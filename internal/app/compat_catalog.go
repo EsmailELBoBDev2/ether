@@ -16,6 +16,8 @@ type compatApp struct {
 	Product       string   `json:"product,omitempty"`
 	Devices       []string `json:"devices"`
 	VideoCodecs   []string `json:"videoCodecs"`
+	AudioCodecs   []string `json:"audioCodecs"`
+	Containers    []string `json:"containers"`
 	Subtitles     []string `json:"subtitles"`
 	DirectPlay    string   `json:"directPlay"`
 	Note          string   `json:"note"`
@@ -35,6 +37,8 @@ type compatDevice struct {
 	MaxHeight           int      `json:"maxHeight,omitempty"`
 	HDR10               bool     `json:"hdr10"`
 	DolbyVision         bool     `json:"dolbyVision"`
+	BuiltinAudioCodecs  []string `json:"builtinAudioCodecs"`
+	BuiltinContainers   []string `json:"builtinContainers"`
 	BuiltinMaxHeight    int      `json:"builtinMaxHeight,omitempty"`
 	BuiltinHDR10        bool     `json:"builtinHdr10"`
 	BuiltinDolbyVision  bool     `json:"builtinDolbyVision"`
@@ -58,7 +62,7 @@ type compatCatalog struct {
 // profile when one exists; otherwise the app is marked as reporting its own
 // capabilities at playback. Nothing here is inferred.
 func builtinApps() []compatApp {
-	return []compatApp{
+	apps := []compatApp{
 		// Protocol strings below identify catalogue entries; they do not select host behavior.
 		{Protocol: "plex", Name: "Plex Web", Devices: []string{"Browser"}, DirectPlay: "browser", Certification: "builtin"},
 		{Protocol: "plex", Name: "Plex for Android phones", Product: "Plex for Android (Mobile)", Devices: []string{"Android"}, DirectPlay: "reported", Certification: "builtin"},
@@ -88,6 +92,20 @@ func builtinApps() []compatApp {
 		{Protocol: "dlna", Name: "DLNA renderer", Devices: []string{"DLNA TV or receiver"}, DirectPlay: "renderer", Certification: "builtin"},
 		{Protocol: "webdav", Name: "Files and media players", Devices: []string{"Apple TV", "iOS", "Android"}, DirectPlay: "player", Certification: "builtin"},
 	}
+	for i := range apps {
+		app := &apps[i]
+		if app.Protocol != "plex" {
+			continue
+		}
+		product := app.Product
+		if product == "" {
+			product = app.Name
+		}
+		base := clientreg.Playback(clientreg.Identity{Product: product}, nil)
+		app.AudioCodecs = base.Audio
+		app.Containers = base.Containers
+	}
+	return apps
 }
 
 func builtinDevices(overrides []core.ClientCapabilityOverride) []compatDevice {
@@ -113,6 +131,8 @@ func builtinDevices(overrides []core.ClientCapabilityOverride) []compatDevice {
 			MaxHeight:           play.MaxHeight,
 			HDR10:               play.HDR10,
 			DolbyVision:         play.DolbyVision,
+			BuiltinAudioCodecs:  playBase.Audio,
+			BuiltinContainers:   playBase.Containers,
 			BuiltinMaxHeight:    playBase.MaxHeight,
 			BuiltinHDR10:        playBase.HDR10,
 			BuiltinDolbyVision:  playBase.DolbyVision,

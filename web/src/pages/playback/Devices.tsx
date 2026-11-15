@@ -12,7 +12,7 @@ import {
   type ListSearchParams,
 } from "@braedonsaunders/appkit-ui";
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -30,6 +30,8 @@ type CompatApp = {
   product?: string;
   devices: string[];
   videoCodecs: string[] | null;
+  audioCodecs?: string[] | null;
+  containers?: string[] | null;
   subtitles: string[] | null;
   directPlay: string;
   note: string;
@@ -43,6 +45,8 @@ type CompatDevice = {
   subtitleCodecs: string[] | null;
   notes: string;
   videoCodecs?: string[] | null;
+  builtinAudioCodecs?: string[] | null;
+  builtinContainers?: string[] | null;
   maxHeight?: number;
   hdr10?: boolean;
   dolbyVision?: boolean;
@@ -62,6 +66,8 @@ type CapabilityOverride = {
   dolbyVisionProfiles?: number[];
   subtitleCodecs?: string[];
   videoCodecs?: string[];
+  audioCodecs?: string[];
+  containers?: string[];
   maxHeight?: number;
   hdr10?: boolean;
   dolbyVision?: boolean;
@@ -87,6 +93,8 @@ type Draft = {
   profiles: string[];
   subtitles: string[];
   video: string[];
+  audio: string[];
+  containers: string[];
   height: string;
   hdr: boolean;
   dolby: boolean;
@@ -94,6 +102,21 @@ type Draft = {
 };
 
 const VIDEO_CHOICES = ["h264", "hevc", "vp9", "av1", "vp8", "mpeg2video", "vc1", "mpeg4"];
+const AUDIO_CHOICES = [
+  "aac",
+  "ac3",
+  "eac3",
+  "truehd",
+  "dts",
+  "dtshd",
+  "mp3",
+  "flac",
+  "alac",
+  "opus",
+  "vorbis",
+  "pcm",
+];
+const CONTAINER_CHOICES = ["mp4", "mkv", "mov", "avi", "mpegts", "webm"];
 const SUBTITLE_CHOICES = ["srt", "ass", "ssa", "vtt", "ttml", "pgs", "vobsub"];
 const PROFILE_CHOICES = ["5", "7", "8", "4", "9"];
 
@@ -220,6 +243,8 @@ function blankDraft(): Draft {
     profiles: [],
     subtitles: [],
     video: [],
+    audio: [],
+    containers: [],
     height: "",
     hdr: false,
     dolby: false,
@@ -233,6 +258,8 @@ function listsFrom(saved?: CapabilityOverride, builtinHeight = 0) {
     profiles: saved?.dolbyVisionProfiles?.map(String) ?? [],
     subtitles: [...(saved?.subtitleCodecs ?? [])],
     video: [...(saved?.videoCodecs ?? [])],
+    audio: [...(saved?.audioCodecs ?? [])],
+    containers: [...(saved?.containers ?? [])],
     height: height > 0 && height !== builtinHeight ? String(height) : "",
     hdr: Boolean(saved?.hdr10),
     dolby: Boolean(saved?.dolbyVision),
@@ -295,6 +322,14 @@ function applyCapabilityDiff(
     if (draft.video.length) override.videoCodecs = draft.video;
     else delete override.videoCodecs;
   }
+  if (!sameList(draft.audio, baseline.audio)) {
+    if (draft.audio.length) override.audioCodecs = draft.audio;
+    else delete override.audioCodecs;
+  }
+  if (!sameList(draft.containers, baseline.containers)) {
+    if (draft.containers.length) override.containers = draft.containers;
+    else delete override.containers;
+  }
   const height = Number(draft.height);
   if (draft.height !== baseline.height) {
     if (Number.isInteger(height) && height > 0 && height !== builtinHeight)
@@ -330,16 +365,19 @@ function ChoiceRow({
   onChange,
   options,
   placeholder,
+  help,
 }: {
   label: string;
   value: string[];
   onChange: (value: string[]) => void;
   options: { value: string; label: string }[];
   placeholder: string;
+  help?: ReactNode;
 }) {
   return (
     <SettingsRow
       title={label}
+      description={help}
       control={
         <div className="w-full sm:w-80">
           <MultiSelect
@@ -642,6 +680,21 @@ export function DeviceCapabilities() {
     ...(builtin?.videoCodecs ?? sourceApp?.videoCodecs ?? []),
     ...draft.video,
   ]).map((value) => ({ value, label: codecLabel(value) }));
+  const audioBuiltin = builtin?.builtinAudioCodecs ?? sourceApp?.audioCodecs ?? [];
+  const containersBuiltin = builtin?.builtinContainers ?? sourceApp?.containers ?? [];
+  const audioOptions = withChoices(AUDIO_CHOICES, [...audioBuiltin, ...draft.audio]).map(
+    (value) => ({ value, label: value }),
+  );
+  const containerOptions = withChoices(CONTAINER_CHOICES, [
+    ...containersBuiltin,
+    ...draft.containers,
+  ]).map((value) => ({ value, label: value }));
+  const codecHelp = (
+    <>
+      {t("Replaces the built-in list, so include every codec the app supports.")}
+      <span className="block">{t("Codecs the Plex app declares itself are still added.")}</span>
+    </>
+  );
   const subtitleOptions = withChoices(SUBTITLE_CHOICES, [
     ...(builtin?.subtitleCodecs ?? sourceApp?.subtitles ?? []),
     ...draft.subtitles,
@@ -949,9 +1002,7 @@ export function DeviceCapabilities() {
                 : ""
           }
           description={
-            editing?.mode === "create"
-              ? t("Pick a known one, or type a match.")
-              : t("What the app reports at playback replaces this.")
+            editing?.mode === "create" ? t("Pick a known one, or type a match.") : undefined
           }
           onClose={() => setEditing(null)}
           onSave={() => void save()}
@@ -1004,11 +1055,28 @@ export function DeviceCapabilities() {
             onChange={(subtitles) => setDraft({ ...draft, subtitles })}
           />
           <ChoiceRow
+            help={codecHelp}
             label={t("Video codecs")}
             value={draft.video}
             options={videoOptions}
             placeholder={videoPlaceholder}
             onChange={(video) => setDraft({ ...draft, video })}
+          />
+          <ChoiceRow
+            label={t("Audio codecs")}
+            help={codecHelp}
+            value={draft.audio}
+            options={audioOptions}
+            placeholder={builtIn(audioBuiltin)}
+            onChange={(audio) => setDraft({ ...draft, audio })}
+          />
+          <ChoiceRow
+            label={t("Containers")}
+            help={t("Replaces the built-in list, so include every container the app supports.")}
+            value={draft.containers}
+            options={containerOptions}
+            placeholder={builtIn(containersBuiltin)}
+            onChange={(containers) => setDraft({ ...draft, containers })}
           />
           <SettingsRow
             title={t("Highest resolution it can show")}

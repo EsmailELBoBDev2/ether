@@ -361,6 +361,7 @@ func applyMovieYear(t *core.Title, primary time.Time, dates *tmdb.ReleaseDates) 
 
 func (c *Catalog) movieDetailsToTitle(ctx context.Context, d *tmdb.MovieDetails) core.Title {
 	t := c.movieToTitle(ctx, d.Movie)
+	c.applyTranslatedNames(&t, d.Translations, d.AlternativeTitles)
 	// Date added is the earliest theatrical date. The title year is the
 	// primary release_date, which is what TMDB, IMDb and Plex match on.
 	// A later regional theatrical date must not move that year. With no
@@ -370,7 +371,6 @@ func (c *Catalog) movieDetailsToTitle(ctx context.Context, d *tmdb.MovieDetails)
 	}
 	applyMovieYear(&t, tmdb.ParseDate(d.ReleaseDate), d.ReleaseDates)
 	t.Keywords = keywordNames(d.Keywords)
-	t.AlternativeTitles = altTitles(d.AlternativeTitles, t.Title, t.OriginalTitle)
 	t.Tagline = d.Tagline
 	t.Status = d.Status
 	if d.Runtime > 0 {
@@ -414,8 +414,8 @@ func (c *Catalog) tvToTitle(ctx context.Context, s tmdb.TVShow) core.Title {
 
 func (c *Catalog) tvDetailsToTitle(ctx context.Context, d *tmdb.TVDetails) core.Title {
 	t := c.tvToTitle(ctx, d.TVShow)
+	c.applyTranslatedNames(&t, d.Translations, d.AlternativeTitles)
 	t.Keywords = keywordNames(d.Keywords)
-	t.AlternativeTitles = altTitles(d.AlternativeTitles, t.Title, t.OriginalTitle)
 	t.Tagline = d.Tagline
 	t.Status = d.Status
 	t.LastAirDate = tmdb.ParseDate(d.LastAirDate)
@@ -574,21 +574,30 @@ const (
 )
 
 // altTitles keeps the alternative titles release names can use: written in
-// Latin script (a release name's script), not the title or original title
-// again, unique after normalization, in TMDB's order, at most maxAltTitles.
+// Latin script, plus preferred localized names in any script; not the title
+// or original title again, unique after normalization, at most maxAltTitles.
 // Romanized originals ("Sousou no Frieren") are what anime and foreign
 // releases are named by. Non-nil when TMDB sent the block, so an empty list
 // replaces stale rows.
-func altTitles(a *tmdb.AltTitles, title, original string) []string {
-	if a == nil {
+func altTitles(a *tmdb.AltTitles, title, original string, preferred ...string) []string {
+	if a == nil && preferred == nil {
 		return nil
 	}
 	out := []string{}
 	seen := map[string]bool{releaseparse.NormalizeTitle(title): true, releaseparse.NormalizeTitle(original): true}
-	for _, list := range [][]tmdb.AltTitle{a.Titles, a.Results} {
+	// Requested-language translations and regional names go first, including
+	// native scripts. Other aliases keep the existing Latin-script policy.
+	lists := [][]tmdb.AltTitle{{}}
+	for _, name := range preferred {
+		lists[0] = append(lists[0], tmdb.AltTitle{Title: name})
+	}
+	if a != nil {
+		lists = append(lists, a.Titles, a.Results)
+	}
+	for i, list := range lists {
 		for _, alt := range list {
 			name := strings.TrimSpace(alt.Title)
-			if name == "" || len(name) > maxAltTitleLen || !latinScript(name) {
+			if name == "" || len(name) > maxAltTitleLen || (i > 0 && !latinScript(name)) {
 				continue
 			}
 			norm := releaseparse.NormalizeTitle(name)

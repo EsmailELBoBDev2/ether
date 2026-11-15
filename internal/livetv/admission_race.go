@@ -68,21 +68,28 @@ func (s *Service) raceSteadyInputs(ctx context.Context, c Channel, candidates []
 				}
 				defer stop()
 				started := time.Now()
-				link, err := s.linkSteadySource(attempt, c, src, "broadcast-"+c.ID+"-admit-"+randomID(), s.latencyPolicy().TargetLatency()+s.latencyPolicy().SegmentDuration())
-				sourceOpenElapsed := time.Since(started)
-				var probeElapsed, pictureElapsed time.Duration
+				var link *steadyLink
+				var sourceOpenElapsed, probeElapsed, pictureElapsed time.Duration
 				var info *core.MediaInfo
-				if err == nil {
-					s.setInputAdmission(link.ss, true)
-					probeStarted := time.Now()
-					info, err = s.probeSteadyLink(attempt, c, link)
-					probeElapsed = time.Since(probeStarted)
+				err := s.withProviderCapacity(attempt, c, src, func() error {
+					link.close(s)
+					opened := time.Now()
+					var err error
+					link, err = s.linkSteadySource(attempt, c, src, "broadcast-"+c.ID+"-admit-"+randomID(), s.latencyPolicy().TargetLatency()+s.latencyPolicy().SegmentDuration())
+					sourceOpenElapsed += time.Since(opened)
 					if err == nil {
-						pictureStarted := time.Now()
-						err = s.primeAdmissionPicture(attempt, c, link, info)
-						pictureElapsed = time.Since(pictureStarted)
+						s.setInputAdmission(link.ss, true)
+						probeStarted := time.Now()
+						info, err = s.probeSteadyLink(attempt, c, link)
+						probeElapsed += time.Since(probeStarted)
+						if err == nil {
+							pictureStarted := time.Now()
+							err = s.primeAdmissionPicture(attempt, c, link, info)
+							pictureElapsed += time.Since(pictureStarted)
+						}
 					}
-				}
+					return err
+				})
 				s.logger().Debug("live admission input finished", "channel", c.ID, "input", src.ID, "elapsed", time.Since(started), "source_open_elapsed", sourceOpenElapsed, "probe_elapsed", probeElapsed, "first_picture_elapsed", pictureElapsed, "success", err == nil)
 				results <- result{src: src, account: account, link: link, info: info, err: err}
 			}(src, account)

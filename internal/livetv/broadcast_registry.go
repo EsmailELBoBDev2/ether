@@ -19,6 +19,7 @@ type broadcastKey struct {
 type broadcastRegistry struct {
 	mu        sync.Mutex
 	outputs   map[broadcastKey]*broadcast
+	retiring  map[*broadcast]broadcastKey
 	closed    bool
 	yielding  atomic.Int32
 	onAcquire func()
@@ -88,23 +89,8 @@ func (r *broadcastRegistry) watchedChannelIDs() map[string]bool {
 }
 
 func (r *broadcastRegistry) acquire(ctx context.Context, key broadcastKey, id string, decision core.Decision, create func() (*broadcast, error), caps ...core.ClientCaps) (*broadcastLease, error) {
-	// Keep the requested channel warm while yielding other grace-period
-	// encoders. A same-channel reopen must retain its encoded live window.
-	r.mu.Lock()
-	existing := r.outputs[key]
-	r.mu.Unlock()
-	needsEncoder := true
-	if existing != nil {
-		existing.mu.Lock()
-		needsEncoder = existing.closed || existing.renditions[id] == nil
-		existing.mu.Unlock()
-	}
-	// Joining an encoded rendition allocates no encoder or server stream unit.
-	// Preserve other warm channels instead of needlessly forcing their next tune
-	// through cold startup. Actual new encoders still yield unused outputs.
-	if needsEncoder {
-		r.yieldIdle(existing)
-	}
+	// Provider admission and stream-limit handling yield idle outputs only
+	// when capacity is needed. A new rendition alone must not evict warm TV.
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -265,10 +251,19 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 	r.mu.Lock()
 	var idle []*broadcast
 	for key, b := range r.outputs {
-		if b != except && b.unwatched(now) {
+		b.mu.Lock()
+		// Claim the idle output under the same lock used to attach viewers.
+		if b != except && b.viewers == 0 && !b.closed && now.Sub(b.created) >= 2*time.Second {
+			b.closed = true
+			b.cancel()
 			delete(r.outputs, key)
+			if r.retiring == nil {
+				r.retiring = map[*broadcast]broadcastKey{}
+			}
+			r.retiring[b] = key
 			idle = append(idle, b)
 		}
+		b.mu.Unlock()
 	}
 	r.mu.Unlock()
 	for _, b := range idle {
@@ -276,7 +271,13 @@ func (r *broadcastRegistry) yieldIdle(except *broadcast) bool {
 		b.logger.Debug("broadcast yielded its stream to a tuned channel")
 		// close waits for the output's goroutines; never block the caller's
 		// frame clock on it.
-		go func() { defer r.yielding.Add(-1); b.close() }()
+		go func() {
+			defer r.yielding.Add(-1)
+			b.close()
+			r.mu.Lock()
+			delete(r.retiring, b)
+			r.mu.Unlock()
+		}()
 	}
 	return len(idle) > 0 || r.yielding.Load() > 0
 }

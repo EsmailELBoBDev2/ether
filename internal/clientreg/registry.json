@@ -665,6 +665,7 @@
     {
       "id": "plex-android-matroska-hls",
       "role": "quirk",
+      "notes": "Plex for Android Matroska-in-HLS transport. Its master playlist must not declare CODECS or SUPPLEMENTAL-CODECS, or the app's media3 player drops the muxed subtitle track (listed, never drawn); see transcode.HLSVariantAttributes. The match also covers Plex for Android (TV), which shares the player code.",
       "quirks": ["plex-android-matroska-hls"],
       "match": {"field": "product", "op": "contains", "value": "plex for android"}
     },

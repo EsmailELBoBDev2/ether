@@ -1568,6 +1568,12 @@ func (s *Server) writeMasterPlaylist(w http.ResponseWriter, r *http.Request, ses
 				if rg.Width > 0 && rg.Height > 0 {
 					line += fmt.Sprintf(",RESOLUTION=%dx%d", rg.Width, rg.Height)
 				}
+				// Not reachable for Plex Android Matroska sessions: Matroska HLS
+				// is cut to a single rung before the session exists
+				// (transcode/manager.go, distributed_support.go), so those
+				// masters go through HLSVariantAttributes below, which omits
+				// CODECS on purpose. If Matroska ever gets a real ladder, this
+				// line must follow the same rule (see hls_attributes.go).
 				if rg.Codecs != "" {
 					line += fmt.Sprintf(",CODECS=%q", rg.Codecs)
 				}
@@ -1620,6 +1626,10 @@ func (s *Server) writeMasterPlaylist(w http.ResponseWriter, r *http.Request, ses
 			line += fmt.Sprintf(",FRAME-RATE=%.3f", v.FrameRate)
 		}
 	}
+	// Plex for Android's Matroska transport gets no CODECS or
+	// SUPPLEMENTAL-CODECS here, deliberately: with them the app drops the muxed
+	// subtitle track (listed, never drawn). The reason is in
+	// transcode.HLSVariantAttributes.
 	line += frontend.HLSVariantAttributes(info, dec)
 	body := "#EXTM3U\n" + subtitleTags + line + subtitleGroup + "\n" + s.mediaURL("session/"+sessionID+"/base/index.m3u8", sessionID, entry.streamToken) + "\n"
 	h := w.Header()

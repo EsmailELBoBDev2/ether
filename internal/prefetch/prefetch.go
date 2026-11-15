@@ -299,7 +299,7 @@ func (p *Prefetcher) OnTimeline(user *core.User, key core.RatingKey, offset, dur
 		return
 	}
 	// Resume warming reuses the played source; permanent failure may replace it.
-	if user != nil && offset > 0 && p.deps.Hints != nil && p.config().KeepInProgressWarm && (key.Kind() == core.KindMovie || key.Kind() == core.KindEpisode) {
+	if user != nil && offset > 0 && p.deps.Hints != nil && p.config().KeepInProgressWarm && state != "playing" && state != "buffering" && (key.Kind() == core.KindMovie || key.Kind() == core.KindEpisode) {
 		u := *user
 		p.enqueue(job{
 			id:  fmt.Sprintf("resume:%d:%d:%d:%s", u.ID, key, offset/(25*time.Second), state),
@@ -406,7 +406,7 @@ func (p *Prefetcher) runJob(j job) {
 	ctx, cancel := context.WithTimeout(p.ctx, p.opts.JobTimeout)
 	var err error
 	if cfg := p.config(); !cfg.DisableSpeculation && cfg.Mode != "off" {
-		err = j.run(ctx)
+		err = j.run(core.WithUnattendedSearch(ctx))
 	}
 	cancel()
 
@@ -607,6 +607,11 @@ func maxTime(a, b time.Time) time.Time {
 // warmResume only resolves after a stored source proves permanently broken.
 // An unstarted title or missing source never spends an indexer request.
 func (p *Prefetcher) warmResume(ctx context.Context, userID int64, key core.RatingKey, offset, duration time.Duration) error {
+	// A queued job may outlive its timeline state. Playback already owns
+	// read-ahead for this title; resume warming must not fetch beside it.
+	if _, live, _ := p.deps.Hints.ClientCaps(userID, key); live {
+		return nil
+	}
 	rp, err := p.deps.Hints.ResumePoint(ctx, userID, key)
 	if err != nil || rp == nil || rp.Size <= 0 || len(rp.NZB) == 0 {
 		return err

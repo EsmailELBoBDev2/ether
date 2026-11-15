@@ -30,11 +30,12 @@ type connCap struct {
 	nextDial map[string]time.Time
 	dialGap  time.Duration
 	reduced  map[string]time.Time // addr -> end of its reduced-cap cooldown
-	freed    chan struct{}        // closed and replaced whenever a connection closes
+	freed    chan struct{}        // closed and replaced whenever admission changes
+	waiters  map[string][]*dialWaiter
 }
 
 func newConnCap(limit int) *connCap {
-	return &connCap{limit: limit, now: time.Now, open: map[string]int{}, nextDial: map[string]time.Time{}, reduced: map[string]time.Time{}, freed: make(chan struct{})}
+	return &connCap{limit: limit, now: time.Now, open: map[string]int{}, nextDial: map[string]time.Time{}, reduced: map[string]time.Time{}, freed: make(chan struct{}), waiters: map[string][]*dialWaiter{}}
 }
 
 // limitLocked is addr's effective cap and, while it is reduced, when the
@@ -86,7 +87,36 @@ func (c *connCap) wrap(next dialFunc) dialFunc {
 	}
 }
 
+type dialWaiter struct {
+	urgent  func() bool
+	granted bool
+}
+
+// Equal-priority dials keep FIFO order. Background dials resume as soon as
+// the foreground queue drains; already-open connections are never displaced.
 func (c *connCap) acquire(ctx context.Context, addr string) error {
+	w := &dialWaiter{urgent: func() bool { return gateUrgent(ctx) }}
+	c.mu.Lock()
+	c.waiters[addr] = append(c.waiters[addr], w)
+	c.signalLocked()
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		q := c.waiters[addr]
+		for i, other := range q {
+			if other == w {
+				q = append(q[:i], q[i+1:]...)
+				break
+			}
+		}
+		if len(q) == 0 {
+			delete(c.waiters, addr)
+		} else {
+			c.waiters[addr] = q
+		}
+		c.signalLocked()
+		c.mu.Unlock()
+	}()
 	asked := false
 	began := time.Now()
 	lim := c.limit
@@ -97,27 +127,44 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 	}()
 	for {
 		c.mu.Lock()
+		if w.granted {
+			c.mu.Unlock()
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			return err
+		}
 		var until time.Time
 		lim, until = c.limitLocked(addr)
-		if c.open[addr] < lim {
-			wait := c.nextDial[addr].Sub(c.now())
-			if wait <= 0 {
-				c.open[addr]++
-				if c.dialGap > 0 {
-					c.nextDial[addr] = c.now().Add(c.dialGap)
+		// Any awake waiter can grant the selected dial. Priority may change
+		// while that dial sleeps; progress cannot depend on it waking itself.
+		q := c.waiters[addr]
+		if c.open[addr] < lim && !c.now().Before(c.nextDial[addr]) {
+			pick := 0
+			for i, candidate := range q {
+				if candidate.urgent() {
+					pick = i
+					break
 				}
+			}
+			chosen := q[pick]
+			c.waiters[addr] = append(q[:pick:pick], q[pick+1:]...)
+			chosen.granted = true
+			c.open[addr]++
+			if c.dialGap > 0 {
+				c.nextDial[addr] = c.now().Add(c.dialGap)
+			}
+			c.signalLocked()
+			if chosen == w {
 				c.mu.Unlock()
 				return nil
 			}
-			c.mu.Unlock()
-			t := time.NewTimer(wait)
-			select {
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				return ctx.Err()
-			}
-			continue
+		}
+		// A spare slot gets a timer even when another waiter is currently
+		// selected. When it expires we can grant a newly promoted sleeper.
+		if c.open[addr] < lim {
+			until = c.nextDial[addr]
 		}
 		freed := c.freed
 		c.mu.Unlock()
@@ -129,7 +176,7 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 		var restored <-chan time.Time
 		var t *time.Timer
 		if !until.IsZero() {
-			// The cap rises when the cooldown ends, even if nothing closes.
+			// Wake for dial spacing or cap restoration, even if nothing closes.
 			t = time.NewTimer(until.Sub(c.now()))
 			restored = t.C
 		}
@@ -140,7 +187,7 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 			if t != nil {
 				t.Stop()
 			}
-			return ctx.Err()
+			continue // recheck a grant racing with cancellation under c.mu
 		}
 		if t != nil {
 			t.Stop()
@@ -155,9 +202,13 @@ func (c *connCap) release(addr string) {
 	} else {
 		c.open[addr]--
 	}
+	c.signalLocked()
+	c.mu.Unlock()
+}
+
+func (c *connCap) signalLocked() {
 	close(c.freed)
 	c.freed = make(chan struct{})
-	c.mu.Unlock()
 }
 
 // Reserve headroom for real reads, including connections in both pools.
@@ -203,6 +254,9 @@ type hostGate struct {
 	mu      sync.Mutex
 	busy    map[string]int
 	waiters map[string][]*gateWaiter
+
+	foreground map[string]int
+	drains     map[string]map[*drainLease]struct{}
 }
 
 type gateWaiter struct {
@@ -215,6 +269,65 @@ func newHostGate(c *connCap) *hostGate {
 	return &hostGate{limit: c.current, now: func() time.Time { return c.now() }, busy: map[string]int{}, waiters: map[string][]*gateWaiter{}}
 }
 
+// A drain owns its connection normally, but may keep it only while no
+// foreground request is entering admission. Cancellation aborts the HTTP
+// body; neither the request gate nor the physical connection cap is bypassed.
+type drainLease struct{ cancel context.CancelFunc }
+
+func (g *hostGate) beginForeground(addr string) func() {
+	if g == nil {
+		return func() {}
+	}
+	g.mu.Lock()
+	if g.foreground == nil {
+		g.foreground = make(map[string]int)
+	}
+	g.foreground[addr]++
+	var cancel []context.CancelFunc
+	for d := range g.drains[addr] {
+		cancel = append(cancel, d.cancel)
+	}
+	g.mu.Unlock()
+	for _, stop := range cancel {
+		stop()
+	}
+	return func() {
+		g.mu.Lock()
+		g.foreground[addr]--
+		if g.foreground[addr] == 0 {
+			delete(g.foreground, addr)
+		}
+		g.mu.Unlock()
+	}
+}
+
+func (g *hostGate) tryDrain(addr string, cancel context.CancelFunc) (func(), bool) {
+	if g == nil {
+		return nil, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.foreground[addr] > 0 {
+		return nil, false
+	}
+	if g.drains == nil {
+		g.drains = make(map[string]map[*drainLease]struct{})
+	}
+	if g.drains[addr] == nil {
+		g.drains[addr] = make(map[*drainLease]struct{})
+	}
+	d := &drainLease{cancel: cancel}
+	g.drains[addr][d] = struct{}{}
+	return func() {
+		g.mu.Lock()
+		delete(g.drains[addr], d)
+		if len(g.drains[addr]) == 0 {
+			delete(g.drains, addr)
+		}
+		g.mu.Unlock()
+	}, true
+}
+
 // acquire waits for a request slot to addr. urgent reports whether a viewer
 // is waiting on this request; it is consulted again whenever a slot frees.
 func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool) (func(), error) {
@@ -224,13 +337,18 @@ func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool)
 	began := time.Now()
 	g.mu.Lock()
 	lim, until := g.limit(addr)
-	if g.busy[addr] < lim && (len(g.waiters[addr]) == 0 || urgent()) {
+	if err := ctx.Err(); err != nil {
+		g.mu.Unlock()
+		return nil, err
+	}
+	if g.busy[addr] < lim && len(g.waiters[addr]) == 0 {
 		g.busy[addr]++
 		g.mu.Unlock()
 		return g.releaser(addr), nil
 	}
 	w := &gateWaiter{urgent: urgent, ready: make(chan struct{})}
 	g.waiters[addr] = append(g.waiters[addr], w)
+	g.dispatchLocked(addr)
 	g.mu.Unlock()
 	defer func() {
 		if wait := time.Since(began); wait > 250*time.Millisecond && g.log != nil {

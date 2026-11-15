@@ -511,7 +511,7 @@ func TestKeepWarmTimelineUsesNewPosition(t *testing.T) {
 		f.wait(t)
 	}
 	calls := f.engine.got()
-	if len(calls) != 3 {
+	if len(calls) != 2 {
 		t.Fatalf("timeline warm calls = %v", calls)
 	}
 	for _, c := range calls {

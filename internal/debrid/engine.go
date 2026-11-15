@@ -33,7 +33,7 @@ const (
 	defaultConnections  = 4         // config.Debrid.MaxConnections default
 	minReadAheadBytes   = 8 << 20
 	maxReadAheadBytes   = 32 << 20
-	readAheadSeconds    = 10 // adaptive window: seconds of measured throughput
+	readAheadSeconds    = 10 // adaptive window: seconds of measured reader consumption
 	memBlocksPerFile    = 24 // in-memory blocks per open file (12 MiB)
 	defaultHedgeDelay   = 400 * time.Millisecond
 	idleFileTTL         = 15 * time.Minute
@@ -335,8 +335,8 @@ func (e *Engine) Open(ctx context.Context, releaseID string, payload []byte) (co
 	if err != nil {
 		return nil, err
 	}
-	s := &httpSource{f: f, last: -2}
-	s.raCtx, s.raCancel = context.WithCancel(f.ctx)
+	s := &httpSource{f: f, last: -2, priority: func() bool { return callerUrgent(ctx) }}
+	s.raCtx, s.raCancel = newSeekEpoch(f.ctx)
 	return s, nil
 }
 
@@ -544,11 +544,12 @@ const (
 )
 
 type blockFlight struct {
-	done  chan struct{}
-	data  []byte
-	err   error
-	mode  fetchMode
-	first int64 // run start; urgent readers steal later blocks of a prefetch run
+	done   chan struct{}
+	data   []byte
+	err    error
+	mode   fetchMode
+	first  int64        // run start; urgent readers steal later blocks of a prefetch run
+	demand *atomic.Bool // shared by the run: a viewer joined its queued range
 }
 
 type remoteFile struct {
@@ -593,15 +594,20 @@ type remoteFile struct {
 	mediaPauseKey   string
 	mediaPause      mediaPause
 
-	bmu     sync.Mutex
-	flights map[int64]*blockFlight
-	mem     *lru.Cache[int64, []byte]
-	edges   map[int64][]byte // bounded head/tail, retained independently of streaming LRU
-	stored  map[int64]bool
-	tput    float64 // bytes/s EWMA
+	bmu      sync.Mutex
+	flights  map[int64]*blockFlight
+	mem      *lru.Cache[int64, []byte]
+	edges    map[int64][]byte // bounded head/tail, retained independently of streaming LRU
+	stored   map[int64]bool
+	tput     float64           // bytes/s EWMA
+	ttfbs    [32]time.Duration // bounded recent successful range TTFBs
+	ttfbNext uint64
+	runCount int          // scheduled runs, including admission waits; guarded by bmu
+	playback atomic.Int64 // live source handles that have served foreground reads
 
-	conns   chan struct{} // all requests
-	raSlots chan struct{} // read-ahead and prefetch (leaves one connection for urgent reads)
+	conns       chan struct{} // all requests
+	raSlots     chan struct{} // ordinary read-ahead and prefetch reserve an urgent connection
+	sustainSlot chan struct{} // playback alone may borrow the reserved connection
 
 	// yieldSig is closed when an urgent seek is in flight so prefetch and
 	// read-ahead abandon their connections instead of filling toward the
@@ -616,7 +622,7 @@ func (e *Engine) newFile(id string, p Payload) *remoteFile {
 	f := &remoteFile{e: e, id: id, tag: p.fileTag(), size: p.Size, pl: p,
 		flights: map[int64]*blockFlight{}, mem: lru.New(lru.Options[int64, []byte]{MaxEntries: memBlocksPerFile}), stored: map[int64]bool{}, failedGen: -1,
 		conns: make(chan struct{}, conns), raSlots: make(chan struct{}, max(1, conns-1)),
-		yieldSig: make(chan struct{}), rerouteSem: make(chan struct{}, 1)}
+		sustainSlot: make(chan struct{}, 1), yieldSig: make(chan struct{}), rerouteSem: make(chan struct{}, 1)}
 	f.nblocks = (p.Size + e.block - 1) / e.block
 	f.ctx, f.cancel = context.WithCancel(e.ctx)
 	return f
@@ -1124,8 +1130,10 @@ func (f *remoteFile) block(ctx context.Context, idx int64, mode fetchMode, runBl
 			return d, nil
 		}
 		fl := f.flights[idx]
-		if fl != nil && mode == fetchUrgent && fl.mode != fetchUrgent && fl.first < idx {
-			// A prefetch/read-ahead run started earlier in the file has
+		if fl != nil && mode == fetchUrgent && fl.mode == fetchPrefetch && fl.first < idx {
+			// Playback read-ahead is joined even at a later block: stealing
+			// its tail duplicates bytes and strands its warm connection.
+			// A prefetch run started earlier in the file has
 			// claimed this block but has not reached it. Waiting would
 			// fill sequentially up to the offset. Steal this block and
 			// the unread tail so the urgent GET can cover a full window.
@@ -1161,7 +1169,10 @@ func (f *remoteFile) block(ctx context.Context, idx int64, mode fetchMode, runBl
 					runCtx = f.ctx
 				}
 			}
-			fl, _ = f.startRun(runCtx, idx, runBlocks, mode, false)
+			fl, _ = f.startRun(inheritReadPriority(runCtx, ctx), idx, runBlocks, mode, false)
+		}
+		if fl.demand != nil && mode == fetchUrgent && callerUrgent(ctx) {
+			fl.demand.Store(true)
 		}
 		select {
 		case <-fl.done:
@@ -1198,17 +1209,34 @@ func (f *remoteFile) startRun(ctx context.Context, idx, n int64, mode fetchMode,
 		f.bmu.Unlock()
 		return fl, false
 	}
+	runs, _ := ctx.Value(seekRunsKey{}).(*seekRuns)
+	if !runs.register() {
+		f.bmu.Unlock()
+		fl := &blockFlight{done: make(chan struct{}), err: errRunCancelled}
+		close(fl.done)
+		return fl, false
+	}
 	var fls []*blockFlight
+	demand := new(atomic.Bool)
 	for i := idx; i < idx+max(n, 1) && i < f.nblocks; i++ {
 		if i > idx && f.presentLocked(i) {
 			break
 		}
-		fl := &blockFlight{done: make(chan struct{}), mode: mode, first: idx}
+		fl := &blockFlight{done: make(chan struct{}), mode: mode, first: idx, demand: demand}
 		f.flights[i] = fl
 		fls = append(fls, fl)
 	}
+	f.runCount++
 	f.bmu.Unlock()
-	go f.fetchRun(ctx, idx, fls, mode, slotHeld)
+	go func() {
+		defer runs.finish()
+		defer func() {
+			f.bmu.Lock()
+			f.runCount--
+			f.bmu.Unlock()
+		}()
+		f.fetchRun(ctx, idx, fls, mode, slotHeld)
+	}()
 	return fls[0], true
 }
 
@@ -1232,22 +1260,26 @@ func (f *remoteFile) finish(idx int64, fl *blockFlight, data []byte, err error, 
 // publishing each block as soon as its bytes arrive.
 func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlight, mode fetchMode, slotHeld bool) {
 	// reqCtx ends when the run is abandoned; httpCtx carries its request.
-	// They differ for background runs, which keep a nearly finished
-	// response going so its connection survives the seek that displaced it.
+	// Only background responses may finish a short remainder into cache,
+	// and they yield immediately when foreground admission needs the host.
 	reqCtx, httpCtx := ctx, ctx
 	var remaining atomic.Int64 // response bytes still unread; -1 before the body
 	remaining.Store(-1)
-	if mode == fetchReadAhead || mode == fetchPrefetch {
-		var stop, cancelHTTP context.CancelFunc
-		reqCtx, stop = f.yieldCtx(ctx)
-		defer stop()
+	if mode == fetchReadAhead || mode == fetchPrefetch || mode == fetchUrgent {
+		var cancelHTTP context.CancelFunc
+		if mode != fetchUrgent {
+			var stop context.CancelFunc
+			reqCtx, stop = f.yieldCtx(ctx)
+			defer stop()
+		}
 		httpCtx, cancelHTTP = context.WithCancel(context.WithoutCancel(ctx))
 		finished := make(chan struct{})
 		defer cancelHTTP()
 		defer close(finished)
-		go f.keepWarmOnYield(reqCtx, finished, &remaining, cancelHTTP)
+		go f.keepWarmOnYield(reqCtx, finished, &remaining, mode, cancelHTTP)
 	}
 	httpCtx = context.WithValue(httpCtx, fetchModeKey{}, mode)
+	httpCtx = context.WithValue(httpCtx, playheadDemandKey{}, fls[0].demand)
 	i := 0
 	fail := func(err error) {
 		if reqCtx.Err() != nil {
@@ -1270,7 +1302,11 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 		}
 	}
 	if slotHeld {
-		defer func() { <-f.raSlots }()
+		slot := f.raSlots
+		if extra, _ := ctx.Value(sustainSlotKey{}).(bool); extra {
+			slot = f.sustainSlot
+		}
+		defer func() { <-slot }()
 	} else if mode == fetchReadAhead || mode == fetchPrefetch || mode == fetchMetadata {
 		select {
 		case f.raSlots <- struct{}{}:
@@ -1302,6 +1338,10 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			body.Close()
 		}
 	}()
+	f.bmu.Lock()
+	f.ttfbs[f.ttfbNext%uint64(len(f.ttfbs))] = tm.ttfb
+	f.ttfbNext++
+	f.bmu.Unlock()
 	var got int64
 	bodyRetries := 0
 	for ; i < len(fls); i++ {
@@ -1381,12 +1421,8 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 	f.e.svc.RecordStream(p.Provider, tm.connect, tm.ttfb, got, elapsed)
 }
 
-// A background run displaced by a seek reads its last bytes, up to about a
-// quarter second of transfer, when that is all that stands between its
-// connection and the idle pool: the seek's own request then reuses a warm
-// connection instead of paying a new TCP and TLS handshake to the CDN (or
-// waiting under the host cap for a slot). Anything longer is cut off at
-// once, as before, so it never competes with the seek for bandwidth.
+// An abandoned background run may finish a small remainder to retain a
+// warm connection, but only until foreground admission needs that host.
 const (
 	minYieldDrainBytes = 1 << 20
 	maxYieldDrainBytes = 4 << 20
@@ -1395,14 +1431,29 @@ const (
 
 type fetchModeKey struct{}
 
-// gateUrgent reports whether a viewer is waiting on the request ctx carries:
-// a foreground read that is not, or is no longer, a warm-up or analysis.
+// readPriorityKey carries caller admission through workers detached from a
+// request's cancellation. The callback preserves warm-up promotion to Play.
+type readPriorityKey struct{}
+type playheadDemandKey struct{}
+
+func callerUrgent(ctx context.Context) bool {
+	if priority, ok := ctx.Value(readPriorityKey{}).(func() bool); ok {
+		return priority()
+	}
+	return !core.SpeculativeIndexerWork(ctx) && !core.IsBackgroundCheck(ctx) && !isAnalysisRead(ctx)
+}
+
+func inheritReadPriority(dst, src context.Context) context.Context {
+	return context.WithValue(dst, readPriorityKey{}, func() bool { return callerUrgent(src) })
+}
+
+// gateUrgent distinguishes playhead/probe reads from speculative ranges.
 func gateUrgent(ctx context.Context) bool {
-	mode, ok := ctx.Value(fetchModeKey{}).(fetchMode)
-	if !ok {
+	if demand, _ := ctx.Value(playheadDemandKey{}).(*atomic.Bool); demand != nil && demand.Load() {
 		return true
 	}
-	return (mode == fetchUrgent || mode == fetchDurable || mode == fetchMetadata) && !core.IsSpeculative(ctx) && !isAnalysisRead(ctx)
+	mode, ok := ctx.Value(fetchModeKey{}).(fetchMode)
+	return (!ok || mode == fetchUrgent || mode == fetchDurable || mode == fetchMetadata) && callerUrgent(ctx)
 }
 
 func (f *remoteFile) yieldDrainBytes() int64 {
@@ -1412,24 +1463,41 @@ func (f *remoteFile) yieldDrainBytes() int64 {
 	return min(int64(maxYieldDrainBytes), max(int64(minYieldDrainBytes), int64(tput/4)))
 }
 
-// keepWarmOnYield ends an abandoned background run's request, unless only a
-// short remainder is left: that is read to the end (and published), so the
-// connection goes back to the pool instead of being torn down mid-response.
-func (f *remoteFile) keepWarmOnYield(abandoned context.Context, finished <-chan struct{}, remaining *atomic.Int64, cancel context.CancelFunc) {
+// keepWarmOnYield aborts abandoned foreground ranges immediately. Background
+// drains retain their normal cap slot and are preemptible before any new
+// foreground request enters even the per-file admission queue.
+func (f *remoteFile) keepWarmOnYield(abandoned context.Context, finished <-chan struct{}, remaining *atomic.Int64, mode fetchMode, cancel context.CancelFunc) {
 	select {
 	case <-abandoned.Done():
 	case <-finished:
 		return
 	}
-	if rem := remaining.Load(); rem < 0 || rem > f.yieldDrainBytes() || f.ctx.Err() != nil {
+	if rem := remaining.Load(); mode == fetchUrgent || rem < 0 || rem > f.yieldDrainBytes() || f.ctx.Err() != nil {
 		cancel()
 		return
 	}
+	f.urgentMu.Lock()
+	sig := f.yieldSig
+	seeking := f.urgentWait > 0
+	f.urgentMu.Unlock()
+	if seeking {
+		cancel()
+		return
+	}
+	p, _ := f.payload()
+	release, ok := f.e.gate.tryDrain(dialAddr(p.URL), cancel)
+	if !ok {
+		cancel()
+		return
+	}
+	defer release()
 	t := time.NewTimer(yieldDrainWait)
 	defer t.Stop()
 	select {
 	case <-finished:
 	case <-t.C:
+		cancel()
+	case <-sig:
 		cancel()
 	case <-f.ctx.Done():
 		cancel()
@@ -1443,7 +1511,7 @@ func (f *remoteFile) isRateLimited() bool {
 
 // prefetch warms byte ranges into the cache with bounded concurrency.
 func (f *remoteFile) prefetch(ctx context.Context, ranges [][2]int64) error {
-	if f.isRateLimited() {
+	if f.playback.Load() > 0 || f.isRateLimited() {
 		return nil
 	}
 	maxRun, _, _ := f.e.tuning()
@@ -1467,6 +1535,9 @@ func (f *remoteFile) prefetch(ctx context.Context, ranges [][2]int64) error {
 				defer wg.Done()
 				// Wait for the whole run, not just its first block.
 				for i := idx; i < idx+n; i++ {
+					if f.playback.Load() > 0 {
+						return // let a running range finish, but start no competing runs
+					}
 					f.bmu.Lock()
 					fl, stored := f.flights[i], f.presentOnDiskLocked(i)
 					f.bmu.Unlock()
@@ -1519,6 +1590,13 @@ type timing struct{ connect, ttfb time.Duration }
 // core.ErrArticleMissing (the link keeps failing) or core.ErrArticleCorrupt
 // (the file is not what the payload describes).
 func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool) (result io.ReadCloser, measured timing, served servedBy, resultErr error) {
+	if _, ok := ctx.Value(fetchModeKey{}).(fetchMode); !ok {
+		mode := fetchPrefetch
+		if urgent {
+			mode = fetchUrgent
+		}
+		ctx = context.WithValue(ctx, fetchModeKey{}, mode)
+	}
 	if isAnalysisRead(ctx) && f.e.svc != nil {
 		totals := &f.e.svc.analysisTotals
 		totals.active.Add(1)
@@ -1788,6 +1866,13 @@ func checkContentRange(v string, start, size int64) error {
 // byte has not arrived within the hedge delay, a duplicate request goes out
 // on a separate connection pool and the first to deliver a byte wins.
 func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent bool, slots chan struct{}) (*http.Response, timing, error) {
+	// Preempt drains before waiting on either per-file or host admission.
+	// Holding this registration through header/first-byte acquisition also
+	// prevents a newly abandoned background range from starting a drain.
+	if gateUrgent(ctx) {
+		done := e.gate.beginForeground(dialAddr(u))
+		defer done()
+	}
 	// Count actual requests through body close, including probes and hedges.
 	// A speculative duplicate may only use a spare slot; it must never
 	// block the primary or exceed the provider's media connection budget.
@@ -1835,7 +1920,7 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 		<-slots
 		return nil, timing{}, err
 	}
-	if !urgent || e.delay < 0 {
+	if !urgent || !priority() || e.delay < 0 {
 		return send(ctx, e.hc, nil, host)
 	}
 	type result struct {
@@ -2183,10 +2268,13 @@ type httpSource struct {
 	f *remoteFile
 
 	mu       sync.Mutex
-	last     int64 // last block a live read touched
+	last     int64       // last block a live read touched
+	priority func() bool // source-open role, including a promotable warm-up
 	raCtx    context.Context
 	raCancel context.CancelFunc
 	closed   bool
+	playing  bool          // counted in f.playback until Close
+	sustain  sourceSustain // guarded by mu; metered only by foreground reads
 }
 
 func (s *httpSource) Size() int64       { return s.f.size }
@@ -2239,6 +2327,9 @@ func (s *httpSource) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.playing {
+		s.f.playback.Add(-1)
+	}
 	s.raCancel()
 	s.mu.Unlock()
 	s.f.e.releaseFile(s.f)
@@ -2248,6 +2339,9 @@ func (s *httpSource) Close() error {
 func (s *httpSource) ReadAt(p []byte, off int64) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), readAtDefaultBudget)
 	defer cancel()
+	if s.priority != nil {
+		ctx = context.WithValue(ctx, readPriorityKey{}, s.priority)
+	}
 	return s.read(ctx, p, off, fetchUrgent, true)
 }
 
@@ -2275,7 +2369,15 @@ func (s *httpSource) ReadMetadataAtContext(ctx context.Context, p []byte, off in
 	if isAnalysisRead(ctx) {
 		return s.ReadAtAnalysisContext(ctx, p, off)
 	}
-	return s.read(ctx, p, off, fetchMetadata, false)
+	// Probe ranges own only the blocks they ask for. Do not leave their
+	// response bodies holding connections after the probe has its bytes.
+	epoch, cancel := newSeekEpoch(ctx)
+	defer func() {
+		cancel()
+		runs, _ := epoch.Value(seekRunsKey{}).(*seekRuns)
+		runs.wait()
+	}()
+	return s.read(epoch, p, off, fetchMetadata, false)
 }
 
 func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMode, live bool) (int, error) {
@@ -2304,29 +2406,55 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 	if !live {
 		runLen = min(maxRun, max(1, lastBlock-first+1))
 	}
-	var liveRun context.Context
+	var liveRun, meterEpoch context.Context
+	if mode == fetchMetadata {
+		liveRun = ctx
+	}
+	n := 0
+	if live && callerUrgent(ctx) {
+		s.beginConsumption(f.e.now())
+		defer func() { s.recordConsumption(n, off, meterEpoch) }()
+	}
 	if live {
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
 			return 0, errors.New("debrid: read on closed source")
 		}
+		if !s.playing && callerUrgent(ctx) {
+			s.playing = true
+			f.playback.Add(1)
+		}
 		// A short forward skip onto blocks read-ahead already holds or is
 		// fetching keeps those runs; anything else is a seek.
 		sequential := s.last >= 0 && first >= s.last && first <= s.last+2
-		if !sequential && s.last >= 0 && first > s.last {
+		if !sequential {
 			f.bmu.Lock()
+			// Overlapping forward HTTP requests may arrive out of order.
+			// A cached or in-flight block needs no new seek connection,
+			// including when it is just behind the latest request.
 			sequential = f.presentLocked(first)
 			f.bmu.Unlock()
 		}
-		// A seek, or the first read far from the head: drop speculative
-		// fills of the start of the file and take a connection now.
-		far := first > 2
-		if !sequential && (s.last >= 0 || far) {
+		// The first live read needs the same handover as a seek, even at
+		// the head: preparation must yield before playback takes a slot.
+		seek := s.last < 0 || !sequential
+		var oldRuns *seekRuns
+		seekEnded := false
+		if seek {
+			// Keep the last consumption estimate while restarting its sample
+			// interval: the new position has no useful measurement yet.
+			s.sustain.rateAt, s.sustain.rateBytes = f.e.now(), 0
+			oldRuns, _ = s.raCtx.Value(seekRunsKey{}).(*seekRuns)
+			s.sustain.playhead = off
 			s.raCancel()
-			s.raCtx, s.raCancel = context.WithCancel(f.ctx)
+			s.raCtx, s.raCancel = newSeekEpoch(f.ctx)
 			f.beginUrgentSeek()
-			defer f.endUrgentSeek()
+			defer func() {
+				if !seekEnded {
+					f.endUrgentSeek()
+				}
+			}()
 		}
 		if sequential {
 			runLen = min(maxRun, 4)
@@ -2338,15 +2466,38 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 		// Request cancellation still retires the urgent run; joined readers
 		// retry an abandoned flight under their own request context.
 		liveRun = s.raCtx
+		meterEpoch = s.raCtx
 		if concurrent, _ := ctx.Value(concurrentRangeKey{}).(bool); concurrent {
 			liveRun = ctx
 		}
 		s.mu.Unlock()
-		// Start read-ahead past this read before blocking, so the burst
-		// runs in parallel with the request for the bytes asked for.
+		if seek {
+			// Retired foreground ranges abort and background drains yield.
+			// Await their body close and slot release here,
+			// before the new foreground GET enters host admission.
+			oldRuns.wait()
+			f.endUrgentSeek()
+			seekEnded = true
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
+		// Every client range registers foreground demand before speculation,
+		// including the first head range and overlapping startup ranges.
+		f.bmu.Lock()
+		present := f.presentLocked(first)
+		fl := f.flights[first]
+		f.bmu.Unlock()
+		if !present {
+			fl, _ = f.startRun(inheritReadPriority(liveRun, ctx), first,
+				min(maxRun, max(runLen, lastBlock-first+1)), mode, false)
+		}
+		if fl != nil && fl.demand != nil && callerUrgent(ctx) {
+			fl.demand.Store(true)
+		}
+		// Start the entire bounded burst before waiting for the playhead.
 		s.readAhead(lastBlock)
 	}
-	n := 0
 	for idx := first; idx <= lastBlock; idx++ {
 		data, err := f.block(ctx, idx, mode, min(maxRun, max(runLen, lastBlock-idx+1)), liveRun)
 		if err != nil {
@@ -2369,49 +2520,70 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 	return n, nil
 }
 
-// readAhead keeps a throughput-scaled window ahead of the reader in flight,
-// in runs that start at freshRunBlocks and double up to the chunk size.
+// readAhead is topped up only by a live reader; it has no background pump.
 func (s *httpSource) readAhead(from int64) {
 	f := s.f
 	maxRun, _, fixed := f.e.tuning()
 	if fixed < 0 || f.isRateLimited() {
 		return
 	}
-	window := fixed
-	if window == 0 {
-		f.bmu.Lock()
-		tput := f.tput
-		f.bmu.Unlock()
-		window = min(maxReadAheadBytes, max(minReadAheadBytes, int64(tput*readAheadSeconds)))
-	}
 	s.mu.Lock()
-	ctx := s.raCtx
-	closed := s.closed
+	ctx, closed, rate := s.raCtx, s.closed, s.sustain.rate
 	s.mu.Unlock()
 	if closed || ctx.Err() != nil {
 		return
 	}
+	capRuns := min(cap(f.conns), defaultHostConnections)
+	if f.e.limit != nil {
+		p, _ := f.payload()
+		f.e.limit.mu.Lock()
+		hostCap, _ := f.e.limit.limitLocked(dialAddr(p.URL))
+		f.e.limit.mu.Unlock()
+		capRuns = min(capRuns, hostCap)
+	}
+	f.bmu.Lock()
+	tput := f.tput
+	f.bmu.Unlock()
+	window, parallel := sustainPolicy(rate, tput, s.aheadBudget(), fixed, capRuns)
 	lastIdx := min(f.nblocks-1, from+window/f.e.block)
 	run := min(maxRun, freshRunBlocks)
+	if rate > 0 {
+		run = maxRun
+	}
 	for idx := from + 1; idx <= lastIdx; {
 		f.bmu.Lock()
 		present := f.presentLocked(idx)
+		runs := f.runCount
 		f.bmu.Unlock()
 		if present {
 			idx++
 			continue
 		}
-		// Read-ahead runs never queue: a queued run would hold flights a
-		// reader may soon wait on. Without a free slot, the next read
-		// tops the window up.
-		select {
-		case f.raSlots <- struct{}{}:
-		default:
+		if runs >= parallel {
 			return
 		}
+		// Never queue speculative flights. Playback may use the fourth
+		// connection when measured demand requires it; prefetch still uses
+		// only raSlots, and all dials retain their existing priority/cap.
+		runCtx := ctx
+		slot := f.raSlots
+		select {
+		case slot <- struct{}{}:
+		default:
+			if parallel <= cap(f.raSlots) {
+				return
+			}
+			slot = f.sustainSlot
+			select {
+			case slot <- struct{}{}:
+				runCtx = context.WithValue(ctx, sustainSlotKey{}, true)
+			default:
+				return
+			}
+		}
 		n := min(run, lastIdx-idx+1)
-		if _, started := f.startRun(ctx, idx, n, fetchReadAhead, true); !started {
-			<-f.raSlots
+		if _, started := f.startRun(runCtx, idx, n, fetchReadAhead, true); !started {
+			<-slot
 		}
 		idx += n
 		run = min(run*2, maxRun)

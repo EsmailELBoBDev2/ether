@@ -2,9 +2,12 @@ package debrid
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/lru"
 )
 
 // A foreground refill can use every freed slot without paying a staircase
@@ -107,4 +110,107 @@ func TestConnCapForegroundRefill(t *testing.T) {
 			})
 		})
 	}
+}
+
+// Read-ahead is the producer for long streaming reads: empty reserves must
+// refill as a burst, healthy reserves stay paced, and joining a sleeping run
+// must wake admission immediately rather than wait for its spacing timer.
+func TestConnCapReadAheadLowWater(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const addr = "cdn:443"
+		const gap = 250 * time.Millisecond
+		const mib = 1 << 20
+		c := newConnCap(defaultHostConnections)
+		c.dialGap = gap
+		f := &remoteFile{
+			e: &Engine{block: mib, limit: c}, size: 64 * mib, nblocks: 64,
+			mem:   lru.New(lru.Options[int64, []byte]{MaxEntries: memBlocksPerFile}),
+			edges: map[int64][]byte{},
+		}
+		f.bitrateFloor.Store(2 * mib)
+		epoch := t.Context()
+		s := &httpSource{f: f, raCtx: epoch}
+		background := context.WithValue(epoch, fetchModeKey{}, fetchReadAhead)
+		ctx := context.WithValue(background, readAheadDialKey{}, func() bool { return s.readAheadDialUrgent(epoch) })
+		burst := func() {
+			t.Helper()
+			c.nextDial[addr] = time.Now().Add(gap)
+			before := time.Now()
+			for i := 0; i < defaultHostConnections; i++ {
+				if err := c.acquire(ctx, addr); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if elapsed := time.Since(before); elapsed != 0 {
+				t.Fatalf("read-ahead refill paid spacing: %v", elapsed)
+			}
+			extraCtx, cancel := context.WithCancel(ctx)
+			done := make(chan error, 1)
+			go func() { done <- c.acquire(extraCtx, addr) }()
+			synctest.Wait()
+			select {
+			case err := <-done:
+				t.Fatalf("read-ahead exceeded cap: %v", err)
+			default:
+			}
+			cancel()
+			if err := <-done; err == nil {
+				t.Fatal("cancelled dial admitted")
+			}
+			for i := 0; i < defaultHostConnections; i++ {
+				c.release(addr)
+			}
+		}
+		burst() // open, before the first measurement
+		s.sustain.measured, s.sustain.rate = true, mib
+		burst() // measured but empty: bitrate floor exceeds observed delivery
+		// Three MiB exceeds 2.5 seconds of measured delivery, but falls
+		// short of the five MiB required by the unchanged bitrate floor.
+		for i := int64(0); i < 3; i++ {
+			f.edges[i] = []byte{1}
+		}
+		burst()
+		for i := int64(3); i < 6; i++ {
+			f.edges[i] = []byte{1}
+		}
+		for i := 0; i < defaultHostConnections; i++ {
+			before := time.Now()
+			if err := c.acquire(ctx, addr); err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(before); elapsed != gap {
+				t.Fatalf("healthy reserve spacing = %v, want %v", elapsed, gap)
+			}
+			c.release(addr)
+		}
+		// A new seek epoch is urgent even with a retained estimate/cache.
+		s.sustain.measured = false
+		burst()
+		s.sustain.measured = true
+		fl := &blockFlight{demand: new(atomic.Bool)}
+		joined := context.WithValue(ctx, playheadDemandKey{}, fl.demand)
+		done := make(chan error, 1)
+		before := time.Now()
+		go func() { done <- c.acquire(joined, addr) }()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("healthy run skipped spacing: %v", err)
+		default:
+		}
+		f.promoteDemand(fl)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatal("promoted run was not woken")
+		}
+		if time.Since(before) != 0 {
+			t.Fatal("promoted run paid spacing")
+		}
+		c.release(addr)
+	})
 }

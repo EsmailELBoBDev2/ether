@@ -91,6 +91,18 @@ func (c *connCap) wrap(next dialFunc) dialFunc {
 // they inherit a foreground request's priority.
 type hedgeDialKey struct{}
 
+// readAheadDialKey carries a live, bounded buffer check only to dial admission.
+// It does not promote speculative requests to hedges or change host caps.
+type readAheadDialKey struct{}
+
+func dialUrgent(ctx context.Context) bool {
+	if gateUrgent(ctx) {
+		return true
+	}
+	refill, _ := ctx.Value(readAheadDialKey{}).(func() bool)
+	return refill != nil && refill()
+}
+
 type dialWaiter struct {
 	urgent  func() bool
 	hedge   bool
@@ -100,7 +112,7 @@ type dialWaiter struct {
 // Equal-priority dials with the same spacing policy keep FIFO order. Background
 // dials resume after the foreground queue drains; open connections stay put.
 func (c *connCap) acquire(ctx context.Context, addr string) error {
-	w := &dialWaiter{urgent: func() bool { return gateUrgent(ctx) }, hedge: ctx.Value(hedgeDialKey{}) != nil}
+	w := &dialWaiter{urgent: func() bool { return dialUrgent(ctx) }, hedge: ctx.Value(hedgeDialKey{}) != nil}
 	c.mu.Lock()
 	c.waiters[addr] = append(c.waiters[addr], w)
 	c.signalLocked()
@@ -225,6 +237,16 @@ func (c *connCap) release(addr string) {
 	} else {
 		c.open[addr]--
 	}
+	c.signalLocked()
+	c.mu.Unlock()
+}
+
+// wake re-evaluates queued dials after playhead progress or demand promotion.
+func (c *connCap) wake() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
 	c.signalLocked()
 	c.mu.Unlock()
 }

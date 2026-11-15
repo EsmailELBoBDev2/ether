@@ -61,6 +61,39 @@ func (s *httpSource) aheadBudget() int64 {
 	return max(memory, budget/2) // reserve cache space for demand and other viewers
 }
 
+// readAheadDialUrgent exempts refill from spacing below 2.5 seconds of
+// contiguous downloaded media. In-flight bytes are not a playback reserve.
+// Open/seek epochs remain urgent until their first consumption measurement.
+// The scan never exceeds the existing bounded read-ahead horizon.
+func (s *httpSource) readAheadDialUrgent(epoch context.Context) bool {
+	s.mu.Lock()
+	active := !s.closed && epoch == s.raCtx && epoch.Err() == nil
+	measured, rate, playhead := s.sustain.measured, s.sustain.rate, s.sustain.playhead
+	priority := s.priority
+	s.mu.Unlock()
+	if !active || (priority != nil && !priority()) {
+		return false
+	}
+	if !measured {
+		return true
+	}
+	f := s.f
+	rate = max(rate, float64(f.bitrateFloor.Load()))
+	lowWater := int64(min(float64(maxReadAheadBytes*defaultHostConnections), rate*2.5))
+	if rate <= 0 {
+		lowWater = minReadAheadBytes
+	}
+	end := min(f.size, playhead+lowWater)
+	f.bmu.Lock()
+	defer f.bmu.Unlock()
+	for idx := playhead / f.e.block; idx*f.e.block < end; idx++ {
+		if f.edges[idx] == nil && !f.mem.Contains(idx) && !f.presentOnDiskLocked(idx) {
+			return true
+		}
+	}
+	return false
+}
+
 type sourceSustain struct {
 	measured            bool // a complete consumption interval in this seek epoch
 	rate                float64
@@ -96,6 +129,9 @@ func (s *httpSource) recordConsumption(n int, off int64, epoch context.Context) 
 	}
 	f := s.f
 	now := f.e.now()
+	// Consumption can lower the reserve while a read-ahead dial is sleeping.
+	// Wake after releasing source/cache locks: dial admission checks them.
+	defer f.e.limit.wake()
 	s.mu.Lock()
 	m := &s.sustain
 	if epoch == s.raCtx {

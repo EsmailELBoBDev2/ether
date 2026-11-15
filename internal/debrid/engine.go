@@ -1173,7 +1173,7 @@ func (f *remoteFile) block(ctx context.Context, idx int64, mode fetchMode, runBl
 			fl, _ = f.startRun(inheritReadPriority(runCtx, ctx), idx, runBlocks, mode, false)
 		}
 		if fl.demand != nil && mode == fetchUrgent && callerUrgent(ctx) {
-			fl.demand.Store(true)
+			f.promoteDemand(fl)
 		}
 		select {
 		case <-fl.done:
@@ -1239,6 +1239,12 @@ func (f *remoteFile) startRun(ctx context.Context, idx, n int64, mode fetchMode,
 		f.fetchRun(ctx, idx, fls, mode, slotHeld)
 	}()
 	return fls[0], true
+}
+
+func (f *remoteFile) promoteDemand(fl *blockFlight) {
+	if fl.demand.CompareAndSwap(false, true) {
+		f.e.limit.wake()
+	}
 }
 
 func (f *remoteFile) finish(idx int64, fl *blockFlight, data []byte, err error, mode fetchMode) {
@@ -2508,7 +2514,7 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 				min(maxRun, max(runLen, lastBlock-first+1)), mode, false)
 		}
 		if fl != nil && fl.demand != nil && callerUrgent(ctx) {
-			fl.demand.Store(true)
+			f.promoteDemand(fl)
 		}
 		// Start the entire bounded burst before waiting for the playhead.
 		s.readAhead(lastBlock)
@@ -2548,6 +2554,10 @@ func (s *httpSource) readAhead(from int64) {
 	if closed || ctx.Err() != nil {
 		return
 	}
+	// Evaluate the source's current reserve when the transport actually dials,
+	// including retries after a run has waited in admission.
+	epoch := ctx
+	ctx = context.WithValue(ctx, readAheadDialKey{}, func() bool { return s.readAheadDialUrgent(epoch) })
 	capRuns := min(cap(f.conns), defaultHostConnections)
 	if f.e.limit != nil {
 		p, _ := f.payload()

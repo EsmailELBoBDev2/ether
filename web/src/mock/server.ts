@@ -649,7 +649,17 @@ function durationMs(w: string): number {
 export function createFakeServer(opts: FakeOptions = {}) {
   // Keep the fixture stable when a setup link changes the page's query string.
   const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
-  const xtreamGrants = new Map<string, { hash: string; surface: string; lastUsed: number; xtreamUsername?: string; revealAvailable?: boolean; xtreamStreamLimit?: number }[]>();
+  const xtreamGrants = new Map<
+    string,
+    {
+      hash: string;
+      surface: string;
+      lastUsed: number;
+      xtreamUsername?: string;
+      revealAvailable?: boolean;
+      xtreamStreamLimit?: number;
+    }[]
+  >();
   const catalog = buildCatalog();
   const byKey = new Map(catalog.map((t) => [t.key, t]));
   const ownerTags = new Map<string, string[]>();
@@ -5218,8 +5228,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
     )
       return json({ devices: xtreamGrants.get(seg[1]!) ?? [] });
     if (seg[0] === "users" && seg[2] === "devices" && seg[3] === "xtream" && method === "POST") {
-     if (seg[4] === "reveal") return json({available:true,username:"alice42",password:"k7m2-9qxr-4t"});
-     return json({ok:true});
+      if (seg[4] === "reveal")
+        return json({ available: true, username: "alice42", password: "k7m2-9qxr-4t" });
+      return json({ ok: true });
     }
     if (seg[0] === "users" && seg[1] && seg[2] === "password" && method === "POST")
       return json({ ok: true });

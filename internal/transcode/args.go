@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 // runSpec is everything needed to build one ffmpeg HLS run.
 type runSpec struct {
+	SoftwareDecode bool // keep hardware encode after a decoder init failure
 	HealTimestamps bool
 	CopyOrigin     bool // retain audio from the measured video presentation origin
 	// RampClock keeps every run of a fast-start session on the steady clock.
@@ -1305,7 +1307,8 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 	// HDR, and only the explicitly probed CUDA path can feed a 10-bit
 	// tone-mapped contract. Tone mappers produce limited-range BT.709.
 	p010CUDA := accel == AccelNVENC && s.Features.cudaP010ToneMap && !pictureOf(v).full && (s.Target == nil || (s.Target.pic.prim == "bt709" && s.Target.pic.matrix == "bt709" && !s.Target.pic.full))
-	gpuOff := v.Interlaced || s.PictureCrop != nil || pic.pad || pic.convert != "" || (pic.tonemap && pic.tenBit && !p010CUDA)
+	decodeOK := s.canGPUDecode()
+	gpuOff := !decodeOK || v.Interlaced || s.PictureCrop != nil || pic.pad || pic.convert != "" || (pic.tonemap && pic.tenBit && !p010CUDA)
 	dv5 := pic.tonemap && v.DolbyVision && v.DolbyVisionProfile == 5
 	gpuInput, gpuFilters, gpuOK := gpuPipeline(s, accel, pic.w, pic.h, pic.tonemap, pic.tenBit, burn)
 	if dv5 {
@@ -1348,11 +1351,11 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 			chain = append(chain, pic.setSAR)
 		}
 		hwFrames = true
-	case accel == AccelVideoToolbox:
+	case accel == AccelVideoToolbox && decodeOK:
 		inputArgs = append(inputArgs, "-hwaccel", "videotoolbox")
-	case accel == AccelNVENC && !(v.Codec == "h264" && v.BitDepth > 8):
+	case accel == AccelNVENC && decodeOK:
 		inputArgs = append(inputArgs, "-hwaccel", "cuda")
-	case accel == AccelQSV && s.Features.hwaccels["qsv"] && !(v.Codec == "h264" && v.BitDepth > 8):
+	case accel == AccelQSV && s.Features.hwaccels["qsv"] && decodeOK:
 		inputArgs = append(inputArgs, "-hwaccel", "qsv")
 	case accel == AccelVAAPI:
 		dev := s.Accel.Device
@@ -1361,7 +1364,7 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 		}
 		if burn {
 			inputArgs = append(inputArgs, "-init_hw_device", "vaapi=va:"+dev, "-filter_hw_device", "va")
-			if !(v.Codec == "h264" && v.BitDepth > 8) {
+			if decodeOK {
 				inputArgs = append(inputArgs, "-hwaccel", "vaapi", "-hwaccel_device", "va")
 			}
 		} else {
@@ -1674,7 +1677,7 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	// For bitmap burns, scale on VAAPI before downloading for the software
 	// overlay. Upload the result back to the same device for encoding.
 	vaapiBitmap := burn && IsImageSubtitle(sub.Codec) && !sub.External && accel == AccelVAAPI &&
-		!(v.Codec == "h264" && v.BitDepth > 8) && !s.Accel.NoGPUScale &&
+		slices.Contains(chainInput, "-hwaccel") && !s.Accel.NoGPUScale &&
 		pic.w > 0 && pic.h > 0 && s.PictureCrop == nil && !pic.pad && pic.convert == "" && !pic.tonemap && !pic.tenBit && pic.setSAR == ""
 	if vaapiBitmap {
 		chainInput = append(chainInput, "-hwaccel_output_format", "vaapi")

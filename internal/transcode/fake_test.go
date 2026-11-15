@@ -771,6 +771,12 @@ func newTestManager(t *testing.T, fr *fakeRunner, cfg config.Transcode, opts ...
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// The fake runner's ffprobe replies belong to source probes. Synthetic
+	// capability probes must not consume those replies or race call assertions.
+	if cache, ok := m.feat.decode.(*decodeProbeCache); ok {
+		cache.close()
+	}
+	m.feat.decode = testFeatures().decode
 	t.Cleanup(func() { _ = m.Close() })
 	return m
 }

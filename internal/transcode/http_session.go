@@ -25,14 +25,15 @@ type httpSession struct {
 	life *encoderLifetime
 	log  *slog.Logger
 
-	mu         sync.Mutex
-	proc       Process
-	pipe       *io.PipeReader
-	requestSeq uint64
-	closed     bool
-	forceCPU   bool
-	delivered  atomic.Bool
-	lastAccess time.Time
+	mu             sync.Mutex
+	proc           Process
+	pipe           *io.PipeReader
+	requestSeq     uint64
+	closed         bool
+	softwareDecode bool
+	forceCPU       bool
+	delivered      atomic.Bool
+	lastAccess     time.Time
 }
 
 var _ core.HTTPSession = (*httpSession)(nil)
@@ -235,7 +236,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.forceCPU || time.Now().UnixNano() < s.m.httpHWFailedUntil.Load() {
 			accel = core.HWAccel{Name: AccelNone}
 		}
-		spec := runSpec{SilenceAudio: silenceAudio, LiveInput: s.req.LiveInput, CopyTimestamps: s.req.CopyTimestamps, InputHeaders: s.req.InputHeaders, Input: s.req.InputURL, Info: s.req.Info, Decision: s.req.Decision, Start: s.req.StartOffset, Accel: accel, Features: s.m.feat, Protocol: core.ProtocolHTTP, InputTimeout: s.m.opts.stallTimeout}
+		spec := runSpec{SoftwareDecode: s.softwareDecode, SilenceAudio: silenceAudio, LiveInput: s.req.LiveInput, CopyTimestamps: s.req.CopyTimestamps, InputHeaders: s.req.InputHeaders, Input: s.req.InputURL, Info: s.req.Info, Decision: s.req.Decision, Start: s.req.StartOffset, Accel: accel, Features: s.m.feat, Protocol: core.ProtocolHTTP, InputTimeout: s.m.opts.stallTimeout}
 		scopeHeaders, err := encoderScopeHeaders(s.req.InputLease, s.req.InputURL)
 		if err != nil {
 			s.mu.Unlock()
@@ -331,7 +332,13 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		current := !s.closed && s.requestSeq == seq
 		hardwareFailed := current && r.Context().Err() == nil && !clientWriteFailed && spec.usesHW() && procErr != nil && looksLikeEncoderFailure(stderr.String(), spec)
-		if hardwareFailed {
+		if hardwareFailed && decodeInitFailure(stderr.String(), spec) {
+			s.softwareDecode = true
+			if caps := spec.Features.decode; caps != nil {
+				caps.reject(spec.Accel, spec.Info.Video())
+			}
+			s.log.Warn("progressive hardware decode failed; retrying with software decode and hardware encode", "hwaccel", spec.Accel.Name)
+		} else if hardwareFailed {
 			s.forceCPU = true
 			s.m.httpHWFailedUntil.Store(time.Now().Add(5 * time.Minute).UnixNano())
 			s.log.Warn("progressive hardware encoder failed; next request will use CPU", "hwaccel", spec.Accel.Name)

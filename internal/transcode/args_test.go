@@ -16,6 +16,7 @@ import (
 
 func testFeatures() features {
 	return features{
+		decode:        fakeDecodeCapabilities{allow: func(_ core.HWAccel, v *core.StreamInfo) bool { return !(v.Codec == "h264" && v.BitDepth > 8) }},
 		scaleVTFormat: true,
 		encoders:      parseEncoders([]byte(sampleEncoders)),
 		filters:       parseFilters([]byte(sampleFilters)),

@@ -29,6 +29,7 @@ const DefaultVAAPIDevice = "/dev/dri/renderD128"
 
 // features is what the ffmpeg build offers: encoders, hwaccels, filters.
 type features struct {
+	decode decodeCapabilities
 	// A one-frame device probe confirms the installed CUDA filter accepts
 	// P010 output. A filter name or version alone does not establish this.
 	cudaP010ToneMap bool

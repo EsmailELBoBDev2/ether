@@ -395,6 +395,17 @@ func (s *Session) finish(r *run) {
 		}
 		s.log.Info("ffmpeg run", "event", "stop", "reason", why, "run", r.seq, "segment", r.startSeg, "maxDone", r.maxDone, "planEnd", r.planEnd, "playhead", s.lastReq, "err", err)
 	}
+	if err != nil && !r.stalled && !s.softwareDecode && decodeInitFailure(r.stderr.String(), r.spec) {
+		s.softwareDecode = true
+		if caps := r.spec.Features.decode; caps != nil {
+			caps.reject(r.spec.Accel, r.spec.Info.Video())
+		}
+		s.log.Warn("hardware decode failed; retrying with software decode and hardware encode", "hwaccel", r.spec.Accel.Name)
+		if retryErr := s.startRunForLocked(r.next(), r.spec.BigProbe, "software decode fallback"); retryErr != nil {
+			s.failErr = retryErr
+		}
+		return
+	}
 	if err != nil && s.cur == r && s.retryQSVLocked(r) {
 		return
 	}

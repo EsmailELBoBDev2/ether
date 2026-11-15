@@ -8,7 +8,7 @@ import "fmt"
 // it again. Return false when the installed FFmpeg lacks the complete graph;
 // planVideo then retains the software-filter path (including subtitle burn-in).
 func gpuPipeline(s runSpec, accel string, w, h int, toneMap, tenBit, burn bool) (input, filters []string, ok bool) {
-	if burn || w <= 0 || h <= 0 {
+	if burn || !s.canGPUDecode() || w <= 0 || h <= 0 {
 		return nil, nil, false
 	}
 	format := "nv12"
@@ -18,12 +18,6 @@ func gpuPipeline(s runSpec, accel string, w, h int, toneMap, tenBit, burn bool) 
 	switch accel {
 	case AccelNVENC:
 		if toneMap && tenBit && !s.Features.cudaP010ToneMap {
-			return nil, nil, false
-		}
-		// H.264 High 10 is not decoded by the validated pre-Blackwell
-		// NVDEC devices. Keep software decoding/filtering with NVENC
-		// encoding instead of launching an unusable CUDA frame graph.
-		if v := s.Info.Video(); v != nil && v.Codec == "h264" && v.BitDepth > 8 {
 			return nil, nil, false
 		}
 		if !s.Features.hwaccels["cuda"] || !s.Features.hasFilter("scale_cuda") || (toneMap && !s.Features.hasFilter("tonemap_cuda")) {

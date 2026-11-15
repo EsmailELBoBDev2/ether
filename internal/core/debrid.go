@@ -29,9 +29,9 @@ type ReleaseTarget struct {
 	// MovieTitles and MovieYear constrain file selection inside movie collections.
 	MovieTitles []string `json:"movieTitles,omitempty"`
 	MovieYear   int      `json:"movieYear,omitempty"`
-	// FileIndex is an explicit zero-based torrent file list index (including non-video files).
+	// FileIndex is a zero-based index in the complete torrent file list; the selected file must be a video.
 	FileIndex *int `json:"fileIndex,omitempty"`
-	// ExactFile selects a plugin-requested path or unambiguous basename, including non-video files.
+	// ExactFile selects a plugin-requested video path or unambiguous basename.
 	ExactFile string `json:"exactFile,omitempty"`
 	// FileName is the source-matched file hint, never proof of episode identity.
 	FileName string `json:"fileName,omitempty"`

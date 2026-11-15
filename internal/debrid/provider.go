@@ -9,6 +9,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/httpclient"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -112,6 +113,8 @@ type File struct {
 	ID   string // provider file id ("" when the provider has none)
 	Path string
 	Size int64
+	// MIMEType is optional provider metadata; generic binary types defer to Path.
+	MIMEType string
 	// Link is the provider-side link for the file (Real-Debrid hoster
 	// link, AllDebrid file link, Premiumize, Debrid-Link and Offcloud
 	// direct link).
@@ -664,6 +667,21 @@ func isVideo(p string) bool {
 	return videoExts[strings.ToLower(path.Ext(p))]
 }
 
+// playableVideo is shared by automatic selection and explicit plugin hints.
+// A filename must name a supported video, and a specific provider MIME type
+// must agree. Providers commonly report generic binary data for valid videos.
+func playableVideo(f File) bool {
+	if !isVideo(f.Path) || isExtra(f.Path) || f.Size <= 0 {
+		return false
+	}
+	if strings.TrimSpace(f.MIMEType) == "" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(f.MIMEType)
+	return err == nil && (strings.HasPrefix(mediaType, "video/") ||
+		mediaType == "application/octet-stream" || mediaType == "binary/octet-stream")
+}
+
 // isExtra reports samples, trailers and featurettes.
 func isExtra(p string) bool {
 	lower := strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
@@ -678,14 +696,17 @@ func isExtra(p string) bool {
 	return false
 }
 
-// ChooseFile honors explicit plugin file selectors first, including non-video
-// files. Otherwise it picks the main video: the target episode or largest video.
+// ChooseFile honors explicit plugin file selectors only for playable videos.
+// Otherwise it picks the main video: the target episode or largest video.
 func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	featureCount := 0
 	for _, f := range files {
-		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 {
+		if playableVideo(f) {
 			featureCount++
 		}
+	}
+	if featureCount == 0 {
+		return File{}, fmt.Errorf("%w (%s)", errNoVideo, torrentFileSummary(files))
 	}
 	movieMatches := func(f File) bool { return featureCount <= 1 || movieFileMatches(f.Path, target) }
 
@@ -701,15 +722,21 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d: %w", i, len(files), core.ErrWrongContent)
 			}
 			f := files[i]
-			if f.Size <= 0 || !matches(f) || !movieMatches(f) {
-				return File{}, fmt.Errorf("debrid: selected file is empty or does not match file: %w", core.ErrWrongContent)
+			if !playableVideo(f) {
+				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
+			}
+			if !matches(f) || !movieMatches(f) {
+				return File{}, fmt.Errorf("debrid: selected file does not match target: %w", core.ErrWrongContent)
 			}
 			return f, nil
 		}
 		var chosen File
 		count := 0
 		for _, f := range files {
-			if f.Size > 0 && matches(f) && movieMatches(f) {
+			if matches(f) && !playableVideo(f) {
+				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
+			}
+			if playableVideo(f) && matches(f) && movieMatches(f) {
 				chosen = f
 				count++
 			}
@@ -732,10 +759,10 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	identityMismatch := false
 	for _, f := range files {
 		if target != nil && (!movieMatches(f) || !fileCourMatchesTarget(f.Path, target) || !fileIdentityMatches(f, target)) {
-			identityMismatch = identityMismatch || (isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0)
+			identityMismatch = identityMismatch || playableVideo(f)
 			continue
 		}
-		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 {
+		if playableVideo(f) {
 			videos = append(videos, f)
 		}
 	}
@@ -847,7 +874,7 @@ func sourceNamedFile(files []File, target *core.ReleaseTarget) (File, bool) {
 	var match File
 	count := 0
 	for _, f := range files {
-		if isVideo(f.Path) && !isExtra(f.Path) && f.Size > 0 && strings.EqualFold(basename(f.Path), basename(target.FileName)) {
+		if playableVideo(f) && strings.EqualFold(basename(f.Path), basename(target.FileName)) {
 			match = f
 			count++
 		}

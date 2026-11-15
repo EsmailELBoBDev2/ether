@@ -127,9 +127,10 @@ type tbTorrent struct {
 	DownloadFinished bool        `json:"download_finished"`
 	DownloadState    string      `json:"download_state"`
 	Files            []struct {
-		ID   json.Number `json:"id"`
-		Name string      `json:"name"`
-		Size int64       `json:"size"`
+		ID       json.Number `json:"id"`
+		Name     string      `json:"name"`
+		Size     int64       `json:"size"`
+		MIMEType string      `json:"mimetype"`
 	} `json:"files"`
 }
 
@@ -324,7 +325,7 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 	}
 	files := make([]File, 0, len(t.Files))
 	for _, f := range t.Files {
-		files = append(files, File{ID: f.ID.String(), Path: f.Name, Size: f.Size})
+		files = append(files, File{ID: f.ID.String(), Path: f.Name, Size: f.Size, MIMEType: f.MIMEType})
 	}
 	chosen, err := req.Choose(files)
 	if err != nil {

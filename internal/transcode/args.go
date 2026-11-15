@@ -1674,6 +1674,18 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	in := fmt.Sprintf("[0:%d]", v.Index)
 	chainInput, chain, hwFrames := planFilterChain(s, v, pic, accel, burn, size, format)
 	p.hwFrames = hwFrames
+	bitmapHW := false
+	bitmapOverlay, bitmapUpload := "", ""
+	if burn && IsImageSubtitle(sub.Codec) && !sub.External {
+		if input, filters, overlay, upload, ok := bitmapPipeline(s, v, pic, accel, swFmt); ok {
+			chainInput, chain = input, filters
+			bitmapOverlay, bitmapUpload, bitmapHW = overlay, upload, true
+			// The final overlay may use software frames. Only a hardware
+			// overlay (or the VAAPI re-upload) feeds hardware to the encoder.
+			hwFrames = upload != "" || accel == AccelVAAPI
+			p.hwFrames = hwFrames
+		}
+	}
 	// For bitmap burns, scale on VAAPI before downloading for the software
 	// overlay. Upload the result back to the same device for encoding.
 	vaapiBitmap := burn && IsImageSubtitle(sub.Codec) && !sub.External && accel == AccelVAAPI &&
@@ -1700,15 +1712,18 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	case burn && IsImageSubtitle(sub.Codec) && !sub.External:
 		post := finish(nil)
 		subW, subH := v.Width, v.Height
-		if vaapiBitmap {
+		if bitmapHW {
+			post = nil
+			subW, subH = pic.w, pic.h
+		} else if vaapiBitmap {
 			post = format(nil)
 			subW, subH = pic.w, pic.h
-		} else if pic.scaling && s.PictureCrop == nil {
+		} else if pic.scaling || s.PictureCrop != nil {
 			// Overlay at the output size: scale the picture first and
 			// draw the subtitle onto the smaller frame, instead of
 			// overlaying every source-size frame and scaling after
-			// (#313). A cropped picture keeps the source-size overlay,
-			// where the subtitle canvas still matches it.
+			// (#313). Crop the subtitle canvas with the same coordinates
+			// before scaling so placement remains aligned with the picture.
 			chain = size(chain)
 			post = format(nil)
 			subW, subH = pic.w, pic.h
@@ -1720,6 +1735,13 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 		subScale := "null"
 		if subW > 0 && subH > 0 {
 			subScale = fmt.Sprintf("scale=%d:%d", subW, subH)
+		}
+		if crop := s.PictureCrop; crop != nil {
+			// Subtitle canvases can differ from the coded picture (for
+			// example 1920x1080 PGS on 1920x800 video). Express the
+			// picture crop in canvas coordinates without first upscaling
+			// the subtitle to a source-sized intermediate.
+			subScale = fmt.Sprintf("crop=iw*%d/%d:ih*%d/%d:iw*%d/%d:ih*%d/%d:exact=1,", crop.width, v.Width, crop.height, v.Height, crop.x, v.Width, crop.y, v.Height) + subScale
 		}
 		// Without -copyts, -ss puts this run's frames at PTS 0 while a
 		// bitmap subtitle packet can keep its title timestamp. Reset both
@@ -1736,8 +1758,13 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 				subScale = "setpts=PTS-STARTPTS," + subScale
 			}
 		}
-		graph = fmt.Sprintf("%s%s[base];[0:%d]%s[sub];[base][sub]overlay=eof_action=pass,%s[vout]",
-			in, pre, sub.Index, subScale, strings.Join(post, ","))
+		overlay := "overlay=eof_action=pass," + strings.Join(post, ",")
+		if bitmapHW {
+			overlay = bitmapOverlay
+			subScale += bitmapUpload
+		}
+		graph = fmt.Sprintf("%s%s[base];[0:%d]%s[sub];[base][sub]%s[vout]",
+			in, pre, sub.Index, subScale, overlay)
 	case burn && s.Features.hasFilter("subtitles"):
 		src := s.Input
 		opt := ""

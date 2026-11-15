@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -133,8 +134,8 @@ func TestDistribution(t *testing.T) {
 			if mismatch {
 				content = "bad"
 			}
-			assets["/archive"] = tarball(t, []*tar.Header{{Name: "./index.html", Typeflag: tar.TypeReg, Size: 3}}, []string{content})
-			inv := inventory{SchemaVersion: 1, Version: "0.1.42", Files: []File{{Path: "index.html", Bytes: 3, SHA256: hash([]byte("new"))}}}
+			assets["/archive"] = tarball(t, []*tar.Header{{Name: "./index.html", Typeflag: tar.TypeReg, Size: 3}, {Name: "./root-build.json", Typeflag: tar.TypeReg, Size: 4}}, []string{content, "ship"})
+			inv := inventory{SchemaVersion: 1, Version: "0.1.42", Files: []File{{Path: "index.html", Bytes: 3, SHA256: hash([]byte("new"))}, {Path: "root-build.json", Bytes: 4, SHA256: hash([]byte("ship"))}}}
 			assets["/manifest"], _ = json.Marshal(inv)
 			r := descriptor()
 			r.Archive = Asset{URL: srv.URL + "/archive", Bytes: int64(len(assets["/archive"])), SHA256: hash(assets["/archive"])}
@@ -169,6 +170,13 @@ func TestDistribution(t *testing.T) {
 				t.Fatalf("additive file %s lost: %v", p, e)
 			}
 		}
+		// These were staged after the previous build became a rollback.
+		additions := []string{"universal/18273ed7/module.js", "universal/f68fb203/module.js", "CORE-STREAMING-owner.json", "CORE-RESERVE-owner.json"}
+		for _, p := range additions {
+			write(t, m.live(), p, "late-owner")
+		}
+		write(t, m.rollbacks()[0], "CORE-existing.json", "previous-owner")
+		write(t, m.live(), "CORE-existing.json", "outgoing-owner")
 		if e := m.Rollback(context.Background()); e != nil {
 			t.Fatal(e)
 		}
@@ -176,5 +184,94 @@ func TestDistribution(t *testing.T) {
 		if string(b) != "old" {
 			t.Fatal("rollback did not restore old build")
 		}
+		for _, p := range additions {
+			b, e := os.ReadFile(filepath.Join(m.live(), p))
+			if e != nil || string(b) != "late-owner" {
+				t.Fatalf("rollback lost %s: %v", p, e)
+			}
+		}
+		b, _ = os.ReadFile(filepath.Join(m.live(), "CORE-existing.json"))
+		if string(b) != "previous-owner" {
+			t.Fatal("rollback overwrote an existing additive item")
+		}
+		if _, e := os.Stat(filepath.Join(m.live(), "root-build.json")); !os.IsNotExist(e) {
+			t.Fatal("rollback copied a shipped JSON file absent from the older build")
+		}
+		if m.Status().InstalledVersion != "0.1.41" {
+			t.Fatal("rollback copied outgoing release metadata")
+		}
+		if e := m.Check(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+		if e := m.Install(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+		for _, p := range additions {
+			b, e := os.ReadFile(filepath.Join(m.live(), p))
+			if e != nil || string(b) != "late-owner" {
+				t.Fatalf("reinstall lost %s: %v", p, e)
+			}
+		}
 	})
+	t.Run("rollback-retention", func(t *testing.T) {
+		for _, future := range []bool{false, true} {
+			t.Run(fmt.Sprint(future), func(t *testing.T) {
+				m := New(t.TempDir(), "0.3.13", nil)
+				legacy := filepath.Join(m.dir, ".vela-rollback-20261115T074837")
+				epoch := filepath.Join(m.dir, ".vela-rollback-01794760000000000000")
+				write(t, legacy, "index.html", "legacy")
+				write(t, epoch, "index.html", "epoch")
+				old := time.Now().Add(-48 * time.Hour)
+				newer := old.Add(time.Hour)
+				if e := os.Chtimes(legacy, old, old); e != nil {
+					t.Fatal(e)
+				}
+				if e := os.Chtimes(epoch, newer, newer); e != nil {
+					t.Fatal(e)
+				}
+				if got := m.rollbacks(); len(got) != 2 || got[0] != epoch {
+					t.Fatalf("name ordering overrode rollback time: %v", got)
+				}
+				if future {
+					stamp := time.Now().Add(24 * time.Hour)
+					if e := os.Chtimes(legacy, stamp, stamp); e != nil {
+						t.Fatal(e)
+					}
+				}
+				write(t, m.live(), "index.html", "outgoing")
+				if e := os.Chtimes(m.live(), old, old); e != nil {
+					t.Fatal(e)
+				}
+				stage := filepath.Join(m.dir, ".vela-staging-test")
+				write(t, stage, "index.html", "new")
+				if e := m.swap(stage); e != nil {
+					t.Fatal(e)
+				}
+				kept := m.rollbacks()
+				if len(kept) != 2 {
+					t.Fatalf("retained %d rollbacks", len(kept))
+				}
+				outgoing := false
+				for _, p := range kept {
+					b, _ := os.ReadFile(filepath.Join(p, "index.html"))
+					if string(b) == "outgoing" {
+						outgoing = true
+					}
+				}
+				if !outgoing {
+					t.Fatal("newly created rollback was pruned")
+				}
+				if !future {
+					b, _ := os.ReadFile(filepath.Join(kept[0], "index.html"))
+					if string(b) != "outgoing" {
+						t.Fatal("new rollback did not receive its creation time")
+					}
+					if _, e := os.Stat(legacy); !os.IsNotExist(e) {
+						t.Fatal("old legacy rollback retained instead of newer epoch rollback")
+					}
+				}
+			})
+		}
+	})
+
 }

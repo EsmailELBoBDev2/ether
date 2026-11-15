@@ -321,6 +321,9 @@ func (m *Manager) Install(ctx context.Context) (err error) {
 	if e = preserve(ctx, m.live(), stage); e != nil {
 		return e
 	}
+	if e = os.WriteFile(filepath.Join(stage, ".ether-inventory.json"), raw, 0600); e != nil {
+		return errors.New("cannot record installed inventory")
+	}
 	b, _ := json.Marshal(r)
 	if e = os.WriteFile(filepath.Join(stage, ".ether-release.json"), b, 0600); e != nil {
 		return errors.New("cannot record installed release")
@@ -346,7 +349,7 @@ func inventoryMap(files []File) (map[string]File, int64, error) {
 	var total int64
 	for _, f := range files {
 		d, e := hex.DecodeString(f.SHA256)
-		if !safePath(f.Path) || f.Path == ".ether-release.json" || f.Bytes < 0 || f.Bytes > maxExtracted || e != nil || len(d) != 32 {
+		if !safePath(f.Path) || (f.Path == ".ether-release.json" || f.Path == ".ether-inventory.json") || f.Bytes < 0 || f.Bytes > maxExtracted || e != nil || len(d) != 32 {
 			return nil, 0, errors.New("invalid inventory entry")
 		}
 		if _, ok := out[f.Path]; ok {
@@ -445,7 +448,27 @@ func verifyFiles(ctx context.Context, root string, files []File) error {
 }
 func (m *Manager) rollbacks() []string {
 	paths, _ := filepath.Glob(filepath.Join(m.dir, ".vela-rollback-*"))
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	type entry struct {
+		path     string
+		modified time.Time
+	}
+	var entries []entry
+	for _, p := range paths {
+		info, err := os.Lstat(p)
+		if err == nil && info.IsDir() {
+			entries = append(entries, entry{p, info.ModTime()})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].modified.Equal(entries[j].modified) {
+			return entries[i].path > entries[j].path
+		}
+		return entries[i].modified.After(entries[j].modified)
+	})
+	paths = nil
+	for _, e := range entries {
+		paths = append(paths, e.path)
+	}
 	return paths
 }
 func (m *Manager) swap(stage string) error {
@@ -454,6 +477,15 @@ func (m *Manager) swap(stage string) error {
 	if _, e := os.Lstat(m.live()); e == nil {
 		if e = os.Rename(m.live(), backup); e != nil {
 			return errors.New("cannot retain previous Vela build")
+		}
+		// Rename keeps a directory's old mtime. Stamp the new rollback so
+		// retention measures when it was taken, independent of its name.
+		now := time.Now()
+		if e = os.Chtimes(backup, now, now); e != nil {
+			if restore := os.Rename(backup, m.live()); restore != nil {
+				return errors.New("cannot date rollback; previous build is retained in the rollback directory")
+			}
+			return errors.New("cannot date previous Vela build")
 		}
 		hadLive = true
 	} else if !os.IsNotExist(e) {
@@ -467,10 +499,21 @@ func (m *Manager) swap(stage string) error {
 		}
 		return errors.New("cannot activate Vela build")
 	}
-	for i, p := range m.rollbacks() {
-		if i >= 2 {
-			_ = os.RemoveAll(p)
+	// Always retain the rollback just created, even if an older directory
+	// has a future mtime or the filesystem rounds timestamps to a tie.
+	kept := 0
+	if hadLive {
+		kept = 1
+	}
+	for _, p := range m.rollbacks() {
+		if hadLive && p == backup {
+			continue
 		}
+		if kept < 2 {
+			kept++
+			continue
+		}
+		_ = os.RemoveAll(p)
 	}
 	return nil
 }
@@ -482,6 +525,12 @@ func (m *Manager) Rollback(ctx context.Context) (err error) {
 	paths := m.rollbacks()
 	if len(paths) == 0 {
 		return errors.New("no previous Vela build is available")
+	}
+	if ctx.Err() != nil {
+		return errors.New("Vela rollback cancelled")
+	}
+	if err = preserve(ctx, m.live(), paths[0]); err != nil {
+		return
 	}
 	if ctx.Err() != nil {
 		return errors.New("Vela rollback cancelled")
@@ -511,11 +560,27 @@ func preserve(ctx context.Context, old, stage string) error {
 		}
 	}
 
-	patterns := []string{"diagnostic-core-*", "universal/*", "engines/cinematic/*", "core-app-*.html"}
+	buildJSON, err := buildRootJSON(old)
+	if err != nil {
+		return err
+	}
+	patterns := []string{"diagnostic-core-*", "universal/*", "engines/cinematic/*", "core-app-*.html", "*.json"}
 	for _, pattern := range patterns {
 		matches, _ := filepath.Glob(filepath.Join(old, pattern))
 		for _, src := range matches {
 			rel, _ := filepath.Rel(old, src)
+			if pattern == "*.json" {
+				if strings.HasPrefix(rel, ".") || buildJSON[rel] || (strings.HasPrefix(rel, "vela-") && strings.HasSuffix(rel, ".manifest.json")) {
+					continue
+				}
+				info, err := os.Lstat(src)
+				if err != nil {
+					return errors.New("cannot inspect owner Vela JSON")
+				}
+				if info.IsDir() {
+					continue
+				}
+			}
 			dest := filepath.Join(stage, rel)
 			if _, e := os.Lstat(dest); e == nil {
 				continue
@@ -527,6 +592,42 @@ func preserve(ctx context.Context, old, stage string) error {
 	}
 	return nil
 }
+
+// New installs retain their verified full inventory for offline carry-over.
+// Manual installs may have the original full manifest alongside their assets.
+func buildRootJSON(dir string) (map[string]bool, error) {
+	out := map[string]bool{"app.version.json": true, "engines.json": true, "manifest.json": true}
+	manifests, err := filepath.Glob(filepath.Join(dir, "vela-*.manifest.json"))
+	if err != nil {
+		return nil, err
+	}
+	manifests = append([]string{filepath.Join(dir, ".ether-inventory.json")}, manifests...)
+	for _, p := range manifests {
+		f, err := os.Open(p)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, errors.New("cannot read installed Vela inventory")
+		}
+		b, err := io.ReadAll(io.LimitReader(f, maxMetadata+1))
+		f.Close()
+		if err != nil || len(b) > maxMetadata {
+			return nil, errors.New("cannot read installed Vela inventory")
+		}
+		var inv inventory
+		if json.Unmarshal(b, &inv) != nil || inv.SchemaVersion != 1 || len(inv.Files) == 0 {
+			return nil, errors.New("invalid installed Vela inventory")
+		}
+		for _, entry := range inv.Files {
+			if strings.HasSuffix(entry.Path, ".json") && !strings.Contains(entry.Path, "/") {
+				out[entry.Path] = true
+			}
+		}
+	}
+	return out, nil
+}
+
 func copyAdditive(ctx context.Context, src, dest string) error {
 	if ctx.Err() != nil {
 		return errors.New("Vela install cancelled")

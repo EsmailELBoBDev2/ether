@@ -29,7 +29,7 @@ import (
 
 func (a *App) buildAdmin() http.Handler {
 	local, _ := identity.NewLocal(a.db)
-	grants, _ := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil)
+	grants, _ := identity.NewGrants(a.db, a.users, 30*24*time.Hour, nil, a.cfg)
 	limiter, _ := identity.NewLoginLimiter(a.db, 15*time.Minute, 30, 8, nil)
 	pollLimiter, _ := identity.NewPollLimiter(a.db, time.Minute, 120, 60, nil)
 	quick, _ := identity.NewQuickConnect(a.db, 10*time.Minute, 30*24*time.Hour, nil)

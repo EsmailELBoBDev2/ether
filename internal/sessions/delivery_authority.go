@@ -81,7 +81,7 @@ func (b *Broker) Prune(ctx context.Context) (int64, error) {
 		del  string
 		args []any
 	}{
-		{`DELETE FROM sessions_xtream_connections WHERE grant_reference IN (SELECT grant_reference FROM sessions_xtream_connections WHERE expires<=? ORDER BY expires LIMIT ?)`, []any{nowMS}},
+		{`DELETE FROM sessions_xtream_connections WHERE (grant_reference,target) IN (SELECT grant_reference,target FROM sessions_xtream_connections WHERE expires<=? ORDER BY expires LIMIT ?)`, []any{nowMS}},
 		{`DELETE FROM sessions_lazy_streams WHERE hash IN (SELECT s.hash FROM sessions_lazy_streams s WHERE s.expires<=? AND NOT EXISTS (SELECT 1 FROM capability_headers h WHERE h.namespace='lazy-stream' AND h.digest=s.hash) ORDER BY s.expires LIMIT ?)`, []any{nowMS}},
 		{`DELETE FROM sessions_detail_sources WHERE handle IN (SELECT handle FROM sessions_detail_sources WHERE expires<=? ORDER BY expires LIMIT ?)`, []any{nowMS}},
 		{`DELETE FROM plex_decision_arms WHERE (user_id,client_id,session_id,title_key) IN (SELECT user_id,client_id,session_id,title_key FROM plex_decision_arms WHERE expires<=? ORDER BY expires LIMIT ?)`, []any{nowMS}},

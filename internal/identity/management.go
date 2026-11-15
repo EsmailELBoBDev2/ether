@@ -41,17 +41,20 @@ func (l *Local) UpsertPassword(ctx context.Context, viewerID int64, username, pa
 }
 
 type GrantInfo struct {
-	Hash     string `json:"hash"`
-	Surface  string `json:"surface"`
-	DeviceID string `json:"deviceId"`
-	Client   string `json:"client"`
-	Product  string `json:"product"`
-	Version  string `json:"version"`
-	LastUsed int64  `json:"lastUsed"`
+	XtreamUsername    string `json:"xtreamUsername,omitempty"`
+	XtreamStreamLimit int    `json:"xtreamStreamLimit,omitempty"`
+	RevealAvailable   bool   `json:"revealAvailable,omitempty"`
+	Hash              string `json:"hash"`
+	Surface           string `json:"surface"`
+	DeviceID          string `json:"deviceId"`
+	Client            string `json:"client"`
+	Product           string `json:"product"`
+	Version           string `json:"version"`
+	LastUsed          int64  `json:"lastUsed"`
 }
 
 func (g *Grants) List(ctx context.Context, viewerID int64) ([]GrantInfo, error) {
-	rows, err := g.db.QueryContext(ctx, `SELECT hash,surface,device_id,client,product,version,last_used FROM identity_grants WHERE viewer_id=? AND revoked=0 AND expires>? ORDER BY last_used DESC`, viewerID, g.now().UnixMilli())
+	rows, err := g.db.QueryContext(ctx, `SELECT hash,surface,device_id,client,product,version,last_used,COALESCE(xtream_username,''),xtream_stream_limit,(xtream_password<>'') FROM identity_grants WHERE viewer_id=? AND revoked=0 AND expires>? ORDER BY last_used DESC`, viewerID, g.now().UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +62,7 @@ func (g *Grants) List(ctx context.Context, viewerID int64) ([]GrantInfo, error) 
 	result := []GrantInfo{}
 	for rows.Next() {
 		var v GrantInfo
-		if err = rows.Scan(&v.Hash, &v.Surface, &v.DeviceID, &v.Client, &v.Product, &v.Version, &v.LastUsed); err != nil {
+		if err = rows.Scan(&v.Hash, &v.Surface, &v.DeviceID, &v.Client, &v.Product, &v.Version, &v.LastUsed, &v.XtreamUsername, &v.XtreamStreamLimit, &v.RevealAvailable); err != nil {
 			return nil, err
 		}
 		result = append(result, v)

@@ -647,7 +647,7 @@ function durationMs(w: string): number {
 export function createFakeServer(opts: FakeOptions = {}) {
   // Keep the fixture stable when a setup link changes the page's query string.
   const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
-  const xtreamGrants = new Map<string, { hash: string; surface: string; lastUsed: number }[]>();
+  const xtreamGrants = new Map<string, { hash: string; surface: string; lastUsed: number; xtreamUsername?: string; revealAvailable?: boolean; xtreamStreamLimit?: number }[]>();
   const catalog = buildCatalog();
   const byKey = new Map(catalog.map((t) => [t.key, t]));
   const ownerTags = new Map<string, string[]>();
@@ -3378,14 +3378,17 @@ export function createFakeServer(opts: FakeOptions = {}) {
           grants.push({
             hash: `mock-xtream-${grants.length + 1}`,
             surface: "xtream",
+            xtreamUsername: "alice42",
+            revealAvailable: true,
+            xtreamStreamLimit: 0,
             lastUsed: Date.now(),
           });
           xtreamGrants.set(id ?? "1", grants);
           return json({
             surface,
             url: "http://ether.local/xtream",
-            username: "xt_demo",
-            password: "eg1_private-mock-login",
+            username: "alice42",
+            password: "k7m2-9qxr-4t",
             qr: "",
           });
         }
@@ -5202,6 +5205,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
       method === "GET"
     )
       return json({ devices: xtreamGrants.get(seg[1]!) ?? [] });
+    if (seg[0] === "users" && seg[2] === "devices" && seg[3] === "xtream" && method === "POST") {
+     if (seg[4] === "reveal") return json({available:true,username:"alice42",password:"k7m2-9qxr-4t"});
+     return json({ok:true});
+    }
     if (seg[0] === "users" && seg[1] && seg[2] === "password" && method === "POST")
       return json({ ok: true });
     if (seg[0] === "users" && seg[1] && seg[2] === "devices" && seg[3] === "revoke") {

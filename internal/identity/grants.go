@@ -16,6 +16,7 @@ import (
 	"time"
 
 	_ "github.com/braedonsaunders/ether/internal/auth"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -50,9 +51,11 @@ type ActiveViewer interface {
 	ActiveUser(context.Context, int64) (*core.User, error)
 }
 
-// Grants stores only hashes of credentials in the shared database. Each grant
-// is scoped to one surface and expires after a sliding period of inactivity.
+// Grants authenticates using credential hashes in the shared database. Xtream
+// passwords are also sealed for owner recovery. Each grant is scoped to one
+// surface and expires after a sliding period of inactivity.
 type Grants struct {
+	sealer  config.FieldSealer
 	db      *sql.DB
 	viewers ActiveViewer
 	times   *ViewerTimes
@@ -69,7 +72,7 @@ func (g *Grants) Generation() uint64 {
 	return g.gen.Load()
 }
 
-func NewGrants(db *sql.DB, viewers ActiveViewer, ttl time.Duration, now func() time.Time) (*Grants, error) {
+func NewGrants(db *sql.DB, viewers ActiveViewer, ttl time.Duration, now func() time.Time, sealers ...config.FieldSealer) (*Grants, error) {
 	if db == nil || viewers == nil || ttl < time.Second {
 		return nil, errors.New("identity: database, active viewer lookup and positive TTL required")
 	}
@@ -80,7 +83,11 @@ func NewGrants(db *sql.DB, viewers ActiveViewer, ttl time.Duration, now func() t
 	if err != nil {
 		return nil, err
 	}
-	return &Grants{db: db, viewers: viewers, times: times, ttl: ttl, now: now}, nil
+	g := &Grants{db: db, viewers: viewers, times: times, ttl: ttl, now: now}
+	if len(sealers) > 0 {
+		g.sealer = sealers[0]
+	}
+	return g, nil
 }
 
 // IsGrantCredential distinguishes Ether grants from credentials belonging to
@@ -102,34 +109,36 @@ func grantHash(credential string) (string, bool) {
 
 // Issue creates a new independent credential for a device and surface.
 func (g *Grants) Issue(ctx context.Context, viewerID int64, identityID *int64, surface string, device core.Device) (string, error) {
-	return g.issue(ctx, viewerID, identityID, surface, device, false, false)
+	return g.issue(ctx, viewerID, identityID, surface, device, false, false, "", "", "")
 }
 
 // IssueLogin atomically issues a grant and records a successful explicit sign-in.
 func (g *Grants) IssueLogin(ctx context.Context, viewerID int64, identityID *int64, surface string, device core.Device) (string, error) {
-	return g.issue(ctx, viewerID, identityID, surface, device, true, false)
+	return g.issue(ctx, viewerID, identityID, surface, device, true, false, "", "", "")
 }
 
 // IssueOwnerLogin admits only an active owner and records the sign-in atomically.
 func (g *Grants) IssueOwnerLogin(ctx context.Context, viewerID int64, identityID *int64, surface string, device core.Device) (string, error) {
-	return g.issue(ctx, viewerID, identityID, surface, device, true, true)
+	return g.issue(ctx, viewerID, identityID, surface, device, true, true, "", "", "")
 }
 
 // ViewerTimes returns the database-backed event observer owned by this grant service.
 func (g *Grants) ViewerTimes() *ViewerTimes { return g.times }
 
-func (g *Grants) issue(ctx context.Context, viewerID int64, identityID *int64, surface string, device core.Device, login, ownerOnly bool) (string, error) {
+func (g *Grants) issue(ctx context.Context, viewerID int64, identityID *int64, surface string, device core.Device, login, ownerOnly bool, token, xtreamUsername, sealedPassword string) (string, error) {
 	if surface == "" || viewerID <= 0 {
 		return "", errors.New("identity: surface and viewer required")
 	}
 	if _, err := g.viewers.ActiveUser(ctx, viewerID); err != nil {
 		return "", err
 	}
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
+	if token == "" {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", err
+		}
+		token = grantPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
 	}
-	token := grantPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
 	hash, _ := grantHash(token)
 	now := g.now().UnixMilli()
 	var exec interface {
@@ -149,7 +158,7 @@ func (g *Grants) issue(ctx context.Context, viewerID int64, identityID *int64, s
 	if ownerOnly {
 		ownerFlag = 1
 	}
-	result, err := exec.ExecContext(ctx, `INSERT INTO identity_grants(hash,viewer_id,identity_id,surface,device_id,client,product,version,created,last_used,expires) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM auth_users WHERE id=? AND active=1 AND (?=0 OR is_owner=1) AND (origin<>'dlna_guest' OR ?='dlna'))`, hash, viewerID, identityID, surface, device.ID, device.Client, device.Product, device.Version, now, now, now+g.ttl.Milliseconds(), viewerID, ownerFlag, surface)
+	result, err := exec.ExecContext(ctx, `INSERT INTO identity_grants(hash,viewer_id,identity_id,surface,device_id,client,product,version,created,last_used,expires,xtream_username,xtream_password) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM auth_users WHERE id=? AND active=1 AND (?=0 OR is_owner=1) AND (origin<>'dlna_guest' OR ?='dlna')) ON CONFLICT(xtream_username) DO NOTHING`, hash, viewerID, identityID, surface, device.ID, device.Client, device.Product, device.Version, now, now, now+g.ttl.Milliseconds(), nullableXtreamUsername(xtreamUsername), sealedPassword, viewerID, ownerFlag, surface)
 	if err != nil {
 		return "", err
 	}
@@ -158,6 +167,9 @@ func (g *Grants) issue(ctx context.Context, viewerID int64, identityID *int64, s
 		return "", err
 	}
 	if n != 1 {
+		if xtreamUsername != "" {
+			return "", errXtreamNameUnavailable
+		}
 		return "", core.ErrUnauthorized
 	}
 	if login {

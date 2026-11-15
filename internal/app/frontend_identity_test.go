@@ -2,12 +2,16 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/identity"
@@ -457,7 +461,11 @@ func TestXtreamAppPasswordRateLimitAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grants, _ := identity.NewGrants(a.db, a.users, time.Hour, nil)
+	sealer, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants, _ := identity.NewGrants(a.db, a.users, time.Hour, nil, sealer)
 	resolver, _ := identity.NewResolver(map[string]identity.Authenticator{"plex": a.users}, grants)
 	limiter, _ := identity.NewLoginLimiter(a.db, time.Minute, 3, 3, nil)
 	surface := surfaceIdentity{surface: "xtream", resolver: resolver, grants: grants, login: limiter}
@@ -472,13 +480,73 @@ func TestXtreamAppPasswordRateLimitAndRevocation(t *testing.T) {
 			t.Fatal("normal startup locked out", err)
 		}
 	}
+	shortUser, shortPass, credential, err := grants.IssueXtream(ctx, owner.ID, core.Device{ID: "xtream-short"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shortUser) > 12 || len(shortPass) != 12 {
+		t.Fatal("invalid short pair shape")
+	}
+	var sealed string
+	if err := a.db.QueryRowContext(ctx, `SELECT xtream_password FROM identity_grants WHERE xtream_username=?`, shortUser).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	if !config.IsSealed(sealed) || strings.Contains(sealed, shortPass) {
+		t.Fatal("password not encrypted")
+	}
+	hash := sha256.Sum256([]byte(credential))
+	revealedUser, revealedPass, available, err := grants.RevealXtream(ctx, owner.ID, hex.EncodeToString(hash[:]))
+	if err != nil || !available || revealedUser != shortUser || revealedPass != shortPass {
+		t.Fatal("encrypted reveal failed", err)
+	}
+	oldHash := sha256.Sum256([]byte(password))
+	if _, _, available, err := grants.RevealXtream(ctx, owner.ID, hex.EncodeToString(oldHash[:])); err != nil || available {
+		t.Fatal("old login unexpectedly revealable", err)
+	}
+	otherUser, _, _, err := grants.IssueXtream(ctx, owner.ID, core.Device{ID: "xtream-other"})
+	if err != nil || otherUser == shortUser {
+		t.Fatal("username not unique", err)
+	}
+	for _, spelling := range []string{shortPass, strings.ReplaceAll(shortPass, "-", ""), strings.ToUpper(shortPass)} {
+		got, ok := frontend.XtreamGrantCredential(shortUser, spelling)
+		if !ok || got != credential {
+			t.Fatal("spellings do not share one grant")
+		}
+		for n := 0; n < 20; n++ {
+			v, err := surface.AuthenticateAppPassword(ctx, shortUser, spelling)
+			if err != nil || v == nil || v.ID != owner.ID {
+				t.Fatal("short login failed", err)
+			}
+		}
+	}
+	var stored string
+	if err := a.db.QueryRowContext(ctx, `SELECT hash FROM identity_grants WHERE xtream_username=?`, shortUser).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(credential))
+	if stored != hex.EncodeToString(sum[:]) {
+		t.Fatal("short login must store only the grant hash")
+	}
 	for n := 0; n < 3; n++ {
-		if _, err := surface.AuthenticateAppPassword(ctx, "owner", "main-password"); !errors.Is(err, core.ErrUnauthorized) {
+		if _, err := surface.AuthenticateAppPassword(ctx, shortUser, "zzzz-zzzz-zz"); !errors.Is(err, core.ErrUnauthorized) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := surface.AuthenticateAppPassword(ctx, "owner", "main-password"); !errors.Is(err, frontend.ErrRateLimited) {
+	if _, err := surface.AuthenticateAppPassword(ctx, shortUser, "zzzz-zzzz-zz"); !errors.Is(err, frontend.ErrRateLimited) {
 		t.Fatal("brute force not limited", err)
+	}
+	// Failed attempts cannot interrupt valid API/Range requests for either form.
+	if _, err := surface.AuthenticateAppPassword(ctx, username, password); err != nil {
+		t.Fatal("old login stopped working", err)
+	}
+	if _, err := surface.AuthenticateAppPassword(ctx, shortUser, shortPass); err != nil {
+		t.Fatal("valid short login locked out", err)
+	}
+	if err := surface.Revoke(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := surface.AuthenticateAppPassword(ctx, shortUser, shortPass); err == nil {
+		t.Fatal("revoked short login accepted")
 	}
 	if err := surface.Revoke(ctx, password); err != nil {
 		t.Fatal(err)

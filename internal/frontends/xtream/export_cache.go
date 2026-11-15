@@ -62,7 +62,7 @@ func (i *instance) listRequest(r *http.Request, l login, kind string) (listcache
 		}}
 	if renews {
 		out.Renew = func(ctx context.Context, e *listcache.Entry) error {
-			return listcache.RenewImages(ctx, e, renewer, l.password, l.device)
+			return listcache.RenewImages(ctx, e, renewer, l.credential, l.device)
 		}
 	}
 	return out, true

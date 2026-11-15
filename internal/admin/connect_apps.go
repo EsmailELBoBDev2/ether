@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/frontend"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
@@ -132,7 +131,12 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		return
 	}
 	device := core.Device{ID: surface + "-" + hex.EncodeToString(id[:]), Client: surface, Product: surface}
-	secret, err := h.deps.IdentityGrants.Issue(r.Context(), viewer.ID, nil, surface, device)
+	var secret, xtreamUsername, xtreamPassword string
+	if surface == "xtream" {
+		xtreamUsername, xtreamPassword, secret, err = h.deps.IdentityGrants.IssueXtream(r.Context(), viewer.ID, device)
+	} else {
+		secret, err = h.deps.IdentityGrants.Issue(r.Context(), viewer.ID, nil, surface, device)
+	}
 	if err != nil {
 		writeError(w, 404, "not_found", "viewer unavailable")
 		return
@@ -152,8 +156,8 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	case surface == "xtream":
 		u.Path = prefix + "/xtream"
 		result["url"] = u.String()
-		result["username"] = frontend.XtreamUsername(secret)
-		result["password"] = secret
+		result["username"] = xtreamUsername
+		result["password"] = xtreamPassword
 	case surface == "m3u":
 		u.Path = prefix + "/m3u/" + secret + "/playlist.m3u"
 		result["url"] = u.String()
@@ -178,4 +182,45 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 	}
 	result["qr"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
 	writeJSON(w, 200, result)
+}
+
+// Credentials are decrypted only after owner authentication and explicit CSRF admission.
+func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	access, ok := RequestAccess(r.Context())
+	if !ok || !access.Owner || !h.isOwner(r, tokenFromRequest(r)) || h.deps.IdentityGrants == nil {
+		writeError(w, 403, "forbidden", "owner required")
+		return
+	}
+	if !csrfOK(r) {
+		writeError(w, 403, "csrf", "request rejected")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, 400, "invalid", "invalid viewer")
+		return
+	}
+	var body struct {
+		Hash  string `json:"hash"`
+		Limit int    `json:"limit"`
+	}
+	if decodeJSON(r, &body) != nil {
+		writeError(w, 400, "invalid", "invalid request")
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/limit") {
+		if h.deps.IdentityGrants.SetXtreamStreamLimit(r.Context(), id, body.Hash, body.Limit) != nil {
+			writeError(w, 400, "invalid", "invalid request")
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	username, password, available, err := h.deps.IdentityGrants.RevealXtream(r.Context(), id, body.Hash)
+	if err != nil {
+		writeError(w, 404, "not_found", "login unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"available": available, "username": username, "password": password})
 }

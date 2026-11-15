@@ -43,7 +43,7 @@ func TestColdOpenHandover(t *testing.T) {
 					close(ready)
 					body.allow, body.ready = ready, func() {}
 					body.close = func() { close(metadataClosing); <-metadataClose }
-				case start >= 32*testBlock: // preparation left in the old epoch
+				case start >= 128*testBlock: // preparation beyond the startup horizon, left in the old epoch
 					oldBodies.Add(1)
 					body.ready = func() { oldReady <- struct{}{} }
 					var once sync.Once
@@ -80,7 +80,7 @@ func TestColdOpenHandover(t *testing.T) {
 
 			epoch := s.raCtx
 			for i := int64(1); i <= 4; i++ {
-				f.startRun(epoch, i*32, 32, fetchUrgent, false)
+				f.startRun(epoch, 128+(i-1)*32, 32, fetchUrgent, false)
 			}
 			for i := 0; i < 4; i++ {
 				<-oldReady
@@ -93,7 +93,7 @@ func TestColdOpenHandover(t *testing.T) {
 				done <- err
 			}
 			go read(0)
-			parallel := min(2, hostCap)
+			parallel := hostCap
 			for i := 0; i < parallel; i++ {
 				<-newReady
 			}

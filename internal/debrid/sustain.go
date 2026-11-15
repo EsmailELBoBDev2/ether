@@ -18,16 +18,21 @@ type sustainSlotKey struct{}
 // the existing four host connections permits ten seconds at those rates,
 // without enlarging the 12 MiB memory LRU: completed excess lives on disk.
 // Cache capacity (or the memory-only allowance) always wins over that target.
-// Parallelism uses the existing per-run throughput EWMA, with the same
-// headroom, rather than mistaking one connection's speed for reader demand.
-func sustainPolicy(consumption, tput float64, budget, fixed int64, capRuns int) (window int64, parallel int) {
+// Depth and parallelism floor demand at the known average media bitrate.
+// Parallelism uses the existing per-run throughput EWMA with the same headroom.
+func sustainPolicy(consumption, bitrateFloor, tput float64, budget, fixed int64, capRuns int, measured bool) (window int64, parallel int) {
+	// Foreground delivery can be supply-limited, so it cannot disprove the
+	// demand implied by the known file size and playback duration.
+	consumption = max(consumption, bitrateFloor)
 	ceiling := min(int64(maxReadAheadBytes*defaultHostConnections), max(0, budget))
 	window = min(ceiling, max(int64(minReadAheadBytes), int64(consumption*readAheadSeconds*1.25)))
 	if fixed > 0 {
 		window = min(ceiling, fixed)
 	}
-	parallel = 2 // bounded startup before a complete run supplies throughput
-	if consumption > 0 && tput > 0 {
+	parallel = 2 // retain the fallback when connection throughput is unknown
+	if !measured {
+		parallel = capRuns // full bounded startup until the first consumption interval
+	} else if consumption > 0 && tput > 0 {
 		parallel = int(math.Ceil(consumption * 1.25 / tput))
 	}
 	return window, min(max(1, capRuns), max(1, parallel))
@@ -57,6 +62,7 @@ func (s *httpSource) aheadBudget() int64 {
 }
 
 type sourceSustain struct {
+	measured            bool // a complete consumption interval in this seek epoch
 	rate                float64
 	rateAt, lastRead    time.Time
 	rateBytes           int64
@@ -66,7 +72,7 @@ type sourceSustain struct {
 }
 
 func (m *sourceSustain) resetRate(now time.Time) {
-	m.rate, m.rateBytes, m.rateAt = 0, 0, now
+	m.rate, m.rateBytes, m.rateAt, m.measured = 0, 0, now, false
 }
 
 func (s *httpSource) beginConsumption(now time.Time) {
@@ -98,9 +104,9 @@ func (s *httpSource) recordConsumption(n int, off int64, epoch context.Context) 
 	}
 	m.delivered += int64(n)
 	m.logBytes += int64(n)
-	if elapsed := now.Sub(m.rateAt); elapsed >= time.Second {
+	if elapsed := now.Sub(m.rateAt); epoch == s.raCtx && elapsed >= time.Second {
 		m.rate = ewma(m.rate, float64(m.rateBytes)/elapsed.Seconds(), m.rate == 0)
-		m.rateAt, m.rateBytes = now, 0
+		m.rateAt, m.rateBytes, m.measured = now, 0, true
 	}
 	m.lastRead = now
 	elapsed := now.Sub(m.logAt)
@@ -147,7 +153,7 @@ func (s *httpSource) recordConsumption(n int, off int64, epoch context.Context) 
 	f.e.log.Info("debrid playback throughput", "release", f.id, "source", fmt.Sprintf("%p", s),
 		"deliveredBytes", delivered, "intervalBytes", intervalBytes, "intervalSeconds", elapsed.Seconds(),
 		"goodputMbps", float64(intervalBytes)*8/elapsed.Seconds()/1e6,
-		"consumptionMbps", rate*8/1e6, "connectionMbps", tput*8/1e6,
+		"consumptionMbps", rate*8/1e6, "bitrateFloorMbps", float64(f.bitrateFloor.Load())*8/1e6, "connectionMbps", tput*8/1e6,
 		"aheadInFlightBytes", inFlight, "bufferedAheadBytes", buffered,
 		"concurrentRuns", runs, "medianTTFBMs", float64(median)/float64(time.Millisecond), "ttfbSamples", count)
 }

@@ -594,16 +594,17 @@ type remoteFile struct {
 	mediaPauseKey   string
 	mediaPause      mediaPause
 
-	bmu      sync.Mutex
-	flights  map[int64]*blockFlight
-	mem      *lru.Cache[int64, []byte]
-	edges    map[int64][]byte // bounded head/tail, retained independently of streaming LRU
-	stored   map[int64]bool
-	tput     float64           // bytes/s EWMA
-	ttfbs    [32]time.Duration // bounded recent successful range TTFBs
-	ttfbNext uint64
-	runCount int          // scheduled runs, including admission waits; guarded by bmu
-	playback atomic.Int64 // live source handles that have served foreground reads
+	bmu          sync.Mutex
+	flights      map[int64]*blockFlight
+	mem          *lru.Cache[int64, []byte]
+	edges        map[int64][]byte // bounded head/tail, retained independently of streaming LRU
+	stored       map[int64]bool
+	tput         float64           // bytes/s EWMA
+	ttfbs        [32]time.Duration // bounded recent successful range TTFBs
+	ttfbNext     uint64
+	runCount     int          // scheduled runs, including admission waits; guarded by bmu
+	playback     atomic.Int64 // live source handles that have served foreground reads
+	bitrateFloor atomic.Int64 // average media bytes/s, supplied by playback after probing
 
 	conns       chan struct{} // all requests
 	raSlots     chan struct{} // ordinary read-ahead and prefetch reserve an urgent connection
@@ -2277,6 +2278,17 @@ type httpSource struct {
 	sustain  sourceSustain // guarded by mu; metered only by foreground reads
 }
 
+// SetPlaybackDuration implements core.PlaybackDurationSetter using the duration
+// playback already obtained from its probe or remembered media descriptor.
+// It adds no work until a foreground reader asks for read-ahead.
+func (s *httpSource) SetPlaybackDuration(d time.Duration) {
+	if d > 0 {
+		s.f.bitrateFloor.Store(max(1, int64(float64(s.f.size)/d.Seconds())))
+	}
+}
+
+var _ core.PlaybackDurationSetter = (*httpSource)(nil)
+
 func (s *httpSource) Size() int64       { return s.f.size }
 func (s *httpSource) Name() string      { p, _ := s.f.payload(); return p.Name() }
 func (s *httpSource) ReleaseID() string { return s.f.id }
@@ -2444,7 +2456,7 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 		if seek {
 			// Keep the last consumption estimate while restarting its sample
 			// interval: the new position has no useful measurement yet.
-			s.sustain.rateAt, s.sustain.rateBytes = f.e.now(), 0
+			s.sustain.rateAt, s.sustain.rateBytes, s.sustain.measured = f.e.now(), 0, false
 			oldRuns, _ = s.raCtx.Value(seekRunsKey{}).(*seekRuns)
 			s.sustain.playhead = off
 			s.raCancel()
@@ -2528,7 +2540,7 @@ func (s *httpSource) readAhead(from int64) {
 		return
 	}
 	s.mu.Lock()
-	ctx, closed, rate := s.raCtx, s.closed, s.sustain.rate
+	ctx, closed, rate, measured := s.raCtx, s.closed, s.sustain.rate, s.sustain.measured
 	s.mu.Unlock()
 	if closed || ctx.Err() != nil {
 		return
@@ -2544,7 +2556,7 @@ func (s *httpSource) readAhead(from int64) {
 	f.bmu.Lock()
 	tput := f.tput
 	f.bmu.Unlock()
-	window, parallel := sustainPolicy(rate, tput, s.aheadBudget(), fixed, capRuns)
+	window, parallel := sustainPolicy(rate, float64(f.bitrateFloor.Load()), tput, s.aheadBudget(), fixed, capRuns, measured)
 	lastIdx := min(f.nblocks-1, from+window/f.e.block)
 	run := min(maxRun, freshRunBlocks)
 	if rate > 0 {
@@ -2582,6 +2594,11 @@ func (s *httpSource) readAhead(from int64) {
 			}
 		}
 		n := min(run, lastIdx-idx+1)
+		if !measured {
+			// Share even a small startup horizon across all available slots,
+			// including when the foreground run already covers its head.
+			n = min(n, max(1, (lastIdx-idx+1)/int64(max(1, parallel-runs))))
+		}
 		if _, started := f.startRun(runCtx, idx, n, fetchReadAhead, true); !started {
 			<-slot
 		}

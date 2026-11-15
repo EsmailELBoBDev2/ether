@@ -676,3 +676,47 @@ func TestHardwareForcedIDR(t *testing.T) {
 		})
 	}
 }
+
+// Segmented AAC needs a sample clock even when the decoder already supplies
+// the encoder's format/rate, so FFmpeg would otherwise skip its resampler.
+func TestFMP4EncodedAudioSampleClockArgs(t *testing.T) {
+	info := core.MediaInfo{Container: "mkv", Duration: time.Hour, Streams: []core.StreamInfo{
+		{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160, FrameRate: 24},
+		{Index: 1, Type: "audio", Codec: "dts", Channels: 6, SampleRate: 48000},
+	}}
+	d := core.Decision{Container: ContainerFMP4, VideoCodec: "h264", AudioCodec: "aac", AudioStream: 1, AudioChannels: 2, AudioSampleRate: 48000, SubtitleStream: -1}
+	for _, tc := range []struct {
+		name   string
+		change func(*runSpec)
+		want   bool
+	}{
+		{"hardware-seek", func(s *runSpec) {}, true},
+		{"initial", func(s *runSpec) { s.Start = 0 }, true},
+		{"resample", func(s *runSpec) { s.Decision.AudioSampleRate = 44100 }, true},
+		{"copy-video", func(s *runSpec) { s.Decision.VideoCopy = true }, true},
+		{"dash", func(s *runSpec) { s.Protocol = core.ProtocolDASH }, true},
+		{"warmed-preroll", func(s *runSpec) { s.Accel.Name = AccelNone }, false},
+		{"copy-audio", func(s *runSpec) { s.Decision.AudioCopy = true }, false},
+		{"opus", func(s *runSpec) { s.Decision.AudioCodec = "opus" }, false},
+		{"ts", func(s *runSpec) { s.Decision.Container = ContainerMPEGTS }, false},
+		{"http", func(s *runSpec) { s.Protocol = core.ProtocolHTTP }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := baseSpec(info, d)
+			s.Protocol = core.ProtocolHLS
+			s.Start = 1390500 * time.Millisecond
+			s.Accel = core.HWAccel{Name: AccelVideoToolbox, Encoders: []string{"h264_videotoolbox"}}
+			tc.change(&s)
+			args := buildArgs(s)
+			if tc.want {
+				mustContain(t, args, "aresample="+strconv.Itoa(decisionAudioRate(s.Decision))+":async=1")
+				mustNotContain(t, args, "first_pts=", "asetpts=PTS-STARTPTS")
+			} else {
+				mustNotContain(t, args, ":async=1")
+			}
+			if tc.name == "warmed-preroll" {
+				mustContain(t, args, "asettb=1/48000,asetpts=N+")
+			}
+		})
+	}
+}

@@ -77,6 +77,7 @@ type BrokerDeps struct {
 	// ReceiptCurrent rechecks the acceptance Plex stored for this request.
 	ReceiptCurrent     func(context.Context, auth.Acceptance) error
 	BitrateLimit       func(*core.Viewer) int
+	StreamLimit        func(*core.Viewer) int
 	RemoteBitrateLimit func() int
 	OnTimeline         func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
 	Events             *EventBus

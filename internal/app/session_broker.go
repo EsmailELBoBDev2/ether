@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	playlimits "github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/sessions"
 	"github.com/braedonsaunders/ether/internal/state"
 	"github.com/braedonsaunders/ether/internal/trackprefs"
@@ -139,6 +140,7 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			return a.safety.UserPolicy(v), nil
 		},
 		CanPlay: a.safety.CanPlay, FreshPlay: a.safety.ConfirmAdmission, CurrentPlay: a.safety.ConfirmPlayback, ReceiptCurrent: a.users.ReceiptCurrent, BitrateLimit: a.safety.BitrateLimit,
+		StreamLimit:        func(v *core.Viewer) int { return playlimits.UserStreamLimit(a.cfg.Read(), v) },
 		RemoteBitrateLimit: func() int { return a.cfg.Read().Transcode.RemoteMaxBitrateKbps },
 		OnTimeline: func(v *core.Viewer, key core.RatingKey, pos, dur time.Duration, playState string) {
 			if playState == "playing" && a.personalize != nil {

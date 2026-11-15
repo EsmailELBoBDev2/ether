@@ -274,8 +274,12 @@ func (s surfaceIdentity) AuthenticateAppPassword(ctx context.Context, username, 
 	}
 	// Valid app passwords authenticate each API/Range request. Charging those
 	// against the interactive sign-in budget would lock out a normal startup.
-	if core.IsGrantCredential(password) && username == frontend.XtreamUsername(password) {
-		viewer, err := s.Resolve(ctx, password)
+	credential, short := frontend.XtreamGrantCredential(username, password)
+	if !short {
+		credential = password
+	}
+	if short || len(username) <= 128 && len(password) <= 128 && core.IsGrantCredential(password) && username == frontend.XtreamUsername(password) {
+		viewer, err := s.Resolve(ctx, credential)
 		if err == nil && viewer != nil {
 			return viewer, nil
 		}

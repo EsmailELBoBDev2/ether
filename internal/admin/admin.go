@@ -481,6 +481,8 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/users/{id}/password", h.ownerIdentityManagement)
 	api("GET /api/users/{id}/devices", h.ownerIdentityManagement)
 	api("POST /api/users/{id}/devices/revoke", h.ownerIdentityManagement)
+	api("POST /api/users/{id}/devices/xtream/reveal", h.ownerXtreamLogin)
+	api("POST /api/users/{id}/devices/xtream/limit", h.ownerXtreamLogin)
 	api("POST /api/users/{id}/invite", h.ownerIdentityManagement)
 	api("POST /api/users/local", h.handleCreateLocalViewer)
 	api("POST /api/users/invite", h.handleCreateInviteViewer)

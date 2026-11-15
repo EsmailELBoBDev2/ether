@@ -2,6 +2,8 @@ package admin_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -211,7 +213,7 @@ func TestConnectAppsPlexViewerWithoutLocalPasswordMintsJellyfinEmbySilo(t *testi
 	if err := users.RefreshViewers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	grants, err := identity.NewGrants(db, users, time.Hour, nil)
+	grants, err := identity.NewGrants(db, users, time.Hour, nil, newStore(t, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,15 +284,63 @@ func TestConnectAppsPlexViewerWithoutLocalPasswordMintsJellyfinEmbySilo(t *testi
 		t.Fatal(err)
 	}
 	res.Body.Close()
-	if res.StatusCode != 200 || xt.Username != frontend.XtreamUsername(xt.Password) || xt.Username == "plexviewer" || xt.URL != "https://ether.example/xtream" {
+	credential, short := frontend.XtreamGrantCredential(xt.Username, xt.Password)
+	if res.StatusCode != 200 || !short || len(xt.Username) > 12 || len(xt.Password) != 12 || xt.URL != "https://ether.example/xtream" {
 		t.Fatalf("invalid app login: status=%d", res.StatusCode)
 	}
-	viewer, err := grants.Resolve(ctx, "xtream", xt.Password)
+	viewer, err := grants.Resolve(ctx, "xtream", credential)
 	if err != nil || viewer.ID != 77 {
 		t.Fatal("unscoped login", err)
 	}
-	if _, err = grants.Resolve(ctx, "jellyfin", xt.Password); err == nil {
+	if _, err = grants.Resolve(ctx, "jellyfin", credential); err == nil {
 		t.Fatal("cross-surface credential")
+	}
+
+	// Later reveal requires an owner credential and explicit CSRF admission.
+	sum := sha256.Sum256([]byte(credential))
+	body := `{"hash":"` + hex.EncodeToString(sum[:]) + `"}`
+	reveal := func(token string, csrf bool) *http.Response {
+		r := req("POST", "/ether/api/users/77/devices/xtream/reveal", body)
+		r.Header.Set("Authorization", "Bearer "+token)
+		if !csrf {
+			r.Header.Del("X-Ether-Request")
+		}
+		return serve(h, r).Result()
+	}
+	res = reveal(portal, true)
+	res.Body.Close()
+	if res.StatusCode != 403 {
+		t.Fatalf("viewer reveal admitted: %d", res.StatusCode)
+	}
+	local, _ := identity.NewLocal(db)
+	ownerID, err := local.CreateOwner(ctx, "owner-reveal", "password-1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := users.RefreshViewers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ownerToken, err := grants.Issue(ctx, ownerID, nil, "owner", core.Device{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = reveal(ownerToken, false)
+	res.Body.Close()
+	if res.StatusCode != 403 {
+		t.Fatalf("reveal without CSRF: %d", res.StatusCode)
+	}
+	res = reveal(ownerToken, true)
+	var revealed struct {
+		Available bool   `json:"available"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&revealed); err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 || !revealed.Available || revealed.Username != xt.Username || revealed.Password != xt.Password || res.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("owner reveal failed", res.StatusCode)
 	}
 
 }

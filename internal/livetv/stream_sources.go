@@ -427,10 +427,15 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		ss.info.MediaInfo, ss.relayInfo = nil, nil
 		// ffmpeg and ffprobe read this input through a loopback grant, never
 		// with the provider URL or headers on their command line.
-		err = s.grantDirectInput(ss, grantSrc, headers)
-		if err == nil {
-			err = s.startIPTVSource(attemptCtx, ss, primaryCount > 1 && index < primaryCount)
-		}
+		err = s.withProviderCapacity(attemptCtx, c, src, func() error {
+			ss.owned.close()
+			ss.owned = nil
+			s.revokeInput(ss)
+			if err := s.grantDirectInput(ss, grantSrc, headers); err != nil {
+				return err
+			}
+			return s.startIPTVSource(attemptCtx, ss, primaryCount > 1 && index < primaryCount)
+		})
 		cancel()
 		if err == nil {
 			ss.info.ActiveSourceID = src.ID

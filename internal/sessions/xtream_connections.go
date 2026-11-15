@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -33,17 +34,13 @@ func init() {
  ALTER TABLE sessions_xtream_connections_counted RENAME TO sessions_xtream_connections;
  CREATE INDEX sessions_xtream_connections_expiry ON sessions_xtream_connections(expires);
  CREATE INDEX sessions_xtream_connections_viewer ON sessions_xtream_connections(viewer_id,expires);`)
+	store.Register("xtream_connections", 3, `ALTER TABLE sessions_xtream_connections ADD COLUMN device_id TEXT NOT NULL DEFAULT ''; ALTER TABLE sessions_xtream_connections ADD COLUMN created INTEGER NOT NULL DEFAULT 0; UPDATE sessions_xtream_connections SET created=expires-30000;`)
 	store.RegisterViewerTable("xtream_connections", "sessions_xtream_connections", "viewer_id", store.ViewerMergeDrop)
 }
 
 const (
 	xtreamConnectionTTL       = 30 * time.Second
 	xtreamConnectionHeartbeat = 10 * time.Second
-	// Live playout uses four-second segments (livetv/playout.go): two target
-	// durations allow a normal segment/range gap. Also cover the ten-second
-	// renewal of long responses, with two seconds of scheduling slack, so an
-	// active file or multi-view stream is not mistaken for an abandoned tune.
-	xtreamConnectionIdle = max(2*4*time.Second, xtreamConnectionHeartbeat) + 2*time.Second
 )
 
 // Each login/peer/item has one renewable lease. Different items can play
@@ -54,7 +51,9 @@ func (s *lazyStreams) acquireXtreamConnection(r *http.Request, reference string,
 		return nil, nil, err
 	}
 	update := func(ctx context.Context) error {
-		return s.admitXtream(ctx, reference, viewer, peer, target, xtreamConnectionTTL)
+		// A segment or heartbeat may only renew its existing admission. Once a
+		// primary URL supersedes it, it cannot recreate the old slot and fight back.
+		return s.admitXtream(ctx, reference, viewer, peer, target, "", xtreamConnectionTTL, false)
 	}
 
 	if err := update(r.Context()); err != nil {
@@ -108,8 +107,8 @@ func xtreamBinding(r *http.Request, target string) (string, string, error) {
 	return lazyHash(peer), lazyHash(peer + "/" + target), nil
 }
 
-// PrepareAppConnection reserves an item before source work begins. Recently
-// renewed items on the same device remain protected for IPTV multi-view.
+// PrepareAppConnection preserves multi-view below the cap. At the cap a new
+// primary request switches the oldest stream on this same login and peer.
 func (s *lazyStreams) PrepareAppConnection(r *http.Request, credential string, req frontend.PlanRequest) error {
 	if s.protocol != "xtream" || req.Viewer == nil || req.Protocol != s.protocol {
 		return core.ErrUnauthorized
@@ -122,7 +121,7 @@ func (s *lazyStreams) PrepareAppConnection(r *http.Request, credential string, r
 	if err != nil {
 		return err
 	}
-	return s.admitXtream(r.Context(), ref, v.ID, peer, target, xtreamConnectionTTL)
+	return s.admitXtream(r.Context(), ref, v.ID, peer, target, req.Device.ID, xtreamConnectionTTL, true)
 }
 
 // AppConnectionLimit exposes the same effective cap used by durable admission.
@@ -162,7 +161,7 @@ func (s *lazyStreams) xtreamLimits(ctx context.Context, q xtreamQuerier, ref str
 	}
 	return viewerLimit, deviceLimit, nil
 }
-func (s *lazyStreams) admitXtream(ctx context.Context, ref string, id int64, peer, target string, ttl time.Duration) error {
+func (s *lazyStreams) admitXtream(ctx context.Context, ref string, id int64, peer, target, deviceID string, ttl time.Duration, primary bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -177,23 +176,36 @@ func (s *lazyStreams) admitXtream(ctx context.Context, ref string, id int64, pee
 	if err != nil {
 		return err
 	}
+	if !primary {
+		// An existing but idle lease may resume if capacity permits. A removed
+		// lease was superseded/pruned and cannot be brought back by old segments.
+		if err := tx.QueryRowContext(ctx, `SELECT device_id FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target=?`, ref, id, peer, target).Scan(&deviceID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return core.ErrStreamLimit
+			}
+			return err
+		}
+	}
 	now := s.broker.deps.Now().UnixMilli()
 	var viewerCount, deviceCount int
 	err = tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN c.grant_reference=? THEN 1 ELSE 0 END),0) FROM sessions_xtream_connections c JOIN identity_grants g ON g.hash=c.grant_reference WHERE c.viewer_id=? AND c.expires>? AND g.revoked=0 AND g.expires>? AND NOT(c.grant_reference=? AND c.target=?)`, ref, id, now, now, ref, target).Scan(&viewerCount, &deviceCount)
 	if err != nil {
 		return err
 	}
+	var displacedDevice string
 	atCap := func() bool {
 		return viewerLimit > 0 && viewerCount >= viewerLimit || deviceLimit > 0 && deviceCount >= deviceLimit
 	}
 	if atCap() {
-		// expires is renewed to now+ttl on every request/heartbeat, so subtracting
-		// ttl gives the last renewal without a separate timestamp or migration.
-		// Reclaim only this login's oldest idle item from the requesting peer.
-		// Fresh multi-view items and every other peer/login remain untouched.
-		cutoff := now + ttl.Milliseconds() - xtreamConnectionIdle.Milliseconds()
+		if !primary {
+			return core.ErrStreamLimit
+		}
+		// Only a new primary URL can supersede. Match the exact login and peer;
+		// a different viewer login or peer cannot take another stream's slot.
+		// Creation order, rather than renewal time, makes the oldest stream lose
+		// consistently even when it is actively serving a long response.
 		var staleTarget string
-		err := tx.QueryRowContext(ctx, `SELECT target FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target<>? AND expires>? AND expires<? ORDER BY expires,target LIMIT 1`, ref, id, peer, target, now, cutoff).Scan(&staleTarget)
+		err := tx.QueryRowContext(ctx, `SELECT target,device_id FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target<>? AND expires>? ORDER BY created,target LIMIT 1`, ref, id, peer, target, now).Scan(&staleTarget, &displacedDevice)
 		if err == sql.ErrNoRows {
 			return core.ErrStreamLimit
 		}
@@ -205,13 +217,38 @@ func (s *lazyStreams) admitXtream(ctx context.Context, ref string, id int64, pee
 		if atCap() {
 			return core.ErrStreamLimit
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target=? AND expires<?`, ref, id, peer, staleTarget, cutoff); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target=?`, ref, id, peer, staleTarget); err != nil {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions_xtream_connections(grant_reference,viewer_id,target,peer,expires) VALUES(?,?,?,?,?) ON CONFLICT(grant_reference,target) DO UPDATE SET expires=excluded.expires`, ref, id, target, peer, now+ttl.Milliseconds())
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions_xtream_connections(grant_reference,viewer_id,target,peer,expires,device_id,created) VALUES(?,?,?,?,?,?,?) ON CONFLICT(grant_reference,target) DO UPDATE SET expires=excluded.expires,device_id=excluded.device_id`, ref, id, target, peer, now+ttl.Milliseconds(), deviceID, now)
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if displacedDevice == "" {
+		return nil
+	}
+	// Stop only after committing: broker retirement also writes the shared DB.
+	// The stored device is the exact peer/item ownership assigned at admission,
+	// so this cancels its HTTP transfers and frees normal playback capacity too.
+	viewer, err := s.broker.deps.ActiveViewer(ctx, id)
+	if err != nil {
+		return err
+	}
+	access := frontend.SessionAccess{Viewer: viewer, Protocol: "xtream", Device: core.Device{ID: displacedDevice}}
+	streams, err := s.broker.Sessions(ctx, access)
+	if err != nil {
+		return err
+	}
+	for _, stream := range streams {
+		if stream.Protocol == "xtream" && stream.Device.ID == displacedDevice {
+			if err := s.broker.Stop(ctx, access, stream.ID); err != nil && !errors.Is(err, core.ErrNotFound) {
+				return err
+			}
+		}
+	}
+	return nil
 }

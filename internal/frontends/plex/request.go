@@ -62,6 +62,13 @@ type Request struct {
 	// session/segment handlers may serve a capability-scoped request.
 	Capability bool
 
+	// deliveryGrantHop marks the request whose delivery grant the authentication
+	// ladder just consumed: the second hop of a redirected part read, and the
+	// only request allowed to leave for the provider. The query parameter only
+	// asks for that hop; consuming the grant decides it, so a client cannot claim
+	// the hop by pasting a grant-shaped parameter next to its own credential.
+	deliveryGrantHop bool
+
 	versionItemKey  frontend.RatingKey // single detail or selected queue item
 	versionFlowKey  frontend.RatingKey // selected pre-play/queue item only
 	configuredSlots bool               // configured identities, independent of discovery

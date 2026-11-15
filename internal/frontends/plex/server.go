@@ -191,6 +191,7 @@ type Server struct {
 	transcodes        *transcodeTable
 	progressiveStops  progressiveStopGuard
 	readCaps          *readCapabilityStore
+	deliveryGrants    *deliveryGrantStore
 	extraPlay         *extraPlayStore
 	subtitleOffers    subtitleOffers
 	subtitlePicks     subtitlePicks
@@ -268,6 +269,7 @@ func NewServer(d Deps) *Server {
 		playbackLifecycle: rt.LifecycleGates(),
 		transcodes:        newTranscodeTable(),
 		readCaps:          newReadCapabilityStore(),
+		deliveryGrants:    newDeliveryGrantStore(),
 		extraPlay:         newExtraPlayStore(newDirectHTTPClient(host.DirectProxy)),
 		selections:        newSelectionStore(),
 		notifier:          newNotifier(),

@@ -323,6 +323,42 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
             ],
           },
           {
+            id: "delivery",
+            title: {
+              source: "Media delivery",
+            },
+            description: {
+              source: "How a direct play reaches the player.",
+            },
+            fields: [
+              {
+                key: "delivery",
+                label: {
+                  source: "Delivery",
+                },
+                help: {
+                  source:
+                    "Redirect hands the player the provider's own link, so every request opens a fresh connection instead of staying on the route Ether chose. Ether then sees no bytes from that play.",
+                },
+                kind: "select",
+                options: [
+                  {
+                    value: "relay",
+                    label: {
+                      source: "Relay through Ether",
+                    },
+                  },
+                  {
+                    value: "redirect",
+                    label: {
+                      source: "Redirect to the provider",
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+          {
             id: "compatibility",
             title: {
               source: "Compatibility",

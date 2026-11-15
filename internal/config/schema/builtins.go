@@ -47,6 +47,9 @@ func Builtins() []Builtin {
 				{Key: "certFile", Label: extend.T("Certificate file"), Kind: KindText, Help: extend.T("Leave empty to use the plex.direct certificate Ether manages."), Wide: true},
 				{Key: "keyFile", Label: extend.T("Key file"), Kind: KindText, Help: extend.T("The private key that matches the certificate file."), Wide: true},
 			}},
+			{ID: "delivery", Title: extend.T("Media delivery"), Description: extend.T("How a direct play reaches the player."), Fields: []Field{
+				{Key: "delivery", Label: extend.T("Delivery"), Kind: KindSelect, Help: extend.T("Redirect hands the player the provider's own link, so every request opens a fresh connection instead of staying on the route Ether chose. Ether then sees no bytes from that play."), Options: []Option{{Value: "relay", Label: extend.T("Relay through Ether")}, {Value: "redirect", Label: extend.T("Redirect to the provider")}}},
+			}},
 			{ID: "compatibility", Title: extend.T("Compatibility"), Fields: []Field{
 				{Key: "trackLatestVersion", Label: extend.T("Report the latest public PMS version"), Kind: KindBool, Help: extend.T("Off reports the version Ether is verified against. Plex enables features by server version.")},
 				{Key: "latestCompatibilityVersion", Label: extend.T("Latest public PMS version"), Kind: KindReadonly},

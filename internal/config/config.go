@@ -151,6 +151,13 @@ type Plex struct {
 	// apps still display Plex's own rating. Date-added stays the catalogue
 	// release/air date.
 	UsePlexMetadata bool `json:"usePlexMetadata,omitempty"`
+	// Delivery is how a direct-play media route reaches the client: "relay"
+	// (default) streams the bytes through Ether; "redirect" answers an
+	// authorised part read with a 307 to the provider's own URL, so the
+	// player opens a fresh connection for every request instead of staying on
+	// the one route Ether's session pinned. Redirected plays give Ether no
+	// sample of the delivered bytes. Unrecognised values relay.
+	Delivery string `json:"delivery,omitempty"`
 	// Remote access
 	RemoteAccess bool     `json:"remoteAccess"`
 	UseUPnP      bool     `json:"useUpnp"`

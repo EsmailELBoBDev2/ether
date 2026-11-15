@@ -2245,6 +2245,13 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", contentDisposition(filename))
 	}
 	unlockOwner()
+	// Direct delivery hands the client the provider's URL for a file it has
+	// already been allowed to play. A download keeps Ether's file name, and a
+	// HEAD stays with the relay so the client's size probe is answered by the
+	// session that knows the container.
+	if !download && r.Method == http.MethodGet && s.partDirectDelivery(w, r, ps.ID) {
+		return
+	}
 	cw := s.newCountWriter(w, r)
 	s.plexSources().ServePart(cw, parts.Request(r), ps.ID)
 	cw.finish()

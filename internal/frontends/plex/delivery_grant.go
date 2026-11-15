@@ -42,7 +42,7 @@ const (
 
 type deliveryGrant struct {
 	userID  int64
-	path    string // the part route it was minted for; a grant cannot fetch another file
+	target  string // exact path and query issued in the first redirect
 	expires time.Time
 	seq     uint64
 }
@@ -63,11 +63,12 @@ func newDeliveryGrantStore() *deliveryGrantStore {
 // exists for send no client header, and a clientless part read adopts its
 // synthetic identity per read, so the two hops need not name themselves
 // identically.
-func (g *deliveryGrantStore) mint(userID int64, path string) string {
-	if g == nil || userID == 0 || path == "" {
+func (g *deliveryGrantStore) mint(userID int64, r *http.Request) string {
+	if g == nil || userID == 0 || r.URL.Path == "" {
 		return ""
 	}
 	token := rand.Text()
+	target := grantLocation(r, token)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.byToken == nil {
@@ -89,15 +90,15 @@ func (g *deliveryGrantStore) mint(userID int64, path string) string {
 		delete(g.byToken, oldest)
 	}
 	g.seq++
-	g.byToken[token] = deliveryGrant{userID: userID, path: path, expires: now.Add(deliveryGrantTTL), seq: g.seq}
-	return token
+	g.byToken[token] = deliveryGrant{userID: userID, target: target, expires: now.Add(deliveryGrantTTL), seq: g.seq}
+	return target
 }
 
 // take consumes a grant, reporting the viewer it was minted for when it was a
 // live grant for this exact file. A spent, expired or misplaced token is not a
 // credential: the request that repeats a spent hop has to come back with its
 // own, and mints a fresh grant.
-func (g *deliveryGrantStore) take(token, path string) (int64, bool) {
+func (g *deliveryGrantStore) take(token, target string) (int64, bool) {
 	if g == nil || token == "" {
 		return 0, false
 	}
@@ -108,7 +109,7 @@ func (g *deliveryGrantStore) take(token, path string) (int64, bool) {
 		return 0, false
 	}
 	delete(g.byToken, token)
-	if grant.path != path || !grant.expires.After(g.now()) {
+	if grant.target != target || !grant.expires.After(g.now()) {
 		return 0, false
 	}
 	return grant.userID, true
@@ -133,7 +134,7 @@ func (s *Server) authenticateDeliveryGrant(r *http.Request, pr *Request) bool {
 	if pr.Token != "" || requestHeaderCredential(r) {
 		return false
 	}
-	userID, ok := s.deliveryGrants.take(token, r.URL.Path)
+	userID, ok := s.deliveryGrants.take(token, r.URL.RequestURI())
 	if !ok {
 		return false
 	}
@@ -159,7 +160,7 @@ func (s *Server) authenticateDeliveryGrant(r *http.Request, pr *Request) bool {
 // else's host, so a read with a header credential keeps relaying — and no
 // external redirect may answer it.
 func requestHeaderCredential(r *http.Request) bool {
-	return r.Header.Get("X-Plex-Token") != "" || r.Header.Get("Authorization") != ""
+	return len(r.Header.Values("X-Plex-Token")) != 0 || len(r.Header.Values("Authorization")) != 0
 }
 
 // requestQueryCredential reports whether the URL carries the viewer's Plex
@@ -189,7 +190,6 @@ func grantLocation(r *http.Request, token string) string {
 		forward.Add(plexRoutingIdentity, value)
 	}
 	forward.Set(deliveryGrantParam, token)
-	hop := *r.URL // the path and its escaping, exactly as the client sent them
-	hop.RawQuery, hop.Fragment = forward.Encode(), ""
+	hop := url.URL{Path: r.URL.Path, RawPath: r.URL.RawPath, RawQuery: forward.Encode()}
 	return hop.String()
 }

@@ -513,7 +513,7 @@ func redactQuery(q string) string {
 		// Authentication URL-decodes parameter names. Apply the same decoding
 		// before classifying secrets, while preserving unrelated diagnostics.
 		name, err := url.QueryUnescape(k)
-		if err == nil && (strings.EqualFold(name, "X-Plex-Token") || strings.EqualFold(name, streamGrantParam) || strings.EqualFold(name, readCapParam)) {
+		if err == nil && (strings.EqualFold(name, "X-Plex-Token") || strings.EqualFold(name, streamGrantParam) || strings.EqualFold(name, readCapParam) || strings.EqualFold(name, deliveryGrantParam)) {
 			parts[i] = k + "=REDACTED"
 		}
 	}

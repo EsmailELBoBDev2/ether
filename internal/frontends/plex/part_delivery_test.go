@@ -356,3 +356,50 @@ func TestPartDeliveryRelaysWhenTheLinkGoesAway(t *testing.T) {
 		t.Fatalf("a lost link must fall back to the relay, got %d", rec.Code)
 	}
 }
+
+func TestPartDeliveryRefusesChangedGrantQuery(t *testing.T) {
+	f, _, _ := deliveryFixture(t, config.DeliveryRedirect)
+	for _, extra := range []string{"Authorization=Bearer+test", "X-Plex-Token=&X-Plex-Token=test", "x=%zz"} {
+		target := firstHop(t, f, "?X-Plex-Token="+ownerToken)
+		r := nativeGet(t, f, target+"&"+extra)
+		if r.Code != http.StatusUnauthorized || r.Header().Get("Location") != "" {
+			t.Fatalf("altered grant query: got %d and Location %q", r.Code, r.Header().Get("Location"))
+		}
+	}
+}
+
+func TestPartDeliveryRelaysRepeatedCredentialHeader(t *testing.T) {
+	f, _, _ := deliveryFixture(t, config.DeliveryRedirect)
+	req := httptest.NewRequest(http.MethodGet, deliveryPartPath+"?X-Plex-Token="+ownerToken, nil)
+	req.Header["X-Plex-Token"] = []string{"", ownerToken}
+	req.Header.Set("Range", "bytes=0-9")
+	rec := httptest.NewRecorder()
+	f.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent || rec.Header().Get("Location") != "" {
+		t.Fatalf("repeated token header: got %d and Location %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestPartDeliveryPreservesPlexRangeSemantics(t *testing.T) {
+	f, _, _ := deliveryFixture(t, config.DeliveryRedirect)
+	target := deliveryPartPath + "?X-Plex-Token=" + ownerToken
+	for _, tc := range []struct {
+		name, window, condition string
+		wantBytes               int
+	}{
+		{"conditional seek", "bytes=20-29", "If-Range", 10},
+		{"multi-range", "bytes=1-2,4-5", "", 65536},
+		{"nonstandard unit", "items=20-29", "", 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := []string{"Range", tc.window}
+			if tc.condition != "" {
+				headers = append(headers, tc.condition, `"stale-origin-validator"`)
+			}
+			rec := nativeGet(t, f, target, headers...)
+			if rec.Code != http.StatusPartialContent || rec.Header().Get("Location") != "" || rec.Body.Len() != tc.wantBytes {
+				t.Fatalf("got status %d, %d body bytes, redirected=%v", rec.Code, rec.Body.Len(), rec.Header().Get("Location") != "")
+			}
+		})
+	}
+}

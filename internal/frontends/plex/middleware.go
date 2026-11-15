@@ -228,7 +228,7 @@ func redactTraceQuery(q url.Values) string {
 func traceSecretQuery(k string) bool {
 	switch strings.ToLower(k) {
 	case "x-plex-token", "token", "accesstoken", "access_token",
-		strings.ToLower(streamGrantParam), strings.ToLower(readCapParam):
+		strings.ToLower(streamGrantParam), strings.ToLower(readCapParam), strings.ToLower(deliveryGrantParam):
 		return true
 	default:
 		return false

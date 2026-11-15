@@ -338,7 +338,7 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
                 },
                 help: {
                   source:
-                    "Redirect hands the player the provider's own link, so every request opens a fresh connection instead of staying on the route Ether chose. Ether then sees no bytes from that play.",
+                    "Relay is the default. Redirect gives eligible Plex players a temporary TorBox file URL that they can use until it expires. Ether cannot measure bytes delivered directly by TorBox.",
                 },
                 kind: "select",
                 options: [

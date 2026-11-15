@@ -1,9 +1,8 @@
 package plex
 
 // Direct delivery (plex.delivery = "redirect"): an authorised direct-play part
-// read is answered with a 307 to the provider's own URL, so each request the
-// client makes is a fresh connection decision at the content delivery network
-// rather than the one route Ether's session pinned.
+// read can hand the client a temporary TorBox file URL. The player then
+// fetches the bytes directly from the provider.
 //
 // Ether keeps every decision above the bytes. Both hops below run at the end of
 // handlePart, after authorisation, visibility, the viewer's stream limit, broker
@@ -19,16 +18,16 @@ package plex
 import (
 	"net/http"
 	"net/url"
+	"regexp"
 
-	"github.com/braedonsaunders/ether/internal/config"
-	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // partDirectDelivery answers r with a redirect when direct delivery is configured
 // and this session's file has a live provider URL. It reports whether it answered
 // the request; false means the caller serves the bytes.
 func (s *Server) partDirectDelivery(w http.ResponseWriter, r *http.Request, sessionID string) bool {
-	if s.cfg().Plex.DeliveryOrDefault() != config.DeliveryRedirect {
+	if !s.cfg().Plex.Redirects() {
 		return false
 	}
 	pr := FromContext(r.Context())
@@ -37,7 +36,7 @@ func (s *Server) partDirectDelivery(w http.ResponseWriter, r *http.Request, sess
 	}
 	// Before any hop that leaves for another host: a header credential may
 	// travel with the client, and the provider's edge is not Ether's host.
-	if requestHeaderCredential(r) {
+	if requestHeaderCredential(r) || !providerRangeRequest(r) {
 		return false
 	}
 	if pr.deliveryGrantHop {
@@ -51,14 +50,14 @@ func (s *Server) partDirectDelivery(w http.ResponseWriter, r *http.Request, sess
 	if _, ok := s.directDelivery(sessionID); !ok {
 		return false
 	}
-	token := s.deliveryGrants.mint(pr.User.ID, r.URL.Path)
-	if token == "" {
+	location := s.deliveryGrants.mint(pr.User.ID, r)
+	if location == "" {
 		return false
 	}
 	// A grant is spent the moment it is used, so no cache downstream may answer
 	// this redirect a second time.
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, grantLocation(r, token), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, location, http.StatusTemporaryRedirect)
 	s.log.Info("part redirected to delivery grant", "session", sessionID)
 	return true
 }
@@ -85,17 +84,32 @@ func (s *Server) redirectToProvider(w http.ResponseWriter, r *http.Request, sess
 // fetched from. A playback that cannot answer — a remote cluster session, a
 // Usenet source, a session that moved to another generation or needs a remux —
 // keeps relaying, and answers with its own status (409 included).
-func (s *Server) directDelivery(sessionID string) (core.DirectSourceLink, bool) {
-	deliverer, ok := s.playback().(core.DirectDeliverer)
+func (s *Server) directDelivery(sessionID string) (frontend.DirectSourceLink, bool) {
+	deliverer, ok := s.playback().(frontend.DirectDeliverer)
 	if !ok {
-		return core.DirectSourceLink{}, false
+		return frontend.DirectSourceLink{}, false
 	}
 	link, ok := deliverer.DirectDelivery(sessionID)
 	if !ok || link.URL == "" {
-		return core.DirectSourceLink{}, false
+		return frontend.DirectSourceLink{}, false
 	}
 	if dest, err := url.Parse(link.URL); err != nil || dest.Host == "" {
-		return core.DirectSourceLink{}, false
+		return frontend.DirectSourceLink{}, false
 	}
 	return link, true
+}
+
+// Plex ignores conditional validators and has its own response for multi-range
+// and nonstandard Range requests. A CDN can instead send a complete movie,
+// a multipart body, or an error. Keep those requests on Plex's range handler.
+var providerByteRange = regexp.MustCompile(`^bytes=([0-9]+-[0-9]*|-[1-9][0-9]*)$`)
+
+func providerRangeRequest(r *http.Request) bool {
+	for _, field := range []string{"If-Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since"} {
+		if len(r.Header.Values(field)) > 0 {
+			return false
+		}
+	}
+	ranges := r.Header.Values("Range")
+	return len(ranges) == 0 || (len(ranges) == 1 && providerByteRange.MatchString(ranges[0]))
 }

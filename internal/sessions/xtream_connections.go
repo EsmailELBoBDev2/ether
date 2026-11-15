@@ -36,6 +36,16 @@ func init() {
 	store.RegisterViewerTable("xtream_connections", "sessions_xtream_connections", "viewer_id", store.ViewerMergeDrop)
 }
 
+const (
+	xtreamConnectionTTL       = 30 * time.Second
+	xtreamConnectionHeartbeat = 10 * time.Second
+	// Live playout uses four-second segments (livetv/playout.go): two target
+	// durations allow a normal segment/range gap. Also cover the ten-second
+	// renewal of long responses, with two seconds of scheduling slack, so an
+	// active file or multi-view stream is not mistaken for an abandoned tune.
+	xtreamConnectionIdle = max(2*4*time.Second, xtreamConnectionHeartbeat) + 2*time.Second
+)
+
 // Each login/peer/item has one renewable lease. Different items can play
 // together, with admission serialized on the viewer row across cluster nodes.
 func (s *lazyStreams) acquireXtreamConnection(r *http.Request, reference string, viewer int64, target string) (context.Context, func(), error) {
@@ -43,9 +53,8 @@ func (s *lazyStreams) acquireXtreamConnection(r *http.Request, reference string,
 	if err != nil {
 		return nil, nil, err
 	}
-	const ttl = 30 * time.Second
 	update := func(ctx context.Context) error {
-		return s.admitXtream(ctx, reference, viewer, peer, target, ttl)
+		return s.admitXtream(ctx, reference, viewer, peer, target, xtreamConnectionTTL)
 	}
 
 	if err := update(r.Context()); err != nil {
@@ -57,7 +66,7 @@ func (s *lazyStreams) acquireXtreamConnection(r *http.Request, reference string,
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(xtreamConnectionHeartbeat)
 		defer ticker.Stop()
 		for {
 			select {
@@ -99,8 +108,8 @@ func xtreamBinding(r *http.Request, target string) (string, string, error) {
 	return lazyHash(peer), lazyHash(peer + "/" + target), nil
 }
 
-// PrepareAppConnection reserves an item before source work begins. It never
-// retires a different item on the same device: IPTV multi-view needs both.
+// PrepareAppConnection reserves an item before source work begins. Recently
+// renewed items on the same device remain protected for IPTV multi-view.
 func (s *lazyStreams) PrepareAppConnection(r *http.Request, credential string, req frontend.PlanRequest) error {
 	if s.protocol != "xtream" || req.Viewer == nil || req.Protocol != s.protocol {
 		return core.ErrUnauthorized
@@ -113,7 +122,7 @@ func (s *lazyStreams) PrepareAppConnection(r *http.Request, credential string, r
 	if err != nil {
 		return err
 	}
-	return s.admitXtream(r.Context(), ref, v.ID, peer, target, 30*time.Second)
+	return s.admitXtream(r.Context(), ref, v.ID, peer, target, xtreamConnectionTTL)
 }
 
 // AppConnectionLimit exposes the same effective cap used by durable admission.
@@ -174,8 +183,31 @@ func (s *lazyStreams) admitXtream(ctx context.Context, ref string, id int64, pee
 	if err != nil {
 		return err
 	}
-	if viewerLimit > 0 && viewerCount >= viewerLimit || deviceLimit > 0 && deviceCount >= deviceLimit {
-		return core.ErrStreamLimit
+	atCap := func() bool {
+		return viewerLimit > 0 && viewerCount >= viewerLimit || deviceLimit > 0 && deviceCount >= deviceLimit
+	}
+	if atCap() {
+		// expires is renewed to now+ttl on every request/heartbeat, so subtracting
+		// ttl gives the last renewal without a separate timestamp or migration.
+		// Reclaim only this login's oldest idle item from the requesting peer.
+		// Fresh multi-view items and every other peer/login remain untouched.
+		cutoff := now + ttl.Milliseconds() - xtreamConnectionIdle.Milliseconds()
+		var staleTarget string
+		err := tx.QueryRowContext(ctx, `SELECT target FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target<>? AND expires>? AND expires<? ORDER BY expires,target LIMIT 1`, ref, id, peer, target, now, cutoff).Scan(&staleTarget)
+		if err == sql.ErrNoRows {
+			return core.ErrStreamLimit
+		}
+		if err != nil {
+			return err
+		}
+		viewerCount--
+		deviceCount--
+		if atCap() {
+			return core.ErrStreamLimit
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions_xtream_connections WHERE grant_reference=? AND viewer_id=? AND peer=? AND target=? AND expires<?`, ref, id, peer, staleTarget, cutoff); err != nil {
+			return err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO sessions_xtream_connections(grant_reference,viewer_id,target,peer,expires) VALUES(?,?,?,?,?) ON CONFLICT(grant_reference,target) DO UPDATE SET expires=excluded.expires`, ref, id, target, peer, now+ttl.Milliseconds())
 	if err != nil {

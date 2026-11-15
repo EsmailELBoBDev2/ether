@@ -124,7 +124,7 @@ func (s *Service) recordHistory(ctx context.Context, tr Trace) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var id int64
 	err = s.db.QueryRowContext(ctx,

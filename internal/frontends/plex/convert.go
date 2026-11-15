@@ -630,7 +630,11 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 		stamp = 1
 	}
 	if source, ok := s.svc().variants.(frontend.VersionSlots); ok && !sessionMedia {
-		req := frontend.ResolveRequest{Title: t, Client: s.clientCapsForKey(pr, t.Key), User: pr.User}
+		caps := s.clientCapsForKey(pr, t.Key)
+		// Menu ranking describes the source, just like admission. Remote and
+		// requested bitrate ceilings belong to the output decision.
+		caps.MaxBitrateKbps, caps.DefaultRemoteBitrate = 0, false
+		req := frontend.ResolveRequest{Title: t, Client: caps, User: pr.User}
 		if ps != nil && ps.Resolution != nil {
 			req.PlayedRelease = ps.Resolution.Release.ID
 		} else if !info.Estimated {

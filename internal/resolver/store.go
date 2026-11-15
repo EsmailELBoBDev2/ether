@@ -86,6 +86,14 @@ func (s *Service) persistBad(ctx context.Context, e BlockEntry) error {
 	if s.db == nil {
 		return nil
 	}
+	if foreground, _ := ctx.Value(requestBookkeepingKey{}).(bool); foreground {
+		s.persistBookkeeping(ctx, func(ctx context.Context) {
+			if err := s.persistBad(ctx, e); err != nil {
+				s.log.Debug("resolver bad source not saved", "err", err)
+			}
+		})
+		return nil
+	}
 	now := s.now().Unix()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO resolver_bad(release_id, reason, created_at, name, indexer, rating_key, title_name, source, manual, updated_at)
@@ -119,17 +127,19 @@ func (s *Service) recordReputation(ctx context.Context, indexer string, success 
 	}
 	s.reps[indexer] = rep
 	s.mu.Unlock()
-	if s.db != nil {
-		col := "failures"
-		if success {
-			col = "successes"
-		}
-		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO resolver_reputation(indexer, `+col+`) VALUES (?,1)
+	s.persistBookkeeping(ctx, func(ctx context.Context) {
+		if s.db != nil {
+			col := "failures"
+			if success {
+				col = "successes"
+			}
+			if _, err := s.db.ExecContext(ctx,
+				`INSERT INTO resolver_reputation(indexer, `+col+`) VALUES (?,1)
 			 ON CONFLICT(indexer) DO UPDATE SET `+col+`=resolver_reputation.`+col+`+1`, indexer); err == nil {
-			s.notify("reps")
+				s.notify("reps")
+			}
 		}
-	}
+	})
 }
 
 type availEntry struct {
@@ -152,18 +162,20 @@ func (s *Service) setAvailability(ctx context.Context, key int64, available bool
 	}
 	s.trackAvailabilityLocked(key, exp)
 	s.mu.Unlock()
-	if s.db != nil {
-		v := 0
-		if available {
-			v = 1
-		}
-		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO resolver_availability(rating_key, available, checked_at, expires_at, profile_key) VALUES (?,?,?,?,?)
+	s.persistBookkeeping(ctx, func(ctx context.Context) {
+		if s.db != nil {
+			v := 0
+			if available {
+				v = 1
+			}
+			if _, err := s.db.ExecContext(ctx,
+				`INSERT INTO resolver_availability(rating_key, available, checked_at, expires_at, profile_key) VALUES (?,?,?,?,?)
 			 ON CONFLICT(rating_key) DO UPDATE SET available=excluded.available, checked_at=excluded.checked_at, expires_at=excluded.expires_at, profile_key=excluded.profile_key`,
-			key, v, s.now().Unix(), exp.Unix(), policy); err == nil {
-			s.notify("avail:" + strconv.FormatInt(key, 10))
+				key, v, now.Unix(), exp.Unix(), policy); err == nil {
+				s.notify("avail:" + strconv.FormatInt(key, 10))
+			}
 		}
-	}
+	})
 }
 
 // lastUnavailableChecked peeks at the checked time of the most recent

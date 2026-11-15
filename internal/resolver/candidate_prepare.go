@@ -64,7 +64,7 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 			v.healthy, v.healthCached, v.err = s.checkHealthCached(ctx, rel.ID, v.nzb)
 			if v.healthy && v.err == nil && !v.healthCached && s.observed != nil {
 				if title, ok := ctx.Value(observationTitleKey{}).(*core.Title); ok {
-					s.observed(ctx, title, rel)
+					s.persistBookkeeping(ctx, func(ctx context.Context) { s.observed(ctx, title, rel) })
 				}
 			}
 			v.healthDuration = time.Since(at)

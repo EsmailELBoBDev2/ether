@@ -57,7 +57,6 @@ func (s *Service) VersionSlots(ctx context.Context, req core.ResolveRequest, lim
 	slots := s.configuredSlots(profile, req.Client, limit)
 	var candidates []candidate
 	var auto core.Release
-	var playedAuto core.Release
 	if labels {
 		if results, ok := s.peekSearchCache(searchCacheKey(searchRequestFor(req.Title))); ok {
 			pinID := ""
@@ -68,18 +67,7 @@ func (s *Service) VersionSlots(ctx context.Context, req core.ResolveRequest, lim
 			ranked, _, err := s.rankCandidates(ctx, req, searchRequestFor(req.Title), profile, results, nil, pinID)
 			if err == nil {
 				candidates = pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
-				if len(candidates) > 0 {
-					auto = candidates[0].rel
-					// Resume can keep an earlier Auto pick in this quality/cut.
-					// Only use a candidate that still passes the strict policy;
-					// the logical Auto selector and menu shape remain unchanged.
-					for _, c := range candidates {
-						if c.rel.ID == req.PlayedRelease && variantKey(c.rel.Info) == variantKey(auto.Info) {
-							playedAuto = c.rel
-							break
-						}
-					}
-				}
+				auto = s.slotAuto(req, candidates)
 				if s.resolverCfg().OfferHigherVersions {
 					if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
 						if pool, _, e := s.rankCandidates(ctx, req, searchRequestFor(req.Title), relaxed, results, nil, pinID); e == nil {
@@ -113,14 +101,6 @@ func (s *Service) VersionSlots(ctx context.Context, req core.ResolveRequest, lim
 			}
 		}
 		out[i] = core.ReleaseVariant{ID: slot.id(), Label: label, Auto: i == 0, Edition: r.Info.Edition, Release: r, Info: info}
-	}
-	if playedAuto.ID != "" {
-		// Align Auto's presentation with resume without changing which
-		// concrete candidates the alternative selectors admit.
-		out[0].Release = playedAuto
-		out[0].Label = variantLabel(playedAuto, "auto")
-		out[0].Edition = playedAuto.Info.Edition
-		out[0].Info = estimateVariantInfo(req.Title, playedAuto, wanted)
 	}
 	return out, nil
 }
@@ -207,6 +187,26 @@ func slotLabel(v versionSlot) string {
 		return label
 	}
 }
+
+// slotAuto is shared by menu labels and admission. A remembered source that
+// still passes policy wins over a newly discovered higher-ranked release.
+func (s *Service) slotAuto(req core.ResolveRequest, ranked []candidate) core.Release {
+	autoReq := req
+	autoReq.Prefer = ""
+	if pin, _ := s.pinForResolve(autoReq); pin != nil {
+		return pin.Release
+	}
+	for _, c := range ranked {
+		if c.rel.ID == req.PlayedRelease {
+			return c.rel
+		}
+	}
+	if len(ranked) > 0 {
+		return ranked[0].rel
+	}
+	return core.Release{}
+}
+
 func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []core.Release {
 	out := make([]core.Release, len(slots))
 	if len(ranked) == 0 {
@@ -215,6 +215,12 @@ func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []c
 	used := map[string]bool{}
 	keys := map[string]bool{}
 	for i, slot := range slots {
+		if slot.Kind == "auto" && auto.ID != "" {
+			out[i] = auto
+			used[auto.ID] = true
+			keys[variantKey(auto.Info)] = true
+			continue
+		}
 		for _, c := range ranked {
 			r := c.rel
 			if used[r.ID] {

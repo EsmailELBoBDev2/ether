@@ -89,7 +89,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			// Resolve only the explicit pick. Resolving a fresh automatic
 			// fallback would health-check a source we then discard in favour
 			// of the already checked remembered source below.
-			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true})
+			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true, PlayedRelease: auto.Release.ID})
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}

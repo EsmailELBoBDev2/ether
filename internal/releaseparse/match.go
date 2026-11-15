@@ -262,6 +262,13 @@ func TitlesMatch(a, b string) bool {
 	if ca != "" && ca == cb {
 		return true
 	}
+	// Titles that differ only in how words are joined are the same title:
+	// K-Pop/KPop, Spider-Man/Spiderman, X-Men/XMen, WALL-E/WALLE, and an
+	// apostrophe written as a dot (JoJo.s/JoJo's). Different words, extra
+	// words and sequel numbers still differ once spaces are removed.
+	if ja, jb := strings.ReplaceAll(na, " ", ""), strings.ReplaceAll(nb, " ", ""); len(ja) >= 3 && ja == jb {
+		return true
+	}
 	// Compare exact romanisations without relaxing sequel or word identity.
 	if strings.ContainsAny(a+b, "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя") {
 		for _, foldYo := range []bool{false, true} {

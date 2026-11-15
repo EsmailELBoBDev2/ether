@@ -1935,6 +1935,9 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 	var cancels []context.CancelFunc
 	launch := func(hc *http.Client, hedge bool, w *connWatch, host func()) {
 		rctx, cancel := context.WithCancel(ctx)
+		if hedge {
+			rctx = context.WithValue(rctx, hedgeDialKey{}, true)
+		}
 		cancels = append(cancels, cancel)
 		go func() {
 			resp, tm, err := send(rctx, hc, w, host)

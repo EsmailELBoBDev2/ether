@@ -87,15 +87,20 @@ func (c *connCap) wrap(next dialFunc) dialFunc {
 	}
 }
 
+// hedgeDialKey keeps speculative duplicate dials on the paced path even when
+// they inherit a foreground request's priority.
+type hedgeDialKey struct{}
+
 type dialWaiter struct {
 	urgent  func() bool
+	hedge   bool
 	granted bool
 }
 
-// Equal-priority dials keep FIFO order. Background dials resume as soon as
-// the foreground queue drains; already-open connections are never displaced.
+// Equal-priority dials with the same spacing policy keep FIFO order. Background
+// dials resume after the foreground queue drains; open connections stay put.
 func (c *connCap) acquire(ctx context.Context, addr string) error {
-	w := &dialWaiter{urgent: func() bool { return gateUrgent(ctx) }}
+	w := &dialWaiter{urgent: func() bool { return gateUrgent(ctx) }, hedge: ctx.Value(hedgeDialKey{}) != nil}
 	c.mu.Lock()
 	c.waiters[addr] = append(c.waiters[addr], w)
 	c.signalLocked()
@@ -140,7 +145,7 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 		// Any awake waiter can grant the selected dial. Priority may change
 		// while that dial sleeps; progress cannot depend on it waking itself.
 		q := c.waiters[addr]
-		if c.open[addr] < lim && !c.now().Before(c.nextDial[addr]) {
+		if c.open[addr] < lim {
 			pick := 0
 			for i, candidate := range q {
 				if candidate.urgent() {
@@ -148,17 +153,35 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 					break
 				}
 			}
-			chosen := q[pick]
-			c.waiters[addr] = append(q[:pick:pick], q[pick+1:]...)
-			chosen.granted = true
-			c.open[addr]++
-			if c.dialGap > 0 {
-				c.nextDial[addr] = c.now().Add(c.dialGap)
+			// A paced hedge must not hold an exempt playhead dial behind it.
+			if until.IsZero() && c.now().Before(c.nextDial[addr]) && q[pick].hedge {
+				for i, candidate := range q {
+					if !candidate.hedge && candidate.urgent() {
+						pick = i
+						break
+					}
+				}
 			}
-			c.signalLocked()
-			if chosen == w {
-				c.mu.Unlock()
-				return nil
+			chosen := q[pick]
+			// Spacing was introduced with the conservative CDN cap and reset/
+			// refusal recovery. Keep it for speculation and troubled hosts, but
+			// let playhead reads refill immediately after open, seek or early
+			// close: serial handshakes can otherwise exhaust the audio reserve.
+			// Every dial still owns a slot under the effective host cap, and
+			// even an exempt dial pushes the next background dial back one gap.
+			foreground := chosen.urgent() && !chosen.hedge && until.IsZero()
+			if foreground || !c.now().Before(c.nextDial[addr]) {
+				c.waiters[addr] = append(q[:pick:pick], q[pick+1:]...)
+				chosen.granted = true
+				c.open[addr]++
+				if c.dialGap > 0 {
+					c.nextDial[addr] = c.now().Add(c.dialGap)
+				}
+				c.signalLocked()
+				if chosen == w {
+					c.mu.Unlock()
+					return nil
+				}
 			}
 		}
 		// A spare slot gets a timer even when another waiter is currently

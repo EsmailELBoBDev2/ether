@@ -2,6 +2,7 @@ package playback
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -139,7 +140,9 @@ func (m *Manager) Prewarm(ctx context.Context, user *core.User, key core.RatingK
 // admission limits apply. Slow probes finish in the background; the caller
 // can render estimated metadata until exact facts become available.
 func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
-	if err := ctx.Err(); err != nil {
+	// A caller deadline bounds only the wait: one already past still
+	// schedules the warm-up. Cancellation stops before any work.
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
@@ -151,13 +154,34 @@ func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.R
 	// Viewing the detail page admits one bounded on-demand open, just as
 	// playback intent does, while metadata mode still forbids video prefetch.
 	m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}, true)
-	if _, ok := m.WaitWarmProbe(ctx, user, caps, key, 1500*time.Millisecond); ok {
+	if _, ok := m.WaitWarmProbe(ctx, user, caps, key, probeMetadataWait(ctx)); ok {
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	return core.ErrPrepareSlow
+}
+
+// defaultProbeMetadataWait bounds ProbeMetadata when the caller sets no
+// deadline of its own.
+const defaultProbeMetadataWait = 1500 * time.Millisecond
+
+// maxProbeMetadataWait caps a caller-declared deadline: the Bedrock detail
+// allowance is 4 s, and no caller may hold a response longer for a probe.
+const maxProbeMetadataWait = 4 * time.Second
+
+// probeMetadataWait is how long ProbeMetadata holds the caller for the probe.
+// A caller that declares a deadline owns the allowance: Plex Android and iOS
+// build their subtitle picker from the response being written, so the probe
+// gets the whole budget the caller granted. Without a deadline the wait stays
+// short. The warm-up itself is never cancelled; a probe that finishes later is
+// still adopted by later reads.
+func probeMetadataWait(ctx context.Context) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		return min(time.Until(dl), maxProbeMetadataWait)
+	}
+	return defaultProbeMetadataWait
 }
 
 func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata bool) bool {

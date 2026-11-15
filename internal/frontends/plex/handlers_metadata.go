@@ -400,6 +400,11 @@ func (s *Server) showOnDeck(ctx context.Context, pr *Request, show frontend.Rati
 
 const detailWarmWaitBudget = 1500 * time.Millisecond
 
+// detailVariantReserve is the part of a Bedrock detail/queue allowance the
+// source probe never consumes, so version discovery always has time left in
+// the same total bound.
+const detailVariantReserve = 500 * time.Millisecond
+
 // Apple TV can refresh detail metadata and obtains the admitted source's
 // tracks again on Play. Keep speculative preparation behind its browse
 // pages; share a short allowance across the probe and version discovery.
@@ -1301,7 +1306,9 @@ func (s *Server) probeDetailTracks(ctx context.Context, pr *Request, t *frontend
 	if prober, ok := s.playback().(frontend.MetadataProber); ok {
 		if !pr.detailWaitUntil.IsZero() {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(ctx, pr.detailWaitUntil)
+			// The probe may use the allowance except for a reserve that
+			// version discovery (detailVariantContext) always keeps.
+			ctx, cancel = context.WithDeadline(ctx, pr.detailWaitUntil.Add(-detailVariantReserve))
 			defer cancel()
 		}
 		return prober.ProbeMetadata(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key))

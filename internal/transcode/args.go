@@ -436,6 +436,10 @@ func buildCodecArgs(s runSpec) []string {
 	if textSub != nil && textSub.External && textSub.ExternalURL != "" {
 		silenceInput++
 	}
+	// Plex for Android opens subtitle format id 2 (video, audio, subtitle).
+	// A muxed subtitle with no mapped audio would land at 1. Silence fills
+	// that slot for this client only; every other command stays unchanged.
+	androidGap := androidSubtitleSlot(s, v, a, textSub)
 	if s.SilenceAudio && a != nil {
 		layout := fmt.Sprintf("%dc", decisionAudioChannels(d, a))
 		if s.Decision.AudioCopy {
@@ -446,6 +450,21 @@ func buildCodecArgs(s runSpec) []string {
 		}
 
 		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s", decisionAudioRate(d), layout))
+	}
+	if androidGap {
+		ch := decisionAudioChannels(d, nil)
+		spec := fmt.Sprintf("anullsrc=r=%d:cl=%dc", decisionAudioRate(d), ch)
+		// Title-clock runs keep source PTS. Shift this input with them, or
+		// the muxer waits on silence that starts at zero.
+		if s.titleClock() && s.Start > 0 {
+			args = append(args, "-itsoffset", secs(s.Start))
+		}
+		// anullsrc does not end. Bound it to the probed tail so a finite
+		// title is not held open by the generator.
+		if remain := s.Info.Duration - s.Start; remain > 0 {
+			args = append(args, "-t", secs(remain))
+		}
+		args = append(args, "-f", "lavfi", "-i", spec)
 	}
 	if pceOutputSeek {
 		// Output seeking rebases packet timestamps even with -copyts. Put
@@ -471,6 +490,8 @@ func buildCodecArgs(s runSpec) []string {
 		} else {
 			args = append(args, "-map", fmt.Sprintf("0:%d", a.Index))
 		}
+	} else if androidGap {
+		args = append(args, "-map", fmt.Sprintf("%d:a:0", silenceInput))
 	}
 	args = append(args, "-map_metadata", "-1", "-map_chapters", "-1", "-dn")
 	switch {
@@ -648,6 +669,8 @@ func buildCodecArgs(s runSpec) []string {
 				args = append(args, "-strict", "-2")
 			}
 		}
+	} else if androidGap {
+		args = append(args, androidSilenceCodecArgs(s)...)
 	}
 
 	if s.LoopInput {
@@ -1164,6 +1187,46 @@ func escapeFilterValue(v string) string {
 	v = r.Replace(v)
 	g := strings.NewReplacer(`\`, `\\`, `'`, `\'`, `[`, `\[`, `]`, `\]`, `,`, `\,`, `;`, `\;`)
 	return g.Replace(v)
+}
+
+// androidSubtitleSlot is the Android Matroska case where a muxed subtitle
+// has no audio in front of it. Direct play does not build these args.
+// External sidecars are input 1 already; a silent generator would steal
+// that index. No video means the subtitle cannot become output stream 2.
+func androidSubtitleSlot(s runSpec, video, audio, sub *core.StreamInfo) bool {
+	d := s.Decision
+	return d.AndroidMatroskaHLS && d.Container == ContainerMatroska && video != nil && audio == nil && sub != nil && !sub.External
+}
+
+// androidSilenceCodecArgs encodes the placeholder track. There is no source
+// audio to copy. The default matches the AAC stereo path used when a
+// decision names no audio codec.
+func androidSilenceCodecArgs(s runSpec) []string {
+	d := s.Decision
+	codec := d.AudioCodec
+	if codec == "" {
+		codec = "aac"
+	}
+	ch := decisionAudioChannels(d, nil)
+	enc := codec
+	switch codec {
+	case "mp3":
+		enc = "libmp3lame"
+	case "opus":
+		enc = "libopus"
+		if s.Features.encoders != nil && !s.Features.hasEncoder("libopus") {
+			enc = "opus"
+		}
+	}
+	kbps := audioBitrateKbps(codec, ch)
+	if d.AudioBitrateKbps > 0 && d.AudioBitrateKbps < kbps {
+		kbps = d.AudioBitrateKbps
+	}
+	args := []string{"-c:a", enc, "-ac", strconv.Itoa(ch), "-ar", strconv.Itoa(decisionAudioRate(d)), "-b:a", fmt.Sprintf("%dk", kbps)}
+	if enc == "opus" {
+		args = append(args, "-strict", "-2")
+	}
+	return args
 }
 
 // matroskaSubtitle is the selected track Plex tvOS reads from

@@ -742,8 +742,56 @@ export default function LiveTV() {
     })();
   };
 
+  const updateParams = useCurrentCallback(setParams);
+  const libraryQuery = params.get("q");
+  const librarySort = params.get("sort");
+
   const actions = (
     <div className="flex items-center gap-2">
+      <div className="relative w-[min(16rem,calc(100vw-8rem))] shrink-0">
+        <Search
+          size={13}
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
+          aria-hidden
+        />
+        <Input
+          type="search"
+          value={leftTab === "library" ? (libraryQuery ?? "") : q}
+          onChange={(e) => {
+            const value = e.currentTarget.value;
+            if (leftTab !== "library") setQ(value);
+            else
+              updateParams((p) => {
+                if (value) p.set("q", value);
+                else p.delete("q");
+                return p;
+              });
+          }}
+          placeholder={
+            leftTab === "guides"
+              ? t("Search")
+              : leftTab === "library"
+                ? t("Search Library")
+                : leftTab === "looks"
+                  ? styleCopy("Search styles…")
+                  : leftTab === "sources"
+                    ? t("Find a channel, group or source…")
+                    : leftTab === "guide"
+                      ? t("Find a channel or guide…")
+                      : t("Find a channel or group…")
+          }
+          aria-label={
+            leftTab === "guides"
+              ? t("Search")
+              : leftTab === "library"
+                ? t("Search Library")
+                : leftTab === "looks"
+                  ? styleCopy("Search styles")
+                  : t("Search channels")
+          }
+          className="h-8 pl-7 text-sm"
+        />
+      </div>
       <AddMenu
         onChannel={() => void go({ kind: "new" })}
         onPersonal={() =>
@@ -778,58 +826,11 @@ export default function LiveTV() {
   ) : null;
 
   const { locale } = useLocale();
-  const updateParams = useCurrentCallback(setParams);
-  const libraryQuery = params.get("q");
-  const librarySort = params.get("sort");
   const panelHead = useMemo(
     () => (
       <PanelHead className="@container flex h-[104px]! flex-col items-stretch! justify-between space-y-0! pt-3! pb-0! border-b! [&>div:last-child]:mb-0">
         {
           <div className="flex items-center gap-1.5">
-            <div className="relative min-w-0 flex-1">
-              <Search
-                size={13}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
-                aria-hidden
-              />
-              <Input
-                type="search"
-                value={leftTab === "library" ? (libraryQuery ?? "") : q}
-                onChange={(e) => {
-                  const value = e.currentTarget.value;
-                  if (leftTab !== "library") setQ(value);
-                  else
-                    updateParams((p) => {
-                      if (value) p.set("q", value);
-                      else p.delete("q");
-                      return p;
-                    });
-                }}
-                placeholder={
-                  leftTab === "guides"
-                    ? t("Search")
-                    : leftTab === "library"
-                      ? t("Search Library")
-                      : leftTab === "looks"
-                        ? styleCopy("Search styles…")
-                        : leftTab === "sources"
-                          ? t("Find a channel, group or source…")
-                          : leftTab === "guide"
-                            ? t("Find a channel or guide…")
-                            : t("Find a channel or group…")
-                }
-                aria-label={
-                  leftTab === "guides"
-                    ? t("Search")
-                    : leftTab === "library"
-                      ? t("Search Library")
-                      : leftTab === "looks"
-                        ? styleCopy("Search styles")
-                        : t("Search channels")
-                }
-                className="h-8 pl-7 text-sm"
-              />
-            </div>
             {leftTab === "library" ? (
               <ToolbarPicker
                 ariaLabel={t("Sort assets")}
@@ -919,10 +920,8 @@ export default function LiveTV() {
     [
       locale,
       leftTab,
-      q,
       filter,
       missingCount,
-      libraryQuery,
       librarySort,
       tab,
       navigate,
@@ -1106,7 +1105,7 @@ export default function LiveTV() {
       />
     );
 
-  // Channels: one guide whose left third is the lineup (search, tabs and
+  // Channels: one guide whose left third is the lineup (filters, tabs and
   // channel rows) and whose right two thirds are the listings, so every
   // channel is listed once and its programmes stay level with it.
   // Keep the full guide mounted at the same width behind the channel drawer.

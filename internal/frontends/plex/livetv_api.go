@@ -91,19 +91,24 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 		{
 			Type: "content",
 			Key:  liveProviderPath + "/sections",
-			// Keep one keyed Live TV directory for clients that discover by key,
-			// with the native What's On / Guide pivots and separate grid filters.
+			// Matches real Plex DVR /media/providers so both Plex Web and
+			// Android Mobile/TV show What's On + Guide pivots, Featured, and
+			// GridChannelFilter category pills instead of opening a flat channel list.
 			Directory: []model.ProviderDirectory{
 				{
-					ID:     "livetv",
-					Key:    liveProviderPath + "/lineups/dvr/channels",
-					Type:   "livetv",
+					ID:     frontend.LiveTVProvider,
 					HubKey: liveProviderPath + "/hubs/discover",
 					Title:  "Live TV & DVR",
 					Pivot: []model.Pivot{
 						{ID: "dvr.whatson", Key: liveProviderPath + "/hubs/discover", Type: "hub", Title: "What's On", Context: "content.dvr.discover", Symbol: "star"},
 						{ID: "dvr.guide", Key: "view://dvr/guide", Type: "view", Title: "Guide", Context: "content.dvr.guide", Symbol: "guide"},
 					},
+				},
+				{
+					Icon:  "/:/resources/dvr/dvr-watchnow-icon.png",
+					Key:   liveProviderPath + "/watchnow",
+					Title: "Guide",
+					Type:  "mixed",
 				},
 			},
 		},
@@ -768,7 +773,9 @@ func (s *Server) handleLiveHubs(w http.ResponseWriter, r *http.Request) {
 	if h := s.liveTVHub(r); h != nil {
 		hubs = append(hubs, *h)
 	}
-	hubs = append(hubs, s.liveCategoryHubs(r)...)
+	if r.URL.Query().Get("promoted") != "1" {
+		hubs = append(hubs, s.liveCategoryHubs(r)...)
+	}
 	if len(hubs) > 0 {
 		mc.Hub = hubs
 		mc.Size = len(hubs)

@@ -69,6 +69,10 @@ type warmEntry struct {
 	// nil means the entry predates this field and is treated as proven.
 	opened chan struct{}
 	openDo sync.Once
+	// detailOnly marks the viewer's last played release, warmed for a
+	// detail page's tracks only: it is never prefetched and Play never
+	// opens it.
+	detailOnly bool
 }
 
 func (e *warmEntry) markOpeningReady() {
@@ -335,8 +339,17 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 			e.originalAudio = true
 			e.originalLanguage = strings.TrimSpace(title.Language)
 		}
+		detailOnly := false
 		if res == nil || !m.rememberedReleaseMatchesTitle(ctx, res.Release, title) || !payloadMatchesTitle(res.NZB, title) {
 			res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
+			if (err != nil || res == nil) && reason == core.PrewarmDetail && caps.BroadcastBitrateKbps == 0 {
+				// A detail page for a title the viewer played keeps that
+				// file's stored tracks while no search can answer. The
+				// entry serves the page only; Play selects its own source.
+				if last := m.lastPlayedResolution(ctx, u.ID, title, e.profileObj, caps); last != nil {
+					res, err, detailOnly = last, nil, true
+				}
+			}
 		} else if reason == core.PrewarmDetail {
 			// Reusing the remembered source skips Resolve/search. Recover only
 			// the picker candidates, without delaying or changing that source.
@@ -394,14 +407,14 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		// background IO on debrid/HTTP. Usenet still has to prove the
 		// opening articles exist; takeWarm will not consume it until then.
 		m.mu.Lock()
-		e.res, e.probe, e.runtime = res, facts, title.Runtime
+		e.res, e.probe, e.runtime, e.detailOnly = res, facts, title.Runtime, detailOnly
 		m.mu.Unlock()
 		e.ready.Do(func() { close(e.done) })
 		if !usenetWarm(res) {
 			e.markOpeningReady()
 		}
-		m.log.Debug("prewarm ready", "key", key, "reason", reason, "release", res.Release.Name, "prefetch", prefetchBytes)
-		if prefetchBytes <= 0 {
+		m.log.Debug("prewarm ready", "key", key, "reason", reason, "release", res.Release.Name, "prefetch", prefetchBytes, "detailOnly", detailOnly)
+		if prefetchBytes <= 0 || detailOnly {
 			e.markOpeningReady()
 			return
 		}
@@ -461,6 +474,38 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		}
 	}()
 	return true
+}
+
+// lastPlayedResolution is the release that last served the viewer's title,
+// for a detail warm-up whose Resolve found no source. Unlike
+// resumeResolution it does not require the profile selection key the
+// release was chosen under, so a page opened with other capabilities (home
+// versus away) still lists that file's stored tracks. The release must
+// still match the title, be allowed by the source preference, carry no open
+// failure or title rejection, satisfy the current profile's release rules
+// and original-audio language, and fit these caps and the profile's height,
+// codec, HDR and size bounds as far as its name and size tell.
+// resumePoint already drops a blocked release and an episode payload for
+// another episode. The warm entry built from it is detailOnly: Play
+// discards it and selects under its own profile.
+func (m *Manager) lastPlayedResolution(ctx context.Context, userID int64, title *core.Title, profile core.QualityProfile, caps core.ClientCaps) *core.Resolution {
+	rp, err := m.resumePoint(ctx, userID, title.Key, true)
+	if err != nil || rp == nil || len(rp.NZB) == 0 || !m.resumeSourceAllowed(rp.Release) ||
+		!m.rememberedReleaseMatchesTitle(ctx, rp.Release, title) || m.titleReleaseRejected(ctx, title.Key, rp.Release) {
+		return nil
+	}
+	lang := strings.TrimSpace(title.Language)
+	if !rememberedOriginalAudioCurrent(profile, rp.originalLanguage, lang, rp.Release) {
+		return nil
+	}
+	if pol, err := releasepolicy.Compile(profile.ReleaseRules); err != nil || pol.Evaluate(rp.Release, releasepolicy.Context{OriginalLanguage: lang}).Rejected {
+		return nil
+	}
+	res := &core.Resolution{Title: title.Key, Release: rp.Release, NZB: rp.NZB, ResolvedAt: rp.UpdatedAt}
+	if !warmAcceptable(&warmEntry{res: res, profileObj: profile, runtime: title.Runtime}, profile, caps, lang) {
+		return nil
+	}
+	return res
 }
 
 const (
@@ -787,6 +832,12 @@ func (m *Manager) takeWarmResolution(ctx context.Context, id identity, profile c
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.warm[id] != e {
+		return nil
+	}
+	if e.detailOnly {
+		// The last played release, kept for the detail page's tracks;
+		// Play selects its own source.
+		delete(m.warm, id)
 		return nil
 	}
 	if prefer != "" && (e.res == nil || !e.res.MatchesVersion(prefer)) {

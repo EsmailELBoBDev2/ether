@@ -1178,6 +1178,20 @@ func (i *instance) recommendations(w http.ResponseWriter, r *http.Request, want 
 			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		// Genre wire IDs still use per-title authorization, but load the page's
+		// current policy/genre facts once instead of two cold reads per title.
+		if facets, ok := i.host.Experience.(interface {
+			PrefetchNamedFacetIDs(context.Context, *frontend.Viewer, []frontend.RatingKey, string) error
+		}); ok && (fieldSet(r)["genres"] || !jellyfinListFile(r)) {
+			var genreKeys []frontend.RatingKey
+			for _, title := range titles {
+				if len(title.Genres) > 0 {
+					genreKeys = append(genreKeys, title.Key)
+				}
+			}
+			// Prefetch is optional; a failure keeps the scalar authorization path.
+			_ = facets.PrefetchNamedFacetIDs(r.Context(), v, genreKeys, "genre")
+		}
 		items := make([]any, 0, len(titles))
 		images := i.gridImagesFor(withRankedRow(r, shelf.row.RankedTop10, titles, 0), titles)
 		i.prefetchParentArtwork(r, titles)

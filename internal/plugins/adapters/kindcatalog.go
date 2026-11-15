@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 )
 
 const (
@@ -343,23 +345,33 @@ func (c *KindCatalog) IsPluginLibraryActive(ctx context.Context, lib core.Librar
 	if c == nil || c.mgr == nil || lib.Source != core.LibraryPlugin || lib.PluginID == "" || lib.KindKey == "" {
 		return false
 	}
-	r, err := c.mgr.Get(ctx, lib.PluginID)
-	if err != nil {
-		return false
-	}
-	if !c.recordAllowsCatalogSync(ctx, r) {
-		return false
-	}
-	e := r.Manifest.EffectiveEther()
-	if e == nil {
-		return false
-	}
-	for _, k := range e.Contributes.MediaKinds {
-		if k.Key == lib.KindKey {
-			return k.HasLibrary()
+	// A page may check many items from the same plugin library. Remember
+	// missing/disabled providers too: a missing plugin must not cost one SQL
+	// lookup per candidate. The read-request memo expires after two seconds;
+	// background and write contexts still recheck the current record each time.
+	active, _ := reqmemo.Do(ctx, fmt.Sprintf("plugin-library-active:%p:%v:%s:%s", c, lib.ID, lib.PluginID, lib.KindKey), func() (bool, error) {
+		r, err := c.mgr.Get(ctx, lib.PluginID)
+		if errors.Is(err, plugins.ErrNotFound) {
+			return false, nil
 		}
-	}
-	return false
+		if err != nil {
+			return false, err
+		}
+		if !c.recordAllowsCatalogSync(ctx, r) {
+			return false, nil
+		}
+		e := r.Manifest.EffectiveEther()
+		if e == nil {
+			return false, nil
+		}
+		for _, k := range e.Contributes.MediaKinds {
+			if k.Key == lib.KindKey {
+				return k.HasLibrary(), nil
+			}
+		}
+		return false, nil
+	})
+	return active
 }
 
 // RootMediaType implements experience.PluginLibraries.

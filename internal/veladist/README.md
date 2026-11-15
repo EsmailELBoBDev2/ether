@@ -49,10 +49,17 @@ inventory must agree exactly with the corresponding full-inventory subtree.
 Files stage under `data/clients/.vela-staging-<version>`. Verification failure
 leaves live Vela intact. Activation renames live to `.vela-rollback-<timestamp>`,
 then staging to `vela`, restoring the previous live directory if activation
-fails. The newest two rollbacks are retained. Owner-staged `diagnostic-core-*`,
+fails. Rollbacks are ordered by directory modification time, stamped when taken; retention
+always protects the rollback just created and keeps two. Owner-staged `diagnostic-core-*`,
 `core-app-*.html`, `universal/<key>`, and `engines/cinematic/<id>` items absent
 from the new build are copied before activation without replacing release
-items. The installed descriptor is recorded as `.ether-release.json`.
+items. The same carry-over runs before rollback, including root-level owner JSON
+files excluded from the outgoing build inventory. Verified inventories are saved
+as `.ether-inventory.json` for offline classification; pre-existing manual builds
+can provide their full `vela-*.manifest.json`. Standard shipped root manifests
+(`app.version.json`, `engines.json`, `manifest.json`) and internal metadata are
+always excluded from additive JSON carry-over. The installed descriptor is
+recorded as `.ether-release.json`.
 Existing manual installs are recognized through `app.version.json` or a
 `vela-*.manifest.json`; an unknown installed version must be identified before
 updating, to avoid accidental downgrades.

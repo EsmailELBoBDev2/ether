@@ -38,7 +38,7 @@ import { loadLocale, localized, rememberLocale, t, tn, tx } from "../i18n";
 import { api, apiFetch, newId, setToken } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import type { DebridProvider, DiskInfo, EtherConfig, Indexer, UsenetProvider } from "../lib/types";
-import { appLabel, appPurpose, appRank } from "./apps/catalog";
+import { appInstalled, appLabel, appPurpose, appRank } from "./apps/catalog";
 import { claimFailureMessage } from "./apps/plex-account";
 import { CachePresetCards, cachePresetKey, presetForFreeBytes } from "./cache/presets";
 import { ProwlarrImport } from "../components/ProwlarrImport";
@@ -122,11 +122,14 @@ function storedStep(): number {
 }
 
 export function appCatalog(
-  list: { descriptor: { id: string; name: string } }[] | null,
+  list:
+    { descriptor: { id: string; name: string }; status?: { webPlayerReady?: boolean } }[] | null,
 ): SetupApp[] {
   const rows = (
     list?.length
-      ? list.map((item) => ({ id: item.descriptor.id, name: item.descriptor.name }))
+      ? list
+          .filter(appInstalled)
+          .map((item) => ({ id: item.descriptor.id, name: item.descriptor.name }))
       : FALLBACK_APPS
   )
     .slice()
@@ -486,7 +489,9 @@ export default function Setup() {
     Promise.all([
       api.getConfig(),
       api.setupStatus(),
-      apiFetch<{ descriptor: { id: string; name: string } }[]>("/frontends").catch(() => null),
+      apiFetch<
+        { descriptor: { id: string; name: string }; status?: { webPlayerReady?: boolean } }[]
+      >("/frontends").catch(() => null),
       apiFetch<Partial<StreamRules>>("/stream-preferences/0").catch(() => ({})),
     ])
       .then(([c, status, list, rules]) => {

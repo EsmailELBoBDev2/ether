@@ -20,11 +20,12 @@ import { t } from "../../i18n";
 import { api, apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import { usableAddresses, type ReachabilityStatus } from "../apps/reachability";
+import { appInstalled } from "../apps/catalog";
 
 type Frontend = {
   descriptor: { id: string; name: string; defaultPort?: number };
   enabled: boolean;
-  status: ReachabilityStatus;
+  status: ReachabilityStatus & { webPlayerReady?: boolean };
 };
 function addressPort(address?: string): string {
   if (!address) return "";
@@ -71,7 +72,7 @@ export function AppConnections() {
       ) : (
         <div className="grid gap-4 p-4 xl:grid-cols-2">
           {state.data
-            .filter((app) => app.enabled)
+            .filter((app) => app.enabled && appInstalled(app))
             .map((app) => (
               <Connection key={app.descriptor.id} app={app} />
             ))}

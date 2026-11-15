@@ -33,7 +33,7 @@ import { viewerStatus } from "../viewers/ViewerStatus";
 import { XtreamLogins } from "./XtreamLogins";
 import { AwayFromHome } from "./AwayFromHome";
 import { PlexApp } from "./PlexApp";
-import { appLabel, appPath, appPurpose, appRank } from "./catalog";
+import { appInstalled, appLabel, appPath, appPurpose, appRank } from "./catalog";
 import { LevelBadge } from "../../components/status";
 import {
   StatusRow,
@@ -55,6 +55,7 @@ type FrontendInfo = {
   };
   enabled: boolean;
   status: {
+    webPlayerReady?: boolean;
     addresses: string[] | null;
     connectUrls?: string[];
     lan: string;
@@ -747,9 +748,9 @@ export default function Apps() {
   const [searchParams] = useSearchParams();
   const connectOpen = searchParams.get("connect") === "1";
   const navigate = useNavigate();
-  const apps = [...(state.data ?? [])].sort(
-    (a, b) => appRank(a.descriptor.id) - appRank(b.descriptor.id),
-  );
+  const apps = [...(state.data ?? [])]
+    .filter(appInstalled)
+    .sort((a, b) => appRank(a.descriptor.id) - appRank(b.descriptor.id));
   const plexInfo = apps.find((info) => info.descriptor.id === "plex");
   const plexOn = plexInfo?.enabled === true;
   const showPlex = plexOn && routeTab === "plex";
@@ -772,7 +773,9 @@ export default function Apps() {
       if (!plexEnabled) navigate("/apps/overview", { replace: true });
       return;
     }
-    const match = state.data.find((info) => pathFor(info.descriptor.id) === routeTab);
+    const match = state.data.find(
+      (info) => pathFor(info.descriptor.id) === routeTab && appInstalled(info),
+    );
     if (!match?.enabled) navigate("/apps/overview", { replace: true });
   }, [state.data, routeTab, navigate]);
   useInterval(() => void state.reload(), 10_000);
@@ -815,7 +818,7 @@ export default function Apps() {
               </p>
             ) : null}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {state.data.map((info) => (
+              {state.data.filter(appInstalled).map((info) => (
                 <IntegrationAppCard
                   key={info.descriptor.id}
                   identity={{ id: info.descriptor.id, name: nameFor(info) }}

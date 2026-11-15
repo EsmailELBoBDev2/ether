@@ -246,17 +246,25 @@ describe("Apps", () => {
     expect(screen.queryByRole("button", { name: "Connect a device" })).not.toBeInTheDocument();
   });
 
-  it("sends a disabled app's deep link back to the overview", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/frontends") return [row("jellyfin", "Jellyfin", false)];
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderApps("/apps/jellyfin");
-    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/overview"));
-    expect(screen.queryByRole("tab", { name: "Jellyfin" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-  });
+  it.each(["jellyfin", "vela"])(
+    "sends an unavailable %s deep link back to the overview",
+    async (id) => {
+      apiFetch.mockImplementation(async (path: string) => {
+        if (path === "/frontends")
+          return [row(id, id === "vela" ? "Vela" : "Jellyfin", id === "vela")];
+        throw new Error(`Unexpected request: ${path}`);
+      });
+      renderApps(`/apps/${id}`);
+      await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/overview"));
+      expect(
+        screen.queryByRole("tab", { name: id === "vela" ? "Vela" : "Jellyfin" }),
+      ).not.toBeInTheDocument();
+      if (id === "vela")
+        expect(screen.queryByRole("switch", { name: "Vela enabled" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
+    },
+  );
 
   it("sends a disabled Plex route back to the overview", async () => {
     apiFetch.mockImplementation(async (path: string) => {

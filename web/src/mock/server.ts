@@ -95,6 +95,8 @@ const MOCK_EQUIVALENTS: Record<string, string[]> = {
 const NOW = () => new Date();
 
 export interface FakeOptions {
+  /** Owner-installed Vela client; absent by default. */
+  velaInstalled?: boolean;
   liveTVEmpty?: boolean;
   onAirLayout?: string;
   capabilityOverrides?: Array<Record<string, unknown>>;
@@ -3504,6 +3506,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       sections: [{ key: "connect", fields: [{ key: note, kind: "note" }] }],
     });
     const protocolDefs = [
+      { id: "vela", name: "Vela", settingsSchema: { sections: [] } },
       {
         id: "plex",
         name: "Plex",
@@ -3563,12 +3566,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
         protocolDefs.map((descriptor) => {
           const entry = state.config.frontends?.[descriptor.id];
           const enabled =
-            entry?.enabled ?? (state.config.frontends == null && descriptor.id === "plex");
+            entry?.enabled ??
+            (descriptor.id === "vela" ||
+              (state.config.frontends == null && descriptor.id === "plex"));
           const port = state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort;
           return {
             descriptor,
             enabled,
             status: {
+              webPlayerReady:
+                descriptor.id === "vela"
+                  ? opts.velaInstalled === true
+                  : descriptor.id === "jellyfin",
               addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
               connectUrls: enabled ? mockConnectUrls(descriptor.id, port) : [],
               lan: "unknown",
@@ -3591,9 +3600,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
       if (action === "status" && method === "GET") {
         const enabled =
           state.config.frontends?.[id!]?.enabled ??
-          (state.config.frontends == null && id === "plex");
+          (id === "vela" || (state.config.frontends == null && id === "plex"));
         const port = state.config.frontendPorts?.[id!] ?? descriptor.defaultPort;
         return json({
+          webPlayerReady: id === "vela" ? opts.velaInstalled === true : id === "jellyfin",
           addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
           connectUrls: enabled ? mockConnectUrls(id ?? "", port) : [],
           lan: "unknown",
@@ -3615,7 +3625,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       const entries =
         state.config.frontends ?? (state.config.frontends = { plex: { enabled: true } });
-      const entry = entries[id!] ?? (entries[id!] = { enabled: false });
+      const entry = entries[id!] ?? (entries[id!] = { enabled: id === "vela" });
       if (action === "settings" && method === "PUT") {
         const { port, ...settings } = body as Record<string, unknown>;
         entry.settings = settings;
@@ -3714,10 +3724,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /web-player":
       case "POST /web-player": {
         const players = [
-          { id: "vela", url: `${window.location.origin}/vela/` },
+          ...(opts.velaInstalled ? [{ id: "vela", url: `${window.location.origin}/vela/` }] : []),
           { id: "jellyfin", url: `${window.location.origin}/jellyfin/web/ether-signin` },
         ];
-        const target = players.find((player) => player.id === q.get("app")) ?? players[1]!;
+        const target =
+          players.find((player) => player.id === q.get("app")) ??
+          players.find((player) => player.id === "jellyfin")!;
         return json({ available: true, players, url: target.url });
       }
       case "GET /bootstrap":

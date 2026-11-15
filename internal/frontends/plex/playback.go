@@ -1226,8 +1226,10 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 // I/O. When selectedOnly is false (Android-family decisions), an unselected
 // stream stays in the list bare: it keeps its index and gets no decision or
 // location, the same shape its streams carry in library metadata. That is
-// the shape under review against a real PMS Android capture; the selected
-// stream's shape never changes.
+// the shape under review against a real PMS Android capture. A selected
+// stream keeps that shape, except the Android subtitle row described
+// below: Plex for Android turns a missing index into -1 and disables the
+// text track (#191).
 //
 // The selected subtitle row follows PMS 1.42 (recorded PMS 1.42.2 capture):
 // subtitles=none is decision="ignore" with nothing delivered (except a
@@ -1356,6 +1358,20 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			st.Location = "segments-av"
 			st.Key = ""
 			st.Format = st.Codec
+			// Plex for Android copies this selected row into the player on
+			// the way into playback. The engine turns a missing index into
+			// -1, and the track selector treats -1 as Disabled, so the
+			// subtitle muxed into the segment is never drawn even though
+			// the row stays selected in the panel (#191). Measured on
+			// 2026.22.0: "Selecting subtitle stream with index -1" while
+			// the panel showed the embedded SRT. A direct play matches
+			// this source index to the extractor id. On a transcode the
+			// app replaces any present index with 2, which is the output
+			// index of this mux: one video, one audio, then this subtitle.
+			// Other clients keep the index off the selected row.
+			if !selectedOnly {
+				st.Index = idx
+			}
 		}
 	}
 	return st, true

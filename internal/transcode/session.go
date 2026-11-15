@@ -101,6 +101,7 @@ type sessionInput struct {
 	clockInput          string
 	info                core.MediaInfo
 	decision            core.Decision
+	softwareDecode      bool // decoder failed; retain hardware encoder
 	forceCPU            bool // hardware encoder failed; stay on CPU
 	copyFallback        bool // copied video failed its packet conversion; encode this session
 	copyDiscontinuities map[int]bool

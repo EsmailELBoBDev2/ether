@@ -259,6 +259,7 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 	if err := os.MkdirAll(m.tempDir, 0o755); err != nil {
 		return nil, fmt.Errorf("transcode: temp dir: %w", err)
 	}
+	m.feat.decode = newDecodeProbeCache(m.runner, m.ffmpeg, m.ffprobe, m.tempDir, m.feat.encoders)
 	m.cleanStale()
 	m.log.Info("ffmpeg features", "ffmpeg", m.ffmpeg, "version", m.version,
 		"filters", featureLine(m.feat), "encoders", encoderLine(m.feat),
@@ -1273,6 +1274,9 @@ func (m *Manager) Close() error {
 		setupDone = m.rtxSetup.done
 	}
 	m.mu.Unlock()
+	if cache, ok := m.feat.decode.(*decodeProbeCache); ok {
+		cache.close()
+	}
 	for _, h := range https {
 		_ = h.Close()
 	}

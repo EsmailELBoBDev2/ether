@@ -44,7 +44,11 @@ func (i *instance) serveObservedMedia(w http.ResponseWriter, r *http.Request) {
 		i.host.Sessions.ServeMedia(w, r)
 		return
 	}
-	s.mu.Lock()
+	// Diagnostics are best effort. Media must never queue behind plan work.
+	if !s.mu.TryLock() {
+		i.host.Sessions.ServeMedia(w, r)
+		return
+	}
 	source, seek := s.source, s.seek
 	s.mu.Unlock()
 	out := &mediaObservationWriter{ResponseWriter: w}
@@ -56,7 +60,9 @@ func (i *instance) serveObservedMedia(w http.ResponseWriter, r *http.Request) {
 	if !out.firstByte.IsZero() {
 		record["firstByteAt"] = out.firstByte
 	}
-	s.mu.Lock()
+	if !s.mu.TryLock() {
+		return
+	}
 	defer s.mu.Unlock()
 	if source != s.source || seek != s.seek {
 		return

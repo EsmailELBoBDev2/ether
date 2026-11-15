@@ -174,6 +174,12 @@ type retiredSession struct {
 
 // Broker coordinates playback admission for every protocol, including Plex.
 type Broker struct {
+	timelineReserved int
+	timelineEffects  []timelineEffect
+	timelineRunning  bool
+	timelineCancel   context.CancelFunc
+	timelineDone     chan struct{}
+
 	previews            map[string]previewSession
 	previewPending      map[int64]bool
 	previewPreparations map[int64]*previewPreparation
@@ -1263,8 +1269,32 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		originSession = s.playbackID
 	}
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.public.Protocol, SessionID: originSession, ClientID: s.public.Device.ID})
+	var notify func()
+	reserved := false
+	if s.public.Protocol == "vela" {
+		b.mu.Lock()
+		if b.closed || b.timelineReserved >= 256 {
+			b.mu.Unlock()
+			rollbackSequence()
+			return errors.New("sessions: timeline effects capacity reached")
+		}
+		b.timelineReserved++
+		b.mu.Unlock()
+		reserved = true
+		defer func() {
+			if reserved {
+				b.mu.Lock()
+				b.timelineReserved--
+				b.mu.Unlock()
+			}
+		}()
+	}
 	if sequenced {
 		err = b.deps.Progress.(receiptProgress).ProgressWithReceipt(ctx, s.public.ViewerID, s.public.Item, t.Position, t.Duration, t.State, b.sampleReceipt(ctx, s, report))
+	} else if progress, ok := b.deps.Progress.(interface {
+		AcceptProgress(context.Context, int64, core.RatingKey, time.Duration, time.Duration, string) (func(), error)
+	}); ok && s.public.Protocol == "vela" && s.public.Item.Kind() != core.KindExtra {
+		notify, err = progress.AcceptProgress(ctx, s.public.ViewerID, s.public.Item, t.Position, t.Duration, t.State)
 	} else {
 		err = RecordProgress(ctx, b.deps.Progress, s.public.ViewerID, s.public.Item, t.Position, t.Duration, t.State)
 	}
@@ -1284,23 +1314,23 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 	if toucher, ok := b.deps.Playback.(interface{ Touch(string) }); ok && (t.State == "playing" || t.State == "paused") {
 		toucher.Touch(s.playID)
 	}
-	NotifyTranscodeActivity(b.deps.Transcoder, s.public.ID, t.State)
-	if progress, ok := b.deps.Playback.(core.PlaybackTimeline); ok {
-		progress.PlaybackProgress(s.public.ViewerID, s.clientID, s.public.Item, t.Position, t.State)
+	if s.public.Protocol != "vela" {
+		b.applyTimelineEffects(ctx, s, v, t)
+	} else {
+		b.enqueueTimelineEffect(s, v, t, notify)
+		reserved = false
 	}
-	if b.deps.OnTimeline != nil {
-		b.deps.OnTimeline(v, s.public.Item, t.Position, t.Duration, t.State)
-	}
-	b.publish(ctx, sessionEvent("SessionUpdated", s.public, &t))
 	if t.State == "stopped" {
 		return b.stopLocked(ctx, s)
 	}
 	if err = b.saveNeutralBinding(ctx, id, true); err != nil {
 		return err
 	}
-	b.ensureTrickplay(ctx, s, t.Position)
-	if t.State == "playing" {
-		b.enqueueSubtitleWork(s)
+	if s.public.Protocol != "vela" {
+		b.ensureTrickplay(ctx, s, t.Position)
+		if t.State == "playing" {
+			b.enqueueSubtitleWork(s)
+		}
 	}
 	return nil
 }
@@ -1617,6 +1647,10 @@ func (b *Broker) Close(ctx context.Context) {
 	if b.historyCancel != nil {
 		b.historyCancel()
 	}
+	if b.timelineCancel != nil {
+		b.timelineCancel()
+	}
+	timelineDone := b.timelineDone
 	var transferCancels []context.CancelFunc
 	for _, transfers := range b.lazyTransfers {
 		for _, cancel := range transfers {
@@ -1649,6 +1683,12 @@ func (b *Broker) Close(ctx context.Context) {
 	// canceled; bound the cleanup so an unresponsive gate cannot block forever.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.shutdownTimeout)
 	defer cancel()
+	if timelineDone != nil {
+		select {
+		case <-timelineDone:
+		case <-cleanupCtx.Done():
+		}
+	}
 	if b.historyDone != nil {
 		drainCtx, drainCancel := context.WithTimeout(cleanupCtx, 150*time.Millisecond)
 		select {

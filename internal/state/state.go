@@ -615,7 +615,11 @@ func (s *State) updateAt(ctx context.Context, userID int64, keys []core.RatingKe
 	s.gen.Add(1)
 	for _, ev := range events {
 		ev.Origin = originFrom(ctx)
-		s.emit(ev)
+		if deferred, ok := ctx.Value(acceptedEventsKey{}).(*[]Event); ok {
+			*deferred = append(*deferred, ev)
+		} else {
+			s.emit(ev)
+		}
 	}
 	return nil
 }

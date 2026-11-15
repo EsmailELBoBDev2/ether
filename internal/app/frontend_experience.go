@@ -771,6 +771,13 @@ func (s *surfaceExperience) ListRowViews(ctx context.Context, req frontend.RowVi
 	return s.rowViews.ListRowViews(ctx, req)
 }
 
+func (s *surfaceExperience) ResolveRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest) ([]frontend.RowViewPage, error) {
+	if s.rowViews == nil {
+		return nil, core.ErrUnauthorized
+	}
+	return s.rowViews.ResolveRowViews(ctx, reqs)
+}
+
 func (s *surfaceExperience) ResolveRowView(ctx context.Context, req frontend.RowViewPageRequest) (frontend.RowViewPage, error) {
 	if req.Protocol != s.protocol || s.rowViews == nil {
 		return frontend.RowViewPage{}, core.ErrUnauthorized

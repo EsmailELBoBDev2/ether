@@ -1560,6 +1560,19 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		ids[i] = r.ID
 	}
 	verifiedIDs := s.verifiedAmong(ctx, ids)
+	var subtitles map[string]bool
+	if rcfg.HardSubtitles != "allow" {
+		subtitleIDs := ids
+		if sreq.Type == core.TypeEpisode {
+			// The candidate loop narrows season packs to episode identities before
+			// checking subtitles. Read verdicts for those same identities.
+			subtitleIDs = make([]string, len(results))
+			for n, rel := range results {
+				subtitleIDs[n] = withTarget(rel, sreq).ID
+			}
+		}
+		subtitles = s.subtitleVerdicts(ctx, subtitleIDs)
+	}
 	// One instant ages every candidate. Reading the clock per release made
 	// identical releases differ by the nanoseconds between their scores, so
 	// ties broke on scoring order and clock resolution (a single tick on
@@ -1606,7 +1619,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 		policyResult := policy.Evaluate(rel, policyContext)
-		if env.rcfg.HardSubtitles != "allow" && s.hardSubbed(ctx, rel) {
+		hardSubbed := subtitles[rel.ID] || releaseparse.HardSubbed(rel.Name)
+		if rcfg.HardSubtitles != "allow" && hardSubbed {
 			policyResult.Fallback += 100
 		}
 		if len(profile.ReleaseRules) > 0 {
@@ -1615,7 +1629,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		preferred := pinned || (req.Prefer != "" && rel.ID == req.Prefer)
 		var reason string
 		identityReason := identity.reject(rel, t, sreq)
-		if s.HardSubtitleBlocked(ctx, rel) {
+		if rcfg.HardSubtitles == "exclude" && hardSubbed {
 			reason = "blocked hardcoded subtitles"
 		} else if s.rejectedFor(t.Key, rel) {
 			reason = "release rejected for this title"

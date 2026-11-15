@@ -56,6 +56,12 @@ func RowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, 
 	return hex.EncodeToString(sum[:]), nil
 }
 
+type rowRevisionKey struct{}
+type rowRevisionProof struct {
+	viewer   *core.User
+	revision string
+}
+
 func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 	protocol, receipts, visibility, libraries := d.Protocol, d.Receipts, d.Visibility, d.Libraries
 	// A row snapshot is already drawn from the local catalogue. Revalidation
@@ -85,6 +91,10 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 	}
 	options := RowViewOptions{
 		DB: d.DB, TTL: 15 * time.Minute, Active: d.Active, Receipts: receipts,
+		PreparePolicy: func(ctx context.Context, u *core.User) (context.Context, error) {
+			revision, err := RowViewRevision(ctx, d.DB, u)
+			return context.WithValue(ctx, rowRevisionKey{}, rowRevisionProof{u, revision}), err
+		},
 		Build: func(ctx context.Context, request frontend.RowViewRequest) ([]RowViewSnapshot, error) {
 			if request.Protocol != protocol {
 				return nil, core.ErrUnauthorized
@@ -125,7 +135,14 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if p != protocol {
 				return false
 			}
-			revision, err := RowViewRevision(ctx, d.DB, u)
+			proof, shared := ctx.Value(rowRevisionKey{}).(rowRevisionProof)
+			var revision string
+			var err error
+			if shared && proof.viewer == u {
+				revision = proof.revision
+			} else {
+				revision, err = RowViewRevision(ctx, d.DB, u)
+			}
 			if err != nil || revision != s.Revision {
 				return false
 			}

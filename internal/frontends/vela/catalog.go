@@ -1,6 +1,7 @@
 package vela
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -67,7 +68,25 @@ func titleWire(t frontend.Title) object {
 func watchWire(s frontend.WatchStatus) object {
 	return object{"positionSeconds": s.ViewOffset.Seconds(), "played": s.ViewCount > 0, "favorite": s.IsFavorite, "watchlisted": s.InWatchlist}
 }
+
+type homeTitlesKey struct{}
+
 func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title) ([]object, error) {
+	if cached, ok := r.Context().Value(homeTitlesKey{}).(map[frontend.RatingKey]object); ok {
+		out := make([]object, 0, len(ts))
+		complete := true
+		for _, title := range ts {
+			wire, found := cached[title.Key]
+			if !found {
+				complete = false
+				break
+			}
+			out = append(out, wire)
+		}
+		if complete {
+			return out, nil
+		}
+	}
 	keys := make([]frontend.RatingKey, 0, len(ts))
 	for _, t := range ts {
 		keys = append(keys, t.Key)
@@ -76,10 +95,16 @@ func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts 
 	if err != nil {
 		return nil, err
 	}
+	return i.titlesWithUserData(r, v, token, ts, states)
+}
+
+// Detail already owns the watch/favorite/watchlist state. Do not load it again
+// only to overwrite it with the authorized detail's state below.
+func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title, states map[frontend.RatingKey]frontend.WatchStatus) ([]object, error) {
 	art := map[frontend.RatingKey][]object{}
 	if signer, ok := i.host.ImageGrants.(frontend.ImagePageSigner); ok {
-		for start := 0; start < len(ts); start += 50 {
-			end := min(start+50, len(ts))
+		for start := 0; start < len(ts); start += 250 {
+			end := min(start+250, len(ts))
 			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: ts[start:end], Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
 			if e != nil {
 				return nil, e
@@ -197,7 +222,21 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 		outerMore = len(vv) > limit(r)
 		vv = vv[:min(len(vv), limit(r))]
-		for _, view := range vv {
+		var pages []frontend.RowViewPage
+		if batch, ok := i.host.Experience.(frontend.RowViewPages); ok && len(vv) > 1 {
+			reqs := make([]frontend.RowViewPageRequest, len(vv))
+			for n, view := range vv {
+				reqs[n] = frontend.RowViewPageRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", ID: view.ID, Limit: rowItemLimit(r)}
+			}
+			pages, e = batch.ResolveRowViews(r.Context(), reqs)
+			if e != nil {
+				return nil, false, e
+			}
+			if len(pages) != len(vv) {
+				return nil, false, frontend.ErrRowViewStale
+			}
+		}
+		for n, view := range vv {
 			noteBootstrapDeadline(r, view.ExpiresAt)
 			i.rowMu.Lock()
 			if len(i.rowMeta) >= 2000 {
@@ -205,7 +244,14 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 			}
 			i.rowMeta[view.ID] = view
 			i.rowMu.Unlock()
-			row, e := i.rowPage(r, v, view.ID, 0, rowItemLimit(r))
+			var row frontend.Row
+			var e error
+			if pages != nil {
+				row = rowFromPage(view.ID, pages[n])
+				noteBootstrapDeadline(r, pages[n].ExpiresAt)
+			} else {
+				row, e = i.rowPage(r, v, view.ID, 0, rowItemLimit(r))
+			}
 			if e != nil {
 				if errors.Is(e, frontend.ErrNotFound) {
 					e = frontend.ErrRowViewStale
@@ -232,6 +278,38 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		outerMore = true
 		rows = rows[:limit(r)]
 	}
+	// Share card state, ratings and artwork across all shelves in this page.
+	var pageTitles []frontend.Title
+	seenTitles := map[frontend.RatingKey]bool{}
+	for _, row := range rows {
+		ts := row.Items
+		if len(row.Entries) > 0 {
+			ts = nil
+			for _, entry := range row.Entries {
+				if entry.Title != nil {
+					ts = append(ts, *entry.Title)
+				}
+			}
+		}
+		if row.RankedTop10 {
+			ts = ts[:min(len(ts), 10)]
+		}
+		for _, title := range ts {
+			if !seenTitles[title.Key] {
+				seenTitles[title.Key] = true
+				pageTitles = append(pageTitles, title)
+			}
+		}
+	}
+	converted, err := i.titles(r, v, token, pageTitles)
+	if err != nil {
+		return nil, false, err
+	}
+	cardCache := make(map[frontend.RatingKey]object, len(converted))
+	for n, title := range pageTitles {
+		cardCache[title.Key] = converted[n]
+	}
+	r = r.WithContext(context.WithValue(r.Context(), homeTitlesKey{}, cardCache))
 	out := []object{}
 	for _, row := range rows {
 		if len(sources) > 0 {
@@ -449,7 +527,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		cache(w, r, object{"items": extras})
 		return
 	}
-	ts, e := i.titles(r, v, t, []frontend.Title{d.Title})
+	ts, e := i.titlesWithUserData(r, v, t, []frontend.Title{d.Title}, map[frontend.RatingKey]frontend.WatchStatus{d.Title.Key: d.UserData})
 	if e != nil {
 		fail(w, e, r)
 		return
@@ -458,12 +536,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		ts[0]["themeMusic"] = theme
 	}
 	ts[0]["watch"] = watchWire(d.UserData)
-	cast, e := i.cast(r, t, d)
-	if e != nil {
-		fail(w, e, r)
-		return
-	}
-	crew, e := i.crew(r, t, d)
+	cast, crew, e := i.credits(r, t, d)
 	if e != nil {
 		fail(w, e, r)
 		return

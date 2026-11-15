@@ -135,9 +135,10 @@ type ServiceDeps struct {
 	PersonCreditForms func(context.Context, int64, []core.MediaType) ([]core.PersonCreditForm, error)
 	PersonFormKeys    func(context.Context, int64, []core.MediaType, []core.PersonCreditForm, core.RatingKey, int) ([]core.RatingKey, error)
 	// peopleVisibleTitles is the people read's VisibleTitles (readPeople).
-	peopleVisibleTitles  func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
-	peoplePortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
-	AiredEpisodes        func(context.Context, core.RatingKey, int, int) (core.Page, error)
+	peopleVisibleTitles         func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+	peoplePortraitTitles        func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	peopleRecheckPortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	AiredEpisodes               func(context.Context, core.RatingKey, int, int) (core.Page, error)
 	// AiredEpisodesMany is AiredEpisodes(show, 0, limit) for several shows in
 	// a few statements. Optional; without it each show is read alone.
 	AiredEpisodesMany func(context.Context, []core.RatingKey, int) (map[core.RatingKey]core.Page, error)

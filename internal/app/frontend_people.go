@@ -165,8 +165,18 @@ func (s *surfaceExperience) AuthorizePersonImages(ctx context.Context, viewer *f
 	if !ok {
 		return nil, core.ErrNotAvailable
 	}
+	// Every callback for an item receives the same detached title snapshot.
+	// Build its portrait descriptors once, rather than once per credit.
+	portraits := make(map[core.RatingKey][]frontend.Image)
 	_, err := s.Service.WithPersonCredits(ctx, viewer, device, refs, func(n int, current *core.User, _ frontend.PersonDetail, title core.Title) error {
-		images, err := artwork.PersonImages(ctx, frontend.ArtworkRequest{Viewer: current, Device: device, Item: targets[n].Item}, title)
+		images, listed := portraits[title.Key]
+		var err error
+		if !listed {
+			images, err = artwork.PersonImages(ctx, frontend.ArtworkRequest{Viewer: current, Device: device, Item: targets[n].Item}, title)
+			if err == nil {
+				portraits[title.Key] = images
+			}
+		}
 		if errors.Is(err, core.ErrUnauthorized) || errors.Is(err, core.ErrNotFound) {
 			return nil
 		}

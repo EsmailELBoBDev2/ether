@@ -36,6 +36,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/identity"
+	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
 //go:embed all:dist
@@ -112,6 +113,7 @@ type StatusFuncE func(ctx context.Context) (any, error)
 // ValidateExtra, DiskUsage and UI have defaults or may be left empty.
 type Deps struct {
 	ViewerCatalogRules ViewerCatalogRules
+	Vela               *veladist.Manager
 	Frontends          FrontendAdmin
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal
@@ -527,6 +529,7 @@ func (h *Handler) routes() *http.ServeMux {
 		prefix := "/api/" + path
 		mux.Handle(prefix+"/", http.StripPrefix(prefix, handler))
 	}
+	h.velaRoutes(api)
 	h.personalizationRoutes(api)
 	h.collectionRoutes(mux, api)
 	h.prerollRoutes(api)

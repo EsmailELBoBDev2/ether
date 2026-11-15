@@ -97,6 +97,7 @@ const NOW = () => new Date();
 export interface FakeOptions {
   /** Owner-installed Vela client; absent by default. */
   velaInstalled?: boolean;
+  velaDistribution?: "installing" | "rollback";
   liveTVEmpty?: boolean;
   onAirLayout?: string;
   capabilityOverrides?: Array<Record<string, unknown>>;
@@ -647,6 +648,16 @@ function durationMs(w: string): number {
 }
 
 export function createFakeServer(opts: FakeOptions = {}) {
+  const velaStatus = {
+    installed: opts.velaInstalled === true,
+    installedVersion: opts.velaInstalled ? "0.1.41" : "",
+    availableVersion: "0.1.42",
+    rollbackAvailable: opts.velaDistribution === "rollback",
+    busy: opts.velaDistribution === "installing",
+    phase: opts.velaDistribution === "installing" ? "downloading" : "",
+    downloaded: opts.velaDistribution === "installing" ? 82_000_000 : 0,
+    total: opts.velaDistribution === "installing" ? 193_700_293 : 0,
+  };
   // Keep the fixture stable when a setup link changes the page's query string.
   const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
   const xtreamGrants = new Map<
@@ -2967,6 +2978,28 @@ export function createFakeServer(opts: FakeOptions = {}) {
   let uploadedPosters = 24;
   async function handle(method: string, url: URL, body: unknown): Promise<Response> {
     const p = url.pathname.replace(/^\/ether\/api/, "");
+    if (p === "/vela/status" && method === "GET") return json(velaStatus);
+    if (p === "/vela/check" && method === "POST") return json(velaStatus);
+    if (p === "/vela/install" && method === "POST") {
+      velaStatus.busy = true;
+      velaStatus.phase = "downloading";
+      velaStatus.downloaded = 82_000_000;
+      velaStatus.total = 193_700_293;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      velaStatus.busy = false;
+      velaStatus.phase = "";
+      velaStatus.rollbackAvailable = velaStatus.installed;
+      velaStatus.installed = true;
+      opts.velaInstalled = true;
+      velaStatus.installedVersion = "0.1.42";
+      velaStatus.availableVersion = "";
+      return json(velaStatus);
+    }
+    if (p === "/vela/rollback" && method === "POST") {
+      velaStatus.installedVersion = "0.1.41";
+      velaStatus.availableVersion = "0.1.42";
+      return json(velaStatus);
+    }
     if (method === "GET" && p.startsWith("/viewer-plex-defaults/")) {
       const id = Number(p.split("/").pop());
       return json({

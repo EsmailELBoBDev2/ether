@@ -21,7 +21,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+type Vela struct {
+	ChannelURL string `json:"channelURL,omitempty"`
+}
+
 type Config struct {
+	Vela Vela `json:"vela,omitempty"`
 	// Frontends selects protocol listeners by their registered ID.
 	Frontends map[string]Frontend `json:"frontends,omitempty"`
 	// FrontendPorts are node-local listener port overrides.

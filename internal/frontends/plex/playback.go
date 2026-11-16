@@ -231,7 +231,8 @@ type playRequest struct {
 	mde bool
 	// listAllTracks: Android-family clients receive every probed track in
 	// the decision response; recorded PMS decisions for web, iOS and Apple
-	// TV are selected-only, so those clients keep that shape. Set from the
+	// TV are selected-only. On-demand subtitles are listed independently
+	// because their tracks may only become known at Play. Set from the
 	// request context in decisionContainer; zeroed by sameSettings because
 	// it is response shaping, not a playback setting (an asymmetric compare
 	// would re-prepare and restart the encoder on every start).
@@ -1108,8 +1109,11 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 	// Android builds its picker from this response even while some source
 	// facts remain estimated. Preserve every known track across quality changes.
 	selectedOnly := !p.listAllTracks
+	// Local files already publish their complete tracks before Play. On-demand
+	// versions may discover subtitles only now; publish their whole menu.
+	allSubtitles := onDemandSession(ps)
 	if dec.Kind == frontend.DecisionDirectPlay {
-		return directPlayMedia(m, streams, selectedOnly, p.subtitles)
+		return directPlayMedia(m, streams, selectedOnly, !allSubtitles && selectedOnly, p.subtitles)
 	}
 	applyTranscodeMedia(&m, dec, p.protocol)
 	var kept []model.Stream
@@ -1118,7 +1122,7 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		if rerr != nil && !streamMiss(rerr) {
 			continue
 		}
-		if shaped, keep := applyStreamDecision(st, binding.Info, dec, selectedOnly, p.subtitles, p.softText); keep {
+		if shaped, keep := applyStreamDecision(st, binding.Info, dec, selectedOnly, !allSubtitles && selectedOnly, p.subtitles, p.softText); keep {
 			if plexAndroidClient(&Request{Product: p.caps.Product, Device: p.caps.Device}) && shaped.Decision == "burn" && frontend.IsImageSubtitle(binding.Info.Codec) && p.protocol == frontend.ProtocolHLS {
 				shaped.Location = "segments-av"
 				shaped.Extra = append(shaped.Extra, model.A("burn", "1"))
@@ -1141,11 +1145,10 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 }
 
 // directPlayMedia preserves stream ordering. For Android-family clients
-// every audio and subtitle stays in the list and selected marks the one
-// that will play: Plex Android builds its playback track menu from this
-// response, so dropping the alternates leaves the menu empty. Other
-// clients keep the recorded PMS shape (video + selected tracks), which
-// TestDecisionConformsToPMS and the goldens pin.
+// every audio stays in the list and selected marks the one that will play.
+// On-demand playback lists all subtitle tracks: an unresolved version has no
+// embedded tracks before Play, so this response populates its track picker.
+// Other clients retain the recorded PMS shape for audio (selected only).
 //
 // The selected subtitle stays selected whatever subtitles= says, and its
 // row names the delivery as PMS 1.42 does for a direct play: subtitles=none
@@ -1155,12 +1158,12 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 // /subtitles/:/transcode/universal/start). An image subtitle only reaches
 // direct play when the client can draw it; otherwise Decide burns it and
 // this function is not used.
-func directPlayMedia(m model.Media, streams []model.Stream, selectedOnly bool, subtitles string) model.Media {
+func directPlayMedia(m model.Media, streams []model.Stream, selectedOnly, selectedSubtitleOnly bool, subtitles string) model.Media {
 	part := &m.Part[0]
 	part.Decision = "directplay"
 	var kept []model.Stream
 	for _, st := range streams {
-		if selectedOnly && st.StreamType != 1 && (st.Selected == nil || !*st.Selected) {
+		if (selectedOnly && st.StreamType == 2 || selectedSubtitleOnly && st.StreamType == 3) && (st.Selected == nil || !*st.Selected) {
 			continue
 		}
 		st.Location = "direct"
@@ -1247,13 +1250,12 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 }
 
 // applyStreamDecision shapes one already-resolved stream without registry
-// I/O. When selectedOnly is false (Android-family decisions), an unselected
-// stream stays in the list bare: it keeps its index and gets no decision or
-// location, the same shape its streams carry in library metadata. That is
-// the shape under review against a real PMS Android capture. A selected
-// stream keeps that shape, except the Android subtitle row described
-// below: Plex for Android turns a missing index into -1 and disables the
-// text track (#191).
+// I/O. Unselected audio is kept when selectedOnly is false (Android-family
+// decisions); subtitles are kept when selectedSubtitleOnly is false (also
+// on-demand versions). These rows keep their source index with no decision or
+// location, as in library metadata. Selected tracks describe their delivery.
+// The Android subtitle row retains an index because Plex for Android turns a
+// missing index into -1 and disables the text track (#191).
 //
 // The selected subtitle row follows PMS 1.42 (recorded PMS 1.42.2 capture):
 // subtitles=none is decision="ignore" with nothing delivered (except a
@@ -1263,7 +1265,7 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 // decision="transcode", location="segments-subs") and read from
 // /video/:/transcode/universal/subtitles; a text track copied into
 // Matroska segments keeps its format.
-func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.Decision, selectedOnly bool, subtitles string, softText bool) (model.Stream, bool) {
+func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.Decision, selectedOnly, selectedSubtitleOnly bool, subtitles string, softText bool) (model.Stream, bool) {
 	idx := st.Index
 	st.Index = nil // segments carry their own stream layout
 	switch st.StreamType {
@@ -1323,7 +1325,7 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 		st.Location = "segments-av"
 	case 3:
 		if st.Selected == nil || !*st.Selected {
-			if selectedOnly {
+			if selectedSubtitleOnly {
 				return st, false
 			}
 			st.Index = idx

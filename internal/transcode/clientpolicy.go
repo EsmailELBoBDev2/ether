@@ -136,6 +136,7 @@ func ApplyForcedOverrides(c core.ClientCaps, model string, overrides []core.Clie
 		if o.DolbyVisionProfiles != nil {
 			c.DVProfiles = slices.Clone(o.DolbyVisionProfiles)
 			c.DVProfilesExplicit = len(o.DolbyVisionProfiles) == 0
+			c.DVProfilesForced = len(o.DolbyVisionProfiles) > 0
 		}
 		if o.MaxHeight > 0 {
 			c.MaxHeight = o.MaxHeight

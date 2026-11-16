@@ -708,7 +708,7 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 		// layer (above). Once Ether copies the stream anyway, deliver a real
 		// base-only stream: keeping the configuration and RPUs makes some
 		// players pick a Dolby Vision decoder for an HDR10 fallback (#328).
-		d.StripDolbyVision = hdr10Base || (hasHDR10Base(v, caps) && !supportsDVStream(caps, v))
+		d.StripDolbyVision = hdr10Base || (hasHDR10Base(v, caps) && (!supportsDVStream(caps, v) || (androidClient(caps) && v.DolbyVisionProfile == 7)))
 		if d.StripDolbyVision && !hdr10Base {
 			why = append([]string{fmt.Sprintf("client lacks Dolby Vision profile %d: delivering its HDR10 base layer", v.DolbyVisionProfile)}, why...)
 		}
@@ -1015,6 +1015,10 @@ func supportsDVStream(caps core.ClientCaps, v *core.StreamInfo) bool {
 	switch v.DolbyVisionProfile {
 	case 5:
 		return v.DolbyVisionELPresent == nil || !*v.DolbyVisionELPresent
+	case 7:
+		return caps.DVProfilesForced &&
+			v.DolbyVisionCompatibilityID == 6 &&
+			(v.DolbyVisionBLPresent == nil || *v.DolbyVisionBLPresent)
 	case 8:
 		return v.DolbyVisionCompatibilityID == 1 &&
 			(v.DolbyVisionBLPresent == nil || *v.DolbyVisionBLPresent) &&

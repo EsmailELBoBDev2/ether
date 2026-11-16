@@ -210,6 +210,8 @@ type User struct {
 // the client profile and its declared limits.
 type ClientCaps struct {
 	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an owner-forced empty profile set
+	// DVProfilesForced records an owner-forced non-empty Dolby Vision profile list.
+	DVProfilesForced bool `json:"-"`
 	// ForcedOverrideApplied records a runtime declaration replaced by an owner edit.
 	ForcedOverrideApplied bool `json:"-"`
 	// Broadcast inputs are selected for the channel rendition, independently

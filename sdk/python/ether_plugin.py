@@ -30,7 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
 
 TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
@@ -342,12 +342,86 @@ class _KVClient:
         return list(res.get("keys", [])) if isinstance(res, dict) else []
 
 
+class DataRange(TypedDict):
+    offset: int
+    length: int
+
+
+class ArchiveMember(TypedDict, total=False):
+    index: int
+    name: str
+    size: int
+    unsafe: bool
+    unsafeReason: str
+
+
+class ArchiveExtractOptions(TypedDict, total=False):
+    libraryKey: str
+    name: str
+
+
+class ArchiveExtractResult(TypedDict):
+    ref: str
+    size: int
+    sha1: str
+    md5: str
+    crc32: str
+
+
+def _check_data_range(data_range: Dict[str, Any]) -> Dict[str, int]:
+    offset = data_range.get("offset")
+    length = data_range.get("length")
+    if (
+        isinstance(offset, bool)
+        or isinstance(length, bool)
+        or not isinstance(offset, int)
+        or not isinstance(length, int)
+        or offset < 0
+        or offset > 256 * 1024 * 1024
+        or length <= 0
+        or length > 1024 * 1024
+    ):
+        raise ValueError("Data range needs nonnegative offset and length 1..1048576")
+    return {"offset": offset, "length": length}
+
+
+class _ArchiveClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def list(self, blob_ref: str) -> List[ArchiveMember]:
+        res = self._call("POST", "/ether/plugin-host/data/archive.list", [str(blob_ref)])
+        return list(res) if isinstance(res, list) else []
+
+    def open(self, blob_ref: str, member: int, data_range: DataRange) -> bytes:  # noqa: A002
+        norm = _check_data_range(data_range)
+        res = self._call("POST", "/ether/plugin-host/data/archive.open", [str(blob_ref), int(member), norm])
+        return base64.b64decode((res or {}).get("bodyBase64") or "")
+
+    def extract(
+        self,
+        blob_ref: str,
+        member: int,
+        options: Optional[ArchiveExtractOptions] = None,
+    ) -> ArchiveExtractResult:
+        args: List[Any] = [str(blob_ref), int(member)]
+        if options is not None:
+            args.append(dict(options))
+        res = self._call("POST", "/ether/plugin-host/data/archive.extract", args)
+        return res if isinstance(res, dict) else {}  # type: ignore[return-value]
+
+
 class _HttpClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
 
     def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
         return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
+
+    def fetch_to_cache(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return self._call("POST", "/ether/plugin-host/data/http.fetchToCache", [req])
+
+    fetchToCache = fetch_to_cache
 
     def fetch(self, req: Dict[str, Any]) -> Dict[str, Any]:
         method = str(req.get("method") or "GET").upper()
@@ -451,6 +525,7 @@ class RemoteHostClient:
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json)
         self.cache = self._Cache(self)
+        self.archive = _ArchiveClient(self._call_json)
         self.frontend = _FrontendClient(self._call_json)
 
     class _Cache:
@@ -472,6 +547,11 @@ class RemoteHostClient:
 
         def open(self, blob_ref: str) -> bytes:  # noqa: A002 - mirrors host naming
             return self._request("GET", "/ether/plugin-host/cache/" + str(blob_ref).lstrip("/"))
+
+        def read(self, blob_ref: str, data_range: DataRange) -> bytes:
+            norm = _check_data_range(data_range)
+            res = self._p._call_json("POST", "/ether/plugin-host/data/cache.read", [str(blob_ref), norm])
+            return base64.b64decode((res or {}).get("bodyBase64") or "")
 
     def _call_json(
         self,
@@ -1923,6 +2003,7 @@ class MockHostClient:
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
+        self.archive = self._Archive(self)
         self.frontend = self._Frontend(self)
 
     class _Frontend:
@@ -1973,6 +2054,93 @@ class MockHostClient:
 
         def open(self, blob_ref: str) -> bytes:  # noqa: A002 - mirrors host naming
             return self._p.blobs[blob_ref]
+
+        def read(self, blob_ref: str, data_range: DataRange) -> bytes:
+            norm = _check_data_range(data_range)
+            raw = self._p.blobs[blob_ref]
+            return raw[norm["offset"] : norm["offset"] + norm["length"]]
+
+    class _Archive:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        @staticmethod
+        def _unsafe_reason(name: str) -> str:
+            trimmed = name[:-1] if name.endswith("/") else name
+            if not trimmed or len(name.encode("utf-8")) > 1024:
+                return "empty or oversized member name"
+            if "\x00" in trimmed or "\\" in trimmed or trimmed.startswith("/"):
+                return "non-relative or invalid path separator"
+            parts = trimmed.split("/")
+            if any(p in ("", ".", "..") for p in parts) or (len(parts[0]) >= 2 and parts[0][1] == ":"):
+                return "unsafe archive member path"
+            return ""
+
+        def list(self, blob_ref: str) -> List[ArchiveMember]:
+            import io
+            import zipfile
+
+            out: List[ArchiveMember] = []
+            with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
+                for idx, info in enumerate(zf.infolist()):
+                    entry: ArchiveMember = {"index": idx, "name": info.filename, "size": info.file_size}
+                    reason = self._unsafe_reason(info.filename)
+                    if reason:
+                        entry["unsafe"] = True
+                        entry["unsafeReason"] = reason
+                    out.append(entry)
+            return out
+
+        def open(self, blob_ref: str, member: int, data_range: DataRange) -> bytes:  # noqa: A002
+            import io
+            import zipfile
+
+            norm = _check_data_range(data_range)
+            with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
+                infos = zf.infolist()
+                if member < 0 or member >= len(infos):
+                    raise RuntimeError("plugins: archive member index outside range")
+                info = infos[member]
+                reason = self._unsafe_reason(info.filename)
+                if reason:
+                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
+                if info.is_dir():
+                    raise RuntimeError("plugins: archive member is a directory")
+                data = zf.read(info)
+                if norm["offset"] > len(data):
+                    raise RuntimeError("plugins: archive member offset outside range")
+                return data[norm["offset"] : norm["offset"] + norm["length"]]
+
+        def extract(
+            self,
+            blob_ref: str,
+            member: int,
+            options: Optional[ArchiveExtractOptions] = None,
+        ) -> ArchiveExtractResult:
+            import io
+            import zipfile
+            import zlib
+
+            with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
+                infos = zf.infolist()
+                if member < 0 or member >= len(infos):
+                    raise RuntimeError("plugins: archive member index outside range")
+                info = infos[member]
+                reason = self._unsafe_reason(info.filename)
+                if reason:
+                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
+                if info.is_dir():
+                    raise RuntimeError("plugins: archive member is a directory")
+                data = zf.read(info)
+            ref = "blob:" + hashlib.sha256(data).hexdigest()
+            self._p.blobs[ref] = data
+            return {
+                "ref": ref,
+                "size": len(data),
+                "sha1": hashlib.sha1(data).hexdigest(),
+                "md5": hashlib.md5(data).hexdigest(),
+                "crc32": f"{zlib.crc32(data) & 0xFFFFFFFF:08x}",
+            }
 
     class _KV:
         def __init__(self, parent: "MockHostClient") -> None:

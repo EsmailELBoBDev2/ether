@@ -321,6 +321,8 @@ const member = members.find(m => m.name === "games/example.json")!;
 const chunk = await ctx.ether.archive!.open(cached.blob, member.index, {
   offset: 0, length: Math.min(member.size, 1048576),
 }); // Uint8Array; request another range for the next piece
+const extracted = await ctx.ether.archive!.extract(cached.blob, member.index);
+// {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
 `http.fetchToCache({url, headers?, libraryKey, name})` performs a GET, streams
@@ -343,8 +345,17 @@ Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
 empty bytes and reads crossing EOF return the available suffix. Raw host calls
 return `{bodyBase64, size}`; SDK clients decode this into bytes. Every call opens
 only the calling plugin's cache namespace and closes the reader afterward.
-The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList` and
-`ArchiveOpen` through the optional `BlobHost` interface, with `DataRange` options.
+`archive.extract(blob, memberIndex[, {libraryKey?, name?}])` streams the
+uncompressed member directly into the plugin's own library blob cache (defaulting to
+the source archive's library namespace) in one pass with no full in-memory buffer,
+computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
+`archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
+index with `UnsafeArchiveMemberError` and directories, observes cancellation and
+deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
+The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList`,
+`ArchiveOpen` and `ArchiveExtract` through the optional `BlobHost` interface; the
+Python `RemoteHostClient` and `MockHostClient` expose `archive.list`, `archive.open`
+and `archive.extract`.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.

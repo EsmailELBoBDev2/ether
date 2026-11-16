@@ -86,7 +86,7 @@ export interface ArchiveMember {
   size: number;
   /** Host listing: this member cannot be opened; name is an identifier only. */
   unsafe?: boolean;
-  /** Present with unsafe=true; explains why archive.open refuses the member. */
+  /** Present with unsafe=true; explains why archive.open and archive.extract refuse the member. */
   unsafeReason?: string;
 }
 

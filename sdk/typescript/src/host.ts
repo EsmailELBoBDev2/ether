@@ -33,6 +33,8 @@ export interface HashResult { pending?: boolean; retryInMs?: number; size?: numb
 export interface DataRange { offset: number; length: number }
 export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
+export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
+export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }
 
 function checkDataRange(r: DataRange): void {
   if (!Number.isSafeInteger(r.offset) || r.offset < 0 || r.offset > 256 * 1024 * 1024 || !Number.isSafeInteger(r.length) || r.length <= 0 || r.length > 1024 * 1024) throw new Error("Data range needs nonnegative offset and length 1..1048576");
@@ -169,6 +171,7 @@ export interface EtherHost {
   archive?: {
     list(blobRef: string): MaybePromise<ArchiveMember[]>;
     open(blobRef: string, member: number, range: DataRange): MaybePromise<Uint8Array>;
+    extract(blobRef: string, member: number, opts?: ArchiveExtractOptions): MaybePromise<ArchiveExtractResult>;
   };
   /**
    * Frontend-adapter host services (spec §6.5). streamUrl mints a scoped,
@@ -258,6 +261,7 @@ export function createHostedClient(): EtherHost {
     archive: {
       list: (blob) => callHost<ArchiveMember[]>("archive.list", [blob]),
       open: (blob, member, range) => { checkDataRange(range); return decodeData(callHost("archive.open", [blob, member, range])); },
+      extract: (blob, member, opts) => callHost<ArchiveExtractResult>("archive.extract", opts == null ? [blob, member] : [blob, member, opts]),
     },
     cache: {
       put: (lib, name, data) => callHost<{blob: string}>("cache.put", [lib, name, {bodyBase64: encodeData(data)}]).blob,
@@ -488,6 +492,7 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     archive: {
       list: async (blob) => (await callJson<ArchiveMember[]>("POST", "/ether/plugin-host/data/archive.list", [blob])) ?? [],
       open: async (blob, member, range) => { checkDataRange(range); return decodeData((await callJson<{bodyBase64: string}>("POST", "/ether/plugin-host/data/archive.open", [blob, member, range]))!); },
+      extract: async (blob, member, opts) => (await callJson<ArchiveExtractResult>("POST", "/ether/plugin-host/data/archive.extract", opts == null ? [blob, member] : [blob, member, opts]))!,
     },
     ...(credential ? { settings: { get: async () => (await callJson<{ settings: Record<string, unknown> }>("GET", "/ether/plugin-host/settings"))?.settings ?? {} } } : {}),
     kv: {

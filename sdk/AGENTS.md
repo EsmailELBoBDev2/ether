@@ -112,8 +112,10 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
-ArchiveList/Open read plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
-Returned chunks are at most 1 MiB. Solid ranges restart at the block beginning
+ArchiveList/Open/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
+ArchiveOpen returns chunks up to 1 MiB; ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])
+streams the uncompressed member into the plugin's library blob cache in one pass and returns
+{ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
 metadata, dictionaries and decoding. Split archives, encryption, unsafe names
 and special files are refused. Other 7z coder chains are unsupported.
@@ -344,6 +346,9 @@ capability, ownership, current viewer visibility and the adapter's library list
 on every request. It opens only that library's cache namespace and applies the
 existing archive safety and runtime limits. The plugin must verify expected
 hashes before selecting a cached member; delivery does not assert hash validity.
+When trusted metadata provides SHA-1 or MD5 rather than CRC32, call
+`ether.archive.extract(cachedBlobRef, member.index)` to stream the member into the
+library cache and verify `sha1`/`md5` before serving `{libraryKey, ref: extracted.ref}`.
 
 GET and HEAD are supported. A single GET byte range receives 206; malformed,
 multiple or unsatisfiable ranges receive 416. HEAD ignores Range. Downloads use

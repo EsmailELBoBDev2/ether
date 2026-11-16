@@ -24,6 +24,8 @@ export {
   type DataRange,
   type HashRequest,
   type HashResult,
+  type ArchiveExtractOptions,
+  type ArchiveExtractResult,
   type FetchCacheRequest,
   type FetchCacheResult,
   type HostFetchRequest,

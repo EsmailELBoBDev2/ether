@@ -15,6 +15,7 @@ type BlobHost interface {
 	CacheRead(context.Context, string, DataRange) ([]byte, error)
 	ArchiveList(context.Context, string) ([]ArchiveMember, error)
 	ArchiveOpen(context.Context, string, int, DataRange) ([]byte, error)
+	ArchiveExtract(context.Context, string, int, ...ArchiveExtractOptions) (ArchiveExtractResult, error)
 }
 
 type DataRange struct {
@@ -42,6 +43,17 @@ type ArchiveMember struct {
 	// Unsafe names identify members only and must never be used as output paths.
 	Unsafe       bool   `json:"unsafe,omitempty"`
 	UnsafeReason string `json:"unsafeReason,omitempty"`
+}
+type ArchiveExtractOptions struct {
+	LibraryKey string `json:"libraryKey,omitempty"`
+	Name       string `json:"name,omitempty"`
+}
+type ArchiveExtractResult struct {
+	Ref   string `json:"ref"`
+	Size  int64  `json:"size"`
+	SHA1  string `json:"sha1"`
+	MD5   string `json:"md5"`
+	CRC32 string `json:"crc32"`
 }
 
 func (c *RemoteHostClient) dataCall(ctx context.Context, name string, args []any, out any) error {
@@ -88,6 +100,19 @@ func (c *RemoteHostClient) ArchiveOpen(ctx context.Context, blob string, member 
 		return nil, err
 	}
 	return c.dataRead(ctx, "archive.open", []any{blob, member, r})
+}
+
+// ArchiveExtract streams an uncompressed ZIP, 7z or RAR member straight into
+// the plugin's own library blob cache in one pass and returns its blob ref and
+// SHA-1/MD5/CRC32 digests without buffering the member in plugin memory.
+func (c *RemoteHostClient) ArchiveExtract(ctx context.Context, blob string, member int, opts ...ArchiveExtractOptions) (ArchiveExtractResult, error) {
+	args := []any{blob, member}
+	if len(opts) > 0 && (opts[0].LibraryKey != "" || opts[0].Name != "") {
+		args = append(args, opts[0])
+	}
+	var out ArchiveExtractResult
+	err := c.dataCall(ctx, "archive.extract", args, &out)
+	return out, err
 }
 
 // HashRequest requests an on-demand host-side remote digest without storing bytes.

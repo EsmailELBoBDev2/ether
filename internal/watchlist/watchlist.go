@@ -352,6 +352,16 @@ func (s *Service) SaveSettings(ctx context.Context, v Settings) error {
 		return err
 	}
 	reqmemo.Forget(ctx, s.memoKey())
+	if v.Prewarm && !old.Prewarm {
+		// Warm intents are queued when a title is added. Turning Prewarm on
+		// also covers titles already on watchlists, newest first and bounded.
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO watchlist_warm_intents(user_id,item_key,added) SELECT user_id,item_key,MAX(added) FROM watchlist_items WHERE 1=1 GROUP BY user_id,item_key ORDER BY MAX(added) DESC LIMIT 100 ON CONFLICT(user_id,item_key) DO NOTHING`); err != nil {
+			return err
+		}
+		if s.o.OnAdded != nil {
+			s.o.OnAdded()
+		}
+	}
 	if v.PlexFriendsRSSURL != old.PlexFriendsRSSURL {
 		if v.PlexFriendsRSSURL == "" {
 			if err := s.clearFeedSource(ctx, sourcePlexFriendsRSS, metaKeyFriendsRSS); err != nil {

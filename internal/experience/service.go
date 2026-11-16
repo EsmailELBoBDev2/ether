@@ -2819,7 +2819,9 @@ func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device 
 	isBuiltinView := true
 	if s.d.PluginLibraries != nil && viewID != "" {
 		if lid, err := strconv.Atoi(viewID); err == nil {
-			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin {
+			// Ordinary catalogue libraries share the indexed studio IDs;
+			// resolving one must not enumerate the entire vocabulary.
+			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin && !(kind == "studio" && lib.Source == core.LibraryCatalog) {
 				isBuiltinView = false
 			}
 		}

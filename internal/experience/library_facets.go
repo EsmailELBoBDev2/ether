@@ -210,8 +210,19 @@ func (s *Service) resolveStudio(ctx context.Context, viewer *core.Viewer, viewID
 		if err != nil {
 			return core.FacetValue{}, err
 		}
-		for _, lib := range s.libraries() {
-			if strconv.Itoa(lib.ID) == viewID && !SectionAllowed(v, lib.ID) {
+		libs, err := s.facetLibraries(v, viewID)
+		if err != nil {
+			return core.FacetValue{}, err
+		}
+		for _, lib := range libs {
+			if s.d.PluginLibraries == nil {
+				continue
+			}
+			stored, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lib.ID))
+			if err != nil {
+				return core.FacetValue{}, core.ErrNotFound
+			}
+			if _, _, published := s.publishedLibrary(ctx, stored); !published {
 				return core.FacetValue{}, core.ErrNotFound
 			}
 		}

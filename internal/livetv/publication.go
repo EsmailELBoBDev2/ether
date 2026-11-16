@@ -15,7 +15,7 @@ import (
 // appears in every app unless the owner hides it from one (Channel.HiddenApps).
 // Viewer access restrictions are independent and apply in every app.
 // App names are publication identities, not protocol behavior switches.
-var Apps = []string{"plex", "jellyfin", "emby", "silo", "xtream", "m3u"}
+var Apps = []string{"plex", "jellyfin", "emby", "silo", "xtream", "m3u", "vela"}
 
 func publishedTo(ctx context.Context, c Channel) bool {
 	app := core.LiveApp(ctx)

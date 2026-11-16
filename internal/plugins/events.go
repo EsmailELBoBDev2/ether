@@ -230,6 +230,7 @@ func (m *Manager) DeliverOutbox(ctx context.Context, pluginID string) error {
 // every_node plugins run everywhere. Health checks run on every node.
 func (m *Manager) Run(ctx context.Context) {
 	defer m.cancelActionJobs("")
+	defer m.cancelRemoteHashes("")
 	defer func() {
 		m.hashMu.Lock()
 		defer m.hashMu.Unlock()

@@ -10,6 +10,7 @@ import type {
   KindBrowseRequest,
   KindChangePage,
   KindItem,
+  PendingReply,
   KindMatchRequest,
   KindMatchScore,
   KindPage,
@@ -33,11 +34,11 @@ export interface CatalogProvider<S = Record<string, unknown>> {
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
-  resolve(req: KindResolveRequest, ctx: PluginContext<S>): MaybePromise<KindResolveResponse>;
+  resolve(req: KindResolveRequest, ctx: PluginContext<S>): MaybePromise<KindResolveResponse | PendingReply>;
 }
 
 export interface KindMatcher<S = Record<string, unknown>> {
-  match(req: KindMatchRequest, ctx: PluginContext<S>): MaybePromise<{ matches: KindMatchScore[] }>;
+  match(req: KindMatchRequest, ctx: PluginContext<S>): MaybePromise<{ matches: KindMatchScore[] } | PendingReply>;
 }
 
 /** Spec-name alias. */

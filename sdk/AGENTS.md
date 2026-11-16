@@ -271,3 +271,48 @@ conformance, package, and check the visible result on your own development serve
 Never claim offline conformance proves playback on a real client. New host
 services belong in the generated reference source list and this service map;
 regenerate the reference instead of duplicating contracts in prose.
+
+## Slow resolution and remote verification
+
+Kind `/resolve` and `/match` handlers may return `{pending:true,retryInMs:1000}`.
+Ether retries after 250–5000 ms (clamped), for at most 25 seconds per Play;
+each invocation still has a five-second cap. Pending does not damage health.
+After 25 seconds the item is not available yet; another Play may find it ready.
+For slow searches, also return `job:"/ether/job/prepare"`. Ether deduplicates
+running jobs per plugin, kind and item, passes the original request body, and
+uses the existing promoted job deadline and continuation protocol. A completed
+job wakes the resolver before the retry timer. Persist results in KV; never do
+work ahead of an actual request. At most two jobs run per plugin.
+
+`ether.http.fetch({url,timeoutMs:1200})` bounds a slow remote request by the
+remaining call deadline. Hosted code can catch `e.code === "timeout"`.
+Remote SDK fetches use their local request context/timeout.
+
+`ether.http.hash({url,algo:"sha256",expectSize:12345})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` is
+optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams on the host,
+without a blob or guest bytes, through the same network permissions and safe
+fetch rules as fetch. It starts only when called. One worker per plugin and
+two globally run below playback priority and yield during playback contention.
+Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per
+UTC day (including unsuccessful reads), 12 hours per task. The daily cap logs
+at Info. Cached digests share one read across algorithms, are private to the
+plugin and URL, and include response validators and size. A hit returns
+immediately for five minutes; later calls return pending while the host
+conditionally revalidates ETag/Last-Modified or streams a new digest. Up to
+2048 entries are kept per plugin. Failed tasks may be retried after 30 seconds.
+Remote Go uses `RemoteHostClient.Hash`; TypeScript/Python use `http.hash`.
+
+```js
+// The manifest must declare the upstream in permissions.network.
+function resolve(req) {
+  const result = ether.http.hash({url:req.item.hints.url, algo:"sha256"});
+  if (result.pending) return {status:200, body:result};
+  if (result.sha256 !== req.item.hints.sha256)
+    return {status:404, body:{sources:[]}};
+  return {status:200, body:{sources:[{pattern:"http",url:req.item.hints.url}]}};
+}
+// A slow search instead returns pending with job:"/ether/job/prepare";
+// that handler writes a KV result and returns {done:true}, or checkpoints with
+// {continueInMs:1000,continuation:{cursor:"next"}}. Resolve reads that KV result.
+```

@@ -70,7 +70,17 @@ func ensureQJS() {
 const servicePrelude = `
 "use strict";
 globalThis.ether = (() => {
-  const call = (name, args) => JSON.parse(__ether_host(name, JSON.stringify(args)));
+  const call = (name, args) => {
+    try { return JSON.parse(__ether_host(name, JSON.stringify(args))); }
+    catch (e) {
+      const message = String(e && e.message || e);
+      const at = message.indexOf("__ETHER_FAULT__");
+      if (at >= 0) {
+        try { const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)); e.code = fault.code || fault.Code; } catch (_) {}
+      }
+      throw e;
+    }
+  };
   const ether = {
     log: (...a) => { try { __ether_host("log", JSON.stringify(a.map(String))); } catch (e) {} },
     abort: (msg) => { throw new Error("__ETHER_FAULT__" + JSON.stringify({ code: "aborted", message: String(msg == null ? "aborted" : msg) })); },
@@ -78,7 +88,7 @@ globalThis.ether = (() => {
           delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]) },
     settings: { get: () => call("settings.get", []) },
     secret: { get: (n) => call("secret.get", [n]) },
-    http: { fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
+    http: { hash: (req) => call("http.hash", [req]), fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
     catalog: { search: (q) => call("catalog.search", [q]), get: (id) => call("catalog.get", [id]) },
     addon: { get: (route) => call("addon.get", [route]) },
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),

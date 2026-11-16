@@ -187,7 +187,10 @@ type KindMatchScore struct {
 
 // KindMatchResponse is the response from POST /ether/v1/kinds/{kind}/match (spec §7).
 type KindMatchResponse struct {
-	Matches []KindMatchScore `json:"matches"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Matches   []KindMatchScore `json:"matches"`
 }
 
 // SourceQuery asks Ether to find sources for a kind resolver
@@ -308,6 +311,9 @@ type KindResolveRequest struct {
 // KindResolveResponse is the response returned by a plugin's kind_resolve
 // handler (spec §4.1).
 type KindResolveResponse struct {
-	Sources []PlayableSource `json:"sources"`
-	TTLSec  int              `json:"ttlSec,omitempty"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Sources   []PlayableSource `json:"sources"`
+	TTLSec    int              `json:"ttlSec,omitempty"`
 }

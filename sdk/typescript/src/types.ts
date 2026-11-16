@@ -497,7 +497,12 @@ export interface KindResolveRequest {
   client?: Record<string, unknown>;
 }
 
+export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }
+
 export interface KindResolveResponse {
+  pending?: boolean;
+  retryInMs?: number;
+  job?: string;
   sources: PlayableSource[];
   ttlSec?: number;
 }

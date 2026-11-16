@@ -90,6 +90,8 @@ type Manager struct {
 	hashMu             sync.Mutex
 	hashJobs           map[string]*folderHashWork
 	hashSequence       uint64
+	remoteHashMu       sync.Mutex
+	remoteHashes       map[string]*remoteHashWork
 	// relay holds the add-on settings pages open in the console.
 	relay        *addonRelay
 	relayOnce    sync.Once
@@ -472,6 +474,7 @@ func (m *Manager) CallStream(ctx context.Context, pluginID string, req Request) 
 
 func (m *Manager) closeRuntime(id string) {
 	m.cancelActionJobs(id)
+	m.cancelRemoteHashes(id)
 	m.mu.Lock()
 	if m.runtimeEpoch == nil {
 		m.runtimeEpoch = map[string]uint64{}
@@ -535,10 +538,11 @@ func DeadlineFor(path string) time.Duration {
 	}
 }
 
-// Call makes one call to a plugin through its runtime, records it in the
+// callOnce makes one call to a plugin through its runtime, records it in the
 // inspector ring (secrets redacted) and feeds failures into health.
 // Adapters (WS9) call plugins only through here.
-func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Response, error) {
+func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (Response, error) {
+	req.Headers = cloneHeaders(req.Headers)
 	if req.Path == "/ether/subtitles/download" {
 		var body struct {
 			ID string `json:"id"`
@@ -633,7 +637,9 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 		rec.Status = resp.Status
 	}
 	m.store.addCall(ctx, rec)
-	if ms > deadline.Milliseconds()/2 && ms > 1000 {
+	var pending PendingReply
+	_ = json.Unmarshal(resp.Body, &pending)
+	if !pending.Pending && ms > deadline.Milliseconds()/2 && ms > 1000 {
 		m.RecordSlow(ctx, pluginID, 1)
 	}
 	if resp.Status < 400 {
@@ -1057,8 +1063,13 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 			m.log.Warn("plugin remove: undo had problems", "plugin", id, "err", err)
 		}
 	}
-	m.closeRuntime(id)
+	// Revoke host calls before canceling workers so an in-flight caller
+	// cannot register new work between cancellation and the final purge.
 	r.Enabled = false
+	if err := m.store.upsert(ctx, r); err != nil {
+		return err
+	}
+	m.closeRuntime(id)
 	m.syncDescriptors(ctx, r)
 	m.indexEventSubscriptions(Record{ID: id})
 	if m.deps.Registry != nil {

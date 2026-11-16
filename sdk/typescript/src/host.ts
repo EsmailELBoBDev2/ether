@@ -11,6 +11,8 @@ import type { MaybePromise } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
 
 export interface HostFetchRequest {
+  /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
+  timeoutMs?: number;
   method?: string;
   url: string;
   headers?: Record<string, string>;
@@ -24,6 +26,9 @@ export interface HostFetchResponse {
   body: string;
   bodyBase64?: string;
 }
+
+export interface HashRequest { url: string; algo: "sha256" | "sha1" | "md5"; expectSize?: number }
+export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
 export interface DataRange { offset: number; length: number }
 export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
@@ -108,6 +113,7 @@ export interface EtherHost {
   };
   http: {
     fetch(req: HostFetchRequest): MaybePromise<HostFetchResponse>;
+    hash?(req: HashRequest): MaybePromise<HashResult>;
     fetchToCache?(req: FetchCacheRequest): MaybePromise<FetchCacheResult>;
   };
   catalog: {
@@ -290,9 +296,11 @@ export function createHostedClient(): EtherHost {
       },
     },
     http: {
+      hash: (req) => callHost<HashResult>("http.hash", [req]),
       fetchToCache: (req) => callHost<FetchCacheResult>("http.fetchToCache", [req]),
       fetch(req: HostFetchRequest): HostFetchResponse {
         const normalized = {
+          timeoutMs: req.timeoutMs,
           method: req.method ?? "GET",
           url: req.url,
           headers: req.headers ?? {},
@@ -516,12 +524,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     http: {
+      hash: async (req) => (await callJson<HashResult>("POST", "/ether/plugin-host/data/http.hash", [req]))!,
       fetchToCache: async (req) => (await callJson<FetchCacheResult>("POST", "/ether/plugin-host/data/http.fetchToCache", [req]))!,
       async fetch(req: HostFetchRequest): Promise<HostFetchResponse> {
         const resp = await doFetch(req.url, {
           method: req.method ?? "GET",
           headers: req.headers,
           body: req.body,
+          signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : undefined,
         });
         const outHeaders: Record<string, string> = {};
         resp.headers.forEach((v, k) => {

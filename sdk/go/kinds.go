@@ -151,7 +151,10 @@ type KindMatchScore struct {
 
 // KindMatchResponse is a matcher's answer, best first.
 type KindMatchResponse struct {
-	Matches []KindMatchScore `json:"matches"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Matches   []KindMatchScore `json:"matches"`
 }
 
 // PlayableSource is one candidate way to acquire an item's bytes. URL may
@@ -217,8 +220,11 @@ type KindResolveRequest struct {
 
 // KindResolveResponse is a resolver's ordered sources.
 type KindResolveResponse struct {
-	Sources []PlayableSource `json:"sources"`
-	TTLSec  int              `json:"ttlSec,omitempty"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Sources   []PlayableSource `json:"sources"`
+	TTLSec    int              `json:"ttlSec,omitempty"`
 }
 
 // SetupTestRequest is Ether's setup-step test call: the step key plus the

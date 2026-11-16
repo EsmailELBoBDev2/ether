@@ -414,3 +414,18 @@ Viewer browse/search/playback calls retain tight budgets: `/stream/`, `/catalog/
 route/caller deadlines. Ranking budgets stay unchanged. Administrative setup,
 actions, tools, events and jobs use owner grants. Health/configuration/view/options
 keep short protocol deadlines. See the SDK README for exact fields and APIs.
+
+### Pending resolve and match replies
+
+Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
+`job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
+25 seconds total per Play, and keeps each invocation within five seconds.
+Pending is neutral for health. When the total expires the item is not available
+yet; this result is not saved as a negative resolution. A job receives the
+original request body, uses promoted deadlines and continuation replies, and
+is deduplicated per plugin/kind/item. Job completion wakes the next resolve.
+
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
+A miss returns pending while a bounded host worker streams digests without
+storing bytes; the next resolve reads the cached result. See the worked example
+and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).

@@ -141,6 +141,7 @@ export function XtreamLogins() {
   const [viewer, setViewer] = useState("");
   const [grants, setGrants] = useState<Grant[]>([]);
   const [connection, setConnection] = useState<Connection>();
+  const [serverUrl, setServerUrl] = useState("");
   const [showCreated, setShowCreated] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -162,11 +163,14 @@ export function XtreamLogins() {
     setConnection(undefined);
     setShowCreated(false);
     setGrants([]);
+    setServerUrl("");
     setError("");
     if (viewer)
-      void apiFetch<{ devices: Grant[] }>(`/users/${viewer}/devices`)
+      void apiFetch<{ devices: Grant[]; xtreamUrl?: string }>(`/users/${viewer}/devices`)
         .then((v) => {
-          if (live) setGrants(v.devices.filter((g) => g.surface === "xtream"));
+          if (!live) return;
+          setGrants(v.devices.filter((g) => g.surface === "xtream"));
+          setServerUrl(v.xtreamUrl ?? "");
         })
         .catch((e) => {
           if (live) setError(errorMessage(e));
@@ -185,8 +189,11 @@ export function XtreamLogins() {
         method: "POST",
       });
       setConnection(result);
-      const list = await apiFetch<{ devices: Grant[] }>(`/users/${viewer}/devices`);
+      const list = await apiFetch<{ devices: Grant[]; xtreamUrl?: string }>(
+        `/users/${viewer}/devices`,
+      );
       setGrants(list.devices.filter((g) => g.surface === "xtream"));
+      setServerUrl(list.xtreamUrl || result.url);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -277,6 +284,17 @@ export function XtreamLogins() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+        {!connection && grants.length > 0 && serverUrl && (
+          <div className="space-y-1">
+            <div className="text-sm font-medium">{t("Server address")}</div>
+            <div className="flex items-center justify-between gap-3">
+              <code className="min-w-0 break-all font-mono text-base tracking-wide select-all">
+                {serverUrl}
+              </code>
+              <CopyButton label={t("Server address")} value={serverUrl} />
+            </div>
           </div>
         )}
         {grants.map((g, index) => (

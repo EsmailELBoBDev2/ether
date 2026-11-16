@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -590,7 +591,90 @@ func preserve(ctx context.Context, old, stage string) error {
 			}
 		}
 	}
-	return nil
+	return preserveImmutable(ctx, old, stage)
+}
+
+// Open tabs can load chunks, fonts and player workers after an install or
+// rollback. Carry their immutable URLs forward, but never carry mutable entry
+// points (index, service worker, routes or release metadata) into another build.
+func preserveImmutable(ctx context.Context, old, stage string) error {
+	return filepath.WalkDir(old, func(src string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			if src == old && os.IsNotExist(err) {
+				return nil // First installation has no outgoing assets.
+			}
+			return err
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(old, src)
+		if err != nil || rel == "." {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		family := strings.Split(rel, "/")[0]
+		assetTree := family == "_expo" || family == "assets" || family == "player" || family == "skins"
+		if entry.IsDir() {
+			if !assetTree {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !immutableAsset(rel) {
+			// A linked asset tree must not silently lose its open-tab assets.
+			if assetTree && entry.Type()&os.ModeSymlink != 0 {
+				return errors.New("Vela asset directory contains a symbolic link")
+			}
+			return nil
+		}
+		// Rollback destinations may contain owner additions. Never follow a
+		// destination parent link while copying an otherwise safe relative URL.
+		parent := stage
+		for _, part := range strings.Split(path.Dir(rel), "/") {
+			if part == "." {
+				continue
+			}
+			parent = filepath.Join(parent, part)
+			info, e := os.Lstat(parent)
+			if os.IsNotExist(e) {
+				break
+			}
+			if e != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("unsafe Vela asset destination")
+			}
+		}
+		return copyAdditive(ctx, src, filepath.Join(stage, filepath.FromSlash(rel)))
+	})
+}
+
+func immutableAsset(rel string) bool {
+	parts := strings.Split(rel, "/")
+	if len(parts) >= 3 && parts[0] == "player" && hexID(parts[1], 64) {
+		return true
+	}
+	if len(parts) >= 4 && parts[0] == "skins" {
+		if _, err := updater.ParseVersion(parts[2]); err == nil {
+			return true
+		}
+	}
+	if !(strings.HasPrefix(rel, "_expo/static/") || strings.HasPrefix(rel, "assets/") || strings.HasPrefix(rel, "skins/assets/") || (len(parts) == 1 && strings.HasPrefix(rel, "loader-"))) {
+		return false
+	}
+	for _, token := range strings.FieldsFunc(path.Base(rel), func(r rune) bool { return r == '-' || r == '.' }) {
+		if hexID(token, 16) {
+			return true
+		}
+	}
+	return false
+}
+
+func hexID(s string, minimum int) bool {
+	if len(s) < minimum || len(s) > 64 || len(s)%2 != 0 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 // New installs retain their verified full inventory for offline carry-over.

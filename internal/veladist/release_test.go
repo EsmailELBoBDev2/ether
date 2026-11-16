@@ -171,9 +171,24 @@ func TestDistribution(t *testing.T) {
 			}
 		}
 		// These were staged after the previous build became a rollback.
-		additions := []string{"universal/18273ed7/module.js", "universal/f68fb203/module.js", "CORE-STREAMING-owner.json", "CORE-RESERVE-owner.json"}
+		additions := []string{
+			"universal/18273ed7/module.js", "universal/f68fb203/module.js", "CORE-STREAMING-owner.json", "CORE-RESERVE-owner.json",
+			"loader-2f530de1c195c7547d26.js",
+			"_expo/static/js/web/[id]-437b3b9580e47379267d250fdf53a500.js",
+			"assets/fonts/inter.017bc6ba3fc25503e5eb5e53826d48a8.ttf",
+			"player/" + strings.Repeat("a", 64) + "/libraries/decoder.wasm",
+			"player/" + strings.Repeat("a", 64) + "/capabilities.json",
+			"skins/cinematic/1.0.0/font.ttf",
+			"skins/assets/" + strings.Repeat("b", 64) + ".svg",
+		}
 		for _, p := range additions {
 			write(t, m.live(), p, "late-owner")
+		}
+		// Existing asset directories must merge rather than suppress new chunks.
+		write(t, m.rollbacks()[0], "_expo/static/js/web/existing.js", "previous-chunk")
+		mutable := []string{"sw.js", "_expo/static/runtime.json", "assets/config.json", "skins/catalog.json", "player/current/capabilities.json"}
+		for _, p := range mutable {
+			write(t, m.live(), p, "outgoing-mutable")
 		}
 		write(t, m.rollbacks()[0], "CORE-existing.json", "previous-owner")
 		write(t, m.live(), "CORE-existing.json", "outgoing-owner")
@@ -188,6 +203,11 @@ func TestDistribution(t *testing.T) {
 			b, e := os.ReadFile(filepath.Join(m.live(), p))
 			if e != nil || string(b) != "late-owner" {
 				t.Fatalf("rollback lost %s: %v", p, e)
+			}
+		}
+		for _, p := range mutable {
+			if _, e := os.Stat(filepath.Join(m.live(), p)); !os.IsNotExist(e) {
+				t.Fatalf("rollback carried mutable entry %s", p)
 			}
 		}
 		b, _ = os.ReadFile(filepath.Join(m.live(), "CORE-existing.json"))
@@ -211,6 +231,39 @@ func TestDistribution(t *testing.T) {
 			if e != nil || string(b) != "late-owner" {
 				t.Fatalf("reinstall lost %s: %v", p, e)
 			}
+		}
+	})
+	t.Run("immutable-asset-boundaries", func(t *testing.T) {
+		if err := preserve(context.Background(), filepath.Join(t.TempDir(), "not-installed"), t.TempDir()); err != nil {
+			t.Fatalf("first installation failed: %v", err)
+		}
+		asset := "_expo/static/js/web/chunk-437b3b9580e47379267d250fdf53a500.js"
+		for _, scenario := range []string{"source-link", "destination-link", "cancelled"} {
+			t.Run(scenario, func(t *testing.T) {
+				old, stage, outside := t.TempDir(), t.TempDir(), t.TempDir()
+				write(t, old, asset, "chunk")
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				switch scenario {
+				case "source-link":
+					if err := os.Symlink(outside, filepath.Join(old, "assets")); err != nil {
+						t.Fatal(err)
+					}
+				case "destination-link":
+					if err := os.Symlink(outside, filepath.Join(stage, "_expo")); err != nil {
+						t.Fatal(err)
+					}
+				case "cancelled":
+					cancel()
+				}
+				if err := preserve(ctx, old, stage); err == nil {
+					t.Fatal("unsafe or cancelled preservation succeeded")
+				}
+				entries, err := os.ReadDir(outside)
+				if err != nil || len(entries) != 0 {
+					t.Fatal("preservation wrote outside its destination")
+				}
+			})
 		}
 	})
 	t.Run("rollback-retention", func(t *testing.T) {

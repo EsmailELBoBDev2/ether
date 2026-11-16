@@ -1,4 +1,4 @@
-// Package episodeorder provides presentation-only TV ordering. Canonical TMDB
+// Package episodeorder provides TV presentation and release numbering. Canonical TMDB
 // keys and season/episode identity never change, including during playback.
 package episodeorder
 
@@ -505,4 +505,27 @@ func (s *Service) Position(ctx context.Context, u *core.User, k core.RatingKey) 
 	}
 	p, ok := l.positions[k]
 	return p.season, p.episode, p.name, ok
+}
+
+// SearchNumbering returns the owner's chosen release numbering, never a viewer
+// override. It reads only this show's preference and cached TMDB group; no
+// catalogue-wide episode walk or background fetch is needed.
+func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, season, episode int) (int, int, error) {
+	p, err := s.Preference(ctx, 0, show)
+	if err != nil || p.GroupID == "" {
+		return 0, 0, err
+	}
+	g, err := s.group(ctx, p.GroupID)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, group := range g.Groups {
+		for _, ep := range group.Episodes {
+			if ep.SeasonNumber == season && ep.EpisodeNumber == episode {
+				// TMDB group and episode order fields are zero-based.
+				return group.Order + 1, ep.Order + 1, nil
+			}
+		}
+	}
+	return 0, 0, nil
 }

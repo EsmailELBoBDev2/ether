@@ -26,6 +26,10 @@ const (
 // ReleaseTarget is the episode wanted from a multi-file release such as a
 // season pack.
 type ReleaseTarget struct {
+	// CanonicalSeason/CanonicalEpisode retain TMDB identity when Season/Episode
+	// select a file using the owner's alternate release numbering.
+	CanonicalSeason  int `json:"canonicalSeason,omitempty"`
+	CanonicalEpisode int `json:"canonicalEpisode,omitempty"`
 	// MovieTitles and MovieYear constrain file selection inside movie collections.
 	MovieTitles []string `json:"movieTitles,omitempty"`
 	MovieYear   int      `json:"movieYear,omitempty"`

@@ -4859,6 +4859,7 @@
   "m_1119ed48e63baf": "Skjul matcher kun, når alle produktionslande er angivet. Vis matcher, når et af landene er angivet.",
   "m_111a1cf913db9f": "Alle udgivelser blev udelukket. Den mest almindelige årsag: {reason}",
   "m_111afbd36f9f48": "Fjern udelukkelse {n}",
+  "m_111b27ff44fdba": "Den valgte rækkefølge bruges også til at finde udgivelser.",
   "m_111e898b4e8153": "j/k flyt · a acceptér · r afvis",
   "m_111ec7667bae38": "Spekulativ forudindlæsning",
   "m_111f246cf0fc10": "Altid tæller fra {date}, den første dag Ether registrerede noget for denne kilde.",

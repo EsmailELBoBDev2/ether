@@ -553,6 +553,9 @@ type SearchRequest struct {
 	Year          int
 	Season        int
 	Episode       int
+	// AltSeason/AltEpisode are additional release numbers from the owner's show-wide episode order (zero when unset).
+	AltSeason     int
+	AltEpisode    int
 	EpisodeTitle  string   // optional title used to distinguish same-numbered episodes
 	SpecialTitles []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
 	// AbsoluteEpisode is the episode's number counted from the series

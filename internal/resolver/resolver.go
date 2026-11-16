@@ -77,6 +77,8 @@ type LibraryProfiles interface {
 
 // Options tunes a Service. Zero values get sensible defaults.
 type Options struct {
+	// EpisodeNumbering lazily reads the owner's show-wide release order.
+	EpisodeNumbering func(context.Context, core.RatingKey, int, int) (int, int, error)
 	// EpisodeIdentity must read only bounded local catalogue data; no upstream calls.
 	EpisodeIdentity func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	SpecialTitles   func(context.Context, int64) []string
@@ -216,6 +218,7 @@ type inflight struct {
 
 // Service implements core.Resolver.
 type Service struct {
+	episodeNumbering          func(context.Context, core.RatingKey, int, int) (int, int, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
 	years                     seriesYears
@@ -295,7 +298,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
+	s := &Service{episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, reps: map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
@@ -569,6 +572,11 @@ func searchRequestFor(t *core.Title) core.SearchRequest {
 
 func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchRequest {
 	req := searchRequestFor(t)
+	if s != nil && s.episodeNumbering != nil && req.Type == core.TypeEpisode && req.IDs.TMDB > 0 {
+		if season, episode, err := s.episodeNumbering(ctx, core.ShowKey(req.IDs.TMDB), req.Season, req.Episode); err == nil && season > 0 && episode > 0 && (season != req.Season || episode != req.Episode) {
+			req.AltSeason, req.AltEpisode = season, episode
+		}
+	}
 	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 {
 		req.SpecialTitles = s.specialTitles(ctx, req.IDs.TMDB)
 	}
@@ -1239,7 +1247,7 @@ func titleOriginalLanguage(t *core.Title) string {
 }
 
 func searchCacheKey(req core.SearchRequest) string {
-	return fmt.Sprintf("%s|%v|%s|%d|%d|%d", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode)
+	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|alt:%d:%d", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, req.AltSeason, req.AltEpisode)
 }
 
 type rescueSearcher interface {
@@ -2052,7 +2060,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 			if rel.Protocol != core.ProtocolTorrent && rel.Protocol != core.ProtocolUsenet {
 				return "season pack (skipped in v1)"
 			}
-			packEpisode := sreq.Episode
+			_, packEpisode := releaseNumbers(rel.Info, sreq)
 			if rel.Info.Cour > 0 && rel.Info.Cour == sreq.Cour && sreq.CourEpisode > 0 {
 				packEpisode = sreq.CourEpisode
 			}
@@ -2164,11 +2172,12 @@ func episodeMatchesRequest(info core.ReleaseInfo, sreq core.SearchRequest) bool 
 		}
 		return false
 	}
-	return releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq))
+	return releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq)) ||
+		(sreq.AltEpisode > 0 && releaseparse.EpisodeMatches(info, sreq.AltSeason, sreq.AltEpisode))
 }
 
 func packCoversSeasonCour(info core.ReleaseInfo, sreq core.SearchRequest) bool {
-	if !packCoversSeason(info, sreq.Season) {
+	if !packCoversSeason(info, sreq.Season) && !(sreq.AltEpisode > 0 && packCoversSeason(info, sreq.AltSeason)) {
 		return false
 	}
 	if info.Cour > 1 && sreq.Cour > 0 && info.Cour != sreq.Cour {
@@ -2353,6 +2362,21 @@ func regionTagConflicts(releaseTitle, wantTitle string, countries []string) bool
 	return true
 }
 
+// releaseNumbers keeps canonical single-episode numbers when they fit. Packs
+// covering the chosen order use that order, including complete-series packs.
+func releaseNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int) {
+	if req.AltEpisode > 0 && info.Cour == 0 {
+		if info.FullSeason {
+			if packCoversSeason(info, req.AltSeason) && (len(info.Episodes) == 0 || slices.Contains(info.Episodes, req.AltEpisode)) {
+				return req.AltSeason, req.AltEpisode
+			}
+		} else if !releaseparse.EpisodeMatchesNumbering(info, req.Season, req.Episode, absoluteEpisode(req)) && releaseparse.EpisodeMatches(info, req.AltSeason, req.AltEpisode) {
+			return req.AltSeason, req.AltEpisode
+		}
+	}
+	return req.Season, req.Episode
+}
+
 // withTarget marks a torrent candidate for an episode request with the
 // wanted episode, so debrid streams that file of a multi-file torrent. A
 // season pack gets a per-episode release ID: health, bad marks, pins and
@@ -2371,13 +2395,19 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 	if sreq.Type != core.TypeEpisode || sreq.Episode <= 0 {
 		return rel
 	}
+	targetSeason, targetEpisode := releaseNumbers(rel.Info, sreq)
+	alternate := targetSeason != sreq.Season || targetEpisode != sreq.Episode
 	// A Usenet season pack is narrowed to the episode's files when its NZB
 	// is fetched; other Usenet releases need no target.
-	if rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
+	if !alternate && rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
 		return rel
 	}
 	if rel.Target != nil {
 		target := *rel.Target
+		if alternate {
+			target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
+			target.Season, target.Episode = targetSeason, targetEpisode
+		}
 		target.ShowYear, target.EpisodeTitle = sreq.Year, sreq.EpisodeTitle
 		target.FileName = rel.FileName
 		if sreq.Season == 0 {
@@ -2385,11 +2415,18 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		}
 		target.AbsoluteEpisode = releaseparse.AnimeSearchEpisode(sreq)
 		target.Cour, target.CourEpisode = sreq.Cour, sreq.CourEpisode
+		if alternate {
+			target.Cour, target.CourEpisode = 0, 0
+		}
 		target.ExpectedIDs, target.ReportedIDs = sreq.IDs, rel.ReportedTitleIDs()
 		rel.Target = &target
 		return rel // enrich cached identities without deriving their ID again
 	}
-	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: sreq.Season, Episode: sreq.Episode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	if alternate {
+		target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
+		target.Cour, target.CourEpisode = 0, 0
+	}
 	if sreq.Season == 0 {
 		target.ShowTitles, target.SpecialTitles = specialShowTitles(sreq), sreq.SpecialTitles
 	}

@@ -4859,6 +4859,7 @@
   "m_1119ed48e63baf": "Piilotus täsmää vain, kun kaikki tuotantomaat on lueteltu. Näyttö täsmää, kun jokin maa on lueteltu.",
   "m_111a1cf913db9f": "Kaikki julkaisut suljettiin pois. Yleisin syy: {reason}",
   "m_111afbd36f9f48": "Poista poissulkeminen {n}",
+  "m_111b27ff44fdba": "Valittua järjestystä käytetään myös julkaisujen etsimiseen.",
   "m_111e898b4e8153": "j/k siirry · a hyväksy · r hylkää",
   "m_111ec7667bae38": "Ennakoiva esilataus",
   "m_111f246cf0fc10": "Kaikkiaan lasketaan päivästä {date}, jolloin Ether tallensi ensimmäisen kerran tämän lähteen tietoja.",

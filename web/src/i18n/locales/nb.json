@@ -4859,6 +4859,7 @@
   "m_1119ed48e63baf": "Skjul samsvarer bare når alle produksjonsland er oppført. Vis samsvarer når minst ett land er oppført.",
   "m_111a1cf913db9f": "Alle utgivelser ble utelukket. Vanligste årsak: {reason}",
   "m_111afbd36f9f48": "Fjern utelukkelse {n}",
+  "m_111b27ff44fdba": "Den valgte rekkefølgen brukes også til å finne utgivelser.",
   "m_111e898b4e8153": "j/k flytt · a godta · r avvis",
   "m_111ec7667bae38": "Spekulativ forhåndslasting",
   "m_111f246cf0fc10": "Totalt teller fra {date}, den første dagen Ether registrerte noe for denne kilden.",

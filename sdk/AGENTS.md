@@ -192,7 +192,9 @@ opening a page should read saved data, not repeatedly scan the catalogue.
 ```
 
 The job recipe includes `ether.schedule: [{"every":"1h","call":"/ether/refresh"}]` to the manifest
-and a handler for that path. Store a cursor/etag in KV and process a bounded batch per
+and a handler for that path. The first run happens right after install (within one
+scheduler tick once enabled); later runs keep their cadence across server restarts,
+including failed attempts. Store a cursor/etag in KV and process a bounded batch per
 run. Do not create timers in plugin code. Cache external results; keep the job
 unconfigured until the owner needs it. Settings changes must be read each run.
 

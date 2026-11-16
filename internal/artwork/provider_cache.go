@@ -52,9 +52,9 @@ func (im *Images) providerOriginal(ctx context.Context, raw string) (*providerIm
 	if img := read(); img != nil && time.Now().Before(img.Expires) {
 		return img, nil
 	}
-	// Use the existing detached flight ownership: one cancelled client cannot
-	// cancel another client's render, and different local sizes share this flight.
-	result, err := im.inflight.DoDetached(ctx, key, func(ctx context.Context) (*memImage, error) {
+	// Different local sizes share this flight. A cancelled leader finishes
+	// its work before returning; live waiters retry on their own context.
+	result, err := im.inflight.Do(ctx, key, func(ctx context.Context) (*memImage, error) {
 		old := read()
 		if old != nil && time.Now().Before(old.Expires) {
 			data, _ := json.Marshal(old)
@@ -62,6 +62,9 @@ func (im *Images) providerOriginal(ctx context.Context, raw string) (*providerIm
 		}
 		img, err := im.fetchProviderOriginal(ctx, raw, old)
 		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		data, err := json.Marshal(img)

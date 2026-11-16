@@ -402,7 +402,7 @@ func extract(ctx context.Context, src io.Reader, dir string, limit int64) error 
 			if e = os.MkdirAll(target, 0755); e != nil {
 				return errors.New("cannot create archive directory")
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg: // tar.Reader normalizes the legacy zero type to TypeReg.
 			if h.Size < 0 || h.Size > limit-total {
 				return errors.New("archive exceeds extracted size limit")
 			}

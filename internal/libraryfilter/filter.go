@@ -155,9 +155,6 @@ func (f *Filter) RuleName(index int) string {
 	return f.rules[index].name
 }
 
-func compileCondition(r core.CollectionRule) (condition, error) {
-	return compileConditionDepth(r, 0, nil)
-}
 func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompiler) (condition, error) {
 	if depth > 8 {
 		return condition{}, fmt.Errorf("rule groups may nest at most eight levels")

@@ -106,10 +106,7 @@ func (i *instance) prepareFallback(w http.ResponseWriter, r *http.Request, v *fr
 		}
 	}
 	s.plan["fallback"] = object{"state": "ready", "pathId": pathID}
-	if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(ctx, id, copy) }) {
-		return false
-	}
-	return true
+	return s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(ctx, id, copy) })
 }
 
 func (s *playSession) rungFor(path object) string {

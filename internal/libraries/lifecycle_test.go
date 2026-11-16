@@ -9,7 +9,7 @@ import (
 )
 
 func TestDefaultLibraryLifecycle(t *testing.T) {
-	s, db := openService(t)
+	_, db := openService(t)
 	ctx := context.Background()
 	// Simulate an upgrade from the old writer, including explicit owner edits.
 	if _, err := db.Exec(`DELETE FROM libraries_state WHERE k='defaults_seeded'`); err != nil {

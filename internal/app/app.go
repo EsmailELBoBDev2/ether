@@ -504,7 +504,12 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	}
 	// Libraries (v0.3.8 §1): seed Movies/TV Shows and move the retired
 	// config library names onto libraries 1/2 exactly once.
-	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log, CompilePluginPolicy: func(ctx context.Context, id core.LibraryID, specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log, CompileCataloguePolicy: func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+		if a.catalog == nil {
+			return nil, fmt.Errorf("catalogue unavailable")
+		}
+		return a.catalog.CompileLibraryRules(specs, fallback)
+	}, CompilePluginPolicy: func(ctx context.Context, id core.LibraryID, specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
 		if a.pluginsRT == nil || a.pluginsRT.pluginitems == nil {
 			return nil, fmt.Errorf("plugin items unavailable")
 		}

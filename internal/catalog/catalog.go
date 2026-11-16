@@ -540,10 +540,7 @@ func New(db *sql.DB, client TMDB, cfg config.Catalog, log *slog.Logger, opts ...
 	for _, fn := range opts {
 		fn(c)
 	}
-	visibility, err := c.compileLibraryPolicies(c.libPolicies)
-	if err != nil {
-		return nil, err
-	}
+	visibility := c.compileStoredLibraryPolicies(c.libPolicies)
 	c.visibility = visibility
 	c.searchVis = visibility.ForSearch()
 	if err := c.reloadViewerRules(context.Background()); err != nil {

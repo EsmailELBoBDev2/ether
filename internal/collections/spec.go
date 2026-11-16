@@ -107,6 +107,11 @@ var accentRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 // Normalize fills defaults in place: an empty source list means the whole
 // catalogue, empty match means "all", and so on. It never fails.
 func Normalize(s *core.CollectionSpec) {
+	raw, _ := json.Marshal(s)
+	if fixed, changed := core.NormalizeRuleDocument(raw); changed {
+		_ = json.Unmarshal(fixed, s)
+	}
+	s.MediaType = core.NormalizeRuleMediaType(s.MediaType)
 	s.Name = strings.TrimSpace(s.Name)
 	s.Description = strings.TrimSpace(s.Description)
 	if s.MediaType == "" {
@@ -120,6 +125,7 @@ func Normalize(s *core.CollectionSpec) {
 	}
 	for i := range s.Sources {
 		src := &s.Sources[i]
+		src.MediaType = core.NormalizeRuleMediaType(src.MediaType)
 		src.URL = strings.TrimSpace(src.URL)
 		src.List = strings.TrimSpace(src.List)
 		src.Label = strings.TrimSpace(src.Label)

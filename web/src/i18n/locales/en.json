@@ -3011,6 +3011,7 @@
   "m_0a803516d3a252": "Wednesday",
   "m_0a80ee3837b74b": "Use browser push, or an ntfy, Gotify, Telegram or email channel.",
   "m_0a8137cbeb090d": "Cached movies and episodes appear here as viewers watch.",
+  "m_0a815ce0e3baca": "Choose",
   "m_0a82020af2583a": "Go to",
   "m_0a84681546a84d": "From {start} to {end}",
   "m_0a848c1a79c063": "Remove from Watchlist",
@@ -6319,6 +6320,7 @@
     "other": "Created {count} collections ({skipped} already present)."
   },
   "m_1602dbcba0275a": "Anything that uses it waits for it.",
+  "m_1606784057c8a6": "Some saved rules could not be read. Titles stay hidden until you edit or remove the rules and save.",
   "m_1606fc993473b3": "Y position",
   "m_16085b241c4dff": "Saved for {name}.",
   "m_160876dd37ae79": "Minutes (episode length for shows)",

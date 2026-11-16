@@ -3010,6 +3010,7 @@
   "m_0a803516d3a252": "keskiviikko",
   "m_0a80ee3837b74b": "Käytä selaimen ilmoituksia tai ntfy-, Gotify-, Telegram- tai sähköpostikanavaa.",
   "m_0a8137cbeb090d": "Välimuistissa olevat elokuvat ja jaksot näkyvät täällä, kun katselijat katsovat.",
+  "m_0a815ce0e3baca": "Valitse",
   "m_0a82020af2583a": "Siirry kohtaan",
   "m_0a84681546a84d": "Alkaa {start}, päättyy {end}",
   "m_0a848c1a79c063": "Poista katselulistalta",
@@ -6312,6 +6313,7 @@
     "other": "Luotiin {count} kokoelmaa ({skipped} oli jo olemassa)."
   },
   "m_1602dbcba0275a": "Kaikki sitä käyttävä odottaa sitä.",
+  "m_1606784057c8a6": "Joitakin tallennettuja sääntöjä ei voitu lukea. Nimikkeet pysyvät piilossa, kunnes muokkaat tai poistat säännöt ja tallennat muutokset.",
   "m_1606fc993473b3": "Y-sijainti",
   "m_16085b241c4dff": "Tallennettu: {name}.",
   "m_160876dd37ae79": "Minuutit (sarjoilla jakson pituus)",

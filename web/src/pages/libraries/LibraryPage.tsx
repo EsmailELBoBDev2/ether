@@ -73,6 +73,13 @@ function LibraryRulesTab({
   return (
     <div className="catalog-scroll app-scroll">
       <div className="mx-auto max-w-6xl space-y-4 px-5 pb-5 pt-4 lg:px-7">
+        {library.rulesBroken ? (
+          <p role="alert" className="text-sm text-danger">
+            {t(
+              "Some saved rules could not be read. Titles stay hidden until you edit or remove the rules and save.",
+            )}
+          </p>
+        ) : null}
         <RulesPanel
           pluginLibrary={library.source === "plugin" ? library : undefined}
           libraryId={library.id}
@@ -84,7 +91,7 @@ function LibraryRulesTab({
           onFallback={(value) => setDraft({ rules, visibilityDefault: value })}
         />
         <SaveBar
-          dirty={dirty}
+          dirty={dirty || !!library.rulesBroken}
           saving={saving}
           error={error}
           disabled={dirty && !rulesReady}

@@ -3083,6 +3083,7 @@
   "m_0a803516d3a252": "mercredi",
   "m_0a80ee3837b74b": "Utilisez les notifications du navigateur, ou un canal ntfy, Gotify, Telegram ou e-mail.",
   "m_0a8137cbeb090d": "Les films et épisodes en cache apparaissent ici au fil des visionnages.",
+  "m_0a815ce0e3baca": "Choisir",
   "m_0a82020af2583a": "Aller à",
   "m_0a84681546a84d": "Du {start} au {end}",
   "m_0a848c1a79c063": "Retirer de la liste",
@@ -6478,6 +6479,7 @@
     "other": "{count} collections créées ({skipped} déjà présentes)."
   },
   "m_1602dbcba0275a": "Tout ce qui l'utilise doit l'attendre.",
+  "m_1606784057c8a6": "Certaines règles enregistrées n’ont pas pu être lues. Les titres restent masqués jusqu’à ce que vous modifiiez ou supprimiez les règles et enregistriez les changements.",
   "m_1606fc993473b3": "Position Y",
   "m_16085b241c4dff": "Enregistré pour {name}.",
   "m_160876dd37ae79": "Minutes (durée d’un épisode pour les séries)",

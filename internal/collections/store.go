@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
 func init() {
+	libraryfilter.RegisterMediaTypeMigration("collections", 9, "collections_specs", "spec_json", "id")
 	// Profile membership checks seek one title within a collection, independent of its size.
 	store.Register("collections", 8, `CREATE INDEX collections_members_profile_lookup ON collections_members(spec_id,key,shared);`)
 

@@ -128,6 +128,8 @@ func (s *Service) ByKey(ctx context.Context, key string) (core.Library, error) {
 
 // Create saves a library with sources and visible visibility rules.
 func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaType, rules []core.LibraryExclusion, fallback string, p core.Presentations) (core.Library, error) {
+	mediaType = core.MediaType(core.NormalizeRuleMediaType(string(mediaType)))
+	rules = core.NormalizeLibraryRules(rules)
 	name = strings.TrimSpace(name)
 	slug := slugify(name)
 	if name == "" || slug == "" {
@@ -136,7 +138,7 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 	if mediaType != core.TypeMovie && mediaType != core.TypeShow {
 		return core.Library{}, fmt.Errorf("%w: library type must be movie or show", ErrInvalid)
 	}
-	if _, err := libraryfilter.CompilePolicy(rules, fallback); err != nil {
+	if _, err := s.compileCatalogueRules(rules, fallback); err != nil {
 		return core.Library{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -353,7 +355,7 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		pinnedType = string(core.TypeShow)
 	}
 	normalized := make([]core.LibraryExclusion, len(rules))
-	for i, r := range rules {
+	for i, r := range core.NormalizeLibraryRules(rules) {
 		cp := cloneRule(r)
 		if pinnedType != "" {
 			cp.MediaType = pinnedType
@@ -362,7 +364,7 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		}
 		normalized[i] = cp
 	}
-	compile := libraryfilter.CompilePolicy
+	compile := s.compileCatalogueRules
 	if lib.Source == core.LibraryPlugin {
 		compile = func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
 			if s.compilePluginPolicy != nil {

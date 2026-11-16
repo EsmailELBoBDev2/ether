@@ -3158,6 +3158,7 @@
   "m_0a803516d3a252": "środa",
   "m_0a80ee3837b74b": "Użyj powiadomień przeglądarki albo kanału ntfy, Gotify, Telegram lub e-mail.",
   "m_0a8137cbeb090d": "Filmy i odcinki w pamięci podręcznej pojawią się tutaj w miarę oglądania przez widzów.",
+  "m_0a815ce0e3baca": "Wybierz",
   "m_0a82020af2583a": "Przejdź do",
   "m_0a84681546a84d": "Od {start} do {end}",
   "m_0a848c1a79c063": "Usuń z listy",
@@ -6646,6 +6647,7 @@
     "other": "Utworzono {count} kolekcji ({skipped} już istnieje)."
   },
   "m_1602dbcba0275a": "Wszystko, co z niego korzysta, musi na niego czekać.",
+  "m_1606784057c8a6": "Nie udało się odczytać niektórych zapisanych reguł. Tytuły pozostaną ukryte, dopóki nie edytujesz lub nie usuniesz reguł i nie zapiszesz zmian.",
   "m_1606fc993473b3": "Pozycja Y",
   "m_16085b241c4dff": "Zapisano dla: {name}.",
   "m_160876dd37ae79": "Minuty (długość odcinka w przypadku seriali)",

@@ -3010,6 +3010,7 @@
   "m_0a803516d3a252": "onsdag",
   "m_0a80ee3837b74b": "Använd webbläsaraviseringar eller en kanal för ntfy, Gotify, Telegram eller e-post.",
   "m_0a8137cbeb090d": "Cachade filmer och avsnitt visas här när tittare tittar.",
+  "m_0a815ce0e3baca": "Välj",
   "m_0a82020af2583a": "Gå till",
   "m_0a84681546a84d": "Från {start} till {end}",
   "m_0a848c1a79c063": "Ta bort från bevakningslistan",
@@ -6312,6 +6313,7 @@
     "other": "Skapade {count} samlingar ({skipped} fanns redan)."
   },
   "m_1602dbcba0275a": "Allt som använder den får vänta på den.",
+  "m_1606784057c8a6": "Vissa sparade regler kunde inte läsas. Titlar förblir dolda tills du redigerar eller tar bort reglerna och sparar.",
   "m_1606fc993473b3": "Y-position",
   "m_16085b241c4dff": "Sparat för {name}.",
   "m_160876dd37ae79": "Minuter (avsnittslängd för serier)",

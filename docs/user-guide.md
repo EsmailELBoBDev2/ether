@@ -1557,3 +1557,17 @@ Smarters Pro for Mac was checked for login and decoder activity, but sustained
 playback remains unverified. These are scoped checks, not certification of every
 IPTV app, physical TV, or provider. Upstream provider connection limits are
 enforced per Ether process; they are not a cluster-wide account quota.
+
+### Startup reports `browse: unsupported type "Movies"` after v0.3.12
+
+A saved catalogue Type condition can contain a display label instead of the
+internal value. v0.3.13 repairs those spellings and keeps invalid viewer rules
+closed while the owner edits them under Viewers → Catalogue rules.
+
+For a v0.3.12 server that cannot start, stop Ether and make a copy of `ether.db`
+first. Run `sqlite3 /path/to/ether.db < docs/troubleshooting/startup-537.sql`, then
+restart Ether. The [repair script](troubleshooting/startup-537.sql) updates only
+`browse:type` conditions whose value is exactly `Movies` in
+`catalog_viewer_rules.document` and `libraries.rules`, including nested groups.
+It preserves rule names and search text, and increments affected viewer rule
+revisions. It does not remove restrictions or repair unrelated errors.

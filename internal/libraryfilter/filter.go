@@ -68,7 +68,7 @@ func compilePolicy(specs []core.LibraryExclusion, fallback string, browse Browse
 		return nil, fmt.Errorf("at most 34 visibility rules")
 	}
 	f := &Filter{movieFallback: fallback, showFallback: fallback}
-	for i, s := range specs {
+	for i, s := range core.NormalizeLibraryRules(specs) {
 		// A name is optional. The owner UI labels a rule from its conditions.
 		name := strings.TrimSpace(s.Name)
 		if len(name) > 120 {
@@ -104,7 +104,7 @@ func compilePolicy(specs []core.LibraryExclusion, fallback string, browse Browse
 		for _, r := range s.Rules {
 			c, err := compileConditionDepth(r, 0, browse)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("rule %d (%s): %w", i+1, name, err)
 			}
 			c.allCountries = action == "hide" && c.field == "country" && (c.op == "in" || c.op == "is")
 			g.rules = append(g.rules, c)
@@ -224,6 +224,10 @@ func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompil
 			if err := dec.Decode(&f); err != nil {
 				return condition{}, err
 			}
+		}
+		f.Type = core.MediaType(core.NormalizeRuleMediaType(string(f.Type)))
+		if f.Type != "" && f.Type != core.TypeMovie && f.Type != core.TypeShow {
+			return condition{}, fmt.Errorf("unsupported media type %q", f.Type)
 		}
 		return condition{field: r.Field, op: r.Op, predicate: &f}, nil
 	}

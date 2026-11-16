@@ -203,8 +203,9 @@ type TraceLimits struct {
 }
 
 type searchCacheEntry struct {
-	results []core.Release
-	expires time.Time
+	refreshed time.Time
+	results   []core.Release
+	expires   time.Time
 }
 
 type inflight struct {
@@ -266,13 +267,15 @@ type Service struct {
 	traces    []Trace
 	maxTraces int
 
-	bgCtx            context.Context
-	bgCancel         context.CancelFunc
-	bgMu             sync.Mutex
-	bgClosed         bool
-	bgWG             sync.WaitGroup
-	refills          map[string]chan struct{} // episode search key -> completion; guarded by bgMu
-	refillRetryAfter map[string]refillMark    // next detail discovery allowed; guarded by bgMu
+	bgCtx              context.Context
+	bgCancel           context.CancelFunc
+	bgMu               sync.Mutex
+	bgClosed           bool
+	bookkeeping        []func(context.Context)
+	bookkeepingRunning bool
+	bgWG               sync.WaitGroup
+	refills            map[string]chan struct{} // episode search key -> completion; guarded by bgMu
+	refillRetryAfter   map[string]refillMark    // next detail discovery allowed; guarded by bgMu
 
 	flightMu sync.Mutex
 	flights  map[string]*inflight
@@ -624,7 +627,7 @@ func flightKey(req core.ResolveRequest, profile core.QualityProfile) string {
 	if len(profile.PreferredLanguages) == 0 && req.User != nil {
 		audio = req.User.AudioLanguages
 	}
-	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%t|%t|%s", req.Title.Key, profile.Name, strings.Join(ex, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","))
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%t|%t|%s", req.Title.Key, profile.Name, strings.Join(ex, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec+"|"+req.PlayedRelease, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","))
 }
 
 // Resolve implements core.Resolver. Concurrent calls for the same
@@ -695,6 +698,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			resolved = &copy
 		}
 	}()
+	ctx = context.WithValue(ctx, requestBookkeepingKey{}, true)
 	started := time.Now()
 	// An indexer that was paused or did not answer leaves the search
 	// incomplete; nothing found then does not prove the title unavailable.
@@ -713,7 +717,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			s.log.Info("resolver: below 4K", "title", trace.TitleName, "profile", profile.Name, "why", trace.Ceiling)
 		}
 		s.addTrace(trace)
-		s.recordHistory(ctx, trace)
+		history := compactTrace(trace)
+		s.persistBookkeeping(ctx, func(ctx context.Context) { s.recordHistory(ctx, history) })
 	}()
 
 	// The owner's pin for this title, when it applies to this request
@@ -878,7 +883,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 	s.rememberReleases(t, results)
 	if s.searchObserved != nil {
-		s.searchObserved(ctx, t, results)
+		observed := append([]core.Release(nil), results...)
+		s.persistBookkeeping(ctx, func(ctx context.Context) { s.searchObserved(ctx, t, observed) })
 	}
 	for _, r := range discovered {
 		results = withRelease(results, r)
@@ -909,12 +915,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 				break
 			}
 		}
-		cands = pinFirst(cands, pinID)
+		cands = pinFirst(acceptableVariantAudio(clearIdentityVariants(cands)), pinID)
 		pool := cands
-		auto := core.Release{}
-		if len(cands) > 0 {
-			auto = cands[0].rel
-		}
+		auto := s.slotAuto(req, cands)
 		if s.resolverCfg().OfferHigherVersions && slot.Kind != "auto" && slot.Kind != "alternative" {
 			if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
 				if ranked, _, e := s.rankCandidates(ctx, req, sreq, relaxed, results, &trace, pinID); e == nil {
@@ -1275,7 +1278,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.Lock()
 	now := s.now()
 	boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL())}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 	s.mu.Unlock()
 	// Merge rescued results into the primary search cache entry so Play
 	// Version (Variants) and subsequent resolves see the full candidate set.
@@ -1321,7 +1324,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.Lock()
 		now := s.now()
 		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL())}
+		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 		s.mu.Unlock()
 	}
 	return results
@@ -1473,7 +1476,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	if len(results) == 0 && ttl > freshReleaseCooloff {
 		ttl = freshReleaseCooloff
 	}
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl)}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
 	s.mu.Unlock()
 }
 
@@ -1596,6 +1599,18 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 	}
+	// Unknown height is not evidence that a source fits a ceiling that
+	// excludes every measured release. Do not turn missing metadata into a win.
+	aboveCeiling, withinCeiling := false, false
+	if profile.MaxHeight > 0 {
+		for _, rel := range results {
+			if rel.Info.Height > profile.MaxHeight {
+				aboveCeiling = true
+			} else if rel.Info.Height > 0 {
+				withinCeiling = true
+			}
+		}
+	}
 	for ri, rel := range results {
 		rel = withTarget(rel, sreq)
 		ct := CandidateTrace{ReleaseID: rel.ID, Name: rel.Name, Indexer: rel.Indexer, Size: rel.Size, Height: rel.Info.Height}
@@ -1641,6 +1656,9 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			reason = "ambiguous series identity (name only)"
 		} else if pinned {
 			reason = s.pinRejectReason(rel, sreq, req.Client, exclude)
+		} else if rel.Info.Height <= 0 && aboveCeiling && !withinCeiling {
+			clientRejected = true
+			reason = "unknown source resolution under a resolution limit"
 		} else if policyResult.Rejected {
 			reason = preferenceReason(policyResult)
 		} else {

@@ -199,6 +199,7 @@ type playRequest struct {
 	key            frontend.RatingKey
 	collection     string
 	caps           frontend.ClientCaps
+	sourceLimits   *frontend.ClientCaps
 	opts           frontend.DecideOptions
 	sessionID      string // client transcode session id
 	offset         time.Duration
@@ -342,6 +343,7 @@ func (p playRequest) sameSettings(other playRequest) bool {
 	p.profileResult, other.profileResult = nil, nil
 	p.offset, other.offset = 0, 0
 	p.caps, other.caps = frontend.ClientCaps{}, frontend.ClientCaps{}
+	p.sourceLimits, other.sourceLimits = nil, nil
 	p.listAllTracks, other.listAllTracks = false, false
 	p.variantRelease, other.variantRelease = "", ""
 	p.mediaID, other.mediaID = 0, 0
@@ -393,13 +395,17 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	if s.segmentedSurroundOff(pr) {
 		caps.SegmentedSurroundOff = true // a stream stalled on copied surround audio
 	}
+	// Save device/source limits before the quality slider sets output limits.
+	sourceLimits := caps
+	sourceLimits.MaxBitrateKbps = 0
+	sourceLimits.DefaultRemoteBitrate = false
 	applyDecisionQuery(&caps, q)
 	// The decision query can identify WAN even when the metadata request
-	// looked local. Apply the remote ceiling before source resolution too.
+	// looked local. This ceiling constrains delivery, including direct play.
 	if limit := s.cfg().Transcode.RemoteMaxBitrateKbps; caps.Remote && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
 		caps.MaxBitrateKbps = limit
 	}
-	p := playRequest{copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
+	p := playRequest{copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, sourceLimits: &sourceLimits, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
 	for _, raw := range []string{q.Get("path"), q.Get("key")} {
 		if partID, ok := partIDFromPath(raw); ok {
 			p.requestedPart = partID
@@ -494,6 +500,19 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	}
 	p.offset = durationParam(q.Get("offset"), time.Second)
 	return p, nil
+}
+
+// sourceSelectionCaps keeps request quality limits at delivery selection. Device
+// decoder limits and owner quality rules still govern which source may open.
+func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
+	caps := p.caps
+	if p.sourceLimits != nil {
+		caps.MaxHeight = p.sourceLimits.MaxHeight
+		caps.ExplicitMaxHeight = p.sourceLimits.ExplicitMaxHeight
+		caps.MaxBitrateKbps = p.sourceLimits.MaxBitrateKbps
+		caps.DefaultRemoteBitrate = p.sourceLimits.DefaultRemoteBitrate
+	}
+	return caps
 }
 
 func isPlayableKey(k frontend.RatingKey) bool {
@@ -842,7 +861,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	}
 	// Wait for the result instead of converting slow preparation to an error.
 	// A genuine failure is answered now so admission does not repeat the search.
-	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.caps, "", false); err != nil {
+	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), "", false); err != nil {
 		return t, err
 	}
 	return nil, nil

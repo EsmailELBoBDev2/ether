@@ -216,14 +216,16 @@ func (s *Service) notePin(ctx context.Context, key core.RatingKey, releaseID str
 	if !ok || s.db == nil {
 		return
 	}
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE resolver_pins SET last_status=?, last_reason=?, last_checked_at=? WHERE rating_key=? AND release_id=?`,
-		string(status), reason, now.Unix(), int64(key), releaseID)
-	if err != nil {
-		s.log.Debug("resolver pin status not saved", "title", key, "err", err)
-		return
-	}
-	s.notifyPin(key)
+	s.persistBookkeeping(ctx, func(ctx context.Context) {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE resolver_pins SET last_status=?, last_reason=?, last_checked_at=? WHERE rating_key=? AND release_id=?`,
+			string(status), reason, now.Unix(), int64(key), releaseID)
+		if err != nil {
+			s.log.Debug("resolver pin status not saved", "title", key, "err", err)
+			return
+		}
+		s.notifyPin(key)
+	})
 }
 
 // notePinsBlocked marks pins of a newly blocklisted release as failing, so

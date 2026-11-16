@@ -89,7 +89,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			// Resolve only the explicit pick. Resolving a fresh automatic
 			// fallback would health-check a source we then discard in favour
 			// of the already checked remembered source below.
-			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true})
+			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true, PlayedRelease: auto.Release.ID})
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -97,7 +97,11 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				res = pick
 			} else if err == nil || errors.Is(err, core.ErrNotAvailable) {
 				res, cached, fromResume = auto, facts, remembered
-				m.notePreferenceStale(s.ident.key, s.prefer, auto.Release.ID)
+				reason := "picked version failed availability checks"
+				if err != nil {
+					reason = err.Error()
+				}
+				m.notePreferenceStale(ctx, s, auto.Release.ID, reason)
 			} else {
 				return nil, err
 			}
@@ -134,10 +138,10 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				// automatic choice the warm-up (or resume) already holds, so
 				// the opening prefetch is not wasted on another release, and
 				// stop asking for the pick on every open.
-				m.notePreferenceStale(s.ident.key, s.prefer, res.Release.ID)
 				if auto, autoCached, autoResume := m.preparedResolution(ctx, s, profile, original, ""); auto != nil {
 					res, cached, fromResume = auto, autoCached, autoResume
 				}
+				m.notePreferenceStale(ctx, s, res.Release.ID, "picked version was unavailable; resolver selected Auto")
 			}
 			if err != nil {
 				if fallbackGen != nil {

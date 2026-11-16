@@ -20,7 +20,8 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
-	mc := &model.MediaContainer{Identifier: frontend.LiveTVProvider}
+	sc := liveScopeFrom(r)
+	mc := &model.MediaContainer{Identifier: sc.info.identifier()}
 	if query == "" {
 		s.write(w, r, mc)
 		return
@@ -35,15 +36,28 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 		s.writeErr(w, r, err)
 		return
 	}
+	var set map[string]bool
+	if sc.info.groupID != "" {
+		if _, set, err = s.liveScopeChannels(r, sc); err != nil {
+			s.writeErr(w, r, err)
+			return
+		}
+	}
+	inScope := func(id string) bool { return set == nil || set[id] }
 	for _, c := range results.Channels {
-		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 1, Channel: s.liveSearchChannel(c)})
+		if inScope(c.ID) {
+			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 1, Channel: s.liveSearchChannelFor(c, sc.info.identifier())})
+		}
 	}
 	parents := map[string]frontend.LiveTVChannel{}
 	for _, c := range results.ProgrammeChannels {
 		parents[c.ID] = c
 	}
 	for _, p := range results.Programmes {
-		md := s.liveProgrammeMetadata(parents[p.ChannelID], p)
+		if !inScope(p.ChannelID) {
+			continue
+		}
+		md := s.liveProgrammeMetadataAt(parents[p.ChannelID], p, sc.info.path())
 		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 0.9, Metadata: &md})
 	}
 	mc.Size = len(mc.SearchResult)
@@ -51,11 +65,15 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) liveSearchChannel(c frontend.LiveTVChannel) *model.SearchChannel {
+	return s.liveSearchChannelFor(c, frontend.LiveTVProvider)
+}
+
+func (s *Server) liveSearchChannelFor(c frontend.LiveTVChannel, provider string) *model.SearchChannel {
 	categories := model.StringList{}
 	if c.Group != "" {
 		categories = append(categories, c.Group)
 	}
-	return &model.SearchChannel{ID: c.ID, GridKey: c.ID, VCN: c.Number, Title: c.Name, ShortTitle: c.Name, Categories: categories, Source: "server://" + s.identity().MachineIdentifier + "/" + frontend.LiveTVProvider}
+	return &model.SearchChannel{ID: c.ID, GridKey: c.ID, VCN: c.Number, Title: c.Name, ShortTitle: c.Name, Categories: categories, Source: "server://" + s.identity().MachineIdentifier + "/" + provider}
 }
 
 func (s *Server) appendLiveSearchHubs(r *http.Request, mc *model.MediaContainer, query string, limit int) {

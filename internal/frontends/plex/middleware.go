@@ -341,7 +341,13 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) || s.authenticateDeliveryGrant(r, pr) {
+		authorized := s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) || s.authenticateDeliveryGrant(r, pr)
+		if !authorized {
+			if refetch, ok := s.authenticateManifestRefetch(r, pr); ok {
+				r, authorized = refetch, true
+			}
+		}
+		if authorized {
 			if !s.acceptanceCurrent(r) {
 				writeHTTPError(w, http.StatusUnauthorized)
 				return

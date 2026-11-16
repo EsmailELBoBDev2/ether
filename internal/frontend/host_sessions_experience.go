@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -353,6 +354,10 @@ type Binding[R any] struct {
 	FailKey  core.RatingKey
 	FailErr  error
 	FailedAt time.Time
+	// ManifestIP/ManifestAt: the client address and time an authenticated
+	// request last received this binding's stream manifest.
+	ManifestIP netip.Addr
+	ManifestAt time.Time
 }
 
 type QueueItem struct {

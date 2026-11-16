@@ -27,6 +27,18 @@ import (
 
 // handleStartDASH is /video/:/transcode/universal/start.mpd.
 func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
+	if id, ok := manifestRefetchFrom(r.Context()); ok {
+		// A native player refetching the manifest it was just handed (see
+		// authenticateManifestRefetch): serve the running session's MPD only.
+		if hs, ok := s.plexHLSSession(id); ok && hs != nil {
+			if ds, isDASH := hs.(frontend.DASHSession); isDASH {
+				s.serveStreamManifest(w, r, id, ds.ServeManifest)
+				return
+			}
+		}
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
 	if s.refuseCapability(w, r) {
 		return
 	}
@@ -121,6 +133,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		// segments); a new decision request starts afresh.
 		if ds, isDASH := existing.(frontend.DASHSession); isDASH && entry.started {
 			s.notePlexEncoder(p.sessionID, frontend.StreamDASH, dec, p.offset)
+			s.noteManifestServed(p.sessionID, pr)
 			unlockEncoder()
 			unlockOwner()
 			s.serveStreamManifest(w, r, p.sessionID, ds.ServeManifest)
@@ -153,6 +166,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 	}
 	s.bindTranscodeStarted(entry, dec, p.offset)
 	s.notePlexEncoder(p.sessionID, frontend.StreamDASH, dec, p.offset)
+	s.noteManifestServed(p.sessionID, pr)
 	unlockEncoder()
 	unlockOwner()
 	s.serveStreamManifest(w, r, p.sessionID, ds.ServeManifest)

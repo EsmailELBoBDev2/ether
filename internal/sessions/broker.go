@@ -1021,6 +1021,10 @@ func (b *Broker) access(ctx context.Context, a frontend.SessionAccess, id string
 }
 
 func (b *Broker) accessSession(ctx context.Context, a frontend.SessionAccess, id string, enforcePlaybackPolicy bool) (*brokerSession, *core.Viewer, error) {
+	return b.accessSessionBinding(ctx, a, id, enforcePlaybackPolicy, true)
+}
+
+func (b *Broker) accessSessionBinding(ctx context.Context, a frontend.SessionAccess, id string, enforcePlaybackPolicy, restore bool) (*brokerSession, *core.Viewer, error) {
 	viewer, err := b.viewer(ctx, a.Viewer)
 	if err != nil {
 		return nil, nil, err
@@ -1037,6 +1041,9 @@ func (b *Broker) accessSession(ctx context.Context, a frontend.SessionAccess, id
 	}
 	b.mu.Unlock()
 	if !ok {
+		if !restore {
+			return nil, nil, core.ErrNotFound
+		}
 		if err := b.restoreNeutralBinding(ctx, id, &a, "", string(a.Protocol)); err != nil {
 			return nil, nil, err
 		}

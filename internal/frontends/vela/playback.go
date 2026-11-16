@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -914,14 +915,26 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 	last, _ := strconv.ParseUint(cursor, 10, 64)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	keepAlive := true // connect, then only the existing heartbeat cadence
 	for {
 		identity, ok := i.host.Identity.(frontend.GrantScopes)
 		if !ok {
 			return
 		}
-		if _, err := identity.GrantScopeCurrent(r.Context(), s.scope, requestDevice(r)); err != nil {
+		viewer, err := identity.GrantScopeCurrent(ctx, s.scope, requestDevice(r))
+		if err != nil {
 			return
 		}
+		s.mu.Lock()
+		ended := !s.ended.IsZero()
+		s.mu.Unlock()
+		if keepAlive && !ended {
+			// Backends without activity-only renewal retain their existing SSE behavior.
+			if err := i.host.Sessions.KeepAlive(ctx, i.access(r, viewer), r.PathValue("id")); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
+				return
+			}
+		}
+		keepAlive = false
 		s.mu.Lock()
 		events := []object{}
 		snapshot := last == 0 || last > s.cursor || (len(s.events) > 0 && last+uint64(len(s.events)) < s.cursor)
@@ -944,7 +957,7 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 			chunks = append(chunks, fmt.Sprintf("id: %s\nevent: %s\ndata: %s\n\n", e["cursor"], e["type"], b))
 		}
 		signal := s.signal
-		ended := !s.ended.IsZero()
+		ended = !s.ended.IsZero()
 		s.mu.Unlock()
 		for _, chunk := range chunks {
 			if _, e := fmt.Fprint(w, chunk); e != nil {
@@ -962,6 +975,7 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-signal:
 		case <-ticker.C:
+			keepAlive = true
 			if _, e := fmt.Fprint(w, ": heartbeat\n\n"); e != nil {
 				return
 			}

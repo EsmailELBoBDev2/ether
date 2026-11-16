@@ -1586,6 +1586,22 @@ func (m *Manager) Sessions() []*core.PlaySession {
 	return out
 }
 
+// KeepAlive renews only an existing session's activity. An open control stream
+// is not media delivery or a new play: leave lastRead, timeline and stop intact.
+func (m *Manager) KeepAlive(id string) bool {
+	s := m.lookup(id)
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.lastActive = m.now()
+	return true
+}
+
 // Stop ends a session: its source is closed once reads finish, its live
 // pin is dropped and its HLS session, if any, is stopped.
 func (m *Manager) Stop(id string) {

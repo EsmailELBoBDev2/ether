@@ -5692,10 +5692,40 @@ func safeArchiveName(name string) bool {
 }
 ``````
 
+## Source: internal/plugins/host_archive.go#dataArchiveDirectory.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#dataArchiveDirectory
+
+``````
+// dataArchiveDirectory retains metadata only, never a reader, budget or context.
+type dataArchiveDirectory struct {
+	members []ArchiveMember
+	bind    func(context.Context, *archiveIOBudget, RuntimeLimits) func(int) (io.ReadCloser, error)
+	bytes   int64
+}
+``````
+
 ## Source: internal/plugins/host_archive.go#openDataArchive
 
 ``````
 func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*dataArchive, error) {
+	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: l.FetchBytes}
+	d, err := parseDataArchive(ctx, rc, ra, l)
+	if err != nil {
+		return nil, err
+	}
+	return &dataArchive{members: d.members, open: d.bind(ctx, ra, l)}, nil
+}
+``````
+
+## Source: internal/plugins/host_archive.go#parseDataArchive
+
+``````
+func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget, l RuntimeLimits) (*dataArchiveDirectory, error) {
 	size, err := rc.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -5707,13 +5737,12 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 	if memory < 1<<20 {
 		return nil, fmt.Errorf("plugins: archive memory grant too small")
 	}
-	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: l.FetchBytes}
 	var sig [8]byte
 	if _, err = ra.ReadAt(sig[:], 0); err != nil {
 		return nil, err
 	}
 	format := container.Detect(sig[:])
-	a := &dataArchive{members: make([]ArchiveMember, 0)}
+	a := &dataArchiveDirectory{members: make([]ArchiveMember, 0)}
 	switch format {
 	case container.Format7z:
 		files, e := container.List7zData(ctx, ra, size, container.Data7zLimits{MemoryBytes: memory, ExpandedBytes: l.ArchiveExpandedBytes, Members: l.ArchiveMembers})
@@ -5723,12 +5752,14 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 		for i, f := range files {
 			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.Size)})
 		}
-		a.open = func(i int) (io.ReadCloser, error) {
-			r, e := container.Open7zData(ra, files[i])
-			if e != nil {
-				return nil, e
+		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+			return func(i int) (io.ReadCloser, error) {
+				r, e := container.Open7zData(ctx, ra, files[i])
+				if e != nil {
+					return nil, e
+				}
+				return io.NopCloser(r), nil
 			}
-			return io.NopCloser(r), nil
 		}
 	case container.FormatRAR4, container.FormatRAR5:
 		// Header-only walk: listing a solid RAR never inflates earlier members.
@@ -5758,57 +5789,85 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 			}
 			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.UnpackedSize)})
 		}
-		a.open = func(i int) (io.ReadCloser, error) {
-			if v.Files[i].Dir {
-				return nil, fmt.Errorf("plugins: cannot open an archive directory")
-			}
-			r, e := rardecode.NewReader(io.NewSectionReader(ra, 0, size), rardecode.MaxDictionarySize(memory/8), rardecode.BufferSize(4096))
-			if e != nil {
-				return nil, e
-			}
-			// Explicitly consume dependencies under the expanded-byte grant. This also
-			// keeps implicit solid skipping inside the decoder from doing uncounted work.
-			left := l.ArchiveExpandedBytes
-			start := i
-			for start > 0 && v.Files[start].Solid {
-				start--
-			}
-			for j := 0; j <= i; j++ {
-				h, e := r.Next()
+		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+			return func(i int) (io.ReadCloser, error) {
+				if v.Files[i].Dir {
+					return nil, fmt.Errorf("plugins: cannot open an archive directory")
+				}
+				r, e := rardecode.NewReader(io.NewSectionReader(ra, 0, size), rardecode.MaxDictionarySize(memory/8), rardecode.BufferSize(4096))
 				if e != nil {
 					return nil, e
 				}
-				if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
-					return nil, fmt.Errorf("plugins: inconsistent RAR member")
+				// Explicitly consume dependencies under the expanded-byte grant. This also
+				// keeps implicit solid skipping inside the decoder from doing uncounted work.
+				left := l.ArchiveExpandedBytes
+				start := i
+				for start > 0 && v.Files[start].Solid {
+					start--
 				}
-				if j == i {
-					return io.NopCloser(io.LimitReader(r, h.UnPackedSize)), nil
-				}
-				if j >= start || v.Solid {
-					if h.UnPackedSize > left {
-						return nil, fmt.Errorf("plugins: RAR decode exceeds byte grant")
-					}
-					if _, e = io.CopyN(io.Discard, &boundedDataReader{ctx: ctx, r: r, left: left}, h.UnPackedSize); e != nil {
+				for j := 0; j <= i; j++ {
+					h, e := r.Next()
+					if e != nil {
 						return nil, e
 					}
-					left -= h.UnPackedSize
+					if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
+						return nil, fmt.Errorf("plugins: inconsistent RAR member")
+					}
+					if j == i {
+						return io.NopCloser(io.LimitReader(r, h.UnPackedSize)), nil
+					}
+					if j >= start || v.Solid {
+						if h.UnPackedSize > left {
+							return nil, fmt.Errorf("plugins: RAR decode exceeds byte grant")
+						}
+						if _, e = io.CopyN(io.Discard, &boundedDataReader{ctx: ctx, r: r, left: left}, h.UnPackedSize); e != nil {
+							return nil, e
+						}
+						left -= h.UnPackedSize
+					}
 				}
+				return nil, io.EOF
 			}
-			return nil, io.EOF
 		}
 	default:
-		z, e := openDataZIP(ctx, rc, l)
+		z, e := parseDataZIP(rc, ra, l)
 		if e != nil {
 			return nil, e
 		}
+		files := make([]dataZIPMember, len(z.File))
 		for i, f := range z.File {
+			offset, e := f.DataOffset()
+			if e != nil {
+				return nil, e
+			}
+			if offset < 0 || offset > size || f.CompressedSize64 > uint64(size-offset) {
+				return nil, zip.ErrFormat
+			}
+			// Descriptor metadata is immutable too; validate it once while
+			// building the index, rather than retaining a zip.File's reader.
+			if f.Flags&8 != 0 {
+				at := offset + int64(f.CompressedSize64)
+				var descriptor [12]byte
+				if _, e := ra.ReadAt(descriptor[:], at); e != nil {
+					return nil, e
+				}
+				crc := binary.LittleEndian.Uint32(descriptor[:])
+				if crc == 0x08074b50 {
+					var rest [4]byte
+					if _, e := ra.ReadAt(rest[:], at+12); e != nil {
+						return nil, e
+					}
+					crc = binary.LittleEndian.Uint32(descriptor[4:])
+				}
+				if crc != f.CRC32 {
+					return nil, zip.ErrChecksum
+				}
+			}
+			files[i] = dataZIPMember{offset: offset, packed: int64(f.CompressedSize64), size: f.UncompressedSize64, crc: f.CRC32, method: f.Method, dir: f.FileInfo().IsDir(), verifyCRC: f.Flags&8 != 0 || f.CRC32 != 0}
 			a.members = append(a.members, ArchiveMember{i, f.Name, f.UncompressedSize64})
 		}
-		a.open = func(i int) (io.ReadCloser, error) {
-			if z.File[i].FileInfo().IsDir() {
-				return nil, fmt.Errorf("plugins: cannot open an archive directory")
-			}
-			return z.File[i].Open()
+		a.bind = func(_ context.Context, ra *archiveIOBudget, _ RuntimeLimits) func(int) (io.ReadCloser, error) {
+			return func(i int) (io.ReadCloser, error) { return files[i].open(ra) }
 		}
 	}
 	var total uint64
@@ -5820,7 +5879,89 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 		}
 		total += m.Size
 	}
+	// Conservatively include format tables, slice spare capacity and names. ZIP
+	// comments/extras and raw directory buffers are not retained.
+	a.bytes = 1024 + int64(cap(a.members))*2048 + names*2
+	if a.bytes > maxArchiveDirectory {
+		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
+	}
 	return a, nil
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataZIPMember.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#dataZIPMember
+
+``````
+// ZIP member offsets come from the validated immutable central directory. Each
+// open creates a decoder and checksum state over this call's reader only.
+type dataZIPMember struct {
+	offset, packed int64
+	size           uint64
+	crc            uint32
+	method         uint16
+	dir            bool
+	verifyCRC      bool
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataZIPMember.open
+
+``````
+func (f dataZIPMember) open(ra io.ReaderAt) (io.ReadCloser, error) {
+	if f.dir {
+		return nil, fmt.Errorf("plugins: cannot open an archive directory")
+	}
+	var r io.ReadCloser = io.NopCloser(io.NewSectionReader(ra, f.offset, f.packed))
+	if f.method == zip.Deflate {
+		r = flate.NewReader(r)
+	}
+	return &dataZIPChecksum{ReadCloser: r, hash: crc32.NewIEEE(), size: f.size, crc: f.crc, verifyCRC: f.verifyCRC}, nil
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataZIPChecksum.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#dataZIPChecksum
+
+``````
+type dataZIPChecksum struct {
+	io.ReadCloser
+	hash       hash.Hash32
+	read, size uint64
+	crc        uint32
+	verifyCRC  bool
+}
+``````
+
+## Source: internal/plugins/host_archive.go#*dataZIPChecksum.Read
+
+``````
+func (r *dataZIPChecksum) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.read += uint64(n)
+	r.hash.Write(p[:n])
+	if r.read > r.size {
+		return n, zip.ErrFormat
+	}
+	if err == io.EOF {
+		if r.read != r.size {
+			return n, io.ErrUnexpectedEOF
+		}
+		if r.verifyCRC && r.hash.Sum32() != r.crc {
+			return n, zip.ErrChecksum
+		}
+	}
+	return n, err
 }
 ``````
 
@@ -6069,6 +6210,15 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if len(grants) > 0 {
 		limits = grants[0]
 	}
+	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
+	return parseDataZIP(rc, ra, limits)
+}
+``````
+
+## Source: internal/plugins/host_data.go#parseDataZIP
+
+``````
+func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (*zip.Reader, error) {
 	directoryCap := min(int64(maxArchiveDirectory), int64(limits.ArchiveMembers)*65536, archiveMemory(limits)/8)
 
 	size, err := rc.Seek(0, io.SeekEnd)
@@ -6078,7 +6228,6 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if size < 22 || size > limits.FetchBytes {
 		return nil, fmt.Errorf("plugins: ZIP size outside limit")
 	}
-	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
 	tailSize := min(size, int64(65557))
 	tail := make([]byte, tailSize)
 	if _, err := ra.ReadAt(tail, size-tailSize); err != nil {
@@ -6286,7 +6435,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			opt.Offset = 0
 			value, err = readDataRange(ctx, rc, opt)
 		} else {
-			archive, e := openDataArchive(ctx, rc, limits)
+			var archive *dataArchive
+			var e error
+			if owner, ok := h.(interface{ archiveDirectoryCache() *archiveDirectoryCache }); ok {
+				archive, e = owner.archiveDirectoryCache().open(ctx, ref, rc, limits)
+			} else {
+				archive, e = openDataArchive(ctx, rc, limits)
+			}
 			if e != nil {
 				return nil, e
 			}

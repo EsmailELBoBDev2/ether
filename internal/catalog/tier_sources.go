@@ -180,7 +180,7 @@ var tierUntouchedTables = []string{
 	"subtitles_auto_attempts", "subtitles_auto_provider_pause",
 	// Libraries hold owner filter definitions and plugin-owned items; a
 	// plugin match naming a removed title is promoted again on open.
-	"libraries", "libraries_", "plugin_", "plugins_setup",
+	"libraries", "libraries_", "plugin_", "plugins_setup", "plugins_schedule_runs",
 	// Id mappings (see above).
 	"frontend_compact_ids", "frontend_compact_id_counters", "silo_source_offer_ids", "frontend_client_families", "frontend_clients_seen",
 	// Encrypted idempotency responses contain transient authority, not durable title intent.

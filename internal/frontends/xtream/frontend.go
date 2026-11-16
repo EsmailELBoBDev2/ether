@@ -226,7 +226,7 @@ func (i *instance) api(w http.ResponseWriter, r *http.Request, l login) {
 			}
 		}
 		now := time.Now().UTC()
-		jsonResponse(w, map[string]any{"user_info": map[string]any{"username": l.username, "password": l.password, "auth": 1, "status": "Active", "message": "Ether", "exp_date": nil, "is_trial": "0", "active_cons": strconv.Itoa(i.active(r, l)), "created_at": "0", "max_connections": strconv.Itoa(i.connectionLimit(r, l)), "allowed_output_formats": []string{"m3u8"}}, "server_info": map[string]any{"url": base.Hostname(), "port": port, "https_port": "443", "server_protocol": base.Scheme, "rtmp_port": "0", "timezone": "UTC", "timestamp_now": now.Unix(), "time_now": now.Format("2006-01-02 15:04:05")}})
+		jsonResponse(w, map[string]any{"user_info": map[string]any{"username": l.username, "password": l.password, "auth": 1, "status": "Active", "message": "Ether", "exp_date": nil, "is_trial": "0", "active_cons": strconv.Itoa(i.active(r, l)), "created_at": "0", "max_connections": strconv.Itoa(i.connectionLimit(r, l)), "allowed_output_formats": []string{"m3u8", "ts"}}, "server_info": map[string]any{"url": base.Hostname(), "port": port, "https_port": "443", "server_protocol": base.Scheme, "rtmp_port": "0", "timezone": "UTC", "timestamp_now": now.Unix(), "time_now": now.Format("2006-01-02 15:04:05")}})
 		// Apps sign in, then list categories and whole libraries.
 		i.prepareLists(r, l, "movie", "show")
 	case "get_live_categories", "get_live_streams":

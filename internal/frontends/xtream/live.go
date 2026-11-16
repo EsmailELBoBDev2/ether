@@ -207,12 +207,16 @@ func (i *instance) playlist(w http.ResponseWriter, r *http.Request, l login) {
 	}
 	w.Header().Set("Content-Type", "audio/x-mpegurl; charset=utf-8")
 	_, _ = fmt.Fprintln(w, "#EXTM3U")
+	liveExt := "m3u8"
+	if strings.EqualFold(r.URL.Query().Get("output"), "ts") || strings.EqualFold(r.URL.Query().Get("output"), "mpegts") {
+		liveExt = "ts"
+	}
 	for _, c := range cs {
 		group := strings.TrimSpace(c.Group)
 		if group == "" {
 			group = "Live TV"
 		}
-		_, _ = fmt.Fprintf(w, "#EXTINF:-1 tvg-id=\"%s\" tvg-logo=\"%s\" group-title=\"%s\",%s\n%s/live/%s/%s/%d.m3u8\n", cleanM3U(c.ID), cleanM3U(i.image(r, l, 0, c.ID, c.Images)), cleanM3U(group), cleanM3U(c.Name), base, l.username, l.password, l.channels[c.ID])
+		_, _ = fmt.Fprintf(w, "#EXTINF:-1 tvg-id=\"%s\" tvg-logo=\"%s\" group-title=\"%s\",%s\n%s/live/%s/%s/%d.%s\n", cleanM3U(c.ID), cleanM3U(i.image(r, l, 0, c.ID, c.Images)), cleanM3U(group), cleanM3U(c.Name), base, l.username, l.password, l.channels[c.ID], liveExt)
 	}
 	// Movies are emitted a page at a time; exporting never accumulates the catalogue.
 	if err := i.walk(r, l, "movie", func(l login, t frontend.Title, cat string) error {

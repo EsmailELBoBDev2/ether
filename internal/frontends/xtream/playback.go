@@ -80,6 +80,11 @@ func (i *instance) play(w http.ResponseWriter, r *http.Request, l login) {
 			http.Error(w, "Unavailable", 503)
 			return
 		}
+		if ext == "ts" {
+			// IPTV apps that ask for ".ts" (ExoPlayer infers the container from
+			// the extension) get one continuous MPEG-TS stream, not a playlist.
+			path = strings.TrimSuffix(path, "index.m3u8") + "stream.ts"
+		}
 		http.Redirect(w, r, base+path, http.StatusTemporaryRedirect)
 		return
 	}

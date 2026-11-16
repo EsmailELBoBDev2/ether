@@ -467,7 +467,7 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		if (req.Channel != "" && tail != "live/index.m3u8") || (stored.HLS != nil && tail != "hls/master.m3u8") {
+		if (req.Channel != "" && !liveEntryTail(tail)) || (stored.HLS != nil && tail != "hls/master.m3u8") {
 			s.broker.mu.Lock()
 			id := s.broker.lazySessions[binding].id
 			s.broker.mu.Unlock()
@@ -476,6 +476,8 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.NotFound(w, r)
 				return
 			}
+		} else if req.Channel != "" && tail == "live/stream.ts" {
+			w.Header().Set("Content-Type", "video/mp2t")
 		} else if stored.HLS != nil {
 			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		} else if req.Item != 0 {
@@ -544,7 +546,7 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			existingHLS = existing
 		}
 	}
-	if req.Channel != "" && tail != "live/index.m3u8" && id == "" {
+	if req.Channel != "" && !liveEntryTail(tail) && id == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -938,4 +940,10 @@ func (s *lazyStreams) renewHeader(ctx context.Context, tx *sql.Tx, hash string, 
 		return core.ErrUnauthorized
 	}
 	return nil
+}
+
+// liveEntryTail is a path that may open a lazy live session: the HLS playlist,
+// or the continuous MPEG-TS stream for IPTV apps that request ".ts".
+func liveEntryTail(tail string) bool {
+	return tail == "live/index.m3u8" || tail == "live/stream.ts"
 }

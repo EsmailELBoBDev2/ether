@@ -41,6 +41,9 @@ func (t tileSessions) ServeMedia(w http.ResponseWriter, r *http.Request) { t.bas
 func (t tileSessions) Report(c context.Context, a frontend.SessionAccess, id string, line frontend.Timeline) error {
 	return t.base.Report(c, a, id, line)
 }
+func (t tileSessions) KeepAlive(c context.Context, a frontend.SessionAccess, id string) error {
+	return t.base.KeepAlive(c, a, id)
+}
 func (t tileSessions) Stop(c context.Context, a frontend.SessionAccess, id string) error {
 	return t.base.Stop(c, a, id)
 }

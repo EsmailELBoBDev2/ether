@@ -58,6 +58,7 @@ func TestAppleTVPersistedVersionEmbeddedSubtitles(t *testing.T) {
 func TestDecisionCarriesProbedVersionSubtitles(t *testing.T) {
 	for _, client := range []struct{ product, platform string }{
 		{"Plex for Apple TV", "tvOS"},
+		{"Plex for iOS", "iOS"},
 		{"Plex Web", "Chrome"},
 		{"Plex for Android (TV)", "Android"},
 	} {

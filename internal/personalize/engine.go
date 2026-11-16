@@ -80,7 +80,14 @@ type Options struct {
 	// NotInterestedSnapshot returns signals and their atomically-read shared revision.
 	CatalogRulesRevision  func(*core.User) int64
 	NotInterestedSnapshot func(context.Context, *core.User) ([]NotInterestedSignal, uint64, error)
-	FilterAvailable       func(context.Context, []core.Title) []core.Title
+	// LibraryMembers reports which of keys belong to the library behind a
+	// section (HubContext.SectionID), using the same membership as that
+	// library's All browse, plus a revision that changes when the library's
+	// sources/rules/membership definition change. scoped is false for the
+	// canonical built-in libraries, whose sections keep type-only behaviour.
+	// Nil leaves every section unscoped (type-only).
+	LibraryMembers  func(ctx context.Context, id core.LibraryID, keys []core.RatingKey) (members map[core.RatingKey]bool, revision int64, scoped bool, err error)
+	FilterAvailable func(context.Context, []core.Title) []core.Title
 	// Owner previews use the same effective viewer and title policy as Plex.
 	UserPolicy func(*core.User) *core.User
 	Allowed    func(*core.User, *core.Title) bool
@@ -662,6 +669,10 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	key := memoKey{user: u.ID, section: section, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
 		layout: layoutVer, stats: stats.at.UnixNano(), owner: ownerVer, cw: progressSig(inprog),
 		limits: u.MaxContentRating + "|" + fmt.Sprint(u.AllowedLibraries, u.IsOwner), intent: intentVer, tuning: tune.key(), exclusions: exclusionSig}
+	// A section is one library: same-type libraries never share an assembly.
+	if section != "" && hc.SectionID > 0 {
+		key.library = core.LibraryID(hc.SectionID)
+	}
 	if lead != nil {
 		key.lead = lead.sig
 	}
@@ -671,7 +682,12 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 		policyContinue = e.continueFrom(ctx, inprog)
 	}
 	hidden := map[core.RatingKey]bool{}
-	if e.opts.FilterAvailable != nil || allow != nil {
+	// A custom library's section rows come only from that library's titles:
+	// membership is applied to the full candidate pools here, before
+	// assembly ranks and truncates rows, via the same hidden gate as
+	// availability and viewer policy.
+	libraryScoped := section != "" && key.library != 0 && e.opts.LibraryMembers != nil
+	if e.opts.FilterAvailable != nil || allow != nil || libraryScoped {
 		var pool []core.Title
 		seen := map[core.RatingKey]bool{}
 		for _, row := range append(append([]*candRow{}, m.rows...), owner...) {
@@ -701,6 +717,29 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 					seen[t.Key] = true
 					if ctx.Err() != nil || !allow(ctx, &u, t) {
 						hidden[t.Key] = true
+					}
+				}
+			}
+		}
+		if libraryScoped {
+			poolKeys := make([]core.RatingKey, 0, len(pool))
+			seenKey := map[core.RatingKey]bool{}
+			for i := range pool {
+				if k := pool[i].Key; !seenKey[k] {
+					seenKey[k] = true
+					poolKeys = append(poolKeys, k)
+				}
+			}
+			members, revision, scoped, err := e.opts.LibraryMembers(ctx, key.library, poolKeys)
+			if err != nil {
+				e.log.Warn("personalize: library membership unavailable", "library", key.library, "err", err)
+				return p
+			}
+			if scoped {
+				key.libraryRev = revision
+				for _, k := range poolKeys {
+					if !members[k] {
+						hidden[k] = true
 					}
 				}
 			}
@@ -763,6 +802,8 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 type memoKey struct {
 	user       int64
 	section    core.MediaType
+	library    core.LibraryID // the section's library; 0 = Home or unknown
+	libraryRev int64          // that library's membership/rules revision
 	bucket     string
 	day        int
 	hour       int // layout schedules have hour windows

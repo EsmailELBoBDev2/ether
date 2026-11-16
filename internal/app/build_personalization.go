@@ -147,7 +147,10 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 			return a.availability.FilterDiscovery(ctx, ts)
 		},
 		CatalogRulesRevision: a.catalog.ViewerRulesRevision,
-		UserPolicy:           a.safety.UserPolicy, Allowed: a.safety.Allowed,
+		// A custom library's Recommended rows are scoped to that library's
+		// membership — the same filter its All browse runs (#549).
+		LibraryMembers: a.libraryRecommendationMembers,
+		UserPolicy:     a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {

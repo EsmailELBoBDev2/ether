@@ -180,8 +180,9 @@ func (m *Manager) Usage(ctx context.Context) (UsageReport, error) {
 		out := map[string][2]int64{}
 		var covered [2]int64
 		for p, v := range purposes[k] {
-			// Detail searches have a separate budget class, but belong to
-			// the existing opened-details category in the owner's report.
+			// Detail discovery and unattended warm-ups have independent
+			// allowances but both prepare titles before Play. The console
+			// groups them under "Warm-ups and prefetch", including opened details.
 			category := p
 			if category == core.IndexerPurposeDetail {
 				category = core.IndexerPurposeWarmup

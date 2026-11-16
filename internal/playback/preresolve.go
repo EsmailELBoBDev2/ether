@@ -377,8 +377,8 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		} else if reason == core.PrewarmDetail {
 			// Reusing the remembered source skips Resolve/search. Recover only
 			// the picker candidates, without delaying or changing that source.
-			if refill, ok := m.deps.Resolver.(core.SearchCacheRefiller); ok {
-				refill.RefillSearchCache(title)
+			if refill, ok := m.deps.Resolver.(core.WarmupSearchCacheRefiller); ok {
+				refill.RefillWarmupSearchCache(title)
 			}
 		}
 		if err != nil || res == nil {

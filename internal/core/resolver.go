@@ -6,13 +6,21 @@ import (
 )
 
 // SearchCacheRefiller requests best-effort, non-blocking candidate recovery for
-// an open detail page or an admitted warm-up reusing a remembered source. It searches only;
-// it must not resolve or replace a playback source. The resolver owns the
-// work independently of request/warm-up cancellation and joins it on Close.
+// an open detail page. Unattended callers use WarmupSearchCacheRefiller.
+// It searches only; it must not resolve or replace a playback source.
+// The resolver owns the work independently of request/warm-up cancellation
+// and joins it on Close.
 // A nil signal means skipped; otherwise the signal closes when the existing
 // or newly admitted refill finishes (not necessarily successfully).
 type SearchCacheRefiller interface {
 	RefillSearchCache(*Title) <-chan struct{}
+}
+
+// WarmupSearchCacheRefiller requests the same bounded search recovery as
+// SearchCacheRefiller for unattended work. Its requests spend the warm-up
+// allowance rather than the viewer detail allowance.
+type WarmupSearchCacheRefiller interface {
+	RefillWarmupSearchCache(*Title) <-chan struct{}
 }
 
 // ReleaseBlockChecker lets stored source consumers honor durable owner blocks.

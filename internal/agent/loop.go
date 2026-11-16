@@ -196,7 +196,7 @@ func (s *Service) loop(ctx context.Context, p tools.Principal, threadID, turnID 
 			case llm.EventToolCallDelta:
 				_ = emit(chunkToolInputDelta(ev.ToolCallID, ev.InputDelta))
 			case llm.EventToolCall:
-				calls = append(calls, llm.ToolCall{ID: ev.ToolCallID, Name: ev.ToolName, Input: ev.Input})
+				calls = append(calls, llm.ToolCall{ID: ev.ToolCallID, Name: ev.ToolName, Input: ev.Input, Signature: ev.Signature})
 				var in any
 				_ = json.Unmarshal(ev.Input, &in)
 				if in == nil {
@@ -377,6 +377,10 @@ func (s *Service) executeTool(ctx context.Context, p tools.Principal, threadID, 
 	}()
 	toolPart := part{
 		"type": "tool-" + call.Name, "toolCallId": call.ID, "state": "input-available",
+	}
+	if call.Signature != "" {
+		// Replayed history must return the provider's signature with the call.
+		toolPart["callSignature"] = call.Signature
 	}
 	var input map[string]any
 	if json.Unmarshal(call.Input, &input) != nil || input == nil {

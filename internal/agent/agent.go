@@ -220,7 +220,8 @@ func historyToModel(msgs []Message) []llm.StreamMessage {
 				name := strings.TrimPrefix(typ, "tool-")
 				callID, _ := p["toolCallId"].(string)
 				inputRaw, _ := json.Marshal(p["input"])
-				sm.ToolCalls = append(sm.ToolCalls, llm.ToolCall{ID: callID, Name: name, Input: inputRaw})
+				signature, _ := p["callSignature"].(string)
+				sm.ToolCalls = append(sm.ToolCalls, llm.ToolCall{ID: callID, Name: name, Input: inputRaw, Signature: signature})
 				if outp, present := p["output"]; present {
 					outp = withApprovalOutcome(outp, decided)
 					b, _ := json.Marshal(outp)

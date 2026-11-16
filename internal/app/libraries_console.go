@@ -413,10 +413,6 @@ func (c *librariesConsole) handler() http.Handler {
 			if body.VisibilityDefault != nil {
 				visDefault = *body.VisibilityDefault
 			}
-			if _, err := libraryfilter.CompilePolicy(rules, visDefault); err != nil {
-				libError(w, http.StatusBadRequest, "Invalid visibility rules")
-				return
-			}
 			if err := svc.SetRules(ctx, lib.ID, rules, visDefault); err != nil {
 				libError(w, libErrStatus(err), "Could not save visibility rules")
 				return
@@ -500,7 +496,7 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 			libError(w, http.StatusServiceUnavailable, "Plugin items are unavailable")
 			return
 		}
-		policy, err := pluginitems.LibraryPolicy(r.Context(), lib)
+		policy, err := items.LibraryPolicy(r.Context(), lib)
 		if err != nil {
 			libError(w, 400, "Invalid filter")
 			return
@@ -512,7 +508,7 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 				libError(w, 400, "Invalid filter")
 				return
 			}
-			policy, err = libraryfilter.CompilePolicy(specs, p.Get("ruleFallback"))
+			policy, err = items.CompilePolicy(r.Context(), lib.ID, specs, p.Get("ruleFallback"))
 			if err != nil {
 				libError(w, 400, "Invalid filter")
 				return

@@ -50,6 +50,13 @@ type Filter struct {
 // CompilePolicy compiles ordered rules. fallback is "show" or "hide" for
 // titles that match nothing; empty means show.
 func CompilePolicy(specs []core.LibraryExclusion, fallback string) (*Filter, error) {
+	return compilePolicy(specs, fallback, nil)
+}
+
+// BrowseCompiler validates a kind's field and compiles its indexed predicate.
+type BrowseCompiler func(string, json.RawMessage) (string, []any, error)
+
+func compilePolicy(specs []core.LibraryExclusion, fallback string, browse BrowseCompiler) (*Filter, error) {
 	switch fallback {
 	case "", "show":
 		fallback = "show"
@@ -95,7 +102,7 @@ func CompilePolicy(specs []core.LibraryExclusion, fallback string) (*Filter, err
 			return nil, fmt.Errorf("group %d: scope must be everywhere or discovery", i+1)
 		}
 		for _, r := range s.Rules {
-			c, err := compileCondition(r)
+			c, err := compileConditionDepth(r, 0, browse)
 			if err != nil {
 				return nil, err
 			}
@@ -148,8 +155,10 @@ func (f *Filter) RuleName(index int) string {
 	return f.rules[index].name
 }
 
-func compileCondition(r core.CollectionRule) (condition, error) { return compileConditionDepth(r, 0) }
-func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) {
+func compileCondition(r core.CollectionRule) (condition, error) {
+	return compileConditionDepth(r, 0, nil)
+}
+func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompiler) (condition, error) {
 	if depth > 8 {
 		return condition{}, fmt.Errorf("rule groups may nest at most eight levels")
 	}
@@ -166,7 +175,7 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 		}
 		c := condition{field: r.Field, op: r.Op}
 		for _, s := range specs {
-			child, err := compileConditionDepth(s, depth+1)
+			child, err := compileConditionDepth(s, depth+1, browse)
 			if err != nil {
 				return condition{}, err
 			}
@@ -191,6 +200,13 @@ func compileConditionDepth(r core.CollectionRule, depth int) (condition, error) 
 			f.Group = &g
 		} else {
 			key := strings.TrimPrefix(r.Field, "browse:")
+			if browse != nil {
+				q, args, err := browse(key, r.Value)
+				if err != nil {
+					return condition{}, err
+				}
+				return condition{field: r.Field, op: r.Op, predicate: &f, predicateSQL: q, predicateArgs: args}, nil
+			}
 			valid := false
 			typ := reflect.TypeOf(f)
 			for i := 0; i < typ.NumField(); i++ {

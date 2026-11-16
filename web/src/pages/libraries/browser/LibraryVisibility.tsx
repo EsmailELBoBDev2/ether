@@ -6,7 +6,7 @@ import {
   newBrowseCondition,
 } from "./RuleCondition";
 import { PluginBrowse } from "../PluginBrowse";
-import { librariesApi, type Library as PluginLibrary } from "../api";
+import { librariesApi, type Library as PluginLibrary, type MediaKind } from "../api";
 import { Link } from "react-router-dom";
 import { CatalogBrowser } from "./Catalog";
 import { Button, Input, Select } from "@braedonsaunders/appkit-ui";
@@ -103,21 +103,31 @@ function browsingOnly(rule: VisibilityRule) {
   return actionOf(rule) === "hide" && rule.scope === "discovery";
 }
 
-function conditionLine(rule: Rule): string {
+function conditionLine(rule: Rule, kind?: MediaKind): string {
   if (rule.field === "group" && Array.isArray(rule.value) && rule.value.length === 0)
-    return conditionTitle(rule);
+    return conditionTitle(rule, kind);
   if (rule.field === "group")
-    return `${conditionTitle(rule)} (${(rule.value as Rule[]).map(conditionLine).join(" · ")})`;
+    return `${conditionTitle(rule, kind)} (${(rule.value as Rule[]).map((r) => conditionLine(r, kind)).join(" · ")})`;
   if (rule.field.startsWith("browse:") || rule.field === "viewer")
-    return `${conditionTitle(rule)}: ${conditionValue(rule.value, rule.field)}`;
+    return kind
+      ? rule.op === "isNot"
+        ? t("{field} is not {value}", {
+            field: conditionTitle(rule, kind),
+            value: conditionValue(rule.value),
+          })
+        : t("{field} is {value}", {
+            field: conditionTitle(rule, kind),
+            value: conditionValue(rule.value),
+          })
+      : `${conditionTitle(rule)}: ${conditionValue(rule.value, rule.field)}`;
   if (rule.op === "in") return describeRule({ ...rule, op: "is" });
   return describeRule(rule);
 }
 
 /** "Hide · Genre is Horror, Thriller". The stored name stays in the drawer. */
-function ruleLabel(rule: VisibilityRule, pinnedMediaType?: "movie" | "show") {
+function ruleLabel(rule: VisibilityRule, pinnedMediaType?: "movie" | "show", kind?: MediaKind) {
   const action = actionOf(rule) === "show" ? t("Show") : t("Hide");
-  const bits = rule.rules.filter(isRuleComplete).map(conditionLine);
+  const bits = rule.rules.filter(isRuleComplete).map((r) => conditionLine(r, kind));
   const body =
     rule.match === "any" && bits.length > 1
       ? bits.reduce((left, right) => t("{left} or {right}", { left, right }))
@@ -192,7 +202,7 @@ export function RulesPanel({
     ? FIELDS.filter((f) => f === "year" || f === "rating" || !!pluginFields[f])
     : FIELDS;
   const newCondition = (): Rule =>
-    pluginLibrary ? { field: "year", op: "gte", value: "" } : blank();
+    pluginLibrary ? newBrowseCondition("year", pluginLibrary.kind) : blank();
   const [browse, setBrowse] = useState<"hidden" | "shown" | null>(null);
   const [browseParams, setBrowseParams] = useState(new URLSearchParams());
   const ruleFilter = useMemo(
@@ -262,6 +272,7 @@ export function RulesPanel({
         onChange={change}
         onRemove={remove}
         renderChild={renderCondition}
+        kind={pluginLibrary?.kind}
       />
     ) : (
       <RuleRow
@@ -296,7 +307,7 @@ export function RulesPanel({
               </div>
               <ul className="space-y-1 text-sm">
                 {inheritedPolicy.rules?.map((rule, i) => (
-                  <li key={i}>{ruleLabel(rule, mediaType)}</li>
+                  <li key={i}>{ruleLabel(rule, mediaType, pluginLibrary?.kind)}</li>
                 ))}
               </ul>
               <p className="text-sm text-fg-muted">
@@ -367,7 +378,7 @@ export function RulesPanel({
                       onClick={() => setOpen(i)}
                     >
                       <span className="block text-sm font-medium sm:truncate">
-                        {ruleLabel(rule, mediaType)}
+                        {ruleLabel(rule, mediaType, pluginLibrary?.kind)}
                       </span>
                     </button>
                     {counts ? (
@@ -652,25 +663,26 @@ export function RulesPanel({
                   () => update(open, { rules: editing.rules.filter((_, k) => k !== j) }),
                 ),
               )}
-              {!pluginLibrary ? (
-                <Select
-                  aria-label={t("Add condition")}
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value)
-                      update(open, {
-                        rules: [...editing.rules, newBrowseCondition(e.target.value)],
-                      });
-                  }}
-                >
-                  <option value="">{t("More conditions")}</option>
-                  {browseFields().map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </Select>
-              ) : null}
+              <Select
+                aria-label={t("Add condition")}
+                value=""
+                onChange={(e) => {
+                  if (e.target.value)
+                    update(open, {
+                      rules: [
+                        ...editing.rules,
+                        newBrowseCondition(e.target.value, pluginLibrary?.kind),
+                      ],
+                    });
+                }}
+              >
+                <option value="">{t("More conditions")}</option>
+                {browseFields(pluginLibrary?.kind).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
               <Button
                 size="sm"
                 variant="outline"

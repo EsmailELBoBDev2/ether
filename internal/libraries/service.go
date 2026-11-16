@@ -364,7 +364,12 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 	}
 	compile := libraryfilter.CompilePolicy
 	if lib.Source == core.LibraryPlugin {
-		compile = libraryfilter.CompilePluginPolicy
+		compile = func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+			if s.compilePluginPolicy != nil {
+				return s.compilePluginPolicy(ctx, lib.ID, specs, fallback)
+			}
+			return libraryfilter.CompilePluginPolicy(specs, fallback)
+		}
 	}
 	if _, err := compile(normalized, visibilityDefault); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalid, err.Error())

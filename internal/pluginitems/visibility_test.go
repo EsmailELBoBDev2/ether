@@ -86,3 +86,51 @@ func TestPluginVisibilityAndEnvelopeFacets(t *testing.T) {
 	}
 
 }
+
+// Declared predicates share indexed browse semantics, including nested groups,
+// negation, previews and direct item visibility; unknown keys fail closed.
+func TestDeclaredFacetRules(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestService(t, Options{})
+	decl := sampleBookDecl()
+	if _, err := s.UpsertKind(ctx, "community.books", 10, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", []core.KindItem{
+		{ID: "a", Level: "series", Title: "Alpha", Fields: map[string]json.RawMessage{"format": json.RawMessage(`"epub"`), "pages": json.RawMessage(`120`)}},
+		{ID: "b", Level: "series", Title: "Beta", Fields: map[string]json.RawMessage{"format": json.RawMessage(`"pdf"`), "pages": json.RawMessage(`240`)}},
+		{ID: "c", Level: "series", Title: "Gamma"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	specs := []core.LibraryExclusion{{Action: "show", MediaType: "mixed", Match: "all", Rules: []core.CollectionRule{{Field: "group", Op: "is", Value: json.RawMessage(`[{"field":"browse:format","op":"isNot","value":"pdf"},{"field":"browse:pages","op":"is","value":"120"}]`)}}}}
+	policy, err := s.CompilePolicy(ctx, 10, specs, "hide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.Browse(ctx, BrowseQuery{LibraryID: 10, Policy: policy})
+	if err != nil || page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != "a" {
+		t.Fatalf("declared rules: %+v %v", page, err)
+	}
+	facet, err := s.Browse(ctx, BrowseQuery{LibraryID: 10, Facets: map[string][]string{"format": {"epub"}, "pages": {"120"}}})
+	if err != nil || facet.Total != page.Total {
+		t.Fatalf("browse parity: %+v %v", facet, err)
+	}
+	preview, err := s.PreviewVisibility(ctx, 10, specs, "hide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := preview.(map[string]any)
+	if p["visible"] != 1 || p["hidden"] != 2 {
+		t.Fatalf("preview: %+v", p)
+	}
+	lib := core.Library{ID: 10, Rules: specs, VisibilityDefault: "hide"}
+	hidden, err := s.ItemHidden(ctx, lib, core.NewItemRef("community.books", "book", "b"))
+	if err != nil || !hidden {
+		t.Fatalf("item visibility: %v %v", hidden, err)
+	}
+	specs[0].Rules = []core.CollectionRule{{Field: "browse:undeclared", Op: "is", Value: json.RawMessage(`"x"`)}}
+	if _, err := s.CompilePolicy(ctx, 10, specs, "hide"); err == nil {
+		t.Fatal("undeclared field accepted")
+	}
+}

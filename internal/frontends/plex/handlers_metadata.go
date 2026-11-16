@@ -234,6 +234,15 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if len(keys) == 1 && isPlayable(t.Type) {
+				// Android TV builds its subtitle picker from this refresh after
+				// a manual pick. Join only an already pending download for this
+				// exact Part and client session; browsing never starts one.
+				if pr.User != nil && plexMobileOrTVBedrockClient(pr) {
+					partID := s.playIDs.selectedPart(s.playIdentityFor(pr, t.Key))
+					s.subtitlePicks.waitForPart(ctx, subtitlePickKey{
+						user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,
+					})
+				}
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
@@ -1330,6 +1339,12 @@ func (s *Server) detailSearchAllowed(pr *Request) bool {
 // bounded cached-source probe exception so their first subtitle picker works.
 func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *frontend.Title) {
 	if t == nil || pr == nil || pr.User == nil || !isPlayable(t.Type) {
+		return
+	}
+	// Persisted tracks already describe the selected resume source. Version
+	// discovery is scheduled independently; do not reopen that source just
+	// because a client refreshed its detail page after a restart.
+	if _, _, ok := s.resumedTracks(ctx, pr, t); ok {
 		return
 	}
 	if plexMobileOrTVBedrockClient(pr) {

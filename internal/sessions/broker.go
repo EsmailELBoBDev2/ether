@@ -687,7 +687,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			planErr = fmt.Errorf("release %s: %w", ps.Resolution.Release.ID, planErr)
 		}
 	}()
-	if req.Intent.ExactVersion && (ps.Resolution == nil || ps.Resolution.Release.ID != req.Version) {
+	if req.Intent.ExactVersion && !ps.Resolution.MatchesVersion(req.Version) {
 		if !existed || previous == nil || previous.ID != ps.ID {
 			b.deps.Playback.Stop(ps.ID)
 		}
@@ -759,9 +759,9 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	exactRelease := ""
-	if req.Intent.ExactVersion {
-		exactRelease = req.Version
-	} else if versionHandle != "" && ps.Resolution != nil && ps.Resolution.Release.ID != "" {
+	// The selected logical slot was validated above. Pin its admitted
+	// concrete release for Open and all later source-revision checks.
+	if (req.Intent.ExactVersion || versionHandle != "") && ps.Resolution != nil && ps.Resolution.Release.ID != "" {
 		exactRelease = ps.Resolution.Release.ID
 	}
 	if detail != nil {

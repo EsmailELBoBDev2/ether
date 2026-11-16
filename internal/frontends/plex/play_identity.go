@@ -162,6 +162,20 @@ func (p *playIdentities) entryLocked(k playIdentityKey, now time.Time) *playIden
 	return e
 }
 
+// selectedPart reads the current Part without freezing or extending the issued
+// version list merely because a client is checking for a pending subtitle pick.
+func (p *playIdentities) selectedPart(k playIdentityKey) int64 {
+	if p == nil || !k.valid() {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e := p.m[k]; e != nil {
+		return e.selected
+	}
+	return 0
+}
+
 // pinned returns the identity's list. live renders (a session exists)
 // freeze it; a render without a session or admission thaws it, so the
 // selected playback state can be cleared. The issued list remains valid

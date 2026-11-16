@@ -30,7 +30,10 @@ const (
 // a later load shows versions.
 func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
 	if core.LocalResponse(ctx) {
-		return s.detailVariantRead(req, max, false)
+		// Detail responses expose stable logical choices immediately. Only
+		// the background snapshot may attach policy-checked concrete sources;
+		// a cold snapshot must never make the client's version menu disappear.
+		return s.VersionSlots(ctx, req, max, true)
 	}
 	return s.variants(ctx, req, max)
 }

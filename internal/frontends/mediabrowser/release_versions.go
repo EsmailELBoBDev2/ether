@@ -290,8 +290,14 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		}
 	}
 	needDefault := scopeErr != nil || len(d.Versions) == 0
-	for _, version := range d.Versions {
+	for n, version := range d.Versions {
 		if releaseID != "" && version.ID != releaseID {
+			continue
+		}
+		// The first configured slot is Auto. Keep MediaBrowser's default
+		// item identity for it; explicit alternatives still use scoped handles.
+		if n == 0 && releaseID == "" && scopeErr == nil && strings.HasPrefix(version.ID, frontend.VersionSelectorPrefix) {
+			sources = append(sources, i.defaultMediaSource(r, v, token, key))
 			continue
 		}
 		if scopeErr != nil {

@@ -135,6 +135,7 @@ export function GuideGrid({
   selection,
   bulkActions,
   toolbarStart,
+  toolbarFilters,
 }: {
   /** Sparse by design: only rows near the viewport have been fetched. */
   channels: (Channel | undefined)[];
@@ -171,6 +172,8 @@ export function GuideGrid({
   bulkActions?: ReactNode;
   /** Extra controls at the start of the toolbar row (not in the lineup view). */
   toolbarStart?: ReactNode;
+  /** Filters shown before the time controls in the full-width toolbar. */
+  toolbarFilters?: ReactNode;
 }) {
   const lineup = head !== undefined;
   const loadedChannels = useMemo(
@@ -264,6 +267,8 @@ export function GuideGrid({
 
   // The day being looked at follows the scroll position, not the window.
   const focusedDay = guideDayOffset(start + (view.left / ppm) * MINUTE + LEAD, now);
+  // Whether the live now-line is on screen: "Now" only shows once away from it.
+  const nowInView = x(now) >= view.left && x(now) <= view.left + view.width;
   const days = guideDayCount(now, guideUntil);
   const today = midnight(now);
   // Show `focus`: scroll there when the window holds it, otherwise move the
@@ -390,106 +395,201 @@ export function GuideGrid({
           {lineup ? (
             <OnNowStrip channels={loadedChannels} guide={guide} now={now} onSelect={onSelect} />
           ) : null}
-          <div
-            className={cn(
-              "flex min-w-0 flex-wrap items-center gap-1 bg-surface px-2 py-1.5",
-              channels.length === 0 && !toolbarStart && "max-sm:hidden",
-              lineup
-                ? "ml-auto w-44 shrink-0 content-center justify-center border-l border-border"
-                : "flex-1 border-b border-border sm:px-4",
-            )}
-          >
-            {!lineup ? toolbarStart : null}
+          {lineup ? (
             <div
               className={cn(
-                "flex min-w-0 items-center gap-2",
-                lineup ? "w-full justify-center" : "mr-auto",
+                "flex min-w-0 flex-wrap items-center gap-1 bg-surface px-2 py-1.5",
+                channels.length === 0 && !toolbarStart && "max-sm:hidden",
+                lineup
+                  ? "ml-auto w-44 shrink-0 content-center justify-center border-l border-border"
+                  : "flex-1 border-b border-border sm:px-4",
               )}
             >
-              <h2
+              {!lineup ? toolbarStart : null}
+              <div
                 className={cn(
-                  "text-sm font-semibold text-fg",
-                  (lineup || toolbarStart) && "sr-only",
+                  "flex min-w-0 items-center gap-2",
+                  lineup ? "w-full justify-center" : "mr-auto",
                 )}
               >
-                {t("Guide")}
-              </h2>
-              <span className={cn("text-xs text-fg-muted", lineup && "sr-only")}>
-                {tn(channels.length, "{day} · {count} channel", "{day} · {count} channels", {
-                  day: dayLabel,
-                })}
-              </span>
-              <ToolbarPicker
-                ariaLabel={t("Day")}
-                value={`day:${focusedDay}`}
-                trigger={<span className="min-w-0 truncate">{dayMenu.label(focusedDay)}</span>}
-                options={dayMenu.options}
-                searchable={false}
-                // Sized like the heading it replaces, so the toolbar keeps its height.
-                className="h-5 max-w-[9rem] border-transparent bg-transparent px-1 text-sm font-semibold shadow-none"
-                menuClassName="w-56"
-                onChange={(v) => {
-                  if (v.startsWith("day:")) return pickDay(Number(v.slice(4)));
-                  const j = JUMPS.find((o) => `jump:${o.value}` === v);
-                  if (j) jump(j.hour);
-                }}
+                <h2
+                  className={cn(
+                    "text-sm font-semibold text-fg",
+                    (lineup || toolbarStart) && "sr-only",
+                  )}
+                >
+                  {t("Guide")}
+                </h2>
+                <span className={cn("text-xs text-fg-muted", lineup && "sr-only")}>
+                  {tn(channels.length, "{day} · {count} channel", "{day} · {count} channels", {
+                    day: dayLabel,
+                  })}
+                </span>
+                <ToolbarPicker
+                  ariaLabel={t("Day")}
+                  value={`day:${focusedDay}`}
+                  trigger={<span className="min-w-0 truncate">{dayMenu.label(focusedDay)}</span>}
+                  options={dayMenu.options}
+                  searchable={false}
+                  // Sized like the heading it replaces, so the toolbar keeps its height.
+                  className="h-5 max-w-[9rem] border-transparent bg-transparent px-1 text-sm font-semibold shadow-none"
+                  menuClassName="w-56"
+                  onChange={(v) => {
+                    if (v.startsWith("day:")) return pickDay(Number(v.slice(4)));
+                    const j = JUMPS.find((o) => `jump:${o.value}` === v);
+                    if (j) jump(j.hour);
+                  }}
+                />
+                {loading ? (
+                  lineup ? (
+                    <Spinner size={12} label={t("Updating…")} />
+                  ) : (
+                    <span className="text-xs text-fg-subtle">{t("Updating…")}</span>
+                  )
+                ) : null}
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("Earlier")}
+                  onClick={() => onShift(-3)}
+                >
+                  <ChevronLeft size={15} />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    jumpNow();
+                    scrollToNow(true);
+                  }}
+                >
+                  <span className="relative mr-1 flex size-2">
+                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-danger/60" />
+                    <span className="relative inline-flex size-2 rounded-full bg-danger" />
+                  </span>
+                  {t("Now")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("Later")}
+                  onClick={() => onShift(3)}
+                >
+                  <ChevronRight size={15} />
+                </Button>
+              </div>
+              <Segmented
+                ariaLabel={t("Zoom")}
+                size="sm"
+                value={zoom}
+                onChange={setZoom}
+                options={[
+                  { value: "tight", label: unit(GUIDE_ZOOM_HOURS.tight, "hour") },
+                  { value: "normal", label: unit(GUIDE_ZOOM_HOURS.normal, "hour") },
+                  { value: "wide", label: unit(GUIDE_ZOOM_HOURS.wide, "hour") },
+                ]}
               />
-              {loading ? (
-                lineup ? (
-                  <Spinner size={12} label={t("Updating…")} />
-                ) : (
-                  <span className="text-xs text-fg-subtle">{t("Updating…")}</span>
-                )
-              ) : null}
-            </div>
-            <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
-                aria-label={t("Earlier")}
-                onClick={() => onShift(-3)}
+                aria-label={full ? t("Exit full screen") : t("Full screen guide")}
+                aria-pressed={full}
+                onClick={() => void toggleFull()}
               >
-                <ChevronLeft size={15} />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  jumpNow();
-                  scrollToNow(true);
-                }}
-              >
-                <span className="relative mr-1 flex size-2">
-                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-danger/60" />
-                  <span className="relative inline-flex size-2 rounded-full bg-danger" />
-                </span>
-                {t("Now")}
-              </Button>
-              <Button variant="ghost" size="sm" aria-label={t("Later")} onClick={() => onShift(3)}>
-                <ChevronRight size={15} />
+                {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
               </Button>
             </div>
-            <Segmented
-              ariaLabel={t("Zoom")}
-              size="sm"
-              value={zoom}
-              onChange={setZoom}
-              options={[
-                { value: "tight", label: unit(GUIDE_ZOOM_HOURS.tight, "hour") },
-                { value: "normal", label: unit(GUIDE_ZOOM_HOURS.normal, "hour") },
-                { value: "wide", label: unit(GUIDE_ZOOM_HOURS.wide, "hour") },
-              ]}
-            />
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={full ? t("Exit full screen") : t("Full screen guide")}
-              aria-pressed={full}
-              onClick={() => void toggleFull()}
-            >
-              {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            </Button>
-          </div>
+          ) : (
+            // One bar: views on the left; filters, then one time cluster
+            // (earlier · day · later, and "Now" only once away from now),
+            // then zoom and full screen on the right.
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-3 py-2 sm:px-4">
+              {toolbarStart}
+              <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+                {toolbarFilters}
+                {toolbarFilters ? (
+                  <span className="hidden h-5 w-px bg-border sm:block" aria-hidden />
+                ) : null}
+                <div className="flex items-center gap-0.5 rounded-lg border border-border bg-bg p-0.5">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={t("Earlier")}
+                    onClick={() => onShift(-3)}
+                  >
+                    <ChevronLeft size={15} />
+                  </Button>
+                  <ToolbarPicker
+                    ariaLabel={t("Day")}
+                    value={`day:${focusedDay}`}
+                    trigger={
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        {nowInView ? (
+                          <span className="relative flex size-2 shrink-0">
+                            <span className="absolute inline-flex size-full animate-ping rounded-full bg-danger/60" />
+                            <span className="relative inline-flex size-2 rounded-full bg-danger" />
+                          </span>
+                        ) : null}
+                        <span className="min-w-0 truncate">{dayMenu.label(focusedDay)}</span>
+                      </span>
+                    }
+                    options={dayMenu.options}
+                    searchable={false}
+                    className="h-7 max-w-[11rem] border-transparent bg-transparent px-2 text-sm font-medium shadow-none"
+                    menuClassName="w-56"
+                    onChange={(v) => {
+                      if (v.startsWith("day:")) return pickDay(Number(v.slice(4)));
+                      const j = JUMPS.find((o) => `jump:${o.value}` === v);
+                      if (j) jump(j.hour);
+                    }}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={t("Later")}
+                    onClick={() => onShift(3)}
+                  >
+                    <ChevronRight size={15} />
+                  </Button>
+                  {nowInView ? null : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        jumpNow();
+                        scrollToNow(true);
+                      }}
+                    >
+                      {t("Now")}
+                    </Button>
+                  )}
+                </div>
+                {loading ? <Spinner size={14} label={t("Updating…")} /> : null}
+                <Segmented
+                  ariaLabel={t("Zoom")}
+                  size="sm"
+                  value={zoom}
+                  onChange={setZoom}
+                  options={[
+                    { value: "wide", label: unit(GUIDE_ZOOM_HOURS.wide, "hour") },
+                    { value: "normal", label: unit(GUIDE_ZOOM_HOURS.normal, "hour") },
+                    { value: "tight", label: unit(GUIDE_ZOOM_HOURS.tight, "hour") },
+                  ]}
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={full ? t("Exit full screen") : t("Full screen guide")}
+                  aria-pressed={full}
+                  onClick={() => void toggleFull()}
+                >
+                  {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

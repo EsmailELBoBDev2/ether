@@ -118,12 +118,8 @@ export function GuidePage({
   );
 
   // One toolbar row: these sit at the start of the grid's own toolbar.
-  const gridToolbar = (
+  const gridFilters = (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
-      {subTabs}
-      <span className="text-xs text-fg-muted" id="guide-seen-in">
-        {t("As seen in")}
-      </span>
       <ToolbarPicker
         ariaLabel={t("As seen in")}
         value={app}
@@ -186,7 +182,8 @@ export function GuidePage({
           query={query}
           now={now}
           guideUntil={guideUntil}
-          toolbarStart={gridToolbar}
+          toolbarStart={subTabs}
+          toolbarFilters={gridFilters}
           selectedChannelId={selectedChannelId}
           onSelectChannel={onSelectChannel}
           onInspect={onInspect}
@@ -245,6 +242,7 @@ function TVGuide({
   now,
   guideUntil,
   toolbarStart,
+  toolbarFilters,
   selectedChannelId,
   onSelectChannel,
   onInspect,
@@ -259,6 +257,7 @@ function TVGuide({
   now: number;
   guideUntil?: number;
   toolbarStart?: ReactNode;
+  toolbarFilters?: ReactNode;
   selectedChannelId: string | null;
   onSelectChannel: (id: string) => void;
   onInspect: (c: Channel, p: Programme) => void;
@@ -324,6 +323,7 @@ function TVGuide({
     <div className="flex min-h-0 flex-1 flex-col">
       <GuideGrid
         toolbarStart={toolbarStart}
+        toolbarFilters={toolbarFilters}
         // Summaries carry everything the grid's channel column reads.
         channels={rows as Channel[]}
         guide={guide}

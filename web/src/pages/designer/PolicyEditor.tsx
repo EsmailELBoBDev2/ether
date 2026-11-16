@@ -126,6 +126,22 @@ export function PolicyEditor({
             { value: "off", label: t("Off") },
           ]}
         />
+        <p className="text-fg-muted">{t("Titles other rows show")}</p>
+        <Segmented
+          ariaLabel={t("Titles other rows show")}
+          size="sm"
+          value={policy.showRepeats ? "keep" : "skip"}
+          onChange={(v) => onChange({ ...policy, showRepeats: v === "keep" ? true : undefined })}
+          options={[
+            { value: "skip", label: t("Skip") },
+            { value: "keep", label: t("Keep") },
+          ]}
+        />
+        <p className="text-fg-muted">
+          {t(
+            "Skip leaves out titles another row on the page already shows. Keep shows this row in full, like a Top 10 under Trending.",
+          )}
+        </p>
       </div>
       <div className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-2">
         <span className="text-fg-muted">{t("Anchor to slot")}</span>

@@ -419,6 +419,8 @@ export type RowStatus = "always" | "eligible" | "off";
 export interface RowPolicy {
   previewOnFocus?: boolean;
   rankedTop10?: boolean;
+  /** Keep titles that other rows on the page also show. */
+  showRepeats?: boolean;
   /** Kind ("short-on-time"), "collection:<id>", a hub id, or a glob ("because.*"). */
   row: string;
   status: RowStatus;

@@ -558,6 +558,12 @@ export function RulesPanel({
           onClose={() => setBrowse(null)}
           title={browse === "hidden" ? t("Hidden by rules") : t("Shown by rules")}
           size="2xl"
+          // The browser is its own height-bounded scroller (.catalog-scroll);
+          // a scrolling drawer body would let it grow to all its pages and
+          // make its infinite scroll load the whole library.
+          bodyClassName={
+            browse && !pluginLibrary ? "flex min-h-0 flex-col overflow-hidden" : undefined
+          }
         >
           {browse && pluginLibrary ? (
             <PluginBrowse

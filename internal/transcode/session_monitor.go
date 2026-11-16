@@ -122,6 +122,17 @@ func (s *Session) poll(r *run, playlist string, exited bool) {
 			s.failRunOutputLocked(r, fmt.Errorf("transcode: segment %d is empty", n))
 			break
 		}
+		if s.liveInput && s.total == 0 && !s.isDASH() {
+			d := time.Duration(0)
+			if i < len(p.entries) {
+				d = p.entries[i].dur
+			}
+			if err := s.validateLiveDurationLocked(n, d); err != nil {
+				_ = os.Remove(path)
+				s.failRunOutputLocked(r, err)
+				break
+			}
+		}
 		if s.heldToClock(r) {
 			path := s.trackSegPath(t, n)
 			err := s.moveOntoRetainedLocked(r, t, path)
@@ -143,8 +154,8 @@ func (s *Session) poll(r *run, playlist string, exited bool) {
 		r.produced++
 		r.maxDone = n
 		s.done[t][n] = true
-		if s.liveInput && t == 0 && i < len(p.entries) {
-			s.noteLiveDurationLocked(n, p.entries[i].dur)
+		if s.liveInput && i < len(p.entries) {
+			s.noteLiveDurationLocked(t, n, p.entries[i].dur)
 		}
 		if t == 0 {
 			s.noteSegSizeLocked(n, s.trackSegPath(t, n))
@@ -387,6 +398,17 @@ func (s *Session) finish(r *run) {
 	defer s.broadcastLocked()
 	if s.closed || r.stopped || s.cur != r {
 		return
+	}
+	var targetErr *liveTargetError
+	if errors.As(err, &targetErr) {
+		if s.liveRejected == nil {
+			s.liveRejected = map[string]bool{}
+		}
+		s.liveRejected[s.input] = true
+		s.failErr = err
+		s.endSeg = r.next() - 1
+		s.notifyInputFailureLocked(r)
+		return // deterministic geometry failure: no hardware or same-source retry
 	}
 	if s.traceOn() {
 		why := "eof"

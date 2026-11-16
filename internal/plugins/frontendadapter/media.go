@@ -2,7 +2,10 @@ package frontendadapter
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +30,8 @@ type MediaDeps struct {
 	// request's accepted MIME types. It runs the same authorization path
 	// kind playback uses.
 	Open func(ctx context.Context, viewer *core.Viewer, itemRef string, accept []string) (*frontend.KindMedia, error)
+	// Log records each refused request with its cause (optional).
+	Log *slog.Logger
 }
 
 // MediaHandler serves /ether/v1/kind-media/{ticket}: it redeems the ticket,
@@ -50,27 +55,63 @@ func NewMediaHandler(deps MediaDeps) *MediaHandler {
 func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, KindMediaPath)
 	if token == "" || strings.Contains(token, "/") {
-		http.Error(w, "not found", http.StatusNotFound)
+		h.refuse(w, http.StatusNotFound, "ticket_invalid", "The media ticket is missing or malformed.", nil, "")
 		return
 	}
 	grant, err := h.deps.Tickets.Redeem(token)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		h.refuse(w, http.StatusNotFound, "ticket_invalid", "The media ticket is unknown, expired or out of scope.", err, "")
 		return
 	}
 	viewer, err := h.deps.Viewer(r.Context(), grant.ViewerID)
 	if err != nil || viewer == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		h.refuse(w, http.StatusForbidden, "viewer_invalid", "The viewer this ticket was issued to can no longer play.", err, grant.ItemID)
 		return
 	}
 	accept := parseAccept(r.Header.Get("Accept"))
 	media, err := h.deps.Open(r.Context(), viewer, grant.ItemID, accept)
 	if err != nil || media == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		status, code, message := openFailure(err)
+		h.refuse(w, status, code, message, err, grant.ItemID)
 		return
 	}
 	defer media.Closer.Close()
 	h.serve(w, r, media)
+}
+
+// refuse answers a failed kind-media request in the API's error shape, with
+// the code in X-Ether-Media-Error, and logs the cause host-side. Upstream
+// error text stays in the log: it can name internal hosts or paths.
+func (h *MediaHandler) refuse(w http.ResponseWriter, status int, code, message string, err error, item string) {
+	if h.deps.Log != nil {
+		args := []any{"code", code, "status", status}
+		if item != "" {
+			args = append(args, "item", item)
+		}
+		if err != nil {
+			args = append(args, "err", err)
+		}
+		h.deps.Log.Info("kind media refused", args...)
+	}
+	w.Header().Set("X-Ether-Media-Error", code)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+
+// openFailure classifies why an authorized item could not be opened.
+func openFailure(err error) (int, string, string) {
+	switch {
+	case err == nil, errors.Is(err, core.ErrNotAvailable):
+		return http.StatusConflict, "no_source", "The item has no playable source."
+	case errors.Is(err, core.ErrNotFound):
+		return http.StatusNotFound, "item_not_found", "The item is not in a library this viewer can open."
+	case errors.Is(err, core.ErrSourceUnavailable):
+		return http.StatusServiceUnavailable, "source_unavailable", "The item's source is temporarily unavailable."
+	default:
+		return http.StatusBadGateway, "open_failed", "The item's source could not be opened."
+	}
 }
 
 // serve streams the media with Range support. ServeContent needs an

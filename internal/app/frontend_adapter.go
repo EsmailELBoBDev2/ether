@@ -203,6 +203,7 @@ func (a *App) adapterMediaHandler() *frontendadapter.MediaHandler {
 	resolver := a.pluginsRT.kindResolver
 	return frontendadapter.NewMediaHandler(frontendadapter.MediaDeps{
 		Tickets: issuer,
+		Log:     a.log.With("component", "kind-media"),
 		Viewer: func(ctx context.Context, id int64) (*core.Viewer, error) {
 			if a.users == nil {
 				return nil, core.ErrNotFound

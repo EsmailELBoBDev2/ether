@@ -210,5 +210,48 @@ class KindsConformanceTest(unittest.TestCase):
             ctx.stream_url("pk:recordings:a")
 
 
+
+
+class ArchiveExtractSdkTest(unittest.TestCase):
+    def test_mock_and_remote_archive_extract(self):
+        import hashlib
+        import io
+        import zipfile
+        import zlib
+        from ether_plugin import RemoteHostClient
+
+        buf = io.BytesIO()
+        payload = b"panasonic-3do-track-data"
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("disc/track01.iso", payload)
+            zf.writestr("../unsafe.iso", b"bad")
+
+        mock = create_mock_host_client()
+        archive_ref = mock.cache.put("pk-test-games", "disc.zip", buf.getvalue())
+        members = mock.archive.list(archive_ref)
+        self.assertEqual(len(members), 2)
+        self.assertTrue(members[1].get("unsafe"))
+
+        extracted = mock.archive.extract(archive_ref, 0)
+        self.assertEqual(extracted["ref"], "blob:" + hashlib.sha256(payload).hexdigest())
+        self.assertEqual(extracted["size"], len(payload))
+        self.assertEqual(extracted["sha1"], hashlib.sha1(payload).hexdigest())
+        self.assertEqual(extracted["md5"], hashlib.md5(payload).hexdigest())
+        self.assertEqual(extracted["crc32"], f"{zlib.crc32(payload) & 0xFFFFFFFF:08x}")
+        self.assertEqual(mock.cache.open(extracted["ref"]), payload)
+
+        with self.assertRaises(RuntimeError):
+            mock.archive.extract(archive_ref, 1)
+
+        seen = []
+        client = RemoteHostClient(base_url="http://ether.local", credential="cred")
+        client.archive._call = lambda method, path, body=None, allow_404=False: (  # type: ignore[method-assign]
+            seen.append((method, path, body)) or extracted
+        )
+        out = client.archive.extract(archive_ref, 0)
+        self.assertEqual(out, extracted)
+        self.assertEqual(seen, [("POST", "/ether/plugin-host/data/archive.extract", [archive_ref, 0])])
+
+
 if __name__ == "__main__":
     unittest.main()

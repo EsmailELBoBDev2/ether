@@ -376,7 +376,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open":
+	case "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open", "archive.extract":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -601,9 +601,12 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 }
 
 func mapHostError(err error) error {
+	var fault *wasm.Fault
 	var input *CollectionInputError
 	var valid *ValidationError
 	switch {
+	case errors.As(err, &fault):
+		return fault
 	case errors.As(err, &input):
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: input.Message}
 	case errors.As(err, &valid):

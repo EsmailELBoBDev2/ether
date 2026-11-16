@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   candidateRef,
+  createHostedClient,
   createMockHostClient,
+  createRemoteHostClient,
   parseFeed,
   plugin,
   streamUrl,
@@ -174,4 +176,46 @@ test("frontend stream url host service", async () => {
   assert.deepEqual(host.state.lastStreamUrl, [7, "pk:recordings:a"]);
   const noViewer = { ether: host, headers: {} } as unknown as Parameters<typeof streamUrl>[0];
   await assert.rejects(() => streamUrl(noViewer, "pk:recordings:a"));
+});
+
+test("archive.extract wires hosted and remote clients", async () => {
+  const calls: Array<{ name: string; args: unknown }> = [];
+  const expected = {
+    ref: "blob:" + "a".repeat(64),
+    size: 4096,
+    sha1: "b".repeat(40),
+    md5: "c".repeat(32),
+    crc32: "12345678",
+  };
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  g.__ether_host = (name: string, raw: string) => {
+    calls.push({ name, args: JSON.parse(raw) });
+    return JSON.stringify(expected);
+  };
+  try {
+    const hosted = createHostedClient();
+    const out1 = await hosted.archive!.extract("blob:" + "0".repeat(64), 2);
+    assert.deepEqual(out1, expected);
+    assert.deepEqual(calls[0], { name: "archive.extract", args: ["blob:" + "0".repeat(64), 2] });
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+
+  let remoteCall: { url: string; body: unknown } | undefined;
+  const remote = createRemoteHostClient({
+    baseUrl: "http://ether.local",
+    credential: "cred-1",
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      remoteCall = { url: String(url), body: JSON.parse(String(init?.body ?? "null")) };
+      return new Response(JSON.stringify(expected), { status: 200 });
+    }) as typeof fetch,
+  });
+  const out2 = await remote.archive!.extract("blob:" + "0".repeat(64), 2, { name: "track01.bin" });
+  assert.deepEqual(out2, expected);
+  assert.deepEqual(remoteCall, {
+    url: "http://ether.local/ether/plugin-host/data/archive.extract",
+    body: ["blob:" + "0".repeat(64), 2, { name: "track01.bin" }],
+  });
 });

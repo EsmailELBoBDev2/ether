@@ -11,7 +11,11 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"path"
+	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
 // Data-service limits are host enforced, independent of guest memory. All
@@ -46,6 +50,26 @@ type FetchCacheResult struct {
 	Status int    `json:"status"`
 }
 
+// ArchiveExtractOptions optionally targets one of the plugin's declared media
+// kind libraries or overrides the stored entry name when extracting a member.
+// When omitted, archive.extract writes into the source archive's own library
+// cache namespace (or the plugin's first declared media kind) using the
+// member's base name.
+type ArchiveExtractOptions struct {
+	LibraryKey string `json:"libraryKey,omitempty"`
+	Name       string `json:"name,omitempty"`
+}
+
+// ArchiveExtractResult is returned by archive.extract after streaming an
+// uncompressed archive member into the plugin's own blob cache in one pass.
+type ArchiveExtractResult struct {
+	Ref   string `json:"ref"`
+	Size  int64  `json:"size"`
+	SHA1  string `json:"sha1"`
+	MD5   string `json:"md5"`
+	CRC32 string `json:"crc32"`
+}
+
 // boundedDataReader propagates cancellation and rejects overflow instead of
 // turning a truncated file into a successful content-addressed cache entry.
 type boundedDataReader struct {
@@ -70,6 +94,55 @@ func (r *boundedDataReader) Read(p []byte) (int, error) {
 	r.size += int64(n)
 	if r.left < 0 {
 		return n, fmt.Errorf("plugins: data exceeds size limit")
+	}
+	return n, err
+}
+
+// archiveExtractReader bounds extracted bytes by both the archive member grant
+// and the target library cache quota, charges per-MiB governance units, and
+// refuses truncated streams before CachePut commits a partial blob.
+type archiveExtractReader struct {
+	ctx         context.Context
+	r           io.Reader
+	memberLimit int64
+	cacheLimit  int64
+	expected    int64
+	size        int64
+	chargedMiB  int64
+}
+
+func (r *archiveExtractReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	maxAllowed := min(r.memberLimit, r.cacheLimit)
+	if r.size > maxAllowed {
+		if r.size > r.cacheLimit {
+			return 0, fmt.Errorf("%w: archive member exceeds library cache quota", ErrQuotaExceeded)
+		}
+		return 0, fmt.Errorf("plugins: archive member exceeds size grant")
+	}
+	if rem := maxAllowed - r.size; rem < int64(len(p))-1 {
+		p = p[:rem+1]
+	}
+	n, err := r.r.Read(p)
+	if n > 0 {
+		r.size += int64(n)
+		if r.size > r.memberLimit {
+			return n, fmt.Errorf("plugins: archive member exceeds size grant")
+		}
+		if r.size > r.cacheLimit {
+			return n, fmt.Errorf("%w: archive member exceeds library cache quota", ErrQuotaExceeded)
+		}
+		if wantMiB := (r.size + (1 << 20) - 1) >> 20; wantMiB > r.chargedMiB {
+			if cerr := wasm.ChargeUnits(r.ctx, (wantMiB-r.chargedMiB)*wasm.ArchiveExtractUnitsPerMiB); cerr != nil {
+				return n, cerr
+			}
+			r.chargedMiB = wantMiB
+		}
+	}
+	if err == io.EOF && r.size != r.expected {
+		return n, io.ErrUnexpectedEOF
 	}
 	return n, err
 }
@@ -345,7 +418,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
 	} else {
-		if name != "cache.read" && name != "archive.list" && name != "archive.open" {
+		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.extract" {
 			return nil, ErrPermissionDenied
 		}
 		if len(args) == 0 {
@@ -356,6 +429,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, err
 		}
 		var opt DataRange
+		var extractOpt ArchiveExtractOptions
 		var member int
 		switch name {
 		case "archive.list":
@@ -374,13 +448,32 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			if err = json.Unmarshal(args[1], &member); err == nil {
 				err = json.Unmarshal(args[2], &opt)
 			}
+		case "archive.extract":
+			if len(args) < 2 || len(args) > 3 {
+				return nil, fmt.Errorf("plugins: archive.extract takes (blob, memberIndex[, options])")
+			}
+			err = json.Unmarshal(args[1], &member)
+			if err == nil && len(args) == 3 && string(args[2]) != "null" {
+				err = json.Unmarshal(args[2], &extractOpt)
+			}
 		}
 		if err != nil {
 			return nil, err
 		}
-		if name != "archive.list" {
+		if name == "cache.read" || name == "archive.open" {
 			if err = validDataRange(opt); err != nil {
 				return nil, err
+			}
+		}
+		var defaultLibKey string
+		if name == "archive.extract" {
+			if checker, ok := h.(interface {
+				archiveExtractCheck(context.Context, string) (string, error)
+			}); ok {
+				defaultLibKey, err = checker.archiveExtractCheck(ctx, extractOpt.LibraryKey)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		rc, e := h.CacheOpen(ctx, ref)
@@ -405,9 +498,10 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			if e != nil {
 				return nil, e
 			}
-			if name == "archive.list" {
+			switch name {
+			case "archive.list":
 				value = archive.members
-			} else {
+			case "archive.open":
 				if member < 0 || member >= len(archive.members) {
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
@@ -424,6 +518,71 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 				}
 				defer stream.Close()
 				value, err = readDataRange(ctx, io.LimitReader(stream, int64(f.Size)), opt)
+			case "archive.extract":
+				if member < 0 || member >= len(archive.members) {
+					return nil, fmt.Errorf("plugins: archive member index outside range")
+				}
+				f := archive.members[member]
+				if f.Unsafe {
+					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				}
+				entryName := strings.TrimSpace(extractOpt.Name)
+				if entryName == "" {
+					entryName = path.Base(strings.TrimSuffix(f.Name, "/"))
+				}
+				if entryName == "" || entryName == "." || entryName == "/" {
+					entryName = fmt.Sprintf("member-%d", member)
+				}
+				sourceLibKey := ""
+				if src, ok := rc.(interface{ LibraryKey() string }); ok {
+					sourceLibKey = src.LibraryKey()
+				}
+				libraryKey := extractOpt.LibraryKey
+				cacheLimit := int64(MaxDataFetchBytes)
+				if resolver, ok := h.(interface {
+					resolveExtractTarget(context.Context, string, string, string) (string, int64, error)
+				}); ok {
+					libraryKey, cacheLimit, err = resolver.resolveExtractTarget(ctx, extractOpt.LibraryKey, sourceLibKey, entryName)
+					if err != nil {
+						return nil, err
+					}
+				} else if libraryKey == "" {
+					if sourceLibKey != "" {
+						libraryKey = sourceLibKey
+					} else {
+						libraryKey = defaultLibKey
+					}
+				}
+				if f.Size > uint64(limits.ArchiveMemberBytes) {
+					return nil, fmt.Errorf("plugins: archive member exceeds size grant")
+				}
+				if f.Size > uint64(cacheLimit) {
+					return nil, fmt.Errorf("%w: archive member (%d bytes) exceeds library cache quota (%d bytes)", ErrQuotaExceeded, f.Size, cacheLimit)
+				}
+				stream, e := archive.open(member)
+				if e != nil {
+					return nil, e
+				}
+				defer stream.Close()
+				crc, md5Hash, sha1Hash := crc32.NewIEEE(), md5.New(), sha1.New()
+				reader := &archiveExtractReader{
+					ctx:         ctx,
+					r:           stream,
+					memberLimit: limits.ArchiveMemberBytes,
+					cacheLimit:  cacheLimit,
+					expected:    int64(f.Size),
+				}
+				cachedRef, e := h.CachePut(ctx, libraryKey, entryName, io.TeeReader(reader, io.MultiWriter(crc, md5Hash, sha1Hash)))
+				if e != nil {
+					return nil, e
+				}
+				value = ArchiveExtractResult{
+					Ref:   cachedRef,
+					Size:  reader.size,
+					SHA1:  fmt.Sprintf("%x", sha1Hash.Sum(nil)),
+					MD5:   fmt.Sprintf("%x", md5Hash.Sum(nil)),
+					CRC32: fmt.Sprintf("%08x", crc.Sum32()),
+				}
 			}
 		}
 	}

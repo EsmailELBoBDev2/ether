@@ -288,7 +288,7 @@ func (s *Service) pinRejectReason(rel core.Release, sreq core.SearchRequest, _ c
 		return "marked bad"
 	case sreq.Type == core.TypeEpisode && rel.Info.FullSeason && rel.Protocol != core.ProtocolTorrent && rel.Protocol != core.ProtocolUsenet:
 		return "season pack (skipped in v1)"
-	case sreq.Type == core.TypeEpisode && rel.Info.FullSeason && !packCoversSeason(rel.Info, sreq.Season) && !(sreq.AltEpisode > 0 && packCoversSeason(rel.Info, sreq.AltSeason)):
+	case sreq.Type == core.TypeEpisode && rel.Info.FullSeason && !packCoversSeasonCour(rel.Info, sreq):
 		return "season/episode mismatch"
 	}
 	return ""

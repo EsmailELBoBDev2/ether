@@ -714,6 +714,7 @@ func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
 
 func cacheKey(c *Client, req core.SearchRequest) string {
 	h := sha1.New()
+	fmt.Fprintf(h, "aliases:%v|only:%t|", core.EpisodeAliases(req), req.ReleaseAliasesOnly)
 	if req.AltEpisode > 0 {
 		fmt.Fprintf(h, "alt:%d:%d|", req.AltSeason, req.AltEpisode)
 	}
@@ -821,25 +822,31 @@ func releaseIsTV(r core.Release) bool {
 
 // searchAttempts builds the ordered fallback queries for a request.
 func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
-	primary := c.numberedSearchAttempts(req, caps, id)
-	if req.Category != "" || req.Type != core.TypeEpisode || req.AltEpisode <= 0 {
-		return primary
+	if req.Category != "" || req.Type != core.TypeEpisode {
+		return c.numberedSearchAttempts(req, caps, id)
 	}
-	alt := req
-	alt.Season, alt.Episode = req.AltSeason, req.AltEpisode
-	alt.AltSeason, alt.AltEpisode, alt.Cour, alt.CourEpisode = 0, 0, 0, 0
-	alt.Anime = false
-	secondary := c.numberedSearchAttempts(alt, caps, id)
-	// Interleave numbering variants so existing rescue limits and budgets can
-	// reach both; identical complete-series queries only run once.
+	var lists [][]url.Values
+	if !req.ReleaseAliasesOnly {
+		lists = append(lists, c.numberedSearchAttempts(req, caps, id))
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		lists = append(lists, c.numberedSearchAttempts(core.AliasSearchRequest(req, n), caps, id))
+	}
 	var out []url.Values
 	seen := map[string]bool{}
-	for i := 0; i < max(len(primary), len(secondary)); i++ {
-		for _, list := range [][]url.Values{primary, secondary} {
-			if i < len(list) && !seen[list[i].Encode()] {
-				seen[list[i].Encode()] = true
-				out = append(out, list[i])
+	for i := 0; ; i++ {
+		any := false
+		for _, list := range lists {
+			if i < len(list) {
+				any = true
+				if !seen[list[i].Encode()] {
+					seen[list[i].Encode()] = true
+					out = append(out, list[i])
+				}
 			}
+		}
+		if !any {
+			break
 		}
 	}
 	return out

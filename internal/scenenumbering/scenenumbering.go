@@ -31,7 +31,7 @@ type number struct {
 	Absolute int `json:"absolute"`
 }
 type entry struct {
-	numbers map[int]number
+	numbers *mapping
 	expires time.Time
 	loading chan struct{}
 }
@@ -54,24 +54,27 @@ func New(opts Options) *Service {
 	return &Service{opts: opts, shows: map[int64]*entry{}}
 }
 
-// Lookup never guesses that TMDB and TVDB seasons have the same layout.
-func (s *Service) Lookup(ctx context.Context, req core.SearchRequest) (int, int, error) {
+// Lookup reads XEM only on demand; canonical facts are read only after an
+// entry exists. Canonical numbering remains authoritative.
+func (s *Service) Lookup(ctx context.Context, req core.SearchRequest, canonical func() (core.EpisodeLayout, error)) (core.ReleaseNumbering, error) {
 	if req.Type != core.TypeEpisode || req.IDs.TVDB <= 0 || req.Season <= 0 || req.Episode <= 0 {
-		return 0, 0, nil
+		return core.ReleaseNumbering{}, nil
 	}
-	absolute := req.AbsoluteEpisode
-	if absolute <= 0 && req.Season == 1 {
-		absolute = req.Episode
-	}
-	if absolute <= 0 {
-		return 0, 0, nil
+	if absoluteNumber(req) <= 0 {
+		return core.ReleaseNumbering{}, nil
 	}
 	numbers, err := s.load(ctx, req.IDs.TVDB)
-	n := numbers[absolute]
-	return n.Season, n.Episode, err
+	if err != nil || numbers == nil {
+		return core.ReleaseNumbering{}, err
+	}
+	layout, err := canonical()
+	if err != nil {
+		return core.ReleaseNumbering{}, err
+	}
+	return numbers.lookup(req, layout), nil
 }
 
-func (s *Service) load(ctx context.Context, id int64) (map[int]number, error) {
+func (s *Service) load(ctx context.Context, id int64) (*mapping, error) {
 	for {
 		s.mu.Lock()
 		e := s.shows[id]
@@ -116,7 +119,7 @@ func (s *Service) load(ctx context.Context, id int64) (map[int]number, error) {
 	}
 }
 
-func (s *Service) fetch(id int64) (map[int]number, error) {
+func (s *Service) fetch(id int64) (*mapping, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.opts.URL+"?origin=tvdb&id="+strconv.FormatInt(id, 10), nil)
@@ -154,59 +157,27 @@ func (s *Service) fetch(id int64) (map[int]number, error) {
 	if result.Result != "success" {
 		return nil, fmt.Errorf("scenenumbering: invalid result")
 	}
-	var rows []struct {
-		TVDB   number  `json:"tvdb"`
-		Scene  *number `json:"scene"`
-		Scene2 *number `json:"scene_2"`
-	}
+	var rows []mappingRow
 	if err := json.Unmarshal(result.Data, &rows); err != nil {
 		return nil, err
 	}
-	out := map[int]number{}
-	ambiguous := map[int]bool{}
-	reverse := map[number]int{}
-	for _, row := range rows {
-		n := row.TVDB
-		if row.Scene != nil {
-			n = *row.Scene
-		}
-		abs := row.TVDB.Absolute
-		if row.TVDB.Season <= 0 || row.TVDB.Episode <= 0 || abs <= 0 || abs > 1000000 || n.Season <= 0 || n.Season > 10000 || n.Episode <= 0 || n.Episode > 1000000 {
-			continue
-		}
-		n.Absolute = 0
-		if row.Scene2 != nil && (row.Scene2.Season != n.Season || row.Scene2.Episode != n.Episode) {
-			ambiguous[abs] = true
-		}
-		if other, ok := reverse[n]; ok && other != abs {
-			ambiguous[abs], ambiguous[other] = true, true
-		}
-		reverse[n] = abs
-		if old, ok := out[abs]; ok && old != n {
-			ambiguous[abs] = true
-		}
-		out[abs] = n
-	}
-	for abs := range ambiguous {
-		delete(out, abs)
-	}
-	return out, nil
+	return parseMapping(rows), nil
 }
 
-// LookupCached supports identity checks on browse/detail paths without fetching.
-func (s *Service) LookupCached(req core.SearchRequest) (int, int, error) {
-	if req.Type != core.TypeEpisode || req.IDs.TVDB <= 0 || req.Season <= 0 {
-		return 0, 0, nil
-	}
-	absolute := req.AbsoluteEpisode
-	if absolute <= 0 && req.Season == 1 {
-		absolute = req.Episode
-	}
+// LookupCached never performs network work.
+func (s *Service) LookupCached(req core.SearchRequest, canonical func() (core.EpisodeLayout, error)) (core.ReleaseNumbering, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var numbers *mapping
 	if e := s.shows[req.IDs.TVDB]; e != nil {
-		n := e.numbers[absolute]
-		return n.Season, n.Episode, nil
+		numbers = e.numbers
 	}
-	return 0, 0, nil
+	s.mu.Unlock()
+	if numbers == nil {
+		return core.ReleaseNumbering{}, nil
+	}
+	layout, err := canonical()
+	if err != nil {
+		return core.ReleaseNumbering{}, err
+	}
+	return numbers.lookup(req, layout), nil
 }

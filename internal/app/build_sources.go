@@ -125,25 +125,31 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		animeCour = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
-	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (int, int, error) {
+	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
 		if a.episodeorder == nil {
-			return 0, 0, nil
+			return core.ReleaseNumbering{}, nil
 		}
 		show := core.ShowKey(req.IDs.TMDB)
 		pref, err := a.episodeorder.ReleasePreference(ctx, show)
 		if err != nil {
-			return 0, 0, err
+			return core.ReleaseNumbering{}, err
 		}
 		switch pref.Mode {
 		case "tmdb":
-			return 0, 0, nil
+			return core.ReleaseNumbering{}, nil
 		case "group":
-			return a.episodeorder.SearchNumbering(ctx, show, req.Season, req.Episode, cachedOnly)
+			season, episode, err := a.episodeorder.SearchNumbering(ctx, show, req.Season, req.Episode, cachedOnly)
+			out := core.ReleaseNumbering{}
+			if season > 0 && episode > 0 {
+				out.Aliases = []core.EpisodeNumber{{Season: season, Episode: episode}}
+				out.PackTargets = out.Aliases
+			}
+			return out, err
 		default:
 			if cachedOnly {
-				return sceneNumbers.LookupCached(req)
+				return sceneNumbers.LookupCached(req, func() (core.EpisodeLayout, error) { return a.catalog.ReleaseEpisodeLayout(ctx, show) })
 			}
-			return sceneNumbers.Lookup(ctx, req)
+			return sceneNumbers.Lookup(ctx, req, func() (core.EpisodeLayout, error) { return a.catalog.ReleaseEpisodeLayout(ctx, show) })
 		}
 	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, LibraryProfiles: newLibraryProfiles(a), Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)

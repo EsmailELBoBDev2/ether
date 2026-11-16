@@ -11,8 +11,17 @@ func (s *Service) numberedRequest(ctx context.Context, req core.SearchRequest, c
 	if s.episodeNumbering == nil || req.Type != core.TypeEpisode || req.IDs.TMDB <= 0 {
 		return req
 	}
-	if season, episode, err := s.episodeNumbering(ctx, req, cachedOnly); err == nil && season > 0 && episode > 0 && (season != req.Season || episode != req.Episode) {
-		req.AltSeason, req.AltEpisode = season, episode
+	if numbering, err := s.episodeNumbering(ctx, req, cachedOnly); err == nil {
+		candidate := req
+		candidate.AltSeason, candidate.AltEpisode = 0, 0
+		candidate.ReleaseAliases = numbering.Aliases
+		aliases := core.EpisodeAliases(candidate)
+		if len(aliases) > 0 {
+			req.ReleaseAliases = aliases
+			req.ReleasePackTargets = numbering.PackTargets
+			req.ReleaseNumberingKnown = true
+			req.AltSeason, req.AltEpisode = aliases[0].Season, aliases[0].Episode
+		}
 	}
 	return req
 }
@@ -33,6 +42,7 @@ func (s *Service) searchWithNumbering(ctx context.Context, req *core.SearchReque
 	if mapped.AltEpisode == 0 {
 		return results, cached, nil
 	}
+	mapped.ReleaseAliasesOnly = true
 	*req = mapped
 	// Reuse already returned releases before spending any further indexer calls.
 	results = s.normalizeSearchResults(mapped, append([]core.Release(nil), results...))

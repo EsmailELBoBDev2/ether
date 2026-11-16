@@ -35,3 +35,21 @@ func TestOwnerSessionBitrateIsSourceNotDeliverySpeed(t *testing.T) {
 		t.Fatalf("idle buffer bitrate = %d kbps, want 8000", got)
 	}
 }
+
+func TestOwnerSessionDirectPlayAudioFallback(t *testing.T) {
+	p := &core.PlaySession{
+		Decision: core.DecisionDirectPlay,
+		Info: core.MediaInfo{
+			Container: "mkv",
+			Streams: []core.StreamInfo{
+				{Index: 0, Type: "video", Codec: "hevc", Height: 2160, ColorTransfer: "smpte2084"},
+				{Index: 1, Type: "audio", Codec: "aac", Channels: 2},
+				{Index: 2, Type: "audio", Codec: "truehd", Channels: 8, ChannelLayout: "7.1", Default: true},
+			},
+		},
+	}
+	got := ownerSessionDetails(p)
+	if got.SourceAudio != "TRUEHD 7.1" || got.OutputAudio != "TRUEHD 7.1" {
+		t.Fatalf("direct play audio fallback: got source=%q output=%q, want TRUEHD 7.1", got.SourceAudio, got.OutputAudio)
+	}
+}

@@ -70,6 +70,19 @@ func ownerSessionDetails(p *core.PlaySession) ownerSessionStatus {
 			}
 		}
 	}
+	if audio == nil && !p.Info.Estimated {
+		for i := range p.Info.Streams {
+			st := &p.Info.Streams[i]
+			if st.Type == "audio" {
+				if audio == nil || st.Default {
+					audio = st
+					if st.Default {
+						break
+					}
+				}
+			}
+		}
+	}
 	if audio != nil {
 		out.SourceAudio = audioLabel(audio.Codec, audio.ChannelLayout, audio.Channels)
 	}

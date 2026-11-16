@@ -898,6 +898,28 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 			if len(items) == 0 {
 				continue
 			}
+			if section != "" && hc.SectionID > 0 && e.opts.LibraryMembers != nil {
+				keys := make([]core.RatingKey, len(items))
+				for i, it := range items {
+					keys[i] = it.t.Key
+				}
+				members, _, scoped, err := e.opts.LibraryMembers(ctx, core.LibraryID(hc.SectionID), keys)
+				if err != nil {
+					return core.Hub{}, false
+				}
+				if scoped {
+					filtered := items[:0]
+					for _, it := range items {
+						if members[it.t.Key] {
+							filtered = append(filtered, it)
+						}
+					}
+					items = filtered
+					if len(items) == 0 {
+						continue
+					}
+				}
+			}
 			if e.opts.FilterAvailable != nil {
 				pool := make([]core.Title, len(items))
 				for i, it := range items {

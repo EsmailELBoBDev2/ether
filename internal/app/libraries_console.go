@@ -205,6 +205,33 @@ func libraryScopeFilter(lib core.Library, req core.Filter) core.Filter {
 	return f
 }
 
+// libraryRecommendationMembers implements personalize.Options.LibraryMembers:
+// catalogue and collection libraries scope their section recommendations to
+// their own titles, checked with the same indexed membership SQL as the All
+// browse. Built-in and plugin libraries stay unscoped (type-only sections,
+// as today). The revision is the library's UpdatedAt, so editing its
+// sources, rules or collection invalidates cached section assemblies.
+func (a *App) libraryRecommendationMembers(ctx context.Context, id core.LibraryID, keys []core.RatingKey) (map[core.RatingKey]bool, int64, bool, error) {
+	if a.libraries == nil {
+		return nil, 0, false, nil
+	}
+	lib, err := a.libraries.Get(ctx, id)
+	if errors.Is(err, core.ErrNotFound) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if lib.Source != core.LibraryCatalog && lib.Source != core.LibraryCollection {
+		return nil, 0, false, nil
+	}
+	members, err := a.catalog.TitlesInFilter(ctx, libraryScopeFilter(lib, core.Filter{}), keys)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return members, lib.UpdatedAt.UnixNano(), true, nil
+}
+
 func (c *librariesConsole) browseTitles(ctx context.Context, lib core.Library, req core.Filter, q core.BrowseQuery) (core.Page, error) {
 	q.Filter = libraryScopeFilter(lib, req)
 	if q.Sort == "" {

@@ -165,6 +165,7 @@ var tierTouchSources = []touchSource{
 // the titles behind them would keep every title an Xtream client ever
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
+	"transcode_decode_caps", // Device capabilities hold no title references.
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Startup upgrade markers (credential conversion progress).

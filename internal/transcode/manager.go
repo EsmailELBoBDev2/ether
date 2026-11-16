@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ var ErrImageSubtitle = errors.New("transcode: bitmap subtitles cannot be convert
 type Option func(*options)
 
 type options struct {
+	decodeDB       *sql.DB
 	runtimeDir     string
 	runner         Runner
 	finder         *finder
@@ -94,6 +96,9 @@ func defaultOptions() options {
 // directory. No downloads occur while RTX Video is off. Embedded/test managers
 // that omit this option never install software.
 func WithRuntimeDir(dir string) Option { return func(o *options) { o.runtimeDir = dir } }
+
+// WithDecodeStore persists device decode capability results across restarts.
+func WithDecodeStore(db *sql.DB) Option { return func(o *options) { o.decodeDB = db } }
 
 // WithRunner replaces the process runner (tests).
 func WithRunner(r Runner) Option { return func(o *options) { o.runner = r } }
@@ -259,7 +264,9 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 	if err := os.MkdirAll(m.tempDir, 0o755); err != nil {
 		return nil, fmt.Errorf("transcode: temp dir: %w", err)
 	}
-	m.feat.decode = newDecodeProbeCache(m.runner, m.ffmpeg, m.ffprobe, m.tempDir, m.feat.encoders)
+	decode := newDecodeProbeCache(m.runner, m.ffmpeg, m.ffprobe, m.tempDir, m.feat.encoders)
+	decode.db, decode.log = o.decodeDB, m.log
+	m.feat.decode = decode
 	m.cleanStale()
 	m.log.Info("ffmpeg features", "ffmpeg", m.ffmpeg, "version", m.version,
 		"filters", featureLine(m.feat), "encoders", encoderLine(m.feat),

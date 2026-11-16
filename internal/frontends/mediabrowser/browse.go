@@ -509,7 +509,7 @@ func (i *instance) browseRoutes() error {
 			http.Error(w, "Unavailable", 503)
 			return
 		}
-		d, err := i.host.Experience.Item(i.identityContext(r), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+		d, err := i.host.Experience.Item(frontend.WithColdDetail(i.identityContext(r), key), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 		if err != nil {
 			http.NotFound(w, r)
 			return
@@ -897,7 +897,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	if len(route.Query(r.URL.Query(), "Limit")) == 0 {
 		q.Limit = showChildPageMax
 	}
-	page, err := i.host.Experience.Children(r.Context(), v, device(r), key, q)
+	page, err := i.host.Experience.Children(frontend.WithColdDetail(r.Context(), key), v, device(r), key, q)
 	if err != nil {
 		http.Error(w, "Unavailable", 503)
 		return
@@ -1327,7 +1327,11 @@ func (i *instance) episodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
-	page, err := i.host.Experience.Children(r.Context(), v, device(r), key, q)
+	requested := key
+	if q.Season != nil {
+		requested = frontend.SeasonKey(key.TMDB(), *q.Season)
+	}
+	page, err := i.host.Experience.Children(frontend.WithColdDetail(r.Context(), requested), v, device(r), key, q)
 	if err != nil {
 		if errors.Is(err, frontend.ErrNotFound) {
 			http.NotFound(w, r)

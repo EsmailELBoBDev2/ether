@@ -59,6 +59,7 @@ type warmEntry struct {
 	cancel        context.CancelFunc
 	runtime       time.Duration // title runtime, for size rules without a probe
 	res           *core.Resolution
+	sourceReady   bool // mu; a warm source is resolved before its probe completes
 	probe         *probeCache
 	// originalAudio is set when the warmed profile compares audio with
 	// the catalogue language. originalLanguage is the Title.Language
@@ -156,6 +157,23 @@ func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.R
 	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
 		return nil
 	}
+	if core.LocalResponse(ctx) {
+		if user == nil {
+			return core.ErrPrepareSlow
+		}
+		m.mu.Lock()
+		entry := m.findWarmEntryLocked(user, caps, key, m.now())
+		ready := entry != nil && (entry.sourceReady || entry.res != nil)
+		m.mu.Unlock()
+		if !ready {
+			// An already stored source may need its first probe after restart.
+			// Without such a source the page must not resolve/search to wait.
+			point, err := m.resumeFor(ctx, user, key, caps, false)
+			if err != nil || point == nil {
+				return core.ErrPrepareSlow
+			}
+		}
+	}
 	// Viewing the detail page admits one bounded on-demand open, just as
 	// playback intent does, while metadata mode still forbids video prefetch.
 	m.prewarm(ctx, user, key, caps, core.PrewarmOptions{Reason: core.PrewarmDetail, PlayIntent: true}, true)
@@ -189,7 +207,8 @@ func probeMetadataWait(ctx context.Context) time.Duration {
 	return defaultProbeMetadataWait
 }
 
-func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata bool) bool {
+func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps, opts core.PrewarmOptions, metadata bool) bool {
+	cachedMetadata := metadata && core.LocalResponse(requestCtx)
 	if user == nil || caps.ClientID == "" || caps.Product == "" {
 		return false
 	}
@@ -353,7 +372,19 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 			}
 			ctx = core.WithOnDemandWarm(ctx, m.onDemandWarmAdmit(ctx, id, e, wallStarted, hold))
 		}
-		title, err := m.deps.Catalog.Get(ctx, key)
+		var title *core.Title
+		var err error
+		if cachedMetadata {
+			cached, ok := m.deps.Catalog.(interface {
+				CachedGet(context.Context, core.RatingKey) (*core.Title, error)
+			})
+			if !ok {
+				return
+			}
+			title, err = cached.CachedGet(ctx, key)
+		} else {
+			title, err = m.deps.Catalog.Get(ctx, key)
+		}
 		if err != nil || title == nil || title.IsFutureRelease(m.now()) || title.Type == core.TypeShow || title.Type == core.TypeSeason {
 			return
 		}
@@ -366,6 +397,9 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		}
 		detailOnly := false
 		if res == nil || !m.rememberedReleaseMatchesTitle(ctx, res.Release, title) || !payloadMatchesTitle(res.NZB, title) {
+			if cachedMetadata {
+				return
+			}
 			res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
 			if (err != nil || res == nil) && reason == core.PrewarmDetail && caps.BroadcastBitrateKbps == 0 {
 				// A detail page for a title the viewer played keeps that
@@ -375,7 +409,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 					res, err, detailOnly = last, nil, true
 				}
 			}
-		} else if reason == core.PrewarmDetail {
+		} else if reason == core.PrewarmDetail && !cachedMetadata {
 			// Reusing the remembered source skips Resolve/search. Recover only
 			// the picker candidates, without delaying or changing that source.
 			if refill, ok := m.deps.Resolver.(core.WarmupSearchCacheRefiller); ok {
@@ -385,6 +419,9 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		if err != nil || res == nil {
 			return
 		}
+		m.mu.Lock()
+		e.sourceReady = true
+		m.mu.Unlock()
 		session := newSession(randomID(16), id, &u, caps, title, e.profileKey, m.now())
 		defer session.sources.seal()
 		src, finish, err := m.openSource(ctx, session.sources, res)

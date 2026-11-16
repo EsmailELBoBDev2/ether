@@ -272,9 +272,11 @@ type Catalog struct {
 	refreshMiss   map[string]time.Time
 
 	// hydrating holds the TMDB refreshes running behind reads (hydrate.go).
-	hydrateMu    sync.Mutex
-	hydrating    map[string]*hydration
-	hydrateSlots chan struct{}
+	hydrateMu     sync.Mutex
+	hydrating     map[string]*hydration
+	hydrateSlots  chan struct{}
+	seasonLoaded  map[int64]time.Time     // hydrateMu; short discovery cooldown
+	seasonLoading map[int64]chan struct{} // hydrateMu; orchestration never holds a provider slot
 
 	trendFlights flight.Group[string, trendSnapshot]
 	listMu       sync.Mutex

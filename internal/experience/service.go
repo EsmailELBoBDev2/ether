@@ -955,6 +955,7 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 }
 
 func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+	ctx = s.NoProviderWait(ctx)
 	v, err := s.viewer(ctx, req.Viewer)
 	if err != nil {
 		return frontend.ItemDetail{}, err
@@ -1419,6 +1420,7 @@ func (s *Service) LocalEpisodes(ctx context.Context, viewer *core.Viewer, key co
 }
 
 func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
+	ctx = s.NoProviderWait(ctx)
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	if q.StartAt != 0 && q.AdjacentTo != 0 {
 		return core.Page{}, errors.New("experience: incompatible item anchors")

@@ -120,10 +120,13 @@ type Service struct {
 	look            func(string) (string, error)
 	downloader      *Downloader
 
-	mu       sync.Mutex
-	registry map[core.RatingKey]Extra
-	lists    map[string]listEntry
-	resolved map[string]Resolved
+	listWG      sync.WaitGroup
+	listClosed  bool
+	listPending map[string]bool
+	mu          sync.Mutex
+	registry    map[core.RatingKey]Extra
+	lists       map[string]listEntry
+	resolved    map[string]Resolved
 }
 
 const (
@@ -258,6 +261,28 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 		}
 		s.mu.Unlock()
 		return out, nil
+	}
+	if core.LocalResponse(ctx) {
+		if !s.listClosed && !s.listPending[cacheKey] && len(s.listPending) < 2 {
+			if s.listPending == nil {
+				s.listPending = map[string]bool{}
+			}
+			s.listPending[cacheKey] = true
+			s.listWG.Add(1)
+			// Video lookup reads only this immutable identity snapshot.
+			owned := *parent
+			go func() {
+				defer s.listWG.Done()
+				bg, cancel := context.WithTimeout(s.themeCtx, 5*time.Second)
+				defer cancel()
+				_, _ = s.List(bg, &owned, lang)
+				s.mu.Lock()
+				delete(s.listPending, cacheKey)
+				s.mu.Unlock()
+			}()
+		}
+		s.mu.Unlock()
+		return nil, nil
 	}
 	s.mu.Unlock()
 

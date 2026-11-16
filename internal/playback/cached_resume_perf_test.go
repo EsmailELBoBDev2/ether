@@ -9,6 +9,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+type cachedDetailCatalog struct{ core.Catalog }
+
+func (c cachedDetailCatalog) CachedGet(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	return c.Catalog.Get(ctx, key)
+}
+
 type preferredOnlyResumeResolver struct {
 	core.Resolver
 	picks int
@@ -62,6 +68,33 @@ func TestCachedResumeSkipsMetadataAdmissionAndFallbackValidation(t *testing.T) {
 		t.Fatalf("resume failed to reuse source/probe: %+v picks=%d probes=%d", ps.Resolution, resolver.picks, second.tr.probes)
 	}
 	t.Logf("cached decision elapsed=%s opens=%d probes=%d preferredChecks=%d", time.Since(start), second.engine.openCount(), second.tr.probes, resolver.picks)
+	t.Run("local-cached-source", func(t *testing.T) {
+		first, second, _, _ := restartHarnesses(t, rels, nil)
+		first.prepare(owner, movieKey, "client1")
+		if err := first.m.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := second.m.resume.db.Exec(`DELETE FROM playback_probe`); err != nil {
+			t.Fatal(err)
+		}
+		second.m.deps.Catalog = cachedDetailCatalog{second.m.deps.Catalog}
+		if err := second.m.ProbeMetadata(core.WithLocalResponse(context.Background()), owner, movieKey, defaultCaps("client1")); err != nil {
+			t.Fatal(err)
+		}
+		if second.resolver.callCount() != 0 || second.engine.openCount() != 1 || second.tr.probes != 1 {
+			t.Fatalf("cached probe: resolves=%d opens=%d probes=%d", second.resolver.callCount(), second.engine.openCount(), second.tr.probes)
+		}
+	})
+	t.Run("local-uncached-source", func(t *testing.T) {
+		h := newHarness(t, rels(), []string{"rel1"})
+		err := h.m.ProbeMetadata(core.WithLocalResponse(context.Background()), owner, movieKey, defaultCaps("local-cold"))
+		if !errors.Is(err, core.ErrPrepareSlow) {
+			t.Fatalf("uncached local probe: %v", err)
+		}
+		if h.resolver.callCount() != 0 || h.engine.openCount() != 0 || h.tr.probes != 0 {
+			t.Fatal("local detail searched, resolved or opened an uncached source")
+		}
+	})
 	t.Run("cold-probe-budget", func(t *testing.T) {
 		release := make(chan struct{})
 		h := newHarness(t, rels(), []string{"rel1"}, withNativeProbe(func(ctx context.Context, src core.MediaSource) (*core.MediaInfo, error) {

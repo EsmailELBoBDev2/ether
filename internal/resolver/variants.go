@@ -29,6 +29,13 @@ const (
 // single Auto media; the detail page's PreResolve populates the cache, so
 // a later load shows versions.
 func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
+	if core.LocalResponse(ctx) {
+		return s.detailVariantRead(req, max, false)
+	}
+	return s.variants(ctx, req, max)
+}
+
+func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}

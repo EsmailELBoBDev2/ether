@@ -13,6 +13,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -427,19 +428,32 @@ func (s *State) GetMany(ctx context.Context, userID int64, keys []core.RatingKey
 	if len(keys) == 0 {
 		return out, nil
 	}
-	// Chunked IN queries keep the statement under SQLite's variable limit.
-	for start := 0; start < len(keys); start += 400 {
-		end := min(start+400, len(keys))
-		chunk := keys[start:end]
+	// A single array bind keeps watch reads constant for large episode lists
+	// without exceeding either driver's parameter limit.
+	{
 		q := `SELECT rating_key, view_offset_ns, duration_ns, view_count, last_viewed_at, user_rating, updated_at, counted, watch_at, rating_at
 			FROM state_watch WHERE user_id=? AND rating_key IN (`
 		args := []any{userID}
-		for i, k := range chunk {
-			if i > 0 {
-				q += ","
+		if len(keys) > 256 {
+			ints := make([]int64, len(keys))
+			for i, k := range keys {
+				ints[i] = int64(k)
 			}
-			q += "?"
-			args = append(args, int64(k))
+			encoded, _ := json.Marshal(ints)
+			if store.DialectOf(s.db) == store.Postgres {
+				q += `SELECT CAST(value AS BIGINT) FROM json_array_elements_text(CAST(? AS JSON))`
+			} else {
+				q += `SELECT value FROM json_each(?)`
+			}
+			args = append(args, string(encoded))
+		} else {
+			for i, k := range keys {
+				if i > 0 {
+					q += ","
+				}
+				q += "?"
+				args = append(args, int64(k))
+			}
 		}
 		q += ")"
 		rows, err := s.db.QueryContext(ctx, q, args...)

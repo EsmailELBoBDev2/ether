@@ -1178,6 +1178,7 @@ func (s *Server) detailRelated(ctx context.Context, pr *Request) frontend.Detail
 // handleMetadataHubs is /hubs/metadata/{key}[/related] and
 // /library/metadata/{key}/related.
 func (s *Server) handleMetadataHubs(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	k, err := keyParam(r)
@@ -1251,6 +1252,7 @@ func (s *Server) upNextHub(ctx context.Context, pr *Request, k frontend.RatingKe
 // pre-buffered), then the related rows. Without a PostPlayer this is the
 // old behaviour: Up Next, then related.
 func (s *Server) handlePostplay(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	k, err := frontend.ParseRatingKey(chi.URLParam(r, "key"))

@@ -33,13 +33,17 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 		args = append(args, show)
 		seen := map[int64]bool{}
 		for _, column := range []string{"title", "original_title"} {
+			index := "catalog_titles_type_lower_title"
+			if column == "original_title" {
+				index = "catalog_titles_type_lower_original"
+			}
 			// The scalar episode lookup uses catalog_titles_show and never fetches
 			// remote metadata. Keeping it in SQL avoids per-match round trips.
 			queryArgs := []any{season, episode}
 			queryArgs = append(queryArgs, args...)
 			rows, err := c.db.QueryContext(ctx, `SELECT s.key, s.`+column+`, s.year,
-                COALESCE((SELECT e.title FROM catalog_titles e WHERE e.show_key=s.key AND e.season=? AND e.episode=? AND e.type='episode' LIMIT 1), '')
-                FROM catalog_titles s WHERE s.type=? AND LOWER(s.`+column+`) IN (`+strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")+`) AND s.key<>? LIMIT 16`, queryArgs...)
+                COALESCE((SELECT e.title FROM catalog_titles e`+c.indexedBy("catalog_titles_show")+` WHERE e.show_key=s.key AND e.season=? AND e.episode=? AND e.type='episode' LIMIT 1), '')
+                FROM catalog_titles s`+c.indexedBy(index)+` WHERE s.type=? AND LOWER(s.`+column+`) IN (`+strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")+`) AND s.key<>? LIMIT 16`, queryArgs...)
 			if err != nil {
 				return out, err
 			}
@@ -65,7 +69,7 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 			}
 		}
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT season, title FROM catalog_titles WHERE show_key=? AND type='season' ORDER BY season LIMIT 128`, show)
+	rows, err := c.db.QueryContext(ctx, `SELECT season, title FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE show_key=? AND type='season' ORDER BY season LIMIT 128`, show)
 	if err != nil {
 		return out, err
 	}

@@ -86,9 +86,10 @@ type Deps struct {
 
 // Manager is the plugin host. It is safe for concurrent use.
 type Manager struct {
-	hashMu       sync.Mutex
-	hashJobs     map[string]*folderHashWork
-	hashSequence uint64
+	archiveDirectories archiveDirectoryCache
+	hashMu             sync.Mutex
+	hashJobs           map[string]*folderHashWork
+	hashSequence       uint64
 	// relay holds the add-on settings pages open in the console.
 	relay        *addonRelay
 	relayOnce    sync.Once

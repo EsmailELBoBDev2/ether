@@ -278,8 +278,8 @@ type Manager struct {
 	// by warm-ups (onDemandWarmAdmit); lazily created under mu.
 	onDemandWarmAt      map[int64]time.Time
 	onDemandWarmByAddon map[string][]time.Time
-	stalePrefers        map[stalePreferKey]time.Time // picked releases that fell back (stalePreferTTL)
-	namesake            map[core.RatingKey]bool      // cached namesake lookups (namesake.go)
+	stalePrefers        map[stalePreferKey]stalePreference // picked releases that fell back (stalePreferTTL)
+	namesake            map[core.RatingKey]bool            // cached namesake lookups (namesake.go)
 
 	pinMu        sync.Mutex
 	livePins     map[string]int
@@ -856,7 +856,7 @@ func (m *Manager) PrepareWithin(ctx context.Context, wait time.Duration, user *c
 	return ps, err
 }
 
-func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (*core.PlaySession, core.SourceRetirement, error) {
+func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (prepared *core.PlaySession, retired core.SourceRetirement, prepareErr error) {
 	prepareStarted := time.Now()
 	if user == nil {
 		return nil, nil, core.ErrUnauthorized
@@ -882,6 +882,21 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			return nil, nil, errors.New("playback: shutting down")
 		}
 		if prefer != "" && !exact && m.preferenceStaleLocked(key, prefer, m.now()) {
+			entry := m.stalePrefers[stalePreferKey{key, prefer}]
+			latchedPick := prefer
+			retry := stalePreferTTL - m.now().Sub(entry.at)
+			// Record after admission, outside m.mu, including when Auto reused
+			// an existing session and never called Resolve.
+			defer func() {
+				entry.played = ""
+				if prepared != nil && prepared.Resolution != nil {
+					entry.played = prepared.Resolution.Release.ID
+				}
+				if prepareErr != nil {
+					entry.reason += "; automatic preparation: " + prepareErr.Error()
+				}
+				m.recordPreferenceFallback(ctx, key, latchedPick, entry, retry, true)
+			}()
 			// The picked version fell back moments ago: this open is the
 			// automatic choice (stale_prefer.go).
 			prefer = ""
@@ -891,7 +906,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		}
 		m.lastCaps[user.ID] = caps
 		if s := m.byIdent[id]; s != nil {
-			if s.exact == exact && (prefer == "" || s.current().releaseID() == prefer || (!exact && s.prefer == prefer)) {
+			if s.exact == exact && (prefer == "" || s.current().releaseID() == prefer || (!exact && s.current().res.MatchesVersion(prefer))) {
 				now := m.now()
 				if !m.sessionCountsForLimit(s, now) {
 					cfg := m.config()

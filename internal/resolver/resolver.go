@@ -203,8 +203,9 @@ type TraceLimits struct {
 }
 
 type searchCacheEntry struct {
-	results []core.Release
-	expires time.Time
+	refreshed time.Time
+	results   []core.Release
+	expires   time.Time
 }
 
 type inflight struct {
@@ -1277,7 +1278,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.Lock()
 	now := s.now()
 	boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL())}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 	s.mu.Unlock()
 	// Merge rescued results into the primary search cache entry so Play
 	// Version (Variants) and subsequent resolves see the full candidate set.
@@ -1323,7 +1324,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.Lock()
 		now := s.now()
 		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL())}
+		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 		s.mu.Unlock()
 	}
 	return results
@@ -1475,7 +1476,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	if len(results) == 0 && ttl > freshReleaseCooloff {
 		ttl = freshReleaseCooloff
 	}
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl)}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
 	s.mu.Unlock()
 }
 

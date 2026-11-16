@@ -3986,20 +3986,32 @@ export function createFakeServer(opts: FakeOptions = {}) {
           ],
           seenDevices: [
             {
-              clientIdentifier: "mock-tv", name: "Living room TV", platform: "Android",
-              device: "Xiaomi TV Box", app: "Plex for Android (TV)", viewer: "Alex",
+              clientIdentifier: "mock-tv",
+              name: "Living room TV",
+              platform: "Android",
+              device: "Xiaomi TV Box",
+              app: "Plex for Android (TV)",
+              viewer: "Alex",
               lastSeen: new Date().toISOString(),
             },
             {
-              clientIdentifier: "mock-phone", name: "Alex’s phone", platform: "iOS",
-              device: "iPhone", app: "Plex for iOS", viewer: "Alex",
+              clientIdentifier: "mock-phone",
+              name: "Alex’s phone",
+              platform: "iOS",
+              device: "iPhone",
+              app: "Plex for iOS",
+              viewer: "Alex",
               lastSeen: new Date(Date.now() - 3600000).toISOString(),
             },
           ].map((row) => {
-            const index = opts.capabilityOverrides?.findLastIndex((o) =>
-              o.device && row.device.toLowerCase().includes(String(o.device).toLowerCase()) &&
-              (!o.platform || row.platform.toLowerCase().includes(String(o.platform).toLowerCase()))
-            ) ?? -1;
+            const index =
+              opts.capabilityOverrides?.findLastIndex(
+                (o) =>
+                  o.device &&
+                  row.device.toLowerCase().includes(String(o.device).toLowerCase()) &&
+                  (!o.platform ||
+                    row.platform.toLowerCase().includes(String(o.platform).toLowerCase())),
+              ) ?? -1;
             return { ...row, ...(index >= 0 ? { overrideIndex: index } : {}) };
           }),
           observed: [

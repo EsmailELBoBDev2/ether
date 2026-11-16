@@ -94,7 +94,10 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
             >
               {t("Cancel")}
             </Button>
-            <Button disabled={(!draft.dirty && !data.policy.broken) || saving} onClick={() => void save()}>
+            <Button
+              disabled={(!draft.dirty && !data.policy.broken) || saving}
+              onClick={() => void save()}
+            >
               {t("Save changes")}
             </Button>
           </div>

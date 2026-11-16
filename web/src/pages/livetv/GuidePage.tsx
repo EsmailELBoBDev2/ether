@@ -101,6 +101,7 @@ export function GuidePage({
     <Segmented
       ariaLabel={t("Guide")}
       size="sm"
+      className="p-px"
       value={sub}
       onChange={setSub}
       options={[

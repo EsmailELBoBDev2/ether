@@ -512,10 +512,13 @@ export function GuideGrid({
                 {toolbarFilters ? (
                   <span className="hidden h-5 w-px bg-border sm:block" aria-hidden />
                 ) : null}
-                <div className="flex items-center gap-0.5 rounded-lg border border-border bg-bg p-0.5">
+                {/* Every control in this bar is 32px tall (h-8), so the time
+                    cluster's frame is 1px with 28px children. */}
+                <div className="flex h-8 items-center gap-0.5 rounded-lg border border-border bg-bg p-px">
                   <Button
                     variant="ghost"
                     size="sm"
+                    className="h-7 px-2"
                     aria-label={t("Earlier")}
                     onClick={() => onShift(-3)}
                   >
@@ -548,6 +551,7 @@ export function GuideGrid({
                   <Button
                     variant="ghost"
                     size="sm"
+                    className="h-7 px-2"
                     aria-label={t("Later")}
                     onClick={() => onShift(3)}
                   >
@@ -557,6 +561,7 @@ export function GuideGrid({
                     <Button
                       variant="ghost"
                       size="sm"
+                      className="h-7 px-2"
                       onClick={() => {
                         jumpNow();
                         scrollToNow(true);
@@ -570,6 +575,7 @@ export function GuideGrid({
                 <Segmented
                   ariaLabel={t("Zoom")}
                   size="sm"
+                  className="p-px"
                   value={zoom}
                   onChange={setZoom}
                   options={[
@@ -581,6 +587,7 @@ export function GuideGrid({
                 <Button
                   variant="ghost"
                   size="sm"
+                  className="w-8 px-0"
                   aria-label={full ? t("Exit full screen") : t("Full screen guide")}
                   aria-pressed={full}
                   onClick={() => void toggleFull()}

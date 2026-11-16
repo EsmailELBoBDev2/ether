@@ -11,6 +11,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"unsafe"
 
 	container "github.com/braedonsaunders/ether/internal/archive"
 	"github.com/nwaples/rardecode/v2"
@@ -35,6 +36,16 @@ func (r *archiveIOBudget) ReadAt(p []byte, off int64) (int, error) {
 type dataArchive struct {
 	members []ArchiveMember
 	open    func(int) (io.ReadCloser, error)
+}
+
+// archiveFormatEntryBytes bounds the format's own per-member index entry
+// (offsets, sizes, checksums, flags) kept beside ArchiveMember.
+const archiveFormatEntryBytes = 128
+
+// archiveDirectoryCap scales with the grant like the other archive limits
+// and matches the data parser's directory cap (host_data.go).
+func archiveDirectoryCap(l RuntimeLimits) int64 {
+	return min(int64(maxArchiveDirectory), int64(l.ArchiveMembers)*65536, archiveMemory(l)/8)
 }
 
 func archiveMemory(l RuntimeLimits) int64 {
@@ -243,16 +254,17 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 		m := &a.members[i]
 		m.UnsafeReason = archiveNameReason(m.Name)
 		m.Unsafe = m.UnsafeReason != ""
-		names += int64(len(m.Name)) + 256
+		names += int64(len(m.Name) + len(m.UnsafeReason))
 		if names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
 			return nil, fmt.Errorf("plugins: archive directory or member size exceeds grant")
 		}
 		total += m.Size
 	}
-	// Conservatively include format tables, slice spare capacity and names. ZIP
-	// comments/extras and raw directory buffers are not retained.
-	a.bytes = 1024 + int64(cap(a.members))*2048 + names*2
-	if a.bytes > maxArchiveDirectory {
+	// Measure what the directory retains: each member's entry (including the
+	// slice's spare capacity), a bounded per-member format table, and the name
+	// bytes. ZIP comments/extras and raw directory buffers are not retained.
+	a.bytes = 1024 + int64(cap(a.members))*(int64(unsafe.Sizeof(ArchiveMember{}))+archiveFormatEntryBytes) + names
+	if a.bytes > archiveDirectoryCap(l) {
 		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
 	}
 	bind := a.bind

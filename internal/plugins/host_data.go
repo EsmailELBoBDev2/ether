@@ -167,7 +167,7 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 }
 
 func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (*zip.Reader, error) {
-	directoryCap := min(int64(maxArchiveDirectory), int64(limits.ArchiveMembers)*65536, archiveMemory(limits)/8)
+	directoryCap := archiveDirectoryCap(limits)
 
 	size, err := rc.Seek(0, io.SeekEnd)
 	if err != nil {

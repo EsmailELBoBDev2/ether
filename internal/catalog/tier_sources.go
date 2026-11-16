@@ -71,6 +71,7 @@ var tierTouchSources = []touchSource{
 	{table: "collections_members", column: "key", tierA: true},
 	{table: "collections_specs", column: "spec_json", form: touchScan},
 	{table: "episodeorder_preferences", column: "show_key", tierA: true},
+	{table: "episodeorder_release_preferences", column: "show_key", tierA: true},
 	{table: "trackprefs_memory", column: "show_id", form: touchIDOrKey},
 	{table: "trackprefs_scoped", column: "scope_id", form: touchIDOrKey},
 	{table: "viewer_episode_alerts", column: "episode_key", form: touchKeyText, tierA: true},

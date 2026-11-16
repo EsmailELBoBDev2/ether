@@ -2411,6 +2411,11 @@ func regionTagConflicts(releaseTitle, wantTitle string, countries []string) bool
 // releaseNumbers keeps canonical single-episode numbers when they fit. Packs
 // covering the chosen order use that order, including complete-series packs.
 func releaseNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int) {
+	// Without aliases, even a rejected pack retains its canonical target and
+	// per-episode release ID. Coverage validation belongs to the ranking gate.
+	if !req.ReleaseNumberingKnown && len(core.EpisodeAliases(req)) == 0 {
+		return req.Season, req.Episode
+	}
 	if info.FullSeason {
 		season, episode, _ := packNumbers(info, req)
 		return season, episode

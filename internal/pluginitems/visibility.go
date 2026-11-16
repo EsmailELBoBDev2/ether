@@ -156,5 +156,11 @@ func (s *Service) CompilePolicy(ctx context.Context, lib core.LibraryID, specs [
 	if err != nil {
 		return nil, err
 	}
-	return libraryfilter.CompilePluginPolicy(specs, fallback, rec.Decl)
+	declared := map[string]string{}
+	for _, field := range rec.Decl.Fields {
+		if field.Indexed {
+			declared[field.Key] = field.Type
+		}
+	}
+	return libraryfilter.CompilePluginPolicy(specs, fallback, declared)
 }

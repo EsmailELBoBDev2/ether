@@ -368,7 +368,7 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 			if s.compilePluginPolicy != nil {
 				return s.compilePluginPolicy(ctx, lib.ID, specs, fallback)
 			}
-			return libraryfilter.CompilePluginPolicy(specs, fallback)
+			return libraryfilter.CompilePluginPolicy(specs, fallback, nil)
 		}
 	}
 	if _, err := compile(normalized, visibilityDefault); err != nil {

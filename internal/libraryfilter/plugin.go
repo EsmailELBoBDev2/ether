@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
-	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
 // PluginSQLHidden compiles the same ordered policy against plugin_items AS i.
@@ -50,26 +49,16 @@ func (f *Filter) PluginCatchCountsSQL(typ core.MediaType, fields map[string]stri
 }
 
 // CompilePluginPolicy rejects catalogue-only conditions instead of silently
-// treating an unsupported plugin condition as a non-match.
-func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string, declarations ...plugins.MediaKindMeta) (*Filter, error) {
+// treating an unsupported plugin condition as a non-match. declared maps the
+// kind's indexed field keys to their declared types; nil means the library's
+// kind is unknown, so only built-in conditions compile. It takes plain types,
+// not the plugin declaration, so this package never imports internal/plugins.
+func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string, declared map[string]string) (*Filter, error) {
 	var browse BrowseCompiler
-	if len(declarations) > 0 {
-		decl := declarations[0]
-		types := map[string]string{}
-		for _, field := range decl.Fields {
-			if field.Indexed {
-				types[field.Key] = field.Type
-			}
-		}
+	if declared != nil {
+		types := declared
 		browse = func(key string, raw json.RawMessage) (string, []any, error) {
-			valid := envelopeFacet(key)
-			for _, field := range decl.Fields {
-				if field.Key == key && field.Indexed {
-					valid = true
-					break
-				}
-			}
-			if !valid {
+			if _, ok := types[key]; !ok && !envelopeFacet(key) {
 				return "", nil, fmt.Errorf("unknown browse condition %q", key)
 			}
 			values, err := textValues(raw)

@@ -209,6 +209,9 @@ type User struct {
 // ClientCaps is what a Plex client can play, derived from X-Plex-* headers,
 // the client profile and its declared limits.
 type ClientCaps struct {
+	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an owner-forced empty profile set
+	// ForcedOverrideApplied records a runtime declaration replaced by an owner edit.
+	ForcedOverrideApplied bool `json:"-"`
 	// Broadcast inputs are selected for the channel rendition, independently
 	// of viewer quality preferences. Exclusions last only for this airing.
 	BroadcastBitrateKbps  int      `json:"-"`
@@ -259,7 +262,7 @@ type ClientCaps struct {
 	MaxBitrateKbps       int                 `json:"maxBitrateKbps"`                 // 0 = unlimited
 	DefaultRemoteBitrate bool                `json:"defaultRemoteBitrate,omitempty"` // true when MaxBitrateKbps came from the server's default remote cap rather than a client limitation
 	SubtitleCodecs       []string            `json:"subtitleCodecs,omitempty"`       // native image/text subtitle rendering
-	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses product defaults
+	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses defaults unless DVProfilesExplicit
 	VideoProfiles        map[string][]string `json:"videoProfiles,omitempty"`
 	VideoLevels          map[string]int      `json:"videoLevels,omitempty"` // codec level in ffprobe units (H.264 51 = 5.1)
 	Remote               bool                `json:"remote"`                // not on the server's LAN

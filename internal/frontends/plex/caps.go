@@ -29,8 +29,8 @@ func (pr *Request) ClientCaps(remoteMaxKbps int) frontend.ClientCaps {
 	return pr.ClientCapsWith(remoteMaxKbps, nil)
 }
 
-// ClientCapsWith is ClientCaps with owner registry overrides applied before
-// the request's own profile and capability headers.
+// ClientCapsWith applies registry defaults, runtime declarations, then any
+// explicitly forced owner facts. Remote server limits are applied last.
 func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.ClientCapabilityOverride) frontend.ClientCaps {
 	if pr == nil {
 		return frontend.ClientCaps{}
@@ -81,6 +81,10 @@ func (pr *Request) ClientCapsWith(remoteMaxKbps int, overrides []frontend.Client
 	if pr.ProfileExtra != "" {
 		ev := applyProfileExtra(&c, pr.ProfileExtra)
 		promoteWebHDRFromProfile(&c, pr.Product, ev)
+	}
+	c = frontend.ApplyForcedOverrides(c, pr.Model, overrides)
+	if pr.ClientCapabilities == "" && pr.ProfileExtra == "" {
+		c.ForcedOverrideApplied = false
 	}
 	if c.Remote && remoteMaxKbps > 0 && (c.MaxBitrateKbps == 0 || c.MaxBitrateKbps > remoteMaxKbps) {
 		if c.MaxBitrateKbps == 0 {

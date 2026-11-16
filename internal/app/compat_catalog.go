@@ -50,11 +50,23 @@ type observedClient struct {
 	LastSeen time.Time `json:"lastSeen"`
 }
 
+type seenDevice struct {
+	OverrideIndex    *int      `json:"overrideIndex,omitempty"`
+	ClientIdentifier string    `json:"clientIdentifier"`
+	Name             string    `json:"name"`
+	Platform         string    `json:"platform"`
+	Device           string    `json:"device"`
+	App              string    `json:"app"`
+	Viewer           string    `json:"viewer"`
+	LastSeen         time.Time `json:"lastSeen"`
+}
+
 type compatCatalog struct {
-	Apps      []compatApp                     `json:"apps"`
-	Devices   []compatDevice                  `json:"devices"`
-	Observed  []observedClient                `json:"observed"`
-	Overrides []core.ClientCapabilityOverride `json:"overrides"`
+	SeenDevices []seenDevice                    `json:"seenDevices"`
+	Apps        []compatApp                     `json:"apps"`
+	Devices     []compatDevice                  `json:"devices"`
+	Observed    []observedClient                `json:"observed"`
+	Overrides   []core.ClientCapabilityOverride `json:"overrides"`
 }
 
 // builtinApps is the reference list. Names and certification come from
@@ -154,11 +166,15 @@ func (a *App) compatibilityCatalog(ctx context.Context) (compatCatalog, error) {
 	if observed == nil {
 		observed = []observedClient{}
 	}
+	seen, err := a.seenPlaybackDevices(ctx)
+	if err != nil {
+		return compatCatalog{}, err
+	}
 	overrides := a.cfg.Read().Clients.Overrides
 	if overrides == nil {
 		overrides = []core.ClientCapabilityOverride{}
 	}
-	return compatCatalog{Apps: builtinApps(), Devices: builtinDevices(overrides), Observed: observed, Overrides: overrides}, nil
+	return compatCatalog{SeenDevices: seen, Apps: builtinApps(), Devices: builtinDevices(overrides), Observed: observed, Overrides: overrides}, nil
 }
 
 func (a *App) observedClients(ctx context.Context) ([]observedClient, error) {
@@ -177,4 +193,36 @@ func (a *App) observedClients(ctx context.Context) ([]observedClient, error) {
 		rows = append(rows, observedClient{Protocol: surface, Name: family, LastSeen: time.Unix(seen, 0).UTC()})
 	}
 	return rows, result.Err()
+}
+
+// The registry's last-seen index supplies at most 100 rows. Each latest play
+// is a primary-key lookup, independent of the size of playback history.
+func (a *App) seenPlaybackDevices(ctx context.Context) ([]seenDevice, error) {
+	rows, err := a.db.QueryContext(ctx, `SELECT d.client_identifier,d.name,d.platform,COALESCE(NULLIF(p.device_match,''),d.name),COALESCE(p.product,''),COALESCE(p.username,''),d.last_seen FROM (SELECT * FROM stats_device_registry WHERE last_seen>0 ORDER BY last_seen DESC,id DESC LIMIT 100) d LEFT JOIN stats_plays p ON p.id=d.latest_play_id ORDER BY d.last_seen DESC,d.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []seenDevice{}
+	overrides := a.cfg.Read().Clients.Overrides
+	for rows.Next() {
+		var d seenDevice
+		var seen int64
+		if err := rows.Scan(&d.ClientIdentifier, &d.Name, &d.Platform, &d.Device, &d.App, &d.Viewer, &seen); err != nil {
+			return nil, err
+		}
+		d.LastSeen = time.Unix(seen, 0).UTC()
+		identity := clientreg.Identity{Product: d.App, Platform: d.Platform, Device: d.Device}
+		playback, policy := clientreg.Playback(identity, nil), clientreg.Policy(identity, nil)
+		for i, o := range overrides {
+			// Version is unavailable for historical observations; do not claim a
+			// version-scoped edit applies when that cannot be established.
+			if clientreg.OverrideApplies(o, []string{playback.ID, policy.ID}, identity) {
+				index := i
+				d.OverrideIndex = &index
+			}
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }

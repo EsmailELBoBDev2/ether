@@ -1253,6 +1253,9 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 		c.RecordPlay(g.releaseID(), cacheTitle(*s.title), g.src.Size())
 	}
 	ginfo := g.infoSnapshot()
+	if s.caps.ForcedOverrideApplied {
+		log.Debug("forced device override replaced a runtime declaration", "session", s.id, "device", s.caps.Device, "product", s.caps.Product)
+	}
 	log.Debug("playback session started", "session", s.id, "release", g.res.Release.Name,
 		"container", ginfo.Container, "size", g.src.Size(), "duration", ginfo.Duration, "estimated", ginfo.Estimated)
 	m.emitEvent("start", s, nil)

@@ -343,6 +343,12 @@ class _KVClient:
 
 
 class _HttpClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
+
     def fetch(self, req: Dict[str, Any]) -> Dict[str, Any]:
         method = str(req.get("method") or "GET").upper()
         url = str(req["url"])
@@ -351,7 +357,7 @@ class _HttpClient:
         data = body_str.encode("utf-8") if isinstance(body_str, str) else None
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=15) as resp:
+            with urllib.request.urlopen(request, timeout=min(15, max(0.001, float(req.get("timeoutMs", 15000)) / 1000))) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 out_headers = {k.lower(): v for k, v in resp.headers.items()}
                 return {"status": resp.status, "headers": out_headers, "body": raw}
@@ -438,7 +444,7 @@ class RemoteHostClient:
             credential if credential is not None else os.environ.get("ETHER_PLUGIN_CREDENTIAL", "")
         )
         self.kv = _KVClient(self._call_json)
-        self.http = _HttpClient()
+        self.http = _HttpClient(self._call_json)
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)

@@ -22,6 +22,8 @@ export {
   type FolderHash,
   type FolderHashJob,
   type DataRange,
+  type HashRequest,
+  type HashResult,
   type FetchCacheRequest,
   type FetchCacheResult,
   type HostFetchRequest,

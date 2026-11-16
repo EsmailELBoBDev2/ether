@@ -867,6 +867,8 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
 		`DELETE FROM plugins_hash_cache WHERE plugin=?`,
+		`DELETE FROM plugins_remote_hashes WHERE plugin=?`,
+		`DELETE FROM plugins_remote_hash_budget WHERE plugin=?`,
 		`DELETE FROM plugins_schedule_runs WHERE plugin=?`,
 		`DELETE FROM plugins_health WHERE plugin=?`,
 		`DELETE FROM plugins_outbox WHERE plugin=?`,

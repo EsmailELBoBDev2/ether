@@ -282,8 +282,8 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 	return z, nil
 }
 
-// CallDataHost is the shared hosted/remote data-service funnel. Only the four
-// named services are accepted; cache access rechecks plugin ownership each call.
+// CallDataHost is the shared hosted/remote data-service funnel. Only named
+// services are accepted; cache access rechecks plugin ownership each call.
 func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage) (json.RawMessage, error) {
 	// Remote callers receive the same maximum I/O deadline as hosted calls.
 	limits := defaultDataLimits()
@@ -303,7 +303,22 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		return nil, err
 	}
 	var value any
-	if name == "http.fetchToCache" {
+	if name == "http.hash" {
+		var req HashRequest
+		if len(args) != 1 {
+			return nil, fmt.Errorf("plugins: hash takes one request")
+		}
+		if err = json.Unmarshal(args[0], &req); err != nil {
+			return nil, err
+		}
+		service, ok := h.(interface {
+			HTTPHash(context.Context, HashRequest) (HashResult, error)
+		})
+		if !ok {
+			return nil, ErrUnavailable
+		}
+		value, err = service.HTTPHash(ctx, req)
+	} else if name == "http.fetchToCache" {
 		var req struct {
 			Method     string            `json:"method"`
 			URL        string            `json:"url"`

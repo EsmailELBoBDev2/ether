@@ -36,6 +36,7 @@ type actionJob struct {
 	mu     sync.Mutex
 	status ActionJobStatus
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func (j *actionJob) snapshot() ActionJobStatus { j.mu.Lock(); defer j.mu.Unlock(); return j.status }
@@ -48,24 +49,32 @@ func (j *actionJob) finish(state, reason string) {
 // startActionJob runs only owner-started work. At most two jobs run per plugin;
 // at most sixteen route snapshots are retained per plugin, including running jobs.
 func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
+	_, err := m.startResolverJob(pluginID, body, nil, "")
+	return err
+}
+
+func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessage, suffix string) (*actionJob, error) {
 	var out struct {
 		Job string `json:"job"`
 	}
 	if json.Unmarshal(body, &out) != nil || out.Job == "" {
-		return nil
+		return nil, nil
 	}
 	path := out.Job
 	if !strings.HasPrefix(path, "/ether/job/") {
 		path = "/ether/job/" + strings.TrimPrefix(path, "/")
 	}
 	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
-		return nil
+		return nil, nil
 	}
 	key := pluginID + "|" + path
+	if suffix != "" {
+		key = pluginID + "|resolver" + suffix
+	}
 	m.jobsMu.Lock()
 	defer m.jobsMu.Unlock()
 	if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
-		return nil
+		return old.(*actionJob), nil
 	}
 	active, count := 0, 0
 	oldestKey := ""
@@ -84,26 +93,33 @@ func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
 		return true
 	})
 	if active >= 2 {
-		return fmt.Errorf("two background jobs are already running; wait for one to finish")
+		return nil, fmt.Errorf("two background jobs are already running; wait for one to finish")
 	}
 	if _, exists := m.jobs.Load(key); !exists && count >= 16 {
 		m.jobs.Delete(oldestKey)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.runtimeCeilings(pluginID).deadline)
-	j := &actionJob{cancel: cancel, status: ActionJobStatus{Path: path, State: "running", Started: time.Now().UTC(), TotalLimitMS: m.runtimeCeilings(pluginID).deadline.Milliseconds(), AttemptLimit: ActionJobAttempts}}
+	j := &actionJob{cancel: cancel, done: make(chan struct{}), status: ActionJobStatus{Path: path, State: "running", Started: time.Now().UTC(), TotalLimitMS: m.runtimeCeilings(pluginID).deadline.Milliseconds(), AttemptLimit: ActionJobAttempts}}
 	m.jobs.Store(key, j)
 	go func() {
 		runtime.LockOSThread() // Do not unlock: this lowered-priority thread is discarded on return.
 		lowerJobPriority()
 		defer cancel()
+		defer close(j.done)
 		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 			if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
 				return Response{}, err
 			}
-			payload, _ := json.Marshal(struct {
-				Continuation json.RawMessage `json:"continuation,omitempty"`
-			}{token})
-			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: payload})
+			payload := map[string]json.RawMessage{}
+			_ = json.Unmarshal(initial, &payload)
+			if payload == nil {
+				payload = map[string]json.RawMessage{}
+			}
+			if len(token) > 0 {
+				payload["continuation"] = token
+			}
+			encoded, _ := json.Marshal(payload)
+			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded})
 		})
 		if err != nil {
 			state := "error"
@@ -120,7 +136,7 @@ func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
 			j.finish("done", "")
 		}
 	}()
-	return nil
+	return j, nil
 }
 
 // runActionJob treats an absent continuation flag as completion for existing
@@ -225,8 +241,11 @@ func (m *Manager) handleCancelActionJob(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, 400, "invalid", "The request was not understood.", nil)
 		return
 	}
-	if job, ok := m.jobs.Load(r.PathValue("id") + "|" + req.Path); ok {
-		job.(*actionJob).cancel()
-	}
+	m.jobs.Range(func(k, v any) bool {
+		if strings.HasPrefix(k.(string), r.PathValue("id")+"|") && v.(*actionJob).snapshot().Path == req.Path {
+			v.(*actionJob).cancel()
+		}
+		return true
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

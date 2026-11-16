@@ -650,10 +650,11 @@ type Host interface {
 
 // FetchRequest is one plugin outbound HTTP call.
 type FetchRequest struct {
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    []byte            `json:"body,omitempty"`
+	TimeoutMS int64             `json:"timeoutMs,omitempty"`
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      []byte            `json:"body,omitempty"`
 }
 
 // FetchResponse is the answer to a FetchRequest (body capped at 10 MiB).

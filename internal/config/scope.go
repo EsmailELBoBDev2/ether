@@ -96,6 +96,7 @@ var mixedSections = map[string]map[string]Scope{
 		"certHash":                   Shared,
 		"secureConnections":          Shared,
 		"usePlexMetadata":            Shared,
+		"delivery":                   Shared,
 		// Each node is reached through its own port forward.
 		"useUpnp":    Local,
 		"publicPort": Local,

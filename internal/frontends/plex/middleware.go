@@ -228,7 +228,7 @@ func redactTraceQuery(q url.Values) string {
 func traceSecretQuery(k string) bool {
 	switch strings.ToLower(k) {
 	case "x-plex-token", "token", "accesstoken", "access_token",
-		strings.ToLower(streamGrantParam), strings.ToLower(readCapParam):
+		strings.ToLower(streamGrantParam), strings.ToLower(readCapParam), strings.ToLower(deliveryGrantParam):
 		return true
 	default:
 		return false
@@ -341,7 +341,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) {
+		if s.authenticateStreamGrant(r, pr) || s.authenticateSessionRead(r, pr) || s.authenticateLiveGrant(r, pr) || s.authenticateDeliveryGrant(r, pr) {
 			if !s.acceptanceCurrent(r) {
 				writeHTTPError(w, http.StatusUnauthorized)
 				return

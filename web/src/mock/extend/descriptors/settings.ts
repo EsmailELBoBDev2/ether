@@ -323,6 +323,42 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
             ],
           },
           {
+            id: "delivery",
+            title: {
+              source: "Media delivery",
+            },
+            description: {
+              source: "How a direct play reaches the player.",
+            },
+            fields: [
+              {
+                key: "delivery",
+                label: {
+                  source: "Delivery",
+                },
+                help: {
+                  source:
+                    "Relay is the default. Redirect gives eligible Plex players a temporary TorBox file URL that they can use until it expires. Ether cannot measure bytes delivered directly by TorBox.",
+                },
+                kind: "select",
+                options: [
+                  {
+                    value: "relay",
+                    label: {
+                      source: "Relay through Ether",
+                    },
+                  },
+                  {
+                    value: "redirect",
+                    label: {
+                      source: "Redirect to the provider",
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+          {
             id: "compatibility",
             title: {
               source: "Compatibility",

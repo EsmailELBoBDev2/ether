@@ -440,6 +440,7 @@ func TestHistoryWrittenAndBounded(t *testing.T) {
 			clock := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 			idx := &fakeIndexer{releases: movieReleases()}
 			svc := New(idx, fakeHealth{}, db, testCfg(), Options{Now: clock.now, HistoryMax: 3, HistoryMaxAge: 48 * time.Hour})
+			defer svc.Close()
 			for i := 0; i < 5; i++ {
 				clock.add(time.Minute)
 				req := core.ResolveRequest{Title: matrixTitle(), Client: webCaps()}
@@ -447,6 +448,9 @@ func TestHistoryWrittenAndBounded(t *testing.T) {
 					req.Exclude = []string{"hd"}
 				}
 				if _, err := svc.Resolve(ctx, req); err != nil {
+					t.Fatal(err)
+				}
+				if err := svc.flushBookkeeping(ctx); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -477,6 +481,9 @@ func TestHistoryWrittenAndBounded(t *testing.T) {
 			// Age bound: an old outcome is dropped on the next write.
 			clock.add(72 * time.Hour)
 			if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: matrixTitle(), Client: webCaps()}); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.flushBookkeeping(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if _, total, _ := svc.History(ctx, HistoryFilter{}); total != 1 {

@@ -61,6 +61,12 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			}
 		}
 	}
+	// For a new quality request, look for an HD source matching the output
+	// before reusing an oversized stored source. Active sessions are reused by
+	// prepareOwnedWithin before this path; explicit picks remain authoritative.
+	if res != nil && prefer == "" && s.caps.PreferredSourceHeight >= 720 && (res.Release.Info.Height == 0 || res.Release.Info.Height > s.caps.PreferredSourceHeight) {
+		return nil, nil, false
+	}
 	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}

@@ -38,6 +38,7 @@ func (s *Service) persistBookkeeping(ctx context.Context, write func(context.Con
 		return
 	}
 	s.bookkeepingRunning = true
+	s.bookkeepingIdle = make(chan struct{})
 	s.bgWG.Add(1)
 	go func() {
 		defer s.bgWG.Done()
@@ -46,6 +47,7 @@ func (s *Service) persistBookkeeping(ctx context.Context, write func(context.Con
 			if s.bgClosed || len(s.bookkeeping) == 0 {
 				s.bookkeeping = nil
 				s.bookkeepingRunning = false
+				close(s.bookkeepingIdle)
 				s.bgMu.Unlock()
 				return
 			}
@@ -56,4 +58,21 @@ func (s *Service) persistBookkeeping(ctx context.Context, write func(context.Con
 			next(s.bgCtx)
 		}
 	}()
+}
+
+// flushBookkeeping is a deterministic barrier for evidence readers in tests.
+// It waits for the current queue to drain, without joining unrelated discovery.
+func (s *Service) flushBookkeeping(ctx context.Context) error {
+	s.bgMu.Lock()
+	idle := s.bookkeepingIdle
+	s.bgMu.Unlock()
+	if idle == nil {
+		return nil
+	}
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

@@ -276,6 +276,7 @@ type Service struct {
 	bgClosed           bool
 	bookkeeping        []func(context.Context)
 	bookkeepingRunning bool
+	bookkeepingIdle    chan struct{}
 	bgWG               sync.WaitGroup
 	refills            map[string]chan struct{} // episode search key -> completion; guarded by bgMu
 	refillRetryAfter   map[string]refillMark    // next detail discovery allowed; guarded by bgMu
@@ -1014,6 +1015,16 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable))
 	}
 
+	// A quality change may prefer a known HD source that saves decoding work.
+	// This is a soft preference: never promote unknown/SD, ambiguous, starved,
+	// wrong-audio or below-score sources, and never discard a healthy fallback.
+	if req.Prefer == "" && pin == nil && req.Client.PreferredSourceHeight >= 720 {
+		suitable := func(c candidate) bool {
+			return c.rel.Info.Height >= 720 && c.rel.Info.Height <= req.Client.PreferredSourceHeight && !c.identityWeak && !c.identityConflict && !c.starved && !c.belowScore && c.langOK
+		}
+		sort.SliceStable(cands, func(i, j int) bool { return suitable(cands[i]) && !suitable(cands[j]) })
+	}
+
 	// Preserve normal ranking within each codec family, after policy gates.
 	if req.PreferVideoCodec != "" {
 		sort.SliceStable(cands, func(i, j int) bool {
@@ -1607,10 +1618,11 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 	}
-	// Unknown height is not evidence that a source fits a ceiling that
-	// excludes every measured release. Do not turn missing metadata into a win.
+	// Unknown height is not evidence that a source fits an explicit client
+	// ceiling excluding every measured release. Owner profiles still permit
+	// conservative SD fallbacks when their preferred quality is unavailable.
 	aboveCeiling, withinCeiling := false, false
-	if profile.MaxHeight > 0 {
+	if req.Client.ExplicitMaxHeight && req.Client.MaxHeight > 0 && profile.MaxHeight == req.Client.MaxHeight {
 		for _, rel := range results {
 			if rel.Info.Height > profile.MaxHeight {
 				aboveCeiling = true

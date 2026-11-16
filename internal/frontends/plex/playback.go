@@ -504,6 +504,7 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 
 // sourceSelectionCaps keeps request quality limits at delivery selection. Device
 // decoder limits and owner quality rules still govern which source may open.
+// An HD output request may softly prefer a suitable HD source on new admission.
 func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
 	caps := p.caps
 	if p.sourceLimits != nil {
@@ -511,6 +512,10 @@ func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
 		caps.ExplicitMaxHeight = p.sourceLimits.ExplicitMaxHeight
 		caps.MaxBitrateKbps = p.sourceLimits.MaxBitrateKbps
 		caps.DefaultRemoteBitrate = p.sourceLimits.DefaultRemoteBitrate
+	}
+	// SD delivery caps always shape the encode, never source selection.
+	if p.opts.MaxHeight >= 720 && !p.opts.DirectPlay && !p.opts.DirectStream {
+		caps.PreferredSourceHeight = p.opts.MaxHeight
 	}
 	return caps
 }

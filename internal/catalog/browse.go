@@ -596,6 +596,24 @@ func flagInt(b bool) int {
 // (viewer, date windows, rule preview, availability keys) left zero so
 // membership is a property of the saved filter alone, not of who is asking.
 func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.RatingKey) (bool, error) {
+	members, err := c.TitlesInFilter(ctx, f, []core.RatingKey{key})
+	return members[key], err
+}
+
+// TitlesInFilter is TitleInFilter for a batch of keys: one indexed query per
+// chunk over the same membership SQL, never a per-title round trip or a walk
+// of the library. The result holds exactly the keys that are members.
+func (c *Catalog) TitlesInFilter(ctx context.Context, f core.Filter, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+	out := make(map[core.RatingKey]bool, len(keys))
+	for start := 0; start < len(keys); start += 400 {
+		if err := c.titlesInFilterChunk(ctx, f, keys[start:min(start+400, len(keys))], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (c *Catalog) titlesInFilterChunk(ctx context.Context, f core.Filter, keys []core.RatingKey, out map[core.RatingKey]bool) error {
 	f.LocalOnly = true
 	// Membership protects direct lookup and playback. Discovery-only hides
 	// affect browse pages, never whether a title belongs to an allowed source.
@@ -608,7 +626,7 @@ func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.Rat
 		}
 		f.ExtraRules = rules
 	}
-	f.IncludeKeys = []core.RatingKey{key}
+	f.IncludeKeys = keys
 	f.ExcludeKeys = nil
 	f.CatalogViewerID = 0
 	f.RuleVisibility = ""
@@ -623,13 +641,21 @@ func (c *Catalog) TitleInFilter(ctx context.Context, f core.Filter, key core.Rat
 	f.DigitalDateEvidence = false
 	where, args, err := c.browseWhereMode(f, true)
 	if err != nil {
-		return false, err
+		return err
 	}
-	var n int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles AS t WHERE `+where, args...).Scan(&n); err != nil {
-		return false, err
+	rows, err := c.db.QueryContext(ctx, `SELECT t.key FROM catalog_titles AS t WHERE `+where, args...)
+	if err != nil {
+		return err
 	}
-	return n > 0, nil
+	defer rows.Close()
+	for rows.Next() {
+		var k core.RatingKey
+		if err := rows.Scan(&k); err != nil {
+			return err
+		}
+		out[k] = true
+	}
+	return rows.Err()
 }
 
 func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {

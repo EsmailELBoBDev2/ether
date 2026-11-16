@@ -339,8 +339,7 @@ func isStandaloneGuideLogoClient(pr *Request) bool {
 	if pr == nil {
 		return false
 	}
-	return strings.EqualFold(pr.Platform, "tvOS") ||
-		strings.EqualFold(pr.Product, "Plex for Apple TV") ||
+	return cloudGuideLogoClient(pr) ||
 		strings.EqualFold(pr.Product, "Plex Web") ||
 		strings.EqualFold(pr.Platform, "Android") ||
 		plexAndroidClient(pr)

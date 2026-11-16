@@ -29,7 +29,10 @@ import (
 const signedLogoPrefix = "/livetv/logos/"
 
 func cloudGuideLogoClient(pr *Request) bool {
-	return pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV"))
+	// Plex for iOS and iPadOS share the Apple TV guide and fetch its logos
+	// the same way, so a server-relative logo path draws blank there.
+	return pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV") ||
+		strings.EqualFold(pr.Platform, "iOS") || strings.EqualFold(pr.Platform, "iPadOS") || strings.EqualFold(pr.Product, "Plex for iOS"))
 }
 
 // cloudGuideLogo is the logo URL for a client whose guide fetches logos

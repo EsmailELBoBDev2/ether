@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -67,8 +68,31 @@ func (s *Server) titleAllowed(u *frontend.User, t *frontend.Title) bool {
 }
 
 func (s *Server) visibility() frontend.Visibility {
+	// Resolve the published sections once per Visibility: title checks run
+	// for every row of a hub, and each section listing reads the published
+	// libraries (and their plugins) again.
+	var once sync.Once
+	var movie, show Section
+	var movieOK, showOK bool
+	sectionFor := func(t frontend.MediaType) (int, bool) {
+		once.Do(func() {
+			for _, sec := range s.getSections() {
+				if !movieOK && sec.Type == frontend.TypeMovie {
+					movie, movieOK = sec, true
+				}
+				if !showOK && sec.Type == frontend.TypeShow {
+					show, showOK = sec, true
+				}
+			}
+		})
+		switch t {
+		case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
+			return show.ID, showOK
+		}
+		return movie.ID, movieOK
+	}
 	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(),
-		SectionFor: func(t frontend.MediaType) (int, bool) { sec, ok := s.untitledSectionFor(t); return sec.ID, ok }}
+		SectionFor: sectionFor}
 	if s.catalog() != nil {
 		v.GetTitle = s.seriesTitle
 	}

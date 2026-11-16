@@ -811,9 +811,10 @@ func (s *Server) handleContinueWatching(w http.ResponseWriter, r *http.Request) 
 		// page limit so unavailable entries cannot displace visible items.
 		spec.Items = s.availableForViewer(ctx, pr.User, spec.Items)
 		if sec.ID != 0 {
+			sectionFor := s.visibility().SectionFor // resolves the sections once
 			items := make([]frontend.Title, 0, len(spec.Items))
 			for _, title := range spec.Items {
-				if section, ok := s.untitledSectionFor(title.Type); ok && section.ID == sec.ID {
+				if id, ok := sectionFor(title.Type); ok && id == sec.ID {
 					items = append(items, title)
 				}
 			}

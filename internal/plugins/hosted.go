@@ -209,7 +209,13 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body}, nil
+	var blob *FrontendBlob
+	if len(resp.Blob) > 0 {
+		if err := json.Unmarshal(resp.Blob, &blob); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
 }
 
 func (r *hostedRuntime) Close() error       { return r.p.Close() }

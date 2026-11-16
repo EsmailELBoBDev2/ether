@@ -833,8 +833,16 @@ type RawRequest struct {
 	Locale   string            `json:"locale,omitempty"`
 }
 
+// FrontendBlob selects host-served bytes for a frontend adapter response.
+type FrontendBlob struct {
+	LibraryKey  string `json:"libraryKey"`
+	Ref         string `json:"ref"`
+	MemberIndex *int   `json:"memberIndex,omitempty"`
+}
+
 // RawResponse is the low-level transport-agnostic response returned by Plugin.Dispatch.
 type RawResponse struct {
+	Blob       *FrontendBlob     `json:"blob,omitempty"`
 	Status     int               `json:"status"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	Body       json.RawMessage   `json:"body,omitempty"`

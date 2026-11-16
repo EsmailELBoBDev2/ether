@@ -71,6 +71,7 @@ type Request struct {
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
 // as its body field (usually a JSON string), passed through untouched.
 type Response struct {
+	Blob    json.RawMessage   `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`

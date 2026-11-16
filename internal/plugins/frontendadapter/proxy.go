@@ -79,6 +79,13 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			writePluginError(w, err)
 			return
 		}
+		if resp.Blob != nil {
+			if stream != nil {
+				stream.Close()
+			}
+			f.writeBlob(w, r, auth, resp)
+			return
+		}
 		if stream != nil {
 			defer stream.Close()
 			writeStream(w, resp, stream)
@@ -132,6 +139,7 @@ func writeStream(w http.ResponseWriter, resp plugins.Response, stream io.Reader)
 		status = http.StatusOK
 	}
 	copyResponseHeaders(w, resp.Headers)
+	copyRedirect(w, resp)
 	w.WriteHeader(status)
 	_, _ = io.Copy(w, stream)
 }
@@ -143,6 +151,7 @@ func writeResponse(w http.ResponseWriter, resp plugins.Response) {
 		status = http.StatusOK
 	}
 	copyResponseHeaders(w, resp.Headers)
+	copyRedirect(w, resp)
 	w.WriteHeader(status)
 	_, _ = w.Write(resp.Body)
 }

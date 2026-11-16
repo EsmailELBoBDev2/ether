@@ -396,7 +396,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
             <SettingsSection title={t("Remove")}>
               <SettingsRow
                 title={t("Delete this library")}
-                description={t("Its titles stay in Movies and TV Shows.")}
+                description={t("Media and watch history are kept.")}
                 control={
                   <Button
                     size="sm"
@@ -405,10 +405,9 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
                     onClick={() => {
                       if (
                         window.confirm(
-                          t(
-                            "Delete the library “{name}”? Its titles stay in Movies and TV Shows.",
-                            { name: library.name },
-                          ),
+                          t("Delete the library “{name}”? Media and watch history are kept.", {
+                            name: library.name,
+                          }),
                         )
                       )
                         void librariesApi

@@ -444,6 +444,10 @@ func (c *librariesConsole) handler() http.Handler {
 			libError(w, libErrStatus(err), "Could not delete the library")
 			return
 		}
+		if err := c.app.refreshLibraryPolicies(r.Context()); err != nil {
+			libError(w, http.StatusInternalServerError, "Could not save visibility rules")
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /{id}/items", c.handleItems)

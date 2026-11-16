@@ -3,8 +3,13 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontends/plex"
+	"github.com/braedonsaunders/ether/internal/plextv"
+	"github.com/braedonsaunders/ether/internal/sessions"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,8 +83,8 @@ func TestLibrariesConsoleCRUDAndFilterBrowse(t *testing.T) {
 		t.Fatalf("filter patch %d %s", w.Code, w.Body)
 	}
 
-	// Built-ins cannot be deleted; the filter library can.
-	if w := call("DELETE", "/1", ""); w.Code != 409 {
+	// Both preseeded and owner-created libraries can be deleted.
+	if w := call("DELETE", "/1", ""); w.Code != 204 {
 		t.Fatalf("builtin delete %d", w.Code)
 	}
 	if w := call("DELETE", "/"+id, ""); w.Code != 204 {
@@ -241,4 +246,100 @@ func TestLibrariesConsolePluginItemMatchPinClear(t *testing.T) {
 		t.Fatalf("builtin cache %d", w.Code)
 	}
 	_ = pluginitems.DefaultMatchThreshold
+}
+
+// This exercises the durable declaration, policy cache and already-running
+// protocol experiences together; deleting a section never deletes shared data.
+func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+	if err := a.users.SetOwner(ctx, plextv.Account{ID: 42, Username: "owner"}, "owner-token"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := a.users.Owner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := core.Title{Key: core.MovieKey(991), Type: core.TypeMovie, Title: "Kept", Released: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if err := a.catalog.UpsertTitle(ctx, title, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.state.Scrobble(ctx, owner.ID, title.Key); err != nil {
+		t.Fatal(err)
+	}
+	before, err := a.state.Get(ctx, owner.ID, title.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	experiences := map[core.Protocol]frontend.Experience{}
+	for _, protocol := range []core.Protocol{"plex", "jellyfin", "emby", "stremio", "silo", "vela", "xtream", "dlna", "webdav", "m3u"} {
+		exp, err := a.newSurfaceExperience(protocol)
+		if err != nil {
+			t.Fatal(err)
+		}
+		experiences[protocol] = exp
+		views, err := exp.Views(ctx, owner)
+		if err != nil || len(views) != 2 {
+			t.Fatalf("%s seed views: %+v %v", protocol, views, err)
+		}
+	}
+	srv := plex.NewServer(plex.Deps{Host: frontend.Host{Experience: experiences["plex"], Sessions: sessions.NewLocalRuntime(sessions.LocalRuntimeDeps{})}, DisableEnrichment: true})
+	defer srv.Close()
+	if err := a.libraries.SetRules(ctx, 1, nil, "hide"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.refreshLibraryPolicies(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h := (&librariesConsole{app: a}).handler()
+	for _, id := range []string{"1", "2"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("DELETE", "/"+id, nil))
+		if w.Code != 204 {
+			t.Fatalf("delete %s: %d %s", id, w.Code, w.Body)
+		}
+	}
+	if len(srv.LibrarySections()) != 0 {
+		t.Fatal("Plex retained phantom sections")
+	}
+	for protocol, exp := range experiences {
+		views, err := exp.Views(ctx, owner)
+		if err != nil || len(views) != 0 {
+			t.Fatalf("%s deleted views: %+v %v", protocol, views, err)
+		}
+		if _, err := exp.LibraryItems(ctx, owner, core.Device{}, "1", frontend.ItemQuery{}); err == nil {
+			t.Fatalf("%s retained deleted route", protocol)
+		}
+		rows, err := exp.Rows(ctx, frontend.RowRequest{Viewer: owner, Device: core.Device{ID: "lifecycle"}, Placement: frontend.PlacementHome, Limit: 10})
+		if err != nil {
+			t.Fatalf("%s empty Home: %v", protocol, err)
+		}
+		for _, row := range rows {
+			if len(row.Items) > 0 || len(row.Entries) > 0 {
+				t.Fatalf("%s empty Home has titles: %+v", protocol, row)
+			}
+		}
+	}
+	if _, err := a.catalog.StoredTitle(ctx, title.Key); err != nil {
+		t.Fatalf("media lost: %v", err)
+	}
+	after, err := a.state.Get(ctx, owner.ID, title.Key)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("history changed: %+v %+v %v", before, after, err)
+	}
+	var present core.Presentations
+	if err := json.Unmarshal([]byte(`{"plex":{"base":"movie"}}`), &present); err != nil {
+		t.Fatal(err)
+	}
+	lib, err := a.libraries.Create(ctx, "New films", core.TypeMovie, nil, "show", present)
+	if err != nil || lib.ID <= 2 {
+		t.Fatalf("recreation: %+v %v", lib, err)
+	}
+	page, err := experiences["plex"].LibraryItems(ctx, owner, core.Device{}, strconv.Itoa(int(lib.ID)), frontend.ItemQuery{Limit: 10})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("recreated library inherits deleted policy: %+v %v", page, err)
+	}
+	if sections := srv.LibrarySections(); len(sections) != 1 || sections[0].ID != int(lib.ID) {
+		t.Fatalf("recreated sections: %+v", sections)
+	}
 }

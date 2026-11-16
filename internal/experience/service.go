@@ -264,9 +264,7 @@ func NewService(d ServiceDeps) (*Service, error) {
 
 func (s *Service) libraries() []Library {
 	if s.d.LiveLibraries != nil {
-		if live := s.d.LiveLibraries(); live != nil {
-			return live
-		}
+		return s.d.LiveLibraries()
 	}
 	return s.d.Libraries
 }

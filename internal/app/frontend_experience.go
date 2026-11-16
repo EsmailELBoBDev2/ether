@@ -114,11 +114,25 @@ func (a *App) libraryTitles() (movies, shows string) {
 	return a.libraryName(core.LibraryMovies, "Movies"), a.libraryName(core.LibraryShows, "TV Shows")
 }
 
-// configuredLibraries is the live Movies / TV Shows pair. IDs stay 1 and 2 so
-// saved ParentId and section UUIDs do not change when the owner renames them.
+// configuredLibraries reads current catalogue declarations. An empty stored
+// list remains empty; only hosts without a library store use legacy defaults.
 func (a *App) configuredLibraries() []experience.Library {
-	movies, shows := a.libraryTitles()
-	return []experience.Library{{ID: 1, Name: movies, Type: core.TypeMovie, Virtual: true}, {ID: 2, Name: shows, Type: core.TypeShow, Virtual: true}}
+	if a.libraries == nil {
+		movies, shows := a.libraryTitles()
+		return []experience.Library{{ID: 1, Name: movies, Type: core.TypeMovie, Virtual: true}, {ID: 2, Name: shows, Type: core.TypeShow, Virtual: true}}
+	}
+	out := []experience.Library{}
+	libs, err := a.libraries.List(context.Background())
+	if err != nil {
+		return out
+	}
+	for _, lib := range libs {
+		if lib.Hidden || lib.Source == core.LibraryPlugin {
+			continue
+		}
+		out = append(out, experience.Library{ID: int(lib.ID), Name: lib.Name, Type: lib.MediaType, Virtual: true})
+	}
+	return out
 }
 
 // newSurfaceExperience builds an explicitly surface-bound service. A shared
@@ -131,7 +145,24 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if a.users == nil || a.catalog == nil || a.safety == nil || a.state == nil || a.personalize == nil || a.favorites == nil || a.playlists == nil || a.db == nil {
 		return nil, errors.New("experience: dependencies unavailable")
 	}
-	libs := a.configuredLibraries()
+	liveLibraries := func() []experience.Library {
+		libs := a.configuredLibraries()
+		if a.libraries == nil {
+			return libs
+		}
+		out := []experience.Library{}
+		for _, lib := range libs {
+			stored, err := a.libraries.Get(context.Background(), core.LibraryID(lib.ID))
+			if err != nil {
+				continue
+			}
+			if _, _, published := presentLibraryForProtocol(stored.Present, protocol, stored.MediaType); published {
+				out = append(out, lib)
+			}
+		}
+		return out
+	}
+	libs := liveLibraries()
 	stepAside := a.newStepAsideFor(protocol)
 	filter := func(ctx context.Context, ts []core.Title) []core.Title {
 		if a.availability == nil {
@@ -151,6 +182,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	// Home, library rows, and card user-data read the mirror. Refreshing a
 	// show from a provider stays on the single-title detail and playback path.
 	vis := experienceVisibility(a.safety, a.catalog.CachedGet, filter, sessions, libs)
+	vis.SectionFor = func(kind core.MediaType) (int, bool) {
+		return experience.LibrarySection(liveLibraries(), kind)
+	}
 	vis.JudgedOnFacts = func(ctx context.Context) func(core.Title) bool {
 		if a.availability == nil {
 			return nil
@@ -159,7 +193,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}
 	rowVis := vis
 	source := experience.CandidateRowSource{Kind: a.personalize.SemanticRowKind, Load: func(ctx context.Context, req frontend.RowRequest) ([]experience.RankedCandidate, error) {
-		return a.productionExperienceRows(ctx, req, libs, rowVis, stepAside)
+		return a.productionExperienceRows(ctx, req, liveLibraries(), rowVis, stepAside)
 	}, Additional: func(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 		return a.experienceAdditionalRows(core.WithLiveApp(ctx, string(protocol)), req, a.playlists, rowVis)
 	}}
@@ -188,7 +222,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		if protocol == "plex" {
 			return nil, nil
 		}
-		return a.experienceHomeFallback(ctx, req, libs, rowVis)
+		return a.experienceHomeFallback(ctx, req, liveLibraries(), rowVis)
 	}, Active: func(ctx context.Context, u *core.User) bool {
 		v, e := a.users.ActiveUser(ctx, u.ID)
 		return e == nil && v != nil
@@ -208,7 +242,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				rows[n].PreviewOnFocus = true
 			}
 		}
-		arranged, err := experience.LayoutRows(ctx, layout, libs, req, sit, rows)
+		arranged, err := experience.LayoutRows(ctx, layout, liveLibraries(), req, sit, rows)
 		if !extrasEnabled {
 			for n := range arranged {
 				arranged[n].PreviewOnFocus = false
@@ -290,7 +324,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			out = append(out, frontend.NotInterestedEntry{Key: entry.Key, AddedAt: entry.AddedAt})
 		}
 		return out, nil
-	}, ByExternalID: a.catalog.ByExternalID, Active: a.users.PolicyUser, Libraries: libs, LiveLibraries: a.configuredLibraries, Visibility: vis, State: a.state, Rows: rows, Protocol: protocol, Browse: a.catalog.Browse, PageExclusions: newLibraryPageExclusionsFor(a, stepAside), ViewerRules: a.catalog.ViewerRulesJudge, FacetFilter: a.catalog.FacetFilter, FacetPage: a.catalog.FacetPage, StudioByFacetID: a.catalog.StudioByFacetID, PersonByFacetID: a.catalog.PersonByFacetID, CountWatched: a.catalog.CountWatched, CountBrowsable: a.catalog.CountBrowsable, CreditItems: a.catalog.CachedCreditItems, PeopleIndex: a.peopleIndex, PersonCredits: a.catalog.PersonCreditKeys, PersonCreditsMany: a.catalog.PersonCreditsMany, RankingDetails: a.catalog.RankingDetails, PersonCreditForms: a.catalog.PersonCreditForms, PersonFormKeys: a.catalog.PersonFormKeys, AiredEpisodes: a.catalog.CachedAiredEpisodes, AiredEpisodesMany: a.catalog.CachedAiredEpisodesMany, AiredEpisodeTallies: airedEpisodeTallies, EpisodesSettledBefore: func(ctx context.Context) time.Time {
+	}, ByExternalID: a.catalog.ByExternalID, Active: a.users.PolicyUser, Libraries: libs, LiveLibraries: liveLibraries, Visibility: vis, State: a.state, Rows: rows, Protocol: protocol, Browse: a.catalog.Browse, PageExclusions: newLibraryPageExclusionsFor(a, stepAside), ViewerRules: a.catalog.ViewerRulesJudge, FacetFilter: a.catalog.FacetFilter, FacetPage: a.catalog.FacetPage, StudioByFacetID: a.catalog.StudioByFacetID, PersonByFacetID: a.catalog.PersonByFacetID, CountWatched: a.catalog.CountWatched, CountBrowsable: a.catalog.CountBrowsable, CreditItems: a.catalog.CachedCreditItems, PeopleIndex: a.peopleIndex, PersonCredits: a.catalog.PersonCreditKeys, PersonCreditsMany: a.catalog.PersonCreditsMany, RankingDetails: a.catalog.RankingDetails, PersonCreditForms: a.catalog.PersonCreditForms, PersonFormKeys: a.catalog.PersonFormKeys, AiredEpisodes: a.catalog.CachedAiredEpisodes, AiredEpisodesMany: a.catalog.CachedAiredEpisodesMany, AiredEpisodeTallies: airedEpisodeTallies, EpisodesSettledBefore: func(ctx context.Context) time.Time {
 		if a.availability == nil {
 			return time.Time{}
 		}
@@ -520,7 +554,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}
 	deps.Recommender = a.personalize
 	deps.NextUp = func(ctx context.Context, viewer *core.User, limit int) ([]core.Title, error) {
-		return a.experienceContinueKind(ctx, viewer, libs, rowVis, core.TypeShow, limit)
+		return a.experienceContinueKind(ctx, viewer, liveLibraries(), rowVis, core.TypeShow, limit)
 	}
 	deps.VibeSearch = a.collections
 	deps.SearchSources = a.searchSourcesFor(stepAside)

@@ -108,6 +108,25 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	views, viewErr := i.host.Experience.Views(r.Context(), viewer)
+	if viewErr != nil {
+		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	allowed := false
+	for _, view := range views {
+		if stremioLibraryType(view) != typ {
+			continue
+		}
+		if purpose != "" || libID != "" && view.ID == libID || catalogID == "ether-movies" || catalogID == "ether-series" {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		http.NotFound(w, r)
+		return
+	}
 	extra := r.URL.Query()
 	if raw := r.PathValue("extra"); raw != "" {
 		if !strings.HasSuffix(raw, ".json") {

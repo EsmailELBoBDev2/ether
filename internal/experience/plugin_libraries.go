@@ -180,7 +180,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 }
 
 func (s *Service) allowedFilterLibraries(ctx context.Context, v *core.User) []core.Library {
-	if s.d.PluginLibraries == nil || v == nil || v.IsOwner || len(v.AllowedLibraries) == 0 {
+	if s.d.PluginLibraries == nil || v == nil {
 		return nil
 	}
 	libs, err := reqmemo.Do(ctx, "experience:filterlibs:"+strconv.FormatInt(v.ID, 10), func() ([]core.Library, error) {
@@ -217,21 +217,16 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 		return false
 	}
 	id, ok := sectionFor(title.Type)
-	if !ok {
-		return false
-	}
-	if SectionAllowed(v, id) {
+	if ok && SectionAllowed(v, id) {
 		if s.d.PluginLibraries == nil {
 			return true
 		}
 		// Ensure the canonical built-in library itself has not been hidden on this protocol.
 		if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil {
 			_, _, pub := s.publishedLibrary(ctx, lib)
-			if pub {
+			if pub && lib.Source == core.LibraryBuiltin {
 				return true
 			}
-		} else {
-			return true
 		}
 	}
 	filterLibs := s.allowedFilterLibraries(ctx, v)

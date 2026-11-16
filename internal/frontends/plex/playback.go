@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -653,16 +654,30 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			p.opts.BurnTextSubtitles = true
 		}
 		if androidImageSubtitle(pr, ps.Info, p.opts) {
+			dec := frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{})
 			// Source-change remuxing is also a conversion, even when MDE
-			// initially allowed direct play of the original file.
+			// initially allowed direct play of the original file. Skip the
+			// proactive Usenet burn when the client can direct-play PGS itself.
 			converting := !p.opts.DirectPlay || ps.RequiresRemux
 			if onDemandSession(ps) && p.mde && p.opts.DirectStream && ps.Resolution != nil {
+				// A preliminary direct-play decision can still become an optional
+				// source-safety remux in the broker. Exempt only the native paths
+				// that sessions.Decide also keeps out of that remux.
+				native := false
+				if v := ps.Info.Video(); v != nil && dec.Kind == frontend.DecisionDirectPlay {
+					targets := streamingVideoTarget(pr.ProfileExtra, p.protocol)
+					if len(p.caps.VideoCodecs) > 0 {
+						targets = slices.DeleteFunc(targets, func(c string) bool { return !p.caps.SupportsVideo(c) })
+					}
+					native = (v.DolbyVision && strings.EqualFold(p.caps.Platform, "Android") && frontend.SupportsDVProfile(p.caps, v.DolbyVisionProfile)) ||
+						(v.Codec != "" && len(targets) > 0 && !slices.Contains(targets, v.Codec))
+				}
 				protocol := ps.Resolution.Release.Protocol
-				converting = converting || (protocol != frontend.ProtocolHTTP && protocol != frontend.ProtocolTorrent)
+				converting = converting || (!native && protocol != frontend.ProtocolHTTP && protocol != frontend.ProtocolTorrent)
 			}
 			// A quality/codec limit can require conversion even though the
 			// client allowed direct play.
-			if converting || frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{}).Kind != frontend.DecisionDirectPlay {
+			if converting || dec.Kind != frontend.DecisionDirectPlay {
 				p.opts.BurnSubtitles = true
 			}
 		}

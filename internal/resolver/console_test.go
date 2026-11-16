@@ -245,6 +245,9 @@ func TestPinUnhealthyFailsAndKeepsPin(t *testing.T) {
 	if tr := svc.Traces()[0]; tr.PinStatus != "unhealthy: health: unhealthy" {
 		t.Fatalf("pin status %q", tr.PinStatus)
 	}
+	if err := svc.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	svc2 := New(idx, fakeHealth{}, db, testCfg(), Options{})
 	p, ok := svc2.PinFor(matrixTitle().Key)
 	if !ok || p.LastStatus != PinUnhealthy || p.Release.Name != r720.Name || p.LastCheckedAt.IsZero() {

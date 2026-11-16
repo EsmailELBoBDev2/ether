@@ -132,7 +132,7 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 				}
 				seen[title.Key] = true
 				selected := titleArtwork(title.Key, byKey[title.Key])
-				if show := episodePosterShow(title); show != 0 {
+				if show := episodePosterShow(title); show != 0 && !hasPortrait(selected) {
 					for _, image := range byKey[show] {
 						if image.Image.Kind == frontend.ImagePoster && image.Image.Path != "" && image.Secret != "" {
 							// A poster-only landscape fallback is replaced by the
@@ -181,7 +181,10 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 // episodePosterShow requests a show fallback only when the episode has no
 // portrait of its own. Packed catalogue keys also cover cards without ShowKey.
 func episodePosterShow(title frontend.Title) frontend.RatingKey {
-	if title.Key.Kind() != frontend.KindEpisode || title.PosterPath != "" {
+	// Episodes often carry an inherited or unmeasured PosterPath that
+	// titleArtwork does not select as a portrait, so the show is always
+	// fetched; it is only used when the card ends up without a portrait.
+	if title.Key.Kind() != frontend.KindEpisode {
 		return 0
 	}
 	if title.ShowKey != 0 {
@@ -191,6 +194,16 @@ func episodePosterShow(title frontend.Title) frontend.RatingKey {
 		return title.Key.Parent().Parent()
 	}
 	return 0
+}
+
+func hasPortrait(images []frontend.GrantedImage) bool {
+	for i, image := range images {
+		// A poster in first place is a landscape fallback, not a portrait.
+		if i > 0 && image.Image.Kind == frontend.ImagePoster {
+			return true
+		}
+	}
+	return false
 }
 
 // Episode cards keep their still (or landscape fallback) first, followed by

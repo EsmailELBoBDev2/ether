@@ -362,6 +362,17 @@ func (s *Session) ServeRungPlaylist(w http.ResponseWriter, r *http.Request, rung
 		http.NotFound(w, r)
 		return
 	}
+	s.mu.Unlock()
+	if err := s.awaitLiveTarget(r.Context(), t); err != nil {
+		http.Error(w, "live playlist unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
 	body := s.renderPlaylistLocked(t)
 	s.notePlaylistLocked(t, body)
 	s.mu.Unlock()

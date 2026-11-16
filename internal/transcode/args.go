@@ -16,6 +16,7 @@ import (
 
 // runSpec is everything needed to build one ffmpeg HLS run.
 type runSpec struct {
+	waitDecode     bool // only argv construction may spend the bounded admission budget
 	SoftwareDecode bool // keep hardware encode after a decoder init failure
 	HealTimestamps bool
 	CopyOrigin     bool // retain audio from the measured video presentation origin
@@ -276,6 +277,7 @@ func matroskaCopyParameterSets(d core.Decision, v *core.StreamInfo) string {
 // buildCodecArgs is the input, stream mapping and codec part of a run's
 // command line, shared by HLS and DASH.
 func buildCodecArgs(s runSpec) []string {
+	s.waitDecode = true
 	// A card has no changing content: start its loop at zero, then place it
 	// on the programme clock. Never seek through hours of repeated input.
 	loopStart := s.Start
@@ -1371,6 +1373,15 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 	// tone-mapped contract. Tone mappers produce limited-range BT.709.
 	p010CUDA := accel == AccelNVENC && s.Features.cudaP010ToneMap && !pictureOf(v).full && (s.Target == nil || (s.Target.pic.prim == "bt709" && s.Target.pic.matrix == "bt709" && !s.Target.pic.full))
 	decodeOK := s.canGPUDecode()
+	// A cold asynchronous capability result previously disabled decoding for
+	// the entire first HDR run, even when the hardware supports Main10. Give
+	// this run a small demand-only budget before selecting the GPU graph.
+	if s.waitDecode && !decodeOK && pic.tonemap && !s.SoftwareDecode && (accel == AccelVideoToolbox || accel == AccelNVENC || accel == AccelQSV) {
+		if cache, ok := s.Features.decode.(*decodeProbeCache); ok {
+			decodeOK = cache.supportsWithin(s.Accel, v, 300*time.Millisecond)
+		}
+	}
+
 	gpuOff := !decodeOK || v.Interlaced || s.PictureCrop != nil || pic.pad || pic.convert != "" || (pic.tonemap && pic.tenBit && !p010CUDA)
 	dv5 := pic.tonemap && v.DolbyVision && v.DolbyVisionProfile == 5
 	gpuInput, gpuFilters, gpuOK := gpuPipeline(s, accel, pic.w, pic.h, pic.tonemap, pic.tenBit, burn)
@@ -1383,6 +1394,7 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 		// It must not bypass the RPU-aware CPU graph either.
 		gpuOff = true
 	}
+
 	switch {
 	case gpuOK && !gpuOff:
 		inputArgs = append(inputArgs, gpuInput...)

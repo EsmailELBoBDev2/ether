@@ -81,6 +81,9 @@ type broadcastRendition struct {
 	queue      *broadcastFrameQueue
 	cancel     context.CancelFunc
 	viewers    int
+	// started is set on the first tick queued to this rendition; see
+	// tickCycle for why that tick must be in phase with tick zero.
+	started bool
 }
 type broadcastMomentInput struct {
 	fallback bool
@@ -1399,8 +1402,19 @@ func (b *broadcast) step(now time.Time) bool {
 		b.coldHoldFrame = frame.Video
 	}
 	b.lastFrame = frame
+	cycle := tickCycle(b.format)
 	b.mu.Lock()
 	for id, r := range b.renditions {
+		if !r.started {
+			// A new encoder counts its own ticks from zero and expects tick k
+			// to carry tickSamples(k) of PCM. At 30000/1001 or 60000/1001 that
+			// size varies within a cycle, so a rendition joining a running
+			// output starts on a tick in phase with tick zero.
+			if b.tick%cycle != 0 {
+				continue
+			}
+			r.started = true
+		}
 		slow := false
 		// Priming speed is not sustainable throughput. Startup already bounds
 		// speculative queue depth; due ticks still degrade at real backlog.

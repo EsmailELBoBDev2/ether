@@ -123,9 +123,10 @@ type Manager struct {
 
 // failure is a title's consecutive failed fills and the last one's time.
 type failure struct {
-	count int
-	at    time.Time
-	need  int64 // reservation that did not fit below higher-ranked titles
+	count     int
+	at        time.Time
+	need      int64 // reservation that did not fit below higher-ranked titles
+	watchlist bool  // watchlist fills reserve only a prefix, not the full source
 }
 
 // minOverhead is the least a reservation adds to its source size.
@@ -423,6 +424,7 @@ func (m *Manager) fail(key core.RatingKey, c candidate, cause error) error {
 	var room roomError
 	if errors.As(cause, &room) {
 		f.need = room.need
+		f.watchlist = c.intent != nil
 	}
 	m.failed[key] = f
 	m.items[key] = it
@@ -593,6 +595,11 @@ func (m *Manager) pass(ctx context.Context) error {
 		if waiting && m.deps.Now().Before(f.at.Add(failureBackoff(f.count))) {
 			continue
 		}
+		// A watchlist event changes a full-source fill into a small prefix fill.
+		// Its old reservation is not evidence that the new job cannot fit.
+		if f.watchlist != (candidate.intent != nil) {
+			f.need = 0
+		}
 		// Resolving searches indexers and may grab an NZB. Skip a title that
 		// cannot be admitted even after evicting every lower-ranked entry:
 		// no source fits in its bare overhead, nor in less than the
@@ -685,8 +692,18 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 			size = min(size, int64(8<<20))
 		}
 	}
-	if size <= 0 || size > limit {
-		return errors.New("source size unknown or larger than the preload allocation")
+	if size <= 0 {
+		return errors.New("source size unknown")
+	}
+	// Remember all positive sizes that cannot fit, including sources larger
+	// than the entire allocation. Check before retiring an existing source.
+	overhead := max(size/20, minOverhead)
+	if size > (1<<63-1)-overhead {
+		return errors.New("source reservation overflow")
+	}
+	reservation := size + overhead
+	if reservation > limit {
+		return roomError{need: reservation}
 	}
 	if previous.ReleaseID != "" && previous.ReleaseID != res.Release.ID {
 		if err := m.forget(title.Key); err != nil {
@@ -694,11 +711,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		}
 		previous = Item{}
 	}
-	// Reserve source overhead and make room only after a real source opens.
-	reservation := size + max(size/20, minOverhead)
-	if reservation < 0 || reservation > limit {
-		return errors.New("source does not fit preload allocation")
-	}
+	// Make room only after a real source opens and its reservation fits.
 	if err := m.makeRoom(title.Key, reservation, limit, maxTitles, ranks); err != nil {
 		return err
 	}

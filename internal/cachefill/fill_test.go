@@ -306,30 +306,56 @@ func TestFullShelfSkipsLowerRankedTitlesBeforeResolving(t *testing.T) {
 // Once a title's source proved too large for the room below higher-ranked
 // titles, later passes skip it without searching until that room grows.
 func TestTooLargeTitleIsNotResolvedAgainWhileRoomIsShort(t *testing.T) {
-	m, cfg, eng, res := harness(t)
-	eng.size = 8 << 20                // reservation 40 MiB
-	cfg.PreloadBudgetBytes = 75 << 20 // 35 MiB left after the first title
-	clock := time.Now()
-	m.deps.Now = func() time.Time { return clock }
-	if err := m.pass(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if s := m.Status(); s.Ready != 1 || res.calls.Load() != 2 {
-		t.Fatalf("first pass: ready %d, resolves %d", s.Ready, res.calls.Load())
-	}
-	clock = clock.Add(3 * time.Hour) // past the failure backoff
-	if err := m.pass(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if res.calls.Load() != 2 || eng.opens != 2 {
-		t.Fatalf("title known not to fit resolved again: resolves %d, opens %d", res.calls.Load(), eng.opens)
-	}
-	cfg.PreloadBudgetBytes = 128 << 20 // room grows: try again
-	if err := m.pass(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if s := m.Status(); s.Ready != 2 {
-		t.Fatalf("title not retried after room grew: %+v", s.Items)
+	for _, tc := range []struct {
+		name      string
+		sizeMiB   int
+		budgetMiB int64
+		ready     int
+	}{
+		{"higher-ranked reservation", 8, 75, 1},
+		{"overhead exceeds entire allocation", 8, 39, 0},
+		{"source exceeds entire allocation", 40, 36, 0},
+		{"watchlist can fit a prefix", 40, 65, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, cfg, eng, res := harness(t)
+			eng.size = tc.sizeMiB << 20
+			cfg.PreloadBudgetBytes = tc.budgetMiB << 20
+			clock := time.Now()
+			m.deps.Now = func() time.Time { return clock }
+			if err := m.pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if s := m.Status(); s.Ready != tc.ready || res.calls.Load() != 2 {
+				t.Fatalf("first pass: ready %d, resolves %d", s.Ready, res.calls.Load())
+			}
+			clock = clock.Add(3 * time.Hour) // past the failure backoff
+			if err := m.pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if res.calls.Load() != 2 || eng.opens != 2 {
+				t.Fatalf("title known not to fit resolved again: resolves %d, opens %d", res.calls.Load(), eng.opens)
+			}
+			if tc.name == "watchlist can fit a prefix" {
+				clock = clock.Add(3 * time.Hour)
+				m.deps.WatchlistIntents = func(context.Context) ([]WarmIntent, error) {
+					return []WarmIntent{{UserID: 1, User: core.User{ID: 1}, Key: core.MovieKey(1), Added: clock}}, nil
+				}
+				if err := m.pass(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if s := m.Status(); s.Ready != 1 || res.calls.Load() != 3 {
+					t.Fatalf("full-source reservation blocked watchlist prefix: ready %d, resolves %d", s.Ready, res.calls.Load())
+				}
+			}
+			cfg.PreloadBudgetBytes = 256 << 20 // room grows: try again
+			if err := m.pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if s := m.Status(); s.Ready != 2 {
+				t.Fatalf("title not retried after room grew: %+v", s.Items)
+			}
+		})
 	}
 }
 

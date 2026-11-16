@@ -253,7 +253,7 @@ func (i *instance) serveExtra(w http.ResponseWriter, r *http.Request, viewer *fr
 		return
 	}
 
-	if cached, ok := i.host.ExtraStreams.(frontend.CachedExtraStreams); ok && isTrailerExtra(clip) {
+	if cached, ok := i.host.ExtraStreams.(frontend.CachedExtraStreams); ok {
 		file, mime, err := cached.OpenCachedExtra(r.Context(), key)
 		if err == nil {
 			defer file.Close()
@@ -264,6 +264,10 @@ func (i *instance) serveExtra(w http.ResponseWriter, r *http.Request, viewer *fr
 			}
 			w.Header().Set("Content-Type", mime)
 			http.ServeContent(w, r, "trailer.mp4", info.ModTime(), file)
+			return
+		}
+		if !errors.Is(err, frontend.ErrNotAvailable) {
+			http.Error(w, "Playback unavailable", http.StatusServiceUnavailable)
 			return
 		}
 	}

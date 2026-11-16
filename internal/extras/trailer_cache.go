@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -13,9 +14,16 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
 var ErrCachePreparing = errors.New("trailer cache busy")
+
+// ErrCacheUnsupported leaves non-MP4 single-file sources on their direct path.
+var ErrCacheUnsupported = errors.New("extra cannot use MP4 cache")
+
+var ErrCacheDisabled = errors.New("trailer cache disabled")
 
 // CachedTrailer identifies immutable, locally downloaded trailer bytes.
 // OpenCachedTrailer must be used to open it; eviction may have removed it.
@@ -26,25 +34,95 @@ type CachedTrailer struct {
 
 func (s *Service) trailerGeneration(e Extra) string {
 	c := s.cfg()
-	identity, _ := json.Marshal([]any{e.ParentKey, e.Site, e.SiteKey, e.PublishedAt, c.ResolverCommand, c.ResolverArgs})
+	identity, _ := json.Marshal([]any{"split-mux-v1", e.ParentKey, e.Site, e.SiteKey, e.PublishedAt, c.ResolverCommand, c.ResolverArgs})
 	h := sha256.Sum256(identity)
 	return hex.EncodeToString(h[:])
 }
 
-// CacheTrailer runs only on focus/open or explicit playback. One download at a
-// time bounds network and staging bytes; other callers poll with preparing.
-// The disk index is the directory itself, capped at 512 complete trailers.
-// No timers, sweeps, provider calls or filesystem work run while unused.
+type trailerFill struct {
+	done   chan struct{}
+	cached CachedTrailer
+	err    error
+	retry  time.Time
+}
+
+// CacheTrailer is the polling focus/preview path; playback joins the same fill.
 func (s *Service) CacheTrailer(ctx context.Context, e Extra) (CachedTrailer, error) {
-	if !s.cfg().Enabled || s.cacheDir == "" || s.cfg().TrailerCacheMaxBytes < 0 || !e.IsTrailer() {
-		return CachedTrailer{}, errors.New("trailer cache disabled")
+	if s.cfg().TrailerCacheMaxBytes < 0 || !e.IsTrailer() {
+		return CachedTrailer{}, ErrCacheDisabled
 	}
+	return s.cachedExtra(ctx, e, false)
+}
+
+// CacheExtra waits for a shared, bounded MP4 fill on explicit playback.
+func (s *Service) CacheExtra(ctx context.Context, e Extra) (CachedTrailer, error) {
+	return s.cachedExtra(ctx, e, true)
+}
+
+func (s *Service) cachedExtra(ctx context.Context, e Extra, wait bool) (CachedTrailer, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.cfg().ResolverTimeoutOr(20*time.Second))
+	defer cancel()
+	if !s.cfg().Enabled || s.cacheDir == "" || s.cfg().TrailerCacheMaxBytes < 0 {
+		return CachedTrailer{}, ErrCacheDisabled
+	}
+	generation := s.trailerGeneration(e)
+	s.cacheFlightsMu.Lock()
+	if s.cacheFlights == nil {
+		s.cacheFlights = make(map[string]*trailerFill)
+	}
+	if f := s.cacheFlights[generation]; f != nil {
+		select {
+		case <-f.done:
+			if s.now().Before(f.retry) {
+				s.cacheFlightsMu.Unlock()
+				return f.cached, f.err
+			}
+		default:
+			s.cacheFlightsMu.Unlock()
+			if !wait {
+				return CachedTrailer{}, ErrCachePreparing
+			}
+			select {
+			case <-ctx.Done():
+				return CachedTrailer{}, ctx.Err()
+			case <-f.done:
+				return f.cached, f.err
+			}
+		}
+	}
+	// Bound cooldown metadata, without discarding running fills.
+	if len(s.cacheFlights) >= maxResolvedEntries {
+		for key, f := range s.cacheFlights {
+			select {
+			case <-f.done:
+				delete(s.cacheFlights, key)
+			default:
+			}
+		}
+	}
+	f := &trailerFill{done: make(chan struct{})}
+	s.cacheFlights[generation] = f
+	s.cacheFlightsMu.Unlock()
+	f.cached, f.err = s.cacheExtra(ctx, e)
+	s.cacheFlightsMu.Lock()
+	if f.err != nil && !errors.Is(f.err, ErrCachePreparing) && !errors.Is(f.err, ErrCacheUnsupported) && !errors.Is(f.err, context.Canceled) {
+		f.retry = s.now().Add(time.Minute)
+		s.log.Info("extra cache fill failed", "key", e.Key, "site", e.Site, "siteKey", e.SiteKey, "error", f.err)
+	} else {
+		delete(s.cacheFlights, generation)
+	}
+	close(f.done)
+	s.cacheFlightsMu.Unlock()
+	return f.cached, f.err
+}
+
+func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error) {
 	if !s.cacheDownloadMu.TryLock() {
 		return CachedTrailer{}, ErrCachePreparing
 	}
 	defer s.cacheDownloadMu.Unlock()
 	cap := s.cfg().TrailerCacheMaxBytes
-	if cap == 0 {
+	if cap <= 0 {
 		cap = 512 << 20
 	}
 	generation := s.trailerGeneration(e)
@@ -53,6 +131,9 @@ func (s *Service) CacheTrailer(ctx context.Context, e Extra) (CachedTrailer, err
 		return CachedTrailer{}, err
 	}
 	// Retire an interrupted staging download before accounting for a new one.
+	if err := os.RemoveAll(filepath.Join(s.cacheDir, "source.part")); err != nil {
+		return CachedTrailer{}, err
+	}
 	if err := os.Remove(filepath.Join(s.cacheDir, "download.part")); err != nil && !os.IsNotExist(err) {
 		return CachedTrailer{}, err
 	}
@@ -100,40 +181,55 @@ func (s *Service) CacheTrailer(ctx context.Context, e Extra) (CachedTrailer, err
 		}
 	}
 	var response *http.Response
+	var split *Resolved
+	direct := false
 	reserve := int64(0)
 	hit, statErr := os.Stat(cached.Path)
 	if statErr != nil || hit.Size() <= 0 || hit.Size() > cap {
 		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
-		resolved, err := s.Resolve(ctx, e)
-		if err != nil {
-			return CachedTrailer{}, err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
-		if err != nil {
-			return CachedTrailer{}, err
-		}
-		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-			return CachedTrailer{}, errors.New("unsupported trailer URL")
-		}
-		for name, value := range resolved.Headers {
-			req.Header.Set(name, value)
-		}
-		client := s.cacheHTTP
-		if client == nil {
-			client = &http.Client{Timeout: 90 * time.Second}
-		}
-		response, err = client.Do(req)
-		if err != nil {
-			return CachedTrailer{}, err
-		}
-		defer response.Body.Close()
-		reserve = min(cap, int64(64<<20))
-		if response.StatusCode != http.StatusOK || response.ContentLength > reserve {
-			return CachedTrailer{}, errors.New("trailer unavailable or exceeds cache entry bound")
-		}
-		if response.ContentLength > 0 {
-			reserve = response.ContentLength
+		direct = s.downloadTrailers && len(s.cfg().ResolverArgs) == 0
+		if direct {
+			reserve = min(cap, int64(128<<20))
+		} else {
+			resolved, err := s.Resolve(ctx, e)
+			if err != nil {
+				return CachedTrailer{}, err
+			}
+			if resolved.AudioURL == "" && resolved.Container != "mp4" {
+				return CachedTrailer{}, ErrCacheUnsupported
+			}
+			reserve = min(cap, int64(64<<20))
+			if resolved.AudioURL != "" {
+				split = &resolved
+			} else {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
+				if err != nil {
+					return CachedTrailer{}, err
+				}
+				if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+					return CachedTrailer{}, errors.New("unsupported trailer URL")
+				}
+				for name, value := range resolved.Headers {
+					req.Header.Set(name, value)
+				}
+				client := s.cacheHTTP
+				if client == nil {
+					client = &http.Client{Timeout: 90 * time.Second}
+				}
+				response, err = client.Do(req)
+				if err != nil {
+					return CachedTrailer{}, err
+				}
+				defer response.Body.Close()
+				reserve = min(cap, int64(64<<20))
+				if response.StatusCode != http.StatusOK || response.ContentLength > reserve {
+					return CachedTrailer{}, errors.New("trailer unavailable or exceeds cache entry bound")
+				}
+				if response.ContentLength > 0 {
+					reserve = response.ContentLength
+				}
+			}
 		}
 	} else {
 		// A hit is the most recently used file, including after a cap reduction.
@@ -159,20 +255,44 @@ func (s *Service) CacheTrailer(ctx context.Context, e Extra) (CachedTrailer, err
 		}
 		used -= oldest.Size()
 	}
-	if response == nil {
+	if response == nil && split == nil && !direct {
 		return cached, nil
 	}
 	stage := filepath.Join(s.cacheDir, "download.part")
-	f, err := os.OpenFile(stage, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0600)
+	if direct {
+		if err := s.downloadExtra(ctx, e, stage, reserve/2); err != nil {
+			return CachedTrailer{}, err
+		}
+	}
+	flags := os.O_CREATE | os.O_RDWR
+	if !direct {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(stage, flags, 0600)
 	if err != nil {
 		return CachedTrailer{}, err
 	}
 	defer os.Remove(stage)
-	n, copyErr := io.Copy(f, io.LimitReader(response.Body, reserve))
-	var extra [1]byte
-	extraBytes, tailErr := response.Body.Read(extra[:])
-	if copyErr == nil && tailErr != nil && tailErr != io.EOF {
-		copyErr = tailErr
+	var n int64
+	var copyErr error
+	var extraBytes int
+	if direct {
+		if info, err := f.Stat(); err == nil {
+			n = info.Size()
+		}
+	} else if split != nil {
+		copyErr = s.muxExtra(ctx, *split, f, reserve)
+		if info, err := f.Stat(); err == nil {
+			n = info.Size()
+		}
+	} else {
+		n, copyErr = io.Copy(f, io.LimitReader(response.Body, reserve))
+		var extra [1]byte
+		var tailErr error
+		extraBytes, tailErr = response.Body.Read(extra[:])
+		if copyErr == nil && tailErr != nil && tailErr != io.EOF {
+			copyErr = tailErr
+		}
 	}
 	var header [12]byte
 	_, readErr := f.ReadAt(header[:], 0)
@@ -183,7 +303,7 @@ func (s *Service) CacheTrailer(ctx context.Context, e Extra) (CachedTrailer, err
 	if closeErr != nil {
 		return CachedTrailer{}, closeErr
 	}
-	if extraBytes != 0 || (response.ContentLength >= 0 && n != response.ContentLength) || readErr != nil || string(header[4:8]) != "ftyp" {
+	if n == 0 || n > reserve || extraBytes != 0 || (response != nil && response.ContentLength >= 0 && n != response.ContentLength) || readErr != nil || string(header[4:8]) != "ftyp" {
 		return CachedTrailer{}, errors.New("trailer is not a bounded MP4 file")
 	}
 	if err := os.Rename(stage, cached.Path); err != nil {
@@ -205,4 +325,96 @@ func (s *Service) OpenCachedTrailer(c CachedTrailer) (*os.File, error) {
 		_ = os.Chtimes(c.Path, now, now)
 	}
 	return f, err
+}
+
+// muxExtra produces a seekable MP4 with its moov atom up front.
+// No video or audio is re-encoded. One fill owns the staging file.
+func (s *Service) muxExtra(ctx context.Context, r Resolved, output *os.File, limit int64) error {
+	ff := "ffmpeg"
+	if s.themeFFmpeg != nil {
+		ff = s.themeFFmpeg()
+	}
+	if ff == "" {
+		return errors.New("extra muxer unavailable")
+	}
+	args := []string{"-nostdin", "-v", "error", "-y", "-threads", "1"}
+	for _, input := range []string{r.URL, r.AudioURL} {
+		args = append(args, "-protocol_whitelist", "http,https,tcp,tls,crypto", "-rw_timeout", "15000000")
+		if len(r.Headers) > 0 {
+			var headers strings.Builder
+			names := make([]string, 0, len(r.Headers))
+			for name := range r.Headers {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				value := r.Headers[name]
+				if strings.ContainsAny(name+value, "\r\n") {
+					return errors.New("invalid extra input header")
+				}
+				fmt.Fprintf(&headers, "%s: %s\r\n", name, value)
+			}
+			args = append(args, "-headers", headers.String())
+		}
+		args = append(args, "-i", input)
+	}
+	softLimit := max(int64(1), limit-(64<<10))
+	args = append(args, "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-fs", fmt.Sprint(softLimit), "-f", "mp4", output.Name())
+	proc := mediaproc.CommandContext(ctx, 90*time.Second, ff, args...)
+	if err := proc.Run(); err != nil {
+		return fmt.Errorf("extra mux failed: %w", err)
+	}
+	info, err := output.Stat()
+	if err != nil {
+		return err
+	}
+	// -fs can finish successfully after truncating: reject at the bound.
+	if info.Size() >= softLimit {
+		return errors.New("muxed extra exceeds cache entry bound")
+	}
+	return nil
+}
+
+// downloadExtra lets yt-dlp apply its site-specific chunking and merge fixes.
+// Inputs plus output reserve at most twice the entry limit. Staging lives only
+// for this demand-driven fill and is removed even on timeout or failure.
+func (s *Service) downloadExtra(ctx context.Context, e Extra, stage string, limit int64) error {
+	page, ok := PageURL(e.Site, e.SiteKey)
+	if !ok {
+		return errors.New("invalid extra site/key")
+	}
+	cfg := s.cfg()
+	cmd, ok := s.effectiveCommand(cfg)
+	if !ok {
+		return errors.New("extras resolver unavailable")
+	}
+	dir := filepath.Join(s.cacheDir, "source.part")
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	ff := "ffmpeg"
+	if s.themeFFmpeg != nil {
+		ff = s.themeFFmpeg()
+	}
+	if ff == "" {
+		return errors.New("extra muxer unavailable")
+	}
+	softLimit := max(int64(1), limit-(64<<10))
+	args := []string{"--no-playlist", "--no-cache-dir", "--no-progress", "--no-warnings", "-f", defaultTrailerFormat, "-N", "8", "--http-chunk-size", "10M", "--merge-output-format", "mp4", "--remux-video", "mp4", "--ffmpeg-location", ff, "--postprocessor-args", fmt.Sprintf("ffmpeg_o:-movflags +faststart -fs %d", softLimit), "--max-filesize", fmt.Sprint(max(int64(1), softLimit/2)), "-o", filepath.Join(dir, "media.%(ext)s"), "--", page}
+	if _, err := s.runner(ctx, cmd, args); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "media.mp4")
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 || info.Size() >= softLimit {
+		return errors.New("downloaded extra exceeds cache entry bound")
+	}
+	return os.Rename(path, stage)
 }

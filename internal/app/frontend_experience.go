@@ -771,6 +771,11 @@ func (s *surfaceExperience) ListRowViews(ctx context.Context, req frontend.RowVi
 	return s.rowViews.ListRowViews(ctx, req)
 }
 
+// BeginBootstrapRead is used only by Vela's outer before/after revision fence.
+func (s *surfaceExperience) BeginBootstrapRead(ctx context.Context, viewer *frontend.Viewer, revision frontend.HomeRevision) context.Context {
+	return experience.WithBootstrapProof(ctx, viewer.ID, revision.Policy)
+}
+
 func (s *surfaceExperience) ResolveRowViews(ctx context.Context, reqs []frontend.RowViewPageRequest) ([]frontend.RowViewPage, error) {
 	if s.rowViews == nil {
 		return nil, core.ErrUnauthorized

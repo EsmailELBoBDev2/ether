@@ -103,9 +103,8 @@ func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts 
 func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title, states map[frontend.RatingKey]frontend.WatchStatus) ([]object, error) {
 	art := map[frontend.RatingKey][]object{}
 	if signer, ok := i.host.ImageGrants.(frontend.ImagePageSigner); ok {
-		for start := 0; start < len(ts); start += 250 {
-			end := min(start+250, len(ts))
-			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: ts[start:end], Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
+		if len(ts) > 0 {
+			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: ts, Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
 			if e != nil {
 				return nil, e
 			}
@@ -466,6 +465,7 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	return out, nil
 }
 func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(i.host.Experience.NoProviderWait(r.Context()))
 	v, t, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)

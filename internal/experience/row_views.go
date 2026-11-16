@@ -168,7 +168,7 @@ func (s *RowViewService) viewer(ctx context.Context, v *core.User, d core.Device
 	if v == nil || v.ID <= 0 || d.ID == "" || len(d.ID) > 512 || p == "" || len(p) > 128 {
 		return nil, ErrRowViewNotFound
 	}
-	u, err := s.o.Active(ctx, v.ID)
+	u, err := bootstrapActive(ctx, s.o.Active, v.ID)
 	if err != nil || u == nil || u.ID != v.ID {
 		return nil, ErrRowViewNotFound
 	}
@@ -300,12 +300,20 @@ func (s *RowViewService) ListRowViews(ctx context.Context, req frontend.RowViewR
 	}
 	// Expired visits cannot be resolved and must not exhaust the per-device
 	// bound as viewers encounter new rows over time.
-	if _, err = tx.ExecContext(ctx, `DELETE FROM experience_row_views WHERE viewer_id=? AND device_id=? AND expires<=?`, u.ID, req.Device.ID, now); err != nil {
+	var expiredRows, expiredManifests bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM experience_row_views WHERE viewer_id=? AND device_id=? AND expires<=?), EXISTS(SELECT 1 FROM experience_row_view_manifests WHERE viewer_id=? AND device_id=? AND expires<=?)`, u.ID, req.Device.ID, now, u.ID, req.Device.ID, now).Scan(&expiredRows, &expiredManifests); err != nil {
 		return nil, err
 	}
-	if !exists {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM experience_row_view_manifests WHERE viewer_id=? AND device_id=? AND expires<=?`, u.ID, req.Device.ID, now); err != nil {
+	if expiredRows {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM experience_row_views WHERE viewer_id=? AND device_id=? AND expires<=?`, u.ID, req.Device.ID, now); err != nil {
 			return nil, err
+		}
+	}
+	if !exists {
+		if expiredManifests {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM experience_row_view_manifests WHERE viewer_id=? AND device_id=? AND expires<=?`, u.ID, req.Device.ID, now); err != nil {
+				return nil, err
+			}
 		}
 		var count int
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM experience_row_view_manifests WHERE viewer_id=? AND device_id=?`, u.ID, req.Device.ID).Scan(&count); err != nil {

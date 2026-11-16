@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -38,13 +37,24 @@ type RuntimeRowViews struct {
 // RowViewRevision reads shared preference and layout versions, so snapshots
 // created by another node fail closed after a relevant change.
 func RowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
-	var layout string
-	var favorites, exclusions int64
-	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT document FROM personalize_home_layout WHERE id=1),''), COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0)`, user.ID, user.ID).Scan(&layout, &favorites, &exclusions)
-	if err != nil {
-		return "", err
+	if proof := bootstrapProofFor(ctx, user.ID); proof != nil {
+		proof.mu.Lock()
+		defer proof.mu.Unlock()
+		if proof.revision != "" {
+			return proof.revision, nil
+		}
+		rev, err := readRowViewRevision(ctx, db, user)
+		if err == nil {
+			proof.revision = rev
+		}
+		return rev, err
 	}
-	rules, err := catalog.ReadViewerRulesRevision(ctx, db, user.ID)
+	return readRowViewRevision(ctx, db, user)
+}
+func readRowViewRevision(ctx context.Context, db *sql.DB, user *core.User) (string, error) {
+	var layout string
+	var favorites, exclusions, rules int64
+	err := db.QueryRowContext(ctx, `SELECT COALESCE((SELECT document FROM personalize_home_layout WHERE id=1),''), COALESCE((SELECT updated_at FROM favorites_mirror WHERE viewer_id=?),0), COALESCE((SELECT revision FROM notinterested_revisions WHERE viewer_id=?),0), COALESCE((SELECT revision FROM catalog_viewer_rules WHERE viewer_id=?),0)`, user.ID, user.ID, user.ID).Scan(&layout, &favorites, &exclusions, &rules)
 	if err != nil {
 		return "", err
 	}
@@ -103,7 +113,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			if err != nil {
 				return nil, err
 			}
-			fresh, err := d.Active(ctx, request.Viewer.ID)
+			fresh, err := bootstrapActive(ctx, d.Active, request.Viewer.ID)
 			if err != nil || fresh == nil {
 				return nil, ErrRowViewStale
 			}

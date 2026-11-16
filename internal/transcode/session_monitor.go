@@ -28,6 +28,11 @@ func (s *Session) watch(r *run) {
 	t := time.NewTicker(s.m.opts.pollInterval)
 	defer t.Stop()
 	playlist := filepath.Join(r.spec.Dir, r.spec.Playlist)
+	// Failure wrappers replace proc under the session lock, but retain the
+	// original process's completion channel for this run's whole lifetime.
+	s.mu.Lock()
+	done := r.proc.Done()
+	s.mu.Unlock()
 	var watchdog runWatchdog
 	collect := func(exited bool) {
 		s.collectTextSubtitles(r)
@@ -42,7 +47,7 @@ func (s *Session) watch(r *run) {
 	}
 	for {
 		select {
-		case <-r.proc.Done():
+		case <-done:
 			collect(true)
 			s.finish(r)
 			s.mu.Lock()
@@ -386,9 +391,10 @@ func (s *Session) clientNearLocked(seg int) bool {
 // start failure is retried once with a larger probe, and other mid-stream
 // failures are reported to the failure handler.
 func (s *Session) finish(r *run) {
-	err := redactScopedCommandError(r.proc.Err(), r.spec)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// watch calls finish only after Done closes, so Err cannot wait here.
+	err := redactScopedCommandError(r.proc.Err(), r.spec)
 	if err != nil {
 		s.diagnosticLocked(core.HLSDiagnosticRecord{Resource: "encoder", Error: "encoder exited with an error"})
 	}

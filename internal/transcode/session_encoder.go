@@ -659,14 +659,15 @@ func (s *Session) stopCurrentRunLocked() {
 		s.reaping = reaped
 		stopWork := r.stopWork
 		r.stopWork = nil
+		proc := r.proc
 		s.watchers.Add(1)
 		go func() {
 			defer stopWork.finish()
 			defer s.watchers.Done()
 			defer close(reaped)
-			r.proc.Stop()
+			proc.Stop()
 			if stopWork != nil {
-				<-r.proc.Done()
+				<-proc.Done()
 			}
 			if previous != nil {
 				<-previous

@@ -969,6 +969,8 @@ type Sessions interface {
 	Markers(context.Context, SessionAccess, string) (SessionMarkers, error)
 	// ServeMedia authorizes the scoped grant and serves direct, HLS or DASH data.
 	ServeMedia(http.ResponseWriter, *http.Request)
+	// KeepAlive renews activity for an existing authorized session without changing playback or cancelling a stop.
+	KeepAlive(context.Context, SessionAccess, string) error
 	Report(context.Context, SessionAccess, string, Timeline) error
 	Stop(context.Context, SessionAccess, string) error
 	Command(context.Context, *core.Viewer, string, Command) error

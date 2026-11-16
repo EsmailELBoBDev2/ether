@@ -248,6 +248,7 @@ type Sessions struct {
 	MarkersFunc            func(context.Context, frontend.SessionAccess, string) (frontend.SessionMarkers, error)
 	ServeMediaFunc         func(http.ResponseWriter, *http.Request)
 	ReportSampleFunc       func(context.Context, frontend.SessionAccess, string, frontend.ProgressSample) (frontend.ReportOutcome, error)
+	KeepAliveFunc          func(context.Context, frontend.SessionAccess, string) error
 	ReportFunc             func(context.Context, frontend.SessionAccess, string, frontend.Timeline) error
 	ReportItemFunc         func(context.Context, frontend.SessionAccess, core.RatingKey, frontend.Timeline) error
 	StopFunc               func(context.Context, frontend.SessionAccess, string) error
@@ -296,6 +297,12 @@ func (f Sessions) ServeMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+func (f Sessions) KeepAlive(ctx context.Context, a frontend.SessionAccess, id string) error {
+	if f.KeepAliveFunc != nil {
+		return f.KeepAliveFunc(ctx, a, id)
+	}
+	return nil
 }
 func (f Sessions) Report(c context.Context, a frontend.SessionAccess, id string, t frontend.Timeline) error {
 	if f.ReportFunc != nil {

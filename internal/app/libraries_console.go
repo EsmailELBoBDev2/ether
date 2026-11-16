@@ -161,17 +161,19 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 				dto.ItemCount = &n
 			}
 		}
-	case core.LibraryCatalog:
-		if page, err := c.browseTitles(ctx, lib, core.Filter{}, core.BrowseQuery{Limit: 1}); err == nil {
-			dto.ItemCount = &page.Total
+	case core.LibraryCatalog, core.LibraryCollection:
+		// The listing never counts a library-sized scope on the request: the
+		// cached count refreshes in the background, and the count is omitted
+		// until the first one completes. A deleted collection counts as empty.
+		if c.app.collections == nil {
+			break
 		}
-	case core.LibraryCollection:
-		// A deleted collection leaves the library empty: the browse reads
-		// no members rather than failing the console listing.
-		if page, err := c.browseTitles(ctx, lib, core.Filter{}, core.BrowseQuery{Limit: 1}); err == nil {
-			dto.ItemCount = &page.Total
-		} else if c.app.log != nil {
-			c.app.log.Warn("libraries: collection library could not be counted", "id", int64(lib.ID), "collection", lib.CollectionID, "err", err)
+		if n, pending, err := c.app.collections.ConsoleCount(ctx, libraryScopeFilter(lib, core.Filter{})); err != nil {
+			if c.app.log != nil {
+				c.app.log.Warn("libraries: library could not be counted", "id", int64(lib.ID), "source", lib.Source, "err", err)
+			}
+		} else if !pending || n > 0 {
+			dto.ItemCount = &n
 		}
 	}
 	return dto

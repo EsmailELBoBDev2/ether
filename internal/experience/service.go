@@ -1621,7 +1621,7 @@ func (s *Service) rootWindow(ctx context.Context, v *core.User, device core.Devi
 const searchWindowMin = 100
 
 func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery) (frontend.SearchPage, error) {
-	ctx = core.WithCatalogViewer(ctx, viewer)
+	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return frontend.SearchPage{}, err

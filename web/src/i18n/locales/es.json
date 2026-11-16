@@ -4990,6 +4990,7 @@
   "m_1119ed48e63baf": "Ocultar coincide solo cuando se incluyen todos los países de producción. Mostrar coincide cuando se incluye cualquiera de los países.",
   "m_111a1cf913db9f": "Se descartaron todas las versiones. El motivo más habitual: {reason}",
   "m_111afbd36f9f48": "Quitar la exclusión {n}",
+  "m_111b27ff44fdba": "El orden elegido también se usa para buscar publicaciones.",
   "m_111e898b4e8153": "j/k mover · a aceptar · r rechazar",
   "m_111ec7667bae38": "Precarga especulativa",
   "m_111f246cf0fc10": "El total histórico cuenta desde el {date}, el primer día que Ether registró esta fuente.",

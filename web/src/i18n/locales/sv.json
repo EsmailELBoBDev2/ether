@@ -4867,6 +4867,7 @@
   "m_1119ed48e63baf": "Dölj matchar bara när alla produktionsländer är angivna. Visa matchar när något av länderna är angivet.",
   "m_111a1cf913db9f": "Alla utgåvor uteslöts. Vanligaste orsaken: {reason}",
   "m_111afbd36f9f48": "Ta bort undantag {n}",
+  "m_111b27ff44fdba": "Den valda ordningen används också för att hitta utgåvor.",
   "m_111e898b4e8153": "j/k flytta · a godkänn · r avvisa",
   "m_111ec7667bae38": "Spekulativ förladdning",
   "m_111f246cf0fc10": "Totalt räknas från {date}, den första dagen Ether registrerade något för den här källan.",

@@ -137,6 +137,22 @@ func (r *Runner) attempts(req core.SearchRequest, movieCats, tvCats []int) []que
 		kq.keywords = strings.TrimSpace(kq.q + " " + epString)
 		out = append(out, kq)
 	}
+	if req.Category == "" && req.Type == core.TypeEpisode && req.AltEpisode > 0 {
+		alt := req
+		alt.Season, alt.Episode = req.AltSeason, req.AltEpisode
+		alt.AltSeason, alt.AltEpisode = 0, 0
+		secondary := r.attempts(alt, movieCats, tvCats)
+		var combined []query
+		for i := 0; i < max(len(out), len(secondary)); i++ {
+			if i < len(out) {
+				combined = append(combined, out[i])
+			}
+			if i < len(secondary) {
+				combined = append(combined, secondary[i])
+			}
+		}
+		return combined
+	}
 	return out
 }
 
@@ -298,6 +314,13 @@ func (r *Runner) fallbackAttempts(req core.SearchRequest, movieCats, tvCats []in
 			sqWord.keywords = strings.TrimSpace(fmt.Sprintf("%s Season %d", t, req.Season))
 			out = append(out, sqWord)
 		}
+	}
+	if req.Type == core.TypeEpisode && req.AltEpisode > 0 {
+		alt := req
+		alt.Season, alt.Episode = req.AltSeason, req.AltEpisode
+		alt.AltSeason, alt.AltEpisode, alt.Cour, alt.CourEpisode = 0, 0, 0, 0
+		alt.Anime = false
+		out = append(out, r.fallbackAttempts(alt, movieCats, tvCats)...)
 	}
 	return out
 }

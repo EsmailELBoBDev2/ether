@@ -4990,6 +4990,7 @@
   "m_1119ed48e63baf": "Ocultar corresponde apenas quando todos os países de produção estão listados. Mostrar corresponde quando qualquer país está listado.",
   "m_111a1cf913db9f": "Todas as versões foram descartadas. O motivo mais comum: {reason}",
   "m_111afbd36f9f48": "Remover exclusão {n}",
+  "m_111b27ff44fdba": "A ordem escolhida também é usada para encontrar lançamentos.",
   "m_111e898b4e8153": "j/k mover · a aceitar · r rejeitar",
   "m_111ec7667bae38": "Pré-carregamento especulativo",
   "m_111f246cf0fc10": "O total desde o início conta a partir de {date}, o primeiro dia em que o Ether registrou esta fonte.",

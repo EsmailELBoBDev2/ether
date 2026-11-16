@@ -4867,6 +4867,7 @@
   "m_1119ed48e63baf": "Gizle yalnızca tüm yapım ülkeleri listelendiğinde eşleşir. Göster, ülkelerden herhangi biri listelendiğinde eşleşir.",
   "m_111a1cf913db9f": "Tüm sürümler elendi. En yaygın neden: {reason}",
   "m_111afbd36f9f48": "Hariç tutma {n} öğesini kaldır",
+  "m_111b27ff44fdba": "Seçilen sıralama, sürümleri bulmak için de kullanılır.",
   "m_111e898b4e8153": "j/k hareket · a kabul · r reddet",
   "m_111ec7667bae38": "Tahmine dayalı ön yükleme",
   "m_111f246cf0fc10": "Tüm zamanlar, Ether’in bu kaynak için kayıt tuttuğu ilk gün olan {date} tarihinden itibaren sayılır.",

@@ -4990,6 +4990,7 @@
   "m_1119ed48e63baf": "Nascondi corrisponde solo se sono elencati tutti i paesi di produzione. Mostra corrisponde se è elencato almeno un paese.",
   "m_111a1cf913db9f": "Tutte le release sono state escluse. Il motivo più comune: {reason}",
   "m_111afbd36f9f48": "Rimuovi l'esclusione {n}",
+  "m_111b27ff44fdba": "L’ordine scelto viene usato anche per trovare le pubblicazioni.",
   "m_111e898b4e8153": "j/k sposta · a accetta · r rifiuta",
   "m_111ec7667bae38": "Precaricamento speculativo",
   "m_111f246cf0fc10": "Il totale complessivo parte dal {date}, il primo giorno in cui Ether ha registrato questa sorgente.",

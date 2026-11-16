@@ -38,6 +38,12 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	if episode <= 0 {
 		return true
 	}
+	absolute := playbackAbsoluteEpisode(title, season, episode)
+	var valid bool
+	season, episode, valid = targetEpisodeNumbers(p.Target, season, episode)
+	if !valid {
+		return false
+	}
 	if season == 0 {
 		if p.Target == nil || p.Target.Season != 0 || p.Target.Episode != episode {
 			return false
@@ -59,10 +65,10 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 		baseInfo.Seasons = fullInfo.Seasons
 	}
 	if len(baseInfo.Episodes) > 0 || len(baseInfo.AbsoluteEpisodes) > 0 {
-		return releaseparse.EpisodeMatchesNumbering(baseInfo, season, episode, playbackAbsoluteEpisode(title, season, episode))
+		return releaseparse.EpisodeMatchesNumbering(baseInfo, season, episode, absolute)
 	}
 	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 {
-		return releaseparse.EpisodeMatchesNumbering(fullInfo, season, episode, playbackAbsoluteEpisode(title, season, episode))
+		return releaseparse.EpisodeMatchesNumbering(fullInfo, season, episode, absolute)
 	}
 	return true
 }
@@ -97,6 +103,12 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 			episode = title.Key.Episode()
 		}
 	}
+	absolute := playbackAbsoluteEpisode(title, season, episode)
+	var valid bool
+	season, episode, valid = targetEpisodeNumbers(rel.Target, season, episode)
+	if !valid {
+		return false
+	}
 	// Zero season denotes a special only when an episode number is known.
 	// Partially hydrated titles still carry usable series/year identity.
 	if season == 0 && episode > 0 {
@@ -124,7 +136,7 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 					return false
 				}
 			}
-		} else if !releaseparse.EpisodeMatchesNumbering(info, season, episode, playbackAbsoluteEpisode(title, season, episode)) {
+		} else if !releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute) {
 			return false
 		}
 	}
@@ -176,4 +188,16 @@ func (m *Manager) ownerPinAllows(s *session, releaseID string) bool {
 		return id == "" || id == releaseID
 	}
 	return true
+}
+
+// Alternate file numbers are valid only for the canonical episode the resolver
+// explicitly attached them to. Plain targets retain the existing checks.
+func targetEpisodeNumbers(target *core.ReleaseTarget, season, episode int) (int, int, bool) {
+	if target == nil || target.CanonicalEpisode <= 0 {
+		return season, episode, true
+	}
+	if target.CanonicalSeason != season || target.CanonicalEpisode != episode || target.Episode <= 0 {
+		return season, episode, false
+	}
+	return target.Season, target.Episode, true
 }

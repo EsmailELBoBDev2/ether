@@ -368,6 +368,9 @@ function OrderEditor({
             </option>
           ))}
         </select>
+        {viewerId === 0 ? (
+          <p className="text-xs text-fg-muted">{t("The chosen order is also used to find releases.")}</p>
+        ) : null}
         {groups.length === 0 ? (
           <p className="text-xs text-fg-muted">
             {t("TMDB has no alternate episode orders for this show.")}

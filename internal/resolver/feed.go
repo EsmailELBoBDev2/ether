@@ -219,7 +219,8 @@ func packEvidenceReason(r core.Release, sreq core.SearchRequest) string {
 	if sreq.Type != core.TypeEpisode || !r.Info.FullSeason || r.Protocol != core.ProtocolUsenet {
 		return ""
 	}
-	if !slices.Contains(r.Info.Episodes, sreq.Episode) {
+	_, episode := releaseNumbers(r.Info, sreq)
+	if !slices.Contains(r.Info.Episodes, episode) {
 		return "season pack does not list the episode"
 	}
 	return ""

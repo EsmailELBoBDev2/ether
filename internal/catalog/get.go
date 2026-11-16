@@ -146,6 +146,7 @@ func (c *Catalog) RefreshStoredTitle(ctx context.Context, key core.RatingKey) (*
 
 func (c *Catalog) get(ctx context.Context, key core.RatingKey) (*core.Title, error) {
 	if noReadWait(ctx) && (key.Kind() == core.KindShow || key.Kind() == core.KindSeason || key.Kind() == core.KindEpisode) {
+		defer c.reportDetailPending(ctx, key)
 		if core.ColdDetail(ctx, key) {
 			return c.localDetail(ctx, key)
 		}
@@ -608,6 +609,7 @@ func (c *Catalog) SeasonEpisodePage(ctx context.Context, show core.RatingKey, se
 	}
 	if noReadWait(ctx) {
 		key := core.SeasonKey(show.TMDB(), season)
+		defer c.reportDetailPending(ctx, key)
 		if core.ColdDetail(ctx, key) {
 			_, _ = c.localDetail(ctx, key)
 		} else {

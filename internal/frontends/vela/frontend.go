@@ -225,6 +225,30 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		problem(w, 503, "transient", "service_unavailable")
 	}
 }
+
+// Partial detail snapshots always return a body, even when a client presents
+// their weak ETag again: it must keep polling until the missing fields arrive.
+func cacheDetail(w http.ResponseWriter, r *http.Request, out object, pending *frontend.DetailPending) {
+	fields := pending.Fields()
+	if len(fields) == 0 {
+		cache(w, r, out)
+		return
+	}
+	out["pending"] = fields
+	out["refreshAfterMs"] = 2000
+	b, err := json.Marshal(out)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	tag := `W/"` + hash(string(b)+r.Header.Get("Authorization")+r.Header.Get("X-Vela-Device-Id")+r.URL.RequestURI()) + `"`
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("ETag", tag)
+	w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	_, _ = w.Write(b)
+}
+
 func cache(w http.ResponseWriter, r *http.Request, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {

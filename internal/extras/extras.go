@@ -286,6 +286,9 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 				s.mu.Unlock()
 			}()
 		}
+		if s.listPending[cacheKey] {
+			core.ReportDetailPending(ctx, parent.Key, "extras")
+		}
 		s.mu.Unlock()
 		return nil, nil
 	}

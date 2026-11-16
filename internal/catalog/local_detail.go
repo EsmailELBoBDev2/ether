@@ -106,3 +106,28 @@ func (c *Catalog) localDetail(ctx context.Context, key core.RatingKey) (*core.Ti
 	}
 	return nil, errHydrating
 }
+
+// The discovery job owns show seasons and episodes. A completed season must
+// not inherit pending work belonging to the show's other seasons.
+func (c *Catalog) reportDetailPending(ctx context.Context, key core.RatingKey) {
+	if key.Kind() != core.KindShow && key.Kind() != core.KindSeason {
+		return
+	}
+	c.hydrateMu.Lock()
+	running := c.seasonLoading[key.TMDB()] != nil
+	seasonFlight := c.hydrating[seasonRefreshKey(key.TMDB(), key.Season())] != nil
+	c.hydrateMu.Unlock()
+	if key.Kind() == core.KindShow {
+		if running {
+			core.ReportDetailPending(ctx, key, "seasons", "episodes")
+		}
+		return
+	}
+	c.cacheMu.RLock()
+	cached, ok := c.titleCache[key]
+	missing := ok && cached.gen == c.writeGen.Load() && !cached.st.detail
+	c.cacheMu.RUnlock()
+	if seasonFlight || (running && missing) {
+		core.ReportDetailPending(ctx, key, "episodes")
+	}
+}

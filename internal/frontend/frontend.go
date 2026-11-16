@@ -28,6 +28,8 @@ type CertifiedApp struct {
 }
 
 type Descriptor struct {
+	// Auth declares the authentication mode; none_lan requires an owner-selected viewer.
+	Auth           string         `json:"auth,omitempty"`
 	ID             Protocol       `json:"id"`
 	Name           string         `json:"name"`
 	Logo           string         `json:"logo,omitempty"`

@@ -96,17 +96,26 @@ func TestBroadcastLateRenditionKeepsPCMTickPhase(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer b.close()
-					b.start()
-					// Let the output run with no rendition attached, then join
-					// while its clock is parked. synctest.Wait parks every bubble
-					// goroutine, so b.tick is the tick the rendition starts on.
-					time.Sleep(time.Duration(wait*7) * frameDurationOf(format))
-					synctest.Wait()
-					at := b.tick // 0 when decoder startup outlasted the wait: an in-phase join
+					// Drive startup ticks synchronously so decoder startup cannot
+					// turn a late-join case into a tick-zero join. The production
+					// run loop takes over after the rendition is attached.
+					deadline := time.Now().Add(10 * time.Second)
+					for b.tick < int64(wait*7) {
+						if !time.Now().Before(deadline) {
+							t.Fatalf("output never reached a late join tick: %d", b.tick)
+						}
+						if b.step(b.origin.Add(time.Duration(b.tick) * frameDurationOf(format))) {
+							b.tick++
+						}
+						time.Sleep(frameDurationOf(format))
+						synctest.Wait()
+					}
+					at := b.tick
 					joined = append(joined, at)
 					if _, err := b.addRendition(context.Background(), "late", core.Decision{MaxHeight: 720}); err != nil {
 						t.Fatal(err)
 					}
+					b.start()
 					time.Sleep(3 * time.Second)
 					synctest.Wait()
 					b.mu.Lock()

@@ -542,6 +542,10 @@ func TestUnavailableRecheckAfterHealthFailurePrunePersisted(t *testing.T) {
 	if idx.searches.Load() != 1 || healthChecks.Load() != 1 {
 		t.Fatalf("searches=%d health checks=%d want 1 and 1 (health-failed path)", idx.searches.Load(), healthChecks.Load())
 	}
+	// A new service reads persisted evidence, after the asynchronous write.
+	if err := svc.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	idx.mu.Lock()
 	idx.releases = []core.Release{rel("good", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-GRP", 8000)}
 	idx.mu.Unlock()

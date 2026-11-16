@@ -274,7 +274,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "transcode failed", http.StatusInternalServerError)
 			return
 		}
-		s.life.fenceProcess(proc)
+		s.life.fenceProcess(proc, work[2])
 		s.proc = proc
 		s.pipe = pr
 		s.life.markStarted()

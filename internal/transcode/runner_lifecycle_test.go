@@ -98,7 +98,7 @@ func TestEncoderLifetimeFencesProcessOutsideCleanupQueue(t *testing.T) {
 			t.Fatal(err)
 		}
 		life.mu.Lock() // cleanup and session-state progress deliberately unavailable
-		life.fenceProcess(p)
+		life.fenceProcess(p, nil)
 		if !late {
 			close(life.cancel)
 		}

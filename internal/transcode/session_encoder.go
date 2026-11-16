@@ -471,6 +471,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 		if reserveErr != nil {
 			r.watchWork.finish()
 			r.stopWork.finish()
+			work[2].finish()
 			return reserveErr
 		}
 		hintWork = reserved[0]
@@ -532,7 +533,7 @@ func (s *Session) startRunLocked(seg int, bigProbe bool) error {
 	if err == nil && proc == nil {
 		proc, err = s.m.runner.Start(Command{Path: s.m.ffmpeg, Args: args, Dir: runDir, Stdout: stdout, Stderr: stderr, Background: !s.liveInput && spec.Decision.VideoCopy})
 	}
-	s.encoder.fenceProcess(proc)
+	s.encoder.fenceProcess(proc, work[2])
 	err = redactScopedCommandError(err, spec)
 	s.mu.Lock()
 	if s.starting == starting {

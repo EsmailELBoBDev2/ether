@@ -22,6 +22,7 @@ func TestForcedOverridePrecedence(t *testing.T) {
 	want := c
 	want.DolbyVision = true
 	want.DVProfiles = []int{5, 7, 8}
+	want.DVProfilesForced = true
 	want.ForcedOverrideApplied = true
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sparse force: got %+v, want %+v", got, want)
@@ -41,5 +42,44 @@ func TestForcedOverridePrecedence(t *testing.T) {
 	}
 	if !reflect.DeepEqual(c.DVProfiles, []int{5, 8}) {
 		t.Fatal("runtime input mutated")
+	}
+}
+
+func TestShieldForcedDVProfile7DirectPlayAndRemuxStrip(t *testing.T) {
+	bl := true
+	info := core.MediaInfo{
+		Container: "mkv",
+		Streams: []core.StreamInfo{
+			{
+				Index: 0, Type: "video", Codec: "hevc", Profile: "Main 10",
+				Width: 3840, Height: 2160, BitDepth: 10, ColorTransfer: "smpte2084",
+				DolbyVision: true, DolbyVisionProfile: 7, DolbyVisionCompatibilityID: 6,
+				DolbyVisionBLPresent: &bl,
+			},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6},
+		},
+	}
+	baseCaps := core.ClientCaps{
+		Product: "Plex for Android (TV)", Platform: "Android", Device: "SHIELD Android TV",
+		Containers: []string{"mkv"}, VideoCodecs: []string{"hevc"}, AudioCodecs: []string{"eac3", "truehd"},
+		MaxHeight: 2160, HDR10: true, DolbyVision: true, DVProfiles: []int{5, 8},
+	}
+	// Audio-only Force must not bypass DV variant checks.
+	audioOnly := ApplyForcedOverrides(baseCaps, "", []core.ClientCapabilityOverride{{
+		Force: true, Platform: "Android", Device: "SHIELD Android TV", AudioCodecs: []string{"eac3"},
+	}})
+	if d := Decide(info, audioOnly, core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS}, Policy{}); d.Kind != core.DecisionRemux || !d.StripDolbyVision {
+		t.Fatalf("audio-only force bypassed P7 check: %+v", d)
+	}
+	// Explicit Force dolbyVisionProfiles [5,7,8] allows DirectPlay with P7 intact.
+	forcedDV := ApplyForcedOverrides(baseCaps, "", []core.ClientCapabilityOverride{{
+		Force: true, Platform: "Android", Device: "SHIELD Android TV", DolbyVisionProfiles: []int{5, 7, 8},
+	}})
+	if d := Decide(info, forcedDV, core.DecideOptions{DirectPlay: true, DirectStream: true, Protocol: core.ProtocolHLS}, Policy{}); d.Kind != core.DecisionDirectPlay || d.StripDolbyVision {
+		t.Fatalf("forced P7 did not DirectPlay intact: %+v", d)
+	}
+	// Remux still strips P7 in segmented HLS for #328 safety.
+	if d := Decide(info, forcedDV, core.DecideOptions{DirectPlay: false, DirectStream: true, Protocol: core.ProtocolHLS}, Policy{}); d.Kind != core.DecisionRemux || !d.StripDolbyVision {
+		t.Fatalf("forced P7 remux did not strip DV: %+v", d)
 	}
 }

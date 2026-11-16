@@ -623,6 +623,10 @@ func checkHostedRuntime(ctx context.Context, rep *Report, man plugins.Manifest, 
 	decl := man.Ether.Runtime
 	var plug *wasm.Plugin
 	var err error
+	// Route checks run under the limits the installed plugin is granted. Zero
+	// limits normalize to a one-second unit budget, so an install failed on a
+	// legitimately slow scheduled route whatever the manifest declared.
+	lim := plugins.RuntimeLimitsFor(man)
 
 	switch {
 	case decl.Module != "":
@@ -631,14 +635,14 @@ func checkHostedRuntime(ctx context.Context, rep *Report, man plugins.Manifest, 
 			rep.addErr("runtime", "ether.runtime.module", fmt.Sprintf("missing WASM module %q", decl.Module))
 			return
 		}
-		plug, err = eng.LoadWASM(man.ID, man.Version, modBytes, host, wasm.Limits{})
+		plug, err = eng.LoadWASM(man.ID, man.Version, modBytes, host, lim)
 	case decl.Entry != "":
 		jsSrc, compErr := loadOrCompileEntry(decl.Entry, files)
 		if compErr != nil {
 			rep.addErr("runtime", "ether.runtime.entry", compErr.Error())
 			return
 		}
-		plug, err = eng.LoadJS(man.ID, man.Version, jsSrc, host, wasm.Limits{})
+		plug, err = eng.LoadJS(man.ID, man.Version, jsSrc, host, lim)
 	default:
 		return
 	}

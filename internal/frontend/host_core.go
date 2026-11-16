@@ -135,3 +135,10 @@ type ErrBedtime = core.ErrBedtime
 func WithColdDetail(ctx context.Context, key RatingKey) context.Context {
 	return core.WithColdDetail(ctx, key)
 }
+
+// DetailPending is the exact-page enrichment snapshot.
+type DetailPending = core.DetailPending
+
+func WithDetailPending(ctx context.Context, key RatingKey) (context.Context, *DetailPending) {
+	return core.WithDetailPending(ctx, key)
+}

@@ -582,6 +582,8 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
+	r = r.WithContext(ctx)
 	d, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k})
 	if e != nil {
 		fail(w, e, r)
@@ -600,7 +602,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		extras = append(extras, object{"id": ids.RatingKeyGUID(x.Key), "parentId": ids.RatingKeyGUID(x.ParentKey), "kind": kind, "name": x.Title, "durationSeconds": x.Duration.Seconds(), "availability": availability})
 	}
 	if strings.HasSuffix(r.URL.Path, "/extras") {
-		cache(w, r, object{"items": extras})
+		cacheDetail(w, r, object{"items": extras}, pending)
 		return
 	}
 	ts, e := i.titlesWithUserData(r, v, t, []frontend.Title{d.Title}, map[frontend.RatingKey]frontend.WatchStatus{d.Title.Key: d.UserData})
@@ -629,7 +631,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.warmDetail(r, v, d)
-	cache(w, r, out)
+	cacheDetail(w, r, out, pending)
 }
 func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	v, t, e := i.viewer(r)
@@ -645,6 +647,8 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
+	r = r.WithContext(ctx)
 	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Limit: limit(r), NoTotal: true})
 	if e != nil {
 		fail(w, e, r)
@@ -659,7 +663,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	if len(ts) == limit(r) {
 		c = "unknown"
 	}
-	cache(w, r, object{"items": ts, "continuation": c})
+	cacheDetail(w, r, object{"items": ts, "continuation": c}, pending)
 }
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	v, t, e := i.viewer(r)

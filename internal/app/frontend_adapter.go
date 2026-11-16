@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -79,7 +82,7 @@ func (a *App) buildAdapterController(registry *frontend.Registry) (*frontendadap
 	if a.pluginsRT == nil || a.pluginsRT.mgr == nil {
 		return nil, nil
 	}
-	ctrl, err := frontendadapter.NewController(registry, a.pluginsRT.mgr, adapterCatalog{app: a})
+	ctrl, err := frontendadapter.NewController(adapterRegistry{Registry: registry, app: a}, adapterManager{Manager: a.pluginsRT.mgr, app: a}, adapterCatalog{app: a})
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +102,38 @@ func (a *App) syncAdapters(ctx context.Context) {
 	if a.pluginsRT == nil || a.pluginsRT.adapterCtrl == nil {
 		return
 	}
-	if err := a.pluginsRT.adapterCtrl.Sync(ctx); err != nil {
+	// Serialize descriptor replacement with listener lifecycle operations.
+	if a.frontends != nil {
+		a.frontends.lifecycleMu.Lock()
+	}
+	err := a.pluginsRT.adapterCtrl.Sync(ctx)
+	if a.frontends != nil {
+		a.frontends.lifecycleMu.Unlock()
+	}
+	if err != nil {
 		a.log.Warn("frontend adapter sync", "err", err)
 	}
 	// a.frontends is nil while the runtime is still being constructed; the
 	// runtime's own start/reconcile mounts enabled adapters then.
 	if a.frontends != nil {
-		a.frontends.reconcile(a.cfg.Get())
+		cfg := a.cfg.Get()
+		a.frontends.reconcile(cfg)
+		a.frontends.mu.Lock()
+		running := a.frontends.runCtx != nil && !a.frontends.closed
+		a.frontends.mu.Unlock()
+		if running {
+			for _, id := range a.pluginsRT.adapterCtrl.Live() {
+				if !cfg.Frontends[string(id)].Enabled {
+					continue
+				}
+				status := a.frontends.control.listeners.status(ctx, id)
+				if status.Mounted {
+					a.log.Info("frontend adapter mounted", "adapter", id)
+				} else {
+					a.log.Warn("frontend adapter mount failed", "adapter", id, "err", status.Error)
+				}
+			}
+		}
 	}
 }
 
@@ -193,4 +221,128 @@ func (a *App) adapterMediaHandler() *frontendadapter.MediaHandler {
 			return resolver.OpenKind(ctx, viewer, item.Key, accept)
 		},
 	})
+}
+
+// adapterRegistry keeps listener ownership and registry ownership in step during
+// replacement. Startup can register adapters before the runtime exists.
+type adapterRegistry struct {
+	*frontend.Registry
+	app *App
+}
+
+func (r adapterRegistry) Unmount(ctx context.Context, id frontend.Protocol) error {
+	if rt := r.app.frontends; rt != nil {
+		if err := rt.control.listeners.stop(ctx, id); err != nil {
+			return err
+		}
+	}
+	if _, mounted := r.Registry.Instance(id); mounted {
+		return r.Registry.Unmount(ctx, id)
+	}
+	r.app.log.Info("frontend adapter unmounted", "adapter", id)
+	return nil
+}
+
+// adapterManager adds host-owned binary delivery to the normal plugin calls.
+type adapterManager struct {
+	*plugins.Manager
+	app *App
+}
+
+func (m adapterManager) OpenFrontendBlob(ctx context.Context, pluginID string, viewerID int64, allowed []core.LibraryID, spec plugins.FrontendBlob) (io.ReadCloser, int64, error) {
+	a := m.app
+	if a.users == nil || a.libraries == nil || a.pluginsRT == nil || a.pluginsRT.blobcache == nil {
+		return nil, 0, core.ErrNotFound
+	}
+	rec, err := m.Get(ctx, pluginID)
+	if err != nil || !rec.Enabled || !rec.Manifest.HasCapability(plugins.CapFrontendAdapter) {
+		return nil, 0, core.ErrNotFound
+	}
+	man := rec.Manifest.EffectiveEther()
+	if man == nil {
+		return nil, 0, core.ErrNotFound
+	}
+	owned := false
+	for _, kind := range man.Contributes.MediaKinds {
+		if core.PluginLibraryKey(pluginID, kind.Key) == spec.LibraryKey {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		return nil, 0, core.ErrNotFound
+	}
+	viewer, err := a.users.PolicyUser(ctx, viewerID)
+	if err != nil || viewer == nil {
+		return nil, 0, core.ErrNotFound
+	}
+	lib, err := a.libraries.ByKey(ctx, spec.LibraryKey)
+	if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
+		return nil, 0, core.ErrNotFound
+	}
+	visible := false
+	for _, id := range allowed {
+		if id == lib.ID {
+			visible = true
+			break
+		}
+	}
+	if !visible {
+		return nil, 0, core.ErrNotFound
+	}
+	_, err = blobcache.ParseRef(spec.Ref)
+	if err != nil {
+		return nil, 0, core.ErrNotFound
+	}
+	limits := m.HostFor(pluginID).(interface {
+		DataLimits(context.Context) plugins.RuntimeLimits
+	}).DataLimits(ctx)
+	deadline, err := time.ParseDuration(limits.Deadline)
+	if err != nil || deadline <= 0 {
+		return nil, 0, core.ErrNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	source, err := a.pluginsRT.blobcache.Namespace(spec.LibraryKey, blobcache.Quota{}).Open(blobcache.Ref(spec.Ref))
+	if err != nil {
+		cancel()
+		return nil, 0, core.ErrNotFound
+	}
+	reader := &adapterBlobReader{Reader: source, source: source, cancel: cancel}
+	size, err := source.Seek(0, io.SeekEnd)
+	if err == nil {
+		_, err = source.Seek(0, io.SeekStart)
+	}
+	if err == nil && size >= 0 && size <= limits.FetchBytes && spec.MemberIndex != nil {
+		member, n, e := plugins.OpenFrontendArchiveMember(ctx, source, *spec.MemberIndex, limits)
+		reader.member, reader.Reader, size, err = member, member, n, e
+	}
+	if err != nil || size < 0 || size > limits.FetchBytes {
+		reader.Close()
+		return nil, 0, core.ErrNotFound
+	}
+	reader.ctx = ctx
+	return reader, size, nil
+}
+
+type adapterBlobReader struct {
+	io.Reader
+	ctx    context.Context
+	source io.Closer
+	member io.Closer
+	cancel context.CancelFunc
+}
+
+func (r *adapterBlobReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
+}
+func (r *adapterBlobReader) Close() error {
+	if r.member != nil {
+		_ = r.member.Close()
+	}
+	err := r.source.Close()
+	r.cancel()
+	return err
 }

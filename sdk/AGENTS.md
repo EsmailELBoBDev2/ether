@@ -316,3 +316,40 @@ function resolve(req) {
 // that handler writes a KV result and returns {done:true}, or checkpoints with
 // {continueInMs:1000,continuation:{cursor:"next"}}. Resolve reads that KV result.
 ```
+
+## Frontend adapter downloads
+
+Hosted adapters can return a redirect to a host-minted item stream URL:
+
+```js
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef)}};
+```
+
+Only root-relative local redirect URLs are forwarded. External URLs, authority
+changes, control characters, backslashes and known account credential query
+parameters are refused. Use the scoped host media ticket, never a login token.
+
+For a cached file or verified archive member, return a blob descriptor instead
+of `body` (status 200). The bytes never pass through guest memory:
+
+```js
+return {status:200, blob:{
+  libraryKey:"pk-my-plugin-firmware", ref:cachedBlobRef, memberIndex:member.index
+}};
+```
+
+Use the canonical library key returned for your declared media kind. Omit
+`memberIndex` to serve the whole blob. The host rechecks enabled state, frontend
+capability, ownership, current viewer visibility and the adapter's library list
+on every request. It opens only that library's cache namespace and applies the
+existing archive safety and runtime limits. The plugin must verify expected
+hashes before selecting a cached member; delivery does not assert hash validity.
+
+GET and HEAD are supported. A single GET byte range receives 206; malformed,
+multiple or unsatisfiable ranges receive 416. HEAD ignores Range. Downloads use
+`application/octet-stream`, a fixed safe attachment filename, no-store and
+nosniff; plugin response headers do not override these. Archive range offsets
+may require bounded decompression from the start, so do not use this path for
+unbounded repeated seeks. Existing JSON `body` responses are unchanged. Remote
+HTTP plugins should stream bytes through their existing HTTP response instead;
+this descriptor is for the hosted JSON response envelope.

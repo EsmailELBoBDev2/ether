@@ -993,7 +993,15 @@ export interface RawRequest {
   locale?: string;
 }
 
+/** Host-served cached bytes for an authenticated frontend adapter response. */
+export interface FrontendBlob {
+  libraryKey: string;
+  ref: string;
+  memberIndex?: number;
+}
+
 export interface RawResponse {
+  blob?: FrontendBlob;
   status: number;
   headers?: Record<string, string>;
   body?: unknown;

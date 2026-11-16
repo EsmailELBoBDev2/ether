@@ -53,6 +53,7 @@ type FrontendInfo = {
     version?: string;
     certifiedApps?: { name: string; steps: string[] }[];
     defaultPort?: number;
+    auth?: string;
   };
   enabled: boolean;
   status: {
@@ -359,6 +360,7 @@ function ProtocolSettings({
     return hidden ? null : <ErrorPanel error={state.error} onRetry={() => void state.reload()} />;
   if (!draft) return hidden ? null : <LoadingRows />;
   const named = ["jellyfin", "emby", "silo", "dlna"].includes(id);
+  const lanViewer = info?.descriptor.auth === "none_lan";
   const more: {
     key: "discovery" | "publicViewerPicker";
     label: string;
@@ -424,7 +426,7 @@ function ProtocolSettings({
             </div>
           </SettingsSection>
         ) : null}
-        {id !== "plex" && id !== "dlna" ? (
+        {id !== "plex" && id !== "dlna" && !lanViewer ? (
           <SettingsSection title={t("Away from home")}>
             <SettingsRow
               title={<label htmlFor={`${id}-public-url`}>{t("Public address")}</label>}
@@ -524,6 +526,14 @@ function ProtocolSettings({
             </MoreOptions>
           </SettingsSection>
         ) : null}
+        {lanViewer && id !== "dlna" ? (
+          <SettingsSection title={t("Browse as")}>
+            <LANViewer
+              value={draft.viewerId}
+              onChange={(viewerId) => setDraft((old) => (old ? { ...old, viewerId } : old))}
+            />
+          </SettingsSection>
+        ) : null}
         {named ? (
           <SettingsSection
             title={id === "dlna" ? t("What the TV shows") : t("Find this server")}
@@ -534,7 +544,8 @@ function ProtocolSettings({
             }
           >
             {id === "dlna" ? (
-              <DLNAViewer
+              <LANViewer
+                createLivingRoomGuest
                 value={draft.viewerId}
                 onChange={(viewerId) => setDraft((old) => (old ? { ...old, viewerId } : old))}
               />
@@ -586,7 +597,15 @@ function protocolName(id: string): string {
   }
 }
 
-function DLNAViewer({ value, onChange }: { value?: number; onChange: (id?: number) => void }) {
+function LANViewer({
+  value,
+  onChange,
+  createLivingRoomGuest = false,
+}: {
+  value?: number;
+  onChange: (id?: number) => void;
+  createLivingRoomGuest?: boolean;
+}) {
   const viewers = useAsync(() => api.viewers(), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
@@ -627,9 +646,11 @@ function DLNAViewer({ value, onChange }: { value?: number; onChange: (id?: numbe
           .filter((v) => ["owner", "active"].includes(viewerStatus(v)))
           .map((v) => ({ value: String(v.id), label: v.title || v.username }))}
       />
-      <Button disabled={busy} onClick={() => void createGuest()}>
-        {t("Create a living-room guest")}
-      </Button>
+      {createLivingRoomGuest ? (
+        <Button disabled={busy} onClick={() => void createGuest()}>
+          {t("Create a living-room guest")}
+        </Button>
+      ) : null}
       {error != null && <ErrorPanel error={error} />}
     </div>
   );

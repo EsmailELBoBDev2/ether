@@ -263,9 +263,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		}
 		tickets, _ := identity.NewTicketService(a.db, id, grants, nil)
 		var lanViewer func(context.Context, *http.Request) (*core.Viewer, error)
-		if id == "dlna" {
+		if descriptor, ok := r.control.descriptor(id); ok && descriptor.Auth == "none_lan" {
 			lanViewer = func(ctx context.Context, req *http.Request) (*core.Viewer, error) {
-				return a.dlnaViewer(ctx, req, settings())
+				return a.lanViewer(ctx, req, settings())
 			}
 		}
 		var lanStreams frontend.LANLazyStreams

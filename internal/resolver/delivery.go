@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -58,17 +59,30 @@ func (s *Service) ObserveSourceDelivery(r core.Release, bytesPerSecond float64) 
 }
 
 func (s *Service) deliveryFit(r core.Release, caps core.ClientCaps, title *core.Title) int {
+	fit, _ := s.deliveryFitReason(r, caps, title)
+	return fit
+}
+
+// deliveryFitReason is deliveryFit with the limit that rejected the release,
+// so source history can say which one did: the client's declared bitrate, the
+// debrid account's measured speed, or measured delivery to this client.
+func (s *Service) deliveryFitReason(r core.Release, caps core.ClientCaps, title *core.Title) (int, string) {
 	fit := sourceBandwidthFit(r, caps, title)
-	if r.Size <= 0 || title == nil || title.Runtime <= 0 {
-		return fit
+	reason := ""
+	if fit < 0 {
+		reason = fmt.Sprintf("needs %s, above the %s the app allows (its quality setting)", mbps(releaseBitsPerSecond(r, title)), mbps(float64(caps.MaxBitrateKbps)*1000))
 	}
+	if r.Size <= 0 || title == nil || title.Runtime <= 0 {
+		return fit, reason
+	}
+	need := float64(r.Size) / title.Runtime.Seconds()
 	if source, ok := s.indexer.(interface{ RecentSourceThroughput(core.Release) float64 }); ok {
 		if rate := source.RecentSourceThroughput(r); rate > 0 {
-			if float64(r.Size)/title.Runtime.Seconds() > rate*.75 {
-				return -1
+			if need > rate*.75 {
+				return -1, fmt.Sprintf("needs %s, more than the debrid account recently delivered (%s)", mbps(need*8), mbps(rate*8))
 			}
 			if fit >= 0 {
-				return 1
+				return 1, ""
 			}
 		}
 	}
@@ -78,15 +92,26 @@ func (s *Service) deliveryFit(r core.Release, caps core.ClientCaps, title *core.
 	// Multiple observations prevent one startup header read from governing
 	// source choice. Leave 25% headroom for variable bitrate and uncertainty.
 	if e.count < 3 || s.now().Sub(e.at) > 2*time.Minute {
-		return fit
+		return fit, reason
 	}
-	if float64(r.Size)/title.Runtime.Seconds() > e.rate*.75 {
-		return -1
+	if need > e.rate*.75 {
+		return -1, fmt.Sprintf("needs %s, more than recent playback delivered to this app (%s)", mbps(need*8), mbps(e.rate*8))
 	}
 	if fit < 0 {
-		return fit
+		return fit, reason
 	}
-	return 1
+	return 1, ""
+}
+
+func releaseBitsPerSecond(r core.Release, title *core.Title) float64 {
+	if r.Size <= 0 || title == nil || title.Runtime <= 0 {
+		return 0
+	}
+	return float64(r.Size) * 8 / title.Runtime.Seconds()
+}
+
+func mbps(bitsPerSecond float64) string {
+	return fmt.Sprintf("%.1f Mbps", bitsPerSecond/1e6)
 }
 
 // ChannelSourceAllowed applies the hard channel source envelope first.

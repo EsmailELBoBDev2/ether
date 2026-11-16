@@ -1783,7 +1783,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			trace.Candidates = append(trace.Candidates, ct)
 			tr = len(trace.Candidates) - 1
 		}
-		bandwidth := s.deliveryFit(sizedForEpisode(rel), req.Client, t)
+		bandwidth, bandwidthReason := s.deliveryFitReason(sizedForEpisode(rel), req.Client, t)
 		if trace != nil {
 			note := func(n string) {
 				trace.Candidates[tr].CompatibilityReason = strings.TrimPrefix(trace.Candidates[tr].CompatibilityReason+"; "+n, "; ")
@@ -1795,7 +1795,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 				note("too little bitrate for its resolution: ranked one resolution lower")
 			}
 			if bandwidth < 0 {
-				note("larger than the client's connection carries")
+				note("larger than the client's connection carries: " + bandwidthReason)
 			}
 			if yearGuessed {
 				note("series year differs but names no other show: ranked after correctly-labelled releases")

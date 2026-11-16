@@ -395,7 +395,7 @@ func (c *KindCatalog) Count(ctx context.Context, lib core.Library) (int, error) 
 	if c == nil || c.items == nil {
 		return 0, nil
 	}
-	policy, err := pluginitems.LibraryPolicy(ctx, lib)
+	policy, err := c.items.LibraryPolicy(ctx, lib)
 	if err != nil {
 		return 0, err
 	}
@@ -432,7 +432,7 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 	if level == "-" {
 		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0}, nil
 	}
-	policy, err := pluginitems.LibraryPolicy(ctx, lib)
+	policy, err := c.items.LibraryPolicy(ctx, lib)
 	if err != nil {
 		return experience.PluginBrowsePage{}, err
 	}
@@ -559,7 +559,7 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 	}
 	_, levelIdx, _ := rec.Decl.Level(parentItem.Level)
 	if !recursive || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels)-2 {
-		policy, e := pluginitems.LibraryPolicy(ctx, lib)
+		policy, e := c.items.LibraryPolicy(ctx, lib)
 		if e != nil {
 			return experience.PluginBrowsePage{}, e
 		}
@@ -584,7 +584,7 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		queue = queue[1:]
 		childCursor := ""
 		for {
-			policy, e := pluginitems.LibraryPolicy(ctx, lib)
+			policy, e := c.items.LibraryPolicy(ctx, lib)
 			if e != nil {
 				return experience.PluginBrowsePage{}, e
 			}
@@ -725,7 +725,7 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	if limit <= 0 {
 		limit = 50
 	}
-	policy, err := pluginitems.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
+	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
 	if err != nil {
 		return nil, err
 	}

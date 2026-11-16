@@ -19,7 +19,9 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 		where.WriteString(` AND i.level = ?`)
 		args = append(args, q.Level)
 	}
-	appendFacetClauses(&where, &args, q.Facets, nil)
+	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets); err != nil {
+		return BrowsePage{}, err
+	}
 	if err := s.appendVisibility(ctx, &where, &args, q.LibraryID, q.Policy, q.Hidden); err != nil {
 		return BrowsePage{}, err
 	}

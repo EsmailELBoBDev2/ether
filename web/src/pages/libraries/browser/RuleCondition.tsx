@@ -1,10 +1,23 @@
 import { Button, Input, Select } from "@braedonsaunders/appkit-ui";
 import { t } from "../../../i18n";
+import type { MediaKind } from "../api";
 import type { Rule, RuleField } from "../../../lib/contract";
 
 // The extended rules use the catalogue's existing indexed predicates. These
 // are individual rule conditions, never a second saved library filter.
-export function browseFields(): [string, string][] {
+export function browseFields(kind?: MediaKind): [string, string][] {
+  if (kind)
+    return [
+      ["__group", t("Rules")],
+      ...["year", "rating", "released"].map((key): [string, string] => [
+        key,
+        kind.fields?.find((f) => f.key === key)?.label ??
+          (key === "year" ? t("Year") : key === "rating" ? t("Rating") : t("Recently released")),
+      ]),
+      ...(kind.fields ?? [])
+        .filter((f) => f.indexed && !["year", "rating", "released"].includes(f.key))
+        .map((f): [string, string] => [f.key, f.label]),
+    ];
   return [
     ["__group", t("Rules")],
     ["__unwatched", t("Unwatched")],
@@ -65,11 +78,11 @@ export function browseFields(): [string, string][] {
     ["releasedFilters", t("Release / air date") + " · " + t("Rules")],
   ];
 }
-export function conditionTitle(rule: Rule): string {
+export function conditionTitle(rule: Rule, kind?: MediaKind): string {
   if (rule.field === "group")
     return rule.op === "in" ? t("Any") : rule.op === "isNot" ? t("Not") : t("All");
   if (rule.field === "viewer") return t("Viewer activity");
-  return browseFields().find(([key]) => `browse:${key}` === rule.field)?.[1] ?? t("Rule");
+  return browseFields(kind).find(([key]) => `browse:${key}` === rule.field)?.[1] ?? t("Rule");
 }
 function valueLabel(key: string): string {
   const labels: Record<string, string> = {
@@ -181,7 +194,9 @@ export function ExtendedCondition({
   onChange,
   onRemove,
   renderChild,
+  kind,
 }: {
+  kind?: MediaKind;
   rule: Rule;
   onChange: (r: Rule) => void;
   onRemove: () => void;
@@ -193,7 +208,7 @@ export function ExtendedCondition({
   ) => React.ReactNode;
 }) {
   const children = Array.isArray(rule.value) ? (rule.value as Rule[]) : [];
-  const runtime = rule.field.includes("Runtime") || rule.field.includes("Runtimes");
+  const runtime = !kind && (rule.field.includes("Runtime") || rule.field.includes("Runtimes"));
   const convert = (value: unknown, mult: number): unknown =>
     Array.isArray(value)
       ? value.map((v) => convert(v, mult))
@@ -204,7 +219,7 @@ export function ExtendedCondition({
   return (
     <div className="space-y-3 rounded-xl border border-border p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="font-medium">{conditionTitle(rule)}</span>
+        <span className="font-medium">{conditionTitle(rule, kind)}</span>
         <Button size="sm" variant="ghost" onClick={onRemove}>
           {t("Remove")}
         </Button>
@@ -232,11 +247,14 @@ export function ExtendedCondition({
             value=""
             onChange={(e) => {
               if (e.target.value)
-                onChange({ ...rule, value: [...children, newBrowseCondition(e.target.value)] });
+                onChange({
+                  ...rule,
+                  value: [...children, newBrowseCondition(e.target.value, kind)],
+                });
             }}
           >
             <option value="">{t("More conditions")}</option>
-            {browseFields().map(([key, label]) => (
+            {browseFields(kind).map(([key, label]) => (
               <option key={key} value={key}>
                 {label}
               </option>
@@ -246,23 +264,43 @@ export function ExtendedCondition({
             size="sm"
             variant="outline"
             onClick={() =>
-              onChange({ ...rule, value: [...children, { field: "genre", op: "in", value: [] }] })
+              onChange({
+                ...rule,
+                value: [
+                  ...children,
+                  kind ? newBrowseCondition("year", kind) : { field: "genre", op: "in", value: [] },
+                ],
+              })
             }
           >
             {t("Add condition")}
           </Button>
         </>
       ) : (
-        <ValueEditor
-          field={rule.field.replace("browse:", "")}
-          value={displayValue}
-          onChange={(value) => onChange({ ...rule, value: runtime ? convert(value, 60e9) : value })}
-        />
+        <>
+          {kind ? (
+            <Select
+              value={rule.op}
+              onChange={(e) => onChange({ ...rule, op: e.target.value as Rule["op"] })}
+            >
+              <option value="is">{t("is")}</option>
+              <option value="isNot">{t("is not")}</option>
+            </Select>
+          ) : null}
+          <ValueEditor
+            field={kind ? "" : rule.field.replace("browse:", "")}
+            value={displayValue}
+            onChange={(value) =>
+              onChange({ ...rule, value: runtime ? convert(value, 60e9) : value })
+            }
+          />
+        </>
       )}
     </div>
   );
 }
-export function newBrowseCondition(key: string): Rule {
+export function newBrowseCondition(key: string, kind?: MediaKind): Rule {
+  if (kind && key !== "__group") return { field: `browse:${key}`, op: "is", value: "" };
   if (key === "__group") return { field: "group", op: "is", value: [] };
   if (key.startsWith("__"))
     return {

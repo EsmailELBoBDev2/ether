@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -104,19 +105,21 @@ type PluginLibraryDecl struct {
 
 // Options configures the Service.
 type Options struct {
-	Logger *slog.Logger
-	Now    func() time.Time
+	CompilePluginPolicy func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	Logger              *slog.Logger
+	Now                 func() time.Time
 }
 
 // Service is the libraries store. List/Get are plain indexed reads of
 // a table that holds one row per library, never per item, so no call
 // scales with library size.
 type Service struct {
-	db   *sql.DB
-	log  *slog.Logger
-	now  func() time.Time
-	gen  atomic.Uint64
-	snap atomic.Pointer[snapshot]
+	compilePluginPolicy func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	db                  *sql.DB
+	log                 *slog.Logger
+	now                 func() time.Time
+	gen                 atomic.Uint64
+	snap                atomic.Pointer[snapshot]
 }
 
 // New seeds the two built-in libraries idempotently (§1.3) and returns
@@ -132,7 +135,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	s := &Service{db: db, log: o.Logger.With("component", "libraries"), now: o.Now}
+	s := &Service{compilePluginPolicy: o.CompilePluginPolicy, db: db, log: o.Logger.With("component", "libraries"), now: o.Now}
 	if err := s.seedBuiltins(ctx); err != nil {
 		return nil, fmt.Errorf("libraries: seed builtins: %w", err)
 	}

@@ -1,25 +1,20 @@
 import { Badge, Button, cn, toast } from "@braedonsaunders/appkit-ui";
-import { AlertTriangle, CalendarRange, Pencil, Plus, RefreshCw, Wand2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, CalendarRange, Pencil, Plus, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
-import { t, tn } from "../../i18n";
+import { t } from "../../i18n";
 import { errorMessage } from "../../lib/api";
 import { formatNumber, relativeTime } from "../../lib/format";
 import { useDebouncedValue, useInterval } from "../../lib/hooks";
 import { LIVE_APPS, liveAppName } from "./ChannelApps";
-import { GuideAIAction } from "./GuideAIReview";
 import { GuideSourceList, GuideWorkbench, guideSourceStatus, sourceTitle } from "./GuideData";
 import { GuideGrid } from "./GuideGrid";
-import {
-  filterGuideChannels,
-  groupGuideChannels,
-  type GuideAppFilter,
-} from "./guide-filter";
+import { filterGuideChannels, groupGuideChannels, type GuideAppFilter } from "./guide-filter";
 import { sourceImportError } from "./sourceErrors";
 import {
   MINUTE,
-  dayClock,
   groupBy,
   isGuideSource,
   tv,
@@ -42,7 +37,7 @@ type Sub = "grid" | "mapping" | "sources";
 
 /**
  * The Guide tab as one full-width page: the TV guide grid, channel mapping
- * and guide sources behind a segmented control, sharing one coverage card.
+ * and guide sources behind a segmented control in one toolbar row.
  */
 export function GuidePage({
   initialSub = "grid",
@@ -61,7 +56,6 @@ export function GuidePage({
   onMapChannel,
   onToggleFavorite,
   onEditSource,
-  onAddGuideSource,
   onReload,
 }: {
   /** The guide-data route opens on channel mapping, the Guide tab on the grid. */
@@ -82,175 +76,126 @@ export function GuidePage({
   onMapChannel: (id: string) => void;
   onToggleFavorite?: (c: Channel) => void;
   onEditSource: (id: string) => void;
-  onAddGuideSource: () => void;
   onReload: () => Promise<void>;
 }) {
   const [sub, setSub] = useState<Sub>(initialSub);
   const [app, setApp] = useState<GuideAppFilter>("all");
   const [group, setGroup] = useState("");
-  const [autoMatchNonce, setAutoMatchNonce] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   useInterval(() => setNow(Date.now()), 30_000);
 
   const guideSources = useMemo(() => sources.filter(isGuideSource), [sources]);
-  const guideSource = guideSourceId
-    ? sources.find((s) => s.id === guideSourceId)
-    : undefined;
+  const guideSource = guideSourceId ? sources.find((s) => s.id === guideSourceId) : undefined;
 
   // Coverage over live IPTV channels (virtual channels build their own).
-  const live = useMemo(
-    () => channels.filter((c) => c.kind === "iptv" && c.enabled),
-    [channels],
-  );
+  const live = useMemo(() => channels.filter((c) => c.kind === "iptv" && c.enabled), [channels]);
   const missing = useMemo(
     () => live.filter((c) => coverage && (coverage.get(c.id)?.programmes ?? 0) === 0).length,
     [live, coverage],
   );
   const missingLabel = missingCount ?? missing;
-  const pct = live.length ? (live.length - missing) / live.length : 1;
-
-  const autoMatch = useCallback(() => {
-    setSub("mapping");
-    setAutoMatchNonce((n) => n + 1);
-  }, []);
-
-  const coverageCard = (
-    <section
-      aria-label={t("Guide coverage")}
-      className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-border bg-surface px-4 py-3 shadow-xs"
-    >
-      <p className="text-2xl font-semibold tracking-tight tabular-nums text-fg">
-        {coverage === null ? "—" : `${Math.round(pct * 100)}%`}
-      </p>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-fg">{t("of channels have listings")}</p>
-        <p className="truncate text-xs text-fg-muted">
-          {coverage === null
-            ? t("Checking which channels have listings…")
-            : [
-                tn(missing, "{count} needs a guide", "{count} need a guide"),
-                ...(guideUntil
-                  ? [t("listings run to {time}", { time: dayClock(new Date(guideUntil)) })]
-                  : []),
-                t("Virtual channels build their own."),
-              ].join(" · ")}
-        </p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {sub !== "mapping" && missingLabel > 0 ? (
-          <Button variant="outline" size="sm" onClick={() => setSub("mapping")}>
-            {t("Fix {count} missing", { count: formatNumber(missingLabel) })}
-          </Button>
-        ) : null}
-        <Button size="sm" onClick={autoMatch} disabled={coverage === null}>
-          <Wand2 size={14} /> {t("Auto-match")}
-        </Button>
-        <GuideAIAction
-          channels={channels}
-          sources={sources}
-          coverage={coverage}
-          sourceId={guideSourceId ?? undefined}
-          onApplied={onReload}
-        />
-      </div>
-    </section>
-  );
 
   const groups = useMemo(() => groupGuideChannels(channels), [channels]);
 
+  const subTabs = (
+    <Segmented
+      ariaLabel={t("Guide")}
+      size="sm"
+      value={sub}
+      onChange={setSub}
+      options={[
+        { value: "grid", label: t("TV guide") },
+        {
+          value: "mapping",
+          label: `${t("Channel mapping")} · ${formatNumber(missingLabel)}`,
+        },
+        {
+          value: "sources",
+          label: `${t("Guide sources")} · ${formatNumber(guideSources.length)}`,
+        },
+      ]}
+    />
+  );
+
+  // One toolbar row: these sit at the start of the grid's own toolbar.
+  const gridToolbar = (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {subTabs}
+      <span className="text-xs text-fg-muted" id="guide-seen-in">
+        {t("As seen in")}
+      </span>
+      <ToolbarPicker
+        ariaLabel={t("As seen in")}
+        value={app}
+        onChange={(v) => setApp(v as GuideAppFilter)}
+        options={[
+          { value: "all", label: t("All apps") },
+          ...LIVE_APPS.map((a) => ({ value: a, label: liveAppName(a) })),
+          { value: "vela", label: "Vela" },
+        ]}
+        searchable={false}
+        menuClassName="w-48"
+      />
+      <ToolbarPicker
+        ariaLabel={t("Group")}
+        value={group}
+        onChange={setGroup}
+        className="max-w-[11rem]"
+        options={[
+          { value: "", label: t("All groups") },
+          ...(groups.yours.length
+            ? [{ value: "yours", label: t("Your groups"), group: t("Your groups") }]
+            : []),
+          ...groups.yours.map((g) => ({
+            value: `name:${g}`,
+            label: g,
+            group: t("Your groups"),
+          })),
+          ...(groups.provider.length
+            ? [
+                {
+                  value: "provider",
+                  label: t("Provider groups"),
+                  group: t("Provider groups"),
+                },
+              ]
+            : []),
+          ...groups.provider.map((g) => ({
+            value: `name:${g}`,
+            label: g,
+            group: t("Provider groups"),
+          })),
+        ]}
+      />
+    </div>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2 sm:px-4">
-        <Segmented
-          ariaLabel={t("Guide")}
-          size="sm"
-          value={sub}
-          onChange={setSub}
-          options={[
-            { value: "grid", label: t("TV guide") },
-            {
-              value: "mapping",
-              label: `${t("Channel mapping")} · ${formatNumber(missingLabel)}`,
-            },
-            {
-              value: "sources",
-              label: `${t("Guide sources")} · ${formatNumber(guideSources.length)}`,
-            },
-          ]}
-        />
-        {sub === "grid" ? (
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <span className="text-xs text-fg-muted" id="guide-seen-in">
-              {t("As seen in")}
-            </span>
-            <ToolbarPicker
-              ariaLabel={t("As seen in")}
-              value={app}
-              onChange={(v) => setApp(v as GuideAppFilter)}
-              options={[
-                { value: "all", label: t("All apps") },
-                ...LIVE_APPS.map((a) => ({ value: a, label: liveAppName(a) })),
-                { value: "vela", label: "Vela" },
-              ]}
-              searchable={false}
-              menuClassName="w-48"
-            />
-            <ToolbarPicker
-              ariaLabel={t("Group")}
-              value={group}
-              onChange={setGroup}
-              className="max-w-[11rem]"
-              options={[
-                { value: "", label: t("All groups") },
-                ...(groups.yours.length
-                  ? [{ value: "yours", label: t("Your groups"), group: t("Your groups") }]
-                  : []),
-                ...groups.yours.map((g) => ({
-                  value: `name:${g}`,
-                  label: g,
-                  group: t("Your groups"),
-                })),
-                ...(groups.provider.length
-                  ? [
-                      {
-                        value: "provider",
-                        label: t("Provider groups"),
-                        group: t("Provider groups"),
-                      },
-                    ]
-                  : []),
-                ...groups.provider.map((g) => ({
-                  value: `name:${g}`,
-                  label: g,
-                  group: t("Provider groups"),
-                })),
-              ]}
-            />
-          </div>
-        ) : null}
-      </div>
+      {sub !== "grid" ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2 sm:px-4">
+          {subTabs}
+        </div>
+      ) : null}
 
       {sub === "grid" ? (
-        <>
-          <div className="px-3 pt-3 sm:px-4">{coverageCard}</div>
-          <TVGuide
-            channels={channels}
-            app={app}
-            group={group}
-            query={query}
-            now={now}
-            guideUntil={guideUntil}
-            selectedChannelId={selectedChannelId}
-            onSelectChannel={onSelectChannel}
-            onInspect={onInspect}
-            onPlay={onPlay}
-            onMapChannel={onMapChannel}
-            onToggleFavorite={onToggleFavorite}
-          />
-        </>
+        <TVGuide
+          channels={channels}
+          app={app}
+          group={group}
+          query={query}
+          now={now}
+          guideUntil={guideUntil}
+          toolbarStart={gridToolbar}
+          selectedChannelId={selectedChannelId}
+          onSelectChannel={onSelectChannel}
+          onInspect={onInspect}
+          onPlay={onPlay}
+          onMapChannel={onMapChannel}
+          onToggleFavorite={onToggleFavorite}
+        />
       ) : sub === "mapping" ? (
         <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-7xl px-3 pt-3 sm:px-4">{coverageCard}</div>
           <div className="mx-auto grid max-w-7xl items-start gap-2 lg:grid-cols-[300px_minmax(0,1fr)]">
             <GuideSourceList
               query={query}
@@ -267,8 +212,6 @@ export function GuidePage({
               coverage={coverage}
               source={guideSource}
               showCoverageCard={false}
-              showMatchActions={false}
-              autoMatchNonce={autoMatchNonce}
               onMapChannel={onMapChannel}
               onEditSource={onEditSource}
               onReload={onReload}
@@ -282,7 +225,6 @@ export function GuidePage({
           channels={channels}
           now={now}
           onEditSource={onEditSource}
-          onAddGuideSource={onAddGuideSource}
           onReload={onReload}
         />
       )}
@@ -302,6 +244,7 @@ function TVGuide({
   query,
   now,
   guideUntil,
+  toolbarStart,
   selectedChannelId,
   onSelectChannel,
   onInspect,
@@ -315,6 +258,7 @@ function TVGuide({
   query: string;
   now: number;
   guideUntil?: number;
+  toolbarStart?: ReactNode;
   selectedChannelId: string | null;
   onSelectChannel: (id: string) => void;
   onInspect: (c: Channel, p: Programme) => void;
@@ -377,8 +321,9 @@ function TVGuide({
   );
 
   return (
-    <div className="mt-3 flex min-h-0 flex-1 flex-col border-t border-border">
+    <div className="flex min-h-0 flex-1 flex-col">
       <GuideGrid
+        toolbarStart={toolbarStart}
         // Summaries carry everything the grid's channel column reads.
         channels={rows as Channel[]}
         guide={guide}
@@ -402,20 +347,18 @@ function TVGuide({
   );
 }
 
-/** Every guide source, with refresh and edit; add brings in another XMLTV guide. */
+/** Every guide source, with refresh and edit; new ones are added in Sources. */
 function GuideSources({
   sources,
   channels,
   now,
   onEditSource,
-  onAddGuideSource,
   onReload,
 }: {
   sources: Source[];
   channels: ChannelSummary[];
   now: number;
   onEditSource: (id: string) => void;
-  onAddGuideSource: () => void;
   onReload: () => Promise<void>;
 }) {
   const [refreshing, setRefreshing] = useState<string | null>(null);
@@ -508,8 +451,10 @@ function GuideSources({
             );
           })
         )}
-        <Button variant="outline" className="w-full" onClick={onAddGuideSource}>
-          <Plus size={14} /> {t("Add XMLTV guide")}
+        <Button asChild variant="outline" className="w-full">
+          <Link to="/sources/iptv?new=guide">
+            <Plus size={14} /> {t("Add a guide source in Sources")}
+          </Link>
         </Button>
       </div>
     </div>

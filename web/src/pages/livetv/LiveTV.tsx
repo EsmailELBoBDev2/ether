@@ -1322,7 +1322,6 @@ export default function LiveTV() {
                   onMapChannel={(id) => void go({ kind: "map", id })}
                   onToggleFavorite={toggleFavorite}
                   onEditSource={(id) => void go({ kind: "source", id })}
-                  onAddGuideSource={addGuideSource}
                   onReload={reloadAll}
                 />
               </div>

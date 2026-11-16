@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  GUIDE_ZOOM_HOURS,
   GuideGrid,
   guideDayCount,
   guideDayOffset,
   guideHourTarget,
+  initialGuideZoom,
 } from "../pages/livetv/GuideGrid";
 import { ProgrammeInspector } from "../pages/livetv/ProgrammeInspector";
 import type { Channel, Programme } from "../pages/livetv/model";
@@ -49,6 +51,15 @@ describe("guide day maths", () => {
     expect(guideHourTarget(at(7, 12), 2, 23)).toBe(at(9, 23));
     // A day before today (scrolled back) still jumps forward.
     expect(guideHourTarget(at(7, 12), -1, 20)).toBe(at(7, 20));
+  });
+});
+
+describe("guide zoom", () => {
+  it("defaults to 3h and keeps a stored choice", () => {
+    expect(GUIDE_ZOOM_HOURS[initialGuideZoom(null)]).toBe(3);
+    expect(GUIDE_ZOOM_HOURS[initialGuideZoom("nonsense")]).toBe(3);
+    expect(initialGuideZoom("normal")).toBe("normal");
+    expect(initialGuideZoom("tight")).toBe("tight");
   });
 });
 

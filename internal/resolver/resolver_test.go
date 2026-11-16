@@ -853,6 +853,10 @@ func TestHealthCheckCachedUntilTTLOrMarkBad(t *testing.T) {
 
 	// Same release again within the TTL, even from a fresh service sharing
 	// the database: no new health checks for it.
+	// Resolve publishes the result before its optional evidence write drains.
+	if err := svc.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	svc2 := New(idx, h, db, testCfg(), Options{Now: clock.now, HealthTTL: time.Hour})
 	if _, err := svc2.checkHealth(ctx, first.Release.ID, nil); err != nil {
 		t.Fatal(err)

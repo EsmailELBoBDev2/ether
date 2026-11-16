@@ -68,6 +68,8 @@ type ResolveRequest = core.ResolveRequest
 
 const MaxVariants = core.MaxVariants
 
+const VersionSelectorPrefix = core.VersionSelectorPrefix
+
 func ResolutionTier(w, h int) int { return core.ResolutionTier(w, h) }
 
 func SourceLabel(s Source) string { return core.SourceLabel(s) }

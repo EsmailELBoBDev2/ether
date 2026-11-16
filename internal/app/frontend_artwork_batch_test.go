@@ -103,8 +103,11 @@ func TestArtworkPageAuthorizationWorkBound(t *testing.T) {
 			if pageStats.Queries() != firstBatch || pageStats.Queries() > 4 {
 				t.Fatal("page authorization SQL grew per title")
 			}
-			if scalarStats.Queries()-firstScalar != 72 {
-				t.Fatal("fixture did not reproduce 24 extra title/facts/trailer triplets")
+			// Cached title hydration no longer reads trailers separately.
+			// Keep the scalar baseline honest at two reads per extra title;
+			// the page authorization must still use a fixed number of queries.
+			if scalarStats.Queries()-firstScalar != 48 {
+				t.Fatal("fixture did not reproduce 24 extra title/facts pairs")
 			}
 		}
 	}

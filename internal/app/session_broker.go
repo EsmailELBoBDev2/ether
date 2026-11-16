@@ -100,7 +100,10 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			if a.resolver == nil {
 				return nil, core.ErrNotAvailable
 			}
-			return scorecardVariants(ctx, a, v, t, caps)
+			// Handle authorization must see the same stable logical selectors
+			// that detail pages issued. Concrete sources are checked when the
+			// selected slot is resolved, never by reranking this listing.
+			return scorecardVariants(core.WithLocalResponse(ctx), a, v, t, caps)
 		},
 		SelectScopedTracks: func(ctx context.Context, viewer *core.Viewer, device core.Device, title *core.Title, info core.MediaInfo, opts core.DecideOptions, audioSet, subtitleSet bool) (core.DecideOptions, error) {
 			if a.trackprefs == nil {

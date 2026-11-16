@@ -67,8 +67,16 @@ func TestVelaDetailBoundedQueries(t *testing.T) {
 			for n := range releases {
 				releases[n] = core.Release{ID: fmt.Sprint("release-", n), Name: fmt.Sprintf("Inception.2010.1080p.WEB-DL.H264-G%d", n), Size: 8 << 30}
 			}
-			a.resolver = resolver.New(detailQueryIndexer{releases}, nil, a.db, a.cfg.Read(), resolver.Options{})
+			// A learned verdict, without HC in the name, must filter the
+			// completed snapshot even though the GET never waits for ranking.
+			releases = append(releases, core.Release{ID: "blocked", Name: "Inception.2010.1080p.WEB-DL.H264-BLOCKED", Size: 8 << 30})
+			cfg := a.cfg.Read()
+			cfg.Resolver.HardSubtitles = "exclude"
+			a.resolver = resolver.New(detailQueryIndexer{releases}, nil, a.db, cfg, resolver.Options{})
 			defer a.resolver.Close()
+			if err := a.resolver.RememberSubtitleVerdict(ctx, "blocked", true); err != nil {
+				t.Fatal(err)
+			}
 			if done := a.resolver.RefillSearchCache(&title); done != nil {
 				select {
 				case <-done:
@@ -123,8 +131,36 @@ func TestVelaDetailBoundedQueries(t *testing.T) {
 				}
 			}
 			t.Logf("candidates=%d queries=%d writes=%d verdict_reads=%d joined_credit_reads=%d", count, stats.Queries(), stats.Writes(), verdictReads, creditReads)
-			if verdictReads != 1 || creditReads != 1 || stats.Queries() > 100 {
+			if verdictReads != 0 || creditReads != 1 || stats.Queries() > 100 {
 				t.Fatalf("unbounded detail: queries=%d verdict=%d credits=%d", stats.Queries(), verdictReads, creditReads)
+			}
+			// Observe background completion outside the request. The completed
+			// snapshot must contain a checked source, never the blocked source.
+			local := core.WithLocalResponse(ctx)
+			reqVariants := core.ResolveRequest{Title: &title, User: viewer, Client: core.ClientCaps{Product: "Vela", ClientID: "tv"}}
+			if slots, err := a.resolver.Variants(local, reqVariants, 4); err != nil || len(slots) == 0 {
+				t.Fatalf("immediate slots: %v %v", slots, err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				completed, err := a.resolver.Variants(local, reqVariants, 4)
+				if err != nil || len(completed) == 0 {
+					t.Fatalf("completed snapshot: %v %v", completed, err)
+				}
+				checked := false
+				for _, version := range completed {
+					if version.Release.ID == "blocked" {
+						t.Fatal("completed snapshot advertised a policy-blocked source")
+					}
+					checked = checked || version.Release.ID != version.ID
+				}
+				if checked {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("completed snapshot never supplied a checked source")
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}

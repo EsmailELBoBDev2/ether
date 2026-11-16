@@ -278,9 +278,12 @@ func TestRungSwitchWaitsOutDwell(t *testing.T) {
 	if waited := time.Since(started); waited < 350*time.Millisecond {
 		t.Errorf("switched after %v, before the dwell passed", waited)
 	}
-	if fr.startCount() != 2 || !primary.wasKilled() {
+	if fr.startCount() != 2 {
 		t.Errorf("encoder not switched to the rung after the dwell: starts=%d", fr.startCount())
 	}
+	// The replaced run stops through its cancellation fence, which can return
+	// after the new rung's first segment has been served.
+	waitFor(t, "replaced encoder stopped", primary.wasKilled)
 	mustContain(t, fr.lastStart(), "scale_vt=w=1280:h=720", "-start_number 0")
 }
 

@@ -328,6 +328,11 @@ func fetchPlaylistGuide(ctx context.Context, s *Service, src *Source, withChanne
 		if err != nil {
 			return Fetched{}, fmt.Errorf("playlist: %w", err)
 		}
+		if len(cs) == 0 {
+			if err := s.refuseEmptyLineup(ctx, src); err != nil {
+				return Fetched{}, fmt.Errorf("playlist: %w", err)
+			}
+		}
 		src.SkippedVOD = stats.SkippedVOD
 		cs = s.applyGroupRules(ctx, src, cs)
 		if progress != nil {

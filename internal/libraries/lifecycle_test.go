@@ -64,3 +64,44 @@ func TestDefaultLibraryLifecycle(t *testing.T) {
 		t.Fatalf("recreate reused reserved identity: %+v %v", recreated, err)
 	}
 }
+
+func TestPluginDeletionIdentitySurvivesRestartAndExplicitRestore(t *testing.T) {
+	ctx := context.Background()
+	s, db := openService(t)
+	decl := PluginLibraryDecl{Name: "Recordings"}
+	lib, err := s.UpsertPluginLibrary(ctx, "plugin.one", "recording", decl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rename(ctx, lib.ID, "Owner name"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, lib.ID); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(ctx, db, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.Get(ctx, lib.ID); err != core.ErrNotFound {
+		t.Fatalf("published deleted library: %v", err)
+	}
+	if _, err := reopened.UpsertPluginLibrary(ctx, "plugin.one", "recording", decl); err != ErrDeleted {
+		t.Fatalf("resurrected: %v", err)
+	}
+	if err := reopened.Purge(ctx, lib.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.UpsertPluginLibrary(ctx, "plugin.one", "recording", decl); err != ErrDeleted {
+		t.Fatalf("uninstall cleared owner tombstone: %v", err)
+	}
+	for _, pair := range [][2]string{{"plugin.two", "recording"}, {"plugin.one", "other"}} {
+		if _, err := reopened.UpsertPluginLibrary(ctx, pair[0], pair[1], decl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restored, err := reopened.RestorePluginLibrary(ctx, "plugin.one", "recording", decl)
+	if err != nil || restored.ID != lib.ID || restored.Key != lib.Key || restored.Name != "Owner name" {
+		t.Fatalf("restore: %+v %v", restored, err)
+	}
+}

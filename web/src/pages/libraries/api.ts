@@ -279,10 +279,13 @@ export const librariesApi = {
     apiFetch<{ plugins: PluginLibrarySource[] }>("/plugins-setup", { signal }).then(
       (r) => r.plugins ?? [],
     ),
-  ensurePluginSetup: (plugin: string) =>
-    apiFetch<PluginSetup>(`/plugins-setup/${encodeURIComponent(plugin)}/ensure`, {
-      method: "POST",
-    }),
+  ensurePluginSetup: (plugin: string, kind?: string) =>
+    apiFetch<PluginSetup>(
+      `/plugins-setup/${encodeURIComponent(plugin)}/ensure${kind ? "?kind=" + encodeURIComponent(kind) : ""}`,
+      {
+        method: "POST",
+      },
+    ),
   setup: (plugin: string, signal?: AbortSignal) =>
     apiFetch<PluginSetup>(`/plugins-setup/${encodeURIComponent(plugin)}`, { signal }),
   librarySetup: (id: number, signal?: AbortSignal) =>

@@ -476,6 +476,27 @@ func TestNonKindAndLibrarylessKindCreateNoLibrary(t *testing.T) {
 		t.Fatalf("expected 3 views after adding library decl, got %+v %v", views, err)
 	}
 
+	// Owner deletion survives plugin synchronization without purging its items.
+	if err := h.libs.Delete(ctx, pluginLib.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.SetEnabled(ctx, kindPluginID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.SetEnabled(ctx, kindPluginID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.libs.Get(ctx, pluginLib.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("sync resurrected deleted library: %v", err)
+	}
+	restored, err := h.libs.RestorePluginLibrary(ctx, kindPluginID, pluginLib.KindKey, libraries.PluginLibraryDecl{Name: "Default"})
+	if err != nil || restored.ID != pluginLib.ID || restored.Name != pluginLib.Name {
+		t.Fatalf("restore: %+v %v", restored, err)
+	}
+	if cnt, err := h.catalog.Count(ctx, restored); err != nil || cnt != 1 {
+		t.Fatalf("deletion lost plugin items: %d %v", cnt, err)
+	}
+
 	// 4. Updating to v1.2.0 removing the library block purges the library and items.
 	installStudioManifest(t, h.mgr, map[string]any{
 		"id":      kindPluginID,

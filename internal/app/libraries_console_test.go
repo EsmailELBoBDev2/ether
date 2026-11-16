@@ -234,9 +234,18 @@ func TestLibrariesConsolePluginItemMatchPinClear(t *testing.T) {
 	if w := call("DELETE", base+"/item/"+ref+"/match", ""); w.Code != 200 || strings.Contains(w.Body.String(), "file-dune-epub") {
 		t.Fatalf("clear %d %s", w.Code, w.Body)
 	}
-	// Plugin libraries are removed with their plugin, not from here.
-	if w := call("DELETE", base, ""); w.Code != 409 {
+	// Owner deletion removes publication, while explicit restoration keeps items.
+	if w := call("DELETE", base, ""); w.Code != 204 {
 		t.Fatalf("plugin delete %d", w.Code)
+	}
+	if _, err := a.libraries.UpsertPluginLibrary(ctx, "demo", "book", libraries.PluginLibraryDecl{Name: "Books"}); err != libraries.ErrDeleted {
+		t.Fatalf("automatic resurrection: %v", err)
+	}
+	if _, err := a.libraries.RestorePluginLibrary(ctx, "demo", "book", libraries.PluginLibraryDecl{Name: "Books"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := call("GET", base+"/items", ""); w.Code != 200 || !strings.Contains(w.Body.String(), "Dune") {
+		t.Fatalf("restored items: %d %s", w.Code, w.Body)
 	}
 	// Cache view is available for plugin libraries only.
 	if w := call("GET", base+"/cache", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"maxBytes":2147483648`) {

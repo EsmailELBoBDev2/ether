@@ -392,7 +392,9 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
           {cache.error ? (
             <ErrorPanel error={cache.error} onRetry={() => void cache.reload()} />
           ) : null}
-          {library.source === "catalogue" || library.source === "collection" ? (
+          {library.source === "catalogue" ||
+          library.source === "collection" ||
+          library.source === "plugin" ? (
             <SettingsSection title={t("Remove")}>
               <SettingsRow
                 title={t("Delete this library")}

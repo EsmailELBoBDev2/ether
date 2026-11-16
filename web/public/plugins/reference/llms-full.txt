@@ -91,7 +91,7 @@ Every package has `manifest.json`. `id`, `version`, and `name` are required. The
 ## Reading the generated fields
 The schema table lists required fields **within their parent object**, constraints, enum values, and explicitly declared defaults. An optional parent need not be present. Absence of a schema default does not imply zero is the runtime default: consult the Go type comments and validator below. Go field tables describe serialization, not validation requiredness. `omitempty` never proves that a field is optional for your chosen capability.
 
-Network permissions, contribution metadata, settings references, schedules, and runtime entry points are validated together. Errors identify the field to fix. See [Capabilities](/plugins/reference/capabilities), [Settings](/plugins/reference/settings), and [Publishing](/plugins/reference/publishing).
+Network permissions, contribution metadata, settings references, schedules, and runtime entry points are validated together. For `ether.schedule`, the first run happens right after install (within one scheduler tick once enabled). Later runs resume from the last dispatch plus `every` across server restarts, including failed attempts; overdue entries run on the next tick. Due entries run sequentially through the existing plugin call path, including `/ether/job/` deadlines. Errors identify the field to fix. See [Capabilities](/plugins/reference/capabilities), [Settings](/plugins/reference/settings), and [Publishing](/plugins/reference/publishing).
 
 ## Capabilities & contribution routes
 
@@ -4398,15 +4398,34 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 			m.mu.Lock()
 			next, seen := m.nextRun[key]
 			if !seen {
-				m.nextRun[key] = now.Add(every)
-				m.mu.Unlock()
-				continue
+				last, err := m.store.scheduleLastRun(ctx, r.ID, job.Call)
+				if err != nil {
+					m.mu.Unlock()
+					m.log.Warn("plugin schedule: read last run", "plugin", r.ID, "call", job.Call, "err", err)
+					continue
+				}
+				if !last.IsZero() {
+					next = last.Add(every)
+					m.nextRun[key] = next
+				}
 			}
 			if now.Before(next) {
 				m.mu.Unlock()
 				continue
 			}
-			m.nextRun[key] = now.Add(every)
+			if ctx.Err() != nil {
+				m.mu.Unlock()
+				return
+			}
+			// Record dispatch before calling: failures (or a restart during a
+			// long job) must not produce a first-run storm on the next boot.
+			dispatched := m.now()
+			if err := m.store.markScheduleRun(ctx, r.ID, job.Call, dispatched); err != nil {
+				m.mu.Unlock()
+				m.log.Warn("plugin schedule: save last run", "plugin", r.ID, "call", job.Call, "err", err)
+				continue
+			}
+			m.nextRun[key] = dispatched.Add(every)
 			m.mu.Unlock()
 			_, _ = m.Call(ctx, r.ID, Request{Method: "POST", Path: job.Call})
 		}
@@ -19759,7 +19778,9 @@ opening a page should read saved data, not repeatedly scan the catalogue.
 ```
 
 The job recipe includes `ether.schedule: [{"every":"1h","call":"/ether/refresh"}]` to the manifest
-and a handler for that path. Store a cursor/etag in KV and process a bounded batch per
+and a handler for that path. The first run happens right after install (within one
+scheduler tick once enabled); later runs keep their cadence across server restarts,
+including failed attempts. Store a cursor/etag in KV and process a bounded batch per
 run. Do not create timers in plugin code. Cache external results; keep the job
 unconfigured until the owner needs it. Settings changes must be read each run.
 

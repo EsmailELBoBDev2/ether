@@ -21,6 +21,12 @@ import (
 )
 
 func init() {
+	// Keep cadence across restarts; retained calls also seed existing installs.
+	store.Register("plugins", 7, `
+CREATE TABLE plugins_schedule_runs(plugin TEXT NOT NULL,call TEXT NOT NULL,last_run INTEGER NOT NULL,PRIMARY KEY(plugin,call));
+INSERT INTO plugins_schedule_runs(plugin,call,last_run) SELECT plugin,route,MAX(created)*1000 FROM plugins_calls GROUP BY plugin,route;
+`)
+
 	// Host-owned digests are separate from plugin KV quotas and cannot be forged by plugins.
 	store.Register("plugins", 6, `CREATE TABLE plugins_hash_cache(plugin TEXT NOT NULL,kkey TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(plugin,kkey));`)
 
@@ -51,6 +57,24 @@ CREATE INDEX plugins_calls_plugin ON plugins_calls(plugin,id);
 CREATE TABLE plugins_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,plugin TEXT NOT NULL,line TEXT NOT NULL,created INTEGER NOT NULL);
 CREATE INDEX plugins_logs_plugin ON plugins_logs(plugin,id);
 `)
+}
+
+// scheduleLastRun is host-owned state, independent of plugin KV and call retention.
+func (s *storage) scheduleLastRun(ctx context.Context, plugin, call string) (time.Time, error) {
+	var at int64
+	err := s.db.QueryRowContext(ctx, `SELECT last_run FROM plugins_schedule_runs WHERE plugin=? AND call=?`, plugin, call).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.UnixMilli(at), nil
+}
+
+func (s *storage) markScheduleRun(ctx context.Context, plugin, call string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO plugins_schedule_runs(plugin,call,last_run) VALUES(?,?,?) ON CONFLICT(plugin,call) DO UPDATE SET last_run=excluded.last_run`, plugin, call, at.UnixMilli())
+	return err
 }
 
 // Limits from SPEC §5.1.5, §5.7 and §5.13.
@@ -843,6 +867,7 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
 		`DELETE FROM plugins_hash_cache WHERE plugin=?`,
+		`DELETE FROM plugins_schedule_runs WHERE plugin=?`,
 		`DELETE FROM plugins_health WHERE plugin=?`,
 		`DELETE FROM plugins_outbox WHERE plugin=?`,
 		`DELETE FROM plugins_proposals WHERE plugin=?`,

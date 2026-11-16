@@ -1080,6 +1080,11 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 		return err
 	}
 	m.mu.Lock()
+	for key := range m.nextRun {
+		if strings.HasPrefix(key, id+"|") {
+			delete(m.nextRun, key)
+		}
+	}
 	hooks := append([]func(context.Context, string){}, m.removeHooks...)
 	m.mu.Unlock()
 	for _, fn := range hooks {

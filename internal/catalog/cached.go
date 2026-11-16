@@ -371,13 +371,14 @@ func (c *Catalog) cachedGetMany(ctx context.Context, keys []core.RatingKey, reus
 		}
 		missing = append(missing, key)
 	}
-	for start := 0; start < len(missing); start += 200 {
-		part := missing[start:min(start+200, len(missing))]
+	if len(missing) > 0 {
+		part := missing
 		args := make([]any, len(part))
 		for i, key := range part {
 			args[i] = int64(key)
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, args...)
+		ph, bound := c.hydrationKeys(args)
+		rows, err := c.db.QueryContext(ctx, `SELECT `+titleCols+` FROM catalog_titles WHERE key IN (`+ph+`)`, bound...)
 		if err != nil {
 			return nil, err
 		}

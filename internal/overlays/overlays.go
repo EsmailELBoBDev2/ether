@@ -197,15 +197,20 @@ func (s *Service) ArtworkMany(ctx context.Context, keys []core.RatingKey) (map[c
 	if s == nil || s.db == nil || len(keys) == 0 {
 		return out, nil
 	}
-	for start := 0; start < len(keys); start += 200 {
-		part := keys[start:min(start+200, len(keys))]
-		args := make([]any, len(part))
-		marks := make([]string, len(part))
-		for i, key := range part {
-			args[i] = int64(key)
-			marks[i] = "?"
+	{
+		numeric := make([]int64, len(keys))
+		for n, k := range keys {
+			numeric[n] = int64(k)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT item_key, value FROM overlays_artwork WHERE item_key IN (`+strings.Join(marks, ",")+`)`, args...)
+		data, err := json.Marshal(numeric)
+		if err != nil {
+			return nil, err
+		}
+		source := "SELECT value FROM json_each(?)"
+		if store.DialectOf(s.db) == store.Postgres {
+			source = "SELECT CAST(value AS BIGINT) FROM json_array_elements_text(CAST(? AS JSON))"
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT item_key, value FROM overlays_artwork WHERE item_key IN (`+source+`)`, string(data))
 		if err != nil {
 			return nil, err
 		}

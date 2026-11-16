@@ -371,18 +371,20 @@ func (s *Service) CachedMany(ctx context.Context, titles []core.Title) (map[core
 		keys = append(keys, title.Key)
 	}
 	freshAfter := s.o.Now().Add(-time.Duration(cfg.CacheHours) * time.Hour).Unix()
-	for start := 0; start < len(keys); start += 40 {
-		end := min(start+40, len(keys))
-		args := make([]any, 0, 1+end-start)
-		args = append(args, cacheProvider(cfg))
-		query := `SELECT item_key,value,updated FROM ratings_cache WHERE provider=? AND item_key IN (?`
-		args = append(args, int64(keys[start]))
-		for _, key := range keys[start+1 : end] {
-			query += ",?"
-			args = append(args, int64(key))
+	if len(keys) > 0 {
+		numeric := make([]int64, len(keys))
+		for n, k := range keys {
+			numeric[n] = int64(k)
 		}
-		query += `)`
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		data, err := json.Marshal(numeric)
+		if err != nil {
+			return nil, err
+		}
+		source := "SELECT value FROM json_each(?)"
+		if store.DialectOf(s.db) == store.Postgres {
+			source = "SELECT CAST(value AS BIGINT) FROM json_array_elements_text(CAST(? AS JSON))"
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT item_key,value,updated FROM ratings_cache WHERE provider=? AND item_key IN (`+source+`)`, cacheProvider(cfg), string(data))
 		if err != nil {
 			return nil, err
 		}

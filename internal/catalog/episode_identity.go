@@ -17,7 +17,7 @@ func init() {
 // show index and a fixed row limit, independent of the library's size. It
 // neither fetches missing episodes nor schedules background work.
 func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, season, episode int, names []string) (core.EpisodeIdentity, error) {
-	out := core.EpisodeIdentity{OtherShows: map[string][]core.EpisodeNamesake{}, Seasons: map[int]string{}}
+	out := core.EpisodeIdentity{OtherShows: map[string][]core.EpisodeNamesake{}, Seasons: map[int]string{}, Episodes: map[int]string{}}
 	if len(names) > 8 {
 		names = names[:8]
 	}
@@ -82,5 +82,25 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 		}
 		out.Seasons[n] = title
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil || season <= 0 {
+		return out, err
+	}
+	// Sibling titles let the resolver reject a release that names another
+	// episode of this season (TMDB segment vs broadcast numbering).
+	eps, err := c.db.QueryContext(ctx, `SELECT episode, title FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE show_key=? AND season=? AND type='episode' LIMIT 512`, show, season)
+	if err != nil {
+		return out, err
+	}
+	defer eps.Close()
+	for eps.Next() {
+		var n int
+		var title string
+		if err := eps.Scan(&n, &title); err != nil {
+			return out, err
+		}
+		if n != episode && title != "" {
+			out.Episodes[n] = title
+		}
+	}
+	return out, eps.Err()
 }

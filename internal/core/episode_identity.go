@@ -5,6 +5,8 @@ package core
 type EpisodeIdentity struct {
 	OtherShows map[string][]EpisodeNamesake
 	Seasons    map[int]string
+	// Episodes holds the requested season's other episode titles by number.
+	Episodes map[int]string
 }
 
 // EpisodeNamesake is a show whose own title matches a requested name, with

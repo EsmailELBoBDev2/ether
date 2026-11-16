@@ -2,7 +2,9 @@ package resolver
 
 import (
 	"context"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -81,6 +83,9 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 	if reason := f.otherSeason(rel, t, req); reason != "" {
 		return reason
 	}
+	if reason := f.otherEpisode(rel, t, req); reason != "" {
+		return reason
+	}
 	idMatch, _ := releaseparse.CompareTitleIDs(rel.ReportedTitleIDs(), req.IDs)
 	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
 	primary := releaseparse.TitleMatches(rel.Info, req.Title) || (t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle))
@@ -104,6 +109,36 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 			if distinctiveEpisode(rel.Name, other.EpisodeTitle) && releaseparse.EpisodeTitleEvidence(rel.Name, other.EpisodeTitle) && !distinctiveEpisode(rel.Name, req.EpisodeTitle) && identityWords(other.EpisodeTitle) != identityWords(req.EpisodeTitle) {
 				return "release names another show's episode"
 			}
+		}
+	}
+	return ""
+}
+
+// otherEpisode rejects a single-episode release that names a different episode
+// of the requested season and not the requested one. Shows numbered one way
+// on TMDB and another by release groups (segments vs broadcast episodes) carry
+// the same SxxEyy on different content; the episode title tells them apart.
+func (f localIdentity) otherEpisode(rel core.Release, t *core.Title, req core.SearchRequest) string {
+	if req.Season <= 0 || rel.Info.FullSeason || len(f.Episodes) == 0 || distinctiveEpisode(rel.Name, req.EpisodeTitle) {
+		return ""
+	}
+	own := identityWords(req.EpisodeTitle)
+	shows := []string{req.Title, t.ShowOriginalTitle, rel.Info.Title}
+	for _, n := range slices.Sorted(maps.Keys(f.Episodes)) {
+		title := f.Episodes[n]
+		words := identityWords(title)
+		if n == req.Episode || words == "" || words == own || len(strings.Fields(words)) < 2 || (own != "" && identityPhrase(req.EpisodeTitle, title)) {
+			continue
+		}
+		inShowTitle := false
+		for _, show := range shows {
+			if show != "" && identityPhrase(show, title) {
+				inShowTitle = true
+				break
+			}
+		}
+		if !inShowTitle && distinctiveEpisode(rel.Name, title) {
+			return "release names episode " + strconv.Itoa(n) + " of this season"
 		}
 	}
 	return ""

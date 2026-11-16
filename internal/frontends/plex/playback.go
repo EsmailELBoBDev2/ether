@@ -652,16 +652,18 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			p.opts.BurnTextSubtitles = true
 		}
 		if androidImageSubtitle(pr, ps.Info, p.opts) {
+			dec := frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{})
 			// Source-change remuxing is also a conversion, even when MDE
-			// initially allowed direct play of the original file.
+			// initially allowed direct play of the original file. Skip the
+			// proactive Usenet burn when the client can direct-play PGS itself.
 			converting := !p.opts.DirectPlay || ps.RequiresRemux
-			if onDemandSession(ps) && p.mde && p.opts.DirectStream && ps.Resolution != nil {
+			if dec.Kind != frontend.DecisionDirectPlay && onDemandSession(ps) && p.mde && p.opts.DirectStream && ps.Resolution != nil {
 				protocol := ps.Resolution.Release.Protocol
 				converting = converting || (protocol != frontend.ProtocolHTTP && protocol != frontend.ProtocolTorrent)
 			}
 			// A quality/codec limit can require conversion even though the
 			// client allowed direct play.
-			if converting || frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{}).Kind != frontend.DecisionDirectPlay {
+			if converting || dec.Kind != frontend.DecisionDirectPlay {
 				p.opts.BurnSubtitles = true
 			}
 		}

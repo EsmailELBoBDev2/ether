@@ -14,7 +14,7 @@ import (
 // These tests pin the -map order buildArgs emits. Direct play never reaches
 // buildArgs.
 
-func streamMaps(args []string) []string {
+func noAudioStreamMaps(args []string) []string {
 	var out []string
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "-map" {
@@ -35,7 +35,7 @@ func TestMatroskaNoAudioMapsSubtitleSecond(t *testing.T) {
 	d := core.Decision{Kind: core.DecisionRemux, Container: ContainerMatroska, VideoCopy: true, AudioStream: -1, SubtitleStream: 4}
 	args := buildArgs(baseSpec(noAudioMatroska(4), d))
 	want := []string{"0:0", "0:4"}
-	if maps := streamMaps(args); !slices.Equal(maps, want) {
+	if maps := noAudioStreamMaps(args); !slices.Equal(maps, want) {
 		t.Fatalf("maps = %q, want %q", maps, want)
 	}
 	mustNotContain(t, args, "anullsrc")
@@ -46,7 +46,7 @@ func TestAndroidNoAudioPutsSubtitleAtOutputIndexTwo(t *testing.T) {
 	s := baseSpec(noAudioMatroska(4), d)
 	args := buildArgs(s)
 	want := []string{"0:0", "1:a:0", "0:4"}
-	if maps := streamMaps(args); !slices.Equal(maps, want) {
+	if maps := noAudioStreamMaps(args); !slices.Equal(maps, want) {
 		t.Fatalf("maps = %q, want %q", maps, want)
 	}
 	remain := secs(s.Info.Duration - s.Start)
@@ -68,7 +68,7 @@ func TestAndroidSilenceStaysOffWhenAudioIsMappedOrClientIsNotAndroid(t *testing.
 		t.Fatalf("android flag changed a mapped-audio command\nplain: %q\nflagged: %q", plain, flagged)
 	}
 	want := []string{"0:0", "0:1", "0:4"}
-	if maps := streamMaps(flagged); !slices.Equal(maps, want) {
+	if maps := noAudioStreamMaps(flagged); !slices.Equal(maps, want) {
 		t.Fatalf("maps = %q, want %q", maps, want)
 	}
 	mustNotContain(t, flagged, "anullsrc")

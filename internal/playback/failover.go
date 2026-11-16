@@ -484,7 +484,12 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	share := src
 	src = inner
 	openedRevision := core.SourceRevision(&core.PlaySession{Key: s.ident.key, Source: src})
-	g := &generation{sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
+	g := &generation{warmReads: new(core.WarmReadWindow), sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
+	if len(cached) > 0 && cached[0] != nil && cached[0].warmReads != nil &&
+		cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() &&
+		(cached[0].nzbHash == "" || (len(res.NZB) > 0 && cached[0].nzbHash == nzbHash(res.NZB))) {
+		g.prewarmReads = cached[0].warmReads
+	}
 	g.ctx, g.cancel = context.WithCancel(m.ctx)
 	if core.IsBackgroundAnalysis(ctx) {
 		g.ctx = core.WithBackgroundAnalysis(g.ctx)
@@ -636,7 +641,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 func (m *Manager) probeMedia(ctx context.Context, g *generation, src core.MediaSource) (*core.MediaInfo, string, error) {
 	if m.deps.NativeProbe != nil {
 		started := time.Now()
-		info, err := m.deps.NativeProbe(ctx, src)
+		info, err := m.deps.NativeProbe(core.WithReadOrigin(ctx, "playback.probe", "container facts"), src)
 		if err == nil && info != nil {
 			if m.opts.VerifyNativeProbe && g.res != nil {
 				m.startProbeVerify(g.sess.sources, g.res, *info)
@@ -685,7 +690,7 @@ func (m *Manager) startTrailerFill(g *generation) {
 		ctx, cancel := context.WithTimeout(g.ctx, m.opts.IndexTimeout)
 		defer cancel()
 		info := g.infoSnapshot()
-		if !m.deps.NativeTrailer(ctx, g.src, &info) {
+		if !m.deps.NativeTrailer(core.WithReadOrigin(ctx, "playback.trailer", "container facts"), g.src, &info) {
 			return
 		}
 		g.mu.Lock()
@@ -818,7 +823,7 @@ func (m *Manager) startIndexFill(g *generation) {
 		defer g.markIndexReady()
 		ctx, cancel := context.WithTimeout(g.ctx, m.opts.IndexTimeout)
 		defer cancel()
-		points := containerIndex(ctx, g.src, g.src.Size())
+		points := containerIndex(core.WithReadOrigin(ctx, "playback.index", "container keyframes"), g.src, g.src.Size())
 		if len(points) == 0 {
 			return
 		}

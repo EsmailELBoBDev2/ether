@@ -623,7 +623,7 @@ func (p *Prefetcher) warmResume(ctx context.Context, userID int64, key core.Rati
 		return nil
 	}
 	tm := playback.TimeMap{Size: rp.Size, Duration: duration, Points: resumeIndexPoints(rp.Keyframes)}
-	start := max(int64(0), tm.KeyframeOffsetAt(offset)-p.opts.WarmBehind)
+	start := max(int64(0), tm.WarmOffsetAt(offset)-p.opts.WarmBehind)
 	end := tm.OffsetAt(min(duration, offset+25*time.Second))
 	capBytes := int64(256 << 20)
 	if budget := p.config().BudgetBytes; budget > 0 {
@@ -635,7 +635,7 @@ func (p *Prefetcher) warmResume(ctx context.Context, userID int64, key core.Rati
 	}
 	p.setCurrent(rp.Release.Name, core.CacheCauseResumeWarm)
 	p.noteCause(rp.ReleaseID(), core.CacheCauseResumeWarm, rp.Release.Name)
-	err = p.deps.Engine.Prefetch(ctx, rp.ReleaseID(), rp.NZB, start, length)
+	err = p.deps.Engine.Prefetch(core.WithReadOrigin(ctx, "prefetch.resume", "in-progress title"), rp.ReleaseID(), rp.NZB, start, length)
 	if err == nil {
 		return nil
 	}

@@ -296,18 +296,19 @@ type hostGate struct {
 	now   func() time.Time
 	log   *slog.Logger
 
-	mu      sync.Mutex
-	busy    map[string]int
-	waiters map[string][]*gateWaiter
-
+	mu         sync.Mutex
+	busy       map[string]int
+	waiters    map[string][]*gateWaiter
 	foreground map[string]int
 	drains     map[string]map[*drainLease]struct{}
+	active     map[string]map[*gateWaiter]struct{}
 }
 
 type gateWaiter struct {
 	urgent  func() bool // evaluated at grant time: a warm-up can turn into Play
 	ready   chan struct{}
 	granted bool
+	preempt context.CancelFunc
 }
 
 func newHostGate(c *connCap) *hostGate {
@@ -375,11 +376,15 @@ func (g *hostGate) tryDrain(addr string, cancel context.CancelFunc) (func(), boo
 
 // acquire waits for a request slot to addr. urgent reports whether a viewer
 // is waiting on this request; it is consulted again whenever a slot frees.
-func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool) (func(), error) {
+func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool, preempt ...context.CancelFunc) (func(), error) {
 	if g == nil || addr == "" {
 		return func() {}, nil
 	}
 	began := time.Now()
+	w := &gateWaiter{urgent: urgent, ready: make(chan struct{})}
+	if len(preempt) > 0 {
+		w.preempt = preempt[0]
+	}
 	g.mu.Lock()
 	lim, until := g.limit(addr)
 	if err := ctx.Err(); err != nil {
@@ -388,12 +393,23 @@ func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool)
 	}
 	if g.busy[addr] < lim && len(g.waiters[addr]) == 0 {
 		g.busy[addr]++
+		g.trackLocked(addr, w)
 		g.mu.Unlock()
-		return g.releaser(addr), nil
+		return g.trackedReleaser(addr, w), nil
 	}
-	w := &gateWaiter{urgent: urgent, ready: make(chan struct{})}
 	g.waiters[addr] = append(g.waiters[addr], w)
 	g.dispatchLocked(addr)
+	// An admitted warm body must yield too; queue priority alone cannot free
+	// a host whose slots are all occupied by background work.
+	if !w.granted && urgent() {
+		for active := range g.active[addr] {
+			if active.preempt != nil && !active.urgent() {
+				active.preempt()
+				active.preempt = nil
+				break
+			}
+		}
+	}
 	g.mu.Unlock()
 	defer func() {
 		if wait := time.Since(began); wait > 250*time.Millisecond && g.log != nil {
@@ -414,7 +430,7 @@ func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool)
 			if t != nil {
 				t.Stop()
 			}
-			return g.releaser(addr), nil
+			return g.trackedReleaser(addr, w), nil
 		case <-restored:
 			g.mu.Lock()
 			g.dispatchLocked(addr)
@@ -426,6 +442,10 @@ func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool)
 			}
 			g.mu.Lock()
 			if w.granted {
+				delete(g.active[addr], w)
+				if len(g.active[addr]) == 0 {
+					delete(g.active, addr)
+				}
 				g.mu.Unlock()
 				g.release(addr)
 			} else {
@@ -501,7 +521,35 @@ func (g *hostGate) dispatchLocked(addr string) {
 			g.waiters[addr] = q
 		}
 		g.busy[addr]++
+		g.trackLocked(addr, w)
 		w.granted = true
 		close(w.ready)
+	}
+}
+
+func (g *hostGate) trackLocked(addr string, w *gateWaiter) {
+	if w.preempt == nil {
+		return
+	}
+	if g.active == nil {
+		g.active = make(map[string]map[*gateWaiter]struct{})
+	}
+	if g.active[addr] == nil {
+		g.active[addr] = make(map[*gateWaiter]struct{})
+	}
+	g.active[addr][w] = struct{}{}
+}
+func (g *hostGate) trackedReleaser(addr string, w *gateWaiter) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			delete(g.active[addr], w)
+			if len(g.active[addr]) == 0 {
+				delete(g.active, addr)
+			}
+			g.mu.Unlock()
+			g.release(addr)
+		})
 	}
 }

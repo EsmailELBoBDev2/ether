@@ -543,6 +543,22 @@ const (
 	fetchMetadata                   // container index/metadata reads: single-conn, no hedge
 )
 
+func (m fetchMode) String() string {
+	switch m {
+	case fetchUrgent:
+		return "demand"
+	case fetchReadAhead:
+		return "read-ahead"
+	case fetchPrefetch:
+		return "prefetch"
+	case fetchDurable:
+		return "health-check"
+	case fetchMetadata:
+		return "metadata"
+	}
+	return "unknown"
+}
+
 type blockFlight struct {
 	done   chan struct{}
 	data   []byte
@@ -1164,7 +1180,7 @@ func (f *remoteFile) block(ctx context.Context, idx int64, mode fetchMode, runBl
 				return d, nil
 			}
 			if runCtx == nil {
-				if isAnalysisRead(ctx) {
+				if isAnalysisRead(ctx) || mode == fetchPrefetch || mode == fetchMetadata {
 					runCtx = ctx
 				} else {
 					runCtx = f.ctx
@@ -1266,13 +1282,25 @@ func (f *remoteFile) finish(idx int64, fl *blockFlight, data []byte, err error, 
 // fetchRun reads blocks [first, first+len(fls)) with one range request,
 // publishing each block as soon as its bytes arrive.
 func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlight, mode fetchMode, slotHeld bool) {
-	// reqCtx ends when the run is abandoned; httpCtx carries its request.
-	// Only background responses may finish a short remainder into cache,
-	// and they yield immediately when foreground admission needs the host.
+	// Only non-warm background responses may drain a short remainder.
+	// Startup warming keeps ahead GETs through seek-wide cancellation, but
+	// its window and host-slot preemption cancel obsolete GETs immediately.
+	if mode == fetchPrefetch {
+		var retire context.CancelFunc
+		ctx, retire = core.WarmReadContext(ctx, min((first+int64(len(fls)))*f.e.block, f.size))
+		defer retire()
+	}
+	var preempt context.CancelFunc
+	if mode == fetchReadAhead || mode == fetchPrefetch {
+		var stop context.CancelFunc
+		ctx, stop = context.WithCancel(ctx)
+		defer stop()
+		preempt = stop
+	}
 	reqCtx, httpCtx := ctx, ctx
-	var remaining atomic.Int64 // response bytes still unread; -1 before the body
+	var remaining atomic.Int64
 	remaining.Store(-1)
-	if mode == fetchReadAhead || mode == fetchPrefetch || mode == fetchUrgent {
+	if mode == fetchUrgent || ((mode == fetchReadAhead || mode == fetchPrefetch) && !core.HasWarmReadWindow(ctx)) {
 		var cancelHTTP context.CancelFunc
 		if mode != fetchUrgent {
 			var stop context.CancelFunc
@@ -1280,6 +1308,10 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			defer stop()
 		}
 		httpCtx, cancelHTTP = context.WithCancel(context.WithoutCancel(ctx))
+		if preempt != nil {
+			stopRun := preempt
+			preempt = func() { stopRun(); cancelHTTP() }
+		}
 		finished := make(chan struct{})
 		defer cancelHTTP()
 		defer close(finished)
@@ -1287,6 +1319,9 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 	}
 	httpCtx = context.WithValue(httpCtx, fetchModeKey{}, mode)
 	httpCtx = context.WithValue(httpCtx, playheadDemandKey{}, fls[0].demand)
+	if preempt != nil {
+		httpCtx = context.WithValue(httpCtx, fetchPreemptKey{}, preempt)
+	}
 	i := 0
 	fail := func(err error) {
 		if reqCtx.Err() != nil {
@@ -1323,6 +1358,10 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			return
 		}
 	}
+	defer func() {
+		origin := core.SourceReadOrigin(ctx)
+		f.e.log.Debug("debrid source run ended", "release", f.id, "origin", origin.Component, "reason", origin.Reason, "mode", mode.String(), "offset", first*f.e.block, "cancelled", ctx.Err() != nil || reqCtx.Err() != nil)
+	}()
 	start := first * f.e.block
 	end := min((first+int64(len(fls)))*f.e.block, f.size) - 1
 	began := f.e.now()
@@ -1335,7 +1374,7 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 	}
 	if err != nil {
 		if ctx.Err() == nil && reqCtx.Err() == nil {
-			f.e.log.Warn("debrid range failed", "release", f.id, "offset", start, "err", sanitize(err))
+			f.e.log.Warn("debrid range failed", "release", f.id, "offset", start, "origin", core.SourceReadOrigin(ctx).Component, "reason", core.SourceReadOrigin(ctx).Reason, "mode", mode.String(), "err", sanitize(err))
 		}
 		fail(err)
 		return
@@ -1387,11 +1426,11 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			}
 		}
 		if err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
+			if ctx.Err() != nil || reqCtx.Err() != nil {
+				err = errRunCancelled
 			} else {
 				err = fmt.Errorf("debrid: read %s: %w: %v", f.name(), core.ErrSourceUnavailable, sanitize(err))
-				f.e.log.Warn("debrid range failed", "release", f.id, "offset", idx*f.e.block, "err", err)
+				f.e.log.Warn("debrid range failed", "release", f.id, "offset", idx*f.e.block, "runOffset", first*f.e.block, "origin", core.SourceReadOrigin(ctx).Component, "reason", core.SourceReadOrigin(ctx).Reason, "mode", mode.String(), "err", err)
 			}
 			fail(err)
 			break
@@ -1437,6 +1476,7 @@ const (
 )
 
 type fetchModeKey struct{}
+type fetchPreemptKey struct{}
 
 // readPriorityKey carries caller admission through workers detached from a
 // request's cancellation. The callback preserves warm-up promotion to Play.
@@ -1451,6 +1491,8 @@ func callerUrgent(ctx context.Context) bool {
 }
 
 func inheritReadPriority(dst, src context.Context) context.Context {
+	origin := core.SourceReadOrigin(src)
+	dst = core.WithReadOrigin(dst, origin.Component, origin.Reason)
 	return context.WithValue(dst, readPriorityKey{}, func() bool { return callerUrgent(src) })
 }
 
@@ -1522,6 +1564,12 @@ func (f *remoteFile) prefetch(ctx context.Context, ranges [][2]int64) error {
 		return nil
 	}
 	maxRun, _, _ := f.e.tuning()
+	// An overlapping startup run may straddle the first media Range. Bound
+	// the retained prefix even when the owner configured very large chunks.
+	if core.HasWarmReadWindow(ctx) {
+		maxRun = min(maxRun, max(1, int64(8<<20)/f.e.block))
+	}
+
 	var wg sync.WaitGroup
 	errc := make(chan error, 1)
 	for _, r := range ranges {
@@ -1604,6 +1652,13 @@ func (f *remoteFile) rangeGet(ctx context.Context, start, end int64, urgent bool
 		}
 		ctx = context.WithValue(ctx, fetchModeKey{}, mode)
 	}
+	origin := core.SourceReadOrigin(ctx)
+	if origin.Component == "" {
+		origin = core.ReadOrigin{Component: "debrid", Reason: "source API"}
+	}
+	mode, _ := ctx.Value(fetchModeKey{}).(fetchMode)
+	f.e.log.Debug("debrid source read", "release", f.id, "origin", origin.Component, "reason", origin.Reason, "mode", mode.String(), "offset", start, "end", end)
+
 	if isAnalysisRead(ctx) && f.e.svc != nil {
 		totals := &f.e.svc.analysisTotals
 		totals.active.Add(1)
@@ -1922,7 +1977,8 @@ func (e *Engine) get(ctx context.Context, u string, start, end int64, urgent boo
 	if !acquire(true) {
 		return nil, timing{}, ctx.Err()
 	}
-	host, err := e.gate.acquire(ctx, addr, priority)
+	preempt, _ := ctx.Value(fetchPreemptKey{}).(context.CancelFunc)
+	host, err := e.gate.acquire(ctx, addr, priority, preempt)
 	if err != nil {
 		<-slots
 		return nil, timing{}, err
@@ -2403,6 +2459,9 @@ func (s *httpSource) ReadMetadataAtContext(ctx context.Context, p []byte, off in
 
 func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMode, live bool) (int, error) {
 	f := s.f
+	if core.SourceReadOrigin(ctx).Component == "" {
+		ctx = core.WithReadOrigin(ctx, "debrid.source", mode.String())
+	}
 	if live && !core.IsSpeculative(ctx) && !isAnalysisRead(ctx) && f.e.svc != nil {
 		payload, _ := f.payload()
 		f.e.svc.noteAnalysisLive(payload.Provider)
@@ -2557,6 +2616,7 @@ func (s *httpSource) readAhead(from int64) {
 	// Evaluate the source's current reserve when the transport actually dials,
 	// including retries after a run has waited in admission.
 	epoch := ctx
+	ctx = core.WithReadOrigin(ctx, "debrid.readahead", "after client read")
 	ctx = context.WithValue(ctx, readAheadDialKey{}, func() bool { return s.readAheadDialUrgent(epoch) })
 	capRuns := min(cap(f.conns), defaultHostConnections)
 	if f.e.limit != nil {

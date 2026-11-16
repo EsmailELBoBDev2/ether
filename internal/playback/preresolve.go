@@ -107,6 +107,7 @@ func (e *warmEntry) abort() {
 }
 
 type probeCache struct {
+	warmReads *core.WarmReadWindow
 	releaseID string
 	info      core.MediaInfo
 	points    []IndexPoint
@@ -416,7 +417,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 				return
 			}
 		}
-		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), points: generation.timeMapSnapshot().Points}
+		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), warmReads: generation.warmReads, points: generation.timeMapSnapshot().Points}
 		if facts.info.Estimated {
 			facts = nil
 		}
@@ -458,7 +459,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		if cfg.BudgetBytes > 0 {
 			prefetchBytes = min(prefetchBytes, cfg.BudgetBytes/10)
 		}
-		if err := m.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, warmOffset, prefetchBytes); err != nil {
+		if err := m.deps.Engine.Prefetch(core.WithWarmReadWindow(core.WithReadOrigin(ctx, "playback.prewarm", string(reason)), generation.warmReads), res.Release.ID, res.NZB, warmOffset, prefetchBytes); err != nil {
 			if permanentSourceFailure(err) {
 				// Probe success is not proof that the opening window is intact.
 				// Invalidate the published warm result before a later Play uses it.
@@ -488,7 +489,7 @@ func (m *Manager) prewarm(_ context.Context, user *core.User, key core.RatingKey
 		case <-ctx.Done():
 			return
 		}
-		complete := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), points: generation.timeMapSnapshot().Points}
+		complete := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), warmReads: generation.warmReads, points: generation.timeMapSnapshot().Points}
 		if !complete.info.Estimated {
 			m.mu.Lock()
 			if m.warm[id] == e {

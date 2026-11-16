@@ -6,6 +6,7 @@ import (
 	"html"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -86,8 +87,15 @@ func mpdSeconds(d time.Duration) string {
 // duration, so players can seek anywhere before anything is transcoded.
 // The layout follows real PMS output byte for byte where it can.
 func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []dashRep) []byte {
+	return renderMPDWithBuffer(duration, segDur, segDur, initURL, mediaURL, reps)
+}
+
+func renderMPDWithBuffer(duration, segDur, minBuffer time.Duration, initURL, mediaURL string, reps []dashRep) []byte {
 	if segDur <= 0 {
 		segDur = DefaultDASHSegmentDuration
+	}
+	if minBuffer <= 0 {
+		minBuffer = segDur
 	}
 	timescale, segTicks := int64(1), int64(segDur/time.Second)
 	if segDur%time.Second != 0 {
@@ -105,7 +113,7 @@ func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []
 	fmt.Fprintf(&b, "\tmaxSegmentDuration=%q\n", mpdSeconds(2*segDur))
 	// One segment: Shaka (Plex Web) waits for max(minBufferTime, 2s)
 	// before starting. Two segments held every start for a second GOP.
-	fmt.Fprintf(&b, "\tminBufferTime=%q>\n", mpdSeconds(segDur))
+	fmt.Fprintf(&b, "\tminBufferTime=%q>\n", mpdSeconds(minBuffer))
 	fmt.Fprintf(&b, "\t<Period start=\"PT0S\" id=\"0\" duration=%q>\n", mpdDuration(duration))
 	// Several video representations form one AdaptationSet (an ABR
 	// ladder the player may switch within); a single video keeps the
@@ -116,7 +124,18 @@ func renderMPD(duration, segDur time.Duration, initURL, mediaURL string, reps []
 			videoReps++
 		}
 	}
-	if videoReps > 1 {
+	// Init-derived codecs can replace estimates. Keep the invariant at the
+	// renderer too: never group different codec families in one set.
+	family, mixed := "", false
+	for _, r := range reps {
+		if r.Kind == "video" {
+			if family != "" && family != dashCodecFamily(r.Codecs) {
+				mixed = true
+			}
+			family = dashCodecFamily(r.Codecs)
+		}
+	}
+	if videoReps > 1 && !mixed {
 		var rest []dashRep
 		b.WriteString("\t\t<AdaptationSet segmentAlignment=\"true\" contentType=\"video\">\n")
 		fmt.Fprintf(&b, "\t\t\t<SegmentTemplate timescale=\"%d\" duration=\"%d\" initialization=\"%s\" media=\"%s\" startNumber=\"0\">\n",
@@ -508,4 +527,17 @@ func writeDASHChannelConfiguration(b *bytes.Buffer, r dashRep) {
 		}
 	}
 	fmt.Fprintf(b, "\t\t\t\t<AudioChannelConfiguration schemeIdUri=\"%s\" value=\"%s\"/>\n", scheme, value)
+}
+
+// dashCodecFamily ignores profile/level while treating alternate sample entry
+// names for the same codec as one family.
+func dashCodecFamily(codecs string) string {
+	family, _, _ := strings.Cut(codecs, ".")
+	switch family {
+	case "avc1", "avc3":
+		return "h264"
+	case "hev1", "hvc1":
+		return "hevc"
+	}
+	return family
 }

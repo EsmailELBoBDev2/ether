@@ -14,7 +14,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
-// MPEG-DASH playback for Plex Web, which asks for DASH (protocol=dash,
+// MPEG-DASH playback for Plex Web and TV apps asking for DASH (protocol=dash,
 // start.mpd) in Chromium and Firefox when it cannot direct play. The URL
 // layout is the one real PMS uses:
 //
@@ -138,6 +138,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		Decision:            dec,
 		StartOffset:         p.offset,
 		Protocol:            frontend.ProtocolDASH,
+		PMSDASH:             !strings.EqualFold(strings.TrimSpace(pr.Product), "Plex Web"),
 	})
 	if err != nil {
 		s.writeStartErr(w, r, pr, err)

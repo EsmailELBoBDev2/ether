@@ -25,6 +25,9 @@ type HLSRamp struct {
 }
 
 type HLSRequest struct {
+	// PMSDASH selects the single-video PMS manifest and five-second grid for Plex TV apps.
+	PMSDASH bool
+
 	// MediaGeneration is a trusted presentation namespace retained across encoder
 	// recovery. A new playback start must use a fresh value; empty mints one.
 	MediaGeneration string `json:",omitempty"`

@@ -595,6 +595,7 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 		SessionID: p.sessionID, InputURL: sess.resolved.Input(),
 		InputHeaders: sess.resolved.Headers, Info: sess.info,
 		Decision: dec, StartOffset: p.offset, Protocol: proto,
+		PMSDASH: dash && !strings.EqualFold(strings.TrimSpace(pr.Product), "Plex Web"),
 	})
 	if err != nil {
 		s.log.Warn("start extra session", "session", p.sessionID, "key", e.Key, "err", err)

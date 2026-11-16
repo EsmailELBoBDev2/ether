@@ -16,6 +16,7 @@ import (
 // dashState is what a DASH session adds to Session: its representations
 // and their current init segments. Guarded by Session.mu.
 type dashState struct {
+	pms      bool // Plex TV manifest shape and buffer requirements
 	reps     []dashRep
 	initURL  string
 	mediaURL string
@@ -221,6 +222,9 @@ func (s *Session) renderMPDLocked() []byte {
 	if s.info.Duration <= 0 {
 		s.log.Warn("using growing DASH manifest", "reason", "source duration unavailable")
 		return renderLiveMPD(s.created, time.Now(), s.segDur, s.commonDoneLocked(), s.dash.initURL, s.dash.mediaURL, reps)
+	}
+	if s.dash.pms {
+		return renderMPDWithBuffer(s.info.Duration, s.segDur, 2*s.segDur, s.dash.initURL, s.dash.mediaURL, reps)
 	}
 	return renderMPD(s.info.Duration, s.segDur, s.dash.initURL, s.dash.mediaURL, reps)
 }

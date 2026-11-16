@@ -793,6 +793,21 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		rungs = rungs[:1]
 	}
 
+	if proto == core.ProtocolDASH {
+		// TV apps expect PMS's single video track. All other DASH clients may
+		// switch only within one codec family; copy HEVC + AVC is invalid.
+		if req.PMSDASH {
+			rungs = rungs[:1]
+		} else {
+			for _, rung := range rungs[1:] {
+				if dashCodecFamily(rung.codecs) != dashCodecFamily(rungs[0].codecs) {
+					rungs = rungs[:1]
+					break
+				}
+			}
+		}
+	}
+
 	segDur := req.SegmentDuration
 	if segDur <= 0 {
 		segDur = DefaultSegmentDuration
@@ -805,6 +820,9 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 				segDur = encodedDASHSegmentDuration
 			}
 		}
+	}
+	if proto == core.ProtocolDASH && req.PMSDASH {
+		segDur = DefaultDASHSegmentDuration
 	}
 	if req.Resume != nil {
 		n := req.Resume.FirstSegment
@@ -1102,6 +1120,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			manifestID = req.ManifestSessionID
 		}
 		s.dash = newDASHState(reps, m.opts.dashURLs, manifestID)
+		s.dash.pms = req.PMSDASH
 	}
 	s.Touch()
 	s.log.Info("transcode session starting", "protocol", proto, "kind", d.Kind, "container", d.Container,

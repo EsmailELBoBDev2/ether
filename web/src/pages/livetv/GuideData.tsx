@@ -198,7 +198,7 @@ export function guideSourceStatus(
 
 /**
  * The Guide tab's lineup: overall coverage, then every guide source. Picking
- * one opens its workbench on the right; "All guides" is the whole lineup.
+ * one opens its workbench on the right; "All guide sources" is the whole lineup.
  */
 export function GuideSourceList({
   lineup,
@@ -212,7 +212,7 @@ export function GuideSourceList({
   query?: string;
   lineup: ChannelSummary[];
   sources: Source[];
-  /** The selected guide source id, or null for All guides. */
+  /** The selected guide source id, or null for all guide sources. */
   selected: string | null;
   onSelect: (id: string | null) => void;
   now: number;
@@ -231,7 +231,7 @@ export function GuideSourceList({
           </h2>
           {selected !== null ? (
             <Button size="sm" variant="ghost" onClick={() => onSelect(null)}>
-              {t("Show all guides")}
+              {t("Show all guide sources")}
             </Button>
           ) : null}
         </div>
@@ -287,7 +287,7 @@ export function GuideSourceList({
 }
 
 /**
- * The guide workbench on the right of the Guide tab. For All guides: how
+ * The guide workbench on the right of the Guide tab. For all guide sources: how
  * much of the lineup has listings, suggested matches, and every channel's
  * mapping. For one source: its health, the channels using it, and the
  * channels it could cover. Mapping a channel opens its guide drawer.
@@ -309,13 +309,13 @@ export function GuideWorkbench({
   channels: ChannelSummary[];
   sources: Source[];
   coverage: Map<string, Coverage> | null;
-  /** The selected guide source, or undefined for All guides. */
+  /** The selected guide source, or undefined for all guide sources. */
   source?: Source;
-  /** The Guide page shows its own coverage card above the workbench. */
+  /** The Guide page omits the workbench coverage card. */
   showCoverageCard?: boolean;
-  /** The Guide page's coverage card carries Auto-match and Match with AI. */
+  /** Auto-match and Match with AI in the mapping toolbar. */
   showMatchActions?: boolean;
-  /** Bumping this runs Auto-match (the Guide page's coverage card). */
+  /** Bumping this runs Auto-match. */
   autoMatchNonce?: number;
   /** The Live TV search: narrows the channel mapping list (not the coverage figures). */
   query?: string;
@@ -1006,7 +1006,7 @@ export function GuideMatchPanel({
               onChange={setScope}
               options={[
                 { value: "this", label: scopeName || t("This guide") },
-                { value: "all", label: t("All guides") },
+                { value: "all", label: t("All guide sources") },
               ]}
             />
           ) : null}

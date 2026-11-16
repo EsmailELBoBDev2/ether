@@ -45,6 +45,22 @@ const CH_COL = 208;
 const LINEUP_MIN = 260;
 const ZOOM = { wide: 5, normal: 3.5, tight: 2.2 } as const;
 export type Zoom = keyof typeof ZOOM;
+/** Visible span each zoom aims for, as shown on the zoom control. */
+export const GUIDE_ZOOM_HOURS: Record<Zoom, number> = { tight: 6, normal: 4, wide: 3 };
+const GUIDE_ZOOM_KEY = "ether:guide-zoom";
+/** The stored zoom when valid; otherwise the 3h default ("wide"). */
+export function initialGuideZoom(stored: string | null): Zoom {
+  return stored === "tight" || stored === "normal" || stored === "wide" ? stored : "wide";
+}
+function storedGuideZoom(): Zoom {
+  try {
+    return initialGuideZoom(
+      typeof localStorage !== "undefined" ? localStorage.getItem(GUIDE_ZOOM_KEY) : null,
+    );
+  } catch {
+    return "wide";
+  }
+}
 const HOUR = 60 * MINUTE;
 /** The furthest ahead the day picker reaches, even for virtual channels. */
 const MAX_DAYS = 7;
@@ -118,6 +134,7 @@ export function GuideGrid({
   emptyHint,
   selection,
   bulkActions,
+  toolbarStart,
 }: {
   /** Sparse by design: only rows near the viewport have been fetched. */
   channels: (Channel | undefined)[];
@@ -152,13 +169,23 @@ export function GuideGrid({
   emptyHint?: ReactNode;
   selection?: ChannelSelection;
   bulkActions?: ReactNode;
+  /** Extra controls at the start of the toolbar row (not in the lineup view). */
+  toolbarStart?: ReactNode;
 }) {
   const lineup = head !== undefined;
   const loadedChannels = useMemo(
     () => channels.filter((c): c is Channel => c !== undefined),
     [channels],
   );
-  const [zoom, setZoom] = useState<Zoom>("normal");
+  const [zoom, setZoomState] = useState<Zoom>(storedGuideZoom);
+  const setZoom = useCallback((z: Zoom) => {
+    setZoomState(z);
+    try {
+      localStorage.setItem(GUIDE_ZOOM_KEY, z);
+    } catch {
+      // Private mode: keep the choice for this visit only.
+    }
+  }, []);
   const ppm = ZOOM[zoom];
   const start = from.getTime();
   const minutes = (until.getTime() - start) / MINUTE;
@@ -366,19 +393,25 @@ export function GuideGrid({
           <div
             className={cn(
               "flex min-w-0 flex-wrap items-center gap-1 bg-surface px-2 py-1.5",
-              channels.length === 0 && "max-sm:hidden",
+              channels.length === 0 && !toolbarStart && "max-sm:hidden",
               lineup
                 ? "ml-auto w-44 shrink-0 content-center justify-center border-l border-border"
                 : "flex-1 border-b border-border sm:px-4",
             )}
           >
+            {!lineup ? toolbarStart : null}
             <div
               className={cn(
                 "flex min-w-0 items-center gap-2",
                 lineup ? "w-full justify-center" : "mr-auto",
               )}
             >
-              <h2 className={cn("text-sm font-semibold text-fg", lineup && "sr-only")}>
+              <h2
+                className={cn(
+                  "text-sm font-semibold text-fg",
+                  (lineup || toolbarStart) && "sr-only",
+                )}
+              >
                 {t("Guide")}
               </h2>
               <span className={cn("text-xs text-fg-muted", lineup && "sr-only")}>
@@ -442,9 +475,9 @@ export function GuideGrid({
               value={zoom}
               onChange={setZoom}
               options={[
-                { value: "tight", label: unit(6, "hour") },
-                { value: "normal", label: unit(4, "hour") },
-                { value: "wide", label: unit(3, "hour") },
+                { value: "tight", label: unit(GUIDE_ZOOM_HOURS.tight, "hour") },
+                { value: "normal", label: unit(GUIDE_ZOOM_HOURS.normal, "hour") },
+                { value: "wide", label: unit(GUIDE_ZOOM_HOURS.wide, "hour") },
               ]}
             />
             <Button

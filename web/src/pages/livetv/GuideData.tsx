@@ -167,7 +167,7 @@ export function MapGuideButton({
 
 const ROW_PAGE = 80;
 
-const sourceTitle = (s: Source) => (s.kind === "plex" ? plexLineupName(s.name) : s.name);
+export const sourceTitle = (s: Source) => (s.kind === "plex" ? plexLineupName(s.name) : s.name);
 
 /** A guide source is stale when it has failed, or its listings end within six hours. */
 const STALE_MS = 6 * 60 * 60 * 1000;
@@ -176,7 +176,11 @@ const usesGuide = (c: ChannelSummary, s: Source) =>
   c.kind === "iptv" && Boolean(c.guideId) && (c.guideSourceId || c.sourceId) === s.id;
 
 /** One line on how a guide source is doing: size, use, horizon, or its error. */
-function guideSourceStatus(s: Source, used: number, now: number): { text: string; warn: boolean } {
+export function guideSourceStatus(
+  s: Source,
+  used: number,
+  now: number,
+): { text: string; warn: boolean } {
   const until = s.guideUntil ? Date.parse(s.guideUntil) : 0;
   if (s.lastError) return { text: t("Last refresh failed"), warn: true };
   const total = s.guideChannelCount ?? 0;
@@ -298,12 +302,21 @@ export function GuideWorkbench({
   onReload,
   now,
   query = "",
+  showCoverageCard = true,
+  showMatchActions = true,
+  autoMatchNonce = 0,
 }: {
   channels: ChannelSummary[];
   sources: Source[];
   coverage: Map<string, Coverage> | null;
   /** The selected guide source, or undefined for All guides. */
   source?: Source;
+  /** The Guide page shows its own coverage card above the workbench. */
+  showCoverageCard?: boolean;
+  /** The Guide page's coverage card carries Auto-match and Match with AI. */
+  showMatchActions?: boolean;
+  /** Bumping this runs Auto-match (the Guide page's coverage card). */
+  autoMatchNonce?: number;
   /** The Live TV search: narrows the channel mapping list (not the coverage figures). */
   query?: string;
   onMapChannel: (id: string) => void;
@@ -401,6 +414,11 @@ export function GuideWorkbench({
       setBusy(false);
     }
   };
+  useEffect(() => {
+    if (autoMatchNonce > 0) void propose();
+    // propose reads current state; only the nonce is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoMatchNonce]);
   const refresh = async () => {
     if (!source) return;
     setRefreshing(true);
@@ -417,6 +435,7 @@ export function GuideWorkbench({
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 p-3 sm:p-6">
+      {source || showCoverageCard ? (
       <section
         className={cn(
           "relative overflow-hidden rounded-2xl border border-border bg-surface shadow-xs",
@@ -490,6 +509,7 @@ export function GuideWorkbench({
           </div>
         )}
       </section>
+      ) : null}
 
       {proposals !== null ? (
         <section
@@ -590,19 +610,25 @@ export function GuideWorkbench({
         <div className="flex flex-wrap items-center gap-3">
           <div className="min-w-0 basis-full sm:basis-auto sm:flex-1">
             <h2 className="text-sm font-semibold text-fg">{t("Channel mapping")}</h2>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void propose()} disabled={busy || coverage === null}>
-                <Wand2 size={14} />
-                {t("Auto-match")}
-              </Button>
-              <GuideAIAction
-                channels={channels}
-                sources={sources}
-                coverage={coverage}
-                sourceId={sourceId}
-                onApplied={onReload}
-              />
-            </div>
+            {showMatchActions ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => void propose()}
+                  disabled={busy || coverage === null}
+                >
+                  <Wand2 size={14} />
+                  {t("Auto-match")}
+                </Button>
+                <GuideAIAction
+                  channels={channels}
+                  sources={sources}
+                  coverage={coverage}
+                  sourceId={sourceId}
+                  onApplied={onReload}
+                />
+              </div>
+            ) : null}
             <p className="mt-1 text-xs text-fg-muted">
               {t("Map a channel from Missing or All IPTV, or run Auto-match.")}
             </p>

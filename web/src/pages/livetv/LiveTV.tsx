@@ -51,6 +51,7 @@ import { GuideMatchPanel, GuideSourceList, GuideWorkbench } from "./GuideData";
 import { ChannelBulkBar, type ChannelPatch, appStates, patchChannel } from "./ChannelBulkBar";
 import { ChannelDrawerBody } from "./ChannelDrawerBody";
 import { GuideGrid } from "./GuideGrid";
+import { GuidePage } from "./GuidePage";
 import { LivePreview } from "./LivePreview";
 import { ProgrammeInspector, type InspectedProgramme } from "./ProgrammeInspector";
 import { SourcesDashboard } from "./SourcesDashboard";
@@ -1298,6 +1299,32 @@ export default function LiveTV() {
                 >
                   {main}
                 </main>
+              </div>
+            ) : leftTab === "guide" ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                {panelHead}
+                <GuidePage
+                  initialSub={tab === "guide-data" ? "mapping" : "grid"}
+                  channels={sorted}
+                  sources={sources}
+                  coverage={coverage}
+                  query={query}
+                  guideUntil={guideUntil}
+                  missingCount={missingCount}
+                  selectedChannelId={selectedID}
+                  guideSourceId={guideSourceId}
+                  onSelectGuideSource={(id) =>
+                    setParams(id ? new URLSearchParams({ gsrc: id }) : new URLSearchParams())
+                  }
+                  onSelectChannel={selectChannel}
+                  onInspect={inspectProgramme}
+                  onPlay={setPreviewChannel}
+                  onMapChannel={(id) => void go({ kind: "map", id })}
+                  onToggleFavorite={toggleFavorite}
+                  onEditSource={(id) => void go({ kind: "source", id })}
+                  onAddGuideSource={addGuideSource}
+                  onReload={reloadAll}
+                />
               </div>
             ) : leftTab === "channels" ? (
               lineupGuide

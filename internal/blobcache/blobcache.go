@@ -249,6 +249,7 @@ func (c *Cache) BindPluginLibrary(pluginID, libraryKey string) {
 // libraryKey and applies quota.
 func (c *Cache) Namespace(libraryKey string, quota Quota) *Namespace {
 	key := sanitizeNamespaceKey(libraryKey)
+	trimmed := strings.TrimSpace(libraryKey)
 	c.mu.Lock()
 	ns, ok := c.namespaces[key]
 	if !ok {
@@ -258,9 +259,21 @@ func (c *Cache) Namespace(libraryKey string, quota Quota) *Namespace {
 			c.logger.Warn("blobcache: create namespace failed", "library", key, "err", err)
 			ns = newEmptyNamespace(c, key, quota)
 		}
+		if trimmed != "" {
+			ns.libraryKey = trimmed
+		}
 		c.namespaces[key] = ns
-	} else if quota.MaxBytes > 0 || quota.TTL > 0 {
-		ns.SetQuota(quota)
+	} else {
+		if trimmed != "" {
+			ns.mu.Lock()
+			if ns.libraryKey == "" || ns.libraryKey == ns.key {
+				ns.libraryKey = trimmed
+			}
+			ns.mu.Unlock()
+		}
+		if quota.MaxBytes > 0 || quota.TTL > 0 {
+			ns.SetQuota(quota)
+		}
 	}
 	c.mu.Unlock()
 	return ns
@@ -520,9 +533,10 @@ type putFlight struct {
 
 // Namespace is one library's isolated blob cache directory and index.
 type Namespace struct {
-	cache *Cache
-	key   string
-	dir   string
+	cache      *Cache
+	key        string
+	libraryKey string
+	dir        string
 
 	mu        sync.Mutex
 	quota     Quota
@@ -542,9 +556,10 @@ func newEmptyNamespace(c *Cache, key string, quota Quota) *Namespace {
 		quota.MaxBytes = DefaultMaxBytes
 	}
 	return &Namespace{
-		cache:   c,
-		key:     key,
-		dir:     filepath.Join(c.dir, key),
+		cache:      c,
+		key:        key,
+		libraryKey: key,
+		dir:        filepath.Join(c.dir, key),
 		quota:   quota,
 		blobs:   make(map[string]*blobEntry),
 		keys:    make(map[string]string),
@@ -974,16 +989,18 @@ func (n *Namespace) Open(ref Ref) (ByteSource, error) {
 		mimeType = "application/octet-stream"
 	}
 	size := e.Size
+	libKey := n.libraryKey
 	n.mu.Unlock()
 
 	if shouldFlush {
 		n.flushIndex()
 	}
 	return &fileSource{
-		f:    f,
-		size: size,
-		name: name,
-		mime: mimeType,
+		f:          f,
+		size:       size,
+		name:       name,
+		mime:       mimeType,
+		libraryKey: libKey,
 	}, nil
 }
 
@@ -1104,10 +1121,11 @@ func containsString(xs []string, target string) bool {
 
 // fileSource implements ByteSource over an *os.File.
 type fileSource struct {
-	f    *os.File
-	size int64
-	name string
-	mime string
+	f          *os.File
+	size       int64
+	name       string
+	mime       string
+	libraryKey string
 }
 
 func (s *fileSource) ReadAt(p []byte, off int64) (int, error) {
@@ -1124,5 +1142,6 @@ func (s *fileSource) Seek(offset int64, whence int) (int64, error) {
 
 func (s *fileSource) Size() int64  { return s.size }
 func (s *fileSource) Name() string { return s.name }
-func (s *fileSource) MIME() string { return s.mime }
-func (s *fileSource) Close() error { return s.f.Close() }
+func (s *fileSource) MIME() string       { return s.mime }
+func (s *fileSource) LibraryKey() string { return s.libraryKey }
+func (s *fileSource) Close() error       { return s.f.Close() }

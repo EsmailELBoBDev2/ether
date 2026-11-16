@@ -481,3 +481,50 @@ func (h *host) cacheWriteCheck(ctx context.Context, libraryKey, name string) (Me
 	}
 	return decl, nil
 }
+
+func (h *host) archiveExtractCheck(ctx context.Context, explicitLibraryKey string) (string, error) {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return "", err
+	}
+	if explicit := strings.TrimSpace(explicitLibraryKey); explicit != "" {
+		if _, err := h.cacheWriteCheck(ctx, explicit, "_"); err != nil {
+			return "", err
+		}
+		return explicit, nil
+	}
+	rec, _, err := h.record(ctx)
+	if err != nil {
+		return "", err
+	}
+	man := rec.Manifest
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 || !(man.HasCapability(CapCatalogProvider) || man.HasCapability(CapKindResolver)) {
+		h.noteDenied("cache")
+		return "", fmt.Errorf("%w: cache", ErrPermissionDenied)
+	}
+	return core.PluginLibraryKey(h.plugin, man.Ether.Contributes.MediaKinds[0].Key), nil
+}
+
+func (h *host) resolveExtractTarget(ctx context.Context, explicitLibraryKey, sourceLibraryKey, name string) (string, int64, error) {
+	if explicit := strings.TrimSpace(explicitLibraryKey); explicit != "" {
+		decl, err := h.cacheWriteCheck(ctx, explicit, name)
+		if err != nil {
+			return "", 0, err
+		}
+		return explicit, decl.Cache.EffectiveMaxBytes(), nil
+	}
+	if src := strings.TrimSpace(sourceLibraryKey); src != "" {
+		if decl, err := h.cacheWriteCheck(ctx, src, name); err == nil {
+			return src, decl.Cache.EffectiveMaxBytes(), nil
+		}
+	}
+	libKey, err := h.archiveExtractCheck(ctx, "")
+	if err != nil {
+		return "", 0, err
+	}
+	decl, err := h.cacheWriteCheck(ctx, libKey, name)
+	if err != nil {
+		return "", 0, err
+	}
+	return libKey, decl.Cache.EffectiveMaxBytes(), nil
+}

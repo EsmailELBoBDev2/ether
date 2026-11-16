@@ -284,7 +284,8 @@ func mapHostErr(err error) error {
 	default:
 		var ve *plugins.ValidationError
 		var collectionInput *plugins.CollectionInputError
-		if errors.As(err, &ve) || errors.As(err, &collectionInput) {
+		var unsafeMember *plugins.UnsafeArchiveMemberError
+		if errors.As(err, &ve) || errors.As(err, &collectionInput) || errors.As(err, &unsafeMember) {
 			return fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
 		return err

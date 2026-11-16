@@ -79,7 +79,7 @@ type Response struct {
 
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
 // service method: kv.get, kv.put, kv.delete, kv.list, secret.get,
-// http.fetch, http.fetchToCache, archive.list, archive.open, catalog.search, catalog.get, viewers.history,
+// http.fetch, http.fetchToCache, archive.list, archive.open, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, frontend.streamURL,
 // folders.list, folders.stat, notify.owner, log. Args is a JSON array of positional
@@ -93,10 +93,11 @@ type Host interface {
 type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
 
 // Default host-call unit costs, in the spirit of appkit-sandbox's priced
-// host functions. Wall time adds 1 unit per WallUnitInterval.
+// host functions. Wall time adds 1 unit per WallUnitInterval; archive.extract
+// additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
 	"log": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
@@ -112,6 +113,9 @@ const (
 	WallUnitInterval = 100 * time.Microsecond
 	// BaseCallUnits is charged once per handle call.
 	BaseCallUnits = 10
+	// ArchiveExtractUnitsPerMiB is charged per started MiB of uncompressed
+	// archive member streamed by archive.extract on top of its base call cost.
+	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
 	// MaxResponseBytes caps a plugin response.
@@ -123,6 +127,25 @@ const (
 	MaxHostResultBytes = 4 << 20
 	maxLogsPerCall     = 100
 )
+
+type unitChargerKey struct{}
+
+// ChargeUnits charges additional governance units to the active guest call,
+// returning a StatusGovernance *Fault when the call's UnitBudget is exceeded.
+// Outside a governed wasm call it is a no-op.
+func ChargeUnits(ctx context.Context, units int64) error {
+	if units <= 0 {
+		return nil
+	}
+	fn, _ := ctx.Value(unitChargerKey{}).(func(int64) *Fault)
+	if fn == nil {
+		return nil
+	}
+	if f := fn(units); f != nil {
+		return f
+	}
+	return nil
+}
 
 // Limits bound one plugin. Zero fields take the defaults in normalize.
 type Limits struct {
@@ -270,7 +293,11 @@ func (cs *callState) chargeWall() {
 // still ends the call as governance.
 func (cs *callState) charge(name string) *Fault {
 	cs.chargeWall()
-	cs.units += cs.lim.costOf(name)
+	return cs.chargeUnits(cs.lim.costOf(name))
+}
+
+func (cs *callState) chargeUnits(units int64) *Fault {
+	cs.units += units
 	if cs.units > cs.lim.UnitBudget {
 		cs.exceeded = true
 		return &Fault{Code: string(StatusGovernance),
@@ -322,7 +349,13 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 	if cs.host == nil {
 		return nil, Forbidden("no host services are configured for this plugin")
 	}
-	out, err := cs.host.CallHost(cs.ctx, name, args)
+	streamCharged := false
+	hostCtx := context.WithValue(cs.ctx, unitChargerKey{}, func(units int64) *Fault {
+		streamCharged = true
+		cs.last = time.Now()
+		return cs.chargeUnits(units)
+	})
+	out, err := cs.host.CallHost(hostCtx, name, args)
 	// Time spent waiting on the host (a network fetch, a catalogue query) is
 	// paid by the call's own unit price, not as guest wall time; otherwise
 	// one slow upstream response spent the whole budget. The call deadline
@@ -333,6 +366,17 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 			return nil, f
 		}
 		return nil, &Fault{Code: "host_error", Message: err.Error()}
+	}
+	if name == "archive.extract" && !streamCharged {
+		var extracted struct {
+			Size int64 `json:"size"`
+		}
+		if json.Unmarshal(out, &extracted) == nil && extracted.Size > 0 {
+			mib := (extracted.Size + (1 << 20) - 1) >> 20
+			if f := cs.chargeUnits(mib * ArchiveExtractUnitsPerMiB); f != nil {
+				return nil, f
+			}
+		}
 	}
 	limit := MaxHostResultBytes
 	// JSON can escape each text byte as six bytes. HTTPFetch bounds the raw

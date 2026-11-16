@@ -553,7 +553,7 @@ type SearchRequest struct {
 	Year          int
 	Season        int
 	Episode       int
-	// AltSeason/AltEpisode are additional release numbers from the owner's show-wide episode order (zero when unset).
+	// AltSeason/AltEpisode are additional release numbers from independent release numbering (zero when unset).
 	AltSeason     int
 	AltEpisode    int
 	EpisodeTitle  string   // optional title used to distinguish same-numbered episodes

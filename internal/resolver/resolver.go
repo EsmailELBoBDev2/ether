@@ -77,8 +77,8 @@ type LibraryProfiles interface {
 
 // Options tunes a Service. Zero values get sensible defaults.
 type Options struct {
-	// EpisodeNumbering lazily reads the owner's show-wide release order.
-	EpisodeNumbering func(context.Context, core.RatingKey, int, int) (int, int, error)
+	// EpisodeNumbering reads independent release numbering. cachedOnly forbids upstream work.
+	EpisodeNumbering func(context.Context, core.SearchRequest, bool) (int, int, error)
 	// EpisodeIdentity must read only bounded local catalogue data; no upstream calls.
 	EpisodeIdentity func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	SpecialTitles   func(context.Context, int64) []string
@@ -218,7 +218,7 @@ type inflight struct {
 
 // Service implements core.Resolver.
 type Service struct {
-	episodeNumbering          func(context.Context, core.RatingKey, int, int) (int, int, error)
+	episodeNumbering          func(context.Context, core.SearchRequest, bool) (int, int, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
 	years                     seriesYears
@@ -572,11 +572,6 @@ func searchRequestFor(t *core.Title) core.SearchRequest {
 
 func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchRequest {
 	req := searchRequestFor(t)
-	if s != nil && s.episodeNumbering != nil && req.Type == core.TypeEpisode && req.IDs.TMDB > 0 {
-		if season, episode, err := s.episodeNumbering(ctx, core.ShowKey(req.IDs.TMDB), req.Season, req.Episode); err == nil && season > 0 && episode > 0 && (season != req.Season || episode != req.Episode) {
-			req.AltSeason, req.AltEpisode = season, episode
-		}
-	}
 	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 {
 		req.SpecialTitles = s.specialTitles(ctx, req.IDs.TMDB)
 	}
@@ -734,7 +729,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		trace.Pinned = pinID
 		// A stored pin already has the complete source. Do not search, rescue,
 		// race other releases or return alternates for automatic failover.
-		sreq := s.searchRequest(ctx, t)
+		sreq := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
 		results := withRelease(nil, pin.Release)
 		cands, _, err := s.rankCandidates(ctx, req, sreq, profile, results, &trace, pinID)
 		if err != nil {
@@ -854,7 +849,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 
 	searchStart := time.Now()
-	results, cached, searchErr := s.searchCached(ctx, sreq, forceFresh)
+	results, cached, searchErr := s.searchWithNumbering(ctx, &sreq, forceFresh)
 	if os.Getenv("ETHER_TRACE_PLAYBACK") != "" {
 		s.log.Info("playback trace: resolver.searchCached",
 			"key", t.Key,
@@ -1409,7 +1404,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 		ctx, coverage = core.WithSearchCoverage(ctx)
 	}
 	partial := false
-	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok {
+	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok && early != nil {
 		if streaming, ok := s.indexer.(core.StreamingIndexer); ok {
 			results, partial, err = early.searchLive(ctx, streaming, req)
 		} else {
@@ -2407,6 +2402,9 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		if alternate {
 			target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
 			target.Season, target.Episode = targetSeason, targetEpisode
+			if target.PackID != "" {
+				rel.ID = core.TargetReleaseID(target.PackID, target)
+			}
 		}
 		target.ShowYear, target.EpisodeTitle = sreq.Year, sreq.EpisodeTitle
 		target.FileName = rel.FileName

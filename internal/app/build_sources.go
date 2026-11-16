@@ -16,6 +16,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/resolver"
+	"github.com/braedonsaunders/ether/internal/scenenumbering"
 	"github.com/braedonsaunders/ether/internal/segcache"
 	"github.com/braedonsaunders/ether/internal/stream"
 	"github.com/braedonsaunders/ether/internal/stremio"
@@ -123,11 +124,27 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		indexer, health = a.opts.FixtureMedia, a.opts.FixtureMedia
 		animeCour = nil
 	}
-	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{EpisodeNumbering: func(ctx context.Context, show core.RatingKey, season, episode int) (int, int, error) {
+	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
+	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (int, int, error) {
 		if a.episodeorder == nil {
 			return 0, 0, nil
 		}
-		return a.episodeorder.SearchNumbering(ctx, show, season, episode)
+		show := core.ShowKey(req.IDs.TMDB)
+		pref, err := a.episodeorder.ReleasePreference(ctx, show)
+		if err != nil {
+			return 0, 0, err
+		}
+		switch pref.Mode {
+		case "tmdb":
+			return 0, 0, nil
+		case "group":
+			return a.episodeorder.SearchNumbering(ctx, show, req.Season, req.Episode, cachedOnly)
+		default:
+			if cachedOnly {
+				return sceneNumbers.LookupCached(req)
+			}
+			return sceneNumbers.Lookup(ctx, req)
+		}
 	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, LibraryProfiles: newLibraryProfiles(a), Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)
 	a.closers = append(a.closers, func() { a.resolver.Close() })

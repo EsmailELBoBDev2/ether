@@ -373,7 +373,7 @@ func (s *Service) SearchReleases(ctx context.Context, t *core.Title, opts Search
 	}
 	sreq := s.searchRequest(ctx, t)
 	start := time.Now()
-	results, cached, err := s.searchCached(ctx, sreq, opts.Fresh)
+	results, cached, err := s.searchWithNumbering(ctx, &sreq, opts.Fresh)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +635,7 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 				return
 			}
 			defer func() { <-sem }()
-			fetched[i].results, _, fetched[i].err = s.searchCached(ctx, sreqs[i], opts.Fresh)
+			fetched[i].results, _, fetched[i].err = s.searchWithNumbering(ctx, &sreqs[i], opts.Fresh)
 		}()
 	}
 	wg.Wait()

@@ -714,7 +714,19 @@ defaults per library afterwards.
   `frontend_adapter` and serve the protocol yourself. Embed
   `/ether/v1/kind-media/{itemId}` stream URLs for bytes (the SDKs'
   `StreamURL`/`stream_url`/`streamUrl` helper) instead of proxying
-  media through the adapter.
+  media through the adapter. A refused stream URL answers
+  `{"error": {"code", "message"}}` with the code also in the
+  `X-Ether-Media-Error` header, and the host log records the cause
+  (`kind media refused`):
+
+  | Status | Code | Meaning |
+  |---|---|---|
+  | 404 | `ticket_invalid` | Unknown, expired (2 min) or out-of-scope ticket |
+  | 403 | `viewer_invalid` | The ticket's viewer can no longer play |
+  | 404 | `item_not_found` | The item is not in a library this viewer can open |
+  | 409 | `no_source` | The item has no playable source (your resolve returned none) |
+  | 503 | `source_unavailable` | The source is temporarily unavailable |
+  | 502 | `open_failed` | The source could not be opened |
 
 A library the owner cannot see is invisible to that viewer on every
 surface; you never check viewer permissions yourself.

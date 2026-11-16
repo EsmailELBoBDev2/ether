@@ -139,8 +139,12 @@ func (p *searchPreparation) pumpLocked() {
 		}
 	}
 	var hedgeAt time.Time
+	limit := earlyCheckLimit
+	if core.IsSpeculative(p.ctx) {
+		limit = min(limit, speculativeHealthAttempts)
+	}
 	for _, c := range p.ranked {
-		if active >= 4 || len(p.byID) >= earlyCheckLimit {
+		if active >= 4 || len(p.byID) >= limit {
 			break
 		}
 		if c.rel.OpensOnDemand() {

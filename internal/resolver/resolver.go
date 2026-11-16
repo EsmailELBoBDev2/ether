@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/clusterbus"
@@ -705,6 +706,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 	}()
 	ctx = context.WithValue(ctx, requestBookkeepingKey{}, true)
+	ctx = context.WithValue(ctx, speculativeChecksKey{}, new(atomic.Int64))
 	started := time.Now()
 	// An indexer that was paused or did not answer leaves the search
 	// incomplete; nothing found then does not prove the title unavailable.
@@ -1075,6 +1077,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			return nil, errOnDemandForeground
 		}
 		at := time.Now()
+		if !reserveSpeculativeCheck(ctx) {
+			return nil, errHealthBudget
+		}
 		nzb, err := s.indexer.FetchNZB(ctx, cands[0].rel)
 		trace.Candidates[cands[0].trace].Attempted = true
 		trace.Candidates[cands[0].trace].FetchDuration = time.Since(at)

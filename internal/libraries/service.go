@@ -349,9 +349,9 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		pinnedType = "mixed"
 	}
 	switch {
-	case lib.ID == core.LibraryMovies || lib.MediaType == core.TypeMovie:
+	case lib.MediaType == core.TypeMovie:
 		pinnedType = string(core.TypeMovie)
-	case lib.ID == core.LibraryShows || lib.MediaType == core.TypeShow:
+	case lib.MediaType == core.TypeShow:
 		pinnedType = string(core.TypeShow)
 	}
 	normalized := make([]core.LibraryExclusion, len(rules))
@@ -400,20 +400,19 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 	return nil
 }
 
-// Delete removes a filter or plugin library. Built-ins are refused:
-// Movies and TV Shows exist forever. Plugin libraries are deleted
-// only through plugin removal (§2.5), which calls this after purging
-// the plugin's items.
+// Delete removes only the library declaration. Media, source membership and
+// watch history are shared and must survive removal of a library.
 func (s *Service) Delete(ctx context.Context, id core.LibraryID) error {
-	lib, err := s.Get(ctx, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, int64(id))
 	if err != nil {
 		return err
 	}
-	if lib.Source == core.LibraryBuiltin {
-		return ErrBuiltinLibrary
-	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, int64(id)); err != nil {
+	n, err := res.RowsAffected()
+	if err != nil {
 		return err
+	}
+	if n == 0 {
+		return core.ErrNotFound
 	}
 	s.gen.Add(1)
 	return nil

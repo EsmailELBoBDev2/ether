@@ -29,9 +29,8 @@ const (
 )
 
 // publishedKindSections returns one Section per Plex-published plugin or
-// filter library, from the protocol's published libraries. It is the only place a
-// plugin library becomes a Plex section (spec §6.4). Built-in libraries are
-// not returned here; buildSections keeps their existing identities.
+// catalogue library, including the preseeded catalogues. A non-nil empty list
+// is authoritative; nil is reserved for legacy hosts without stored libraries.
 func (s *Server) publishedKindSections(ctx context.Context) []Section {
 	exp := s.exp()
 	if exp == nil {
@@ -39,6 +38,9 @@ func (s *Server) publishedKindSections(ctx context.Context) []Section {
 	}
 	views, err := exp.PublishedViews(ctx)
 	if err != nil {
+		return []Section{}
+	}
+	if views == nil {
 		return nil
 	}
 	out := make([]Section, 0, len(views))

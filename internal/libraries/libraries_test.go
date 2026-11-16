@@ -35,10 +35,10 @@ func TestSeededBuiltins(t *testing.T) {
 		t.Fatalf("List = %+v, want the two builtins", libs)
 	}
 	movies, shows := libs[0], libs[1]
-	if movies.ID != 1 || movies.Key != "movies" || movies.Name != "Movies" || movies.Source != core.LibraryBuiltin || movies.MediaType != core.TypeMovie {
+	if movies.ID != 1 || movies.Key != "movies" || movies.Name != "Movies" || movies.Source != core.LibraryCatalog || movies.MediaType != core.TypeMovie {
 		t.Fatalf("movies = %+v", movies)
 	}
-	if shows.ID != 2 || shows.Key != "shows" || shows.Name != "TV Shows" || shows.Source != core.LibraryBuiltin || shows.MediaType != core.TypeShow {
+	if shows.ID != 2 || shows.Key != "shows" || shows.Name != "TV Shows" || shows.Source != core.LibraryCatalog || shows.MediaType != core.TypeShow {
 		t.Fatalf("shows = %+v", shows)
 	}
 	if got, err := s.ByKey(ctx, "movies"); err != nil || got.ID != 1 {
@@ -168,8 +168,8 @@ func TestOwnerEditsAndDelete(t *testing.T) {
 	if err := s.Rename(ctx, 99, "Nope"); !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("rename missing = %v, want ErrNotFound", err)
 	}
-	if err := s.Delete(ctx, 1); !errors.Is(err, ErrBuiltinLibrary) {
-		t.Fatalf("delete builtin = %v, want ErrBuiltinLibrary", err)
+	if err := s.Delete(ctx, 1); err != nil {
+		t.Fatalf("delete default = %v", err)
 	}
 	filter, err := s.Create(ctx, "Short Lived", core.TypeShow, nil, "show", core.Presentations{})
 	if err != nil {

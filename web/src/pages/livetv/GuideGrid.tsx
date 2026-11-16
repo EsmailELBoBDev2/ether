@@ -652,7 +652,7 @@ export function GuideGrid({
                       >
                         {c.kind === "iptv" && onMapGuide ? (
                           <>
-                            <span>{t("No guide data")}</span>
+                            <span>{t("No listings")}</span>
                             <button
                               type="button"
                               onClick={() => onMapGuide(c)}

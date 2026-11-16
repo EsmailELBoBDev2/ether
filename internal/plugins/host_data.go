@@ -161,6 +161,11 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if len(grants) > 0 {
 		limits = grants[0]
 	}
+	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
+	return parseDataZIP(rc, ra, limits)
+}
+
+func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (*zip.Reader, error) {
 	directoryCap := min(int64(maxArchiveDirectory), int64(limits.ArchiveMembers)*65536, archiveMemory(limits)/8)
 
 	size, err := rc.Seek(0, io.SeekEnd)
@@ -170,7 +175,6 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if size < 22 || size > limits.FetchBytes {
 		return nil, fmt.Errorf("plugins: ZIP size outside limit")
 	}
-	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
 	tailSize := min(size, int64(65557))
 	tail := make([]byte, tailSize)
 	if _, err := ra.ReadAt(tail, size-tailSize); err != nil {
@@ -374,7 +378,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			opt.Offset = 0
 			value, err = readDataRange(ctx, rc, opt)
 		} else {
-			archive, e := openDataArchive(ctx, rc, limits)
+			var archive *dataArchive
+			var e error
+			if owner, ok := h.(interface{ archiveDirectoryCache() *archiveDirectoryCache }); ok {
+				archive, e = owner.archiveDirectoryCache().open(ctx, ref, rc, limits)
+			} else {
+				archive, e = openDataArchive(ctx, rc, limits)
+			}
 			if e != nil {
 				return nil, e
 			}

@@ -12,6 +12,7 @@ import (
 type RARFile struct {
 	NonRegular   bool        // Unix special file, reparse point or RAR redirection
 	UnsafeName   bool        // name used a backslash before normalization
+	StoredName   string      // decoded original name, before separator normalization
 	Name         string      // path inside the archive, '/'-separated
 	HeaderOffset int64       // offset of the block header in this volume
 	DataOffset   int64       // offset of this file's data in this volume

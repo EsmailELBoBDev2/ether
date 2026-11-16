@@ -43,9 +43,37 @@ func archiveMemory(l RuntimeLimits) int64 {
 	}
 	return int64(min(l.MemoryBytes, 2<<30))
 }
-func safeArchiveName(name string) bool {
+
+// UnsafeArchiveMemberError refuses a single member without hiding its directory.
+// Name is an archive identifier only, never an extraction path.
+type UnsafeArchiveMemberError struct {
+	Index  int
+	Name   string
+	Reason string
+}
+
+func (e *UnsafeArchiveMemberError) Error() string {
+	return fmt.Sprintf("plugins: unsafe archive member %d %q: %s", e.Index, e.Name, e.Reason)
+}
+
+func archiveNameReason(name string) string {
 	name = strings.TrimSuffix(name, "/")
-	return name != "" && len(name) <= 1024 && !strings.ContainsAny(name, "\\:\x00") && !strings.HasPrefix(name, "/") && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../")
+	switch {
+	case name == "":
+		return "empty name"
+	case len(name) > 1024:
+		return "name exceeds 1024 bytes"
+	case strings.ContainsRune(name, '\x00'):
+		return "name contains NUL"
+	case strings.ContainsRune(name, '\\'):
+		return "name contains a backslash"
+	case strings.HasPrefix(name, "/") || (len(name) >= 3 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) && name[1:3] == ":/"):
+		return "absolute path"
+	case path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../"):
+		return "name contains traversal or noncanonical path segments"
+	}
+	// Members are streamed by index; a colon is never used in a disk path.
+	return ""
 }
 
 // dataArchiveDirectory retains metadata only, never a reader, budget or context.
@@ -89,7 +117,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 			return nil, e
 		}
 		for i, f := range files {
-			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.Size)})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.Name, Size: uint64(f.Size)})
 		}
 		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
 			return func(i int) (io.ReadCloser, error) {
@@ -112,7 +140,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 		}
 		var solidPacked, solidExpanded int64
 		for i, f := range v.Files {
-			if f.SplitBefore || f.SplitAfter || f.Encrypted || f.NonRegular || f.UnsafeName || f.UnpackedSize < 0 {
+			if f.SplitBefore || f.SplitAfter || f.Encrypted || f.NonRegular || f.UnpackedSize < 0 {
 				return nil, fmt.Errorf("plugins: split, encrypted or unsupported RAR member")
 			}
 			if !f.Solid {
@@ -126,7 +154,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 			if solidExpanded > 0 && (solidPacked == 0 || (solidPacked <= 1<<53 && solidExpanded > solidPacked*maxArchiveRatio)) {
 				return nil, fmt.Errorf("plugins: RAR member exceeds compression-ratio limit")
 			}
-			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.UnpackedSize)})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.StoredName, Size: uint64(f.UnpackedSize)})
 		}
 		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
 			return func(i int) (io.ReadCloser, error) {
@@ -203,7 +231,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 				}
 			}
 			files[i] = dataZIPMember{offset: offset, packed: int64(f.CompressedSize64), size: f.UncompressedSize64, crc: f.CRC32, method: f.Method, dir: f.FileInfo().IsDir(), verifyCRC: f.Flags&8 != 0 || f.CRC32 != 0}
-			a.members = append(a.members, ArchiveMember{i, f.Name, f.UncompressedSize64})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.Name, Size: f.UncompressedSize64})
 		}
 		a.bind = func(_ context.Context, ra *archiveIOBudget, _ RuntimeLimits) func(int) (io.ReadCloser, error) {
 			return func(i int) (io.ReadCloser, error) { return files[i].open(ra) }
@@ -211,10 +239,13 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	}
 	var total uint64
 	var names int64
-	for _, m := range a.members {
+	for i := range a.members {
+		m := &a.members[i]
+		m.UnsafeReason = archiveNameReason(m.Name)
+		m.Unsafe = m.UnsafeReason != ""
 		names += int64(len(m.Name)) + 256
-		if !safeArchiveName(m.Name) || names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
-			return nil, fmt.Errorf("plugins: unsafe archive member or size exceeds grant")
+		if names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
+			return nil, fmt.Errorf("plugins: archive directory or member size exceeds grant")
 		}
 		total += m.Size
 	}
@@ -223,6 +254,17 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	a.bytes = 1024 + int64(cap(a.members))*2048 + names*2
 	if a.bytes > maxArchiveDirectory {
 		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
+	}
+	bind := a.bind
+	a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+		open := bind(ctx, ra, l)
+		return func(i int) (io.ReadCloser, error) {
+			m := a.members[i]
+			if m.Unsafe {
+				return nil, &UnsafeArchiveMemberError{Index: m.Index, Name: m.Name, Reason: m.UnsafeReason}
+			}
+			return open(i)
+		}
 	}
 	return a, nil
 }

@@ -77,8 +77,8 @@ type LibraryProfiles interface {
 
 // Options tunes a Service. Zero values get sensible defaults.
 type Options struct {
-	// EpisodeNumbering lazily reads the owner's show-wide release order.
-	EpisodeNumbering func(context.Context, core.RatingKey, int, int) (int, int, error)
+	// EpisodeNumbering reads independent release numbering. cachedOnly forbids upstream work.
+	EpisodeNumbering func(context.Context, core.SearchRequest, bool) (core.ReleaseNumbering, error)
 	// EpisodeIdentity must read only bounded local catalogue data; no upstream calls.
 	EpisodeIdentity func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	SpecialTitles   func(context.Context, int64) []string
@@ -219,7 +219,7 @@ type inflight struct {
 
 // Service implements core.Resolver.
 type Service struct {
-	episodeNumbering          func(context.Context, core.RatingKey, int, int) (int, int, error)
+	episodeNumbering          func(context.Context, core.SearchRequest, bool) (core.ReleaseNumbering, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
 	years                     seriesYears
@@ -576,11 +576,6 @@ func searchRequestFor(t *core.Title) core.SearchRequest {
 
 func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchRequest {
 	req := searchRequestFor(t)
-	if s != nil && s.episodeNumbering != nil && req.Type == core.TypeEpisode && req.IDs.TMDB > 0 {
-		if season, episode, err := s.episodeNumbering(ctx, core.ShowKey(req.IDs.TMDB), req.Season, req.Episode); err == nil && season > 0 && episode > 0 && (season != req.Season || episode != req.Episode) {
-			req.AltSeason, req.AltEpisode = season, episode
-		}
-	}
 	if s != nil && s.specialTitles != nil && req.Type == core.TypeEpisode && req.Season == 0 {
 		req.SpecialTitles = s.specialTitles(ctx, req.IDs.TMDB)
 	}
@@ -740,7 +735,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		trace.Pinned = pinID
 		// A stored pin already has the complete source. Do not search, rescue,
 		// race other releases or return alternates for automatic failover.
-		sreq := s.searchRequest(ctx, t)
+		sreq := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
 		results := withRelease(nil, pin.Release)
 		cands, _, err := s.rankCandidates(ctx, req, sreq, profile, results, &trace, pinID)
 		if err != nil {
@@ -860,7 +855,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 
 	searchStart := time.Now()
-	results, cached, searchErr := s.searchCached(ctx, sreq, forceFresh)
+	results, cached, searchErr := s.searchWithNumbering(ctx, &sreq, forceFresh)
 	if os.Getenv("ETHER_TRACE_PLAYBACK") != "" {
 		s.log.Info("playback trace: resolver.searchCached",
 			"key", t.Key,
@@ -1261,7 +1256,7 @@ func titleOriginalLanguage(t *core.Title) string {
 }
 
 func searchCacheKey(req core.SearchRequest) string {
-	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|alt:%d:%d", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, req.AltSeason, req.AltEpisode)
+	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|aliases:%v|packs:%v|known:%t|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, core.EpisodeAliases(req), req.ReleasePackTargets, req.ReleaseNumberingKnown, req.ReleaseAliasesOnly)
 }
 
 type rescueSearcher interface {
@@ -1423,7 +1418,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 		ctx, coverage = core.WithSearchCoverage(ctx)
 	}
 	partial := false
-	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok {
+	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok && early != nil {
 		if streaming, ok := s.indexer.(core.StreamingIndexer); ok {
 			results, partial, err = early.searchLive(ctx, streaming, req)
 		} else {
@@ -2216,12 +2211,19 @@ func episodeMatchesRequest(info core.ReleaseInfo, sreq core.SearchRequest) bool 
 		}
 		return false
 	}
-	return releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq)) ||
-		(sreq.AltEpisode > 0 && releaseparse.EpisodeMatches(info, sreq.AltSeason, sreq.AltEpisode))
+	if releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq)) {
+		return true
+	}
+	for _, n := range core.EpisodeAliases(sreq) {
+		if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+			return true
+		}
+	}
+	return false
 }
 
 func packCoversSeasonCour(info core.ReleaseInfo, sreq core.SearchRequest) bool {
-	if !packCoversSeason(info, sreq.Season) && !(sreq.AltEpisode > 0 && packCoversSeason(info, sreq.AltSeason)) {
+	if _, _, ok := packNumbers(info, sreq); !ok {
 		return false
 	}
 	if info.Cour > 1 && sreq.Cour > 0 && info.Cour != sreq.Cour {
@@ -2409,16 +2411,47 @@ func regionTagConflicts(releaseTitle, wantTitle string, countries []string) bool
 // releaseNumbers keeps canonical single-episode numbers when they fit. Packs
 // covering the chosen order use that order, including complete-series packs.
 func releaseNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int) {
-	if req.AltEpisode > 0 && info.Cour == 0 {
-		if info.FullSeason {
-			if packCoversSeason(info, req.AltSeason) && (len(info.Episodes) == 0 || slices.Contains(info.Episodes, req.AltEpisode)) {
-				return req.AltSeason, req.AltEpisode
+	if info.FullSeason {
+		season, episode, _ := packNumbers(info, req)
+		return season, episode
+	}
+	if !releaseparse.EpisodeMatchesNumbering(info, req.Season, req.Episode, absoluteEpisode(req)) && info.Cour == 0 {
+		for _, n := range core.EpisodeAliases(req) {
+			if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+				return n.Season, n.Episode
 			}
-		} else if !releaseparse.EpisodeMatchesNumbering(info, req.Season, req.Episode, absoluteEpisode(req)) && releaseparse.EpisodeMatches(info, req.AltSeason, req.AltEpisode) {
-			return req.AltSeason, req.AltEpisode
 		}
 	}
 	return req.Season, req.Episode
+}
+
+// A pack cannot select different files under two fitting numbering systems.
+func packNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int, bool) {
+	if info.Cour > 0 {
+		return req.Season, req.Episode, packCoversSeason(info, req.Season)
+	}
+	if req.ReleaseNumberingKnown {
+		chosen := core.EpisodeNumber{}
+		for _, n := range req.ReleasePackTargets {
+			if !packCoversSeason(info, n.Season) || (len(info.Episodes) > 0 && !slices.Contains(info.Episodes, n.Episode)) {
+				continue
+			}
+			if chosen.Episode > 0 && chosen != n {
+				return 0, 0, false
+			}
+			chosen = n
+		}
+		return chosen.Season, chosen.Episode, chosen.Episode > 0
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		if packCoversSeason(info, n.Season) && (len(info.Episodes) == 0 || slices.Contains(info.Episodes, n.Episode)) {
+			return n.Season, n.Episode, true
+		}
+	}
+	if packCoversSeason(info, req.Season) {
+		return req.Season, req.Episode, true
+	}
+	return 0, 0, false
 }
 
 // withTarget marks a torrent candidate for an episode request with the
@@ -2440,6 +2473,9 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		return rel
 	}
 	targetSeason, targetEpisode := releaseNumbers(rel.Info, sreq)
+	if rel.Info.FullSeason && targetEpisode <= 0 {
+		return rel
+	}
 	alternate := targetSeason != sreq.Season || targetEpisode != sreq.Episode
 	// A Usenet season pack is narrowed to the episode's files when its NZB
 	// is fetched; other Usenet releases need no target.
@@ -2451,6 +2487,9 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		if alternate {
 			target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
 			target.Season, target.Episode = targetSeason, targetEpisode
+			if target.PackID != "" {
+				rel.ID = core.TargetReleaseID(target.PackID, target)
+			}
 		}
 		target.ShowYear, target.EpisodeTitle = sreq.Year, sreq.EpisodeTitle
 		target.FileName = rel.FileName

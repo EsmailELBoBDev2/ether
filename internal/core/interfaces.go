@@ -553,11 +553,15 @@ type SearchRequest struct {
 	Year          int
 	Season        int
 	Episode       int
-	// AltSeason/AltEpisode are additional release numbers from the owner's show-wide episode order (zero when unset).
-	AltSeason     int
-	AltEpisode    int
-	EpisodeTitle  string   // optional title used to distinguish same-numbered episodes
-	SpecialTitles []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
+	// AltSeason/AltEpisode are additional release numbers from independent release numbering (zero when unset).
+	AltSeason             int
+	AltEpisode            int
+	ReleaseAliases        []EpisodeNumber
+	ReleasePackTargets    []EpisodeNumber
+	ReleaseNumberingKnown bool
+	ReleaseAliasesOnly    bool     // canonical discovery already ran; query additional forms only
+	EpisodeTitle          string   // optional title used to distinguish same-numbered episodes
+	SpecialTitles         []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
 	// AbsoluteEpisode is the episode's number counted from the series
 	// start (0 = unknown), and Anime marks a series whose releases are
 	// commonly numbered that way (additive).

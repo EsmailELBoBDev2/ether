@@ -24,7 +24,7 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 	if s.rejectedFor(t.Key, rel) {
 		return false
 	}
-	req := s.searchRequest(ctx, t)
+	req := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
 	if rel.Info.Title == "" {
 		rel.Info = releaseparse.Parse(rel.Name)
 	}

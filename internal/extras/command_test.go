@@ -70,12 +70,25 @@ func TestRunResolverFakeRunner(t *testing.T) {
 		t.Errorf("expiry not capped: %v", r.Expires)
 	}
 
-	// Multiple URLs (split audio/video) and junk are errors.
-	for _, out := range []string{"https://a.example/v.mp4\nhttps://a.example/a.m4a\n", "nope", "", "file:///etc/passwd\n"} {
+	// More than two URLs and junk are errors.
+	for _, out := range []string{"https://a.example/v.mp4\nhttps://a.example/a.m4a\nhttps://a.example/other\n", "nope", "", "file:///etc/passwd\n"} {
 		runner = func(_ context.Context, _ string, _ []string) ([]byte, error) { return []byte(out), nil }
 		if _, err := runResolver(context.Background(), cfg, e, runner, func() time.Time { return testNow }); err == nil {
 			t.Errorf("want error for %q", out)
 		}
+	}
+	// Split picks retain video-first order and expire together at the earlier
+	// googlevideo URL expiry, while owner argument templates remain untouched.
+	cfg.ResolverArgs = []string{"--owner-option", "{url}"}
+	runner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		if len(args) != 2 || args[0] != "--owner-option" {
+			t.Errorf("owner args: %v", args)
+		}
+		return []byte("https://a.example/v.mp4?expire=" + fmt.Sprint(testNow.Add(2*time.Hour).Unix()) + "\nhttps://a.example/a.m4a?expire=" + fmt.Sprint(testNow.Add(time.Hour).Unix())), nil
+	}
+	r, err = runResolver(context.Background(), cfg, e, runner, func() time.Time { return testNow })
+	if err != nil || r.AudioURL == "" || !r.Expires.Equal(testNow.Add(time.Hour)) {
+		t.Fatalf("split: %+v %v", r, err)
 	}
 	// Invalid site key never reaches the runner.
 	called := false

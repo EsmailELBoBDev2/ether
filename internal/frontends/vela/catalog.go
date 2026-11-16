@@ -104,14 +104,53 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 	art := map[frontend.RatingKey][]object{}
 	if signer, ok := i.host.ImageGrants.(frontend.ImagePageSigner); ok {
 		if len(ts) > 0 {
-			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: ts, Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
+			// Include series in the same authorization, artwork and signing batch.
+			// Their poster keeps its show scope, including overlays and policy checks.
+			page := append([]frontend.Title(nil), ts...)
+			seen := make(map[frontend.RatingKey]bool, len(ts))
+			for _, title := range ts {
+				seen[title.Key] = true
+			}
+			for _, title := range ts {
+				if show := episodePosterShow(title); show != 0 && !seen[show] {
+					seen[show] = true
+					page = append(page, frontend.Title{Key: show})
+				}
+			}
+			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: page, Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
 			if e != nil {
 				return nil, e
 			}
+			byKey := make(map[frontend.RatingKey][]frontend.GrantedImage, len(images))
 			for _, item := range images {
-				for _, g := range titleArtwork(item.Item, item.Images) {
+				byKey[item.Item] = item.Images
+			}
+			seen = make(map[frontend.RatingKey]bool, len(ts))
+			for _, title := range ts {
+				if seen[title.Key] {
+					continue
+				}
+				seen[title.Key] = true
+				selected := titleArtwork(title.Key, byKey[title.Key])
+				if show := episodePosterShow(title); show != 0 {
+					for _, image := range byKey[show] {
+						if image.Image.Kind == frontend.ImagePoster && image.Image.Path != "" && image.Secret != "" {
+							// A poster-only landscape fallback is replaced by the
+							// actual series poster; stills and backdrops keep priority.
+							if len(selected) > 0 {
+								selected = selected[:1]
+								if selected[0].Image.Kind == frontend.ImagePoster {
+									selected = nil
+								}
+							}
+							selected = append(selected, image)
+							break
+						}
+					}
+				}
+				for _, g := range selected {
 					im := g.Image
-					art[item.Item] = append(art[item.Item], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
+					art[title.Key] = append(art[title.Key], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
 				}
 			}
 		}
@@ -139,9 +178,24 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 	return out, nil
 }
 
-// Episode cards have one landscape image: their own still, or an explicitly
-// typed fallback. Do not leave inherited series art competing with a still.
-// Selection happens after batch signing, so every URL retains its item scope.
+// episodePosterShow requests a show fallback only when the episode has no
+// portrait of its own. Packed catalogue keys also cover cards without ShowKey.
+func episodePosterShow(title frontend.Title) frontend.RatingKey {
+	if title.Key.Kind() != frontend.KindEpisode || title.PosterPath != "" {
+		return 0
+	}
+	if title.ShowKey != 0 {
+		return title.ShowKey
+	}
+	if !title.Key.IsPluginKey() {
+		return title.Key.Parent().Parent()
+	}
+	return 0
+}
+
+// Episode cards keep their still (or landscape fallback) first, followed by
+// an available portrait. Selection happens after batch signing, so every URL
+// retains its item scope.
 func titleArtwork(key frontend.RatingKey, images []frontend.GrantedImage) []frontend.GrantedImage {
 	if key.Kind() != frontend.KindEpisode {
 		return images
@@ -149,7 +203,16 @@ func titleArtwork(key frontend.RatingKey, images []frontend.GrantedImage) []fron
 	for _, kind := range []string{frontend.ImageStill, frontend.ImageBackdrop, frontend.ImagePoster} {
 		for _, image := range images {
 			if image.Image.Kind == kind && image.Image.Path != "" && image.Secret != "" {
-				return []frontend.GrantedImage{image}
+				out := []frontend.GrantedImage{image}
+				if kind != frontend.ImagePoster {
+					for _, portrait := range images {
+						if portrait.Image.Kind == frontend.ImagePoster && portrait.Image.Width > 0 && portrait.Image.Height > portrait.Image.Width && portrait.Image.Path != "" && portrait.Secret != "" {
+							out = append(out, portrait)
+							break
+						}
+					}
+				}
+				return out
 			}
 		}
 	}

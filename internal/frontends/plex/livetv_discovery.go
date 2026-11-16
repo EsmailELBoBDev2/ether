@@ -127,7 +127,7 @@ func (s *Server) liveDiscoverySnapshot(ctx context.Context, viewer *frontend.Use
 	c.mu.Unlock()
 	// A fixed short join keeps small lineups responsive on first use, independent
 	// of library size. A large/cold lineup returns Retry-After while it prepares.
-	timer := time.NewTimer(250 * time.Millisecond)
+	timer := time.NewTimer(25 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-ready:

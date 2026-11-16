@@ -87,13 +87,12 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 		return nil
 	}
 	filters := s.liveGuideFilters(ctx, u)
-	return &model.MediaProvider{Extra: []model.Attr{model.A("id", 1), model.A("parentID", 1), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: frontend.LiveTVProvider, Title: "Live TV", Types: "video", Protocols: "livetv", Feature: []model.Feature{
+	provider := &model.MediaProvider{Extra: []model.Attr{model.A("id", 1), model.A("parentID", 1), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: frontend.LiveTVProvider, Title: "Live TV", Types: "video", Protocols: "livetv", Feature: []model.Feature{
 		{
 			Type: "content",
 			Key:  liveProviderPath + "/sections",
-			// Matches real Plex DVR /media/providers so both Plex Web and
-			// Android Mobile/TV show What's On + Guide pivots, Featured, and
-			// GridChannelFilter category pills instead of opening a flat channel list.
+			// Android uses the DVR provider shape for What's On and Guide
+			// pivots. Other clients retain their single directory below.
 			Directory: []model.ProviderDirectory{
 				{
 					ID:     frontend.LiveTVProvider,
@@ -118,6 +117,17 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 		{Type: "livetv", Key: "/livetv/dvrs"},
 		{Type: "promoted", Key: liveProviderPath + "/hubs/discover?promoted=1&includeTypeFirst=1"},
 	}}
+	// Native Android needs the DVR directory shape to expose its pivots.
+	// Other clients retain the single keyed entry, avoiding duplicate Live TV.
+	pr := FromContext(ctx)
+	if pr == nil || !strings.EqualFold(pr.Platform, "Android") {
+		entry := &provider.Feature[0].Directory[0]
+		entry.ID = "livetv"
+		entry.Key = liveProviderPath + "/lineups/dvr/channels"
+		entry.Type = "livetv"
+		provider.Feature[0].Directory = provider.Feature[0].Directory[:1]
+	}
+	return provider
 }
 
 func (s *Server) registerLiveTVRoutes(r chi.Router) {

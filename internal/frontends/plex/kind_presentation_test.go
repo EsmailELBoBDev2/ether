@@ -137,8 +137,8 @@ func TestKindSectionPresentation(t *testing.T) {
 	if photo["type"] != plexBasePhoto {
 		t.Errorf("photo section type = %v, want %s", photo["type"], plexBasePhoto)
 	}
-	if movies := findDirectory(t, body, "Movies"); movies == nil || movies["type"] != "movie" {
-		t.Errorf("builtin Movies section changed: %v", movies)
+	if movies := findDirectory(t, body, "Movies"); movies != nil {
+		t.Errorf("unpublished Movies section was invented: %v", movies)
 	}
 }
 

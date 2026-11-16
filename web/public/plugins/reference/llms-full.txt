@@ -862,7 +862,7 @@ synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
 `cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
-`archive.list(blob)` returns `[{index, name, size}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
+`archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
 without loading all compressed bytes. `archive.open(blob, memberIndex,
 {offset, length})` returns at most 1 MiB from the **uncompressed** member.
 Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
@@ -874,11 +874,19 @@ The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList` an
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Member names are limited to 1024 bytes. ZIP supports Store/Deflate and ZIP64;
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`.
+Their stored names are identifiers only: opening one returns a typed
+`UnsafeArchiveMemberError` (a descriptive error through hosted/remote calls),
+while other members remain readable. Empty names, names over 1024 bytes, NUL,
+backslashes, absolute paths (including drive-rooted paths), and traversal or
+noncanonical path segments are unsafe. Colons in ordinary member names are
+allowed: reads use member indexes and never write stored names to disk.
+These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-unsafe paths, links and other special files are refused. Directories may appear
+links and other special files are refused. Unsafe paths are listed but cannot
+be opened. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -3111,10 +3119,33 @@ type Request struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#FrontendBlob.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `libraryKey` | `string` | emitted (validation may require a value) |  |
+| `ref` | `string` | emitted (validation may require a value) |  |
+| `memberIndex` | `*int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FrontendBlob
+
+``````
+// FrontendBlob asks the host to serve cached bytes without passing them through
+// guest memory. LibraryKey scopes Ref to an owned, viewer-visible kind library.
+// MemberIndex selects an archive member; nil serves the entire blob.
+type FrontendBlob struct {
+	LibraryKey  string `json:"libraryKey"`
+	Ref         string `json:"ref"`
+	MemberIndex *int   `json:"memberIndex,omitempty"`
+}
+``````
+
 ## Source: internal/plugins/contract.go#Response.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `blob` | `*FrontendBlob` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -3125,6 +3156,7 @@ type Request struct {
 ``````
 // Response is a plugin's answer to a Request.
 type Response struct {
+	Blob    *FrontendBlob     `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -5744,12 +5776,53 @@ func archiveMemory(l RuntimeLimits) int64 {
 }
 ``````
 
-## Source: internal/plugins/host_archive.go#safeArchiveName
+## Source: internal/plugins/host_archive.go#UnsafeArchiveMemberError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#UnsafeArchiveMemberError
 
 ``````
-func safeArchiveName(name string) bool {
+// UnsafeArchiveMemberError refuses a single member without hiding its directory.
+// Name is an archive identifier only, never an extraction path.
+type UnsafeArchiveMemberError struct {
+	Index  int
+	Name   string
+	Reason string
+}
+``````
+
+## Source: internal/plugins/host_archive.go#*UnsafeArchiveMemberError.Error
+
+``````
+func (e *UnsafeArchiveMemberError) Error() string {
+	return fmt.Sprintf("plugins: unsafe archive member %d %q: %s", e.Index, e.Name, e.Reason)
+}
+``````
+
+## Source: internal/plugins/host_archive.go#archiveNameReason
+
+``````
+func archiveNameReason(name string) string {
 	name = strings.TrimSuffix(name, "/")
-	return name != "" && len(name) <= 1024 && !strings.ContainsAny(name, "\\:\x00") && !strings.HasPrefix(name, "/") && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../")
+	switch {
+	case name == "":
+		return "empty name"
+	case len(name) > 1024:
+		return "name exceeds 1024 bytes"
+	case strings.ContainsRune(name, '\x00'):
+		return "name contains NUL"
+	case strings.ContainsRune(name, '\\'):
+		return "name contains a backslash"
+	case strings.HasPrefix(name, "/") || (len(name) >= 3 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) && name[1:3] == ":/"):
+		return "absolute path"
+	case path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../"):
+		return "name contains traversal or noncanonical path segments"
+	}
+	// Members are streamed by index; a colon is never used in a disk path.
+	return ""
 }
 ``````
 
@@ -5811,7 +5884,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 			return nil, e
 		}
 		for i, f := range files {
-			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.Size)})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.Name, Size: uint64(f.Size)})
 		}
 		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
 			return func(i int) (io.ReadCloser, error) {
@@ -5834,7 +5907,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 		}
 		var solidPacked, solidExpanded int64
 		for i, f := range v.Files {
-			if f.SplitBefore || f.SplitAfter || f.Encrypted || f.NonRegular || f.UnsafeName || f.UnpackedSize < 0 {
+			if f.SplitBefore || f.SplitAfter || f.Encrypted || f.NonRegular || f.UnpackedSize < 0 {
 				return nil, fmt.Errorf("plugins: split, encrypted or unsupported RAR member")
 			}
 			if !f.Solid {
@@ -5848,7 +5921,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 			if solidExpanded > 0 && (solidPacked == 0 || (solidPacked <= 1<<53 && solidExpanded > solidPacked*maxArchiveRatio)) {
 				return nil, fmt.Errorf("plugins: RAR member exceeds compression-ratio limit")
 			}
-			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.UnpackedSize)})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.StoredName, Size: uint64(f.UnpackedSize)})
 		}
 		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
 			return func(i int) (io.ReadCloser, error) {
@@ -5925,7 +5998,7 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 				}
 			}
 			files[i] = dataZIPMember{offset: offset, packed: int64(f.CompressedSize64), size: f.UncompressedSize64, crc: f.CRC32, method: f.Method, dir: f.FileInfo().IsDir(), verifyCRC: f.Flags&8 != 0 || f.CRC32 != 0}
-			a.members = append(a.members, ArchiveMember{i, f.Name, f.UncompressedSize64})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.Name, Size: f.UncompressedSize64})
 		}
 		a.bind = func(_ context.Context, ra *archiveIOBudget, _ RuntimeLimits) func(int) (io.ReadCloser, error) {
 			return func(i int) (io.ReadCloser, error) { return files[i].open(ra) }
@@ -5933,10 +6006,13 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	}
 	var total uint64
 	var names int64
-	for _, m := range a.members {
+	for i := range a.members {
+		m := &a.members[i]
+		m.UnsafeReason = archiveNameReason(m.Name)
+		m.Unsafe = m.UnsafeReason != ""
 		names += int64(len(m.Name)) + 256
-		if !safeArchiveName(m.Name) || names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
-			return nil, fmt.Errorf("plugins: unsafe archive member or size exceeds grant")
+		if names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
+			return nil, fmt.Errorf("plugins: archive directory or member size exceeds grant")
 		}
 		total += m.Size
 	}
@@ -5945,6 +6021,17 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	a.bytes = 1024 + int64(cap(a.members))*2048 + names*2
 	if a.bytes > maxArchiveDirectory {
 		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
+	}
+	bind := a.bind
+	a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+		open := bind(ctx, ra, l)
+		return func(i int) (io.ReadCloser, error) {
+			m := a.members[i]
+			if m.Unsafe {
+				return nil, &UnsafeArchiveMemberError{Index: m.Index, Name: m.Name, Reason: m.UnsafeReason}
+			}
+			return open(i)
+		}
 	}
 	return a, nil
 }
@@ -6251,6 +6338,8 @@ func (r seekReaderAt) ReadAt(p []byte, off int64) (int, error) {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `name` | `string` | emitted (validation may require a value) |  |
 | `size` | `uint64` | emitted (validation may require a value) |  |
+| `unsafe` | `bool` | may be omitted (see validation for conditions) | Unsafe names identify members only and must never be used as output paths. |
+| `unsafeReason` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/plugins/host_data.go#ArchiveMember
@@ -6260,6 +6349,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 ``````
 
@@ -6365,7 +6457,9 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 		return nil, fmt.Errorf("plugins: ZIP directory not found")
 	}
 	z, err := zip.NewReader(ra, size)
-	if err != nil {
+	// With zipinsecurepath=0, Go still returns the directory alongside this
+	// warning. Names are identifiers here; the per-member guard controls opens.
+	if err != nil && err != zip.ErrInsecurePath {
 		return nil, err
 	}
 	if len(z.File) > limits.ArchiveMembers {
@@ -6374,10 +6468,9 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 	var total uint64
 	names := 0
 	for _, f := range z.File {
-		name := strings.TrimSuffix(f.Name, "/")
 		names += len(f.Name)
-		if name == "" || len(f.Name) > 1024 || int64(names) > directoryCap || strings.ContainsAny(name, "\\:\x00") || strings.HasPrefix(name, "/") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
-			return nil, fmt.Errorf("plugins: unsafe ZIP member name")
+		if int64(names) > directoryCap {
+			return nil, fmt.Errorf("plugins: ZIP member names exceed directory grant")
 		}
 		if !f.FileInfo().IsDir() && !f.Mode().IsRegular() {
 			return nil, fmt.Errorf("plugins: unsupported ZIP member type")
@@ -6528,6 +6621,9 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
+				if f.Unsafe {
+					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				}
 				if uint64(opt.Offset) > f.Size {
 					return nil, fmt.Errorf("plugins: archive member offset outside range")
 				}
@@ -7411,7 +7507,13 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body}, nil
+	var blob *FrontendBlob
+	if len(resp.Blob) > 0 {
+		if err := json.Unmarshal(resp.Blob, &blob); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
 }
 ``````
 
@@ -18067,6 +18169,7 @@ type Request struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `blob` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -18078,6 +18181,7 @@ type Request struct {
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
 // as its body field (usually a JSON string), passed through untouched.
 type Response struct {
+	Blob    json.RawMessage   `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -20593,6 +20697,43 @@ function resolve(req) {
 // that handler writes a KV result and returns {done:true}, or checkpoints with
 // {continueInMs:1000,continuation:{cursor:"next"}}. Resolve reads that KV result.
 ```
+
+## Frontend adapter downloads
+
+Hosted adapters can return a redirect to a host-minted item stream URL:
+
+```js
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef)}};
+```
+
+Only root-relative local redirect URLs are forwarded. External URLs, authority
+changes, control characters, backslashes and known account credential query
+parameters are refused. Use the scoped host media ticket, never a login token.
+
+For a cached file or verified archive member, return a blob descriptor instead
+of `body` (status 200). The bytes never pass through guest memory:
+
+```js
+return {status:200, blob:{
+  libraryKey:"pk-my-plugin-firmware", ref:cachedBlobRef, memberIndex:member.index
+}};
+```
+
+Use the canonical library key returned for your declared media kind. Omit
+`memberIndex` to serve the whole blob. The host rechecks enabled state, frontend
+capability, ownership, current viewer visibility and the adapter's library list
+on every request. It opens only that library's cache namespace and applies the
+existing archive safety and runtime limits. The plugin must verify expected
+hashes before selecting a cached member; delivery does not assert hash validity.
+
+GET and HEAD are supported. A single GET byte range receives 206; malformed,
+multiple or unsatisfiable ranges receive 416. HEAD ignores Range. Downloads use
+`application/octet-stream`, a fixed safe attachment filename, no-store and
+nosniff; plugin response headers do not override these. Archive range offsets
+may require bounded decompression from the start, so do not use this path for
+unbounded repeated seeks. Existing JSON `body` responses are unchanged. Remote
+HTTP plugins should stream bytes through their existing HTTP response instead;
+this descriptor is for the hosted JSON response envelope.
 
 
 ## Source: sdk/catalogue-template/README.md
@@ -26603,6 +26744,8 @@ type FetchCacheResult struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `name` | `string` | emitted (validation may require a value) |  |
 | `size` | `uint64` | emitted (validation may require a value) |  |
+| `unsafe` | `bool` | may be omitted (see validation for conditions) | Unsafe names identify members only and must never be used as output paths. |
+| `unsafeReason` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/data_host.go#ArchiveMember
@@ -26612,6 +26755,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 ``````
 
@@ -34219,10 +34365,31 @@ type RawRequest struct {
 }
 ``````
 
+## Source: sdk/go/types.go#FrontendBlob.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `libraryKey` | `string` | emitted (validation may require a value) |  |
+| `ref` | `string` | emitted (validation may require a value) |  |
+| `memberIndex` | `*int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#FrontendBlob
+
+``````
+// FrontendBlob selects host-served bytes for a frontend adapter response.
+type FrontendBlob struct {
+	LibraryKey  string `json:"libraryKey"`
+	Ref         string `json:"ref"`
+	MemberIndex *int   `json:"memberIndex,omitempty"`
+}
+``````
+
 ## Source: sdk/go/types.go#RawResponse.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `blob` | `*FrontendBlob` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -34233,6 +34400,7 @@ type RawRequest struct {
 ``````
 // RawResponse is the low-level transport-agnostic response returned by Plugin.Dispatch.
 type RawResponse struct {
+	Blob       *FrontendBlob     `json:"blob,omitempty"`
 	Status     int               `json:"status"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	Body       json.RawMessage   `json:"body,omitempty"`
@@ -38684,11 +38852,15 @@ export function parseFeed(data: string): ParsedFeed {
   };
 }
 
-/** One non-directory zip member, in archive order. */
+/** An archive member in archive order (host listings may include directories). */
 export interface ArchiveMember {
   index: number;
   name: string;
   size: number;
+  /** Host listing: this member cannot be opened; name is an identifier only. */
+  unsafe?: boolean;
+  /** Present with unsafe=true; explains why archive.open refuses the member. */
+  unsafeReason?: string;
 }
 
 /** List zip/cbz/epub members by reading the central directory. */
@@ -41798,7 +41970,15 @@ export interface RawRequest {
   locale?: string;
 }
 
+/** Host-served cached bytes for an authenticated frontend adapter response. */
+export interface FrontendBlob {
+  libraryKey: string;
+  ref: string;
+  memberIndex?: number;
+}
+
 export interface RawResponse {
+  blob?: FrontendBlob;
   status: number;
   headers?: Record<string, string>;
   body?: unknown;

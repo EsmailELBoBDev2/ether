@@ -661,7 +661,7 @@ func immutableAsset(rel string) bool {
 	if !(strings.HasPrefix(rel, "_expo/static/") || strings.HasPrefix(rel, "assets/") || strings.HasPrefix(rel, "skins/assets/") || (len(parts) == 1 && strings.HasPrefix(rel, "loader-"))) {
 		return false
 	}
-	for _, token := range strings.FieldsFunc(path.Base(rel), func(r rune) bool { return r == '-' || r == '.' }) {
+	for _, token := range strings.FieldsFunc(path.Base(rel), func(r rune) bool { return r == '-' || r == '.' || r == '@' }) {
 		if hexID(token, 16) {
 			return true
 		}

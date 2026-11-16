@@ -233,6 +233,27 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 	if len(filterLibs) == 0 {
 		return false
 	}
+	// A published, unrestricted TMDB source includes remote search summaries
+	// as well as stored rows. Requiring a row here both hides those summaries
+	// and adds a membership query for every card on Home. Viewer safety is
+	// still applied by the caller after this library-admission check.
+	kind := title.Type
+	if kind == core.TypeEpisode || kind == core.TypeSeason {
+		kind = core.TypeShow
+	}
+	for _, lib := range filterLibs {
+		if lib.Source != core.LibraryCatalog || filterMediaType(lib) != kind || lib.RulesBroken || len(lib.Rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
+			continue
+		}
+		if len(lib.Sources) == 0 {
+			return true
+		}
+		for _, source := range lib.Sources {
+			if kind == core.TypeMovie && source == "tmdb-movies" || kind == core.TypeShow && source == "tmdb-tv" {
+				return true
+			}
+		}
+	}
 	target := title
 	if (title.Type == core.TypeSeason || title.Type == core.TypeEpisode) && title.ShowKey != 0 && s.d.CachedGet != nil {
 		if show, err := s.d.CachedGet(ctx, title.ShowKey); err == nil && show != nil {

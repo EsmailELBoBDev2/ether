@@ -25,6 +25,7 @@ const (
 // sectionScopes classifies every top-level key of Config whose whole value
 // shares one scope.
 var sectionScopes = map[string]Scope{
+	"vela":           Local, // installs and optional file:// release channels belong to this node
 	"frontends":      Shared,
 	"frontendPorts":  Local,
 	"posters":        Shared,

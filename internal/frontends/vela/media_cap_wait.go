@@ -5,14 +5,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 const mediaCapWaitHeader = "X-Ether-Media-Cap-Wait-Ms"
 
 type capWaitWriter struct {
 	http.ResponseWriter
-	measurement *core.MediaCapWait
+	measurement *frontend.MediaCapWait
 	wrote       bool
 	head        bool
 }

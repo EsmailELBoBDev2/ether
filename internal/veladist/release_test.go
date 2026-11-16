@@ -176,6 +176,7 @@ func TestDistribution(t *testing.T) {
 			"loader-2f530de1c195c7547d26.js",
 			"_expo/static/js/web/[id]-437b3b9580e47379267d250fdf53a500.js",
 			"assets/fonts/inter.017bc6ba3fc25503e5eb5e53826d48a8.ttf",
+			"assets/icons/close.808e1b1b9b53114ec2838071a7e6daa7@2x.png",
 			"player/" + strings.Repeat("a", 64) + "/libraries/decoder.wasm",
 			"player/" + strings.Repeat("a", 64) + "/capabilities.json",
 			"skins/cinematic/1.0.0/font.ttf",

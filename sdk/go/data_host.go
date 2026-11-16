@@ -39,6 +39,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 
 func (c *RemoteHostClient) dataCall(ctx context.Context, name string, args []any, out any) error {

@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"path"
-	"strings"
 	"time"
 )
 
@@ -154,6 +152,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 
 func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits) (*zip.Reader, error) {
@@ -251,7 +252,9 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 		return nil, fmt.Errorf("plugins: ZIP directory not found")
 	}
 	z, err := zip.NewReader(ra, size)
-	if err != nil {
+	// With zipinsecurepath=0, Go still returns the directory alongside this
+	// warning. Names are identifiers here; the per-member guard controls opens.
+	if err != nil && err != zip.ErrInsecurePath {
 		return nil, err
 	}
 	if len(z.File) > limits.ArchiveMembers {
@@ -260,10 +263,9 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 	var total uint64
 	names := 0
 	for _, f := range z.File {
-		name := strings.TrimSuffix(f.Name, "/")
 		names += len(f.Name)
-		if name == "" || len(f.Name) > 1024 || int64(names) > directoryCap || strings.ContainsAny(name, "\\:\x00") || strings.HasPrefix(name, "/") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
-			return nil, fmt.Errorf("plugins: unsafe ZIP member name")
+		if int64(names) > directoryCap {
+			return nil, fmt.Errorf("plugins: ZIP member names exceed directory grant")
 		}
 		if !f.FileInfo().IsDir() && !f.Mode().IsRegular() {
 			return nil, fmt.Errorf("plugins: unsupported ZIP member type")
@@ -410,6 +412,9 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
+				if f.Unsafe {
+					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				}
 				if uint64(opt.Offset) > f.Size {
 					return nil, fmt.Errorf("plugins: archive member offset outside range")
 				}

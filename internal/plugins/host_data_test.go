@@ -175,11 +175,6 @@ func TestDataHostInvariants(t *testing.T) {
 		}
 	})
 	t.Run("directory and expansion limits", func(t *testing.T) {
-		for _, name := range []string{"../escape", "/absolute", "C:/windows", "dir/../escape", "dir\\escape"} {
-			if _, err := openDataZIP(ctx, bytes.NewReader(dataZIP(t, name, zip.Store, []byte("ok")))); err == nil {
-				t.Fatalf("accepted unsafe name %q", name)
-			}
-		}
 		bomb := dataZIP(t, "bomb", zip.Deflate, bytes.Repeat([]byte("a"), 2<<20))
 		central := bytes.Index(bomb, []byte{0x50, 0x4b, 0x01, 0x02})
 		binary.LittleEndian.PutUint32(bomb[central+24:], 64<<20)

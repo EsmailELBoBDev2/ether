@@ -285,6 +285,7 @@ func parseRAR5File(p *rar5Buf, extra []byte, hflags uint64, crypto ...*rarCrypto
 		return f, p.err
 	}
 	f.Name = string(name)
+	f.StoredName = f.Name
 	f.NonRegular = (hostOS == 1 && attr&0xf000 != 0 && attr&0xf000 != 0x8000 && attr&0xf000 != 0x4000) || (hostOS == 0 && attr&0x400 != 0)
 	f.UnpackedSize = unp
 	if ff&rar5FileUnknownSize != 0 {

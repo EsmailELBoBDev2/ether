@@ -52,6 +52,10 @@ func PlaybackDefaultsFor(product, platform, device, model, version string, overr
 	return transcode.PlaybackDefaultsFor(product, platform, device, model, version, overrides)
 }
 
+func ApplyForcedOverrides(c ClientCaps, model string, overrides []core.ClientCapabilityOverride) ClientCaps {
+	return transcode.ApplyForcedOverrides(c, model, overrides)
+}
+
 func ClientPolicyFor(c ClientCaps) ClientPolicy { return transcode.ClientPolicyFor(c) }
 
 func SupportsDVProfile(c ClientCaps, profile int) bool {

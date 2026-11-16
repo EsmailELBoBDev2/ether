@@ -3951,6 +3951,24 @@ export function createFakeServer(opts: FakeOptions = {}) {
               notes: "Browser codec declarations govern playback; text subtitles remain sidecars.",
             },
           ],
+          seenDevices: [
+            {
+              clientIdentifier: "mock-tv", name: "Living room TV", platform: "Android",
+              device: "Xiaomi TV Box", app: "Plex for Android (TV)", viewer: "Alex",
+              lastSeen: new Date().toISOString(),
+            },
+            {
+              clientIdentifier: "mock-phone", name: "Alex’s phone", platform: "iOS",
+              device: "iPhone", app: "Plex for iOS", viewer: "Alex",
+              lastSeen: new Date(Date.now() - 3600000).toISOString(),
+            },
+          ].map((row) => {
+            const index = opts.capabilityOverrides?.findLastIndex((o) =>
+              o.device && row.device.toLowerCase().includes(String(o.device).toLowerCase()) &&
+              (!o.platform || row.platform.toLowerCase().includes(String(o.platform).toLowerCase()))
+            ) ?? -1;
+            return { ...row, ...(index >= 0 ? { overrideIndex: index } : {}) };
+          }),
           observed: [
             { protocol: "jellyfin", name: "Jellyfin TV", lastSeen: "2026-10-31T12:00:00Z" },
           ],

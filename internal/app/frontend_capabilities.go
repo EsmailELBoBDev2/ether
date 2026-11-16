@@ -52,6 +52,7 @@ func (s surfaceCapabilities) Build(ctx context.Context, req frontend.CapabilityR
 	if len(declared.DVProfiles) == 0 {
 		declared.DVProfiles = append([]int(nil), policy.DolbyVisionProfiles...)
 	}
+	declared = transcode.ApplyForcedOverrides(declared, "", overrides)
 	declared.PreserveEmptyVideoCodecs = s.policy.NativePlaybackCapabilities
 	qualityCaps := declared
 	declared = resolver.ApplyClientRules(cfg.Quality, declared, req.Viewer)

@@ -266,13 +266,15 @@ type Service struct {
 	traces    []Trace
 	maxTraces int
 
-	bgCtx            context.Context
-	bgCancel         context.CancelFunc
-	bgMu             sync.Mutex
-	bgClosed         bool
-	bgWG             sync.WaitGroup
-	refills          map[string]chan struct{} // episode search key -> completion; guarded by bgMu
-	refillRetryAfter map[string]refillMark    // next detail discovery allowed; guarded by bgMu
+	bgCtx                context.Context
+	bgCancel             context.CancelFunc
+	bgMu                 sync.Mutex
+	bgClosed             bool
+	bgWG                 sync.WaitGroup
+	detailVariants       map[[32]byte]*detailVariantSnapshot // bgMu; lazy detail labels
+	detailVariantWorkers int                                 // bgMu
+	refills              map[string]chan struct{}            // episode search key -> completion; guarded by bgMu
+	refillRetryAfter     map[string]refillMark               // next detail discovery allowed; guarded by bgMu
 
 	flightMu sync.Mutex
 	flights  map[string]*inflight

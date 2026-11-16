@@ -42,6 +42,18 @@ func parseVersionSlot(id string) (versionSlot, bool) {
 // Cached labels are optional; count, order and selector identities never depend
 // on search results. Only the normal admission path opens a selected slot.
 func (s *Service) VersionSlots(ctx context.Context, req core.ResolveRequest, limit int, labels bool) ([]core.ReleaseVariant, error) {
+	if labels && core.LocalResponse(ctx) {
+		if versions, err := s.detailVariantRead(req, limit, true); err != nil || len(versions) > 0 {
+			return versions, err
+		}
+		// The configured menu needs no release ranking. Missing labels never
+		// remove or renumber a choice while background discovery fills them.
+		return s.versionSlots(ctx, req, limit, false)
+	}
+	return s.versionSlots(ctx, req, limit, labels)
+}
+
+func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, limit int, labels bool) ([]core.ReleaseVariant, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}

@@ -22,6 +22,7 @@ func TestConfiguredVersionSlots(t *testing.T) {
 			cfg.Resolver.OfferHigherVersions = mode != "default"
 			idx := &fakeIndexer{releases: variantReleases()}
 			svc := New(idx, fakeHealth{}, nil, cfg, Options{})
+			defer svc.Close()
 			req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()}
 			ctx := context.Background()
 			cold, err := svc.VersionSlots(ctx, req, core.MaxVariants, false)
@@ -66,6 +67,18 @@ func TestConfiguredVersionSlots(t *testing.T) {
 			if !found {
 				t.Fatal("known releases lost their labels")
 			}
+			// Local responses keep the configured identities immediately and
+			// acquire labels only through the bounded background snapshot.
+			local := core.WithLocalResponse(ctx)
+			immediate, e := svc.VersionSlots(local, req, core.MaxVariants, true)
+			if e != nil || !reflect.DeepEqual(ids(immediate), before) {
+				t.Fatalf("local slots: %v", e)
+			}
+			svc.bgWG.Wait()
+			labelled, e := svc.VersionSlots(local, req, core.MaxVariants, true)
+			if e != nil || !reflect.DeepEqual(labelled, warm) {
+				t.Fatalf("local labels differ: %v", e)
+			}
 			for _, v := range warm[1:] {
 				if v.Release.ID == v.ID {
 					continue
@@ -108,6 +121,7 @@ func TestConfiguredVersionSlots(t *testing.T) {
 		cfg.Resolver.OfferHigherVersions = true
 		idx := &fakeIndexer{releases: []core.Release{rel("high", "The.Signal.1999.2160p.WEB-DL.HEVC.DDP5.1-GRP", 20000), rel("hd", "The.Signal.1999.1080p.WEB-DL.H.264.DDP5.1-GRP", 8000)}}
 		svc := New(idx, fakeHealth{}, nil, cfg, Options{})
+		defer svc.Close()
 		req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()}
 		slots, err := svc.VersionSlots(context.Background(), req, core.MaxVariants, false)
 		if err != nil {

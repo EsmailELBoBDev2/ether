@@ -89,6 +89,9 @@ type Options struct {
 	// SeriesYearConflict reports whether the catalogue holds a different
 	// show titled title that first aired in year (see series_year.go).
 	SeriesYearConflict func(ctx context.Context, show core.RatingKey, title string, year int) (bool, error)
+	// ReleaseTitleIDs independently resolves an unmatched release name through
+	// metadata. It must return no identity for ambiguous searches.
+	ReleaseTitleIDs func(context.Context, core.MediaType, string) (core.IDs, error)
 	// AnimeCour maps multi-cour TMDB anime season episodes to their cour
 	// and cour-relative episode number; nil disables cour mapping.
 	AnimeCour AnimeCour
@@ -216,6 +219,8 @@ type inflight struct {
 
 // Service implements core.Resolver.
 type Service struct {
+	releaseTitles             releaseTitleCache
+	releaseTitleIDs           func(context.Context, core.MediaType, string) (core.IDs, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
 	years                     seriesYears
@@ -295,7 +300,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
+	s := &Service{releaseTitleIDs: opts.ReleaseTitleIDs, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, reps: map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
@@ -1527,6 +1532,7 @@ func (s *Service) rankWith(ctx context.Context, env rankEnv, req core.ResolveReq
 		s.loadRejectionsFor(ctx, req.Title.Key)
 	}
 	s.prepareSeriesYears(ctx, req.Title, sreq, results)
+	s.prepareReleaseTitles(ctx, req.Title, sreq, results)
 	return s.rankPass(ctx, env, req, sreq, profile, results, trace, pinID)
 }
 
@@ -1956,7 +1962,7 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 		}
 	}
 	acceptYear := func(y int) bool { return t != nil && s.seriesYearAccepted(t.ShowKey, y) }
-	if reason := rejectIdentityYears(rel, t, sreq, s.catalogLanguage(), acceptYear); reason != "" {
+	if reason := rejectIdentityMetadata(rel, t, sreq, s.catalogLanguage(), acceptYear, s.metadataTitleMatches(rel, sreq)); reason != "" {
 		return reason
 	}
 	return rejectPolicy(rel, t, profile, caps, preferred, preferred && s.resolverCfg().OfferHigherVersions)
@@ -1971,6 +1977,12 @@ func rejectIdentity(rel core.Release, t *core.Title, sreq core.SearchRequest, ca
 // rejectIdentityYears is rejectIdentity where acceptYear may accept a series
 // year that differs from the show's (one that names no other show).
 func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool) string {
+	return rejectIdentityMetadata(rel, t, sreq, catalogLang, acceptYear, false)
+}
+
+// metadataMatch is independent metadata evidence for the parsed title, kept
+// separate from the identifiers an indexer reports on the release.
+func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool, metadataMatch bool) string {
 	if releaseparse.IsPlaceholderResult(rel.Name) {
 		return "indexer placeholder"
 	}
@@ -2002,7 +2014,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 			}
 		}
 	}
-	titleOK := miniseriesPart > 0 ||
+	titleOK := metadataMatch || miniseriesPart > 0 ||
 		releaseparse.TitleMatches(rel.Info, wantTitle) ||
 		(!isEpisode && t.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.OriginalTitle)) ||
 		(isEpisode && t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle)) ||
@@ -2033,8 +2045,8 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 			return "obfuscated, no usable info"
 		}
 		// Querying by ID does not prove that the indexer honored it.
-		// Only identifiers actually reported on this result can establish
-		// an otherwise unreadable or alternate title's identity.
+		// A result needs reported identifiers or an independent metadata
+		// match to establish an otherwise alternate title's identity.
 		return formatTitleMismatch(rel.Info.Title, expectedTitlesFor(t, sreq))
 	}
 	if isEpisode {
@@ -2042,7 +2054,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 		if !releaseparse.SeriesYearMatches(releaseYear, sreq.Year) && (acceptYear == nil || !acceptYear(releaseYear)) {
 			return "series year mismatch"
 		}
-		if sreq.Season != 0 && releaseYear == 0 && !idMatch && !localizedEpisodeTitle(rel.Info, t, catalogLang) && !episodeTitleMatchesRelease(rel, sreq.EpisodeTitle) && !releaseparse.EpisodeTitleEvidence(rel.Name, sreq.EpisodeTitle) {
+		if sreq.Season != 0 && releaseYear == 0 && !idMatch && !metadataMatch && !localizedEpisodeTitle(rel.Info, t, catalogLang) && !episodeTitleMatchesRelease(rel, sreq.EpisodeTitle) && !releaseparse.EpisodeTitleEvidence(rel.Name, sreq.EpisodeTitle) {
 			return "episode title mismatch"
 		}
 		if rel.Info.FullSeason {

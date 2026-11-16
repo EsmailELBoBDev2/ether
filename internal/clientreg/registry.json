@@ -673,7 +673,7 @@
       "id": "plex-android-mobile",
       "role": "segmented-audio",
       "notes": "Plex for Android (Mobile), also the app uncertified Android boxes run, lists E-AC-3, AC-3 and DTS in its HLS target whatever the device decodes. Segmented Matroska with copied E-AC-3 froze after the first segment on Pixel phones (PR #395) and plays converted to AAC. Direct play of the original file is the app's own decision and is untouched.",
-      "audio": ["eac3", "ac3", "dts", "dca", "dtshd", "truehd", "mlp"],
+      "audio": ["eac3", "ac3", "dts", "dca", "dtshd"],
       "match": {
         "all": [
           {"field": "product", "op": "contains", "value": "plex for android"},

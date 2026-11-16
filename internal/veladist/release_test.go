@@ -239,7 +239,7 @@ func TestDistribution(t *testing.T) {
 			t.Fatalf("first installation failed: %v", err)
 		}
 		asset := "_expo/static/js/web/chunk-437b3b9580e47379267d250fdf53a500.js"
-		for _, scenario := range []string{"source-link", "destination-link", "cancelled"} {
+		for _, scenario := range []string{"source-link", "destination-link", "collision", "matching", "cancelled"} {
 			t.Run(scenario, func(t *testing.T) {
 				old, stage, outside := t.TempDir(), t.TempDir(), t.TempDir()
 				write(t, old, asset, "chunk")
@@ -254,11 +254,22 @@ func TestDistribution(t *testing.T) {
 					if err := os.Symlink(outside, filepath.Join(stage, "_expo")); err != nil {
 						t.Fatal(err)
 					}
+				case "collision":
+					write(t, stage, asset, "other")
+				case "matching":
+					write(t, stage, asset, "chunk")
 				case "cancelled":
 					cancel()
 				}
-				if err := preserve(ctx, old, stage); err == nil {
-					t.Fatal("unsafe or cancelled preservation succeeded")
+				err := preserve(ctx, old, stage)
+				if (scenario == "matching") != (err == nil) {
+					t.Fatalf("preservation result: %v", err)
+				}
+				if scenario == "collision" {
+					b, _ := os.ReadFile(filepath.Join(stage, asset))
+					if string(b) != "other" {
+						t.Fatal("collision overwrote candidate asset")
+					}
 				}
 				entries, err := os.ReadDir(outside)
 				if err != nil || len(entries) != 0 {

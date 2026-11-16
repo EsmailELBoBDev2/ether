@@ -644,8 +644,55 @@ func preserveImmutable(ctx context.Context, old, stage string) error {
 				return errors.New("unsafe Vela asset destination")
 			}
 		}
-		return copyAdditive(ctx, src, filepath.Join(stage, filepath.FromSlash(rel)))
+		dest := filepath.Join(stage, filepath.FromSlash(rel))
+		if info, e := os.Lstat(dest); e == nil {
+			// One immutable URL must serve the same bytes to both old and new
+			// tabs. A signed release can still accidentally reuse an old URL.
+			if !info.Mode().IsRegular() || !entry.Type().IsRegular() {
+				return errors.New("unsafe Vela asset collision")
+			}
+			previous, e := assetDigest(ctx, src)
+			if e != nil {
+				return e
+			}
+			next, e := assetDigest(ctx, dest)
+			if e != nil {
+				return e
+			}
+			if previous != next {
+				return fmt.Errorf("Vela immutable asset URL has different content: %s", rel)
+			}
+			return nil
+		} else if !os.IsNotExist(e) {
+			return e
+		}
+		return copyAdditive(ctx, src, dest)
 	})
+}
+
+func assetDigest(ctx context.Context, filename string) ([sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
+	f, err := os.Open(filename)
+	if err != nil {
+		return digest, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	buf := make([]byte, 32*1024)
+	for {
+		if err := ctx.Err(); err != nil {
+			return digest, err
+		}
+		n, err := f.Read(buf)
+		h.Write(buf[:n])
+		if err == io.EOF {
+			copy(digest[:], h.Sum(nil))
+			return digest, nil
+		}
+		if err != nil {
+			return digest, err
+		}
+	}
 }
 
 func immutableAsset(rel string) bool {

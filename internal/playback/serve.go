@@ -37,6 +37,13 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		http.Error(w, "unknown playback session", http.StatusNotFound)
 		return
 	}
+	if measurement := core.MediaCapWaitFrom(r.Context()); measurement != nil {
+		if g := s.current(); g != nil {
+			if source, ok := g.src.(core.MediaCapWaitSource); ok && source.MediaCapWaitKnown() {
+				measurement.MarkKnown()
+			}
+		}
+	}
 	s.activeReads.Add(1)
 	defer func() {
 		s.activeReads.Add(-1)

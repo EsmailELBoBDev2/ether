@@ -136,6 +136,12 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 	}()
 	asked := false
 	began := time.Now()
+	waited := false
+	defer func() {
+		if waited {
+			recordCapWait(ctx, began)
+		}
+	}()
 	lim := c.limit
 	defer func() {
 		if wait := time.Since(began); wait > 250*time.Millisecond && c.log != nil {
@@ -201,6 +207,7 @@ func (c *connCap) acquire(ctx context.Context, addr string) error {
 		if c.open[addr] < lim {
 			until = c.nextDial[addr]
 		}
+		waited = true
 		freed := c.freed
 		c.mu.Unlock()
 		if !asked && c.closeIdle != nil {
@@ -399,6 +406,9 @@ func (g *hostGate) acquire(ctx context.Context, addr string, urgent func() bool,
 	}
 	g.waiters[addr] = append(g.waiters[addr], w)
 	g.dispatchLocked(addr)
+	if !w.granted {
+		defer recordCapWait(ctx, began)
+	}
 	// An admitted warm body must yield too; queue priority alone cannot free
 	// a host whose slots are all occupied by background work.
 	if !w.granted && urgent() {

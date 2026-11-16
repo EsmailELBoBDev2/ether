@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 var playlistURI = regexp.MustCompile(`URI="([^"]*)"`)
@@ -35,6 +37,11 @@ func sanitizePlaylist(body string) string {
 }
 
 func (i *instance) serveObservedMedia(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/file") {
+		measurement := new(core.MediaCapWait)
+		r = r.WithContext(core.WithMediaCapWait(r.Context(), measurement))
+		w = &capWaitWriter{ResponseWriter: w, measurement: measurement, head: r.Method == http.MethodHead}
+	}
 	tail := strings.TrimPrefix(r.URL.Path, "/sessions/media/")
 	id, _, _ := strings.Cut(tail, "/")
 	i.mu.Lock()

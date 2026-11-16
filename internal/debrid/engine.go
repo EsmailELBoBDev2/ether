@@ -560,12 +560,13 @@ func (m fetchMode) String() string {
 }
 
 type blockFlight struct {
-	done   chan struct{}
-	data   []byte
-	err    error
-	mode   fetchMode
-	first  int64        // run start; urgent readers steal later blocks of a prefetch run
-	demand *atomic.Bool // shared by the run: a viewer joined its queued range
+	done    chan struct{}
+	data    []byte
+	err     error
+	mode    fetchMode
+	first   int64        // run start; urgent readers steal later blocks of a prefetch run
+	demand  *atomic.Bool // shared by the run: a viewer joined its queued range
+	capWait *capWaitRecord
 }
 
 type remoteFile struct {
@@ -1197,6 +1198,9 @@ func (f *remoteFile) block(ctx context.Context, idx int64, mode fetchMode, runBl
 			return nil, ctx.Err()
 		}
 		if fl.err == nil {
+			if read, _ := ctx.Value(capResponseKey{}).(*capResponseRead); read != nil {
+				read.measurement.FirstUpstream(fl.capWait.since(read.began))
+			}
 			return fl.data, nil
 		}
 		if !errors.Is(fl.err, errRunCancelled) {
@@ -1235,11 +1239,12 @@ func (f *remoteFile) startRun(ctx context.Context, idx, n int64, mode fetchMode,
 	}
 	var fls []*blockFlight
 	demand := new(atomic.Bool)
+	capWait := new(capWaitRecord)
 	for i := idx; i < idx+max(n, 1) && i < f.nblocks; i++ {
 		if i > idx && f.presentLocked(i) {
 			break
 		}
-		fl := &blockFlight{done: make(chan struct{}), mode: mode, first: idx, demand: demand}
+		fl := &blockFlight{done: make(chan struct{}), mode: mode, first: idx, demand: demand, capWait: capWait}
 		f.flights[i] = fl
 		fls = append(fls, fl)
 	}
@@ -1282,6 +1287,7 @@ func (f *remoteFile) finish(idx int64, fl *blockFlight, data []byte, err error, 
 // fetchRun reads blocks [first, first+len(fls)) with one range request,
 // publishing each block as soon as its bytes arrive.
 func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlight, mode fetchMode, slotHeld bool) {
+	ctx = context.WithValue(ctx, capWaitKey{}, fls[0].capWait)
 	// Only non-warm background responses may drain a short remainder.
 	// Startup warming keeps ahead GETs through seek-wide cancellation, but
 	// its window and host-slot preemption cancel obsolete GETs immediately.
@@ -2241,6 +2247,7 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 	}
 	trace := &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
+			noteCapReadStarted(ctx)
 			gotConn.Store(int64(time.Since(began)))
 			reused = info.Reused
 			if w != nil {
@@ -2299,6 +2306,7 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 	}
 	switch {
 	case err == nil:
+		noteCapReadStarted(ctx) // transports without httptrace still bound the initial read
 		e.backoff.success(host)
 	case ctx.Err() == nil:
 		// A connect, TLS or transport failure, not a cancelled request
@@ -2353,6 +2361,8 @@ func (s *httpSource) SetPlaybackDuration(d time.Duration) {
 }
 
 var _ core.PlaybackDurationSetter = (*httpSource)(nil)
+
+func (s *httpSource) MediaCapWaitKnown() bool { p, _ := s.f.payload(); return !p.IsDirect() }
 
 func (s *httpSource) Size() int64       { return s.f.size }
 func (s *httpSource) Name() string      { p, _ := s.f.payload(); return p.Name() }
@@ -2459,6 +2469,9 @@ func (s *httpSource) ReadMetadataAtContext(ctx context.Context, p []byte, off in
 
 func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMode, live bool) (int, error) {
 	f := s.f
+	if measurement := core.MediaCapWaitFrom(ctx); measurement != nil && s.MediaCapWaitKnown() && measurement.BeginRead() {
+		ctx = context.WithValue(ctx, capResponseKey{}, &capResponseRead{measurement: measurement, began: time.Now()})
+	}
 	if core.SourceReadOrigin(ctx).Component == "" {
 		ctx = core.WithReadOrigin(ctx, "debrid.source", mode.String())
 	}
@@ -2487,6 +2500,7 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 		runLen = min(maxRun, max(1, lastBlock-first+1))
 	}
 	var liveRun, meterEpoch context.Context
+	var firstFlight *blockFlight
 	if mode == fetchMetadata {
 		liveRun = ctx
 	}
@@ -2572,6 +2586,7 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 			fl, _ = f.startRun(inheritReadPriority(liveRun, ctx), first,
 				min(maxRun, max(runLen, lastBlock-first+1)), mode, false)
 		}
+		firstFlight = fl
 		if fl != nil && fl.demand != nil && callerUrgent(ctx) {
 			f.promoteDemand(fl)
 		}
@@ -2582,6 +2597,13 @@ func (s *httpSource) read(ctx context.Context, p []byte, off int64, mode fetchMo
 		data, err := f.block(ctx, idx, mode, min(maxRun, max(runLen, lastBlock-idx+1)), liveRun)
 		if err != nil {
 			return n, err
+		}
+		// A proactive run can publish into memory before block examines it. Keep
+		// its admission measurement even when that lookup has become a cache hit.
+		if idx == first && firstFlight != nil {
+			if read, _ := ctx.Value(capResponseKey{}).(*capResponseRead); read != nil {
+				read.measurement.FirstUpstream(firstFlight.capWait.since(read.began))
+			}
 		}
 		from := int64(0)
 		if idx == first {

@@ -76,9 +76,10 @@ type Options struct {
 	QueueSize int
 	// WarmInterval is how often in-progress resume points are warmed (default 15m).
 	WarmInterval time.Duration
-	// WarmBehind is pulled before the resume point, for the client's
-	// rewind-on-resume (default 4 MiB). The window after it is
-	// a keyframe-aligned 25 seconds of media, capped at 256 MiB and 10% of the cache budget.
+	// Without a keyframe index, WarmBehind is pulled before the estimated
+	// resume point for rewind-on-resume (default and maximum 4 MiB). Indexed
+	// resumes start exactly at their preceding cue. The following 25 seconds
+	// of media are capped at 256 MiB and 10% of the cache budget.
 	WarmBehind int64
 	// InProgressLimit is how many in-progress titles per user are warmed (default 5).
 	InProgressLimit int
@@ -623,7 +624,13 @@ func (p *Prefetcher) warmResume(ctx context.Context, userID int64, key core.Rati
 		return nil
 	}
 	tm := playback.TimeMap{Size: rp.Size, Duration: duration, Points: resumeIndexPoints(rp.Keyframes)}
-	start := max(int64(0), tm.WarmOffsetAt(offset)-p.opts.WarmBehind)
+	// An indexed resume starts at its actual preceding cue, with no extra
+	// slack. Without an index, WarmBehind already supplies bounded slack;
+	// applying the startup warm estimate too would pad the same range twice.
+	start := tm.KeyframeOffsetAt(offset)
+	if len(tm.Points) == 0 {
+		start = max(int64(0), start-min(p.opts.WarmBehind, int64(4<<20)))
+	}
 	end := tm.OffsetAt(min(duration, offset+25*time.Second))
 	capBytes := int64(256 << 20)
 	if budget := p.config().BudgetBytes; budget > 0 {

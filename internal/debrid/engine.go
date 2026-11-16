@@ -1291,7 +1291,9 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 	// Only non-warm background responses may drain a short remainder.
 	// Startup warming keeps ahead GETs through seek-wide cancellation, but
 	// its window and host-slot preemption cancel obsolete GETs immediately.
-	if mode == fetchPrefetch {
+	// Optional warm-window geometry is needed only for an active warm read.
+	// Cancelled runs must retire their flights without touching source I/O.
+	if mode == fetchPrefetch && core.HasWarmReadWindow(ctx) && ctx.Err() == nil {
 		var retire context.CancelFunc
 		ctx, retire = core.WarmReadContext(ctx, min((first+int64(len(fls)))*f.e.block, f.size))
 		defer retire()
@@ -1355,7 +1357,12 @@ func (f *remoteFile) fetchRun(ctx context.Context, first int64, fls []*blockFlig
 			slot = f.sustainSlot
 		}
 		defer func() { <-slot }()
-	} else if mode == fetchReadAhead || mode == fetchPrefetch || mode == fetchMetadata {
+	}
+	if err := reqCtx.Err(); err != nil {
+		fail(err)
+		return
+	}
+	if !slotHeld && (mode == fetchReadAhead || mode == fetchPrefetch || mode == fetchMetadata) {
 		select {
 		case f.raSlots <- struct{}{}:
 			defer func() { <-f.raSlots }()

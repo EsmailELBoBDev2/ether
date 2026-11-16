@@ -164,6 +164,16 @@ func (s *Service) setAvailability(ctx context.Context, key int64, available bool
 	s.mu.Unlock()
 	s.persistBookkeeping(ctx, func(ctx context.Context) {
 		if s.db != nil {
+			// The write may run after a newer verdict or a forget. Persist only
+			// the verdict memory still holds, under the lock forget also takes.
+			s.availPersistMu.Lock()
+			defer s.availPersistMu.Unlock()
+			s.mu.RLock()
+			current, ok := s.avail[key]
+			s.mu.RUnlock()
+			if !ok || !current.checked.Equal(now) || current.available != available {
+				return
+			}
 			v := 0
 			if available {
 				v = 1

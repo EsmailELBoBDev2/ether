@@ -968,6 +968,8 @@ func (s *Service) Forget(ctx context.Context, t *core.Title) error {
 }
 
 func (s *Service) forgetAvailability(ctx context.Context, key core.RatingKey) error {
+	s.availPersistMu.Lock()
+	defer s.availPersistMu.Unlock()
 	s.mu.Lock()
 	s.forgetAvailabilityEpochLocked(int64(key))
 	delete(s.avail, int64(key))

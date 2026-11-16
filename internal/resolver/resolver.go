@@ -271,9 +271,12 @@ type Service struct {
 	traces    []Trace
 	maxTraces int
 
-	bgCtx                context.Context
-	bgCancel             context.CancelFunc
-	bgMu                 sync.Mutex
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bgMu     sync.Mutex
+	// availPersistMu orders a queued availability write against forgetAvailability's
+	// delete, so a revoked verdict is never written back after it was cleared.
+	availPersistMu       sync.Mutex
 	bgClosed             bool
 	bookkeeping          []func(context.Context)
 	bookkeepingRunning   bool

@@ -3,6 +3,7 @@ package cachefill
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -235,6 +236,47 @@ func TestAllocationAndTitleLimits(t *testing.T) {
 		t.Fatal("lower budget left shelf over allocated")
 	}
 }
+
+// Failed titles that never got a source reserve nothing, so they must not
+// use up preload title slots, and they leave the manifest once no longer selected.
+func TestFailedTitlesWithoutSourceDoNotFillTitleCap(t *testing.T) {
+	m, cfg, _, res := harness(t)
+	cfg.PreloadMaxTitles = 2
+	released := time.Now().Add(-time.Hour)
+	var titles []core.Title
+	for i := int64(1); i <= 4; i++ {
+		titles = append(titles, core.Title{Key: core.MovieKey(i), Title: fmt.Sprint("Movie ", i), Type: core.TypeMovie, Released: released})
+	}
+	m.deps.Catalog = catalogFake{items: titles}
+	now := time.Now()
+	raw, _ := json.Marshal(*cfg)
+	m.mu.Lock()
+	m.settings = string(raw) // unchanged settings keep the failure backoff
+	m.failed = map[core.RatingKey]failure{}
+	for _, k := range []core.RatingKey{core.MovieKey(1), core.MovieKey(2), core.MovieKey(3), core.MovieKey(50)} {
+		m.items[k] = Item{Key: k, Title: fmt.Sprint(k), State: "failed", Updated: now}
+		m.failed[k] = failure{count: 1, at: now} // still backing off
+	}
+	m.mu.Unlock()
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := m.Status()
+	if s.Ready != 1 || res.calls.Load() != 1 {
+		t.Fatalf("fillable title blocked by failed titles: ready %d, resolves %d, items %+v", s.Ready, res.calls.Load(), s.Items)
+	}
+	states := map[core.RatingKey]string{}
+	for _, it := range s.Items {
+		states[it.Key] = it.State
+	}
+	if states[core.MovieKey(4)] != "cached" || states[core.MovieKey(1)] != "failed" {
+		t.Fatalf("items = %+v", s.Items)
+	}
+	if _, ok := states[core.MovieKey(50)]; ok {
+		t.Fatal("failed title that is no longer selected stayed in the manifest")
+	}
+}
+
 func TestFutureTitlesNeverResolve(t *testing.T) {
 	m, _, _, res := harness(t)
 	m.deps.Catalog = catalogFake{items: []core.Title{{Key: core.MovieKey(3), Type: core.TypeMovie, Released: time.Now().Add(time.Hour)}}}

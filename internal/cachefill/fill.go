@@ -424,6 +424,9 @@ func (m *Manager) forget(key core.RatingKey) error {
 	m.mu.Lock()
 	it := m.items[key]
 	if it.ReleaseID == "" {
+		// A title that failed before choosing a source holds no pin or bytes.
+		// The manifest load drops it too, so no write is needed here.
+		delete(m.items, key)
 		m.mu.Unlock()
 		return nil
 	}
@@ -477,8 +480,11 @@ func (m *Manager) pass(ctx context.Context) error {
 	// become ordinary retention candidates, never a forced deletion.
 	snapshot := m.localStatus()
 	sort.Slice(snapshot.Items, func(i, j int) bool { return snapshot.Items[i].Updated.Before(snapshot.Items[j].Updated) })
-	allocated, count := snapshot.Allocated, len(snapshot.Items)
+	allocated, count := snapshot.Allocated, reserved(snapshot.Items)
 	for _, it := range snapshot.Items {
+		if it.ReleaseID == "" {
+			continue // a failed title without a source reserves nothing
+		}
 		if !m.enabled(cfg) || (!contentAllowed(cfg, it.Key) && !keptWarm(cfg, it.Key)) || allocated > limit || count > maxTitles || m.deps.Cache.ReleaseBytes(it.ReleaseID) == 0 {
 			allocated -= max(it.Size, m.deps.Cache.ReleaseBytes(it.ReleaseID))
 			count--
@@ -735,7 +741,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 // a preload reservation leaves its bytes available to ordinary cache retention.
 func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitles int, ranks map[core.RatingKey]int) error {
 	s := m.localStatus()
-	allocated, count := s.Allocated, len(s.Items)
+	allocated, count := s.Allocated, reserved(s.Items)
 	rank := func(k core.RatingKey) int {
 		if n, ok := ranks[k]; ok {
 			return n
@@ -744,6 +750,9 @@ func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitl
 	}
 	var victims []Item
 	for _, it := range s.Items {
+		if it.ReleaseID == "" {
+			continue // failed titles keep no reservation and free nothing
+		}
 		if it.Key == key {
 			allocated -= max(it.Size, m.deps.Cache.ReleaseBytes(it.ReleaseID))
 			count--
@@ -770,6 +779,18 @@ func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitl
 		}
 	}
 	return nil
+}
+
+// reserved counts shelf entries that hold a source. Failed titles stay in the
+// manifest for the selection list but take no title slot.
+func reserved(items []Item) int {
+	n := 0
+	for _, it := range items {
+		if it.ReleaseID != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *Manager) loadDocument(b []byte) error {

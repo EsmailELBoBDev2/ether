@@ -125,7 +125,17 @@ type Manager struct {
 type failure struct {
 	count int
 	at    time.Time
+	need  int64 // reservation that did not fit below higher-ranked titles
 }
+
+// minOverhead is the least a reservation adds to its source size.
+const minOverhead = 32 << 20
+
+// roomError is a source that would not fit even after evicting every
+// lower-ranked shelf entry.
+type roomError struct{ need int64 }
+
+func (roomError) Error() string { return "higher-ranked sources already fill the allocation" }
 
 func New(dir string, d Deps) (*Manager, error) {
 	if d.Catalog == nil || d.Resolver == nil || d.Engine == nil || d.Cache == nil || d.Config == nil || d.Owner == nil || d.FreeBytes == nil {
@@ -397,7 +407,7 @@ func (m *Manager) noteShelf(r core.Release, file, title string, size int64, deta
 }
 
 // fail keeps a failed title in the manifest so the selection list can show it.
-func (m *Manager) fail(key core.RatingKey, c candidate) error {
+func (m *Manager) fail(key core.RatingKey, c candidate, cause error) error {
 	m.mu.Lock()
 	it := m.items[key]
 	it.Key = key
@@ -409,7 +419,12 @@ func (m *Manager) fail(key core.RatingKey, c candidate) error {
 	if m.failed == nil {
 		m.failed = map[core.RatingKey]failure{}
 	}
-	m.failed[key] = failure{count: m.failed[key].count + 1, at: m.deps.Now()}
+	f := failure{count: m.failed[key].count + 1, at: m.deps.Now()}
+	var room roomError
+	if errors.As(cause, &room) {
+		f.need = room.need
+	}
+	m.failed[key] = f
 	m.items[key] = it
 	m.mu.Unlock()
 	if it.ReleaseID != "" {
@@ -470,7 +485,11 @@ func (m *Manager) pass(ctx context.Context) error {
 		m.failed = nil
 	}
 	for k, f := range m.failed {
-		if m.deps.Now().Sub(f.at) > 2*failureBackoff(f.count) {
+		keep := 2 * failureBackoff(f.count)
+		if f.need > 0 {
+			keep = 48 * time.Hour // a pass can wait hours behind one long fill
+		}
+		if m.deps.Now().Sub(f.at) > keep {
 			delete(m.failed, k) // no longer a candidate: keep the map bounded
 		}
 	}
@@ -574,6 +593,20 @@ func (m *Manager) pass(ctx context.Context) error {
 		if waiting && m.deps.Now().Before(f.at.Add(failureBackoff(f.count))) {
 			continue
 		}
+		// Resolving searches indexers and may grab an NZB. Skip a title that
+		// cannot be admitted even after evicting every lower-ranked entry:
+		// no source fits in its bare overhead, nor in less than the
+		// reservation its last source needed.
+		if _, err := m.victims(title.Key, max(minOverhead+1, f.need), limit, maxTitles, ranks); err != nil {
+			if waiting {
+				m.mu.Lock()
+				f.at = m.deps.Now() // still waiting for room, not a new failure
+				m.failed[title.Key] = f
+				m.mu.Unlock()
+			}
+			m.deps.Logger.Debug("preload deferred until higher-ranked sources leave room", "key", title.Key, "need", max(minOverhead+1, f.need))
+			continue
+		}
 		if err := m.allowed(); err != nil {
 			return err
 		}
@@ -613,7 +646,7 @@ func (m *Manager) pass(ctx context.Context) error {
 			m.status.Failed++
 			m.mu.Unlock()
 			m.deps.Logger.Debug("preload skipped", "key", title.Key, "err", err)
-			if dropErr := m.fail(title.Key, candidate); dropErr != nil {
+			if dropErr := m.fail(title.Key, candidate, err); dropErr != nil {
 				return dropErr
 			}
 		}
@@ -662,7 +695,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		previous = Item{}
 	}
 	// Reserve source overhead and make room only after a real source opens.
-	reservation := size + max(size/20, 32<<20)
+	reservation := size + max(size/20, minOverhead)
 	if reservation < 0 || reservation > limit {
 		return errors.New("source does not fit preload allocation")
 	}
@@ -740,6 +773,21 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 // makeRoom rotates out lower-ranked shelf entries, never better ones. Removing
 // a preload reservation leaves its bytes available to ordinary cache retention.
 func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitles int, ranks map[core.RatingKey]int) error {
+	victims, err := m.victims(key, reservation, limit, maxTitles, ranks)
+	if err != nil {
+		return err
+	}
+	for _, it := range victims {
+		if err := m.forget(it.Key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// victims lists the lowest-ranked shelf entries that must leave for key to
+// reserve reservation bytes and a title slot, without changing anything.
+func (m *Manager) victims(key core.RatingKey, reservation, limit int64, maxTitles int, ranks map[core.RatingKey]int) ([]Item, error) {
 	s := m.localStatus()
 	allocated, count := s.Allocated, reserved(s.Items)
 	rank := func(k core.RatingKey) int {
@@ -766,19 +814,14 @@ func (m *Manager) makeRoom(key core.RatingKey, reservation, limit int64, maxTitl
 	need := 0
 	for reservation > limit-allocated || count >= maxTitles {
 		if need >= len(victims) {
-			return errors.New("higher-ranked sources already fill the allocation")
+			return nil, roomError{need: reservation}
 		}
 		it := victims[need]
 		allocated -= max(it.Size, m.deps.Cache.ReleaseBytes(it.ReleaseID))
 		count--
 		need++
 	}
-	for _, it := range victims[:need] {
-		if err := m.forget(it.Key); err != nil {
-			return err
-		}
-	}
-	return nil
+	return victims[:need], nil
 }
 
 // reserved counts shelf entries that hold a source. Failed titles stay in the

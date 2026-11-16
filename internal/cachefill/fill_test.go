@@ -48,11 +48,14 @@ type engineFake struct {
 	cache  *segcache.Cache
 	fail   bool
 	calls  int
+	opens  int
+	size   int // source size; 0 means 32 bytes
 	during func(context.Context)
 }
 
 func (e *engineFake) Open(_ context.Context, id string, _ []byte) (core.MediaSource, error) {
-	return &sourceFake{Reader: bytes.NewReader(make([]byte, 32)), id: id}, nil
+	e.opens++
+	return &sourceFake{Reader: bytes.NewReader(make([]byte, max(e.size, 32))), id: id}, nil
 }
 func (e *engineFake) Prefetch(context.Context, string, []byte, int64, int64) error {
 	panic("managed fill must use durable prefetch")
@@ -274,6 +277,59 @@ func TestFailedTitlesWithoutSourceDoNotFillTitleCap(t *testing.T) {
 	}
 	if _, ok := states[core.MovieKey(50)]; ok {
 		t.Fatal("failed title that is no longer selected stayed in the manifest")
+	}
+}
+
+// A title ranked below a full shelf cannot be admitted, so preload must not
+// search indexers or open a source for it. Higher-ranked titles still displace.
+func TestFullShelfSkipsLowerRankedTitlesBeforeResolving(t *testing.T) {
+	m, cfg, eng, res := harness(t)
+	cfg.PreloadBudgetBytes = 48 << 20 // one 32 MiB-overhead reservation fits
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Status(); s.Ready != 1 || s.Items[0].Key != core.MovieKey(1) {
+		t.Fatalf("shelf = %+v", s.Items)
+	}
+	if res.calls.Load() != 1 || eng.opens != 1 {
+		t.Fatalf("lower-ranked title resolved %d times, opened %d times for a full shelf", res.calls.Load(), eng.opens)
+	}
+	m.deps.Catalog = catalogFake{items: []core.Title{{Key: core.MovieKey(3), Title: "Three", Type: core.TypeMovie, Released: time.Now().Add(-time.Hour)}, {Key: core.MovieKey(1), Title: "One", Type: core.TypeMovie, Released: time.Now().Add(-time.Hour)}}}
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Status(); s.Ready != 1 || s.Items[0].Key != core.MovieKey(3) {
+		t.Fatalf("higher-ranked title did not displace: %+v", s.Items)
+	}
+}
+
+// Once a title's source proved too large for the room below higher-ranked
+// titles, later passes skip it without searching until that room grows.
+func TestTooLargeTitleIsNotResolvedAgainWhileRoomIsShort(t *testing.T) {
+	m, cfg, eng, res := harness(t)
+	eng.size = 8 << 20                // reservation 40 MiB
+	cfg.PreloadBudgetBytes = 75 << 20 // 35 MiB left after the first title
+	clock := time.Now()
+	m.deps.Now = func() time.Time { return clock }
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Status(); s.Ready != 1 || res.calls.Load() != 2 {
+		t.Fatalf("first pass: ready %d, resolves %d", s.Ready, res.calls.Load())
+	}
+	clock = clock.Add(3 * time.Hour) // past the failure backoff
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if res.calls.Load() != 2 || eng.opens != 2 {
+		t.Fatalf("title known not to fit resolved again: resolves %d, opens %d", res.calls.Load(), eng.opens)
+	}
+	cfg.PreloadBudgetBytes = 128 << 20 // room grows: try again
+	if err := m.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s := m.Status(); s.Ready != 2 {
+		t.Fatalf("title not retried after room grew: %+v", s.Items)
 	}
 }
 

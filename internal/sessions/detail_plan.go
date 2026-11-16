@@ -54,7 +54,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, viewer, req.Device, req.Item)
+	title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if ctx.Err() != nil {
 		return frontend.PlayPlan{}, ctx.Err()
 	}

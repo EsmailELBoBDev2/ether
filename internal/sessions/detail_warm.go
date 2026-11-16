@@ -159,7 +159,7 @@ func (b *Broker) WarmDetail(ctx context.Context, req frontend.PlanRequest) bool 
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, v, req.Device, req.Item)
+	title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil || title == nil || title.Key != req.Item || (title.Type != core.TypeMovie && title.Type != core.TypeEpisode) || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		return false
 	}

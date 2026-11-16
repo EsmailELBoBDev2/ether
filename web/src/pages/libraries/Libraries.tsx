@@ -248,7 +248,9 @@ function LibrariesList() {
                       <ArrowDown size={14} />
                     </Button>
                   </span>
-                  {lib.source === "catalogue" || lib.source === "collection" ? (
+                  {lib.source === "catalogue" ||
+                  lib.source === "collection" ||
+                  lib.source === "plugin" ? (
                     <Button
                       size="icon"
                       variant="ghost"

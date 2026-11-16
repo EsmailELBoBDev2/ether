@@ -58,16 +58,19 @@ type BrokerDeps struct {
 	// prepared through KindPlayback so it shares the decision, HLS and
 	// stream-limit machinery with catalogue titles (spec §15.1).
 	KindSource func(context.Context, *core.Viewer, core.RatingKey) (*core.KindInput, error)
-	// MediaLookup checks current title policy using local facts only; it must
-	// never resolve a release or fetch remote metadata on a segment request.
-	// If nil, Lookup must satisfy the same requirement.
-	MediaLookup   func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error)
-	Playback      core.Playback
-	Transcoder    core.Transcoder
-	Progress      ProgressWriter
-	SourceHistory SourceHistoryWriter
-	ActiveViewer  func(context.Context, int64) (*core.Viewer, error)
-	CanPlay       func(*core.Viewer, bool, time.Time) bool
+	// CurrentMediaLookup checks already admitted playback using local facts.
+	// When nil, MediaLookup retains its historical behavior. MediaLookup checks
+	// admission policy, including lazy issuance. Neither lookup may resolve a
+	// release or refresh remote metadata. If MediaLookup is nil, Lookup must
+	// satisfy that same local-only requirement.
+	CurrentMediaLookup func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error)
+	MediaLookup        func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error)
+	Playback           core.Playback
+	Transcoder         core.Transcoder
+	Progress           ProgressWriter
+	SourceHistory      SourceHistoryWriter
+	ActiveViewer       func(context.Context, int64) (*core.Viewer, error)
+	CanPlay            func(*core.Viewer, bool, time.Time) bool
 	// CurrentPlay rechecks a running item without imposing bedtime.
 	// FreshPlay re-reads fenced membership and safety policy for admission. A returned viewer
 	// replaces the cached one for the rest of the call. ErrPolicyUnconfirmed
@@ -483,7 +486,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		}
 		return b.planKind(ctx, req, v)
 	}
-	title, err := b.deps.Lookup(ctx, v, req.Device, req.Item)
+	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
@@ -859,7 +862,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 		}
 	} else {
 		var lerr error
-		title, lerr = b.deps.Lookup(ctx, v, req.Device, p.request.Item)
+		title, lerr = b.deps.Lookup(core.WithLiveApp(ctx, string(p.request.Protocol)), v, req.Device, p.request.Item)
 		if lerr != nil {
 			return frontend.Session{}, lerr
 		}

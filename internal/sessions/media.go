@@ -486,11 +486,14 @@ func (b *Broker) currentMediaPolicy(ctx context.Context, viewer *core.Viewer, s 
 	if s.live {
 		return b.deps.Live != nil && b.deps.Live.Allowed(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Channel) == nil
 	}
-	lookup := b.deps.MediaLookup
+	lookup := b.deps.CurrentMediaLookup
+	if lookup == nil {
+		lookup = b.deps.MediaLookup
+	}
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(ctx, viewer, s.public.Device, s.public.Item)
+	title, err := lookup(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
 	return err == nil && title != nil && title.Key == s.public.Item && (title.Released.IsZero() || !title.Released.After(b.deps.Now()))
 }
 

@@ -92,7 +92,7 @@ func (s *lazyStreams) Warm(ctx context.Context, credential string, req frontend.
 	if viewer, err = s.broker.confirm(ctx, viewer, req.Caps); err != nil {
 		return
 	}
-	title, err := s.broker.deps.MediaLookup(ctx, viewer, req.Device, req.Item)
+	title, err := s.broker.deps.MediaLookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if err != nil || title == nil || title.Key != req.Item || (!title.Released.IsZero() && title.Released.After(s.broker.deps.Now())) {
 		return
 	}
@@ -138,23 +138,7 @@ func (s *lazyStreams) issueOutput(ctx context.Context, credential string, req fr
 		if _, err = s.broker.confirm(ctx, viewer, req.Caps); err != nil || s.broker.deps.Live == nil {
 			return "", core.ErrUnauthorized
 		}
-	} else if stable {
-		// Authenticated paths are requested for every range. Check only local
-		// policy facts here; resolving a release belongs to the first GET.
-		if s.broker.deps.MediaLookup == nil {
-			return "", core.ErrUnauthorized
-		}
-		if viewer, err = s.broker.confirm(ctx, viewer, req.Caps); err != nil {
-			return "", core.ErrUnauthorized
-		}
-		title, err := s.broker.deps.MediaLookup(ctx, viewer, req.Device, req.Item)
-		if err != nil || title == nil || title.Key != req.Item || (!title.Released.IsZero() && title.Released.After(s.broker.deps.Now())) {
-			if errors.Is(err, core.ErrUnauthorized) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return "", err
-			}
-			return "", core.ErrNotFound
-		}
-	} else {
+	} else if !stable {
 		estimate := req
 		estimate.Version = "" // Version lookup may resolve releases; defer it until GET.
 		// Track positions can only be validated against the opened source.
@@ -203,6 +187,27 @@ func (s *lazyStreams) issueOutput(ctx context.Context, credential string, req fr
 		_, _ = mac.Write([]byte("ether-authenticated-lazy-v1\x00"))
 		_, _ = mac.Write(identity)
 		token = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	}
+	if stable && !lineup {
+		// Authenticated paths are requested for every range. Check only local
+		// policy facts here; resolving a release belongs to the first GET.
+		if s.broker.deps.MediaLookup == nil {
+			return "", core.ErrUnauthorized
+		}
+		if viewer, err = s.broker.confirm(ctx, viewer, req.Caps); err != nil {
+			return "", core.ErrUnauthorized
+		}
+		lookup := s.broker.deps.MediaLookup
+		if activeReuse && s.broker.deps.CurrentMediaLookup != nil && s.broker.activeLazyBinding(lazyHash(token), viewer.ID, s.protocol, req.Device.ID) {
+			lookup = s.broker.deps.CurrentMediaLookup
+		}
+		title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
+		if err != nil || title == nil || title.Key != req.Item || (!title.Released.IsZero() && title.Released.After(s.broker.deps.Now())) {
+			if errors.Is(err, core.ErrUnauthorized) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return "", err
+			}
+			return "", core.ErrNotFound
+		}
 	}
 	now := s.broker.deps.Now()
 	expires := now.Add(s.ttl)
@@ -441,7 +446,17 @@ func (s *lazyStreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		title, err := s.broker.deps.MediaLookup(ctx, viewer, req.Device, req.Item)
+		lookup := s.broker.deps.MediaLookup
+		s.broker.mu.Lock()
+		existingID := s.broker.lazySessions[binding].id
+		s.broker.mu.Unlock()
+		access := frontend.SessionAccess{Viewer: viewer, Device: req.Device, Protocol: s.protocol}
+		if existingID != "" && s.broker.deps.CurrentMediaLookup != nil {
+			if _, _, err := s.broker.access(ctx, access, existingID); err == nil {
+				lookup = s.broker.deps.CurrentMediaLookup
+			}
+		}
+		title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 		if err != nil || title == nil || title.Key != req.Item || (!title.Released.IsZero() && title.Released.After(s.broker.deps.Now())) {
 			http.NotFound(w, r)
 			return
@@ -811,7 +826,11 @@ func (s *lazyStreams) heartbeatBinding(ctx context.Context, cancel context.Cance
 					cancel()
 					return
 				}
-				title, err := s.broker.deps.MediaLookup(ctx, viewer, req.Device, req.Item)
+				lookup := s.broker.deps.CurrentMediaLookup
+				if lookup == nil {
+					lookup = s.broker.deps.MediaLookup
+				}
+				title, err := lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 				if err != nil || title == nil || title.Key != req.Item || (!title.Released.IsZero() && title.Released.After(s.broker.deps.Now())) {
 					cancel()
 					return

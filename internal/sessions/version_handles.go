@@ -110,7 +110,7 @@ func (v *versionHandles) allowedOffers(ctx context.Context, scope frontend.Versi
 	if limit := v.broker.deps.BitrateLimit(viewer); limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
 		caps.MaxBitrateKbps = limit
 	}
-	title, err := v.broker.deps.Lookup(ctx, viewer, scope.Device, item)
+	title, err := v.broker.deps.Lookup(core.WithLiveApp(ctx, string(scope.Protocol)), viewer, scope.Device, item)
 	if err != nil || title == nil || title.Key != item || (!title.Released.IsZero() && title.Released.After(v.broker.deps.Now())) {
 		return nil, nil, core.ErrNotFound
 	}

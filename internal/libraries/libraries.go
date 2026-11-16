@@ -18,6 +18,8 @@ import (
 )
 
 func init() {
+	store.Register("libraries", 9, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
+	store.RegisterDialect("libraries", 9, store.Postgres, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
 	store.RegisterAfter("libraries", "catalog_viewer_rules")
 	libraryfilter.RegisterMediaTypeMigration("libraries", 8, "libraries", "rules", "id")
 	store.Register("libraries", 1, `
@@ -85,6 +87,8 @@ ALTER TABLE libraries ADD COLUMN collection_id BIGINT NOT NULL DEFAULT 0;
 }
 
 var (
+	// ErrDeleted means the owner must explicitly restore this plugin/kind.
+	ErrDeleted = errors.New("libraries: library deleted by owner")
 	// ErrBuiltinLibrary is retained for compatibility with older callers.
 	// Delete no longer returns it.
 	ErrBuiltinLibrary = errors.New("libraries: built-in library cannot be deleted")

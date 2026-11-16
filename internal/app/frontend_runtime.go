@@ -489,6 +489,14 @@ func (r *frontendRuntime) plexHandler() http.Handler {
 			handler.ServeHTTP(w, req)
 			return
 		}
+		if xtreamRootPath(req.URL.Path) {
+			// Many IPTV apps drop the "/xtream" path from the server URL and
+			// call the standard Xtream paths at the root. Plex has none of them.
+			if handler := r.control.listeners.sharedHandler("/xtream"); handler != nil {
+				handler.ServeHTTP(w, req)
+				return
+			}
+		}
 		if siloProbeMiss(w, req) {
 			return
 		}
@@ -862,4 +870,23 @@ func (a *App) browseFreshness() frontend.PageFreshness {
 		f.KindSync = a.pluginsRT.pluginitems.Generation()
 	}
 	return f
+}
+
+// xtreamRootPath reports a standard Xtream Codes API or stream path at the
+// server root: player_api.php, xmltv.php, get.php, or
+// /{live,movie,series}/<username>/<password>/<file>.
+func xtreamRootPath(path string) bool {
+	switch path {
+	case "/player_api.php", "/xmltv.php", "/get.php":
+		return true
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 4 || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+		return false
+	}
+	switch parts[0] {
+	case "live", "movie", "series":
+		return true
+	}
+	return false
 }

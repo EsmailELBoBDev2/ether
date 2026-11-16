@@ -42,6 +42,7 @@ type Library struct {
 	// Visibility rules for this library. Built-in libraries 1 and 2
 	// govern canonical movie/show visibility across every protocol; catalogue
 	// libraries may carry additional rules on top of their canonical library.
+	RulesBroken       bool               `json:"rulesBroken,omitempty"`
 	Rules             []LibraryExclusion `json:"rules,omitempty"`
 	VisibilityDefault string             `json:"visibilityDefault,omitempty"`
 	// Presentation: how protocols expose this library (§6.2). For builtins

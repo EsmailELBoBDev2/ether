@@ -3083,6 +3083,7 @@
   "m_0a803516d3a252": "miércoles",
   "m_0a80ee3837b74b": "Usa las notificaciones del navegador, o un canal ntfy, Gotify, Telegram o de correo.",
   "m_0a8137cbeb090d": "Las películas y los episodios en caché aparecen aquí a medida que los espectadores los ven.",
+  "m_0a815ce0e3baca": "Elegir",
   "m_0a82020af2583a": "Ir a",
   "m_0a84681546a84d": "Del {start} al {end}",
   "m_0a848c1a79c063": "Quitar de la lista",
@@ -6478,6 +6479,7 @@
     "other": "Se crearon {count} colecciones ({skipped} ya existentes)."
   },
   "m_1602dbcba0275a": "Todo lo que lo usa tiene que esperarlo.",
+  "m_1606784057c8a6": "No se pudieron leer algunas reglas guardadas. Los títulos seguirán ocultos hasta que edites o elimines las reglas y guardes los cambios.",
   "m_1606fc993473b3": "Posición Y",
   "m_16085b241c4dff": "Guardado para {name}.",
   "m_160876dd37ae79": "Minutos (duración del episodio en series)",

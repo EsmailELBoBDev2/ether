@@ -3010,6 +3010,7 @@
   "m_0a803516d3a252": "onsdag",
   "m_0a80ee3837b74b": "Brug browserbeskeder eller en ntfy-, Gotify-, Telegram- eller e-mailkanal.",
   "m_0a8137cbeb090d": "Cachede film og episoder vises her, efterhånden som seerne ser dem.",
+  "m_0a815ce0e3baca": "Vælg",
   "m_0a82020af2583a": "Gå til",
   "m_0a84681546a84d": "Fra {start} til {end}",
   "m_0a848c1a79c063": "Fjern fra huskeliste",
@@ -6312,6 +6313,7 @@
     "other": "Oprettede {count} samlinger ({skipped} findes allerede)."
   },
   "m_1602dbcba0275a": "Alt, der bruger den, venter på den.",
+  "m_1606784057c8a6": "Nogle gemte regler kunne ikke læses. Titler forbliver skjult, indtil du redigerer eller fjerner reglerne og gemmer.",
   "m_1606fc993473b3": "Y-position",
   "m_16085b241c4dff": "Gemt for {name}.",
   "m_160876dd37ae79": "Minutter (episodelængde for serier)",

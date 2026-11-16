@@ -3010,6 +3010,7 @@
   "m_0a803516d3a252": "çarşamba",
   "m_0a80ee3837b74b": "Tarayıcı bildirimini ya da bir ntfy, Gotify, Telegram veya e-posta kanalını kullanın.",
   "m_0a8137cbeb090d": "Önbellekteki filmler ve bölümler, izleyiciler izledikçe burada görünür.",
+  "m_0a815ce0e3baca": "Seç",
   "m_0a82020af2583a": "Git",
   "m_0a84681546a84d": "{start} ile {end} arası",
   "m_0a848c1a79c063": "İzleme listesinden çıkar",
@@ -6312,6 +6313,7 @@
     "other": "{count} koleksiyon oluşturuldu ({skipped} zaten mevcut)."
   },
   "m_1602dbcba0275a": "Onu kullanan her şey onu bekler.",
+  "m_1606784057c8a6": "Kaydedilen bazı kurallar okunamadı. Kuralları düzenleyip veya kaldırıp kaydedene kadar içerikler gizli kalır.",
   "m_1606fc993473b3": "Y konumu",
   "m_16085b241c4dff": "{name} için kaydedildi.",
   "m_160876dd37ae79": "Dakika (dizilerde bölüm uzunluğu)",

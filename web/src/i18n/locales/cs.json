@@ -3158,6 +3158,7 @@
   "m_0a803516d3a252": "středa",
   "m_0a80ee3837b74b": "Použijte oznámení v prohlížeči, nebo kanál ntfy, Gotify, Telegram či e-mail.",
   "m_0a8137cbeb090d": "Filmy a epizody v mezipaměti se tu zobrazí, jakmile se na ně diváci podívají.",
+  "m_0a815ce0e3baca": "Vyberte",
   "m_0a82020af2583a": "Přejít na",
   "m_0a84681546a84d": "Od {start} do {end}",
   "m_0a848c1a79c063": "Odebrat ze seznamu",
@@ -6646,6 +6647,7 @@
     "other": "Vytvořeno {count} kolekcí ({skipped} již existuje)."
   },
   "m_1602dbcba0275a": "Vše, co ho používá, na něj čeká.",
+  "m_1606784057c8a6": "Některá uložená pravidla se nepodařilo přečíst. Tituly zůstanou skryté, dokud pravidla neupravíte nebo neodstraníte a změny neuložíte.",
   "m_1606fc993473b3": "Pozice Y",
   "m_16085b241c4dff": "Uloženo pro: {name}.",
   "m_160876dd37ae79": "Minuty (u seriálů délka epizody)",

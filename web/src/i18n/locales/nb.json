@@ -3010,6 +3010,7 @@
   "m_0a803516d3a252": "onsdag",
   "m_0a80ee3837b74b": "Bruk nettleservarsler, eller en ntfy-, Gotify-, Telegram- eller e-postkanal.",
   "m_0a8137cbeb090d": "Hurtigbufrede filmer og episoder vises her etter hvert som seere ser på.",
+  "m_0a815ce0e3baca": "Velg",
   "m_0a82020af2583a": "Gå til",
   "m_0a84681546a84d": "Fra {start} til {end}",
   "m_0a848c1a79c063": "Fjern fra ønskelisten",
@@ -6312,6 +6313,7 @@
     "other": "Opprettet {count} samlinger ({skipped} fantes allerede)."
   },
   "m_1602dbcba0275a": "Alt som bruker den, venter på den.",
+  "m_1606784057c8a6": "Noen lagrede regler kunne ikke leses. Titler forblir skjult til du redigerer eller fjerner reglene og lagrer.",
   "m_1606fc993473b3": "Y-posisjon",
   "m_16085b241c4dff": "Lagret for {name}.",
   "m_160876dd37ae79": "Minutter (episodelengde for serier)",

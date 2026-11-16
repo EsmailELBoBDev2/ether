@@ -21,6 +21,8 @@ import (
 )
 
 func init() {
+	store.RegisterAfter("libraries", "catalog_viewer_rules")
+	libraryfilter.RegisterMediaTypeMigration("libraries", 8, "libraries", "rules", "id")
 	store.Register("libraries", 1, `
 CREATE TABLE libraries (
 	id         INTEGER PRIMARY KEY,
@@ -105,21 +107,23 @@ type PluginLibraryDecl struct {
 
 // Options configures the Service.
 type Options struct {
-	CompilePluginPolicy func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
-	Logger              *slog.Logger
-	Now                 func() time.Time
+	CompileCataloguePolicy func([]core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	CompilePluginPolicy    func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	Logger                 *slog.Logger
+	Now                    func() time.Time
 }
 
 // Service is the libraries store. List/Get are plain indexed reads of
 // a table that holds one row per library, never per item, so no call
 // scales with library size.
 type Service struct {
-	compilePluginPolicy func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
-	db                  *sql.DB
-	log                 *slog.Logger
-	now                 func() time.Time
-	gen                 atomic.Uint64
-	snap                atomic.Pointer[snapshot]
+	compileCataloguePolicy func([]core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	compilePluginPolicy    func(context.Context, core.LibraryID, []core.LibraryExclusion, string) (*libraryfilter.Filter, error)
+	db                     *sql.DB
+	log                    *slog.Logger
+	now                    func() time.Time
+	gen                    atomic.Uint64
+	snap                   atomic.Pointer[snapshot]
 }
 
 // New seeds the two built-in libraries idempotently (§1.3) and returns
@@ -135,7 +139,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	s := &Service{compilePluginPolicy: o.CompilePluginPolicy, db: db, log: o.Logger.With("component", "libraries"), now: o.Now}
+	s := &Service{compileCataloguePolicy: o.CompileCataloguePolicy, compilePluginPolicy: o.CompilePluginPolicy, db: db, log: o.Logger.With("component", "libraries"), now: o.Now}
 	if err := s.seedBuiltins(ctx); err != nil {
 		return nil, fmt.Errorf("libraries: seed builtins: %w", err)
 	}
@@ -147,6 +151,9 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		return nil, err
 	}
 	for _, lib := range libs {
+		if lib.RulesBroken {
+			s.log.Warn("broken library rules", "library_id", lib.ID, "name", lib.Name)
+		}
 		data, _ := json.Marshal(lib.Sources)
 		if _, err = s.db.ExecContext(ctx, `UPDATE libraries SET sources=? WHERE id=? AND sources='[]'`, string(data), int64(lib.ID)); err != nil {
 			return nil, err
@@ -208,4 +215,13 @@ func nextID(ctx context.Context, tx *sql.Tx) (core.LibraryID, error) {
 		return 0, err
 	}
 	return core.LibraryID(next - 1), nil
+}
+
+// compileCatalogueRules uses the exact bound serving compiler when wired by
+// the app. Standalone stores can still validate the portable rule language.
+func (s *Service) compileCatalogueRules(rules []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	if s.compileCataloguePolicy != nil {
+		return s.compileCataloguePolicy(rules, fallback)
+	}
+	return libraryfilter.CompilePolicy(rules, fallback)
 }

@@ -105,7 +105,7 @@ func (s *Service) MigrateConfigRules(ctx context.Context, rules []core.LibraryEx
 		return err
 	}
 	var movieRules, showRules []core.LibraryExclusion
-	for _, r := range rules {
+	for _, r := range core.NormalizeLibraryRules(rules) {
 		switch r.MediaType {
 		case string(core.TypeMovie):
 			cp := cloneRule(r)

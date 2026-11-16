@@ -1,4 +1,5 @@
 import { Button, Input, Select } from "@braedonsaunders/appkit-ui";
+import { catalogValueLabel } from "./catalogValueLabel";
 import { t } from "../../../i18n";
 import type { MediaKind } from "../api";
 import type { Rule, RuleField } from "../../../lib/contract";
@@ -106,14 +107,41 @@ function valueLabel(key: string): string {
   };
   return labels[key] ?? browseFields().find(([field]) => field === key)?.[1] ?? t("Value");
 }
+// Wire values are separate from translated labels for every finite browse enum.
+function enumValues(field: string): string[] | undefined {
+  return (
+    {
+      type: ["movie", "show"],
+      releaseGate: ["admitted", "held", "unknown"],
+      playable: ["yes", "unknown"],
+      debridCached: ["yes", "unknown"],
+      qualities: ["4k", "hdr", "dv", "atmos"],
+      statuses: ["Returning Series", "Ended", "Canceled", "In Production"],
+    } as Record<string, string[]>
+  )[field];
+}
+function enumLabel(field: string, value: string): string {
+  const labelField =
+    (
+      {
+        releaseGate: "gate",
+        debridCached: "cached",
+        qualities: "quality",
+        statuses: "status",
+      } as Record<string, string>
+    )[field] ?? field;
+  return catalogValueLabel(labelField, value);
+}
 function ValueEditor({
   value,
   onChange,
   field = "",
+  choices,
 }: {
   value: unknown;
   onChange: (v: unknown) => void;
   field?: string;
+  choices?: string[];
 }) {
   if (
     typeof value === "number" &&
@@ -137,6 +165,7 @@ function ValueEditor({
             <ValueEditor
               value={v}
               field={field}
+              choices={choices}
               onChange={(next) => onChange(value.map((old, j) => (j === i ? next : old)))}
             />
             <Button
@@ -171,6 +200,20 @@ function ValueEditor({
           </label>
         ))}
       </div>
+    );
+  const options = choices ?? enumValues(field);
+  if (options)
+    return (
+      <Select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
+        {!options.includes(String(value ?? "")) ? (
+          <option value={String(value ?? "")}>{value ? String(value) : t("Choose")}</option>
+        ) : null}
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {choices ? option : enumLabel(field, option)}
+          </option>
+        ))}
+      </Select>
     );
   if (typeof value === "boolean")
     return (
@@ -290,6 +333,7 @@ export function ExtendedCondition({
           <ValueEditor
             field={kind ? "" : rule.field.replace("browse:", "")}
             value={displayValue}
+            choices={kind?.fields?.find((field) => `browse:${field.key}` === rule.field)?.enum}
             onChange={(value) =>
               onChange({ ...rule, value: runtime ? convert(value, 60e9) : value })
             }
@@ -300,7 +344,12 @@ export function ExtendedCondition({
   );
 }
 export function newBrowseCondition(key: string, kind?: MediaKind): Rule {
-  if (kind && key !== "__group") return { field: `browse:${key}`, op: "is", value: "" };
+  if (kind && key !== "__group")
+    return {
+      field: `browse:${key}`,
+      op: "is",
+      value: kind.fields?.find((field) => field.key === key)?.enum?.[0] ?? "",
+    };
   if (key === "__group") return { field: "group", op: "is", value: [] };
   if (key.startsWith("__"))
     return {
@@ -342,30 +391,33 @@ export function newBrowseCondition(key: string, kind?: MediaKind): Rule {
   return {
     field: `browse:${key}` as RuleField,
     op: "is",
-    value: ["anime", "kids"].includes(key)
-      ? true
-      : arrays.includes(key)
-        ? [
-            key.includes("Years") ||
-            [
-              "years",
-              "excludeRatings",
-              "excludeRuntimes",
-              "collections",
-              "excludeCollections",
-            ].includes(key)
-              ? 0
-              : "",
-          ]
-        : key === "credits"
-          ? [{ kind: "cast", names: [""] }]
-          : ["titleFilters", "studioFilters"].includes(key)
-            ? [{ op: "contains", value: "" }]
-            : key === "releasedFilters"
-              ? [{ op: ">=", unix: 0, spanDay: true }]
-              : numeric
-                ? 0
-                : "",
+    value:
+      enumValues(key) && !arrays.includes(key)
+        ? enumValues(key)![0]
+        : ["anime", "kids"].includes(key)
+          ? true
+          : arrays.includes(key)
+            ? [
+                key.includes("Years") ||
+                [
+                  "years",
+                  "excludeRatings",
+                  "excludeRuntimes",
+                  "collections",
+                  "excludeCollections",
+                ].includes(key)
+                  ? 0
+                  : (enumValues(key)?.[0] ?? ""),
+              ]
+            : key === "credits"
+              ? [{ kind: "cast", names: [""] }]
+              : ["titleFilters", "studioFilters"].includes(key)
+                ? [{ op: "contains", value: "" }]
+                : key === "releasedFilters"
+                  ? [{ op: ">=", unix: 0, spanDay: true }]
+                  : numeric
+                    ? 0
+                    : "",
   };
 }
 

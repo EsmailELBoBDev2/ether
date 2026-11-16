@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
 const libraryCols = `sources, id, key, name, source, media_type, plugin_id, kind_key, collection_id, rules, visibility_default, quality_profile, present, sort, hidden, created_at, updated_at`
@@ -27,7 +28,7 @@ func scanLibrary(sc scanner) (core.Library, error) {
 	}
 	lib.ID = core.LibraryID(id)
 	lib.Source = core.LibrarySource(source)
-	lib.MediaType = core.MediaType(mediaType)
+	lib.MediaType = core.MediaType(core.NormalizeRuleMediaType(mediaType))
 	lib.VisibilityDefault = visDefault
 	lib.Sort = int(sort)
 	lib.Hidden = hidden != 0
@@ -40,10 +41,18 @@ func scanLibrary(sc scanner) (core.Library, error) {
 	if rulesJSON != "" && rulesJSON != "[]" {
 		var rules []core.LibraryExclusion
 		if err := json.Unmarshal([]byte(rulesJSON), &rules); err != nil {
-			return core.Library{}, err
+			lib.RulesBroken = true
+			rules = nil
+			lib.VisibilityDefault = "hide"
 		}
+		rules = core.NormalizeLibraryRules(rules)
 		if len(rules) > 0 {
 			lib.Rules = rules
+		}
+	}
+	if lib.Source != core.LibraryPlugin {
+		if _, err := libraryfilter.CompilePolicy(lib.Rules, lib.VisibilityDefault); err != nil {
+			lib.RulesBroken = true
 		}
 	}
 	if presentJSON != "" {

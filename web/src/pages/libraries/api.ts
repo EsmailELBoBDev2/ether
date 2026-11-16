@@ -65,6 +65,7 @@ export interface CatalogueSource {
 }
 
 export interface Library {
+  rulesBroken?: boolean;
   id: number;
   key: string;
   name: string;

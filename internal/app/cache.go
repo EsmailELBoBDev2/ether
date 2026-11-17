@@ -10,6 +10,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/segcache"
 )
@@ -81,8 +82,17 @@ func (a *App) cacheHandler() http.Handler {
 		}
 		var freed int64
 		complete := true
+		pins := a.cache.Pins()
 		for _, release := range a.cache.Releases() {
 			before := a.cache.ReleaseBytes(release.ReleaseID)
+			// With nothing playing, Clear cache removes everything,
+			// including the resume protection kept for unfinished titles;
+			// the next play caches them again.
+			for _, reason := range pins[release.ReleaseID] {
+				if reason == playback.PinReasonInProgress {
+					_ = a.cache.Unpin(release.ReleaseID, reason)
+				}
+			}
 			if err := a.cache.ClearUnpinned(release.ReleaseID); err != nil {
 				complete = false
 				continue

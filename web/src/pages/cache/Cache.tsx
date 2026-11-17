@@ -277,7 +277,9 @@ export default function Cache() {
   async function clearAll() {
     if (
       !window.confirm(
-        t("Clear cache? Stop playback first. Protected files stay until background work finishes."),
+        t(
+          "Clear cache? Everything cached is removed, including the openings kept for titles people are partway through; they cache again on the next play. Stop playback first.",
+        ),
       )
     )
       return;
@@ -289,7 +291,7 @@ export default function Cache() {
       });
       toast.success(t("Freed {size}", { size: formatBytes(result.freedBytes) }));
       if (!result.complete)
-        setError(new Error(t("Protected files remain. Try again after background work finishes.")));
+        toast.info(t("A few files are still being written and were kept. Clear again in a minute."));
       await live.reload();
     } catch (e) {
       setError(e);

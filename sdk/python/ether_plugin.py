@@ -342,9 +342,38 @@ class _KVClient:
         return list(res.get("keys", [])) if isinstance(res, dict) else []
 
 
+MIN_DATA_READ_BYTES = 8 * 1024 * 1024
+MAX_DATA_READ_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_READ_ITEMS = 4096
+
+
+class RuntimeLimits(TypedDict, total=False):
+    fetchBytes: int
+    archiveMemberBytes: int
+    archiveExpandedBytes: int
+    archiveMembers: int
+    memoryBytes: int
+    readBytes: int
+    deadline: str
+    unitBudget: int
+
+
 class DataRange(TypedDict):
     offset: int
     length: int
+
+
+class ArchiveReadItem(TypedDict):
+    member: int
+    offset: int
+    length: int
+
+
+class ArchiveReadResult(TypedDict):
+    index: int
+    member: int
+    size: int
+    body: bytes
 
 
 class ArchiveMember(TypedDict, total=False):
@@ -368,7 +397,7 @@ class ArchiveExtractResult(TypedDict):
     crc32: str
 
 
-def _check_data_range(data_range: Dict[str, Any]) -> Dict[str, int]:
+def _check_data_range(data_range: Dict[str, Any], max_bytes: int = MAX_DATA_READ_BYTES) -> Dict[str, int]:
     offset = data_range.get("offset")
     length = data_range.get("length")
     if (
@@ -377,12 +406,38 @@ def _check_data_range(data_range: Dict[str, Any]) -> Dict[str, int]:
         or not isinstance(offset, int)
         or not isinstance(length, int)
         or offset < 0
-        or offset > 256 * 1024 * 1024
+        or offset > (1 << 60)
         or length <= 0
-        or length > 1024 * 1024
+        or length > max_bytes
     ):
-        raise ValueError("Data range needs nonnegative offset and length 1..1048576")
+        raise ValueError(f"Data range needs nonnegative offset and length 1..{max_bytes}")
     return {"offset": offset, "length": length}
+
+
+def _check_archive_reads(reads: List[ArchiveReadItem], max_bytes: int = MAX_DATA_READ_BYTES) -> List[Dict[str, int]]:
+    if not isinstance(reads, list) or len(reads) == 0 or len(reads) > MAX_ARCHIVE_READ_ITEMS:
+        raise ValueError(f"archive.read takes 1..{MAX_ARCHIVE_READ_ITEMS} reads")
+    normalized: List[Dict[str, int]] = []
+    total = 0
+    for item in reads:
+        member = item.get("member")
+        if isinstance(member, bool) or not isinstance(member, int) or member < 0:
+            raise ValueError("archive.read member index must be a nonnegative integer")
+        rng = _check_data_range(item, max_bytes=max_bytes)
+        total += rng["length"]
+        if total > max_bytes:
+            raise ValueError(f"archive.read requested bytes exceed per-call readBytes limit ({max_bytes})")
+        normalized.append({"member": member, "offset": rng["offset"], "length": rng["length"]})
+    return normalized
+
+
+class _RuntimeClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def limits(self) -> RuntimeLimits:
+        res = self._call("GET", "/ether/plugin-host/limits")
+        return dict(res) if isinstance(res, dict) else {}  # type: ignore[return-value]
 
 
 class _ArchiveClient:
@@ -397,6 +452,20 @@ class _ArchiveClient:
         norm = _check_data_range(data_range)
         res = self._call("POST", "/ether/plugin-host/data/archive.open", [str(blob_ref), int(member), norm])
         return base64.b64decode((res or {}).get("bodyBase64") or "")
+
+    def read(self, blob_ref: str, reads: List[ArchiveReadItem]) -> List[ArchiveReadResult]:
+        norm = _check_archive_reads(reads)
+        res = self._call("POST", "/ether/plugin-host/data/archive.read", [str(blob_ref), norm])
+        rows = res if isinstance(res, list) else []
+        return [
+            {
+                "index": int(row["index"]),
+                "member": int(row["member"]),
+                "size": int(row["size"]),
+                "body": base64.b64decode(row.get("bodyBase64") or ""),
+            }
+            for row in rows
+        ]
 
     def extract(
         self,
@@ -524,6 +593,7 @@ class RemoteHostClient:
         self.collections = _CollectionsClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json)
+        self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
         self.frontend = _FrontendClient(self._call_json)
@@ -575,7 +645,7 @@ class RemoteHostClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
@@ -1999,12 +2069,29 @@ class MockHostClient:
         self.kind_store: Dict[str, List[Dict[str, Any]]] = {}
         self.sources: List[Dict[str, Any]] = []
         self.blobs: Dict[str, bytes] = {}
+        self.limits: RuntimeLimits = {
+            "memoryBytes": 32 * 1024 * 1024,
+            "readBytes": MIN_DATA_READ_BYTES,
+            "fetchBytes": 8 * 1024 * 1024 * 1024,
+            "archiveMemberBytes": 8 * 1024 * 1024 * 1024,
+            "archiveExpandedBytes": 32 * 1024 * 1024 * 1024,
+            "archiveMembers": 65535,
+            "deadline": "12h",
+        }
+        self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
         self.archive = self._Archive(self)
         self.frontend = self._Frontend(self)
+
+    class _Runtime:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def limits(self) -> RuntimeLimits:
+            return dict(self._p.limits)  # type: ignore[return-value]
 
     class _Frontend:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -2056,7 +2143,8 @@ class MockHostClient:
             return self._p.blobs[blob_ref]
 
         def read(self, blob_ref: str, data_range: DataRange) -> bytes:
-            norm = _check_data_range(data_range)
+            cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
+            norm = _check_data_range(data_range, max_bytes=cap)
             raw = self._p.blobs[blob_ref]
             return raw[norm["offset"] : norm["offset"] + norm["length"]]
 
@@ -2095,7 +2183,8 @@ class MockHostClient:
             import io
             import zipfile
 
-            norm = _check_data_range(data_range)
+            cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
+            norm = _check_data_range(data_range, max_bytes=cap)
             with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
                 infos = zf.infolist()
                 if member < 0 or member >= len(infos):
@@ -2110,6 +2199,32 @@ class MockHostClient:
                 if norm["offset"] > len(data):
                     raise RuntimeError("plugins: archive member offset outside range")
                 return data[norm["offset"] : norm["offset"] + norm["length"]]
+
+        def read(self, blob_ref: str, reads: List[ArchiveReadItem]) -> List[ArchiveReadResult]:
+            import io
+            import zipfile
+
+            cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
+            norm = _check_archive_reads(reads, max_bytes=cap)
+            out: List[ArchiveReadResult] = []
+            with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
+                infos = zf.infolist()
+                for idx, item in enumerate(norm):
+                    member = item["member"]
+                    if member < 0 or member >= len(infos):
+                        raise RuntimeError("plugins: archive member index outside range")
+                    info = infos[member]
+                    reason = self._unsafe_reason(info.filename)
+                    if reason:
+                        raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
+                    if info.is_dir():
+                        raise RuntimeError("plugins: archive member is a directory")
+                    data = zf.read(info)
+                    if item["offset"] > len(data):
+                        raise RuntimeError("plugins: archive member offset outside range")
+                    chunk = data[item["offset"] : item["offset"] + item["length"]]
+                    out.append({"index": idx, "member": member, "size": len(chunk), "body": chunk})
+            return out
 
         def extract(
             self,

@@ -1,10 +1,13 @@
 package etherplugin_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -382,5 +385,50 @@ func TestKindHostMockAndKit(t *testing.T) {
 	items, err := feed.Items("show", "track", "https://x/feed")
 	if err != nil || len(items) != 2 || !items[1].Playable {
 		t.Fatalf("feed items: %+v %v", items, err)
+	}
+}
+
+func TestRemoteBlobHostArchiveReadAndLimits(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ether/plugin-host/limits":
+			_ = json.NewEncoder(w).Encode(etherplugin.RuntimeLimits{
+				MemoryBytes: 1 << 30,
+				ReadBytes:   256 << 20,
+			})
+		case "/ether/plugin-host/data/archive.read":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"index": 0, "member": 3, "size": 5, "bodyBase64": base64.StdEncoding.EncodeToString([]byte("alpha"))},
+				{"index": 1, "member": 7, "size": 4, "bodyBase64": base64.StdEncoding.EncodeToString([]byte{0, 255, 1, 2})},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := etherplugin.NewRemoteHostClient(etherplugin.RemoteHostOptions{
+		BaseURL:    srv.URL,
+		Credential: "cred-1",
+	})
+	var blobHost etherplugin.BlobHost = client
+	lim, err := blobHost.RuntimeLimits(ctx)
+	if err != nil || lim.ReadBytes != 256<<20 {
+		t.Fatalf("RuntimeLimits = %+v, err = %v", lim, err)
+	}
+	out, err := blobHost.ArchiveRead(ctx, "blob:"+strings.Repeat("a", 64), []etherplugin.ArchiveReadItem{
+		{Member: 3, Offset: 0, Length: 5},
+		{Member: 7, Offset: 10, Length: 4},
+	})
+	if err != nil || len(out) != 2 {
+		t.Fatalf("ArchiveRead = %+v, err = %v", out, err)
+	}
+	if !bytes.Equal(out[0].Body, []byte("alpha")) || !bytes.Equal(out[1].Body, []byte{0, 255, 1, 2}) {
+		t.Fatalf("unexpected decoded bodies: %+v", out)
+	}
+	if _, err := blobHost.ArchiveRead(ctx, "blob:x", nil); err == nil {
+		t.Fatal("empty reads accepted")
 	}
 }

@@ -402,20 +402,43 @@ This index includes every generated declaration, schema field table, runtime bin
 ## Archive member reads
 
 Hosted and remote clients can keep large data in the host's existing library
-blob cache, without copying the complete file into guest memory:
+blob cache, reading only the metadata or descriptor bytes the plugin itself must parse.
+Big media (streams, ROMs, disc images, firmware downloads) never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive
+members directly to clients itself (for example via frontend `{ blob: { libraryKey, ref, memberIndex } }`
+descriptors in `internal/plugins/frontend_blob.go` and `frontend.streamURL`); these calls
+are strictly for bytes the plugin must parse:
 
 ```ts
+const limits = await ctx.ether.runtime!.limits();
+const readBudget = limits.readBytes ?? 8 * 1024 * 1024; // clamp(memoryBytes / 4, 8 MiB, 512 MiB)
 const cached = await ctx.ether.http.fetchToCache!({
   url: "https://datasets.example/platform.zip",
   libraryKey: "pk-community-example-library-games", // this plugin's own library
   name: "platform.zip",
 });
 const members = await ctx.ether.archive!.list(cached.blob);
-const member = members.find(m => m.name === "games/example.json")!;
-const chunk = await ctx.ether.archive!.open(cached.blob, member.index, {
-  offset: 0, length: Math.min(member.size, 1048576),
-}); // Uint8Array; request another range for the next piece
-const extracted = await ctx.ether.archive!.extract(cached.blob, member.index);
+
+// Batch up to 4096 members per call within readBytes:
+const xmlMembers = members.filter(m => !m.unsafe && m.name.endsWith(".xml") && m.size > 0);
+let batch: Array<{ member: number; offset: number; length: number }> = [];
+let batchBytes = 0;
+for (const m of xmlMembers) {
+  const length = Math.min(m.size, readBudget);
+  if (batch.length === 4096 || batchBytes + length > readBudget) {
+    const results = await ctx.ether.archive!.read(cached.blob, batch);
+    // results: [{ index, member, size, body: Uint8Array }] in request order
+    batch = [];
+    batchBytes = 0;
+  }
+  batch.push({ member: m.index, offset: 0, length });
+  batchBytes += length;
+}
+if (batch.length > 0) {
+  await ctx.ether.archive!.read(cached.blob, batch);
+}
+
+const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.index);
 // {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
@@ -431,14 +454,26 @@ and library cache quota apply; no new permission is needed. The operation is
 synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
-`cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
-`archive.list(blob)` returns `[{index, name, size}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
-without loading all compressed bytes. `archive.open(blob, memberIndex,
-{offset, length})` returns at most 1 MiB from the **uncompressed** member.
-Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
-empty bytes and reads crossing EOF return the available suffix. Raw host calls
-return `{bodyBase64, size}`; SDK clients decode this into bytes. Every call opens
-only the calling plugin's cache namespace and closes the reader afterward.
+The per-call byte ceiling `readBytes` for `cache.read`, `archive.open`, and `archive.read`
+scales with the plugin's granted memory: `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)`
+(default 32 MiB plugin memory → 8 MiB per call; declaring `runtime.limits.memoryBytes` of 1 GiB
+grants 256 MiB per call). Plugins inspect their live grant via `runtime.limits`
+(`ctx.ether.runtime!.limits()`, `BlobHost.RuntimeLimits`, `host.runtime.limits()`, or
+`GET /ether/plugin-host/limits`) to size batches without guessing.
+
+`cache.read(blob, {offset, length})` reads `1..readBytes` from a cached blob.
+`archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
+without loading all compressed bytes. `archive.open(blob, memberIndex, {offset, length})`
+returns `1..readBytes` from one **uncompressed** member, while `archive.read(blob, reads)`
+reads `1..4096` `{member, offset, length}` ranges in one call whose requested `length`s sum
+to at most `readBytes` (returning an error rather than truncating when exceeded) and returns
+`[{index, member, size, body}]` in request order (`bodyBase64` on raw JSON wire calls).
+Use `archive.open` when reading one member or stepping sequentially through a single large
+member across range calls. Use `archive.read` when parsing many small or medium members from
+the same cached archive, amortizing cache ownership checks, directory lookup, and host crossings
+into a single call. Offsets are nonnegative integers; a read at EOF returns empty bytes and reads
+crossing EOF return the available suffix. Every call opens only the calling plugin's cache
+namespace and closes every member stream and blob handle before returning.
 `archive.extract(blob, memberIndex[, {libraryKey?, name?}])` streams the
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
@@ -446,10 +481,10 @@ computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enfor
 `archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
 index with `UnsafeArchiveMemberError` and directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
-The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList`,
-`ArchiveOpen` and `ArchiveExtract` through the optional `BlobHost` interface; the
-Python `RemoteHostClient` and `MockHostClient` expose `archive.list`, `archive.open`
-and `archive.extract`.
+The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
+`ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
+`RemoteHostClient` and `MockHostClient` expose `runtime.limits()` and `archive.list`,
+`archive.open`, `archive.read`, and `archive.extract`.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
@@ -483,14 +518,12 @@ An HTTP `Content-Encoding: gzip` response may be transparently decoded by the
 HTTP client; its digests then describe the decoded bytes. A `.gz` file is not
 automatically decompressed by this archive service.
 
-Direct `http.fetch` still limits the raw response to 10 MiB. Its JSON result
-allowance now includes encoding expansion (binary base64 or escaped text), so the
-4 MiB general host-result cap no longer blocks that documented limit. This is
-an I/O ceiling, not a guarantee of guest heap space: the default guest has 32 MiB
-and the owner ceiling defaults to 2 GiB (adjustable up to wasm32 4 GiB), with temporary JSON strings and parsed objects
-using additional memory. Use fetch-to-cache and ranged reads for large inputs;
-do not concatenate all chunks into one guest buffer. Other host results remain
-capped at 4 MiB.
+Direct `http.fetch` still limits the raw response to 10 MiB, with its JSON result
+allowance including encoding expansion. Hosted WASM host-result envelopes also scale
+automatically with the plugin's `readBytes` grant (including base64 and JSON framing
+overhead, with a 4 MiB baseline floor), while hosted QuickJS binary reads transfer
+decoded bytes directly into guest `ArrayBuffer`s. Big media never goes through these
+read calls — Ether streams blobs and archive members itself (`internal/plugins/frontend_blob.go`).
 
 ## Source: docs/plugin-debrid.md
 
@@ -857,20 +890,42 @@ reason does not grant playback to a nonplayable level.
 ### Large downloads and archive members (v0.3.12)
 
 Hosted and remote clients can keep large data in the host's existing library
-blob cache, without copying the complete file into guest memory:
+blob cache, reading only the metadata or descriptor bytes the plugin itself must parse.
+Big media (video/audio streams, ROMs, disc images, firmware downloads) never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive
+members directly to clients itself (for example via frontend `{ blob: { libraryKey, ref, memberIndex } }`
+descriptors in `internal/plugins/frontend_blob.go`, `frontend.streamURL`, and playable container sources):
 
 ```ts
+const limits = await ctx.ether.runtime!.limits();
+const readBudget = limits.readBytes ?? 8 * 1024 * 1024; // clamp(memoryBytes / 4, 8 MiB, 512 MiB)
 const cached = await ctx.ether.http.fetchToCache!({
   url: "https://datasets.example/platform.zip",
   libraryKey: "pk-community-example-library-games", // this plugin's own library
   name: "platform.zip",
 });
 const members = await ctx.ether.archive!.list(cached.blob);
-const member = members.find(m => m.name === "games/example.json")!;
-const chunk = await ctx.ether.archive!.open(cached.blob, member.index, {
-  offset: 0, length: Math.min(member.size, 1048576),
-}); // Uint8Array; request another range for the next piece
-const extracted = await ctx.ether.archive!.extract(cached.blob, member.index);
+
+// Batch up to 4096 small/medium members per call within readBytes:
+const xmlMembers = members.filter(m => !m.unsafe && m.name.endsWith(".xml") && m.size > 0);
+let batch: Array<{ member: number; offset: number; length: number }> = [];
+let batchBytes = 0;
+for (const m of xmlMembers) {
+  const length = Math.min(m.size, readBudget);
+  if (batch.length === 4096 || batchBytes + length > readBudget) {
+    const results = await ctx.ether.archive!.read(cached.blob, batch);
+    // results: [{ index, member, size, body: Uint8Array }] in request order
+    batch = [];
+    batchBytes = 0;
+  }
+  batch.push({ member: m.index, offset: 0, length });
+  batchBytes += length;
+}
+if (batch.length > 0) {
+  await ctx.ether.archive!.read(cached.blob, batch);
+}
+
+const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.index);
 // {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
@@ -886,14 +941,28 @@ and library cache quota apply; no new permission is needed. The operation is
 synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
-`cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
+The per-call byte ceiling `readBytes` for `cache.read`, `archive.open`, and `archive.read`
+scales with the plugin's granted memory: `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)`
+(default 32 MiB plugin memory → 8 MiB per call; declaring `runtime.limits.memoryBytes` of 1 GiB
+grants 256 MiB per call). Plugins read their live grant via `runtime.limits`
+(`ctx.ether.runtime!.limits()` in TypeScript, `BlobHost.RuntimeLimits(ctx)` in Go,
+`host.runtime.limits()` in Python, or `GET /ether/plugin-host/limits`) so batch sizes never rely
+on hardcoded guesses.
+
+`cache.read(blob, {offset, length})` reads `1..readBytes` from a cached blob.
 `archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
-without loading all compressed bytes. `archive.open(blob, memberIndex,
-{offset, length})` returns at most 1 MiB from the **uncompressed** member.
-Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
-empty bytes and reads crossing EOF return the available suffix. Raw host calls
-return `{bodyBase64, size}`; SDK clients decode this into bytes. Every call opens
-only the calling plugin's cache namespace and closes the reader afterward.
+without loading all compressed bytes. `archive.open(blob, memberIndex, {offset, length})`
+returns `1..readBytes` from one **uncompressed** member, while `archive.read(blob, reads)`
+reads `1..4096` `{member, offset, length}` ranges in one call whose requested `length`s sum
+to at most `readBytes` (returning an error rather than truncating when exceeded) and returns
+`[{index, member, size, body}]` in request order (`bodyBase64` on raw JSON wire calls).
+Use `archive.open` when reading a single member or stepping sequentially through one large
+file across range calls. Use `archive.read` when parsing many small or medium members from the
+same cached archive (such as thousands of XML, DAT, or CUE descriptors), amortizing cache
+ownership checks, directory lookup, and host crossings into one call.
+Offsets are nonnegative integers; a read at EOF returns empty bytes and reads crossing EOF
+return the available suffix. Every call opens only the calling plugin's cache namespace and
+closes every member stream and blob handle before returning.
 `archive.extract(blob, memberIndex[, {libraryKey?, name?}])` streams the
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
@@ -901,10 +970,10 @@ computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enfor
 `archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
 index with `UnsafeArchiveMemberError` and directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
-The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList`,
-`ArchiveOpen` and `ArchiveExtract` through the optional `BlobHost` interface; the
-Python `RemoteHostClient` and `MockHostClient` expose `archive.list`, `archive.open`
-and `archive.extract`.
+The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
+`ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
+`RemoteHostClient` and `MockHostClient` expose `runtime.limits()` and `archive.list`,
+`archive.open`, `archive.read`, and `archive.extract`.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
@@ -946,14 +1015,14 @@ An HTTP `Content-Encoding: gzip` response may be transparently decoded by the
 HTTP client; its digests then describe the decoded bytes. A `.gz` file is not
 automatically decompressed by this archive service.
 
-Direct `http.fetch` still limits the raw response to 10 MiB. Its JSON result
-allowance now includes encoding expansion (binary base64 or escaped text), so the
-4 MiB general host-result cap no longer blocks that documented limit. This is
-an I/O ceiling, not a guarantee of guest heap space: the default guest has 32 MiB
-and the owner ceiling defaults to 2 GiB (adjustable up to wasm32 4 GiB), with temporary JSON strings and parsed objects
-using additional memory. Use fetch-to-cache and ranged reads for large inputs;
-do not concatenate all chunks into one guest buffer. Other host results remain
-capped at 4 MiB.
+Direct `http.fetch` still limits the raw response to 10 MiB, with its JSON result
+allowance including encoding expansion. Hosted WASM host-result envelopes also scale
+automatically with the plugin's `readBytes` grant (including base64 and JSON framing
+overhead, with a 4 MiB baseline floor), while hosted QuickJS binary reads (`cache.read`,
+`archive.open`, `archive.read`) transfer decoded bytes directly into guest `ArrayBuffer`s.
+Remember that big media never goes through these read calls — Ether streams blobs and
+archive members directly to clients itself (`internal/plugins/frontend_blob.go`); reserve
+`cache.read`, `archive.open`, and `archive.read` for bytes the plugin must parse.
 
 ### Owner-started multi-call work and resource requests
 
@@ -2311,6 +2380,7 @@ type RuntimeDecl struct {
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) | default 32 MiB, ceiling owner-controlled, up to 4 GiB |
+| `readBytes` | `int64` | may be omitted (see validation for conditions) | ReadBytes is the granted per-call byte ceiling for cache.read, archive.open and archive.read, derived from MemoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB). |
 | `deadline` | `string` | may be omitted (see validation for conditions) | Go duration; default 12h, owner-controlled ceiling |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | default effectively unlimited, owner-controlled ceiling |
 
@@ -2326,8 +2396,12 @@ type RuntimeLimits struct {
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"` // default 32 MiB, ceiling owner-controlled, up to 4 GiB
-	Deadline             string `json:"deadline,omitempty"`    // Go duration; default 12h, owner-controlled ceiling
-	UnitBudget           int64  `json:"unitBudget,omitempty"`  // default effectively unlimited, owner-controlled ceiling
+	// ReadBytes is the granted per-call byte ceiling for cache.read,
+	// archive.open and archive.read, derived from MemoryBytes:
+	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
+	ReadBytes  int64  `json:"readBytes,omitempty"`
+	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h, owner-controlled ceiling
+	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited, owner-controlled ceiling
 }
 ``````
 
@@ -6120,6 +6194,73 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 }
 ``````
 
+## Source: internal/plugins/host_archive.go#emptyFlateSource
+
+``````
+var (
+	emptyFlateSource = bytes.NewReader(nil)
+	flateReaderPool  sync.Pool
+)
+``````
+
+## Source: internal/plugins/host_archive.go#pooledFlateReader.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#pooledFlateReader
+
+``````
+type pooledFlateReader struct {
+	zr   io.ReadCloser
+	br   *bufio.Reader
+	done bool
+}
+``````
+
+## Source: internal/plugins/host_archive.go#newPooledFlateReader
+
+``````
+func newPooledFlateReader(src io.Reader) io.ReadCloser {
+	if p, ok := flateReaderPool.Get().(*pooledFlateReader); ok {
+		p.br.Reset(src)
+		if resetter, ok := p.zr.(flate.Resetter); ok && resetter.Reset(p.br, nil) == nil {
+			p.done = false
+			return p
+		}
+	}
+	br := bufio.NewReaderSize(src, 4096)
+	return &pooledFlateReader{zr: flate.NewReader(br), br: br}
+}
+``````
+
+## Source: internal/plugins/host_archive.go#*pooledFlateReader.Read
+
+``````
+func (p *pooledFlateReader) Read(b []byte) (int, error) {
+	return p.zr.Read(b)
+}
+``````
+
+## Source: internal/plugins/host_archive.go#*pooledFlateReader.Close
+
+``````
+func (p *pooledFlateReader) Close() error {
+	if p.done {
+		return nil
+	}
+	p.done = true
+	err := p.zr.Close()
+	p.br.Reset(emptyFlateSource)
+	if resetter, ok := p.zr.(flate.Resetter); ok {
+		_ = resetter.Reset(emptyFlateSource, nil)
+	}
+	flateReaderPool.Put(p)
+	return err
+}
+``````
+
 ## Source: internal/plugins/host_archive.go#dataZIPMember.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -6148,9 +6289,12 @@ func (f dataZIPMember) open(ra io.ReaderAt) (io.ReadCloser, error) {
 	if f.dir {
 		return nil, fmt.Errorf("plugins: cannot open an archive directory")
 	}
-	var r io.ReadCloser = io.NopCloser(io.NewSectionReader(ra, f.offset, f.packed))
+	section := io.NewSectionReader(ra, f.offset, f.packed)
+	var r io.ReadCloser
 	if f.method == zip.Deflate {
-		r = flate.NewReader(r)
+		r = newPooledFlateReader(section)
+	} else {
+		r = io.NopCloser(section)
 	}
 	return &dataZIPChecksum{ReadCloser: r, hash: crc32.NewIEEE(), size: f.size, crc: f.crc, verifyCRC: f.verifyCRC}, nil
 }
@@ -6199,17 +6343,41 @@ func (r *dataZIPChecksum) Read(p []byte) (int, error) {
 ## Source: internal/plugins/host_data.go#MaxDataFetchBytes
 
 ``````
-// Data-service limits are host enforced, independent of guest memory. All
-// operations are on demand and use the existing plugin-owned cache namespace.
+// Data-service limits are host enforced. Per-call read ceilings scale with the
+// plugin's memory grant; all operations use the plugin-owned cache namespace.
 const (
 	MaxDataFetchBytes       = 8 << 30
-	MaxDataRangeBytes       = 1 << 20
+	MinDataReadBytes        = wasm.MinDataReadBytes
+	MaxDataReadBytes        = wasm.MaxDataReadBytes
+	MaxArchiveReadItems     = 4096
 	maxArchiveMembers       = 65535
 	maxArchiveDirectory     = 64 << 20
 	maxArchiveMemberBytes   = 8 << 30
 	maxArchiveExpandedBytes = 32 << 30
 	maxArchiveRatio         = 1000
 )
+``````
+
+## Source: internal/plugins/host_data.go#DataReadBytes
+
+``````
+// DataReadBytes returns the per-call byte ceiling for cache.read, archive.open,
+// and archive.read derived from the plugin's memory grant:
+// clamp(memoryBytes/4, 8 MiB, 512 MiB).
+func DataReadBytes(memoryBytes uint64) int64 {
+	return wasm.DataReadBytes(memoryBytes)
+}
+``````
+
+## Source: internal/plugins/host_data.go#dataReadLimit
+
+``````
+func dataReadLimit(limits RuntimeLimits) int64 {
+	if limits.ReadBytes > 0 {
+		return min(max(limits.ReadBytes, MinDataReadBytes), MaxDataReadBytes)
+	}
+	return DataReadBytes(limits.MemoryBytes)
+}
 ``````
 
 ## Source: internal/plugins/host_data.go#DataRange.fields.md
@@ -6226,6 +6394,48 @@ const (
 type DataRange struct {
 	Offset int64 `json:"offset"`
 	Length int64 `json:"length"`
+}
+``````
+
+## Source: internal/plugins/host_data.go#ArchiveReadItem.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `member` | `int` | emitted (validation may require a value) |  |
+| `offset` | `int64` | emitted (validation may require a value) |  |
+| `length` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/host_data.go#ArchiveReadItem
+
+``````
+// ArchiveReadItem selects one byte range inside one archive member for archive.read.
+type ArchiveReadItem struct {
+	Member int   `json:"member"`
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+``````
+
+## Source: internal/plugins/host_data.go#ArchiveReadResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `member` | `int` | emitted (validation may require a value) |  |
+| `size` | `int` | emitted (validation may require a value) |  |
+| `bodyBase64` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/host_data.go#ArchiveReadResult
+
+``````
+// ArchiveReadResult is one item returned by archive.read in request order.
+type ArchiveReadResult struct {
+	Index      int    `json:"index"`
+	Member     int    `json:"member"`
+	Size       int    `json:"size"`
+	BodyBase64 string `json:"bodyBase64"`
 }
 ``````
 
@@ -6460,11 +6670,62 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 ## Source: internal/plugins/host_data.go#validDataRange
 
 ``````
-func validDataRange(r DataRange) error {
-	if r.Offset < 0 || r.Length <= 0 || r.Length > MaxDataRangeBytes || r.Offset > 1<<60 {
-		return fmt.Errorf("plugins: range needs nonnegative offset and length 1..%d", MaxDataRangeBytes)
+func validDataRange(r DataRange, maxBytes int64) error {
+	if r.Offset < 0 || r.Length <= 0 || r.Length > maxBytes || r.Offset > 1<<60 {
+		return fmt.Errorf("plugins: range needs nonnegative offset and length 1..%d", maxBytes)
 	}
 	return nil
+}
+``````
+
+## Source: internal/plugins/host_data.go#readAllSized
+
+``````
+func readAllSized(r io.Reader, sizeHint int64) ([]byte, error) {
+	if sizeHint < 0 {
+		sizeHint = 0
+	}
+	capHint := min(sizeHint+512, int64(8<<20))
+	if capHint < 512 {
+		capHint = 512
+	}
+	b := make([]byte, 0, capHint)
+	for {
+		if len(b) == cap(b) {
+			next := max(cap(b)*2, 4096)
+			if sizeHint > int64(next) {
+				next = int(min(sizeHint+512, int64(MaxDataReadBytes)+512))
+			}
+			grown := make([]byte, len(b), next)
+			copy(grown, b)
+			b = grown
+		}
+		n, err := r.Read(b[len(b):cap(b)])
+		b = b[:len(b)+n]
+		if err != nil {
+			if err == io.EOF {
+				return b, nil
+			}
+			return b, err
+		}
+	}
+}
+``````
+
+## Source: internal/plugins/host_data.go#readDataRangeBytes
+
+``````
+func readDataRangeBytes(ctx context.Context, r io.Reader, opt DataRange, maxBytes, sizeHint int64) ([]byte, error) {
+	if err := validDataRange(opt, maxBytes); err != nil {
+		return nil, err
+	}
+	cr := &boundedDataReader{ctx: ctx, r: r, left: opt.Offset + opt.Length}
+	if opt.Offset > 0 {
+		if _, err := io.CopyN(io.Discard, cr, opt.Offset); err != nil {
+			return nil, err
+		}
+	}
+	return readAllSized(io.LimitReader(cr, opt.Length), sizeHint)
 }
 ``````
 
@@ -6472,20 +6733,38 @@ func validDataRange(r DataRange) error {
 
 ``````
 // Always return base64: arbitrary text/control bytes then have a predictable
-// JSON envelope well below the 4 MiB host-result limit.
-func readDataRange(ctx context.Context, r io.Reader, opt DataRange) (map[string]any, error) {
-	if err := validDataRange(opt); err != nil {
-		return nil, err
-	}
-	cr := &boundedDataReader{ctx: ctx, r: r, left: opt.Offset + opt.Length}
-	if _, err := io.CopyN(io.Discard, cr, opt.Offset); err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(io.LimitReader(cr, opt.Length))
+// JSON envelope scaled with the plugin's per-call readBytes grant.
+func readDataRange(ctx context.Context, r io.Reader, opt DataRange, maxBytes, sizeHint int64) (map[string]any, error) {
+	data, err := readDataRangeBytes(ctx, r, opt, maxBytes, sizeHint)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"bodyBase64": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+}
+``````
+
+## Source: internal/plugins/host_data.go#readArchiveMemberRange
+
+``````
+func readArchiveMemberRange(ctx context.Context, archive *dataArchive, member int, opt DataRange, maxBytes int64) ([]byte, error) {
+	if member < 0 || member >= len(archive.members) {
+		return nil, fmt.Errorf("plugins: archive member index outside range")
+	}
+	f := archive.members[member]
+	if f.Unsafe {
+		return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+	}
+	if uint64(opt.Offset) > f.Size {
+		return nil, fmt.Errorf("plugins: archive member offset outside range")
+	}
+	stream, err := archive.open(member)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+	rem := int64(min(f.Size-uint64(opt.Offset), uint64(maxBytes)))
+	sizeHint := min(opt.Length, rem)
+	return readDataRangeBytes(ctx, io.LimitReader(stream, int64(f.Size)), opt, maxBytes, sizeHint)
 }
 ``````
 
@@ -6512,6 +6791,13 @@ type seekReaderAt struct {
 func (r seekReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
+	}
+	if ra, ok := r.r.(io.ReaderAt); ok {
+		n, err := ra.ReadAt(p, off)
+		if err == io.EOF && n == len(p) {
+			err = nil
+		}
+		return n, err
 	}
 	if _, err := r.r.Seek(off, io.SeekStart); err != nil {
 		return 0, err
@@ -6689,6 +6975,7 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 // CallDataHost is the shared hosted/remote data-service funnel. Only named
 // services are accepted; cache access rechecks plugin ownership each call.
 func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage) (json.RawMessage, error) {
+	ctx = withCallRecord(ctx, h)
 	// Remote callers receive the same maximum I/O deadline as hosted calls.
 	limits := defaultDataLimits()
 	if provider, ok := h.(interface {
@@ -6696,6 +6983,9 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 	}); ok {
 		limits = provider.DataLimits(ctx)
 	}
+	limits.ReadBytes = dataReadLimit(limits)
+	readCap := limits.ReadBytes
+
 	deadline, err := time.ParseDuration(limits.Deadline)
 	if err != nil || deadline <= 0 {
 		deadline = 12 * time.Hour
@@ -6707,7 +6997,21 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		return nil, err
 	}
 	var value any
-	if name == "http.hash" {
+	if name == "runtime.limits" {
+		if len(args) != 0 {
+			return nil, fmt.Errorf("plugins: runtime.limits takes no arguments")
+		}
+		if ph, ok := h.(*host); ok {
+			r, rerr := ph.callRecord(ctx)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if !r.Enabled {
+				return nil, ErrDisabled
+			}
+		}
+		value = limits
+	} else if name == "http.hash" {
 		var req HashRequest
 		if len(args) != 1 {
 			return nil, fmt.Errorf("plugins: hash takes one request")
@@ -6747,7 +7051,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
 	} else {
-		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.extract" {
+		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.read" && name != "archive.extract" {
 			return nil, ErrPermissionDenied
 		}
 		if len(args) == 0 {
@@ -6758,6 +7062,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, err
 		}
 		var opt DataRange
+		var reads []ArchiveReadItem
 		var extractOpt ArchiveExtractOptions
 		var member int
 		switch name {
@@ -6777,6 +7082,11 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			if err = json.Unmarshal(args[1], &member); err == nil {
 				err = json.Unmarshal(args[2], &opt)
 			}
+		case "archive.read":
+			if len(args) != 2 {
+				return nil, fmt.Errorf("plugins: archive.read takes (blob, reads)")
+			}
+			err = json.Unmarshal(args[1], &reads)
 		case "archive.extract":
 			if len(args) < 2 || len(args) > 3 {
 				return nil, fmt.Errorf("plugins: archive.extract takes (blob, memberIndex[, options])")
@@ -6790,7 +7100,25 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, err
 		}
 		if name == "cache.read" || name == "archive.open" {
-			if err = validDataRange(opt); err != nil {
+			if err = validDataRange(opt, readCap); err != nil {
+				return nil, err
+			}
+		}
+		if name == "archive.read" {
+			if len(reads) == 0 || len(reads) > MaxArchiveReadItems {
+				return nil, fmt.Errorf("plugins: archive.read takes 1..%d reads", MaxArchiveReadItems)
+			}
+			var totalRequested int64
+			for _, item := range reads {
+				if err = validDataRange(DataRange{Offset: item.Offset, Length: item.Length}, readCap); err != nil {
+					return nil, err
+				}
+				if item.Length > readCap-totalRequested {
+					return nil, fmt.Errorf("plugins: archive.read requested bytes exceed per-call readBytes limit (%d)", readCap)
+				}
+				totalRequested += item.Length
+			}
+			if err = wasm.ChargeUnits(ctx, int64(len(reads))*wasm.ArchiveReadUnitsPerMember); err != nil {
 				return nil, err
 			}
 		}
@@ -6814,8 +7142,14 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			if _, err = rc.Seek(opt.Offset, io.SeekStart); err != nil {
 				return nil, err
 			}
+			sizeHint := min(opt.Length, int64(64<<10))
+			if sizer, ok := rc.(interface{ Size() int64 }); ok {
+				if rem := sizer.Size() - opt.Offset; rem >= 0 {
+					sizeHint = min(opt.Length, rem)
+				}
+			}
 			opt.Offset = 0
-			value, err = readDataRange(ctx, rc, opt)
+			value, err = readDataRange(ctx, rc, opt, readCap, sizeHint)
 		} else {
 			var archive *dataArchive
 			var e error
@@ -6831,22 +7165,28 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			case "archive.list":
 				value = archive.members
 			case "archive.open":
-				if member < 0 || member >= len(archive.members) {
-					return nil, fmt.Errorf("plugins: archive member index outside range")
+				var data []byte
+				data, err = readArchiveMemberRange(ctx, archive, member, opt, readCap)
+				if err != nil {
+					return nil, err
 				}
-				f := archive.members[member]
-				if f.Unsafe {
-					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				value = map[string]any{"bodyBase64": base64.StdEncoding.EncodeToString(data), "size": len(data)}
+			case "archive.read":
+				out := make([]ArchiveReadResult, len(reads))
+				for i, item := range reads {
+					var data []byte
+					data, err = readArchiveMemberRange(ctx, archive, item.Member, DataRange{Offset: item.Offset, Length: item.Length}, readCap)
+					if err != nil {
+						return nil, err
+					}
+					out[i] = ArchiveReadResult{
+						Index:      i,
+						Member:     item.Member,
+						Size:       len(data),
+						BodyBase64: base64.StdEncoding.EncodeToString(data),
+					}
 				}
-				if uint64(opt.Offset) > f.Size {
-					return nil, fmt.Errorf("plugins: archive member offset outside range")
-				}
-				stream, e := archive.open(member)
-				if e != nil {
-					return nil, e
-				}
-				defer stream.Close()
-				value, err = readDataRange(ctx, io.LimitReader(stream, int64(f.Size)), opt)
+				value = out
 			case "archive.extract":
 				if member < 0 || member >= len(archive.members) {
 					return nil, fmt.Errorf("plugins: archive member index outside range")
@@ -6926,7 +7266,15 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 
 ``````
 func defaultDataLimits() RuntimeLimits {
-	return RuntimeLimits{FetchBytes: MaxDataFetchBytes, ArchiveMemberBytes: maxArchiveMemberBytes, ArchiveExpandedBytes: maxArchiveExpandedBytes, ArchiveMembers: maxArchiveMembers, Deadline: "12h"}
+	return RuntimeLimits{
+		MemoryBytes:          32 << 20,
+		ReadBytes:            MinDataReadBytes,
+		FetchBytes:           MaxDataFetchBytes,
+		ArchiveMemberBytes:   maxArchiveMemberBytes,
+		ArchiveExpandedBytes: maxArchiveExpandedBytes,
+		ArchiveMembers:       maxArchiveMembers,
+		Deadline:             "12h",
+	}
 }
 ``````
 
@@ -7457,8 +7805,12 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 
 ``````
 func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error) {
-	if _, _, err := h.record(ctx); err != nil {
+	r, err := h.callRecord(ctx)
+	if err != nil {
 		return nil, err
+	}
+	if !r.Enabled {
+		return nil, ErrDisabled
 	}
 	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
 	if !ok || len(hexPart) != 64 {
@@ -8072,7 +8424,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open", "archive.extract":
+	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open", "archive.read", "archive.extract":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -8241,17 +8593,23 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		}
 		return result(map[string]any{"blob": ref}, nil)
 	case "cache.open":
+		readCap := int64(MinDataReadBytes)
+		if provider, ok := b.h.(interface {
+			DataLimits(context.Context) RuntimeLimits
+		}); ok {
+			readCap = dataReadLimit(provider.DataLimits(ctx))
+		}
 		rc, err := b.h.CacheOpen(ctx, str(0))
 		if err != nil {
 			return nil, mapHostError(err)
 		}
 		defer rc.Close()
-		data, err := io.ReadAll(io.LimitReader(rc, wasm.MaxHostResultBytes+1))
+		data, err := io.ReadAll(io.LimitReader(rc, readCap+1))
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		if len(data) > wasm.MaxHostResultBytes {
-			return nil, &wasm.Fault{Code: "host_error", Message: "cached blob exceeds host result size cap"}
+		if int64(len(data)) > readCap {
+			return nil, &wasm.Fault{Code: "host_error", Message: "cached blob exceeds per-call readBytes limit"}
 		}
 		out := map[string]any{}
 		if utf8.Valid(data) {
@@ -8908,6 +9266,21 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		return nil, wasm.Forbidden("undeclared secret " + sec)
 	case "settings.get":
 		return json.RawMessage(`{}`), nil
+	case "runtime.limits":
+		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
+			b, _ := json.Marshal(l)
+			return b, nil
+		}
+		b, _ := json.Marshal(plugins.RuntimeLimits{
+			MemoryBytes:          32 << 20,
+			ReadBytes:            plugins.MinDataReadBytes,
+			FetchBytes:           plugins.MaxDataFetchBytes,
+			ArchiveMemberBytes:   8 << 30,
+			ArchiveExpandedBytes: 32 << 30,
+			ArchiveMembers:       65535,
+			Deadline:             "12h",
+		})
+		return b, nil
 	case "addon.get":
 		// An add-on-backed plugin's checks run offline: the add-on answers
 		// with an empty, well-formed Stremio response.
@@ -13427,7 +13800,7 @@ type Host interface {
 // host's per-plugin quota still applies on top.
 const (
 	maxKVValueBytes    = 5 << 20
-	maxHostBodyBytes   = 1 << 20
+	maxHostBodyBytes   = 2 << 20
 	maxCollectionBytes = 2 << 20
 	maxKindUpsertBytes = 8 << 20
 	maxCacheBlobBytes  = 256 << 20
@@ -13505,6 +13878,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/cache/{blobRef...}", h.cacheOpen)
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
+	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -13881,6 +14255,22 @@ func (h *HostHandler) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": v})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.runtimeLimits
+
+``````
+func (h *HostHandler) runtimeLimits(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.host.(interface {
+		CallDataHost(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	})
+	if !ok {
+		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "Data services unavailable")
+		return
+	}
+	out, err := service.CallDataHost(r.Context(), pluginIDOf(r), "runtime.limits", json.RawMessage("[]"))
+	h.writeRaw(w, out, err)
 }
 ``````
 
@@ -14557,7 +14947,12 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 	}
 	c := m.runtimeCeilings(man.ID)
 	l := runtimeLimitsWithCeilings(man, c)
-	r := &RuntimeLimits{MemoryBytes: l.MemoryBytes, Deadline: l.Deadline.String(), UnitBudget: l.UnitBudget}
+	r := &RuntimeLimits{
+		MemoryBytes: l.MemoryBytes,
+		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
+		Deadline:    l.Deadline.String(),
+		UnitBudget:  l.UnitBudget,
+	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
 	r.ArchiveExpandedBytes = c.expanded
@@ -14634,19 +15029,82 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 }
 ``````
 
+## Source: internal/plugins/runtime_limits.go#callRecordKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/runtime_limits.go#callRecordKey
+
+``````
+type callRecordKey struct{}
+``````
+
+## Source: internal/plugins/runtime_limits.go#cachedCallRecord.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/runtime_limits.go#cachedCallRecord
+
+``````
+type cachedCallRecord struct {
+	m      *Manager
+	plugin string
+	rec    Record
+}
+``````
+
+## Source: internal/plugins/runtime_limits.go#withCallRecord
+
+``````
+func withCallRecord(ctx context.Context, h Host) context.Context {
+	ph, ok := h.(*host)
+	if !ok {
+		return ctx
+	}
+	rec, err := ph.m.store.record(ctx, ph.plugin)
+	if err != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, callRecordKey{}, cachedCallRecord{m: ph.m, plugin: ph.plugin, rec: rec})
+}
+``````
+
+## Source: internal/plugins/runtime_limits.go#*host.callRecord
+
+``````
+func (h *host) callRecord(ctx context.Context) (Record, error) {
+	if cached, ok := ctx.Value(callRecordKey{}).(cachedCallRecord); ok && cached.m == h.m && cached.plugin == h.plugin {
+		return cached.rec, nil
+	}
+	return h.m.store.record(ctx, h.plugin)
+}
+``````
+
 ## Source: internal/plugins/runtime_limits.go#*host.DataLimits
 
 ``````
 // DataLimits exposes owner grants to shared hosted/remote data services.
 func (h *host) DataLimits(ctx context.Context) RuntimeLimits {
-	rec, err := h.m.Get(ctx, h.plugin)
+	rec, err := h.callRecord(ctx)
 	if err == nil {
 		if l := h.m.grantedRuntimeLimits(rec.Manifest); l != nil {
 			return *l
 		}
 	}
 	c := h.m.runtimeCeilings(h.plugin)
-	return RuntimeLimits{FetchBytes: c.fetch, ArchiveMemberBytes: c.member, ArchiveExpandedBytes: c.expanded, ArchiveMembers: c.members, Deadline: c.deadline.String()}
+	return RuntimeLimits{
+		FetchBytes:           c.fetch,
+		ArchiveMemberBytes:   c.member,
+		ArchiveExpandedBytes: c.expanded,
+		ArchiveMembers:       c.members,
+		MemoryBytes:          c.memory,
+		ReadBytes:            wasm.DataReadBytes(c.memory),
+		Deadline:             c.deadline.String(),
+	}
 }
 ``````
 
@@ -17753,6 +18211,7 @@ globalThis.ether = (() => {
   const ether = {
     log: (...a) => { try { __ether_host("log", JSON.stringify(a.map(String))); } catch (e) {} },
     abort: (msg) => { throw new Error("__ETHER_FAULT__" + JSON.stringify({ code: "aborted", message: String(msg == null ? "aborted" : msg) })); },
+    runtime: { limits: () => call("runtime.limits", []) },
     kv: { get: (k) => call("kv.get", [k]), put: (k, v) => call("kv.put", [k, v]),
           delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]) },
     settings: { get: () => call("settings.get", []) },
@@ -17769,7 +18228,7 @@ globalThis.ether = (() => {
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
              open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]) },
-    archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
+    archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
     frontend: { streamURL: (itemRef) => call("frontend.streamURL", [itemRef]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
@@ -18007,6 +18466,23 @@ type jsInstance struct {
 }
 ``````
 
+## Source: internal/plugins/wasm/js.go#newJSArrayBuffer
+
+``````
+func newJSArrayBuffer(qc *qjs.Context, data []byte) (*qjs.Value, error) {
+	if len(data) == 0 {
+		return qc.Call("QJS_NewArrayBufferCopy", qc.Raw(), 0, 0), nil
+	}
+	ptr := qc.Malloc(uint64(len(data)))
+	if ptr == 0 {
+		return nil, errors.New("out of guest memory")
+	}
+	defer qc.FreeHandle(ptr)
+	qc.MemWrite(uint32(ptr), data)
+	return qc.Call("QJS_NewArrayBufferCopy", qc.Raw(), ptr, uint64(len(data))), nil
+}
+``````
+
 ## Source: internal/plugins/wasm/js.go#newJSInstance
 
 ``````
@@ -18049,6 +18525,90 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 				return qc.NewFloat64(-1), nil
 			}
 			return qc.NewFloat64(budgetMs(d)), nil
+		})
+	} else {
+		// Native base64 -> ArrayBuffer and direct binary host crossings avoid
+		// multi-megabyte JSON.parse + base64 copies inside QuickJS on wazero.
+		qc.SetFunc("__ether_b64_decode", func(this *qjs.This) (*qjs.Value, error) {
+			args := this.Args()
+			if len(args) != 1 {
+				return nil, errors.New("Invalid base64 host result")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(args[0].String())
+			if err != nil {
+				return nil, errors.New("Invalid base64 host result")
+			}
+			return newJSArrayBuffer(qc, decoded)
+		})
+		qc.SetFunc("__ether_host_binary", func(this *qjs.This) (*qjs.Value, error) {
+			args := this.Args()
+			if in.cs == nil || len(args) != 2 {
+				return nil, errors.New(encodeFault(Forbidden("host call outside a plugin call")))
+			}
+			name := args[0].String()
+			out, fault := in.cs.dispatch(name, json.RawMessage(args[1].String()))
+			if fault != nil {
+				return nil, errors.New(encodeFault(fault))
+			}
+			switch name {
+			case "archive.open", "cache.read":
+				var res struct {
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if err := json.Unmarshal(out, &res); err != nil {
+					return nil, err
+				}
+				decoded, err := base64.StdEncoding.DecodeString(res.BodyBase64)
+				if err != nil {
+					return nil, err
+				}
+				return newJSArrayBuffer(qc, decoded)
+			case "archive.read":
+				var rows []struct {
+					Index      int    `json:"index"`
+					Member     int    `json:"member"`
+					Size       int    `json:"size"`
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if err := json.Unmarshal(out, &rows); err != nil {
+					return nil, err
+				}
+				type itemMeta struct {
+					Index  int `json:"index"`
+					Member int `json:"member"`
+					Size   int `json:"size"`
+					Offset int `json:"offset"`
+				}
+				meta := make([]itemMeta, len(rows))
+				totalLen := 0
+				for _, r := range rows {
+					totalLen += base64.StdEncoding.DecodedLen(len(r.BodyBase64))
+				}
+				concat := make([]byte, totalLen)
+				pos := 0
+				for i, r := range rows {
+					n, err := base64.StdEncoding.Decode(concat[pos:], []byte(r.BodyBase64))
+					if err != nil {
+						return nil, err
+					}
+					meta[i] = itemMeta{Index: r.Index, Member: r.Member, Size: n, Offset: pos}
+					pos += n
+				}
+				ab, err := newJSArrayBuffer(qc, concat[:pos])
+				if err != nil {
+					return nil, err
+				}
+				metaBytes, err := json.Marshal(meta)
+				if err != nil {
+					return nil, err
+				}
+				obj := qc.NewObject()
+				obj.SetPropertyStr("metaJson", qc.NewString(string(metaBytes)))
+				obj.SetPropertyStr("buffer", ab)
+				return obj, nil
+			default:
+				return nil, errors.New("unsupported binary host call")
+			}
 		})
 	}
 	if _, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
@@ -18230,7 +18790,7 @@ func (in *jsInstance) loadBatch(ctx context.Context, cs *callState, cands [][]by
 
 ``````
 func (in *jsInstance) rankBatch(ctx context.Context, cs *callState, cands [][]byte, cfg []byte, lim *Limits) ([]*int64, *Error) {
-	if err := in.loadBatch(ctx, cs, cands, cfg, lim); err != nil {
+	if err := in.loadBatch(ctx, cs, cands, cfg, lim) ; err != nil {
 		return nil, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, lim.hotKill())
@@ -18541,8 +19101,8 @@ type Response struct {
 
 ``````
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
-// service method: kv.get, kv.put, kv.delete, kv.list, secret.get,
-// http.fetch, http.fetchToCache, archive.list, archive.open, archive.extract, catalog.search, catalog.get, viewers.history,
+// service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, secret.get,
+// http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, frontend.streamURL,
 // folders.list, folders.stat, notify.owner, log. Args is a JSON array of positional
@@ -18564,11 +19124,12 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 
 ``````
 // Default host-call unit costs, in the spirit of appkit-sandbox's priced
-// host functions. Wall time adds 1 unit per WallUnitInterval; archive.extract
+// host functions. Wall time adds 1 unit per WallUnitInterval; archive.read
+// adds ArchiveReadUnitsPerMember per requested member; archive.extract
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
-	"log": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
+	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
@@ -18588,20 +19149,66 @@ const (
 	WallUnitInterval = 100 * time.Microsecond
 	// BaseCallUnits is charged once per handle call.
 	BaseCallUnits = 10
+	// ArchiveReadUnitsPerMember is charged per requested item in archive.read
+	// on top of archive.read's 50-unit base call cost, so large batches pay
+	// proportional governance units instead of dodging per-call budgets.
+	ArchiveReadUnitsPerMember = 2
 	// ArchiveExtractUnitsPerMiB is charged per started MiB of uncompressed
 	// archive member streamed by archive.extract on top of its base call cost.
 	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
+	// MinDataReadBytes and MaxDataReadBytes bound the per-call readBytes grant
+	// derived from memoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB).
+	MinDataReadBytes = 8 << 20
+	MaxDataReadBytes = 512 << 20
 	// MaxResponseBytes caps a plugin response.
 	MaxResponseBytes = 8 << 20
 	// MaxFetchBodyBytes caps a direct HTTP response before JSON encoding.
 	MaxFetchBodyBytes = 10 << 20
-	// MaxHostResultBytes caps general results; http.fetch additionally permits
-	// the worst-case JSON encoding of MaxFetchBodyBytes plus header space.
+	// MaxHostResultBytes is the baseline host-result floor; actual per-call
+	// host results scale with HostResultBytes(memoryBytes) so base64-encoded
+	// data reads up to readBytes always fit their JSON envelope.
 	MaxHostResultBytes = 4 << 20
 	maxLogsPerCall     = 100
 )
+``````
+
+## Source: internal/plugins/wasm/wasm.go#DataReadBytes
+
+``````
+// DataReadBytes computes the per-call byte ceiling for cache.read,
+// archive.open, and archive.read from a plugin's memory grant:
+// clamp(memoryBytes/4, 8 MiB, 512 MiB), treating 0 as the 32 MiB default.
+func DataReadBytes(memoryBytes uint64) int64 {
+	if memoryBytes == 0 {
+		memoryBytes = 32 << 20
+	}
+	quarter := memoryBytes / 4
+	if quarter < MinDataReadBytes {
+		return MinDataReadBytes
+	}
+	if quarter > MaxDataReadBytes {
+		return MaxDataReadBytes
+	}
+	return int64(quarter)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#HostResultBytes
+
+``````
+// HostResultBytes returns the maximum JSON host-result envelope for a plugin
+// with the given memory grant, including base64 expansion of DataReadBytes
+// plus 1 MiB for JSON framing.
+func HostResultBytes(memoryBytes uint64) int64 {
+	readCap := DataReadBytes(memoryBytes)
+	envelope := ((readCap + 2) / 3) * 4 + (1 << 20)
+	if envelope < MaxHostResultBytes {
+		return MaxHostResultBytes
+	}
+	return envelope
+}
 ``````
 
 ## Source: internal/plugins/wasm/wasm.go#unitChargerKey.fields.md
@@ -18947,13 +19554,13 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 			}
 		}
 	}
-	limit := MaxHostResultBytes
+	limit := HostResultBytes(cs.lim.MemoryBytes)
 	// JSON can escape each text byte as six bytes. HTTPFetch bounds the raw
 	// body to 10 MiB; leave room for its headers and JSON envelope.
 	if name == "http.fetch" {
-		limit = (6 * MaxFetchBodyBytes) + (1 << 20)
+		limit = max(limit, int64((6*MaxFetchBodyBytes)+(1<<20)))
 	}
-	if len(out) > limit {
+	if int64(len(out)) > limit {
 		return nil, &Fault{Code: "host_error", Message: "host result exceeds size cap"}
 	}
 	if len(out) == 0 {
@@ -20913,9 +21520,17 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
-ArchiveList/Open/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
-ArchiveOpen returns chunks up to 1 MiB; ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])
-streams the uncompressed member into the plugin's library blob cache in one pass and returns
+ArchiveList/Open/Read/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
+Per-call byte reads (`cache.read`, `archive.open`, and summed `archive.read` lengths) scale with
+the plugin's memory grant: `readBytes = clamp(memoryBytes/4, 8 MiB, 512 MiB)` (default 32 MiB → 8 MiB;
+1 GiB → 256 MiB), exposed at runtime via `runtime.limits` (`ether.runtime.limits()` / `BlobHost.RuntimeLimits`).
+Use `archive.open` when reading one member or stepping through one large file in ranges. Use
+`archive.read(blob, reads)` (1..4096 `{member, offset, length}` items summing to `<= readBytes`) when
+parsing many small or medium members from one archive in batches. Big media never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive members
+directly (`internal/plugins/frontend_blob.go`, `frontend.streamURL`); these calls are only for bytes
+the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])`
+streams an uncompressed member into the plugin's library blob cache in one pass and returns
 {ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
 metadata, dictionaries and decoding. Split archives, encryption, unsafe names
@@ -27115,17 +27730,29 @@ the console shows a ready `docker run` command, mounting `-v ether-<id>:/data`
 so the saved credential survives a restart.
 
 
-## Source: sdk/go/data_host.go#BlobHost
+## Source: sdk/go/data_host.go#MinDataReadBytes
 
 ``````
 // BlobHost provides bounded data services. RemoteHostClient implements it;
 // obtain it with ctx.Host.(etherplugin.BlobHost) when starting from Host.
 // The host enforces network grants and the plugin's library cache quota.
+const (
+	MinDataReadBytes    int64 = 8 << 20
+	MaxDataReadBytes    int64 = 512 << 20
+	MaxArchiveReadItems       = 4096
+)
+``````
+
+## Source: sdk/go/data_host.go#BlobHost
+
+``````
 type BlobHost interface {
+	RuntimeLimits(context.Context) (RuntimeLimits, error)
 	FetchToCache(context.Context, FetchCacheRequest) (FetchCacheResult, error)
 	CacheRead(context.Context, string, DataRange) ([]byte, error)
 	ArchiveList(context.Context, string) ([]ArchiveMember, error)
 	ArchiveOpen(context.Context, string, int, DataRange) ([]byte, error)
+	ArchiveRead(context.Context, string, []ArchiveReadItem) ([]ArchiveReadResult, error)
 	ArchiveExtract(context.Context, string, int, ...ArchiveExtractOptions) (ArchiveExtractResult, error)
 }
 ``````
@@ -27144,6 +27771,46 @@ type BlobHost interface {
 type DataRange struct {
 	Offset int64 `json:"offset"`
 	Length int64 `json:"length"`
+}
+``````
+
+## Source: sdk/go/data_host.go#ArchiveReadItem.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `member` | `int` | emitted (validation may require a value) |  |
+| `offset` | `int64` | emitted (validation may require a value) |  |
+| `length` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/data_host.go#ArchiveReadItem
+
+``````
+type ArchiveReadItem struct {
+	Member int   `json:"member"`
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+``````
+
+## Source: sdk/go/data_host.go#ArchiveReadResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `member` | `int` | emitted (validation may require a value) |  |
+| `size` | `int` | emitted (validation may require a value) |  |
+| `body` | `[]byte` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/data_host.go#ArchiveReadResult
+
+``````
+type ArchiveReadResult struct {
+	Index  int    `json:"index"`
+	Member int    `json:"member"`
+	Size   int    `json:"size"`
+	Body   []byte `json:"body"`
 }
 ``````
 
@@ -27300,12 +27967,22 @@ func (c *RemoteHostClient) dataRead(ctx context.Context, name string, args []any
 }
 ``````
 
+## Source: sdk/go/data_host.go#*RemoteHostClient.RuntimeLimits
+
+``````
+func (c *RemoteHostClient) RuntimeLimits(ctx context.Context) (RuntimeLimits, error) {
+	var out RuntimeLimits
+	_, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/limits", nil, &out, false)
+	return out, err
+}
+``````
+
 ## Source: sdk/go/data_host.go#checkDataRange
 
 ``````
 func checkDataRange(r DataRange) error {
-	if r.Offset < 0 || r.Offset > 256<<20 || r.Length <= 0 || r.Length > 1<<20 {
-		return fmt.Errorf("data range needs nonnegative offset and length 1..1048576")
+	if r.Offset < 0 || r.Offset > 1<<60 || r.Length <= 0 || r.Length > MaxDataReadBytes {
+		return fmt.Errorf("data range needs nonnegative offset and length 1..%d", MaxDataReadBytes)
 	}
 	return nil
 }
@@ -27333,6 +28010,49 @@ func (c *RemoteHostClient) ArchiveOpen(ctx context.Context, blob string, member 
 		return nil, err
 	}
 	return c.dataRead(ctx, "archive.open", []any{blob, member, r})
+}
+``````
+
+## Source: sdk/go/data_host.go#*RemoteHostClient.ArchiveRead
+
+``````
+// ArchiveRead reads 1..4096 bounded archive member ranges in one host call
+// while keeping the sum of requested lengths within the plugin's readBytes grant.
+func (c *RemoteHostClient) ArchiveRead(ctx context.Context, blob string, reads []ArchiveReadItem) ([]ArchiveReadResult, error) {
+	if len(reads) == 0 || len(reads) > MaxArchiveReadItems {
+		return nil, fmt.Errorf("archive.read takes 1..%d reads", MaxArchiveReadItems)
+	}
+	var total int64
+	for _, item := range reads {
+		if item.Member < 0 {
+			return nil, fmt.Errorf("archive.read member index must be nonnegative")
+		}
+		if err := checkDataRange(DataRange{Offset: item.Offset, Length: item.Length}); err != nil {
+			return nil, err
+		}
+		if item.Length > MaxDataReadBytes-total {
+			return nil, fmt.Errorf("archive.read requested bytes exceed maximum readBytes ceiling (%d)", MaxDataReadBytes)
+		}
+		total += item.Length
+	}
+	var wire []struct {
+		Index      int    `json:"index"`
+		Member     int    `json:"member"`
+		Size       int    `json:"size"`
+		BodyBase64 string `json:"bodyBase64"`
+	}
+	if err := c.dataCall(ctx, "archive.read", []any{blob, reads}, &wire); err != nil {
+		return nil, err
+	}
+	out := make([]ArchiveReadResult, len(wire))
+	for i, w := range wire {
+		body, err := base64.StdEncoding.DecodeString(w.BodyBase64)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = ArchiveReadResult{Index: w.Index, Member: w.Member, Size: w.Size, Body: body}
+	}
+	return out, nil
 }
 ``````
 
@@ -27726,7 +28446,7 @@ func (c *RemoteHostClient) callJSON(
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (MaxDataReadBytes+2)/3*4+(4<<20)))
 	if err != nil {
 		return false, err
 	}
@@ -32955,6 +33675,7 @@ type RuntimeDecl struct {
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
+| `readBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) |  |
 
@@ -32970,6 +33691,7 @@ type RuntimeLimits struct {
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
+	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"`
 }
@@ -35444,9 +36166,38 @@ class _KVClient:
         return list(res.get("keys", [])) if isinstance(res, dict) else []
 
 
+MIN_DATA_READ_BYTES = 8 * 1024 * 1024
+MAX_DATA_READ_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_READ_ITEMS = 4096
+
+
+class RuntimeLimits(TypedDict, total=False):
+    fetchBytes: int
+    archiveMemberBytes: int
+    archiveExpandedBytes: int
+    archiveMembers: int
+    memoryBytes: int
+    readBytes: int
+    deadline: str
+    unitBudget: int
+
+
 class DataRange(TypedDict):
     offset: int
     length: int
+
+
+class ArchiveReadItem(TypedDict):
+    member: int
+    offset: int
+    length: int
+
+
+class ArchiveReadResult(TypedDict):
+    index: int
+    member: int
+    size: int
+    body: bytes
 
 
 class ArchiveMember(TypedDict, total=False):
@@ -35470,7 +36221,7 @@ class ArchiveExtractResult(TypedDict):
     crc32: str
 
 
-def _check_data_range(data_range: Dict[str, Any]) -> Dict[str, int]:
+def _check_data_range(data_range: Dict[str, Any], max_bytes: int = MAX_DATA_READ_BYTES) -> Dict[str, int]:
     offset = data_range.get("offset")
     length = data_range.get("length")
     if (
@@ -35479,12 +36230,38 @@ def _check_data_range(data_range: Dict[str, Any]) -> Dict[str, int]:
         or not isinstance(offset, int)
         or not isinstance(length, int)
         or offset < 0
-        or offset > 256 * 1024 * 1024
+        or offset > (1 << 60)
         or length <= 0
-        or length > 1024 * 1024
+        or length > max_bytes
     ):
-        raise ValueError("Data range needs nonnegative offset and length 1..1048576")
+        raise ValueError(f"Data range needs nonnegative offset and length 1..{max_bytes}")
     return {"offset": offset, "length": length}
+
+
+def _check_archive_reads(reads: List[ArchiveReadItem], max_bytes: int = MAX_DATA_READ_BYTES) -> List[Dict[str, int]]:
+    if not isinstance(reads, list) or len(reads) == 0 or len(reads) > MAX_ARCHIVE_READ_ITEMS:
+        raise ValueError(f"archive.read takes 1..{MAX_ARCHIVE_READ_ITEMS} reads")
+    normalized: List[Dict[str, int]] = []
+    total = 0
+    for item in reads:
+        member = item.get("member")
+        if isinstance(member, bool) or not isinstance(member, int) or member < 0:
+            raise ValueError("archive.read member index must be a nonnegative integer")
+        rng = _check_data_range(item, max_bytes=max_bytes)
+        total += rng["length"]
+        if total > max_bytes:
+            raise ValueError(f"archive.read requested bytes exceed per-call readBytes limit ({max_bytes})")
+        normalized.append({"member": member, "offset": rng["offset"], "length": rng["length"]})
+    return normalized
+
+
+class _RuntimeClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def limits(self) -> RuntimeLimits:
+        res = self._call("GET", "/ether/plugin-host/limits")
+        return dict(res) if isinstance(res, dict) else {}  # type: ignore[return-value]
 
 
 class _ArchiveClient:
@@ -35499,6 +36276,20 @@ class _ArchiveClient:
         norm = _check_data_range(data_range)
         res = self._call("POST", "/ether/plugin-host/data/archive.open", [str(blob_ref), int(member), norm])
         return base64.b64decode((res or {}).get("bodyBase64") or "")
+
+    def read(self, blob_ref: str, reads: List[ArchiveReadItem]) -> List[ArchiveReadResult]:
+        norm = _check_archive_reads(reads)
+        res = self._call("POST", "/ether/plugin-host/data/archive.read", [str(blob_ref), norm])
+        rows = res if isinstance(res, list) else []
+        return [
+            {
+                "index": int(row["index"]),
+                "member": int(row["member"]),
+                "size": int(row["size"]),
+                "body": base64.b64decode(row.get("bodyBase64") or ""),
+            }
+            for row in rows
+        ]
 
     def extract(
         self,
@@ -35626,6 +36417,7 @@ class RemoteHostClient:
         self.collections = _CollectionsClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json)
+        self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
         self.frontend = _FrontendClient(self._call_json)
@@ -35677,7 +36469,7 @@ class RemoteHostClient:
             method=method,
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
@@ -37101,12 +37893,29 @@ class MockHostClient:
         self.kind_store: Dict[str, List[Dict[str, Any]]] = {}
         self.sources: List[Dict[str, Any]] = []
         self.blobs: Dict[str, bytes] = {}
+        self.limits: RuntimeLimits = {
+            "memoryBytes": 32 * 1024 * 1024,
+            "readBytes": MIN_DATA_READ_BYTES,
+            "fetchBytes": 8 * 1024 * 1024 * 1024,
+            "archiveMemberBytes": 8 * 1024 * 1024 * 1024,
+            "archiveExpandedBytes": 32 * 1024 * 1024 * 1024,
+            "archiveMembers": 65535,
+            "deadline": "12h",
+        }
+        self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
         self.archive = self._Archive(self)
         self.frontend = self._Frontend(self)
+
+    class _Runtime:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def limits(self) -> RuntimeLimits:
+            return dict(self._p.limits)  # type: ignore[return-value]
 
     class _Frontend:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -37158,7 +37967,8 @@ class MockHostClient:
             return self._p.blobs[blob_ref]
 
         def read(self, blob_ref: str, data_range: DataRange) -> bytes:
-            norm = _check_data_range(data_range)
+            cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
+            norm = _check_data_range(data_range, max_bytes=cap)
             raw = self._p.blobs[blob_ref]
             return raw[norm["offset"] : norm["offset"] + norm["length"]]
 
@@ -37197,7 +38007,8 @@ class MockHostClient:
             import io
             import zipfile
 
-            norm = _check_data_range(data_range)
+            cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
+            norm = _check_data_range(data_range, max_bytes=cap)
             with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
                 infos = zf.infolist()
                 if member < 0 or member >= len(infos):
@@ -37212,6 +38023,32 @@ class MockHostClient:
                 if norm["offset"] > len(data):
                     raise RuntimeError("plugins: archive member offset outside range")
                 return data[norm["offset"] : norm["offset"] + norm["length"]]
+
+        def read(self, blob_ref: str, reads: List[ArchiveReadItem]) -> List[ArchiveReadResult]:
+            import io
+            import zipfile
+
+            cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
+            norm = _check_archive_reads(reads, max_bytes=cap)
+            out: List[ArchiveReadResult] = []
+            with zipfile.ZipFile(io.BytesIO(self._p.blobs[blob_ref])) as zf:
+                infos = zf.infolist()
+                for idx, item in enumerate(norm):
+                    member = item["member"]
+                    if member < 0 or member >= len(infos):
+                        raise RuntimeError("plugins: archive member index outside range")
+                    info = infos[member]
+                    reason = self._unsafe_reason(info.filename)
+                    if reason:
+                        raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
+                    if info.is_dir():
+                        raise RuntimeError("plugins: archive member is a directory")
+                    data = zf.read(info)
+                    if item["offset"] > len(data):
+                        raise RuntimeError("plugins: archive member offset outside range")
+                    chunk = data[item["offset"] : item["offset"] + item["length"]]
+                    out.append({"index": idx, "member": member, "size": len(chunk), "body": chunk})
+            return out
 
         def extract(
             self,
@@ -38259,7 +39096,10 @@ The default download and expanded-member ceilings are **8 GiB** each, total
 archive expansion **32 GiB**, and archive members **65,535**. Downloads also obey
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
-`runtimeLimits` in install preview and detail, displayed side by side.
+`runtimeLimits` in install preview and detail, displayed side by side, and exposes
+the live grant at runtime via `ctx.ether.runtime!.limits()` — including
+`readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)` for sizing `cache.read`,
+`archive.open`, and `archive.read` batches without guessing.
 
 Viewer request-path calls remain bounded: `/stream/`, `/catalog/`, `/meta/`,
 `/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,
@@ -38316,7 +39156,7 @@ bound; traversal, encryption, special files and 1000:1 expansion checks remain.
  * `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`.
  */
 
-import type { MaybePromise } from "./types.ts";
+import type { MaybePromise, RuntimeLimits } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
 
 export interface HostFetchRequest {
@@ -38339,42 +39179,129 @@ export interface HostFetchResponse {
 export interface HashRequest { url: string; algo: "sha256" | "sha1" | "md5"; expectSize?: number }
 export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
+export const MinDataReadBytes = 8 * 1024 * 1024;
+export const MaxDataReadBytes = 512 * 1024 * 1024;
+export const MaxArchiveReadItems = 4096;
+
 export interface DataRange { offset: number; length: number }
+export interface ArchiveReadItem { member: number; offset: number; length: number }
+export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
 export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
 export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }
 
+const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_TABLE = (() => {
+  const t = new Int8Array(128).fill(-1);
+  for (let i = 0; i < B64_ALPHABET.length; i++) {
+    t[B64_ALPHABET.charCodeAt(i)] = i;
+  }
+  return t;
+})();
+
 function checkDataRange(r: DataRange): void {
-  if (!Number.isSafeInteger(r.offset) || r.offset < 0 || r.offset > 256 * 1024 * 1024 || !Number.isSafeInteger(r.length) || r.length <= 0 || r.length > 1024 * 1024) throw new Error("Data range needs nonnegative offset and length 1..1048576");
+  if (
+    !Number.isSafeInteger(r.offset) ||
+    r.offset < 0 ||
+    !Number.isSafeInteger(r.length) ||
+    r.length <= 0 ||
+    r.length > MaxDataReadBytes
+  ) {
+    throw new Error(`Data range needs nonnegative offset and length 1..${MaxDataReadBytes}`);
+  }
 }
+
+function checkArchiveReads(reads: ArchiveReadItem[]): void {
+  if (!Array.isArray(reads) || reads.length === 0 || reads.length > MaxArchiveReadItems) {
+    throw new Error(`archive.read takes 1..${MaxArchiveReadItems} reads`);
+  }
+  let total = 0;
+  for (let i = 0; i < reads.length; i++) {
+    const item = reads[i]!;
+    if (!Number.isSafeInteger(item.member) || item.member < 0) {
+      throw new Error("archive.read member index must be a nonnegative integer");
+    }
+    checkDataRange(item);
+    total += item.length;
+    if (total > MaxDataReadBytes) {
+      throw new Error(`archive.read requested bytes exceed maximum readBytes ceiling (${MaxDataReadBytes})`);
+    }
+  }
+}
+
 function encodeData(data: Uint8Array): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const parts: string[] = [];
   for (let i = 0; i < data.length; i += 3) {
     const n = (data[i]! << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0);
-    parts.push(alphabet[(n >>> 18) & 63]! + alphabet[(n >>> 12) & 63]! + (i + 1 < data.length ? alphabet[(n >>> 6) & 63] : "=") + (i + 2 < data.length ? alphabet[n & 63] : "="));
+    parts.push(
+      B64_ALPHABET[(n >>> 18) & 63]! +
+        B64_ALPHABET[(n >>> 12) & 63]! +
+        (i + 1 < data.length ? B64_ALPHABET[(n >>> 6) & 63] : "=") +
+        (i + 2 < data.length ? B64_ALPHABET[n & 63] : "="),
+    );
   }
   return parts.join("");
 }
+
 function encodeText(text: string): Uint8Array {
-  const encoded = encodeURIComponent(text); const bytes: number[] = [];
+  const encoded = encodeURIComponent(text);
+  const bytes: number[] = [];
   for (let i = 0; i < encoded.length; i++) {
-    if (encoded[i] === "%") { bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16)); i += 2; }
-    else bytes.push(encoded.charCodeAt(i));
+    if (encoded[i] === "%") {
+      bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(encoded.charCodeAt(i));
+    }
   }
   return new Uint8Array(bytes);
 }
+
 function decodeData(r: { bodyBase64: string }): Uint8Array {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const text = r.bodyBase64;
-  const out = new Uint8Array(Math.floor(text.length * 3 / 4) - (text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0));
-  let acc = 0, bits = 0, pos = 0;
-  for (const c of text) {
-    if (c === "=") break;
-    const n = alphabet.indexOf(c); if (n < 0) throw new Error("Invalid base64 host result");
-    acc = (acc << 6) | n; bits += 6;
-    if (bits >= 8) { bits -= 8; out[pos++] = (acc >> bits) & 255; }
+  if (text.length === 0) return new Uint8Array(0);
+  const g = globalThis as unknown as GlobalEtherBindings;
+  if (typeof g.__ether_b64_decode === "function") {
+    return new Uint8Array(g.__ether_b64_decode(text));
+  }
+  const len = text.length;
+  if ((len & 3) !== 0) throw new Error("Invalid base64 host result");
+  const pad = text.charCodeAt(len - 1) === 61 ? (text.charCodeAt(len - 2) === 61 ? 2 : 1) : 0;
+  const out = new Uint8Array(((len * 3) >> 2) - pad);
+  const mainEnd = pad > 0 ? len - 4 : len;
+  let pos = 0;
+  for (let i = 0; i < mainEnd; i += 4) {
+    const c0 = text.charCodeAt(i);
+    const c1 = text.charCodeAt(i + 1);
+    const c2 = text.charCodeAt(i + 2);
+    const c3 = text.charCodeAt(i + 3);
+    const b0 = c0 < 128 ? B64_TABLE[c0]! : -1;
+    const b1 = c1 < 128 ? B64_TABLE[c1]! : -1;
+    const b2 = c2 < 128 ? B64_TABLE[c2]! : -1;
+    const b3 = c3 < 128 ? B64_TABLE[c3]! : -1;
+    if ((b0 | b1 | b2 | b3) < 0) throw new Error("Invalid base64 host result");
+    const n = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
+    out[pos++] = (n >> 16) & 255;
+    out[pos++] = (n >> 8) & 255;
+    out[pos++] = n & 255;
+  }
+  if (pad > 0) {
+    const c0 = text.charCodeAt(len - 4);
+    const c1 = text.charCodeAt(len - 3);
+    const b0 = c0 < 128 ? B64_TABLE[c0]! : -1;
+    const b1 = c1 < 128 ? B64_TABLE[c1]! : -1;
+    if ((b0 | b1) < 0) throw new Error("Invalid base64 host result");
+    if (pad === 2) {
+      out[pos++] = ((b0 << 2) | (b1 >> 4)) & 255;
+    } else {
+      const c2 = text.charCodeAt(len - 2);
+      const b2 = c2 < 128 ? B64_TABLE[c2]! : -1;
+      if (b2 < 0) throw new Error("Invalid base64 host result");
+      const n = (b0 << 12) | (b1 << 6) | b2;
+      out[pos++] = (n >> 10) & 255;
+      out[pos++] = (n >> 2) & 255;
+    }
   }
   return out;
 }
@@ -38412,6 +39339,7 @@ export interface ViewerWatchEntry {
 }
 
 export interface EtherHost {
+  runtime?: { limits(): MaybePromise<RuntimeLimits> };
   settings?: { get(): MaybePromise<Record<string, unknown>> };
   kv: {
     get(key: string): MaybePromise<string | null>;
@@ -38480,6 +39408,7 @@ export interface EtherHost {
   archive?: {
     list(blobRef: string): MaybePromise<ArchiveMember[]>;
     open(blobRef: string, member: number, range: DataRange): MaybePromise<Uint8Array>;
+    read(blobRef: string, reads: ArchiveReadItem[]): MaybePromise<ArchiveReadResult[]>;
     extract(blobRef: string, member: number, opts?: ArchiveExtractOptions): MaybePromise<ArchiveExtractResult>;
   };
   /**
@@ -38496,6 +39425,8 @@ export interface EtherHost {
 
 interface GlobalEtherBindings {
   __ether_host?: (name: string, argsJson: string) => string;
+  __ether_host_binary?: (name: string, argsJson: string) => unknown;
+  __ether_b64_decode?: (text: string) => ArrayBuffer;
   ether?: {
     log: (...args: unknown[]) => void;
     abort: (msg?: string) => never;
@@ -38567,15 +39498,40 @@ export function createHostedClient(): EtherHost {
   };
 
   return {
+    runtime: {
+      limits: () => callHost<RuntimeLimits>("runtime.limits", []),
+    },
     archive: {
       list: (blob) => callHost<ArchiveMember[]>("archive.list", [blob]),
-      open: (blob, member, range) => { checkDataRange(range); return decodeData(callHost("archive.open", [blob, member, range])); },
+      open: (blob, member, range) => {
+        checkDataRange(range);
+        if (typeof g.__ether_host_binary === "function") {
+          return new Uint8Array(g.__ether_host_binary("archive.open", JSON.stringify([blob, member, range])) as ArrayBuffer);
+        }
+        return decodeData(callHost("archive.open", [blob, member, range]));
+      },
+      read: (blob, reads) => {
+        checkArchiveReads(reads);
+        if (typeof g.__ether_host_binary === "function") {
+          const packed = g.__ether_host_binary("archive.read", JSON.stringify([blob, reads])) as { metaJson: string; buffer: ArrayBuffer };
+          const meta = JSON.parse(packed.metaJson) as Array<{ index: number; member: number; size: number; offset: number }>;
+          return meta.map((m) => ({ index: m.index, member: m.member, size: m.size, body: new Uint8Array(packed.buffer, m.offset, m.size) }));
+        }
+        const rows = callHost<Array<{ index: number; member: number; size: number; bodyBase64: string }>>("archive.read", [blob, reads]);
+        return rows.map((row) => ({ index: row.index, member: row.member, size: row.size, body: decodeData(row) }));
+      },
       extract: (blob, member, opts) => callHost<ArchiveExtractResult>("archive.extract", opts == null ? [blob, member] : [blob, member, opts]),
     },
     cache: {
       put: (lib, name, data) => callHost<{blob: string}>("cache.put", [lib, name, {bodyBase64: encodeData(data)}]).blob,
       open: (blob) => { const r = callHost<{body?: string; bodyBase64?: string}>("cache.open", [blob]); return r.bodyBase64 ? decodeData({bodyBase64: r.bodyBase64}) : encodeText(r.body ?? ""); },
-      read: (blob, range) => { checkDataRange(range); return decodeData(callHost("cache.read", [blob, range])); },
+      read: (blob, range) => {
+        checkDataRange(range);
+        if (typeof g.__ether_host_binary === "function") {
+          return new Uint8Array(g.__ether_host_binary("cache.read", JSON.stringify([blob, range])) as ArrayBuffer);
+        }
+        return decodeData(callHost("cache.read", [blob, range]));
+      },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
     kv: {
@@ -38803,9 +39759,17 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
   };
 
   return {
+    runtime: {
+      limits: async () => (await callJson<RuntimeLimits>("GET", "/ether/plugin-host/limits")) ?? {},
+    },
     archive: {
       list: async (blob) => (await callJson<ArchiveMember[]>("POST", "/ether/plugin-host/data/archive.list", [blob])) ?? [],
       open: async (blob, member, range) => { checkDataRange(range); return decodeData((await callJson<{bodyBase64: string}>("POST", "/ether/plugin-host/data/archive.open", [blob, member, range]))!); },
+      read: async (blob, reads) => {
+        checkArchiveReads(reads);
+        const rows = (await callJson<Array<{ index: number; member: number; size: number; bodyBase64: string }>>("POST", "/ether/plugin-host/data/archive.read", [blob, reads])) ?? [];
+        return rows.map((row) => ({ index: row.index, member: row.member, size: row.size, body: decodeData(row) }));
+      },
       extract: async (blob, member, opts) => (await callJson<ArchiveExtractResult>("POST", "/ether/plugin-host/data/archive.extract", opts == null ? [blob, member] : [blob, member, opts]))!,
     },
     ...(credential ? { settings: { get: async () => (await callJson<{ settings: Record<string, unknown> }>("GET", "/ether/plugin-host/settings"))?.settings ?? {} } } : {}),
@@ -39132,12 +40096,17 @@ export {
   createHostedHostClient,
   createRemoteHostClient,
   isHostedRuntime,
+  MinDataReadBytes,
+  MaxDataReadBytes,
+  MaxArchiveReadItems,
   type CatalogTitleSummary,
   type EtherHost,
   type FolderEntry,
   type FolderHash,
   type FolderHashJob,
   type DataRange,
+  type ArchiveReadItem,
+  type ArchiveReadResult,
   type HashRequest,
   type HashResult,
   type ArchiveExtractOptions,
@@ -41745,6 +42714,7 @@ export interface RuntimeLimits {
   archiveExpandedBytes?: number;
   archiveMembers?: number;
   memoryBytes?: number;
+  readBytes?: number;
   deadline?: string;
   unitBudget?: number;
 }

@@ -10,17 +10,36 @@ import (
 // BlobHost provides bounded data services. RemoteHostClient implements it;
 // obtain it with ctx.Host.(etherplugin.BlobHost) when starting from Host.
 // The host enforces network grants and the plugin's library cache quota.
+const (
+	MinDataReadBytes    int64 = 8 << 20
+	MaxDataReadBytes    int64 = 512 << 20
+	MaxArchiveReadItems       = 4096
+)
+
 type BlobHost interface {
+	RuntimeLimits(context.Context) (RuntimeLimits, error)
 	FetchToCache(context.Context, FetchCacheRequest) (FetchCacheResult, error)
 	CacheRead(context.Context, string, DataRange) ([]byte, error)
 	ArchiveList(context.Context, string) ([]ArchiveMember, error)
 	ArchiveOpen(context.Context, string, int, DataRange) ([]byte, error)
+	ArchiveRead(context.Context, string, []ArchiveReadItem) ([]ArchiveReadResult, error)
 	ArchiveExtract(context.Context, string, int, ...ArchiveExtractOptions) (ArchiveExtractResult, error)
 }
 
 type DataRange struct {
 	Offset int64 `json:"offset"`
 	Length int64 `json:"length"`
+}
+type ArchiveReadItem struct {
+	Member int   `json:"member"`
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+type ArchiveReadResult struct {
+	Index  int    `json:"index"`
+	Member int    `json:"member"`
+	Size   int    `json:"size"`
+	Body   []byte `json:"body"`
 }
 type FetchCacheRequest struct {
 	URL        string            `json:"url"`
@@ -79,9 +98,15 @@ func (c *RemoteHostClient) dataRead(ctx context.Context, name string, args []any
 	}
 	return base64.StdEncoding.DecodeString(out.BodyBase64)
 }
+func (c *RemoteHostClient) RuntimeLimits(ctx context.Context) (RuntimeLimits, error) {
+	var out RuntimeLimits
+	_, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/limits", nil, &out, false)
+	return out, err
+}
+
 func checkDataRange(r DataRange) error {
-	if r.Offset < 0 || r.Offset > 256<<20 || r.Length <= 0 || r.Length > 1<<20 {
-		return fmt.Errorf("data range needs nonnegative offset and length 1..1048576")
+	if r.Offset < 0 || r.Offset > 1<<60 || r.Length <= 0 || r.Length > MaxDataReadBytes {
+		return fmt.Errorf("data range needs nonnegative offset and length 1..%d", MaxDataReadBytes)
 	}
 	return nil
 }
@@ -100,6 +125,45 @@ func (c *RemoteHostClient) ArchiveOpen(ctx context.Context, blob string, member 
 		return nil, err
 	}
 	return c.dataRead(ctx, "archive.open", []any{blob, member, r})
+}
+
+// ArchiveRead reads 1..4096 bounded archive member ranges in one host call
+// while keeping the sum of requested lengths within the plugin's readBytes grant.
+func (c *RemoteHostClient) ArchiveRead(ctx context.Context, blob string, reads []ArchiveReadItem) ([]ArchiveReadResult, error) {
+	if len(reads) == 0 || len(reads) > MaxArchiveReadItems {
+		return nil, fmt.Errorf("archive.read takes 1..%d reads", MaxArchiveReadItems)
+	}
+	var total int64
+	for _, item := range reads {
+		if item.Member < 0 {
+			return nil, fmt.Errorf("archive.read member index must be nonnegative")
+		}
+		if err := checkDataRange(DataRange{Offset: item.Offset, Length: item.Length}); err != nil {
+			return nil, err
+		}
+		if item.Length > MaxDataReadBytes-total {
+			return nil, fmt.Errorf("archive.read requested bytes exceed maximum readBytes ceiling (%d)", MaxDataReadBytes)
+		}
+		total += item.Length
+	}
+	var wire []struct {
+		Index      int    `json:"index"`
+		Member     int    `json:"member"`
+		Size       int    `json:"size"`
+		BodyBase64 string `json:"bodyBase64"`
+	}
+	if err := c.dataCall(ctx, "archive.read", []any{blob, reads}, &wire); err != nil {
+		return nil, err
+	}
+	out := make([]ArchiveReadResult, len(wire))
+	for i, w := range wire {
+		body, err := base64.StdEncoding.DecodeString(w.BodyBase64)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = ArchiveReadResult{Index: w.Index, Member: w.Member, Size: w.Size, Body: body}
+	}
+	return out, nil
 }
 
 // ArchiveExtract streams an uncompressed ZIP, 7z or RAR member straight into

@@ -219,3 +219,73 @@ test("archive.extract wires hosted and remote clients", async () => {
     body: ["blob:" + "0".repeat(64), 2, { name: "track01.bin" }],
   });
 });
+
+test("archive.read and runtime.limits wire hosted, remote, and mock clients", async () => {
+  const mock = createMockHostClient();
+  const mockLimits = await mock.runtime!.limits();
+  assert.equal(mockLimits.readBytes, 8 * 1024 * 1024);
+
+  const blob = "blob:" + "1".repeat(64);
+  const wireRows = [
+    { index: 0, member: 4, size: 5, bodyBase64: Buffer.from("alpha").toString("base64") },
+    { index: 1, member: 9, size: 4, bodyBase64: Buffer.from([0, 255, 16, 42]).toString("base64") },
+  ];
+
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  const hostedCalls: Array<{ name: string; args: unknown }> = [];
+  g.__ether_host = (name: string, raw: string) => {
+    hostedCalls.push({ name, args: JSON.parse(raw) });
+    if (name === "runtime.limits") {
+      return JSON.stringify({ memoryBytes: 1073741824, readBytes: 268435456 });
+    }
+    return JSON.stringify(wireRows);
+  };
+  try {
+    const hosted = createHostedClient();
+    const lim = await hosted.runtime!.limits();
+    assert.equal(lim.readBytes, 268435456);
+    const out = await hosted.archive!.read(blob, [
+      { member: 4, offset: 0, length: 5 },
+      { member: 9, offset: 2, length: 4 },
+    ]);
+    assert.equal(out.length, 2);
+    assert.equal(new TextDecoder().decode(out[0]!.body), "alpha");
+    assert.deepEqual([...out[1]!.body], [0, 255, 16, 42]);
+    assert.throws(() => hosted.archive!.read(blob, []));
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+  assert.equal(hostedCalls[0]!.name, "runtime.limits");
+  assert.equal(hostedCalls[1]!.name, "archive.read");
+
+  const remoteSeen: Array<{ url: string; method: string; body: unknown }> = [];
+  const remote = createRemoteHostClient({
+    baseUrl: "http://ether.local",
+    credential: "cred-1",
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      remoteSeen.push({
+        url: u,
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      if (u.endsWith("/ether/plugin-host/limits")) {
+        return new Response(JSON.stringify({ memoryBytes: 33554432, readBytes: 8388608 }), { status: 200 });
+      }
+      return new Response(JSON.stringify(wireRows), { status: 200 });
+    }) as typeof fetch,
+  });
+  const rLim = await remote.runtime!.limits();
+  assert.equal(rLim.readBytes, 8388608);
+  const rOut = await remote.archive!.read(blob, [
+    { member: 4, offset: 0, length: 5 },
+    { member: 9, offset: 2, length: 4 },
+  ]);
+  assert.equal(rOut.length, 2);
+  assert.equal(new TextDecoder().decode(rOut[0]!.body), "alpha");
+  assert.deepEqual([...rOut[1]!.body], [0, 255, 16, 42]);
+  assert.equal(remoteSeen[0]!.url, "http://ether.local/ether/plugin-host/limits");
+  assert.equal(remoteSeen[1]!.url, "http://ether.local/ether/plugin-host/data/archive.read");
+});

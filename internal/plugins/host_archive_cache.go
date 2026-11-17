@@ -15,7 +15,8 @@ type archiveDirectoryKey struct {
 	ref    string
 	format container.Format
 	// Grants are part of the key so a directory validated under a larger grant
-	// cannot bypass stricter limits. Deadline and unit budget do not affect parsing.
+	// cannot bypass stricter limits. Deadline, unit budget and per-call read
+	// ceiling do not affect parsing.
 	limits RuntimeLimits
 }
 type archiveDirectoryEntry struct {
@@ -42,7 +43,7 @@ func (c *archiveDirectoryCache) open(ctx context.Context, ref string, rc io.Read
 		return nil, err
 	}
 	grants := l
-	grants.Deadline, grants.UnitBudget = "", 0
+	grants.Deadline, grants.UnitBudget, grants.ReadBytes = "", 0, 0
 	key := archiveDirectoryKey{ref: ref, format: container.Detect(sig[:]), limits: grants}
 	for {
 		if err := ctx.Err(); err != nil {

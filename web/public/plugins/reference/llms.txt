@@ -170,9 +170,17 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
-ArchiveList/Open/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
-ArchiveOpen returns chunks up to 1 MiB; ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])
-streams the uncompressed member into the plugin's library blob cache in one pass and returns
+ArchiveList/Open/Read/Extract handle plugin-cached ZIP, 7z (Copy/LZMA/LZMA2), and RAR 4/5.
+Per-call byte reads (`cache.read`, `archive.open`, and summed `archive.read` lengths) scale with
+the plugin's memory grant: `readBytes = clamp(memoryBytes/4, 8 MiB, 512 MiB)` (default 32 MiB → 8 MiB;
+1 GiB → 256 MiB), exposed at runtime via `runtime.limits` (`ether.runtime.limits()` / `BlobHost.RuntimeLimits`).
+Use `archive.open` when reading one member or stepping through one large file in ranges. Use
+`archive.read(blob, reads)` (1..4096 `{member, offset, length}` items summing to `<= readBytes`) when
+parsing many small or medium members from one archive in batches. Big media never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive members
+directly (`internal/plugins/frontend_blob.go`, `frontend.streamURL`); these calls are only for bytes
+the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])`
+streams an uncompressed member into the plugin's library blob cache in one pass and returns
 {ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
 metadata, dictionaries and decoding. Split archives, encryption, unsafe names

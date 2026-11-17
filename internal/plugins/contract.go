@@ -189,8 +189,12 @@ type RuntimeLimits struct {
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"` // default 32 MiB, ceiling owner-controlled, up to 4 GiB
-	Deadline             string `json:"deadline,omitempty"`    // Go duration; default 12h, owner-controlled ceiling
-	UnitBudget           int64  `json:"unitBudget,omitempty"`  // default effectively unlimited, owner-controlled ceiling
+	// ReadBytes is the granted per-call byte ceiling for cache.read,
+	// archive.open and archive.read, derived from MemoryBytes:
+	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
+	ReadBytes  int64  `json:"readBytes,omitempty"`
+	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h, owner-controlled ceiling
+	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited, owner-controlled ceiling
 }
 
 // SidecarDecl says how a remote plugin's program comes to be: a Docker image,

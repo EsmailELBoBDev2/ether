@@ -78,8 +78,8 @@ type Response struct {
 }
 
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
-// service method: kv.get, kv.put, kv.delete, kv.list, secret.get,
-// http.fetch, http.fetchToCache, archive.list, archive.open, archive.extract, catalog.search, catalog.get, viewers.history,
+// service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, secret.get,
+// http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, frontend.streamURL,
 // folders.list, folders.stat, notify.owner, log. Args is a JSON array of positional
@@ -93,11 +93,12 @@ type Host interface {
 type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
 
 // Default host-call unit costs, in the spirit of appkit-sandbox's priced
-// host functions. Wall time adds 1 unit per WallUnitInterval; archive.extract
+// host functions. Wall time adds 1 unit per WallUnitInterval; archive.read
+// adds ArchiveReadUnitsPerMember per requested member; archive.extract
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
-	"log": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
+	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
@@ -113,20 +114,58 @@ const (
 	WallUnitInterval = 100 * time.Microsecond
 	// BaseCallUnits is charged once per handle call.
 	BaseCallUnits = 10
+	// ArchiveReadUnitsPerMember is charged per requested item in archive.read
+	// on top of archive.read's 50-unit base call cost, so large batches pay
+	// proportional governance units instead of dodging per-call budgets.
+	ArchiveReadUnitsPerMember = 2
 	// ArchiveExtractUnitsPerMiB is charged per started MiB of uncompressed
 	// archive member streamed by archive.extract on top of its base call cost.
 	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
+	// MinDataReadBytes and MaxDataReadBytes bound the per-call readBytes grant
+	// derived from memoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB).
+	MinDataReadBytes = 8 << 20
+	MaxDataReadBytes = 512 << 20
 	// MaxResponseBytes caps a plugin response.
 	MaxResponseBytes = 8 << 20
 	// MaxFetchBodyBytes caps a direct HTTP response before JSON encoding.
 	MaxFetchBodyBytes = 10 << 20
-	// MaxHostResultBytes caps general results; http.fetch additionally permits
-	// the worst-case JSON encoding of MaxFetchBodyBytes plus header space.
+	// MaxHostResultBytes is the baseline host-result floor; actual per-call
+	// host results scale with HostResultBytes(memoryBytes) so base64-encoded
+	// data reads up to readBytes always fit their JSON envelope.
 	MaxHostResultBytes = 4 << 20
 	maxLogsPerCall     = 100
 )
+
+// DataReadBytes computes the per-call byte ceiling for cache.read,
+// archive.open, and archive.read from a plugin's memory grant:
+// clamp(memoryBytes/4, 8 MiB, 512 MiB), treating 0 as the 32 MiB default.
+func DataReadBytes(memoryBytes uint64) int64 {
+	if memoryBytes == 0 {
+		memoryBytes = 32 << 20
+	}
+	quarter := memoryBytes / 4
+	if quarter < MinDataReadBytes {
+		return MinDataReadBytes
+	}
+	if quarter > MaxDataReadBytes {
+		return MaxDataReadBytes
+	}
+	return int64(quarter)
+}
+
+// HostResultBytes returns the maximum JSON host-result envelope for a plugin
+// with the given memory grant, including base64 expansion of DataReadBytes
+// plus 1 MiB for JSON framing.
+func HostResultBytes(memoryBytes uint64) int64 {
+	readCap := DataReadBytes(memoryBytes)
+	envelope := ((readCap + 2) / 3) * 4 + (1 << 20)
+	if envelope < MaxHostResultBytes {
+		return MaxHostResultBytes
+	}
+	return envelope
+}
 
 type unitChargerKey struct{}
 
@@ -378,13 +417,13 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 			}
 		}
 	}
-	limit := MaxHostResultBytes
+	limit := HostResultBytes(cs.lim.MemoryBytes)
 	// JSON can escape each text byte as six bytes. HTTPFetch bounds the raw
 	// body to 10 MiB; leave room for its headers and JSON envelope.
 	if name == "http.fetch" {
-		limit = (6 * MaxFetchBodyBytes) + (1 << 20)
+		limit = max(limit, int64((6*MaxFetchBodyBytes)+(1<<20)))
 	}
-	if len(out) > limit {
+	if int64(len(out)) > limit {
 		return nil, &Fault{Code: "host_error", Message: "host result exceeds size cap"}
 	}
 	if len(out) == 0 {

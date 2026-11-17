@@ -384,7 +384,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open", "archive.extract":
+	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open", "archive.read", "archive.extract":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -553,17 +553,23 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		}
 		return result(map[string]any{"blob": ref}, nil)
 	case "cache.open":
+		readCap := int64(MinDataReadBytes)
+		if provider, ok := b.h.(interface {
+			DataLimits(context.Context) RuntimeLimits
+		}); ok {
+			readCap = dataReadLimit(provider.DataLimits(ctx))
+		}
 		rc, err := b.h.CacheOpen(ctx, str(0))
 		if err != nil {
 			return nil, mapHostError(err)
 		}
 		defer rc.Close()
-		data, err := io.ReadAll(io.LimitReader(rc, wasm.MaxHostResultBytes+1))
+		data, err := io.ReadAll(io.LimitReader(rc, readCap+1))
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		if len(data) > wasm.MaxHostResultBytes {
-			return nil, &wasm.Fault{Code: "host_error", Message: "cached blob exceeds host result size cap"}
+		if int64(len(data)) > readCap {
+			return nil, &wasm.Fault{Code: "host_error", Message: "cached blob exceeds per-call readBytes limit"}
 		}
 		out := map[string]any{}
 		if utf8.Valid(data) {

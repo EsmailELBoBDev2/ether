@@ -7,7 +7,7 @@
  * `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`.
  */
 
-import type { MaybePromise } from "./types.ts";
+import type { MaybePromise, RuntimeLimits } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
 
 export interface HostFetchRequest {
@@ -30,42 +30,129 @@ export interface HostFetchResponse {
 export interface HashRequest { url: string; algo: "sha256" | "sha1" | "md5"; expectSize?: number }
 export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
+export const MinDataReadBytes = 8 * 1024 * 1024;
+export const MaxDataReadBytes = 512 * 1024 * 1024;
+export const MaxArchiveReadItems = 4096;
+
 export interface DataRange { offset: number; length: number }
+export interface ArchiveReadItem { member: number; offset: number; length: number }
+export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
 export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
 export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }
 
+const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_TABLE = (() => {
+  const t = new Int8Array(128).fill(-1);
+  for (let i = 0; i < B64_ALPHABET.length; i++) {
+    t[B64_ALPHABET.charCodeAt(i)] = i;
+  }
+  return t;
+})();
+
 function checkDataRange(r: DataRange): void {
-  if (!Number.isSafeInteger(r.offset) || r.offset < 0 || r.offset > 256 * 1024 * 1024 || !Number.isSafeInteger(r.length) || r.length <= 0 || r.length > 1024 * 1024) throw new Error("Data range needs nonnegative offset and length 1..1048576");
+  if (
+    !Number.isSafeInteger(r.offset) ||
+    r.offset < 0 ||
+    !Number.isSafeInteger(r.length) ||
+    r.length <= 0 ||
+    r.length > MaxDataReadBytes
+  ) {
+    throw new Error(`Data range needs nonnegative offset and length 1..${MaxDataReadBytes}`);
+  }
 }
+
+function checkArchiveReads(reads: ArchiveReadItem[]): void {
+  if (!Array.isArray(reads) || reads.length === 0 || reads.length > MaxArchiveReadItems) {
+    throw new Error(`archive.read takes 1..${MaxArchiveReadItems} reads`);
+  }
+  let total = 0;
+  for (let i = 0; i < reads.length; i++) {
+    const item = reads[i]!;
+    if (!Number.isSafeInteger(item.member) || item.member < 0) {
+      throw new Error("archive.read member index must be a nonnegative integer");
+    }
+    checkDataRange(item);
+    total += item.length;
+    if (total > MaxDataReadBytes) {
+      throw new Error(`archive.read requested bytes exceed maximum readBytes ceiling (${MaxDataReadBytes})`);
+    }
+  }
+}
+
 function encodeData(data: Uint8Array): string {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const parts: string[] = [];
   for (let i = 0; i < data.length; i += 3) {
     const n = (data[i]! << 16) | ((data[i + 1] ?? 0) << 8) | (data[i + 2] ?? 0);
-    parts.push(alphabet[(n >>> 18) & 63]! + alphabet[(n >>> 12) & 63]! + (i + 1 < data.length ? alphabet[(n >>> 6) & 63] : "=") + (i + 2 < data.length ? alphabet[n & 63] : "="));
+    parts.push(
+      B64_ALPHABET[(n >>> 18) & 63]! +
+        B64_ALPHABET[(n >>> 12) & 63]! +
+        (i + 1 < data.length ? B64_ALPHABET[(n >>> 6) & 63] : "=") +
+        (i + 2 < data.length ? B64_ALPHABET[n & 63] : "="),
+    );
   }
   return parts.join("");
 }
+
 function encodeText(text: string): Uint8Array {
-  const encoded = encodeURIComponent(text); const bytes: number[] = [];
+  const encoded = encodeURIComponent(text);
+  const bytes: number[] = [];
   for (let i = 0; i < encoded.length; i++) {
-    if (encoded[i] === "%") { bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16)); i += 2; }
-    else bytes.push(encoded.charCodeAt(i));
+    if (encoded[i] === "%") {
+      bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(encoded.charCodeAt(i));
+    }
   }
   return new Uint8Array(bytes);
 }
+
 function decodeData(r: { bodyBase64: string }): Uint8Array {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const text = r.bodyBase64;
-  const out = new Uint8Array(Math.floor(text.length * 3 / 4) - (text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0));
-  let acc = 0, bits = 0, pos = 0;
-  for (const c of text) {
-    if (c === "=") break;
-    const n = alphabet.indexOf(c); if (n < 0) throw new Error("Invalid base64 host result");
-    acc = (acc << 6) | n; bits += 6;
-    if (bits >= 8) { bits -= 8; out[pos++] = (acc >> bits) & 255; }
+  if (text.length === 0) return new Uint8Array(0);
+  const g = globalThis as unknown as GlobalEtherBindings;
+  if (typeof g.__ether_b64_decode === "function") {
+    return new Uint8Array(g.__ether_b64_decode(text));
+  }
+  const len = text.length;
+  if ((len & 3) !== 0) throw new Error("Invalid base64 host result");
+  const pad = text.charCodeAt(len - 1) === 61 ? (text.charCodeAt(len - 2) === 61 ? 2 : 1) : 0;
+  const out = new Uint8Array(((len * 3) >> 2) - pad);
+  const mainEnd = pad > 0 ? len - 4 : len;
+  let pos = 0;
+  for (let i = 0; i < mainEnd; i += 4) {
+    const c0 = text.charCodeAt(i);
+    const c1 = text.charCodeAt(i + 1);
+    const c2 = text.charCodeAt(i + 2);
+    const c3 = text.charCodeAt(i + 3);
+    const b0 = c0 < 128 ? B64_TABLE[c0]! : -1;
+    const b1 = c1 < 128 ? B64_TABLE[c1]! : -1;
+    const b2 = c2 < 128 ? B64_TABLE[c2]! : -1;
+    const b3 = c3 < 128 ? B64_TABLE[c3]! : -1;
+    if ((b0 | b1 | b2 | b3) < 0) throw new Error("Invalid base64 host result");
+    const n = (b0 << 18) | (b1 << 12) | (b2 << 6) | b3;
+    out[pos++] = (n >> 16) & 255;
+    out[pos++] = (n >> 8) & 255;
+    out[pos++] = n & 255;
+  }
+  if (pad > 0) {
+    const c0 = text.charCodeAt(len - 4);
+    const c1 = text.charCodeAt(len - 3);
+    const b0 = c0 < 128 ? B64_TABLE[c0]! : -1;
+    const b1 = c1 < 128 ? B64_TABLE[c1]! : -1;
+    if ((b0 | b1) < 0) throw new Error("Invalid base64 host result");
+    if (pad === 2) {
+      out[pos++] = ((b0 << 2) | (b1 >> 4)) & 255;
+    } else {
+      const c2 = text.charCodeAt(len - 2);
+      const b2 = c2 < 128 ? B64_TABLE[c2]! : -1;
+      if (b2 < 0) throw new Error("Invalid base64 host result");
+      const n = (b0 << 12) | (b1 << 6) | b2;
+      out[pos++] = (n >> 10) & 255;
+      out[pos++] = (n >> 2) & 255;
+    }
   }
   return out;
 }
@@ -103,6 +190,7 @@ export interface ViewerWatchEntry {
 }
 
 export interface EtherHost {
+  runtime?: { limits(): MaybePromise<RuntimeLimits> };
   settings?: { get(): MaybePromise<Record<string, unknown>> };
   kv: {
     get(key: string): MaybePromise<string | null>;
@@ -171,6 +259,7 @@ export interface EtherHost {
   archive?: {
     list(blobRef: string): MaybePromise<ArchiveMember[]>;
     open(blobRef: string, member: number, range: DataRange): MaybePromise<Uint8Array>;
+    read(blobRef: string, reads: ArchiveReadItem[]): MaybePromise<ArchiveReadResult[]>;
     extract(blobRef: string, member: number, opts?: ArchiveExtractOptions): MaybePromise<ArchiveExtractResult>;
   };
   /**
@@ -187,6 +276,8 @@ export interface EtherHost {
 
 interface GlobalEtherBindings {
   __ether_host?: (name: string, argsJson: string) => string;
+  __ether_host_binary?: (name: string, argsJson: string) => unknown;
+  __ether_b64_decode?: (text: string) => ArrayBuffer;
   ether?: {
     log: (...args: unknown[]) => void;
     abort: (msg?: string) => never;
@@ -258,15 +349,40 @@ export function createHostedClient(): EtherHost {
   };
 
   return {
+    runtime: {
+      limits: () => callHost<RuntimeLimits>("runtime.limits", []),
+    },
     archive: {
       list: (blob) => callHost<ArchiveMember[]>("archive.list", [blob]),
-      open: (blob, member, range) => { checkDataRange(range); return decodeData(callHost("archive.open", [blob, member, range])); },
+      open: (blob, member, range) => {
+        checkDataRange(range);
+        if (typeof g.__ether_host_binary === "function") {
+          return new Uint8Array(g.__ether_host_binary("archive.open", JSON.stringify([blob, member, range])) as ArrayBuffer);
+        }
+        return decodeData(callHost("archive.open", [blob, member, range]));
+      },
+      read: (blob, reads) => {
+        checkArchiveReads(reads);
+        if (typeof g.__ether_host_binary === "function") {
+          const packed = g.__ether_host_binary("archive.read", JSON.stringify([blob, reads])) as { metaJson: string; buffer: ArrayBuffer };
+          const meta = JSON.parse(packed.metaJson) as Array<{ index: number; member: number; size: number; offset: number }>;
+          return meta.map((m) => ({ index: m.index, member: m.member, size: m.size, body: new Uint8Array(packed.buffer, m.offset, m.size) }));
+        }
+        const rows = callHost<Array<{ index: number; member: number; size: number; bodyBase64: string }>>("archive.read", [blob, reads]);
+        return rows.map((row) => ({ index: row.index, member: row.member, size: row.size, body: decodeData(row) }));
+      },
       extract: (blob, member, opts) => callHost<ArchiveExtractResult>("archive.extract", opts == null ? [blob, member] : [blob, member, opts]),
     },
     cache: {
       put: (lib, name, data) => callHost<{blob: string}>("cache.put", [lib, name, {bodyBase64: encodeData(data)}]).blob,
       open: (blob) => { const r = callHost<{body?: string; bodyBase64?: string}>("cache.open", [blob]); return r.bodyBase64 ? decodeData({bodyBase64: r.bodyBase64}) : encodeText(r.body ?? ""); },
-      read: (blob, range) => { checkDataRange(range); return decodeData(callHost("cache.read", [blob, range])); },
+      read: (blob, range) => {
+        checkDataRange(range);
+        if (typeof g.__ether_host_binary === "function") {
+          return new Uint8Array(g.__ether_host_binary("cache.read", JSON.stringify([blob, range])) as ArrayBuffer);
+        }
+        return decodeData(callHost("cache.read", [blob, range]));
+      },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
     kv: {
@@ -494,9 +610,17 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
   };
 
   return {
+    runtime: {
+      limits: async () => (await callJson<RuntimeLimits>("GET", "/ether/plugin-host/limits")) ?? {},
+    },
     archive: {
       list: async (blob) => (await callJson<ArchiveMember[]>("POST", "/ether/plugin-host/data/archive.list", [blob])) ?? [],
       open: async (blob, member, range) => { checkDataRange(range); return decodeData((await callJson<{bodyBase64: string}>("POST", "/ether/plugin-host/data/archive.open", [blob, member, range]))!); },
+      read: async (blob, reads) => {
+        checkArchiveReads(reads);
+        const rows = (await callJson<Array<{ index: number; member: number; size: number; bodyBase64: string }>>("POST", "/ether/plugin-host/data/archive.read", [blob, reads])) ?? [];
+        return rows.map((row) => ({ index: row.index, member: row.member, size: row.size, body: decodeData(row) }));
+      },
       extract: async (blob, member, opts) => (await callJson<ArchiveExtractResult>("POST", "/ether/plugin-host/data/archive.extract", opts == null ? [blob, member] : [blob, member, opts]))!,
     },
     ...(credential ? { settings: { get: async () => (await callJson<{ settings: Record<string, unknown> }>("GET", "/ether/plugin-host/settings"))?.settings ?? {} } } : {}),

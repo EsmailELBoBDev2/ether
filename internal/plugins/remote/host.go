@@ -58,7 +58,7 @@ type Host interface {
 // host's per-plugin quota still applies on top.
 const (
 	maxKVValueBytes    = 5 << 20
-	maxHostBodyBytes   = 1 << 20
+	maxHostBodyBytes   = 2 << 20
 	maxCollectionBytes = 2 << 20
 	maxKindUpsertBytes = 8 << 20
 	maxCacheBlobBytes  = 256 << 20
@@ -112,6 +112,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/cache/{blobRef...}", h.cacheOpen)
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
+	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -402,6 +403,18 @@ func (h *HostHandler) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settings": v})
+}
+
+func (h *HostHandler) runtimeLimits(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.host.(interface {
+		CallDataHost(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	})
+	if !ok {
+		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "Data services unavailable")
+		return
+	}
+	out, err := service.CallDataHost(r.Context(), pluginIDOf(r), "runtime.limits", json.RawMessage("[]"))
+	h.writeRaw(w, out, err)
 }
 
 func (h *HostHandler) notify(w http.ResponseWriter, r *http.Request) {

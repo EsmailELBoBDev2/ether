@@ -168,7 +168,7 @@ func TestDataHostInvariants(t *testing.T) {
 			t.Fatalf("leaked readers: %d opens/%d closes", h.opens, h.closes)
 		}
 		before := h.opens
-		for _, args := range []string{`["blob:test",{"offset":-1,"length":1}]`, `["blob:test",{"offset":0,"length":1048577}]`} {
+		for _, args := range []string{`["blob:test",{"offset":-1,"length":1}]`, `["blob:test",{"offset":0,"length":8388609}]`} {
 			if _, err = CallDataHost(ctx, h, "cache.read", json.RawMessage(args)); err == nil {
 				t.Fatal("invalid range accepted")
 			}

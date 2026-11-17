@@ -77,7 +77,12 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 	}
 	c := m.runtimeCeilings(man.ID)
 	l := runtimeLimitsWithCeilings(man, c)
-	r := &RuntimeLimits{MemoryBytes: l.MemoryBytes, Deadline: l.Deadline.String(), UnitBudget: l.UnitBudget}
+	r := &RuntimeLimits{
+		MemoryBytes: l.MemoryBytes,
+		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
+		Deadline:    l.Deadline.String(),
+		UnitBudget:  l.UnitBudget,
+	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
 	r.ArchiveExpandedBytes = c.expanded
@@ -148,14 +153,49 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.runtimeConfig())
 }
 
+type callRecordKey struct{}
+
+type cachedCallRecord struct {
+	m      *Manager
+	plugin string
+	rec    Record
+}
+
+func withCallRecord(ctx context.Context, h Host) context.Context {
+	ph, ok := h.(*host)
+	if !ok {
+		return ctx
+	}
+	rec, err := ph.m.store.record(ctx, ph.plugin)
+	if err != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, callRecordKey{}, cachedCallRecord{m: ph.m, plugin: ph.plugin, rec: rec})
+}
+
+func (h *host) callRecord(ctx context.Context) (Record, error) {
+	if cached, ok := ctx.Value(callRecordKey{}).(cachedCallRecord); ok && cached.m == h.m && cached.plugin == h.plugin {
+		return cached.rec, nil
+	}
+	return h.m.store.record(ctx, h.plugin)
+}
+
 // DataLimits exposes owner grants to shared hosted/remote data services.
 func (h *host) DataLimits(ctx context.Context) RuntimeLimits {
-	rec, err := h.m.Get(ctx, h.plugin)
+	rec, err := h.callRecord(ctx)
 	if err == nil {
 		if l := h.m.grantedRuntimeLimits(rec.Manifest); l != nil {
 			return *l
 		}
 	}
 	c := h.m.runtimeCeilings(h.plugin)
-	return RuntimeLimits{FetchBytes: c.fetch, ArchiveMemberBytes: c.member, ArchiveExpandedBytes: c.expanded, ArchiveMembers: c.members, Deadline: c.deadline.String()}
+	return RuntimeLimits{
+		FetchBytes:           c.fetch,
+		ArchiveMemberBytes:   c.member,
+		ArchiveExpandedBytes: c.expanded,
+		ArchiveMembers:       c.members,
+		MemoryBytes:          c.memory,
+		ReadBytes:            wasm.DataReadBytes(c.memory),
+		Deadline:             c.deadline.String(),
+	}
 }

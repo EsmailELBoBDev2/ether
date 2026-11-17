@@ -151,7 +151,7 @@ func newW10Fixture(t *testing.T) *w10Fixture {
 	return &w10Fixture{f: f, mgr: mgr, rs: rs, tr: tr, health: health}
 }
 
-func TestW10RedecisionWithBitrateCapSwitchesReleaseAndDirectStreams(t *testing.T) {
+func TestRedecisionWithBitrateCapSwitchesReleaseAndDirectStreams(t *testing.T) {
 	for _, mediaIndex := range []string{"0", "1"} {
 		t.Run("mediaIndex="+mediaIndex, func(t *testing.T) {
 			w := newW10Fixture(t)
@@ -278,7 +278,7 @@ func TestW10RedecisionWithBitrateCapSwitchesReleaseAndDirectStreams(t *testing.T
 	}
 }
 
-func TestW10RedecisionBelowFittingReleaseTranscodesChosenHDSource(t *testing.T) {
+func TestRedecisionBelowFittingReleaseTranscodesChosenHDSource(t *testing.T) {
 	w := newW10Fixture(t)
 	hdr := []string{
 		"X-Plex-Client-Identifier", "04a814bdf7a4d41c-com-plexapp-android",

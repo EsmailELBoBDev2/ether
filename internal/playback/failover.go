@@ -67,6 +67,23 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 	if res != nil && prefer == "" && s.caps.PreferredSourceHeight >= 720 && (res.Release.Info.Height == 0 || res.Release.Info.Height > s.caps.PreferredSourceHeight) {
 		return nil, nil, false
 	}
+	if res != nil && prefer == "" && !s.caps.DefaultRemoteBitrate && s.caps.MaxBitrateKbps > 0 {
+		if cached != nil && cached.info.BitrateKbps > 0 {
+			if cached.info.BitrateKbps > s.caps.MaxBitrateKbps {
+				return nil, nil, false
+			}
+		} else {
+			dur := time.Duration(0)
+			if cached != nil && cached.info.Duration > 0 {
+				dur = cached.info.Duration
+			} else if s.title != nil {
+				dur = s.title.Runtime
+			}
+			if !sourceFitsBitrate(res.Release.Size, dur, 0, s.caps.MaxBitrateKbps) {
+				return nil, nil, false
+			}
+		}
+	}
 	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}

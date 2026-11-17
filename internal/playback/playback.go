@@ -881,6 +881,16 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			m.mu.Unlock()
 			return nil, nil, errors.New("playback: shutting down")
 		}
+		var promotedReplaced []string
+		if !deferSupersession && picked != "" {
+			variantID := identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface, variant: picked, exact: exact}
+			if prep := m.byIdent[variantID]; prep != nil {
+				stale := !exact && m.preferenceStaleLocked(key, picked, m.now())
+				if sessionFitsSelection(prep, caps, "", exact) && (sessionFitsSelection(prep, caps, picked, exact) || (stale && prep.prefer == picked)) {
+					promotedReplaced = m.promotePreparedLocked(id, variantID, prep)
+				}
+			}
+		}
 		if prefer != "" && !exact && m.preferenceStaleLocked(key, prefer, m.now()) {
 			entry := m.stalePrefers[stalePreferKey{key, prefer}]
 			latchedPick := prefer
@@ -905,8 +915,14 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			}
 		}
 		m.lastCaps[user.ID] = caps
-		if s := m.byIdent[id]; s != nil {
-			if s.exact == exact && (prefer == "" || s.current().releaseID() == prefer || (!exact && s.current().res.MatchesVersion(prefer))) {
+		s := m.byIdent[id]
+		if s == nil && deferSupersession && prefer != "" && !exact {
+			if def := m.byIdent[identity{userID: user.ID, clientID: caps.ClientID, key: key, surface: id.surface}]; sessionFitsSelection(def, caps, prefer, false) {
+				s = def
+			}
+		}
+		if s != nil {
+			if sessionFitsSelection(s, caps, prefer, exact) {
 				now := m.now()
 				if !m.sessionCountsForLimit(s, now) {
 					cfg := m.config()
@@ -915,12 +931,17 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 					userN, total, _ := m.reservationCountsLocked(id)
 					if userLimit > 0 && userN >= userLimit {
 						m.mu.Unlock()
+						m.stopReplaced(promotedReplaced)
 						return nil, nil, fmt.Errorf("%w: %s is using %d of %d streams", core.ErrStreamLimit, userLabel(user), userN, userLimit)
 					}
 					if serverLimit > 0 && total >= serverLimit {
 						m.mu.Unlock()
+						m.stopReplaced(promotedReplaced)
 						return nil, nil, fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 					}
+				}
+				if !deferSupersession {
+					promotedReplaced = append(promotedReplaced, m.promotePreparedLocked(id, id, s)...)
 				}
 				if play {
 					s.mu.Lock()
@@ -940,6 +961,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 				}
 				s.claimed = true
 				m.mu.Unlock()
+				m.stopReplaced(promotedReplaced)
 				s.touch(now)
 				if play {
 					s.mu.Lock()
@@ -951,7 +973,8 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			}
 			old := s.id
 			m.mu.Unlock()
-			m.log.Debug("variant picked a different release; replacing session", "old", old, "prefer", prefer)
+			m.stopReplaced(promotedReplaced)
+			m.log.Debug("variant or bitrate cap picked a different release; replacing session", "old", old, "prefer", prefer, "maxBitrateKbps", caps.MaxBitrateKbps)
 			m.Stop(old)
 			continue
 		}
@@ -959,12 +982,12 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 	}
 	fk := flightKey{id: id, prefer: prefer, exact: exact, deferSupersession: deferSupersession}
 	f := m.flights[fk]
-	if f == nil && !deferSupersession && prefer == "" && !exact {
-		// The automatic choice a bounded decision wait (PrepareWithin) is
-		// already preparing is the same source: join it rather than
-		// resolving and opening a second one in parallel.
+	if f == nil && !deferSupersession {
+		// Join the bounded decision wait (PrepareWithin) already preparing
+		// this selection rather than resolving and opening a second source.
 		alt := fk
 		alt.deferSupersession = true
+		alt.id.variant, alt.id.exact = prefer, exact
 		if f = m.flights[alt]; f != nil {
 			fk = alt
 		}
@@ -979,6 +1002,12 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		}
 		if f = m.flights[alt]; f != nil {
 			fk = alt
+		} else if !deferSupersession {
+			alt.deferSupersession = true
+			alt.id.variant, alt.id.exact = picked, exact
+			if f = m.flights[alt]; f != nil {
+				fk = alt
+			}
 		}
 	}
 	if f == nil {
@@ -1009,6 +1038,14 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 	case <-f.done:
 		if f.err != nil {
 			return nil, f.sources, f.err
+		}
+		if !deferSupersession && f.sess != nil {
+			m.mu.Lock()
+			replaced := m.promotePreparedLocked(id, f.sess.ident, f.sess)
+			f.sess.claimed = true
+			m.mu.Unlock()
+			m.stopReplaced(replaced)
+			m.reg.poke()
 		}
 		if play {
 			f.sess.mu.Lock()

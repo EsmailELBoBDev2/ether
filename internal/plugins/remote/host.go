@@ -7,6 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
 	"github.com/braedonsaunders/ether/internal/httpjson"
+	"github.com/braedonsaunders/ether/internal/plugins"
 	"io"
 	"log/slog"
 	"net/http"
@@ -487,6 +488,11 @@ func (h *HostHandler) decode(w http.ResponseWriter, r *http.Request, max int64, 
 func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return true
+	}
+	var blockedLocal *plugins.BlockedLocalHostError
+	if errors.As(err, &blockedLocal) {
+		writeHostError(w, http.StatusForbidden, "permission_denied", blockedLocal.PluginMessage())
+		return false
 	}
 	switch {
 	case errors.Is(err, ErrPermissionDenied):

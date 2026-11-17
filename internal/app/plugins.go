@@ -294,7 +294,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	})
 	log := a.log.With("component", "plugins-remote")
 	tunnel := remote.NewTunnelServer(remote.TunnelOptions{Auth: auth, Logger: log})
-	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), Logger: log}
+	factory := &remote.Factory{Tunnel: tunnel, TrustedLAN: remote.GrantsLAN(mgr.GrantsOf), LocalHosts: remote.GrantsLocalHosts(mgr.GrantsOf), Logger: log}
 	mgr.RegisterRuntime("remote", factory.RuntimeFactory())
 	mgr.SetSidecarState(factory.SidecarState)
 	// A sidecar that (re)connects is checked at once, so the console does

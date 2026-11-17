@@ -154,7 +154,7 @@ func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName strin
 		return false
 	}
 	if err := h.deny(r, g, "network", "", func(string) bool {
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName)
+		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName) || g.allowsLocalHostName(hostName)
 	}); err != nil {
 		return false
 	}
@@ -186,6 +186,10 @@ func hostAllowed(patterns []string, host string) bool {
 var ErrFetchFailed = errors.New("plugins: request failed")
 
 func fetchError(host string, err error) error {
+	var blocked *BlockedLocalHostError
+	if errors.As(err, &blocked) {
+		return blocked
+	}
 	reason := "network error"
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -196,6 +200,9 @@ func fetchError(host string, err error) error {
 		// A redirect left the plugin's network grant.
 		return fmt.Errorf("%w: a redirect from %s left the granted hosts", ErrPermissionDenied, host)
 	case errors.Is(err, safefetch.ErrBlocked):
+		if isNonPublicBlockError(err) {
+			return &BlockedLocalHostError{Host: host}
+		}
 		return fmt.Errorf("%w: %s is not allowed (%w)", ErrFetchFailed, host, safefetch.ErrBlocked)
 	}
 	if reason == "timed out" {
@@ -210,13 +217,24 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		return nil, err
 	}
 	u, err := url.Parse(req.URL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("%w: bad url", ErrPermissionDenied)
 	}
-	if err := h.deny(r, g, "network", "", func(string) bool {
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, u.Hostname())
-	}); err != nil {
-		return nil, err
+	if g.revoked("network") {
+		h.noteDenied("network")
+		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
+	}
+	if !networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) && !g.allowsLocalURL(u) {
+		if IsLocalNetworkHost(u.Hostname()) {
+			blocked := urlHostPortDisplay(u)
+			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
+			return nil, &BlockedLocalHostError{Host: blocked}
+		}
+		h.noteDenied("network")
+		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
+	}
+	if len(g.LocalHosts) > 0 {
+		ctx = safefetch.WithTrustedHosts(ctx, g.LocalHosts)
 	}
 	method := req.Method
 	if method == "" {
@@ -235,17 +253,28 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	if deadline, ok := ctx.Deadline(); ok {
 		client.Timeout = time.Until(deadline)
 	}
+	lastURL := u
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		lastURL = next.URL
 		current, grants, err := h.record(next.Context())
 		if err != nil {
 			return err
 		}
-		if err := h.deny(current, grants, "network", "", func(string) bool {
-			return hostAllowed(current.Manifest.Ether.Permissions.Network, next.URL.Hostname())
-		}); err != nil {
-			return err
+		if grants.revoked("network") {
+			h.noteDenied("network")
+			return fmt.Errorf("%w: network", ErrPermissionDenied)
 		}
+		if !networkAllowedURL(current.Manifest.Ether.Permissions.Network, next.URL) && !grants.allowsLocalURL(next.URL) {
+			if IsLocalNetworkHost(next.URL.Hostname()) {
+				blocked := urlHostPortDisplay(next.URL)
+				h.m.noteBlockedLocalHost(next.Context(), h.plugin, blocked)
+				return &BlockedLocalHostError{Host: blocked}
+			}
+			h.noteDenied("network")
+			return fmt.Errorf("%w: network", ErrPermissionDenied)
+		}
+		*next = *next.WithContext(safefetch.WithTrustedHosts(next.Context(), grants.LocalHosts))
 		if previousRedirect != nil {
 			return previousRedirect(next, via)
 		}
@@ -256,6 +285,11 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	}
 	resp, err := client.Do(hr)
 	if err != nil {
+		if isNonPublicBlockError(err) {
+			blocked := urlHostPortDisplay(lastURL)
+			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
+			return nil, fetchError(blocked, err)
+		}
 		return nil, fetchError(u.Hostname(), err)
 	}
 	return resp, nil

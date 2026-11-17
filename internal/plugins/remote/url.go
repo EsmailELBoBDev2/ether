@@ -33,16 +33,17 @@ const DefaultCallTimeout = 30 * time.Second
 // owner-confirmed (LAN URL mode). Explicit proxy routing follows egress
 // CapPlugins; process environment proxies are not used.
 type URLClient struct {
-	base       *url.URL
-	httpClient *http.Client
-	credential string
-	plain      bool
-	locale     string
-	trusted    bool
-	maxBytes   int64
-	maxStream  int64
-	timeout    time.Duration
-	log        *slog.Logger
+	base         *url.URL
+	httpClient   *http.Client
+	credential   string
+	plain        bool
+	locale       string
+	trusted      bool
+	trustedHosts func() []string
+	maxBytes     int64
+	maxStream    int64
+	timeout      time.Duration
+	log          *slog.Logger
 
 	mu     sync.Mutex
 	closed bool
@@ -88,6 +89,9 @@ type URLOptions struct {
 	// client can never be built trusted for one host and aimed at
 	// another.
 	TrustedOrigin string
+	// TrustedHosts returns owner-granted local hosts (host or host:port)
+	// allowed to resolve to private network addresses.
+	TrustedHosts func() []string
 	// Guard guards fetches; nil uses a zero safefetch.Guard. Tests
 	// inject one with fake DNS.
 	Guard *safefetch.Guard
@@ -158,7 +162,8 @@ func NewURLClient(opts URLOptions) (*URLClient, error) {
 				return fmt.Errorf("too many plugin redirects")
 			}
 			if !safefetch.SameOrigin(base.String(), req.URL.String()) {
-				if !opts.AllowPublicRedirects || opts.Credential != "" || req.Method != http.MethodGet || (base.Scheme == "https" && req.URL.Scheme != "https") {
+				allowedLocal := opts.TrustedHosts != nil && safefetch.TrustedHostMatchesURL(opts.TrustedHosts(), req.URL)
+				if (!opts.AllowPublicRedirects && !allowedLocal) || opts.Credential != "" || req.Method != http.MethodGet || (base.Scheme == "https" && req.URL.Scheme != "https") {
 					return fmt.Errorf("%w: cross-origin plugin redirect", safefetch.ErrBlocked)
 				}
 				for key := range req.Header {
@@ -172,14 +177,15 @@ func NewURLClient(opts URLOptions) (*URLClient, error) {
 			}
 			return nil
 		}}),
-		credential: opts.Credential,
-		plain:      opts.Plain,
-		locale:     opts.Locale,
-		trusted:    trusted,
-		maxBytes:   maxBytes,
-		maxStream:  opts.MaxStreamBytes,
-		timeout:    timeout,
-		log:        log,
+		credential:   opts.Credential,
+		plain:        opts.Plain,
+		locale:       opts.Locale,
+		trusted:      trusted,
+		trustedHosts: opts.TrustedHosts,
+		maxBytes:     maxBytes,
+		maxStream:    opts.MaxStreamBytes,
+		timeout:      timeout,
+		log:          log,
 	}, nil
 }
 
@@ -256,6 +262,11 @@ func (c *URLClient) do(ctx context.Context, req Request) (*http.Response, contex
 	ctx, cancel, deadline := deadlineFor(ctx, req, c.timeout)
 	if c.trusted {
 		ctx = safefetch.WithTrustedOriginFor(ctx, c.base.String(), target)
+	}
+	if c.trustedHosts != nil {
+		if hosts := c.trustedHosts(); len(hosts) > 0 {
+			ctx = safefetch.WithTrustedHosts(ctx, hosts)
+		}
 	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {

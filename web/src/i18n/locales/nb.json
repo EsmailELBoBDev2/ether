@@ -523,6 +523,7 @@
     "other": "Denne nodens klokke går {count} sekunder feil i forhold til databaseserverens. Synkroniser klokken (NTP) på hver node."
   },
   "m_01d4aeea8e4f81": "Rollene kommer fra oppstartsinnstillingene til denne noden. Endre dem i utrullingen eller innstillingsfilen.",
+  "m_01d5e818a752e3": "Fjern {host}",
   "m_01d693cd50d394": "Sist brukt {time}",
   "m_01d6cc52397d90": "Skjul lite kjente titler fra bibliotekene. De kan fortsatt søkes.",
   "m_01d78a2b16a6bb": "Venter på godkjenning",
@@ -1270,6 +1271,7 @@
   "m_0445b5d21193b6": "Biblioteket er tomt til katalogen synkroniserer. Det krever en TMDB-nøkkel. Avspilling krever også en debrid-konto eller en Usenet-leverandør.",
   "m_044617802b6ee0": "Beta",
   "m_044708445dde03": "Bare den første episoden i en økt",
+  "m_044709f4ba5a8e": "Tillatte nettverksadresser",
   "m_0449a41cbe9c3f": "Lim inn en manifestlenke eller et GitHub-repositorium, eller last opp en pakkefil.",
   "m_044a019c439c06": "Tillegg",
   "m_044a48e6118d51": "Importerer dataene dine",
@@ -2011,6 +2013,7 @@
   "m_06dae4134ad80d": "God ettermiddag",
   "m_06daee10a7d943": "Direkte strøm",
   "m_06db1db5e3ffe9": "videoprofilen eller -nivået",
+  "m_06dc2e2fd1555c": "Kan nå på nettverket ditt: {hosts}",
   "m_06dc5804d9c769": "Last opp fil",
   "m_06dd435866d846": "Strømmetjenester",
   "m_06dea04cfc1d12": "Usenet (Newznab)",
@@ -2941,6 +2944,7 @@
     "one": "Koden utløper {time}. Vent minst {count} sekund mellom hver sjekk.",
     "other": "Koden utløper {time}. Vent minst {count} sekunder mellom hver sjekk."
   },
+  "m_0a2361a6ac54d4": "Lar dette programtillegget nå disse adressene på nettverket ditt, som tuliprox eller 192.168.1.20.",
   "m_0a247d58e26ea6": {
     "one": "{count} kanal i Live TV",
     "other": "{count} kanaler i Live TV"
@@ -3789,6 +3793,7 @@
   "m_0d2fe1df2fe27b": "Gi samlingen et navn",
   "m_0d307d1ddc4605": "Flytt {title} senere",
   "m_0d330670eab0fb": "denne guiden",
+  "m_0d350eb564c698": "Blokkerte {host} (på nettverket ditt)",
   "m_0d356bef686cb7": "En heksfarge, for eksempel #ffffff.",
   "m_0d367971ab47d5": "Nye utgivelser",
   "m_0d3ad34f910bc4": "Bare på kino",
@@ -4817,6 +4822,7 @@
     "other": "{count} sikrede forespørsler, {won} vunnet"
   },
   "m_10bb309f1fd724": "Denne seeren",
+  "m_10bb9410746c41": "Nettverksadresse",
   "m_10bbf84592ffe8": "Vekt for {name}",
   "m_10bc9d7f42f09f": "Akkurat her. Akkurat nå.",
   "m_10bcb25da19792": "Kildeforbindelser",
@@ -7988,6 +7994,7 @@
   "m_1b684664d80b86": "Undertekstmodus",
   "m_1b6c2d210164f7": "Avspillinger fra denne kontoen per dag, avspilt og mislykket",
   "m_1b6cdca15c1430": "Den spilles for denne seeren.",
+  "m_1b6f1a32121ae9": "tuliprox:8901",
   "m_1b6fd019c90164": "Denne seerens episoderekkefølge for serien",
   "m_1b716b698df38b": "Velg titler én etter én, i din rekkefølge",
   "m_1b71bd8faa855a": "Releasenavn",
@@ -8222,6 +8229,7 @@
   "m_1c570854c0c190": "Kanaloversikt",
   "m_1c57c168df25d4": "Kjente filmer fra Sør-Korea.",
   "m_1c58035fa97d7f": "Ingen installert plugin tilbyr en film- eller serie-katalog ennå.",
+  "m_1c5960e7b961b7": "På nettverket ditt",
   "m_1c59b4e8b2924b": "Denne serveren",
   "m_1c59cdb32b0197": "Fremdrift for omstart",
   "m_1c5a5b911c0721": "Serier på lufta",
@@ -8609,6 +8617,7 @@
   "m_1d952f4e2f5ed6": "av {author}",
   "m_1d959b8b6bda9a": "Bruker MDBList-kontoen som er koblet til i {link}.",
   "m_1d96c4ec55c70d": "Alle noder deler én PostgreSQL-database, så en gjenoppretting erstatter den for hele klyngen. For å holde klyngen trygg gjør ikke Ether dette fra én node. Sikkerhetskopien er sjekket og klar; følg disse trinnene.",
+  "m_1d976a0b5c9303": "Blokkerte nettverksadresser",
   "m_1d976c6b7bd8de": "Beskyttede filer gjenstår. Prøv igjen når bakgrunnsarbeidet er ferdig.",
   "m_1d998f21013953": "Eier: {name}",
   "m_1d99b564d0d1e3": "Volum for lydforhåndsvisning",

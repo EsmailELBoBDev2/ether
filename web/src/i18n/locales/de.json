@@ -523,6 +523,7 @@
     "other": "Die Uhr dieses Knotens weicht {count} Sekunden von der des Datenbankservers ab. Synchronisiere die Uhr (NTP) auf jedem Knoten."
   },
   "m_01d4aeea8e4f81": "Die Rollen stammen aus den Starteinstellungen dieses Knotens. Ändere sie in seiner Bereitstellung oder Einstellungsdatei.",
+  "m_01d5e818a752e3": "{host} entfernen",
   "m_01d693cd50d394": "Zuletzt verwendet: {time}",
   "m_01d6cc52397d90": "Blendet unbekannte Titel aus den Bibliotheken aus. Sie bleiben suchbar.",
   "m_01d78a2b16a6bb": "Warten auf Genehmigung",
@@ -1270,6 +1271,7 @@
   "m_0445b5d21193b6": "Die Bibliothek ist leer, bis der Katalog synchron ist. Dafür braucht es einen TMDB-Schlüssel. Die Wiedergabe braucht außerdem ein Debrid-Konto oder einen Usenet-Anbieter.",
   "m_044617802b6ee0": "Beta",
   "m_044708445dde03": "Nur die erste Folge einer Sitzung",
+  "m_044709f4ba5a8e": "Erlaubte Netzwerkadressen",
   "m_0449a41cbe9c3f": "Füge einen Manifest-Link oder ein GitHub-Repository ein oder lade eine Paketdatei hoch.",
   "m_044a019c439c06": "Addon",
   "m_044a48e6118d51": "Deine Daten werden importiert",
@@ -2011,6 +2013,7 @@
   "m_06dae4134ad80d": "Guten Tag",
   "m_06daee10a7d943": "Direktes Streaming",
   "m_06db1db5e3ffe9": "das Videoprofil oder -level",
+  "m_06dc2e2fd1555c": "Darf in deinem Netzwerk erreichen: {hosts}",
   "m_06dc5804d9c769": "Datei hochladen",
   "m_06dd435866d846": "Streaming-Dienste",
   "m_06dea04cfc1d12": "Usenet (Newznab)",
@@ -2941,6 +2944,7 @@
     "one": "Der Code läuft um {time} ab. Warte zwischen den Prüfungen mindestens {count} Sekunde.",
     "other": "Der Code läuft um {time} ab. Warte zwischen den Prüfungen mindestens {count} Sekunden."
   },
+  "m_0a2361a6ac54d4": "Erlaubt diesem Plugin den Zugriff auf diese Adressen in deinem Netzwerk, z. B. tuliprox oder 192.168.1.20.",
   "m_0a247d58e26ea6": {
     "one": "{count} Sender in Live TV",
     "other": "{count} Sender in Live TV"
@@ -3789,6 +3793,7 @@
   "m_0d2fe1df2fe27b": "Gib deiner Sammlung einen Namen",
   "m_0d307d1ddc4605": "{title} später einordnen",
   "m_0d330670eab0fb": "diesem Programm",
+  "m_0d350eb564c698": "{host} blockiert (in deinem Netzwerk)",
   "m_0d356bef686cb7": "Eine Hex-Farbe, zum Beispiel #ffffff.",
   "m_0d367971ab47d5": "Neuerscheinungen",
   "m_0d3ad34f910bc4": "Nur im Kino",
@@ -4817,6 +4822,7 @@
     "other": "{count} abgesicherte Anfragen, {won} gewonnen"
   },
   "m_10bb309f1fd724": "Dieser Zuschauer",
+  "m_10bb9410746c41": "Netzwerkadresse",
   "m_10bbf84592ffe8": "Gewichtung von {name}",
   "m_10bc9d7f42f09f": "Genau hier. Genau jetzt.",
   "m_10bcb25da19792": "Quellverbindungen",
@@ -7988,6 +7994,7 @@
   "m_1b684664d80b86": "Untertitelmodus",
   "m_1b6c2d210164f7": "Wiedergaben von diesem Konto pro Tag, erfolgreich und fehlgeschlagen",
   "m_1b6cdca15c1430": "Er läuft für diesen Zuschauer.",
+  "m_1b6f1a32121ae9": "tuliprox:8901",
   "m_1b6fd019c90164": "Episodenreihenfolge dieses Zuschauers für die Serie",
   "m_1b716b698df38b": "Wähle Titel einzeln aus, in deiner Reihenfolge",
   "m_1b71bd8faa855a": "Release-Namen",
@@ -8222,6 +8229,7 @@
   "m_1c570854c0c190": "Senderliste",
   "m_1c57c168df25d4": "Anerkannte Filme aus Südkorea.",
   "m_1c58035fa97d7f": "Noch kein installiertes Plugin bietet einen Film- oder Serienkatalog.",
+  "m_1c5960e7b961b7": "In deinem Netzwerk",
   "m_1c59b4e8b2924b": "Dieser Server",
   "m_1c59cdb32b0197": "Fortschritt des Neustarts",
   "m_1c5a5b911c0721": "Serien auf Sendung",
@@ -8609,6 +8617,7 @@
   "m_1d952f4e2f5ed6": "von {author}",
   "m_1d959b8b6bda9a": "Nutzt das in {link} verbundene MDBList-Konto.",
   "m_1d96c4ec55c70d": "Alle Knoten teilen sich eine PostgreSQL-Datenbank, eine Wiederherstellung ersetzt sie also für den ganzen Cluster. Damit der Cluster sicher bleibt, macht Ether das nicht von einem einzelnen Knoten aus. Das Backup ist geprüft und bereit; folge diesen Schritten.",
+  "m_1d976a0b5c9303": "Blockierte Netzwerkadressen",
   "m_1d976c6b7bd8de": "Geschützte Dateien bleiben erhalten. Nach Abschluss der Hintergrundarbeit erneut versuchen.",
   "m_1d998f21013953": "Eigentümer: {name}",
   "m_1d99b564d0d1e3": "Lautstärke der Audiovorschau",

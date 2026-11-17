@@ -279,8 +279,16 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Connects to the add-on it was made from")
 	}
 	p := man.Ether.Permissions
+	var localHosts []string
 	for _, h := range p.Network {
-		lines = append(lines, "Connects to "+h)
+		if IsLocalNetworkHost(h) {
+			localHosts = append(localHosts, h)
+		} else {
+			lines = append(lines, "Connects to "+h)
+		}
+	}
+	if len(localHosts) > 0 {
+		lines = append(lines, "May reach on your network: "+strings.Join(localHosts, ", "))
 	}
 	if normLevel(p.Catalog) == "read" {
 		lines = append(lines, "Reads your catalogue")
@@ -348,10 +356,18 @@ func PermissionDiff(cur, next Manifest) []string {
 	for _, h := range a.Network {
 		have[h] = true
 	}
+	var addedLocal []string
 	for _, h := range b.Network {
 		if !have[h] {
-			added = append(added, "Connects to "+h)
+			if IsLocalNetworkHost(h) {
+				addedLocal = append(addedLocal, h)
+			} else {
+				added = append(added, "Connects to "+h)
+			}
 		}
+	}
+	if len(addedLocal) > 0 {
+		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
 	}
 	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }

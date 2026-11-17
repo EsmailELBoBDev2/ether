@@ -69,8 +69,8 @@ func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return ErrPermissionDenied
 	}
-	if !h.m.AllowNetworkHost(ctx, h.plugin, u.Hostname()) {
-		return ErrPermissionDenied
+	if err := h.allowNetworkURL(ctx, u); err != nil {
+		return err
 	}
 	return nil
 }

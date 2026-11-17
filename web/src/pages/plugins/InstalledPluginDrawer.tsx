@@ -15,6 +15,7 @@ import {
   FlaskConical,
   Info,
   MoreHorizontal,
+  Network,
   PowerOff,
   RefreshCw,
   RotateCcw,
@@ -43,6 +44,7 @@ import { openInStudio } from "./openInStudio";
 import {
   isAddon,
   kindLabel,
+  translatePermissionLine,
   type JournalEntry,
   type PluginDetail,
   type PluginSummary,
@@ -162,6 +164,19 @@ export function InstalledPluginDrawer({
       await reloadCalls();
     });
 
+  const allowLocalHost = (host: string) =>
+    run(`allow:${host}`, async () => {
+      const cur = detail!.permissions.grants ?? {};
+      const existing = cur.localHosts ?? [];
+      const localHosts = existing.includes(host) ? existing : [...existing, host];
+      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/grants`, {
+        method: "PUT",
+        body: JSON.stringify({ ...cur, localHosts }),
+      });
+      await reload();
+      toast.success(t("Access updated"));
+    });
+
   const makeLive = () =>
     run("live", async () => {
       await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/shadow`, {
@@ -195,7 +210,7 @@ export function InstalledPluginDrawer({
         title: t("Update {name}?", { name: detail.name }),
         message: t("Version {version} asks for new access: {access}", {
           version: detail.updateVersion ?? "",
-          access: pendingPerms.map((p) => t(p)).join(", "),
+          access: pendingPerms.map(translatePermissionLine).join(", "),
         }),
         confirmLabel: t("Allow and update"),
       });
@@ -401,6 +416,25 @@ export function InstalledPluginDrawer({
         <ErrorPanel error={loadError} onRetry={() => pluginId && void loadDetail(pluginId)} />
       ) : detail ? (
         <div className="space-y-5">
+          {active !== "setup" && detail.blockedLocalHosts?.length
+            ? detail.blockedLocalHosts.map((host) => (
+                <Banner
+                  key={host}
+                  icon={<Network size={16} className="text-warning" />}
+                  text={t("Blocked {host} (on your network)", { host })}
+                  action={
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy === `allow:${host}`}
+                      onClick={() => void allowLocalHost(host)}
+                    >
+                      {t("Allow")}
+                    </Button>
+                  }
+                />
+              ))
+            : null}
           {detail.updateVersion ? (
             <Banner
               icon={<ArrowUpCircle size={16} className="text-primary" />}

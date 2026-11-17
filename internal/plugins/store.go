@@ -96,10 +96,11 @@ const (
 // "viewers.write_watch_state", "collections", "folders", "secrets",
 // "events").
 type Grants struct {
-	Viewers []int64  `json:"viewers,omitempty"`
-	Folders []string `json:"folders,omitempty"`
-	Revoked []string `json:"revoked,omitempty"`
-	LAN     bool     `json:"lan,omitempty"`
+	Viewers    []int64  `json:"viewers,omitempty"`
+	Folders    []string `json:"folders,omitempty"`
+	LocalHosts []string `json:"localHosts,omitempty"`
+	Revoked    []string `json:"revoked,omitempty"`
+	LAN        bool     `json:"lan,omitempty"`
 }
 
 func (g Grants) revoked(key string) bool {

@@ -106,7 +106,7 @@ to its admin token in your shell and run:
 ./ether plugin dev ./my-plugin --server http://localhost:32400 --once
 ```
 
-Alternatively open Plugins → Add plugin and upload `my-plugin.etherpkg`. Review
+Alternatively open Plugins → Add and upload `my-plugin.etherpkg`. Review
 requested permissions and enable it. Do not use a production server for iteration.
 `check --json` is the structured report for agents. `dev` installs hosted
 packages; remote Python/Go sidecars must run separately and be connected by
@@ -114,6 +114,15 @@ manifest URL or tunnel. `test` also runs recorded
 fixtures; ETHER_BIN enables its headless integration check, ETHER_PLUGIN_URL tests
 an already running remote sidecar. `pack` compiles TypeScript and checks the
 package. No separate npm install is needed for generated hosted templates.
+
+Ether reads the official signed marketplace (`https://github.com/braedonsaunders/ether-plugins`,
+served at `https://braedonsaunders.github.io/ether-plugins/index.json`) by default
+under Plugins → Marketplace. To publish a plugin there, upload `<id>-<version>.etherpkg`
+to a GitHub release, run `./ether plugin publish --url <release-asset-url> ./my-plugin`
+to pack the archive and print a validated `plugins/<id>.yaml` entry with its SHA-256
+digest, and open a pull request against `https://github.com/braedonsaunders/ether-plugins`.
+Marketplace CI verifies the artifact digest and runs `ether plugin check` before
+signing the updated index.
 
 ## Manifest decisions
 

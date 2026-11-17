@@ -579,13 +579,28 @@ func (b *builder) chooseMember(members []archive.Member) *archive.Member {
 	if !ok {
 		return chooseMember(members)
 	}
+	sizeGate := archiveEpisodeSizeGate(members, h)
 	var matching []archive.Member
 	for _, m := range members {
-		if memberMatchesHint(h, m.Name) {
+		if memberMatchesHint(h, m.Name) && sizeGate.Accept(m.Name, m.Size) {
 			matching = append(matching, m)
 		}
 	}
 	return chooseMember(matching)
+}
+
+func archiveEpisodeSizeGate(members []archive.Member, h nzb.EpisodeHint) releaseparse.PackEpisodeSizeGate {
+	if h.Season <= 0 || h.Episode <= 0 {
+		return releaseparse.PackEpisodeSizeGate{}
+	}
+	sized := make([]releaseparse.PackSizedFile, 0, len(members))
+	for _, m := range members {
+		info := nzb.Classify(m.Name)
+		if !m.Dir && info.Kind == nzb.KindVideo && !info.Sample && !info.Extra {
+			sized = append(sized, releaseparse.PackSizedFile{Path: m.Name, Size: m.Size})
+		}
+	}
+	return releaseparse.NewPackEpisodeSizeGate(sized, h.Season, 0)
 }
 
 // memberMatchesHint reports whether an archive member's name is the episode h.

@@ -179,13 +179,21 @@ func packUnits(doc *nzb.NZB) []packUnit {
 }
 
 // pickPackUnit returns the largest unit whose name carries the target
-// episode, or nil. The release itself already matched the series, so the
-// check is the episode number alone.
+// episode within plausible pack episode size bounds, or nil. The release
+// itself already matched the series, so the check is the episode number alone.
 func pickPackUnit(units []packUnit, t *core.ReleaseTarget) *packUnit {
+	sized := make([]releaseparse.PackSizedFile, 0, len(units))
+	for _, u := range units {
+		if fileCourMatchesTarget(u.name+".mkv", t) {
+			sized = append(sized, releaseparse.PackSizedFile{Path: u.name + ".mkv", Size: u.bytes})
+		}
+	}
+	sizeGate := releaseparse.NewPackEpisodeSizeGate(sized, t.Season, t.Cour)
+
 	var best *packUnit
 	for i := range units {
 		u := &units[i]
-		if !fileCourMatchesTarget(u.name+".mkv", t) {
+		if !fileCourMatchesTarget(u.name+".mkv", t) || !sizeGate.Accept(u.name+".mkv", u.bytes) {
 			continue
 		}
 		info := releaseparse.Parse(u.name)

@@ -42,7 +42,7 @@ func (s *Service) PreferredVersionRecovered(title *core.Title, prefer, played st
 	slot, logical := parseVersionSlot(prefer)
 	if !logical {
 		for _, r := range e.results {
-			if r.ID == prefer {
+			if r.ID == prefer && !s.isBad(r.ID) && !s.recentlyFailedHealth(r.ID) {
 				return true
 			}
 		}
@@ -51,10 +51,13 @@ func (s *Service) PreferredVersionRecovered(title *core.Title, prefer, played st
 	ranked := make([]candidate, 0, len(e.results))
 	auto := core.Release{ID: played}
 	for _, r := range e.results {
-		ranked = append(ranked, candidate{rel: r})
 		if r.ID == played {
 			auto = r
 		}
+		if s.isBad(r.ID) || s.recentlyFailedHealth(r.ID) {
+			continue
+		}
+		ranked = append(ranked, candidate{rel: r})
 	}
 	if auto.ID == "" && len(ranked) > 0 {
 		auto = ranked[0].rel

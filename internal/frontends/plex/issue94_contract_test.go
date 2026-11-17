@@ -207,11 +207,11 @@ func TestIssue94SessionTiming(t *testing.T) {
 				if !ok {
 					t.Fatal("missing new session")
 				}
-				if timing == "stopped-before" && current.ID == old.ID {
-					t.Fatal("stopped session reused")
+				if current.ID == old.ID {
+					t.Fatalf("oversized active source reused for 3000 kbps cap (timing=%s)", timing)
 				}
-				if timing != "stopped-before" && current.ID != old.ID {
-					t.Fatal("active source not reused")
+				if current.Resolution == nil || current.Resolution.Release.ID != "sd" {
+					t.Fatalf("expected 3000 kbps re-decision to switch to sd, got %+v", current.Resolution)
 				}
 				if timing == "stale-stop-after" {
 					stop()

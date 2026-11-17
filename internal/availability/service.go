@@ -83,6 +83,7 @@ type Service struct {
 	cacheSeeded        bool
 	hasGateTable       bool
 	gateRev            atomic.Uint64
+	seedRunMu          sync.Mutex
 	seededMu           sync.RWMutex
 	seededPolicies     map[string]bool
 	lastPrune          time.Time

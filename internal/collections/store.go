@@ -218,6 +218,11 @@ func (s *Service) loadRows(ctx context.Context) ([]*specRow, error) {
 	return append([]*specRow(nil), rows...), err
 }
 
+func (s *Service) forgetRowMemo(ctx context.Context) {
+	reqmemo.Forget(ctx, fmt.Sprintf("collections-rows:%p", s))
+	reqmemo.ForgetPrefix(ctx, fmt.Sprintf("collections-lastchance:%p:", s))
+}
+
 func (s *Service) readRows(ctx context.Context) ([]*specRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+specCols+` FROM collections_specs ORDER BY builtin ASC, id ASC`)
 	if err != nil {
@@ -312,6 +317,7 @@ func (s *Service) insertRow(ctx context.Context, sp core.CollectionSpec, owner i
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.forgetRowMemo(ctx)
 	return s.rowByID(ctx, strconv.FormatInt(id, 10))
 }
 
@@ -346,6 +352,7 @@ func (s *Service) updateRow(ctx context.Context, id int64, sp core.CollectionSpe
 	if n, _ := res.RowsAffected(); n == 0 {
 		return core.ErrNotFound
 	}
+	s.forgetRowMemo(ctx)
 	return nil
 }
 
@@ -365,7 +372,11 @@ func (s *Service) deleteRow(ctx context.Context, id int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM collections_members WHERE spec_id=?`, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.forgetRowMemo(ctx)
+	return nil
 }
 
 // saveBuild persists a build's members and report.
@@ -406,7 +417,11 @@ func (s *Service) saveBuild(ctx context.Context, id int64, expected, resolved st
 		hash, at.Unix(), at.Unix(), itemCount, string(wj), hash, id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.forgetRowMemo(ctx)
+	return nil
 }
 
 func (s *Service) loadMembers(ctx context.Context, id int64) ([]core.RatingKey, map[core.RatingKey]bool, error) {
@@ -432,6 +447,64 @@ func (s *Service) loadMembers(ctx context.Context, id int64) ([]core.RatingKey, 
 		}
 	}
 	return out, unshared, rows.Err()
+}
+
+func (s *Service) loadMembersMany(ctx context.Context, ids []int64) (map[int64][]core.RatingKey, map[int64]map[core.RatingKey]bool, error) {
+	keysByID := make(map[int64][]core.RatingKey, len(ids))
+	unsharedByID := make(map[int64]map[core.RatingKey]bool)
+	if len(ids) == 0 {
+		return keysByID, unsharedByID, nil
+	}
+	uniq := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	for chunk := range store.Chunks(uniq, 500) {
+		var q strings.Builder
+		q.WriteString(`SELECT spec_id,key,shared FROM collections_members WHERE spec_id IN (`)
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			if i > 0 {
+				q.WriteByte(',')
+			}
+			q.WriteByte('?')
+			args[i] = id
+		}
+		q.WriteString(`) ORDER BY spec_id,pos`)
+		rows, err := s.db.QueryContext(ctx, q.String(), args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			var specID, k int64
+			var shared int
+			if err := rows.Scan(&specID, &k, &shared); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			rk := core.RatingKey(k)
+			keysByID[specID] = append(keysByID[specID], rk)
+			if shared == 0 {
+				m := unsharedByID[specID]
+				if m == nil {
+					m = map[core.RatingKey]bool{}
+					unsharedByID[specID] = m
+				}
+				m[rk] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		rows.Close()
+	}
+	return keysByID, unsharedByID, nil
 }
 
 func (s *Service) meta(ctx context.Context, k string) string {

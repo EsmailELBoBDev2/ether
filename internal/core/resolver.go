@@ -29,6 +29,12 @@ type ReleaseBlockChecker interface {
 	ReleaseBlocked(context.Context, string) (bool, error)
 }
 
+// ReleaseBatchBlockChecker batches ReleaseBlocked across many release IDs so
+// list pages do not execute one blocklist SELECT per remembered resume row.
+type ReleaseBatchBlockChecker interface {
+	ReleasesBlocked(context.Context, []string) (map[string]bool, error)
+}
+
 // PreferenceFallbackObserver records picked-version cooldowns without waiting
 // for persistence, and checks only refreshed in-memory search results for recovery.
 // Recovery permits a new admission attempt; normal policy and health gates still apply.

@@ -827,6 +827,7 @@ func (s *resumeStore) manyLookups(ctx context.Context, userID int64) bool {
 func forgetResume(ctx context.Context, userID int64, key core.RatingKey) {
 	reqmemo.Forget(ctx, resumeMemoKey(userID, key))
 	reqmemo.Forget(ctx, resumeKeysMemoKey(userID))
+	reqmemo.ForgetPrefix(ctx, resumeMemoKey(userID, key)+":probe:")
 }
 
 // resumeKeySetAfter is how many titles a read request looks up one by one
@@ -838,29 +839,29 @@ const resumeKeySetAfter = 8
 // reads which titles have a record at all, once: a Home or list page asks
 // for every title it shows, and most have none.
 func (s *resumeStore) get(ctx context.Context, userID int64, key core.RatingKey) (*resumeRecord, error) {
-	if reqmemo.Active(ctx) && s.manyLookups(ctx, userID) {
-		set, err := reqmemo.Do(ctx, resumeKeysMemoKey(userID), func() (resumeKeySet, error) {
-			rows, err := s.db.QueryContext(ctx, `SELECT rating_key FROM playback_resume WHERE user_id=? LIMIT ?`, userID, resumeKeySetMax+1)
-			if err != nil {
-				return resumeKeySet{}, err
-			}
-			defer rows.Close()
-			set := resumeKeySet{has: map[core.RatingKey]bool{}}
-			for rows.Next() {
-				var k int64
-				if err := rows.Scan(&k); err != nil {
+	rec, err := reqmemo.Do(ctx, resumeMemoKey(userID, key), func() (*resumeRecord, error) {
+		if reqmemo.Active(ctx) && s.manyLookups(ctx, userID) {
+			set, err := reqmemo.Do(ctx, resumeKeysMemoKey(userID), func() (resumeKeySet, error) {
+				rows, err := s.db.QueryContext(ctx, `SELECT rating_key FROM playback_resume WHERE user_id=? LIMIT ?`, userID, resumeKeySetMax+1)
+				if err != nil {
 					return resumeKeySet{}, err
 				}
-				set.has[core.RatingKey(k)] = true
+				defer rows.Close()
+				set := resumeKeySet{has: map[core.RatingKey]bool{}}
+				for rows.Next() {
+					var k int64
+					if err := rows.Scan(&k); err != nil {
+						return resumeKeySet{}, err
+					}
+					set.has[core.RatingKey(k)] = true
+				}
+				set.complete = len(set.has) <= resumeKeySetMax
+				return set, rows.Err()
+			})
+			if err == nil && set.complete && !set.has[key] {
+				return nil, nil
 			}
-			set.complete = len(set.has) <= resumeKeySetMax
-			return set, rows.Err()
-		})
-		if err == nil && set.complete && !set.has[key] {
-			return nil, nil
 		}
-	}
-	rec, err := reqmemo.Do(ctx, resumeMemoKey(userID, key), func() (*resumeRecord, error) {
 		row := s.db.QueryRowContext(ctx, `SELECT `+resumeColumns+` FROM playback_resume WHERE user_id=? AND rating_key=?`,
 			userID, int64(key))
 		rec, err := scanResume(row)

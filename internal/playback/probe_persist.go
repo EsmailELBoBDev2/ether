@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -81,7 +82,46 @@ func persistedProbeFacts(info core.MediaInfo) (core.MediaInfo, bool) {
 	return out, true
 }
 
+func probeInfoMemoKey(userID int64, key core.RatingKey, releaseID, hash string) string {
+	return resumeMemoKey(userID, key) + ":probe:" + releaseID + ":" + hash
+}
+
+func decodeStoredProbeRow(releaseID, hash string, size int64, raw string) *probeCache {
+	if hash == "" || len(raw) > maxPersistedProbeBytes {
+		return nil
+	}
+	info, ok := decodePersistedProbe(raw)
+	if !ok {
+		return nil // a corrupt or old-generation row is a cache miss
+	}
+	facts, ok := persistedProbeFacts(info)
+	if !ok || facts.Size != size {
+		return nil
+	}
+	return &probeCache{
+		releaseID:    releaseID,
+		info:         facts,
+		needsAugment: true,
+		nzbHash:      hash,
+	}
+}
+
+func cloneProbeCache(src *probeCache) *probeCache {
+	if src == nil {
+		return nil
+	}
+	return &probeCache{
+		warmReads:    src.warmReads,
+		releaseID:    src.releaseID,
+		info:         core.CloneMediaInfo(src.info),
+		points:       append([]IndexPoint(nil), src.points...),
+		needsAugment: src.needsAugment,
+		nzbHash:      src.nzbHash,
+	}
+}
+
 func saveProbeWith(ctx context.Context, exec resumeExecer, userID int64, key core.RatingKey, releaseID string, nzb []byte, info core.MediaInfo, at time.Time) error {
+	reqmemo.ForgetPrefix(ctx, resumeMemoKey(userID, key)+":probe:")
 	facts, ok := persistedProbeFacts(info)
 	if !ok || releaseID == "" || len(nzb) == 0 {
 		return nil
@@ -107,45 +147,46 @@ ON CONFLICT(user_id,rating_key,release_id) DO UPDATE SET nzb_hash=excluded.nzb_h
 	return err
 }
 
-// loadProbeHash is loadProbe for the payload with this hash.
-func (s *resumeStore) loadProbeHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) (*probeCache, error) {
+// loadProbeInfoHash loads persisted stream/container facts without querying
+// playback_index keyframes. Callers that only check codec compatibility or
+// render track lists avoid reading keyframe blobs.
+func (s *resumeStore) loadProbeInfoHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) (*probeCache, error) {
 	if hash == "" {
 		return nil, nil
 	}
-	var (
-		raw  string
-		size int64
-	)
-	err := s.db.QueryRowContext(ctx, `SELECT size, info_json FROM playback_probe WHERE user_id=? AND rating_key=? AND release_id=? AND nzb_hash=?`,
-		userID, int64(key), releaseID, hash).Scan(&size, &raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
+	cached, err := reqmemo.Do(ctx, probeInfoMemoKey(userID, key, releaseID, hash), func() (*probeCache, error) {
+		var (
+			raw  string
+			size int64
+		)
+		err := s.db.QueryRowContext(ctx, `SELECT size, info_json FROM playback_probe WHERE user_id=? AND rating_key=? AND release_id=? AND nzb_hash=?`,
+			userID, int64(key), releaseID, hash).Scan(&size, &raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return decodeStoredProbeRow(releaseID, hash, size, raw), nil
+	})
+	if err != nil || cached == nil {
 		return nil, err
 	}
-	if len(raw) > maxPersistedProbeBytes {
-		return nil, nil
-	}
-	info, ok := decodePersistedProbe(raw)
-	if !ok {
-		return nil, nil // a corrupt or old-generation row is a cache miss
-	}
-	facts, ok := persistedProbeFacts(info)
-	if !ok || facts.Size != size {
-		return nil, nil
+	return cloneProbeCache(cached), nil
+}
+
+// loadProbeHash is loadProbe for the payload with this hash.
+func (s *resumeStore) loadProbeHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) (*probeCache, error) {
+	facts, err := s.loadProbeInfoHash(ctx, userID, key, releaseID, hash)
+	if err != nil || facts == nil {
+		return nil, err
 	}
 	points, err := s.loadIndex(ctx, userID, key, releaseID)
 	if err != nil {
 		return nil, err
 	}
-	return &probeCache{
-		releaseID:    releaseID,
-		info:         facts,
-		points:       indexPointsOf(points),
-		needsAugment: true,
-		nzbHash:      hash,
-	}, nil
+	facts.points = indexPointsOf(points)
+	return facts, nil
 }
 
 // persistedProbe is loadProbe as a cache lookup: any failure is a miss.
@@ -176,6 +217,23 @@ func (m *Manager) persistedProbe(ctx context.Context, userID int64, key core.Rat
 	}
 	facts.nzbHash = hash // probeGeneration still binds reuse to this opened payload and size
 	m.log.Debug("reusing torrent file probe after link renewal", "key", key, "release", releaseID)
+	return facts
+}
+
+// persistedProbeInfoHash returns persisted stream/container facts without
+// loading playback_index keyframes.
+func (m *Manager) persistedProbeInfoHash(ctx context.Context, userID int64, key core.RatingKey, releaseID, hash string) *probeCache {
+	if m.resume == nil || releaseID == "" {
+		return nil
+	}
+	if live := m.resume.liveProbeHash(userID, key, releaseID, hash); live != nil {
+		return live
+	}
+	facts, err := m.resume.loadProbeInfoHash(ctx, userID, key, releaseID, hash)
+	if err != nil {
+		m.log.Debug("persisted probe info lookup failed", "key", key, "release", releaseID, "err", err)
+		return nil
+	}
 	return facts
 }
 

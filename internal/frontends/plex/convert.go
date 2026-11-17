@@ -1396,6 +1396,9 @@ func languageTag(code string) string {
 
 // renderTitles renders a list, loading the user's watch state in one call.
 func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Title, o renderOpts) []model.Metadata {
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
 	ctx = withStoredPolicy(ctx)
 	if o.media && pr.excludeMedia && listMediaSkip && !o.detail && !o.detailEpisodes && !o.session {
 		// The response drops Media (and mediaCount stands in for it), so
@@ -1414,18 +1417,25 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	s.warmTitleDetails(ts, o.storedOnly)
 	if d := s.discovery(); d != nil {
 		if d.Ratings != nil {
-			ctx = d.Ratings.WithSettingsSnapshot(ctx)
+			ctx = d.Ratings.WithPage(ctx, ts)
 		}
 		if d.Overlays != nil {
-			ctx = d.Overlays.WithSettingsSnapshot(ctx)
+			var viewer *frontend.User
+			if pr != nil {
+				viewer = pr.User
+			}
+			if next, err := d.Overlays.WithTitlePage(ctx, viewer, ts); err == nil {
+				ctx = next
+			} else {
+				ctx = d.Overlays.WithSettingsSnapshot(ctx)
+			}
 		}
 	}
 	if o.state == nil {
 		o.state = s.stateFor(ctx, pr, ts)
 	}
 	s.preloadUltraBlur(ctx, ts)
-	s.preloadShowLanguages(ctx, pr, ts, o)
-	s.preloadTrackChoices(ctx, pr, ts, o)
+	ctx = s.preloadPageStreams(ctx, pr, ts, o)
 	var guids map[frontend.RatingKey]string
 	var missingGUIDs []frontend.RatingKey
 	lookup := make([]frontend.RatingKey, 0, len(ts)*2)

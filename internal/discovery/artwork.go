@@ -24,16 +24,25 @@ func (d *Features) SelectArtwork(ctx context.Context, viewer *core.User, t *core
 			out.Title = localized
 		}
 	}
+	var version string
+	versionLoaded := false
+	overlayVersion := func() string {
+		if !versionLoaded {
+			version = d.Overlays.Version(ctx, viewer, out.Title, lang)
+			versionLoaded = true
+		}
+		return version
+	}
 	if (cfg.Enabled && (out.Title.Type != core.TypeEpisode || cfg.BadgesOnEpisodes()) && (out.Title.PosterPath != "" || (out.Title.Type == core.TypeEpisode && out.Title.StillPath != ""))) || (d.Overlays.CustomPostersEnabled() && (out.Title.Type == core.TypeMovie || out.Title.Type == core.TypeShow)) {
-		out.PosterVersion = d.Overlays.Version(ctx, viewer, out.Title, lang)
+		out.PosterVersion = overlayVersion()
 	}
 	if cfg.Enabled {
 		_, backdrop := d.Overlays.Paths(ctx, viewer, out.Title, lang)
 		if backdrop != "" && backdrop != t.BackdropPath {
-			out.BackdropVersion = d.Overlays.Version(ctx, viewer, out.Title, lang)
+			out.BackdropVersion = overlayVersion()
 		}
 		if out.Title.LogoPath != "" {
-			out.LogoVersion = d.Overlays.Version(ctx, viewer, out.Title, lang)
+			out.LogoVersion = overlayVersion()
 		}
 	}
 	return out

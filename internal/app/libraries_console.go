@@ -656,7 +656,7 @@ func (c *librariesConsole) handleFacets(w http.ResponseWriter, r *http.Request) 
 	p := r.URL.Query()
 	limit, _ := strconv.Atoi(p.Get("limit"))
 	if limit <= 0 {
-		limit = 100
+		limit = 500 // the store's ceiling; the response says when a field has more
 	}
 	if lib.Source == core.LibraryPlugin {
 		items, _, err := c.services()
@@ -664,15 +664,15 @@ func (c *librariesConsole) handleFacets(w http.ResponseWriter, r *http.Request) 
 			libError(w, http.StatusServiceUnavailable, "Plugin items are unavailable")
 			return
 		}
-		values, err := items.Facets(r.Context(), lib.ID, p.Get("level"), field, limit)
+		page, err := items.Facets(r.Context(), lib.ID, p.Get("level"), field, limit)
 		if err != nil {
 			libError(w, http.StatusInternalServerError, "Could not list filter values")
 			return
 		}
-		if values == nil {
-			values = []pluginitems.FacetCount{}
+		if page.Values == nil {
+			page.Values = []pluginitems.FacetCount{}
 		}
-		libJSON(w, http.StatusOK, map[string]any{"field": field, "values": values})
+		libJSON(w, http.StatusOK, map[string]any{"field": field, "values": page.Values, "truncated": page.Truncated})
 		return
 	}
 	t := lib.MediaType

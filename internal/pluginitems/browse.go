@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -345,17 +346,28 @@ func scanItemRowWithAdded(sc rowScanner) (core.KindItem, int64, error) {
 
 // Facets returns the distinct values and counts for a declared facetable field
 // within a library (optionally scoped to a level).
-func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, fieldKey string, limit int) ([]FacetCount, error) {
+// FacetPage is one field's filter values in display order. Truncated means
+// the field has more distinct values than the limit returned.
+type FacetPage struct {
+	Values    []FacetCount `json:"values"`
+	Truncated bool         `json:"truncated,omitempty"`
+}
+
+// Facets lists a field's values. The query keeps the most common values when
+// a field has more than limit; the page is then ordered for reading: an enum
+// in its declared order, text values alphabetically, numbers by count.
+func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, fieldKey string, limit int) (FacetPage, error) {
 	if s == nil || s.db == nil {
-		return nil, fmt.Errorf("pluginitems: nil service")
+		return FacetPage{}, fmt.Errorf("pluginitems: nil service")
 	}
 	fieldKey = strings.TrimSpace(fieldKey)
 	if libraryID <= 0 || fieldKey == "" {
-		return nil, fmt.Errorf("pluginitems: library_id and field_key are required")
+		return FacetPage{}, fmt.Errorf("pluginitems: library_id and field_key are required")
 	}
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
+	fetch := limit + 1
 
 	var (
 		query string
@@ -370,7 +382,7 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 			GROUP BY f.v_text
 			ORDER BY cnt DESC, f.v_text ASC
 			LIMIT ?`
-		args = []any{int64(libraryID), fieldKey, limit}
+		args = []any{int64(libraryID), fieldKey, fetch}
 	} else {
 		query = `
 			SELECT f.v_text, COUNT(*) AS cnt
@@ -380,7 +392,7 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 			GROUP BY f.v_text
 			ORDER BY cnt DESC, f.v_text ASC
 			LIMIT ?`
-		args = []any{int64(libraryID), strings.TrimSpace(level), fieldKey, limit}
+		args = []any{int64(libraryID), strings.TrimSpace(level), fieldKey, fetch}
 	}
 
 	if envelopeFacet(fieldKey) {
@@ -391,12 +403,12 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 			args = append(args, strings.TrimSpace(level))
 		}
 		query += ` GROUP BY i.` + fieldKey + ` ORDER BY cnt DESC, i.` + fieldKey + ` ASC LIMIT ?`
-		args = append(args, limit)
+		args = append(args, fetch)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return FacetPage{}, err
 	}
 	defer rows.Close()
 
@@ -404,11 +416,60 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 	for rows.Next() {
 		var fc FacetCount
 		if err := rows.Scan(&fc.Value, &fc.Count); err != nil {
-			return nil, err
+			return FacetPage{}, err
 		}
 		out = append(out, fc)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return FacetPage{}, err
+	}
+	page := FacetPage{Values: out}
+	if len(out) > limit {
+		page.Values, page.Truncated = out[:limit], true
+	}
+	if !envelopeFacet(fieldKey) {
+		if rec, err := s.GetKindByLibrary(ctx, libraryID); err == nil {
+			for _, f := range rec.Decl.Fields {
+				if f.Key == fieldKey {
+					orderFacetValues(page.Values, f.Type, f.Enum)
+					break
+				}
+			}
+		}
+	}
+	return page, nil
+}
+
+// orderFacetValues orders a facet page for reading. Numbers keep the most
+// common first; labels read alphabetically; an enum follows its declaration.
+func orderFacetValues(values []FacetCount, fieldType string, enum []string) {
+	switch fieldType {
+	case "enum":
+		rank := make(map[string]int, len(enum))
+		for i, v := range enum {
+			rank[v] = i
+		}
+		sort.SliceStable(values, func(i, j int) bool {
+			ri, iok := rank[values[i].Value]
+			rj, jok := rank[values[j].Value]
+			if iok != jok {
+				return iok
+			}
+			if iok {
+				return ri < rj
+			}
+			return facetNameLess(values[i].Value, values[j].Value)
+		})
+	case "string", "strings", "people":
+		sort.SliceStable(values, func(i, j int) bool { return facetNameLess(values[i].Value, values[j].Value) })
+	}
+}
+
+func facetNameLess(a, b string) bool {
+	if la, lb := strings.ToLower(a), strings.ToLower(b); la != lb {
+		return la < lb
+	}
+	return a < b
 }
 
 func envelopeFacet(key string) bool {

@@ -406,8 +406,18 @@ func testBrowseFacetsAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tagFacets) != 2 || tagFacets[0].Value != "scifi" || tagFacets[0].Count != 2 {
+	// Label facets read alphabetically (#555); counts are unchanged.
+	tags := tagFacets.Values
+	if len(tags) != 2 || tagFacets.Truncated || strings.ToLower(tags[0].Value) > strings.ToLower(tags[1].Value) {
 		t.Fatalf("tagFacets = %+v", tagFacets)
+	}
+	for _, v := range tags {
+		if v.Value == "scifi" && v.Count != 2 {
+			t.Fatalf("scifi count = %d", v.Count)
+		}
+	}
+	if one, err := s.Facets(ctx, 10, "book", "tags", 1); err != nil || len(one.Values) != 1 || !one.Truncated {
+		t.Fatalf("truncated tagFacets = %+v, err=%v", one, err)
 	}
 
 	// Deleting parent s1 cascades to children b1 and b2 and updates tallies.

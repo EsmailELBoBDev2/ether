@@ -689,11 +689,11 @@ func (c *KindCatalog) Facets(ctx context.Context, lib core.Library, facet string
 	}
 	merged := make(map[string]int)
 	for _, fieldKey := range fields {
-		counts, err := c.items.Facets(ctx, lib.ID, rootLevel, fieldKey, 500)
+		page, err := c.items.Facets(ctx, lib.ID, rootLevel, fieldKey, 500)
 		if err != nil {
 			return nil, err
 		}
-		for _, fc := range counts {
+		for _, fc := range page.Values {
 			if fc.Value != "" {
 				merged[fc.Value] += fc.Count
 			}

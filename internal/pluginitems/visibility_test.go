@@ -49,7 +49,8 @@ func TestPluginVisibilityAndEnvelopeFacets(t *testing.T) {
 		t.Fatalf("hidden: %+v", hidden)
 	}
 	for _, field := range []string{"year", "released", "rating"} {
-		facets, err := s.Facets(ctx, 10, "series", field, 10)
+		page, err := s.Facets(ctx, 10, "series", field, 10)
+		facets := page.Values
 		if err != nil || len(facets) != 2 {
 			t.Fatalf("%s facets: %+v %v", field, facets, err)
 		}

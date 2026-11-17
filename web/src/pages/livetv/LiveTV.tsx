@@ -122,7 +122,6 @@ export default function LiveTV() {
         { replace: true },
       );
     else if (tab === "sources") navigate("/sources/iptv", { replace: true });
-    else if (tab === "guides") navigate("/livetv", { replace: true });
   }, [selection.kind, selection.kind === "source" ? selection.id : null, tab, navigate]);
 
   const activeTab: LiveTVTab =
@@ -702,7 +701,7 @@ export default function LiveTV() {
 
   // ---- render -----------------------------------------------------------------------------
 
-  if (tab === "sources" || tab === "guides" || selection.kind === "source") return null;
+  if (tab === "sources" || selection.kind === "source") return null;
 
   const state = error ? (
     <div className="p-6">

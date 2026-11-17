@@ -4518,7 +4518,7 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				}
 			}
 		}
-		if !r.Enabled || r.Manifest.Ether == nil {
+		if !r.Enabled || r.Manifest.Ether == nil || m.sidecarWaiting(r) {
 			continue
 		}
 		interval := time.Minute
@@ -7997,12 +7997,20 @@ func (m *Manager) warmAsync(pluginID string) {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		r, err := m.Get(ctx, pluginID)
-		if err != nil || !r.Enabled {
-			return
-		}
-		if _, err := m.runtimeFor(ctx, r); err != nil {
+		for attempt := 0; attempt < 3; attempt++ {
+			r, err := m.Get(ctx, pluginID)
+			if err != nil || !r.Enabled {
+				return
+			}
+			_, err = m.runtimeFor(ctx, r)
+			if err == nil {
+				return
+			}
+			if errors.Is(err, ErrUnavailable) && attempt < 2 {
+				continue
+			}
 			m.log.Warn("plugins: warm hot runtime", "plugin", pluginID, "err", err)
+			return
 		}
 	}()
 }
@@ -26337,7 +26345,7 @@ Pluto determines the actual lineup from the server's public IP; the region setti
 
 ``````
 {
-  "id": "tv.ether.examples.pluto", "version": "1.0.0", "name": "Pluto TV", "description": "Live channels and guide from Pluto TV.",
+  "id": "tv.ether.examples.pluto", "version": "1.0.1", "name": "Pluto TV", "description": "Live channels and guide from Pluto TV.",
   "types": ["tv"], "resources": ["stream"],
   "ether": {
     "protocol": 1, "kind": "livetv_source", "capabilities": ["livetv_channels"],
@@ -26364,6 +26372,13 @@ import {
 import manifest from "./manifest.json" with { type: "json" };
 
 type Settings = { region: string };
+type Timeline = {
+  _id?: string;
+  start: string;
+  stop: string;
+  title: string;
+  episode?: { description?: string };
+};
 type Channel = {
   _id: string;
   name: string;
@@ -26371,13 +26386,7 @@ type Channel = {
   category?: string;
   colorLogoPNG?: { path?: string };
   stitched?: { urls?: { type: string; url: string }[] };
-  timelines?: {
-    _id?: string;
-    start: string;
-    stop: string;
-    title: string;
-    episode?: { description?: string };
-  }[];
+  timelines?: Timeline[];
 };
 function fetchJSON(ctx: PluginContext<Settings>, path: string): unknown {
   const region = ctx.settings.region || "auto";
@@ -26389,8 +26398,29 @@ function fetchJSON(ctx: PluginContext<Settings>, path: string): unknown {
     throw new Error(`Pluto TV returned HTTP ${result.status}`);
   return JSON.parse(result.body);
 }
-function getChannels(ctx: PluginContext<Settings>): Channel[] {
-  const data = fetchJSON(ctx, "/v2/channels.json");
+function mapTimelines(channelId: string, timelines?: Timeline[]) {
+  return (timelines || [])
+    .filter((t) => t.start && t.stop && t.title)
+    .map((t) => ({
+      id: t._id,
+      channelId,
+      title: t.title,
+      start: t.start,
+      stop: t.stop,
+      description: t.episode?.description,
+    }));
+}
+function getChannels(
+  ctx: PluginContext<Settings>,
+  withGuideWindow = false,
+): Channel[] {
+  let path = "/v2/channels.json";
+  if (withGuideWindow) {
+    const start = new Date(Date.now() - 6 * 3600000).toISOString();
+    const stop = new Date(Date.now() + 24 * 3600000).toISOString();
+    path += `?start=${encodeURIComponent(start)}&stop=${encodeURIComponent(stop)}`;
+  }
+  const data = fetchJSON(ctx, path);
   if (!Array.isArray(data)) return [];
   const configured = ctx.settings.region || "auto";
   const url = data[0]?.stitched?.urls?.[0]?.url || "";
@@ -26434,26 +26464,31 @@ export function createPlugin(host?: EtherHost) {
     routes: {
       channels(ctx) {
         return {
-          channels: getChannels(ctx)
+          channels: getChannels(ctx, true)
             .filter(
               (c) =>
                 c._id &&
                 c.name &&
+                c.category?.toLowerCase() !== "testing" &&
                 c.stitched?.urls?.some((u) => u.type === "hls" && u.url),
             )
-            .map((c) => ({
-              id: c._id,
-              name: c.name,
-              number: c.number,
-              group: c.category,
-              logo: c.colorLogoPNG?.path,
-              guideId: c._id,
-              inputs: [
-                {
-                  url: `plugin://tv.ether.examples.pluto/stream/tv/${encodeURIComponent(c._id)}`,
-                },
-              ],
-            })),
+            .map((c) => {
+              const programmes = mapTimelines(c._id, c.timelines);
+              return {
+                id: c._id,
+                name: c.name,
+                number: c.number,
+                group: c.category,
+                logo: c.colorLogoPNG?.path,
+                guideId: c._id,
+                inputs: [
+                  {
+                    url: `plugin://tv.ether.examples.pluto/stream/tv/${encodeURIComponent(c._id)}`,
+                  },
+                ],
+                ...(programmes.length > 0 ? { programmes } : {}),
+              };
+            }),
         };
       },
       guide(req, ctx) {
@@ -26463,16 +26498,7 @@ export function createPlugin(host?: EtherHost) {
           `/v2/channels/${encodeURIComponent(req.channelId)}${query}`,
         ) as Channel;
         return {
-          programmes: (channel.timelines || [])
-            .filter((t) => t.start && t.stop && t.title)
-            .map((t) => ({
-              id: t._id,
-              channelId: req.channelId,
-              title: t.title,
-              start: t.start,
-              stop: t.stop,
-              description: t.episode?.description,
-            })),
+          programmes: mapTimelines(req.channelId, channel.timelines),
         };
       },
       stream(req, ctx) {
@@ -26526,7 +26552,7 @@ func main() {
 ``````
 {
   "id": "org.ether.examples.subdl",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "SubDL",
   "description": "Find subtitles with your SubDL account.",
   "types": [
@@ -26602,6 +26628,14 @@ import schema from './settings.schema.json';
 
 const MAX = 2 * 1024 * 1024;
 const fail = (message: string): never => { throw new PluginRouteError(502, 'subdl_error', message); };
+function readApiKey(ctx: { ether: { secret: { get(name: string): unknown } } }): string {
+  try {
+    return ((ctx.ether.secret.get('apiKey') as string) || '').trim();
+  } catch (err) {
+    if (err instanceof Error && /is not saved/i.test(err.message)) return '';
+    throw err;
+  }
+}
 function bytes64(s: string): Uint8Array {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s) || s.length > 4 * Math.ceil(MAX / 3)) return fail('Invalid subtitle archive.');
@@ -26634,7 +26668,7 @@ const settingsManifest = {...manifest, ether:{...manifest.ether, settings:schema
 export const subdl = plugin<{apiKey:string}>({manifest:settingsManifest, routes:{
   subtitles(req, ctx) {
     const id = req.id.split(':');
-    const apiKey = ctx.ether.secret.get('apiKey') as string;
+    const apiKey = readApiKey(ctx);
     if (!/^tt\d+$/.test(id[0]) || !apiKey) return {subtitles:[]};
     let url='https://api.subdl.com/api/v1/subtitles?api_key='+encodeURIComponent(apiKey)+'&imdb_id='+encodeURIComponent(id[0])+'&subs_per_page=30&client=custom_integration';
     if (req.type==='series' && /^\d+$/.test(id[1] || '') && /^\d+$/.test(id[2] || '')) url+='&type=tv&season_number='+id[1]+'&episode_number='+id[2];
@@ -26645,11 +26679,13 @@ export const subdl = plugin<{apiKey:string}>({manifest:settingsManifest, routes:
   },
   subtitlesDownload(req,ctx) {
     if (!/^\/subtitle\/[0-9]+-[0-9]+\.zip$/.test(req.id) || req.format !== 'srt') return fail('Invalid subtitle selection.');
-    const response=ctx.ether.http.fetch({url:'https://dl.subdl.com'+req.id,headers:{'x-api-key':ctx.ether.secret.get('apiKey') as string}}) as any;
+    const apiKey = readApiKey(ctx);
+    if (!apiKey) return fail('Enter an API key.');
+    const response=ctx.ether.http.fetch({url:'https://dl.subdl.com'+req.id,headers:{'x-api-key':apiKey}}) as any;
     if (response.status!==200 || !response.bodyBase64) return fail('Subtitle download failed.');
     return {format:'srt',encoding:'utf8',data:archive(response.bodyBase64)};
   },
-  test(ctx) { const key = ctx.ether.secret.get('apiKey') as string; return {ok:!!key, message:key ? 'API key saved.' : 'Enter an API key.'}; }
+  test(ctx) { const key = readApiKey(ctx); return {ok:!!key, message:key ? 'API key saved.' : 'Enter an API key.'}; }
 }});
 export const handle = subdl.handle;
 
@@ -38568,8 +38604,13 @@ export function createHostedClient(): EtherHost {
     },
     secret: {
       get(name: string): string {
-        if (g.ether?.secret) return g.ether.secret.get(name);
-        return callHost<string>("secret.get", [name]);
+        try {
+          if (g.ether?.secret) return g.ether.secret.get(name) ?? "";
+          return callHost<string>("secret.get", [name]) ?? "";
+        } catch (err) {
+          if (err instanceof Error && /is not saved/i.test(err.message)) return "";
+          throw err;
+        }
       },
     },
     http: {

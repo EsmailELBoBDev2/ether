@@ -79,6 +79,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/trickplay"
 	"github.com/braedonsaunders/ether/internal/updater"
 	"github.com/braedonsaunders/ether/internal/usenet"
+	"github.com/braedonsaunders/ether/internal/veladist"
 	"github.com/braedonsaunders/ether/internal/watchlist"
 	"log/slog"
 	"net/http"
@@ -263,6 +264,8 @@ type App struct {
 	safety            *safety.Service
 	updates           *updateState
 	frontends         *frontendRuntime
+	velaOnce          sync.Once
+	velaDist          *veladist.Manager
 	frontendClients   *frontendClients
 	artwork           *artworkservice.Source
 	downloadRemuxer   core.DownloadRemuxer
@@ -803,6 +806,7 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.playback.FinishStartup(ctx) })
 
 	background.start(func() { a.runNodeControl(ctx) })
+	background.start(func() { a.ensureVelaInstalled(ctx) })
 	background.start(func() { a.watchConsoleSessions(ctx) })
 
 	// Singleton work runs only on the cluster leader (always, standalone).

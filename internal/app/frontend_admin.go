@@ -60,10 +60,7 @@ func (f *frontendControl) List(ctx context.Context) ([]admin.FrontendInfo, error
 	}
 	out := make([]admin.FrontendInfo, 0)
 	for _, d := range f.registry.Descriptors() {
-		enabled := cfg.Frontends[string(d.ID)].Enabled
-		if cfg.Frontends == nil && frontendHostPolicy(d.ID).MainListener {
-			enabled = true
-		}
+		enabled := frontendDesired(cfg, d.ID)
 		status := f.listeners.status(ctx, d.ID)
 		if f.sharedStatus != nil {
 			f.sharedStatus(d.ID, &status)
@@ -285,10 +282,7 @@ func (f *frontendControl) Reconcile(ctx context.Context, c config.Config) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, d := range f.registry.Descriptors() {
-		desired := c.Frontends[string(d.ID)].Enabled
-		if c.Frontends == nil && frontendHostPolicy(d.ID).MainListener {
-			desired = true
-		}
+		desired := frontendDesired(c, d.ID)
 		settings := c.Frontends[string(d.ID)].Settings
 		current := listenerSettings{Port: c.FrontendPorts[string(d.ID)], Discovery: settings["discovery"]}
 		_, mounted := f.registry.Instance(d.ID)
@@ -351,3 +345,17 @@ func withoutServerName(s frontend.Settings) frontend.Settings {
 }
 
 var _ admin.FrontendAdmin = (*frontendControl)(nil)
+
+// frontendDesired reports whether an app should be served. An explicit
+// entry wins. Without one, main-listener apps are on for an install that
+// never chose its apps, and Vela, Ether's own app, is on unless the owner
+// turned it off.
+func frontendDesired(c config.Config, id frontend.Protocol) bool {
+	if fe, ok := c.Frontends[string(id)]; ok {
+		return fe.Enabled
+	}
+	if id == "vela" {
+		return true
+	}
+	return c.Frontends == nil && frontendHostPolicy(id).MainListener
+}

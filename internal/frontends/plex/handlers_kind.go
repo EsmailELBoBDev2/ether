@@ -82,11 +82,31 @@ func plexDevice(pr *Request) frontend.Device {
 }
 
 // kindItem resolves one plugin item through the Experience, which authorizes
-// the viewer against the item's owning library (spec §6.4).
+// the viewer against the item's owning library (spec §6.4). StoredItem is
+// preferred so metadata and children lookups do not depend on user-data
+// enrichment; test doubles without StoredItem fall back to Item.
 func (s *Server) kindItem(ctx context.Context, pr *Request, k frontend.RatingKey) (*frontend.Title, error) {
-	detail, err := s.exp().Item(ctx, frontend.ItemRequest{Viewer: pr.User, Device: plexDevice(pr), Key: k})
+	req := frontend.ItemRequest{Viewer: pr.User, Device: plexDevice(pr), Key: k}
+	type storedItemReader interface {
+		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
+	}
+	var (
+		detail frontend.ItemDetail
+		err    error
+	)
+	if stored, ok := s.exp().(storedItemReader); ok {
+		detail, err = stored.StoredItem(ctx, req)
+	} else {
+		detail, err = s.exp().Item(ctx, req)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if detail.Title.LibraryID != 0 {
+		sec, ok := s.sectionForLibrary(detail.Title.LibraryID)
+		if !ok || !s.canSeeSection(pr.User, sec.ID) {
+			return nil, frontend.ErrNotFound
+		}
 	}
 	t := detail.Title
 	return &t, nil
@@ -174,6 +194,13 @@ func kindTypeForBase(base, projected string, t *frontend.Title) string {
 func (s *Server) writeKindChildren(w http.ResponseWriter, r *http.Request, pr *Request, parent *frontend.Title, kids []frontend.Title) {
 	ctx := r.Context()
 	mc := s.itemContainer(parent.Type)
+	if parent.LibraryID != 0 {
+		if sec, ok := s.sectionForLibrary(parent.LibraryID); ok {
+			mc.LibrarySectionID = model.Ptr(sec.ID)
+			mc.LibrarySectionTitle = sec.Title
+			mc.LibrarySectionUUID = sec.UUID
+		}
+	}
 	mc.Key = parent.Key.String()
 	mc.Nocache = model.Ptr(true)
 	mc.Thumb = s.thumbURL(parent)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/favorites"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/braedonsaunders/ether/internal/sessions"
@@ -348,5 +351,336 @@ func TestKindPartStreamsBytes(t *testing.T) {
 		if !bytes.Equal(rec.Body.Bytes(), data) {
 			t.Fatalf("part %s served %d bytes, want %d", key, rec.Body.Len(), len(data))
 		}
+	}
+}
+
+type kindMusicPluginStore struct {
+	lib     core.Library
+	artists []core.Title
+	albums  []core.Title
+	tracks  []core.Title
+}
+
+func (s *kindMusicPluginStore) Libraries(context.Context) ([]core.Library, error) {
+	return []core.Library{
+		{ID: core.LibraryMovies, Name: "Movies", Source: core.LibraryBuiltin, MediaType: core.TypeMovie},
+		{ID: core.LibraryShows, Name: "TV Shows", Source: core.LibraryBuiltin, MediaType: core.TypeShow},
+		s.lib,
+	}, nil
+}
+
+func (s *kindMusicPluginStore) Library(_ context.Context, id core.LibraryID) (core.Library, error) {
+	switch id {
+	case core.LibraryMovies:
+		return core.Library{ID: core.LibraryMovies, Name: "Movies", Source: core.LibraryBuiltin, MediaType: core.TypeMovie}, nil
+	case core.LibraryShows:
+		return core.Library{ID: core.LibraryShows, Name: "TV Shows", Source: core.LibraryBuiltin, MediaType: core.TypeShow}, nil
+	case s.lib.ID:
+		return s.lib, nil
+	}
+	return core.Library{}, core.ErrNotFound
+}
+
+func (s *kindMusicPluginStore) IsPluginLibraryActive(context.Context, core.Library) bool { return true }
+func (s *kindMusicPluginStore) RootMediaType(context.Context, core.Library) core.MediaType {
+	return core.TypeShow
+}
+func (s *kindMusicPluginStore) Count(context.Context, core.Library) (int, error) {
+	return len(s.artists), nil
+}
+func (s *kindMusicPluginStore) Browse(_ context.Context, lib core.Library, _ frontend.ItemQuery, _ string, limit int) (experience.PluginBrowsePage, error) {
+	if lib.ID != s.lib.ID {
+		return experience.PluginBrowsePage{}, nil
+	}
+	items := s.artists
+	next := ""
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+		next = "more"
+	}
+	return experience.PluginBrowsePage{Items: append([]core.Title(nil), items...), Total: len(s.artists), NextCursor: next}, nil
+}
+func (s *kindMusicPluginStore) Item(_ context.Context, key core.RatingKey) (experience.PluginItemView, error) {
+	for _, list := range [][]core.Title{s.artists, s.albums, s.tracks} {
+		for _, t := range list {
+			if t.Key == key {
+				return experience.PluginItemView{
+					Title:    t,
+					Library:  s.lib,
+					Playable: t.Type == core.TypeEpisode,
+				}, nil
+			}
+		}
+	}
+	return experience.PluginItemView{}, core.ErrNotFound
+}
+func (s *kindMusicPluginStore) ItemsMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]experience.PluginItemView, error) {
+	out := make(map[core.RatingKey]experience.PluginItemView, len(keys))
+	for _, k := range keys {
+		if piv, err := s.Item(ctx, k); err == nil {
+			out[k] = piv
+		}
+	}
+	return out, nil
+}
+func (s *kindMusicPluginStore) Children(_ context.Context, parent core.RatingKey, _ bool, _ string, _ int) (experience.PluginBrowsePage, error) {
+	switch parent {
+	case s.artists[0].Key:
+		return experience.PluginBrowsePage{Items: append([]core.Title(nil), s.albums...), Total: len(s.albums)}, nil
+	case s.albums[0].Key:
+		return experience.PluginBrowsePage{Items: append([]core.Title(nil), s.tracks...), Total: len(s.tracks)}, nil
+	}
+	return experience.PluginBrowsePage{}, nil
+}
+func (s *kindMusicPluginStore) Ancestors(context.Context, core.RatingKey) ([]core.Title, core.Library, error) {
+	return nil, s.lib, nil
+}
+func (s *kindMusicPluginStore) Facets(context.Context, core.Library, string) ([]core.FacetValue, error) {
+	return nil, nil
+}
+func (s *kindMusicPluginStore) Search(context.Context, core.Library, string, frontend.ItemQuery, int) ([]core.Title, error) {
+	return nil, nil
+}
+func (s *kindMusicPluginStore) MemberOf(context.Context, core.Library, core.RatingKey) (bool, error) {
+	return false, nil
+}
+
+// TestIssue558PluginMusicSectionHubsAndArtistBrowse proves (#558):
+//  1. /hubs/sections/{id} on a plugin music library renders an Artists hub
+//     linking to /library/sections/{id}/all?type=8 from Experience.LibraryItems
+//     instead of leaking video recommendation rows, while Movies still renders
+//     video recommendations.
+//  2. /library/metadata/{artist|album}/children and track metadata succeed via
+//     StoredItem (and check owning-library access) even when favorites/user-data
+//     enrichment refuses plugin keys with favorites.ErrForbidden.
+//  3. Experience.Item, Experience.UserData, and Experience.FavoriteItem log and
+//     omit plugin enrichment failures instead of turning them into HTTP 500s.
+func TestIssue558PluginMusicSectionHubsAndArtistBrowse(t *testing.T) {
+	const musicOnlyToken = "music-only"
+	const moviesOnlyToken = "movies-only"
+	musicUser := core.User{ID: 51, Username: "listener", AllowedLibraries: []core.LibraryID{3}}
+	moviesOnlyUser := core.User{ID: 52, Username: "watcher", AllowedLibraries: []core.LibraryID{core.LibraryMovies}}
+
+	artist2 := core.Title{Key: core.PluginKey(104), Type: core.TypeShow, Title: "Artist Two", ChildCount: 1, KindLevel: "artist", LibraryID: 3}
+	artist1 := kindMusicArtist()
+	artist1.LibraryID = 3
+	album1 := kindMusicAlbum()
+	album1.LibraryID = 3
+	track1 := kindMusicTrack()
+	track1.LibraryID = 3
+
+	store := &kindMusicPluginStore{
+		lib: core.Library{
+			ID:        3,
+			Name:      "Subsonic Music",
+			Source:    core.LibraryPlugin,
+			PluginID:  "subsonic",
+			KindKey:   "artists",
+			MediaType: core.TypeShow,
+			Present: core.Presentations{Plex: &struct {
+				Base string `json:"base"`
+			}{Base: plexBaseArtist}},
+		},
+		artists: []core.Title{artist1, artist2},
+		albums:  []core.Title{album1},
+		tracks:  []core.Title{track1},
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	rec := &fakeRecommender{
+		section: map[core.MediaType][]core.Hub{
+			core.TypeMovie: {
+				{ID: "movie.trending", Title: "Trending Now", Type: core.TypeMovie, Promoted: true, Items: []core.Title{fightClub}},
+				{ID: "movie.short", Title: "Short on Time", Type: core.TypeMovie, Promoted: true, Items: []core.Title{alien}},
+			},
+			core.TypeShow: {
+				{ID: "tv.trending", Title: "Trending Now", Type: core.TypeShow, Promoted: true, Items: []core.Title{breakingBad}},
+			},
+			core.MediaType(plexBaseArtist): {
+				{ID: "artist.trending", Title: "Trending Now", Type: core.MediaType(plexBaseArtist), Promoted: true, Items: []core.Title{fightClub}},
+			},
+		},
+	}
+
+	f := newFixture(func(d *testServerDeps) {
+		setDepsAuth(d, &fakeAuth{users: map[string]core.User{
+			ownerToken:      ownerUser,
+			musicOnlyToken:  musicUser,
+			moviesOnlyToken: moviesOnlyUser,
+		}})
+	})
+	defer f.srv.Close()
+
+	expSvc := experience.NewDirectService(experience.ServiceDeps{
+		Active: func(_ context.Context, id int64) (*core.User, error) {
+			switch id {
+			case ownerUser.ID:
+				u := ownerUser
+				return &u, nil
+			case musicUser.ID:
+				u := musicUser
+				return &u, nil
+			case moviesOnlyUser.ID:
+				u := moviesOnlyUser
+				return &u, nil
+			}
+			return nil, core.ErrUnauthorized
+		},
+		Catalog:         f.catalog,
+		State:           f.state,
+		Playlists:       f.pls,
+		Recommender:     rec,
+		PluginLibraries: store,
+		Protocol:        "plex",
+		Log:             logger,
+		LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+			if p.Plex != nil && p.Plex.Base != "" {
+				return mt, p.Plex.Base, true
+			}
+			if mt == core.TypeShow {
+				return mt, plexBaseShow, true
+			}
+			return mt, plexBaseMovie, true
+		},
+		BuiltinNative: func(mt core.MediaType) string {
+			if mt == core.TypeShow {
+				return plexBaseShow
+			}
+			return plexBaseMovie
+		},
+		Visibility: experience.Visibility{
+			SectionFor: func(mt core.MediaType) (int, bool) {
+				if mt == core.TypeShow || mt == core.TypeSeason || mt == core.TypeEpisode {
+					return 2, true
+				}
+				return 1, true
+			},
+		},
+		IsFavorite: func(_ context.Context, _ *core.User, k core.RatingKey) (bool, error) {
+			if k.IsPluginKey() {
+				return false, favorites.ErrForbidden
+			}
+			return false, nil
+		},
+		IsFavoriteMany: func(_ context.Context, _ *core.User, keys []core.RatingKey) (map[core.RatingKey]bool, error) {
+			for _, k := range keys {
+				if k.IsPluginKey() {
+					return nil, favorites.ErrForbidden
+				}
+			}
+			return map[core.RatingKey]bool{}, nil
+		},
+		IsNotInterested: func(_ context.Context, _ *core.User, k core.RatingKey) (bool, error) {
+			if k.IsPluginKey() {
+				return false, favorites.ErrForbidden
+			}
+			return false, nil
+		},
+		IsWatchlisted: func(_ context.Context, _ *core.User, k core.RatingKey) (bool, error) {
+			if k.IsPluginKey() {
+				return false, favorites.ErrForbidden
+			}
+			return false, nil
+		},
+		FavoriteMembership: func(_ context.Context, _ *core.User, k core.RatingKey) (frontend.Membership, error) {
+			if k.IsPluginKey() {
+				return frontend.Membership{}, favorites.ErrForbidden
+			}
+			return frontend.Membership{}, nil
+		},
+	})
+	f.srv.bindHost(frontend.Host{Experience: expSvc})
+
+	// (1) Music section hubs (/hubs/sections/3?count=1) return a single Artists
+	// hub linking to /library/sections/3/all?type=8 with totalSize=2, more=true,
+	// and never leak video recommendation rows.
+	musicHubResp := f.get(t, "/hubs/sections/3?count=1", "Accept", "application/json", "X-Plex-Token", musicOnlyToken)
+	if musicHubResp.Code != http.StatusOK {
+		t.Fatalf("/hubs/sections/3 status = %d: %s", musicHubResp.Code, musicHubResp.Body.String())
+	}
+	var hubPayload struct {
+		MediaContainer model.MediaContainer `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(musicHubResp.Body.Bytes(), &hubPayload); err != nil {
+		t.Fatalf("decode music section hubs: %v", err)
+	}
+	if len(hubPayload.MediaContainer.Hub) != 1 {
+		t.Fatalf("music section hubs = %+v, want 1 Artists hub", hubPayload.MediaContainer.Hub)
+	}
+	artistsHub := hubPayload.MediaContainer.Hub[0]
+	if artistsHub.Title != "Artists" || artistsHub.Type != plexBaseArtist || artistsHub.Key != "/library/sections/3/all?type=8" {
+		t.Fatalf("unexpected Artists hub: %+v", artistsHub)
+	}
+	if artistsHub.TotalSize == nil || *artistsHub.TotalSize != 2 || !artistsHub.More || len(artistsHub.Metadata) != 1 {
+		t.Fatalf("unexpected Artists hub paging: size=%d total=%v more=%v", artistsHub.Size, artistsHub.TotalSize, artistsHub.More)
+	}
+	if artistsHub.Metadata[0].Type != plexBaseArtist || artistsHub.Metadata[0].Title != "Artist One" {
+		t.Fatalf("unexpected artist item in hub: %+v", artistsHub.Metadata[0])
+	}
+
+	// Viewer restricted away from section 3 cannot see its hubs or its artists.
+	if denied := f.get(t, "/hubs/sections/3", "Accept", "application/json", "X-Plex-Token", moviesOnlyToken); denied.Code != http.StatusNotFound {
+		t.Fatalf("unauthorized /hubs/sections/3 status = %d, want 404", denied.Code)
+	}
+	if denied := f.get(t, "/library/metadata/"+artist1.Key.String()+"/children", "Accept", "application/json", "X-Plex-Token", moviesOnlyToken); denied.Code != http.StatusNotFound {
+		t.Fatalf("unauthorized artist children status = %d, want 404", denied.Code)
+	}
+
+	// Movies section recommendations still render normally.
+	movieHubResp := f.get(t, "/hubs/sections/1", "Accept", "application/json")
+	if movieHubResp.Code != http.StatusOK {
+		t.Fatalf("/hubs/sections/1 status = %d", movieHubResp.Code)
+	}
+	var movieHubs struct {
+		MediaContainer model.MediaContainer `json:"MediaContainer"`
+	}
+	if err := json.Unmarshal(movieHubResp.Body.Bytes(), &movieHubs); err != nil || len(movieHubs.MediaContainer.Hub) == 0 {
+		t.Fatalf("movies section hubs missing: err=%v body=%s", err, movieHubResp.Body.String())
+	}
+
+	// (2) Artist -> Album -> Track browsing returns 200 (not 500).
+	albumsResp := f.get(t, "/library/metadata/"+artist1.Key.String()+"/children", "Accept", "application/json", "X-Plex-Token", musicOnlyToken)
+	if albumsResp.Code != http.StatusOK {
+		t.Fatalf("artist children status = %d: %s", albumsResp.Code, albumsResp.Body.String())
+	}
+	albums := decodeMetadata(t, albumsResp.Body.Bytes())
+	if len(albums) != 1 || albums[0]["type"] != plexBaseAlbum || albums[0]["title"] != "Album One" {
+		t.Fatalf("unexpected album children: %+v", albums)
+	}
+
+	tracksResp := f.get(t, "/library/metadata/"+album1.Key.String()+"/children", "Accept", "application/json", "X-Plex-Token", musicOnlyToken)
+	if tracksResp.Code != http.StatusOK {
+		t.Fatalf("album children status = %d: %s", tracksResp.Code, tracksResp.Body.String())
+	}
+	tracks := decodeMetadata(t, tracksResp.Body.Bytes())
+	if len(tracks) != 1 || tracks[0]["type"] != plexBaseTrack || tracks[0]["title"] != "Track One" {
+		t.Fatalf("unexpected track children: %+v", tracks)
+	}
+
+	// (3) Direct Experience.Item, UserData, and FavoriteItem calls on plugin items
+	// log and omit favorites enrichment errors rather than failing with 500.
+	ctx := context.Background()
+	detail, err := expSvc.Item(ctx, frontend.ItemRequest{Viewer: &musicUser, Key: artist1.Key})
+	if err != nil {
+		t.Fatalf("Experience.Item on plugin artist failed: %v", err)
+	}
+	if detail.Title.Key != artist1.Key || detail.UserData.IsFavorite {
+		t.Fatalf("unexpected plugin Item detail: %+v", detail)
+	}
+	ud, err := expSvc.UserData(ctx, &musicUser, []core.RatingKey{artist1.Key})
+	if err != nil {
+		t.Fatalf("Experience.UserData on plugin artist failed: %v", err)
+	}
+	if ud[artist1.Key].IsFavorite {
+		t.Fatalf("unexpected favorite flag in UserData: %+v", ud)
+	}
+	mem, err := expSvc.FavoriteItem(ctx, &musicUser, core.Device{}, artist1.Key)
+	if err != nil || mem.Present {
+		t.Fatalf("Experience.FavoriteItem on plugin artist = (%+v, %v), want empty nil", mem, err)
+	}
+	if !strings.Contains(logBuf.String(), "favorites") {
+		t.Fatalf("expected omitted favorites enrichment to be logged, got %q", logBuf.String())
 	}
 }

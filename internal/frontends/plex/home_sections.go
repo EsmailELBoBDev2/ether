@@ -15,6 +15,10 @@ func isVideoSection(sec Section) bool {
 	return sec.PluginID == "" && (sec.Type == frontend.TypeMovie || sec.Type == frontend.TypeShow)
 }
 
+func isKindMusicSection(sec Section) bool {
+	return isKindSection(sec) && string(sec.Type) == plexBaseArtist
+}
+
 func parseContentDirectories(raw string) ([]int, bool) {
 	var ids []int
 	playlists := false
@@ -38,7 +42,7 @@ func (s *Server) allowedContentSections(u *frontend.User, ids []int) []Section {
 		if seen[id] {
 			continue
 		}
-		if sec, ok := s.sectionByID(id); ok && isVideoSection(sec) && s.canSeeSection(u, id) {
+		if sec, ok := s.sectionByID(id); ok && (isVideoSection(sec) || isKindMusicSection(sec)) && s.canSeeSection(u, id) {
 			seen[id] = true
 			out = append(out, sec)
 		}
@@ -171,6 +175,57 @@ func (s *Server) sectionHubs(w http.ResponseWriter, r *http.Request, promotedOnl
 	})
 }
 
+func (s *Server) kindMusicArtistsHub(ctx context.Context, pr *Request, sec Section, visibleCount int) (model.Hub, bool) {
+	exp := s.exp()
+	if exp == nil || visibleCount <= 0 {
+		return model.Hub{}, false
+	}
+	page, err := exp.LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), frontend.ItemQuery{Limit: visibleCount + 1})
+	if err != nil {
+		s.log.Warn("music section hubs", "section", sec.ID, "err", err)
+		return model.Hub{}, false
+	}
+	items := page.Items
+	hasExtra := len(items) > visibleCount
+	if hasExtra {
+		items = items[:visibleCount]
+	}
+	byKey := make(map[string]*frontend.Title, len(items))
+	for i := range items {
+		byKey[items[i].Key.String()] = &items[i]
+	}
+	secCopy := sec
+	vis := s.sectionVisibility(sec)
+	md := s.renderTitles(ctx, pr, items, renderOpts{media: true, storedOnly: true, vis: &vis, section: &secCopy})
+	if len(md) == 0 {
+		return model.Hub{}, false
+	}
+	keys := make([]string, 0, len(md))
+	for i := range md {
+		md[i].Type = kindTypeForBase(string(sec.Type), md[i].Type, byKey[md[i].RatingKey])
+		keys = append(keys, md[i].RatingKey)
+	}
+	id := sec.IDString()
+	total := max(page.Total, len(md))
+	if hasExtra && total <= len(md) {
+		total = len(md) + 1
+	}
+	return model.Hub{
+		HubKey:        "/library/metadata/" + strings.Join(keys, ","),
+		Key:           "/library/sections/" + id + "/all?type=" + strconv.Itoa(typeNumArtist),
+		Title:         "Artists",
+		Type:          plexBaseArtist,
+		HubIdentifier: "music.artists." + id,
+		Context:       "hub.music.artists",
+		Size:          len(md),
+		TotalSize:     model.Ptr(total),
+		More:          hasExtra || page.Total > len(md),
+		Style:         "shelf",
+		Promoted:      model.Ptr(true),
+		Metadata:      md,
+	}, true
+}
+
 func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly bool) homeBuild {
 	batch := &shelfBatch{}
 	ctx := withStoredPolicy(context.WithValue(r.Context(), shelfBatchKey{}, batch))
@@ -182,6 +237,13 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 	mc.LibrarySectionID = model.Ptr(sec.ID)
 	mc.LibrarySectionTitle = sec.Title
 	mc.LibrarySectionUUID = sec.UUID
+	if isKindMusicSection(sec) {
+		if mh, ok := s.kindMusicArtistsHub(ctx, pr, sec, visibleCount); ok {
+			mc.Hub = []model.Hub{mh}
+		}
+		mc.Size = len(mc.Hub)
+		return homeBuild{mc: mc, section: sec.ID}
+	}
 	if !isVideoSection(sec) {
 		return homeBuild{mc: mc, section: sec.ID}
 	}
@@ -303,7 +365,7 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 		return homeBuild{mc: hubContainer()}
 	}
 	perDirectory := !strings.Contains(rawDir, ",")
-	shelves := promotedOnly && perDirectory && len(allowedSecs) == 1 && !wantPlaylists && s.wantsCollectionShelves(pr)
+	shelves := promotedOnly && perDirectory && len(allowedSecs) == 1 && isVideoSection(allowedSecs[0]) && !wantPlaylists && s.wantsCollectionShelves(pr)
 	pinned := q.Get("pinnedContentDirectoryID")
 	if shelves && strings.TrimSpace(pinned) == "" {
 		pinned = s.defaultPinnedDirectories(pr.User)
@@ -355,6 +417,14 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 	var allRows []model.Hub
 	provisional := false
 	for _, sec := range allowedSecs {
+		if isKindMusicSection(sec) {
+			if mh, ok := s.kindMusicArtistsHub(ctx, pr, sec, count); ok {
+				if selected == nil || selected[mh.HubIdentifier] {
+					allRows = append(allRows, mh)
+				}
+			}
+			continue
+		}
 		secCopy := sec
 		renderHC := hubCtx{visible: count, renderSec: &secCopy}
 		pc := s.hubContext(pr, sec.ID)

@@ -36,6 +36,13 @@ bare imports do not resolve inside the hosted virtual filesystem. Remote and
 hosted APIs differ: folder/secret services are hosted only. Test paid accounts
 through the owner's connection test after offline conformance.
 
+Private network addresses are blocked by default even when a host is listed in
+`permissions.network`, unless the owner allows that exact `host` or `host:port`
+under "On your network" in the plugin's settings (loopback stays blocked unless
+the owner explicitly grants `localhost` or `127.0.0.1`). Exact local names in
+`permissions.network` (no dot, `.local`, `.lan`, `.home.arpa`, or a private IP)
+are highlighted on the install permission sheet and pre-granted on install.
+
 Large data services added in v0.3.11 are generated from `host_data.go` and both
 SDK clients: `http.fetchToCache`, `cache.read`, `archive.list`, `archive.open`, and `archive.extract`.
 See `plugin-kinds.md` for the wire shapes, grant rules, archive safety bounds, and

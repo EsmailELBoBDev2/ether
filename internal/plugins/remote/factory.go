@@ -30,6 +30,8 @@ type Factory struct {
 	// TrustedLAN reports whether the owner confirmed the plugin's
 	// URL as a LAN origin at install (Manager grants carry it).
 	TrustedLAN func(pluginID string) bool
+	// LocalHosts returns the owner-granted local network hosts for one plugin.
+	LocalHosts func(pluginID string) []string
 	// Credential returns the credential Ether presents to the plugin
 	// on URL calls, or "" for none (plain Stremio add-ons).
 	Credential func(pluginID string) string
@@ -80,6 +82,10 @@ func (f *Factory) RuntimeFactory() plugins.RuntimeFactory {
 			}
 			if f.TrustedLAN != nil && f.TrustedLAN(inst.ID) {
 				opts.TrustedOrigin = base
+			}
+			if f.LocalHosts != nil {
+				pluginID := inst.ID
+				opts.TrustedHosts = func() []string { return f.LocalHosts(pluginID) }
 			}
 			client, err := NewURLClient(opts)
 			if err != nil {
@@ -485,6 +491,22 @@ func GrantsLAN(grantsOf func(ctx context.Context, pluginID string) (plugins.Gran
 		defer cancel()
 		g, err := grantsOf(ctx, pluginID)
 		return err == nil && g.LAN
+	}
+}
+
+// GrantsLocalHosts adapts a Manager-like grants lookup to Factory.LocalHosts.
+func GrantsLocalHosts(grantsOf func(ctx context.Context, pluginID string) (plugins.Grants, error)) func(string) []string {
+	if grantsOf == nil {
+		return nil
+	}
+	return func(pluginID string) []string {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		g, err := grantsOf(ctx, pluginID)
+		if err != nil {
+			return nil
+		}
+		return g.LocalHosts
 	}
 }
 

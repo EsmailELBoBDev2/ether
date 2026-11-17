@@ -139,6 +139,9 @@ type Manager struct {
 	// shadow mirrors each plugin's shadow flag (guarded by mu) so the play
 	// path can skip shadow plugins without a database read.
 	shadow map[string]bool
+	// blockedLocal records up to maxBlockedLocalHosts distinct private hosts
+	// blocked per plugin (guarded by mu) so the console can offer a one-click allow.
+	blockedLocal map[string][]string
 }
 
 func (m *Manager) notificationLock(id string) *sync.Mutex {
@@ -168,7 +171,7 @@ func New(deps Deps) (*Manager, error) {
 	}
 	m := &Manager{
 		busOrigin: newEventID(),
-		store: &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
+		store:     &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
 		log: log, now: now, client: client,
 		fatories: map[string]RuntimeFactory{}, runtimes: map[string]Runtime{}, warming: map[string]bool{}, shadow: map[string]bool{},
 		eventSubs: map[string]map[string]Record{},
@@ -320,9 +323,18 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 	if _, err := m.store.record(ctx, id); err != nil {
 		return err
 	}
+	if g.LocalHosts != nil {
+		normalized, err := normalizeLocalHosts(g.LocalHosts)
+		if err != nil {
+			return &ValidationError{Fields: []FieldError{{Field: "localHosts", Message: err.Error()}}}
+		}
+		g.LocalHosts = normalized
+	}
 	if err := m.store.putGrants(ctx, id, g); err != nil {
 		return err
 	}
+	m.pruneBlockedLocalHosts(id, g.LocalHosts)
+	m.closeRuntime(id)
 	m.broadcast(ctx)
 	return nil
 }
@@ -1101,6 +1113,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	if err := m.store.purge(ctx, id); err != nil {
 		return err
 	}
+	m.clearBlockedLocalHosts(id)
 	m.mu.Lock()
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {

@@ -612,7 +612,10 @@ func mapHostError(err error) error {
 	var fault *wasm.Fault
 	var input *CollectionInputError
 	var valid *ValidationError
+	var blocked *BlockedLocalHostError
 	switch {
+	case errors.As(err, &blocked):
+		return &wasm.Fault{Code: "host_error", Message: blocked.PluginMessage()}
 	case errors.As(err, &fault):
 		return fault
 	case errors.As(err, &input):

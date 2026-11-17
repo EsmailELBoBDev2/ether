@@ -179,6 +179,8 @@ type Detail struct {
 	} `json:"impact"`
 	// AddedPermissions is set when an update is waiting and asks for more.
 	AddedPermissions []string `json:"addedPermissions,omitempty"`
+	// BlockedLocalHosts lists private-network hosts recently blocked for this plugin.
+	BlockedLocalHosts []string `json:"blockedLocalHosts,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -265,9 +267,10 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 		d.Privacy.DeclaredHosts = rec.Manifest.Ether.Permissions.Network
 	}
 	d.Permissions.Grants = g
+	d.BlockedLocalHosts = m.BlockedLocalHosts(id)
 	d.Privacy.ObservedHosts = h.Observed
 	for host := range h.Observed {
-		if rec.Manifest.Ether == nil || !hostAllowed(rec.Manifest.Ether.Permissions.Network, host) {
+		if !networkHostDeclaredOrGranted(rec.Manifest, g, host) {
 			d.Privacy.Undeclared = append(d.Privacy.Undeclared, host)
 		}
 	}
@@ -677,11 +680,13 @@ func (m *Manager) handleGrants(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid", "The request was not understood.", nil)
 		return
 	}
-	if err := m.SetGrants(r.Context(), r.PathValue("id"), g); err != nil {
+	id := r.PathValue("id")
+	if err := m.SetGrants(r.Context(), id, g); err != nil {
 		m.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "saved", "grants": g})
+	saved, _ := m.GrantsOf(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "saved", "grants": saved})
 }
 
 func (m *Manager) handleShadow(w http.ResponseWriter, r *http.Request) {

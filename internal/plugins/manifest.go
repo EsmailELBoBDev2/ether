@@ -359,7 +359,7 @@ func isHTTPSURL(s string) bool {
 
 func validatePermissions(p Permissions, add func(string, string)) {
 	for i, h := range p.Network {
-		if !hostRe.MatchString(strings.ToLower(h)) || strings.Contains(h, "://") {
+		if !isValidManifestNetworkEntry(h) {
 			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, with a wildcard only as *.example.com")
 		}
 	}

@@ -48,6 +48,7 @@ type Preview struct {
 	PermissionLines  []string `json:"permissions"`
 	NeedsViewers     bool     `json:"needsViewers"`
 	NeedsFolders     bool     `json:"needsFolders"`
+	LocalHosts       []string `json:"localHosts,omitempty"`
 	Verified         bool     `json:"verified"`
 	StremioOnly      bool     `json:"stremioOnly"`
 	AlreadyInstalled bool     `json:"alreadyInstalled,omitempty"`
@@ -467,6 +468,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 	}
 	p := &Preview{Manifest: man, RuntimeLimits: m.grantedRuntimeLimits(man), source: src, files: files, manifestRaw: raw, Verified: src.Verified, StremioOnly: man.IsStremioOnly()}
 	p.PermissionLines, p.NeedsViewers, p.NeedsFolders = PermissionSheet(man)
+	p.LocalHosts = DeclaredLocalHosts(man)
 	if err := p.resolve(); err != nil {
 		return nil, err
 	}
@@ -584,12 +586,22 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 			m.log.Warn("plugin install: dropping old artifacts failed", "plugin", man.ID, "err", err)
 		}
 	}
-	// Grants: keep existing picks on update unless new ones were given.
+	// Grants: keep existing picks on update unless new ones were given;
+	// on fresh install, pre-grant any local-network hosts declared in the manifest.
 	g := opts.Grants
-	if existing && g.Viewers == nil && g.Folders == nil && g.Revoked == nil {
+	if existing && g.Viewers == nil && g.Folders == nil && g.LocalHosts == nil && g.Revoked == nil {
 		if old, err := m.store.grants(ctx, man.ID); err == nil {
 			g = old
 		}
+	} else if !existing && g.LocalHosts == nil {
+		g.LocalHosts = DeclaredLocalHosts(man)
+	}
+	if g.LocalHosts != nil {
+		normalized, err := normalizeLocalHosts(g.LocalHosts)
+		if err != nil {
+			return Record{}, &ValidationError{Fields: []FieldError{{Field: "localHosts", Message: err.Error()}}}
+		}
+		g.LocalHosts = normalized
 	}
 	if p.source.LAN {
 		g.LAN = true

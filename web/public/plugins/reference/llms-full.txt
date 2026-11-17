@@ -271,7 +271,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## HTTP requests
 
-Hosted fetch requires the destination in permissions.network. Redirect destinations are checked too. Read the generated MaxFetchBytes and transport limits; private or blocked destinations fail even if a hostname is declared. Handle upstream non-2xx status explicitly.
+Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too. Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
 
 ```ts
 const r = ether.http.fetch({url: "https://api.example.org/status", method: "GET"});
@@ -4072,8 +4072,16 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Connects to the add-on it was made from")
 	}
 	p := man.Ether.Permissions
+	var localHosts []string
 	for _, h := range p.Network {
-		lines = append(lines, "Connects to "+h)
+		if IsLocalNetworkHost(h) {
+			localHosts = append(localHosts, h)
+		} else {
+			lines = append(lines, "Connects to "+h)
+		}
+	}
+	if len(localHosts) > 0 {
+		lines = append(lines, "May reach on your network: "+strings.Join(localHosts, ", "))
 	}
 	if normLevel(p.Catalog) == "read" {
 		lines = append(lines, "Reads your catalogue")
@@ -4145,10 +4153,18 @@ func PermissionDiff(cur, next Manifest) []string {
 	for _, h := range a.Network {
 		have[h] = true
 	}
+	var addedLocal []string
 	for _, h := range b.Network {
 		if !have[h] {
-			added = append(added, "Connects to "+h)
+			if IsLocalNetworkHost(h) {
+				addedLocal = append(addedLocal, h)
+			} else {
+				added = append(added, "Connects to "+h)
+			}
 		}
+	}
+	if len(addedLocal) > 0 {
+		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
 	}
 	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }
@@ -5005,7 +5021,7 @@ func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName strin
 		return false
 	}
 	if err := h.deny(r, g, "network", "", func(string) bool {
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName)
+		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName) || g.allowsLocalHostName(hostName)
 	}); err != nil {
 		return false
 	}
@@ -5049,6 +5065,10 @@ var ErrFetchFailed = errors.New("plugins: request failed")
 
 ``````
 func fetchError(host string, err error) error {
+	var blocked *BlockedLocalHostError
+	if errors.As(err, &blocked) {
+		return blocked
+	}
 	reason := "network error"
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -5059,6 +5079,9 @@ func fetchError(host string, err error) error {
 		// A redirect left the plugin's network grant.
 		return fmt.Errorf("%w: a redirect from %s left the granted hosts", ErrPermissionDenied, host)
 	case errors.Is(err, safefetch.ErrBlocked):
+		if isNonPublicBlockError(err) {
+			return &BlockedLocalHostError{Host: host}
+		}
 		return fmt.Errorf("%w: %s is not allowed (%w)", ErrFetchFailed, host, safefetch.ErrBlocked)
 	}
 	if reason == "timed out" {
@@ -5077,13 +5100,24 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		return nil, err
 	}
 	u, err := url.Parse(req.URL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("%w: bad url", ErrPermissionDenied)
 	}
-	if err := h.deny(r, g, "network", "", func(string) bool {
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, u.Hostname())
-	}); err != nil {
-		return nil, err
+	if g.revoked("network") {
+		h.noteDenied("network")
+		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
+	}
+	if !networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) && !g.allowsLocalURL(u) {
+		if IsLocalNetworkHost(u.Hostname()) {
+			blocked := urlHostPortDisplay(u)
+			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
+			return nil, &BlockedLocalHostError{Host: blocked}
+		}
+		h.noteDenied("network")
+		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
+	}
+	if len(g.LocalHosts) > 0 {
+		ctx = safefetch.WithTrustedHosts(ctx, g.LocalHosts)
 	}
 	method := req.Method
 	if method == "" {
@@ -5102,17 +5136,28 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	if deadline, ok := ctx.Deadline(); ok {
 		client.Timeout = time.Until(deadline)
 	}
+	lastURL := u
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		lastURL = next.URL
 		current, grants, err := h.record(next.Context())
 		if err != nil {
 			return err
 		}
-		if err := h.deny(current, grants, "network", "", func(string) bool {
-			return hostAllowed(current.Manifest.Ether.Permissions.Network, next.URL.Hostname())
-		}); err != nil {
-			return err
+		if grants.revoked("network") {
+			h.noteDenied("network")
+			return fmt.Errorf("%w: network", ErrPermissionDenied)
 		}
+		if !networkAllowedURL(current.Manifest.Ether.Permissions.Network, next.URL) && !grants.allowsLocalURL(next.URL) {
+			if IsLocalNetworkHost(next.URL.Hostname()) {
+				blocked := urlHostPortDisplay(next.URL)
+				h.m.noteBlockedLocalHost(next.Context(), h.plugin, blocked)
+				return &BlockedLocalHostError{Host: blocked}
+			}
+			h.noteDenied("network")
+			return fmt.Errorf("%w: network", ErrPermissionDenied)
+		}
+		*next = *next.WithContext(safefetch.WithTrustedHosts(next.Context(), grants.LocalHosts))
 		if previousRedirect != nil {
 			return previousRedirect(next, via)
 		}
@@ -5123,6 +5168,11 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	}
 	resp, err := client.Do(hr)
 	if err != nil {
+		if isNonPublicBlockError(err) {
+			blocked := urlHostPortDisplay(lastURL)
+			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
+			return nil, fetchError(blocked, err)
+		}
 		return nil, fetchError(u.Hostname(), err)
 	}
 	return resp, nil
@@ -8304,7 +8354,10 @@ func mapHostError(err error) error {
 	var fault *wasm.Fault
 	var input *CollectionInputError
 	var valid *ValidationError
+	var blocked *BlockedLocalHostError
 	switch {
+	case errors.As(err, &blocked):
+		return &wasm.Fault{Code: "host_error", Message: blocked.PluginMessage()}
 	case errors.As(err, &fault):
 		return fault
 	case errors.As(err, &input):
@@ -11830,6 +11883,409 @@ Develop against a running Ether server:
 }
 ``````
 
+## Source: internal/plugins/local_hosts.go#maxBlockedLocalHosts
+
+``````
+const maxBlockedLocalHosts = 10
+``````
+
+## Source: internal/plugins/local_hosts.go#BlockedLocalHostError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/local_hosts.go#BlockedLocalHostError
+
+``````
+// BlockedLocalHostError reports that a plugin fetch targeted a non-public
+// network address that the owner has not granted in Grants.LocalHosts.
+type BlockedLocalHostError struct {
+	Host string
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*BlockedLocalHostError.PluginMessage
+
+``````
+// PluginMessage returns the message exposed to the plugin runtime.
+func (e *BlockedLocalHostError) PluginMessage() string {
+	return fmt.Sprintf("%s is on your network; the owner can allow it in this plugin's settings", e.Host)
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*BlockedLocalHostError.Error
+
+``````
+func (e *BlockedLocalHostError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrFetchFailed, e.PluginMessage())
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*BlockedLocalHostError.Unwrap
+
+``````
+func (e *BlockedLocalHostError) Unwrap() []error {
+	return []error{ErrFetchFailed, safefetch.ErrBlocked}
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#NormalizeLocalHost
+
+``````
+// NormalizeLocalHost validates a single local-network host grant ("host" or
+// "host:port", or a single IP literal with optional port, without wildcards
+// or CIDRs) and returns its canonical lowercase form.
+func NormalizeLocalHost(raw string) (string, error) {
+	norm, ok := safefetch.NormalizeTrustedHost(raw)
+	if !ok {
+		return "", fmt.Errorf("must be a host name or single IP address (with optional :port), without wildcards or CIDRs")
+	}
+	return norm, nil
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#normalizeLocalHosts
+
+``````
+func normalizeLocalHosts(in []string) ([]string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		norm, err := NormalizeLocalHost(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[norm] {
+			seen[norm] = true
+			out = append(out, norm)
+		}
+	}
+	return out, nil
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#Grants.allowsLocalURL
+
+``````
+func (g Grants) allowsLocalURL(u *url.URL) bool {
+	return safefetch.TrustedHostMatchesURL(g.LocalHosts, u)
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#Grants.allowsLocalHostName
+
+``````
+func (g Grants) allowsLocalHostName(hostName string) bool {
+	return localListCoversHost(g.LocalHosts, hostName)
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#localListCoversHost
+
+``````
+func localListCoversHost(entries []string, hostName string) bool {
+	normHost, ok := safefetch.NormalizeTrustedHost(hostName)
+	if !ok {
+		return false
+	}
+	for _, raw := range entries {
+		norm, ok := safefetch.NormalizeTrustedHost(raw)
+		if !ok {
+			continue
+		}
+		if norm == normHost {
+			return true
+		}
+		if h, _, err := net.SplitHostPort(norm); err == nil && h == normHost {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#localGrantCoversBlockedEntry
+
+``````
+func localGrantCoversBlockedEntry(granted []string, blocked string) bool {
+	u, err := url.Parse("http://" + blocked)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	if u.Port() != "" {
+		return safefetch.TrustedHostMatchesURL(granted, u)
+	}
+	for _, g := range granted {
+		norm, ok := safefetch.NormalizeTrustedHost(g)
+		if !ok {
+			continue
+		}
+		if norm == blocked {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#IsLocalNetworkHost
+
+``````
+// IsLocalNetworkHost reports whether raw is an exact non-public LAN host
+// (dotless hostname, .local, .lan, .home.arpa, or a private/CGNAT IP literal).
+// Loopback (localhost, 127.0.0.1, ::1) and wildcards are excluded so a
+// manifest never pre-grants loopback access.
+func IsLocalNetworkHost(raw string) bool {
+	if strings.Contains(raw, "*") {
+		return false
+	}
+	norm, ok := safefetch.NormalizeTrustedHost(raw)
+	if !ok {
+		return false
+	}
+	host := norm
+	if h, _, err := net.SplitHostPort(norm); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return safefetch.IsPrivateLANIP(ip)
+	}
+	return !strings.Contains(host, ".") ||
+		strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".lan") ||
+		strings.HasSuffix(host, ".home.arpa")
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#DeclaredLocalHosts
+
+``````
+// DeclaredLocalHosts returns any local-network hosts declared in a manifest's
+// permissions.network list, normalized and deduplicated.
+func DeclaredLocalHosts(man Manifest) []string {
+	if man.Ether == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range man.Ether.Permissions.Network {
+		if !IsLocalNetworkHost(h) {
+			continue
+		}
+		norm, ok := safefetch.NormalizeTrustedHost(h)
+		if !ok || seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		out = append(out, norm)
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#isValidManifestNetworkEntry
+
+``````
+func isValidManifestNetworkEntry(raw string) bool {
+	if strings.Contains(raw, "://") {
+		return false
+	}
+	lower := strings.ToLower(raw)
+	if hostRe.MatchString(lower) {
+		return true
+	}
+	if strings.Contains(raw, "*") {
+		return false
+	}
+	_, ok := safefetch.NormalizeTrustedHost(raw)
+	return ok
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#networkAllowedURL
+
+``````
+func networkAllowedURL(patterns []string, u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	if hostAllowed(patterns, u.Hostname()) {
+		return true
+	}
+	return safefetch.TrustedHostMatchesURL(patterns, u)
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#networkHostDeclaredOrGranted
+
+``````
+func networkHostDeclaredOrGranted(man Manifest, g Grants, host string) bool {
+	if man.Ether != nil {
+		if hostAllowed(man.Ether.Permissions.Network, host) || localListCoversHost(man.Ether.Permissions.Network, host) {
+			return true
+		}
+	}
+	return localListCoversHost(g.LocalHosts, host)
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#urlHostPortDisplay
+
+``````
+func urlHostPortDisplay(u *url.URL) string {
+	if u == nil || u.Hostname() == "" {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		if norm, ok := safefetch.NormalizeTrustedHost(net.JoinHostPort(u.Hostname(), port)); ok {
+			return norm
+		}
+	}
+	if norm, ok := safefetch.NormalizeTrustedHost(u.Hostname()); ok {
+		return norm
+	}
+	return strings.ToLower(u.Hostname())
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#isNonPublicBlockError
+
+``````
+func isNonPublicBlockError(err error) bool {
+	if !errors.Is(err, safefetch.ErrBlocked) {
+		return false
+	}
+	msg := err.Error()
+	return !strings.Contains(msg, "does not resolve") &&
+		!strings.Contains(msg, "redirect to scheme") &&
+		!strings.Contains(msg, "not an http(s) URL")
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*host.allowNetworkURL
+
+``````
+func (h *host) allowNetworkURL(ctx context.Context, u *url.URL) error {
+	r, g, err := h.record(ctx)
+	if err != nil {
+		return err
+	}
+	if r.Manifest.Ether == nil {
+		return ErrPermissionDenied
+	}
+	if g.revoked("network") {
+		h.noteDenied("network")
+		return fmt.Errorf("%w: network", ErrPermissionDenied)
+	}
+	if networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) || g.allowsLocalURL(u) {
+		return nil
+	}
+	if IsLocalNetworkHost(u.Hostname()) {
+		blocked := urlHostPortDisplay(u)
+		h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
+		return &BlockedLocalHostError{Host: blocked}
+	}
+	h.noteDenied("network")
+	return fmt.Errorf("%w: network", ErrPermissionDenied)
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*Manager.noteBlockedLocalHost
+
+``````
+func (m *Manager) noteBlockedLocalHost(ctx context.Context, pluginID, blocked string) {
+	norm, ok := safefetch.NormalizeTrustedHost(blocked)
+	if !ok || pluginID == "" {
+		return
+	}
+	if g, err := m.store.grants(ctx, pluginID); err == nil {
+		if localGrantCoversBlockedEntry(g.LocalHosts, norm) {
+			return
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.blockedLocal == nil {
+		m.blockedLocal = map[string][]string{}
+	}
+	cur := m.blockedLocal[pluginID]
+	next := make([]string, 0, min(len(cur)+1, maxBlockedLocalHosts))
+	for _, existing := range cur {
+		if existing != norm {
+			next = append(next, existing)
+		}
+	}
+	next = append(next, norm)
+	if len(next) > maxBlockedLocalHosts {
+		next = next[len(next)-maxBlockedLocalHosts:]
+	}
+	m.blockedLocal[pluginID] = next
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*Manager.BlockedLocalHosts
+
+``````
+// BlockedLocalHosts returns recently blocked private-network hosts (up to 10
+// distinct entries) for one plugin, oldest to newest.
+func (m *Manager) BlockedLocalHosts(pluginID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.blockedLocal[pluginID]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*Manager.pruneBlockedLocalHosts
+
+``````
+func (m *Manager) pruneBlockedLocalHosts(pluginID string, granted []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := m.blockedLocal[pluginID]
+	if len(cur) == 0 {
+		return
+	}
+	kept := cur[:0]
+	for _, b := range cur {
+		if !localGrantCoversBlockedEntry(granted, b) {
+			kept = append(kept, b)
+		}
+	}
+	if len(kept) == 0 {
+		delete(m.blockedLocal, pluginID)
+		return
+	}
+	m.blockedLocal[pluginID] = kept
+}
+``````
+
+## Source: internal/plugins/local_hosts.go#*Manager.clearBlockedLocalHosts
+
+``````
+func (m *Manager) clearBlockedLocalHosts(pluginID string) {
+	m.mu.Lock()
+	delete(m.blockedLocal, pluginID)
+	m.mu.Unlock()
+}
+``````
+
 ## Source: internal/plugins/manifest.go#ParseManifest
 
 ``````
@@ -12236,7 +12692,7 @@ func isHTTPSURL(s string) bool {
 ``````
 func validatePermissions(p Permissions, add func(string, string)) {
 	for i, h := range p.Network {
-		if !hostRe.MatchString(strings.ToLower(h)) || strings.Contains(h, "://") {
+		if !isValidManifestNetworkEntry(h) {
 			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, with a wildcard only as *.example.com")
 		}
 	}
@@ -13972,6 +14428,11 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 	if err == nil {
 		return true
 	}
+	var blockedLocal *plugins.BlockedLocalHostError
+	if errors.As(err, &blockedLocal) {
+		writeHostError(w, http.StatusForbidden, "permission_denied", blockedLocal.PluginMessage())
+		return false
+	}
 	switch {
 	case errors.Is(err, ErrPermissionDenied):
 		writeHostError(w, http.StatusForbidden, "permission_denied", "This plugin does not have the grant this call needs")
@@ -14226,8 +14687,8 @@ func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return ErrPermissionDenied
 	}
-	if !h.m.AllowNetworkHost(ctx, h.plugin, u.Hostname()) {
-		return ErrPermissionDenied
+	if err := h.allowNetworkURL(ctx, u); err != nil {
+		return err
 	}
 	return nil
 }
@@ -20923,6 +21384,7 @@ and special files are refused. Other 7z coder chains are unsupported.
 
 FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they return
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
+Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed.
 Host calls enforce permissions again on every request; revocation is immediate.
 
 ## Ten recipes

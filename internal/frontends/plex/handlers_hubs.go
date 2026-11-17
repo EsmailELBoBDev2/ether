@@ -1872,7 +1872,21 @@ func (s *Server) searchExperience() frontend.Search {
 	return s.exp().SearchFor(src, s.visibility(), unrestricted)
 }
 
+func (s *Server) searchClientID(pr *Request) string {
+	if pr == nil {
+		return ""
+	}
+	if pr.ClientID != "" {
+		return pr.ClientID
+	}
+	if pr.SessionID != "" {
+		return pr.SessionID
+	}
+	return pr.Token
+}
+
 func (s *Server) runSearch(ctx context.Context, pr *Request, query string, sectionID, limit int) ([]frontend.Title, error) {
+	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
 	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, sectionID), s.saferFetchCount(pr.User, limit), false)
 	result.Items = s.takeVisible(pr.User, result.Items, limit)
 	return result.Items, err
@@ -1930,6 +1944,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 	// genres): the catalogue reads those facts for the titles a hub shows,
 	// not every credit, keyword and alternative title, and returns the rest
 	// of its window as rows (frontend.SearchCandidates).
+	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
 	searchCtx, listDetails := s.hubSearchCandidates(frontend.WithSearchListFacts(ctx), pr.User)
 	result, err := s.searchExperience().Resolve(searchCtx, pr.User, query, s.searchTypes(pr.User, sectionID), fetch, true)
 	people := <-peopleDone
@@ -1938,6 +1953,10 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vibe, res, isVibe := result.Collection, result.Items, result.CollectionSearch
+	aiRank := map[frontend.RatingKey]int{}
+	for i := 0; i < min(result.AIItems, len(res)); i++ {
+		aiRank[res[i].Key] = i
+	}
 	byType := map[frontend.MediaType][]frontend.Title{}
 	for _, t := range res {
 		byType[t.Type] = append(byType[t.Type], t)
@@ -1985,9 +2004,23 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 			h := frontend.Hub{ID: hd.id, Title: hd.title, Type: mediaType, Items: items, More: more, Style: "shelf"}
 			scores := make(map[string]float64, len(items))
 			relevant := make(map[string]bool, len(items))
+			hubHasAI := false
+			bestAIRank := result.AIItems
 			for i := range items {
-				scores[items[i].Key.String()] = titleSearchScore(&items[i], i, len(items))
-				relevant[items[i].Key.String()] = items[i].SearchScore > 0
+				rankPos := searchScore(i, len(items))
+				if rnk, isAI := aiRank[items[i].Key]; isAI {
+					hubHasAI = true
+					bestAIRank = min(bestAIRank, rnk)
+					scores[items[i].Key.String()] = rankPos
+					relevant[items[i].Key.String()] = true
+				} else {
+					sc := titleSearchScore(&items[i], i, len(items))
+					if hubHasAI {
+						sc = min(sc, rankPos)
+					}
+					scores[items[i].Key.String()] = sc
+					relevant[items[i].Key.String()] = items[i].SearchScore > 0
+				}
 			}
 			mh := s.renderHub(ctx, pr, hubSpec{Hub: h, noPromoted: true}, hubCtx{})
 			mh.Context, mh.Key, mh.HubKey = "", "", ""
@@ -2007,6 +2040,9 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 					top = max(top, score)
 				}
 			}
+			if hubHasAI && len(mh.Metadata) > 0 {
+				top = max(top, 1.9-float64(bestAIRank)*0.001)
+			}
 			mc.Hub = append(mc.Hub, mh)
 		case "collection":
 			mh := model.Hub{
@@ -2018,7 +2054,11 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 			if isVibe && vibe != nil {
 				mh.Directory = []model.Directory{s.collectionDirectory(ctx, vibe)}
 				mh.Size = len(mh.Directory)
-				top = searchPersonExactScore
+				if result.AIItems > 0 {
+					top = 2.0
+				} else {
+					top = searchPersonExactScore
+				}
 			}
 			mc.Hub = append(mc.Hub, mh)
 		case "playlist":
@@ -2155,6 +2195,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		peopleDone = make(chan peopleSearchResult, 1)
 		go func() { peopleDone <- s.searchPeople(ctx, pr, query, 0, limit, false) }()
 	}
+	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
 	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, 0), limit, true)
 	var people peopleSearchResult
 	if peopleDone != nil {
@@ -2165,6 +2206,10 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vibe, res, isVibe := result.Collection, result.Items, result.CollectionSearch
+	aiKeys := map[frontend.RatingKey]bool{}
+	for i := 0; i < min(result.AIItems, len(res)); i++ {
+		aiKeys[res[i].Key] = true
+	}
 	searchCollections := false
 	searchPeopleFlag := q.Get("searchTypes") == ""
 	if st := q.Get("searchTypes"); st != "" {
@@ -2192,6 +2237,32 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			res = filtered
+		}
+	}
+	var leading []model.SearchResult
+	if result.AIItems > 0 {
+		var aiTitles, kwTitles []frontend.Title
+		for _, t := range res {
+			if aiKeys[t.Key] {
+				aiTitles = append(aiTitles, t)
+			} else {
+				kwTitles = append(kwTitles, t)
+			}
+		}
+		res = kwTitles
+		aiMD := s.renderTitles(ctx, pr, aiTitles, renderOpts{media: true})
+		for i := range aiMD {
+			aiMD[i].LibrarySectionID, aiMD[i].LibrarySectionKey = 0, ""
+			sc := max(0.96, math.Round((1-float64(i)*0.0001)*10000)/10000)
+			leading = append(leading, model.SearchResult{Score: sc, Metadata: &aiMD[i]})
+		}
+		if isVibe && vibe != nil && (searchCollections || q.Get("searchTypes") == "") {
+			d := s.collectionDirectory(ctx, vibe)
+			sc := 0.96
+			if len(leading) == 0 {
+				sc = 1
+			}
+			leading = append(leading, model.SearchResult{Score: sc, Directory: &d})
 		}
 	}
 	var peopleDirs []model.Directory
@@ -2252,11 +2323,18 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	ranked := make([]model.SearchResult, len(order))
 	for i, j := range order {
 		ranked[i] = mc.SearchResult[j]
+		if len(leading) > 0 && ranked[i].Score > 0.95 {
+			ranked[i].Score = 0.95
+		}
 	}
-	mc.SearchResult = ranked
-	if isVibe && vibe != nil && (searchCollections || q.Get("searchTypes") == "") {
-		d := s.collectionDirectory(ctx, vibe)
-		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 1, Directory: &d})
+	if len(leading) > 0 {
+		mc.SearchResult = append(leading, ranked...)
+	} else {
+		mc.SearchResult = ranked
+		if isVibe && vibe != nil && (searchCollections || q.Get("searchTypes") == "") {
+			d := s.collectionDirectory(ctx, vibe)
+			mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 1, Directory: &d})
+		}
 	}
 	// A flat search has one window across every result family.
 	if len(mc.SearchResult) > limit {

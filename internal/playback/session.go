@@ -298,6 +298,7 @@ type session struct {
 	encoderSeekAt     time.Time
 	encoderSlowChecks int
 	encoderRetryAt    time.Time
+	encoderMisses     int
 	lastSrcPos        int64 // latest source read position on the current generation
 	expectPos         int64 // next sequential read offset (-1 = unknown)
 }

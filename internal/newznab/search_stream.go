@@ -59,9 +59,14 @@ func (c *Client) SearchWith(ctx context.Context, req core.SearchRequest, arrived
 }
 
 func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([]core.Release), id config.Identity) ([]core.Release, error) {
+	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHost()
 	// Same SSRF guard as Client.get: the streamed search goes to the
 	// owner-configured indexer, but redirects away from it must be public.
-	req, err := http.NewRequestWithContext(c.trustedCtx(ctx, rawURL), http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(c.trustedCtx(hctx, rawURL), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, redactURLError(err)
 	}
@@ -72,7 +77,7 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
+		return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
 	}
 	const limit = 20 << 20
 	lr := &io.LimitedReader{R: resp.Body, N: limit + 1}
@@ -107,7 +112,7 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Budget {
-			return nil, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), err)
+			return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), err)
 		}
 		return nil, err
 	}

@@ -25,6 +25,7 @@ type Manager struct {
 	opts   Options
 	log    *slog.Logger
 	par    int
+	hosts  *HostLimiter
 
 	mu             sync.RWMutex
 	clients        []*Client
@@ -50,7 +51,10 @@ var _ core.Indexer = (*Manager)(nil)
 
 // NewManager builds a Manager from indexer configs.
 func NewManager(db *sql.DB, cfgs []config.Indexer, opts Options) *Manager {
-	m := &Manager{db: db, opts: opts, par: opts.MaxParallel}
+	if opts.HostLimiter == nil {
+		opts.HostLimiter = NewHostLimiter(opts.MaxPerHost)
+	}
+	m := &Manager{db: db, opts: opts, par: opts.MaxParallel, hosts: opts.HostLimiter}
 	m.log = opts.Logger
 	if m.log == nil {
 		m.log = slog.Default()
@@ -69,6 +73,7 @@ func (m *Manager) Reload(cfgs []config.Indexer) {
 		old[cl.indexerID()] = cl
 	}
 	opts := m.opts
+	opts.HostLimiter = m.hosts
 	opts.onEvent = m.emitEvent
 	next := make([]*Client, 0, len(cfgs))
 	for _, cfg := range cfgs {
@@ -77,6 +82,7 @@ func (m *Manager) Reload(cfgs []config.Indexer) {
 			id = cfg.Name
 		}
 		if cl, ok := old[id]; ok {
+			cl.hosts = m.hosts
 			cl.UpdateConfig(cfg)
 			cl.SetClientIdentity(m.opts.ClientIdentity)
 			cl.setOnEvent(m.emitEvent)

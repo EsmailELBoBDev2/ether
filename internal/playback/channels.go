@@ -58,10 +58,14 @@ func (m *Manager) prepareChannelRelease(ctx context.Context, u *core.User, key c
 }
 
 // reservationCountsLocked counts distinct viewing groups and ordinary sources.
-func (m *Manager) reservationCountsLocked(id identity) (user, total, children int) {
+func (m *Manager) reservationCountsLocked(id identity) (user, total, children, sourced int) {
 	group := m.channelGroups[id]
 	joining := strings.HasPrefix(id.clientID, "join/")
 	units := map[string]int64{}
+	// sourcedUnits are units that resolve a release (sessions and pending
+	// prepares, virtual channels included); passthrough IPTV groups and
+	// broadcasts never touch Usenet.
+	sourcedUnits := map[string]bool{}
 	broadcastUnits := map[string]bool{}
 	viewerUnits := map[string]bool{}
 	for g, slot := range m.externalGroups {
@@ -101,6 +105,7 @@ func (m *Manager) reservationCountsLocked(id identity) (user, total, children in
 			unit = fmt.Sprintf("client/%d/%s/%s", other.userID, other.surface, other.clientID)
 		}
 		units[unit] = other.userID
+		sourcedUnits[unit] = true
 	}
 	now := m.now()
 	for sid, s := range m.sessions {
@@ -123,6 +128,7 @@ func (m *Manager) reservationCountsLocked(id identity) (user, total, children in
 	}
 	total += len(broadcastUnits)
 	user += len(viewerUnits)
+	sourced = len(sourcedUnits)
 	return
 }
 
@@ -155,7 +161,12 @@ func (m *Manager) beginChannel(u *core.User, caps core.ClientCaps, group, output
 	}
 	cfg := m.config()
 	userLimit := UserStreamLimit(cfg, u)
-	serverLimit := ServerStreamLimit(cfg, m.opts.ConnectionsPerStream)
+	serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
+	if derived {
+		// The automatic limit protects Usenet connections; a channel
+		// reserved here plays from its IPTV source, never from Usenet.
+		serverLimit = 0
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -180,7 +191,7 @@ func (m *Manager) beginChannel(u *core.User, caps core.ClientCaps, group, output
 		id.clientID = "join/" + caps.ClientID
 		m.channelGroups[id] = output
 	}
-	userN, total, _ := m.reservationCountsLocked(id)
+	userN, total, _, _ := m.reservationCountsLocked(id)
 	if output != "" {
 		delete(m.channelGroups, id)
 	}

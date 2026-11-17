@@ -720,6 +720,16 @@ func UserStreamLimit(cfg config.Config, u *core.User) int {
 // ServerStreamLimit is the server-wide stream cap: Server.MaxStreams, or the
 // total connections of enabled primary (non-backfill) Usenet providers
 // divided by connsPerStream, at least 1. 0 means unlimited (no providers).
+// serverStreamLimit is ServerStreamLimit plus whether it was derived from
+// Usenet connections (no explicit Server.MaxStreams). A derived limit counts
+// only streams that resolve a release.
+func serverStreamLimit(cfg config.Config, connsPerStream int) (int, bool) {
+	if cfg.Server.MaxStreams > 0 {
+		return cfg.Server.MaxStreams, false
+	}
+	return ServerStreamLimit(cfg, connsPerStream), true
+}
+
 func ServerStreamLimit(cfg config.Config, connsPerStream int) int {
 	if cfg.Server.MaxStreams > 0 {
 		return cfg.Server.MaxStreams
@@ -749,7 +759,7 @@ func ServerStreamLimit(cfg config.Config, connsPerStream int) int {
 func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) error {
 	cfg := m.config()
 	userLimit := UserStreamLimit(cfg, user)
-	serverLimit := ServerStreamLimit(cfg, m.opts.ConnectionsPerStream)
+	serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -759,7 +769,11 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 		m.mu.Unlock()
 		return errDraining
 	}
-	userN, total, children := m.reservationCountsLocked(id)
+	userN, total, children, sourced := m.reservationCountsLocked(id)
+	limited := total
+	if derived {
+		limited = sourced
+	}
 	group := m.channelGroups[id]
 	if strings.HasPrefix(group, "broadcast-") {
 		userLimit = 0
@@ -772,7 +786,7 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 		m.mu.Unlock()
 		return fmt.Errorf("%w: %s is using %d of %d streams", core.ErrStreamLimit, userLabel(user), userN, userLimit)
 	}
-	if serverLimit > 0 && total >= serverLimit {
+	if serverLimit > 0 && limited >= serverLimit {
 		m.mu.Unlock()
 		return fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 	}
@@ -792,7 +806,7 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 		return nil
 	}
 	claim := unitRow{id: pendingID(m.reg.self, id), user: id.userID, client: clusterClientID(id), grp: group, kind: unitPending}
-	if err := m.reg.admit(ctx, user, id, claim, userN, total, userLimit, serverLimit); err != nil {
+	if err := m.reg.admit(ctx, user, id, claim, userN, limited, userLimit, serverLimit); err != nil {
 		m.mu.Lock()
 		m.unreserveLocked(id)
 		m.mu.Unlock()
@@ -930,8 +944,11 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 				if !m.sessionCountsForLimit(s, now) {
 					cfg := m.config()
 					userLimit := UserStreamLimit(cfg, user)
-					serverLimit := ServerStreamLimit(cfg, m.opts.ConnectionsPerStream)
-					userN, total, _ := m.reservationCountsLocked(id)
+					serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
+					userN, total, _, sourced := m.reservationCountsLocked(id)
+					if derived {
+						total = sourced
+					}
 					if userLimit > 0 && userN >= userLimit {
 						m.mu.Unlock()
 						m.stopReplaced(promotedReplaced)

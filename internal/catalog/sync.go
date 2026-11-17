@@ -704,6 +704,7 @@ func (c *Catalog) hydratePersonCredits(ctx context.Context, client TMDB, pc pers
 	if personName == "" {
 		if pd, ok := client.(personDetailsSource); ok {
 			if p, err := pd.PersonDetails(bctx, personID); err == nil && p != nil {
+				c.savePersonMetadata(personID, p)
 				personName, personThumb = p.Name, p.ProfilePath
 				if p.ID == personID && validPersonIMDB(p.IMDBID) {
 					personIMDB = p.IMDBID

@@ -19,6 +19,10 @@ func (s *surfaceExperience) personArtwork(ctx context.Context, viewer *frontend.
 			return core.ErrNotFound
 		}
 		result = credit
+		result.KnownFor = person.KnownFor
+		result.Biography = person.Biography
+		result.Birthday = person.Birthday
+		result.Roles = person.Roles
 		artwork, ok := s.artwork.(frontend.PersonArtwork)
 		if !ok {
 			return nil

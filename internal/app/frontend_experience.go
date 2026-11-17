@@ -203,7 +203,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		_, err := a.playlists.Get(ctx, u.ID, key)
 		return err == nil
 	}}
-	interactions := experience.RowInteractionPolicy{Libraries: libs, Visibility: rowVis, Get: a.catalog.CachedGet, AllowEntry: entryPolicy.Subject, CollectionMembers: func(ctx context.Context, u *core.User, key core.RatingKey, entries []core.NeutralEntryRef) bool {
+	interactions := experience.RowInteractionPolicy{Libraries: libs, LiveLibraries: liveLibraries, Visibility: rowVis, Get: a.catalog.CachedGet, AllowEntry: entryPolicy.Subject, CollectionMembers: func(ctx context.Context, u *core.User, key core.RatingKey, entries []core.NeutralEntryRef) bool {
 		return rowViewCollectionMembers(ctx, a.collections, u, key, entries)
 	}, Impression: a.personalize.RecordNeutralImpression, EntryImpression: a.personalize.RecordNeutralEntryImpression, DetailOpen: a.personalize.RecordDetailOpen}
 	receipts, err := experience.NewReceipts(experience.ReceiptOptions{DB: a.db, PolicyLease: a.cfg.AcquirePolicy, Active: a.users.PolicyUser, TTL: 30 * time.Minute, MaxPerDevice: 10000, Prefetch: func(ctx context.Context, keys []core.RatingKey) {
@@ -260,7 +260,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if err != nil {
 		return nil, err
 	}
-	rowViews, err := a.newRowViews(protocol, rows, receipts, vis, libs)
+	rowViews, err := a.newRowViews(protocol, rows, receipts, vis, libs, liveLibraries)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			out = append(out, frontend.NotInterestedEntry{Key: entry.Key, AddedAt: entry.AddedAt})
 		}
 		return out, nil
-	}, ByExternalID: a.catalog.ByExternalID, Active: a.users.PolicyUser, Libraries: libs, LiveLibraries: liveLibraries, Visibility: vis, State: a.state, Rows: rows, Protocol: protocol, Browse: a.catalog.Browse, PageExclusions: newLibraryPageExclusionsFor(a, stepAside), ViewerRules: a.catalog.ViewerRulesJudge, FacetFilter: a.catalog.FacetFilter, FacetPage: a.catalog.FacetPage, StudioByFacetID: a.catalog.StudioByFacetID, PersonByFacetID: a.catalog.PersonByFacetID, CountWatched: a.catalog.CountWatched, CountBrowsable: a.catalog.CountBrowsable, CreditItems: a.catalog.CachedCreditItems, PeopleIndex: a.peopleIndex, PersonCredits: a.catalog.PersonCreditKeys, PersonCreditsMany: a.catalog.PersonCreditsMany, RankingDetails: a.catalog.RankingDetails, PersonCreditForms: a.catalog.PersonCreditForms, PersonFormKeys: a.catalog.PersonFormKeys, AiredEpisodes: a.catalog.CachedAiredEpisodes, AiredEpisodesMany: a.catalog.CachedAiredEpisodesMany, AiredEpisodeTallies: airedEpisodeTallies, EpisodesSettledBefore: func(ctx context.Context) time.Time {
+	}, ByExternalID: a.catalog.ByExternalID, Active: a.users.PolicyUser, Libraries: libs, LiveLibraries: liveLibraries, Visibility: vis, State: a.state, Rows: rows, Protocol: protocol, Browse: a.catalog.Browse, PageExclusions: newLibraryPageExclusionsFor(a, stepAside), ViewerRules: a.catalog.ViewerRulesJudge, FacetFilter: a.catalog.FacetFilter, FacetPage: a.catalog.FacetPage, StudioByFacetID: a.catalog.StudioByFacetID, PersonByFacetID: a.catalog.PersonByFacetID, CountWatched: a.catalog.CountWatched, CountBrowsable: a.catalog.CountBrowsable, CreditItems: a.catalog.CachedCreditItems, PeopleIndex: a.peopleIndex, PersonCredits: a.catalog.PersonCreditKeys, PersonCreditsMany: a.catalog.PersonCreditsMany, RankingDetails: a.catalog.RankingDetails, PersonMetadata: a.catalog.PersonMetadata, LibraryMembers: a.libraryRecommendationMembers, PersonCreditForms: a.catalog.PersonCreditForms, PersonFormKeys: a.catalog.PersonFormKeys, AiredEpisodes: a.catalog.CachedAiredEpisodes, AiredEpisodesMany: a.catalog.CachedAiredEpisodesMany, AiredEpisodeTallies: airedEpisodeTallies, EpisodesSettledBefore: func(ctx context.Context) time.Time {
 		if a.availability == nil {
 			return time.Time{}
 		}
@@ -927,11 +927,37 @@ func (s *surfaceExperience) startCollage(viewID string, gen uint64, typ core.Med
 }
 
 func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Viewer, device core.Device, keys []core.RatingKey) (map[core.RatingKey][]frontend.Image, error) {
-	titles, err := s.PageArtworkTitles(ctx, viewer, keys)
+	out := make(map[core.RatingKey][]frontend.Image, len(keys))
+	var titleKeys []core.RatingKey
+	seenDirect := map[core.RatingKey]bool{}
+	for _, k := range keys {
+		switch k.Kind() {
+		case core.KindCollection, core.KindSmart, core.KindPlaylist:
+			if seenDirect[k] {
+				continue
+			}
+			seenDirect[k] = true
+			imgs, ok, err := s.ItemArtwork(ctx, viewer, device, k)
+			if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrUnauthorized) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				out[k] = imgs
+			}
+		default:
+			titleKeys = append(titleKeys, k)
+		}
+	}
+	if len(titleKeys) == 0 {
+		return out, nil
+	}
+	titles, err := s.PageArtworkTitles(ctx, viewer, titleKeys)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[core.RatingKey][]frontend.Image, len(titles))
 	var pluginKeys []core.RatingKey
 	var tmdbTitles []core.Title
 	for _, t := range titles {

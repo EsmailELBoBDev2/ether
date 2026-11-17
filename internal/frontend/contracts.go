@@ -233,6 +233,7 @@ type ItemQuery struct {
 	ExcludedTypes []core.MediaType
 	Recursive     bool
 	Season        *int // Optional presented season number.
+	CollectionKey core.RatingKey
 	Filter        core.Filter
 	Watched       *bool
 	Favorite      *bool
@@ -537,6 +538,7 @@ type ExternalRequest struct {
 type CollectionQuery struct {
 	// ExistsOnly stops after the first visible collection; Total is then 0 or 1.
 	ExistsOnly    bool
+	ViewID        string
 	Query         string
 	Types         []core.MediaType
 	Offset, Limit int

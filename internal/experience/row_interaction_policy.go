@@ -14,6 +14,7 @@ import (
 // before recording personalization events.
 type RowInteractionPolicy struct {
 	Libraries         []Library
+	LiveLibraries     func() []Library
 	Visibility        Visibility
 	Get               func(context.Context, core.RatingKey) (*core.Title, error)
 	AllowEntry        func(context.Context, *core.User, string, string) bool
@@ -21,6 +22,13 @@ type RowInteractionPolicy struct {
 	Impression        func(*core.User, core.NeutralImpression)
 	EntryImpression   func(*core.User, core.NeutralImpression, core.NeutralEntryRef)
 	DetailOpen        func(context.Context, *core.User, *core.Title)
+}
+
+func (p RowInteractionPolicy) libraries() []Library {
+	if p.LiveLibraries != nil {
+		return p.LiveLibraries()
+	}
+	return p.Libraries
 }
 
 func (p RowInteractionPolicy) Allowed(ctx context.Context, u *core.User, subject ReceiptSubject) bool {
@@ -75,7 +83,7 @@ func (p RowInteractionPolicy) allowedImpression(ctx context.Context, u *core.Use
 	case frontend.PlacementLibrary:
 		id, err := strconv.Atoi(imp.ViewID)
 		valid := false
-		for _, lib := range p.Libraries {
+		for _, lib := range p.libraries() {
 			if lib.ID == id {
 				valid = true
 				break

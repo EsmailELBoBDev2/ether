@@ -475,6 +475,9 @@ func (i *instance) routes() {
 	i.route("GET", "/events", i.appearanceEvents)
 	i.route("GET", "/libraries", i.libraries)
 	i.route("GET", "/libraries/{id}/items", i.libraryItems)
+	i.route("GET", "/libraries/{id}/collections", i.libraryCollections)
+	i.route("GET", "/people/{id}", i.person)
+	i.route("GET", "/people/{id}/titles", i.personTitles)
 	i.route("GET", "/capabilities", func(w http.ResponseWriter, r *http.Request) { cache(w, r, i.requestCapabilities(r)) })
 	i.route("POST", "/negotiate", i.negotiate)
 	for _, p := range []string{"sign-in", "refresh", "revoke", "web-code", "web-code/redeem", "device", "device/poll", "device/approve", "quick-connect", "quick-connect/poll", "quick-connect/approve"} {

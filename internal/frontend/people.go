@@ -26,13 +26,17 @@ type PeopleQuery struct {
 
 type PersonReadOptions struct{ Prefetch bool }
 
-// PersonDetail contains only facts from currently visible credits. Artwork is
-// optional and remains bound to the authorized title that owns the image.
+// PersonDetail contains only facts from currently visible credits, plus optional
+// cached person metadata. Artwork remains bound to the authorized title that owns it.
 type PersonDetail struct {
 	ID, Name, IMDB string
 	TMDB           int64
 	ArtworkItem    RatingKey
 	Images         []Image
+	KnownFor       string
+	Biography      string
+	Birthday       string
+	Roles          []string
 }
 
 // PeopleReader resolves existing person facet IDs through current visible

@@ -1140,6 +1140,10 @@ type personalRules struct {
 // filterForUser applies a user's library access, content-rating limit and
 // personal rules (watched, in progress) to built members.
 func (s *Service) filterForUser(ctx context.Context, keys []core.RatingKey, pr personalRules, user *core.User, snap *snapshot) []core.RatingKey {
+	return s.filterForUserWithStatuses(ctx, keys, pr, user, snap, nil, false)
+}
+
+func (s *Service) filterForUserWithStatuses(ctx context.Context, keys []core.RatingKey, pr personalRules, user *core.User, snap *snapshot, preloaded map[core.RatingKey]core.WatchStatus, preloadedOK bool) []core.RatingKey {
 	max := ""
 	allowedLibs := false
 	if user != nil {
@@ -1158,7 +1162,9 @@ func (s *Service) filterForUser(ctx context.Context, keys []core.RatingKey, pr p
 		return keys
 	}
 	var statuses map[core.RatingKey]core.WatchStatus
-	if st := s.stateDep(); personal && user != nil && st != nil {
+	if preloadedOK {
+		statuses = preloaded
+	} else if st := s.stateDep(); personal && user != nil && st != nil {
 		if m, err := st.GetMany(ctx, user.ID, keys); err == nil {
 			statuses = m
 		} else {

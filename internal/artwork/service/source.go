@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/livetv"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"net/url"
 	"sync"
 	"time"
@@ -425,10 +426,22 @@ func (a *Source) StoreMetadata(ctx context.Context, viewer *core.User, titles []
 }
 
 // ListPage lists artwork for titles already loaded by the caller. Overlay
-// settings and saved variants are read once for the page.
+// settings, saved variants, cached ratings, and viewer overlay facts are read
+// once for the page.
 func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.Device, titles []core.Title) (map[core.RatingKey][]frontend.Image, error) {
 	if viewer == nil {
 		return nil, core.ErrUnauthorized
+	}
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	pageViewer := viewer
+	if policy, ok := a.Visibility.Policy.(core.UserPolicySource); ok {
+		resolved := policy.UserPolicy(viewer)
+		if resolved == nil || resolved.ID != viewer.ID {
+			return nil, core.ErrUnauthorized
+		}
+		pageViewer = resolved
 	}
 	ctx = withVisMemo(ctx)
 	memo, _ := ctx.Value(visMemoKey{}).(*visMemo)
@@ -445,11 +458,7 @@ func (a Source) ListPage(ctx context.Context, viewer *core.Viewer, device core.D
 		memo.mu.Unlock()
 	}
 	if a.Discovery != nil && a.Discovery.Overlays != nil {
-		keys := make([]core.RatingKey, len(titles))
-		for i := range titles {
-			keys[i] = titles[i].Key
-		}
-		next, err := a.Discovery.Overlays.WithArtworkPage(ctx, keys)
+		next, err := a.Discovery.Overlays.WithTitlePage(ctx, pageViewer, titles)
 		if err != nil {
 			return nil, err
 		}

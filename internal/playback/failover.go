@@ -1717,8 +1717,10 @@ func (m *Manager) resumePoint(ctx context.Context, userID int64, key core.Rating
 		if title != nil && (!releaseMatchesTitle(live.Release, title) || !payloadMatchesTitle(live.NZB, title)) {
 			return nil, nil
 		}
-		if pts, err := m.resume.loadIndex(ctx, userID, key, live.Release.ID); err == nil {
-			live.Keyframes = pts
+		if payload {
+			if pts, err := m.resume.loadIndex(ctx, userID, key, live.Release.ID); err == nil {
+				live.Keyframes = pts
+			}
 		}
 		return live, nil
 	}
@@ -1746,9 +1748,11 @@ func (m *Manager) resumePoint(ctx context.Context, userID int64, key core.Rating
 		m.resume.notePayloadChecked(rec.nzbHash, key)
 	}
 	point := rec.point(nzb)
-	point.Keyframes, err = m.resume.loadIndex(ctx, userID, key, rec.releaseID)
-	if err != nil {
-		return nil, err
+	if payload {
+		point.Keyframes, err = m.resume.loadIndex(ctx, userID, key, rec.releaseID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return point, nil
 }
@@ -1818,7 +1822,7 @@ func (m *Manager) resumeFor(ctx context.Context, user *core.User, key core.Ratin
 	if rp.profileKey != profileKey(prof) || !rememberedOriginalAudioCurrent(prof, rp.originalLanguage, current, rp.Release) || !rememberedCodecCurrent(rp.Release, caps) || !m.resumeSourceAllowed(rp.Release) || !sourceFitsBitrate(rp.Size, rp.Duration, 0, caps.MaxBitrateKbps) {
 		return nil, nil
 	}
-	if probe := m.persistedProbeHash(ctx, user.ID, key, rp.Release.ID, rp.payloadHash()); probe != nil && !rememberedInfoCodecCurrent(probe.info, caps) {
+	if probe := m.persistedProbeInfoHash(ctx, user.ID, key, rp.Release.ID, rp.payloadHash()); probe != nil && !rememberedInfoCodecCurrent(probe.info, caps) {
 		return nil, nil
 	}
 	rp.Profile = prof.Name // name from the profile object, not the stored column

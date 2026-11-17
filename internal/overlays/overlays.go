@@ -103,6 +103,7 @@ type Options struct {
 	Allowed           func(*core.User, *core.Title) bool
 	Facts             func(context.Context, *core.User, *core.Title) Facts
 	FactsFor          func(context.Context, *core.User, *core.Title, bool, bool) Facts
+	PreparePage       func(context.Context, *core.User, []core.Title, bool, bool) context.Context
 	Ratings           *ratings.Service
 	Taste             func(context.Context, *core.User) []string
 	Now               func() time.Time
@@ -179,14 +180,68 @@ func (s *Service) WithArtworkPage(ctx context.Context, keys []core.RatingKey) (c
 		return ctx, nil
 	}
 	ctx = s.WithSettingsSnapshot(ctx)
-	if _, ok := ctx.Value(artworkPageKey{}).(map[core.RatingKey]Artwork); ok {
-		return ctx, nil
+	if prev, ok := ctx.Value(artworkPageKey{}).(map[core.RatingKey]Artwork); ok {
+		var missing []core.RatingKey
+		seen := make(map[core.RatingKey]bool, len(keys))
+		for _, k := range keys {
+			if k == 0 || seen[k] {
+				continue
+			}
+			seen[k] = true
+			if _, have := prev[k]; !have {
+				missing = append(missing, k)
+			}
+		}
+		if len(missing) == 0 {
+			return ctx, nil
+		}
+		batch, err := s.ArtworkMany(ctx, missing)
+		if err != nil {
+			return ctx, err
+		}
+		merged := make(map[core.RatingKey]Artwork, len(prev)+len(batch))
+		for k, v := range prev {
+			merged[k] = v
+		}
+		for k, v := range batch {
+			merged[k] = v
+		}
+		return context.WithValue(ctx, artworkPageKey{}, merged), nil
 	}
 	batch, err := s.ArtworkMany(ctx, keys)
 	if err != nil {
 		return ctx, err
 	}
 	return context.WithValue(ctx, artworkPageKey{}, batch), nil
+}
+
+// WithTitlePage prepares settings, saved variants, cached ratings, and viewer
+// overlay facts once for a page of titles so per-tile versioning and selection
+// perform no per-item database queries.
+func (s *Service) WithTitlePage(ctx context.Context, viewer *core.User, titles []core.Title) (context.Context, error) {
+	if s == nil {
+		return ctx, nil
+	}
+	keys := make([]core.RatingKey, len(titles))
+	for i := range titles {
+		keys[i] = titles[i].Key
+	}
+	var err error
+	ctx, err = s.WithArtworkPage(ctx, keys)
+	if err != nil {
+		return ctx, err
+	}
+	cfg, err := s.Settings(ctx)
+	if err != nil || !cfg.Enabled || len(titles) == 0 {
+		return ctx, nil
+	}
+	if cfg.Ratings && s.o.Ratings != nil {
+		ctx = s.o.Ratings.WithPage(ctx, titles)
+	}
+	if (cfg.Status || cfg.Quality) && s.o.PreparePage != nil {
+		ctx = s.o.PreparePage(ctx, viewer, titles, cfg.Status, cfg.Quality)
+	}
+	return ctx, nil
 }
 
 func (s *Service) ArtworkMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]Artwork, error) {

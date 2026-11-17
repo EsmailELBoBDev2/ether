@@ -979,6 +979,12 @@ func titleIncludes(parent, key core.RatingKey) bool {
 }
 
 func (m *Manager) releaseBlocked(ctx context.Context, id string) bool {
+	if local, ok := m.deps.Resolver.(interface{ LocalReleaseBlocked(string) bool }); ok && local.LocalReleaseBlocked(id) {
+		return true
+	}
+	if blocked, ok := preloadedReleaseBlocked(ctx, id); ok {
+		return blocked
+	}
 	if checker, ok := m.deps.Resolver.(core.ReleaseBlockChecker); ok {
 		blocked, err := checker.ReleaseBlocked(ctx, id)
 		return blocked || err != nil

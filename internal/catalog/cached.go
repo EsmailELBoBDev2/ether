@@ -20,7 +20,7 @@ func (c *Catalog) CachedTitle(ctx context.Context, key core.RatingKey) (*core.Ti
 // RecentEpisodes returns only local, released episode identities for artwork
 // badges. Callers apply viewer state through core.State instead of a SQL join.
 func (c *Catalog) RecentEpisodes(ctx context.Context, show core.RatingKey, since time.Time) ([]core.Title, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT key,episode FROM catalog_titles WHERE show_key=? AND type='episode' AND adult=0 AND released_ts BETWEEN ? AND ?`, show, since.Unix(), c.now().Unix())
+	rows, err := c.db.QueryContext(ctx, `SELECT key,episode FROM catalog_titles WHERE show_key=? AND type='episode' AND release_known=1 AND adult=0 AND released_ts BETWEEN ? AND ?`, show, since.Unix(), c.now().Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +35,56 @@ func (c *Catalog) RecentEpisodes(ctx context.Context, show core.RatingKey, since
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// RecentEpisodesMany batches RecentEpisodes across shows so page-level status
+// overlays read catalog_titles_episode_aired once per chunk instead of per tile.
+func (c *Catalog) RecentEpisodesMany(ctx context.Context, shows []core.RatingKey, since time.Time) (map[core.RatingKey][]core.Title, error) {
+	out := make(map[core.RatingKey][]core.Title, len(shows))
+	if len(shows) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(shows))
+	seen := make(map[core.RatingKey]bool, len(shows))
+	for _, k := range shows {
+		if k.Kind() == core.KindShow && !seen[k] {
+			seen[k] = true
+			args = append(args, int64(k))
+		}
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	sinceTS := since.Unix()
+	nowTS := c.now().Unix()
+	const batch = 200
+	for chunk := range store.Chunks(args, batch) {
+		qArgs := make([]any, 0, 2+len(chunk))
+		qArgs = append(qArgs, sinceTS, nowTS)
+		qArgs = append(qArgs, chunk...)
+		rows, err := c.db.QueryContext(ctx, `SELECT show_key,key,episode FROM catalog_titles WHERE type='episode' AND release_known=1 AND adult=0 AND released_ts BETWEEN ? AND ? AND show_key IN (`+placeholders(len(chunk))+`)`, qArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var showKey int64
+			var t core.Title
+			t.Type = core.TypeEpisode
+			if err := rows.Scan(&showKey, &t.Key, &t.Episode); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			sk := core.RatingKey(showKey)
+			t.ShowKey = sk
+			out[sk] = append(out[sk], t)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // CachedTitles returns released, non-adult mirrored titles in requested order,

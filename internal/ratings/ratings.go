@@ -333,6 +333,12 @@ func (s *Service) Cached(ctx context.Context, t *core.Title) ([]Badge, error) {
 	if e != nil || !cfg.Enabled || t == nil {
 		return nil, e
 	}
+	if snap, ok := ctx.Value(pageSnapshotKey{s}).(pageSnapshot); ok && snap.provider == cacheProvider(cfg) && snap.checked[t.Key] {
+		if bs, hit := snap.badges[t.Key]; hit {
+			return append([]Badge(nil), bs...), nil
+		}
+		return nil, nil
+	}
 	var raw string
 	var at int64
 	e = s.db.QueryRowContext(ctx, `SELECT value,updated FROM ratings_cache WHERE item_key=? AND provider=?`, t.Key, cacheProvider(cfg)).Scan(&raw, &at)
@@ -370,7 +376,8 @@ func (s *Service) CachedMany(ctx context.Context, titles []core.Title) (map[core
 		seen[title.Key] = true
 		keys = append(keys, title.Key)
 	}
-	freshAfter := s.o.Now().Add(-time.Duration(cfg.CacheHours) * time.Hour).Unix()
+	now := s.o.Now()
+	maxAge := time.Duration(cfg.CacheHours) * time.Hour
 	if len(keys) > 0 {
 		numeric := make([]int64, len(keys))
 		for n, k := range keys {
@@ -395,7 +402,7 @@ func (s *Service) CachedMany(ctx context.Context, titles []core.Title) (map[core
 				rows.Close()
 				return nil, err
 			}
-			if updated < freshAfter {
+			if now.Sub(time.Unix(updated, 0)) > maxAge {
 				continue
 			}
 			var badges []Badge

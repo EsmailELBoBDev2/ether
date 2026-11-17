@@ -97,3 +97,7 @@ func (r discoveryRatings) Queue(t core.Title) {
 func (r discoveryRatings) WithSettingsSnapshot(ctx context.Context) context.Context {
 	return r.s.WithSettingsSnapshot(ctx)
 }
+
+func (r discoveryRatings) WithPage(ctx context.Context, titles []core.Title) context.Context {
+	return r.s.WithPage(ctx, titles)
+}

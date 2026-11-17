@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // Blocklist sources.
@@ -336,7 +337,10 @@ func (s *Service) memBlocklist(f BlockFilter) []BlockEntry {
 
 func (s *Service) memBlocklistTotal(f BlockFilter) int { return len(s.memBlocklistAll(f)) }
 
-var _ core.ReleaseBlockChecker = (*Service)(nil)
+var (
+	_ core.ReleaseBlockChecker      = (*Service)(nil)
+	_ core.ReleaseBatchBlockChecker = (*Service)(nil)
+)
 
 func (s *Service) ReleaseBlocked(ctx context.Context, id string) (bool, error) {
 	if s.isBad(id) {
@@ -353,6 +357,66 @@ func (s *Service) ReleaseBlocked(ctx context.Context, id string) (bool, error) {
 		return false, err
 	}
 	return e.Manual || s.now().Sub(e.UpdatedAt) < badRetention, nil
+}
+
+// ReleasesBlocked checks a batch of release IDs against the in-memory bad marks
+// and durable resolver_bad table. Every non-empty input ID is populated in the
+// returned map (true when blocked, false otherwise).
+func (s *Service) ReleasesBlocked(ctx context.Context, ids []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var pending []any
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if s.isBad(id) {
+			out[id] = true
+			continue
+		}
+		out[id] = false
+		if s.db != nil {
+			pending = append(pending, id)
+		}
+	}
+	if len(pending) == 0 || s.db == nil {
+		return out, nil
+	}
+	now := s.now()
+	const batch = 500
+	for chunk := range store.Chunks(pending, batch) {
+		rows, err := s.db.QueryContext(ctx, `SELECT release_id, manual, created_at, updated_at FROM resolver_bad WHERE release_id IN (`+store.Placeholders(len(chunk))+`)`, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var (
+				relID            string
+				manual           int
+				created, updated int64
+			)
+			if err := rows.Scan(&relID, &manual, &created, &updated); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if updated == 0 {
+				updated = created
+			}
+			if manual == 1 || now.Sub(time.Unix(updated, 0)) < badRetention {
+				out[relID] = true
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // LocalReleaseBlocked reads the in-memory snapshot without database access.

@@ -157,6 +157,9 @@ func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.R
 	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
 		return nil
 	}
+	if user != nil && core.DetailBurst(user.ID, caps.ClientID, key) {
+		return core.ErrPrepareSlow
+	}
 	if core.LocalResponse(ctx) {
 		if user == nil {
 			return core.ErrPrepareSlow
@@ -215,6 +218,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 	reason := opts.Reason
 	if reason != core.PrewarmTrailer && reason != core.PrewarmPostPlay && reason != core.PrewarmBrowse && reason != core.PrewarmNextEpisode {
 		reason = core.PrewarmDetail
+	}
+	if reason == core.PrewarmDetail && !opts.DuringPlayback && core.DetailBurst(user.ID, caps.ClientID, key) {
+		return false
 	}
 	cfg := m.config().Cache
 	if cfg.DisableSpeculation || cfg.Mode == "off" || (cfg.SpeculativeWarming == "off" && reason != core.PrewarmNextEpisode && !metadata) || (reason == core.PrewarmDetail && cfg.DetailWarmup == "off") {

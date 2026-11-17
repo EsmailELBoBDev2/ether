@@ -246,7 +246,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
-				if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && variants != nil {
+				if variants := s.svc().variants; pr.User != nil && s.detailSearchAllowed(pr) && !s.detailBurst(pr, t.Key) && variants != nil {
 					// Repeated metadata fetches while the same page is being
 					// watched must not retry a failed search on every fetch.
 					watchKey := fmt.Sprintf("%d|%s|%d", pr.User.ID, pr.ClientID, t.Key)
@@ -1333,6 +1333,13 @@ func (s *Server) detailSearchAllowed(pr *Request) bool {
 	}
 	c := s.cfg().Cache
 	return !c.DisableSpeculation && c.Mode != "off" && c.DetailWarmup != "off"
+}
+
+// detailBurst reports a client reading detail pages faster than a person
+// could (a library sync such as Tracearr). Such a client gets no detail
+// searches or warm-ups; see playback.Manager.DetailBurst.
+func (s *Server) detailBurst(pr *Request, key frontend.RatingKey) bool {
+	return pr.User != nil && frontend.DetailBurst(pr.User.ID, pr.ClientID, key)
 }
 
 // Detail-family GETs schedule preparation. Flagged Plex clients retain their

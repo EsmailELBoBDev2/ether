@@ -15,6 +15,8 @@ export {
   createHostedClient,
   createHostedHostClient,
   createRemoteHostClient,
+  decodeText,
+  encodeText,
   isHostedRuntime,
   MinDataReadBytes,
   MaxDataReadBytes,

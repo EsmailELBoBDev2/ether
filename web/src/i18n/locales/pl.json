@@ -4816,6 +4816,7 @@
   "m_0fe73321121ea5": "Węzeł",
   "m_0fe74007df11d7": "Brak napisów",
   "m_0fe744408508ef": "Zainstaluj Node.js, dodaj ten serwer do konfiguracji Claude Desktop, a następnie zatwierdź żądanie w Etherze.",
+  "m_0fe7ad3bb23d6f": "Wysyłaj źródła przez proxy",
   "m_0fe7ff39356b29": "Połącz aplikację AI",
   "m_0fe952fce7e285": {
     "one": "Poniżej progu popularności ({count} głos; próg {floor})",

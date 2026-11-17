@@ -23,7 +23,7 @@ describe("Settings", () => {
   it("fills a proxy suggestion and tests the connection inline", async () => {
     const { fake } = renderApp("/server");
     fireEvent.click(
-      await screen.findByLabelText("Send indexers, debrid and Usenet through a proxy", {}, WAIT),
+      await screen.findByLabelText("Send sources through a proxy", {}, WAIT),
     );
     fireEvent.click(screen.getByRole("button", { name: "Common proxy setups" }));
     fireEvent.click(

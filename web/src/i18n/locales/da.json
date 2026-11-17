@@ -4586,6 +4586,7 @@
   "m_0fe73321121ea5": "Node",
   "m_0fe74007df11d7": "Ingen undertekster",
   "m_0fe744408508ef": "Installer Node.js, tilføj denne server til din Claude Desktop-konfiguration, og godkend derefter anmodningen i Ether.",
+  "m_0fe7ad3bb23d6f": "Send kilder gennem en proxy",
   "m_0fe7ff39356b29": "Tilslut en AI-app",
   "m_0fe952fce7e285": {
     "one": "Under din popularitetsgrænse ({count} stemme; grænse {floor})",

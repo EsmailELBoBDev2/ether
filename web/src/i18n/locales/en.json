@@ -4593,6 +4593,7 @@
   "m_0fe73321121ea5": "Node",
   "m_0fe74007df11d7": "No subtitles",
   "m_0fe744408508ef": "Install Node.js, add this server to your Claude Desktop configuration, then approve the request in Ether.",
+  "m_0fe7ad3bb23d6f": "Send sources through a proxy",
   "m_0fe7ff39356b29": "Connect an AI app",
   "m_0fe952fce7e285": {
     "one": "Below your popularity floor ({count} vote; floor {floor})",

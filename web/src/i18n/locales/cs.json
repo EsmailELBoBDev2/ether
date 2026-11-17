@@ -4816,6 +4816,7 @@
   "m_0fe73321121ea5": "Uzel",
   "m_0fe74007df11d7": "Žádné titulky",
   "m_0fe744408508ef": "Nainstalujte Node.js, přidejte tento server do konfigurace Claude Desktop a poté žádost schvalte v Etheru.",
+  "m_0fe7ad3bb23d6f": "Posílat zdroje přes proxy",
   "m_0fe7ff39356b29": "Připojit aplikaci AI",
   "m_0fe952fce7e285": {
     "one": "Pod vaším prahem oblíbenosti ({count} hlas; práh {floor})",

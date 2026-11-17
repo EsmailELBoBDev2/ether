@@ -4586,6 +4586,7 @@
   "m_0fe73321121ea5": "Node",
   "m_0fe74007df11d7": "Ingen undertekster",
   "m_0fe744408508ef": "Installer Node.js, legg til denne serveren i Claude Desktop-konfigurasjonen din, og godkjenn deretter forespørselen i Ether.",
+  "m_0fe7ad3bb23d6f": "Send kilder gjennom en proxy",
   "m_0fe7ff39356b29": "Koble til en KI-app",
   "m_0fe952fce7e285": {
     "one": "Under popularitetsgrensen din ({count} stemme; grense {floor})",

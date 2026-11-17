@@ -155,6 +155,7 @@ type Channel struct {
 
 	sweepKey      string
 	numberMissing bool
+	numberKept    bool   // lineup-unique import: provider number was free and is kept
 	Health        string `json:"health,omitempty"`
 	Transcode     bool   `json:"transcode"`           // IPTV: normalize codecs through the transcoder
 	Stability     string `json:"stability,omitempty"` // fastest, balanced, rocksolid; "" inherits the server preset

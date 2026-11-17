@@ -258,7 +258,9 @@ export function CatalogueTab({
         ) : null}
         <EmptyState
           icon={<Store size={18} />}
-          title={!configured ? t("No marketplace configured") : t("Could not reach the marketplace")}
+          title={
+            !configured ? t("No marketplace configured") : t("Could not reach the marketplace")
+          }
           description={
             !configured
               ? t(
@@ -489,7 +491,9 @@ export function CatalogueTab({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2.5 text-[11px] text-fg-subtle">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge>{kindLabel(entry.kind)}</Badge>
-                    {entry.category ? <Badge>{categoryLabel(entry.category)}</Badge> : null}
+                    {entry.category && categoryLabel(entry.category) !== kindLabel(entry.kind) ? (
+                      <Badge>{categoryLabel(entry.category)}</Badge>
+                    ) : null}
                   </div>
                   {entry.latestVersion ? (
                     <span className="font-mono">v{entry.latestVersion}</span>
@@ -571,7 +575,10 @@ export function CatalogueTab({
                     </Badge>
                   ) : null}
                   <Badge>{kindLabel(selected.kind)}</Badge>
-                  {selected.category ? <Badge>{categoryLabel(selected.category)}</Badge> : null}
+                  {selected.category &&
+                  categoryLabel(selected.category) !== kindLabel(selected.kind) ? (
+                    <Badge>{categoryLabel(selected.category)}</Badge>
+                  ) : null}
                   {selected.latestVersion ? (
                     <span className="font-mono text-xs text-fg-subtle">
                       v{selected.latestVersion}

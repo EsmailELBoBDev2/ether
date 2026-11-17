@@ -4700,6 +4700,7 @@
   "m_0fe73321121ea5": "Nodo",
   "m_0fe74007df11d7": "Sin subtítulos",
   "m_0fe744408508ef": "Instala Node.js, añade este servidor a tu configuración de Claude Desktop y luego aprueba la solicitud en Ether.",
+  "m_0fe7ad3bb23d6f": "Enviar las fuentes a través de un proxy",
   "m_0fe7ff39356b29": "Conectar una aplicación de IA",
   "m_0fe952fce7e285": {
     "one": "Por debajo de tu umbral de popularidad ({count} voto; mínimo {floor})",

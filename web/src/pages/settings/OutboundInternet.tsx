@@ -149,13 +149,13 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
     >
       <SettingsRow
         setting="send-indexers-debrid-and-usenet-through-a-proxy"
-        title={t("Send indexers, debrid and Usenet through a proxy")}
+        title={t("Send sources through a proxy")}
         description={t(
           "Off until you turn it on. A proxy that is down is not replaced by a direct connection.",
         )}
         control={
           <Switch
-            aria-label={t("Send indexers, debrid and Usenet through a proxy")}
+            aria-label={t("Send sources through a proxy")}
             checked={draft.enabled}
             onChange={(e) => patch({ enabled: e.currentTarget.checked })}
           />

@@ -2301,7 +2301,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			keepNumber[c.ID] = previous
 		}
 	}
-	if err := assignImportedNumbers(ctx, tx, src.ID, cs, keepNumber, old, s.o.Now()); err != nil {
+	if err := assignImportedNumbers(ctx, tx, src.ID, cs, keepNumber, old, s.o.Now(), strings.HasPrefix(src.Kind, "plugin:")); err != nil {
 		return src, err
 	}
 	// Write in batches: one statement per row also fires the database's

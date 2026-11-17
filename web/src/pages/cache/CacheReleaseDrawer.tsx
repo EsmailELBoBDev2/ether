@@ -455,11 +455,13 @@ export function CacheReleaseDrawer({
                 >
                   {causeLabel(primaryCode)}
                 </Badge>
-                {(release.Pins ?? []).map((pin) => (
-                  <Badge key={pin} variant="secondary">
-                    {pinLabel(pin)}
-                  </Badge>
-                ))}
+                {(release.Pins ?? [])
+                  .filter((pin) => pinLabel(pin) !== causeLabel(primaryCode))
+                  .map((pin) => (
+                    <Badge key={pin} variant="secondary">
+                      {pinLabel(pin)}
+                    </Badge>
+                  ))}
                 {resBadge ? <Badge variant="secondary">{resBadge}</Badge> : null}
                 {range ? <Badge variant="secondary">{range}</Badge> : null}
                 {sourceBadge ? <Badge variant="secondary">{sourceBadge}</Badge> : null}

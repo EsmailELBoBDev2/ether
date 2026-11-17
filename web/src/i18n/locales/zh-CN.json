@@ -4476,6 +4476,7 @@
   "m_0fe73321121ea5": "节点",
   "m_0fe74007df11d7": "没有字幕",
   "m_0fe744408508ef": "安装 Node.js，将此服务器添加到 Claude Desktop 配置中，然后在 Ether 中批准请求。",
+  "m_0fe7ad3bb23d6f": "通过代理发送来源",
   "m_0fe7ff39356b29": "连接 AI 应用",
   "m_0fe952fce7e285": {
     "other": "低于热度下限（{count} 票；下限 {floor}）"

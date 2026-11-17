@@ -238,6 +238,10 @@ type Source struct {
 	Kind        string     `json:"kind,omitempty"` // a source kind id, e.g. plugin:<id>/channels
 	PlaylistURL string     `json:"playlistUrl,omitempty"`
 	GuideURL    string     `json:"guideUrl,omitempty"`
+	// PlaylistGuide reports that the last import used a guide URL found in
+	// the playlist's #EXTM3U header (x-tvg-url / url-tvg) because the owner
+	// set no guide of their own.
+	PlaylistGuide bool `json:"playlistGuide,omitempty"`
 	// Inline uploads are supplied on import and are not returned by GET.
 	Playlist  string    `json:"playlist,omitempty"`
 	Guide     string    `json:"guide,omitempty"`

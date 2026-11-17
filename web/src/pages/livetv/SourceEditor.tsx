@@ -34,6 +34,7 @@ import { isPluginDescriptor, textOf, useRegistry, type Descriptor } from "../../
 import type { ParamField } from "../../lib/rules";
 import { formatBytes, formatNumber, relativeTime } from "../../lib/format";
 import { ChannelGroups, ProviderAccountCard } from "./SourceGroups";
+import { hasM3UHeaderGuide } from "./sourceOnboarding";
 import { sourceImportError } from "./sourceErrors";
 import { UnratedChannelRating } from "./UnratedChannelRating";
 import { SourceLimits } from "./SourceLimits";
@@ -156,6 +157,7 @@ export function SourceEditor({
     playlist: null,
     guide: null,
   });
+  const [filePlaylistGuide, setFilePlaylistGuide] = useState(false);
   // Source kinds come from the descriptor registry; the editor families
   // (playlist, guide, xtream) are named by each kind's meta.editor.
   const registry = useRegistry<LiveTVSourceMeta>("liveTVSource");
@@ -226,6 +228,7 @@ export function SourceEditor({
     setGuideKind(source?.kind === "plex" ? "plex" : "xmltv");
     setLineups(null);
     setFiles({ playlist: null, guide: null });
+    setFilePlaylistGuide(false);
     setError("");
     setProgress(null);
     setProgressUnavailable(false);
@@ -242,6 +245,16 @@ export function SourceEditor({
       return;
     }
     setError("");
+    if (key === "playlist") {
+      setFilePlaylistGuide(false);
+      if (!/\.gz$/i.test(file.name)) {
+        void file
+          .slice(0, 8192)
+          .text()
+          .then((head) => setFilePlaylistGuide(hasM3UHeaderGuide(head)))
+          .catch(() => {});
+      }
+    }
     setFiles((current) => ({ ...current, [key]: file }));
     setDraft((s) => ({
       ...s,
@@ -264,7 +277,9 @@ export function SourceEditor({
   const storedPlaylist = Boolean(
     source?.hasPlaylist && !source.playlistUrl && source.auth?.type !== "xtream",
   );
-  const storedGuide = Boolean(source?.hasGuide && !source.guideUrl && source.kind !== "plex");
+  const storedGuide = Boolean(
+    source?.hasGuide && !source.guideUrl && !source.playlistGuide && source.kind !== "plex",
+  );
   const canSave =
     draft.name.trim() !== "" &&
     (xtream
@@ -412,7 +427,20 @@ export function SourceEditor({
       })),
     [],
   );
-  const urlBacked = plex || xtream || Boolean(draft.playlistUrl || draft.guideUrl);
+  const urlBacked =
+    plex || xtream || Boolean(draft.playlistUrl || draft.guideUrl || source?.playlistGuide);
+  const playlistGuideFound =
+    kind === "playlist" &&
+    !xtream &&
+    !pluginBacked &&
+    !plex &&
+    !files.guide &&
+    !draft.guideUrl.trim() &&
+    !draft.guide.trim() &&
+    !storedGuide &&
+    (files.playlist
+      ? filePlaylistGuide
+      : Boolean(source?.playlistGuide && draft.playlistUrl === (source.playlistUrl ?? "")));
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-3 sm:p-6">
@@ -976,11 +1004,14 @@ export function SourceEditor({
             }
             url={draft.guideUrl}
             fileReady={Boolean(files.guide)}
+            badge={playlistGuideFound ? t("Guide found in the playlist") : undefined}
             accept=".xml,.gz,application/xml,text/xml,application/gzip"
             placeholder={
               xtream
                 ? t("Leave blank to use the panel's guide")
-                : t("https://…/guide.xml or .xml.gz")
+                : playlistGuideFound
+                  ? t("Guide found in the playlist")
+                  : t("https://…/guide.xml or .xml.gz")
             }
             hint={
               xtream
@@ -1412,6 +1443,7 @@ function UrlOrFile({
   label,
   url,
   fileReady,
+  badge,
   accept,
   placeholder,
   hint,
@@ -1422,6 +1454,7 @@ function UrlOrFile({
   label: string;
   url: string;
   fileReady: boolean;
+  badge?: string;
   accept: string;
   placeholder: string;
   hint?: string;
@@ -1453,6 +1486,10 @@ function UrlOrFile({
       {fileReady ? (
         <Badge variant="success" className="mt-1.5">
           {t("File ready to import")}
+        </Badge>
+      ) : badge ? (
+        <Badge variant="success" className="mt-1.5">
+          {badge}
         </Badge>
       ) : null}
     </Field>

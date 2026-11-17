@@ -319,6 +319,7 @@ export type Source = {
   name: string;
   playlistUrl?: string;
   guideUrl?: string;
+  playlistGuide?: boolean;
   updatedAt: string;
   refreshHours?: number;
   activityRefreshMinutes?: number;

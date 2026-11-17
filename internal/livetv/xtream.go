@@ -203,7 +203,7 @@ func fetchXtream(ctx context.Context, s *Service, src *Source) (Fetched, error) 
 	src.Account = acct
 	src.Playlist = ""
 	cs = s.applyGroupRules(ctx, src, cs)
-	g, err := fetchSourceGuide(ctx, s, src, cs, true)
+	g, err := fetchSourceGuide(ctx, s, src, cs, true, nil)
 	if err != nil {
 		return Fetched{}, err
 	}

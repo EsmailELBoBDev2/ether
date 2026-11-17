@@ -127,7 +127,6 @@ export function GuidePage({
         options={[
           { value: "all", label: t("All apps") },
           ...LIVE_APPS.map((a) => ({ value: a, label: liveAppName(a) })),
-          { value: "vela", label: "Vela" },
         ]}
         searchable={false}
         menuClassName="w-48"

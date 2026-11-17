@@ -144,6 +144,7 @@ func (s *Server) routes() chi.Router {
 	get("/hubs/search", s.handleHubSearch)
 	get("/hubs/search/voice", s.handleHubSearch)
 	get("/hubs/sections/{section}", s.handleSectionHubs)
+	get("/hubs/sections/{section}/promoted", s.handlePromotedSectionHubs)
 	get("/hubs/sections/{section}/continueWatching/items", s.handleContinueWatchingItems)
 	get("/hubs/metadata/{key}", s.handleMetadataHubs)
 	get("/hubs/metadata/{key}/related", s.handleMetadataHubs)

@@ -43,6 +43,12 @@ type renderOpts struct {
 	// mediaExcluded: the client excluded Media, so list rows skip building
 	// it (and every read behind it). Set by renderTitles.
 	mediaExcluded bool
+	// vis overrides canonical section visibility when rendering rows scoped
+	// to a specific library section (such as a custom library).
+	vis *frontend.Visibility
+	// section overrides canonical librarySection* item attributes when
+	// rendering rows scoped to a specific library section.
+	section *Section
 }
 
 // metadataKey is the item's "key": children list for containers, the item
@@ -252,7 +258,11 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 	if len(t.Studios) > 0 {
 		m.Studio = t.Studios[0]
 	}
-	if sec, ok := s.sectionFor(t.Type); ok && !o.inSection && t.Key.Kind() != frontend.KindCollection {
+	sec, secOK := s.sectionFor(t.Type)
+	if o.section != nil && o.section.ID != 0 {
+		sec, secOK = *o.section, true
+	}
+	if secOK && !o.inSection && t.Key.Kind() != frontend.KindCollection {
 		m.LibrarySectionID = sec.ID
 		m.LibrarySectionKey = "/library/sections/" + strconv.Itoa(sec.ID)
 		m.LibrarySectionTitle = sec.Title
@@ -1406,8 +1416,12 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	}
 	// The rendering's own Playable checks (resumed tracks) read the same
 	// series rows as admission.
+	vis := s.visibility()
+	if o.vis != nil {
+		vis = *o.vis
+	}
 	ctx = s.withSeriesRows(ctx, pr.User, ts)
-	ts = s.openableTitles(ctx, pr.User, ts, o.availabilityInSQL || shelfContainsAll(ctx, ts))
+	ts = s.openableTitlesWith(ctx, vis, pr.User, ts, o.availabilityInSQL || shelfContainsAll(ctx, ts))
 	if len(ts) == 0 {
 		return nil
 	}

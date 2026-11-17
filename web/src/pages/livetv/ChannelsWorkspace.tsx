@@ -88,6 +88,7 @@ export function ChannelsWorkspace({
   onSaveOwnerGroups,
   onSetChannelsApp,
   onUpdateChannels,
+  onReorderSources,
 }: {
   channels: ChannelSummary[] | null;
   sources: Source[];
@@ -105,6 +106,7 @@ export function ChannelsWorkspace({
   onSaveOwnerGroups: (groups: OwnerGroup[]) => Promise<boolean>;
   onSetChannelsApp: (change: ChannelAppChange) => Promise<boolean>;
   onUpdateChannels: (ids: string[], patch: ChannelPatch) => Promise<boolean>;
+  onReorderSources?: (ids: string[]) => Promise<void>;
 }) {
   const [selectedApp, setSelectedApp] = useState<"all" | LiveApp>("all");
   const [statusFilter, setStatusFilter] = useState<ChannelStatusFilter>("all");
@@ -118,6 +120,7 @@ export function ChannelsWorkspace({
   });
   const [groupBusy, setGroupBusy] = useState(false);
   const dragIndex = useRef<number | null>(null);
+  const sourceDragId = useRef<string | null>(null);
 
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -953,13 +956,56 @@ export function ChannelsWorkspace({
           {/* Channel sources & provider groups */}
           {[...index.sourceMap.entries()]
             .filter(([, entry]) => entry.counts.total > 0)
-            .map(([sid, entry]) => {
+            .sort(([a], [b]) => {
+              const ia = sources.findIndex((s) => s.id === a);
+              const ib = sources.findIndex((s) => s.id === b);
+              return (ia < 0 ? 9999 : ia) - (ib < 0 ? 9999 : ib);
+            })
+            .map(([sid, entry], _, activeSourceEntries) => {
               const sname = sourceNameById.get(sid) || sid || "IPTV";
               const sourceActive = sameScope(scope, { kind: "source", sourceId: sid });
+              const canDragSource = Boolean(onReorderSources && sid && activeSourceEntries.length > 1);
               return (
                 <div key={sid || "__default__"} className="mt-3 space-y-0.5">
-                  <div className="mb-1 flex items-center justify-between px-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
-                    <span className="truncate">{sname}</span>
+                  <div
+                    draggable={canDragSource || undefined}
+                    aria-label={canDragSource ? t("Provider {name}", { name: sname }) : undefined}
+                    onDragStart={
+                      canDragSource
+                        ? () => {
+                            sourceDragId.current = sid;
+                          }
+                        : undefined
+                    }
+                    onDragOver={canDragSource ? (e) => e.preventDefault() : undefined}
+                    onDrop={
+                      canDragSource
+                        ? (e) => {
+                            e.preventDefault();
+                            const fromId = sourceDragId.current;
+                            sourceDragId.current = null;
+                            if (!fromId || fromId === sid || !onReorderSources) return;
+                            const orderedIds = sources.map((s) => s.id);
+                            const fromIdx = orderedIds.indexOf(fromId);
+                            const toIdx = orderedIds.indexOf(sid);
+                            if (fromIdx < 0 || toIdx < 0) return;
+                            const [picked] = orderedIds.splice(fromIdx, 1);
+                            if (!picked) return;
+                            orderedIds.splice(toIdx, 0, picked);
+                            void onReorderSources(orderedIds);
+                          }
+                        : undefined
+                    }
+                    className="mb-1 flex items-center justify-between gap-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle"
+                  >
+                    {canDragSource ? (
+                      <GripVertical
+                        size={12}
+                        className="shrink-0 cursor-grab text-fg-subtle"
+                        aria-hidden
+                      />
+                    ) : null}
+                    <span className="min-w-0 flex-1 truncate">{sname}</span>
                     <span className="ml-2 shrink-0 tabular-nums">
                       {formatNumber(entry.counts.total)}
                     </span>

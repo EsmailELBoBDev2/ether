@@ -7,7 +7,7 @@ import { invalidateRegistry } from "../lib/extend";
 import LiveTV from "../pages/livetv/LiveTV";
 import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProgrammingEditor } from "../pages/livetv/ProgrammingEditor";
-import { compileOwnerGroupMatcher, compileOwnerGroupRegExp, type Channel, type OwnerGroup } from "../pages/livetv/model";
+import { compileOwnerGroupMatcher, compileOwnerGroupRegExp, streamQualityTier, type Channel, type OwnerGroup, type OwnerGroupRule } from "../pages/livetv/model";
 import { ScheduleTimeline } from "../pages/livetv/ScheduleTimeline";
 import { calls as fakeCalls } from "./harness";
 import { renderAppWith } from "./routes";
@@ -1459,4 +1459,196 @@ it("creates a rule-based owner group in a drawer with live preview and inline re
 
   expect(await within(nav).findByRole("button", { name: "US Sports" }, WAIT)).toBeVisible();
   expect(await screen.findByRole("heading", { name: "US Sports · your group" }, WAIT)).toBeVisible();
+});
+
+
+it("merges matching channel feeds with live preview, health, and provider priority reorder", async () => {
+  let sourcesList = [
+    { id: "src-a", name: "Alpha TV", hasPlaylist: true, priority: 1, updatedAt: new Date().toISOString() },
+    { id: "src-b", name: "Bravo TV", hasPlaylist: true, priority: 2, updatedAt: new Date().toISOString() },
+  ];
+  const chans: any[] = [
+    iptv("espn-a", {
+      number: "206",
+      name: "ESPN HD",
+      group: "Sports",
+      guideId: "espn.us",
+      sourceId: "src-a",
+      streamUrl: "https://alpha.example/espn-hd.m3u8",
+    }),
+    iptv("espn-b", {
+      number: "207",
+      name: "US: ESPN FHD",
+      group: "Sports",
+      guideId: "espn.us",
+      sourceId: "src-b",
+      streamUrl: "https://bravo.example/espn-fhd.m3u8",
+    }),
+    iptv("bbc", {
+      number: "501",
+      name: "BBC News",
+      group: "News",
+      guideId: "bbc.news",
+      sourceId: "src-a",
+      streamUrl: "https://alpha.example/bbc.m3u8",
+    }),
+  ];
+
+  const calls = backend(chans, (url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.endsWith("/livetv/sources") && method === "GET") return sourcesList;
+    if (url.endsWith("/livetv/sources/order") && method === "PUT") {
+      const { ids = [] } = JSON.parse(String(init?.body ?? "{}")) as { ids?: string[] };
+      const byId = new Map(sourcesList.map((s) => [s.id, s]));
+      sourcesList = ids
+        .map((id, i) => {
+          const found = byId.get(id);
+          return found ? { ...found, priority: i + 1 } : null;
+        })
+        .filter((x): x is (typeof sourcesList)[number] => x !== null);
+      return sourcesList;
+    }
+    if (url.endsWith("/livetv/channels/summary") && method === "GET") {
+      return chans.filter((c) => !c.mergedInto);
+    }
+    if (url.endsWith("/livetv/channels/merge-preview") && method === "POST") {
+      const req = JSON.parse(String(init?.body ?? "{}")) as {
+        channelId?: string;
+        rules?: OwnerGroupRule[];
+        match?: "any" | "all";
+      };
+      const rules = req.rules ?? [];
+      for (const [i, r] of rules.entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            return new Response(
+              JSON.stringify({
+                error: {
+                  code: "livetv",
+                  message: `invalid pattern "${r.value}"`,
+                  fields: [
+                    {
+                      field: `rules.${i}.value`,
+                      message: `error parsing regexp: missing closing ): \`${r.value}\``,
+                    },
+                  ],
+                },
+              }),
+              { status: 400 },
+            );
+          }
+        }
+      }
+      const srcNames = new Map(sourcesList.map((s) => [s.id, s.name]));
+      const srcRanks = new Map(sourcesList.map((s, idx) => [s.id, idx + 1]));
+      const matcher = compileOwnerGroupMatcher(
+        { groups: [], rules, match: req.match ?? "any" },
+        srcNames,
+      );
+      const target = chans.find((c) => c.id === req.channelId);
+      const donors = chans.filter((c) => c.id !== req.channelId && matcher(c));
+      const ordered = [...(target ? [target] : []), ...donors].sort(
+        (a, b) =>
+          (srcRanks.get(a.sourceId) ?? 99) - (srcRanks.get(b.sourceId) ?? 99) ||
+          streamQualityTier(a.name).rank - streamQualityTier(b.name).rank,
+      );
+      return {
+        matchCount: donors.length,
+        totalFeeds: ordered.length,
+        maxInputs: 16,
+        inputs: ordered.map((c, idx) => ({
+          id: c.id,
+          channelId: c.id,
+          name: c.name,
+          sourceId: c.sourceId,
+          sourceName: srcNames.get(c.sourceId),
+          sourcePriority: srcRanks.get(c.sourceId),
+          quality: streamQualityTier(c.name).label || undefined,
+          primary: c.id === req.channelId,
+          included: idx < 16,
+          state: c.id === "espn-b" ? "available" : "cooling_down",
+        })),
+      };
+    }
+    if (url.endsWith("/livetv/channels/espn-a") && method === "PUT") {
+      const saved = JSON.parse(String(init?.body ?? "{}")) as Channel;
+      const idx = chans.findIndex((c) => c.id === "espn-a");
+      if (idx >= 0) chans[idx] = saved;
+      for (const c of chans) {
+        if (c.id === "espn-b" && saved.inputMerge?.rules?.length) {
+          c.mergedInto = saved.inputMerge.hideDuplicates === false ? undefined : "espn-a";
+        }
+      }
+      return saved;
+    }
+    return undefined;
+  });
+
+  renderLiveTV("/livetv");
+
+  // 1. Reorder provider priority via sidebar drag-and-drop (Bravo TV above Alpha TV).
+  const nav = await screen.findByRole("navigation", { name: "Channel groups" }, WAIT);
+  const bravoHeader = await within(nav).findByLabelText("Provider Bravo TV", undefined, WAIT);
+  const alphaHeader = within(nav).getByLabelText("Provider Alpha TV");
+  fireEvent.dragStart(bravoHeader);
+  fireEvent.dragOver(alphaHeader);
+  fireEvent.drop(alphaHeader);
+
+  await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/sources\/order$/)).toHaveLength(1), WAIT);
+  expect(body(sent(calls, "PUT", /\/livetv\/sources\/order$/)[0])).toEqual({
+    ids: ["src-b", "src-a"],
+  });
+
+  const lineup = screen.getByRole("region", { name: "Channels" });
+  expect(await within(lineup).findByRole("button", { name: "207 US: ESPN FHD" }, WAIT)).toBeVisible();
+  fireEvent.click(within(lineup).getByRole("button", { name: "206 ESPN HD" }));
+
+  // 2. Configure regex merge rule in the channel drawer with inline validation + live preview.
+  const mergeSection = await screen.findByRole("region", { name: "Merge matching feeds" }, WAIT);
+  fireEvent.click(within(mergeSection).getByRole("button", { name: "Add rule" }));
+
+  const opBtn = within(mergeSection).getByRole("button", { name: "Rule condition" });
+  fireEvent.click(opBtn);
+  fireEvent.click(await screen.findByRole("option", { name: "matches pattern" }));
+
+  const valInput = within(mergeSection).getByLabelText("Rule value");
+  fireEvent.change(valInput, { target: { value: "(?i)^(?:us:\\s*)?espn\\b(" } });
+
+  const alert = await within(mergeSection).findByRole("alert", undefined, WAIT);
+  expect(alert).toHaveTextContent("missing closing )");
+  expect(screen.getByRole("button", { name: /Save channel/ })).toBeDisabled();
+
+  fireEvent.change(valInput, { target: { value: "(?i)^(?:us:\\s*)?espn\\b" } });
+  await waitFor(() => expect(within(mergeSection).queryByRole("alert")).not.toBeInTheDocument(), WAIT);
+
+  expect(await within(mergeSection).findByText("1 matching feed", undefined, WAIT)).toBeVisible();
+  const previewRows = within(mergeSection).getAllByRole("listitem");
+  expect(previewRows).toHaveLength(2);
+  expect(previewRows[0]).toHaveTextContent("Primary");
+  expect(previewRows[0]).toHaveTextContent("US: ESPN FHD");
+  expect(previewRows[0]).toHaveTextContent("FHD");
+  expect(previewRows[0]).toHaveTextContent("Bravo TV");
+  expect(previewRows[0]).toHaveTextContent("Healthy");
+  expect(previewRows[1]).toHaveTextContent("Backup 1");
+  expect(previewRows[1]).toHaveTextContent("ESPN HD");
+  expect(previewRows[1]).toHaveTextContent("Alpha TV");
+  expect(previewRows[1]).toHaveTextContent("Cooling down");
+
+  // 3. Save channel and verify inputMerge payload + duplicate channel hidden from standalone lineup.
+  expect(within(mergeSection).getByRole("switch", { name: "Hide matched duplicate channels" })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: /Save channel/ }));
+  await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)).toHaveLength(1), WAIT);
+
+  const savedBody = body(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)[0]);
+  expect(savedBody.inputMerge).toEqual({
+    match: "any",
+    rules: [{ field: "name", op: "matches", value: "(?i)^(?:us:\\s*)?espn\\b" }],
+  });
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(
+    () => expect(within(lineup).queryByRole("button", { name: "207 US: ESPN FHD" })).toBeNull(),
+    WAIT,
+  );
+  expect(within(lineup).getByRole("button", { name: "501 BBC News" })).toBeInTheDocument();
 });

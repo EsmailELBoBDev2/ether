@@ -2,7 +2,10 @@ import { scheduleFixture } from "./schedule-timeline";
 import {
   compileOwnerGroupMatcher,
   compileOwnerGroupRegExp,
+  streamQualityTier,
+  type ChannelInputMerge,
   type OwnerGroup,
+  type OwnerGroupRule,
 } from "../pages/livetv/model";
 import type { ChannelLook } from "../pages/livetv/onair/model";
 /**
@@ -752,7 +755,8 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       }
       return { body: { ok: true } };
     }
-    if (route === "GET /channels/summary") return { body: channels };
+    if (route === "GET /channels/summary")
+      return { body: channels.filter((c) => !c.mergedInto) };
     if (route === "GET /channels/page") {
       const needle = (q.get("q") || "").toLowerCase();
       const filter = q.get("filter") || "all";
@@ -767,7 +771,8 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
               : filter === "missing"
                 ? !c.guideId && c.kind === "iptv"
                 : c.enabled);
-      const all = channels.filter(
+      const visible = channels.filter((c) => !c.mergedInto);
+      const all = visible.filter(
         (c) => matches(c) && `${c.name} ${c.number}`.toLowerCase().includes(needle),
       );
       const offset = Number(q.get("offset") || 0),
@@ -802,6 +807,118 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     if (method === "GET" && seg[1] === "channels" && seg.length === 3)
       return { body: channels.find((c) => c.id === seg[2]) };
     if (route === "GET /channels") return { body: channels };
+    if (route === "POST /channels/merge-preview") {
+      const req = (body ?? {}) as {
+        channelId?: string;
+        name?: string;
+        sourceId?: string;
+        streamUrl?: string;
+        rules?: OwnerGroupRule[];
+        match?: "any" | "all";
+      };
+      const rules = req.rules ?? [];
+      for (const [i, r] of rules.entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            return {
+              status: 400,
+              body: {
+                error: {
+                  code: "livetv",
+                  message: `invalid pattern "${r.value}"`,
+                  fields: [{ field: `rules.${i}.value`, message: `invalid pattern: ${r.value}` }],
+                },
+              },
+            };
+          }
+        }
+      }
+      const active = rules.filter((r) => r.value !== "");
+      if (!active.length) {
+        return { body: { matchCount: 0, totalFeeds: 0, maxInputs: 16, inputs: [] } };
+      }
+      const srcNames = new Map(sources.map((s) => [s.id, s.name]));
+      const srcRanks = new Map(sources.map((s, i) => [s.id, i + 1]));
+      const matcher = compileOwnerGroupMatcher(
+        { groups: [], rules: active, match: req.match ?? "any" },
+        srcNames,
+      );
+      const target = channels.find((c) => c.id === req.channelId);
+      const matched = channels.filter(
+        (c) => c.kind === "iptv" && c.id !== req.channelId && matcher(c),
+      );
+      const raw = [
+        ...(target
+          ? [{ ch: target, primary: true }]
+          : req.streamUrl
+            ? [
+                {
+                  ch: {
+                    id: req.channelId || "draft",
+                    name: req.name || "Primary",
+                    sourceId: req.sourceId,
+                  } as Channel,
+                  primary: true,
+                },
+              ]
+            : []),
+        ...matched.map((ch) => ({ ch, primary: false })),
+      ];
+      const sorted = raw
+        .map((entry, idx) => {
+          const sid = entry.ch.sourceId ?? "";
+          const q = streamQualityTier(entry.ch.name);
+          return {
+            ...entry,
+            sRank: srcRanks.get(sid) ?? 999,
+            qRank: q.rank,
+            qLabel: q.label,
+            idx,
+          };
+        })
+        .sort(
+          (a, b) =>
+            a.sRank - b.sRank ||
+            a.qRank - b.qRank ||
+            Number(b.primary) - Number(a.primary) ||
+            a.idx - b.idx,
+        );
+      return {
+        body: {
+          matchCount: matched.length,
+          totalFeeds: sorted.length,
+          maxInputs: 16,
+          inputs: sorted.map((entry, i) => ({
+            id: entry.ch.id,
+            channelId: entry.ch.id,
+            name: entry.ch.name,
+            group: entry.ch.group,
+            guideId: entry.ch.guideId,
+            sourceId: entry.ch.sourceId,
+            sourceName: entry.ch.sourceId ? srcNames.get(entry.ch.sourceId) : undefined,
+            sourcePriority: entry.ch.sourceId ? srcRanks.get(entry.ch.sourceId) : undefined,
+            quality: entry.qLabel || undefined,
+            primary: entry.primary,
+            included: i < 16,
+            state: "unchecked",
+          })),
+        },
+      };
+    }
+    if (route === "PUT /sources/order") {
+      const { ids = [] } = (body ?? {}) as { ids?: string[] };
+      const byId = new Map(sources.map((s) => [s.id, s]));
+      const next: Source[] = [];
+      for (const id of ids) {
+        const s = byId.get(id);
+        if (s && !next.includes(s)) next.push(s);
+      }
+      for (const s of sources) {
+        if (!next.includes(s)) next.push(s);
+      }
+      sources.splice(0, sources.length, ...next.map((s, i) => ({ ...s, priority: i + 1 })));
+      return { body: sources.map(source) };
+    }
     if (route === "GET /sources") return { body: sources.map(source) };
     if (route === "GET /guide") {
       const from = Date.parse(q.get("from") ?? "") || now;
@@ -1025,6 +1142,42 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       if (c.guideSourceId && c.guideId) unlisted.delete(c.id);
       if (i >= 0) channels[i] = c;
       else channels.push(c);
+      const merge = c.inputMerge as ChannelInputMerge | undefined;
+      for (const other of channels) {
+        if (other.mergedInto === c.id) delete other.mergedInto;
+      }
+      if (c.kind === "iptv" && merge?.rules?.length) {
+        const srcNames = new Map(sources.map((s) => [s.id, s.name]));
+        const srcRanks = new Map(sources.map((s, idx) => [s.id, idx + 1]));
+        const matcher = compileOwnerGroupMatcher(
+          { groups: [], rules: merge.rules, match: merge.match ?? "any" },
+          srcNames,
+        );
+        const donors = channels.filter(
+          (d) => d.kind === "iptv" && d.id !== c.id && matcher(d),
+        );
+        if (merge.hideDuplicates !== false) {
+          for (const d of donors) d.mergedInto = c.id;
+        }
+        const candidates = [c, ...donors]
+          .map((ch, idx) => ({
+            ch,
+            sRank: srcRanks.get(ch.sourceId ?? "") ?? 999,
+            qRank: streamQualityTier(ch.name).rank,
+            idx,
+          }))
+          .sort((a, b) => a.sRank - b.sRank || a.qRank - b.qRank || a.idx - b.idx)
+          .slice(0, 16);
+        c.streamSources = candidates.map((entry, idx) => ({
+          id: entry.ch.id === c.id ? `playlist-${c.id}` : `merge-${entry.ch.id}`,
+          name: entry.ch.id === c.id ? "Imported stream" : entry.ch.name,
+          url: String(entry.ch.streamUrl ?? `https://iptv.example/${entry.ch.id}.m3u8`),
+          enabled: true,
+          priority: idx,
+          authSourceId: entry.ch.sourceId,
+          mergedFrom: entry.ch.id === c.id ? undefined : entry.ch.id,
+        }));
+      }
       return { body: c };
     }
     if (method === "DELETE" && seg[1] === "channels" && seg[2]) {

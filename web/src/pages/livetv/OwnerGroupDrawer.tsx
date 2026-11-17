@@ -21,7 +21,7 @@ import {
   type Source,
 } from "./model";
 
-function extractRuleErrors(err: unknown, rules: OwnerGroupRule[]): Record<number, string> {
+export function extractRuleErrors(err: unknown, rules: OwnerGroupRule[]): Record<number, string> {
   const out: Record<number, string> = {};
   if (err instanceof ApiError && err.fields?.length) {
     for (const f of err.fields) {
@@ -36,6 +36,117 @@ function extractRuleErrors(err: unknown, rules: OwnerGroupRule[]): Record<number
     if (idx >= 0) out[idx] = errorMessage(err);
   }
   return out;
+}
+
+export function MatchRuleRows({
+  rules,
+  ruleErrors,
+  onUpdate,
+  onRemove,
+  onAdd,
+  regexPlaceholder = "^(cbs\\.wcbs|espn\\.us)$",
+}: {
+  rules: OwnerGroupRule[];
+  ruleErrors: Record<number, string>;
+  onUpdate: (idx: number, patch: Partial<OwnerGroupRule>) => void;
+  onRemove: (idx: number) => void;
+  onAdd: () => void;
+  regexPlaceholder?: string;
+}) {
+  const fieldOptions: { value: OwnerGroupRuleField; label: string }[] = [
+    { value: "name", label: t("Channel name") },
+    { value: "group", label: t("Provider group") },
+    { value: "guideId", label: t("Guide ID") },
+    { value: "number", label: t("Channel number") },
+    { value: "source", label: t("Source") },
+  ];
+
+  const opOptions: { value: OwnerGroupRuleOp; label: string }[] = [
+    { value: "contains", label: t("contains") },
+    { value: "is", label: t("is") },
+    { value: "startsWith", label: t("starts with") },
+    { value: "matches", label: t("matches pattern") },
+    { value: "notContains", label: t("doesn't contain") },
+    { value: "notMatches", label: t("doesn't match pattern") },
+  ];
+
+  return (
+    <>
+      {rules.length > 0 ? (
+        <div className="space-y-2.5">
+          {rules.map((rule, idx) => {
+            const isRegex = rule.op === "matches" || rule.op === "notMatches";
+            const err = ruleErrors[idx];
+            return (
+              <div
+                key={idx}
+                className="space-y-1.5 rounded-lg border border-border bg-bg-subtle/50 p-2.5"
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="sm:flex-1">
+                    <SearchSelect
+                      ariaLabel={t("Rule field")}
+                      value={rule.field}
+                      options={fieldOptions}
+                      searchable={false}
+                      selectLabel={t("Select")}
+                      closeLabel={t("Close")}
+                      onChange={(val) => onUpdate(idx, { field: val as OwnerGroupRuleField })}
+                    />
+                  </div>
+                  <div className="sm:flex-1">
+                    <SearchSelect
+                      ariaLabel={t("Rule condition")}
+                      value={rule.op}
+                      options={opOptions}
+                      searchable={false}
+                      selectLabel={t("Select")}
+                      closeLabel={t("Close")}
+                      onChange={(val) => onUpdate(idx, { op: val as OwnerGroupRuleOp })}
+                    />
+                  </div>
+                </div>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <Input
+                    aria-label={t("Rule value")}
+                    aria-invalid={Boolean(err) || undefined}
+                    value={rule.value}
+                    spellCheck={false}
+                    placeholder={isRegex ? regexPlaceholder : t("Value")}
+                    className={cn("min-w-0 flex-1", isRegex && "font-mono text-xs")}
+                    onChange={(e) => onUpdate(idx, { value: e.currentTarget.value })}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={t("Remove rule")}
+                    className="shrink-0 text-fg-muted hover:text-danger"
+                    onClick={() => onRemove(idx)}
+                  >
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
+                {err ? (
+                  <p className="text-xs text-danger" role="alert">
+                    {err}
+                  </p>
+                ) : isRegex ? (
+                  <p className="text-xs text-fg-muted">
+                    {t("Regular expression, case-insensitive by default.")}
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <Button type="button" variant="outline" size="sm" onClick={onAdd}>
+        <Plus size={14} /> {t("Add rule")}
+      </Button>
+    </>
+  );
 }
 
 export function OwnerGroupDrawer({
@@ -246,23 +357,6 @@ export function OwnerGroupDrawer({
     }
   };
 
-  const fieldOptions: { value: OwnerGroupRuleField; label: string }[] = [
-    { value: "name", label: t("Channel name") },
-    { value: "group", label: t("Provider group") },
-    { value: "guideId", label: t("Guide ID") },
-    { value: "number", label: t("Channel number") },
-    { value: "source", label: t("Source") },
-  ];
-
-  const opOptions: { value: OwnerGroupRuleOp; label: string }[] = [
-    { value: "contains", label: t("contains") },
-    { value: "is", label: t("is") },
-    { value: "startsWith", label: t("starts with") },
-    { value: "matches", label: t("matches pattern") },
-    { value: "notContains", label: t("doesn't contain") },
-    { value: "notMatches", label: t("doesn't match pattern") },
-  ];
-
   return (
     <Drawer
       open={open}
@@ -344,81 +438,13 @@ export function OwnerGroupDrawer({
             ) : null}
           </div>
 
-          {rules.length > 0 ? (
-            <div className="space-y-2.5">
-              {rules.map((rule, idx) => {
-                const isRegex = rule.op === "matches" || rule.op === "notMatches";
-                const err = ruleErrors[idx];
-                return (
-                  <div
-                    key={idx}
-                    className="space-y-1.5 rounded-lg border border-border bg-bg-subtle/50 p-2.5"
-                  >
-                    {/* Field and condition share a row; the value takes the full
-                        width below so a long pattern stays readable. */}
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <div className="sm:flex-1">
-                        <SearchSelect
-                          ariaLabel={t("Rule field")}
-                          value={rule.field}
-                          options={fieldOptions}
-                          searchable={false}
-                          selectLabel={t("Select")}
-                          closeLabel={t("Close")}
-                          onChange={(val) => updateRule(idx, { field: val as OwnerGroupRuleField })}
-                        />
-                      </div>
-                      <div className="sm:flex-1">
-                        <SearchSelect
-                          ariaLabel={t("Rule condition")}
-                          value={rule.op}
-                          options={opOptions}
-                          searchable={false}
-                          selectLabel={t("Select")}
-                          closeLabel={t("Close")}
-                          onChange={(val) => updateRule(idx, { op: val as OwnerGroupRuleOp })}
-                        />
-                      </div>
-                    </div>
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <Input
-                        aria-label={t("Rule value")}
-                        aria-invalid={Boolean(err) || undefined}
-                        value={rule.value}
-                        spellCheck={false}
-                        placeholder={isRegex ? "^(cbs\\.wcbs|espn\\.us)$" : t("Value")}
-                        className={cn("min-w-0 flex-1", isRegex && "font-mono text-xs")}
-                        onChange={(e) => updateRule(idx, { value: e.currentTarget.value })}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        aria-label={t("Remove rule")}
-                        className="shrink-0 text-fg-muted hover:text-danger"
-                        onClick={() => removeRule(idx)}
-                      >
-                        <Trash2 size={14} />
-                      </Button>
-                    </div>
-                    {err ? (
-                      <p className="text-xs text-danger" role="alert">
-                        {err}
-                      </p>
-                    ) : isRegex ? (
-                      <p className="text-xs text-fg-muted">
-                        {t("Regular expression, case-insensitive by default.")}
-                      </p>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-
-          <Button type="button" variant="outline" size="sm" onClick={addRule}>
-            <Plus size={14} /> {t("Add rule")}
-          </Button>
+          <MatchRuleRows
+            rules={rules}
+            ruleErrors={ruleErrors}
+            onUpdate={updateRule}
+            onRemove={removeRule}
+            onAdd={addRule}
+          />
         </section>
 
         {/* Provider groups & hand-picked channels */}

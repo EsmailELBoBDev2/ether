@@ -57,6 +57,7 @@ import {
   TEMPLATES,
   browserTimeZone,
   compileOwnerGroupMatcher,
+  compileOwnerGroupRegExp,
   emptyChannel,
   plexLineupName,
   tv,
@@ -210,7 +211,7 @@ export default function LiveTV() {
     tv.channelSummaries(ctl.signal)
       .then((all) => {
         if (!ctl.signal.aborted) {
-          setAllChannels(all ?? []);
+          setAllChannels((all ?? []).filter((c) => !c.mergedInto));
           setError(null);
         }
       })
@@ -225,6 +226,14 @@ export default function LiveTV() {
       ? selectedChannel
       : undefined;
   const dirty = draft !== null && JSON.stringify(draft) !== baseline;
+  const hasInvalidMergeRule = Boolean(
+    draft?.channel.inputMerge?.rules?.some(
+      (r) =>
+        r.value !== "" &&
+        (r.op === "matches" || r.op === "notMatches") &&
+        !compileOwnerGroupRegExp(r.value),
+    ),
+  );
 
   useEffect(() => {
     if (selection.kind !== "channel" && selection.kind !== "map") {
@@ -916,6 +925,19 @@ export default function LiveTV() {
                 onSaveOwnerGroups={handleSaveOwnerGroups}
                 onSetChannelsApp={handleSetChannelsApp}
                 onUpdateChannels={handleUpdateChannels}
+                onReorderSources={async (ids) => {
+                  try {
+                    const next = await tv.saveSourceOrder(ids);
+                    setSources(next);
+                    setCoverageNonce((n) => n + 1);
+                    if (selection.kind === "channel" && selectedChannel?.id) {
+                      const refreshed = await tv.channel(selectedChannel.id);
+                      setSelectedChannel(refreshed);
+                    }
+                  } catch (e) {
+                    toast.error(errorMessage(e));
+                  }
+                }}
               />
             ) : undefined)}
         </Workspace>
@@ -999,7 +1021,7 @@ export default function LiveTV() {
                 </Button>
                 <Button
                   size="sm"
-                  disabled={(!dirty && selection.kind !== "new") || saving}
+                  disabled={(!dirty && selection.kind !== "new") || saving || hasInvalidMergeRule}
                   onClick={() => void saveDraft()}
                 >
                   <Save size={14} />{" "}

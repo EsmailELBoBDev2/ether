@@ -2,13 +2,11 @@ import {
   Badge,
   Button,
   Checkbox,
-  Input,
   Switch,
   cn,
   confirmDialog,
-  toast,
 } from "@braedonsaunders/appkit-ui";
-import { Check, GripVertical, Pencil, Plus, Trash2, Tv, X } from "lucide-react";
+import { GripVertical, Pencil, Plus, Trash2, Tv } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
@@ -18,8 +16,10 @@ import { formatNumber } from "../../lib/format";
 import { LIVE_APPS, type LiveApp, liveAppChipLabel, liveAppNote } from "./ChannelApps";
 import { ChannelBulkBar, type ChannelPatch, appStates } from "./ChannelBulkBar";
 import { ChannelLogo } from "./ChannelLogo";
+import { OwnerGroupDrawer } from "./OwnerGroupDrawer";
 import {
   channelVisibleInApp,
+  compileOwnerGroupMatcher,
   compressOwnerGroupMembers,
   isChannelSource,
   type ChannelAppChange,
@@ -112,10 +112,10 @@ export function ChannelsWorkspace({
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const selectionAnchor = useRef<string | null>(null);
 
-  const [creatingGroup, setCreatingGroup] = useState(false);
-  const [newGroupName, setNewGroupName] = useState("");
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
+  const [groupDrawer, setGroupDrawer] = useState<{ open: boolean; group: OwnerGroup | null }>({
+    open: false,
+    group: null,
+  });
   const [groupBusy, setGroupBusy] = useState(false);
   const dragIndex = useRef<number | null>(null);
 
@@ -146,11 +146,16 @@ export function ChannelsWorkspace({
   // Single O(N) pass over allChannels to compute per-app totals, channel-to-owner-group
   // memberships, and counts for every row in the left group tree.
   const index = useMemo(() => {
-    const allFlagGroups = ownerGroups.filter((g) => g.all);
+    const allFlagGroups = ownerGroups.filter((g) => g.all && !g.rules?.length);
     const byProvKey = new Map<string, OwnerGroup[]>();
     const byChanId = new Map<string, OwnerGroup[]>();
+    const ruleMatchers: { group: OwnerGroup; match: (c: ChannelSummary) => boolean }[] = [];
 
     for (const g of ownerGroups) {
+      if (g.rules?.length) {
+        ruleMatchers.push({ group: g, match: compileOwnerGroupMatcher(g, sourceNameById) });
+        continue;
+      }
       if (g.all) continue;
       for (const pg of g.groups ?? []) {
         const k = `${pg.sourceId}\u0000${pg.name}`;
@@ -193,25 +198,37 @@ export function ChannelsWorkspace({
           ? byProvKey.get(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`)
           : undefined;
       const chanMatches = byChanId.get(c.id);
+      let ruleMatches: OwnerGroup[] | undefined;
+      if (ruleMatchers.length > 0) {
+        for (const rm of ruleMatchers) {
+          if (rm.match(c)) {
+            if (ruleMatches) ruleMatches.push(rm.group);
+            else ruleMatches = [rm.group];
+          }
+        }
+      }
 
       let cGroups: OwnerGroup[] | undefined;
-      if (allFlagGroups.length || provMatches?.length || chanMatches?.length) {
-        if (
-          (allFlagGroups.length ? 1 : 0) +
-            (provMatches?.length ? 1 : 0) +
-            (chanMatches?.length ? 1 : 0) ===
-          1
-        ) {
+      const hitBuckets =
+        (allFlagGroups.length ? 1 : 0) +
+        (provMatches?.length ? 1 : 0) +
+        (chanMatches?.length ? 1 : 0) +
+        (ruleMatches?.length ? 1 : 0);
+      if (hitBuckets > 0) {
+        if (hitBuckets === 1) {
           cGroups = allFlagGroups.length
             ? allFlagGroups
             : provMatches?.length
               ? provMatches
-              : chanMatches;
+              : chanMatches?.length
+                ? chanMatches
+                : ruleMatches;
         } else {
           const hit = new Set<string>();
           for (const g of allFlagGroups) hit.add(g.id);
           if (provMatches) for (const g of provMatches) hit.add(g.id);
           if (chanMatches) for (const g of chanMatches) hit.add(g.id);
+          if (ruleMatches) for (const g of ruleMatches) hit.add(g.id);
           cGroups = ownerGroups.filter((g) => hit.has(g.id));
         }
         if (cGroups?.length) memberGroupsByChannel.set(c.id, cGroups);
@@ -265,7 +282,7 @@ export function ChannelsWorkspace({
       sourceMap,
       memberGroupsByChannel,
     };
-  }, [all, ownerGroups, sources, selectedApp]);
+  }, [all, ownerGroups, sources, selectedApp, sourceNameById]);
 
   const hasCoverage = useCallback(
     (c: ChannelSummary): boolean => {
@@ -545,48 +562,6 @@ export function ChannelsWorkspace({
     [checked, ownerGroups, all, onSaveOwnerGroups],
   );
 
-  const submitCreateGroup = async () => {
-    const name = newGroupName.trim();
-    if (!name || groupBusy) return;
-    if (ownerGroups.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
-      toast.error(t("A group with that name already exists."));
-      return;
-    }
-    setGroupBusy(true);
-    try {
-      const created: OwnerGroup = { id: uuid(), name, groups: [], channels: [] };
-      const ok = await onSaveOwnerGroups([...ownerGroups, created]);
-      if (ok) {
-        setCreatingGroup(false);
-        setNewGroupName("");
-        setScope({ kind: "ownerGroup", id: created.id });
-      }
-    } finally {
-      setGroupBusy(false);
-    }
-  };
-
-  const submitRenameGroup = async (group: OwnerGroup) => {
-    const name = renameDraft.trim();
-    if (!name || name === group.name) {
-      setRenamingId(null);
-      return;
-    }
-    if (ownerGroups.some((g) => g.id !== group.id && g.name.toLowerCase() === name.toLowerCase())) {
-      toast.error(t("A group with that name already exists."));
-      return;
-    }
-    setGroupBusy(true);
-    try {
-      const ok = await onSaveOwnerGroups(
-        ownerGroups.map((g) => (g.id === group.id ? { ...g, name } : g)),
-      );
-      if (ok) setRenamingId(null);
-    } finally {
-      setGroupBusy(false);
-    }
-  };
-
   const handleDeleteGroup = async (group: OwnerGroup) => {
     const ok = await confirmDialog({
       title: t("Delete {name}?", { name: group.name }),
@@ -611,6 +586,11 @@ export function ChannelsWorkspace({
     next.splice(to, 0, picked);
     void onSaveOwnerGroups(next);
   };
+
+  const activeOwnerGroup = useMemo(
+    () => (scope.kind === "ownerGroup" ? (ownerGroups.find((x) => x.id === scope.id) ?? null) : null),
+    [scope, ownerGroups],
+  );
 
   const scopeTitle = useMemo(() => {
     switch (scope.kind) {
@@ -849,11 +829,7 @@ export function ChannelsWorkspace({
             <button
               type="button"
               disabled={groupBusy}
-              onClick={() => {
-                setCreatingGroup(true);
-                setNewGroupName("");
-                setRenamingId(null);
-              }}
+              onClick={() => setGroupDrawer({ open: true, group: null })}
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary-subtle disabled:opacity-50"
             >
               <Plus size={12} />
@@ -861,59 +837,7 @@ export function ChannelsWorkspace({
             </button>
           </div>
 
-          {creatingGroup ? (
-            <form
-              className="mb-1.5 flex items-center gap-1 px-1"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submitCreateGroup();
-              }}
-            >
-              <Input
-                autoFocus
-                value={newGroupName}
-                maxLength={150}
-                disabled={groupBusy}
-                aria-label={t("Group name")}
-                placeholder={t("Group name")}
-                onChange={(e) => setNewGroupName(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setCreatingGroup(false);
-                    setNewGroupName("");
-                  }
-                }}
-                className="h-7 text-xs"
-              />
-              <Button
-                type="submit"
-                size="icon"
-                variant="ghost"
-                disabled={groupBusy || !newGroupName.trim()}
-                aria-label={t("Save")}
-                className="size-7 shrink-0"
-              >
-                <Check size={13} />
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                disabled={groupBusy}
-                aria-label={t("Cancel")}
-                onClick={() => {
-                  setCreatingGroup(false);
-                  setNewGroupName("");
-                }}
-                className="size-7 shrink-0"
-              >
-                <X size={13} />
-              </Button>
-            </form>
-          ) : null}
-
-          {ownerGroups.length === 0 && !creatingGroup ? (
+          {ownerGroups.length === 0 ? (
             <p className="px-2 py-1 text-xs text-fg-subtle">
               {t("Create groups for Sports, News or Kids across sources.")}
             </p>
@@ -923,56 +847,6 @@ export function ChannelsWorkspace({
             {ownerGroups.map((g, idx) => {
               const stat = index.ownerGroupCounts.get(g.id) ?? { total: 0, shown: 0 };
               const active = sameScope(scope, { kind: "ownerGroup", id: g.id });
-              if (renamingId === g.id) {
-                return (
-                  <form
-                    key={g.id}
-                    className="flex items-center gap-1 px-1 py-0.5"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void submitRenameGroup(g);
-                    }}
-                  >
-                    <Input
-                      autoFocus
-                      value={renameDraft}
-                      maxLength={150}
-                      disabled={groupBusy}
-                      aria-label={t("Rename {name}", { name: g.name })}
-                      onChange={(e) => setRenameDraft(e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape") {
-                          e.preventDefault();
-                          setRenamingId(null);
-                        }
-                      }}
-                      className="h-7 text-xs"
-                    />
-                    <Button
-                      type="submit"
-                      size="icon"
-                      variant="ghost"
-                      disabled={groupBusy || !renameDraft.trim()}
-                      aria-label={t("Save")}
-                      className="size-7 shrink-0"
-                    >
-                      <Check size={13} />
-                    </Button>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      disabled={groupBusy}
-                      aria-label={t("Cancel")}
-                      onClick={() => setRenamingId(null)}
-                      className="size-7 shrink-0"
-                    >
-                      <X size={13} />
-                    </Button>
-                  </form>
-                );
-              }
-
               return (
                 <div
                   key={g.id}
@@ -1014,12 +888,8 @@ export function ChannelsWorkspace({
                   <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">
                     <button
                       type="button"
-                      aria-label={t("Rename {name}", { name: g.name })}
-                      onClick={() => {
-                        setRenamingId(g.id);
-                        setRenameDraft(g.name);
-                        setCreatingGroup(false);
-                      }}
+                      aria-label={t("Edit {name}", { name: g.name })}
+                      onClick={() => setGroupDrawer({ open: true, group: g })}
                       className="rounded p-0.5 text-fg-subtle hover:bg-surface hover:text-fg"
                     >
                       <Pencil size={12} />
@@ -1209,6 +1079,16 @@ export function ChannelsWorkspace({
                 </>
               ) : null}
             </span>
+            {activeOwnerGroup ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setGroupDrawer({ open: true, group: activeOwnerGroup })}
+              >
+                <Pencil size={13} /> {t("Edit group")}
+              </Button>
+            ) : null}
             <div className="ml-auto flex flex-wrap items-center gap-1.5">
               <Segmented
                 ariaLabel={t("Status")}
@@ -1315,6 +1195,23 @@ export function ChannelsWorkspace({
           onAddToOwnerGroup={handleAddToOwnerGroup}
         />
       ) : null}
+
+      <OwnerGroupDrawer
+        open={groupDrawer.open}
+        group={groupDrawer.group}
+        ownerGroups={ownerGroups}
+        sources={sources}
+        channels={all}
+        onClose={() => setGroupDrawer({ open: false, group: null })}
+        onSave={async (nextGroups, saved) => {
+          const ok = await onSaveOwnerGroups(nextGroups);
+          if (ok && !groupDrawer.group) {
+            setScope({ kind: "ownerGroup", id: saved.id });
+          }
+          return ok;
+        }}
+        onDelete={handleDeleteGroup}
+      />
     </div>
   );
 }

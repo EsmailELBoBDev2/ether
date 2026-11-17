@@ -926,6 +926,31 @@ for On Air channels). To change many channels at once, select them and choose
 Disabling a channel still removes it everywhere, and viewer access restrictions
 apply in every app. M3U and Xtream exports retain the imported channel groups.
 
+### Your groups and matching rules
+
+Under **Your groups** on **Live TV › Channels**, create or edit a group to
+collect channels from provider groups, hand-picked channels, or **Channels that
+match** rules. Each rule checks a channel's **Name**, **Provider group**,
+**Guide ID**, **Number**, or **Source** with **contains** (the default), **is**,
+**starts with**, **matches pattern**, **doesn't contain**, or **doesn't match
+pattern**. Choose **Any rule** or **All rules** for positive matches; negative
+rules (**doesn't contain** and **doesn't match pattern**) always exclude
+matching channels from the group, including ones brought in by a provider group
+or picked by hand.
+
+**matches pattern** and **doesn't match pattern** use Go RE2 regular
+expressions, case-insensitive by default and anchored only where you write `^`
+or `$`. For example, to map specific network feeds into a **US Sports** group
+the way Tuliprox filter-and-mapping rules do, add a rule on **Guide ID** (or
+**Name**) with **matches pattern** set to:
+
+`(?i)^(cbs\.wcbs|espn\.us|fs1\.us)$`
+
+The drawer previews the matching channel count and sample channels live as you
+type and flags invalid patterns before you save. Matched channels inherit the
+group's **Show in apps** and unrated content-rating settings automatically,
+including channels a provider adds on a later refresh.
+
 ### Channel logos on Apple TV
 
 Plex for Apple TV shows guide channel logos only when Plex's online image

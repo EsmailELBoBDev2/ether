@@ -188,12 +188,32 @@ export type ProviderGroupRef = {
   sourceName?: string;
   count?: number;
 };
+export type OwnerGroupRuleField = "name" | "group" | "guideId" | "number" | "source";
+export type OwnerGroupRuleOp =
+  | "contains"
+  | "is"
+  | "startsWith"
+  | "matches"
+  | "notContains"
+  | "notMatches";
+export type OwnerGroupRule = {
+  field: OwnerGroupRuleField;
+  op: OwnerGroupRuleOp;
+  value: string;
+};
+export type OwnerGroupMatch = "any" | "all";
+export type OwnerGroupPreview = {
+  count: number;
+  channels: ChannelSummary[];
+};
 /** One of the owner's ordered channel groups ("Your groups"). */
 export type OwnerGroup = {
   id: string;
   name: string;
   groups: ProviderGroupRef[];
   channels?: string[];
+  rules?: OwnerGroupRule[];
+  match?: OwnerGroupMatch;
   all?: boolean;
   hidden?: boolean;
   unratedRating?: string;
@@ -455,6 +475,118 @@ function unpackOwnerGroups(raw: unknown): OwnerGroup[] {
 }
 
 /**
+ * Translates a Go RE2-style rule pattern (case-insensitive by default unless
+ * inline flags like (?i) or (?-i) are set) into a JS RegExp for client-side
+ * membership display. Authoritative validation happens on the server.
+ */
+export function compileOwnerGroupRegExp(pattern: string): RegExp | null {
+  if (!pattern || pattern.length > 4096) return null;
+  let expr = pattern;
+  let flagI = true;
+  let flagM = false;
+  let flagS = false;
+  const leading = /^\(\?([imsU-]+)\)/.exec(expr);
+  if (leading) {
+    expr = expr.slice(leading[0].length);
+    flagI = false;
+    let neg = false;
+    for (const ch of leading[1]!) {
+      if (ch === "-") {
+        neg = true;
+        continue;
+      }
+      if (ch === "i") flagI = !neg;
+      if (ch === "m") flagM = !neg;
+      if (ch === "s") flagS = !neg;
+    }
+  }
+  const flags = `${flagI ? "i" : ""}${flagM ? "m" : ""}${flagS ? "s" : ""}`;
+  try {
+    return new RegExp(expr, flags);
+  } catch {
+    return null;
+  }
+}
+
+type ChannelRuleLike = Pick<
+  ChannelSummary,
+  "id" | "name" | "group" | "guideId" | "number" | "kind" | "sourceId"
+>;
+
+/**
+ * Compiles one OwnerGroup's membership (provider groups ∪ explicit channels ∪
+ * rule matches − rule excludes) once so scanning 10,000+ channels stays fast.
+ */
+export function compileOwnerGroupMatcher(
+  g: Pick<OwnerGroup, "all" | "groups" | "channels" | "rules" | "match">,
+  sourceNames?: ReadonlyMap<string, string>,
+): (c: ChannelRuleLike) => boolean {
+  const pkeys = new Set((g.groups ?? []).map((p) => `${p.sourceId}\u0000${p.name}`));
+  const cids = new Set(g.channels ?? []);
+  const include: ((c: ChannelRuleLike) => boolean)[] = [];
+  const exclude: ((c: ChannelRuleLike) => boolean)[] = [];
+
+  for (const r of g.rules ?? []) {
+    if (!r.value) continue;
+    const isRegex = r.op === "matches" || r.op === "notMatches";
+    const re = isRegex ? compileOwnerGroupRegExp(r.value) : null;
+    if (isRegex && !re) continue;
+    const lower = isRegex ? "" : r.value.toLowerCase();
+    const matchVal = (val: string): boolean => {
+      switch (r.op) {
+        case "contains":
+        case "notContains":
+          return val.toLowerCase().includes(lower);
+        case "is":
+          return val.toLowerCase() === lower;
+        case "startsWith":
+          return val.toLowerCase().startsWith(lower);
+        case "matches":
+        case "notMatches":
+          return re ? re.test(val) : false;
+      }
+    };
+    const fn = (c: ChannelRuleLike): boolean => {
+      switch (r.field) {
+        case "name":
+          return matchVal(c.name ?? "");
+        case "group":
+          return matchVal(c.group ?? "");
+        case "guideId":
+          return matchVal(c.guideId ?? "");
+        case "number":
+          return matchVal(c.number ?? "");
+        case "source": {
+          const sid = c.sourceId ?? "";
+          const sname = sourceNames?.get(sid) ?? "";
+          if (sname && matchVal(sname)) return true;
+          if (!sname || sid !== sname) return matchVal(sid);
+          return false;
+        }
+      }
+    };
+    if (r.op === "notContains" || r.op === "notMatches") exclude.push(fn);
+    else include.push(fn);
+  }
+
+  const matchAll = g.match === "all";
+  return (c: ChannelRuleLike): boolean => {
+    let hit =
+      Boolean(g.all) ||
+      cids.has(c.id) ||
+      (c.kind !== "virtual" && pkeys.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`));
+    if (!hit && include.length > 0) {
+      hit = matchAll ? include.every((fn) => fn(c)) : include.some((fn) => fn(c));
+    }
+    if (!hit) return false;
+    for (const fn of exclude) {
+      if (fn(c)) return false;
+    }
+    return true;
+  };
+}
+
+/**
  * Effective visibility of a channel in one Live TV app, combining per-channel
  * hiddenApps with any per-group app rules from the channel's owner groups.
  */
@@ -612,6 +744,11 @@ export const tv = {
     const saved = unpackOwnerGroups(res);
     return saved.length || groups.length === 0 ? saved : groups;
   },
+  previewGroup: (group: Partial<OwnerGroup>, signal?: AbortSignal) =>
+    apiFetch<OwnerGroupPreview>("/livetv/groups/preview", {
+      ...json("POST", { groups: [], ...group }),
+      signal,
+    }),
   setChannelsApp: (change: ChannelAppChange) =>
     apiFetch<{ updated: number }>("/livetv/channels/apps", json("POST", change)),
   sources: (signal?: AbortSignal) => apiFetch<Source[]>("/livetv/sources", { signal }),

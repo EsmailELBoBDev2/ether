@@ -1304,7 +1304,7 @@ func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context
 			pol.UserID = u.ID
 		}
 		if groupIdx == nil || rev != prevGroupRev {
-			decoded, err := decodeOwnerGroupIndex(rawGroups)
+			decoded, err := s.loadOwnerGroupIndex(ctx, rev, rawGroups)
 			if err != nil {
 				return ctx, Policy{}, err
 			}
@@ -2544,6 +2544,7 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 		return s.ImportSource(ctx, src)
 	}
 	old, err := s.storedSourceByID(ctx, src.ID)
+	renamed := err == nil && old.Name != src.Name
 	if err == nil {
 		src.Playlist, src.PlaylistURL = old.Playlist, old.PlaylistURL
 		src.Guide, src.GuideURL = old.Guide, old.GuideURL
@@ -2563,6 +2564,10 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 	}
 	if _, err = s.o.DB.ExecContext(ctx, `INSERT INTO livetv_sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, src.ID, b); err != nil {
 		return src, err
+	}
+	if renamed {
+		_, _ = s.o.DB.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`)
+		s.bumpLineup()
 	}
 	s.forgetSourceAuth(src.ID)
 	s.wakeSourceRefresh()

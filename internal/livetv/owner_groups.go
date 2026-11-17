@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -17,6 +18,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/go-chi/chi/v5"
+)
+
+const (
+	maxOwnerGroupRules        = 50
+	maxOwnerGroupRuleValueLen = 4096
+	ownerGroupPreviewLimit    = 50
 )
 
 func init() {
@@ -117,12 +124,24 @@ func (g *OwnerGroupSource) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// OwnerGroupRule matches or excludes channels by one channel field.
+//
+// Field is one of "name", "group", "guideId", "number", or "source".
+// Op is one of "contains", "is", "startsWith", "matches", "notContains", or "notMatches".
+// Exclude operators ("notContains", "notMatches") always subtract from group membership.
+type OwnerGroupRule struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value string `json:"value"`
+}
+
 // OwnerGroup is one of the owner's named channel groups ("Your groups").
 //
-// Membership is a union of whole provider groups (Groups), individual channel IDs
-// (Channels), or the entire lineup (All). Because provider-group membership is
-// stored by (SourceID, Name), channels a provider adds on later refreshes join
-// the group and inherit its UnratedRating and Apps publication rules automatically.
+// Membership is (provider groups ∪ explicit channels ∪ rule matches) − rule excludes
+// (or (entire lineup) − rule excludes when All is true). Because provider-group and
+// rule memberships are evaluated dynamically per lineup generation, channels a
+// provider adds on later refreshes join the group and inherit its UnratedRating and
+// Apps publication rules automatically.
 //
 // Apps maps app surface names (see Apps in publication.go) to whether members of
 // this group are published there (true = shown, false = hidden; omitted = no rule).
@@ -134,6 +153,8 @@ type OwnerGroup struct {
 	Name          string             `json:"name"`
 	Groups        []OwnerGroupSource `json:"groups"`
 	Channels      []string           `json:"channels,omitempty"`
+	Rules         []OwnerGroupRule   `json:"rules,omitempty"`
+	Match         string             `json:"match,omitempty"`
 	All           bool               `json:"all,omitempty"`
 	Hidden        bool               `json:"hidden,omitempty"`
 	UnratedRating string             `json:"unratedRating,omitempty"`
@@ -150,12 +171,417 @@ type OwnerGroupChoice struct {
 	Count      int    `json:"count"`
 }
 
-func (g OwnerGroup) contains(source, group string) bool {
-	return g.All || slices.Contains(g.Groups, OwnerGroupSource{SourceID: source, Name: group})
+// OwnerGroupPreview is returned by POST /livetv/groups/preview for live editing.
+type OwnerGroupPreview struct {
+	Count    int              `json:"count"`
+	Channels []ChannelSummary `json:"channels"`
 }
 
-func (g OwnerGroup) matchesChannel(source, group, channelID string) bool {
-	return g.contains(source, group) || slices.Contains(g.Channels, channelID)
+type ownerFieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+type ownerValidationError struct {
+	message string
+	fields  []ownerFieldError
+}
+
+func (e *ownerValidationError) Error() string { return e.message }
+
+func isOwnerGroupRuleField(field string) bool {
+	switch field {
+	case "name", "group", "guideId", "number", "source":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOwnerGroupExcludeOp(op string) bool {
+	return op == "notContains" || op == "notMatches"
+}
+
+func isOwnerGroupRuleOp(op string) bool {
+	switch op {
+	case "contains", "is", "startsWith", "matches", "notContains", "notMatches":
+		return true
+	default:
+		return false
+	}
+}
+
+// patternSetsFlags reports whether pattern already contains an unescaped RE2 flag
+// directive such as (?i), (?-i), or (?im:...) outside character classes.
+func patternSetsFlags(pattern string) bool {
+	inClass := false
+	classStart := 0
+	for i := 0; i < len(pattern); i++ {
+		ch := pattern[i]
+		if ch == '\\' {
+			i++
+			continue
+		}
+		if inClass {
+			if ch == '[' && i+1 < len(pattern) && pattern[i+1] == ':' {
+				if end := strings.Index(pattern[i+2:], ":]"); end >= 0 {
+					i += end + 3
+					continue
+				}
+			}
+			if ch == ']' && i > classStart {
+				inClass = false
+			}
+			continue
+		}
+		if ch == '[' {
+			inClass = true
+			classStart = i + 1
+			if classStart < len(pattern) && pattern[classStart] == '^' {
+				classStart++
+			}
+			continue
+		}
+		if ch == '(' && i+1 < len(pattern) && pattern[i+1] == '?' {
+			j := i + 2
+			hasFlag := false
+			for j < len(pattern) {
+				f := pattern[j]
+				if f == 'i' || f == 'm' || f == 's' || f == 'U' {
+					hasFlag = true
+					j++
+					continue
+				}
+				if f == '-' {
+					j++
+					continue
+				}
+				break
+			}
+			if hasFlag && j < len(pattern) && (pattern[j] == ')' || pattern[j] == ':') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compileOwnerGroupRegexp(pattern string) (*regexp.Regexp, error) {
+	if len(pattern) > maxOwnerGroupRuleValueLen {
+		return nil, fmt.Errorf("pattern exceeds %d bytes", maxOwnerGroupRuleValueLen)
+	}
+	expr := pattern
+	if !patternSetsFlags(pattern) {
+		expr = "(?i)" + pattern
+	}
+	return regexp.Compile(expr)
+}
+
+func validateOwnerGroupRules(rules []OwnerGroupRule, match string, allowEmptyValue bool) ([]OwnerGroupRule, string, error) {
+	if len(rules) > maxOwnerGroupRules {
+		return nil, "", fmt.Errorf("too many rules (at most %d)", maxOwnerGroupRules)
+	}
+	match = strings.TrimSpace(match)
+	switch match {
+	case "", "any", "all":
+	default:
+		return nil, "", fmt.Errorf("invalid rule match %q", match)
+	}
+	var out []OwnerGroupRule
+	for ri, r := range rules {
+		field := strings.TrimSpace(r.Field)
+		op := strings.TrimSpace(r.Op)
+		if !isOwnerGroupRuleField(field) {
+			msg := fmt.Sprintf("invalid rule field %q", r.Field)
+			return nil, "", &ownerValidationError{
+				message: msg,
+				fields:  []ownerFieldError{{Field: fmt.Sprintf("rules.%d.field", ri), Message: msg}},
+			}
+		}
+		if !isOwnerGroupRuleOp(op) {
+			msg := fmt.Sprintf("invalid rule operator %q", r.Op)
+			return nil, "", &ownerValidationError{
+				message: msg,
+				fields:  []ownerFieldError{{Field: fmt.Sprintf("rules.%d.op", ri), Message: msg}},
+			}
+		}
+		if len(r.Value) > maxOwnerGroupRuleValueLen {
+			msg := fmt.Sprintf("rule pattern exceeds %d bytes", maxOwnerGroupRuleValueLen)
+			return nil, "", &ownerValidationError{
+				message: msg,
+				fields:  []ownerFieldError{{Field: fmt.Sprintf("rules.%d.value", ri), Message: msg}},
+			}
+		}
+		if r.Value == "" {
+			if allowEmptyValue {
+				continue
+			}
+			msg := "rule value is required"
+			return nil, "", &ownerValidationError{
+				message: msg,
+				fields:  []ownerFieldError{{Field: fmt.Sprintf("rules.%d.value", ri), Message: msg}},
+			}
+		}
+		if op == "matches" || op == "notMatches" {
+			if _, err := compileOwnerGroupRegexp(r.Value); err != nil {
+				return nil, "", &ownerValidationError{
+					message: fmt.Sprintf("invalid pattern %q: %v", r.Value, err),
+					fields:  []ownerFieldError{{Field: fmt.Sprintf("rules.%d.value", ri), Message: err.Error()}},
+				}
+			}
+		}
+		out = append(out, OwnerGroupRule{Field: field, Op: op, Value: r.Value})
+	}
+	normMatch := ""
+	if match == "all" {
+		normMatch = "all"
+	} else if len(out) > 0 {
+		normMatch = "any"
+	}
+	if len(out) == 0 {
+		out = nil
+	}
+	return out, normMatch, nil
+}
+
+func anyGroupHasRules(gs []OwnerGroup) bool {
+	for i := range gs {
+		if len(gs[i].Rules) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func groupUsesSourceField(g OwnerGroup) bool {
+	for _, r := range g.Rules {
+		if r.Field == "source" {
+			return true
+		}
+	}
+	return false
+}
+
+func anyRuleUsesSourceField(gs []OwnerGroup) bool {
+	for i := range gs {
+		if groupUsesSourceField(gs[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+type channelRuleTarget struct {
+	ID       string
+	Name     string
+	Group    string
+	GuideID  string
+	Number   string
+	SourceID string
+}
+
+func targetFromChannel(c Channel) channelRuleTarget {
+	return channelRuleTarget{
+		ID:       c.ID,
+		Name:     c.Name,
+		Group:    c.Group,
+		GuideID:  c.GuideID,
+		Number:   c.Number,
+		SourceID: c.SourceID,
+	}
+}
+
+func targetFromSummary(c ChannelSummary) channelRuleTarget {
+	return channelRuleTarget{
+		ID:       c.ID,
+		Name:     c.Name,
+		Group:    c.Group,
+		GuideID:  c.GuideID,
+		Number:   c.Number,
+		SourceID: c.SourceID,
+	}
+}
+
+func targetsFromChannels(cs []Channel) []channelRuleTarget {
+	out := make([]channelRuleTarget, len(cs))
+	for i := range cs {
+		out[i] = targetFromChannel(cs[i])
+	}
+	return out
+}
+
+func targetsFromSummaries(cs []ChannelSummary) []channelRuleTarget {
+	out := make([]channelRuleTarget, len(cs))
+	for i := range cs {
+		out[i] = targetFromSummary(cs[i])
+	}
+	return out
+}
+
+type compiledOwnerGroupRule struct {
+	field      string
+	op         string
+	valueLower string
+	re         *regexp.Regexp
+}
+
+func (r *compiledOwnerGroupRule) matchesValue(val string) bool {
+	switch r.op {
+	case "contains", "notContains":
+		return strings.Contains(strings.ToLower(val), r.valueLower)
+	case "is":
+		return strings.ToLower(val) == r.valueLower
+	case "startsWith":
+		return strings.HasPrefix(strings.ToLower(val), r.valueLower)
+	case "matches", "notMatches":
+		return r.re != nil && r.re.MatchString(val)
+	default:
+		return false
+	}
+}
+
+func (r *compiledOwnerGroupRule) matchesTarget(t channelRuleTarget, sourceNames map[string]string) bool {
+	switch r.field {
+	case "name":
+		return r.matchesValue(t.Name)
+	case "group":
+		return r.matchesValue(t.Group)
+	case "guideId":
+		return r.matchesValue(t.GuideID)
+	case "number":
+		return r.matchesValue(t.Number)
+	case "source":
+		name := sourceNames[t.SourceID]
+		if name != "" && r.matchesValue(name) {
+			return true
+		}
+		if name == "" || t.SourceID != name {
+			return r.matchesValue(t.SourceID)
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+type compiledOwnerGroup struct {
+	all         bool
+	sources     map[OwnerGroupSource]struct{}
+	channels    map[string]struct{}
+	include     []compiledOwnerGroupRule
+	exclude     []compiledOwnerGroupRule
+	matchAll    bool
+	sourceNames map[string]string
+}
+
+func compileSingleOwnerGroup(g OwnerGroup, sourceNames map[string]string) (*compiledOwnerGroup, error) {
+	cg := &compiledOwnerGroup{
+		all:         g.All,
+		sources:     make(map[OwnerGroupSource]struct{}, len(g.Groups)),
+		channels:    make(map[string]struct{}, len(g.Channels)),
+		matchAll:    g.Match == "all",
+		sourceNames: sourceNames,
+	}
+	for _, sg := range g.Groups {
+		cg.sources[sg] = struct{}{}
+	}
+	for _, cid := range g.Channels {
+		cg.channels[cid] = struct{}{}
+	}
+	for _, r := range g.Rules {
+		if r.Value == "" {
+			continue
+		}
+		cr := compiledOwnerGroupRule{
+			field: strings.TrimSpace(r.Field),
+			op:    strings.TrimSpace(r.Op),
+		}
+		if cr.op == "matches" || cr.op == "notMatches" {
+			re, err := compileOwnerGroupRegexp(r.Value)
+			if err != nil {
+				return nil, err
+			}
+			cr.re = re
+		} else {
+			cr.valueLower = strings.ToLower(r.Value)
+		}
+		if isOwnerGroupExcludeOp(cr.op) {
+			cg.exclude = append(cg.exclude, cr)
+		} else {
+			cg.include = append(cg.include, cr)
+		}
+	}
+	return cg, nil
+}
+
+func compileSingleOwnerGroupBestEffort(g OwnerGroup, sourceNames map[string]string) *compiledOwnerGroup {
+	cg, err := compileSingleOwnerGroup(g, sourceNames)
+	if err == nil {
+		return cg
+	}
+	fallback := g
+	fallback.Rules = nil
+	for _, r := range g.Rules {
+		if r.Value == "" {
+			continue
+		}
+		if r.Op == "matches" || r.Op == "notMatches" {
+			if _, rerr := compileOwnerGroupRegexp(r.Value); rerr != nil {
+				continue
+			}
+		}
+		fallback.Rules = append(fallback.Rules, r)
+	}
+	cg, _ = compileSingleOwnerGroup(fallback, sourceNames)
+	return cg
+}
+
+func (cg *compiledOwnerGroup) matchesTarget(t channelRuleTarget) bool {
+	if cg == nil {
+		return false
+	}
+	included := cg.all
+	if !included && len(cg.sources) > 0 {
+		_, included = cg.sources[OwnerGroupSource{SourceID: t.SourceID, Name: t.Group}]
+	}
+	if !included && len(cg.channels) > 0 {
+		_, included = cg.channels[t.ID]
+	}
+	if !included && len(cg.include) > 0 {
+		if cg.matchAll {
+			included = true
+			for i := range cg.include {
+				if !cg.include[i].matchesTarget(t, cg.sourceNames) {
+					included = false
+					break
+				}
+			}
+		} else {
+			for i := range cg.include {
+				if cg.include[i].matchesTarget(t, cg.sourceNames) {
+					included = true
+					break
+				}
+			}
+		}
+	}
+	if !included {
+		return false
+	}
+	for i := range cg.exclude {
+		if cg.exclude[i].matchesTarget(t, cg.sourceNames) {
+			return false
+		}
+	}
+	return true
+}
+
+func (cg *compiledOwnerGroup) matchesChannel(c Channel) bool {
+	return cg.matchesTarget(targetFromChannel(c))
+}
+
+func (cg *compiledOwnerGroup) matchesSummary(c ChannelSummary) bool {
+	return cg.matchesTarget(targetFromSummary(c))
 }
 
 type ownerGroupAppRule struct {
@@ -165,9 +591,13 @@ type ownerGroupAppRule struct {
 }
 
 type ownerGroupEntry struct {
-	group    OwnerGroup
-	sources  map[OwnerGroupSource]struct{}
-	channels map[string]struct{}
+	group        OwnerGroup
+	sources      map[OwnerGroupSource]struct{}
+	channels     map[string]struct{}
+	compiled     *compiledOwnerGroup
+	hasRules     bool
+	precomputed  bool
+	matchedChans map[string]struct{}
 }
 
 // ownerGroupIndex compiles saved OwnerGroup rules once per livetv_channel_epoch
@@ -175,6 +605,7 @@ type ownerGroupEntry struct {
 // without per-request channel scans or extra SQL reads.
 type ownerGroupIndex struct {
 	groups        []OwnerGroup
+	hasRules      bool
 	byID          map[string]ownerGroupEntry
 	ratings       *groupRatingIndex
 	appAll        map[string]ownerGroupAppRule
@@ -185,16 +616,25 @@ type ownerGroupIndex struct {
 	visibleGroups map[OwnerGroupSource][]frontend.LiveGroup
 	visibleChans  map[string][]frontend.LiveGroup
 	visibleOrder  map[string]int
+	hiddenAll     bool
+	hiddenGroups  map[OwnerGroupSource]struct{}
+	hiddenChans   map[string]struct{}
 }
 
 func compileOwnerGroupIndex(gs []OwnerGroup) *ownerGroupIndex {
+	return compileOwnerGroupIndexWithTargets(gs, nil, nil)
+}
+
+func compileOwnerGroupIndexWithTargets(gs []OwnerGroup, targets []channelRuleTarget, sourceNames map[string]string) *ownerGroupIndex {
 	if gs == nil {
 		gs = []OwnerGroup{}
 	}
+	hasRules := anyGroupHasRules(gs)
 	x := &ownerGroupIndex{
 		groups:        gs,
+		hasRules:      hasRules,
 		byID:          make(map[string]ownerGroupEntry, len(gs)),
-		ratings:       indexGroupRatings(gs),
+		ratings:       newGroupRatingIndex(),
 		appAll:        make(map[string]ownerGroupAppRule, len(Apps)),
 		appGroups:     make(map[string]map[OwnerGroupSource]ownerGroupAppRule, len(Apps)),
 		appChans:      make(map[string]map[string]ownerGroupAppRule, len(Apps)),
@@ -202,26 +642,97 @@ func compileOwnerGroupIndex(gs []OwnerGroup) *ownerGroupIndex {
 		visibleGroups: map[OwnerGroupSource][]frontend.LiveGroup{},
 		visibleChans:  map[string][]frontend.LiveGroup{},
 		visibleOrder:  make(map[string]int, len(gs)),
+		hiddenGroups:  map[OwnerGroupSource]struct{}{},
+		hiddenChans:   map[string]struct{}{},
 	}
 	for _, app := range Apps {
 		x.appGroups[app] = map[OwnerGroupSource]ownerGroupAppRule{}
 		x.appChans[app] = map[string]ownerGroupAppRule{}
 	}
+	precompute := targets != nil
 	for i, g := range gs {
 		x.visibleOrder[g.ID] = i
+		compiled := compileSingleOwnerGroupBestEffort(g, sourceNames)
 		entry := ownerGroupEntry{
 			group:    g,
-			sources:  make(map[OwnerGroupSource]struct{}, len(g.Groups)),
-			channels: make(map[string]struct{}, len(g.Channels)),
+			sources:  compiled.sources,
+			channels: compiled.channels,
+			compiled: compiled,
+			hasRules: len(g.Rules) > 0,
 		}
-		for _, sg := range g.Groups {
-			entry.sources[sg] = struct{}{}
+		if entry.hasRules && precompute {
+			entry.precomputed = true
+			entry.matchedChans = map[string]struct{}{}
+			for ti := range targets {
+				if compiled.matchesTarget(targets[ti]) {
+					entry.matchedChans[targets[ti].ID] = struct{}{}
+				}
+			}
+			x.byID[g.ID] = entry
+			if g.Hidden {
+				for cid := range entry.matchedChans {
+					x.hiddenChans[cid] = struct{}{}
+				}
+				continue
+			}
+			lg := frontend.LiveGroup{ID: g.ID, Name: g.Name}
+			for cid := range entry.matchedChans {
+				x.visibleChans[cid] = append(x.visibleChans[cid], lg)
+			}
+			for app, show := range g.Apps {
+				if !slices.Contains(Apps, app) {
+					continue
+				}
+				if !show {
+					x.appHasHide[app] = true
+				}
+				rule := ownerGroupAppRule{order: i, show: show, set: true}
+				cm := x.appChans[app]
+				for cid := range entry.matchedChans {
+					if cand, exists := cm[cid]; !exists || rule.order < cand.order {
+						cm[cid] = rule
+					}
+				}
+			}
+			if g.UnratedRating != "" {
+				rr := groupRatingRule{rating: g.UnratedRating, order: i}
+				for cid := range entry.matchedChans {
+					if cand, exists := x.ratings.channels[cid]; !exists || rr.order < cand.order {
+						x.ratings.channels[cid] = rr
+					}
+				}
+			}
+			continue
 		}
-		for _, cid := range g.Channels {
-			entry.channels[cid] = struct{}{}
-		}
+
 		x.byID[g.ID] = entry
 		if g.Hidden {
+			if !entry.hasRules {
+				if g.All {
+					x.hiddenAll = true
+				}
+				for _, sg := range g.Groups {
+					x.hiddenGroups[sg] = struct{}{}
+				}
+				for _, cid := range g.Channels {
+					x.hiddenChans[cid] = struct{}{}
+				}
+			}
+			continue
+		}
+		if entry.hasRules {
+			// Standalone (un-precomputed) mode: record app hides and dynamic rating fallback.
+			for app, show := range g.Apps {
+				if slices.Contains(Apps, app) && !show {
+					x.appHasHide[app] = true
+				}
+			}
+			if g.UnratedRating != "" {
+				x.ratings.dynamic = append(x.ratings.dynamic, dynamicGroupRatingRule{
+					compiled: compiled,
+					rule:     groupRatingRule{rating: g.UnratedRating, order: i},
+				})
+			}
 			continue
 		}
 		lg := frontend.LiveGroup{ID: g.ID, Name: g.Name}
@@ -253,8 +764,24 @@ func compileOwnerGroupIndex(gs []OwnerGroup) *ownerGroupIndex {
 			}
 			cm := x.appChans[app]
 			for _, cid := range g.Channels {
-				if _, exists := cm[cid]; !exists {
+				if cand, exists := cm[cid]; !exists || rule.order < cand.order {
 					cm[cid] = rule
+				}
+			}
+		}
+		if g.UnratedRating != "" {
+			rr := groupRatingRule{rating: g.UnratedRating, order: i}
+			if g.All && x.ratings.all.rating == "" {
+				x.ratings.all = rr
+			}
+			for _, cid := range g.Channels {
+				if cand, exists := x.ratings.channels[cid]; !exists || rr.order < cand.order {
+					x.ratings.channels[cid] = rr
+				}
+			}
+			for _, sg := range g.Groups {
+				if _, exists := x.ratings.groups[sg]; !exists {
+					x.ratings.groups[sg] = rr
 				}
 			}
 		}
@@ -262,14 +789,130 @@ func compileOwnerGroupIndex(gs []OwnerGroup) *ownerGroupIndex {
 	return x
 }
 
-func decodeOwnerGroupIndex(raw string) (*ownerGroupIndex, error) {
+func decodeOwnerGroupsRaw(raw string) ([]OwnerGroup, error) {
 	var gs []OwnerGroup
 	if strings.TrimSpace(raw) != "" {
 		if err := json.Unmarshal([]byte(raw), &gs); err != nil {
 			return nil, err
 		}
 	}
+	return gs, nil
+}
+
+func decodeOwnerGroupIndex(raw string) (*ownerGroupIndex, error) {
+	gs, err := decodeOwnerGroupsRaw(raw)
+	if err != nil {
+		return nil, err
+	}
 	return compileOwnerGroupIndex(gs), nil
+}
+
+func (s *Service) sourceNamesMap(ctx context.Context) (map[string]string, error) {
+	rows, err := s.o.DB.QueryContext(ctx, `SELECT id, data FROM livetv_sources`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := map[string]string{}
+	for rows.Next() {
+		var id string
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		var doc struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &doc); err == nil && doc.Name != "" {
+			names[id] = doc.Name
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func (s *Service) ruleTargetsForGeneration(ctx context.Context, rev int64) ([]channelRuleTarget, error) {
+	s.lineupMu.Lock()
+	if s.lineupIndex != nil && s.lineupRev == rev {
+		summaries := s.lineupIndex
+		s.lineupMu.Unlock()
+		return targetsFromSummaries(summaries), nil
+	}
+	s.lineupMu.Unlock()
+
+	s.chanSnap.mu.Lock()
+	if s.chanSnap.list != nil && s.chanSnap.generation == rev {
+		list := s.chanSnap.list
+		s.chanSnap.mu.Unlock()
+		return targetsFromChannels(list), nil
+	}
+	s.chanSnap.mu.Unlock()
+
+	rows, err := s.o.DB.QueryContext(ctx, `SELECT data FROM livetv_channels`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	targets := make([]channelRuleTarget, 0, 256)
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var doc struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Group    string `json:"group"`
+			GuideID  string `json:"guideId"`
+			Number   string `json:"number"`
+			SourceID string `json:"sourceId"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, err
+		}
+		targets = append(targets, channelRuleTarget{
+			ID:       doc.ID,
+			Name:     doc.Name,
+			Group:    doc.Group,
+			GuideID:  doc.GuideID,
+			Number:   doc.Number,
+			SourceID: doc.SourceID,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return targets, nil
+}
+
+func (s *Service) loadOwnerGroupIndexWithTargets(ctx context.Context, rev int64, raw string, targets []channelRuleTarget) (*ownerGroupIndex, error) {
+	gs, err := decodeOwnerGroupsRaw(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !anyGroupHasRules(gs) {
+		return compileOwnerGroupIndex(gs), nil
+	}
+	if targets == nil {
+		targets, err = s.ruleTargetsForGeneration(ctx, rev)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var sourceNames map[string]string
+	if anyRuleUsesSourceField(gs) {
+		sourceNames, err = s.sourceNamesMap(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return compileOwnerGroupIndexWithTargets(gs, targets, sourceNames), nil
+}
+
+func (s *Service) loadOwnerGroupIndex(ctx context.Context, rev int64, raw string) (*ownerGroupIndex, error) {
+	return s.loadOwnerGroupIndexWithTargets(ctx, rev, raw, nil)
 }
 
 func (x *ownerGroupIndex) groupAppRule(sourceID, group, channelID, app string) (bool, bool) {
@@ -291,6 +934,32 @@ func (x *ownerGroupIndex) groupAppRule(sourceID, group, channelID, app string) (
 		return true, false
 	}
 	return best.show, true
+}
+
+// groupAppRuleForChannel evaluates group app rules directly against c's fields so
+// unsaved or freshly-edited channels reconcile accurately before database write.
+func (x *ownerGroupIndex) groupAppRuleForChannel(c Channel, app string) (bool, bool) {
+	if x == nil {
+		return true, false
+	}
+	if !x.hasRules {
+		return x.groupAppRule(c.SourceID, c.Group, c.ID, app)
+	}
+	target := targetFromChannel(c)
+	for _, g := range x.groups {
+		if g.Hidden {
+			continue
+		}
+		show, exists := g.Apps[app]
+		if !exists {
+			continue
+		}
+		entry := x.byID[g.ID]
+		if entry.compiled != nil && entry.compiled.matchesTarget(target) {
+			return show, true
+		}
+	}
+	return true, false
 }
 
 func (x *ownerGroupIndex) publishedToFor(app, sourceID, group, channelID string, hiddenApps, shownApps []string) bool {
@@ -335,6 +1004,20 @@ func (x *ownerGroupIndex) hasAppHides(app string) bool {
 	return x != nil && x.appHasHide[app]
 }
 
+func (x *ownerGroupIndex) inHiddenGroup(sourceID, group, channelID string) bool {
+	if x == nil {
+		return false
+	}
+	if x.hiddenAll {
+		return true
+	}
+	if _, ok := x.hiddenGroups[OwnerGroupSource{SourceID: sourceID, Name: group}]; ok {
+		return true
+	}
+	_, ok := x.hiddenChans[channelID]
+	return ok
+}
+
 func (x *ownerGroupIndex) memberships(sourceID, group, channelID string) []frontend.LiveGroup {
 	if x == nil || len(x.groups) == 0 {
 		return []frontend.LiveGroup{}
@@ -377,6 +1060,10 @@ func (x *ownerGroupIndex) inGroup(groupID, sourceID, group, channelID string) bo
 	entry, ok := x.byID[groupID]
 	if !ok {
 		return false
+	}
+	if entry.precomputed {
+		_, ok := entry.matchedChans[channelID]
+		return ok
 	}
 	if entry.group.All {
 		return true
@@ -441,7 +1128,7 @@ func (s *Service) cachedOwnerGroupIndex(ctx context.Context) (*ownerGroupIndex, 
 	if prevIdx != nil && rev == prevRev {
 		return prevIdx, nil
 	}
-	idx, err := decodeOwnerGroupIndex(raw)
+	idx, err := s.loadOwnerGroupIndex(ctx, rev, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -554,6 +1241,12 @@ func validateAndNormalizeOwnerGroups(gs []OwnerGroup) ([]OwnerGroup, error) {
 		if len(g.ID) > 100 || strings.ContainsAny(g.ID, "/\\?# \t\r\n") || seen[g.ID] || names[strings.ToLower(g.Name)] || g.Name == "" || len(g.Name) > 150 || len(g.Groups) > 2000 || len(g.Channels) > 20000 {
 			return nil, fmt.Errorf("invalid group")
 		}
+		rules, match, err := validateOwnerGroupRules(g.Rules, g.Match, false)
+		if err != nil {
+			return nil, err
+		}
+		g.Rules = rules
+		g.Match = match
 		legacyHidden, err := normalizeHiddenApps(g.HiddenApps)
 		if err != nil {
 			return nil, err
@@ -615,24 +1308,23 @@ func (s *Service) SaveOwnerGroups(ctx context.Context, gs []OwnerGroup) error {
 }
 
 func populateOwnerGroupCounts(gs []OwnerGroup, cs []ChannelSummary) []OwnerGroup {
+	return populateOwnerGroupCountsWithSources(gs, cs, nil)
+}
+
+func populateOwnerGroupCountsWithSources(gs []OwnerGroup, cs []ChannelSummary, sourceNames map[string]string) []OwnerGroup {
 	out := make([]OwnerGroup, len(gs))
-	idx := compileOwnerGroupIndex(gs)
 	for i, g := range gs {
 		copyGroup := g
 		if copyGroup.Groups == nil {
 			copyGroup.Groups = []OwnerGroupSource{}
 		}
-		entry := idx.byID[g.ID]
+		compiled := compileSingleOwnerGroupBestEffort(g, sourceNames)
 		count := 0
-		if g.All {
+		if g.All && len(compiled.exclude) == 0 {
 			count = len(cs)
 		} else {
-			for _, c := range cs {
-				if _, ok := entry.sources[OwnerGroupSource{SourceID: c.SourceID, Name: c.Group}]; ok {
-					count++
-					continue
-				}
-				if _, ok := entry.channels[c.ID]; ok {
+			for ci := range cs {
+				if compiled.matchesSummary(cs[ci]) {
 					count++
 				}
 			}
@@ -652,13 +1344,77 @@ func (s *Service) ownerGroupsWithCounts(ctx context.Context) ([]OwnerGroup, []Ch
 	if err != nil {
 		return nil, nil, err
 	}
-	return populateOwnerGroupCounts(gs, cs), cs, nil
+	var sourceNames map[string]string
+	if anyRuleUsesSourceField(gs) {
+		sourceNames, err = s.sourceNamesMap(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return populateOwnerGroupCountsWithSources(gs, cs, sourceNames), cs, nil
+}
+
+// PreviewOwnerGroup evaluates a draft OwnerGroup against the current lineup
+// without saving, returning the total matching count and first ~50 channels.
+func (s *Service) PreviewOwnerGroup(ctx context.Context, draft OwnerGroup) (OwnerGroupPreview, error) {
+	if len(draft.Groups) > 2000 || len(draft.Channels) > 20000 {
+		return OwnerGroupPreview{}, fmt.Errorf("invalid group")
+	}
+	rules, match, err := validateOwnerGroupRules(draft.Rules, draft.Match, true)
+	if err != nil {
+		return OwnerGroupPreview{}, err
+	}
+	previewGroup := OwnerGroup{
+		ID:       "preview",
+		Groups:   draft.Groups,
+		Channels: uniqueIDs(draft.Channels),
+		Rules:    rules,
+		Match:    match,
+		All:      draft.All,
+	}
+	cs, err := s.ChannelSummaries(ctx)
+	if err != nil {
+		return OwnerGroupPreview{}, err
+	}
+	var sourceNames map[string]string
+	if groupUsesSourceField(previewGroup) {
+		sourceNames, err = s.sourceNamesMap(ctx)
+		if err != nil {
+			return OwnerGroupPreview{}, err
+		}
+	}
+	compiled, err := compileSingleOwnerGroup(previewGroup, sourceNames)
+	if err != nil {
+		return OwnerGroupPreview{}, err
+	}
+	matched := make([]ChannelSummary, 0, min(len(cs), ownerGroupPreviewLimit))
+	count := 0
+	for i := range cs {
+		if compiled.matchesSummary(cs[i]) {
+			count++
+			if len(matched) < ownerGroupPreviewLimit {
+				matched = append(matched, cs[i])
+			}
+		}
+	}
+	return OwnerGroupPreview{Count: count, Channels: matched}, nil
+}
+
+func (s *Service) ownerGroupPreviewRoute(w http.ResponseWriter, r *http.Request) {
+	var draft OwnerGroup
+	if !ownerBody(w, r, &draft) {
+		return
+	}
+	res, err := s.PreviewOwnerGroup(r.Context(), draft)
+	ownerResult(w, res, err)
 }
 
 type ownerGroupPatch struct {
 	Name          *string             `json:"name,omitempty"`
 	Groups        *[]OwnerGroupSource `json:"groups,omitempty"`
 	Channels      *[]string           `json:"channels,omitempty"`
+	Rules         *[]OwnerGroupRule   `json:"rules,omitempty"`
+	Match         *string             `json:"match,omitempty"`
 	All           *bool               `json:"all,omitempty"`
 	Hidden        *bool               `json:"hidden,omitempty"`
 	UnratedRating *string             `json:"unratedRating,omitempty"`
@@ -874,6 +1630,12 @@ func (s *Service) ownerGroupItemRoute(w http.ResponseWriter, r *http.Request) {
 		if patch.Channels != nil {
 			g.Channels = *patch.Channels
 		}
+		if patch.Rules != nil {
+			g.Rules = *patch.Rules
+		}
+		if patch.Match != nil {
+			g.Match = strings.TrimSpace(*patch.Match)
+		}
 		if patch.All != nil {
 			g.All = *patch.All
 		}
@@ -1004,13 +1766,17 @@ func (s *Service) ownerGroupAppsRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) clearGroupChannelAppOverrides(ctx context.Context, g OwnerGroup, apps []string) error {
+	idx, err := s.cachedOwnerGroupIndex(ctx)
+	if err != nil {
+		return err
+	}
 	all, err := s.allChannels(ctx)
 	if err != nil {
 		return err
 	}
 	var ids []string
 	for _, c := range all {
-		if !g.matchesChannel(c.SourceID, c.Group, c.ID) {
+		if !idx.inGroup(g.ID, c.SourceID, c.Group, c.ID) {
 			continue
 		}
 		hasOverride := false
@@ -1056,35 +1822,21 @@ func (h liveTVHost) Groups(ctx context.Context, u *core.User) ([]frontend.LiveGr
 }
 
 func (h liveTVHost) GroupChannels(ctx context.Context, u *core.User, id string) ([]frontend.LiveTVChannel, error) {
-	gs, err := h.s.OwnerGroups(ctx)
+	idx, err := h.s.cachedOwnerGroupIndex(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var chosen *OwnerGroup
-	for i := range gs {
-		if gs[i].ID == id && !gs[i].Hidden {
-			chosen = &gs[i]
-			break
-		}
-	}
-	if chosen == nil {
+	entry, ok := idx.byID[id]
+	if !ok || entry.group.Hidden {
 		return nil, core.ErrNotFound
 	}
 	cs, err := h.s.AllowedChannels(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	groups := map[OwnerGroupSource]bool{}
-	for _, g := range chosen.Groups {
-		groups[g] = true
-	}
-	individual := map[string]bool{}
-	for _, cid := range chosen.Channels {
-		individual[cid] = true
-	}
 	out := []frontend.LiveTVChannel{}
 	for _, c := range cs {
-		if chosen.All || groups[OwnerGroupSource{SourceID: c.SourceID, Name: c.Group}] || individual[c.ID] {
+		if idx.inGroup(id, c.SourceID, c.Group, c.ID) {
 			out = append(out, ToFrontendChannel(c))
 		}
 	}

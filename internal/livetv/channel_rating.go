@@ -7,36 +7,29 @@ type groupRatingRule struct {
 	order  int
 }
 
+type dynamicGroupRatingRule struct {
+	compiled *compiledOwnerGroup
+	rule     groupRatingRule
+}
+
 type groupRatingIndex struct {
 	channels map[string]groupRatingRule
 	groups   map[OwnerGroupSource]groupRatingRule
 	all      groupRatingRule
+	dynamic  []dynamicGroupRatingRule
+}
+
+func newGroupRatingIndex() *groupRatingIndex {
+	return &groupRatingIndex{
+		channels: map[string]groupRatingRule{},
+		groups:   map[OwnerGroupSource]groupRatingRule{},
+	}
 }
 
 // Compile saved membership once, without enumerating the channel library.
 // When groups overlap, the first rated, visible group in the owner's order wins.
 func indexGroupRatings(gs []OwnerGroup) *groupRatingIndex {
-	x := &groupRatingIndex{channels: map[string]groupRatingRule{}, groups: map[OwnerGroupSource]groupRatingRule{}}
-	for i, g := range gs {
-		if g.Hidden || g.UnratedRating == "" {
-			continue
-		}
-		r := groupRatingRule{g.UnratedRating, i}
-		if g.All && x.all.rating == "" {
-			x.all = r
-		}
-		for _, id := range g.Channels {
-			if _, ok := x.channels[id]; !ok {
-				x.channels[id] = r
-			}
-		}
-		for _, group := range g.Groups {
-			if _, ok := x.groups[group]; !ok {
-				x.groups[group] = r
-			}
-		}
-	}
-	return x
+	return compileOwnerGroupIndex(gs).ratings
 }
 
 func (x *groupRatingIndex) rating(c Channel) string {
@@ -47,6 +40,12 @@ func (x *groupRatingIndex) rating(c Channel) string {
 	for _, candidate := range []groupRatingRule{x.channels[c.ID], x.groups[OwnerGroupSource{c.SourceID, c.Group}]} {
 		if candidate.rating != "" && (r.rating == "" || candidate.order < r.order) {
 			r = candidate
+		}
+	}
+	for i := range x.dynamic {
+		d := x.dynamic[i]
+		if (r.rating == "" || d.rule.order < r.order) && d.compiled.matchesChannel(c) {
+			r = d.rule
 		}
 	}
 	return r.rating

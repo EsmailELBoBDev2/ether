@@ -1,5 +1,9 @@
 import { scheduleFixture } from "./schedule-timeline";
-import type { OwnerGroup } from "../pages/livetv/model";
+import {
+  compileOwnerGroupMatcher,
+  compileOwnerGroupRegExp,
+  type OwnerGroup,
+} from "../pages/livetv/model";
 import type { ChannelLook } from "../pages/livetv/onair/model";
 /**
  * Live TV for the mock backend: a few virtual channels built from the fake
@@ -586,6 +590,33 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     const route = `${method} /${seg.slice(1).join("/")}`;
     const now = Date.now();
     if (route === "GET /groups") return { body: ownerGroups };
+    if (route === "POST /groups/preview") {
+      const draft = (body ?? {}) as Partial<OwnerGroup>;
+      for (const [i, r] of (draft.rules ?? []).entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            const msg = `invalid pattern "${r.value}"`;
+            return {
+              status: 400,
+              body: {
+                error: {
+                  code: "livetv",
+                  message: msg,
+                  fields: [{ field: `rules.${i}.value`, message: msg }],
+                },
+              },
+            };
+          }
+        }
+      }
+      const sourceNames = new Map(sources.map((s) => [s.id, s.name]));
+      const matcher = compileOwnerGroupMatcher(
+        { id: draft.id ?? "", name: draft.name ?? "", groups: draft.groups ?? [], ...draft },
+        sourceNames,
+      );
+      const matched = channels.filter((c) => matcher(c));
+      return { body: { count: matched.length, channels: matched.slice(0, 50) } };
+    }
     if (route === "PUT /groups") {
       ownerGroups = Array.isArray(body) ? (body as typeof ownerGroups) : ownerGroups;
       return { body: ownerGroups };
@@ -607,13 +638,9 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
         const g = ownerGroups.find((x) => x.id === b.ownerGroup);
         if (!g) return { status: 404, body: { error: { code: "livetv", message: "not found" } } };
         g.apps = { ...(g.apps ?? {}), [b.app]: b.show };
-        const cset = new Set(g.channels ?? []);
-        const pset = new Set((g.groups ?? []).map((p) => `${p.sourceId}\u0000${p.name}`));
-        targets = channels.filter(
-          (c) =>
-            cset.has(c.id) ||
-            (c.kind !== "virtual" && pset.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`)),
-        );
+        const sourceNames = new Map(sources.map((s) => [s.id, s.name]));
+        const matcher = compileOwnerGroupMatcher(g, sourceNames);
+        targets = channels.filter((c) => matcher(c));
         let updated = 0;
         for (const c of targets) {
           const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);

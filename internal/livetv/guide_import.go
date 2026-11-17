@@ -292,8 +292,10 @@ func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src Sourc
 		return false, err
 	}
 	write := err != nil
+	renamed := false
 	if !write {
 		old, _, derr := s.decodeSource(raw)
+		renamed = derr == nil && old.Name != src.Name
 		write = derr != nil || old.LastError != "" || old.LastErrorAt != nil || old.RefreshFailures != 0 || !sameStoredSource(old, src)
 	}
 	if write {
@@ -303,6 +305,11 @@ func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src Sourc
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO livetv_sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, src.ID, b); err != nil {
 			return false, err
+		}
+		if renamed {
+			if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
+				return false, err
+			}
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO livetv_source_refresh(id,updated_ms) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET updated_ms=excluded.updated_ms`, src.ID, src.UpdatedAt.UnixMilli())

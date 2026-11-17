@@ -13,8 +13,7 @@ import (
 
 const maxAppBatchChannels = 200_000
 
-// ChannelAppChange sets one app's visibility across an explicit channel list,
-// a source (optionally narrowed to one provider group), or an owner group.
+// ChannelAppChange sets one app's visibility across an explicit channel list,\n// a source (optionally narrowed to one provider group), or an owner group.
 type ChannelAppChange struct {
 	App        string   `json:"app"`
 	Show       *bool    `json:"show"`
@@ -221,16 +220,19 @@ func (s *Service) applyOwnerGroupAppRule(ctx context.Context, groupID, app strin
 	if err != nil {
 		return nil, false, 0, err
 	}
-	groupSet := make(map[OwnerGroupSource]bool, len(chosen.Groups))
-	for _, g := range chosen.Groups {
-		groupSet[g] = true
+	var sourceNames map[string]string
+	if groupUsesSourceField(normalized[idx]) {
+		sourceNames, err = s.sourceNamesMap(ctx)
+		if err != nil {
+			return nil, false, 0, err
+		}
 	}
-	explicit := make(map[string]bool, len(chosen.Channels))
-	for _, id := range chosen.Channels {
-		explicit[id] = true
+	compiled, err := compileSingleOwnerGroup(normalized[idx], sourceNames)
+	if err != nil {
+		return nil, false, 0, err
 	}
 	for _, c := range summaries {
-		if chosen.All || groupSet[OwnerGroupSource{SourceID: c.SourceID, Name: c.Group}] || explicit[c.ID] {
+		if compiled.matchesSummary(c) {
 			ids = append(ids, c.ID)
 		}
 	}

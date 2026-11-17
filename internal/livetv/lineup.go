@@ -107,43 +107,44 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 	).Scan(&rev, &rawGroups); err != nil {
 		return nil, err
 	}
-	groupIdx := prevGroupIdx
-	if groupIdx == nil || rev != prevGroupRev {
-		decoded, err := decodeOwnerGroupIndex(rawGroups)
-		if err != nil {
-			return nil, err
-		}
-		groupIdx = decoded
-		s.setOwnerGroupCacheState(rev, groupIdx)
-	}
 	s.lineupMu.Lock()
-	defer s.lineupMu.Unlock()
 	if s.lineupIndex != nil && s.lineupRev == rev {
-		return s.lineupIndex, nil
+		cached := s.lineupIndex
+		s.lineupMu.Unlock()
+		if prevGroupIdx == nil || rev != prevGroupRev {
+			decoded, err := s.loadOwnerGroupIndexWithTargets(ctx, rev, rawGroups, targetsFromSummaries(cached))
+			if err != nil {
+				return nil, err
+			}
+			s.setOwnerGroupCacheState(rev, decoded)
+		}
+		return cached, nil
 	}
+	defer s.lineupMu.Unlock()
 	rows, err := s.o.DB.QueryContext(ctx, `SELECT data FROM livetv_channels`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := make([]ChannelSummary, 0, 1024)
 	for rows.Next() {
 		var b []byte
 		if err = rows.Scan(&b); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		var c ChannelSummary
 		if err = json.Unmarshal(b, &c); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		c.rawHiddenApps = c.HiddenApps
-		c.HiddenApps = groupIdx.effectiveHiddenAppsFor(c.SourceID, c.Group, c.ID, c.rawHiddenApps, c.ShownApps)
 		var stream struct {
 			Look          *ChannelLook   `json:"look"`
 			StreamURL     string         `json:"streamUrl"`
 			StreamSources []StreamSource `json:"streamSources"`
 		}
 		if err = json.Unmarshal(b, &stream); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if stream.Look != nil {
@@ -155,8 +156,24 @@ func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error
 		out = append(out, c)
 	}
 	if err = rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
+	rows.Close()
+
+	groupIdx := prevGroupIdx
+	if groupIdx == nil || rev != prevGroupRev {
+		decoded, err := s.loadOwnerGroupIndexWithTargets(ctx, rev, rawGroups, targetsFromSummaries(out))
+		if err != nil {
+			return nil, err
+		}
+		groupIdx = decoded
+		s.setOwnerGroupCacheState(rev, groupIdx)
+	}
+	for i := range out {
+		out[i].HiddenApps = groupIdx.effectiveHiddenAppsFor(out[i].SourceID, out[i].Group, out[i].ID, out[i].rawHiddenApps, out[i].ShownApps)
+	}
+
 	// Virtual channels lead, then natural channel number, source and ID.
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
@@ -334,7 +351,7 @@ func channelMatches(c ChannelSummary, q ChannelPageQuery, stats map[guideKey]gui
 			return false
 		}
 	case "off":
-		if c.Enabled {
+		if !c.Enabled {
 			return false
 		}
 	}

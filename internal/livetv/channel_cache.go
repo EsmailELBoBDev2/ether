@@ -78,31 +78,36 @@ func (s *Service) channelSnapshot(ctx context.Context) ([]Channel, *channelSnaps
 	).Scan(&gen, &rawGroups); err != nil {
 		return nil, nil, err
 	}
+	c := &s.chanSnap
+	c.mu.Lock()
+	var list []Channel
+	if c.list != nil && c.generation == gen {
+		list = c.list
+		c.mu.Unlock()
+	} else {
+		// The epoch is read before the rows: a write in between leaves an older
+		// generation on a newer list, which the next request rebuilds.
+		loaded, err := channels(ctx, s.o.DB)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, nil, err
+		}
+		c.generation, c.list = gen, loaded
+		c.byID = make(map[string]int, len(loaded))
+		c.bySource = map[string][]int{}
+		for i, ch := range loaded {
+			c.byID[ch.ID] = i
+			c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
+		}
+		list = loaded
+		c.mu.Unlock()
+	}
 	if prevGroupIdx == nil || gen != prevGroupRev {
-		idx, err := decodeOwnerGroupIndex(rawGroups)
+		idx, err := s.loadOwnerGroupIndex(ctx, gen, rawGroups)
 		if err != nil {
 			return nil, nil, err
 		}
 		s.setOwnerGroupCacheState(gen, idx)
-	}
-	c := &s.chanSnap
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.list != nil && c.generation == gen {
-		return c.list, c, nil
-	}
-	// The epoch is read before the rows: a write in between leaves an older
-	// generation on a newer list, which the next request rebuilds.
-	list, err := channels(ctx, s.o.DB)
-	if err != nil {
-		return nil, nil, err
-	}
-	c.generation, c.list = gen, list
-	c.byID = make(map[string]int, len(list))
-	c.bySource = map[string][]int{}
-	for i, ch := range list {
-		c.byID[ch.ID] = i
-		c.bySource[ch.SourceID] = append(c.bySource[ch.SourceID], i)
 	}
 	return list, c, nil
 }

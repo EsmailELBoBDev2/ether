@@ -230,7 +230,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		provider.Feature = append(provider.Feature, downloadSubscribeFeature)
 	}
 	mc := &model.MediaContainer{Size: 1, Extra: s.serverInfoAttrs(true, u), MediaProvider: []model.MediaProvider{provider}}
-	if p := s.liveTVProvider(r.Context(), FromContext(r.Context()).User); p != nil {
+	for _, p := range s.liveTVMediaProviders(r.Context(), FromContext(r.Context()).User) {
 		mc.MediaProvider = append(mc.MediaProvider, *p)
 		mc.Size++
 	}

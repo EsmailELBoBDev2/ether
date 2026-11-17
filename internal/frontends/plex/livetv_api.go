@@ -83,39 +83,63 @@ func (s *Server) liveTVEnabled() bool {
 	return s.svc().liveTV != nil && s.svc().liveTV.Enabled() && s.identity().MyPlexSubscription
 }
 func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.MediaProvider {
+	return s.liveTVProviderFor(ctx, u, mainLiveProvider)
+}
+
+// liveTVMediaProviders advertises the all-channels provider plus one Live TV
+// source per owner group, as PMS does for multiple DVRs/EPG providers.
+func (s *Server) liveTVMediaProviders(ctx context.Context, u *frontend.User) []*model.MediaProvider {
 	if !s.liveTVEnabled() || !s.svc().liveTV.VisibleTo(ctx, u) {
 		return nil
 	}
-	filters := s.liveGuideFilters(ctx, u)
-	provider := &model.MediaProvider{Extra: []model.Attr{model.A("id", 1), model.A("parentID", 1), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: frontend.LiveTVProvider, Title: "Live TV", Types: "video", Protocols: "livetv", Feature: []model.Feature{
+	out := []*model.MediaProvider{}
+	for _, info := range s.liveProviders(ctx, u) {
+		if p := s.liveTVProviderFor(ctx, u, info); p != nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *Server) liveTVProviderFor(ctx context.Context, u *frontend.User, info liveProviderInfo) *model.MediaProvider {
+	if !s.liveTVEnabled() || !s.svc().liveTV.VisibleTo(ctx, u) {
+		return nil
+	}
+	pp := info.path()
+	filters := s.liveGuideFiltersFor(ctx, u, pp, info.groupID == "")
+	dirTitle := "Live TV & DVR"
+	if info.groupID != "" {
+		dirTitle = info.title
+	}
+	provider := &model.MediaProvider{Extra: []model.Attr{model.A("id", info.num), model.A("parentID", info.num), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: info.identifier(), Title: info.title, Types: "video", Protocols: "livetv", Feature: []model.Feature{
 		{
 			Type: "content",
-			Key:  liveProviderPath + "/sections",
+			Key:  pp + "/sections",
 			// Android uses the DVR provider shape for What's On and Guide
 			// pivots. Other clients retain their single directory below.
 			Directory: []model.ProviderDirectory{
 				{
-					ID:     frontend.LiveTVProvider,
-					HubKey: liveProviderPath + "/hubs/discover",
-					Title:  "Live TV & DVR",
+					ID:     info.identifier(),
+					HubKey: pp + "/hubs/discover",
+					Title:  dirTitle,
 					Pivot: []model.Pivot{
-						{ID: "dvr.whatson", Key: liveProviderPath + "/hubs/discover", Type: "hub", Title: "What's On", Context: "content.dvr.discover", Symbol: "star"},
+						{ID: "dvr.whatson", Key: pp + "/hubs/discover", Type: "hub", Title: "What's On", Context: "content.dvr.discover", Symbol: "star"},
 						{ID: "dvr.guide", Key: "view://dvr/guide", Type: "view", Title: "Guide", Context: "content.dvr.guide", Symbol: "guide"},
 					},
 				},
 				{
 					Icon:  "/:/resources/dvr/dvr-watchnow-icon.png",
-					Key:   liveProviderPath + "/watchnow",
+					Key:   pp + "/watchnow",
 					Title: "Guide",
 					Type:  "mixed",
 				},
 			},
 		},
-		{Type: "universalsearch", Key: liveProviderPath + "/library/search"},
-		{Type: "grid", Key: liveProviderPath + "/grid", PromotedGridChannelFilter: []model.GridChannelFilter{{Identifier: "featured", Key: liveProviderPath + "/lineups/dvr/channels/featured", Title: "Featured"}}, GridChannelFilter: filters},
-		{Type: "metadata", Key: liveProviderPath + "/metadata"},
+		{Type: "universalsearch", Key: pp + "/library/search"},
+		{Type: "grid", Key: pp + "/grid", PromotedGridChannelFilter: []model.GridChannelFilter{{Identifier: "featured", Key: pp + "/lineups/dvr/channels/featured", Title: "Featured"}}, GridChannelFilter: filters},
+		{Type: "metadata", Key: pp + "/metadata"},
 		{Type: "livetv", Key: "/livetv/dvrs"},
-		{Type: "promoted", Key: liveProviderPath + "/hubs/discover?promoted=1&includeTypeFirst=1"},
+		{Type: "promoted", Key: pp + "/hubs/discover?promoted=1&includeTypeFirst=1"},
 	}}
 	// Native Android needs the DVR directory shape to expose its pivots.
 	// Other clients retain the single keyed entry, avoiding duplicate Live TV.
@@ -123,7 +147,7 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 	if pr == nil || !strings.EqualFold(pr.Platform, "Android") {
 		entry := &provider.Feature[0].Directory[0]
 		entry.ID = "livetv"
-		entry.Key = liveProviderPath + "/lineups/dvr/channels"
+		entry.Key = pp + "/lineups/dvr/channels"
 		entry.Type = "livetv"
 		provider.Feature[0].Directory = provider.Feature[0].Directory[:1]
 	}
@@ -145,6 +169,14 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 			if p, ok := s.policy().(frontend.PlaybackAccessPolicy); ok && !p.CanPlay(pr.User, pr.Remote, s.now()) {
 				writeHTTPError(w, 403)
 				return
+			}
+			if n, ok := r.Context().Value(liveProviderNumKey{}).(int); ok {
+				info, found := s.resolveLiveProviderNum(r.Context(), pr.User, n)
+				if !found {
+					writeHTTPError(w, 404)
+					return
+				}
+				r = r.WithContext(context.WithValue(r.Context(), liveScopeKey{}, &liveScope{info: info}))
 			}
 			h(w, r)
 		}
@@ -245,28 +277,117 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	})
 
 }
-func (s *Server) liveDevices(r *http.Request) ([]liveDevice, error) {
-	cs, err := s.svc().liveTV.AllowedChannels(r.Context(), FromContext(r.Context()).User)
-	if err != nil {
-		return nil, err
+func (s *Server) liveProviderChannels(r *http.Request, info liveProviderInfo) ([]frontend.LiveTVChannel, error) {
+	u := FromContext(r.Context()).User
+	if info.groupID == "" {
+		return s.svc().liveTV.AllowedChannels(r.Context(), u)
 	}
+	g, ok := s.svc().liveTV.(frontend.LiveTVGroups)
+	if !ok {
+		return nil, frontend.ErrNotFound
+	}
+	return g.GroupChannels(r.Context(), u, info.groupID)
+}
+
+func (s *Server) liveDeviceFor(info liveProviderInfo, cs []frontend.LiveTVChannel) liveDevice {
 	maps := []liveMapping{}
 	for _, c := range cs {
 		maps = append(maps, liveMapping{c.ID, c.Number, "1", c.GuideID})
 	}
-	return []liveDevice{{Key: "1", Make: "Ether", Model: "Owner channels", Protocol: "livetv", Sources: "IPTV,Virtual", State: "1", Status: "1", Tuners: "4", URI: "device://tv.plex.grabbers.ether/1", UUID: s.identity().MachineIdentifier + "-livetv", ChannelMapping: maps}}, nil
-}
-func (s *Server) handleLiveDVRs(w http.ResponseWriter, r *http.Request) {
-	if id := chi.URLParam(r, "dvr"); id != "" && id != "1" {
-		writeHTTPError(w, 404)
-		return
+	key := strconv.Itoa(info.num)
+	model, uuid := "Owner channels", s.identity().MachineIdentifier+"-livetv"
+	if info.groupID != "" {
+		model, uuid = info.title, uuid+"-"+key
 	}
-	devices, err := s.liveDevices(r)
+	return liveDevice{Key: key, Make: "Ether", Model: model, Protocol: "livetv", Sources: "IPTV,Virtual", State: "1", Status: "1", Tuners: "4", URI: "device://tv.plex.grabbers.ether/" + key, UUID: uuid, ChannelMapping: maps}
+}
+
+// liveProviderByKey resolves a DVR/device key: "1" is the main provider,
+// any other number must be a visible group provider.
+func (s *Server) liveProviderByKey(r *http.Request, key string) (liveProviderInfo, bool) {
+	n, err := strconv.Atoi(key)
+	if err != nil || n < 1 {
+		return liveProviderInfo{}, false
+	}
+	return s.resolveLiveProviderNum(r.Context(), FromContext(r.Context()).User, n)
+}
+
+// liveProviderChannelMap buckets the viewer's channels by provider in one
+// pass over the lineup (memberships travel on LiveChannel.Groups), so the
+// DVR/device lists never rescan all channels per group.
+func (s *Server) liveProviderChannelMap(r *http.Request, infos []liveProviderInfo) (map[int][]frontend.LiveTVChannel, error) {
+	u := FromContext(r.Context()).User
+	allowed, err := s.svc().liveTV.AllowedChannels(r.Context(), u)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int][]frontend.LiveTVChannel{1: allowed}
+	numByGroup := map[string]int{}
+	for _, info := range infos {
+		if info.groupID != "" {
+			numByGroup[info.groupID] = info.num
+			out[info.num] = []frontend.LiveTVChannel{}
+		}
+	}
+	if len(numByGroup) == 0 {
+		return out, nil
+	}
+	byID := make(map[string]frontend.LiveTVChannel, len(allowed))
+	for _, c := range allowed {
+		byID[c.ID] = c
+	}
+	live, err := s.svc().liveTV.Channels(r.Context(), u)
+	if err != nil {
+		return nil, err
+	}
+	for _, lc := range live {
+		c, ok := byID[lc.ID]
+		if !ok {
+			continue
+		}
+		for _, g := range lc.Groups {
+			if n, ok := numByGroup[g.ID]; ok {
+				out[n] = append(out[n], c)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) liveDVRFor(r *http.Request, info liveProviderInfo, cs []frontend.LiveTVChannel) liveDVR {
+	uuid := s.identity().MachineIdentifier + "-livetv"
+	if info.groupID != "" {
+		uuid += "-" + strconv.Itoa(info.num)
+	}
+	return liveDVR{EPGIdentifier: info.identifier(), Key: strconv.Itoa(info.num), Language: "eng", Lineup: "lineup://" + info.identifier() + "/dvr", UUID: uuid, RefreshedAt: s.liveLineupRefreshedAtFor(FromContext(r.Context()).User), Device: []liveDevice{s.liveDeviceFor(info, cs)}}
+}
+
+func (s *Server) handleLiveDVRs(w http.ResponseWriter, r *http.Request) {
+	var infos []liveProviderInfo
+	if id := chi.URLParam(r, "dvr"); id != "" {
+		info, ok := s.liveProviderByKey(r, id)
+		if !ok {
+			writeHTTPError(w, 404)
+			return
+		}
+		infos = []liveProviderInfo{info}
+	} else {
+		infos = s.liveProviders(r.Context(), FromContext(r.Context()).User)
+	}
+	byProvider, err := s.liveProviderChannelMap(r, infos)
 	if err != nil {
 		s.writeErr(w, r, err)
 		return
 	}
-	s.write(w, r, &liveContainer{Size: 1, Identifier: frontend.LiveTVProvider, DVR: []liveDVR{{EPGIdentifier: frontend.LiveTVProvider, Key: "1", Language: "eng", Lineup: "lineup://" + frontend.LiveTVProvider + "/dvr", UUID: s.identity().MachineIdentifier + "-livetv", RefreshedAt: s.liveLineupRefreshedAtFor(FromContext(r.Context()).User), Device: devices}}})
+	dvrs := []liveDVR{}
+	for _, info := range infos {
+		dvrs = append(dvrs, s.liveDVRFor(r, info, byProvider[info.num]))
+	}
+	ident := frontend.LiveTVProvider
+	if len(infos) == 1 {
+		ident = infos[0].identifier()
+	}
+	s.write(w, r, &liveContainer{Size: len(dvrs), Identifier: ident, DVR: dvrs})
 }
 
 func (s *Server) liveLineupRefreshedAtFor(u *frontend.User) int64 {
@@ -319,16 +440,29 @@ func (s *Server) handleLiveGrabbers(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, &liveContainer{Size: 1, Identifier: frontend.LiveTVProvider, MediaGrabber: []liveGrabber{{Title: "Ether owner channels", Identifier: "tv.plex.grabbers.ether", Protocol: "livetv"}}})
 }
 func (s *Server) handleLiveDevices(w http.ResponseWriter, r *http.Request) {
-	if id := chi.URLParam(r, "device"); id != "" && id != "1" {
-		writeHTTPError(w, 404)
-		return
+	var infos []liveProviderInfo
+	ident := frontend.LiveTVProvider
+	if id := chi.URLParam(r, "device"); id != "" {
+		info, ok := s.liveProviderByKey(r, id)
+		if !ok {
+			writeHTTPError(w, 404)
+			return
+		}
+		infos = []liveProviderInfo{info}
+		ident = info.identifier()
+	} else {
+		infos = s.liveProviders(r.Context(), FromContext(r.Context()).User)
 	}
-	devices, err := s.liveDevices(r)
+	byProvider, err := s.liveProviderChannelMap(r, infos)
 	if err != nil {
 		s.writeErr(w, r, err)
 		return
 	}
-	s.write(w, r, &liveContainer{Size: len(devices), Identifier: frontend.LiveTVProvider, Device: devices})
+	devices := []liveDevice{}
+	for _, info := range infos {
+		devices = append(devices, s.liveDeviceFor(info, byProvider[info.num]))
+	}
+	s.write(w, r, &liveContainer{Size: len(devices), Identifier: ident, Device: devices})
 }
 func liveLogo(c frontend.LiveTVChannel) string {
 	return "/livetv/channels/" + url.PathEscape(c.ID) + "/logo.png"
@@ -387,10 +521,29 @@ func (s *Server) requestOrigin(r *http.Request) (string, string) {
 }
 
 func (s *Server) handleLiveChannels(w http.ResponseWriter, r *http.Request) {
+	sc := liveScopeFrom(r)
 	cs, err := s.svc().liveTV.AllowedChannels(r.Context(), FromContext(r.Context()).User)
 	if err != nil {
 		s.writeErr(w, r, err)
 		return
+	}
+	if sc.info.groupID != "" {
+		cs, _, err = s.liveScopeChannels(r, sc)
+		if err != nil {
+			s.writeErr(w, r, err)
+			return
+		}
+	} else if id := chi.URLParam(r, "device"); id != "" && id != "1" {
+		info, ok := s.liveProviderByKey(r, id)
+		if !ok {
+			writeHTTPError(w, 404)
+			return
+		}
+		cs, err = s.liveProviderChannels(r, info)
+		if err != nil {
+			s.writeErr(w, r, err)
+			return
+		}
 	}
 	if id := chi.URLParam(r, "guide"); id != "" {
 		if g, ok := s.svc().liveTV.(frontend.LiveTVGroups); ok {
@@ -434,13 +587,27 @@ func (s *Server) handleLiveChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		cs = filtered
 	}
+	if sc.info.groupID != "" {
+		_, set, serr := s.liveScopeChannels(r, sc)
+		if serr != nil {
+			s.writeErr(w, r, serr)
+			return
+		}
+		filtered := make([]frontend.LiveTVChannel, 0, len(cs))
+		for _, c := range cs {
+			if set[c.ID] {
+				filtered = append(filtered, c)
+			}
+		}
+		cs = filtered
+	}
 	out := []liveChannel{}
 	maps := []liveMapping{}
 	for _, c := range cs {
 		out = append(out, liveChannel{ID: c.ID, GridKey: c.ID, VCN: c.Number, Thumb: s.liveGuideLogo(r, c), Title: c.Name, CallSign: c.Name, Language: "eng", GenreRatingKeys: genreKeys[c.ID]})
 		maps = append(maps, liveMapping{c.ID, c.Number, "1", c.GuideID})
 	}
-	s.write(w, r, &liveContainer{Size: len(out), Identifier: frontend.LiveTVProvider, Channel: out, ChannelMapping: maps})
+	s.write(w, r, &liveContainer{Size: len(out), Identifier: sc.info.identifier(), Channel: out, ChannelMapping: maps})
 }
 
 // liveProgrammeThumb rewrites a raw, server-relative EPG poster/still path
@@ -468,6 +635,10 @@ func liveProgrammeArt(key frontend.RatingKey, path string) string {
 }
 
 func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.LiveTVProgramme) model.Metadata {
+	return s.liveProgrammeMetadataAt(c, p, liveProviderPath)
+}
+
+func (s *Server) liveProgrammeMetadataAt(c frontend.LiveTVChannel, p frontend.LiveTVProgramme, providerPath string) model.Metadata {
 	dur := p.End.Sub(p.Start).Milliseconds()
 	rating := p.Item.Rating
 	if rating == "" {
@@ -479,7 +650,7 @@ func (s *Server) liveProgrammeMetadata(c frontend.LiveTVChannel, p frontend.Live
 	if mediaType != "episode" && mediaType != "movie" {
 		mediaType = "movie"
 	}
-	md := model.Metadata{RatingKey: p.ID, Key: liveProviderPath + "/metadata/" + url.PathEscape(p.ID), GUID: "ether://livetv/" + p.ID, Type: mediaType, Title: p.Item.Title, Summary: p.Item.Summary, ContentRating: rating, Thumb: s.liveProgrammeThumb(p.Item.Key, p.Item.Thumb), Duration: dur, Media: []model.Media{{ID: p.Start.Unix(), Duration: dur, Protocol: "livetv", Extra: []model.Attr{model.A("beginsAt", p.Start.Unix()), model.A("endsAt", p.End.Unix()), model.A("channelIdentifier", c.ID), model.A("channelID", c.ID), model.A("channelTitle", c.Name), model.A("channelCallSign", c.Name), model.A("channelVcn", c.Number), model.A("channelThumb", liveLogo(c)), model.A("gridKey", c.ID)}}}}
+	md := model.Metadata{RatingKey: p.ID, Key: providerPath + "/metadata/" + url.PathEscape(p.ID), GUID: "ether://livetv/" + p.ID, Type: mediaType, Title: p.Item.Title, Summary: p.Item.Summary, ContentRating: rating, Thumb: s.liveProgrammeThumb(p.Item.Key, p.Item.Thumb), Duration: dur, Media: []model.Media{{ID: p.Start.Unix(), Duration: dur, Protocol: "livetv", Extra: []model.Attr{model.A("beginsAt", p.Start.Unix()), model.A("endsAt", p.End.Unix()), model.A("channelIdentifier", c.ID), model.A("channelID", c.ID), model.A("channelTitle", c.Name), model.A("channelCallSign", c.Name), model.A("channelVcn", c.Number), model.A("channelThumb", liveLogo(c)), model.A("gridKey", c.ID)}}}}
 	for _, g := range p.Item.Genres {
 		md.Genre = append(md.Genre, model.Tag{Tag: g})
 	}
@@ -572,6 +743,42 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 	if !until.After(from) || until.Sub(from) > 7*24*time.Hour {
 		return nil, fmt.Errorf("%w: window", errLiveBadRequest)
 	}
+	// A group provider's grid only ever reads that group's channels:
+	// intersect an explicit grid-key list, or read the group's channels
+	// instead of the whole guide window.
+	sc := liveScopeFrom(r)
+	var scopeByID map[string]frontend.LiveTVChannel
+	if sc.info.groupID != "" {
+		gcs, set, serr := s.liveScopeChannels(r, sc)
+		if serr != nil {
+			return nil, serr
+		}
+		scopeByID = make(map[string]frontend.LiveTVChannel, len(gcs))
+		for _, c := range gcs {
+			scopeByID[c.ID] = c
+		}
+		if gridKey != "" {
+			kept := []string{}
+			for _, id := range strings.Split(gridKey, ",") {
+				if set[id] {
+					kept = append(kept, id)
+				}
+			}
+			if len(kept) == 0 {
+				return []model.Metadata{}, nil
+			}
+			gridKey = strings.Join(kept, ",")
+		} else {
+			ids := make([]string, 0, len(gcs))
+			for _, c := range gcs {
+				ids = append(ids, c.ID)
+			}
+			if len(ids) == 0 {
+				return []model.Metadata{}, nil
+			}
+			gridKey = strings.Join(ids, ",")
+		}
+	}
 	// Read only the requested channels. Plex can send comma-separated or
 	// repeated grid keys; treating the list as one ID produces an empty guide.
 	var ps []frontend.LiveTVProgramme
@@ -585,7 +792,9 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 		return nil, err
 	}
 	byID := map[string]frontend.LiveTVChannel{}
-	if gridKey != "" {
+	if scopeByID != nil {
+		byID = scopeByID
+	} else if gridKey != "" {
 		for _, id := range strings.Split(gridKey, ",") {
 			c, err := s.svc().liveTV.ChannelForViewer(r.Context(), FromContext(r.Context()).User, id)
 			if errors.Is(err, frontend.ErrNotFound) {
@@ -616,7 +825,7 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 		if id := chi.URLParam(r, "programme"); id != "" && p.ID != id {
 			continue
 		}
-		md := s.liveProgrammeMetadata(byID[p.ChannelID], p)
+		md := s.liveProgrammeMetadataAt(byID[p.ChannelID], p, sc.info.path())
 		if c, ok := byID[p.ChannelID]; ok && cloudGuideLogoClient(FromContext(r.Context())) {
 			// The Apple TV guide draws airings' channelThumb too: give it the
 			// same fetchable logo as the lineup.
@@ -695,7 +904,7 @@ func (s *Server) handleLiveGuide(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, 404)
 		return
 	}
-	mc := &model.MediaContainer{Size: len(md), Identifier: frontend.LiveTVProvider, Metadata: md}
+	mc := &model.MediaContainer{Size: len(md), Identifier: liveScopeFrom(r).info.identifier(), Metadata: md}
 	if strings.Contains(r.URL.Path, "/watchnow/") {
 		total := len(md)
 		lo, hi := 0, total
@@ -721,17 +930,21 @@ func (s *Server) handleLiveGuide(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, mc)
 }
 func (s *Server) handleLiveRoot(w http.ResponseWriter, r *http.Request) {
-	s.write(w, r, &model.MediaContainer{Size: 2, Identifier: frontend.LiveTVProvider, Directory: []model.Directory{{Key: liveProviderPath + "/lineups/dvr/channels", Title: "Guide", Type: "livetv"}, {Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed"}}})
+	sc := liveScopeFrom(r)
+	pp := sc.info.path()
+	s.write(w, r, &model.MediaContainer{Size: 2, Identifier: sc.info.identifier(), Directory: []model.Directory{{Key: pp + "/lineups/dvr/channels", Title: "Guide", Type: "livetv"}, {Key: pp + "/watchnow/all", Title: "On Now", Type: "mixed"}}})
 }
 func (s *Server) handleLiveWatchNow(w http.ResponseWriter, r *http.Request) {
-	types := []model.MetaType{{Active: true, Key: liveProviderPath + "/watchnow/all", Title: "All Channels", Type: "mixed"}}
-	dirs := []model.Directory{{Key: liveProviderPath + "/watchnow/all", Title: "All Channels", Type: "mixed"}}
+	sc := liveScopeFrom(r)
+	pp := sc.info.path()
+	types := []model.MetaType{{Active: true, Key: pp + "/watchnow/all", Title: "All Channels", Type: "mixed"}}
+	dirs := []model.Directory{{Key: pp + "/watchnow/all", Title: "All Channels", Type: "mixed"}}
 	for _, c := range []struct{ id, title string }{{"movie", "Movies"}, {"sports", "Sports"}, {"news", "News"}, {"kids", "Kids"}, {"series", "TV Shows"}} {
-		k := liveProviderPath + "/watchnow/categories/" + c.id
+		k := pp + "/watchnow/categories/" + c.id
 		types = append(types, model.MetaType{Key: k, Title: c.title, Type: "mixed"})
 		dirs = append(dirs, model.Directory{Key: k, Title: c.title, Type: "mixed"})
 	}
-	s.write(w, r, &model.MediaContainer{Size: len(types), Identifier: frontend.LiveTVProvider, Type: types, Directory: dirs})
+	s.write(w, r, &model.MediaContainer{Size: len(types), Identifier: sc.info.identifier(), Type: types, Directory: dirs})
 }
 func (s *Server) liveTVHub(r *http.Request) *model.Hub {
 	h, _ := s.liveTVHubProjection(r)
@@ -747,7 +960,13 @@ func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row)
 		items = items[:24]
 	}
 	md := s.liveDiscoveryToMetadata(r, items, channels)
-	h := &model.Hub{Key: liveProviderPath + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: "livetv.onnow", Context: "hub.livetv.onnow", Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
+	sc := liveScopeFrom(r)
+	hubID, hubCtx := "livetv.onnow", "hub.livetv.onnow"
+	if sc.info.groupID != "" {
+		hubID += "." + sc.info.groupID
+		hubCtx += "." + sc.info.groupID
+	}
+	h := &model.Hub{Key: sc.info.path() + "/watchnow/all", Title: "On Now", Type: "mixed", HubIdentifier: hubID, Context: hubCtx, Size: len(md), Style: "shelf", Promoted: model.Ptr(true), Metadata: md}
 	row := frontend.Row{ID: "livetv.onnow", Title: "On Now", Purpose: frontend.RowLive, Style: "shelf", Promoted: true}
 	for _, item := range items {
 		c := channels[item.ChannelID]
@@ -760,9 +979,10 @@ func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row)
 	return h, row
 }
 func (s *Server) liveChannelMetadata(r *http.Request, c frontend.LiveTVChannel) model.Metadata {
-	return model.Metadata{RatingKey: "channel-" + c.ID, Key: liveProviderPath + "/channels/" + url.PathEscape(c.ID), Type: "clip", Title: c.Name, Summary: "Live channel. No programme guide supplied.", Thumb: s.liveGuideLogo(r, c), ContentRating: c.Rating, Extra: []model.Attr{model.A("live", true), model.A("dvrChannel", true)}, Media: []model.Media{{Protocol: "livetv", Extra: []model.Attr{model.A("origin", "livetv"), model.A("channelIdentifier", c.ID), model.A("channelTitle", c.Name), model.A("channelVcn", c.Number), model.A("onAir", true)}}}}
+	return model.Metadata{RatingKey: "channel-" + c.ID, Key: liveScopeFrom(r).info.path() + "/channels/" + url.PathEscape(c.ID), Type: "clip", Title: c.Name, Summary: "Live channel. No programme guide supplied.", Thumb: s.liveGuideLogo(r, c), ContentRating: c.Rating, Extra: []model.Attr{model.A("live", true), model.A("dvrChannel", true)}, Media: []model.Media{{Protocol: "livetv", Extra: []model.Attr{model.A("origin", "livetv"), model.A("channelIdentifier", c.ID), model.A("channelTitle", c.Name), model.A("channelVcn", c.Number), model.A("onAir", true)}}}}
 }
 func (s *Server) handleLiveChannel(w http.ResponseWriter, r *http.Request) {
+	sc := liveScopeFrom(r)
 	c, err := s.svc().liveTV.AllowedChannel(r.Context(), FromContext(r.Context()).User, chi.URLParam(r, "channel"))
 	if errors.Is(err, frontend.ErrNotFound) {
 		writeHTTPError(w, 404)
@@ -772,11 +992,22 @@ func (s *Server) handleLiveChannel(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	s.write(w, r, &model.MediaContainer{Size: 1, Identifier: frontend.LiveTVProvider, Metadata: []model.Metadata{s.liveChannelMetadata(r, c)}})
+	if sc.info.groupID != "" {
+		_, set, serr := s.liveScopeChannels(r, sc)
+		if serr != nil {
+			s.writeErr(w, r, serr)
+			return
+		}
+		if !set[c.ID] {
+			writeHTTPError(w, 404)
+			return
+		}
+	}
+	s.write(w, r, &model.MediaContainer{Size: 1, Identifier: sc.info.identifier(), Metadata: []model.Metadata{s.liveChannelMetadata(r, c)}})
 }
 
 func (s *Server) handleLiveHubs(w http.ResponseWriter, r *http.Request) {
-	mc := &model.MediaContainer{Identifier: frontend.LiveTVProvider}
+	mc := &model.MediaContainer{Identifier: liveScopeFrom(r).info.identifier()}
 	hubs := []model.Hub{}
 	if h := s.liveTVHub(r); h != nil {
 		hubs = append(hubs, *h)
@@ -840,7 +1071,14 @@ func (s *Server) liveCategoryHubs(r *http.Request) []model.Hub {
 			items = items[:24]
 		}
 		md := s.liveDiscoveryToMetadata(r, items, channels)
-		out = append(out, model.Hub{Key: b.key, Title: b.title, Type: "mixed", HubIdentifier: "livetv." + b.id, Context: "hub.livetv." + b.id, Size: len(md), Style: "shelf", Metadata: md})
+		sc := liveScopeFrom(r)
+		key, hubID, hubCtx := b.key, "livetv."+b.id, "hub.livetv."+b.id
+		if sc.info.groupID != "" {
+			key = sc.info.path() + strings.TrimPrefix(b.key, liveProviderPath)
+			hubID += "." + sc.info.groupID
+			hubCtx += "." + sc.info.groupID
+		}
+		out = append(out, model.Hub{Key: key, Title: b.title, Type: "mixed", HubIdentifier: hubID, Context: hubCtx, Size: len(md), Style: "shelf", Metadata: md})
 	}
 	return out
 }
@@ -869,7 +1107,8 @@ func (s *Server) liveSessionMetadata(info frontend.LiveTVSessionInfo) model.Meta
 	return md
 }
 func (s *Server) handleLiveTune(w http.ResponseWriter, r *http.Request) {
-	if chi.URLParam(r, "dvr") != "1" {
+	prov, ok := s.liveProviderByKey(r, chi.URLParam(r, "dvr"))
+	if !ok {
 		writeHTTPError(w, 404)
 		return
 	}
@@ -884,6 +1123,26 @@ func (s *Server) handleLiveTune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := c.ID
+	if prov.groupID != "" {
+		// A group DVR only tunes its own lineup; playback itself is the
+		// shared session path, identical to the main DVR.
+		gcs, gerr := s.liveProviderChannels(r, prov)
+		if gerr != nil {
+			s.writeErr(w, r, gerr)
+			return
+		}
+		found := false
+		for _, gc := range gcs {
+			if gc.ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeHTTPError(w, 404)
+			return
+		}
+	}
 	info, err := s.svc().liveTV.TuneWithSession(r.Context(), pr.User, id, liveTuneCaps(s.clientCaps(pr)), pr.SessionID)
 	if err != nil {
 		s.log.Warn("live tune response failed", append([]any{"channel", id, "client", pr.ClientID, "product", pr.Product}, frontend.DiagnoseLiveTV("tune", err).LogAttrs...)...)

@@ -40,7 +40,11 @@ func (s *Server) catalogBrowse(ctx context.Context, q frontend.BrowseQuery) (fro
 }
 
 func (s *Server) visibleTitles(u *frontend.User, ts []frontend.Title) []frontend.Title {
-	out := s.visibility().TitlesAllowed(u, ts)
+	return s.visibleTitlesWith(s.visibility(), u, ts)
+}
+
+func (s *Server) visibleTitlesWith(vis frontend.Visibility, u *frontend.User, ts []frontend.Title) []frontend.Title {
+	out := vis.TitlesAllowed(u, ts)
 	metaSrc := s.libraryMetadata()
 	if !s.needPlexRatingFilter(u) || metaSrc == nil {
 		return out
@@ -67,6 +71,33 @@ func (s *Server) titleAllowed(u *frontend.User, t *frontend.Title) bool {
 	return frontend.TitleAllowed(s.policy(), u, t) && s.plexMetaRatingAllowed(u, t)
 }
 
+func titleInSectionType(titleType, sectionType frontend.MediaType) bool {
+	switch sectionType {
+	case frontend.TypeMovie:
+		return titleType == frontend.TypeMovie
+	case frontend.TypeShow:
+		switch titleType {
+		case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
+			return true
+		}
+		return false
+	default:
+		return sectionType != "" && titleType == sectionType
+	}
+}
+
+func (s *Server) visibilityWithSectionFor(sectionFor func(frontend.MediaType) (int, bool)) frontend.Visibility {
+	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(),
+		SectionFor: sectionFor}
+	if s.catalog() != nil {
+		v.GetTitle = s.seriesTitle
+	}
+	if s.playback() != nil {
+		v.Sessions = s.playback().Sessions
+	}
+	return v
+}
+
 func (s *Server) visibility() frontend.Visibility {
 	// Resolve the published sections once per Visibility: title checks run
 	// for every row of a hub, and each section listing reads the published
@@ -76,7 +107,19 @@ func (s *Server) visibility() frontend.Visibility {
 	var movieOK, showOK bool
 	sectionFor := func(t frontend.MediaType) (int, bool) {
 		once.Do(func() {
-			for _, sec := range s.getSections() {
+			secs := s.getSections()
+			for _, sec := range secs {
+				if isKindSection(sec) {
+					continue
+				}
+				if !movieOK && sec.Type == frontend.TypeMovie {
+					movie, movieOK = sec, true
+				}
+				if !showOK && sec.Type == frontend.TypeShow {
+					show, showOK = sec, true
+				}
+			}
+			for _, sec := range secs {
 				if !movieOK && sec.Type == frontend.TypeMovie {
 					movie, movieOK = sec, true
 				}
@@ -91,20 +134,32 @@ func (s *Server) visibility() frontend.Visibility {
 		}
 		return movie.ID, movieOK
 	}
-	v := frontend.Visibility{Policy: s.policy(), FilterAvailable: s.filterAvailable(), JudgedOnFacts: s.judgedOnFacts(),
-		SectionFor: sectionFor}
-	if s.catalog() != nil {
-		v.GetTitle = s.seriesTitle
+	return s.visibilityWithSectionFor(sectionFor)
+}
+
+// sectionVisibility scopes visibility to one section's media type and library
+// authorization: titles of any other media type are rejected, and library
+// access is checked against sec.ID rather than the canonical section for that
+// media type.
+func (s *Server) sectionVisibility(sec Section) frontend.Visibility {
+	if sec.ID == 0 {
+		return s.visibility()
 	}
-	if s.playback() != nil {
-		v.Sessions = s.playback().Sessions
-	}
-	return v
+	return s.visibilityWithSectionFor(func(t frontend.MediaType) (int, bool) {
+		if titleInSectionType(t, sec.Type) {
+			return sec.ID, true
+		}
+		return 0, false
+	})
 }
 
 // openableTitles is the common row/detail admission decision. A pinned shelf
 // retains its availability cut, but never bypasses current authorization.
 func (s *Server) openableTitles(ctx context.Context, u *frontend.User, ts []frontend.Title, pinned bool) []frontend.Title {
+	return s.openableTitlesWith(ctx, s.visibility(), u, ts, pinned)
+}
+
+func (s *Server) openableTitlesWith(ctx context.Context, vis frontend.Visibility, u *frontend.User, ts []frontend.Title, pinned bool) []frontend.Title {
 	// Plugin items are authorized by the Experience when projected; the
 	// catalogue openability and built-in visibility checks do not know them,
 	// so keep them without those filters (spec §6.4).
@@ -123,14 +178,14 @@ func (s *Server) openableTitles(ctx context.Context, u *frontend.User, ts []fron
 		}
 	}
 	ts = catalog
-	ts = s.visibleTitles(u, ts)
+	ts = s.visibleTitlesWith(vis, u, ts)
 	ctx = s.withSeriesRows(ctx, u, ts)
 	if !pinned {
-		ts = s.availableForViewer(ctx, u, ts)
+		ts = vis.Available(ctx, u, ts)
 	}
 	for _, t := range ts {
 		_, admitted := shelfMember(ctx, t.Key)
-		if (admitted || s.admittedTitle(&t)) && s.playableTitle(ctx, u, &t) {
+		if (admitted || s.admittedTitle(&t)) && vis.Playable(ctx, u, &t) && s.plexMetaRatingAllowed(u, &t) {
 			out = append(out, t)
 		}
 	}

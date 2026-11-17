@@ -20,7 +20,6 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontend/kit/homefilter"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
@@ -33,6 +32,9 @@ type hubCtx struct {
 	// visible caps the rendered items of a hub whose candidate window is
 	// wider (section hubs assemble a stable window for later pages).
 	visible int
+	// renderSec stamps librarySection* for a scoped hub even when section == 0
+	// (e.g. Home per-directory rows that skip SQL shelfSnapshot pinning).
+	renderSec *Section
 }
 
 // hubSpec is a hub plus the PMS presentation details Ether generates for
@@ -113,8 +115,29 @@ func hubItemsKey(h frontend.Hub, hc hubCtx) string {
 }
 
 func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubCtx) model.Hub {
+	vis := s.visibility()
+	if hc.section != 0 && hs.ID != "home.continue" && hs.ID != "home.ondeck" && hs.ID != "continueWatching" {
+		if sec, ok := s.sectionByID(hc.section); ok {
+			vis = s.sectionVisibility(sec)
+			if hc.renderSec == nil {
+				hc.renderSec = &sec
+			}
+		}
+	}
+	return s.renderHubWithVisibility(ctx, pr, hs, hc, vis)
+}
+
+func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hubSpec, hc hubCtx, vis frontend.Visibility) model.Hub {
 	s.rememberHub(ctx, pr, hs, hc)
 	h := hs.Hub
+	renderSec := hc.renderSec
+	if h.ID == "home.continue" || h.ID == "home.ondeck" || h.ID == "continueWatching" {
+		renderSec = nil
+	} else if renderSec == nil && hc.section != 0 {
+		if sec, ok := s.sectionByID(hc.section); ok {
+			renderSec = &sec
+		}
+	}
 	if strings.HasPrefix(h.ID, "movie.recentlyviewed.") || strings.HasPrefix(h.ID, "tv.recentlyviewed.") {
 		if sec, ok := s.sectionFromHubID(h.ID); ok {
 			if measured, err := s.recentlyWatchedHub(ctx, pr, sec, max(len(h.Items), 1)); err == nil {
@@ -128,7 +151,7 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 			h.Items = loader.LoadRowFacts(ctx, h.Items)
 		}
 
-		return (s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: s.visibility(), PrioritizeAvailable: s.prioritizeAvailable(),
+		return (s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: vis, PrioritizeAvailable: s.prioritizeAvailable(),
 			SameDayUnavailable: func(ctx context.Context, t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) },
 		})).Items(ctx, pr.User, h)
 	}
@@ -152,7 +175,7 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 			sourceItems = sourceItems[:hc.visible]
 			h.More = true
 		}
-		return s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain})
+		return s.renderTitles(ctx, pr, sourceItems, renderOpts{media: true, state: hs.state, inSection: related, guids: related, detailEpisodes: !hs.plain, vis: &vis, section: renderSec})
 	}
 	var md []model.Metadata
 	generation := ""
@@ -172,7 +195,7 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 			selected, generation = s.shelfSnapshot(ctx, pr, h, hc, func() ([]frontend.Title, []model.Metadata) {
 				// Snapshot membership before decorating the visible page.
 				sourceItems = build()
-				members := s.openableTitles(withStoredPolicy(ctx), pr.User, sourceItems, shelfContainsAll(ctx, sourceItems))
+				members := s.openableTitlesWith(withStoredPolicy(ctx), vis, pr.User, sourceItems, shelfContainsAll(ctx, sourceItems))
 				identities := make([]model.Metadata, 0, len(members))
 				for _, title := range members {
 					identities = append(identities, model.Metadata{RatingKey: title.Key.String()})
@@ -180,7 +203,7 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 				return sourceItems, identities
 			})
 		}
-		selected = s.openableTitles(withShelfMembers(withStoredPolicy(ctx), selected), pr.User, selected, true)
+		selected = s.openableTitlesWith(withShelfMembers(withStoredPolicy(ctx), selected), vis, pr.User, selected, true)
 		if canonicalTotal != nil {
 			canonicalTotal = model.Ptr(len(selected))
 		}
@@ -190,7 +213,7 @@ func (s *Server) renderHub(ctx context.Context, pr *Request, hs hubSpec, hc hubC
 			selected = selected[:hc.visible]
 			h.More = true
 		}
-		md = s.renderTitles(withShelfMembers(ctx, selected), pr, selected, renderOpts{media: true, availabilityInSQL: true})
+		md = s.renderTitles(withShelfMembers(ctx, selected), pr, selected, renderOpts{media: true, availabilityInSQL: true, vis: &vis, section: renderSec})
 		// More is calculated from the canonical generation, not source hints.
 	} else {
 		md = render()
@@ -284,7 +307,7 @@ const (
 
 // continueHub builds a Continue Watching hub.
 func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec Section, count int) hubSpec {
-	// Continue Watching is PMS's On Deck, bounded by its OnDeckLimit: a
+	// Continue Watching is PMS's OnDeck, bounded by its OnDeckLimit: a
 	// row or page asking for more answers the whole bounded deck.
 	bounded := count >= plexOnDeckLimit
 	count = min(count, plexOnDeckLimit)
@@ -341,7 +364,14 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 			}
 		}
 	}
-	items = s.takeVisible(pr.User, items, count)
+	vis := s.visibility()
+	if sec.ID != 0 {
+		vis = s.sectionVisibility(sec)
+	}
+	items = s.visibleTitlesWith(vis, pr.User, items)
+	if count > 0 && len(items) > count {
+		items = items[:count]
+	}
 	hs := hubSpec{Hub: frontend.Hub{Title: "Continue Watching", Style: "hero", Promoted: true}, state: state}
 	switch v {
 	case cwHome:
@@ -369,7 +399,7 @@ func (s *Server) recentlyAddedHub(ctx context.Context, pr *Request, sec Section,
 }
 
 func (s *Server) recentlyAddedHubPage(ctx context.Context, pr *Request, sec Section, count int, noTotal bool) (hubSpec, error) {
-	recent := s.exp().NewRecent(frontend.RecentOptions{Visibility: s.visibility(), Unrestricted: func(u *frontend.User) bool { return !s.viewerRestricted(u) }})
+	recent := s.exp().NewRecent(frontend.RecentOptions{Visibility: s.sectionVisibility(sec), Unrestricted: func(u *frontend.User) bool { return !s.viewerRestricted(u) }})
 	items, more, err := recent.Added(ctx, pr.User, sec.Type, count, func(ctx context.Context, q frontend.BrowseQuery) (frontend.Page, error) {
 		q.NoTotal = noTotal
 		return s.catalogBrowse(ctx, q)
@@ -401,17 +431,30 @@ func parseSectionList(s string) []int {
 	return out
 }
 
-// hubInSections reports whether a hub's items belong to one of the
-// sections (mixed hubs always match).
+// hubInSections reports whether a hub's items belong to one of the sections.
 func (s *Server) hubInSections(h frontend.Hub, ids []int) bool {
-	if len(ids) == 0 || h.Type == "" {
+	if len(ids) == 0 {
 		return true
 	}
-	sec, ok := s.sectionFor(h.Type)
-	if !ok {
-		return true
+	for _, id := range ids {
+		sec, ok := s.sectionByID(id)
+		if !ok {
+			continue
+		}
+		if h.Type == "" {
+			if len(h.Items) == 0 {
+				return true
+			}
+			if _, ok := frontend.SectionView(h, sec.Type); ok {
+				return true
+			}
+			continue
+		}
+		if titleInSectionType(h.Type, sec.Type) {
+			return true
+		}
 	}
-	return containsInt(ids, sec.ID)
+	return false
 }
 
 func (s *Server) homeHubs(w http.ResponseWriter, r *http.Request, promotedOnly bool) {
@@ -424,48 +467,17 @@ func (s *Server) homeHubs(w http.ResponseWriter, r *http.Request, promotedOnly b
 }
 
 func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
+	if strings.TrimSpace(r.URL.Query().Get("contentDirectoryID")) != "" {
+		return s.buildScopedHomeHubs(r, promotedOnly)
+	}
 	ctx := withStoredPolicy(r.Context())
 	pr := FromContext(ctx)
 	q := r.URL.Query()
 	count := countParam(r, 12)
-	sections := parseSectionList(q.Get("contentDirectoryID"))
-	directory := strings.TrimSpace(q.Get("contentDirectoryID"))
-	perDirectory := directory != "" && !strings.Contains(directory, ",")
-	shelves := promotedOnly && perDirectory && directory != "playlists" && s.wantsCollectionShelves(pr)
-	pinned := q.Get("pinnedContentDirectoryID")
-	if shelves && strings.TrimSpace(pinned) == "" {
-		pinned = s.defaultPinnedDirectories(pr.User)
-	}
-	first := strings.TrimSpace(strings.Split(pinned, ",")[0])
-	if first == "" {
-		first = directory
-	}
-	var directorySection Section
-	if perDirectory && directory != "playlists" {
-		id, err := strconv.Atoi(directory)
-		var ok bool
-		if err == nil {
-			directorySection, ok = s.sectionByID(id)
-		}
-		if !ok || !s.canSeeSection(pr.User, id) {
-			return homeBuild{mc: hubContainer()}
-		}
-	}
 	hc := s.hubContext(pr, 0)
 	mc := hubContainer()
 	var hubs []frontend.Hub
-	var sharedDiscovery []frontend.Hub
-	if perDirectory {
-		var err error
-		var filter *homefilter.Snapshot
-		hubs, sharedDiscovery, filter, err = s.sharedHome(ctx, pr, hc, directory, pinned, s.saferFetchCount(pr.User, count), count)
-		if filter != nil {
-			ctx = homefilter.With(ctx, filter)
-		}
-		if err != nil {
-			s.log.Warn("home hubs", "err", err)
-		}
-	} else if s.recommender() != nil {
+	if s.recommender() != nil {
 		var err error
 		if hubs, err = s.recommendHome(ctx, pr, hc, s.saferFetchCount(pr.User, count)); err != nil {
 			s.log.Warn("home hubs", "err", err)
@@ -488,67 +500,24 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 			if hub.ID == "home.ondeck" && ondeckHub != nil {
 				return *ondeckHub
 			}
-			owner := first
-			if hub.ID == "home.playlists" {
-				owner = "playlists"
-			} else if sec := s.homeDirectoryForHub(hub.ID); sec != "" {
-				owner = sec
-			}
-			if perDirectory && owner != directory {
-				// The layout needs the same painted item count, but the client
-				// will never receive this row's expensive metadata projection.
-				items := (s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: s.visibility(), PrioritizeAvailable: s.prioritizeAvailable(),
-					SameDayUnavailable: func(ctx context.Context, t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) },
-				})).Items(ctx, pr.User, hub)
-				items = s.availableForViewer(ctx, pr.User, s.visibleTitles(pr.User, items))
-				typ := string(hub.Type)
-				if typ == "" {
-					typ = "mixed"
-				}
-				contextName := hub.Context
-				if contextName == "" {
-					contextName = "hub." + hub.ID
-				}
-				return model.Hub{HubIdentifier: hub.ID, Title: hub.Title, Type: typ, Context: contextName, Size: len(items)}
-			}
 			return s.renderHub(ctx, pr, hubSpec{Hub: hub}, hubCtx{})
 		},
 		Identity:    func(row model.Hub) string { return row.HubIdentifier },
 		Report:      homeLayoutFacts,
-		InLibraries: func(hub frontend.Hub) bool { return perDirectory || s.hubInSections(hub, sections) },
+		InLibraries: func(frontend.Hub) bool { return true },
 		Continue: func() (frontend.Hub, model.Hub) {
 			return cwHomeSpec.Hub, cwHomeRendered
 		},
 		Playlists: func() (model.Hub, bool) {
-			if q.Get("contentDirectoryID") != "" && q.Get("contentDirectoryID") != "playlists" {
-				return model.Hub{}, false
-			}
 			hub, _, ok := s.playlistsHubProjection(ctx, pr, count)
 			return hub, ok
 		},
 		Discovery: func() []frontend.Hub {
-			hubs := append([]frontend.Hub(nil), sharedDiscovery...)
-			if !perDirectory {
-				for _, spec := range s.discoveryHubs(ctx, pr, count) {
-					hubs = append(hubs, spec.Hub)
-				}
+			var disc []frontend.Hub
+			for _, spec := range s.discoveryHubs(ctx, pr, count) {
+				disc = append(disc, spec.Hub)
 			}
-			if perDirectory && directorySection.ID != 0 {
-				if spec, err := s.recentlyAddedHubPage(ctx, pr, directorySection, count, true); err == nil {
-					hubs = append(hubs, spec.Hub)
-				}
-				if s.recommender() != nil {
-					sectionHubs, err := s.recommendSection(ctx, pr, directorySection.Type, s.hubContext(pr, directorySection.ID), s.saferFetchCount(pr.User, count))
-					if err == nil {
-						for _, hub := range sectionHubs {
-							if s.homeDirectoryForHub(hub.ID) == directory {
-								hubs = append(hubs, hub)
-							}
-						}
-					}
-				}
-			}
-			return hubs
+			return disc
 		},
 		Live: func() (model.Hub, bool) {
 			hub, _ := s.liveTVHubProjection(r)
@@ -562,37 +531,8 @@ func (s *Server) buildHomeHubs(r *http.Request, promotedOnly bool) homeBuild {
 			return s.arrangeHomeRows(ctx, pr, hc, "home", rows, hubs, neutral)
 		},
 	}
-	rows, served := assembly.Rows(hubs, includeContinue, promotedOnly, len(sections) == 0 || perDirectory, frontend.HomePurpose)
-	if perDirectory {
-		var filtered []model.Hub
-		for _, row := range rows {
-			owner := first
-			if row.HubIdentifier == "home.playlists" {
-				owner = "playlists"
-			} else if section := s.homeDirectoryForHub(row.HubIdentifier); section != "" {
-				owner = section
-			}
-			if owner == directory {
-				if row.HubIdentifier != "home.continue" && strings.EqualFold(row.Style, "hero") {
-					row.Style = "shelf"
-				}
-				filtered = append(filtered, row)
-			}
-		}
-		mc.Hub = stableHomeHubs(filtered)
-		if shelves {
-			var renamed map[string]shelfRef
-			mc.Hub, renamed = collectionShelves(mc.Hub, directorySection.ID)
-			s.rememberShelves(renamed)
-			for id, ref := range renamed {
-				if h, ok := served[ref.hub]; ok {
-					served[id] = h
-				}
-			}
-		}
-	} else {
-		mc.Hub = heroReadyHomeHubs(stableHomeHubs(rows))
-	}
+	rows, served := assembly.Rows(hubs, includeContinue, promotedOnly, true, frontend.HomePurpose)
+	mc.Hub = heroReadyHomeHubs(stableHomeHubs(rows))
 	mc.Size = len(mc.Hub)
 	return homeBuild{mc: mc, served: served, provisional: provisional}
 }
@@ -606,24 +546,6 @@ func hasRecommendedRows(hubs []frontend.Hub) bool {
 		}
 	}
 	return false
-}
-
-// Library hub namespaces identify their source independently of the request.
-// Everything else belongs to the first pinned directory.
-func (s *Server) homeDirectoryForHub(id string) string {
-	var typ frontend.MediaType
-	switch {
-	case strings.HasPrefix(id, "movie."):
-		typ = frontend.TypeMovie
-	case strings.HasPrefix(id, "tv."):
-		typ = frontend.TypeShow
-	default:
-		return ""
-	}
-	if sec, ok := s.sectionFor(typ); ok {
-		return strconv.Itoa(sec.ID)
-	}
-	return ""
 }
 
 // hubContext is the personalization context of a hubs request: the
@@ -645,6 +567,10 @@ func (s *Server) recommendHome(ctx context.Context, pr *Request, hc frontend.Hub
 
 func (s *Server) recommendSection(ctx context.Context, pr *Request, t frontend.MediaType, hc frontend.HubContext, count int) ([]frontend.Hub, error) {
 	return (s.exp().NewHomeSelection(frontend.HomeSelectionOptions{Source: s.recommender(), Visibility: s.visibility(), Restricted: s.viewerRestricted(pr.User)})).Rows(ctx, pr.User, hc, t, count)
+}
+
+func (s *Server) recommendSectionFor(ctx context.Context, pr *Request, sec Section, hc frontend.HubContext, count int) ([]frontend.Hub, error) {
+	return (s.exp().NewHomeSelection(frontend.HomeSelectionOptions{Source: s.recommender(), Visibility: s.sectionVisibility(sec), Restricted: s.viewerRestricted(pr.User)})).Rows(ctx, pr.User, hc, sec.Type, count)
 }
 
 // warmBrowseLink opens at most one already-visible playable after the hub
@@ -811,10 +737,9 @@ func (s *Server) handleContinueWatching(w http.ResponseWriter, r *http.Request) 
 		// page limit so unavailable entries cannot displace visible items.
 		spec.Items = s.availableForViewer(ctx, pr.User, spec.Items)
 		if sec.ID != 0 {
-			sectionFor := s.visibility().SectionFor // resolves the sections once
 			items := make([]frontend.Title, 0, len(spec.Items))
 			for _, title := range spec.Items {
-				if id, ok := sectionFor(title.Type); ok && id == sec.ID {
+				if !isKindSection(sec) && titleInSectionType(title.Type, sec.Type) {
 					items = append(items, title)
 				}
 			}
@@ -904,92 +829,6 @@ func (s *Server) handleContinueWatchingItems(w http.ResponseWriter, r *http.Requ
 	s.write(w, r, mc)
 }
 
-func (s *Server) handleSectionHubs(w http.ResponseWriter, r *http.Request) {
-	sec, ok := s.sectionParam(w, r)
-	if !ok {
-		return
-	}
-	s.serveHome(w, r, "hubs/sections/"+strconv.Itoa(sec.ID), func(_ context.Context, r *http.Request) homeBuild { return s.buildSectionHubs(r, sec) })
-}
-
-func (s *Server) buildSectionHubs(r *http.Request, sec Section) homeBuild {
-	batch := &shelfBatch{}
-	ctx := withStoredPolicy(context.WithValue(r.Context(), shelfBatchKey{}, batch))
-	defer func() { s.enqueueShelves(batch.records) }()
-	pr := FromContext(ctx)
-	visibleCount := countParam(r, 12)
-	count := 200
-	mc := hubContainer()
-	mc.LibrarySectionID = model.Ptr(sec.ID)
-	mc.LibrarySectionTitle = sec.Title
-	mc.LibrarySectionUUID = sec.UUID
-	hc := hubCtx{section: sec.ID, visible: visibleCount}
-	pc := s.hubContext(pr, sec.ID)
-	served := map[string]frontend.Hub{}
-	var layoutHubs []frontend.Hub
-	var layoutNeutral []frontend.NeutralHomeRow
-	add := func(hs hubSpec) {
-		mh := s.renderHub(ctx, pr, hs, hc)
-		mc.Hub = append(mc.Hub, mh)
-		hub, neutral := homeLayoutFacts(mh)
-		layoutHubs = append(layoutHubs, hub)
-		layoutNeutral = append(layoutNeutral, neutral)
-		served[mh.HubIdentifier] = hs.Hub
-	}
-	add(s.continueHub(ctx, pr, cwSection, sec, visibleCount))
-	if ra, err := s.recentlyAddedHub(ctx, pr, sec, count); err == nil {
-		add(ra)
-	} else {
-		s.log.Warn("recently added hub", "section", sec.ID, "err", err)
-	}
-	var sectionPlaylist *model.Hub
-	if r.URL.Query().Get("includeLibraryPlaylists") == "1" {
-		if h, ok := s.sectionPlaylistsHub(ctx, pr, sec.ID, visibleCount); ok {
-			sectionPlaylist = &h
-		}
-	}
-	provisional := false
-	if s.recommender() != nil {
-		hubs, err := s.recommendSection(ctx, pr, sec.Type, pc, s.saferFetchCount(pr.User, count))
-		if err != nil {
-			s.log.Warn("section hubs", "section", sec.ID, "err", err)
-		}
-		provisional = !hasRecommendedRows(hubs)
-		for _, h := range hubs {
-			add(hubSpec{Hub: h})
-		}
-	}
-	// Mixed discovery rows (watchlist, Rediscover) keep this section's
-	// titles.
-	for _, hs := range s.discoveryHubs(ctx, pr, count) {
-		if h, ok := frontend.SectionView(hs.Hub, sec.Type); ok {
-			hs.Hub = h
-			add(hs)
-		}
-	}
-	sectionName := "movies"
-	if sec.Type == frontend.TypeShow {
-		sectionName = "shows"
-	}
-	mc.Hub = stableHomeHubs(s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral))
-	if sectionPlaylist != nil {
-		at := 0
-		for i, h := range mc.Hub {
-			if strings.Contains(h.HubIdentifier, ".recentlyadded.") {
-				at = i + 1
-				break
-			}
-		}
-		mc.Hub = append(mc.Hub, model.Hub{})
-		copy(mc.Hub[at+1:], mc.Hub[at:])
-		mc.Hub[at] = *sectionPlaylist
-	}
-
-	s.log.Debug("section hubs rendered", "section", sec.ID, "user", pr.User.ID, "count", count, "rows", len(mc.Hub))
-	mc.Size = len(mc.Hub)
-	return homeBuild{mc: mc, served: served, section: sec.ID, provisional: provisional}
-}
-
 // handleHubItems is /hubs/items?identifier=...: one hub with more items.
 func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1006,16 +845,22 @@ func (s *Server) handleHubItems(w http.ResponseWriter, r *http.Request) {
 		count = 200
 	}
 	mc := hubContainer()
-	sections := parseSectionList(q.Get("contentDirectoryID"))
-	if hs, ok := s.findHub(ctx, pr, id, sections, q.Get("metadataID"), count); ok {
-		hc := hubCtx{}
-		if len(sections) == 1 {
-			hc.section = sections[0]
+	rawDir := strings.TrimSpace(q.Get("contentDirectoryID"))
+	sections := parseSectionList(rawDir)
+	if rawDir != "" {
+		sections = s.allowedSectionIDs(pr.User, sections)
+	}
+	if (rawDir == "" || len(sections) > 0) && id != "" {
+		if hs, ok := s.findHub(ctx, pr, id, sections, q.Get("metadataID"), count); ok {
+			hc := hubCtx{}
+			if len(sections) == 1 {
+				hc.section = sections[0]
+			}
+			if k, err := frontend.ParseRatingKey(q.Get("metadataID")); err == nil {
+				hc.related = k
+			}
+			mc.Metadata = s.renderHub(ctx, pr, hs, hc).Metadata
 		}
-		if k, err := frontend.ParseRatingKey(q.Get("metadataID")); err == nil {
-			hc.related = k
-		}
-		mc.Metadata = s.renderHub(ctx, pr, hs, hc).Metadata
 	}
 	total := len(mc.Metadata)
 	start := min(max(pr.Start, 0), total)
@@ -1087,19 +932,29 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		(remembered.related == 0 || (metadataID == "" || metadataID == remembered.related.String()) && s.relatedSourceVisible(ctx, pr, remembered.related)) {
 		return remembered.spec, true
 	}
-	for _, h := range s.discoveryHubs(ctx, pr, count) {
-		if h.ID != id || !s.hubInSections(h.Hub, sections) {
-			continue
+	candidates := s.candidateHubIDs(id, sections)
+	singleKindSection := false
+	if len(sections) == 1 {
+		if sec, ok := s.sectionByID(sections[0]); ok && isKindSection(sec) {
+			singleKindSection = true
 		}
-		if len(sections) == 1 {
-			// A section's copy of a mixed row ("More" from a library).
-			if sec, ok := s.sectionByID(sections[0]); ok {
-				if v, ok := frontend.SectionView(h.Hub, sec.Type); ok {
-					h.Hub = v
+	}
+	if !singleKindSection {
+		for _, h := range s.discoveryHubs(ctx, pr, count) {
+			if !matchHubID(h.ID, candidates) || !s.hubInSections(h.Hub, sections) {
+				continue
+			}
+			if len(sections) == 1 {
+				// A section's copy of a mixed row ("More" from a library).
+				if sec, ok := s.sectionByID(sections[0]); ok {
+					if v, ok := frontend.SectionView(h.Hub, sec.Type); ok {
+						h.Hub = v
+					}
 				}
 			}
+			h.ID = id
+			return h, true
 		}
-		return h, true
 	}
 	if s.recommender() == nil {
 		return hubSpec{}, false
@@ -1124,10 +979,16 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		if len(sections) > 0 && !containsInt(sections, sec.ID) {
 			continue
 		}
-		if hubs, err := s.recommendSection(ctx, pr, sec.Type, s.hubContext(pr, sec.ID), count); err == nil {
+		if !isVideoSection(sec) {
+			continue
+		}
+		if hubs, err := s.recommendSectionFor(ctx, pr, sec, s.hubContext(pr, sec.ID), count); err == nil {
 			for _, h := range hubs {
-				if h.ID == id {
-					return hubSpec{Hub: h}, true
+				if matchHubID(h.ID, candidates) {
+					if view, ok := frontend.SectionView(h, sec.Type); ok {
+						view.ID = id
+						return hubSpec{Hub: view}, true
+					}
 				}
 			}
 		}
@@ -1137,8 +998,20 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		if len(sections) == 1 {
 			secID = sections[0]
 		}
-		if h, ok := src.HubItemsFor(ctx, pr.User, s.hubContext(pr, secID), id, count); ok && s.hubInSections(h, sections) {
-			return hubSpec{Hub: h}, true
+		for _, candID := range candidates {
+			if h, ok := src.HubItemsFor(ctx, pr.User, s.hubContext(pr, secID), candID, count); ok && s.hubInSections(h, sections) {
+				if len(sections) == 1 {
+					if sec, ok := s.sectionByID(sections[0]); ok {
+						if view, ok := frontend.SectionView(h, sec.Type); ok {
+							h = view
+						} else {
+							continue
+						}
+					}
+				}
+				h.ID = id
+				return hubSpec{Hub: h}, true
+			}
 		}
 	}
 	return hubSpec{}, false

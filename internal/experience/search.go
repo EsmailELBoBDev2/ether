@@ -15,7 +15,8 @@ import (
 const (
 	// DescriptiveSearchWaitBound caps how long a live search request waits for
 	// AI descriptive results before returning partial AI or keyword results.
-	DescriptiveSearchWaitBound = 10 * time.Second
+	// Production models answer a new query in about 12-15 s; 10 s missed them.
+	DescriptiveSearchWaitBound = 20 * time.Second
 	// DescriptiveSearchSettleDelay holds an uncached descriptive query briefly
 	// so search-as-you-type prefixes are superseded before starting an AI job.
 	DescriptiveSearchSettleDelay = 200 * time.Millisecond

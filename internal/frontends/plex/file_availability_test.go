@@ -235,3 +235,40 @@ func TestBatchedFileChecksDoNotSearch(t *testing.T) {
 		t.Fatalf("single-title checkFiles did not probe: resolves=%d opens=%d", resolves.Load(), engine.opens.Load())
 	}
 }
+
+// Monitoring and library tools (Tautulli, Tracearr, Kometa, python-plexapi
+// scripts) read single titles too, for live sessions, notifications and
+// their own UIs. Those reads never start a search, a source probe or
+// version discovery, whatever the options.
+func TestLibraryToolReadsDoNotSearch(t *testing.T) {
+	for _, product := range []string{"Tautulli", "Tracearr", "Kometa", "PlexAPI"} {
+		t.Run(product, func(t *testing.T) {
+			f := newFixture(func(d *testServerDeps) { d.DisableEnrichment = true })
+			engine := &fileProbeEngine{}
+			resolves := &atomic.Int32{}
+			m := fileProbeManager(t, f, countingProbeResolver{fileProbeResolver{releases: []string{"checked"}}, resolves}, engine)
+			f.srv.setPlayback(m)
+			defer f.srv.Close()
+			defer m.Close()
+			r := f.get(t, "/library/metadata/"+fightClub.Key.String()+"?checkFiles=1", append([]string{"X-Plex-Product", product}, jsonAccept...)...)
+			if r.Code != 200 {
+				t.Fatalf("%d %s", r.Code, r.Body.String())
+			}
+			part := decodeJSON(t, r)["Metadata"].([]any)[0].(map[string]any)["Media"].([]any)[0].(map[string]any)["Part"].([]any)[0].(map[string]any)
+			if part["exists"] != true || part["accessible"] != true {
+				t.Fatalf("part exists=%v accessible=%v, want available", part["exists"], part["accessible"])
+			}
+			if resolves.Load() != 0 || engine.opens.Load() != 0 {
+				t.Fatalf("library tool read searched: resolves=%d opens=%d", resolves.Load(), engine.opens.Load())
+			}
+			if f.srv.detailSearchAllowed(&Request{Product: product}) {
+				t.Fatal("library tool allowed detail version discovery")
+			}
+		})
+	}
+	for _, product := range []string{"Plex Web", "Plex for Android (TV)", "Plex HTPC", ""} {
+		if libraryToolClient(&Request{Product: product}) {
+			t.Fatalf("player %q classified as a library tool", product)
+		}
+	}
+}

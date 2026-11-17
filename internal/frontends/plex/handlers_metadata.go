@@ -430,7 +430,7 @@ func startDetailPageWait(pr *Request) {
 // yet, so the first detail/season/show open renders the file's real audio and
 // subtitle tracks instead of an estimate.
 func (s *Server) warmDetail(ctx context.Context, pr *Request, t *frontend.Title) {
-	if t == nil || !isPlayable(t.Type) || s.playback() == nil {
+	if t == nil || !isPlayable(t.Type) || s.playback() == nil || libraryToolClient(pr) {
 		return
 	}
 	// A persisted probe describes the exact resume release already selected
@@ -1328,6 +1328,10 @@ func (s *Server) probeDetailTracks(ctx context.Context, pr *Request, t *frontend
 // the required probe nor version discovery may start a fresh indexer search.
 // Other clients retain their existing discovery policy.
 func (s *Server) detailSearchAllowed(pr *Request) bool {
+	if libraryToolClient(pr) {
+		// A monitoring or library tool reading metadata is not a viewer.
+		return false
+	}
 	if !plexMobileOrTVBedrockClient(pr) {
 		return true
 	}
@@ -1338,7 +1342,7 @@ func (s *Server) detailSearchAllowed(pr *Request) bool {
 // Detail-family GETs schedule preparation. Flagged Plex clients retain their
 // bounded cached-source probe exception so their first subtitle picker works.
 func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *frontend.Title) {
-	if t == nil || pr == nil || pr.User == nil || !isPlayable(t.Type) {
+	if t == nil || pr == nil || pr.User == nil || !isPlayable(t.Type) || libraryToolClient(pr) {
 		return
 	}
 	// Persisted tracks already describe the selected resume source. Version

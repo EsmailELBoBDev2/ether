@@ -64,18 +64,18 @@ func (s *Server) projectFileAvailability(r *http.Request, mc *model.MediaContain
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg().Plex.FileCheckTimeoutOrDefault())
 	defer cancel()
-	if len(mc.Metadata) > 1 {
+	pr := FromContext(ctx)
+	if len(mc.Metadata) > 1 || libraryToolClient(pr) {
 		// Plex apps ask checkFiles for the one detail page a viewer opened.
-		// A batched lookup (/library/metadata/1,2,…?checkFiles=1) comes from
-		// a library tool reconciling its catalogue (Tracearr, for instance,
-		// checks 100 rating keys per request across the whole library). A
-		// warm-up search per title would spend each indexer's background
-		// share in minutes, so batches get local verdicts only: a blocked
-		// release or remembered source still answers, anything else is no
-		// verdict and the Part stays available.
+		// A batched lookup (/library/metadata/1,2,…?checkFiles=1), or any
+		// lookup from a monitoring or library tool, reconciles a catalogue
+		// instead (Tracearr, for instance, checks 100 rating keys per request
+		// across the whole library). A warm-up search per title would spend
+		// each indexer's background share in minutes, so these get local
+		// verdicts only: a blocked release or remembered source still
+		// answers, anything else is no verdict and the Part stays available.
 		ctx = frontend.WithLocalResponse(ctx)
 	}
-	pr := FromContext(ctx)
 	caps := s.clientCaps(pr)
 	verdicts := make([]*bool, len(order)) // nil: no verdict
 	slots := make(chan struct{}, fileCheckParallel)

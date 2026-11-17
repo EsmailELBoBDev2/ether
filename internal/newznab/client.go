@@ -1202,13 +1202,15 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 	// a single round-trip instead of N serial timeouts. An indexer with a
 	// personal cap tries them one at a time and stops at the first hit.
 	if c.Config().DailyLimit == 0 && firstErr == nil {
-		const burstWidth = 4
-		for base := 0; base < len(rest); base += burstWidth {
+		const maxBurstWidth = 4
+		for base := 0; base < len(rest); {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			end := min(base+burstWidth, len(rest))
+			width := c.br.burstLimit(maxBurstWidth)
+			end := min(base+width, len(rest))
 			batch := rest[base:end]
+			base = end
 			type outSlot struct {
 				res []core.Release
 				err error
@@ -1454,36 +1456,56 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	var firstErr error
 	// As for Search: a capped indexer's rescue goes one query at a time.
 	if c.Config().DailyLimit == 0 {
-		type slot struct {
-			res []core.Release
-			err error
-		}
-		slots := make([]slot, len(attempts))
-		var wg sync.WaitGroup
-		for i, p := range attempts {
-			wg.Add(1)
-			go func(i int, p url.Values) {
-				defer wg.Done()
-				slots[i].res, slots[i].err = c.doSearch(ctx, p, id)
-			}(i, p)
-		}
-		wg.Wait()
-		for _, s := range slots {
-			if s.err != nil {
-				if firstErr == nil {
-					firstErr = s.err
-				}
-				continue
+		for base := 0; base < len(attempts); {
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-			for _, r := range s.res {
-				k := r.ID
-				if r.InfoHash != "" {
-					k = r.InfoHash
+			width := c.br.burstLimit(len(attempts))
+			end := min(base+width, len(attempts))
+			batch := attempts[base:end]
+			base = end
+			type slot struct {
+				res []core.Release
+				err error
+			}
+			slots := make([]slot, len(batch))
+			var wg sync.WaitGroup
+			for i, p := range batch {
+				wg.Add(1)
+				go func(i int, p url.Values) {
+					defer wg.Done()
+					slots[i].res, slots[i].err = c.doSearch(ctx, p, id)
+				}(i, p)
+			}
+			wg.Wait()
+			var budgetErr error
+			down := false
+			for _, s := range slots {
+				if s.err != nil {
+					if errors.Is(s.err, core.ErrBudgetExhausted) && budgetErr == nil {
+						budgetErr = s.err
+					} else if firstErr == nil {
+						firstErr = s.err
+					}
+					down = down || transientFailure(s.err)
+					continue
 				}
-				if !seen[k] {
-					seen[k] = true
-					merged = append(merged, r)
+				for _, r := range s.res {
+					k := r.ID
+					if r.InfoHash != "" {
+						k = r.InfoHash
+					}
+					if !seen[k] {
+						seen[k] = true
+						merged = append(merged, r)
+					}
 				}
+			}
+			if budgetErr != nil || down {
+				if firstErr == nil {
+					firstErr = budgetErr
+				}
+				break
 			}
 		}
 	} else {

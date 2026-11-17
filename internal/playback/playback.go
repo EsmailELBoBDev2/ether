@@ -79,6 +79,9 @@ type Deps struct {
 	// held and written later, and admission skips the cluster-wide check
 	// while the database is down (failing open) instead of waiting on it.
 	Availability *store.Availability
+	// SeasonRevealer, when set, checks an in-progress TV season in the
+	// background for streaming-dropped episodes on non-burst detail opens.
+	SeasonRevealer func(core.RatingKey)
 }
 
 // Options tune the manager. Zero values take the defaults noted.

@@ -835,6 +835,64 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	return nil, errors.Join(errs...)
 }
 
+// CachedPackMatcher inspects a cached season-pack torrent once and returns a
+// matcher reporting which episode targets exist in its file list, plus
+// definitive=true when the configured providers gave a conclusive answer.
+func (s *Service) CachedPackMatcher(ctx context.Context, rel core.Release) (func(*core.ReleaseTarget) bool, bool) {
+	if s == nil {
+		return nil, false
+	}
+	entries := s.active()
+	if len(entries) == 0 {
+		return nil, false
+	}
+	hash := strings.ToLower(rel.InfoHash)
+	if hash == "" {
+		return nil, true
+	}
+	magnet := rel.MagnetURL
+	if magnet == "" {
+		magnet = "magnet:?xt=urn:btih:" + hash
+	}
+	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Release: rel.Name}
+	definitive := true
+	for _, e := range entries {
+		if e.blocked(s.now()) != nil {
+			definitive = false
+			continue
+		}
+		if cached, ok, _ := s.knownFor(ctx, e.cfg.ID, hash); ok && !cached {
+			continue
+		}
+		var captured []File
+		choose := func(files []File) (File, error) {
+			captured = slices.Clone(files)
+			return ChooseFile(files, nil)
+		}
+		_, err := s.acquireOn(ctx, e, base, choose, false)
+		if err == nil && len(captured) > 0 {
+			files := captured
+			return func(target *core.ReleaseTarget) bool {
+				if target == nil {
+					return false
+				}
+				_, err := ChooseFile(files, target)
+				return err == nil
+			}, true
+		}
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		switch {
+		case errors.Is(err, core.ErrNotCached) && !errors.Is(err, core.ErrDownloadLimit):
+		case errors.Is(err, ErrBlocked), errors.Is(err, core.ErrReleaseRejected):
+		default:
+			definitive = false
+		}
+	}
+	return nil, definitive
+}
+
 // queuedTTL is how long a title's queued download stands for the title: other
 // releases of it are not sent as well.
 const queuedTTL = 6 * time.Hour

@@ -631,7 +631,12 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if a.cfg != nil {
 		detail.enabled = func() bool { return a.cfg.Read().Personalize.MicroReasons }
 	}
-	return &surfaceExperience{Service: service, receipts: receipts, protocol: protocol, artwork: artworkSource, pluginLibs: deps.PluginLibraries, active: a.users.ActiveUser, rowViews: rowViews, detail: detail, generation: func(ctx context.Context) (int64, error) {
+	return &surfaceExperience{Service: service, receipts: receipts, protocol: protocol, artwork: artworkSource, pluginLibs: deps.PluginLibraries, active: a.users.ActiveUser, rowViews: rowViews, revealDetail: func(viewer *core.Viewer, device core.Device, key core.RatingKey) {
+		if a.playback == nil || viewer == nil {
+			return
+		}
+		a.playback.RevealDetail(&core.User{ID: viewer.ID}, device.ID, key)
+	}, detail: detail, generation: func(ctx context.Context) (int64, error) {
 		gen, err := viewerpolicy.Read(ctx, a.db)
 		if err != nil || stepAside == nil {
 			return gen, err
@@ -698,23 +703,24 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 
 type surfaceExperience struct {
 	*experience.Service
-	receipts    *experience.Receipts
-	protocol    core.Protocol
-	artwork     frontend.Artwork
-	pluginLibs  experience.PluginLibraries
-	active      func(context.Context, int64) (*core.User, error)
-	rowViews    *experience.RowViewService
-	playability func(context.Context, frontend.ItemRequest) *bool
-	detail      detailPersonalization
-	generation  func(context.Context) (int64, error)
-	catalogGen  func() uint64
-	rowGen      func() uint64
-	posters     func(context.Context, core.MediaType, int) ([]core.Title, error)
-	modelReady  func(int64) bool
-	rowMu       sync.Mutex
-	rowCache    map[string]rowCacheSlot
-	collageMu   sync.Mutex
-	collage     map[string]collageSlot
+	receipts     *experience.Receipts
+	protocol     core.Protocol
+	artwork      frontend.Artwork
+	pluginLibs   experience.PluginLibraries
+	active       func(context.Context, int64) (*core.User, error)
+	rowViews     *experience.RowViewService
+	revealDetail func(*core.Viewer, core.Device, core.RatingKey)
+	playability  func(context.Context, frontend.ItemRequest) *bool
+	detail       detailPersonalization
+	generation   func(context.Context) (int64, error)
+	catalogGen   func() uint64
+	rowGen       func() uint64
+	posters      func(context.Context, core.MediaType, int) ([]core.Title, error)
+	modelReady   func(int64) bool
+	rowMu        sync.Mutex
+	rowCache     map[string]rowCacheSlot
+	collageMu    sync.Mutex
+	collage      map[string]collageSlot
 	// Public (unauthenticated) title artwork: the active-user snapshot
 	// and per-item intersection verdicts, cached per policy epoch.
 	publicUsers func(context.Context) ([]core.User, error)
@@ -1051,6 +1057,9 @@ func (s *surfaceExperience) Item(ctx context.Context, req frontend.ItemRequest) 
 	if err != nil || req.Key.IsPluginKey() || detail.Title.Key.IsPluginKey() {
 		return detail, err
 	}
+	if s.revealDetail != nil && core.ColdDetail(ctx, req.Key) {
+		s.revealDetail(req.Viewer, req.Device, detail.Title.Key)
+	}
 	if detail.Title.Key != 0 && s.playability != nil {
 		if detail.Title.Type == core.TypeShow || detail.Title.Type == core.TypeSeason {
 			playable := false
@@ -1265,6 +1274,13 @@ func (s *surfaceExperience) Children(ctx context.Context, viewer *core.Viewer, d
 	page, err := s.Service.Children(ctx, viewer, device, key, query)
 	if err == nil {
 		s.warmArtwork(page.Items, device)
+		target := key
+		if query.Season != nil && key.Kind() == core.KindShow {
+			target = core.SeasonKey(key.TMDB(), *query.Season)
+		}
+		if s.revealDetail != nil && !target.IsPluginKey() && core.ColdDetail(ctx, target) {
+			s.revealDetail(viewer, device, target)
+		}
 	}
 	return page, err
 }

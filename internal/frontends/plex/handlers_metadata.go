@@ -263,6 +263,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if len(keys) == 1 {
 				// Live session intent (#32): a single-item detail open.
 				s.recordDetailIntent(ctx, pr, t)
+				s.revealDetail(pr, t)
 			}
 			// renderTitles uses verified cached GUIDs and queues missing identities.
 			// Remote identity enrichment must not hold detail or Play requests.
@@ -533,6 +534,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		s.writeKindChildren(w, r, pr, parent, kids)
 		return
 	}
+	s.revealDetail(pr, parent)
 	mc := s.itemContainer(parent.Type)
 	mc.Key = parent.Key.String()
 	mc.Nocache = model.Ptr(true)
@@ -700,6 +702,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
+	s.revealDetail(pr, parent)
 	var eps []frontend.Title
 	switch parent.Type {
 	case frontend.TypeShow:
@@ -1367,5 +1370,19 @@ func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *fronten
 	}
 	if warm, ok := s.playback().(frontend.Prewarmer); ok {
 		warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
+	}
+}
+
+func (s *Server) revealDetail(pr *Request, t *frontend.Title) {
+	if t == nil || pr == nil || pr.User == nil || t.Key.IsPluginKey() || libraryToolClient(pr) {
+		return
+	}
+	switch t.Type {
+	case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
+	default:
+		return
+	}
+	if dr, ok := s.playback().(frontend.DetailRevealer); ok {
+		dr.RevealDetail(pr.User, pr.ClientID, t.Key)
 	}
 }

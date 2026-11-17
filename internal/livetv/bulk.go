@@ -78,6 +78,13 @@ func (s *Service) UpdateChannels(ctx context.Context, change ChannelBatch) (int,
 	if ids[0] == "" {
 		return 0, fmt.Errorf("channel id is required")
 	}
+	// Read the owner-group index before opening the transaction: it uses
+	// the pool, and on a single-connection database a pool read inside the
+	// transaction waits for the transaction forever.
+	var groupIdx *ownerGroupIndex
+	if apps {
+		groupIdx, _ = s.cachedOwnerGroupIndex(ctx)
+	}
 	tx, err := s.o.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -90,7 +97,6 @@ func (s *Service) UpdateChannels(ctx context.Context, change ChannelBatch) (int,
 	// channel's current list, everything else is shared.
 	groups := map[string][]string{}
 	if apps {
-		groupIdx, _ := s.cachedOwnerGroupIndex(ctx)
 		current, err := channelAppOverrides(ctx, store.DialectOf(s.o.DB), tx, ids)
 		if err != nil {
 			return 0, err

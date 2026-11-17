@@ -208,6 +208,8 @@ probe found.
 NVENC: use the NVIDIA container toolkit flags shown in
 `docker-compose.example.yml`.
 
+Health check: the image includes a built-in Docker `HEALTHCHECK` (`ether healthcheck`) that probes the local `/ether/api/health` endpoint on the configured port without authentication.
+
 ## From a tarball/zip (any OS)
 
 Release archives contain `ether`, the tray (Linux/Windows), `ffmpeg` and

@@ -19,6 +19,7 @@ import {
   JellyfinMark,
   PlexMark,
   SiloMark,
+  VelaMark,
 } from "../../components/integration-brands";
 import { StremioMark } from "../sources/marks";
 import { MoreOptions } from "../../components/ConfigSection";
@@ -111,6 +112,8 @@ function appLogo(id: string): ReactNode | undefined {
       return <EmbyMark />;
     case "silo":
       return <SiloMark />;
+    case "vela":
+      return <VelaMark />;
     case "stremio":
       return <StremioMark />;
     default:

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/langtag"
+	"github.com/braedonsaunders/ether/internal/newznab"
 )
 
 // LoginLock serialises logins for one key across every Ether node sharing
@@ -42,15 +43,16 @@ type Runner struct {
 
 // runnerOptions carries a Runner's dependencies.
 type runnerOptions struct {
-	IndexerID  string
-	SiteLink   string
-	Settings   map[string]string
-	HTTPClient *http.Client
-	FlareURL   func() string
-	Sessions   *sessionStore
-	Lock       LoginLock
-	Logger     *slog.Logger
-	Now        func() time.Time
+	IndexerID   string
+	SiteLink    string
+	Settings    map[string]string
+	HTTPClient  *http.Client
+	FlareURL    func() string
+	Sessions    *sessionStore
+	Lock        LoginLock
+	Logger      *slog.Logger
+	Now         func() time.Time
+	HostLimiter *newznab.HostLimiter
 	// Language is the owner's per-indexer Release language override; empty
 	// leaves the definition's own `language` in force (see Runner.language).
 	Language string
@@ -84,6 +86,7 @@ func newRunner(def *Definition, o runnerOptions) (*Runner, error) {
 		r.id = def.ID
 	}
 	r.http = newHTTPSession(def, o.HTTPClient, o.FlareURL, o.Logger)
+	r.http.hosts = o.HostLimiter
 	return r, nil
 }
 

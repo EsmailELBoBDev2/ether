@@ -142,26 +142,35 @@ func transientFailure(err error) bool {
 	return errors.As(err, &ne)
 }
 
-// guardSearch runs one search request through the breaker. adaptive applies
-// the adaptive timeout under ceiling (Newznab/Torznab HTTP requests; a
-// backend's own sessions and challenge solving keep their timeouts).
-func (c *Client) guardSearch(ctx context.Context, adaptive bool, ceiling time.Duration, do func(context.Context) ([]core.Release, error)) ([]core.Release, error) {
+// guardSearch runs one search request through the breaker and per-host
+// concurrency limiter. Local host-queue wait is excluded from both the
+// adaptive timeout and p95 latency sampling. adaptive applies the adaptive
+// timeout under ceiling (Newznab/Torznab HTTP requests; a backend's own
+// sessions and challenge solving keep their timeouts).
+func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool, ceiling time.Duration, do func(context.Context) ([]core.Release, error)) ([]core.Release, error) {
 	trial, err := c.br.admit(c.now())
 	if err != nil {
 		return nil, fmt.Errorf("indexer %q: %w", c.Name(), err)
 	}
-	rctx := ctx
+	hctx, releaseHost, err := c.acquireHost(ctx, hostURL)
+	if err != nil {
+		c.br.neutral(trial)
+		return nil, err
+	}
+	defer releaseHost()
+	rctx := hctx
 	var limit time.Duration
 	if adaptive {
 		if limit = c.br.timeout(ceiling); limit > 0 {
 			var cancel context.CancelFunc
-			rctx, cancel = context.WithTimeout(ctx, limit)
+			rctx, cancel = context.WithTimeout(hctx, limit)
 			defer cancel()
 		}
 	}
 	started := time.Now()
 	res, err := do(rctx)
 	elapsed := time.Since(started)
+	releaseHost()
 	if err != nil && (ctx.Err() != nil || errors.Is(err, core.ErrBudgetExhausted)) {
 		// The caller went away, or a budget or rate-limit pause (which
 		// has its own back-off) refused the request: no verdict.

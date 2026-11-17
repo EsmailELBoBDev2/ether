@@ -56,7 +56,8 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	a.closers = append(a.closers, func() { a.engine.Close() })
 
 	// Indexers and resolver.
-	siteOpts := cardigann.Options{DB: a.db, Sealer: a.cfg, Logger: log.With("component", "cardigann"), Sites: cfg.IndexerSites}
+	indexerHosts := newznab.NewHostLimiter(0)
+	siteOpts := cardigann.Options{DB: a.db, Sealer: a.cfg, Logger: log.With("component", "cardigann"), Sites: cfg.IndexerSites, HostLimiter: indexerHosts}
 	if a.clustered() {
 		siteOpts.LoginLock = a.clusterLoginLock // one login per site across nodes
 	}
@@ -68,6 +69,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
 		NZBDir:         filepath.Join(dataDir, "nzb"),
 		ClientIdentity: cfg.ClientIdentity,
+		HostLimiter:    indexerHosts,
 		Backend: func(ix config.Indexer) (newznab.Backend, error) {
 			if ix.IsStremio() {
 				return a.addons.Backend(ix)

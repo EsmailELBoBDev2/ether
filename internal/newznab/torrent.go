@@ -348,13 +348,22 @@ func (c *Client) resolveTorrentCached(ctx context.Context, r core.Release) (core
 }
 
 func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Release, bool, error) {
-	if c.Config().UsesBackend() {
+	if cfg := c.Config(); cfg.UsesBackend() {
 		b, err := c.backend()
 		if err != nil {
 			return r, false, err
 		}
+		hctx := ctx
+		if cfg.IsStremio() {
+			var releaseHost func()
+			hctx, releaseHost, err = c.acquireHost(ctx, cfg.URL)
+			if err != nil {
+				return r, false, err
+			}
+			defer releaseHost()
+		}
 		reserved := false
-		out, err := b.ResolveTorrent(ctx, r, func(rctx context.Context, kind string) error {
+		out, err := b.ResolveTorrent(hctx, r, func(rctx context.Context, kind string) error {
 			if err := c.reserve(rctx, kind); err != nil {
 				return err
 			}
@@ -378,12 +387,17 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 		}
 		rawURL = base.ResolveReference(ref).String()
 	}
+	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
+	if err != nil {
+		return r, false, err
+	}
+	defer releaseHost()
 	// The download URL comes from the feed (untrusted): fetch it through
 	// the safefetch guard, like FetchNZB. Only the owner-configured
 	// indexer origin may be private; redirects away from it (other than
 	// magnet, handled below) are revalidated at dial time.
 	id := c.clientIdentityFor(releaseIsTV(r), true)
-	req, err := http.NewRequestWithContext(c.trustedCtx(ctx, rawURL), http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(c.trustedCtx(hctx, rawURL), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return r, false, redactURLError(err)
 	}
@@ -408,7 +422,7 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	if hc.Timeout == 0 {
 		hc.Timeout = defaultHTTPTimeout
 	}
-	if err := c.reserve(ctx, "grab"); err != nil {
+	if err := c.reserve(hctx, "grab"); err != nil {
 		return r, false, err
 	}
 	resp, err := hc.Do(req)
@@ -431,7 +445,7 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	if resp.StatusCode == http.StatusTooManyRequests {
 		// Honor the throttle like API requests do, so the next play does
 		// not immediately hit the throttled indexer again.
-		return r, true, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
+		return r, true, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return r, true, apiError(resp.StatusCode, resp.Status)

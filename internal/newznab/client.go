@@ -62,6 +62,8 @@ type Options struct {
 	MaxNZBBytes    int64
 	Now            func() time.Time // injected clock (tests)
 	MaxParallel    int              // Manager fan-out; 0 dispatches every configured indexer
+	MaxPerHost     int              // per-origin concurrency cap; 0 = DefaultMaxPerHost, <0 = unlimited
+	HostLimiter    *HostLimiter     // optional shared per-origin concurrency limiter
 	// ClientIdentity is the owner's policy for the client Ether presents to
 	// indexers; the zero value keeps the Ether identity.
 	ClientIdentity config.ClientIdentity
@@ -105,6 +107,7 @@ type Client struct {
 	maxNZB   int64
 	now      func() time.Time
 	backends func(config.Indexer) (Backend, error)
+	hosts    *HostLimiter
 
 	feedMu   sync.Mutex
 	feedMode recentFeedMode
@@ -224,6 +227,10 @@ func New(cfg config.Indexer, db *sql.DB, opts Options) *Client {
 	c.maxNZB = opts.MaxNZBBytes
 	if c.maxNZB <= 0 {
 		c.maxNZB = defaultMaxNZBBytes
+	}
+	c.hosts = opts.HostLimiter
+	if c.hosts == nil {
+		c.hosts = NewHostLimiter(opts.MaxPerHost)
 	}
 	c.SetClientIdentity(opts.ClientIdentity)
 	return c
@@ -562,7 +569,12 @@ func (c *Client) trustedCtx(ctx context.Context, rawURL string) context.Context 
 // get performs a GET and returns the body, mapping HTTP failures to
 // typed API errors. Responses are size-limited.
 func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.Identity) ([]byte, error) {
-	req, err := http.NewRequestWithContext(c.trustedCtx(ctx, rawURL), http.MethodGet, rawURL, nil)
+	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHost()
+	req, err := http.NewRequestWithContext(c.trustedCtx(hctx, rawURL), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, redactURLError(err)
 	}
@@ -581,7 +593,7 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 	// Record throttling before reading the body: even a broken error response
 	// must not cause every new play request to hammer a throttled indexer.
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
+		return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
@@ -590,7 +602,7 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 	if int64(len(body)) > limit {
 		return nil, fmt.Errorf("newznab: response exceeds %d bytes", limit)
 	}
-	c.noteAPILimit(ctx, body)
+	c.noteAPILimit(hctx, body)
 	// Newznab quota errors can arrive with HTTP 200, including NZB grabs.
 	// Detect these here so caps, searches and downloads share the same backoff.
 	if bytes.Contains(bytes.ToLower(body[:min(len(body), 4096)]), []byte("error")) {
@@ -598,7 +610,7 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 			var ae *APIError
 			if errors.As(perr, &ae) {
 				if ae.Budget {
-					return nil, c.recordRateLimit(ctx, resp.Header.Get("Retry-After"), perr)
+					return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), perr)
 				}
 				return nil, perr
 			}
@@ -692,10 +704,15 @@ func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := c.reserve(capsPurpose(ctx), "hit"); err != nil {
+	hctx, releaseHost, err := c.acquireHost(ctx, u)
+	if err != nil {
 		return nil, err
 	}
-	body, err := c.get(ctx, u, 5<<20, id)
+	defer releaseHost()
+	if err := c.reserve(capsPurpose(hctx), "hit"); err != nil {
+		return nil, err
+	}
+	body, err := c.get(hctx, u, 5<<20, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1034,8 +1051,9 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 	started := time.Now()
 	admitted := false
 	reserved := false
-	results, err := c.guardSearch(ctx, true, defaultHTTPTimeout, func(ctx context.Context) ([]core.Release, error) {
+	results, err := c.guardSearch(ctx, u, true, defaultHTTPTimeout, func(ctx context.Context) ([]core.Release, error) {
 		admitted = true
+		started = time.Now()
 		// The hit is reserved once the breaker has admitted the request,
 		// right before it is sent: the budget and the usage breakdown count
 		// HTTP requests the indexer actually receives, as Prowlarr does.
@@ -1659,13 +1677,26 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 // fetchNZB downloads r's NZB from the indexer, spending one grab, and
 // keeps it on disk. The bool reports whether a grab slot was reserved.
 func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, error) {
-	if c.Config().UsesBackend() {
+	if cfg := c.Config(); cfg.UsesBackend() {
 		b, err := c.backend()
 		if err != nil {
 			return nil, false, err
 		}
+		hctx := ctx
+		if cfg.IsStremio() {
+			target := r.NZBURL
+			if target == "" {
+				target = cfg.URL
+			}
+			var releaseHost func()
+			hctx, releaseHost, err = c.acquireHost(ctx, target)
+			if err != nil {
+				return nil, false, err
+			}
+			defer releaseHost()
+		}
 		reserved := false
-		body, err := b.FetchNZB(ctx, r, func(rctx context.Context, kind string) error {
+		body, err := b.FetchNZB(hctx, r, func(rctx context.Context, kind string) error {
 			if err := c.reserve(rctx, kind); err != nil {
 				return err
 			}
@@ -1705,12 +1736,17 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		}
 		rawURL = base.ResolveReference(ref).String()
 	}
-	// Reserved right before the request, so a release with no usable URL
-	// spends nothing.
-	if err := c.reserve(ctx, "grab"); err != nil {
+	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
+	if err != nil {
 		return nil, false, err
 	}
-	body, err := c.get(ctx, rawURL, c.maxNZB, id)
+	defer releaseHost()
+	// Reserved right before the request, so a release with no usable URL
+	// spends nothing.
+	if err := c.reserve(hctx, "grab"); err != nil {
+		return nil, false, err
+	}
+	body, err := c.get(hctx, rawURL, c.maxNZB, id)
 	if err != nil {
 		return nil, true, err
 	}
@@ -1803,8 +1839,13 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 		}
 		return nil
 	}
-	results, err := c.guardSearch(ctx, false, 0, func(ctx context.Context) ([]core.Release, error) {
+	hostURL := ""
+	if c.Config().IsStremio() {
+		hostURL = c.Config().URL
+	}
+	results, err := c.guardSearch(ctx, hostURL, false, 0, func(ctx context.Context) ([]core.Release, error) {
 		admitted = true
+		started = time.Now()
 		return run(ctx, reserve)
 	})
 	if err != nil {

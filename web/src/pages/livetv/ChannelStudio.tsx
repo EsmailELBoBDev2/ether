@@ -19,11 +19,11 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Artwork } from "../../components/Artwork";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { DragHandle, SortableList } from "../../components/Sortable";
-import { Field } from "../../components/fields";
+import { Field, Segmented } from "../../components/fields";
 import { errorMessage, isAbort } from "../../lib/api";
 import type { CollectionSpec } from "../../lib/contract";
 import type { EtherUser } from "../../lib/types";
@@ -37,6 +37,7 @@ import { LivePreview } from "./LivePreview";
 import { STABILITY } from "./stability";
 import { ScheduleTimeline, type TimelineElement } from "./ScheduleTimeline";
 import { Drawer } from "../../components/Drawer";
+import { MatchRuleRows, extractRuleErrors } from "./OwnerGroupDrawer";
 import {
   timeZones,
   MINUTE,
@@ -49,7 +50,11 @@ import {
   tv,
   upNext,
   policyPermits,
+  compileOwnerGroupRegExp,
   type Channel,
+  type ChannelMergePreview,
+  type OwnerGroupMatch,
+  type OwnerGroupRule,
   type ChannelSummary,
   type Coverage,
   type LiveTVPolicy,
@@ -120,6 +125,25 @@ export function compose(d: StudioDraft): Channel {
         throw new Error(t("Add at least one movie to each time block, or remove the empty block."));
     }
     return { ...c, blocks: c.blocks ?? [] };
+  }
+  if (c.inputMerge) {
+    const activeRules = (c.inputMerge.rules ?? []).filter((r) => r.value !== "");
+    for (const r of activeRules) {
+      if ((r.op === "matches" || r.op === "notMatches") && !compileOwnerGroupRegExp(r.value)) {
+        throw new Error(t("Fix invalid rule patterns before saving."));
+      }
+    }
+    if (activeRules.length === 0) {
+      return { ...c, inputMerge: undefined };
+    }
+    return {
+      ...c,
+      inputMerge: {
+        rules: activeRules,
+        match: c.inputMerge.match === "all" ? "all" : "any",
+        hideDuplicates: c.inputMerge.hideDuplicates === false ? false : undefined,
+      },
+    };
   }
   return c;
 }
@@ -548,6 +572,7 @@ export function ChannelStudio({
         {tab === "stream" && !virtual ? (
           <section className="max-w-2xl space-y-4">
             <StreamSources channel={c} sources={sources} onChange={set} />
+            <MergeMatchingFeeds channel={c} sources={sources} onChange={set} />
             <Field label={t("Group")} htmlFor="ch-group">
               <Input
                 id="ch-group"
@@ -915,6 +940,12 @@ function StreamSources({
                   className="h-8 w-32 shrink-0 text-sm"
                 />
               ) : null}
+              {x.mergedFrom || (!logins.length && x.authSourceId) ? (
+                <Badge className="shrink-0">
+                  {sources.find((s) => s.id === (x.authSourceId || c.sourceId))?.name ??
+                    x.authSourceId}
+                </Badge>
+              ) : null}
               <SourceHealth status={status.get(x.id)} />
               {logins.length ? (
                 <ToolbarPicker
@@ -1011,6 +1042,263 @@ function SourceHealth({ status }: { status?: SourceStatus }) {
     >
       {h.label}
     </span>
+  );
+}
+
+const EMPTY_MERGE_RULES: OwnerGroupRule[] = [];
+
+function MergeMatchingFeeds({
+  channel: c,
+  sources,
+  onChange,
+}: {
+  channel: Channel;
+  sources: Source[];
+  onChange: (p: Partial<Channel>) => void;
+}) {
+  const headingId = useId();
+  const rules = c.inputMerge?.rules ?? EMPTY_MERGE_RULES;
+  const match: OwnerGroupMatch = c.inputMerge?.match === "all" ? "all" : "any";
+  const hideDuplicates = c.inputMerge?.hideDuplicates !== false;
+
+  const [ruleErrors, setRuleErrors] = useState<Record<number, string>>({});
+  const [preview, setPreview] = useState<ChannelMergePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const initialRef = useRef(true);
+  const clearRuleErrors = () =>
+    setRuleErrors((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+
+  useEffect(() => {
+    clearRuleErrors();
+    setPreview(null);
+    initialRef.current = true;
+  }, [c.id]);
+
+  const setMerge = (
+    nextRules: OwnerGroupRule[],
+    nextMatch: OwnerGroupMatch = match,
+    nextHide: boolean = hideDuplicates,
+  ) => {
+    if (nextRules.length === 0) {
+      onChange({ inputMerge: undefined });
+      return;
+    }
+    onChange({
+      inputMerge: {
+        rules: nextRules,
+        match: nextMatch,
+        hideDuplicates: nextHide ? undefined : false,
+      },
+    });
+  };
+
+  const activeRules = useMemo(() => rules.filter((r) => r.value !== ""), [rules]);
+  const previewPayload = useMemo(
+    () => ({
+      channelId: c.id || undefined,
+      name: c.name || undefined,
+      sourceId: c.sourceId || undefined,
+      streamUrl: c.streamUrl || undefined,
+      rules,
+      match,
+    }),
+    [c.id, c.name, c.sourceId, c.streamUrl, rules, match],
+  );
+  const sourcesOrderKey = useMemo(() => sources.map((s) => s.id).join(","), [sources]);
+  const previewKey = useMemo(
+    () => `${sourcesOrderKey}:${JSON.stringify(previewPayload)}`,
+    [sourcesOrderKey, previewPayload],
+  );
+
+  useEffect(() => {
+    if (activeRules.length === 0) {
+      setPreview(null);
+      clearRuleErrors();
+      setPreviewLoading(false);
+      return;
+    }
+    const ctl = new AbortController();
+    const delay = initialRef.current ? 0 : 180;
+    initialRef.current = false;
+    setPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      tv.previewChannelMerge(previewPayload, ctl.signal)
+        .then((res) => {
+          if (ctl.signal.aborted) return;
+          setPreview({
+            matchCount: typeof res?.matchCount === "number" ? res.matchCount : 0,
+            totalFeeds: typeof res?.totalFeeds === "number" ? res.totalFeeds : 0,
+            maxInputs: typeof res?.maxInputs === "number" ? res.maxInputs : 16,
+            inputs: Array.isArray(res?.inputs) ? res.inputs : [],
+          });
+          clearRuleErrors();
+          setPreviewLoading(false);
+        })
+        .catch((err) => {
+          if (ctl.signal.aborted || isAbort(err)) return;
+          setRuleErrors(extractRuleErrors(err, rules));
+          setPreviewLoading(false);
+        });
+    }, delay);
+    return () => {
+      window.clearTimeout(timer);
+      ctl.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRules.length, previewKey]);
+
+  const updateRule = (idx: number, patch: Partial<OwnerGroupRule>) => {
+    setMerge(rules.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+    setRuleErrors((prev) => {
+      if (!(idx in prev)) return prev;
+      const next = { ...prev };
+      delete next[idx];
+      return next;
+    });
+  };
+
+  const removeRule = (idx: number) => {
+    setMerge(rules.filter((_, i) => i !== idx));
+    setRuleErrors({});
+  };
+
+  const addRule = () => {
+    setMerge([...rules, { field: "name", op: "contains", value: "" }]);
+  };
+
+  return (
+    <section
+      className="space-y-3 rounded-xl border border-border bg-surface p-4"
+      aria-labelledby={headingId}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <h3 id={headingId} className="text-sm font-semibold text-fg">
+            {t("Merge matching feeds")}
+          </h3>
+          <p className="text-xs text-fg-muted">
+            {t(
+              "Attach matching streams across your IPTV providers as automatic failover inputs, ordered by provider priority and stream quality.",
+            )}
+          </p>
+        </div>
+        {rules.length > 0 ? (
+          <Segmented
+            ariaLabel={t("Match mode")}
+            size="sm"
+            value={match}
+            onChange={(next) => setMerge(rules, next)}
+            options={[
+              { value: "any", label: t("Any rule") },
+              { value: "all", label: t("All rules") },
+            ]}
+          />
+        ) : null}
+      </div>
+
+      <MatchRuleRows
+        rules={rules}
+        ruleErrors={ruleErrors}
+        onUpdate={updateRule}
+        onRemove={removeRule}
+        onAdd={addRule}
+        regexPlaceholder="^(?:US\s*\|\s*)?ESPN\b"
+      />
+
+      {rules.length > 0 ? (
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg-subtle/40 p-2.5">
+          <Switch
+            checked={hideDuplicates}
+            onChange={(e) => setMerge(rules, match, e.currentTarget.checked)}
+            aria-label={t("Hide matched duplicate channels")}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium text-fg">
+              {t("Hide matched duplicate channels")}
+            </span>
+            <span className="block text-xs text-fg-muted">
+              {t(
+                "Hides extra provider channels from your lineup and guide without deleting them.",
+              )}
+            </span>
+          </span>
+        </label>
+      ) : null}
+
+      {activeRules.length > 0 && Object.keys(ruleErrors).length === 0 ? (
+        <div className="space-y-2 border-t border-border pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-fg">
+              {previewLoading && !preview
+                ? t("Checking matching feeds…")
+                : tn(
+                    preview?.matchCount ?? 0,
+                    "{count} matching feed",
+                    "{count} matching feeds",
+                  )}
+            </span>
+            {preview && preview.totalFeeds > preview.maxInputs ? (
+              <span className="text-fg-muted">
+                {t("Top {max} feeds attach by provider priority.", { max: preview.maxInputs })}
+              </span>
+            ) : sources.filter((s) => s.hasPlaylist !== false).length > 1 ? (
+              <span className="text-fg-muted">{t("Ordered by provider priority and quality")}</span>
+            ) : null}
+          </div>
+
+          {preview && preview.inputs.length > 0 ? (
+            <ol className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-bg-subtle/30">
+              {preview.inputs.map((item, idx) => {
+                const roleLabel = !item.included
+                  ? t("Skipped")
+                  : idx === 0
+                    ? t("Primary")
+                    : t("Backup {number}", { number: idx });
+                return (
+                  <li
+                    key={`${item.channelId}-${item.id}`}
+                    className={cn(
+                      "flex flex-wrap items-center gap-2 px-3 py-2 text-xs",
+                      !item.included && "opacity-55",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "w-[4.75rem] shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-center text-[10.5px] font-semibold uppercase tracking-wider",
+                        !item.included
+                          ? "bg-bg-subtle text-fg-subtle"
+                          : idx === 0
+                            ? "bg-primary-subtle text-primary"
+                            : "bg-info/15 text-info",
+                      )}
+                    >
+                      {roleLabel}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-fg">
+                      {item.name}
+                    </span>
+                    {item.quality ? <Badge>{item.quality}</Badge> : null}
+                    {item.sourceName ? (
+                      <Badge className="shrink-0">{item.sourceName}</Badge>
+                    ) : null}
+                    <SourceHealth
+                      status={{
+                        id: item.id,
+                        state: item.state,
+                        failures: item.failures,
+                        lastPlayed: item.lastPlayed,
+                        retryAfter: item.retryAfter,
+                        lastError: item.lastError,
+                      }}
+                    />
+                  </li>
+                );
+              })}
+            </ol>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

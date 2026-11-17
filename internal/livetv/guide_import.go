@@ -285,7 +285,7 @@ func init() {
 // is written only when the source itself changed or a refresh error is to be
 // cleared, and it reports whether it was; every import records its time in
 // livetv_source_refresh. Callers hold lockSourceEdits for the source.
-func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src Source) (bool, error) {
+func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src *Source) (bool, error) {
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT data FROM livetv_sources WHERE id=?`, src.ID).Scan(&raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -295,11 +295,14 @@ func (s *Service) writeImportedSource(ctx context.Context, tx *sql.Tx, src Sourc
 	renamed := false
 	if !write {
 		old, _, derr := s.decodeSource(raw)
+		if derr == nil && src.Priority == 0 && old.Priority > 0 {
+			src.Priority = old.Priority
+		}
 		renamed = derr == nil && old.Name != src.Name
-		write = derr != nil || old.LastError != "" || old.LastErrorAt != nil || old.RefreshFailures != 0 || !sameStoredSource(old, src)
+		write = derr != nil || old.LastError != "" || old.LastErrorAt != nil || old.RefreshFailures != 0 || !sameStoredSource(old, *src)
 	}
 	if write {
-		b, err := s.encodeSource(src)
+		b, err := s.encodeSource(*src)
 		if err != nil {
 			return false, err
 		}

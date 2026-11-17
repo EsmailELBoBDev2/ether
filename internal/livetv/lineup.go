@@ -40,6 +40,7 @@ type ChannelSummary struct {
 	GuideID       string   `json:"guideId,omitempty"`
 	GuideSourceID string   `json:"guideSourceId,omitempty"`
 	Group         string   `json:"group,omitempty"`
+	MergedInto    string   `json:"mergedInto,omitempty"`
 
 	rawHiddenApps []string
 	numberKey     numberKey
@@ -94,7 +95,27 @@ type ChannelPage struct {
 // ChannelSummaries returns the whole lineup in display order. The result is
 // shared and must be treated as read-only.
 func (s *Service) ChannelSummaries(ctx context.Context) ([]ChannelSummary, error) {
-	return s.channelSummaries(ctx)
+	all, err := s.channelSummaries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hasMerged := false
+	for i := range all {
+		if all[i].MergedInto != "" {
+			hasMerged = true
+			break
+		}
+	}
+	if !hasMerged {
+		return all, nil
+	}
+	out := make([]ChannelSummary, 0, len(all))
+	for _, c := range all {
+		if c.MergedInto == "" {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) channelSummaries(ctx context.Context) ([]ChannelSummary, error) {
@@ -282,6 +303,9 @@ func summaryCovered(c ChannelSummary, stats map[guideKey]guideStat) bool {
 func channelCounts(all []ChannelSummary, stats map[guideKey]guideStat) ChannelCounts {
 	var n ChannelCounts
 	for _, c := range all {
+		if c.MergedInto != "" {
+			continue
+		}
 		n.All++
 		if c.Enabled {
 			n.Live++
@@ -305,6 +329,9 @@ func channelCounts(all []ChannelSummary, stats map[guideKey]guideStat) ChannelCo
 }
 
 func channelMatches(c ChannelSummary, q ChannelPageQuery, stats map[guideKey]guideStat, groupIdx *ownerGroupIndex) bool {
+	if c.MergedInto != "" {
+		return false
+	}
 	if q.Group != "" && c.Group != q.Group {
 		return false
 	}
@@ -384,6 +411,9 @@ func channelGroups(all []ChannelSummary, order []int) []ChannelGroup {
 func nextChannelNumber(all []ChannelSummary) string {
 	max := 0
 	for _, c := range all {
+		if c.MergedInto != "" {
+			continue
+		}
 		if n, err := strconv.ParseFloat(c.Number, 64); err == nil && int(n) > max {
 			max = int(n)
 		}

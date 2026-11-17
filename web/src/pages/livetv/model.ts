@@ -130,6 +130,10 @@ export type Channel = {
   streamUrl?: string;
   /** Ordered stream sources: the first enabled one plays, the rest are backups. */
   streamSources?: StreamSource[];
+  /** Rules that merge matching feeds across IPTV providers into streamSources. */
+  inputMerge?: ChannelInputMerge;
+  /** Target channel ID when this channel is hidden as a merged duplicate. */
+  mergedInto?: string;
   group?: string;
   customGroup?: boolean;
   /** The provider's channel number; differs from `number` when the owner renumbered it. */
@@ -206,6 +210,35 @@ export type OwnerGroupPreview = {
   count: number;
   channels: ChannelSummary[];
 };
+export type ChannelInputMerge = {
+  rules?: OwnerGroupRule[];
+  match?: OwnerGroupMatch;
+  hideDuplicates?: boolean;
+};
+export type ChannelMergePreviewItem = {
+  id: string;
+  channelId: string;
+  name: string;
+  group?: string;
+  guideId?: string;
+  sourceId?: string;
+  sourceName?: string;
+  sourcePriority?: number;
+  quality?: string;
+  primary?: boolean;
+  included: boolean;
+  state: SourceStatus["state"];
+  failures?: number;
+  lastPlayed?: string;
+  retryAfter?: string;
+  lastError?: string;
+};
+export type ChannelMergePreview = {
+  matchCount: number;
+  totalFeeds: number;
+  maxInputs: number;
+  inputs: ChannelMergePreviewItem[];
+};
 /** One of the owner's ordered channel groups ("Your groups"). */
 export type OwnerGroup = {
   id: string;
@@ -235,6 +268,8 @@ export type StreamSource = {
   priority: number;
   /** The source whose provider login this input uses (blank: the channel's own). */
   authSourceId?: string;
+  /** Imported channel ID when attached automatically by input merge rules. */
+  mergedFrom?: string;
 };
 export type AuthType = "" | "basic" | "bearer" | "headers" | "xtream";
 /** Provider login. Secrets come back as "••••"; sending that back keeps them. */
@@ -337,6 +372,7 @@ export type Source = {
   kind?: string;
   id: string;
   name: string;
+  priority?: number;
   playlistUrl?: string;
   guideUrl?: string;
   playlistGuide?: boolean;
@@ -749,9 +785,26 @@ export const tv = {
       ...json("POST", { groups: [], ...group }),
       signal,
     }),
+  previewChannelMerge: (
+    req: {
+      channelId?: string;
+      name?: string;
+      sourceId?: string;
+      streamUrl?: string;
+      rules: OwnerGroupRule[];
+      match?: OwnerGroupMatch;
+    },
+    signal?: AbortSignal,
+  ) =>
+    apiFetch<ChannelMergePreview>("/livetv/channels/merge-preview", {
+      ...json("POST", req),
+      signal,
+    }),
   setChannelsApp: (change: ChannelAppChange) =>
     apiFetch<{ updated: number }>("/livetv/channels/apps", json("POST", change)),
   sources: (signal?: AbortSignal) => apiFetch<Source[]>("/livetv/sources", { signal }),
+  saveSourceOrder: (ids: string[]) =>
+    apiFetch<Source[]>("/livetv/sources/order", json("PUT", { ids })),
   guide: (from: Date, until: Date, channels?: string[], signal?: AbortSignal) => {
     const p = new URLSearchParams({
       from: from.toISOString(),
@@ -1189,6 +1242,28 @@ export function programmeArtwork(src?: string): string | undefined {
   return src && /^\/[A-Za-z0-9_-]+\.(jpg|png|webp)$/i.test(src)
     ? `/ether/api/image?path=${encodeURIComponent(src)}&w=342`
     : src;
+}
+
+/** Parses stream quality tier rank (0=4K … 4=SD) from channel or feed names. */
+export function streamQualityTier(...names: (string | undefined)[]): { rank: number; label: string } {
+  let best = 3;
+  let sawSD = false;
+  for (const raw of names) {
+    if (!raw) continue;
+    for (const tok of raw.toLowerCase().split(/[^a-z0-9]+/)) {
+      if (!tok) continue;
+      if (["4k", "uhd", "2160p", "2160i", "2160", "4kuhd", "uhd4k"].includes(tok)) {
+        return { rank: 0, label: "4K" };
+      }
+      if (["fhd", "1080p", "1080i", "1080", "fullhd"].includes(tok) && 1 < best) best = 1;
+      else if (["hd", "720p", "720i", "720"].includes(tok) && 2 < best) best = 2;
+      else if (["sd", "480p", "480i", "480", "576p", "576i", "576"].includes(tok)) sawSD = true;
+    }
+  }
+  if (best === 1) return { rank: 1, label: "FHD" };
+  if (best === 2) return { rank: 2, label: "HD" };
+  if (sawSD) return { rank: 4, label: "SD" };
+  return { rank: 3, label: "" };
 }
 
 /** Live TV stability presets (config liveTV.stability, channel stability). */

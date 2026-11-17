@@ -162,9 +162,12 @@ func (h liveTVHost) Channels(ctx context.Context, v *core.Viewer) ([]frontend.Li
 	if err != nil {
 		return nil, err
 	}
-	idx, err := h.s.cachedOwnerGroupIndex(ctx)
-	if err != nil {
-		return nil, err
+	_, idx := h.s.getOwnerGroupCacheState()
+	if idx == nil {
+		idx, err = h.s.cachedOwnerGroupIndex(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := make([]frontend.LiveChannel, len(cs))
 	for i, c := range cs {
@@ -364,7 +367,14 @@ func (h liveTVHost) LogoKey() []byte {
 }
 
 func (h liveTVHost) FilterDiscovery(ctx context.Context, u *frontend.User, ps []frontend.LiveTVProgramme) ([]frontend.LiveTVProgramme, []frontend.LiveTVChannel, error) {
-	ctx = h.s.withOwnerGroupIndex(ctx)
+	var err error
+	ctx, _, err = h.s.withPolicy(ctx, u)
+	if err != nil {
+		return nil, nil, err
+	}
+	if u == nil {
+		ctx = h.s.withOwnerGroupIndex(ctx)
+	}
 	ids := make([]string, 0, len(ps))
 	seen := map[string]bool{}
 	for _, p := range ps {
@@ -378,10 +388,6 @@ func (h liveTVHost) FilterDiscovery(ctx context.Context, u *frontend.User, ps []
 		return nil, nil, err
 	}
 	cs, err := h.s.searchAllowedChannels(ctx, u, ids)
-	if err != nil {
-		return nil, nil, err
-	}
-	ctx, _, err = h.s.withPolicy(ctx, u)
 	if err != nil {
 		return nil, nil, err
 	}

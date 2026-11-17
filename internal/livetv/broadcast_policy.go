@@ -49,11 +49,25 @@ func (s *Service) broadcastPolicyContext(ctx context.Context, ss *session, u *co
 	}
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
+	prevGroupRev, prevGroupIdx := s.getOwnerGroupCacheState()
 	var epoch int64
-	var raw string
-	err := s.o.DB.QueryRowContext(ctx, `SELECT generation,COALESCE((SELECT data FROM livetv_policies WHERE user_id=?),'{}') FROM livetv_channel_epoch WHERE id=1`, u.ID).Scan(&epoch, &raw)
+	var raw, rawGroups string
+	err := s.o.DB.QueryRowContext(
+		ctx,
+		`SELECT generation,COALESCE((SELECT data FROM livetv_policies WHERE user_id=?),'{}'),CASE WHEN generation=? THEN '' ELSE COALESCE((SELECT data FROM livetv_owner_groups WHERE id=1),'[]') END FROM livetv_channel_epoch WHERE id=1`,
+		u.ID, prevGroupRev,
+	).Scan(&epoch, &raw, &rawGroups)
 	if err != nil {
 		return ctx, err
+	}
+	groupIdx := prevGroupIdx
+	if groupIdx == nil || epoch != prevGroupRev {
+		decoded, err := decodeOwnerGroupIndex(rawGroups)
+		if err != nil {
+			return ctx, err
+		}
+		groupIdx = decoded
+		s.setOwnerGroupCacheState(epoch, groupIdx)
 	}
 	s.virtualGuide.mu.RLock()
 	revision := s.virtualGuide.revision
@@ -87,6 +101,7 @@ func (s *Service) broadcastPolicyContext(ctx context.Context, ss *session, u *co
 		*cache = broadcastViewerPolicy{epoch: epoch, revision: revision, raw: raw, user: *u, channel: c, policy: pol, decisions: map[*broadcastPolicyTag]bool{}}
 	}
 	ss.user = *u
+	ctx = contextWithOwnerGroupIndex(ctx, groupIdx)
 	ctx = context.WithValue(ctx, loadedPolicyKey{}, loadedPolicy{id: u.ID, user: u, pol: cache.policy})
 	return context.WithValue(ctx, broadcastPolicyContextKey{}, ss), nil
 }
@@ -99,8 +114,7 @@ func (s *Service) broadcastTagsAllowed(ctx context.Context, ss *session, tags []
 	if err != nil {
 		return false
 	}
-	// Resolve group rules and paused-source state before ss.mu: cold caches read the database.
-	ctx = s.withOwnerGroupIndex(ctx)
+	// Resolve paused-source state before ss.mu: a cold source cache reads the database.
 	if s.sourcePaused(ctx, Channel{SourceID: sourceID}) {
 		return false
 	}

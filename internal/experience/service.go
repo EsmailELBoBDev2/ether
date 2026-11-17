@@ -243,6 +243,17 @@ type Service struct {
 	d             ServiceDeps
 	cursors       *episodeCursors
 	pluginCursors *pluginCursorCache
+	searchGate    *descriptiveGate
+}
+
+func (s *Service) ensureSearchGate() *descriptiveGate {
+	if s.searchGate != nil {
+		return s.searchGate
+	}
+	if s.d.Search.gate != nil {
+		return s.d.Search.gate
+	}
+	return fallbackDescriptiveGate
 }
 
 // pageUserData reads watch progress, favorites, not-interested and watchlist
@@ -261,7 +272,12 @@ func NewService(d ServiceDeps) (*Service, error) {
 	d.Dashboard, d.Resources = Statistics(d.Dashboard, d.Resources, d.Now)
 	d.Libraries = append([]Library(nil), d.Libraries...)
 	d.Search.Visibility = d.Visibility
-	return &Service{d: d, cursors: &episodeCursors{}, pluginCursors: newPluginCursorCache()}, nil
+	gate := d.Search.gate
+	if gate == nil {
+		gate = newDescriptiveGate()
+		d.Search.gate = gate
+	}
+	return &Service{d: d, cursors: &episodeCursors{}, pluginCursors: newPluginCursorCache(), searchGate: gate}, nil
 }
 
 func (s *Service) libraries() []Library {
@@ -1625,6 +1641,9 @@ const searchWindowMin = 100
 
 func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery) (frontend.SearchPage, error) {
 	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
+	if core.SearchClientFrom(ctx) == "" && device.ID != "" {
+		ctx = core.WithSearchClient(ctx, device.ID)
+	}
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return frontend.SearchPage{}, err
@@ -1721,7 +1740,38 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	if err != nil {
 		return frontend.SearchPage{}, err
 	}
-	if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
+	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" {
+		if !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || HasTitleMatch(pluginHits) || len(types) == 0 {
+			if prev, superseded := s.ensureSearchGate().supersede(v, core.SearchClientFrom(ctx), query); superseded {
+				if ctrl, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearchController); ok {
+					ctrl.CancelDescribeSearch(v, prev)
+				}
+			}
+		} else {
+			search := s.d.Search
+			search.gate = s.ensureSearchGate()
+			_, aiRaw, handled, err := search.resolveDescriptive(ctx, v, query, types, false)
+			if err != nil {
+				return frontend.SearchPage{}, err
+			}
+			if handled && len(aiRaw) > 0 {
+				aiItems := make([]core.Title, 0, len(aiRaw))
+				for _, title := range aiRaw {
+					if !s.visible(ctx, v, &title) {
+						continue
+					}
+					ok, e := s.matchesUserQuery(ctx, v, title, q)
+					if e != nil {
+						return frontend.SearchPage{}, e
+					}
+					if ok {
+						aiItems = append(aiItems, title)
+					}
+				}
+				items = mergeAIAndKeyword(aiItems, items)
+			}
+		}
+	} else if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
 		items, err = s.vibeMembers(ctx, v, query, q)
 		if err != nil {
 			return frontend.SearchPage{}, err

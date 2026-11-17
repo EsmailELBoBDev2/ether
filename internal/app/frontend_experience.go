@@ -1338,3 +1338,14 @@ func (v stepAsideVibe) DescribeSearch(ctx context.Context, user *core.User, quer
 	}
 	return result, err
 }
+
+func (v stepAsideVibe) DescribeCached(user *core.User, query string) bool {
+	ctrl, ok := v.VibeSearcher.(core.DescriptiveSearchController)
+	return ok && ctrl.DescribeCached(user, query)
+}
+
+func (v stepAsideVibe) CancelDescribeSearch(user *core.User, query string) {
+	if ctrl, ok := v.VibeSearcher.(core.DescriptiveSearchController); ok {
+		ctrl.CancelDescribeSearch(user, query)
+	}
+}

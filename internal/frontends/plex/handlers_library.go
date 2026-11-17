@@ -1410,8 +1410,9 @@ func (s *Server) sectionList(w http.ResponseWriter, r *http.Request, sec Section
 }
 
 func (s *Server) sectionSearch(w http.ResponseWriter, r *http.Request, sec Section, t frontend.MediaType, query string, mc *model.MediaContainer) {
-	ctx := r.Context()
-	pr := FromContext(ctx)
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
+	pr := FromContext(r.Context())
+	ctx := frontend.WithSearchClient(r.Context(), s.searchClientID(pr))
 	var items []frontend.Title
 	if strings.TrimSpace(query) != "" {
 		limit := 50

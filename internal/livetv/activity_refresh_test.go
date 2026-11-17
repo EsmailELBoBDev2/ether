@@ -37,6 +37,9 @@ func TestActivityRefreshAndPublication(t *testing.T) {
 		t.Fatal("cooldown bypassed")
 	}
 	clock.Set(guideTestNow.Add(time.Hour))
+	wait := ownerEditLeaseWait
+	ownerEditLeaseWait = 0
+	t.Cleanup(func() { ownerEditLeaseWait = wait })
 	release, err := s.acquireRefresh(ctx, src.ID)
 	if err != nil {
 		t.Fatal(err)

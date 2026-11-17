@@ -30,9 +30,18 @@ const signedLogoPrefix = "/livetv/logos/"
 
 func cloudGuideLogoClient(pr *Request) bool {
 	// Plex for iOS and iPadOS share the Apple TV guide and fetch its logos
-	// the same way, so a server-relative logo path draws blank there.
-	return pr != nil && (strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Product, "Plex for Apple TV") ||
-		strings.EqualFold(pr.Platform, "iOS") || strings.EqualFold(pr.Platform, "iPadOS") || strings.EqualFold(pr.Product, "Plex for iOS"))
+	// the same way, so a server-relative logo path draws blank there. Only
+	// Plex's own apps do this: third-party apps on the same platforms (Plezy
+	// sends Platform iOS/tvOS) load logos through this server's
+	// /photo/:/transcode and need its ordinary logo path.
+	if pr == nil {
+		return false
+	}
+	if strings.EqualFold(pr.Product, "Plex for Apple TV") || strings.EqualFold(pr.Product, "Plex for iOS") {
+		return true
+	}
+	apple := strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Platform, "iOS") || strings.EqualFold(pr.Platform, "iPadOS")
+	return apple && (pr.Product == "" || strings.HasPrefix(strings.ToLower(pr.Product), "plex"))
 }
 
 // cloudGuideLogo is the logo URL for a client whose guide fetches logos
@@ -113,9 +122,18 @@ func (s *Server) liveLogoSignature(id string) string {
 // viewer: the signature was minted for a viewer allowed that channel, and a
 // logo reveals nothing beyond what the guide that carried it did.
 func (s *Server) handleSignedLiveLogo(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "channel")
 	sig, ok := strings.CutSuffix(chi.URLParam(r, "signature"), ".png")
-	if !ok || !s.liveTVEnabled() || !hmac.Equal([]byte(sig), []byte(s.liveLogoSignature(id))) {
+	if !ok {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	s.serveSignedLiveLogo(w, r, chi.URLParam(r, "channel"), sig)
+}
+
+// serveSignedLiveLogo serves one channel's logo when sig is this server's
+// signature for it.
+func (s *Server) serveSignedLiveLogo(w http.ResponseWriter, r *http.Request, id, sig string) {
+	if !s.liveTVEnabled() || !hmac.Equal([]byte(sig), []byte(s.liveLogoSignature(id))) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}

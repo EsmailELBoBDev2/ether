@@ -407,6 +407,13 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 	// viewer; never dial that hostname or use credentials from the nested URL.
 	androidLocal := plexAndroidClient(FromContext(r.Context())) && (u.Scheme == "http" || u.Scheme == "https") &&
 		(metadataImageRe.MatchString(u.Path) || discoveryImageRe.MatchString(u.Path) || personImageRe.MatchString(u.Path) || playlistImageRe.MatchString(u.Path) || liveChannelLogoRe.MatchString(u.Path))
+	// A signed guide logo needs no host check: the signature names the
+	// channel and nothing is dialled. A client may wrap the public address
+	// Plex's cloud was given.
+	if m := signedLogoRe.FindStringSubmatch(u.Path); m != nil && (u.Scheme == "" || u.Scheme == "http" || u.Scheme == "https") {
+		s.serveSignedLiveLogo(w, r, m[1], m[2])
+		return
+	}
 	if !u.IsAbs() || s.isSelfHost(r, u.Host) || androidLocal {
 		path := u.Path
 		if m := liveChannelLogoRe.FindStringSubmatch(path); m != nil {
@@ -479,6 +486,8 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 }
 
 var liveChannelLogoRe = regexp.MustCompile(`^/livetv/channels/([^/]+)/logo\.(?:svg|png)$`)
+
+var signedLogoRe = regexp.MustCompile(`^/livetv/logos/([^/]+)/([A-Za-z0-9_-]+)\.png$`)
 
 // isSelfHost reports whether host refers to this server.
 func (s *Server) isSelfHost(r *http.Request, host string) bool {

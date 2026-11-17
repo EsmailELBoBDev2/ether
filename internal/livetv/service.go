@@ -2198,8 +2198,9 @@ func (s *Service) ImportSource(ctx context.Context, src Source) (Source, error) 
 	if src.ID == "" {
 		src.ID = randomID()
 	}
-	release, err := s.acquireRefresh(ctx, src.ID)
+	release, err := s.acquireRefreshWait(ctx, src.ID, ownerEditLeaseWait)
 	if err != nil {
+		s.o.Logger.Warn("Live TV source import failed", "sourceId", src.ID, "source", src.Name, "error", err)
 		return src, err
 	}
 	defer release()

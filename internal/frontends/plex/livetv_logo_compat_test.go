@@ -268,6 +268,14 @@ func TestAppleTVGuideLogoIsCloudFetchable(t *testing.T) {
 	if got := lineupThumb(); !strings.HasPrefix(got, "https://203-0-113-7.abc123.plex.direct:32400"+signedLogoPrefix) {
 		t.Fatalf("logo ignores the public address: %q", got)
 	}
+	// Plezy on Apple platforms loads logos through /photo/:/transcode, not
+	// Plex's cloud: it keeps this server's own logo path.
+	for _, plat := range []string{"tvOS", "iOS"} {
+		plezy := decodeJSON(t, f.get(t, liveProviderPath+"/lineups/dvr/channels", "Accept", "application/json", "X-Plex-Product", "Plezy", "X-Plex-Platform", plat))
+		if thumb := plezy["Channel"].([]any)[0].(map[string]any)["thumb"].(string); strings.Contains(thumb, signedLogoPrefix) {
+			t.Fatalf("Plezy/%s got the cloud logo: %q", plat, thumb)
+		}
+	}
 	// Other standalone clients keep the authenticated server URL.
 	web := decodeJSON(t, f.get(t, liveProviderPath+"/lineups/dvr/channels", "Accept", "application/json", "X-Plex-Product", "Plex Web"))
 	if thumb := web["Channel"].([]any)[0].(map[string]any)["thumb"].(string); !strings.Contains(thumb, "X-Plex-Token=") {

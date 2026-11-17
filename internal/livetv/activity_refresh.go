@@ -2,6 +2,8 @@ package livetv
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -65,8 +67,47 @@ ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,until_ms=excluded.until_ms 
 		return nil, core.ErrNotAvailable
 	}
 	return func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = s.o.DB.ExecContext(cleanup, `DELETE FROM livetv_refresh_leases WHERE id=? AND holder=?`, id, holder)
+		// A lease left behind blocks owner edits until it expires (31
+		// minutes), so a busy database gets a few attempts, not one.
+		for attempt := 0; attempt < 3; attempt++ {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err := s.o.DB.ExecContext(cleanup, `DELETE FROM livetv_refresh_leases WHERE id=? AND holder=?`, id, holder)
+			cancel()
+			if err == nil {
+				return
+			}
+			if attempt == 2 {
+				s.o.Logger.Warn("Live TV source lease not released; it expires on its own", "sourceId", id, "error", err)
+			}
+		}
 	}, nil
+}
+
+// errSourceBusy is what an owner edit gets while another import of the same
+// source is still running after the edit waited for it.
+var errSourceBusy = fmt.Errorf("this source is still updating; try again in a minute: %w", core.ErrNotAvailable)
+
+// ownerEditLeaseWait is how long an owner edit waits for a running import
+// of the same source.
+var ownerEditLeaseWait = 90 * time.Second
+
+// acquireRefreshWait is acquireRefresh for owner edits: a scheduled refresh
+// of the same source is usually seconds from done, so the edit waits for it
+// rather than failing at once.
+func (s *Service) acquireRefreshWait(ctx context.Context, id string, wait time.Duration) (func(), error) {
+	deadline := time.Now().Add(wait)
+	for {
+		release, err := s.acquireRefresh(ctx, id)
+		if !errors.Is(err, core.ErrNotAvailable) {
+			return release, err
+		}
+		if !time.Now().Before(deadline) {
+			return nil, errSourceBusy
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }

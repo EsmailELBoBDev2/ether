@@ -713,3 +713,105 @@ func TestSuccessfulCallClearsRecordedFailure(t *testing.T) {
 		t.Fatalf("health after a good call: %+v", h)
 	}
 }
+
+func mustParseTestManifest(t *testing.T, raw []byte) Manifest {
+	t.Helper()
+	m, err := ParseManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestOnInstallAndFolderGrantPrefill(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	var installedIDs []string
+	env.m.OnInstall(func(_ context.Context, r Record) {
+		installedIDs = append(installedIDs, r.ID+"@"+r.Version)
+	})
+	makeManifest := func(ver string) []byte {
+		return []byte(`{"id":"com.example.folders","version":"` + ver + `","name":"Folders","ether":{"protocol":1,"kind":"source","capabilities":["stream_source"],"runtime":{"kind":"hosted","entry":"plugin.js"},"permissions":{"folders":"read"},"settings":{"fields":[{"key":"folder","kind":"folder","label":"Folder"}]},"contributes":{"source":{"class":"direct","abilities":["file"]}}}}`)
+	}
+	p1 := &Preview{
+		Manifest:         mustParseTestManifest(t, makeManifest("1.0.0")),
+		manifestRaw:      makeManifest("1.0.0"),
+		files:            map[string][]byte{"manifest.json": makeManifest("1.0.0"), "plugin.js": []byte("export function handle(){return {status:200,body:{}};}")},
+		resolvedSettings: json.RawMessage(`{"fields":[{"key":"folder","kind":"folder","label":"Folder"}]}`),
+		source:           Source{Kind: "package", ID: "com.example.folders"},
+	}
+	dir := t.TempDir()
+	rec, err := env.m.Install(ctx, p1, InstallOptions{Grants: Grants{Folders: []string{dir}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installedIDs) != 1 || installedIDs[0] != "com.example.folders@1.0.0" {
+		t.Fatalf("OnInstall hooks: %v", installedIDs)
+	}
+	settings, _, err := env.m.GetSettings(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["folder"] != dir {
+		t.Fatalf("expected folder setting prefilled to %q, got %v", dir, settings)
+	}
+	// Updating an existing plugin does not re-fire OnInstall.
+	p2 := &Preview{
+		Manifest:         mustParseTestManifest(t, makeManifest("1.1.0")),
+		manifestRaw:      makeManifest("1.1.0"),
+		files:            map[string][]byte{"manifest.json": makeManifest("1.1.0"), "plugin.js": []byte("export function handle(){return {status:200,body:{}};}")},
+		resolvedSettings: json.RawMessage(`{"fields":[{"key":"folder","kind":"folder","label":"Folder"}]}`),
+		source:           Source{Kind: "package", ID: "com.example.folders"},
+	}
+	if _, err := env.m.Install(ctx, p2, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(installedIDs) != 1 {
+		t.Fatalf("OnInstall fired on update: %v", installedIDs)
+	}
+}
+
+func TestWaitingSidecarDoesNotAutoDisableOnHealthTicks(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	env.fake.fail = errors.New("remote: tunnel disconnected")
+	env.m.RegisterRuntime("remote", func(inst Installed) (Runtime, error) {
+		return env.fake, nil
+	})
+	env.m.SetSidecarState(func(r Record) (bool, bool) {
+		if r.Manifest.RuntimeKind() == "remote" {
+			return true, false
+		}
+		return false, false
+	})
+	man := []byte(`{"id":"com.example.sidecar","version":"1.0.0","name":"Sidecar","ether":{"protocol":1,"kind":"extension","runtime":{"kind":"remote"}}}`)
+	p := &Preview{
+		Manifest:    mustParseTestManifest(t, man),
+		manifestRaw: man,
+		files:       map[string][]byte{"manifest.json": man},
+		source:      Source{Kind: "package", ID: "com.example.sidecar"},
+	}
+	rec, err := env.m.Install(ctx, p, InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastHealth := map[string]time.Time{}
+	for i := 0; i < 6; i++ {
+		env.m.runOnce(ctx, lastHealth)
+		delete(lastHealth, rec.ID)
+	}
+	after, err := env.m.Get(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Enabled {
+		t.Fatal("waiting sidecar plugin was auto-disabled before sidecar connected")
+	}
+	h, err := env.m.CheckHealth(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Status != "attention" || h.Sidecar != "waiting" {
+		t.Fatalf("unexpected waiting sidecar health: %+v", h)
+	}
+}

@@ -280,7 +280,7 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				}
 			}
 		}
-		if !r.Enabled || r.Manifest.Ether == nil {
+		if !r.Enabled || r.Manifest.Ether == nil || m.sidecarWaiting(r) {
 			continue
 		}
 		interval := time.Minute

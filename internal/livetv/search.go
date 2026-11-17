@@ -96,8 +96,12 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 	if pg {
 		match = strings.Join(words, " & ")
 	}
+	// The unary + strips p's column affinity so SQLite probes
+	// livetv_search_channel_guide for each match. Without it every matched
+	// programme scans the whole channel table (25 s for "office" on a large
+	// lineup).
 	cq := `SELECT id FROM livetv_search_channels WHERE livetv_search_channels MATCH ? ORDER BY rank LIMIT 400`
-	pq := `SELECT c.id,p.data FROM livetv_search_programmes f JOIN livetv_programmes p ON p.source_id=f.source AND p.channel_id=f.channel AND p.start_ms=f.start JOIN livetv_channels c ON coalesce(nullif(json_extract(c.data,'$.guideSourceId'),''),json_extract(c.data,'$.sourceId'))=p.source_id AND json_extract(c.data,'$.guideId')=p.channel_id WHERE livetv_search_programmes MATCH ? AND p.end_ms>? AND p.start_ms<? ORDER BY p.start_ms,c.id LIMIT 400`
+	pq := `SELECT c.id,p.data FROM livetv_search_programmes f JOIN livetv_programmes p ON p.source_id=f.source AND p.channel_id=f.channel AND p.start_ms=f.start JOIN livetv_channels c ON coalesce(nullif(json_extract(c.data,'$.guideSourceId'),''),json_extract(c.data,'$.sourceId'))=+p.source_id AND json_extract(c.data,'$.guideId')=+p.channel_id WHERE livetv_search_programmes MATCH ? AND p.end_ms>? AND p.start_ms<? ORDER BY p.start_ms,c.id LIMIT 400`
 	if pg {
 		cq = `SELECT id FROM livetv_channels WHERE to_tsvector('simple',coalesce(data::jsonb->>'name','') || ' ' || coalesce(data::jsonb->>'number','') || ' ' || coalesce(data::jsonb->>'guideId','')) @@ to_tsquery('simple',?) ORDER BY id LIMIT 400`
 		pq = `SELECT c.id,p.data FROM livetv_programmes p JOIN livetv_channels c ON coalesce(nullif(c.data::jsonb->>'guideSourceId',''),c.data::jsonb->>'sourceId')=p.source_id AND c.data::jsonb->>'guideId'=p.channel_id WHERE to_tsvector('simple',coalesce(p.data::jsonb->'item'->>'title','') || ' ' || coalesce(p.data::jsonb->'item'->>'episodeTitle','') || ' ' || coalesce(p.data::jsonb->'item'->>'summary','')) @@ to_tsquery('simple',?) AND p.end_ms>? AND p.start_ms<? ORDER BY p.start_ms,c.id LIMIT 400`

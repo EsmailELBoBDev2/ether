@@ -926,7 +926,6 @@
   "m_031743be409e25": "Cargando vista previa",
   "m_0317a9912b4274": "Colecciones «Descríbelo», filas temáticas de Inicio, búsqueda en lenguaje natural y resúmenes.",
   "m_031e5b1c1a2e74": "Filtrar por título o lanzamiento…",
-  "m_031f7d1b37fc4b": "Añade cada grupo de canales incluido como una fila en Qué hay en Plex.",
   "m_0320d1c6a83c9a": "Tiempo (horas)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Horas vistas por día",
@@ -6976,7 +6975,6 @@
   "m_17974440a17035": "Obtiene artículos directamente de proveedores NNTP principales y de respaldo.",
   "m_1798257d73583a": "Idiomas",
   "m_1798a2aafbb24a": "Fila de Plex: {title}",
-  "m_179910abc86aaf": "Mostrar grupos de canales en Qué hay",
   "m_179abc2f697e0c": "Se reproduce un pre-roll por título, elegido al azar entre los que coinciden.",
   "m_179bf042c3e16c": {
     "many": "Escribiendo {count} actualizaciones retenidas",

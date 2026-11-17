@@ -389,3 +389,42 @@ func TestSwiftfinLiveTVChannelsProgramsAndTune(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveChannelTagsFollowOwnerGroups(t *testing.T) {
+	viewer := &frontend.Viewer{ID: 1}
+	ident := frontendtest.Identity{ResolveFunc: func(context.Context, string) (*frontend.Viewer, error) { return viewer, nil }}
+	live := frontendtest.LiveTV{
+		GroupsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveGroup, error) {
+			return []frontend.LiveGroup{{ID: "uk", Name: "UK TV"}, {ID: "news", Name: "World News"}}, nil
+		},
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{
+				{ID: "bbc", Name: "BBC News", Group: "Raw UK", Groups: []frontend.LiveGroup{{ID: "uk", Name: "UK TV"}, {ID: "news", Name: "World News"}}},
+				{ID: "local", Name: "Local", Group: "Local OTA"},
+			}, nil
+		},
+	}
+	inst, err := (Emby{MachineID: "test"}).Mount(context.Background(), frontend.Host{Identity: ident, LiveTV: live})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/LiveTv/ChannelTags", nil)
+	r.Header.Set("X-Emby-Token", "grant")
+	inst.Handler().ServeHTTP(w, r)
+	var tagsResp struct {
+		Items []struct {
+			Name string `json:"Name"`
+		} `json:"Items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &tagsResp); err != nil || w.Code != 200 || len(tagsResp.Items) != 2 || tagsResp.Items[0].Name != "UK TV" || tagsResp.Items[1].Name != "World News" {
+		t.Fatalf("ChannelTags order: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/LiveTv/Channels?Tags=World+News", nil)
+	r.Header.Set("X-Emby-Token", "grant")
+	inst.Handler().ServeHTTP(w, r)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "BBC News") || strings.Contains(w.Body.String(), "Local OTA") {
+		t.Fatalf("Channels?Tags=World News: %d %s", w.Code, w.Body.String())
+	}
+}

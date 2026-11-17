@@ -2,11 +2,8 @@ package plex
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -143,11 +140,6 @@ func (s *Server) liveDiscoverySnapshot(ctx context.Context, viewer *frontend.Use
 	return nil
 }
 
-func liveGroupID(source, group string) string {
-	sum := sha256.Sum256([]byte(source + "\x00" + strings.ToLower(strings.TrimSpace(group))))
-	return "group-" + hex.EncodeToString(sum[:16])
-}
-
 func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) (*liveDiscoverySnapshot, error) {
 	live := s.svc().liveTV
 	if live == nil || !live.VisibleTo(ctx, viewer) {
@@ -186,20 +178,6 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 		addBucket(f.Identifier, f.Title, liveProviderPath+"/watchnow/categories/"+f.Identifier)
 	}
 	addBucket("tonight", "On Tonight", liveProviderPath+"/watchnow/tonight")
-	groups := map[string]bool{}
-	if h, ok := live.(frontend.LiveTVSourceHubGroups); ok {
-		gs, e := h.SourceHubGroups(ctx)
-		if e != nil {
-			return nil, e
-		}
-		for _, g := range gs {
-			id := liveGroupID(g.SourceID, g.Group)
-			addBucket(id, g.Group, liveProviderPath+"/watchnow/groups/"+url.PathEscape(g.SourceID)+"/"+url.PathEscape(g.Group))
-			if _, ok := bucketIndex[id]; ok {
-				groups[id] = true
-			}
-		}
-	}
 	// Each batch temporarily holds at most 32 channels' guide. Retained entries
 	// and buckets have hard caps; a 10,000-channel guide is never materialized.
 	for start := 0; start < len(cs); start += 32 {
@@ -220,7 +198,7 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 		found := map[string]bool{}
 		appendItem := func(id string, p frontend.LiveTVProgramme) {
 			if at, ok := bucketIndex[id]; ok {
-				if id != "all" && id != "tonight" && !strings.HasPrefix(id, "group-") {
+				if id != "all" && id != "tonight" {
 					key := "ether.category." + id
 					found := false
 					for _, existing := range out.genres[p.ChannelID] {
@@ -272,11 +250,6 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 			if p.End.After(evening) && p.Start.Before(nightEnd) {
 				appendItem("tonight", p)
 			}
-			if !p.Start.After(now) {
-				if id := liveGroupID(c.SourceID, c.Group); groups[id] {
-					appendItem(id, p)
-				}
-			}
 		}
 		for _, c := range chunk {
 			if !found[c.ID] {
@@ -315,7 +288,7 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 			kept := make([]frontend.LiveTVProgramme, 0, min(len(b.items), liveDiscoveryItemsMax))
 			for _, p := range b.items {
 				dedup := p.ChannelID
-				if b.id != "all" && !strings.HasPrefix(b.id, "group-") && p.ID != "" {
+				if b.id != "all" && p.ID != "" {
 					dedup = p.ChannelID + "|" + p.Item.Title
 				}
 				if seen[dedup] {
@@ -400,17 +373,6 @@ func (s *Server) liveDiscoveryMetadata(r *http.Request, captured *[]frontend.Liv
 			return nil, frontend.ErrNotFound
 		}
 	}
-	if raw := chi.URLParam(r, "group"); raw != "" {
-		group, err := liveRouteParam(r, raw)
-		if err != nil {
-			return nil, errLiveBadRequest
-		}
-		source, err := liveRouteParam(r, chi.URLParam(r, "sourceID"))
-		if err != nil {
-			return nil, errLiveBadRequest
-		}
-		id = liveGroupID(source, group)
-	}
 	ps, cs, err := s.liveDiscoveryItems(r, id, liveDiscoveryItemsMax)
 	if err != nil {
 		return nil, err
@@ -419,12 +381,4 @@ func (s *Server) liveDiscoveryMetadata(r *http.Request, captured *[]frontend.Liv
 		*captured = ps
 	}
 	return s.liveDiscoveryToMetadata(r, ps, cs), nil
-}
-
-// chi routes on RawPath when present, otherwise on the already decoded Path.
-func liveRouteParam(r *http.Request, raw string) (string, error) {
-	if r.URL.RawPath == "" {
-		return raw, nil
-	}
-	return url.PathUnescape(raw)
 }

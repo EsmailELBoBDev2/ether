@@ -20,9 +20,11 @@ type ChannelBatch struct {
 	Favorite *bool    `json:"favorite,omitempty"`
 	Group    *string  `json:"group,omitempty"`
 	// ShowApps and HideApps change only the named apps; each channel keeps
-	// its own choice for every other app.
-	ShowApps []string `json:"showApps,omitempty"`
-	HideApps []string `json:"hideApps,omitempty"`
+	// its own choice for every other app. ClearApps removes per-channel
+	// overrides for the named apps so they inherit their group's rule again.
+	ShowApps  []string `json:"showApps,omitempty"`
+	HideApps  []string `json:"hideApps,omitempty"`
+	ClearApps []string `json:"clearApps,omitempty"`
 }
 
 func (s *Service) UpdateChannels(ctx context.Context, change ChannelBatch) (int, error) {
@@ -38,12 +40,21 @@ func (s *Service) UpdateChannels(ctx context.Context, change ChannelBatch) (int,
 	if err != nil {
 		return 0, err
 	}
+	clearList, err := normalizeHiddenApps(change.ClearApps)
+	if err != nil {
+		return 0, err
+	}
 	for _, app := range show {
-		if slices.Contains(hide, app) {
+		if slices.Contains(hide, app) || slices.Contains(clearList, app) {
 			return 0, fmt.Errorf("show or hide %s, not both", app)
 		}
 	}
-	apps := len(show)+len(hide) > 0
+	for _, app := range hide {
+		if slices.Contains(clearList, app) {
+			return 0, fmt.Errorf("hide or clear %s, not both", app)
+		}
+	}
+	apps := len(show)+len(hide)+len(clearList) > 0
 	if change.Enabled != nil {
 		patch["enabled"] = *change.Enabled
 	}
@@ -79,14 +90,30 @@ func (s *Service) UpdateChannels(ctx context.Context, change ChannelBatch) (int,
 	// channel's current list, everything else is shared.
 	groups := map[string][]string{}
 	if apps {
-		current, err := channelHiddenApps(ctx, store.DialectOf(s.o.DB), tx, ids)
+		groupIdx, _ := s.cachedOwnerGroupIndex(ctx)
+		current, err := channelAppOverrides(ctx, store.DialectOf(s.o.DB), tx, ids)
 		if err != nil {
 			return 0, err
 		}
 		for _, id := range ids {
-			next := slices.DeleteFunc(slices.Clone(current[id]), func(app string) bool { return slices.Contains(show, app) })
-			next, _ = normalizeHiddenApps(append(next, hide...))
-			patch["hiddenApps"] = next
+			cur := current[id]
+			nextHidden := slices.DeleteFunc(slices.Clone(cur.hidden), func(app string) bool {
+				return slices.Contains(show, app) || slices.Contains(clearList, app)
+			})
+			nextHidden, _ = normalizeHiddenApps(append(nextHidden, hide...))
+
+			nextShown := slices.DeleteFunc(slices.Clone(cur.shown), func(app string) bool {
+				return slices.Contains(hide, app) || slices.Contains(clearList, app) || slices.Contains(show, app)
+			})
+			for _, app := range show {
+				if groupShow, hasRule := groupIdx.groupAppRule(cur.sourceID, cur.group, id, app); hasRule && !groupShow {
+					nextShown = append(nextShown, app)
+				}
+			}
+			nextShown, _ = normalizeHiddenApps(nextShown)
+
+			patch["hiddenApps"] = nextHidden
+			patch["shownApps"] = nextShown
 			payload, err := json.Marshal(patch)
 			if err != nil {
 				return 0, err
@@ -154,11 +181,21 @@ func patchChannels(ctx context.Context, tx *sql.Tx, expression, payload string, 
 	return nil
 }
 
-// channelHiddenApps reads only the app lists of the selected channels. A
-// missing channel is reported by the update that follows.
-func channelHiddenApps(ctx context.Context, d store.Dialect, tx *sql.Tx, ids []string) (map[string][]string, error) {
-	out := make(map[string][]string, len(ids))
-	column := store.JSONText(d, "data", "hiddenApps")
+type channelAppOverridePair struct {
+	sourceID string
+	group    string
+	hidden   []string
+	shown    []string
+}
+
+// channelAppOverrides reads only the per-channel app override lists and group
+// keys of the selected channels. A missing channel is reported by the update that follows.
+func channelAppOverrides(ctx context.Context, d store.Dialect, tx *sql.Tx, ids []string) (map[string]channelAppOverridePair, error) {
+	out := make(map[string]channelAppOverridePair, len(ids))
+	sourceCol := "COALESCE(" + store.JSONText(d, "data", "sourceId") + ", '')"
+	groupCol := "COALESCE(" + store.JSONText(d, "data", "group") + ", '')"
+	hiddenCol := store.JSONText(d, "data", "hiddenApps")
+	shownCol := store.JSONText(d, "data", "shownApps")
 	for start := 0; start < len(ids); start += 500 {
 		batch := ids[start:min(start+500, len(ids))]
 		args := make([]any, len(batch))
@@ -166,25 +203,31 @@ func channelHiddenApps(ctx context.Context, d store.Dialect, tx *sql.Tx, ids []s
 			args[i] = id
 		}
 		marks := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		rows, err := tx.QueryContext(ctx, "SELECT id, "+column+" FROM livetv_channels WHERE id IN ("+marks+")", args...)
+		rows, err := tx.QueryContext(ctx, "SELECT id, "+sourceCol+", "+groupCol+", "+hiddenCol+", "+shownCol+" FROM livetv_channels WHERE id IN ("+marks+")", args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
 			var id string
-			var raw sql.NullString
-			if err := rows.Scan(&id, &raw); err != nil {
+			var pair channelAppOverridePair
+			var rawHidden, rawShown sql.NullString
+			if err := rows.Scan(&id, &pair.sourceID, &pair.group, &rawHidden, &rawShown); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			var apps []string
-			if raw.Valid && raw.String != "" {
-				if err := json.Unmarshal([]byte(raw.String), &apps); err != nil {
+			if rawHidden.Valid && rawHidden.String != "" {
+				if err := json.Unmarshal([]byte(rawHidden.String), &pair.hidden); err != nil {
 					rows.Close()
-					return nil, fmt.Errorf("live TV channel %s apps: %w", id, err)
+					return nil, fmt.Errorf("live TV channel %s hiddenApps: %w", id, err)
 				}
 			}
-			out[id] = apps
+			if rawShown.Valid && rawShown.String != "" {
+				if err := json.Unmarshal([]byte(rawShown.String), &pair.shown); err != nil {
+					rows.Close()
+					return nil, fmt.Errorf("live TV channel %s shownApps: %w", id, err)
+				}
+			}
+			out[id] = pair
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {

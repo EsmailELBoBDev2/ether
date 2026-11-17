@@ -426,8 +426,17 @@ export function ChannelsWorkspace({
   );
 
   const selectedAppsState = useMemo(
-    () => appStates(rows.filter((c) => checked.has(c.id)).map((c) => c.hiddenApps)),
-    [rows, checked],
+    () =>
+      appStates(
+        rows
+          .filter((c) => checked.has(c.id))
+          .map((c) =>
+            LIVE_APPS.filter(
+              (app) => !channelVisibleInApp(c, app, index.memberGroupsByChannel.get(c.id)),
+            ),
+          ),
+      ),
+    [rows, checked, index.memberGroupsByChannel],
   );
 
   const clearSelection = useCallback(() => {

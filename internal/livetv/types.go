@@ -167,7 +167,8 @@ type Channel struct {
 	Name          string         `json:"name"`
 	Kind          string         `json:"kind"` // virtual or iptv
 	Enabled       bool           `json:"enabled"`
-	HiddenApps    []string       `json:"hiddenApps,omitempty"` // apps (Apps) that omit this channel; every other app lists it
+	HiddenApps    []string       `json:"hiddenApps,omitempty"` // explicit per-channel hides (override OwnerGroup.Apps)
+	ShownApps     []string       `json:"shownApps,omitempty"`  // explicit per-channel shows (override OwnerGroup.Apps hides)
 	Favorite      bool           `json:"favorite"`
 	Logo          string         `json:"logo,omitempty"`
 	LogoMatched   bool           `json:"logoMatched,omitempty"`
@@ -288,8 +289,6 @@ type Source struct {
 	// order and numbers; otherwise channels are numbered 1… down the
 	// listed groups (unlisted groups follow in provider order).
 	GroupOrder []string `json:"groupOrder,omitempty"`
-	// HubGroups adds each included channel group as a What's On shelf in Plex.
-	HubGroups bool `json:"hubGroups,omitempty"`
 
 	// Provider etiquette for the source's streams. MaxConnections caps
 	// simultaneous provider connections below what the panel allows (0 uses

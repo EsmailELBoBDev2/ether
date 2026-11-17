@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,25 +35,25 @@ CREATE TABLE livetv_policies(user_id INTEGER PRIMARY KEY, data TEXT NOT NULL);`)
 }
 
 type Service struct {
-	guideRatingsMu                            sync.Mutex
-	guideRatings                              *guideRatingIndex
 	searchDemanded                            atomic.Bool
 	searchVirtualMu                           sync.Mutex
 	searchVirtualSnapshots                    map[string]virtualSearchIndexedSnapshot
 	searchMu                                  sync.Mutex
 	searchBuilding, searchReady, searchClosed bool
 
-	ownerGuidesMu    sync.Mutex
-	ownerGuideGroups []guideChoice
-	ownerGuideRev    int64
-	loginPool        loginPool
-	closeOnce        sync.Once
-	lifetimeStop     chan struct{}
-	lifetimeDone     chan struct{}
-	lifetimeWake     chan struct{}
-	hasChannels      atomic.Bool
-	lifecycleMu      sync.Mutex
-	running          bool
+	ownerGroupsMu        sync.Mutex
+	ownerGroupsIndex     *ownerGroupIndex
+	ownerGroupsIndexRev  int64
+	ownerGroupChoices    []OwnerGroupChoice
+	ownerGroupChoicesRev int64
+	loginPool            loginPool
+	closeOnce            sync.Once
+	lifetimeStop         chan struct{}
+	lifetimeDone         chan struct{}
+	lifetimeWake         chan struct{}
+	hasChannels          atomic.Bool
+	lifecycleMu          sync.Mutex
+	running              bool
 
 	readinessWake         chan struct{}
 	readiness             map[string]channelReadiness
@@ -933,6 +934,17 @@ func validateChannel(c *Channel) error {
 		return err
 	}
 	c.HiddenApps = apps
+	shown, err := normalizeHiddenApps(c.ShownApps)
+	if err != nil {
+		return err
+	}
+	if len(shown) > 0 && len(apps) > 0 {
+		shown = slices.DeleteFunc(shown, func(app string) bool { return slices.Contains(apps, app) })
+		if len(shown) == 0 {
+			shown = nil
+		}
+	}
+	c.ShownApps = shown
 	if c.Look != nil {
 		if err := c.Look.Bug.Validate(); err != nil {
 			return err
@@ -1271,7 +1283,7 @@ func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context
 }
 
 func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
-	if u == nil || !c.Enabled || !publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
+	if u == nil || !c.Enabled || !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
 		return false
 	}
 	if !u.IsOwner && s.sweepState(c) == "unavailable" {
@@ -1364,7 +1376,7 @@ func (s *Service) AllowedChannels(ctx context.Context, u *core.User) ([]Channel,
 	return s.allowedChannels(ctx, u, nil)
 }
 
-// AllowedChannelsForIDs checks a guide's selected channels without waiting for
+// AllowedChannelsForIDs checks a group's selected channels without waiting for
 // unrelated channels to finish their background preparation.
 func (s *Service) AllowedChannelsForIDs(ctx context.Context, u *core.User, ids []string) ([]Channel, error) {
 	return s.allowedChannels(ctx, u, ids)
@@ -1381,7 +1393,13 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 	var cs []Channel
 	if ids == nil {
 		cs, err = s.Channels(ctx)
+		if err == nil {
+			if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+				ctx = contextWithOwnerGroupIndex(ctx, idx)
+			}
+		}
 	} else {
+		ctx = s.withOwnerGroupIndex(ctx)
 		var selected map[string]Channel
 		selected, err = s.channelsByIDs(ctx, ids)
 		for _, id := range ids {
@@ -1733,9 +1751,13 @@ func (s *Service) GuideForChannels(ctx context.Context, u *core.User, from, unti
 }
 
 func channelFromSummary(c ChannelSummary) Channel {
+	hidden := c.rawHiddenApps
+	if hidden == nil && c.ShownApps == nil {
+		hidden = c.HiddenApps
+	}
 	return Channel{
 		ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, sweepKey: c.sweepKey,
-		Private: c.Private, Enabled: c.Enabled, Favorite: c.Favorite, HiddenApps: c.HiddenApps,
+		Private: c.Private, Enabled: c.Enabled, Favorite: c.Favorite, HiddenApps: hidden, ShownApps: c.ShownApps,
 		Rating: c.Rating, Logo: c.Logo, SourceID: c.SourceID,
 		GuideID: c.GuideID, GuideSourceID: c.GuideSourceID, Group: c.Group,
 	}
@@ -1755,6 +1777,7 @@ func (s *Service) guide(ctx context.Context, u *core.User, from, until time.Time
 	}
 	var cs []Channel
 	if ids != nil {
+		ctx = s.withOwnerGroupIndex(ctx)
 		full, err := s.channelsByIDs(ctx, ids)
 		if err != nil {
 			return nil, err
@@ -1771,6 +1794,9 @@ func (s *Service) guide(ctx context.Context, u *core.User, from, until time.Time
 		all, err := s.channelSummaries(ctx)
 		if err != nil {
 			return nil, err
+		}
+		if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+			ctx = contextWithOwnerGroupIndex(ctx, idx)
 		}
 		virtualIDs := make([]string, 0)
 		for _, c := range all {
@@ -1969,6 +1995,9 @@ func (s *Service) onNow(ctx context.Context, u *core.User, now, until time.Time,
 	cs, err := s.Channels(ctx)
 	if err != nil {
 		return nil, nil, err
+	}
+	if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+		ctx = contextWithOwnerGroupIndex(ctx, idx)
 	}
 	ctx, err = s.withVirtualGuide(ctx, cs)
 	if err != nil {
@@ -2256,6 +2285,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 				}
 				c.Enabled = previous.Enabled
 				c.HiddenApps = previous.HiddenApps
+				c.ShownApps = previous.ShownApps
 				c.Favorite = previous.Favorite
 				c.Rating = previous.Rating
 				c.GuideID = previous.GuideID

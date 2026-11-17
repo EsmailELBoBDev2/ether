@@ -12,8 +12,8 @@ import (
 
 func TestOwnerGuideFilterDiscovery(t *testing.T) {
 	f, service, ch := liveFixture(t)
-	guides := []livetv.OwnerGuide{{ID: "family", Name: "Family", All: true}, {ID: "hidden", Name: "Hidden", All: true, Hidden: true}}
-	if err := service.SaveOwnerGuides(context.Background(), guides); err != nil {
+	guides := []livetv.OwnerGroup{{ID: "family", Name: "Family", All: true}, {ID: "hidden", Name: "Hidden", All: true, Hidden: true}}
+	if err := service.SaveOwnerGroups(context.Background(), guides); err != nil {
 		t.Fatal(err)
 	}
 	for _, accept := range []string{"application/json", "application/xml"} {
@@ -41,7 +41,7 @@ func TestOwnerGuideFilterDiscovery(t *testing.T) {
 		t.Fatalf("hidden guide status %d", r.Code)
 	}
 	guides[0].Name = "Renamed"
-	if err := service.SaveOwnerGuides(context.Background(), guides); err != nil {
+	if err := service.SaveOwnerGroups(context.Background(), guides); err != nil {
 		t.Fatal(err)
 	}
 	r = f.request(t, "GET", "/media/providers", map[string]string{"Accept": "application/json"})

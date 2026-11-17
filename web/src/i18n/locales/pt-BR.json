@@ -926,7 +926,6 @@
   "m_031743be409e25": "Carregando a prévia",
   "m_0317a9912b4274": "Coleções por descrição, linhas temáticas do Início, pesquisa em linguagem natural e resumos.",
   "m_031e5b1c1a2e74": "Filtrar por título ou release…",
-  "m_031f7d1b37fc4b": "Adiciona cada grupo de canais incluído como uma fileira em No ar no Plex.",
   "m_0320d1c6a83c9a": "Tempo (horas)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Horas assistidas por dia",
@@ -6976,7 +6975,6 @@
   "m_17974440a17035": "Busca artigos diretamente nos provedores NNTP principais e de reserva.",
   "m_1798257d73583a": "Idiomas",
   "m_1798a2aafbb24a": "Linha do Plex: {title}",
-  "m_179910abc86aaf": "Mostrar grupos de canais em No ar",
   "m_179abc2f697e0c": "Passa um pre-roll por título, sorteado entre os que se encaixam.",
   "m_179bf042c3e16c": {
     "many": "Gravando {count} atualizações retidas",

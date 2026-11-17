@@ -947,7 +947,6 @@
   "m_031743be409e25": "Načítání náhledu",
   "m_0317a9912b4274": "Kolekce z funkce Popište to, tematické řádky Domů, vyhledávání přirozeným jazykem a shrnutí.",
   "m_031e5b1c1a2e74": "Filtrovat podle titulu nebo vydání…",
-  "m_031f7d1b37fc4b": "Přidá každou zahrnutou skupinu kanálů jako samostatný řádek v části Co se vysílá v Plexu.",
   "m_0320d1c6a83c9a": "Čas (hodiny)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Hodiny sledování podle dnů",
@@ -7155,7 +7154,6 @@
   "m_17974440a17035": "Načítá články přímo od primárních a záložních poskytovatelů NNTP.",
   "m_1798257d73583a": "Jazyky",
   "m_1798a2aafbb24a": "Řádek Plexu: {title}",
-  "m_179910abc86aaf": "Zobrazit skupiny kanálů v Co se vysílá",
   "m_179abc2f697e0c": "Před každým titulem se přehraje jeden pre-roll, náhodně vybraný z vyhovujících.",
   "m_179bf042c3e16c": {
     "few": "Zapisují se {count} odložené aktualizace",

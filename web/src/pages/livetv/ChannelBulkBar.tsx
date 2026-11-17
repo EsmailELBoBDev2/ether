@@ -23,6 +23,7 @@ export type ChannelPatch = {
   /** Apps to list the channels in / leave them out of; other apps keep each channel's choice. */
   showApps?: string[];
   hideApps?: string[];
+  clearApps?: string[];
 };
 
 /** How the selected channels currently appear in one app. */
@@ -38,14 +39,29 @@ export function appStates(hidden: (string[] | undefined)[]): Record<LiveApp, App
 }
 
 /** A channel after a bulk patch, as the server applies it. */
-export function patchChannel<C extends { hiddenApps?: string[] }>(c: C, patch: ChannelPatch): C {
-  const { showApps, hideApps, ...rest } = patch;
+export function patchChannel<C extends { hiddenApps?: string[]; shownApps?: string[] }>(
+  c: C,
+  patch: ChannelPatch,
+): C {
+  const { showApps, hideApps, clearApps, ...rest } = patch;
   const next: C = { ...c, ...rest, ...(rest.group !== undefined ? { customGroup: true } : {}) };
-  if (showApps || hideApps) {
+  if (showApps || hideApps || clearApps) {
     const hidden = new Set(c.hiddenApps ?? []);
-    for (const app of showApps ?? []) hidden.delete(app);
-    for (const app of hideApps ?? []) hidden.add(app);
+    const shown = new Set(c.shownApps ?? []);
+    for (const app of clearApps ?? []) {
+      hidden.delete(app);
+      shown.delete(app);
+    }
+    for (const app of showApps ?? []) {
+      hidden.delete(app);
+      shown.add(app);
+    }
+    for (const app of hideApps ?? []) {
+      shown.delete(app);
+      hidden.add(app);
+    }
     next.hiddenApps = hidden.size ? LIVE_APPS.filter((a) => hidden.has(a)) : undefined;
+    next.shownApps = shown.size ? LIVE_APPS.filter((a) => shown.has(a)) : undefined;
   }
   return next;
 }

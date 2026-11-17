@@ -549,8 +549,22 @@ export default function LiveTV() {
       setBulkBusy(true);
       try {
         await tv.setChannelsApp(change);
-        const patchOne = <T extends { hiddenApps?: string[] }>(c: T): T =>
+        const patchOne = <T extends { hiddenApps?: string[]; shownApps?: string[] }>(c: T): T =>
           patchChannel(c, change.show ? { showApps: [change.app] } : { hideApps: [change.app] });
+
+        if ("ownerGroup" in change) {
+          setOwnerGroups((gs) =>
+            gs.map((g) => {
+              if (g.id !== change.ownerGroup) return g;
+              const hiddenApps = g.hiddenApps?.filter((a) => a !== change.app);
+              return {
+                ...g,
+                apps: { ...(g.apps ?? {}), [change.app]: change.show },
+                hiddenApps: hiddenApps?.length ? hiddenApps : undefined,
+              };
+            }),
+          );
+        }
 
         setAllChannels((cs) => {
           if (!cs) return cs;
@@ -568,7 +582,7 @@ export default function LiveTV() {
                 g.all ||
                 cset.has(c.id) ||
                 (c.kind !== "virtual" && pset.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`));
-              return hit ? patchOne(c) : c;
+              return hit ? patchChannel(c, { clearApps: [change.app] }) : c;
             });
           }
           return cs.map((c) => {

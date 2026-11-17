@@ -28,6 +28,13 @@ type surfaceLiveTV struct {
 	artwork          frontend.Artwork
 }
 
+func (s surfaceLiveTV) withApp(ctx context.Context) context.Context {
+	if s.surface == "" {
+		return ctx
+	}
+	return core.WithLiveApp(ctx, s.surface)
+}
+
 func (s surfaceLiveTV) Enabled() bool {
 	return s.app != nil && s.app.livetv != nil && s.app.livetv.Enabled()
 }
@@ -49,17 +56,23 @@ func (s surfaceLiveTV) viewer(ctx context.Context, v *core.Viewer) (*core.User, 
 	}
 	return s.app.safety.UserPolicy(viewer), nil
 }
-func (s surfaceLiveTV) liveChannel(viewer *core.Viewer, c livetv.Channel) frontend.LiveChannel {
-	result := frontend.LiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Rating: c.Rating, Favorite: c.Favorite, Group: c.Group}
+
+func (s surfaceLiveTV) liveChannel(ctx context.Context, viewer *core.Viewer, c livetv.Channel) (frontend.LiveChannel, error) {
+	groups, err := s.app.livetv.ChannelGroups(ctx, c.SourceID, c.Group, c.ID)
+	if err != nil {
+		return frontend.LiveChannel{}, err
+	}
+	result := frontend.LiveChannel{ID: c.ID, Number: c.Number, Name: c.Name, Kind: c.Kind, Rating: c.Rating, Favorite: c.Favorite, Group: c.Group, Groups: groups}
 	if s.channelArtwork != nil {
 		if image := s.channelArtwork(viewer, c); image.Path != "" {
 			result.Images = []frontend.Image{image}
 		}
 	}
-	return result
+	return result, nil
 }
+
 func (s surfaceLiveTV) Channels(ctx context.Context, v *core.Viewer) ([]frontend.LiveChannel, error) {
-	ctx = core.WithLiveApp(ctx, s.surface)
+	ctx = s.withApp(ctx)
 	viewer, err := s.viewer(ctx, v)
 	if err != nil {
 		return nil, err
@@ -67,6 +80,7 @@ func (s surfaceLiveTV) Channels(ctx context.Context, v *core.Viewer) ([]frontend
 	if s.app.livetv == nil {
 		return nil, core.ErrNotAvailable
 	}
+	ctx = s.app.livetv.WithOwnerGroupIndex(ctx)
 	channels, err := s.app.livetv.AllowedChannels(ctx, viewer)
 	if err == nil {
 		s.app.livetv.NoteClientActivity()
@@ -76,10 +90,51 @@ func (s surfaceLiveTV) Channels(ctx context.Context, v *core.Viewer) ([]frontend
 	}
 	out := make([]frontend.LiveChannel, 0, len(channels))
 	for _, c := range channels {
-		out = append(out, s.liveChannel(viewer, c))
+		row, err := s.liveChannel(ctx, viewer, c)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
 	}
 	return out, nil
 }
+
+func (s surfaceLiveTV) Groups(ctx context.Context, u *frontend.User) ([]frontend.LiveGroup, error) {
+	ctx = s.withApp(ctx)
+	viewer, err := s.viewer(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	if h, ok := s.host().(frontend.LiveTVGroups); ok {
+		return h.Groups(ctx, viewer)
+	}
+	return []frontend.LiveGroup{}, nil
+}
+
+func (s surfaceLiveTV) GroupChannels(ctx context.Context, u *frontend.User, id string) ([]frontend.LiveTVChannel, error) {
+	ctx = s.withApp(ctx)
+	viewer, err := s.viewer(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	if h, ok := s.host().(frontend.LiveTVGroups); ok {
+		return h.GroupChannels(ctx, viewer, id)
+	}
+	return nil, core.ErrNotFound
+}
+
+func (s surfaceLiveTV) SearchLiveTV(ctx context.Context, v *core.Viewer, query string, limit int) (frontend.LiveSearchResults, error) {
+	ctx = s.withApp(ctx)
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return frontend.LiveSearchResults{}, err
+	}
+	if h, ok := s.host().(frontend.LiveTVSearch); ok {
+		return h.SearchLiveTV(ctx, viewer, query, limit)
+	}
+	return frontend.LiveSearchResults{}, nil
+}
+
 func (s surfaceLiveTV) Guide(ctx context.Context, v *core.Viewer, q frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error) {
 	page, err := s.guidePage(ctx, v, frontend.LiveGuidePageQuery{LiveGuideQuery: q}, false)
 	return page.Items, err
@@ -91,7 +146,7 @@ func (s surfaceLiveTV) GuidePage(ctx context.Context, v *core.Viewer, pageQuery 
 
 func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery frontend.LiveGuidePageQuery, paged bool) (frontend.LiveGuidePage, error) {
 	q := pageQuery.LiveGuideQuery
-	ctx = core.WithLiveApp(ctx, s.surface)
+	ctx = s.withApp(ctx)
 	if !q.Until.After(q.From) || q.Until.Sub(q.From) > 7*24*time.Hour || q.Limit < 0 || q.Limit > maxLiveProgrammes || pageQuery.Offset < 0 {
 		return frontend.LiveGuidePage{}, errLiveQuery
 	}
@@ -214,6 +269,7 @@ func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery 
 	}
 	return frontend.LiveGuidePage{Items: out, Snapshot: snapshot, More: more}, nil
 }
+
 func normalizeLiveGUID(raw string, kind ids.Kind) (string, error) {
 	n, err := ids.ParseGUID(kind, raw)
 	if err != nil {
@@ -221,8 +277,9 @@ func normalizeLiveGUID(raw string, kind ids.Kind) (string, error) {
 	}
 	return ids.GUID(kind, n)
 }
+
 func (s surfaceLiveTV) ResolveChannelGUID(ctx context.Context, v *core.Viewer, guid string) (frontend.LiveChannel, error) {
-	ctx = core.WithLiveApp(ctx, s.surface)
+	ctx = s.withApp(ctx)
 	normalized, err := normalizeLiveGUID(guid, ids.Channel)
 	if err != nil {
 		return frontend.LiveChannel{}, err
@@ -234,6 +291,7 @@ func (s surfaceLiveTV) ResolveChannelGUID(ctx context.Context, v *core.Viewer, g
 	if s.app.livetv == nil {
 		return frontend.LiveChannel{}, core.ErrNotAvailable
 	}
+	ctx = s.app.livetv.WithOwnerGroupIndex(ctx)
 	channels, err := s.app.livetv.Channels(ctx)
 	if err != nil {
 		return frontend.LiveChannel{}, err
@@ -263,7 +321,10 @@ func (s surfaceLiveTV) ResolveChannelGUID(ctx context.Context, v *core.Viewer, g
 		if found != nil {
 			return frontend.LiveChannel{}, core.ErrUnauthorized
 		}
-		row := s.liveChannel(viewer, c)
+		row, err := s.liveChannel(ctx, viewer, c)
+		if err != nil {
+			return frontend.LiveChannel{}, err
+		}
 		found = &row
 	}
 	if found == nil {
@@ -271,6 +332,7 @@ func (s surfaceLiveTV) ResolveChannelGUID(ctx context.Context, v *core.Viewer, g
 	}
 	return *found, nil
 }
+
 func (s surfaceLiveTV) ResolveProgrammeGUID(ctx context.Context, v *core.Viewer, guid string, q frontend.LiveGuideQuery) (frontend.LiveProgramme, error) {
 	normalized, err := normalizeLiveGUID(guid, ids.Programme)
 	if err != nil {
@@ -299,10 +361,13 @@ func (s surfaceLiveTV) ResolveProgrammeGUID(ctx context.Context, v *core.Viewer,
 
 func (s surfaceLiveTV) VisibleTo(ctx context.Context, u *frontend.User) bool {
 	h := s.host()
-	return h != nil && h.VisibleTo(ctx, u)
+	return h != nil && h.VisibleTo(s.withApp(ctx), u)
 }
 func (s surfaceLiveTV) ServeXMLTV(w http.ResponseWriter, r *http.Request, u *frontend.User) {
 	if h := s.host(); h != nil {
+		if s.surface != "" {
+			r = r.WithContext(s.withApp(r.Context()))
+		}
 		h.ServeXMLTV(w, r, u)
 	}
 }
@@ -338,14 +403,14 @@ func (s surfaceLiveTV) AllowedChannels(ctx context.Context, u *frontend.User) ([
 	if h == nil {
 		return nil, core.ErrNotAvailable
 	}
-	return h.AllowedChannels(ctx, u)
+	return h.AllowedChannels(s.withApp(ctx), u)
 }
 func (s surfaceLiveTV) AllowedChannel(ctx context.Context, u *frontend.User, id string) (frontend.LiveTVChannel, error) {
 	h := s.host()
 	if h == nil {
 		return frontend.LiveTVChannel{}, core.ErrNotAvailable
 	}
-	return h.AllowedChannel(ctx, u, id)
+	return h.AllowedChannel(s.withApp(ctx), u, id)
 }
 func (s surfaceLiveTV) Channel(ctx context.Context, id string) (frontend.LiveTVChannel, error) {
 	h := s.host()
@@ -373,7 +438,7 @@ func (s surfaceLiveTV) ChannelPermitted(ctx context.Context, u *frontend.User, i
 	if h == nil {
 		return false, core.ErrNotAvailable
 	}
-	return h.ChannelPermitted(ctx, u, id)
+	return h.ChannelPermitted(s.withApp(ctx), u, id)
 }
 func (s surfaceLiveTV) LineupChangedFor(u *frontend.User) time.Time {
 	if h := s.host(); h != nil {
@@ -386,14 +451,14 @@ func (s surfaceLiveTV) GuideForChannels(ctx context.Context, u *frontend.User, f
 	if h == nil {
 		return nil, core.ErrNotAvailable
 	}
-	return h.GuideForChannels(ctx, u, from, until, channelIDs)
+	return h.GuideForChannels(s.withApp(ctx), u, from, until, channelIDs)
 }
 func (s surfaceLiveTV) GuideWindow(ctx context.Context, u *frontend.User, from, until time.Time) ([]frontend.LiveTVProgramme, error) {
 	h := s.host()
 	if h == nil {
 		return nil, core.ErrNotAvailable
 	}
-	return h.GuideWindow(ctx, u, from, until)
+	return h.GuideWindow(s.withApp(ctx), u, from, until)
 }
 func (s surfaceLiveTV) GuideChannelLogo(ctx context.Context, c frontend.LiveTVChannel) string {
 	if h := s.host(); h != nil {
@@ -401,18 +466,12 @@ func (s surfaceLiveTV) GuideChannelLogo(ctx context.Context, c frontend.LiveTVCh
 	}
 	return ""
 }
-func (s surfaceLiveTV) SourceHubGroups(ctx context.Context) ([]frontend.LiveSourceHubGroup, error) {
-	if h, ok := s.host().(frontend.LiveTVSourceHubGroups); ok {
-		return h.SourceHubGroups(ctx)
-	}
-	return nil, nil
-}
 func (s surfaceLiveTV) TuneWithSession(ctx context.Context, u *frontend.User, id string, caps frontend.ClientCaps, sessionID string) (frontend.LiveTVSessionInfo, error) {
 	h := s.host()
 	if h == nil {
 		return frontend.LiveTVSessionInfo{}, core.ErrNotAvailable
 	}
-	return h.TuneWithSession(ctx, u, id, liveTVClientCaps(caps), sessionID)
+	return h.TuneWithSession(s.withApp(ctx), u, id, liveTVClientCaps(caps), sessionID)
 }
 func (s surfaceLiveTV) Sessions(ctx context.Context, u *frontend.User) []frontend.LiveTVSessionInfo {
 	if h := s.host(); h != nil {
@@ -465,7 +524,11 @@ func (s surfaceLiveTV) LogoKey() []byte {
 	return nil
 }
 
-var _ frontend.LiveTV = surfaceLiveTV{}
+var (
+	_ frontend.LiveTV       = surfaceLiveTV{}
+	_ frontend.LiveTVGroups = surfaceLiveTV{}
+	_ frontend.LiveTVSearch = surfaceLiveTV{}
+)
 
 func (s surfaceLiveTV) FilterDiscovery(ctx context.Context, u *frontend.User, ps []frontend.LiveTVProgramme) ([]frontend.LiveTVProgramme, []frontend.LiveTVChannel, error) {
 	viewer, err := s.viewer(ctx, u)
@@ -473,7 +536,7 @@ func (s surfaceLiveTV) FilterDiscovery(ctx context.Context, u *frontend.User, ps
 		return nil, nil, err
 	}
 	if h, ok := s.host().(frontend.LiveTVDiscoveryPolicy); ok {
-		return h.FilterDiscovery(core.WithLiveApp(ctx, s.surface), viewer, ps)
+		return h.FilterDiscovery(s.withApp(ctx), viewer, ps)
 	}
 	return nil, nil, frontend.ErrNotAvailable
 }

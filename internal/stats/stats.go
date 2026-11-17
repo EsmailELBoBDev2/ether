@@ -69,6 +69,7 @@ type Options struct {
 	Newsletter    func(context.Context, string) error
 	StopSession   func(string) error
 	SessionExists func(string) bool
+	Session       func(string) (*core.PlaySession, bool)
 	Playback      core.Playback
 	Providers     func() []usenet.ProviderStats
 	Indexers      func(context.Context) ([]newznab.Remaining, error)
@@ -108,6 +109,16 @@ type Service struct {
 	// plays holds play records through a database outage (clustered).
 	plays *store.Outbox[string, playRecord]
 	dash  *Dashboard
+}
+
+func (s *Service) liveSession(id string) (*core.PlaySession, bool) {
+	if s.opts.Session != nil {
+		return s.opts.Session(id)
+	}
+	if s.opts.Playback != nil {
+		return s.opts.Playback.Session(id)
+	}
+	return nil, false
 }
 
 // playRecord is one observation of a play, captured when it was made.

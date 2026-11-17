@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"cmp"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -130,6 +131,15 @@ func (v *viewing) endedPart(id string) bool {
 	return false
 }
 
+// liveViewing snapshots a live session's coalesced row and totals without
+// mutating viewing state on a read request.
+type liveViewing struct {
+	row     string
+	started time.Time
+	totals  viewingPart
+	exp     *core.PlayExperience
+}
+
 // viewings maps playback sessions onto rows. The caller holds Service.vmu.
 type viewings struct {
 	byKey     map[viewingKey]*viewing
@@ -138,6 +148,54 @@ type viewings struct {
 
 func newViewings() *viewings {
 	return &viewings{byKey: map[viewingKey]*viewing{}, bySession: map[string]*viewing{}}
+}
+
+// lookup finds the viewing a live session belongs to (by session id, or by
+// viewer/client/title when a live session has not yet been sampled). Ended
+// secondary sessions return ok=false so they never masquerade as rows.
+func (vs *viewings) lookup(id string, live *core.PlaySession, now time.Time) (liveViewing, bool) {
+	v := vs.bySession[id]
+	if v == nil && live != nil {
+		k := viewingKey{user: live.UserID, client: cmp.Or(live.ClientID, live.Client.ClientID), key: live.Key}
+		if cur := vs.byKey[k]; cur != nil && !cur.endedPart(id) && !now.After(cur.last.Add(viewingWindow)) {
+			v = cur
+		}
+	}
+	if v == nil {
+		return liveViewing{}, false
+	}
+	t := v.ended
+	seen := false
+	for sid, part := range v.live {
+		if live != nil && sid == live.ID {
+			seen = true
+			part.bytes = max(part.bytes, live.BytesServed)
+			part.failovers = max(part.failovers, live.Failovers)
+			part.downFailovers = max(part.downFailovers, live.DownFailovers)
+			if e := live.Experience; e != nil {
+				part.bufferEvents = max(part.bufferEvents, e.BufferEvents)
+				part.buffering = max(part.buffering, e.Buffering)
+			}
+		}
+		t = t.add(part)
+	}
+	if live != nil && !seen {
+		part := viewingPart{bytes: live.BytesServed, failovers: live.Failovers, downFailovers: live.DownFailovers}
+		if e := live.Experience; e != nil {
+			part.bufferEvents = e.BufferEvents
+			part.buffering = e.Buffering
+		}
+		t = t.add(part)
+	}
+	start := v.start
+	if live != nil {
+		start.observe(live.Experience)
+	}
+	started := v.started
+	if live != nil && !live.StartedAt.IsZero() && (started.IsZero() || live.StartedAt.Before(started)) {
+		started = live.StartedAt
+	}
+	return liveViewing{row: v.row, started: started, totals: t, exp: start.experience(t)}, true
 }
 
 // observe folds one session observation into its viewing. It returns the

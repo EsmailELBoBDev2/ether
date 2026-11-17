@@ -360,7 +360,9 @@ export function LibraryGrid({
   const [selected, setSelected] = useState<string[]>([]),
     [pending, setPending] = useState<File[]>([]),
     [license, setLicense] = useState("");
-  const [uploads, setUploads] = useState<{ name: string; progress: number; status: string }[]>([]);
+  const [uploads, setUploads] = useState<
+    { id: string; name: string; progress: number; status: string }[]
+  >([]);
   const kind = params.get("kind") ?? "",
     query = params.get("q") ?? "",
     sort = params.get("sort") ?? "newest";
@@ -425,7 +427,12 @@ export function LibraryGrid({
       setError(t("This file type is not available here."));
       return;
     }
-    setUploads((p) => [...p, { name: file.name, progress: 0, status: t("Uploading…") }]);
+    // Rows are keyed per attempt: a retried file must not share its progress.
+    const uploadId = `${file.name}:${Date.now()}:${Math.random()}`;
+    setUploads((p) => [
+      ...p,
+      { id: uploadId, name: file.name, progress: 0, status: t("Uploading…") },
+    ]);
     try {
       if (import.meta.env.MODE === "mock") {
         const data = new FormData();
@@ -437,12 +444,14 @@ export function LibraryGrid({
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("POST", "/ether/api/onair/assets");
+          // XHR bypasses apiFetch, so it sets the CSRF header itself.
+          xhr.setRequestHeader("X-Ether-Request", "1");
           sessionXhrSetup(xhr, "/ether/api/onair/assets");
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable)
               setUploads((p) =>
                 p.map((x) =>
-                  x.name === file.name
+                  x.id === uploadId
                     ? { ...x, progress: Math.round((e.loaded / e.total) * 100) }
                     : x,
                 ),
@@ -450,12 +459,20 @@ export function LibraryGrid({
           };
           xhr.upload.onload = () =>
             setUploads((p) =>
-              p.map((x) => (x.name === file.name ? { ...x, status: t("Processing media…") } : x)),
+              p.map((x) => (x.id === uploadId ? { ...x, status: t("Processing media…") } : x)),
             );
-          xhr.onload = () =>
-            xhr.status >= 200 && xhr.status < 300
-              ? resolve()
-              : reject(new Error(t("Upload failed")));
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) return resolve();
+            let reason = "";
+            try {
+              reason =
+                (JSON.parse(xhr.responseText) as { error?: { message?: string } }).error?.message ??
+                "";
+            } catch {
+              /* not JSON: keep the generic message */
+            }
+            reject(new Error(reason ? `${t("Upload failed")}: ${reason}` : t("Upload failed")));
+          };
           xhr.onerror = () => reject(new Error(t("Upload failed")));
           const data = new FormData();
           data.append("file", file);
@@ -463,12 +480,12 @@ export function LibraryGrid({
           data.append("license", lic);
           xhr.send(data);
         });
-      setUploads((p) => p.filter((x) => x.name !== file.name));
+      setUploads((p) => p.filter((x) => x.id !== uploadId));
       await reload();
     } catch (e) {
       setError(errorMessage(e));
       setUploads((p) =>
-        p.map((x) => (x.name === file.name ? { ...x, status: t("Upload failed") } : x)),
+        p.map((x) => (x.id === uploadId ? { ...x, status: t("Upload failed") } : x)),
       );
     }
   };
@@ -596,8 +613,8 @@ export function LibraryGrid({
           {error}
         </p>
       )}
-      {uploads.map((u, i) => (
-        <div key={i} role="status">
+      {uploads.map((u) => (
+        <div key={u.id} role="status">
           <p>
             {t("{name}: {status} ({progress}%)", {
               name: u.name,

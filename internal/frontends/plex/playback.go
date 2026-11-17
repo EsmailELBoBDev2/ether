@@ -405,6 +405,9 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	// The decision query can identify WAN even when the metadata request
 	// looked local. This ceiling constrains delivery, including direct play.
 	if limit := s.cfg().Transcode.RemoteMaxBitrateKbps; caps.Remote && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
+		if caps.MaxBitrateKbps == 0 {
+			caps.DefaultRemoteBitrate = true
+		}
 		caps.MaxBitrateKbps = limit
 	}
 	p := playRequest{copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, sourceLimits: &sourceLimits, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
@@ -516,6 +519,10 @@ func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
 		caps.DefaultRemoteBitrate = p.sourceLimits.DefaultRemoteBitrate
 	}
 	// SD delivery caps always shape the encode, never source selection.
+	if !p.caps.DefaultRemoteBitrate && p.caps.MaxBitrateKbps >= 1500 {
+		caps.MaxBitrateKbps = p.caps.MaxBitrateKbps
+		caps.DefaultRemoteBitrate = false
+	}
 	if p.opts.MaxHeight >= 720 && !p.opts.DirectPlay && !p.opts.DirectStream {
 		caps.PreferredSourceHeight = p.opts.MaxHeight
 	}
@@ -595,9 +602,11 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 	if policy, ok := s.policy().(frontend.BitrateAccessPolicy); ok {
 		if limit := policy.BitrateLimit(pr.User); limit > 0 && (p.caps.MaxBitrateKbps == 0 || limit < p.caps.MaxBitrateKbps) {
 			p.caps.MaxBitrateKbps = limit
+			p.caps.DefaultRemoteBitrate = false
 			p.opts.MaxBitrateKbps = limit
 		}
 	}
+	explicitBitrateCap := !p.caps.DefaultRemoteBitrate && p.opts.MaxBitrateKbps > 0
 	s.observeClientAdmission(pr, p.caps)
 	if !s.transcodes.claim(p.sessionID, pr.User.ID, pr.ClientID, s.now()) {
 		return t, nil, frontend.Decision{}, frontend.ErrUnauthorized
@@ -704,6 +713,14 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 		}
 		if err := s.applyDeviceProfile(pr, t, ps, p); err != nil {
 			return frontend.PlanAdmission{}, err
+		}
+		// A quality re-decision sends directStream=0 against the previous Media.
+		// When source selection chose a release that already fits the explicit
+		// cap, allow Decide to remux video if codec and container rules permit.
+		if !p.opts.DirectPlay && !p.opts.DirectStream && explicitBitrateCap && p.opts.MaxBitrateKbps > 0 &&
+			ps.Info.BitrateKbps > 0 && ps.Info.BitrateKbps <= p.opts.MaxBitrateKbps &&
+			(p.opts.MaxHeight == 0 || ps.Info.Video() == nil || ps.Info.Video().Height <= p.opts.MaxHeight) {
+			p.opts.DirectStream = true
 		}
 		if s.svc().support != nil && s.svc().support.Recording() {
 			ev := s.supportEvent(pr, frontend.DiagnosticKindClientCapabilities)
@@ -875,6 +892,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	if policy, ok := s.policy().(frontend.BitrateAccessPolicy); ok {
 		if limit := policy.BitrateLimit(pr.User); limit > 0 && (p.caps.MaxBitrateKbps == 0 || limit < p.caps.MaxBitrateKbps) {
 			p.caps.MaxBitrateKbps = limit
+			p.caps.DefaultRemoteBitrate = false
 		}
 	}
 	if p.caps.ClientID == "" {

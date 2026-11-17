@@ -9,7 +9,7 @@ import (
 
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
-	r.Use(s.recoverer, s.commonHeaders, s.parse, s.requestLog, s.authenticate, s.rewriteLiveGroupProvider)
+	r.Use(s.recoverer, s.commonHeaders, s.parse, s.requestLog, s.authenticate)
 	r.NotFound(s.handleUnknown)
 	r.MethodNotAllowed(s.handleUnknown)
 

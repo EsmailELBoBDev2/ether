@@ -336,26 +336,6 @@ func (s *Server) liveDiscoveryItems(r *http.Request, id string, limit int) ([]fr
 			for _, c := range channels {
 				byID[c.ID] = c
 			}
-			// Group providers reuse the shared bounded snapshot, filtered to
-			// their own channels (at most liveDiscoveryItemsMax items).
-			if sc := liveScopeFrom(r); sc.info.groupID != "" && err == nil {
-				_, set, serr := s.liveScopeChannels(r, sc)
-				if serr != nil {
-					return nil, nil, serr
-				}
-				kept := items[:0]
-				for _, p := range items {
-					if set[p.ChannelID] {
-						kept = append(kept, p)
-					}
-				}
-				items = kept
-				for id := range byID {
-					if !set[id] {
-						delete(byID, id)
-					}
-				}
-			}
 			return items, byID, err
 		}
 	}
@@ -369,7 +349,7 @@ func (s *Server) liveDiscoveryToMetadata(r *http.Request, ps []frontend.LiveTVPr
 			out = append(out, s.liveChannelMetadata(r, c))
 			continue
 		}
-		md := s.liveProgrammeMetadataAt(c, p, liveScopeFrom(r).info.path())
+		md := s.liveProgrammeMetadata(c, p)
 		if cloudGuideLogoClient(FromContext(r.Context())) {
 			for i, a := range md.Media[0].Extra {
 				if a.Name == "channelThumb" {

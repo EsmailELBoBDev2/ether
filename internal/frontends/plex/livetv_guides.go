@@ -46,46 +46,35 @@ func matchesLiveCategory(genres []string, category, mediaType string) bool {
 }
 
 func liveCategoryGuideFilters() []model.GridChannelFilter {
-	return liveCategoryGuideFiltersFor(liveProviderPath)
-}
-func liveCategoryGuideFiltersFor(providerPath string) []model.GridChannelFilter {
 	out := []model.GridChannelFilter{}
 	for _, c := range []struct{ id, title string }{{"movie", "Movies"}, {"series", "TV Shows"}, {"sports", "Sports"}, {"news", "News"}, {"kids", "Kids"}} {
-		out = append(out, liveCategoryFilterFor(providerPath, c.id, c.title))
+		out = append(out, liveCategoryFilter(c.id, c.title))
 	}
 	return out
 }
+
 func liveCategoryFilter(id, title string) model.GridChannelFilter {
-	return liveCategoryFilterFor(liveProviderPath, id, title)
-}
-func liveCategoryFilterFor(providerPath, id, title string) model.GridChannelFilter {
-	return model.GridChannelFilter{Identifier: id, Key: providerPath + "/lineups/dvr/channels?genre=" + url.QueryEscape(id), GenreRatingKey: "ether.category." + id, Title: title}
+	return model.GridChannelFilter{Identifier: id, Key: liveProviderPath + "/lineups/dvr/channels?genre=" + url.QueryEscape(id), GenreRatingKey: "ether.category." + id, Title: title}
 }
 
+// Owner groups are published as guide tabs on the single Live TV provider in
+// owner order, ahead of category filters.
 func (s *Server) liveGuideFilters(ctx context.Context, u *frontend.User) []model.GridChannelFilter {
-	return s.liveGuideFiltersFor(ctx, u, liveProviderPath, true)
-}
-
-// Group providers carry only category pills (scoped to their own path); the
-// group pills live on the main provider, where they switch between groups.
-func (s *Server) liveGuideFiltersFor(ctx context.Context, u *frontend.User, providerPath string, includeGroups bool) []model.GridChannelFilter {
 	out := []model.GridChannelFilter{}
-	if includeGroups {
-		if g, ok := s.svc().liveTV.(frontend.LiveTVGroups); ok {
-			groups, err := g.Groups(ctx, u)
-			if err != nil {
-				s.log.Warn("live groups unavailable", "error", err)
-			}
-			for _, g := range groups {
-				out = append(out, model.GridChannelFilter{Identifier: "guide-" + g.ID, Key: providerPath + "/guides/" + url.PathEscape(g.ID) + "/channels", GenreRatingKey: "ether.guide." + g.ID, Title: g.Name})
-			}
+	if g, ok := s.svc().liveTV.(frontend.LiveTVGroups); ok {
+		groups, err := g.Groups(ctx, u)
+		if err != nil {
+			s.log.Warn("live groups unavailable", "error", err)
+		}
+		for _, g := range groups {
+			out = append(out, model.GridChannelFilter{Identifier: "guide-" + g.ID, Key: liveProviderPath + "/guides/" + url.PathEscape(g.ID) + "/channels", GenreRatingKey: "ether.guide." + g.ID, Title: g.Name})
 		}
 	}
-	out = append(out, liveCategoryGuideFiltersFor(providerPath)...)
+	out = append(out, liveCategoryGuideFilters()...)
 	if snapshot := s.liveDiscoverySnapshot(ctx, u); snapshot != nil {
 		for _, bucket := range snapshot.buckets {
 			if strings.HasPrefix(bucket.id, "genre-") {
-				out = append(out, liveCategoryFilterFor(providerPath, bucket.id, bucket.title))
+				out = append(out, liveCategoryFilter(bucket.id, bucket.title))
 			}
 		}
 	}

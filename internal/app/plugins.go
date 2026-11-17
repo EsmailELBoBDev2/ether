@@ -253,11 +253,12 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	if err != nil {
 		return nil, err
 	}
+	indexURL, indexKey := cfg.Plugins.Catalogue()
 	cat, err := catalogue.New(catalogue.Options{
 		DB:        a.db,
 		Manager:   mgr,
-		IndexURL:  cfg.Plugins.IndexURL,
-		PublicKey: cfg.Plugins.PublicKey,
+		IndexURL:  indexURL,
+		PublicKey: indexKey,
 		Log:       a.log.With("component", "plugins-catalogue"),
 	})
 	if err != nil {

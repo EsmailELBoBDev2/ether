@@ -792,11 +792,11 @@ export function ChannelsWorkspace({
       </div>
 
       {/* Main workspace split: Left group tree + Right virtualised channel list */}
-      <div className="app-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3 sm:p-5 lg:grid lg:grid-cols-[272px_minmax(0,1fr)] lg:overflow-hidden">
+      <div className="app-scroll flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[272px_minmax(0,1fr)] lg:overflow-hidden">
         {/* Left group tree */}
         <nav
           aria-label={t("Channel groups")}
-          className="app-scroll flex shrink-0 flex-col rounded-xl border border-border bg-surface p-2.5 text-sm lg:min-h-0 lg:overflow-y-auto"
+          className="app-scroll flex shrink-0 flex-col border-b border-border bg-surface p-2.5 text-sm lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r"
         >
           {/* Every channel */}
           <button
@@ -1097,7 +1097,7 @@ export function ChannelsWorkspace({
         {/* Right virtualised channel list */}
         <section
           aria-label={t("Channels")}
-          className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface lg:min-h-0"
+          className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden bg-surface lg:min-h-0"
         >
           {/* List header */}
           <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border px-3 py-2.5">

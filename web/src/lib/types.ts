@@ -309,6 +309,7 @@ export interface EtherConfig {
     password?: string;
     indexers: boolean;
     stremio: boolean;
+    liveTV: boolean;
     debrid: boolean;
     usenet: boolean;
     metadata: boolean;

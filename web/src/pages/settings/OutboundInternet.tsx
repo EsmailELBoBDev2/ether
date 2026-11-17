@@ -27,6 +27,7 @@ interface OutboundConfig {
   password?: string;
   indexers: boolean;
   stremio: boolean;
+  liveTV: boolean;
   debrid: boolean;
   usenet: boolean;
   metadata: boolean;
@@ -51,6 +52,7 @@ function defaults(saved: EtherConfig["outbound"]): OutboundConfig {
     password: saved?.password ?? "",
     indexers: saved?.indexers ?? true,
     stremio: saved?.stremio ?? true,
+    liveTV: saved?.liveTV ?? true,
     debrid: saved?.debrid ?? true,
     usenet: saved?.usenet ?? true,
     metadata: saved?.metadata ?? false,
@@ -246,9 +248,14 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
           onChange={(indexers) => patch({ indexers })}
         />
         <RouteSwitch
-          label={t("Stremio addons, plugins and Live TV/IPTV")}
+          label={t("Stremio addons and plugins")}
           checked={draft.stremio}
           onChange={(stremio) => patch({ stremio })}
+        />
+        <RouteSwitch
+          label={t("Live TV and IPTV channels")}
+          checked={draft.liveTV}
+          onChange={(liveTV) => patch({ liveTV })}
         />
         <RouteSwitch
           label={t("Debrid services and streams")}

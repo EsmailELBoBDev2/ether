@@ -44,8 +44,8 @@ const (
 	// plugin calls and plugin http.fetch. It follows the Stremio route
 	// decision, so a source proxy carries it with add-on traffic.
 	CapPlugins
-	// CapLiveTV is IPTV playlists, guide data and provider streams. It
-	// follows the Stremio source route, including Xtream movies and series.
+	// CapLiveTV is IPTV playlists, guide data and provider streams,
+	// including Xtream movies and series. It has its own route switch.
 	CapLiveTV
 )
 
@@ -56,6 +56,7 @@ type Policy struct {
 	Proxy    *url.URL
 	Indexers bool
 	Stremio  bool
+	LiveTV   bool
 	Debrid   bool
 	Usenet   bool
 	Metadata bool
@@ -109,6 +110,7 @@ func PolicyFrom(o config.Outbound) Policy {
 		Enabled:  o.Enabled,
 		Indexers: o.Indexers,
 		Stremio:  o.Stremio,
+		LiveTV:   o.LiveTV,
 		Debrid:   o.Debrid,
 		Usenet:   o.Usenet,
 		Metadata: o.Metadata,
@@ -192,8 +194,10 @@ func (p Policy) routes(cap Capability) bool {
 	switch cap {
 	case CapIndexers:
 		return p.Indexers
-	case CapStremio, CapPlugins, CapLiveTV:
+	case CapStremio, CapPlugins:
 		return p.Stremio
+	case CapLiveTV:
+		return p.LiveTV
 	case CapDebrid:
 		return p.Debrid
 	case CapUsenet:
@@ -201,7 +205,7 @@ func (p Policy) routes(cap Capability) bool {
 	case CapMetadata:
 		return p.Metadata
 	case CapProbe:
-		return p.Indexers || p.Stremio || p.Debrid || p.Usenet
+		return p.Indexers || p.Stremio || p.LiveTV || p.Debrid || p.Usenet
 	default:
 		return false
 	}

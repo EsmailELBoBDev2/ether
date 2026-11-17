@@ -16,6 +16,7 @@ func TestSetChannelsApp(t *testing.T) {
 	ctx := context.Background()
 	var bumps int
 	s := testService(t, Options{})
+	s.o.DB.SetMaxOpenConns(1)
 	s.onChange = func() { bumps++ }
 
 	seed := []Channel{

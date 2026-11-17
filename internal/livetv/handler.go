@@ -40,6 +40,13 @@ func (s *Service) presentOwnerChannels(ctx context.Context, cs []Channel) {
 	}
 }
 
+func (s *Service) withRefreshedOwnerGroupIndex(ctx context.Context) context.Context {
+	if _, idx := s.getOwnerGroupCacheState(); idx != nil {
+		return contextWithOwnerGroupIndex(ctx, idx)
+	}
+	return ctx
+}
+
 // reconcileOwnerChannelApps translates an owner HTTP channel save whose body
 // carries effective HiddenApps (and no explicit ShownApps) into per-channel
 // HiddenApps/ShownApps overrides relative to the channel's group rules.
@@ -175,7 +182,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		v, e := s.Channels(r.Context())
 		if e == nil {
 			s.redactAddonChannels(r.Context(), v)
-			s.presentOwnerChannels(r.Context(), v)
+			s.presentOwnerChannels(s.withRefreshedOwnerGroupIndex(r.Context()), v)
 		}
 		ownerResult(w, v, e)
 	})
@@ -193,7 +200,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		})
 		if e == nil {
 			s.redactAddonChannels(r.Context(), v.Channels)
-			s.presentOwnerChannels(r.Context(), v.Channels)
+			s.presentOwnerChannels(s.withRefreshedOwnerGroupIndex(r.Context()), v.Channels)
 		}
 		ownerResult(w, v, e)
 	})
@@ -202,7 +209,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		if e == nil {
 			one := []Channel{v}
 			s.redactAddonChannels(r.Context(), one)
-			s.presentOwnerChannels(r.Context(), one)
+			s.presentOwnerChannels(s.withRefreshedOwnerGroupIndex(r.Context()), one)
 			v = one[0]
 		}
 		ownerResult(w, v, e)

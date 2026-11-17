@@ -1266,8 +1266,8 @@ type loadedPolicy struct {
 	pol  Policy
 }
 
-// withPolicy reads the viewer's Live TV policy once and reuses it for every
-// channel check on this request.
+// withPolicy reads the viewer's Live TV policy and validates the compiled
+// owner-group rule index in one statement, reusing both for the request.
 func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context, Policy, error) {
 	if u == nil {
 		return ctx, Policy{}, nil
@@ -1275,22 +1275,65 @@ func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context
 	if loaded, ok := ctx.Value(loadedPolicyKey{}).(loadedPolicy); ok && loaded.id == u.ID {
 		return ctx, loaded.pol, nil
 	}
-	pol, err := s.Policy(ctx, u.ID)
-	if err != nil {
-		return ctx, Policy{}, err
+	s.policyReads.Add(1)
+	prevGroupRev, prevGroupIdx := s.getOwnerGroupCacheState()
+	prevHasGroups := 0
+	if prevGroupIdx != nil && len(prevGroupIdx.groups) > 0 {
+		prevHasGroups = 1
 	}
+	var rev int64
+	var rawPolicy, rawGroups string
+	err := s.o.DB.QueryRowContext(
+		ctx,
+		`SELECT generation,COALESCE((SELECT data FROM livetv_policies WHERE user_id=?),''),CASE WHEN generation=? THEN '' ELSE COALESCE((SELECT data FROM livetv_owner_groups WHERE id=1),'[]') END FROM livetv_channel_epoch WHERE id=1 AND (EXISTS(SELECT 1 FROM livetv_policies WHERE user_id=?) OR (generation!=? AND (?=1 OR EXISTS(SELECT 1 FROM livetv_owner_groups WHERE id=1))))`,
+		u.ID, prevGroupRev, u.ID, prevGroupRev, prevHasGroups,
+	).Scan(&rev, &rawPolicy, &rawGroups)
+	pol := Policy{UserID: u.ID}
+	groupIdx := prevGroupIdx
+	if errors.Is(err, sql.ErrNoRows) {
+		if groupIdx == nil {
+			groupIdx = compileOwnerGroupIndex(nil)
+		}
+	} else if err != nil {
+		return ctx, Policy{}, err
+	} else {
+		if rawPolicy != "" {
+			if err := json.Unmarshal([]byte(rawPolicy), &pol); err != nil {
+				return ctx, Policy{}, err
+			}
+			pol.UserID = u.ID
+		}
+		if groupIdx == nil || rev != prevGroupRev {
+			decoded, err := decodeOwnerGroupIndex(rawGroups)
+			if err != nil {
+				return ctx, Policy{}, err
+			}
+			groupIdx = decoded
+			s.setOwnerGroupCacheState(rev, groupIdx)
+		}
+	}
+	pol.indexChannels()
+	ctx = contextWithOwnerGroupIndex(ctx, groupIdx)
 	return context.WithValue(ctx, loadedPolicyKey{}, loadedPolicy{id: u.ID, user: u, pol: pol}), pol, nil
 }
 
 func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
-	if u == nil || !c.Enabled || !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
+	if u == nil || !c.Enabled {
+		return false
+	}
+	if app := core.LiveApp(ctx); app != "" && slices.Contains(c.HiddenApps, app) {
 		return false
 	}
 	if !u.IsOwner && s.sweepState(c) == "unavailable" {
 		return false
 	}
-	_, pol, err := s.withPolicy(ctx, u)
+	var pol Policy
+	var err error
+	ctx, pol, err = s.withPolicy(ctx, u)
 	if err != nil {
+		return false
+	}
+	if !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) {
 		return false
 	}
 	if c.Personal != nil && (s.o.Picker == nil || (pol.Personal != nil && pol.Personal.Enabled != nil && !*pol.Personal.Enabled)) {
@@ -1399,7 +1442,6 @@ func (s *Service) allowedChannels(ctx context.Context, u *core.User, ids []strin
 			}
 		}
 	} else {
-		ctx = s.withOwnerGroupIndex(ctx)
 		var selected map[string]Channel
 		selected, err = s.channelsByIDs(ctx, ids)
 		for _, id := range ids {
@@ -1777,7 +1819,6 @@ func (s *Service) guide(ctx context.Context, u *core.User, from, until time.Time
 	}
 	var cs []Channel
 	if ids != nil {
-		ctx = s.withOwnerGroupIndex(ctx)
 		full, err := s.channelsByIDs(ctx, ids)
 		if err != nil {
 			return nil, err

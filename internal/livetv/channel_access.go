@@ -282,7 +282,7 @@ func (s *Service) VisibleTo(ctx context.Context, u *core.User) bool {
 	if u == nil {
 		return false
 	}
-	_, pol, err := s.withPolicy(ctx, u)
+	ctx, pol, err := s.withPolicy(ctx, u)
 	if err != nil || pol.Disabled {
 		return false
 	}

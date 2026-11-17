@@ -1,10 +1,4 @@
-import {
-  Badge,
-  Button,
-  Input,
-  SearchSelect,
-  cn,
-} from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Input, SearchSelect, cn } from "@braedonsaunders/appkit-ui";
 import { Plus, Save, Trash2, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Drawer } from "../../components/Drawer";
@@ -206,9 +200,7 @@ export function OwnerGroupDrawer({
       return;
     }
     if (
-      ownerGroups.some(
-        (g) => g.id !== group?.id && g.name.toLowerCase() === trimmed.toLowerCase(),
-      )
+      ownerGroups.some((g) => g.id !== group?.id && g.name.toLowerCase() === trimmed.toLowerCase())
     ) {
       setNameError(t("A group with that name already exists."));
       return;
@@ -362,8 +354,10 @@ export function OwnerGroupDrawer({
                     key={idx}
                     className="space-y-1.5 rounded-lg border border-border bg-bg-subtle/50 p-2.5"
                   >
+                    {/* Field and condition share a row; the value takes the full
+                        width below so a long pattern stays readable. */}
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <div className="sm:w-40 sm:shrink-0">
+                      <div className="sm:flex-1">
                         <SearchSelect
                           ariaLabel={t("Rule field")}
                           value={rule.field}
@@ -374,7 +368,7 @@ export function OwnerGroupDrawer({
                           onChange={(val) => updateRule(idx, { field: val as OwnerGroupRuleField })}
                         />
                       </div>
-                      <div className="sm:w-48 sm:shrink-0">
+                      <div className="sm:flex-1">
                         <SearchSelect
                           ariaLabel={t("Rule condition")}
                           value={rule.op}
@@ -385,27 +379,27 @@ export function OwnerGroupDrawer({
                           onChange={(val) => updateRule(idx, { op: val as OwnerGroupRuleOp })}
                         />
                       </div>
-                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                        <Input
-                          aria-label={t("Rule value")}
-                          aria-invalid={Boolean(err) || undefined}
-                          value={rule.value}
-                          spellCheck={false}
-                          placeholder={isRegex ? "^(cbs\\.wcbs|espn\\.us)$" : t("Value")}
-                          className={cn("min-w-0 flex-1", isRegex && "font-mono text-xs")}
-                          onChange={(e) => updateRule(idx, { value: e.currentTarget.value })}
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          aria-label={t("Remove rule")}
-                          className="shrink-0 text-fg-muted hover:text-danger"
-                          onClick={() => removeRule(idx)}
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
+                    </div>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <Input
+                        aria-label={t("Rule value")}
+                        aria-invalid={Boolean(err) || undefined}
+                        value={rule.value}
+                        spellCheck={false}
+                        placeholder={isRegex ? "^(cbs\\.wcbs|espn\\.us)$" : t("Value")}
+                        className={cn("min-w-0 flex-1", isRegex && "font-mono text-xs")}
+                        onChange={(e) => updateRule(idx, { value: e.currentTarget.value })}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t("Remove rule")}
+                        className="shrink-0 text-fg-muted hover:text-danger"
+                        onClick={() => removeRule(idx)}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
                     </div>
                     {err ? (
                       <p className="text-xs text-danger" role="alert">
@@ -459,9 +453,7 @@ export function OwnerGroupDrawer({
                         className="rounded-full p-0.5 text-fg-muted hover:bg-surface-hover hover:text-fg"
                         onClick={() =>
                           setProviderGroups((prev) =>
-                            prev.filter(
-                              (x) => !(x.sourceId === pg.sourceId && x.name === pg.name),
-                            ),
+                            prev.filter((x) => !(x.sourceId === pg.sourceId && x.name === pg.name)),
                           )
                         }
                       >

@@ -68,7 +68,9 @@ func (i *instance) libraries(w http.ResponseWriter, r *http.Request) {
 	end := min(start+limit(r), len(views))
 	items := []object{}
 	for _, view := range views[start:end] {
-		items = append(items, libraryWire(view))
+		wire := libraryWire(view)
+		i.addGenreNames(r, v, view, wire)
+		items = append(items, wire)
 	}
 	page := object{"items": items, "continuation": "exhausted"}
 	if end < len(views) {
@@ -456,4 +458,26 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		out["continuation"], out["nextCursor"] = "more", next
 	}
 	cache(w, r, out)
+}
+
+// addGenreNames lists a library's genres (server order) in
+// browse.filters.genres, so a client can offer a Genres view. A library
+// whose genres cannot be listed keeps the plain genre filter.
+func (i *instance) addGenreNames(r *http.Request, v *frontend.Viewer, view frontend.View, wire object) {
+	browse, _ := wire["browse"].(object)
+	filters, _ := browse["filters"].(object)
+	if filters == nil || filters["genre"] != true {
+		return
+	}
+	values, err := i.host.Experience.Facets(r.Context(), v, requestDevice(r), view.ID, "genre")
+	if err != nil {
+		return
+	}
+	names := make([]string, 0, len(values))
+	for _, f := range values {
+		if f.Title != "" {
+			names = append(names, f.Title)
+		}
+	}
+	filters["genres"] = names
 }

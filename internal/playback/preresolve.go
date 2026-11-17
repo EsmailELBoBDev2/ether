@@ -141,6 +141,32 @@ func (m *Manager) Prewarm(ctx context.Context, user *core.User, key core.RatingK
 	return m.prewarm(ctx, user, key, caps, opts, false)
 }
 
+// RevealDetail triggers a background season-drop check for a show, season, or
+// episode detail open unless the client is reading pages like a crawler.
+func (m *Manager) RevealDetail(user *core.User, clientID string, key core.RatingKey) {
+	if m == nil || m.deps.SeasonRevealer == nil || user == nil || !isTVDetailKey(key) {
+		return
+	}
+	if core.DetailBurst(user.ID, clientID, key) {
+		return
+	}
+	m.deps.SeasonRevealer(key)
+}
+
+func isTVDetailKey(key core.RatingKey) bool {
+	if key == 0 || key.IsPluginKey() || key.TMDB() <= 0 {
+		return false
+	}
+	switch key.Kind() {
+	case core.KindShow:
+		return true
+	case core.KindSeason, core.KindEpisode:
+		return key.Season() > 0
+	default:
+		return false
+	}
+}
+
 // ProbeMetadata resolves and probes the detail page's source without creating a
 // playback session or prefetching video. Owner cache/warm-up settings and
 // admission limits apply. Slow probes finish in the background; the caller
@@ -152,13 +178,18 @@ func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.R
 		return err
 	}
 	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
+		m.RevealDetail(user, caps.ClientID, key)
 		return nil
 	}
 	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
+		m.RevealDetail(user, caps.ClientID, key)
 		return nil
 	}
 	if user != nil && core.DetailBurst(user.ID, caps.ClientID, key) {
 		return core.ErrPrepareSlow
+	}
+	if user != nil && m.deps.SeasonRevealer != nil && isTVDetailKey(key) {
+		m.deps.SeasonRevealer(key)
 	}
 	if core.LocalResponse(ctx) {
 		if user == nil {
@@ -219,8 +250,13 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 	if reason != core.PrewarmTrailer && reason != core.PrewarmPostPlay && reason != core.PrewarmBrowse && reason != core.PrewarmNextEpisode {
 		reason = core.PrewarmDetail
 	}
-	if reason == core.PrewarmDetail && !opts.DuringPlayback && core.DetailBurst(user.ID, caps.ClientID, key) {
-		return false
+	if reason == core.PrewarmDetail && !opts.DuringPlayback {
+		if core.DetailBurst(user.ID, caps.ClientID, key) {
+			return false
+		}
+		if m.deps.SeasonRevealer != nil && isTVDetailKey(key) {
+			m.deps.SeasonRevealer(key)
+		}
 	}
 	cfg := m.config().Cache
 	if cfg.DisableSpeculation || cfg.Mode == "off" || (cfg.SpeculativeWarming == "off" && reason != core.PrewarmNextEpisode && !metadata) || (reason == core.PrewarmDetail && cfg.DetailWarmup == "off") {

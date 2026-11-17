@@ -76,11 +76,12 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 			}
 			return nil, false
 		},
-		DB:            a.db,
-		Logger:        log,
-		Cluster:       a.clusterNode(),
-		DescribeGroup: a.describeLiveGroup,
-		Availability:  a.dbAvail,
+		DB:             a.db,
+		Logger:         log,
+		Cluster:        a.clusterNode(),
+		DescribeGroup:  a.describeLiveGroup,
+		Availability:   a.dbAvail,
+		SeasonRevealer: a.revealTitleSeason,
 	}, cfg, playback.Options{SessionSurface: sessionSurface, Now: parityClock(), DataDir: dataDir, PayloadReplayGrace: 5 * time.Second, VerifyNativeProbe: os.Getenv("ETHER_VERIFY_NATIVE_PROBE") == "1", TracePlayback: tracePlayback})
 	if err != nil {
 		return fmt.Errorf("playback: %w", err)

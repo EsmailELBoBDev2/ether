@@ -38,3 +38,9 @@ type WarmProbeWaiter interface {
 type MetadataProber interface {
 	ProbeMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
+
+// DetailRevealer schedules a background season-drop check when a viewer opens
+// a show, season, or episode detail page, subject to detail-burst gating.
+type DetailRevealer interface {
+	RevealDetail(user *User, clientID string, key RatingKey)
+}

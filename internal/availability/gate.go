@@ -1083,13 +1083,25 @@ func (s *Service) seedDueChecks(ctx context.Context, cfg config.Availability) er
 		priority  float64
 		state     string
 	}
+	inProgressMemo := map[core.RatingKey]bool{}
+	revealSeasons := map[core.RatingKey]bool{}
 	nextFollowed := map[core.RatingKey]core.RatingKey{}
 	for _, t := range candidates {
 		if t.Type == core.TypeEpisode && t.Season > 0 && t.Episode > 0 && t.Released.After(now) && (watch[t.Key] || watch[t.ShowKey]) {
+			sk := core.SeasonKey(t.Key.TMDB(), t.Season)
+			if s.isSeasonInProgress(ctx, sk, now, candidates, inProgressMemo) {
+				// Replace per-episode 72h-early probes inside an in-progress season
+				// with one season-level reveal check; keep 72h early for premieres.
+				revealSeasons[sk] = true
+				continue
+			}
 			if k := nextFollowed[t.ShowKey]; k == 0 || t.Key < k {
 				nextFollowed[t.ShowKey] = t.Key
 			}
 		}
+	}
+	for sk := range revealSeasons {
+		s.RevealSeason(ctx, sk)
 	}
 	var updates []upsertRow
 	for _, t := range candidates {

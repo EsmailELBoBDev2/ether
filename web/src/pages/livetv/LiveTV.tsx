@@ -56,6 +56,7 @@ import {
   MINUTE,
   TEMPLATES,
   browserTimeZone,
+  compileOwnerGroupMatcher,
   emptyChannel,
   plexLineupName,
   tv,
@@ -575,15 +576,9 @@ export default function LiveTV() {
           if ("ownerGroup" in change) {
             const g = ownerGroups.find((x) => x.id === change.ownerGroup);
             if (!g) return cs;
-            const cset = new Set(g.channels ?? []);
-            const pset = new Set((g.groups ?? []).map((p) => `${p.sourceId}\u0000${p.name}`));
-            return cs.map((c) => {
-              const hit =
-                g.all ||
-                cset.has(c.id) ||
-                (c.kind !== "virtual" && pset.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`));
-              return hit ? patchChannel(c, { clearApps: [change.app] }) : c;
-            });
+            const sourceNames = new Map(sources.map((s) => [s.id, s.name]));
+            const matchesGroup = compileOwnerGroupMatcher(g, sourceNames);
+            return cs.map((c) => (matchesGroup(c) ? patchChannel(c, { clearApps: [change.app] }) : c));
           }
           return cs.map((c) => {
             if (change.source === "virtual") {

@@ -7,7 +7,7 @@ import { invalidateRegistry } from "../lib/extend";
 import LiveTV from "../pages/livetv/LiveTV";
 import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProgrammingEditor } from "../pages/livetv/ProgrammingEditor";
-import type { Channel } from "../pages/livetv/model";
+import { compileOwnerGroupMatcher, compileOwnerGroupRegExp, type Channel, type OwnerGroup } from "../pages/livetv/model";
 import { ScheduleTimeline } from "../pages/livetv/ScheduleTimeline";
 import { calls as fakeCalls } from "./harness";
 import { renderAppWith } from "./routes";
@@ -1346,4 +1346,117 @@ describe("timeline snapshot boundary", () => {
     await waitFor(() => expect(attempts).toBe(2), { timeout: 3500 });
     expect(screen.queryByText("Unable to load schedule")).not.toBeInTheDocument();
   });
+});
+
+
+it("creates a rule-based owner group in a drawer with live preview and inline regex validation", async () => {
+  const chans = [
+    iptv("cbs", { number: "2", name: "CBS WCBS HD", group: "US Locals", guideId: "cbs.wcbs" }),
+    iptv("espn", { number: "206", name: "ESPN HD", group: "Sports", guideId: "espn.us" }),
+    iptv("espn-bak", { number: "207", name: "ESPN Backup", group: "Sports", guideId: "espn.us" }),
+    iptv("bbc", { number: "501", name: "BBC News", group: "News", guideId: "bbc.news" }),
+  ];
+  let savedGroups: OwnerGroup[] = [];
+  const calls = backend(chans, (url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.endsWith("/livetv/sources")) {
+      return [{ id: "src1", name: "Tuliprox US", hasPlaylist: true, updatedAt: new Date().toISOString() }];
+    }
+    if (url.endsWith("/livetv/groups") && method === "GET") return savedGroups;
+    if (url.endsWith("/livetv/groups") && method === "PUT") {
+      savedGroups = JSON.parse(String(init?.body ?? "[]")) as OwnerGroup[];
+      return savedGroups;
+    }
+    if (url.endsWith("/livetv/groups/preview") && method === "POST") {
+      const draft = JSON.parse(String(init?.body ?? "{}")) as OwnerGroup;
+      for (const [i, r] of (draft.rules ?? []).entries()) {
+        if ((r.op === "matches" || r.op === "notMatches") && r.value) {
+          if (!compileOwnerGroupRegExp(r.value)) {
+            return new Response(
+              JSON.stringify({
+                error: {
+                  code: "livetv",
+                  message: `invalid pattern "${r.value}"`,
+                  fields: [
+                    {
+                      field: `rules.${i}.value`,
+                      message: `error parsing regexp: missing closing ): \`${r.value}\``,
+                    },
+                  ],
+                },
+              }),
+              { status: 400 },
+            );
+          }
+        }
+      }
+      const match = compileOwnerGroupMatcher(draft, new Map([["src1", "Tuliprox US"]]));
+      const matched = chans.filter((c) => match(c as any));
+      return { count: matched.length, channels: matched };
+    }
+    return undefined;
+  });
+
+  renderLiveTV("/livetv");
+  const nav = await screen.findByRole("navigation", { name: "Channel groups" }, WAIT);
+  fireEvent.click(within(nav).getByRole("button", { name: "New" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "New group" }, WAIT);
+  fireEvent.change(within(dialog).getByLabelText("Group name"), {
+    target: { value: "US Sports" },
+  });
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Add rule" }));
+  const fieldBtn = within(dialog).getByRole("button", { name: "Rule field" });
+  const opBtn = within(dialog).getByRole("button", { name: "Rule condition" });
+  expect(fieldBtn).toHaveTextContent("Channel name");
+  expect(opBtn).toHaveTextContent("contains");
+
+  fireEvent.click(fieldBtn);
+  fireEvent.click(await screen.findByRole("option", { name: "Guide ID" }));
+  fireEvent.click(opBtn);
+  fireEvent.click(await screen.findByRole("option", { name: "matches pattern" }));
+  fireEvent.change(within(dialog).getByLabelText("Rule value"), {
+    target: { value: "(?i)^(cbs\\.wcbs|espn\\.us" },
+  });
+
+  const alert = await within(dialog).findByRole("alert", undefined, WAIT);
+  expect(alert).toHaveTextContent("missing closing )");
+  expect(within(dialog).getByRole("button", { name: "Create group" })).toBeDisabled();
+
+  fireEvent.change(within(dialog).getByLabelText("Rule value"), {
+    target: { value: "(?i)^(cbs\\.wcbs|espn\\.us)$" },
+  });
+  await waitFor(() => expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument(), WAIT);
+  expect(await within(dialog).findByText("3 channels", undefined, WAIT)).toBeVisible();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Add rule" }));
+  const opBtns = within(dialog).getAllByRole("button", { name: "Rule condition" });
+  const valInputs = within(dialog).getAllByLabelText("Rule value");
+  fireEvent.click(opBtns[1]!);
+  fireEvent.click(await screen.findByRole("option", { name: "doesn't contain" }));
+  fireEvent.change(valInputs[1]!, { target: { value: "Backup" } });
+
+  expect(await within(dialog).findByText("2 channels", undefined, WAIT)).toBeVisible();
+  expect(within(dialog).getByText("CBS WCBS HD")).toBeVisible();
+  expect(within(dialog).getByText("ESPN HD")).toBeVisible();
+  expect(within(dialog).queryByText("ESPN Backup")).not.toBeInTheDocument();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Create group" }));
+  await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/groups$/)).toHaveLength(1), WAIT);
+
+  const putPayload = body(sent(calls, "PUT", /\/livetv\/groups$/)[0]);
+  expect(putPayload).toMatchObject([
+    {
+      name: "US Sports",
+      match: "any",
+      rules: [
+        { field: "guideId", op: "matches", value: "(?i)^(cbs\\.wcbs|espn\\.us)$" },
+        { field: "name", op: "notContains", value: "Backup" },
+      ],
+    },
+  ]);
+
+  expect(await within(nav).findByRole("button", { name: "US Sports" }, WAIT)).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "US Sports · your group" }, WAIT)).toBeVisible();
 });

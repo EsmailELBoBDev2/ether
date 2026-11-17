@@ -1652,8 +1652,17 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 	}
+	var movieLangs []string
+	var movieOrig string
+	if sreq.Type == core.TypeMovie {
+		movieLangs, movieOrig = movieTargetLanguages(profile, wanted, t)
+	}
 	for ri, rel := range results {
 		rel = withTarget(rel, sreq)
+		if sreq.Type == core.TypeMovie && rel.Target != nil {
+			rel.Target.WantedLanguages = movieLangs
+			rel.Target.OriginalLanguage = movieOrig
+		}
 		ct := CandidateTrace{ReleaseID: rel.ID, Name: rel.Name, Indexer: rel.Indexer, Size: rel.Size, Height: rel.Info.Height}
 		if !s.ChannelSourceAllowed(sizedForEpisode(rel), req.Client, t) {
 			clientRejected = true
@@ -1689,6 +1698,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			reason = "blocked hardcoded subtitles"
 		} else if s.rejectedFor(t.Key, rel) {
 			reason = "release rejected for this title"
+		} else if nonVideoRelease(rel, t, sreq) {
+			reason = ReasonNotAVideoFile
 		} else if !pinned && identityReason != "" {
 			reason = identityReason
 		} else if !pinned && namesake && episodeNamesakeConflict(rel, t, sreq) {
@@ -2016,6 +2027,9 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 		if g != "" && strings.EqualFold(rel.Info.Group, g) {
 			return "blocked group: " + g
 		}
+	}
+	if nonVideoRelease(rel, t, sreq) {
+		return ReasonNotAVideoFile
 	}
 	if reason := sourceSuitability(rel, t, profile, preferred); reason != "" {
 		return reason

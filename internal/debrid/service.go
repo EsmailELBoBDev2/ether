@@ -710,6 +710,9 @@ func payloadKey(rel core.Release) string {
 		if len(rel.Target.MovieTitles) > 0 {
 			k += fmt.Sprintf("|movie:%q:%d", rel.Target.MovieTitles, rel.Target.MovieYear)
 		}
+		if len(rel.Target.WantedLanguages) > 0 || rel.Target.OriginalLanguage != "" {
+			k += fmt.Sprintf("|lang:%q:%s", rel.Target.WantedLanguages, rel.Target.OriginalLanguage)
+		}
 		if rel.Target.FileIndex != nil {
 			k += fmt.Sprintf("|fileIndex:%d", *rel.Target.FileIndex)
 		}

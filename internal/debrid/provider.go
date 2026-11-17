@@ -776,6 +776,14 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	}
 	sort.SliceStable(videos, func(i, j int) bool { return videos[i].Size > videos[j].Size })
 	if target == nil || target.Episode <= 0 {
+		if target != nil && len(videos) > 1 && len(target.WantedLanguages) > 0 {
+			mc := make([]releaseparse.MovieCandidate, len(videos))
+			for i, v := range videos {
+				mc[i] = releaseparse.MovieCandidate{Path: v.Path, Size: v.Size}
+			}
+			order := releaseparse.OrderMovieCandidates(mc, target.MovieTitles, target.OriginalLanguage, target.WantedLanguages)
+			return videos[order[0]], nil
+		}
 		return videos[0], nil
 	}
 	if target.Season == 0 {
@@ -789,9 +797,13 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		}
 		return File{}, fmt.Errorf("debrid: no verified special S00E%02d: %w", target.Episode, core.ErrWrongContent)
 	}
+	sizeGate := episodeSizeGate(videos, target)
 	// Pass 1: explicit season + episode match on base name, or on full path
 	// when the base name carries no episode number of its own.
 	for _, f := range videos {
+		if !sizeGate.Accept(f.Path, f.Size) {
+			continue
+		}
 		normPath := strings.ReplaceAll(f.Path, "\\", "/")
 		baseInfo := releaseparse.Parse(path.Base(normPath))
 		fullInfo := releaseparse.Parse(strings.ReplaceAll(normPath, "/", " "))
@@ -838,7 +850,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	// or miniseries "Part 2 - Title.mkv") when no standard SxxExx matched.
 	if len(videos) > 1 {
 		for _, f := range videos {
-			if classicPackEpisodeMatches(f.Path, target.Season, target.Episode) {
+			if sizeGate.Accept(f.Path, f.Size) && classicPackEpisodeMatches(f.Path, target.Season, target.Episode) {
 				return f, nil
 			}
 		}
@@ -880,6 +892,15 @@ func sourceNamedFile(files []File, target *core.ReleaseTarget) (File, bool) {
 		}
 	}
 	if count != 1 || !fileCourMatchesTarget(match.Path, target) || !fileIdentityMatches(match, target) {
+		return File{}, false
+	}
+	var peers []File
+	for _, f := range files {
+		if playableVideo(f) && fileCourMatchesTarget(f.Path, target) && fileIdentityMatches(f, target) {
+			peers = append(peers, f)
+		}
+	}
+	if !episodeSizeGate(peers, target).Accept(match.Path, match.Size) {
 		return File{}, false
 	}
 	info := releaseparse.Parse(path.Base(strings.ReplaceAll(match.Path, "\\", "/")))
@@ -1015,6 +1036,17 @@ func fileIdentityMatches(f File, target *core.ReleaseTarget) bool {
 	info := releaseparse.Parse(full)
 	year := releaseparse.EpisodeSeriesYear(full, info.Year)
 	return releaseparse.SeriesYearMatches(year, target.ShowYear) && (target.Season == 0 || year != 0 || idMatch || releaseparse.EpisodeTitleMatches(path.Base(strings.ReplaceAll(f.Path, "\\", "/")), target.EpisodeTitle))
+}
+
+func episodeSizeGate(videos []File, target *core.ReleaseTarget) releaseparse.PackEpisodeSizeGate {
+	if target == nil || target.Season <= 0 || target.Episode <= 0 {
+		return releaseparse.PackEpisodeSizeGate{}
+	}
+	sized := make([]releaseparse.PackSizedFile, len(videos))
+	for i, f := range videos {
+		sized[i] = releaseparse.PackSizedFile{Path: f.Path, Size: f.Size}
+	}
+	return releaseparse.NewPackEpisodeSizeGate(sized, target.Season, target.Cour)
 }
 
 func movieFileMatches(name string, target *core.ReleaseTarget) bool {

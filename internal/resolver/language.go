@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -36,8 +37,8 @@ func profileLanguageMode(profile core.QualityProfile) (specific string, anyLang 
 
 // profileLanguageRejection is the reason a release fails a profile's
 // specific Language, or "" when it passes (or the profile sets none). A
-// release declaring no audio is in the title's original language as far
-// as anyone knows, so it passes when that is the profile's language or
+// release declaring no audio is in the title's original language as far as
+// anyone knows, so it passes when that is the profile's language or
 // unknown; MULTI and DUAL carry more than one track and pass, as in
 // audioAcceptable.
 func profileLanguageRejection(info core.ReleaseInfo, profile core.QualityProfile, t *core.Title) string {
@@ -81,6 +82,31 @@ func wantedAudio(profile core.QualityProfile, user *core.User, serverLang string
 		out = append(out, base)
 	}
 	return out
+}
+
+// movieTargetLanguages returns the ordered audio languages and original
+// language for multi-file movie pack file selection. An explicit "Original"
+// profile language puts the title's original language ahead of viewer/server
+// fallbacks; otherwise wanted audio languages lead and the original language
+// trails as a fallback over unrelated dubs.
+func movieTargetLanguages(profile core.QualityProfile, wanted []string, t *core.Title) ([]string, string) {
+	orig := titleOriginalLanguage(t)
+	var out []string
+	add := func(v string) {
+		if n := releaseparse.LanguageName(v); n != "" && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(profile.Language), core.ProfileLanguageOriginal) && orig != "" && len(profile.PreferredLanguages) == 0 {
+		add(orig)
+	}
+	for _, w := range wanted {
+		add(w)
+	}
+	if specific, _ := profileLanguageMode(profile); specific == "" && orig != "" {
+		add(orig)
+	}
+	return out, releaseparse.LanguageName(orig)
 }
 
 // acceptedAudio lists the audio languages a release may declare and still

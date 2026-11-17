@@ -23,8 +23,8 @@ const (
 	ProtocolHTTP = "http"
 )
 
-// ReleaseTarget is the episode wanted from a multi-file release such as a
-// season pack.
+// ReleaseTarget is the episode or movie wanted from a multi-file release such
+// as a season pack or dual-language movie pack.
 type ReleaseTarget struct {
 	// CanonicalSeason/CanonicalEpisode retain TMDB identity when Season/Episode
 	// select a file using the owner's alternate release numbering.
@@ -33,6 +33,11 @@ type ReleaseTarget struct {
 	// MovieTitles and MovieYear constrain file selection inside movie collections.
 	MovieTitles []string `json:"movieTitles,omitempty"`
 	MovieYear   int      `json:"movieYear,omitempty"`
+	// WantedLanguages and OriginalLanguage rank full-length language versions
+	// inside multi-file movie torrents and NZB archives before falling back to
+	// byte size (additive).
+	WantedLanguages  []string `json:"wantedLanguages,omitempty"`
+	OriginalLanguage string   `json:"originalLanguage,omitempty"`
 	// FileIndex is a zero-based index in the complete torrent file list; the selected file must be a video.
 	FileIndex *int `json:"fileIndex,omitempty"`
 	// ExactFile selects a plugin-requested video path or unambiguous basename.

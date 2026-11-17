@@ -458,11 +458,19 @@ func (x *Indexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) 
 			return nil, fmt.Errorf("usenet release %q: %w", r.Name, core.ErrNotAvailable)
 		}
 		data, err := x.inner.FetchNZB(ctx, r)
-		if err != nil || !r.Info.FullSeason || r.Target == nil {
+		if err != nil || r.Target == nil {
 			return data, err
 		}
-		// A Usenet season pack plays as its wanted episode's files only.
-		return x.episodeNZB(ctx, r, data)
+		if r.Info.FullSeason {
+			// A Usenet season pack plays as its wanted episode's files only.
+			return x.episodeNZB(ctx, r, data)
+		}
+		if len(r.Target.MovieTitles) > 0 || len(r.Target.WantedLanguages) > 0 {
+			if out, merr := EpisodeNZB(data, r.Target); merr == nil {
+				return out, nil
+			}
+		}
+		return data, nil
 	}
 	if !x.svc.Enabled() {
 		return nil, fmt.Errorf("torrent release %q: %w", r.Name, ErrNoProvider)

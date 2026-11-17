@@ -122,7 +122,7 @@ func (s *Service) broadcastTagsAllowed(ctx context.Context, ss *session, tags []
 	defer ss.mu.Unlock()
 	cache := &ss.broadcastPolicy
 	c := cache.channel
-	if !c.Enabled || (!user.IsOwner && (s.sweepState(c) == "unavailable" || !cache.policy.Permits(c.ID, c.Private))) || (c.Personal != nil && (s.o.Picker == nil || (cache.policy.Personal != nil && cache.policy.Personal.Enabled != nil && !*cache.policy.Personal.Enabled))) {
+	if !c.Enabled || c.MergedInto != "" || (!user.IsOwner && (s.sweepState(c) == "unavailable" || !cache.policy.Permits(c.ID, c.Private))) || (c.Personal != nil && (s.o.Picker == nil || (cache.policy.Personal != nil && cache.policy.Personal.Enabled != nil && !*cache.policy.Personal.Enabled))) {
 		return false
 	}
 	for _, identity := range tags {
@@ -165,7 +165,7 @@ func (s *Service) broadcastSegmentAllowed(ctx context.Context, ss *session, seg 
 // Audience admission is independent of the programme's rating. Checking a
 // channel's empty rating first would incorrectly hide a permitted programme.
 func (s *Service) audienceAllowed(ctx context.Context, u *core.User, c Channel) bool {
-	if u == nil || !c.Enabled || !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) || (!u.IsOwner && s.sweepState(c) == "unavailable") {
+	if u == nil || !c.Enabled || c.MergedInto != "" || !s.publishedTo(ctx, c) || s.sourcePaused(ctx, c) || (!u.IsOwner && s.sweepState(c) == "unavailable") {
 		return false
 	}
 	_, pol, err := s.withPolicy(ctx, u)

@@ -25,6 +25,9 @@ type StreamSource struct {
 	// AuthSourceID names the source whose provider credentials this input
 	// uses; empty means the channel's own source.
 	AuthSourceID string `json:"authSourceId,omitempty"`
+	// MergedFrom names the imported channel ID whose stream was attached by
+	// channel input merge rules; empty on the channel's own or manual inputs.
+	MergedFrom string `json:"mergedFrom,omitempty"`
 	// Headers are request headers this input needs (a Stremio stream's
 	// proxy headers), sent after the source's own.
 	Headers map[string]string `json:"headers,omitempty"`
@@ -315,7 +318,11 @@ func (s *Service) recordSourceHealth(channelID string, src StreamSource, err err
 // URLs return directly; plugin:// inputs delegate to the installed stream
 // opener under its Open deadline.
 func (s *Service) ResolveStreamSource(ctx context.Context, c Channel, src StreamSource) (string, http.Header, error) {
-	if !s.channelSourceEnabled(ctx, c.SourceID) || !s.channelSourceEnabled(ctx, src.AuthSourceID) {
+	effSourceID := src.AuthSourceID
+	if effSourceID == "" {
+		effSourceID = c.SourceID
+	}
+	if !s.channelSourceEnabled(ctx, effSourceID) {
 		return "", nil, core.ErrNotAvailable
 	}
 	headers, err := s.upstreamHeaders(ctx, c, src)

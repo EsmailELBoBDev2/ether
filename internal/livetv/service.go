@@ -46,6 +46,9 @@ type Service struct {
 	ownerGroupsIndexRev  int64
 	ownerGroupChoices    []OwnerGroupChoice
 	ownerGroupChoicesRev int64
+	inputMergeMu         sync.Mutex
+	inputMergeIdx        *inputMergeIndex
+	inputMergeRev        int64
 	loginPool            loginPool
 	closeOnce            sync.Once
 	lifetimeStop         chan struct{}
@@ -989,9 +992,17 @@ func validateChannel(c *Channel) error {
 		return fmt.Errorf("kind must be virtual or iptv")
 	}
 	if c.Kind == "iptv" {
+		m, err := normalizeChannelInputMerge(c.InputMerge)
+		if err != nil {
+			return err
+		}
+		c.InputMerge = m
 		if err := normalizeStreamSources(c); err != nil {
 			return err
 		}
+	} else {
+		c.InputMerge = nil
+		c.MergedInto = ""
 	}
 	if c.Personal == nil && c.Kind == "virtual" && len(c.Items) == 0 && len(c.Blocks) == 0 && len(c.Pins) == 0 && !c.OffAir && len(c.Fallback) == 0 {
 		return fmt.Errorf("virtual channel needs base programming")
@@ -1128,17 +1139,15 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 	if err := validateChannel(&c); err != nil {
 		return c, err
 	}
-	b, err := json.Marshal(c)
-	if err != nil {
-		return c, err
-	}
-	_, err = s.o.DB.ExecContext(ctx, `INSERT INTO livetv_channels(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, c.ID, b)
+	invalidated, err := s.saveChannelWithMerges(ctx, &c)
 	if err == nil {
 		if !c.Enabled {
 			s.cancelGraphics(c.ID)
 		}
 		s.captureBreakOwner(ctx, c.ID)
-		s.invalidate(c.ID, "")
+		for _, cid := range invalidated {
+			s.invalidate(cid, "")
+		}
 		if err = s.refreshVirtualGuideIfWarm(ctx); err != nil {
 			return c, err
 		}
@@ -1161,8 +1170,30 @@ func (s *Service) cancelGraphics(channelID string) {
 }
 
 func (s *Service) DeleteChannel(ctx context.Context, id string) error {
-	_, err := s.o.DB.ExecContext(ctx, `DELETE FROM livetv_channels WHERE id=?`, id)
+	tx, err := s.o.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var invalidated []string
+	if _, err = tx.ExecContext(ctx, `DELETE FROM livetv_channels WHERE id=?`, id); err != nil {
+		return err
+	}
+	mergedChanged, inv, err := s.reconcileInputMergesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	invalidated = inv
+	if mergedChanged {
+		if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
+			return err
+		}
+	}
+	err = tx.Commit()
 	if err == nil {
+		for _, cid := range invalidated {
+			s.invalidate(cid, "")
+		}
 		s.cancelGraphics(id)
 		s.mu.Lock()
 		delete(s.breakOwners, id)
@@ -1318,7 +1349,7 @@ func (s *Service) withPolicy(ctx context.Context, u *core.User) (context.Context
 }
 
 func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel, p *Programme, lookup func(context.Context, core.RatingKey) (*core.Title, error), strict bool) bool {
-	if u == nil || !c.Enabled {
+	if u == nil || !c.Enabled || c.MergedInto != "" {
 		return false
 	}
 	if app := core.LiveApp(ctx); app != "" && slices.Contains(c.HiddenApps, app) {
@@ -1528,7 +1559,7 @@ func (s *Service) AllowedChannel(ctx context.Context, u *core.User, key string) 
 		return Channel{}, err
 	}
 	for _, summary := range all {
-		if summary.Number != key || !summary.Enabled {
+		if summary.Number != key || !summary.Enabled || summary.MergedInto != "" {
 			continue
 		}
 		c, err = s.Channel(ctx, summary.ID)
@@ -2148,6 +2179,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 		return nil, err
 	}
 	rows.Close()
+	sortSourcesByPriority(out)
 	for i := range out {
 		s.fillVODStatus(ctx, &out[i])
 	}
@@ -2282,7 +2314,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	// transaction cannot be lost. The source row itself is written only when
 	// it changed.
 	src.UpdatedAt = s.o.Now()
-	sourceWritten, err := s.writeImportedSource(ctx, tx, src)
+	sourceWritten, err := s.writeImportedSource(ctx, tx, &src)
 	if err != nil {
 		return src, err
 	}
@@ -2334,6 +2366,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 				c.GuideSourceID = previous.GuideSourceID
 				c.Transcode = previous.Transcode
 				c.Stability = previous.Stability
+				c.InputMerge = previous.InputMerge
 				if previous.CustomGroup {
 					c.Group, c.CustomGroup = previous.Group, true
 				}
@@ -2351,13 +2384,19 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 			if guide, ok := g.Channels[c.GuideID]; ok && c.Logo == "" {
 				c.Logo = guide.Logo
 			}
-			b, e := json.Marshal(c)
-			if e != nil {
-				return src, e
-			}
-			ids, encoded = append(ids, c.ID), append(encoded, b)
 			stored = append(stored, c)
 		}
+	}
+	crossChanged, crossInvalidated, err := s.reconcileImportedMerges(ctx, tx, src, stored, old)
+	if err != nil {
+		return src, err
+	}
+	for _, c := range stored {
+		b, e := json.Marshal(c)
+		if e != nil {
+			return src, e
+		}
+		ids, encoded = append(ids, c.ID), append(encoded, b)
 	}
 	var savedChannels, savedProgrammes func(int)
 	if progress != nil {
@@ -2381,7 +2420,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		progress.setSavedChannels(len(stored))
 		progress.setSavedProgrammes(len(g.Programmes))
 	}
-	changed := sourceWritten || writes.changed()
+	changed := sourceWritten || writes.changed() || crossChanged
 	if changed {
 		// Guide-only sources change coverage without touching any channel
 		// rows. Publish that change transactionally to every cluster node's
@@ -2418,6 +2457,9 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		// Only tunes whose stream changed or disappeared are interrupted, so
 		// a scheduled refresh does not cut off viewers.
 		for _, id := range changedStreams(oldByID, stored) {
+			s.invalidate(id, "")
+		}
+		for _, id := range crossInvalidated {
 			s.invalidate(id, "")
 		}
 	}
@@ -2548,6 +2590,9 @@ func (s *Service) SavePendingSource(ctx context.Context, src Source) (Source, er
 	if err == nil {
 		src.Playlist, src.PlaylistURL = old.Playlist, old.PlaylistURL
 		src.Guide, src.GuideURL = old.Guide, old.GuideURL
+		if src.Priority == 0 {
+			src.Priority = old.Priority
+		}
 		if src.Auth == nil {
 			src.Auth = old.Auth
 		}
@@ -2672,10 +2717,19 @@ func (s *Service) DeleteSource(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	_, delInv, err := s.reconcileInputMergesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
 		return err
 	}
 	err = tx.Commit()
+	if err == nil {
+		for _, cid := range delInv {
+			s.invalidate(cid, "")
+		}
+	}
 	s.forgetSourceAuth(id)
 	if err == nil {
 		s.invalidate("", id)

@@ -219,6 +219,14 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		v, e := s.StreamSourceStatuses(r.Context(), chi.URLParam(r, "id"))
 		ownerResult(w, v, e)
 	})
+	r.Post("/channels/merge-preview", func(w http.ResponseWriter, r *http.Request) {
+		var req ChannelMergePreviewRequest
+		if !ownerBody(w, r, &req) {
+			return
+		}
+		v, e := s.PreviewChannelMerge(r.Context(), req)
+		ownerResult(w, v, e)
+	})
 	save := func(w http.ResponseWriter, r *http.Request) {
 		var c Channel
 		if !ownerBody(w, r, &c) {
@@ -254,6 +262,14 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		ownerResult(w, map[string]bool{"ok": true}, s.DeleteChannel(r.Context(), chi.URLParam(r, "id")))
 	})
 	r.Get("/sources", func(w http.ResponseWriter, r *http.Request) { v, e := s.Sources(r.Context()); ownerResult(w, v, e) })
+	r.Put("/sources/order", func(w http.ResponseWriter, r *http.Request) {
+		var req SourceOrderRequest
+		if !ownerBody(w, r, &req) {
+			return
+		}
+		v, e := s.SetSourceOrder(r.Context(), req.IDs)
+		ownerResult(w, v, e)
+	})
 	r.Get("/usage", func(w http.ResponseWriter, r *http.Request) { v, e := s.LiveUsage(r.Context()); ownerResult(w, v, e) })
 	r.Get("/sources/progress/{id}", func(w http.ResponseWriter, r *http.Request) {
 		v, ok := s.ImportProgress(chi.URLParam(r, "id"))

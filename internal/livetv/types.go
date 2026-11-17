@@ -163,30 +163,32 @@ type Channel struct {
 	// Private channels are hidden from every viewer whose policy does not
 	// grant them: a restricted viewer needs it in Channels, an unrestricted
 	// one in Granted. Owners always see them.
-	Private       bool           `json:"private,omitempty"`
-	Number        string         `json:"number"`
-	Name          string         `json:"name"`
-	Kind          string         `json:"kind"` // virtual or iptv
-	Enabled       bool           `json:"enabled"`
-	HiddenApps    []string       `json:"hiddenApps,omitempty"` // explicit per-channel hides (override OwnerGroup.Apps)
-	ShownApps     []string       `json:"shownApps,omitempty"`  // explicit per-channel shows (override OwnerGroup.Apps hides)
-	Favorite      bool           `json:"favorite"`
-	Logo          string         `json:"logo,omitempty"`
-	LogoMatched   bool           `json:"logoMatched,omitempty"`
-	ProviderAdult bool           `json:"providerAdult,omitempty"`
-	Rating        string         `json:"rating,omitempty"`
-	SourceID      string         `json:"sourceId,omitempty"`
-	GuideID       string         `json:"guideId,omitempty"`
-	TvgName       string         `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
-	StreamURL     string         `json:"streamUrl,omitempty"`     // owner API only
-	StreamSources []StreamSource `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
-	Group         string         `json:"group,omitempty"`
-	CustomGroup   bool           `json:"customGroup,omitempty"` // preserve owner grouping on provider refresh
-	Epoch         time.Time      `json:"epoch"`
-	Seed          int64          `json:"seed"`
-	Shuffle       bool           `json:"shuffle"`
-	Items         []Item         `json:"items"`
-	Blocks        []Block        `json:"blocks,omitempty"`
+	Private       bool               `json:"private,omitempty"`
+	Number        string             `json:"number"`
+	Name          string             `json:"name"`
+	Kind          string             `json:"kind"` // virtual or iptv
+	Enabled       bool               `json:"enabled"`
+	HiddenApps    []string           `json:"hiddenApps,omitempty"` // explicit per-channel hides (override OwnerGroup.Apps)
+	ShownApps     []string           `json:"shownApps,omitempty"`  // explicit per-channel shows (override OwnerGroup.Apps hides)
+	Favorite      bool               `json:"favorite"`
+	Logo          string             `json:"logo,omitempty"`
+	LogoMatched   bool               `json:"logoMatched,omitempty"`
+	ProviderAdult bool               `json:"providerAdult,omitempty"`
+	Rating        string             `json:"rating,omitempty"`
+	SourceID      string             `json:"sourceId,omitempty"`
+	GuideID       string             `json:"guideId,omitempty"`
+	TvgName       string             `json:"tvgName,omitempty"`       // provider's label; a guide-matching hint
+	StreamURL     string             `json:"streamUrl,omitempty"`     // owner API only
+	StreamSources []StreamSource     `json:"streamSources,omitempty"` // ordered inputs; independent of channel/guide identity
+	InputMerge    *ChannelInputMerge `json:"inputMerge,omitempty"`
+	MergedInto    string             `json:"mergedInto,omitempty"`
+	Group         string             `json:"group,omitempty"`
+	CustomGroup   bool               `json:"customGroup,omitempty"` // preserve owner grouping on provider refresh
+	Epoch         time.Time          `json:"epoch"`
+	Seed          int64              `json:"seed"`
+	Shuffle       bool               `json:"shuffle"`
+	Items         []Item             `json:"items"`
+	Blocks        []Block            `json:"blocks,omitempty"`
 	// Collection/Filter/Sources are expanded into a stable item snapshot when saved.
 	Collection core.RatingKey  `json:"collection,omitempty"`
 	Filter     *core.Filter    `json:"filter,omitempty"`
@@ -236,6 +238,7 @@ type Source struct {
 	PlexCursor  int        `json:"plexCursor,omitempty"`
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
+	Priority    int        `json:"priority,omitempty"`
 	Kind        string     `json:"kind,omitempty"` // a source kind id, e.g. plugin:<id>/channels
 	PlaylistURL string     `json:"playlistUrl,omitempty"`
 	GuideURL    string     `json:"guideUrl,omitempty"`

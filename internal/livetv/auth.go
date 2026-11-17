@@ -727,7 +727,15 @@ func (s *Service) sourcePaused(ctx context.Context, c Channel) bool {
 		return false
 	}
 	_, err := s.sourceEntry(ctx, c.SourceID)
-	return errors.Is(err, core.ErrNotAvailable)
+	if !errors.Is(err, core.ErrNotAvailable) {
+		return false
+	}
+	for _, src := range c.StreamSources {
+		if src.Enabled && src.AuthSourceID != "" && src.AuthSourceID != c.SourceID && s.channelSourceEnabled(ctx, src.AuthSourceID) {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultTuneGap spaces new streams on a connection-limited account: a

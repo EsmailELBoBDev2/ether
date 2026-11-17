@@ -403,17 +403,23 @@ func targetFromSummary(c ChannelSummary) channelRuleTarget {
 }
 
 func targetsFromChannels(cs []Channel) []channelRuleTarget {
-	out := make([]channelRuleTarget, len(cs))
+	out := make([]channelRuleTarget, 0, len(cs))
 	for i := range cs {
-		out[i] = targetFromChannel(cs[i])
+		if cs[i].MergedInto != "" {
+			continue
+		}
+		out = append(out, targetFromChannel(cs[i]))
 	}
 	return out
 }
 
 func targetsFromSummaries(cs []ChannelSummary) []channelRuleTarget {
-	out := make([]channelRuleTarget, len(cs))
+	out := make([]channelRuleTarget, 0, len(cs))
 	for i := range cs {
-		out[i] = targetFromSummary(cs[i])
+		if cs[i].MergedInto != "" {
+			continue
+		}
+		out = append(out, targetFromSummary(cs[i]))
 	}
 	return out
 }
@@ -862,15 +868,19 @@ func (s *Service) ruleTargetsForGeneration(ctx context.Context, rev int64) ([]ch
 			return nil, err
 		}
 		var doc struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			Group    string `json:"group"`
-			GuideID  string `json:"guideId"`
-			Number   string `json:"number"`
-			SourceID string `json:"sourceId"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Group      string `json:"group"`
+			GuideID    string `json:"guideId"`
+			Number     string `json:"number"`
+			SourceID   string `json:"sourceId"`
+			MergedInto string `json:"mergedInto"`
 		}
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			return nil, err
+		}
+		if doc.MergedInto != "" {
+			continue
 		}
 		targets = append(targets, channelRuleTarget{
 			ID:       doc.ID,

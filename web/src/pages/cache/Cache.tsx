@@ -24,6 +24,7 @@ const CACHE_TABS = localized(
 );
 import { Drawer } from "../../components/Drawer";
 import { RestartButton } from "../../components/RestartDrawer";
+import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { ErrorPanel } from "../../components/feedback";
 import { Field, NumberInput } from "../../components/fields";
 import { useDraft, useUnsavedGuard } from "../../components/SaveBar";
@@ -32,6 +33,7 @@ import { api, apiFetch } from "../../lib/api";
 import { useApp } from "../../app-context";
 import { formatBytes, formatNumber, formatPercent } from "../../lib/format";
 import { useAsync, useInterval } from "../../lib/hooks";
+import type { ReleaseInfo } from "../../lib/releases";
 import type { EtherConfig } from "../../lib/types";
 
 type Policy = EtherConfig["cache"];
@@ -52,6 +54,24 @@ export type ReleaseReason = {
   retention: CacheRetention;
   file: string;
   source: string;
+  indexer?: string;
+  origin?: string;
+  ratingKey?: number;
+  cachedAt?: string;
+  info?: ReleaseInfo;
+};
+export type SegmentSpan = {
+  start: number;
+  end: number;
+};
+export type ReleaseDetail = {
+  releaseId: string;
+  segments: number;
+  estimatedTotal?: number;
+  spanCount: number;
+  spans: SegmentSpan[];
+  coverage?: number[];
+  firstCached?: string;
 };
 type Release = {
   ReleaseID: string;
@@ -252,7 +272,7 @@ export default function Cache() {
       setBusy(null);
     }
   }
-  async function clearRelease(releaseId: string, title: string, block: boolean) {
+  async function clearRelease(releaseId: string, title: string, block: boolean): Promise<boolean> {
     const question = block
       ? t(
           "Clear cached bytes for {title} and block this release from future playback? Active or paused playback must be stopped first. Protected bytes may remain until background work ends. You can unblock it in the release controls.",
@@ -262,7 +282,7 @@ export default function Cache() {
           "Clear cached bytes for {title}? The release stays playable and is fetched again the next time it plays. Active or paused playback must be stopped first. Protected bytes may remain until background work ends.",
           { title },
         );
-    if (!window.confirm(question)) return;
+    if (!window.confirm(question)) return false;
     const path = block ? "clear-block" : "clear";
     setBusy(path);
     setError(null);
@@ -274,8 +294,10 @@ export default function Cache() {
       await live.reload();
       if (result.cleared) toast.success(result.message);
       else setError(new Error(result.message));
+      return result.cleared;
     } catch (e) {
       setError(e);
+      return false;
     } finally {
       setBusy(null);
     }
@@ -302,6 +324,12 @@ export default function Cache() {
     saved.mode === "off" || matched === "pass-through"
       ? t("Pass-through")
       : savedPreset?.name || t("Custom policy");
+  const activePolicyName = snap?.policy
+    ? snap.policy.mode === "off"
+      ? t("Pass-through")
+      : (CACHE_PRESETS.find((p) => p.key === cachePresetKey(snap.policy!))?.name ??
+        t("Custom policy"))
+    : policyName;
   const enabled = draft.mode !== "off",
     speculate = enabled && !draft.disableSpeculation;
   return (
@@ -409,14 +437,7 @@ export default function Cache() {
               <CacheOverview
                 snapshot={snap}
                 policy={snap?.policy ?? saved}
-                name={
-                  snap?.policy
-                    ? snap.policy.mode === "off"
-                      ? t("Pass-through")
-                      : (CACHE_PRESETS.find((p) => p.key === cachePresetKey(snap.policy!))?.name ??
-                        t("Custom policy"))
-                    : policyName
-                }
+                name={activePolicyName}
                 freeBytes={disk.data?.freeBytes}
                 busy={busy !== null}
                 onProfile={() => {
@@ -431,10 +452,11 @@ export default function Cache() {
           ) : tab === "explorer" ? (
             <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col p-4 sm:p-5">
               <CacheExplorer
-                snapshot={snap}
+                snapshot={snap ? { ...snap, policy: snap.policy ?? saved } : undefined}
+                policyName={activePolicyName}
                 busy={busy !== null}
                 onPin={(releaseId, pinned) => void action("pin", { releaseId, pinned })}
-                onClear={(id, title, block) => void clearRelease(id, title, block)}
+                onClear={(id, title, block) => clearRelease(id, title, block)}
               />
             </div>
           ) : tab === "libraries" ? (
@@ -847,15 +869,18 @@ export default function Cache() {
                     patch({ budgetBytes: Math.round(n * (unit === "TiB" ? 1024 * GiB : GiB)) })
                   }
                 />
-                <select
-                  aria-label={t("Budget unit")}
+                <ToolbarPicker
+                  ariaLabel={t("Budget unit")}
                   value={unit}
-                  onChange={(e) => setUnit(e.target.value as "GiB" | "TiB")}
-                  className="rounded border border-border bg-surface p-2 text-xs"
-                >
-                  <option>GiB</option>
-                  <option>TiB</option>
-                </select>
+                  onChange={(v) => setUnit(v)}
+                  searchable={false}
+                  className="h-10 shrink-0 px-3 text-xs"
+                  menuClassName="w-28"
+                  options={[
+                    { value: "GiB", label: "GiB" },
+                    { value: "TiB", label: "TiB" },
+                  ]}
+                />
               </div>
             </Field>
             {disk.data && draft.dir === activeDirectory && (
@@ -882,21 +907,25 @@ export default function Cache() {
               <label className="mt-3 block text-sm font-medium" htmlFor="cache-mode">
                 {t("Retention strategy")}
               </label>
-              <select
+              <ToolbarPicker
                 id="cache-mode"
+                ariaLabel={t("Retention strategy")}
                 value={draft.mode || "demand"}
-                onChange={(e) =>
+                onChange={(next) =>
                   patch({
-                    mode: e.target.value,
-                    ...(e.target.value === "off" ? { preloadEnabled: false } : {}),
+                    mode: next,
+                    ...(next === "off" ? { preloadEnabled: false } : {}),
                   })
                 }
-                className="mt-2 w-full rounded-lg border border-border bg-surface p-2.5 text-sm"
-              >
-                <option value="off">{t("No persistent media")}</option>
-                <option value="demand">{t("Keep what is streamed")}</option>
-                <option value="adaptive">{t("Favour repeat watches")}</option>
-              </select>
+                searchable={false}
+                matchWidth
+                className="mt-2 h-10 w-full justify-between px-3"
+                options={[
+                  { value: "off", label: t("No persistent media") },
+                  { value: "demand", label: t("Keep what is streamed") },
+                  { value: "adaptive", label: t("Favour repeat watches") },
+                ]}
+              />
               <p className="mt-2 text-xs leading-relaxed text-fg-muted">
                 {!enabled
                   ? t(
@@ -967,25 +996,27 @@ export default function Cache() {
                 )}
                 htmlFor="cache-playback-read-ahead"
               >
-                <select
+                <ToolbarPicker
                   id="cache-playback-read-ahead"
-                  className="w-full rounded border border-border bg-surface p-2 text-sm"
+                  ariaLabel={t("Read ahead while playing")}
                   disabled={!enabled}
-                  value={draft.playbackReadAheadMinutes ?? 5}
-                  onChange={(e) => patch({ playbackReadAheadMinutes: Number(e.target.value) })}
-                >
-                  {[...new Set([0, 2, 5, 10, draft.playbackReadAheadMinutes ?? 5])]
+                  value={String(draft.playbackReadAheadMinutes ?? 5)}
+                  onChange={(v) => patch({ playbackReadAheadMinutes: Number(v) })}
+                  searchable={false}
+                  matchWidth
+                  className="h-10 w-full justify-between px-3"
+                  options={[...new Set([0, 2, 5, 10, draft.playbackReadAheadMinutes ?? 5])]
                     .sort((a, b) => a - b)
-                    .map((minutes) => (
-                      <option key={minutes} value={minutes}>
-                        {minutes === 0
+                    .map((minutes) => ({
+                      value: String(minutes),
+                      label:
+                        minutes === 0
                           ? t("Off")
                           : minutes === 5
                             ? t("5 minutes (recommended)")
-                            : tn(minutes, "{count} minute", "{count} minutes")}
-                      </option>
-                    ))}
-                </select>
+                            : tn(minutes, "{count} minute", "{count} minutes"),
+                    }))}
+                />
               </Field>
             </div>
             <div className="border-t border-border pt-5">
@@ -1036,28 +1067,36 @@ export default function Cache() {
                     />
                   </Field>
                   <Field label={t("Include in your shelf")} htmlFor="preload-content">
-                    <select
+                    <ToolbarPicker
                       id="preload-content"
-                      className="w-full rounded border border-border bg-surface p-2 text-sm"
+                      ariaLabel={t("Include in your shelf")}
                       value={draft.preloadContent || "mixed"}
-                      onChange={(e) => patch({ preloadContent: e.target.value })}
-                    >
-                      <option value="mixed">{t("Movies & TV episodes")}</option>
-                      <option value="movies">{t("Movies only")}</option>
-                      <option value="tv">{t("TV episodes only")}</option>
-                    </select>
+                      onChange={(v) => patch({ preloadContent: v })}
+                      searchable={false}
+                      matchWidth
+                      className="h-10 w-full justify-between px-3"
+                      options={[
+                        { value: "mixed", label: t("Movies & TV episodes") },
+                        { value: "movies", label: t("Movies only") },
+                        { value: "tv", label: t("TV episodes only") },
+                      ]}
+                    />
                   </Field>
                   <Field label={t("Selection strategy")} htmlFor="preload-source">
-                    <select
+                    <ToolbarPicker
                       id="preload-source"
-                      className="w-full rounded border border-border bg-surface p-2 text-sm"
+                      ariaLabel={t("Selection strategy")}
                       value={draft.preloadSource || "smart"}
-                      onChange={(e) => patch({ preloadSource: e.target.value })}
-                    >
-                      <option value="smart">{t("Smart household blend")}</option>
-                      <option value="popular">{t("Catalogue popularity")}</option>
-                      <option value="recent">{t("Newest releases")}</option>
-                    </select>
+                      onChange={(v) => patch({ preloadSource: v })}
+                      searchable={false}
+                      matchWidth
+                      className="h-10 w-full justify-between px-3"
+                      options={[
+                        { value: "smart", label: t("Smart household blend") },
+                        { value: "popular", label: t("Catalogue popularity") },
+                        { value: "recent", label: t("Newest releases") },
+                      ]}
+                    />
                   </Field>
                   {(!draft.preloadSource || draft.preloadSource === "smart") && (
                     <div className="space-y-3 rounded-lg border border-primary/20 bg-surface p-3">
@@ -1095,15 +1134,19 @@ export default function Cache() {
                     htmlFor="household-scope"
                     hint={t("Also determines whose TV progress guides episode selection.")}
                   >
-                    <select
+                    <ToolbarPicker
                       id="household-scope"
-                      className="w-full rounded border border-border bg-surface p-2 text-sm"
+                      ariaLabel={t("Learn from")}
                       value={draft.preloadHouseholdScope || "home"}
-                      onChange={(e) => patch({ preloadHouseholdScope: e.target.value })}
-                    >
-                      <option value="home">{t("Owner & Plex Home members")}</option>
-                      <option value="all">{t("All active shared viewers")}</option>
-                    </select>
+                      onChange={(v) => patch({ preloadHouseholdScope: v })}
+                      searchable={false}
+                      matchWidth
+                      className="h-10 w-full justify-between px-3"
+                      options={[
+                        { value: "home", label: t("Owner & Plex Home members") },
+                        { value: "all", label: t("All active shared viewers") },
+                      ]}
+                    />
                   </Field>
                   {draft.preloadContent !== "movies" && (
                     <Field

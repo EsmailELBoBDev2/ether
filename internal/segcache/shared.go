@@ -391,8 +391,12 @@ func (s *sharedCache) releaseBytes(id string) int64 {
 }
 
 type sharedProvenance struct {
-	Source string            `json:"source,omitempty"`
-	Causes []core.CacheCause `json:"causes,omitempty"`
+	Source    string            `json:"source,omitempty"`
+	Indexer   string            `json:"indexer,omitempty"`
+	Origin    string            `json:"origin,omitempty"`
+	RatingKey core.RatingKey    `json:"ratingKey,omitempty"`
+	CachedAt  time.Time         `json:"cachedAt,omitzero"`
+	Causes    []core.CacheCause `json:"causes,omitempty"`
 }
 
 func (s *sharedCache) recordProvenance(p core.CacheProvenance) {
@@ -422,8 +426,20 @@ func (s *sharedCache) recordProvenance(p core.CacheProvenance) {
 				prov = sharedProvenance{}
 			}
 		}
+		if prov.CachedAt.IsZero() {
+			prov.CachedAt = now
+		}
 		if p.Source != "" {
 			prov.Source = p.Source
+		}
+		if p.Indexer != "" {
+			prov.Indexer = p.Indexer
+		}
+		if p.Origin != "" {
+			prov.Origin = p.Origin
+		}
+		if p.RatingKey != 0 {
+			prov.RatingKey = p.RatingKey
 		}
 		if p.Cause != "" {
 			prov.Causes = mergeCause(prov.Causes, core.CacheCause{Code: p.Cause, FirstSeen: now, Shelf: p.Shelf})
@@ -470,6 +486,10 @@ func (s *sharedCache) releases() []ReleaseUsage {
 				s.log(err)
 			} else {
 				r.source = prov.Source
+				r.indexer = prov.Indexer
+				r.origin = prov.Origin
+				r.ratingKey = prov.RatingKey
+				r.cachedAt = prov.CachedAt
 				r.causes = prov.Causes
 			}
 		}
@@ -493,6 +513,59 @@ func (s *sharedCache) releases() []ReleaseUsage {
 		out[i].Reason = reasonFor(&out[i], policy, now)
 	}
 	return out
+}
+func (s *sharedCache) releaseDetail(id string) (ReleaseDetail, bool) {
+	ctx, cancel := s.context()
+	defer cancel()
+	var bytes, size int64
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT bytes,size,COALESCE(provenance,'') FROM segcache_releases WHERE release_id=?`, id).Scan(&bytes, &size, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		if len(s.pins()[id]) == 0 {
+			return ReleaseDetail{}, false
+		}
+		return buildReleaseDetail(id, nil, 0, 0, time.Time{}), true
+	}
+	if err != nil {
+		s.log(err)
+		return ReleaseDetail{}, false
+	}
+	var first time.Time
+	if raw != "" {
+		var prov sharedProvenance
+		if json.Unmarshal([]byte(raw), &prov) == nil {
+			first = earliestTime(prov.CachedAt, prov.Causes)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT segment,touched FROM segcache_segments WHERE release_id=? ORDER BY segment`, id)
+	if err != nil {
+		s.log(err)
+		return ReleaseDetail{}, false
+	}
+	defer rows.Close()
+	var keys []int
+	var earliest int64
+	for rows.Next() {
+		var seg int
+		var touched int64
+		if rows.Scan(&seg, &touched) == nil {
+			keys = append(keys, seg)
+			if touched > 0 && (earliest == 0 || touched < earliest) {
+				earliest = touched
+			}
+		}
+	}
+	s.logRows("release_detail", rows.Err())
+	if len(keys) == 0 && len(s.pins()[id]) == 0 {
+		return ReleaseDetail{}, false
+	}
+	if earliest > 0 {
+		t := time.Unix(earliest, 0)
+		if first.IsZero() || t.Before(first) {
+			first = t
+		}
+	}
+	return buildReleaseDetail(id, keys, bytes, size, first), true
 }
 func (s *sharedCache) remove(id string) error { return s.evictWhere(id, false) }
 func (s *sharedCache) sweep(expire bool)      { s.log(s.evictWhere("", expire)) }

@@ -398,13 +398,26 @@ func releaseLabel(r core.Release) string {
 	return r.Indexer
 }
 
+func shelfOrigin(src core.MediaSource, protocol string) string {
+	if o, ok := src.(core.OriginSource); ok {
+		return o.Origin()
+	}
+	if protocol == core.ProtocolTorrent {
+		return "Debrid"
+	}
+	if protocol == core.ProtocolHTTP {
+		return "HTTP"
+	}
+	return "Usenet"
+}
+
 // noteShelf records the selection reason and file behind a shelf entry.
-func (m *Manager) noteShelf(r core.Release, file, title string, size int64, detail core.CacheShelfDetail) {
+func (m *Manager) noteShelf(key core.RatingKey, r core.Release, src core.MediaSource, file, title string, size int64, detail core.CacheShelfDetail) {
 	rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder)
 	if !ok {
 		return
 	}
-	rec.RecordProvenance(core.CacheProvenance{ReleaseID: r.ID, File: file, Size: size, Source: releaseLabel(r), Title: title, Cause: core.CacheCauseShelf, Shelf: &detail})
+	rec.RecordProvenance(core.CacheProvenance{ReleaseID: r.ID, RatingKey: key, File: file, Size: size, Source: releaseLabel(r), Indexer: r.Indexer, Origin: shelfOrigin(src, r.Protocol), Title: title, Cause: core.CacheCauseShelf, Shelf: &detail})
 }
 
 // fail keeps a failed title in the manifest so the selection list can show it.
@@ -727,7 +740,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		_ = m.pin(res.Release.ID, false)
 		return err
 	}
-	m.noteShelf(res.Release, src.Name(), displayTitle(*title), size, shelf)
+	m.noteShelf(title.Key, res.Release, src, src.Name(), displayTitle(*title), size, shelf)
 	m.state("filling", "Fetching complete source at background priority")
 	for off := int64(0); off < size; {
 		if err := ctx.Err(); err != nil {
@@ -774,7 +787,7 @@ func (m *Manager) fill(ctx context.Context, owner *core.User, title *core.Title,
 		return err
 	}
 	shelf.State = "fetched"
-	m.noteShelf(res.Release, src.Name(), displayTitle(*title), size, shelf)
+	m.noteShelf(title.Key, res.Release, src, src.Name(), displayTitle(*title), size, shelf)
 	if m.deps.Remember != nil {
 		if err := m.deps.Remember(ctx, owner, title.Key, caps, res); err != nil {
 			m.deps.Logger.Warn("remember preloaded source", "err", err)

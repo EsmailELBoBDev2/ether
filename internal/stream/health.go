@@ -44,7 +44,7 @@ func (e *Engine) CheckRelease(ctx context.Context, releaseID string, nzbData []b
 	var healthSize int64
 	if rec, ok := e.cache.(core.CacheProvenanceRecorder); ok && releaseID != "" {
 		defer func() {
-			rec.RecordProvenance(core.CacheProvenance{ReleaseID: releaseID, File: healthFile, Size: healthSize, Cause: core.CacheCauseQualityCheck})
+			rec.RecordProvenance(core.CacheProvenance{ReleaseID: releaseID, File: healthFile, Size: healthSize, Origin: "Usenet", Cause: core.CacheCauseQualityCheck})
 		}()
 	}
 	if e.repairOptions().Enabled {

@@ -387,7 +387,7 @@ func (e *Engine) CheckRelease(ctx context.Context, releaseID string, payload []b
 		return false, fmt.Errorf("%w: %v", core.ErrReleaseRejected, err)
 	}
 	if rec, ok := e.cache.(core.CacheProvenanceRecorder); ok && p.ReleaseID != "" {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: p.ReleaseID, File: p.Name(), Size: p.Size, Cause: core.CacheCauseQualityCheck})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: p.ReleaseID, File: p.Name(), Size: p.Size, Source: p.Release, Origin: payloadOrigin(p), Cause: core.CacheCauseQualityCheck})
 	}
 	// Health checks have no release id; the payload carries it so the head
 	// block lands where Open will look for it.
@@ -2393,9 +2393,7 @@ func (s *httpSource) BufferedAhead() int64 {
 	return int64(idx-last-1) * f.e.block
 }
 
-// Origin implements core.OriginSource with the debrid service's name.
-func (s *httpSource) Origin() string {
-	p, _ := s.f.payload()
+func payloadOrigin(p Payload) string {
 	if p.IsDirect() {
 		return "HTTP"
 	}
@@ -2406,6 +2404,12 @@ func (s *httpSource) Origin() string {
 		return p.Kind
 	}
 	return "Debrid"
+}
+
+// Origin implements core.OriginSource with the debrid service's name.
+func (s *httpSource) Origin() string {
+	p, _ := s.f.payload()
+	return payloadOrigin(p)
 }
 
 // RetryDirectPlay keeps the file representation stable across a temporary CDN

@@ -1398,7 +1398,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	s.mu.Unlock()
 
 	if rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder); ok && g.src != nil {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Cause: core.CacheCauseFailover})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), RatingKey: g.res.Title, File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Indexer: g.res.Release.Indexer, Origin: sourceOrigin(g.src, g.res.Release.Protocol), Cause: core.CacheCauseFailover})
 	}
 
 	m.mu.Lock()

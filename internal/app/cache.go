@@ -54,6 +54,21 @@ func (a *App) configureCache(c config.Cache) {
 	a.cache.SetBudget(c.BudgetBytes)
 }
 
+func protocolOrigin(protocol string) string {
+	switch protocol {
+	case core.ProtocolTorrent:
+		return "Debrid"
+	case core.ProtocolHTTP:
+		return "HTTP"
+	default:
+		return "Usenet"
+	}
+}
+
+func hasReleaseInfo(info core.ReleaseInfo) bool {
+	return info.Height > 0 || info.Source != "" || info.VideoCodec != "" || info.AudioCodec != "" || info.HDR10 || info.DolbyVision || info.Atmos || info.Group != ""
+}
+
 // This extension is mounted behind the owner API's authentication and CSRF guard.
 func (a *App) cacheHandler() http.Handler {
 	a.cache.SetBlockCheck(a.resolver.LocalReleaseBlocked)
@@ -79,6 +94,16 @@ func (a *App) cacheHandler() http.Handler {
 	})
 	mux.HandleFunc("POST /clear", func(w http.ResponseWriter, r *http.Request) { a.clearReleaseCache(w, r, false) })
 	mux.HandleFunc("POST /clear-block", func(w http.ResponseWriter, r *http.Request) { a.clearReleaseCache(w, r, true) })
+	mux.HandleFunc("GET /releases/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		detail, ok := a.cache.ReleaseDetail(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(detail)
+	})
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -86,19 +111,77 @@ func (a *App) cacheHandler() http.Handler {
 		}
 		used, budget := a.cache.Usage()
 		releases := a.cache.Releases()
-		live := map[string]core.CacheCause{}
+		preload := a.cachefill.Status()
+
+		preloadKeys := make(map[string]core.RatingKey, len(preload.Items))
+		for _, it := range preload.Items {
+			if it.ReleaseID != "" && it.Key != 0 {
+				preloadKeys[it.ReleaseID] = it.Key
+			}
+		}
+
+		live := map[string]*core.PlaySession{}
 		for _, session := range a.playback.Sessions() {
 			if session.Resolution == nil || session.Resolution.Release.ID == "" {
 				continue
 			}
-			switch session.ViewerState {
-			case "playing", "paused":
-				live[session.Resolution.Release.ID] = core.CacheCause{Code: session.ViewerState, FirstSeen: session.StartedAt}
-			}
+			live[session.Resolution.Release.ID] = session
 		}
+
 		for i := range releases {
-			if cause, ok := live[releases[i].ReleaseID]; ok {
-				releases[i].Reason.AddCause(cause)
+			reason := releases[i].Reason
+			if reason == nil {
+				continue
+			}
+			id := releases[i].ReleaseID
+			if session, ok := live[id]; ok {
+				switch session.ViewerState {
+				case "playing", "paused":
+					reason.AddCause(core.CacheCause{Code: session.ViewerState, FirstSeen: session.StartedAt})
+				}
+				if reason.Origin == "" && session.Origin != "" {
+					reason.Origin = session.Origin
+				}
+				if session.Resolution != nil {
+					if reason.RatingKey == 0 && session.Resolution.Title != 0 {
+						reason.RatingKey = session.Resolution.Title
+					}
+					if reason.Indexer == "" && session.Resolution.Release.Indexer != "" {
+						reason.Indexer = session.Resolution.Release.Indexer
+					}
+					if reason.Source == "" && session.Resolution.Release.Name != "" {
+						reason.Source = session.Resolution.Release.Name
+					}
+					if reason.Info == nil && hasReleaseInfo(session.Resolution.Release.Info) {
+						info := session.Resolution.Release.Info
+						reason.Info = &info
+					}
+				}
+			}
+			if reason.RatingKey == 0 {
+				if key, ok := preloadKeys[id]; ok {
+					reason.RatingKey = key
+				}
+			}
+			if a.resolver != nil {
+				if rel, titleKey, ok := a.resolver.LookupReleaseMeta(id); ok {
+					if reason.RatingKey == 0 && titleKey != 0 {
+						reason.RatingKey = titleKey
+					}
+					if reason.Indexer == "" && rel.Indexer != "" {
+						reason.Indexer = rel.Indexer
+					}
+					if reason.Source == "" && rel.Name != "" {
+						reason.Source = rel.Name
+					}
+					if reason.Origin == "" {
+						reason.Origin = protocolOrigin(rel.Protocol)
+					}
+					if reason.Info == nil && hasReleaseInfo(rel.Info) {
+						info := rel.Info
+						reason.Info = &info
+					}
+				}
 			}
 		}
 		protected := a.protectedReleases()
@@ -109,7 +192,7 @@ func (a *App) cacheHandler() http.Handler {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"policy": a.runningCacheConfig(), "shared": a.cache.Shared(), "clustered": a.clustered(), "storageError": a.cache.StorageError(), "restartRequired": a.cacheRestartRequired(), "used": used, "budget": budget, "directory": a.cache.Directory(), "protectedBytes": pinnedBytes, "releases": releases, "metrics": a.cache.Metrics(), "prefetch": a.prefetch.Stats(), "preload": a.cachefill.Status()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"policy": a.runningCacheConfig(), "shared": a.cache.Shared(), "clustered": a.clustered(), "storageError": a.cache.StorageError(), "restartRequired": a.cacheRestartRequired(), "used": used, "budget": budget, "directory": a.cache.Directory(), "protectedBytes": pinnedBytes, "releases": releases, "metrics": a.cache.Metrics(), "prefetch": a.prefetch.Stats(), "preload": preload})
 	})
 	mux.HandleFunc("POST /warm", func(w http.ResponseWriter, r *http.Request) {
 		cfg := a.runningCacheConfig()

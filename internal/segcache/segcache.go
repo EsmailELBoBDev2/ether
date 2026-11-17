@@ -142,9 +142,13 @@ type ReleaseUsage struct {
 	LastPlayed time.Time
 
 	// Parsed provenance, rendered into Reason once retention is known.
-	file   string
-	source string
-	causes []core.CacheCause
+	file      string
+	source    string
+	indexer   string
+	origin    string
+	ratingKey core.RatingKey
+	cachedAt  time.Time
+	causes    []core.CacheCause
 
 	Reason *ReleaseReason `json:"reason,omitempty"`
 }
@@ -598,6 +602,46 @@ func (c *Cache) Remove(releaseID string) error {
 	return nil
 }
 
+// ReleaseDetail summarizes the cached segment spans for one release. It touches
+// only that release's in-memory index (or indexed rows on a shared pool).
+func (c *Cache) ReleaseDetail(releaseID string) (ReleaseDetail, bool) {
+	if releaseID == "" {
+		return ReleaseDetail{}, false
+	}
+	if c.shared != nil {
+		return c.shared.releaseDetail(releaseID)
+	}
+	c.mu.Lock()
+	r := c.rels[releaseID]
+	if r == nil || (len(r.segs) == 0 && len(c.pins[releaseID]) == 0) {
+		c.mu.Unlock()
+		return ReleaseDetail{}, false
+	}
+	keys := make([]int, 0, len(r.segs))
+	var earliestNs int64
+	for seg, e := range r.segs {
+		keys = append(keys, seg)
+		ts := e.touched
+		if ts <= 0 || (e.lastUsed > 0 && e.lastUsed < ts) {
+			ts = e.lastUsed
+		}
+		if ts > 0 && (earliestNs == 0 || ts < earliestNs) {
+			earliestNs = ts
+		}
+	}
+	bytes, size := r.bytes, r.experience.Size
+	first := earliestTime(r.experience.CachedAt, r.experience.Causes)
+	c.mu.Unlock()
+	if earliestNs > 0 {
+		t := time.Unix(0, earliestNs)
+		if first.IsZero() || t.Before(first) {
+			first = t
+		}
+	}
+	slices.Sort(keys)
+	return buildReleaseDetail(releaseID, keys, bytes, size, first), true
+}
+
 // Releases lists every release that has cached segments or pins, most
 // recently used first.
 func (c *Cache) Releases() []ReleaseUsage {
@@ -612,7 +656,7 @@ func (c *Cache) Releases() []ReleaseUsage {
 			continue
 		}
 		seen[id] = true
-		u := ReleaseUsage{Title: r.experience.Title, Size: r.experience.Size, Plays: r.experience.Plays, LastPlayed: r.experience.LastPlayed, ReleaseID: id, Bytes: r.bytes, Segments: len(r.segs), Pins: sortedReasons(c.pins[id]), file: r.experience.File, source: r.experience.Source, causes: append([]core.CacheCause(nil), r.experience.Causes...)}
+		u := ReleaseUsage{Title: r.experience.Title, Size: r.experience.Size, Plays: r.experience.Plays, LastPlayed: r.experience.LastPlayed, ReleaseID: id, Bytes: r.bytes, Segments: len(r.segs), Pins: sortedReasons(c.pins[id]), file: r.experience.File, source: r.experience.Source, indexer: r.experience.Indexer, origin: r.experience.Origin, ratingKey: r.experience.RatingKey, cachedAt: r.experience.CachedAt, causes: append([]core.CacheCause(nil), r.experience.Causes...)}
 		if r.lastUsed > 0 {
 			u.LastUsed = time.Unix(0, r.lastUsed)
 		}
@@ -732,6 +776,12 @@ func (c *Cache) insertLocked(r *release, seg int, size, nowNs int64) {
 	c.used += size
 	r.bytes += size
 	r.lastUsed = max(r.lastUsed, nowNs)
+	if nowNs > 0 {
+		ts := time.Unix(0, nowNs)
+		if r.experience.CachedAt.IsZero() || ts.Before(r.experience.CachedAt) {
+			r.experience.CachedAt = ts
+		}
+	}
 	c.lru.pushFront(e)
 	r.pushEntry(e)
 }

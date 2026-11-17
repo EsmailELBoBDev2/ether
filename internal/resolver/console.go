@@ -162,18 +162,25 @@ func (s *Service) rememberReleases(t *core.Title, results []core.Release) {
 // LookupRelease finds a release by id among recent search results and
 // owner pins.
 func (s *Service) LookupRelease(id string) (core.Release, bool) {
+	rel, _, ok := s.LookupReleaseMeta(id)
+	return rel, ok
+}
+
+// LookupReleaseMeta finds a release and its associated catalogue key in memory
+// (recent search results and owner pins) without touching disk or database.
+func (s *Service) LookupReleaseMeta(id string) (core.Release, core.RatingKey, bool) {
 	c := &s.con
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if r, ok := c.recent[id]; ok {
-		return r.rel, true
+		return r.rel, r.titleKey, true
 	}
 	for _, p := range c.pins {
 		if p.Release.ID == id {
-			return p.Release, true
+			return p.Release, p.TitleKey, true
 		}
 	}
-	return core.Release{}, false
+	return core.Release{}, 0, false
 }
 
 // consoleTitleName is the owner-facing name of a title: "Show S01E02" for

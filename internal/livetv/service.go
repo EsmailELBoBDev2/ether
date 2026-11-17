@@ -2138,7 +2138,7 @@ func (s *Service) Sources(ctx context.Context) ([]Source, error) {
 			return nil, err
 		}
 		v.HasPlaylist = v.Playlist != "" || v.PlaylistURL != ""
-		v.HasGuide = s.sourceGuideFeatures(v).Remote || v.Guide != "" || v.GuideURL != ""
+		v.HasGuide = s.sourceGuideFeatures(v).Remote || v.Guide != "" || v.GuideURL != "" || v.PlaylistGuide
 		v.Playlist = ""
 		v.Guide = ""
 		redactSourceAuth(&v)
@@ -2242,6 +2242,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	}
 	progress := importProgress(ctx)
 	src.SkippedVOD = 0
+	src.PlaylistGuide = false
 	// Account and groups are what this fetch reports; a source body from the
 	// owner API carries stale read-only copies.
 	src.Account, src.Groups = nil, nil
@@ -2429,7 +2430,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 	}
 	src = storedSource(src)
 	src.HasPlaylist = src.Playlist != "" || src.PlaylistURL != ""
-	src.HasGuide = s.sourceGuideFeatures(src).Remote || src.Guide != "" || src.GuideURL != ""
+	src.HasGuide = s.sourceGuideFeatures(src).Remote || src.Guide != "" || src.GuideURL != "" || src.PlaylistGuide
 	src.Playlist = ""
 	src.Guide = ""
 	redactSourceAuth(&src)

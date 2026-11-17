@@ -34,6 +34,12 @@ import { isPluginDescriptor, textOf, useRegistry, type Descriptor } from "../../
 import type { ParamField } from "../../lib/rules";
 import { formatBytes, formatNumber, relativeTime } from "../../lib/format";
 import { ChannelGroups, ProviderAccountCard } from "./SourceGroups";
+import {
+  hasM3UHeaderGuide,
+  parseXtreamUrl,
+  stripXtreamServerUrl,
+  type XtreamCredentials,
+} from "./sourceOnboarding";
 import { sourceImportError } from "./sourceErrors";
 import { UnratedChannelRating } from "./UnratedChannelRating";
 import { SourceLimits } from "./SourceLimits";
@@ -156,6 +162,7 @@ export function SourceEditor({
     playlist: null,
     guide: null,
   });
+  const [filePlaylistGuide, setFilePlaylistGuide] = useState(false);
   // Source kinds come from the descriptor registry; the editor families
   // (playlist, guide, xtream) are named by each kind's meta.editor.
   const registry = useRegistry<LiveTVSourceMeta>("liveTVSource");
@@ -226,6 +233,7 @@ export function SourceEditor({
     setGuideKind(source?.kind === "plex" ? "plex" : "xmltv");
     setLineups(null);
     setFiles({ playlist: null, guide: null });
+    setFilePlaylistGuide(false);
     setError("");
     setProgress(null);
     setProgressUnavailable(false);
@@ -242,6 +250,16 @@ export function SourceEditor({
       return;
     }
     setError("");
+    if (key === "playlist") {
+      setFilePlaylistGuide(false);
+      if (!/\.gz$/i.test(file.name)) {
+        void file
+          .slice(0, 8192)
+          .text()
+          .then((head) => setFilePlaylistGuide(hasM3UHeaderGuide(head)))
+          .catch(() => {});
+      }
+    }
     setFiles((current) => ({ ...current, [key]: file }));
     setDraft((s) => ({
       ...s,
@@ -252,23 +270,37 @@ export function SourceEditor({
 
   const auth = draft.auth ?? {};
   const xtream = kind === "playlist" && auth.type === "xtream";
+  const inlineXtream = xtream ? parseXtreamUrl(auth.server ?? "") : null;
   const setAuth = (patch: SourceAuth) =>
     setDraft((d) => ({
       ...d,
       auth: { ...d.auth, ...patch },
       ...(patch.type && patch.type !== d.auth?.type ? { logins: [] } : {}),
     }));
+  const applyXtreamUrl = (parsed: XtreamCredentials) =>
+    setAuth({
+      server: parsed.server,
+      username: parsed.username,
+      password: parsed.password,
+      ...(parsed.output ? { output: parsed.output } : {}),
+    });
   const plex = kind === "guide" && guideKind === "plex";
   // GET never returns inline uploads, but the server keeps a stored upload
   // when a save sends none (keepStoredUploads), so it still counts here.
   const storedPlaylist = Boolean(
     source?.hasPlaylist && !source.playlistUrl && source.auth?.type !== "xtream",
   );
-  const storedGuide = Boolean(source?.hasGuide && !source.guideUrl && source.kind !== "plex");
+  const storedGuide = Boolean(
+    source?.hasGuide && !source.guideUrl && !source.playlistGuide && source.kind !== "plex",
+  );
   const canSave =
     draft.name.trim() !== "" &&
     (xtream
-      ? Boolean(auth.server?.trim() && auth.username?.trim() && auth.password)
+      ? Boolean(
+          (inlineXtream?.server || auth.server?.trim()) &&
+            (inlineXtream?.username || auth.username?.trim()) &&
+            (inlineXtream?.password || auth.password),
+        )
       : kind === "playlist"
         ? Boolean(files.playlist || draft.playlist || draft.playlistUrl || storedPlaylist)
         : plex
@@ -412,7 +444,20 @@ export function SourceEditor({
       })),
     [],
   );
-  const urlBacked = plex || xtream || Boolean(draft.playlistUrl || draft.guideUrl);
+  const urlBacked =
+    plex || xtream || Boolean(draft.playlistUrl || draft.guideUrl || source?.playlistGuide);
+  const playlistGuideFound =
+    kind === "playlist" &&
+    !xtream &&
+    !pluginBacked &&
+    !plex &&
+    !files.guide &&
+    !draft.guideUrl.trim() &&
+    !draft.guide.trim() &&
+    !storedGuide &&
+    (files.playlist
+      ? filePlaylistGuide
+      : Boolean(source?.playlistGuide && draft.playlistUrl === (source.playlistUrl ?? "")));
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-3 sm:p-6">
@@ -830,14 +875,42 @@ export function SourceEditor({
             <Field
               label={t("Server")}
               htmlFor="xt-server"
-              hint={t("The panel address your provider gave you, e.g. {example}", {
-                example: "http://provider.example:8080",
-              })}
+              hint={t(
+                "The panel address (e.g. {example}), or paste a full Xtream link to fill in your sign-in.",
+                { example: "http://provider.example:8080" },
+              )}
             >
               <Input
                 id="xt-server"
                 value={auth.server ?? ""}
-                onChange={(e) => setAuth({ server: e.currentTarget.value })}
+                onPaste={(e) => {
+                  const parsed = parseXtreamUrl(e.clipboardData?.getData("text") ?? "");
+                  if (parsed) {
+                    e.preventDefault();
+                    applyXtreamUrl(parsed);
+                  }
+                }}
+                onChange={(e) => {
+                  const next = e.currentTarget.value;
+                  if (next.length - (auth.server ?? "").length > 1) {
+                    const parsed = parseXtreamUrl(next);
+                    if (parsed) {
+                      applyXtreamUrl(parsed);
+                      return;
+                    }
+                  }
+                  setAuth({ server: next });
+                }}
+                onBlur={() => {
+                  const raw = auth.server ?? "";
+                  const parsed = parseXtreamUrl(raw);
+                  if (parsed) {
+                    applyXtreamUrl(parsed);
+                    return;
+                  }
+                  const cleaned = stripXtreamServerUrl(raw);
+                  if (cleaned && cleaned !== raw) setAuth({ server: cleaned });
+                }}
                 placeholder="http://provider.example:8080"
               />
             </Field>
@@ -847,6 +920,13 @@ export function SourceEditor({
                   id="xt-user"
                   value={auth.username ?? ""}
                   autoComplete="off"
+                  onPaste={(e) => {
+                    const parsed = parseXtreamUrl(e.clipboardData?.getData("text") ?? "");
+                    if (parsed) {
+                      e.preventDefault();
+                      applyXtreamUrl(parsed);
+                    }
+                  }}
                   onChange={(e) => setAuth({ username: e.currentTarget.value })}
                 />
               </Field>
@@ -976,11 +1056,14 @@ export function SourceEditor({
             }
             url={draft.guideUrl}
             fileReady={Boolean(files.guide)}
+            badge={playlistGuideFound ? t("Guide found in the playlist") : undefined}
             accept=".xml,.gz,application/xml,text/xml,application/gzip"
             placeholder={
               xtream
                 ? t("Leave blank to use the panel's guide")
-                : t("https://…/guide.xml or .xml.gz")
+                : playlistGuideFound
+                  ? t("Guide found in the playlist")
+                  : t("https://…/guide.xml or .xml.gz")
             }
             hint={
               xtream
@@ -1234,13 +1317,27 @@ function cleanAuth(a: SourceAuth | undefined, kind: SourceKind): SourceAuth | un
   const headers = Object.fromEntries(
     Object.entries(a.headers ?? {}).filter(([k]) => k.trim() !== ""),
   );
+  const xtreamParsed = type === "xtream" ? parseXtreamUrl(a.server ?? "") : null;
+  const xtreamServer =
+    type === "xtream"
+      ? xtreamParsed?.server || stripXtreamServerUrl(a.server ?? "")
+      : undefined;
+  const xtreamReplaceCreds =
+    type === "xtream" && (!a.password || a.password === "••••") && Boolean(xtreamParsed);
   const out: SourceAuth = {
     type,
     ...(type === "basic" || type === "xtream"
-      ? { username: a.username?.trim(), password: a.password }
+      ? {
+          username: xtreamReplaceCreds
+            ? xtreamParsed?.username
+            : a.username?.trim() || xtreamParsed?.username,
+          password: xtreamReplaceCreds ? xtreamParsed?.password : a.password,
+        }
       : {}),
     ...(type === "bearer" ? { token: a.token } : {}),
-    ...(type === "xtream" ? { server: a.server?.trim(), output: a.output ?? "ts" } : {}),
+    ...(type === "xtream"
+      ? { server: xtreamServer, output: a.output ?? xtreamParsed?.output ?? "ts" }
+      : {}),
     ...(Object.keys(headers).length ? { headers } : {}),
     ...(a.userAgent?.trim() ? { userAgent: a.userAgent.trim() } : {}),
     ...(a.referer?.trim() ? { referer: a.referer.trim() } : {}),
@@ -1412,6 +1509,7 @@ function UrlOrFile({
   label,
   url,
   fileReady,
+  badge,
   accept,
   placeholder,
   hint,
@@ -1422,6 +1520,7 @@ function UrlOrFile({
   label: string;
   url: string;
   fileReady: boolean;
+  badge?: string;
   accept: string;
   placeholder: string;
   hint?: string;
@@ -1453,6 +1552,10 @@ function UrlOrFile({
       {fileReady ? (
         <Badge variant="success" className="mt-1.5">
           {t("File ready to import")}
+        </Badge>
+      ) : badge ? (
+        <Badge variant="success" className="mt-1.5">
+          {badge}
         </Badge>
       ) : null}
     </Field>

@@ -1,9 +1,14 @@
 package livetv
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,5 +105,108 @@ func TestM3UPlaylistHeaderGuideDiscoveryAndOwnerOverride(t *testing.T) {
 	}
 	if inline.PlaylistGuide || !inline.HasGuide || inline.GuideChannelCount != 1 || inline.ProgrammeCount != 2 {
 		t.Fatalf("owner inline Guide was overridden by playlist header: %+v", inline)
+	}
+}
+
+func TestXtreamOnePasteURLShapesAndNeverLogsPassword(t *testing.T) {
+	ctx := context.Background()
+	const (
+		user = "xt-owner"
+		pass = "Sup3r$ecret!Pass/99"
+	)
+
+	var paths []string
+	streams := `[{"num":1,"name":"News Network","stream_id":101,"epg_channel_id":"news.us","category_id":"3"}]`
+	up := xtreamPanel(t, user, pass, &paths, &streams)
+
+	var logs bytes.Buffer
+	s := testService(t, Options{
+		HTTPClient: up.Client(),
+		Sealer:     upgradedSealer(t),
+		Logger:     slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Now:        func() time.Time { return guideTestNow },
+	})
+
+	shapes := []struct {
+		id         string
+		pasted     string
+		wantOutput string
+	}{
+		{
+			id:         "xt-get",
+			pasted:     up.URL + "/get.php?username=" + url.QueryEscape(user) + "&password=" + url.QueryEscape(pass) + "&type=m3u_plus&output=m3u8",
+			wantOutput: "m3u8",
+		},
+		{
+			id:     "xt-api",
+			pasted: up.URL + "/player_api.php?username=" + url.QueryEscape(user) + "&password=" + url.QueryEscape(pass),
+		},
+		{
+			id:         "xt-short",
+			pasted:     up.URL + "/" + url.PathEscape(user) + "/" + url.PathEscape(pass) + "/101.m3u8",
+			wantOutput: "m3u8",
+		},
+		{
+			id:         "xt-live",
+			pasted:     up.URL + "/live/" + url.PathEscape(user) + "/" + url.PathEscape(pass) + "/101.ts",
+			wantOutput: "ts",
+		},
+	}
+
+	for _, tc := range shapes {
+		got, err := s.ImportSource(ctx, Source{
+			ID:   tc.id,
+			Name: tc.id,
+			Auth: &SourceAuth{Type: "xtream", Server: tc.pasted},
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.id, err)
+		}
+		if got.Auth == nil || got.Auth.Server != up.URL || got.Auth.Username != user || got.Auth.Password != redactedSecret {
+			t.Fatalf("%s: unexpected auth after import: %+v", tc.id, got.Auth)
+		}
+		if tc.wantOutput != "" && got.Auth.Output != tc.wantOutput {
+			t.Fatalf("%s: output=%q, want %q", tc.id, got.Auth.Output, tc.wantOutput)
+		}
+		raw := rawSource(t, s.o.DB, tc.id)
+		for _, secret := range []string{pass, url.QueryEscape(pass), url.PathEscape(pass), user, "get.php", "player_api.php"} {
+			if strings.Contains(raw, secret) {
+				t.Fatalf("%s: leaked %q in stored source row: %s", tc.id, secret, raw)
+			}
+		}
+	}
+
+	// Failed login and unreachable host must never echo or log the password either.
+	_, badErr := s.ImportSource(ctx, Source{
+		ID:   "xt-bad",
+		Name: "Bad creds",
+		Auth: &SourceAuth{
+			Type:   "xtream",
+			Server: up.URL + "/get.php?username=" + url.QueryEscape(user) + "&password=" + url.QueryEscape(pass+"-wrong"),
+		},
+	})
+	if badErr == nil || strings.Contains(badErr.Error(), "Sup3r") {
+		t.Fatalf("expected clean error without password, got %v", badErr)
+	}
+
+	// Redacted placeholder inside a moved server URL must still be rejected.
+	_, moveErr := s.ImportSource(ctx, Source{
+		ID:   "xt-get",
+		Name: "Moved",
+		Auth: &SourceAuth{
+			Type:     "xtream",
+			Server:   "https://evil.invalid/get.php?username=" + url.QueryEscape(user) + "&password=" + url.QueryEscape(redactedSecret),
+			Username: user,
+			Password: redactedSecret,
+		},
+	})
+	if !errors.Is(moveErr, errSourceSecretMoved) {
+		t.Fatalf("expected errSourceSecretMoved, got %v", moveErr)
+	}
+
+	for _, secret := range []string{"Sup3r", pass, url.QueryEscape(pass), url.PathEscape(pass)} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("password leaked into logs: %s", logs.String())
+		}
 	}
 }

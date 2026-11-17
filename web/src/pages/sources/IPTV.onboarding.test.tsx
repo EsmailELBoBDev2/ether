@@ -17,7 +17,8 @@ function mockBackend(sources: unknown[] = []) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const method = (init?.method ?? "GET").toUpperCase();
       const body = typeof init?.body === "string" ? init.body : undefined;
       requests.push({ method, url, body });
@@ -59,6 +60,7 @@ function renderIPTV(path: string) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -92,5 +94,75 @@ describe("IPTV source onboarding", () => {
 
     fireEvent.change(guideInput, { target: { value: "" } });
     expect(await screen.findByText("Guide found in the playlist")).toBeInTheDocument();
+  });
+
+  it("splits pasted Xtream URLs across usual shapes into server, username and password without logging the password", async () => {
+    const logged: string[] = [];
+    for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        logged.push(args.map(String).join(" "));
+      });
+    }
+
+    const requests = mockBackend([]);
+    renderIPTV("/sources/iptv?new=xtream");
+
+    const nameInput = await screen.findByLabelText("Source name");
+    const serverInput = screen.getByLabelText("Server") as HTMLInputElement;
+    const userInput = screen.getByLabelText("Username") as HTMLInputElement;
+    const passInput = screen.getByLabelText("Password") as HTMLInputElement;
+
+    // 1. get.php?username=U&password=P&type=m3u_plus via clipboard paste
+    fireEvent.paste(serverInput, {
+      clipboardData: {
+        getData: () =>
+          "http://panel.example:8080/get.php?username=alice&password=P%40ssSecret1&type=m3u_plus&output=m3u8",
+      },
+    });
+    expect(serverInput.value).toBe("http://panel.example:8080");
+    expect(userInput.value).toBe("alice");
+    expect(passInput.value).toBe("P@ssSecret1");
+
+    // 2. player_api.php?username=U&password=P (with reverse-proxy base path)
+    fireEvent.paste(serverInput, {
+      clipboardData: {
+        getData: () =>
+          "https://iptv.example/sub/player_api.php?username=bob&password=S3cretTwo",
+      },
+    });
+    expect(serverInput.value).toBe("https://iptv.example/sub");
+    expect(userInput.value).toBe("bob");
+    expect(passInput.value).toBe("S3cretTwo");
+
+    // 3. Short path /U/P/stream
+    fireEvent.change(serverInput, {
+      target: { value: "http://short.example:25461/carol/N0LogSecret%21/9988.ts" },
+    });
+    expect(serverInput.value).toBe("http://short.example:25461");
+    expect(userInput.value).toBe("carol");
+    expect(passInput.value).toBe("N0LogSecret!");
+
+    fireEvent.change(nameInput, { target: { value: "My Xtream" } });
+    fireEvent.click(screen.getByRole("button", { name: "Import source" }));
+
+    await waitFor(() => {
+      expect(requests.some((r) => r.method === "POST" && r.url.includes("/api/livetv/sources"))).toBe(
+        true,
+      );
+    });
+    const post = requests.find((r) => r.method === "POST" && r.url.includes("/api/livetv/sources"));
+    const payload = JSON.parse(post?.body ?? "{}") as {
+      auth?: { type?: string; server?: string; username?: string; password?: string };
+    };
+    expect(payload.auth).toMatchObject({
+      type: "xtream",
+      server: "http://short.example:25461",
+      username: "carol",
+      password: "N0LogSecret!",
+    });
+
+    for (const secret of ["P@ssSecret1", "S3cretTwo", "N0LogSecret!"]) {
+      expect(logged.join("\n")).not.toContain(secret);
+    }
   });
 });

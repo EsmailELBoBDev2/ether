@@ -34,7 +34,12 @@ import { isPluginDescriptor, textOf, useRegistry, type Descriptor } from "../../
 import type { ParamField } from "../../lib/rules";
 import { formatBytes, formatNumber, relativeTime } from "../../lib/format";
 import { ChannelGroups, ProviderAccountCard } from "./SourceGroups";
-import { hasM3UHeaderGuide } from "./sourceOnboarding";
+import {
+  hasM3UHeaderGuide,
+  parseXtreamUrl,
+  stripXtreamServerUrl,
+  type XtreamCredentials,
+} from "./sourceOnboarding";
 import { sourceImportError } from "./sourceErrors";
 import { UnratedChannelRating } from "./UnratedChannelRating";
 import { SourceLimits } from "./SourceLimits";
@@ -265,12 +270,20 @@ export function SourceEditor({
 
   const auth = draft.auth ?? {};
   const xtream = kind === "playlist" && auth.type === "xtream";
+  const inlineXtream = xtream ? parseXtreamUrl(auth.server ?? "") : null;
   const setAuth = (patch: SourceAuth) =>
     setDraft((d) => ({
       ...d,
       auth: { ...d.auth, ...patch },
       ...(patch.type && patch.type !== d.auth?.type ? { logins: [] } : {}),
     }));
+  const applyXtreamUrl = (parsed: XtreamCredentials) =>
+    setAuth({
+      server: parsed.server,
+      username: parsed.username,
+      password: parsed.password,
+      ...(parsed.output ? { output: parsed.output } : {}),
+    });
   const plex = kind === "guide" && guideKind === "plex";
   // GET never returns inline uploads, but the server keeps a stored upload
   // when a save sends none (keepStoredUploads), so it still counts here.
@@ -283,7 +296,11 @@ export function SourceEditor({
   const canSave =
     draft.name.trim() !== "" &&
     (xtream
-      ? Boolean(auth.server?.trim() && auth.username?.trim() && auth.password)
+      ? Boolean(
+          (inlineXtream?.server || auth.server?.trim()) &&
+            (inlineXtream?.username || auth.username?.trim()) &&
+            (inlineXtream?.password || auth.password),
+        )
       : kind === "playlist"
         ? Boolean(files.playlist || draft.playlist || draft.playlistUrl || storedPlaylist)
         : plex
@@ -858,14 +875,42 @@ export function SourceEditor({
             <Field
               label={t("Server")}
               htmlFor="xt-server"
-              hint={t("The panel address your provider gave you, e.g. {example}", {
-                example: "http://provider.example:8080",
-              })}
+              hint={t(
+                "The panel address (e.g. {example}), or paste a full Xtream link to fill in your sign-in.",
+                { example: "http://provider.example:8080" },
+              )}
             >
               <Input
                 id="xt-server"
                 value={auth.server ?? ""}
-                onChange={(e) => setAuth({ server: e.currentTarget.value })}
+                onPaste={(e) => {
+                  const parsed = parseXtreamUrl(e.clipboardData?.getData("text") ?? "");
+                  if (parsed) {
+                    e.preventDefault();
+                    applyXtreamUrl(parsed);
+                  }
+                }}
+                onChange={(e) => {
+                  const next = e.currentTarget.value;
+                  if (next.length - (auth.server ?? "").length > 1) {
+                    const parsed = parseXtreamUrl(next);
+                    if (parsed) {
+                      applyXtreamUrl(parsed);
+                      return;
+                    }
+                  }
+                  setAuth({ server: next });
+                }}
+                onBlur={() => {
+                  const raw = auth.server ?? "";
+                  const parsed = parseXtreamUrl(raw);
+                  if (parsed) {
+                    applyXtreamUrl(parsed);
+                    return;
+                  }
+                  const cleaned = stripXtreamServerUrl(raw);
+                  if (cleaned && cleaned !== raw) setAuth({ server: cleaned });
+                }}
                 placeholder="http://provider.example:8080"
               />
             </Field>
@@ -875,6 +920,13 @@ export function SourceEditor({
                   id="xt-user"
                   value={auth.username ?? ""}
                   autoComplete="off"
+                  onPaste={(e) => {
+                    const parsed = parseXtreamUrl(e.clipboardData?.getData("text") ?? "");
+                    if (parsed) {
+                      e.preventDefault();
+                      applyXtreamUrl(parsed);
+                    }
+                  }}
                   onChange={(e) => setAuth({ username: e.currentTarget.value })}
                 />
               </Field>
@@ -1265,13 +1317,27 @@ function cleanAuth(a: SourceAuth | undefined, kind: SourceKind): SourceAuth | un
   const headers = Object.fromEntries(
     Object.entries(a.headers ?? {}).filter(([k]) => k.trim() !== ""),
   );
+  const xtreamParsed = type === "xtream" ? parseXtreamUrl(a.server ?? "") : null;
+  const xtreamServer =
+    type === "xtream"
+      ? xtreamParsed?.server || stripXtreamServerUrl(a.server ?? "")
+      : undefined;
+  const xtreamReplaceCreds =
+    type === "xtream" && (!a.password || a.password === "••••") && Boolean(xtreamParsed);
   const out: SourceAuth = {
     type,
     ...(type === "basic" || type === "xtream"
-      ? { username: a.username?.trim(), password: a.password }
+      ? {
+          username: xtreamReplaceCreds
+            ? xtreamParsed?.username
+            : a.username?.trim() || xtreamParsed?.username,
+          password: xtreamReplaceCreds ? xtreamParsed?.password : a.password,
+        }
       : {}),
     ...(type === "bearer" ? { token: a.token } : {}),
-    ...(type === "xtream" ? { server: a.server?.trim(), output: a.output ?? "ts" } : {}),
+    ...(type === "xtream"
+      ? { server: xtreamServer, output: a.output ?? xtreamParsed?.output ?? "ts" }
+      : {}),
     ...(Object.keys(headers).length ? { headers } : {}),
     ...(a.userAgent?.trim() ? { userAgent: a.userAgent.trim() } : {}),
     ...(a.referer?.trim() ? { referer: a.referer.trim() } : {}),

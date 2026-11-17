@@ -650,44 +650,43 @@ export default function LiveTV() {
         ]}
         className="[&_button]:py-1.5"
       />
-      {activeTab !== "channels" ? (
-        <div className="relative w-[min(15rem,calc(100vw-8rem))] shrink-0">
-          <Search
-            size={13}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
-            aria-hidden
-          />
-          <Input
-            type="search"
-            value={activeTab === "library" ? (libraryQuery ?? "") : q}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              if (activeTab !== "library") setQ(value);
-              else
-                updateParams((p) => {
-                  if (value) p.set("q", value);
-                  else p.delete("q");
-                  return p;
-                });
-            }}
-            placeholder={
-              activeTab === "library"
-                ? t("Search Library")
-                : activeTab === "looks"
-                  ? styleCopy("Search styles…")
-                  : t("Find a channel or guide…")
-            }
-            aria-label={
-              activeTab === "library"
-                ? t("Search Library")
-                : activeTab === "looks"
-                  ? styleCopy("Search styles")
-                  : t("Search channels")
-            }
-            className="h-8 pl-7 text-sm"
-          />
-        </div>
-      ) : null}
+      {/* One search box in the same place on every Live TV tab. */}
+      <div className="relative w-[min(15rem,calc(100vw-8rem))] shrink-0">
+        <Search
+          size={13}
+          className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
+          aria-hidden
+        />
+        <Input
+          type="search"
+          value={activeTab === "library" ? (libraryQuery ?? "") : q}
+          onChange={(e) => {
+            const value = e.currentTarget.value;
+            if (activeTab !== "library") setQ(value);
+            else
+              updateParams((p) => {
+                if (value) p.set("q", value);
+                else p.delete("q");
+                return p;
+              });
+          }}
+          placeholder={
+            activeTab === "library"
+              ? t("Search Library")
+              : activeTab === "looks"
+                ? styleCopy("Search styles…")
+                : t("Find a channel or guide…")
+          }
+          aria-label={
+            activeTab === "library"
+              ? t("Search Library")
+              : activeTab === "looks"
+                ? styleCopy("Search styles")
+                : t("Search channels")
+          }
+          className="h-8 pl-7 text-sm"
+        />
+      </div>
       <AddMenu
         onChannel={() => void go({ kind: "new" })}
         onPersonal={() =>
@@ -910,8 +909,6 @@ export default function LiveTV() {
                 sources={sources}
                 coverage={coverage}
                 ownerGroups={ownerGroups}
-                rawQuery={q}
-                onQueryChange={setQ}
                 query={search}
                 filter={filter}
                 onFilterChange={setFilter}

@@ -8,7 +8,7 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Check, GripVertical, Pencil, Plus, Search, Trash2, Tv, X } from "lucide-react";
+import { Check, GripVertical, Pencil, Plus, Trash2, Tv, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
@@ -76,8 +76,6 @@ export function ChannelsWorkspace({
   sources,
   coverage,
   ownerGroups,
-  rawQuery,
-  onQueryChange,
   query,
   filter,
   onFilterChange,
@@ -95,8 +93,6 @@ export function ChannelsWorkspace({
   sources: Source[];
   coverage: ReadonlyMap<string, Coverage> | null;
   ownerGroups: OwnerGroup[];
-  rawQuery: string;
-  onQueryChange: (next: string) => void;
   query: string;
   filter: ChannelFilter;
   onFilterChange: (next: ChannelFilter) => void;
@@ -1249,21 +1245,6 @@ export function ChannelsWorkspace({
                 ]}
                 menuClassName="w-40"
               />
-              <div className="relative w-44 sm:w-56">
-                <Search
-                  size={13}
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
-                  aria-hidden
-                />
-                <Input
-                  type="search"
-                  value={rawQuery}
-                  onChange={(e) => onQueryChange(e.currentTarget.value)}
-                  placeholder={t("Search in {scope}…", { scope: scopeTitle })}
-                  aria-label={t("Search channels")}
-                  className="h-8 pl-7 text-sm"
-                />
-              </div>
             </div>
           </div>
 

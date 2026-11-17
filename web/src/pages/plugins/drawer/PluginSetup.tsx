@@ -9,7 +9,7 @@ import { t } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
 import { ApiError, apiFetch, errorMessage } from "../../../lib/api";
 import { SchemaGroups } from "../../settings/SchemaForm";
-import { FolderGrantsPicker, ViewerGrantsPicker } from "../PermissionSheet";
+import { FolderGrantsPicker, LocalHostGrantsPicker, ViewerGrantsPicker } from "../PermissionSheet";
 import { SearchSetting } from "./SearchSetting";
 import { AddonSettings } from "./AddonSettings";
 import {
@@ -170,6 +170,7 @@ export function PluginSetup({
   const revoked = new Set(grants.revoked ?? []);
   const grantItems = buildGrantItems(detail).filter((g) => g.revocable);
   const access = detail.permissions.needsViewers || detail.permissions.needsFolders;
+  const canReachLocalHosts = detail.manifest.ether?.runtime?.kind !== "data";
   // Updates come from where the plugin was installed; Studio builds and
   // add-ons that always follow their link have nothing to auto-update.
   const updatable = detail.sourceKind !== "studio" && !detail.stremioOnly;
@@ -224,7 +225,7 @@ export function PluginSetup({
         </Section>
       )}
 
-      {access ? (
+      {access || canReachLocalHosts ? (
         <div className="space-y-4">
           {detail.permissions.needsViewers ? (
             <ViewerGrantsPicker
@@ -236,6 +237,13 @@ export function PluginSetup({
             <FolderGrantsPicker
               value={grants.folders ?? []}
               onChange={(f) => void updateGrants({ ...grants, folders: f })}
+            />
+          ) : null}
+          {canReachLocalHosts ? (
+            <LocalHostGrantsPicker
+              value={grants.localHosts ?? []}
+              blocked={detail.blockedLocalHosts ?? []}
+              onChange={(localHosts) => void updateGrants({ ...grants, localHosts })}
             />
           ) : null}
         </div>

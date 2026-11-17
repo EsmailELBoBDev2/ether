@@ -6,11 +6,20 @@ import {
   Button,
   Input,
 } from "@braedonsaunders/appkit-ui";
-import { AlertTriangle, FolderOpen, Plus, Shield, ShieldCheck, Users, X } from "lucide-react";
+import {
+  AlertTriangle,
+  FolderOpen,
+  Network,
+  Plus,
+  Shield,
+  ShieldCheck,
+  Users,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import { ChipGroup } from "../../components/fields";
 import { useViewers, viewerName } from "../../components/pickers";
-import type { RuntimeLimits } from "./types";
+import { translatePermissionLine, type RuntimeLimits } from "./types";
 import { t } from "../../i18n";
 
 export function ViewerGrantsPicker({
@@ -119,6 +128,108 @@ export function FolderGrantsPicker({
   );
 }
 
+function cleanLocalHostInput(raw: string): string {
+  const trimmed = raw.trim();
+  const m = /^https?:\/\/([^/?#*]+)\/?$/i.exec(trimmed);
+  return m ? m[1]! : trimmed;
+}
+
+export function LocalHostGrantsPicker({
+  value,
+  blocked = [],
+  onChange,
+}: {
+  value: string[];
+  blocked?: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const addHost = () => {
+    const clean = cleanLocalHostInput(draft);
+    if (!clean) return;
+    if (!value.includes(clean)) {
+      onChange([...value, clean]);
+    }
+    setDraft("");
+  };
+
+  const allowBlocked = (host: string) => {
+    if (!value.includes(host)) {
+      onChange([...value, host]);
+    }
+  };
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-border bg-bg-subtle p-3.5">
+      <div className="flex items-center gap-2 text-xs font-medium text-fg">
+        <Network size={14} className="text-fg-muted" aria-hidden />
+        <span>{t("On your network")}</span>
+      </div>
+      <p className="text-xs text-fg-muted">
+        {t(
+          "Lets this plugin reach these addresses on your network, such as tuliprox or 192.168.1.20.",
+        )}
+      </p>
+      {blocked.length > 0 ? (
+        <ul className="space-y-1.5" aria-label={t("Blocked network addresses")}>
+          {blocked.map((host) => (
+            <li
+              key={host}
+              className="flex items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-xs"
+            >
+              <span className="min-w-0 flex-1 truncate text-fg">
+                {t("Blocked {host} (on your network)", { host })}
+              </span>
+              <Button type="button" variant="outline" size="sm" onClick={() => allowBlocked(host)}>
+                {t("Allow")}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {value.length > 0 ? (
+        <ul className="space-y-1.5" aria-label={t("Allowed network addresses")}>
+          {value.map((host) => (
+            <li
+              key={host}
+              className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs"
+            >
+              <code className="min-w-0 flex-1 truncate font-mono text-fg">{host}</code>
+              <button
+                type="button"
+                aria-label={t("Remove {host}", { host })}
+                onClick={() => onChange(value.filter((h) => h !== host))}
+                className="rounded p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg"
+              >
+                <X size={13} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Input
+          value={draft}
+          onChange={(e) => setDraft(e.currentTarget.value)}
+          placeholder={t("tuliprox:8901")}
+          aria-label={t("Network address")}
+          className="flex-1 font-mono text-xs"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addHost();
+            }
+          }}
+        />
+        <Button type="button" variant="outline" size="sm" onClick={addHost}>
+          <Plus size={14} /> {t("Add")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function PermissionSheet({
   permissions,
   verified,
@@ -185,7 +296,7 @@ export function PermissionSheet({
               ) : (
                 <Shield size={16} className="mt-0.5 shrink-0 text-fg-muted" aria-hidden />
               )}
-              <span>{t(line)}</span>
+              <span>{translatePermissionLine(line)}</span>
             </li>
           ))}
         </ul>
@@ -197,7 +308,7 @@ export function PermissionSheet({
           <AlertDescription>
             <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
               {addedPermissions.map((line) => (
-                <li key={line}>{t(line)}</li>
+                <li key={line}>{translatePermissionLine(line)}</li>
               ))}
             </ul>
           </AlertDescription>

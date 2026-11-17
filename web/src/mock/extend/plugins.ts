@@ -50,10 +50,17 @@ interface PluginDetail extends PluginSummary {
   permissions: {
     lines: string[];
     declared: Record<string, unknown>;
-    grants: { viewers?: number[]; folders?: string[]; revoked?: string[]; lan?: boolean };
+    grants: {
+      viewers?: number[];
+      folders?: string[];
+      revoked?: string[];
+      lan?: boolean;
+      localHosts?: string[];
+    };
     needsViewers: boolean;
     needsFolders: boolean;
   };
+  blockedLocalHosts?: string[];
   healthDetail: PluginHealth;
   privacy: {
     declaredHosts: string[];
@@ -989,8 +996,8 @@ export function createPluginsMock(): {
       const perms = catMatch.item.permissions ?? {};
       const needsViewers = Boolean(
         (perms.viewers?.identity && perms.viewers.identity !== "none") ||
-          (perms.viewers?.watch_history && perms.viewers.watch_history !== "none") ||
-          (perms.viewers?.write_watch_state && perms.viewers.write_watch_state !== "none"),
+        (perms.viewers?.watch_history && perms.viewers.watch_history !== "none") ||
+        (perms.viewers?.write_watch_state && perms.viewers.write_watch_state !== "none"),
       );
       const needsFolders = perms.folders === "read";
       return {
@@ -1386,7 +1393,14 @@ export function createPluginsMock(): {
       return json({ status: "disabled" });
     }
     if (method === "PUT" && seg[2] === "grants") {
-      d.permissions.grants = (body ?? {}) as PluginDetail["permissions"]["grants"];
+      const next = (body ?? {}) as PluginDetail["permissions"]["grants"];
+      if (next.localHosts && d.blockedLocalHosts?.length) {
+        const allowed = new Set(next.localHosts.map((h) => h.toLowerCase()));
+        d.blockedLocalHosts = d.blockedLocalHosts.filter(
+          (b) => !allowed.has(b.toLowerCase()) && !allowed.has(b.toLowerCase().split(":")[0]!),
+        );
+      }
+      d.permissions.grants = next;
       return json({ status: "saved", grants: d.permissions.grants });
     }
     if (method === "POST" && seg[2] === "shadow") {

@@ -57,6 +57,7 @@ export interface PluginGrants {
   folders?: string[];
   revoked?: string[];
   lan?: boolean;
+  localHosts?: string[];
 }
 
 export interface DeclaredPermissions {
@@ -130,6 +131,7 @@ export interface PluginDetail extends PluginSummary {
     needsViewers: boolean;
     needsFolders: boolean;
   };
+  blockedLocalHosts?: string[];
   healthDetail: PluginHealth;
   privacy: {
     declaredHosts: string[];
@@ -159,6 +161,7 @@ export interface InstallPreview {
   permissions: string[];
   needsViewers: boolean;
   needsFolders: boolean;
+  localHosts?: string[];
   verified: boolean;
   stremioOnly: boolean;
   alreadyInstalled?: boolean;
@@ -308,6 +311,28 @@ export function isPrivateUrl(raw: string): boolean {
   }
 }
 
+const LOCAL_REACH_PREFIX = "May reach on your network: ";
+const CONNECTS_PREFIX = "Connects to ";
+
+export function translatePermissionLine(line: string): string {
+  if (line.startsWith(LOCAL_REACH_PREFIX)) {
+    return t("May reach on your network: {hosts}", {
+      hosts: line.slice(LOCAL_REACH_PREFIX.length),
+    });
+  }
+  if (
+    line.startsWith(CONNECTS_PREFIX) &&
+    line !== "Connects to the add-on address you gave" &&
+    line !== "Connects to the add-on it was made from"
+  ) {
+    const rest = line.slice(CONNECTS_PREFIX.length);
+    return rest.includes(", ")
+      ? t("Connects to {hosts}", { hosts: rest })
+      : t("Connects to {host}", { host: rest });
+  }
+  return t(line);
+}
+
 export interface GrantItem {
   key: string;
   label: string;
@@ -400,7 +425,7 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
     for (const [idx, line] of fallbackLines.entries()) {
       items.push({
         key: `line-${idx}`,
-        label: line,
+        label: translatePermissionLine(line),
         revocable: false,
       });
     }

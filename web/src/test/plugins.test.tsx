@@ -223,6 +223,91 @@ describe("Server › Plugins (WS10a)", () => {
     expect(screen.getAllByText("Preview plugin").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("shows blocked local network hosts with an Allow button and lets the owner list, add, and remove local hosts in Settings", async () => {
+    let blocked = ["tuliprox:8901"];
+    const savedBodies: { localHosts?: string[] }[] = [];
+    customIntercept = async (url, init) => {
+      const base = "/ether/api/plugins/community.plutotv.ether";
+      if (url.pathname === base && (!init?.method || init.method === "GET")) {
+        const response = await fakeServer.fetch(url.toString(), init);
+        const detail = await response.json();
+        detail.blockedLocalHosts = blocked;
+        return Response.json(detail);
+      }
+      if (url.pathname === `${base}/grants` && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body ?? "{}")) as { localHosts?: string[] };
+        savedBodies.push(body);
+        if (body.localHosts) {
+          const allowed = new Set(body.localHosts.map((h) => h.toLowerCase()));
+          blocked = blocked.filter(
+            (h) => !allowed.has(h.toLowerCase()) && !allowed.has(h.toLowerCase().split(":")[0]!),
+          );
+        }
+      }
+      if (url.pathname === "/ether/api/plugins/install/preview" && init?.method === "POST") {
+        const response = await fakeServer.fetch(url.toString(), init);
+        const preview = await response.json();
+        preview.permissions = [...preview.permissions, "May reach on your network: tuliprox:8901"];
+        return Response.json(preview);
+      }
+      return null;
+    };
+
+    renderPlugins("/plugins");
+    fireEvent.click(await screen.findByText("Pluto TV"));
+
+    // Blocked private host surfaces right in the drawer with a one-click Allow button.
+    expect(await screen.findByText("Blocked tuliprox:8901 (on your network)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Blocked tuliprox:8901 (on your network)")).toBeNull();
+    });
+    expect(savedBodies.at(-1)?.localHosts).toEqual(["tuliprox:8901"]);
+
+    // Settings -> "On your network": list, add, remove.
+    const tabs = screen.getByRole("tablist", { name: "Plugin sections" });
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+
+    expect(await screen.findByText("On your network")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Lets this plugin reach these addresses on your network, such as tuliprox or 192.168.1.20.",
+      ),
+    ).toBeTruthy();
+
+    const allowedList = screen.getByRole("list", { name: "Allowed network addresses" });
+    expect(within(allowedList).getByText("tuliprox:8901")).toBeTruthy();
+
+    const hostInput = screen.getByLabelText("Network address");
+    fireEvent.change(hostInput, { target: { value: "192.168.1.20" } });
+    fireEvent.keyDown(hostInput, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(within(allowedList).getByText("192.168.1.20")).toBeTruthy();
+    });
+    expect(savedBodies.at(-1)?.localHosts).toEqual(["tuliprox:8901", "192.168.1.20"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove tuliprox:8901" }));
+    await waitFor(() => {
+      expect(within(allowedList).queryByText("tuliprox:8901")).toBeNull();
+    });
+    expect(savedBodies.at(-1)?.localHosts).toEqual(["192.168.1.20"]);
+
+    // Also verify the install permission sheet renders "May reach on your network: …".
+    cleanup();
+    renderPlugins("/plugins");
+    await screen.findByText("Pluto TV");
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /From a link/i }));
+    fireEvent.change(await screen.findByLabelText("Plugin address"), {
+      target: { value: "https://plugins.example.test/iptv/manifest.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review permissions/i }));
+    const sheet = await screen.findByTestId("permission-sheet");
+    expect(within(sheet).getByText("May reach on your network: tuliprox:8901")).toBeTruthy();
+  });
+
   it("browses, filters, refreshes, and installs from the Marketplace tab using the real catalogue contract", async () => {
     let refreshed = false;
     let installBody: Record<string, unknown> | null = null;

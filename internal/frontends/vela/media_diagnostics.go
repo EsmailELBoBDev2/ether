@@ -51,14 +51,16 @@ func (i *instance) serveObservedMedia(w http.ResponseWriter, r *http.Request) {
 		i.host.Sessions.ServeMedia(w, r)
 		return
 	}
+	done := s.beginMediaRead()
+	defer done()
 	// Diagnostics are best effort. Media must never queue behind plan work.
 	if !s.mu.TryLock() {
-		i.host.Sessions.ServeMedia(w, r)
+		i.host.Sessions.ServeMedia(&mediaActivityWriter{ResponseWriter: w, session: s}, r)
 		return
 	}
 	source, seek := s.source, s.seek
 	s.mu.Unlock()
-	out := &mediaObservationWriter{ResponseWriter: w}
+	out := &mediaObservationWriter{ResponseWriter: w, session: s}
 	i.host.Sessions.ServeMedia(out, r)
 	record := object{"at": time.Now().UTC(), "resource": path.Base(r.URL.Path), "mimeType": w.Header().Get("Content-Type"), "status": out.status, "bytes": out.bytes, "sourceGeneration": source, "seekGeneration": seek}
 	if len(out.playlist) > 0 {
@@ -80,8 +82,24 @@ func (i *instance) serveObservedMedia(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type mediaActivityWriter struct {
+	http.ResponseWriter
+	session *playSession
+}
+
+func (w *mediaActivityWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *mediaActivityWriter) Flush()                      { _ = http.NewResponseController(w.ResponseWriter).Flush() }
+func (w *mediaActivityWriter) Write(data []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(data)
+	if n > 0 && w.session != nil {
+		w.session.noteActivity()
+	}
+	return n, err
+}
+
 type mediaObservationWriter struct {
 	http.ResponseWriter
+	session   *playSession
 	status    int
 	bytes     int64
 	firstByte time.Time
@@ -101,8 +119,13 @@ func (w *mediaObservationWriter) Write(data []byte) (int, error) {
 		w.WriteHeader(200)
 	}
 	n, err := w.ResponseWriter.Write(data)
-	if n > 0 && w.firstByte.IsZero() {
-		w.firstByte = time.Now().UTC()
+	if n > 0 {
+		if w.firstByte.IsZero() {
+			w.firstByte = time.Now().UTC()
+		}
+		if w.session != nil {
+			w.session.noteActivity()
+		}
 	}
 	w.bytes += int64(n)
 	if strings.Contains(w.Header().Get("Content-Type"), "mpegurl") && len(w.playlist) < 8192 {

@@ -150,7 +150,7 @@ func (m *frontendListeners) start(ctx context.Context, id frontend.Protocol) err
 				next.ServeHTTP(w, r)
 			})
 		}
-		run.servers = append(run.servers, &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second})
+		run.servers = append(run.servers, &http.Server{Handler: handler, ConnContext: sockerr.WithConn, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second})
 	}
 	if err == nil {
 		for _, a := range inst.Discovery() {

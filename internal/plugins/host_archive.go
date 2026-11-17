@@ -2,6 +2,8 @@ package plugins
 
 import (
 	"archive/zip"
+	"bufio"
+	"bytes"
 	"compress/flate"
 	"context"
 	"encoding/binary"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 	"unsafe"
 
 	container "github.com/braedonsaunders/ether/internal/archive"
@@ -281,6 +284,47 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	return a, nil
 }
 
+var (
+	emptyFlateSource = bytes.NewReader(nil)
+	flateReaderPool  sync.Pool
+)
+
+type pooledFlateReader struct {
+	zr   io.ReadCloser
+	br   *bufio.Reader
+	done bool
+}
+
+func newPooledFlateReader(src io.Reader) io.ReadCloser {
+	if p, ok := flateReaderPool.Get().(*pooledFlateReader); ok {
+		p.br.Reset(src)
+		if resetter, ok := p.zr.(flate.Resetter); ok && resetter.Reset(p.br, nil) == nil {
+			p.done = false
+			return p
+		}
+	}
+	br := bufio.NewReaderSize(src, 4096)
+	return &pooledFlateReader{zr: flate.NewReader(br), br: br}
+}
+
+func (p *pooledFlateReader) Read(b []byte) (int, error) {
+	return p.zr.Read(b)
+}
+
+func (p *pooledFlateReader) Close() error {
+	if p.done {
+		return nil
+	}
+	p.done = true
+	err := p.zr.Close()
+	p.br.Reset(emptyFlateSource)
+	if resetter, ok := p.zr.(flate.Resetter); ok {
+		_ = resetter.Reset(emptyFlateSource, nil)
+	}
+	flateReaderPool.Put(p)
+	return err
+}
+
 // ZIP member offsets come from the validated immutable central directory. Each
 // open creates a decoder and checksum state over this call's reader only.
 type dataZIPMember struct {
@@ -296,9 +340,12 @@ func (f dataZIPMember) open(ra io.ReaderAt) (io.ReadCloser, error) {
 	if f.dir {
 		return nil, fmt.Errorf("plugins: cannot open an archive directory")
 	}
-	var r io.ReadCloser = io.NopCloser(io.NewSectionReader(ra, f.offset, f.packed))
+	section := io.NewSectionReader(ra, f.offset, f.packed)
+	var r io.ReadCloser
 	if f.method == zip.Deflate {
-		r = flate.NewReader(r)
+		r = newPooledFlateReader(section)
+	} else {
+		r = io.NopCloser(section)
 	}
 	return &dataZIPChecksum{ReadCloser: r, hash: crc32.NewIEEE(), size: f.size, crc: f.crc, verifyCRC: f.verifyCRC}, nil
 }

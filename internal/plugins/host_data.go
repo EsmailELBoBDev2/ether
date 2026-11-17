@@ -18,11 +18,13 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
-// Data-service limits are host enforced, independent of guest memory. All
-// operations are on demand and use the existing plugin-owned cache namespace.
+// Data-service limits are host enforced. Per-call read ceilings scale with the
+// plugin's memory grant; all operations use the plugin-owned cache namespace.
 const (
 	MaxDataFetchBytes       = 8 << 30
-	MaxDataRangeBytes       = 1 << 20
+	MinDataReadBytes        = wasm.MinDataReadBytes
+	MaxDataReadBytes        = wasm.MaxDataReadBytes
+	MaxArchiveReadItems     = 4096
 	maxArchiveMembers       = 65535
 	maxArchiveDirectory     = 64 << 20
 	maxArchiveMemberBytes   = 8 << 30
@@ -30,9 +32,38 @@ const (
 	maxArchiveRatio         = 1000
 )
 
+// DataReadBytes returns the per-call byte ceiling for cache.read, archive.open,
+// and archive.read derived from the plugin's memory grant:
+// clamp(memoryBytes/4, 8 MiB, 512 MiB).
+func DataReadBytes(memoryBytes uint64) int64 {
+	return wasm.DataReadBytes(memoryBytes)
+}
+
+func dataReadLimit(limits RuntimeLimits) int64 {
+	if limits.ReadBytes > 0 {
+		return min(max(limits.ReadBytes, MinDataReadBytes), MaxDataReadBytes)
+	}
+	return DataReadBytes(limits.MemoryBytes)
+}
+
 type DataRange struct {
 	Offset int64 `json:"offset"`
 	Length int64 `json:"length"`
+}
+
+// ArchiveReadItem selects one byte range inside one archive member for archive.read.
+type ArchiveReadItem struct {
+	Member int   `json:"member"`
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+
+// ArchiveReadResult is one item returned by archive.read in request order.
+type ArchiveReadResult struct {
+	Index      int    `json:"index"`
+	Member     int    `json:"member"`
+	Size       int    `json:"size"`
+	BodyBase64 string `json:"bodyBase64"`
 }
 
 type FetchCacheRequest struct {
@@ -176,28 +207,85 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 	return FetchCacheResult{Blob: ref, Size: reader.size, CRC32: fmt.Sprintf("%08x", crc.Sum32()), MD5: fmt.Sprintf("%x", m.Sum(nil)), SHA1: fmt.Sprintf("%x", s.Sum(nil)), Status: resp.StatusCode}, nil
 }
 
-func validDataRange(r DataRange) error {
-	if r.Offset < 0 || r.Length <= 0 || r.Length > MaxDataRangeBytes || r.Offset > 1<<60 {
-		return fmt.Errorf("plugins: range needs nonnegative offset and length 1..%d", MaxDataRangeBytes)
+func validDataRange(r DataRange, maxBytes int64) error {
+	if r.Offset < 0 || r.Length <= 0 || r.Length > maxBytes || r.Offset > 1<<60 {
+		return fmt.Errorf("plugins: range needs nonnegative offset and length 1..%d", maxBytes)
 	}
 	return nil
 }
 
-// Always return base64: arbitrary text/control bytes then have a predictable
-// JSON envelope well below the 4 MiB host-result limit.
-func readDataRange(ctx context.Context, r io.Reader, opt DataRange) (map[string]any, error) {
-	if err := validDataRange(opt); err != nil {
+func readAllSized(r io.Reader, sizeHint int64) ([]byte, error) {
+	if sizeHint < 0 {
+		sizeHint = 0
+	}
+	capHint := min(sizeHint+512, int64(8<<20))
+	if capHint < 512 {
+		capHint = 512
+	}
+	b := make([]byte, 0, capHint)
+	for {
+		if len(b) == cap(b) {
+			next := max(cap(b)*2, 4096)
+			if sizeHint > int64(next) {
+				next = int(min(sizeHint+512, int64(MaxDataReadBytes)+512))
+			}
+			grown := make([]byte, len(b), next)
+			copy(grown, b)
+			b = grown
+		}
+		n, err := r.Read(b[len(b):cap(b)])
+		b = b[:len(b)+n]
+		if err != nil {
+			if err == io.EOF {
+				return b, nil
+			}
+			return b, err
+		}
+	}
+}
+
+func readDataRangeBytes(ctx context.Context, r io.Reader, opt DataRange, maxBytes, sizeHint int64) ([]byte, error) {
+	if err := validDataRange(opt, maxBytes); err != nil {
 		return nil, err
 	}
 	cr := &boundedDataReader{ctx: ctx, r: r, left: opt.Offset + opt.Length}
-	if _, err := io.CopyN(io.Discard, cr, opt.Offset); err != nil {
-		return nil, err
+	if opt.Offset > 0 {
+		if _, err := io.CopyN(io.Discard, cr, opt.Offset); err != nil {
+			return nil, err
+		}
 	}
-	data, err := io.ReadAll(io.LimitReader(cr, opt.Length))
+	return readAllSized(io.LimitReader(cr, opt.Length), sizeHint)
+}
+
+// Always return base64: arbitrary text/control bytes then have a predictable
+// JSON envelope scaled with the plugin's per-call readBytes grant.
+func readDataRange(ctx context.Context, r io.Reader, opt DataRange, maxBytes, sizeHint int64) (map[string]any, error) {
+	data, err := readDataRangeBytes(ctx, r, opt, maxBytes, sizeHint)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"bodyBase64": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+}
+
+func readArchiveMemberRange(ctx context.Context, archive *dataArchive, member int, opt DataRange, maxBytes int64) ([]byte, error) {
+	if member < 0 || member >= len(archive.members) {
+		return nil, fmt.Errorf("plugins: archive member index outside range")
+	}
+	f := archive.members[member]
+	if f.Unsafe {
+		return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+	}
+	if uint64(opt.Offset) > f.Size {
+		return nil, fmt.Errorf("plugins: archive member offset outside range")
+	}
+	stream, err := archive.open(member)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+	rem := int64(min(f.Size-uint64(opt.Offset), uint64(maxBytes)))
+	sizeHint := min(opt.Length, rem)
+	return readDataRangeBytes(ctx, io.LimitReader(stream, int64(f.Size)), opt, maxBytes, sizeHint)
 }
 
 // seekReaderAt gives zip.Reader random access without materializing an archive.
@@ -210,6 +298,13 @@ type seekReaderAt struct {
 func (r seekReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
+	}
+	if ra, ok := r.r.(io.ReaderAt); ok {
+		n, err := ra.ReadAt(p, off)
+		if err == io.EOF && n == len(p) {
+			err = nil
+		}
+		return n, err
 	}
 	if _, err := r.r.Seek(off, io.SeekStart); err != nil {
 		return 0, err
@@ -360,6 +455,7 @@ func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (
 // CallDataHost is the shared hosted/remote data-service funnel. Only named
 // services are accepted; cache access rechecks plugin ownership each call.
 func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage) (json.RawMessage, error) {
+	ctx = withCallRecord(ctx, h)
 	// Remote callers receive the same maximum I/O deadline as hosted calls.
 	limits := defaultDataLimits()
 	if provider, ok := h.(interface {
@@ -367,6 +463,9 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 	}); ok {
 		limits = provider.DataLimits(ctx)
 	}
+	limits.ReadBytes = dataReadLimit(limits)
+	readCap := limits.ReadBytes
+
 	deadline, err := time.ParseDuration(limits.Deadline)
 	if err != nil || deadline <= 0 {
 		deadline = 12 * time.Hour
@@ -378,7 +477,21 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		return nil, err
 	}
 	var value any
-	if name == "http.hash" {
+	if name == "runtime.limits" {
+		if len(args) != 0 {
+			return nil, fmt.Errorf("plugins: runtime.limits takes no arguments")
+		}
+		if ph, ok := h.(*host); ok {
+			r, rerr := ph.callRecord(ctx)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if !r.Enabled {
+				return nil, ErrDisabled
+			}
+		}
+		value = limits
+	} else if name == "http.hash" {
 		var req HashRequest
 		if len(args) != 1 {
 			return nil, fmt.Errorf("plugins: hash takes one request")
@@ -418,7 +531,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
 	} else {
-		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.extract" {
+		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.read" && name != "archive.extract" {
 			return nil, ErrPermissionDenied
 		}
 		if len(args) == 0 {
@@ -429,6 +542,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, err
 		}
 		var opt DataRange
+		var reads []ArchiveReadItem
 		var extractOpt ArchiveExtractOptions
 		var member int
 		switch name {
@@ -448,6 +562,11 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			if err = json.Unmarshal(args[1], &member); err == nil {
 				err = json.Unmarshal(args[2], &opt)
 			}
+		case "archive.read":
+			if len(args) != 2 {
+				return nil, fmt.Errorf("plugins: archive.read takes (blob, reads)")
+			}
+			err = json.Unmarshal(args[1], &reads)
 		case "archive.extract":
 			if len(args) < 2 || len(args) > 3 {
 				return nil, fmt.Errorf("plugins: archive.extract takes (blob, memberIndex[, options])")
@@ -461,7 +580,25 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, err
 		}
 		if name == "cache.read" || name == "archive.open" {
-			if err = validDataRange(opt); err != nil {
+			if err = validDataRange(opt, readCap); err != nil {
+				return nil, err
+			}
+		}
+		if name == "archive.read" {
+			if len(reads) == 0 || len(reads) > MaxArchiveReadItems {
+				return nil, fmt.Errorf("plugins: archive.read takes 1..%d reads", MaxArchiveReadItems)
+			}
+			var totalRequested int64
+			for _, item := range reads {
+				if err = validDataRange(DataRange{Offset: item.Offset, Length: item.Length}, readCap); err != nil {
+					return nil, err
+				}
+				if item.Length > readCap-totalRequested {
+					return nil, fmt.Errorf("plugins: archive.read requested bytes exceed per-call readBytes limit (%d)", readCap)
+				}
+				totalRequested += item.Length
+			}
+			if err = wasm.ChargeUnits(ctx, int64(len(reads))*wasm.ArchiveReadUnitsPerMember); err != nil {
 				return nil, err
 			}
 		}
@@ -485,8 +622,14 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			if _, err = rc.Seek(opt.Offset, io.SeekStart); err != nil {
 				return nil, err
 			}
+			sizeHint := min(opt.Length, int64(64<<10))
+			if sizer, ok := rc.(interface{ Size() int64 }); ok {
+				if rem := sizer.Size() - opt.Offset; rem >= 0 {
+					sizeHint = min(opt.Length, rem)
+				}
+			}
 			opt.Offset = 0
-			value, err = readDataRange(ctx, rc, opt)
+			value, err = readDataRange(ctx, rc, opt, readCap, sizeHint)
 		} else {
 			var archive *dataArchive
 			var e error
@@ -502,22 +645,28 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			case "archive.list":
 				value = archive.members
 			case "archive.open":
-				if member < 0 || member >= len(archive.members) {
-					return nil, fmt.Errorf("plugins: archive member index outside range")
+				var data []byte
+				data, err = readArchiveMemberRange(ctx, archive, member, opt, readCap)
+				if err != nil {
+					return nil, err
 				}
-				f := archive.members[member]
-				if f.Unsafe {
-					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				value = map[string]any{"bodyBase64": base64.StdEncoding.EncodeToString(data), "size": len(data)}
+			case "archive.read":
+				out := make([]ArchiveReadResult, len(reads))
+				for i, item := range reads {
+					var data []byte
+					data, err = readArchiveMemberRange(ctx, archive, item.Member, DataRange{Offset: item.Offset, Length: item.Length}, readCap)
+					if err != nil {
+						return nil, err
+					}
+					out[i] = ArchiveReadResult{
+						Index:      i,
+						Member:     item.Member,
+						Size:       len(data),
+						BodyBase64: base64.StdEncoding.EncodeToString(data),
+					}
 				}
-				if uint64(opt.Offset) > f.Size {
-					return nil, fmt.Errorf("plugins: archive member offset outside range")
-				}
-				stream, e := archive.open(member)
-				if e != nil {
-					return nil, e
-				}
-				defer stream.Close()
-				value, err = readDataRange(ctx, io.LimitReader(stream, int64(f.Size)), opt)
+				value = out
 			case "archive.extract":
 				if member < 0 || member >= len(archive.members) {
 					return nil, fmt.Errorf("plugins: archive member index outside range")
@@ -593,5 +742,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 }
 
 func defaultDataLimits() RuntimeLimits {
-	return RuntimeLimits{FetchBytes: MaxDataFetchBytes, ArchiveMemberBytes: maxArchiveMemberBytes, ArchiveExpandedBytes: maxArchiveExpandedBytes, ArchiveMembers: maxArchiveMembers, Deadline: "12h"}
+	return RuntimeLimits{
+		MemoryBytes:          32 << 20,
+		ReadBytes:            MinDataReadBytes,
+		FetchBytes:           MaxDataFetchBytes,
+		ArchiveMemberBytes:   maxArchiveMemberBytes,
+		ArchiveExpandedBytes: maxArchiveExpandedBytes,
+		ArchiveMembers:       maxArchiveMembers,
+		Deadline:             "12h",
+	}
 }

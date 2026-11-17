@@ -436,8 +436,12 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 }
 
 func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error) {
-	if _, _, err := h.record(ctx); err != nil {
+	r, err := h.callRecord(ctx)
+	if err != nil {
 		return nil, err
+	}
+	if !r.Enabled {
+		return nil, ErrDisabled
 	}
 	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
 	if !ok || len(hexPart) != 64 {

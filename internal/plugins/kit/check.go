@@ -508,6 +508,21 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		return nil, wasm.Forbidden("undeclared secret " + sec)
 	case "settings.get":
 		return json.RawMessage(`{}`), nil
+	case "runtime.limits":
+		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
+			b, _ := json.Marshal(l)
+			return b, nil
+		}
+		b, _ := json.Marshal(plugins.RuntimeLimits{
+			MemoryBytes:          32 << 20,
+			ReadBytes:            plugins.MinDataReadBytes,
+			FetchBytes:           plugins.MaxDataFetchBytes,
+			ArchiveMemberBytes:   8 << 30,
+			ArchiveExpandedBytes: 32 << 30,
+			ArchiveMembers:       65535,
+			Deadline:             "12h",
+		})
+		return b, nil
 	case "addon.get":
 		// An add-on-backed plugin's checks run offline: the add-on answers
 		// with an empty, well-formed Stremio response.

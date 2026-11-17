@@ -2,6 +2,7 @@ package wasm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,6 +85,7 @@ globalThis.ether = (() => {
   const ether = {
     log: (...a) => { try { __ether_host("log", JSON.stringify(a.map(String))); } catch (e) {} },
     abort: (msg) => { throw new Error("__ETHER_FAULT__" + JSON.stringify({ code: "aborted", message: String(msg == null ? "aborted" : msg) })); },
+    runtime: { limits: () => call("runtime.limits", []) },
     kv: { get: (k) => call("kv.get", [k]), put: (k, v) => call("kv.put", [k, v]),
           delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]) },
     settings: { get: () => call("settings.get", []) },
@@ -100,7 +102,7 @@ globalThis.ether = (() => {
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
              open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]) },
-    archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
+    archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
     frontend: { streamURL: (itemRef) => call("frontend.streamURL", [itemRef]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
@@ -262,6 +264,19 @@ type jsInstance struct {
 	cs           *callState // set for the duration of one call
 }
 
+func newJSArrayBuffer(qc *qjs.Context, data []byte) (*qjs.Value, error) {
+	if len(data) == 0 {
+		return qc.Call("QJS_NewArrayBufferCopy", qc.Raw(), 0, 0), nil
+	}
+	ptr := qc.Malloc(uint64(len(data)))
+	if ptr == 0 {
+		return nil, errors.New("out of guest memory")
+	}
+	defer qc.FreeHandle(ptr)
+	qc.MemWrite(uint32(ptr), data)
+	return qc.Call("QJS_NewArrayBufferCopy", qc.Raw(), ptr, uint64(len(data))), nil
+}
+
 func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, logger *slog.Logger, pluginID string) (in *jsInstance, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -301,6 +316,90 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 				return qc.NewFloat64(-1), nil
 			}
 			return qc.NewFloat64(budgetMs(d)), nil
+		})
+	} else {
+		// Native base64 -> ArrayBuffer and direct binary host crossings avoid
+		// multi-megabyte JSON.parse + base64 copies inside QuickJS on wazero.
+		qc.SetFunc("__ether_b64_decode", func(this *qjs.This) (*qjs.Value, error) {
+			args := this.Args()
+			if len(args) != 1 {
+				return nil, errors.New("Invalid base64 host result")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(args[0].String())
+			if err != nil {
+				return nil, errors.New("Invalid base64 host result")
+			}
+			return newJSArrayBuffer(qc, decoded)
+		})
+		qc.SetFunc("__ether_host_binary", func(this *qjs.This) (*qjs.Value, error) {
+			args := this.Args()
+			if in.cs == nil || len(args) != 2 {
+				return nil, errors.New(encodeFault(Forbidden("host call outside a plugin call")))
+			}
+			name := args[0].String()
+			out, fault := in.cs.dispatch(name, json.RawMessage(args[1].String()))
+			if fault != nil {
+				return nil, errors.New(encodeFault(fault))
+			}
+			switch name {
+			case "archive.open", "cache.read":
+				var res struct {
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if err := json.Unmarshal(out, &res); err != nil {
+					return nil, err
+				}
+				decoded, err := base64.StdEncoding.DecodeString(res.BodyBase64)
+				if err != nil {
+					return nil, err
+				}
+				return newJSArrayBuffer(qc, decoded)
+			case "archive.read":
+				var rows []struct {
+					Index      int    `json:"index"`
+					Member     int    `json:"member"`
+					Size       int    `json:"size"`
+					BodyBase64 string `json:"bodyBase64"`
+				}
+				if err := json.Unmarshal(out, &rows); err != nil {
+					return nil, err
+				}
+				type itemMeta struct {
+					Index  int `json:"index"`
+					Member int `json:"member"`
+					Size   int `json:"size"`
+					Offset int `json:"offset"`
+				}
+				meta := make([]itemMeta, len(rows))
+				totalLen := 0
+				for _, r := range rows {
+					totalLen += base64.StdEncoding.DecodedLen(len(r.BodyBase64))
+				}
+				concat := make([]byte, totalLen)
+				pos := 0
+				for i, r := range rows {
+					n, err := base64.StdEncoding.Decode(concat[pos:], []byte(r.BodyBase64))
+					if err != nil {
+						return nil, err
+					}
+					meta[i] = itemMeta{Index: r.Index, Member: r.Member, Size: n, Offset: pos}
+					pos += n
+				}
+				ab, err := newJSArrayBuffer(qc, concat[:pos])
+				if err != nil {
+					return nil, err
+				}
+				metaBytes, err := json.Marshal(meta)
+				if err != nil {
+					return nil, err
+				}
+				obj := qc.NewObject()
+				obj.SetPropertyStr("metaJson", qc.NewString(string(metaBytes)))
+				obj.SetPropertyStr("buffer", ab)
+				return obj, nil
+			default:
+				return nil, errors.New("unsupported binary host call")
+			}
 		})
 	}
 	if _, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
@@ -438,7 +537,7 @@ func (in *jsInstance) loadBatch(ctx context.Context, cs *callState, cands [][]by
 }
 
 func (in *jsInstance) rankBatch(ctx context.Context, cs *callState, cands [][]byte, cfg []byte, lim *Limits) ([]*int64, *Error) {
-	if err := in.loadBatch(ctx, cs, cands, cfg, lim); err != nil {
+	if err := in.loadBatch(ctx, cs, cands, cfg, lim) ; err != nil {
 		return nil, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, lim.hotKill())

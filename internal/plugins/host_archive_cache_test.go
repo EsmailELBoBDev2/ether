@@ -38,6 +38,13 @@ func (r *directoryCacheTestReader) Read(p []byte) (int, error) {
 	return r.Reader.Read(p)
 }
 
+func (r *directoryCacheTestReader) ReadAt(p []byte, off int64) (int, error) {
+	if off == r.host.directoryOffset {
+		r.host.directoryReads++
+	}
+	return r.Reader.ReadAt(p, off)
+}
+
 // Reuse must preserve independent per-call reader lifetimes, while the second
 // member read performs no central-directory I/O after the first call expires.
 func TestArchiveDirectoryCache(t *testing.T) {

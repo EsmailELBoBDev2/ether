@@ -95,18 +95,129 @@ function encodeData(data: Uint8Array): string {
   return parts.join("");
 }
 
-function encodeText(text: string): Uint8Array {
-  const encoded = encodeURIComponent(text);
+let sharedTextEncoder: TextEncoder | undefined;
+let sharedTextDecoder: TextDecoder | undefined;
+
+export function encodeText(text: string): Uint8Array {
+  if (text.length === 0) return new Uint8Array(0);
+  const g = globalThis as unknown as GlobalEtherBindings;
+  if (typeof g.__ether_text_encode === "function") {
+    return new Uint8Array(g.__ether_text_encode(text));
+  }
+  if (typeof TextEncoder === "function") {
+    sharedTextEncoder ??= new TextEncoder();
+    return sharedTextEncoder.encode(text);
+  }
   const bytes: number[] = [];
-  for (let i = 0; i < encoded.length; i++) {
-    if (encoded[i] === "%") {
-      bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16));
-      i += 2;
+  for (let i = 0; i < text.length; i++) {
+    let cp = text.charCodeAt(i);
+    if (cp >= 0xd800 && cp <= 0xdbff && i + 1 < text.length) {
+      const lo = text.charCodeAt(i + 1);
+      if (lo >= 0xdc00 && lo <= 0xdfff) {
+        cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
+        i++;
+      } else {
+        cp = 0xfffd;
+      }
+    } else if (cp >= 0xd800 && cp <= 0xdfff) {
+      cp = 0xfffd;
+    }
+    if (cp <= 0x7f) {
+      bytes.push(cp);
+    } else if (cp <= 0x7ff) {
+      bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    } else if (cp <= 0xffff) {
+      bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
     } else {
-      bytes.push(encoded.charCodeAt(i));
+      bytes.push(
+        0xf0 | (cp >> 18),
+        0x80 | ((cp >> 12) & 0x3f),
+        0x80 | ((cp >> 6) & 0x3f),
+        0x80 | (cp & 0x3f),
+      );
     }
   }
   return new Uint8Array(bytes);
+}
+
+export function decodeText(bytes: ArrayBuffer | ArrayBufferView): string {
+  if (bytes.byteLength === 0) return "";
+  const g = globalThis as unknown as GlobalEtherBindings;
+  if (typeof g.__ether_text_decode === "function") {
+    return g.__ether_text_decode(bytes);
+  }
+  if (typeof TextDecoder === "function") {
+    sharedTextDecoder ??= new TextDecoder("utf-8", { ignoreBOM: true });
+    return sharedTextDecoder.decode(bytes);
+  }
+  const u8 = ArrayBuffer.isView(bytes)
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    : new Uint8Array(bytes);
+  let out = "";
+  let i = 0;
+  while (i < u8.length) {
+    const b0 = u8[i]!;
+    if (b0 <= 0x7f) {
+      let end = i + 1;
+      while (end < u8.length && end - i < 4096 && u8[end]! <= 0x7f) end++;
+      out += String.fromCharCode(...u8.subarray(i, end));
+      i = end;
+    } else if (b0 >= 0xc2 && b0 <= 0xdf) {
+      const b1 = u8[i + 1];
+      if (b1 !== undefined && b1 >= 0x80 && b1 <= 0xbf) {
+        out += String.fromCharCode(((b0 & 0x1f) << 6) | (b1 & 0x3f));
+        i += 2;
+      } else {
+        out += "\ufffd";
+        i++;
+      }
+    } else if (b0 >= 0xe0 && b0 <= 0xef) {
+      const b1 = u8[i + 1];
+      const lo = b0 === 0xe0 ? 0xa0 : 0x80;
+      const hi = b0 === 0xed ? 0x9f : 0xbf;
+      if (b1 === undefined || b1 < lo || b1 > hi) {
+        out += "\ufffd";
+        i++;
+      } else {
+        const b2 = u8[i + 2];
+        if (b2 === undefined || b2 < 0x80 || b2 > 0xbf) {
+          out += "\ufffd";
+          i += 2;
+        } else {
+          out += String.fromCharCode(((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f));
+          i += 3;
+        }
+      }
+    } else if (b0 >= 0xf0 && b0 <= 0xf4) {
+      const b1 = u8[i + 1];
+      const lo = b0 === 0xf0 ? 0x90 : 0x80;
+      const hi = b0 === 0xf4 ? 0x8f : 0xbf;
+      if (b1 === undefined || b1 < lo || b1 > hi) {
+        out += "\ufffd";
+        i++;
+      } else {
+        const b2 = u8[i + 2];
+        if (b2 === undefined || b2 < 0x80 || b2 > 0xbf) {
+          out += "\ufffd";
+          i += 2;
+        } else {
+          const b3 = u8[i + 3];
+          if (b3 === undefined || b3 < 0x80 || b3 > 0xbf) {
+            out += "\ufffd";
+            i += 3;
+          } else {
+            const cp = (((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f)) - 0x10000;
+            out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+            i += 4;
+          }
+        }
+      }
+    } else {
+      out += "\ufffd";
+      i++;
+    }
+  }
+  return out;
 }
 
 function decodeData(r: { bodyBase64: string }): Uint8Array {
@@ -278,6 +389,8 @@ interface GlobalEtherBindings {
   __ether_host?: (name: string, argsJson: string) => string;
   __ether_host_binary?: (name: string, argsJson: string) => unknown;
   __ether_b64_decode?: (text: string) => ArrayBuffer;
+  __ether_text_decode?: (bytes: ArrayBuffer | ArrayBufferView) => string;
+  __ether_text_encode?: (text: string) => ArrayBuffer;
   ether?: {
     log: (...args: unknown[]) => void;
     abort: (msg?: string) => never;

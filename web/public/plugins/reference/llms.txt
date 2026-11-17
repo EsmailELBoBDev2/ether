@@ -176,7 +176,10 @@ the plugin's memory grant: `readBytes = clamp(memoryBytes/4, 8 MiB, 512 MiB)` (d
 1 GiB → 256 MiB), exposed at runtime via `runtime.limits` (`ether.runtime.limits()` / `BlobHost.RuntimeLimits`).
 Use `archive.open` when reading one member or stepping through one large file in ranges. Use
 `archive.read(blob, reads)` (1..4096 `{member, offset, length}` items summing to `<= readBytes`) when
-parsing many small or medium members from one archive in batches. Big media never goes through
+parsing many small or medium members from one archive in batches. Hosted QuickJS provides native UTF-8
+`TextDecoder` and `TextEncoder` globals (`__ether_text_decode` / `__ether_text_encode`, or `decodeText` /
+`encodeText` from `@ether/plugin-sdk`) so decoding `Uint8Array` slices into strings runs in native Go rather
+than a per-byte JavaScript loop. Big media never goes through
 `cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive members
 directly (`internal/plugins/frontend_blob.go`, `frontend.streamURL`); these calls are only for bytes
 the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}])`

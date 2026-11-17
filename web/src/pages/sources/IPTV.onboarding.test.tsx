@@ -126,8 +126,7 @@ describe("IPTV source onboarding", () => {
     // 2. player_api.php?username=U&password=P (with reverse-proxy base path)
     fireEvent.paste(serverInput, {
       clipboardData: {
-        getData: () =>
-          "https://iptv.example/sub/player_api.php?username=bob&password=S3cretTwo",
+        getData: () => "https://iptv.example/sub/player_api.php?username=bob&password=S3cretTwo",
       },
     });
     expect(serverInput.value).toBe("https://iptv.example/sub");
@@ -146,9 +145,9 @@ describe("IPTV source onboarding", () => {
     fireEvent.click(screen.getByRole("button", { name: "Import source" }));
 
     await waitFor(() => {
-      expect(requests.some((r) => r.method === "POST" && r.url.includes("/api/livetv/sources"))).toBe(
-        true,
-      );
+      expect(
+        requests.some((r) => r.method === "POST" && r.url.includes("/api/livetv/sources")),
+      ).toBe(true);
     });
     const post = requests.find((r) => r.method === "POST" && r.url.includes("/api/livetv/sources"));
     const payload = JSON.parse(post?.body ?? "{}") as {

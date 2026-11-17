@@ -7,7 +7,14 @@ import { invalidateRegistry } from "../lib/extend";
 import LiveTV from "../pages/livetv/LiveTV";
 import { IPTVProviders } from "../pages/sources/IPTV";
 import { ProgrammingEditor } from "../pages/livetv/ProgrammingEditor";
-import { compileOwnerGroupMatcher, compileOwnerGroupRegExp, streamQualityTier, type Channel, type OwnerGroup, type OwnerGroupRule } from "../pages/livetv/model";
+import {
+  compileOwnerGroupMatcher,
+  compileOwnerGroupRegExp,
+  streamQualityTier,
+  type Channel,
+  type OwnerGroup,
+  type OwnerGroupRule,
+} from "../pages/livetv/model";
 import { ScheduleTimeline } from "../pages/livetv/ScheduleTimeline";
 import { calls as fakeCalls } from "./harness";
 import { renderAppWith } from "./routes";
@@ -1348,7 +1355,6 @@ describe("timeline snapshot boundary", () => {
   });
 });
 
-
 it("creates a rule-based owner group in a drawer with live preview and inline regex validation", async () => {
   const chans = [
     iptv("cbs", { number: "2", name: "CBS WCBS HD", group: "US Locals", guideId: "cbs.wcbs" }),
@@ -1360,7 +1366,9 @@ it("creates a rule-based owner group in a drawer with live preview and inline re
   const calls = backend(chans, (url, init) => {
     const method = init?.method ?? "GET";
     if (url.endsWith("/livetv/sources")) {
-      return [{ id: "src1", name: "Tuliprox US", hasPlaylist: true, updatedAt: new Date().toISOString() }];
+      return [
+        { id: "src1", name: "Tuliprox US", hasPlaylist: true, updatedAt: new Date().toISOString() },
+      ];
     }
     if (url.endsWith("/livetv/groups") && method === "GET") return savedGroups;
     if (url.endsWith("/livetv/groups") && method === "PUT") {
@@ -1458,14 +1466,27 @@ it("creates a rule-based owner group in a drawer with live preview and inline re
   ]);
 
   expect(await within(nav).findByRole("button", { name: "US Sports" }, WAIT)).toBeVisible();
-  expect(await screen.findByRole("heading", { name: "US Sports · your group" }, WAIT)).toBeVisible();
+  expect(
+    await screen.findByRole("heading", { name: "US Sports · your group" }, WAIT),
+  ).toBeVisible();
 });
-
 
 it("merges matching channel feeds with live preview, health, and provider priority reorder", async () => {
   let sourcesList = [
-    { id: "src-a", name: "Alpha TV", hasPlaylist: true, priority: 1, updatedAt: new Date().toISOString() },
-    { id: "src-b", name: "Bravo TV", hasPlaylist: true, priority: 2, updatedAt: new Date().toISOString() },
+    {
+      id: "src-a",
+      name: "Alpha TV",
+      hasPlaylist: true,
+      priority: 1,
+      updatedAt: new Date().toISOString(),
+    },
+    {
+      id: "src-b",
+      name: "Bravo TV",
+      hasPlaylist: true,
+      priority: 2,
+      updatedAt: new Date().toISOString(),
+    },
   ];
   const chans: any[] = [
     iptv("espn-a", {
@@ -1594,13 +1615,18 @@ it("merges matching channel feeds with live preview, health, and provider priori
   fireEvent.dragOver(alphaHeader);
   fireEvent.drop(alphaHeader);
 
-  await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/sources\/order$/)).toHaveLength(1), WAIT);
+  await waitFor(
+    () => expect(sent(calls, "PUT", /\/livetv\/sources\/order$/)).toHaveLength(1),
+    WAIT,
+  );
   expect(body(sent(calls, "PUT", /\/livetv\/sources\/order$/)[0])).toEqual({
     ids: ["src-b", "src-a"],
   });
 
   const lineup = screen.getByRole("region", { name: "Channels" });
-  expect(await within(lineup).findByRole("button", { name: "207 US: ESPN FHD" }, WAIT)).toBeVisible();
+  expect(
+    await within(lineup).findByRole("button", { name: "207 US: ESPN FHD" }, WAIT),
+  ).toBeVisible();
   fireEvent.click(within(lineup).getByRole("button", { name: "206 ESPN HD" }));
 
   // 2. Configure regex merge rule in the channel drawer with inline validation + live preview.
@@ -1619,7 +1645,10 @@ it("merges matching channel feeds with live preview, health, and provider priori
   expect(screen.getByRole("button", { name: /Save channel/ })).toBeDisabled();
 
   fireEvent.change(valInput, { target: { value: "(?i)^(?:us:\\s*)?espn\\b" } });
-  await waitFor(() => expect(within(mergeSection).queryByRole("alert")).not.toBeInTheDocument(), WAIT);
+  await waitFor(
+    () => expect(within(mergeSection).queryByRole("alert")).not.toBeInTheDocument(),
+    WAIT,
+  );
 
   expect(await within(mergeSection).findByText("1 matching feed", undefined, WAIT)).toBeVisible();
   const previewRows = within(mergeSection).getAllByRole("listitem");
@@ -1635,9 +1664,14 @@ it("merges matching channel feeds with live preview, health, and provider priori
   expect(previewRows[1]).toHaveTextContent("Cooling down");
 
   // 3. Save channel and verify inputMerge payload + duplicate channel hidden from standalone lineup.
-  expect(within(mergeSection).getByRole("switch", { name: "Hide matched duplicate channels" })).toBeChecked();
+  expect(
+    within(mergeSection).getByRole("switch", { name: "Hide matched duplicate channels" }),
+  ).toBeChecked();
   fireEvent.click(screen.getByRole("button", { name: /Save channel/ }));
-  await waitFor(() => expect(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)).toHaveLength(1), WAIT);
+  await waitFor(
+    () => expect(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)).toHaveLength(1),
+    WAIT,
+  );
 
   const savedBody = body(sent(calls, "PUT", /\/livetv\/channels\/espn-a$/)[0]);
   expect(savedBody.inputMerge).toEqual({

@@ -587,7 +587,9 @@ export default function LiveTV() {
             if (!g) return cs;
             const sourceNames = new Map(sources.map((s) => [s.id, s.name]));
             const matchesGroup = compileOwnerGroupMatcher(g, sourceNames);
-            return cs.map((c) => (matchesGroup(c) ? patchChannel(c, { clearApps: [change.app] }) : c));
+            return cs.map((c) =>
+              matchesGroup(c) ? patchChannel(c, { clearApps: [change.app] }) : c,
+            );
           }
           return cs.map((c) => {
             if (change.source === "virtual") {

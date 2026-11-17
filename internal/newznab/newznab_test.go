@@ -412,6 +412,7 @@ func TestSearchAnimeCourFallback(t *testing.T) {
 }
 
 func TestSearchAnimeCourTVDBSeason(t *testing.T) {
+	var queriesMu sync.Mutex
 	var queries []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -419,8 +420,10 @@ func TestSearchAnimeCourTVDBSeason(t *testing.T) {
 		case "caps":
 			fmt.Fprint(w, `<caps><searching><search available="yes" supportedParams="q"/><tv-search available="yes" supportedParams="q,tvdbid,tmdbid,season,ep"/></searching></caps>`)
 		default:
+			queriesMu.Lock()
 			queries = append(queries, fmt.Sprintf("t=%s|tvdb=%s|tmdb=%s|s=%s|ep=%s|q=%s",
 				q.Get("t"), q.Get("tvdbid"), q.Get("tmdbid"), q.Get("season"), q.Get("ep"), q.Get("q")))
+			queriesMu.Unlock()
 			fmt.Fprint(w, `<rss version="2.0"><channel></channel></rss>`)
 		}
 	}))
@@ -454,6 +457,8 @@ func TestSearchAnimeCourTVDBSeason(t *testing.T) {
 		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 3rd Season",
 	}
 	gotSet := map[string]bool{}
+	queriesMu.Lock()
+	defer queriesMu.Unlock()
 	for _, q := range queries {
 		gotSet[q] = true
 	}

@@ -231,14 +231,14 @@ func credentialFingerprint(cfg config.Indexer) string {
 
 func (s *Service) newRunner(cfg config.Indexer, p *parsedDef) (*Runner, error) {
 	return newRunner(p.def, runnerOptions{
-		IndexerID:  cfg.ID,
-		SiteLink:   cfg.URL,
-		Settings:   mergedSettings(cfg),
-		HTTPClient: s.hc,
-		FlareURL:   s.flareURL,
-		Sessions:   s.sessions,
-		Lock:       s.lock,
-		Logger:     s.log.With("indexer", cfg.Name),
+		IndexerID:   cfg.ID,
+		SiteLink:    cfg.URL,
+		Settings:    mergedSettings(cfg),
+		HTTPClient:  s.hc,
+		FlareURL:    s.flareURL,
+		Sessions:    s.sessions,
+		Lock:        s.lock,
+		Logger:      s.log.With("indexer", cfg.Name),
 		Now:         s.now,
 		HostLimiter: s.hosts,
 		Language:    cfg.Language,

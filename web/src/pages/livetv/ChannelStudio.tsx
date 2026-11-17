@@ -1217,9 +1217,7 @@ function MergeMatchingFeeds({
               {t("Hide matched duplicate channels")}
             </span>
             <span className="block text-xs text-fg-muted">
-              {t(
-                "Hides extra provider channels from your lineup and guide without deleting them.",
-              )}
+              {t("Hides extra provider channels from your lineup and guide without deleting them.")}
             </span>
           </span>
         </label>
@@ -1231,11 +1229,7 @@ function MergeMatchingFeeds({
             <span className="font-medium text-fg">
               {previewLoading && !preview
                 ? t("Checking matching feeds…")
-                : tn(
-                    preview?.matchCount ?? 0,
-                    "{count} matching feed",
-                    "{count} matching feeds",
-                  )}
+                : tn(preview?.matchCount ?? 0, "{count} matching feed", "{count} matching feeds")}
             </span>
             {preview && preview.totalFeeds > preview.maxInputs ? (
               <span className="text-fg-muted">
@@ -1274,13 +1268,9 @@ function MergeMatchingFeeds({
                     >
                       {roleLabel}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-medium text-fg">
-                      {item.name}
-                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-fg">{item.name}</span>
                     {item.quality ? <Badge>{item.quality}</Badge> : null}
-                    {item.sourceName ? (
-                      <Badge className="shrink-0">{item.sourceName}</Badge>
-                    ) : null}
+                    {item.sourceName ? <Badge className="shrink-0">{item.sourceName}</Badge> : null}
                     <SourceHealth
                       status={{
                         id: item.id,

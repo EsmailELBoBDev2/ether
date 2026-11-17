@@ -22,9 +22,7 @@ afterEach(async () => {
 describe("Settings", () => {
   it("fills a proxy suggestion and tests the connection inline", async () => {
     const { fake } = renderApp("/server");
-    fireEvent.click(
-      await screen.findByLabelText("Send sources through a proxy", {}, WAIT),
-    );
+    fireEvent.click(await screen.findByLabelText("Send sources through a proxy", {}, WAIT));
     fireEvent.click(screen.getByRole("button", { name: "Common proxy setups" }));
     fireEvent.click(
       within(await screen.findByRole("listbox", { hidden: true })).getByText(

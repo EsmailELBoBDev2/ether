@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
-	"github.com/braedonsaunders/ether/internal/sockerr"
 	"math"
 	"net/http"
 	"strconv"
@@ -928,7 +927,7 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		i.unavailable(w, r)
 		return
 	}
-	sockerr.EnableFastDeadPeer(r.Context(), i.deadPeerTimeout())
+	frontend.EnableFastDeadPeer(r.Context(), i.deadPeerTimeout())
 	writeTimeout := i.streamWriteTimeout()
 	rc := http.NewResponseController(unwrapResponseWriter(w))
 	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()

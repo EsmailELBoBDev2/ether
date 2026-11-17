@@ -49,8 +49,11 @@ func (m *Manager) promotePreparedLocked(id, variantID identity, prep *session) [
 	if old := m.byIdent[id]; old != nil && old != prep {
 		replaced = append(replaced, old.id)
 	}
-	prep.ident = id
+	// A session's ident never changes once created: it is read without
+	// locks across playback. The promoted session answers for id through
+	// byIdent, and detach removes that alias with it.
 	m.byIdent[id] = prep
+	prep.alias, prep.hasAlias = id, true
 	prep.mu.Lock()
 	prep.preparedOnly = false
 	prep.mu.Unlock()

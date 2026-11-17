@@ -42,9 +42,9 @@ describe("guide channel filtering", () => {
   });
 
   it("filters by your groups, provider groups and one group name", () => {
-    expect(
-      filterGuideChannels(channels, { app: "all", group: "yours" }).map((c) => c.id),
-    ).toEqual(["c"]);
+    expect(filterGuideChannels(channels, { app: "all", group: "yours" }).map((c) => c.id)).toEqual([
+      "c",
+    ]);
     expect(
       filterGuideChannels(channels, { app: "all", group: "provider" }).map((c) => c.id),
     ).toEqual(["a", "b"]);

@@ -755,8 +755,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       }
       return { body: { ok: true } };
     }
-    if (route === "GET /channels/summary")
-      return { body: channels.filter((c) => !c.mergedInto) };
+    if (route === "GET /channels/summary") return { body: channels.filter((c) => !c.mergedInto) };
     if (route === "GET /channels/page") {
       const needle = (q.get("q") || "").toLowerCase();
       const filter = q.get("filter") || "all";
@@ -1153,9 +1152,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
           { groups: [], rules: merge.rules, match: merge.match ?? "any" },
           srcNames,
         );
-        const donors = channels.filter(
-          (d) => d.kind === "iptv" && d.id !== c.id && matcher(d),
-        );
+        const donors = channels.filter((d) => d.kind === "iptv" && d.id !== c.id && matcher(d));
         if (merge.hideDuplicates !== false) {
           for (const d of donors) d.mergedInto = c.id;
         }

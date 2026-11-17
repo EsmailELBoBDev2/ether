@@ -1812,7 +1812,8 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 	fetch := max(limit*2, s.saferFetchCount(pr.User, limit))
 	// People are searched beside titles; neither waits for the other.
 	peopleDone := make(chan peopleSearchResult, 1)
-	go func() { peopleDone <- s.searchPeople(ctx, pr, query, sectionID, limit, true) }()
+	peopleCtx := ctx // ctx is reassigned below; the goroutine keeps its own copy
+	go func() { peopleDone <- s.searchPeople(peopleCtx, pr, query, sectionID, limit, true) }()
 	// Hub items render as list items (three cast members, directors,
 	// genres): the catalogue reads those facts for the titles a hub shows,
 	// not every credit, keyword and alternative title, and returns the rest
@@ -2066,7 +2067,8 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	var peopleDone chan peopleSearchResult
 	if wantPeople {
 		peopleDone = make(chan peopleSearchResult, 1)
-		go func() { peopleDone <- s.searchPeople(ctx, pr, query, 0, limit, false) }()
+		peopleCtx := ctx // ctx is reassigned below
+		go func() { peopleDone <- s.searchPeople(peopleCtx, pr, query, 0, limit, false) }()
 	}
 	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
 	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, 0), limit, true)

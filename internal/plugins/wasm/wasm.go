@@ -160,7 +160,7 @@ func DataReadBytes(memoryBytes uint64) int64 {
 // plus 1 MiB for JSON framing.
 func HostResultBytes(memoryBytes uint64) int64 {
 	readCap := DataReadBytes(memoryBytes)
-	envelope := ((readCap + 2) / 3) * 4 + (1 << 20)
+	envelope := ((readCap+2)/3)*4 + (1 << 20)
 	if envelope < MaxHostResultBytes {
 		return MaxHostResultBytes
 	}

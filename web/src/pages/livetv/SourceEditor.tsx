@@ -298,8 +298,8 @@ export function SourceEditor({
     (xtream
       ? Boolean(
           (inlineXtream?.server || auth.server?.trim()) &&
-            (inlineXtream?.username || auth.username?.trim()) &&
-            (inlineXtream?.password || auth.password),
+          (inlineXtream?.username || auth.username?.trim()) &&
+          (inlineXtream?.password || auth.password),
         )
       : kind === "playlist"
         ? Boolean(files.playlist || draft.playlist || draft.playlistUrl || storedPlaylist)
@@ -1319,9 +1319,7 @@ function cleanAuth(a: SourceAuth | undefined, kind: SourceKind): SourceAuth | un
   );
   const xtreamParsed = type === "xtream" ? parseXtreamUrl(a.server ?? "") : null;
   const xtreamServer =
-    type === "xtream"
-      ? xtreamParsed?.server || stripXtreamServerUrl(a.server ?? "")
-      : undefined;
+    type === "xtream" ? xtreamParsed?.server || stripXtreamServerUrl(a.server ?? "") : undefined;
   const xtreamReplaceCreds =
     type === "xtream" && (!a.password || a.password === "••••") && Boolean(xtreamParsed);
   const out: SourceAuth = {

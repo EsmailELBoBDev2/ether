@@ -194,12 +194,7 @@ export type ProviderGroupRef = {
 };
 export type OwnerGroupRuleField = "name" | "group" | "guideId" | "number" | "source";
 export type OwnerGroupRuleOp =
-  | "contains"
-  | "is"
-  | "startsWith"
-  | "matches"
-  | "notContains"
-  | "notMatches";
+  "contains" | "is" | "startsWith" | "matches" | "notContains" | "notMatches";
 export type OwnerGroupRule = {
   field: OwnerGroupRuleField;
   op: OwnerGroupRuleOp;
@@ -1245,7 +1240,10 @@ export function programmeArtwork(src?: string): string | undefined {
 }
 
 /** Parses stream quality tier rank (0=4K … 4=SD) from channel or feed names. */
-export function streamQualityTier(...names: (string | undefined)[]): { rank: number; label: string } {
+export function streamQualityTier(...names: (string | undefined)[]): {
+  rank: number;
+  label: string;
+} {
   let best = 3;
   let sawSD = false;
   for (const raw of names) {

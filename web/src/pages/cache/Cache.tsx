@@ -291,7 +291,9 @@ export default function Cache() {
       });
       toast.success(t("Freed {size}", { size: formatBytes(result.freedBytes) }));
       if (!result.complete)
-        toast.info(t("A few files are still being written and were kept. Clear again in a minute."));
+        toast.info(
+          t("A few files are still being written and were kept. Clear again in a minute."),
+        );
       await live.reload();
     } catch (e) {
       setError(e);

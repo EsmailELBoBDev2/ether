@@ -1660,6 +1660,10 @@ func (m *Manager) detachSessionLocked(s *session) *generation {
 		delete(m.byIdent, s.ident)
 		delete(m.channelGroups, s.ident)
 	}
+	if s.hasAlias && m.byIdent[s.alias] == s {
+		delete(m.byIdent, s.alias)
+		delete(m.channelGroups, s.alias)
+	}
 	s.mu.Lock()
 	s.closed = true
 	if s.stopCancel != nil {

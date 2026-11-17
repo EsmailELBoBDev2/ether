@@ -11,7 +11,14 @@ import type { AddonSummary } from "../../components/addons/addons";
 import { errorMessage } from "../../lib/api";
 import { ProviderAccountCard } from "../livetv/SourceGroups";
 import { SourceEditor } from "../livetv/SourceEditor";
-import { addonChannelsKind, emptySource, isChannelSource, plexLineupName, tv, type Source } from "../livetv/model";
+import {
+  addonChannelsKind,
+  emptySource,
+  isChannelSource,
+  plexLineupName,
+  tv,
+  type Source,
+} from "../livetv/model";
 
 /** The canonical connection editor for provider, playlist and guide sources.
  * Live TV links here and reads the same source records for its lineup. */
@@ -133,59 +140,63 @@ export function IPTVProviders() {
                         <Badge>{t("Priority #{rank}", { rank: channelRank })}</Badge>
                       ) : null}
                       {source.disabled ? <Badge>{t("Disabled")}</Badge> : null}
-                  <Badge>
-                    {source.kind?.startsWith("plugin:")
-                      ? t("Plugin source")
-                      : source.auth?.type === "xtream"
-                        ? t("Xtream Codes login")
-                        : source.hasPlaylist
-                          ? t("M3U playlist")
-                          : t("Guide source")}
-                  </Badge>
-                </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-fg-muted">
-                  {source.useLiveTV !== false ? (
-                    <span>
-                      {source.hasPlaylist === false && source.auth?.type !== "xtream"
-                        ? tn(
-                            source.guideChannelCount ?? 0,
-                            "{count} guide channel",
-                            "{count} guide channels",
-                          )
-                        : tn(source.channelCount ?? 0, "{count} channel", "{count} channels")}
-                    </span>
-                  ) : null}
-                  {source.useVOD ? (
-                    <span>
-                      {t("Movies & shows index")}:{" "}
-                      {tn(source.vodStatus?.movies ?? 0, "{count} movie", "{count} movies")} ·{" "}
-                      {tn(source.vodStatus?.series ?? 0, "{count} show", "{count} shows")}
-                    </span>
-                  ) : null}
-                </div>
-                {source.logins?.length ? (
-                  <details className="text-sm">
-                    <summary className="cursor-pointer text-fg-muted">
-                      {t("Provider account")}
-                    </summary>
-                    <div className="mt-3 space-y-3">
-                      {[{ id: "primary", account: source.account }, ...source.logins].map(
-                        (login, i) => (
-                          <div key={login.id} className="space-y-1">
-                            <p className="font-medium">{t("Login {number}", { number: i + 1 })}</p>
-                            {login.account ? <ProviderAccountCard account={login.account} /> : null}
-                          </div>
-                        ),
-                      )}
+                      <Badge>
+                        {source.kind?.startsWith("plugin:")
+                          ? t("Plugin source")
+                          : source.auth?.type === "xtream"
+                            ? t("Xtream Codes login")
+                            : source.hasPlaylist
+                              ? t("M3U playlist")
+                              : t("Guide source")}
+                      </Badge>
                     </div>
-                  </details>
-                ) : null}
-                {source.lastError || source.vodStatus?.error ? (
-                  <p className="text-sm text-danger">
-                    {t("Provider unavailable; retry scheduled")}
-                  </p>
-                ) : null}
-              </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-fg-muted">
+                      {source.useLiveTV !== false ? (
+                        <span>
+                          {source.hasPlaylist === false && source.auth?.type !== "xtream"
+                            ? tn(
+                                source.guideChannelCount ?? 0,
+                                "{count} guide channel",
+                                "{count} guide channels",
+                              )
+                            : tn(source.channelCount ?? 0, "{count} channel", "{count} channels")}
+                        </span>
+                      ) : null}
+                      {source.useVOD ? (
+                        <span>
+                          {t("Movies & shows index")}:{" "}
+                          {tn(source.vodStatus?.movies ?? 0, "{count} movie", "{count} movies")} ·{" "}
+                          {tn(source.vodStatus?.series ?? 0, "{count} show", "{count} shows")}
+                        </span>
+                      ) : null}
+                    </div>
+                    {source.logins?.length ? (
+                      <details className="text-sm">
+                        <summary className="cursor-pointer text-fg-muted">
+                          {t("Provider account")}
+                        </summary>
+                        <div className="mt-3 space-y-3">
+                          {[{ id: "primary", account: source.account }, ...source.logins].map(
+                            (login, i) => (
+                              <div key={login.id} className="space-y-1">
+                                <p className="font-medium">
+                                  {t("Login {number}", { number: i + 1 })}
+                                </p>
+                                {login.account ? (
+                                  <ProviderAccountCard account={login.account} />
+                                ) : null}
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      </details>
+                    ) : null}
+                    {source.lastError || source.vodStatus?.error ? (
+                      <p className="text-sm text-danger">
+                        {t("Provider unavailable; retry scheduled")}
+                      </p>
+                    ) : null}
+                  </div>
                   <Button
                     variant="outline"
                     size="sm"

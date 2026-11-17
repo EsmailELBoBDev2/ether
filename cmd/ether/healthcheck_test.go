@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,10 @@ import (
 )
 
 func TestHealthcheckSubcommand(t *testing.T) {
-	var mode string
+	var modeMu sync.Mutex
+	var modeValue string
+	setMode := func(m string) { modeMu.Lock(); modeValue = m; modeMu.Unlock() }
+	getMode := func() string { modeMu.Lock(); defer modeMu.Unlock(); return modeValue }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ether/api/health" {
 			http.NotFound(w, r)
@@ -25,7 +29,7 @@ func TestHealthcheckSubcommand(t *testing.T) {
 		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Ether-Admin-Token") != "" {
 			t.Errorf("unexpected auth header on health probe: %v", r.Header)
 		}
-		switch mode {
+		switch getMode() {
 		case "ok":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"ok":true,"version":"test","authRequired":true}`))
@@ -55,7 +59,7 @@ func TestHealthcheckSubcommand(t *testing.T) {
 	t.Setenv("ETHER_PORT", "")
 
 	// Healthy server: exit 0 and zero output on stdout/stderr, without auth.
-	mode = "ok"
+	setMode("ok")
 	var stdout, stderr bytes.Buffer
 	if code := runHealthcheck(nil, config.DefaultDataDir(), &stdout, &stderr); code != 0 {
 		t.Fatalf("healthy exit = %d, want 0 (stderr=%q)", code, stderr.String())
@@ -65,7 +69,7 @@ func TestHealthcheckSubcommand(t *testing.T) {
 	}
 
 	// Starting / 503: exit 1.
-	mode = "starting"
+	setMode("starting")
 	stdout.Reset()
 	stderr.Reset()
 	if code := runHealthcheck(nil, config.DefaultDataDir(), &stdout, &stderr); code != 1 {
@@ -73,7 +77,7 @@ func TestHealthcheckSubcommand(t *testing.T) {
 	}
 
 	// Exceeding timeout: exit 1.
-	mode = "slow"
+	setMode("slow")
 	stdout.Reset()
 	stderr.Reset()
 	if code := runHealthcheck([]string{"--timeout", "40ms"}, config.DefaultDataDir(), &stdout, &stderr); code != 1 {
@@ -81,7 +85,7 @@ func TestHealthcheckSubcommand(t *testing.T) {
 	}
 
 	// ETHER_PORT overrides config.json port, and missing data dir is not created.
-	mode = "ok"
+	setMode("ok")
 	missingDir := filepath.Join(dir, "does-not-exist")
 	t.Setenv("ETHER_DATA_DIR", missingDir)
 	t.Setenv("ETHER_PORT", portStr)

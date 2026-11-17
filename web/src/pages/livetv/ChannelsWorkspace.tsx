@@ -1,16 +1,10 @@
-import {
-  Badge,
-  Button,
-  Checkbox,
-  Switch,
-  cn,
-  confirmDialog,
-} from "@braedonsaunders/appkit-ui";
+import { Badge, Button, Checkbox, Switch, cn, confirmDialog } from "@braedonsaunders/appkit-ui";
 import { GripVertical, Pencil, Plus, Trash2, Tv } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { localized, t, tn } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { uuid } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
 import { LIVE_APPS, type LiveApp, liveAppChipLabel, liveAppNote } from "./ChannelApps";
@@ -108,6 +102,7 @@ export function ChannelsWorkspace({
   onUpdateChannels: (ids: string[], patch: ChannelPatch) => Promise<boolean>;
   onReorderSources?: (ids: string[]) => Promise<void>;
 }) {
+  const { locale } = useLocale();
   const [selectedApp, setSelectedApp] = useState<"all" | LiveApp>("all");
   const [statusFilter, setStatusFilter] = useState<ChannelStatusFilter>("all");
   const [scope, setScope] = useState<TreeScope>({ kind: "every" });
@@ -591,7 +586,8 @@ export function ChannelsWorkspace({
   };
 
   const activeOwnerGroup = useMemo(
-    () => (scope.kind === "ownerGroup" ? (ownerGroups.find((x) => x.id === scope.id) ?? null) : null),
+    () =>
+      scope.kind === "ownerGroup" ? (ownerGroups.find((x) => x.id === scope.id) ?? null) : null,
     [scope, ownerGroups],
   );
 
@@ -612,7 +608,7 @@ export function ChannelsWorkspace({
         return `${sname} › ${scope.group || t("Ungrouped")}`;
       }
     }
-  }, [scope, ownerGroups, sourceNameById]);
+  }, [scope, ownerGroups, sourceNameById, locale]);
 
   const totalChannels = all.length;
   const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - 8);
@@ -712,7 +708,7 @@ export function ChannelsWorkspace({
       );
     }
     return base;
-  }, [selectedApp, statusCounts]);
+  }, [selectedApp, statusCounts, locale]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
@@ -964,7 +960,9 @@ export function ChannelsWorkspace({
             .map(([sid, entry], _, activeSourceEntries) => {
               const sname = sourceNameById.get(sid) || sid || "IPTV";
               const sourceActive = sameScope(scope, { kind: "source", sourceId: sid });
-              const canDragSource = Boolean(onReorderSources && sid && activeSourceEntries.length > 1);
+              const canDragSource = Boolean(
+                onReorderSources && sid && activeSourceEntries.length > 1,
+              );
               return (
                 <div key={sid || "__default__"} className="mt-3 space-y-0.5">
                   <div

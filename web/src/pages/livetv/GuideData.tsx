@@ -436,79 +436,80 @@ export function GuideWorkbench({
   return (
     <div className="mx-auto max-w-5xl space-y-5 p-3 sm:p-6">
       {source || showCoverageCard ? (
-      <section
-        className={cn(
-          "relative overflow-hidden rounded-2xl border border-border bg-surface shadow-xs",
-          "px-4 py-3",
-        )}
-      >
-        {source ? (
-          <div className="relative flex flex-wrap items-center gap-4">
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-info/15 text-info">
-              <CalendarRange size={18} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-                {source.kind === "plex" ? t("Plex guide") : t("XMLTV guide")}
-              </p>
-              <h2 className="mt-0.5 truncate text-base font-semibold tracking-tight text-fg">
-                {sourceTitle(source)}
-              </h2>
-              <p className={cn("mt-0.5 text-sm", status.warn ? "text-warning" : "text-fg-muted")}>
-                {status.text}
-                {source.updatedAt
-                  ? ` · ${t("refreshed {when}", { when: relativeTime(source.updatedAt) })}`
-                  : ""}
-              </p>
+        <section
+          className={cn(
+            "relative overflow-hidden rounded-2xl border border-border bg-surface shadow-xs",
+            "px-4 py-3",
+          )}
+        >
+          {source ? (
+            <div className="relative flex flex-wrap items-center gap-4">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-info/15 text-info">
+                <CalendarRange size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+                  {source.kind === "plex" ? t("Plex guide") : t("XMLTV guide")}
+                </p>
+                <h2 className="mt-0.5 truncate text-base font-semibold tracking-tight text-fg">
+                  {sourceTitle(source)}
+                </h2>
+                <p className={cn("mt-0.5 text-sm", status.warn ? "text-warning" : "text-fg-muted")}>
+                  {status.text}
+                  {source.updatedAt
+                    ? ` · ${t("refreshed {when}", { when: relativeTime(source.updatedAt) })}`
+                    : ""}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => void refresh()} disabled={refreshing}>
+                  <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />{" "}
+                  {t("Refresh")}
+                </Button>
+                <Button variant="outline" onClick={() => onEditSource(source.id)}>
+                  <Pencil size={14} /> {t("Edit")}
+                </Button>
+              </div>
+              {source.lastError ? (
+                <p
+                  role="alert"
+                  className="relative w-full rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
+                >
+                  {sourceImportError(source.lastError)}
+                </p>
+              ) : null}
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => void refresh()} disabled={refreshing}>
-                <RefreshCw size={14} className={cn(refreshing && "animate-spin")} /> {t("Refresh")}
-              </Button>
-              <Button variant="outline" onClick={() => onEditSource(source.id)}>
-                <Pencil size={14} /> {t("Edit")}
-              </Button>
-            </div>
-            {source.lastError ? (
-              <p
-                role="alert"
-                className="relative w-full rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
-              >
-                {sourceImportError(source.lastError)}
+          ) : (
+            <div className="relative flex flex-wrap items-center gap-x-4 gap-y-2">
+              <p className="text-2xl font-semibold tracking-tight tabular-nums text-fg">
+                {coverage === null ? "—" : `${Math.round(pct * 100)}%`}
               </p>
-            ) : null}
-          </div>
-        ) : (
-          <div className="relative flex flex-wrap items-center gap-x-4 gap-y-2">
-            <p className="text-2xl font-semibold tracking-tight tabular-nums text-fg">
-              {coverage === null ? "—" : `${Math.round(pct * 100)}%`}
-            </p>
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <p className="truncate text-sm text-fg-muted">
-                <span className="text-fg">{t("of live IPTV channels have listings")}</span>
-                {" · "}
-                {coverage === null
-                  ? t("Checking which channels have listings…")
-                  : missing.length
-                    ? t("{missing} of {total} need a guide. Virtual channels build their own.", {
-                        missing: formatNumber(missing.length),
-                        total: formatNumber(live.length),
-                      })
-                    : t("Every live channel has listings. Virtual channels build their own.")}
-              </p>
-              <div className="h-1.5 overflow-hidden rounded-full bg-bg-subtle">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-all",
-                    pct >= 0.999 ? "bg-success" : "bg-gradient-to-r from-primary to-info",
-                  )}
-                  style={{ width: `${pct * 100}%` }}
-                />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <p className="truncate text-sm text-fg-muted">
+                  <span className="text-fg">{t("of live IPTV channels have listings")}</span>
+                  {" · "}
+                  {coverage === null
+                    ? t("Checking which channels have listings…")
+                    : missing.length
+                      ? t("{missing} of {total} need a guide. Virtual channels build their own.", {
+                          missing: formatNumber(missing.length),
+                          total: formatNumber(live.length),
+                        })
+                      : t("Every live channel has listings. Virtual channels build their own.")}
+                </p>
+                <div className="h-1.5 overflow-hidden rounded-full bg-bg-subtle">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-all",
+                      pct >= 0.999 ? "bg-success" : "bg-gradient-to-r from-primary to-info",
+                    )}
+                    style={{ width: `${pct * 100}%` }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
       ) : null}
 
       {proposals !== null ? (

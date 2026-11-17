@@ -34,10 +34,7 @@ function dropPhpTail(segs: string[]): string[] {
 
 function validCreds(username: string | null, password: string | null): username is string {
   return Boolean(
-    username &&
-      password &&
-      username !== REDACTED_SECRET &&
-      password !== REDACTED_SECRET,
+    username && password && username !== REDACTED_SECRET && password !== REDACTED_SECRET,
   );
 }
 

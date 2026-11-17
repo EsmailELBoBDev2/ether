@@ -3069,7 +3069,7 @@
   },
   {
     "path": "internal/plugins/wasm/wasm.go#HostResultBytes",
-    "code": "// HostResultBytes returns the maximum JSON host-result envelope for a plugin\n// with the given memory grant, including base64 expansion of DataReadBytes\n// plus 1 MiB for JSON framing.\nfunc HostResultBytes(memoryBytes uint64) int64 {\n\treadCap := DataReadBytes(memoryBytes)\n\tenvelope := ((readCap + 2) / 3) * 4 + (1 \u003c\u003c 20)\n\tif envelope \u003c MaxHostResultBytes {\n\t\treturn MaxHostResultBytes\n\t}\n\treturn envelope\n}"
+    "code": "// HostResultBytes returns the maximum JSON host-result envelope for a plugin\n// with the given memory grant, including base64 expansion of DataReadBytes\n// plus 1 MiB for JSON framing.\nfunc HostResultBytes(memoryBytes uint64) int64 {\n\treadCap := DataReadBytes(memoryBytes)\n\tenvelope := ((readCap+2)/3)*4 + (1 \u003c\u003c 20)\n\tif envelope \u003c MaxHostResultBytes {\n\t\treturn MaxHostResultBytes\n\t}\n\treturn envelope\n}"
   },
   {
     "path": "internal/plugins/wasm/wasm.go#unitChargerKey.fields.md",

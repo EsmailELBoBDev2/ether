@@ -314,11 +314,11 @@ export function handle(req: any) {
 			t.Fatalf("hosted big read failed: %v", err)
 		}
 		var out struct {
-			ReadBytes  int64   `json:"readBytes"`
-			SingleLen  int     `json:"singleLen"`
-			FirstByte  int     `json:"firstByte"`
-			LastByte   int     `json:"lastByte"`
-			BatchSizes []int   `json:"batchSizes"`
+			ReadBytes  int64 `json:"readBytes"`
+			SingleLen  int   `json:"singleLen"`
+			FirstByte  int   `json:"firstByte"`
+			LastByte   int   `json:"lastByte"`
+			BatchSizes []int `json:"batchSizes"`
 		}
 		if err := json.Unmarshal(resp.Body, &out); err != nil {
 			t.Fatalf("unmarshal guest response %s: %v", resp.Body, err)
@@ -500,4 +500,3 @@ export function handle(req: any) {
 		t.Fatalf("Hosted SDK archive.open regression: %v/call exceeds 25ms threshold", sdkOpenPerCall)
 	}
 }
-

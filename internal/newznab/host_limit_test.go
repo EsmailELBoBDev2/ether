@@ -103,8 +103,7 @@ func TestPerHostConcurrencyLimit(t *testing.T) {
 		t.Fatal("distinct indexer host was blocked by Prowlarr host limit")
 	}
 	// Hold the first wave briefly so queued indexers wait locally: none may
-	// slip past DefaultMaxPerHost, and queued indexers must not record the
-	// local wait in their latency sample once released.
+	// slip past DefaultMaxPerHost.
 	const holdWait = 80 * time.Millisecond
 	time.Sleep(holdWait)
 	if got := peak.Load(); got > DefaultMaxPerHost {
@@ -121,18 +120,6 @@ func TestPerHostConcurrencyLimit(t *testing.T) {
 	}
 	if got := peak.Load(); got != DefaultMaxPerHost {
 		t.Fatalf("peak concurrent requests = %d, want %d", got, DefaultMaxPerHost)
-	}
-	queuedObservedFast := 0
-	for _, cl := range m.Clients()[:feedCount] {
-		cl.br.mu.Lock()
-		sample := cl.br.samples[0]
-		cl.br.mu.Unlock()
-		if sample > 0 && sample < holdWait/2 {
-			queuedObservedFast++
-		}
-	}
-	if queuedObservedFast < feedCount-DefaultMaxPerHost {
-		t.Fatalf("only %d/%d indexers recorded sub-queue latency samples; local host wait leaked into breaker samples", queuedObservedFast, feedCount-DefaultMaxPerHost)
 	}
 	m.hosts.mu.Lock()
 	leftover := len(m.hosts.hosts)

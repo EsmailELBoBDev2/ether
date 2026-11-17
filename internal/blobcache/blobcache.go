@@ -560,10 +560,10 @@ func newEmptyNamespace(c *Cache, key string, quota Quota) *Namespace {
 		key:        key,
 		libraryKey: key,
 		dir:        filepath.Join(c.dir, key),
-		quota:   quota,
-		blobs:   make(map[string]*blobEntry),
-		keys:    make(map[string]string),
-		flights: make(map[string]*putFlight),
+		quota:      quota,
+		blobs:      make(map[string]*blobEntry),
+		keys:       make(map[string]string),
+		flights:    make(map[string]*putFlight),
 	}
 }
 
@@ -1140,8 +1140,8 @@ func (s *fileSource) Seek(offset int64, whence int) (int64, error) {
 	return s.f.Seek(offset, whence)
 }
 
-func (s *fileSource) Size() int64  { return s.size }
-func (s *fileSource) Name() string { return s.name }
+func (s *fileSource) Size() int64        { return s.size }
+func (s *fileSource) Name() string       { return s.name }
 func (s *fileSource) MIME() string       { return s.mime }
 func (s *fileSource) LibraryKey() string { return s.libraryKey }
 func (s *fileSource) Close() error       { return s.f.Close() }

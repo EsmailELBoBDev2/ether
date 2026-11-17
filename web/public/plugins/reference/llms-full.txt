@@ -91,7 +91,7 @@ Every package has `manifest.json`. `id`, `version`, and `name` are required. The
 ## Reading the generated fields
 The schema table lists required fields **within their parent object**, constraints, enum values, and explicitly declared defaults. An optional parent need not be present. Absence of a schema default does not imply zero is the runtime default: consult the Go type comments and validator below. Go field tables describe serialization, not validation requiredness. `omitempty` never proves that a field is optional for your chosen capability.
 
-Network permissions, contribution metadata, settings references, schedules, and runtime entry points are validated together. Errors identify the field to fix. See [Capabilities](/plugins/reference/capabilities), [Settings](/plugins/reference/settings), and [Publishing](/plugins/reference/publishing).
+Network permissions, contribution metadata, settings references, schedules, and runtime entry points are validated together. For `ether.schedule`, the first run happens right after install (within one scheduler tick once enabled). Later runs resume from the last dispatch plus `every` across server restarts, including failed attempts; overdue entries run on the next tick. Due entries run sequentially through the existing plugin call path, including `/ether/job/` deadlines. Errors identify the field to fix. See [Capabilities](/plugins/reference/capabilities), [Settings](/plugins/reference/settings), and [Publishing](/plugins/reference/publishing).
 
 ## Capabilities & contribution routes
 
@@ -862,7 +862,7 @@ synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
 `cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
-`archive.list(blob)` returns `[{index, name, size}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
+`archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
 without loading all compressed bytes. `archive.open(blob, memberIndex,
 {offset, length})` returns at most 1 MiB from the **uncompressed** member.
 Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
@@ -874,11 +874,19 @@ The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList` an
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Member names are limited to 1024 bytes. ZIP supports Store/Deflate and ZIP64;
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`.
+Their stored names are identifiers only: opening one returns a typed
+`UnsafeArchiveMemberError` (a descriptive error through hosted/remote calls),
+while other members remain readable. Empty names, names over 1024 bytes, NUL,
+backslashes, absolute paths (including drive-rooted paths), and traversal or
+noncanonical path segments are unsafe. Colons in ordinary member names are
+allowed: reads use member indexes and never write stored names to disk.
+These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-unsafe paths, links and other special files are refused. Directories may appear
+links and other special files are refused. Unsafe paths are listed but cannot
+be opened. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -940,6 +948,21 @@ Viewer browse/search/playback calls retain tight budgets: `/stream/`, `/catalog/
 route/caller deadlines. Ranking budgets stay unchanged. Administrative setup,
 actions, tools, events and jobs use owner grants. Health/configuration/view/options
 keep short protocol deadlines. See the SDK README for exact fields and APIs.
+
+### Pending resolve and match replies
+
+Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
+`job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
+25 seconds total per Play, and keeps each invocation within five seconds.
+Pending is neutral for health. When the total expires the item is not available
+yet; this result is not saved as a negative resolution. A job receives the
+original request body, uses promoted deadlines and continuation replies, and
+is deduplicated per plugin/kind/item. Job completion wakes the next resolve.
+
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
+A miss returns pending while a bounded host worker streams digests without
+storing bytes; the next resolve reads the cached result. See the worked example
+and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).
 
 
 ## Source: internal/config/plugins.go#Plugins.fields.md
@@ -1339,6 +1362,9 @@ type KindMatchScore struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `pending` | `bool` | may be omitted (see validation for conditions) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
 | `matches` | `[]KindMatchScore` | emitted (validation may require a value) |  |
 
 
@@ -1347,7 +1373,10 @@ type KindMatchScore struct {
 ``````
 // KindMatchResponse is the response from POST /ether/v1/kinds/{kind}/match (spec §7).
 type KindMatchResponse struct {
-	Matches []KindMatchScore `json:"matches"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Matches   []KindMatchScore `json:"matches"`
 }
 ``````
 
@@ -1598,6 +1627,9 @@ type KindResolveRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `pending` | `bool` | may be omitted (see validation for conditions) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
 | `sources` | `[]PlayableSource` | emitted (validation may require a value) |  |
 | `ttlSec` | `int` | may be omitted (see validation for conditions) |  |
 
@@ -1608,8 +1640,11 @@ type KindResolveRequest struct {
 // KindResolveResponse is the response returned by a plugin's kind_resolve
 // handler (spec §4.1).
 type KindResolveResponse struct {
-	Sources []PlayableSource `json:"sources"`
-	TTLSec  int              `json:"ttlSec,omitempty"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Sources   []PlayableSource `json:"sources"`
+	TTLSec    int              `json:"ttlSec,omitempty"`
 }
 ``````
 
@@ -1667,6 +1702,7 @@ type actionJob struct {
 	mu     sync.Mutex
 	status ActionJobStatus
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 ``````
 
@@ -1692,24 +1728,36 @@ func (j *actionJob) finish(state, reason string) {
 // startActionJob runs only owner-started work. At most two jobs run per plugin;
 // at most sixteen route snapshots are retained per plugin, including running jobs.
 func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
+	_, err := m.startResolverJob(pluginID, body, nil, "")
+	return err
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*Manager.startResolverJob
+
+``````
+func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessage, suffix string) (*actionJob, error) {
 	var out struct {
 		Job string `json:"job"`
 	}
 	if json.Unmarshal(body, &out) != nil || out.Job == "" {
-		return nil
+		return nil, nil
 	}
 	path := out.Job
 	if !strings.HasPrefix(path, "/ether/job/") {
 		path = "/ether/job/" + strings.TrimPrefix(path, "/")
 	}
 	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
-		return nil
+		return nil, nil
 	}
 	key := pluginID + "|" + path
+	if suffix != "" {
+		key = pluginID + "|resolver" + suffix
+	}
 	m.jobsMu.Lock()
 	defer m.jobsMu.Unlock()
 	if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
-		return nil
+		return old.(*actionJob), nil
 	}
 	active, count := 0, 0
 	oldestKey := ""
@@ -1728,26 +1776,33 @@ func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
 		return true
 	})
 	if active >= 2 {
-		return fmt.Errorf("two background jobs are already running; wait for one to finish")
+		return nil, fmt.Errorf("two background jobs are already running; wait for one to finish")
 	}
 	if _, exists := m.jobs.Load(key); !exists && count >= 16 {
 		m.jobs.Delete(oldestKey)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.runtimeCeilings(pluginID).deadline)
-	j := &actionJob{cancel: cancel, status: ActionJobStatus{Path: path, State: "running", Started: time.Now().UTC(), TotalLimitMS: m.runtimeCeilings(pluginID).deadline.Milliseconds(), AttemptLimit: ActionJobAttempts}}
+	j := &actionJob{cancel: cancel, done: make(chan struct{}), status: ActionJobStatus{Path: path, State: "running", Started: time.Now().UTC(), TotalLimitMS: m.runtimeCeilings(pluginID).deadline.Milliseconds(), AttemptLimit: ActionJobAttempts}}
 	m.jobs.Store(key, j)
 	go func() {
 		runtime.LockOSThread() // Do not unlock: this lowered-priority thread is discarded on return.
 		lowerJobPriority()
 		defer cancel()
+		defer close(j.done)
 		err := runActionJob(ctx, j, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
 			if err := wasm.WaitBackground(ctx, m.deps.Busy); err != nil {
 				return Response{}, err
 			}
-			payload, _ := json.Marshal(struct {
-				Continuation json.RawMessage `json:"continuation,omitempty"`
-			}{token})
-			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: payload})
+			payload := map[string]json.RawMessage{}
+			_ = json.Unmarshal(initial, &payload)
+			if payload == nil {
+				payload = map[string]json.RawMessage{}
+			}
+			if len(token) > 0 {
+				payload["continuation"] = token
+			}
+			encoded, _ := json.Marshal(payload)
+			return m.Call(ctx, pluginID, Request{Method: "POST", Path: path, Body: encoded})
 		})
 		if err != nil {
 			state := "error"
@@ -1764,7 +1819,7 @@ func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
 			j.finish("done", "")
 		}
 	}()
-	return nil
+	return j, nil
 }
 ``````
 
@@ -1887,9 +1942,12 @@ func (m *Manager) handleCancelActionJob(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, 400, "invalid", "The request was not understood.", nil)
 		return
 	}
-	if job, ok := m.jobs.Load(r.PathValue("id") + "|" + req.Path); ok {
-		job.(*actionJob).cancel()
-	}
+	m.jobs.Range(func(k, v any) bool {
+		if strings.HasPrefix(k.(string), r.PathValue("id")+"|") && v.(*actionJob).snapshot().Path == req.Path {
+			v.(*actionJob).cancel()
+		}
+		return true
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 ``````
@@ -3061,10 +3119,33 @@ type Request struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#FrontendBlob.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `libraryKey` | `string` | emitted (validation may require a value) |  |
+| `ref` | `string` | emitted (validation may require a value) |  |
+| `memberIndex` | `*int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FrontendBlob
+
+``````
+// FrontendBlob asks the host to serve cached bytes without passing them through
+// guest memory. LibraryKey scopes Ref to an owned, viewer-visible kind library.
+// MemberIndex selects an archive member; nil serves the entire blob.
+type FrontendBlob struct {
+	LibraryKey  string `json:"libraryKey"`
+	Ref         string `json:"ref"`
+	MemberIndex *int   `json:"memberIndex,omitempty"`
+}
+``````
+
 ## Source: internal/plugins/contract.go#Response.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `blob` | `*FrontendBlob` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -3075,6 +3156,7 @@ type Request struct {
 ``````
 // Response is a plugin's answer to a Request.
 type Response struct {
+	Blob    *FrontendBlob     `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -3212,6 +3294,7 @@ type Host interface {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) |  |
 | `method` | `string` | emitted (validation may require a value) |  |
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
@@ -3223,10 +3306,11 @@ type Host interface {
 ``````
 // FetchRequest is one plugin outbound HTTP call.
 type FetchRequest struct {
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    []byte            `json:"body,omitempty"`
+	TimeoutMS int64             `json:"timeoutMs,omitempty"`
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      []byte            `json:"body,omitempty"`
 }
 ``````
 
@@ -4312,6 +4396,7 @@ func (m *Manager) DeliverOutbox(ctx context.Context, pluginID string) error {
 // every_node plugins run everywhere. Health checks run on every node.
 func (m *Manager) Run(ctx context.Context) {
 	defer m.cancelActionJobs("")
+	defer m.cancelRemoteHashes("")
 	defer func() {
 		m.hashMu.Lock()
 		defer m.hashMu.Unlock()
@@ -4398,15 +4483,34 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 			m.mu.Lock()
 			next, seen := m.nextRun[key]
 			if !seen {
-				m.nextRun[key] = now.Add(every)
-				m.mu.Unlock()
-				continue
+				last, err := m.store.scheduleLastRun(ctx, r.ID, job.Call)
+				if err != nil {
+					m.mu.Unlock()
+					m.log.Warn("plugin schedule: read last run", "plugin", r.ID, "call", job.Call, "err", err)
+					continue
+				}
+				if !last.IsZero() {
+					next = last.Add(every)
+					m.nextRun[key] = next
+				}
 			}
 			if now.Before(next) {
 				m.mu.Unlock()
 				continue
 			}
-			m.nextRun[key] = now.Add(every)
+			if ctx.Err() != nil {
+				m.mu.Unlock()
+				return
+			}
+			// Record dispatch before calling: failures (or a restart during a
+			// long job) must not produce a first-run storm on the next boot.
+			dispatched := m.now()
+			if err := m.store.markScheduleRun(ctx, r.ID, job.Call, dispatched); err != nil {
+				m.mu.Unlock()
+				m.log.Warn("plugin schedule: save last run", "plugin", r.ID, "call", job.Call, "err", err)
+				continue
+			}
+			m.nextRun[key] = dispatched.Add(every)
 			m.mu.Unlock()
 			_, _ = m.Call(ctx, r.ID, Request{Method: "POST", Path: job.Call})
 		}
@@ -4893,6 +4997,9 @@ func fetchError(host string, err error) error {
 	case errors.Is(err, safefetch.ErrBlocked):
 		return fmt.Errorf("%w: %s is not allowed (%w)", ErrFetchFailed, host, safefetch.ErrBlocked)
 	}
+	if reason == "timed out" {
+		return fmt.Errorf("%w: %s: %w", ErrFetchFailed, host, context.DeadlineExceeded)
+	}
 	return fmt.Errorf("%w: %s: %s", ErrFetchFailed, host, reason)
 }
 ``````
@@ -4962,6 +5069,11 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 
 ``````
 func (h *host) HTTPFetch(ctx context.Context, req FetchRequest) (FetchResponse, error) {
+	if req.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
 	resp, err := h.openFetch(ctx, req)
 	if err != nil {
 		return FetchResponse{}, err
@@ -5664,12 +5776,70 @@ func archiveMemory(l RuntimeLimits) int64 {
 }
 ``````
 
-## Source: internal/plugins/host_archive.go#safeArchiveName
+## Source: internal/plugins/host_archive.go#UnsafeArchiveMemberError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#UnsafeArchiveMemberError
 
 ``````
-func safeArchiveName(name string) bool {
+// UnsafeArchiveMemberError refuses a single member without hiding its directory.
+// Name is an archive identifier only, never an extraction path.
+type UnsafeArchiveMemberError struct {
+	Index  int
+	Name   string
+	Reason string
+}
+``````
+
+## Source: internal/plugins/host_archive.go#*UnsafeArchiveMemberError.Error
+
+``````
+func (e *UnsafeArchiveMemberError) Error() string {
+	return fmt.Sprintf("plugins: unsafe archive member %d %q: %s", e.Index, e.Name, e.Reason)
+}
+``````
+
+## Source: internal/plugins/host_archive.go#archiveNameReason
+
+``````
+func archiveNameReason(name string) string {
 	name = strings.TrimSuffix(name, "/")
-	return name != "" && len(name) <= 1024 && !strings.ContainsAny(name, "\\:\x00") && !strings.HasPrefix(name, "/") && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../")
+	switch {
+	case name == "":
+		return "empty name"
+	case len(name) > 1024:
+		return "name exceeds 1024 bytes"
+	case strings.ContainsRune(name, '\x00'):
+		return "name contains NUL"
+	case strings.ContainsRune(name, '\\'):
+		return "name contains a backslash"
+	case strings.HasPrefix(name, "/") || (len(name) >= 3 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) && name[1:3] == ":/"):
+		return "absolute path"
+	case path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../"):
+		return "name contains traversal or noncanonical path segments"
+	}
+	// Members are streamed by index; a colon is never used in a disk path.
+	return ""
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataArchiveDirectory.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#dataArchiveDirectory
+
+``````
+// dataArchiveDirectory retains metadata only, never a reader, budget or context.
+type dataArchiveDirectory struct {
+	members []ArchiveMember
+	bind    func(context.Context, *archiveIOBudget, RuntimeLimits) func(int) (io.ReadCloser, error)
+	bytes   int64
 }
 ``````
 
@@ -5677,6 +5847,19 @@ func safeArchiveName(name string) bool {
 
 ``````
 func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*dataArchive, error) {
+	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: l.FetchBytes}
+	d, err := parseDataArchive(ctx, rc, ra, l)
+	if err != nil {
+		return nil, err
+	}
+	return &dataArchive{members: d.members, open: d.bind(ctx, ra, l)}, nil
+}
+``````
+
+## Source: internal/plugins/host_archive.go#parseDataArchive
+
+``````
+func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget, l RuntimeLimits) (*dataArchiveDirectory, error) {
 	size, err := rc.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -5688,13 +5871,12 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 	if memory < 1<<20 {
 		return nil, fmt.Errorf("plugins: archive memory grant too small")
 	}
-	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: l.FetchBytes}
 	var sig [8]byte
 	if _, err = ra.ReadAt(sig[:], 0); err != nil {
 		return nil, err
 	}
 	format := container.Detect(sig[:])
-	a := &dataArchive{members: make([]ArchiveMember, 0)}
+	a := &dataArchiveDirectory{members: make([]ArchiveMember, 0)}
 	switch format {
 	case container.Format7z:
 		files, e := container.List7zData(ctx, ra, size, container.Data7zLimits{MemoryBytes: memory, ExpandedBytes: l.ArchiveExpandedBytes, Members: l.ArchiveMembers})
@@ -5702,14 +5884,16 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 			return nil, e
 		}
 		for i, f := range files {
-			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.Size)})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.Name, Size: uint64(f.Size)})
 		}
-		a.open = func(i int) (io.ReadCloser, error) {
-			r, e := container.Open7zData(ra, files[i])
-			if e != nil {
-				return nil, e
+		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+			return func(i int) (io.ReadCloser, error) {
+				r, e := container.Open7zData(ctx, ra, files[i])
+				if e != nil {
+					return nil, e
+				}
+				return io.NopCloser(r), nil
 			}
-			return io.NopCloser(r), nil
 		}
 	case container.FormatRAR4, container.FormatRAR5:
 		// Header-only walk: listing a solid RAR never inflates earlier members.
@@ -5723,7 +5907,7 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 		}
 		var solidPacked, solidExpanded int64
 		for i, f := range v.Files {
-			if f.SplitBefore || f.SplitAfter || f.Encrypted || f.NonRegular || f.UnsafeName || f.UnpackedSize < 0 {
+			if f.SplitBefore || f.SplitAfter || f.Encrypted || f.NonRegular || f.UnpackedSize < 0 {
 				return nil, fmt.Errorf("plugins: split, encrypted or unsupported RAR member")
 			}
 			if !f.Solid {
@@ -5737,71 +5921,195 @@ func openDataArchive(ctx context.Context, rc io.ReadSeeker, l RuntimeLimits) (*d
 			if solidExpanded > 0 && (solidPacked == 0 || (solidPacked <= 1<<53 && solidExpanded > solidPacked*maxArchiveRatio)) {
 				return nil, fmt.Errorf("plugins: RAR member exceeds compression-ratio limit")
 			}
-			a.members = append(a.members, ArchiveMember{i, f.Name, uint64(f.UnpackedSize)})
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.StoredName, Size: uint64(f.UnpackedSize)})
 		}
-		a.open = func(i int) (io.ReadCloser, error) {
-			if v.Files[i].Dir {
-				return nil, fmt.Errorf("plugins: cannot open an archive directory")
-			}
-			r, e := rardecode.NewReader(io.NewSectionReader(ra, 0, size), rardecode.MaxDictionarySize(memory/8), rardecode.BufferSize(4096))
-			if e != nil {
-				return nil, e
-			}
-			// Explicitly consume dependencies under the expanded-byte grant. This also
-			// keeps implicit solid skipping inside the decoder from doing uncounted work.
-			left := l.ArchiveExpandedBytes
-			start := i
-			for start > 0 && v.Files[start].Solid {
-				start--
-			}
-			for j := 0; j <= i; j++ {
-				h, e := r.Next()
+		a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+			return func(i int) (io.ReadCloser, error) {
+				if v.Files[i].Dir {
+					return nil, fmt.Errorf("plugins: cannot open an archive directory")
+				}
+				r, e := rardecode.NewReader(io.NewSectionReader(ra, 0, size), rardecode.MaxDictionarySize(memory/8), rardecode.BufferSize(4096))
 				if e != nil {
 					return nil, e
 				}
-				if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
-					return nil, fmt.Errorf("plugins: inconsistent RAR member")
+				// Explicitly consume dependencies under the expanded-byte grant. This also
+				// keeps implicit solid skipping inside the decoder from doing uncounted work.
+				left := l.ArchiveExpandedBytes
+				start := i
+				for start > 0 && v.Files[start].Solid {
+					start--
 				}
-				if j == i {
-					return io.NopCloser(io.LimitReader(r, h.UnPackedSize)), nil
-				}
-				if j >= start || v.Solid {
-					if h.UnPackedSize > left {
-						return nil, fmt.Errorf("plugins: RAR decode exceeds byte grant")
-					}
-					if _, e = io.CopyN(io.Discard, &boundedDataReader{ctx: ctx, r: r, left: left}, h.UnPackedSize); e != nil {
+				for j := 0; j <= i; j++ {
+					h, e := r.Next()
+					if e != nil {
 						return nil, e
 					}
-					left -= h.UnPackedSize
+					if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
+						return nil, fmt.Errorf("plugins: inconsistent RAR member")
+					}
+					if j == i {
+						return io.NopCloser(io.LimitReader(r, h.UnPackedSize)), nil
+					}
+					if j >= start || v.Solid {
+						if h.UnPackedSize > left {
+							return nil, fmt.Errorf("plugins: RAR decode exceeds byte grant")
+						}
+						if _, e = io.CopyN(io.Discard, &boundedDataReader{ctx: ctx, r: r, left: left}, h.UnPackedSize); e != nil {
+							return nil, e
+						}
+						left -= h.UnPackedSize
+					}
 				}
+				return nil, io.EOF
 			}
-			return nil, io.EOF
 		}
 	default:
-		z, e := openDataZIP(ctx, rc, l)
+		z, e := parseDataZIP(rc, ra, l)
 		if e != nil {
 			return nil, e
 		}
+		files := make([]dataZIPMember, len(z.File))
 		for i, f := range z.File {
-			a.members = append(a.members, ArchiveMember{i, f.Name, f.UncompressedSize64})
-		}
-		a.open = func(i int) (io.ReadCloser, error) {
-			if z.File[i].FileInfo().IsDir() {
-				return nil, fmt.Errorf("plugins: cannot open an archive directory")
+			offset, e := f.DataOffset()
+			if e != nil {
+				return nil, e
 			}
-			return z.File[i].Open()
+			if offset < 0 || offset > size || f.CompressedSize64 > uint64(size-offset) {
+				return nil, zip.ErrFormat
+			}
+			// Descriptor metadata is immutable too; validate it once while
+			// building the index, rather than retaining a zip.File's reader.
+			if f.Flags&8 != 0 {
+				at := offset + int64(f.CompressedSize64)
+				var descriptor [12]byte
+				if _, e := ra.ReadAt(descriptor[:], at); e != nil {
+					return nil, e
+				}
+				crc := binary.LittleEndian.Uint32(descriptor[:])
+				if crc == 0x08074b50 {
+					var rest [4]byte
+					if _, e := ra.ReadAt(rest[:], at+12); e != nil {
+						return nil, e
+					}
+					crc = binary.LittleEndian.Uint32(descriptor[4:])
+				}
+				if crc != f.CRC32 {
+					return nil, zip.ErrChecksum
+				}
+			}
+			files[i] = dataZIPMember{offset: offset, packed: int64(f.CompressedSize64), size: f.UncompressedSize64, crc: f.CRC32, method: f.Method, dir: f.FileInfo().IsDir(), verifyCRC: f.Flags&8 != 0 || f.CRC32 != 0}
+			a.members = append(a.members, ArchiveMember{Index: i, Name: f.Name, Size: f.UncompressedSize64})
+		}
+		a.bind = func(_ context.Context, ra *archiveIOBudget, _ RuntimeLimits) func(int) (io.ReadCloser, error) {
+			return func(i int) (io.ReadCloser, error) { return files[i].open(ra) }
 		}
 	}
 	var total uint64
 	var names int64
-	for _, m := range a.members {
+	for i := range a.members {
+		m := &a.members[i]
+		m.UnsafeReason = archiveNameReason(m.Name)
+		m.Unsafe = m.UnsafeReason != ""
 		names += int64(len(m.Name)) + 256
-		if !safeArchiveName(m.Name) || names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
-			return nil, fmt.Errorf("plugins: unsafe archive member or size exceeds grant")
+		if names > memory/4 || m.Size > uint64(l.ArchiveMemberBytes) || m.Size > uint64(l.ArchiveExpandedBytes)-total {
+			return nil, fmt.Errorf("plugins: archive directory or member size exceeds grant")
 		}
 		total += m.Size
 	}
+	// Conservatively include format tables, slice spare capacity and names. ZIP
+	// comments/extras and raw directory buffers are not retained.
+	a.bytes = 1024 + int64(cap(a.members))*2048 + names*2
+	if a.bytes > maxArchiveDirectory {
+		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
+	}
+	bind := a.bind
+	a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
+		open := bind(ctx, ra, l)
+		return func(i int) (io.ReadCloser, error) {
+			m := a.members[i]
+			if m.Unsafe {
+				return nil, &UnsafeArchiveMemberError{Index: m.Index, Name: m.Name, Reason: m.UnsafeReason}
+			}
+			return open(i)
+		}
+	}
 	return a, nil
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataZIPMember.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#dataZIPMember
+
+``````
+// ZIP member offsets come from the validated immutable central directory. Each
+// open creates a decoder and checksum state over this call's reader only.
+type dataZIPMember struct {
+	offset, packed int64
+	size           uint64
+	crc            uint32
+	method         uint16
+	dir            bool
+	verifyCRC      bool
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataZIPMember.open
+
+``````
+func (f dataZIPMember) open(ra io.ReaderAt) (io.ReadCloser, error) {
+	if f.dir {
+		return nil, fmt.Errorf("plugins: cannot open an archive directory")
+	}
+	var r io.ReadCloser = io.NopCloser(io.NewSectionReader(ra, f.offset, f.packed))
+	if f.method == zip.Deflate {
+		r = flate.NewReader(r)
+	}
+	return &dataZIPChecksum{ReadCloser: r, hash: crc32.NewIEEE(), size: f.size, crc: f.crc, verifyCRC: f.verifyCRC}, nil
+}
+``````
+
+## Source: internal/plugins/host_archive.go#dataZIPChecksum.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_archive.go#dataZIPChecksum
+
+``````
+type dataZIPChecksum struct {
+	io.ReadCloser
+	hash       hash.Hash32
+	read, size uint64
+	crc        uint32
+	verifyCRC  bool
+}
+``````
+
+## Source: internal/plugins/host_archive.go#*dataZIPChecksum.Read
+
+``````
+func (r *dataZIPChecksum) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.read += uint64(n)
+	r.hash.Write(p[:n])
+	if r.read > r.size {
+		return n, zip.ErrFormat
+	}
+	if err == io.EOF {
+		if r.read != r.size {
+			return n, io.ErrUnexpectedEOF
+		}
+		if r.verifyCRC && r.hash.Sum32() != r.crc {
+			return n, zip.ErrChecksum
+		}
+	}
+	return n, err
 }
 ``````
 
@@ -6030,6 +6338,8 @@ func (r seekReaderAt) ReadAt(p []byte, off int64) (int, error) {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `name` | `string` | emitted (validation may require a value) |  |
 | `size` | `uint64` | emitted (validation may require a value) |  |
+| `unsafe` | `bool` | may be omitted (see validation for conditions) | Unsafe names identify members only and must never be used as output paths. |
+| `unsafeReason` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/plugins/host_data.go#ArchiveMember
@@ -6039,6 +6349,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 ``````
 
@@ -6050,6 +6363,15 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if len(grants) > 0 {
 		limits = grants[0]
 	}
+	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
+	return parseDataZIP(rc, ra, limits)
+}
+``````
+
+## Source: internal/plugins/host_data.go#parseDataZIP
+
+``````
+func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (*zip.Reader, error) {
 	directoryCap := min(int64(maxArchiveDirectory), int64(limits.ArchiveMembers)*65536, archiveMemory(limits)/8)
 
 	size, err := rc.Seek(0, io.SeekEnd)
@@ -6059,7 +6381,6 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if size < 22 || size > limits.FetchBytes {
 		return nil, fmt.Errorf("plugins: ZIP size outside limit")
 	}
-	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
 	tailSize := min(size, int64(65557))
 	tail := make([]byte, tailSize)
 	if _, err := ra.ReadAt(tail, size-tailSize); err != nil {
@@ -6136,7 +6457,9 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 		return nil, fmt.Errorf("plugins: ZIP directory not found")
 	}
 	z, err := zip.NewReader(ra, size)
-	if err != nil {
+	// With zipinsecurepath=0, Go still returns the directory alongside this
+	// warning. Names are identifiers here; the per-member guard controls opens.
+	if err != nil && err != zip.ErrInsecurePath {
 		return nil, err
 	}
 	if len(z.File) > limits.ArchiveMembers {
@@ -6145,10 +6468,9 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	var total uint64
 	names := 0
 	for _, f := range z.File {
-		name := strings.TrimSuffix(f.Name, "/")
 		names += len(f.Name)
-		if name == "" || len(f.Name) > 1024 || int64(names) > directoryCap || strings.ContainsAny(name, "\\:\x00") || strings.HasPrefix(name, "/") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
-			return nil, fmt.Errorf("plugins: unsafe ZIP member name")
+		if int64(names) > directoryCap {
+			return nil, fmt.Errorf("plugins: ZIP member names exceed directory grant")
 		}
 		if !f.FileInfo().IsDir() && !f.Mode().IsRegular() {
 			return nil, fmt.Errorf("plugins: unsupported ZIP member type")
@@ -6171,8 +6493,8 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 ## Source: internal/plugins/host_data.go#CallDataHost
 
 ``````
-// CallDataHost is the shared hosted/remote data-service funnel. Only the four
-// named services are accepted; cache access rechecks plugin ownership each call.
+// CallDataHost is the shared hosted/remote data-service funnel. Only named
+// services are accepted; cache access rechecks plugin ownership each call.
 func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage) (json.RawMessage, error) {
 	// Remote callers receive the same maximum I/O deadline as hosted calls.
 	limits := defaultDataLimits()
@@ -6192,7 +6514,22 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		return nil, err
 	}
 	var value any
-	if name == "http.fetchToCache" {
+	if name == "http.hash" {
+		var req HashRequest
+		if len(args) != 1 {
+			return nil, fmt.Errorf("plugins: hash takes one request")
+		}
+		if err = json.Unmarshal(args[0], &req); err != nil {
+			return nil, err
+		}
+		service, ok := h.(interface {
+			HTTPHash(context.Context, HashRequest) (HashResult, error)
+		})
+		if !ok {
+			return nil, ErrUnavailable
+		}
+		value, err = service.HTTPHash(ctx, req)
+	} else if name == "http.fetchToCache" {
 		var req struct {
 			Method     string            `json:"method"`
 			URL        string            `json:"url"`
@@ -6267,7 +6604,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			opt.Offset = 0
 			value, err = readDataRange(ctx, rc, opt)
 		} else {
-			archive, e := openDataArchive(ctx, rc, limits)
+			var archive *dataArchive
+			var e error
+			if owner, ok := h.(interface{ archiveDirectoryCache() *archiveDirectoryCache }); ok {
+				archive, e = owner.archiveDirectoryCache().open(ctx, ref, rc, limits)
+			} else {
+				archive, e = openDataArchive(ctx, rc, limits)
+			}
 			if e != nil {
 				return nil, e
 			}
@@ -6278,6 +6621,9 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
+				if f.Unsafe {
+					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				}
 				if uint64(opt.Offset) > f.Size {
 					return nil, fmt.Errorf("plugins: archive member offset outside range")
 				}
@@ -7161,7 +7507,13 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body}, nil
+	var blob *FrontendBlob
+	if len(resp.Blob) > 0 {
+		if err := json.Unmarshal(resp.Blob, &blob); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
 }
 ``````
 
@@ -7378,7 +7730,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "http.fetchToCache", "cache.read", "archive.list", "archive.open":
+	case "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -7417,6 +7769,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			Body    string            `json:"body"`
 			// BodyBase64 carries a binary request body; it wins over Body.
 			BodyBase64 string `json:"bodyBase64"`
+			TimeoutMS  int64  `json:"timeoutMs"`
 		}
 		if len(args) > 0 {
 			if err := json.Unmarshal(args[0], &req); err != nil {
@@ -7434,7 +7787,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 			body = decoded
 		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body})
+		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body, TimeoutMS: req.TimeoutMS})
 		if err != nil {
 			return nil, mapHostError(err)
 		}
@@ -12574,6 +12927,107 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 }
 ``````
 
+## Source: internal/plugins/pending.go#ResolverTotal
+
+``````
+const ResolverTotal = 25 * time.Second
+``````
+
+## Source: internal/plugins/pending.go#PendingReply.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `pending` | `bool` | emitted (validation may require a value) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/pending.go#PendingReply
+
+``````
+// PendingReply defers a kind resolve or match without recording a failure.
+// RetryInMS is clamped to 250..5000. Job is an optional /ether/job/ route;
+// the host passes the original request body and drives job continuations.
+type PendingReply struct {
+	Pending   bool   `json:"pending"`
+	RetryInMS int64  `json:"retryInMs,omitempty"`
+	Job       string `json:"job,omitempty"`
+}
+``````
+
+## Source: internal/plugins/pending.go#*Manager.Call
+
+``````
+// Call applies the total pending budget to kind resolvers and matchers.
+func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Response, error) {
+	if !strings.HasPrefix(req.Path, "/ether/v1/kinds/") || (!strings.HasSuffix(req.Path, "/resolve") && !strings.HasSuffix(req.Path, "/match")) {
+		return m.callOnce(ctx, pluginID, req)
+	}
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, ResolverTotal)
+	defer cancel()
+	// One job per plugin/kind/item, even across simultaneous Plays. Include the
+	// request body when older callers do not supply an item reference.
+	var identity struct {
+		Item struct {
+			Ref        string `json:"ref"`
+			ExternalID string `json:"id"`
+		} `json:"item"`
+	}
+	_ = json.Unmarshal(req.Body, &identity)
+	item := identity.Item.Ref
+	if item == "" {
+		item = identity.Item.ExternalID
+	}
+	if item == "" {
+		item = string(req.Body)
+	}
+	suffix := fmt.Sprintf("|%x", sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimSuffix(req.Path, "/resolve"), "/match")+"|"+item)))
+	started := false
+	var job *actionJob
+	for {
+		resp, err := m.callOnce(ctx, pluginID, req)
+		if err != nil {
+			if parent.Err() != nil {
+				return Response{}, parent.Err()
+			}
+			if ctx.Err() != nil {
+				return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+			}
+			return resp, err
+		}
+		var pending PendingReply
+		if resp.Status >= 400 || json.Unmarshal(resp.Body, &pending) != nil || !pending.Pending {
+			return resp, nil
+		}
+		if !started && strings.HasPrefix(pending.Job, "/ether/job/") {
+			job, err = m.startResolverJob(pluginID, resp.Body, req.Body, suffix)
+			if err != nil {
+				return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+			}
+			started = true
+		}
+		var done <-chan struct{}
+		if job != nil {
+			done = job.done
+		}
+		timer := time.NewTimer(time.Duration(max(int64(250), min(int64(5000), pending.RetryInMS))) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if parent.Err() != nil {
+				return Response{}, parent.Err()
+			}
+			return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+		case <-done:
+			timer.Stop()
+			job = nil
+		case <-timer.C:
+		}
+	}
+}
+``````
+
 ## Source: internal/plugins/remote/host.go#Host
 
 ``````
@@ -13297,6 +13751,354 @@ func (h *HostHandler) dataCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#RemoteHashMaxBytes
+
+``````
+const RemoteHashMaxBytes int64 = 64 << 30
+``````
+
+## Source: internal/plugins/remote_hash.go#RemoteHashDailyBytes
+
+``````
+const RemoteHashDailyBytes int64 = 50 << 30
+``````
+
+## Source: internal/plugins/remote_hash.go#remoteHashFresh
+
+``````
+const remoteHashFresh = 5 * time.Minute
+``````
+
+## Source: internal/plugins/remote_hash.go#init
+
+``````
+func init() {
+	store.Register("plugins", 8, `
+CREATE TABLE plugins_remote_hashes(plugin TEXT NOT NULL,urlkey TEXT NOT NULL,etag TEXT NOT NULL,modified TEXT NOT NULL,size INTEGER NOT NULL,value BLOB NOT NULL,checked INTEGER NOT NULL,PRIMARY KEY(plugin,urlkey));
+CREATE INDEX plugins_remote_hashes_age ON plugins_remote_hashes(plugin,checked);
+CREATE TABLE plugins_remote_hash_budget(plugin TEXT PRIMARY KEY,day TEXT NOT NULL,bytes INTEGER NOT NULL);
+`)
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#HashRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `url` | `string` | emitted (validation may require a value) |  |
+| `algo` | `string` | emitted (validation may require a value) |  |
+| `expectSize` | `*int64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/remote_hash.go#HashRequest
+
+``````
+type HashRequest struct {
+	URL        string `json:"url"`
+	Algo       string `json:"algo"`
+	ExpectSize *int64 `json:"expectSize,omitempty"`
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#HashResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `pending` | `bool` | may be omitted (see validation for conditions) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `size` | `int64` | emitted (validation may require a value) |  |
+| `sha256` | `string` | may be omitted (see validation for conditions) |  |
+| `sha1` | `string` | may be omitted (see validation for conditions) |  |
+| `md5` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/remote_hash.go#HashResult
+
+``````
+// HashResult never includes remote bytes. All three digests share a single read.
+type HashResult struct {
+	Pending   bool   `json:"pending,omitempty"`
+	RetryInMS int64  `json:"retryInMs,omitempty"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256,omitempty"`
+	SHA1      string `json:"sha1,omitempty"`
+	MD5       string `json:"md5,omitempty"`
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#remoteHashWork.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/remote_hash.go#remoteHashWork
+
+``````
+type remoteHashWork struct {
+	key    string
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error
+	ended  time.Time
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#remoteHashEntry.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/remote_hash.go#remoteHashEntry
+
+``````
+type remoteHashEntry struct {
+	HashResult
+	etag, modified string
+	checked        int64
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#*host.hashPermission
+
+``````
+func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
+	if req.Algo != "sha256" && req.Algo != "sha1" && req.Algo != "md5" {
+		return fmt.Errorf("plugins: hash algo must be sha256, sha1 or md5")
+	}
+	if req.ExpectSize != nil && (*req.ExpectSize < 0 || *req.ExpectSize > RemoteHashMaxBytes) {
+		return fmt.Errorf("plugins: hash size outside limit")
+	}
+	u, err := url.Parse(req.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return ErrPermissionDenied
+	}
+	if !h.m.AllowNetworkHost(ctx, h.plugin, u.Hostname()) {
+		return ErrPermissionDenied
+	}
+	return nil
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#*host.cachedRemoteHash
+
+``````
+func (h *host) cachedRemoteHash(ctx context.Context, key string) (remoteHashEntry, error) {
+	var e remoteHashEntry
+	var data []byte
+	err := h.m.store.db.QueryRowContext(ctx, `SELECT etag,modified,value,checked FROM plugins_remote_hashes WHERE plugin=? AND urlkey=?`, h.plugin, key).Scan(&e.etag, &e.modified, &data, &e.checked)
+	if err == nil {
+		err = json.Unmarshal(data, &e.HashResult)
+	}
+	return e, err
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#*host.HTTPHash
+
+``````
+func (h *host) HTTPHash(ctx context.Context, req HashRequest) (HashResult, error) {
+	if err := h.hashPermission(ctx, req); err != nil {
+		return HashResult{}, err
+	}
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(req.URL)))
+	e, err := h.cachedRemoteHash(ctx, key)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return HashResult{}, err
+	}
+	if err == nil && h.m.now().Sub(time.Unix(e.checked, 0)) < remoteHashFresh {
+		if req.ExpectSize != nil && *req.ExpectSize != e.Size {
+			return HashResult{}, fmt.Errorf("plugins: hash size did not match expectSize")
+		}
+		return e.HashResult, nil
+	}
+	m := h.m
+	m.remoteHashMu.Lock()
+	defer m.remoteHashMu.Unlock()
+	if m.remoteHashes == nil {
+		m.remoteHashes = map[string]*remoteHashWork{}
+	}
+	if work := m.remoteHashes[h.plugin]; work != nil {
+		select {
+		case <-work.done:
+			// The worker may have committed after our first cache read.
+			if work.key == key && work.err == nil {
+				if fresh, err := h.cachedRemoteHash(ctx, key); err == nil && m.now().Sub(time.Unix(fresh.checked, 0)) < remoteHashFresh {
+					if req.ExpectSize != nil && *req.ExpectSize != fresh.Size {
+						return HashResult{}, fmt.Errorf("plugins: hash size did not match expectSize")
+					}
+					return fresh.HashResult, nil
+				}
+			}
+			if work.key == key && work.err != nil && m.now().Sub(work.ended) < 30*time.Second {
+				return HashResult{}, work.err
+			}
+		default:
+			return HashResult{Pending: true, RetryInMS: 1000}, nil
+		}
+	}
+	// Recheck enabled state under the cancellation lock so a disable cannot
+	// race between authorization and registering this worker.
+	if _, _, err := h.record(ctx); err != nil {
+		return HashResult{}, err
+	}
+	workCtx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
+	w := &remoteHashWork{key: key, cancel: cancel, done: make(chan struct{})}
+	m.remoteHashes[h.plugin] = w
+	go func() {
+		defer cancel()
+		select {
+		case folderHashSlots <- struct{}{}:
+			defer func() { <-folderHashSlots }()
+		case <-workCtx.Done():
+			w.err = workCtx.Err()
+			close(w.done)
+			return
+		}
+		// Waiting plugins consume a goroutine, never a dedicated OS thread.
+		runtime.LockOSThread()
+		lowerJobPriority()
+		w.err = h.computeRemoteHash(workCtx, req, key, e)
+		w.ended = m.now()
+		close(w.done)
+	}()
+	return HashResult{Pending: true, RetryInMS: 1000}, nil
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#*Manager.cancelRemoteHashes
+
+``````
+func (m *Manager) cancelRemoteHashes(id string) {
+	m.remoteHashMu.Lock()
+	defer m.remoteHashMu.Unlock()
+	for plugin, w := range m.remoteHashes {
+		if id == "" || plugin == id {
+			w.cancel()
+		}
+	}
+}
+``````
+
+## Source: internal/plugins/remote_hash.go#*host.computeRemoteHash
+
+``````
+func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key string, old remoteHashEntry) error {
+	if err := wasm.WaitBackground(ctx, h.m.deps.Busy); err != nil {
+		return err
+	}
+	headers := map[string]string{"Accept-Encoding": "identity"}
+	if old.etag != "" {
+		headers["If-None-Match"] = old.etag
+	} else if old.modified != "" {
+		headers["If-Modified-Since"] = old.modified
+	}
+	resp, err := h.openFetch(ctx, FetchRequest{URL: req.URL, Headers: headers})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 304 && old.SHA256 != "" {
+		_, err = h.m.store.db.ExecContext(ctx, `UPDATE plugins_remote_hashes SET checked=? WHERE plugin=? AND urlkey=?`, h.m.now().Unix(), h.plugin, key)
+		return err
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("plugins: hash HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > RemoteHashMaxBytes {
+		return fmt.Errorf("plugins: hash size outside limit")
+	}
+	if req.ExpectSize != nil && resp.ContentLength >= 0 && resp.ContentLength != *req.ExpectSize {
+		return fmt.Errorf("plugins: hash size did not match expectSize")
+	}
+	// Reserve the remaining allowance durably before reading. An interrupted
+	// process conservatively keeps its reservation; normal completion refunds it.
+	day := h.m.now().UTC().Format("2006-01-02")
+	_, err = h.m.store.db.ExecContext(ctx, `INSERT INTO plugins_remote_hash_budget(plugin,day,bytes) VALUES(?,?,0) ON CONFLICT(plugin) DO UPDATE SET day=excluded.day,bytes=0 WHERE plugins_remote_hash_budget.day<>excluded.day`, h.plugin, day)
+	if err != nil {
+		return err
+	}
+	var used int64
+	if err = h.m.store.db.QueryRowContext(ctx, `SELECT bytes FROM plugins_remote_hash_budget WHERE plugin=?`, h.plugin).Scan(&used); err != nil {
+		return err
+	}
+	allowance := RemoteHashDailyBytes - used
+	if allowance <= 0 {
+		h.m.log.Info("plugins: daily hash byte budget reached", "plugin", h.plugin)
+		return fmt.Errorf("plugins: daily hash byte budget reached")
+	}
+	if resp.ContentLength > allowance {
+		h.m.log.Info("plugins: daily hash byte budget reached", "plugin", h.plugin)
+		return fmt.Errorf("plugins: daily hash byte budget reached")
+	}
+	reserve := allowance
+	if resp.ContentLength >= 0 {
+		reserve = resp.ContentLength
+	}
+	reservation, err := h.m.store.db.ExecContext(ctx, `UPDATE plugins_remote_hash_budget SET bytes=bytes+? WHERE plugin=? AND day=? AND bytes+?<=?`, reserve, h.plugin, day, reserve, RemoteHashDailyBytes)
+	if err != nil {
+		return err
+	}
+	if n, err := reservation.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		h.m.log.Info("plugins: daily hash byte budget reached", "plugin", h.plugin)
+		return fmt.Errorf("plugins: daily hash byte budget reached")
+	}
+	var size int64
+	defer func() {
+		refundCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = h.m.store.db.ExecContext(refundCtx, `UPDATE plugins_remote_hash_budget SET bytes=bytes-? WHERE plugin=? AND day=?`, max(int64(0), reserve-size), h.plugin, day)
+	}()
+	a, b, c := sha256.New(), sha1.New(), md5.New()
+	buf := make([]byte, 256<<10)
+	var checkedGrants time.Time
+	limit := min(RemoteHashMaxBytes, reserve)
+	for {
+		if err = wasm.WaitBackground(ctx, h.m.deps.Busy); err != nil {
+			return err
+		}
+		// Recheck grants at most once a second rather than querying the store
+		// for every chunk. Disable/uninstall also cancels the read context.
+		if time.Since(checkedGrants) >= time.Second {
+			if err = h.hashPermission(ctx, req); err != nil {
+				return err
+			}
+			checkedGrants = time.Now()
+		}
+		n, readErr := resp.Body.Read(buf[:min(int64(len(buf)), limit-size+1)])
+		size += int64(n)
+		if size > limit {
+			return fmt.Errorf("plugins: hash exceeded byte limit")
+		}
+		if n > 0 {
+			_, _ = a.Write(buf[:n])
+			_, _ = b.Write(buf[:n])
+			_, _ = c.Write(buf[:n])
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fetchError(resp.Request.URL.Hostname(), readErr)
+		}
+	}
+	if req.ExpectSize != nil && size != *req.ExpectSize {
+		return fmt.Errorf("plugins: hash size did not match expectSize")
+	}
+	result := HashResult{Size: size, SHA256: fmt.Sprintf("%x", a.Sum(nil)), SHA1: fmt.Sprintf("%x", b.Sum(nil)), MD5: fmt.Sprintf("%x", c.Sum(nil))}
+	data, _ := json.Marshal(result)
+	_, err = h.m.store.db.ExecContext(ctx, `INSERT INTO plugins_remote_hashes(plugin,urlkey,etag,modified,size,value,checked) VALUES(?,?,?,?,?,?,?) ON CONFLICT(plugin,urlkey) DO UPDATE SET etag=excluded.etag,modified=excluded.modified,size=excluded.size,value=excluded.value,checked=excluded.checked`, h.plugin, key, resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"), size, data, h.m.now().Unix())
+	if err != nil {
+		return err
+	}
+	_, err = h.m.store.db.ExecContext(ctx, `DELETE FROM plugins_remote_hashes WHERE plugin=? AND urlkey IN (SELECT urlkey FROM plugins_remote_hashes WHERE plugin=? ORDER BY checked DESC LIMIT 2147483647 OFFSET 2048)`, h.plugin, h.plugin)
+	return err
 }
 ``````
 
@@ -16588,7 +17390,17 @@ func ensureQJS() {
 const servicePrelude = `
 "use strict";
 globalThis.ether = (() => {
-  const call = (name, args) => JSON.parse(__ether_host(name, JSON.stringify(args)));
+  const call = (name, args) => {
+    try { return JSON.parse(__ether_host(name, JSON.stringify(args))); }
+    catch (e) {
+      const message = String(e && e.message || e);
+      const at = message.indexOf("__ETHER_FAULT__");
+      if (at >= 0) {
+        try { const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)); e.code = fault.code || fault.Code; } catch (_) {}
+      }
+      throw e;
+    }
+  };
   const ether = {
     log: (...a) => { try { __ether_host("log", JSON.stringify(a.map(String))); } catch (e) {} },
     abort: (msg) => { throw new Error("__ETHER_FAULT__" + JSON.stringify({ code: "aborted", message: String(msg == null ? "aborted" : msg) })); },
@@ -16596,7 +17408,7 @@ globalThis.ether = (() => {
           delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]) },
     settings: { get: () => call("settings.get", []) },
     secret: { get: (n) => call("secret.get", [n]) },
-    http: { fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
+    http: { hash: (req) => call("http.hash", [req]), fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
     catalog: { search: (q) => call("catalog.search", [q]), get: (id) => call("catalog.get", [id]) },
     addon: { get: (route) => call("addon.get", [route]) },
     viewers: { granted: () => call("viewers.granted", []), history: (id, page) => call("viewers.history", [id, page == null ? 0 : page]),
@@ -17357,6 +18169,7 @@ type Request struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `blob` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -17368,6 +18181,7 @@ type Request struct {
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
 // as its body field (usually a JSON string), passed through untouched.
 type Response struct {
+	Blob    json.RawMessage   `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -17404,7 +18218,7 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 // host functions. Wall time adds 1 unit per WallUnitInterval.
 var DefaultCosts = map[string]int64{
 	"log": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
@@ -19759,7 +20573,9 @@ opening a page should read saved data, not repeatedly scan the catalogue.
 ```
 
 The job recipe includes `ether.schedule: [{"every":"1h","call":"/ether/refresh"}]` to the manifest
-and a handler for that path. Store a cursor/etag in KV and process a bounded batch per
+and a handler for that path. The first run happens right after install (within one
+scheduler tick once enabled); later runs keep their cadence across server restarts,
+including failed attempts. Store a cursor/etag in KV and process a bounded batch per
 run. Do not create timers in plugin code. Cache external results; keep the job
 unconfigured until the owner needs it. Settings changes must be read each run.
 
@@ -19836,6 +20652,88 @@ conformance, package, and check the visible result on your own development serve
 Never claim offline conformance proves playback on a real client. New host
 services belong in the generated reference source list and this service map;
 regenerate the reference instead of duplicating contracts in prose.
+
+## Slow resolution and remote verification
+
+Kind `/resolve` and `/match` handlers may return `{pending:true,retryInMs:1000}`.
+Ether retries after 250–5000 ms (clamped), for at most 25 seconds per Play;
+each invocation still has a five-second cap. Pending does not damage health.
+After 25 seconds the item is not available yet; another Play may find it ready.
+For slow searches, also return `job:"/ether/job/prepare"`. Ether deduplicates
+running jobs per plugin, kind and item, passes the original request body, and
+uses the existing promoted job deadline and continuation protocol. A completed
+job wakes the resolver before the retry timer. Persist results in KV; never do
+work ahead of an actual request. At most two jobs run per plugin.
+
+`ether.http.fetch({url,timeoutMs:1200})` bounds a slow remote request by the
+remaining call deadline. Hosted code can catch `e.code === "timeout"`.
+Remote SDK fetches use their local request context/timeout.
+
+`ether.http.hash({url,algo:"sha256",expectSize:12345})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` is
+optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams on the host,
+without a blob or guest bytes, through the same network permissions and safe
+fetch rules as fetch. It starts only when called. One worker per plugin and
+two globally run below playback priority and yield during playback contention.
+Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per
+UTC day (including unsuccessful reads), 12 hours per task. The daily cap logs
+at Info. Cached digests share one read across algorithms, are private to the
+plugin and URL, and include response validators and size. A hit returns
+immediately for five minutes; later calls return pending while the host
+conditionally revalidates ETag/Last-Modified or streams a new digest. Up to
+2048 entries are kept per plugin. Failed tasks may be retried after 30 seconds.
+Remote Go uses `RemoteHostClient.Hash`; TypeScript/Python use `http.hash`.
+
+```js
+// The manifest must declare the upstream in permissions.network.
+function resolve(req) {
+  const result = ether.http.hash({url:req.item.hints.url, algo:"sha256"});
+  if (result.pending) return {status:200, body:result};
+  if (result.sha256 !== req.item.hints.sha256)
+    return {status:404, body:{sources:[]}};
+  return {status:200, body:{sources:[{pattern:"http",url:req.item.hints.url}]}};
+}
+// A slow search instead returns pending with job:"/ether/job/prepare";
+// that handler writes a KV result and returns {done:true}, or checkpoints with
+// {continueInMs:1000,continuation:{cursor:"next"}}. Resolve reads that KV result.
+```
+
+## Frontend adapter downloads
+
+Hosted adapters can return a redirect to a host-minted item stream URL:
+
+```js
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef)}};
+```
+
+Only root-relative local redirect URLs are forwarded. External URLs, authority
+changes, control characters, backslashes and known account credential query
+parameters are refused. Use the scoped host media ticket, never a login token.
+
+For a cached file or verified archive member, return a blob descriptor instead
+of `body` (status 200). The bytes never pass through guest memory:
+
+```js
+return {status:200, blob:{
+  libraryKey:"pk-my-plugin-firmware", ref:cachedBlobRef, memberIndex:member.index
+}};
+```
+
+Use the canonical library key returned for your declared media kind. Omit
+`memberIndex` to serve the whole blob. The host rechecks enabled state, frontend
+capability, ownership, current viewer visibility and the adapter's library list
+on every request. It opens only that library's cache namespace and applies the
+existing archive safety and runtime limits. The plugin must verify expected
+hashes before selecting a cached member; delivery does not assert hash validity.
+
+GET and HEAD are supported. A single GET byte range receives 206; malformed,
+multiple or unsatisfiable ranges receive 416. HEAD ignores Range. Downloads use
+`application/octet-stream`, a fixed safe attachment filename, no-store and
+nosniff; plugin response headers do not override these. Archive range offsets
+may require bounded decompression from the start, so do not use this path for
+unbounded repeated seeks. Existing JSON `body` responses are unchanged. Remote
+HTTP plugins should stream bytes through their existing HTTP response instead;
+this descriptor is for the hosted JSON response envelope.
 
 
 ## Source: sdk/catalogue-template/README.md
@@ -25846,6 +26744,8 @@ type FetchCacheResult struct {
 | `index` | `int` | emitted (validation may require a value) |  |
 | `name` | `string` | emitted (validation may require a value) |  |
 | `size` | `uint64` | emitted (validation may require a value) |  |
+| `unsafe` | `bool` | may be omitted (see validation for conditions) | Unsafe names identify members only and must never be used as output paths. |
+| `unsafeReason` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/data_host.go#ArchiveMember
@@ -25855,6 +26755,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 ``````
 
@@ -25937,10 +26840,66 @@ func (c *RemoteHostClient) ArchiveOpen(ctx context.Context, blob string, member 
 }
 ``````
 
+## Source: sdk/go/data_host.go#HashRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `url` | `string` | emitted (validation may require a value) |  |
+| `algo` | `string` | emitted (validation may require a value) |  |
+| `expectSize` | `*int64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/data_host.go#HashRequest
+
+``````
+// HashRequest requests an on-demand host-side remote digest without storing bytes.
+type HashRequest struct {
+	URL        string `json:"url"`
+	Algo       string `json:"algo"`
+	ExpectSize *int64 `json:"expectSize,omitempty"`
+}
+``````
+
+## Source: sdk/go/data_host.go#HashResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `pending` | `bool` | may be omitted (see validation for conditions) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `size` | `int64` | emitted (validation may require a value) |  |
+| `sha256` | `string` | may be omitted (see validation for conditions) |  |
+| `sha1` | `string` | may be omitted (see validation for conditions) |  |
+| `md5` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/data_host.go#HashResult
+
+``````
+type HashResult struct {
+	Pending   bool   `json:"pending,omitempty"`
+	RetryInMS int64  `json:"retryInMs,omitempty"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256,omitempty"`
+	SHA1      string `json:"sha1,omitempty"`
+	MD5       string `json:"md5,omitempty"`
+}
+``````
+
+## Source: sdk/go/data_host.go#*RemoteHostClient.Hash
+
+``````
+func (c *RemoteHostClient) Hash(ctx context.Context, r HashRequest) (HashResult, error) {
+	var out HashResult
+	err := c.dataCall(ctx, "http.hash", []any{r}, &out)
+	return out, err
+}
+``````
+
 ## Source: sdk/go/host.go#HostFetchRequest.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) |  |
 | `method` | `string` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
@@ -25952,10 +26911,11 @@ func (c *RemoteHostClient) ArchiveOpen(ctx context.Context, blob string, member 
 ``````
 // HostFetchRequest describes an outbound HTTP call via the host service.
 type HostFetchRequest struct {
-	Method  string            `json:"method,omitempty"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
+	TimeoutMS int64             `json:"timeoutMs,omitempty"`
+	Method    string            `json:"method,omitempty"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      string            `json:"body,omitempty"`
 }
 ``````
 
@@ -26357,6 +27317,11 @@ func (c *RemoteHostClient) SecretGet(_ context.Context, _ string) (string, error
 ``````
 // Fetch performs an outbound HTTP request.
 func (c *RemoteHostClient) Fetch(ctx context.Context, r HostFetchRequest) (HostFetchResponse, error) {
+	if r.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(r.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
 	method := r.Method
 	if method == "" {
 		method = http.MethodGet
@@ -27171,6 +28136,9 @@ type KindMatchScore struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `pending` | `bool` | may be omitted (see validation for conditions) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
 | `matches` | `[]KindMatchScore` | emitted (validation may require a value) |  |
 
 
@@ -27179,7 +28147,10 @@ type KindMatchScore struct {
 ``````
 // KindMatchResponse is a matcher's answer, best first.
 type KindMatchResponse struct {
-	Matches []KindMatchScore `json:"matches"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Matches   []KindMatchScore `json:"matches"`
 }
 ``````
 
@@ -27334,6 +28305,9 @@ type KindResolveRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `pending` | `bool` | may be omitted (see validation for conditions) |  |
+| `retryInMs` | `int64` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
 | `sources` | `[]PlayableSource` | emitted (validation may require a value) |  |
 | `ttlSec` | `int` | may be omitted (see validation for conditions) |  |
 
@@ -27343,8 +28317,11 @@ type KindResolveRequest struct {
 ``````
 // KindResolveResponse is a resolver's ordered sources.
 type KindResolveResponse struct {
-	Sources []PlayableSource `json:"sources"`
-	TTLSec  int              `json:"ttlSec,omitempty"`
+	Pending   bool             `json:"pending,omitempty"`
+	RetryInMS int64            `json:"retryInMs,omitempty"`
+	Job       string           `json:"job,omitempty"`
+	Sources   []PlayableSource `json:"sources"`
+	TTLSec    int              `json:"ttlSec,omitempty"`
 }
 ``````
 
@@ -33388,10 +34365,31 @@ type RawRequest struct {
 }
 ``````
 
+## Source: sdk/go/types.go#FrontendBlob.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `libraryKey` | `string` | emitted (validation may require a value) |  |
+| `ref` | `string` | emitted (validation may require a value) |  |
+| `memberIndex` | `*int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#FrontendBlob
+
+``````
+// FrontendBlob selects host-served bytes for a frontend adapter response.
+type FrontendBlob struct {
+	LibraryKey  string `json:"libraryKey"`
+	Ref         string `json:"ref"`
+	MemberIndex *int   `json:"memberIndex,omitempty"`
+}
+``````
+
 ## Source: sdk/go/types.go#RawResponse.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `blob` | `*FrontendBlob` | may be omitted (see validation for conditions) |  |
 | `status` | `int` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `json.RawMessage` | may be omitted (see validation for conditions) |  |
@@ -33402,6 +34400,7 @@ type RawRequest struct {
 ``````
 // RawResponse is the low-level transport-agnostic response returned by Plugin.Dispatch.
 type RawResponse struct {
+	Blob       *FrontendBlob     `json:"blob,omitempty"`
 	Status     int               `json:"status"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	Body       json.RawMessage   `json:"body,omitempty"`
@@ -33933,6 +34932,12 @@ class _KVClient:
 
 
 class _HttpClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
+
     def fetch(self, req: Dict[str, Any]) -> Dict[str, Any]:
         method = str(req.get("method") or "GET").upper()
         url = str(req["url"])
@@ -33941,7 +34946,7 @@ class _HttpClient:
         data = body_str.encode("utf-8") if isinstance(body_str, str) else None
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=15) as resp:
+            with urllib.request.urlopen(request, timeout=min(15, max(0.001, float(req.get("timeoutMs", 15000)) / 1000))) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
                 out_headers = {k.lower(): v for k, v in resp.headers.items()}
                 return {"status": resp.status, "headers": out_headers, "body": raw}
@@ -34028,7 +35033,7 @@ class RemoteHostClient:
             credential if credential is not None else os.environ.get("ETHER_PLUGIN_CREDENTIAL", "")
         )
         self.kv = _KVClient(self._call_json)
-        self.http = _HttpClient()
+        self.http = _HttpClient(self._call_json)
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
@@ -36634,6 +37639,8 @@ import type { MaybePromise } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
 
 export interface HostFetchRequest {
+  /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
+  timeoutMs?: number;
   method?: string;
   url: string;
   headers?: Record<string, string>;
@@ -36647,6 +37654,9 @@ export interface HostFetchResponse {
   body: string;
   bodyBase64?: string;
 }
+
+export interface HashRequest { url: string; algo: "sha256" | "sha1" | "md5"; expectSize?: number }
+export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
 export interface DataRange { offset: number; length: number }
 export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
@@ -36731,6 +37741,7 @@ export interface EtherHost {
   };
   http: {
     fetch(req: HostFetchRequest): MaybePromise<HostFetchResponse>;
+    hash?(req: HashRequest): MaybePromise<HashResult>;
     fetchToCache?(req: FetchCacheRequest): MaybePromise<FetchCacheResult>;
   };
   catalog: {
@@ -36913,9 +37924,11 @@ export function createHostedClient(): EtherHost {
       },
     },
     http: {
+      hash: (req) => callHost<HashResult>("http.hash", [req]),
       fetchToCache: (req) => callHost<FetchCacheResult>("http.fetchToCache", [req]),
       fetch(req: HostFetchRequest): HostFetchResponse {
         const normalized = {
+          timeoutMs: req.timeoutMs,
           method: req.method ?? "GET",
           url: req.url,
           headers: req.headers ?? {},
@@ -37139,12 +38152,14 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     http: {
+      hash: async (req) => (await callJson<HashResult>("POST", "/ether/plugin-host/data/http.hash", [req]))!,
       fetchToCache: async (req) => (await callJson<FetchCacheResult>("POST", "/ether/plugin-host/data/http.fetchToCache", [req]))!,
       async fetch(req: HostFetchRequest): Promise<HostFetchResponse> {
         const resp = await doFetch(req.url, {
           method: req.method ?? "GET",
           headers: req.headers,
           body: req.body,
+          signal: req.timeoutMs && req.timeoutMs > 0 ? AbortSignal.timeout(req.timeoutMs) : undefined,
         });
         const outHeaders: Record<string, string> = {};
         resp.headers.forEach((v, k) => {
@@ -37432,6 +38447,8 @@ export {
   type FolderHash,
   type FolderHashJob,
   type DataRange,
+  type HashRequest,
+  type HashResult,
   type FetchCacheRequest,
   type FetchCacheResult,
   type HostFetchRequest,
@@ -37524,6 +38541,7 @@ import type {
   KindBrowseRequest,
   KindChangePage,
   KindItem,
+  PendingReply,
   KindMatchRequest,
   KindMatchScore,
   KindPage,
@@ -37547,11 +38565,11 @@ export interface CatalogProvider<S = Record<string, unknown>> {
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
-  resolve(req: KindResolveRequest, ctx: PluginContext<S>): MaybePromise<KindResolveResponse>;
+  resolve(req: KindResolveRequest, ctx: PluginContext<S>): MaybePromise<KindResolveResponse | PendingReply>;
 }
 
 export interface KindMatcher<S = Record<string, unknown>> {
-  match(req: KindMatchRequest, ctx: PluginContext<S>): MaybePromise<{ matches: KindMatchScore[] }>;
+  match(req: KindMatchRequest, ctx: PluginContext<S>): MaybePromise<{ matches: KindMatchScore[] } | PendingReply>;
 }
 
 /** Spec-name alias. */
@@ -37834,11 +38852,15 @@ export function parseFeed(data: string): ParsedFeed {
   };
 }
 
-/** One non-directory zip member, in archive order. */
+/** An archive member in archive order (host listings may include directories). */
 export interface ArchiveMember {
   index: number;
   name: string;
   size: number;
+  /** Host listing: this member cannot be opened; name is an identifier only. */
+  unsafe?: boolean;
+  /** Present with unsafe=true; explains why archive.open refuses the member. */
+  unsafeReason?: string;
 }
 
 /** List zip/cbz/epub members by reading the central directory. */
@@ -40452,7 +41474,12 @@ export interface KindResolveRequest {
   client?: Record<string, unknown>;
 }
 
+export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }
+
 export interface KindResolveResponse {
+  pending?: boolean;
+  retryInMs?: number;
+  job?: string;
   sources: PlayableSource[];
   ttlSec?: number;
 }
@@ -40943,7 +41970,15 @@ export interface RawRequest {
   locale?: string;
 }
 
+/** Host-served cached bytes for an authenticated frontend adapter response. */
+export interface FrontendBlob {
+  libraryKey: string;
+  ref: string;
+  memberIndex?: number;
+}
+
 export interface RawResponse {
+  blob?: FrontendBlob;
   status: number;
   headers?: Record<string, string>;
   body?: unknown;

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 
@@ -36,6 +37,9 @@ func (s extraSurface) Open(ctx context.Context, key core.RatingKey) (string, str
 	resolved, err := s.extras.Resolve(ctx, clip)
 	if err != nil {
 		return "", "", nil, err
+	}
+	if resolved.AudioURL != "" {
+		return "", "", nil, extras.ErrCacheDisabled
 	}
 	return resolved.Container, resolved.URL, resolved.Headers, nil
 }
@@ -116,16 +120,21 @@ func (s extraSurface) Resolve(ctx context.Context, e frontend.ExtraClip) (fronte
 			Source:      e.Source,
 		}
 	}
-	resolved, err := s.extras.Resolve(ctx, clip)
+	cached, err := s.extras.CacheExtra(ctx, clip)
+	if errors.Is(err, extras.ErrCacheUnsupported) || errors.Is(err, extras.ErrCacheDisabled) {
+		r, resolveErr := s.extras.Resolve(ctx, clip)
+		if resolveErr != nil {
+			return frontend.ResolvedExtra{}, resolveErr
+		}
+		if r.AudioURL != "" {
+			return frontend.ResolvedExtra{}, err
+		}
+		return frontend.ResolvedExtra{URL: r.URL, Container: r.Container, Headers: r.Headers, Expires: r.Expires}, nil
+	}
 	if err != nil {
 		return frontend.ResolvedExtra{}, err
 	}
-	return frontend.ResolvedExtra{
-		URL:       resolved.URL,
-		Headers:   resolved.Headers,
-		Expires:   resolved.Expires,
-		Container: resolved.Container,
-	}, nil
+	return frontend.ResolvedExtra{LocalPath: cached.Path, Container: "mp4"}, nil
 }
 
 func (s extraSurface) PrewarmBytes() int64 {
@@ -315,10 +324,13 @@ func (s extraSurface) OpenCachedExtra(ctx context.Context, key core.RatingKey) (
 		return nil, "", core.ErrNotAvailable
 	}
 	clip, ok := s.extras.Lookup(key)
-	if !ok || !clip.IsTrailer() {
+	if !ok {
 		return nil, "", core.ErrNotAvailable
 	}
-	cached, err := s.extras.CacheTrailer(ctx, clip)
+	cached, err := s.extras.CacheExtra(ctx, clip)
+	if errors.Is(err, extras.ErrCacheUnsupported) || errors.Is(err, extras.ErrCacheDisabled) {
+		return nil, "", core.ErrNotAvailable
+	}
 	if err != nil {
 		return nil, "", err
 	}

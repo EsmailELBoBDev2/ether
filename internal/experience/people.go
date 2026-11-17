@@ -31,8 +31,11 @@ type PeopleRead struct {
 	// PortraitTitles reads fresh policy facts and only the requested credits.
 	// Partial titles are used only inside WithPersonCredits; never cached.
 	PortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
-	Finish         func(context.Context) error
-	Close          func()
+	// RecheckPortraitTitles may omit portrait metadata, but must read fresh
+	// visibility facts and named-credit membership.
+	RecheckPortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	Finish                func(context.Context) error
+	Close                 func()
 }
 
 func (s *Service) readPeople(ctx context.Context, viewer *core.User, read func(*Service) error) error {
@@ -71,6 +74,7 @@ func (s *Service) readPeople(ctx context.Context, viewer *core.User, read func(*
 	snapshot.d.CachedGetMany = access.Titles
 	snapshot.d.peopleVisibleTitles = access.VisibleTitles
 	snapshot.d.peoplePortraitTitles = access.PortraitTitles
+	snapshot.d.peopleRecheckPortraitTitles = access.RecheckPortraitTitles
 	if err := read(&snapshot); err != nil {
 		return err
 	}
@@ -916,7 +920,7 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 		if err != nil {
 			return err
 		}
-		resolve := func() (map[core.RatingKey]core.Title, Visibility, error) {
+		resolve := func(recheck bool) (map[core.RatingKey]core.Title, Visibility, error) {
 			keys := make([]core.RatingKey, 0, len(refs))
 			seen := map[core.RatingKey]bool{}
 			for _, r := range refs {
@@ -927,7 +931,9 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 			}
 			var titles map[core.RatingKey]core.Title
 			var err error
-			if snapshot.d.peoplePortraitTitles != nil {
+			if recheck && snapshot.d.peopleRecheckPortraitTitles != nil {
+				titles, err = snapshot.d.peopleRecheckPortraitTitles(ctx, refs)
+			} else if snapshot.d.peoplePortraitTitles != nil {
 				titles, err = snapshot.d.peoplePortraitTitles(ctx, refs)
 			} else {
 				titles, err = snapshot.d.CachedGetMany(ctx, keys)
@@ -958,7 +964,7 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 			}
 			return best.detail, title, true, nil
 		}
-		titles, visibility, err := resolve()
+		titles, visibility, err := resolve(false)
 		if err != nil {
 			return err
 		}
@@ -978,7 +984,7 @@ func (s *Service) WithPersonCredits(ctx context.Context, viewer *core.Viewer, de
 			}
 		}
 		// The recheck: every credit read is still current.
-		titles, visibility, err = resolve()
+		titles, visibility, err = resolve(true)
 		if err != nil {
 			return err
 		}

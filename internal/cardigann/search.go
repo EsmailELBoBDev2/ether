@@ -137,6 +137,29 @@ func (r *Runner) attempts(req core.SearchRequest, movieCats, tvCats []int) []que
 		kq.keywords = strings.TrimSpace(kq.q + " " + epString)
 		out = append(out, kq)
 	}
+	if req.Category == "" && req.Type == core.TypeEpisode {
+		var lists [][]query
+		if !req.ReleaseAliasesOnly {
+			lists = append(lists, out)
+		}
+		for _, n := range core.EpisodeAliases(req) {
+			lists = append(lists, r.attempts(core.AliasSearchRequest(req, n), movieCats, tvCats))
+		}
+		var combined []query
+		for i := 0; ; i++ {
+			any := false
+			for _, list := range lists {
+				if i < len(list) {
+					any = true
+					combined = append(combined, list[i])
+				}
+			}
+			if !any {
+				break
+			}
+		}
+		out = combined
+	}
 	return out
 }
 
@@ -297,6 +320,14 @@ func (r *Runner) fallbackAttempts(req core.SearchRequest, movieCats, tvCats []in
 			sqWord := sq
 			sqWord.keywords = strings.TrimSpace(fmt.Sprintf("%s Season %d", t, req.Season))
 			out = append(out, sqWord)
+		}
+	}
+	if req.Type == core.TypeEpisode {
+		if req.ReleaseAliasesOnly {
+			out = nil
+		}
+		for _, n := range core.EpisodeAliases(req) {
+			out = append(out, r.fallbackAttempts(core.AliasSearchRequest(req, n), movieCats, tvCats)...)
 		}
 	}
 	return out

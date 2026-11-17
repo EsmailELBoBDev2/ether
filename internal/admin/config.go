@@ -14,6 +14,7 @@ import (
 // configSections maps URL section identities to JSON field names on Config.
 // Account section names below select persisted fields, not frontend behavior.
 var configSections = map[string]string{
+	"vela":         "vela",
 	"posters":      "posters",
 	"plexservers":  "plexServers",
 	"availability": "availability",

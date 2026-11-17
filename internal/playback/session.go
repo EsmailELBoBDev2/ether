@@ -27,6 +27,8 @@ type identity struct {
 // generation is one opened source of a session. A failover creates a new
 // generation; the old one is retired and closed once in-flight reads end.
 type generation struct {
+	warmReads            *core.WarmReadWindow
+	prewarmReads         *core.WarmReadWindow
 	backgroundReadBytes  atomic.Int64
 	backgroundReadErrors atomic.Int64
 	backgroundRequests   atomic.Int64

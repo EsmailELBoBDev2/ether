@@ -1,11 +1,13 @@
 package plugins
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -95,15 +97,6 @@ func TestDataArchiveFormats(t *testing.T) {
 		})
 	}
 	for _, version := range []int{4, 5} {
-		for _, name := range []string{"../escape", "/absolute", "C:drive", "a\\b"} {
-			b, e := archivetest.BuildRAR([]archivetest.RARFile{{Name: name, Data: []byte("ok")}}, archivetest.RAROptions{Version: version})
-			if e != nil {
-				t.Fatal(e)
-			}
-			if _, e = openDataArchive(ctx, bytes.NewReader(b[0]), defaultDataLimits()); e == nil {
-				t.Fatalf("unsafe RAR%d %q accepted", version, name)
-			}
-		}
 		for _, opts := range []archivetest.RAROptions{{Version: version, HeaderEncrypted: true}, {Version: version, VolumeSize: 128}} {
 			b, e := archivetest.BuildRAR([]archivetest.RARFile{{Name: "a.txt", Data: bytes.Repeat([]byte{1}, 300)}}, opts)
 			if e != nil {
@@ -121,12 +114,6 @@ func TestDataArchiveFormats(t *testing.T) {
 			if _, e = openDataArchive(ctx, bytes.NewReader(b[0]), defaultDataLimits()); e == nil {
 				t.Fatalf("unsafe RAR member accepted: %+v", file)
 			}
-		}
-	}
-	for _, name := range []string{"../escape", "/absolute", "a\\b"} {
-		b := archivetest.Build7zCopy([]archivetest.SevenZipFile{{Name: name, Data: []byte("ok")}}, true)
-		if _, e := openDataArchive(ctx, bytes.NewReader(b), defaultDataLimits()); e == nil {
-			t.Fatalf("unsafe 7z %q accepted", name)
 		}
 	}
 	for _, name := range []string{"enc_header.7z", "enc_content.7z", "store_vol.7z.001"} {
@@ -214,5 +201,95 @@ func TestDataArchiveFormats(t *testing.T) {
 				t.Fatal(e)
 			}
 		}
+	}
+}
+
+// Unsafe identifiers survive directory caching, but only safe members can be
+// opened. Exercise the same boundary for ZIP, solid 7z, and RAR4/5.
+func TestDataArchiveMemberNames(t *testing.T) {
+	names := []string{"normal.txt", "../escape", "Some Game (Europe: Special Edition).txt", "after.txt", "..", "/absolute", `dir\escape`, "dir/../escape", "C:/absolute"}
+	for _, format := range []string{"zip", "7z", "rar4", "rar5"} {
+		t.Run(format, func(t *testing.T) {
+			var data []byte
+			switch format {
+			case "zip":
+				var b bytes.Buffer
+				z := zip.NewWriter(&b)
+				for _, name := range names {
+					w, err := z.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = io.WriteString(w, "contents"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := z.Close(); err != nil {
+					t.Fatal(err)
+				}
+				data = b.Bytes()
+			case "7z":
+				var files []archivetest.SevenZipFile
+				for _, name := range names {
+					files = append(files, archivetest.SevenZipFile{Name: name, Data: []byte("contents")})
+				}
+				data = archivetest.Build7zCopy(files, true)
+			default:
+				var files []archivetest.RARFile
+				for _, name := range names {
+					files = append(files, archivetest.RARFile{Name: name, Data: []byte("contents")})
+				}
+				version := 4
+				if format == "rar5" {
+					version = 5
+				}
+				volumes, err := archivetest.BuildRAR(files, archivetest.RAROptions{Version: version})
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = volumes[0]
+			}
+			h := &directoryCacheTestHost{data: data, directoryOffset: -1}
+			ctx := context.Background()
+			for pass := 0; pass < 2; pass++ {
+				raw, err := CallDataHost(ctx, h, "archive.list", json.RawMessage(`["blob:test"]`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var members []ArchiveMember
+				if err = json.Unmarshal(raw, &members); err != nil || len(members) != len(names) {
+					t.Fatalf("list: %s, %v", raw, err)
+				}
+				for i, m := range members {
+					unsafe := i == 1 || i >= 4
+					if m.Index != i || m.Name != names[i] || m.Unsafe != unsafe || (m.UnsafeReason != "") != unsafe {
+						t.Fatalf("member: %+v", m)
+					}
+					args, _ := json.Marshal([]any{"blob:test", i, DataRange{Offset: 0, Length: 100}})
+					raw, err = CallDataHost(ctx, h, "archive.open", args)
+					if unsafe {
+						var refusal *UnsafeArchiveMemberError
+						if !errors.As(err, &refusal) || refusal.Index != i || refusal.Name != names[i] || refusal.Reason != m.UnsafeReason {
+							t.Fatalf("unsafe open: %v", err)
+						}
+						continue
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					var out struct{ BodyBase64 string }
+					if err = json.Unmarshal(raw, &out); err != nil {
+						t.Fatal(err)
+					}
+					got, err := base64.StdEncoding.DecodeString(out.BodyBase64)
+					if err != nil || string(got) != "contents" {
+						t.Fatalf("open: %q, %v", got, err)
+					}
+				}
+			}
+			if h.cache.lru.Len() != 1 {
+				t.Fatal("directory was not cached")
+			}
+		})
 	}
 }

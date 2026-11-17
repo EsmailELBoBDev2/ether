@@ -435,7 +435,7 @@ func (h *Handler) ownerIdentityManagement(w http.ResponseWriter, r *http.Request
 			writeError(w, 500, "unavailable", "unavailable")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"devices": items})
+		writeJSON(w, 200, map[string]any{"devices": items, "xtreamUrl": h.xtreamServerURL(r)})
 	case strings.HasSuffix(r.URL.Path, "/password"):
 		var body localLogin
 		if decodeJSON(r, &body) != nil {

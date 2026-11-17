@@ -32,7 +32,16 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 					s.mu.Unlock()
 					return
 				}
-				if i.refreshOutput(ctx, id, s) {
+				if s.commandActive {
+					s.mu.Unlock()
+					continue
+				}
+				copy, revision := s.outputSnapshot(), s.revision
+				s.mu.Unlock()
+				changed := i.refreshOutput(ctx, id, copy)
+				s.mu.Lock()
+				if changed && !s.commandActive && s.revision == revision && s.source == copy.source && s.seek == copy.seek && s.ended.IsZero() {
+					s.applyOutput(copy)
 					s.publish("plan")
 				}
 				s.mu.Unlock()

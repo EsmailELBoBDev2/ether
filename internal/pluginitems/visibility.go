@@ -68,7 +68,7 @@ func (s *Service) appendVisibility(ctx context.Context, where *strings.Builder, 
 // PreviewVisibility aggregates in the indexed item store and fetches at most
 // twelve examples per side. It never projects or loads the whole library.
 func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, specs []core.LibraryExclusion, fallback string) (any, error) {
-	policy, err := libraryfilter.CompilePluginPolicy(specs, fallback)
+	policy, err := s.CompilePolicy(ctx, lib, specs, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +121,11 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 	return map[string]any{"total": hidden.Total + shown.Total, "hidden": hidden.Total, "visible": shown.Total, "movies": movies, "shows": shows, "rules": counts, "items": project(hidden.Items), "shown": project(shown.Items)}, nil
 }
 
-func LibraryPolicy(ctx context.Context, lib core.Library) (*libraryfilter.Filter, error) {
+func (s *Service) LibraryPolicy(ctx context.Context, lib core.Library) (*libraryfilter.Filter, error) {
 	if len(lib.Rules) == 0 && lib.VisibilityDefault != "hide" {
 		return nil, nil
 	}
-	f, err := libraryfilter.CompilePluginPolicy(lib.Rules, lib.VisibilityDefault)
+	f, err := s.CompilePolicy(ctx, lib.ID, lib.Rules, lib.VisibilityDefault)
 	if err == nil && core.ExplicitSearch(ctx) {
 		f = f.ForSearch()
 	}
@@ -133,7 +133,7 @@ func LibraryPolicy(ctx context.Context, lib core.Library) (*libraryfilter.Filter
 }
 
 func (s *Service) ItemHidden(ctx context.Context, lib core.Library, ref core.ItemRef) (bool, error) {
-	policy, err := LibraryPolicy(ctx, lib)
+	policy, err := s.LibraryPolicy(ctx, lib)
 	if err != nil {
 		return false, err
 	}
@@ -148,4 +148,19 @@ func (s *Service) ItemHidden(ctx context.Context, lib core.Library, ref core.Ite
 	var hidden int
 	err = s.db.QueryRowContext(ctx, `SELECT CASE WHEN (`+q+`) THEN 1 ELSE 0 END FROM plugin_items i WHERE i.library_id=? AND i.item_ref=?`, args...).Scan(&hidden)
 	return hidden != 0, err
+}
+
+// CompilePolicy resolves the declaration for this library before validating rules.
+func (s *Service) CompilePolicy(ctx context.Context, lib core.LibraryID, specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	rec, err := s.GetKindByLibrary(ctx, lib)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]string{}
+	for _, field := range rec.Decl.Fields {
+		if field.Indexed {
+			declared[field.Key] = field.Type
+		}
+	}
+	return libraryfilter.CompilePluginPolicy(specs, fallback, declared)
 }

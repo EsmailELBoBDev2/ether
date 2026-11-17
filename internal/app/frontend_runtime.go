@@ -263,9 +263,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		}
 		tickets, _ := identity.NewTicketService(a.db, id, grants, nil)
 		var lanViewer func(context.Context, *http.Request) (*core.Viewer, error)
-		if id == "dlna" {
+		if descriptor, ok := r.control.descriptor(id); ok && descriptor.Auth == "none_lan" {
 			lanViewer = func(ctx context.Context, req *http.Request) (*core.Viewer, error) {
-				return a.dlnaViewer(ctx, req, settings())
+				return a.lanViewer(ctx, req, settings())
 			}
 		}
 		var lanStreams frontend.LANLazyStreams
@@ -488,6 +488,14 @@ func (r *frontendRuntime) plexHandler() http.Handler {
 		if handler := r.control.listeners.sharedHandler(req.URL.Path); handler != nil {
 			handler.ServeHTTP(w, req)
 			return
+		}
+		if xtreamRootPath(req.URL.Path) {
+			// Many IPTV apps drop the "/xtream" path from the server URL and
+			// call the standard Xtream paths at the root. Plex has none of them.
+			if handler := r.control.listeners.sharedHandler("/xtream"); handler != nil {
+				handler.ServeHTTP(w, req)
+				return
+			}
 		}
 		if siloProbeMiss(w, req) {
 			return
@@ -862,4 +870,23 @@ func (a *App) browseFreshness() frontend.PageFreshness {
 		f.KindSync = a.pluginsRT.pluginitems.Generation()
 	}
 	return f
+}
+
+// xtreamRootPath reports a standard Xtream Codes API or stream path at the
+// server root: player_api.php, xmltv.php, get.php, or
+// /{live,movie,series}/<username>/<password>/<file>.
+func xtreamRootPath(path string) bool {
+	switch path {
+	case "/player_api.php", "/xmltv.php", "/get.php":
+		return true
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 4 || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+		return false
+	}
+	switch parts[0] {
+	case "live", "movie", "series":
+		return true
+	}
+	return false
 }

@@ -714,6 +714,10 @@ func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
 
 func cacheKey(c *Client, req core.SearchRequest) string {
 	h := sha1.New()
+	fmt.Fprintf(h, "aliases:%v|only:%t|", core.EpisodeAliases(req), req.ReleaseAliasesOnly)
+	if req.AltEpisode > 0 {
+		fmt.Fprintf(h, "alt:%d:%d|", req.AltSeason, req.AltEpisode)
+	}
 	// Cached releases include parsed audio-language facts. Earlier names
 	// with regional tags were persisted as unknown language; refresh them
 	// instead of applying corrected ranking only after their TTL expires.
@@ -818,6 +822,37 @@ func releaseIsTV(r core.Release) bool {
 
 // searchAttempts builds the ordered fallback queries for a request.
 func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
+	if req.Category != "" || req.Type != core.TypeEpisode {
+		return c.numberedSearchAttempts(req, caps, id)
+	}
+	var lists [][]url.Values
+	if !req.ReleaseAliasesOnly {
+		lists = append(lists, c.numberedSearchAttempts(req, caps, id))
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		lists = append(lists, c.numberedSearchAttempts(core.AliasSearchRequest(req, n), caps, id))
+	}
+	var out []url.Values
+	seen := map[string]bool{}
+	for i := 0; ; i++ {
+		any := false
+		for _, list := range lists {
+			if i < len(list) {
+				any = true
+				if !seen[list[i].Encode()] {
+					seen[list[i].Encode()] = true
+					out = append(out, list[i])
+				}
+			}
+		}
+		if !any {
+			break
+		}
+	}
+	return out
+}
+
+func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
 	cfg := c.Config()
 	if req.Category != "" {
 		cats, err := core.SearchCategories(req.Category)

@@ -255,6 +255,16 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 				if genre == "" || len(genre) > 256 {
 					continue
 				}
+				canonical := false
+				for _, f := range liveCategoryGuideFilters() {
+					if frontend.LiveCategory([]string{genre}, f.Identifier, "") {
+						canonical = true
+						break
+					}
+				}
+				if canonical {
+					continue
+				}
 				id := liveGenreID(genre)
 				addBucket(id, genre, liveProviderPath+"/watchnow/categories/"+id)
 				appendItem(id, p)
@@ -262,8 +272,10 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 			if p.End.After(evening) && p.Start.Before(nightEnd) {
 				appendItem("tonight", p)
 			}
-			if id := liveGroupID(c.SourceID, c.Group); groups[id] {
-				appendItem(id, p)
+			if !p.Start.After(now) {
+				if id := liveGroupID(c.SourceID, c.Group); groups[id] {
+					appendItem(id, p)
+				}
 			}
 		}
 		for _, c := range chunk {
@@ -302,9 +314,9 @@ func (s *Server) buildLiveDiscovery(ctx context.Context, viewer *frontend.User) 
 			seen := map[string]bool{}
 			kept := make([]frontend.LiveTVProgramme, 0, min(len(b.items), liveDiscoveryItemsMax))
 			for _, p := range b.items {
-				dedup := p.ID
-				if dedup == "" {
-					dedup = p.ChannelID
+				dedup := p.ChannelID
+				if b.id != "all" && !strings.HasPrefix(b.id, "group-") && p.ID != "" {
+					dedup = p.ChannelID + "|" + p.Item.Title
 				}
 				if seen[dedup] {
 					continue

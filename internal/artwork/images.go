@@ -168,8 +168,9 @@ func (im *Images) get(ctx context.Context, key string, load func(context.Context
 		return img.data, img.ct, nil
 	}
 	im.mu.Unlock()
-	// The fetch is shared, so it must not die with the first requester.
-	img, err := im.inflight.DoDetached(ctx, key, func(ctx context.Context) (*memImage, error) {
+	// Keep cache writes owned by a request/worker. Live waiters retry with
+	// their own context when the leading request is cancelled.
+	img, err := im.inflight.Do(ctx, key, func(ctx context.Context) (*memImage, error) {
 		img, err := im.loadShared(ctx, key, load)
 		if err == nil {
 			im.mu.Lock()
@@ -192,6 +193,9 @@ func (im *Images) loadShared(ctx context.Context, key string, load func(context.
 	defer cancel()
 	data, ct, err := load(fctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := fctx.Err(); err != nil {
 		return nil, err
 	}
 	im.writeDisk(key, data)

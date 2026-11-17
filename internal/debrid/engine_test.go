@@ -281,7 +281,7 @@ func TestEngineCheck(t *testing.T) {
 func TestEngineHedgesSlowFirstByte(t *testing.T) {
 	r := newEngineRig(t, 256<<10, 30*time.Millisecond)
 	r.media.mu.Lock()
-	r.media.stall["realdebrid-1|bytes=0-65535"] = 3 * time.Second // the head request stalls
+	r.media.stall["realdebrid-1|bytes=0-262143"] = 3 * time.Second // foreground owns the full head run before read-ahead
 	r.media.mu.Unlock()
 	src, err := r.eng.Open(context.Background(), r.rel.ID, r.pl)
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 
 // runSpec is everything needed to build one ffmpeg HLS run.
 type runSpec struct {
+	waitDecode     bool // only argv construction may spend the bounded admission budget
 	SoftwareDecode bool // keep hardware encode after a decoder init failure
 	HealTimestamps bool
 	CopyOrigin     bool // retain audio from the measured video presentation origin
@@ -276,6 +277,7 @@ func matroskaCopyParameterSets(d core.Decision, v *core.StreamInfo) string {
 // buildCodecArgs is the input, stream mapping and codec part of a run's
 // command line, shared by HLS and DASH.
 func buildCodecArgs(s runSpec) []string {
+	s.waitDecode = true
 	// A card has no changing content: start its loop at zero, then place it
 	// on the programme clock. Never seek through hours of repeated input.
 	loopStart := s.Start
@@ -436,6 +438,10 @@ func buildCodecArgs(s runSpec) []string {
 	if textSub != nil && textSub.External && textSub.ExternalURL != "" {
 		silenceInput++
 	}
+	// Plex for Android opens subtitle format id 2 (video, audio, subtitle).
+	// A muxed subtitle with no mapped audio would land at 1. Silence fills
+	// that slot for this client only; every other command stays unchanged.
+	androidGap := androidSubtitleSlot(s, v, a, textSub)
 	if s.SilenceAudio && a != nil {
 		layout := fmt.Sprintf("%dc", decisionAudioChannels(d, a))
 		if s.Decision.AudioCopy {
@@ -446,6 +452,21 @@ func buildCodecArgs(s runSpec) []string {
 		}
 
 		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s", decisionAudioRate(d), layout))
+	}
+	if androidGap {
+		ch := decisionAudioChannels(d, nil)
+		spec := fmt.Sprintf("anullsrc=r=%d:cl=%dc", decisionAudioRate(d), ch)
+		// Title-clock runs keep source PTS. Shift this input with them, or
+		// the muxer waits on silence that starts at zero.
+		if s.titleClock() && s.Start > 0 {
+			args = append(args, "-itsoffset", secs(s.Start))
+		}
+		// anullsrc does not end. Bound it to the probed tail so a finite
+		// title is not held open by the generator.
+		if remain := s.Info.Duration - s.Start; remain > 0 {
+			args = append(args, "-t", secs(remain))
+		}
+		args = append(args, "-f", "lavfi", "-i", spec)
 	}
 	if pceOutputSeek {
 		// Output seeking rebases packet timestamps even with -copyts. Put
@@ -471,6 +492,8 @@ func buildCodecArgs(s runSpec) []string {
 		} else {
 			args = append(args, "-map", fmt.Sprintf("0:%d", a.Index))
 		}
+	} else if androidGap {
+		args = append(args, "-map", fmt.Sprintf("%d:a:0", silenceInput))
 	}
 	args = append(args, "-map_metadata", "-1", "-map_chapters", "-1", "-dn")
 	switch {
@@ -648,6 +671,8 @@ func buildCodecArgs(s runSpec) []string {
 				args = append(args, "-strict", "-2")
 			}
 		}
+	} else if androidGap {
+		args = append(args, androidSilenceCodecArgs(s)...)
 	}
 
 	if s.LoopInput {
@@ -1166,6 +1191,46 @@ func escapeFilterValue(v string) string {
 	return g.Replace(v)
 }
 
+// androidSubtitleSlot is the Android Matroska case where a muxed subtitle
+// has no audio in front of it. Direct play does not build these args.
+// External sidecars are input 1 already; a silent generator would steal
+// that index. No video means the subtitle cannot become output stream 2.
+func androidSubtitleSlot(s runSpec, video, audio, sub *core.StreamInfo) bool {
+	d := s.Decision
+	return d.AndroidMatroskaHLS && d.Container == ContainerMatroska && video != nil && audio == nil && sub != nil && !sub.External
+}
+
+// androidSilenceCodecArgs encodes the placeholder track. There is no source
+// audio to copy. The default matches the AAC stereo path used when a
+// decision names no audio codec.
+func androidSilenceCodecArgs(s runSpec) []string {
+	d := s.Decision
+	codec := d.AudioCodec
+	if codec == "" {
+		codec = "aac"
+	}
+	ch := decisionAudioChannels(d, nil)
+	enc := codec
+	switch codec {
+	case "mp3":
+		enc = "libmp3lame"
+	case "opus":
+		enc = "libopus"
+		if s.Features.encoders != nil && !s.Features.hasEncoder("libopus") {
+			enc = "opus"
+		}
+	}
+	kbps := audioBitrateKbps(codec, ch)
+	if d.AudioBitrateKbps > 0 && d.AudioBitrateKbps < kbps {
+		kbps = d.AudioBitrateKbps
+	}
+	args := []string{"-c:a", enc, "-ac", strconv.Itoa(ch), "-ar", strconv.Itoa(decisionAudioRate(d)), "-b:a", fmt.Sprintf("%dk", kbps)}
+	if enc == "opus" {
+		args = append(args, "-strict", "-2")
+	}
+	return args
+}
+
 // matroskaSubtitle is the selected track Plex tvOS reads from
 // inside segmented Matroska. Burned and non-Matroska decisions keep the
 // sidecar path. A nil return means the run stays subtitle-free (-sn).
@@ -1308,6 +1373,15 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 	// tone-mapped contract. Tone mappers produce limited-range BT.709.
 	p010CUDA := accel == AccelNVENC && s.Features.cudaP010ToneMap && !pictureOf(v).full && (s.Target == nil || (s.Target.pic.prim == "bt709" && s.Target.pic.matrix == "bt709" && !s.Target.pic.full))
 	decodeOK := s.canGPUDecode()
+	// A cold asynchronous capability result previously disabled decoding for
+	// the entire first HDR run, even when the hardware supports Main10. Give
+	// this run a small demand-only budget before selecting the GPU graph.
+	if s.waitDecode && !decodeOK && pic.tonemap && !s.SoftwareDecode && (accel == AccelVideoToolbox || accel == AccelNVENC || accel == AccelQSV) {
+		if cache, ok := s.Features.decode.(*decodeProbeCache); ok {
+			decodeOK = cache.supportsWithin(s.Accel, v, 300*time.Millisecond)
+		}
+	}
+
 	gpuOff := !decodeOK || v.Interlaced || s.PictureCrop != nil || pic.pad || pic.convert != "" || (pic.tonemap && pic.tenBit && !p010CUDA)
 	dv5 := pic.tonemap && v.DolbyVision && v.DolbyVisionProfile == 5
 	gpuInput, gpuFilters, gpuOK := gpuPipeline(s, accel, pic.w, pic.h, pic.tonemap, pic.tenBit, burn)
@@ -1320,6 +1394,7 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 		// It must not bypass the RPU-aware CPU graph either.
 		gpuOff = true
 	}
+
 	switch {
 	case gpuOK && !gpuOff:
 		inputArgs = append(inputArgs, gpuInput...)
@@ -1674,6 +1749,18 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	in := fmt.Sprintf("[0:%d]", v.Index)
 	chainInput, chain, hwFrames := planFilterChain(s, v, pic, accel, burn, size, format)
 	p.hwFrames = hwFrames
+	bitmapHW := false
+	bitmapOverlay, bitmapUpload := "", ""
+	if burn && IsImageSubtitle(sub.Codec) && !sub.External {
+		if input, filters, overlay, upload, ok := bitmapPipeline(s, v, pic, accel, swFmt); ok {
+			chainInput, chain = input, filters
+			bitmapOverlay, bitmapUpload, bitmapHW = overlay, upload, true
+			// The final overlay may use software frames. Only a hardware
+			// overlay (or the VAAPI re-upload) feeds hardware to the encoder.
+			hwFrames = upload != "" || accel == AccelVAAPI
+			p.hwFrames = hwFrames
+		}
+	}
 	// For bitmap burns, scale on VAAPI before downloading for the software
 	// overlay. Upload the result back to the same device for encoding.
 	vaapiBitmap := burn && IsImageSubtitle(sub.Codec) && !sub.External && accel == AccelVAAPI &&
@@ -1700,15 +1787,18 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 	case burn && IsImageSubtitle(sub.Codec) && !sub.External:
 		post := finish(nil)
 		subW, subH := v.Width, v.Height
-		if vaapiBitmap {
+		if bitmapHW {
+			post = nil
+			subW, subH = pic.w, pic.h
+		} else if vaapiBitmap {
 			post = format(nil)
 			subW, subH = pic.w, pic.h
-		} else if pic.scaling && s.PictureCrop == nil {
+		} else if pic.scaling || s.PictureCrop != nil {
 			// Overlay at the output size: scale the picture first and
 			// draw the subtitle onto the smaller frame, instead of
 			// overlaying every source-size frame and scaling after
-			// (#313). A cropped picture keeps the source-size overlay,
-			// where the subtitle canvas still matches it.
+			// (#313). Crop the subtitle canvas with the same coordinates
+			// before scaling so placement remains aligned with the picture.
 			chain = size(chain)
 			post = format(nil)
 			subW, subH = pic.w, pic.h
@@ -1720,6 +1810,13 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 		subScale := "null"
 		if subW > 0 && subH > 0 {
 			subScale = fmt.Sprintf("scale=%d:%d", subW, subH)
+		}
+		if crop := s.PictureCrop; crop != nil {
+			// Subtitle canvases can differ from the coded picture (for
+			// example 1920x1080 PGS on 1920x800 video). Express the
+			// picture crop in canvas coordinates without first upscaling
+			// the subtitle to a source-sized intermediate.
+			subScale = fmt.Sprintf("crop=iw*%d/%d:ih*%d/%d:iw*%d/%d:ih*%d/%d:exact=1,", crop.width, v.Width, crop.height, v.Height, crop.x, v.Width, crop.y, v.Height) + subScale
 		}
 		// Without -copyts, -ss puts this run's frames at PTS 0 while a
 		// bitmap subtitle packet can keep its title timestamp. Reset both
@@ -1736,8 +1833,13 @@ func planVideo(s runSpec, v *core.StreamInfo) videoPlan {
 				subScale = "setpts=PTS-STARTPTS," + subScale
 			}
 		}
-		graph = fmt.Sprintf("%s%s[base];[0:%d]%s[sub];[base][sub]overlay=eof_action=pass,%s[vout]",
-			in, pre, sub.Index, subScale, strings.Join(post, ","))
+		overlay := "overlay=eof_action=pass," + strings.Join(post, ",")
+		if bitmapHW {
+			overlay = bitmapOverlay
+			subScale += bitmapUpload
+		}
+		graph = fmt.Sprintf("%s%s[base];[0:%d]%s[sub];[base][sub]%s[vout]",
+			in, pre, sub.Index, subScale, overlay)
 	case burn && s.Features.hasFilter("subtitles"):
 		src := s.Input
 		opt := ""

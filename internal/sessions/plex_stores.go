@@ -576,6 +576,13 @@ func (r *LocalRuntime) ServeMedia(w http.ResponseWriter, req *http.Request) {
 	http.NotFound(w, req)
 }
 
+func (r *LocalRuntime) KeepAlive(ctx context.Context, a frontend.SessionAccess, id string) error {
+	if r != nil && r.deps.Sessions != nil {
+		return r.deps.Sessions.KeepAlive(ctx, a, id)
+	}
+	return core.ErrNotAvailable
+}
+
 func (r *LocalRuntime) Report(ctx context.Context, a frontend.SessionAccess, id string, t frontend.Timeline) error {
 	if r != nil && r.deps.Sessions != nil {
 		return r.deps.Sessions.Report(ctx, a, id, t)

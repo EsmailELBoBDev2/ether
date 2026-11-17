@@ -191,6 +191,7 @@ type Server struct {
 	transcodes        *transcodeTable
 	progressiveStops  progressiveStopGuard
 	readCaps          *readCapabilityStore
+	deliveryGrants    *deliveryGrantStore
 	extraPlay         *extraPlayStore
 	subtitleOffers    subtitleOffers
 	subtitlePicks     subtitlePicks
@@ -268,6 +269,7 @@ func NewServer(d Deps) *Server {
 		playbackLifecycle: rt.LifecycleGates(),
 		transcodes:        newTranscodeTable(),
 		readCaps:          newReadCapabilityStore(),
+		deliveryGrants:    newDeliveryGrantStore(),
 		extraPlay:         newExtraPlayStore(newDirectHTTPClient(host.DirectProxy)),
 		selections:        newSelectionStore(),
 		notifier:          newNotifier(),
@@ -400,6 +402,13 @@ func (s *Server) tracePlaybackEnabled() bool {
 func (s *Server) getSections() []Section {
 	if s == nil {
 		return nil
+	}
+	// Stored publication is authoritative even when the last library was deleted.
+	if secs := s.publishedKindSections(s.ctx); secs != nil {
+		for i := range secs {
+			secs[i] = s.sectionDefaults(secs[i])
+		}
+		return secs
 	}
 	if p := s.sectionsPtr.Load(); p != nil {
 		return *p
@@ -936,6 +945,12 @@ func (s *Server) LibrarySections() []Section {
 }
 
 func (s *Server) buildSections() []Section {
+	if secs := s.publishedKindSections(s.ctx); secs != nil {
+		for i := range secs {
+			secs[i] = s.sectionDefaults(secs[i])
+		}
+		return secs
+	}
 	secs := s.d.Sections
 	if len(secs) == 0 {
 		secs = []Section{{ID: 1, Type: frontend.TypeMovie}}

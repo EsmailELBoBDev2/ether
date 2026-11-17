@@ -68,6 +68,8 @@ type ResolveRequest = core.ResolveRequest
 
 const MaxVariants = core.MaxVariants
 
+const VersionSelectorPrefix = core.VersionSelectorPrefix
+
 func ResolutionTier(w, h int) int { return core.ResolutionTier(w, h) }
 
 func SourceLabel(s Source) string { return core.SourceLabel(s) }
@@ -121,6 +123,12 @@ type FrontendHostPolicy = core.FrontendHostPolicy
 type DeliveryPolicy = core.DeliveryPolicy
 type RangeResponse = core.RangeResponse
 type RangeRepresentation = core.RangeRepresentation
+
+// Direct delivery crosses the same seam: a playback that can name the provider URL
+// a session's file may be fetched from, and the link it names. A playback without
+// the capability (a remote cluster, a fixture) simply relays.
+type DirectSourceLink = core.DirectSourceLink
+type DirectDeliverer = core.DirectDeliverer
 
 var WithRangeResponse = core.WithRangeResponse
 var IsGrantCredential = core.IsGrantCredential

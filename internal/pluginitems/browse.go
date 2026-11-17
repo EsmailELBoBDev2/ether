@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -145,7 +143,9 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		// Default to root items when neither Level nor ParentRef is specified.
 		baseWhere.WriteString(` AND i.parent_ref = ''`)
 	}
-	appendFacetClauses(&baseWhere, &baseArgs, q.Facets, nil)
+	if err := s.appendFacets(ctx, q.LibraryID, &baseWhere, &baseArgs, q.Facets); err != nil {
+		return BrowsePage{}, err
+	}
 	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden); err != nil {
 		return BrowsePage{}, err
 	}
@@ -429,76 +429,21 @@ func hasActiveFacets(facets map[string][]string) bool {
 	return false
 }
 
-// appendFacetClauses appends ` AND EXISTS (...)` subqueries on plugin_item_fields
-// for each facet key to where.
-func appendFacetClauses(where *strings.Builder, args *[]any, facets map[string][]string, _ map[string]string) {
-	if len(facets) == 0 {
-		return
+// appendFacets resolves field types only when a browse/search uses facets.
+func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string) error {
+	if !hasActiveFacets(facets) {
+		return nil
 	}
-	keys := make([]string, 0, len(facets))
-	for k := range facets {
-		if strings.TrimSpace(k) != "" {
-			keys = append(keys, k)
+	rec, err := s.GetKindByLibrary(ctx, lib)
+	if err != nil {
+		return err
+	}
+	types := map[string]string{}
+	for _, field := range rec.Decl.Fields {
+		if field.Indexed {
+			types[field.Key] = field.Type
 		}
 	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		rawVals := facets[key]
-		var cleanVals []string
-		for _, v := range rawVals {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				cleanVals = append(cleanVals, v)
-			}
-		}
-		if len(cleanVals) == 0 {
-			continue
-		}
-
-		if envelopeFacet(key) {
-			if len(cleanVals) == 1 && strings.Contains(cleanVals[0], "..") {
-				parts := strings.SplitN(cleanVals[0], "..", 2)
-				lo, e1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-				hi, e2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-				if e1 == nil && e2 == nil {
-					where.WriteString(` AND i.` + key + ` BETWEEN ? AND ?`)
-					*args = append(*args, lo, hi)
-					continue
-				}
-			}
-			ph := make([]string, len(cleanVals))
-			for n, value := range cleanVals {
-				ph[n] = "?"
-				number, err := strconv.ParseFloat(value, 64)
-				if err != nil {
-					where.WriteString(` AND 0=1`)
-					number = 0
-				}
-				*args = append(*args, number)
-			}
-			where.WriteString(` AND i.` + key + ` IN (` + strings.Join(ph, ",") + `)`)
-			continue
-		}
-
-		// Support integer range filters encoded as "min..max".
-		if len(cleanVals) == 1 && strings.Contains(cleanVals[0], "..") {
-			parts := strings.SplitN(cleanVals[0], "..", 2)
-			minVal, err1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-			maxVal, err2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-			if err1 == nil && err2 == nil {
-				where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int BETWEEN ? AND ?)`)
-				*args = append(*args, key, minVal, maxVal)
-				continue
-			}
-		}
-
-		placeholders := make([]string, len(cleanVals))
-		*args = append(*args, key)
-		for idx, v := range cleanVals {
-			placeholders[idx] = "?"
-			*args = append(*args, v)
-		}
-		where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
-	}
+	libraryfilter.AppendPluginFacetClauses(where, args, facets, types)
+	return nil
 }

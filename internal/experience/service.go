@@ -135,9 +135,10 @@ type ServiceDeps struct {
 	PersonCreditForms func(context.Context, int64, []core.MediaType) ([]core.PersonCreditForm, error)
 	PersonFormKeys    func(context.Context, int64, []core.MediaType, []core.PersonCreditForm, core.RatingKey, int) ([]core.RatingKey, error)
 	// peopleVisibleTitles is the people read's VisibleTitles (readPeople).
-	peopleVisibleTitles  func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
-	peoplePortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
-	AiredEpisodes        func(context.Context, core.RatingKey, int, int) (core.Page, error)
+	peopleVisibleTitles         func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
+	peoplePortraitTitles        func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	peopleRecheckPortraitTitles func(context.Context, []PersonCreditRef) (map[core.RatingKey]core.Title, error)
+	AiredEpisodes               func(context.Context, core.RatingKey, int, int) (core.Page, error)
 	// AiredEpisodesMany is AiredEpisodes(show, 0, limit) for several shows in
 	// a few statements. Optional; without it each show is read alone.
 	AiredEpisodesMany func(context.Context, []core.RatingKey, int) (map[core.RatingKey]core.Page, error)
@@ -263,9 +264,7 @@ func NewService(d ServiceDeps) (*Service, error) {
 
 func (s *Service) libraries() []Library {
 	if s.d.LiveLibraries != nil {
-		if live := s.d.LiveLibraries(); live != nil {
-			return live
-		}
+		return s.d.LiveLibraries()
 	}
 	return s.d.Libraries
 }
@@ -954,6 +953,7 @@ func (s *Service) StoredItem(ctx context.Context, req frontend.ItemRequest) (fro
 }
 
 func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+	ctx = s.NoProviderWait(ctx)
 	v, err := s.viewer(ctx, req.Viewer)
 	if err != nil {
 		return frontend.ItemDetail{}, err
@@ -1418,6 +1418,7 @@ func (s *Service) LocalEpisodes(ctx context.Context, viewer *core.Viewer, key co
 }
 
 func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
+	ctx = s.NoProviderWait(ctx)
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	if q.StartAt != 0 && q.AdjacentTo != 0 {
 		return core.Page{}, errors.New("experience: incompatible item anchors")
@@ -1618,7 +1619,7 @@ func (s *Service) rootWindow(ctx context.Context, v *core.User, device core.Devi
 const searchWindowMin = 100
 
 func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.Device, query string, q frontend.ItemQuery) (frontend.SearchPage, error) {
-	ctx = core.WithCatalogViewer(ctx, viewer)
+	ctx = core.WithCatalogViewer(core.WithExplicitSearch(ctx), viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return frontend.SearchPage{}, err
@@ -2818,7 +2819,9 @@ func (s *Service) ResolveFacet(ctx context.Context, viewer *core.Viewer, device 
 	isBuiltinView := true
 	if s.d.PluginLibraries != nil && viewID != "" {
 		if lid, err := strconv.Atoi(viewID); err == nil {
-			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin {
+			// Ordinary catalogue libraries share the indexed studio IDs;
+			// resolving one must not enumerate the entire vocabulary.
+			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lid)); err == nil && lib.Source != core.LibraryBuiltin && !(kind == "studio" && lib.Source == core.LibraryCatalog) {
 				isBuiltinView = false
 			}
 		}

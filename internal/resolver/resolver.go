@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/clusterbus"
@@ -77,6 +78,8 @@ type LibraryProfiles interface {
 
 // Options tunes a Service. Zero values get sensible defaults.
 type Options struct {
+	// EpisodeNumbering reads independent release numbering. cachedOnly forbids upstream work.
+	EpisodeNumbering func(context.Context, core.SearchRequest, bool) (core.ReleaseNumbering, error)
 	// EpisodeIdentity must read only bounded local catalogue data; no upstream calls.
 	EpisodeIdentity func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	SpecialTitles   func(context.Context, int64) []string
@@ -89,8 +92,7 @@ type Options struct {
 	// SeriesYearConflict reports whether the catalogue holds a different
 	// show titled title that first aired in year (see series_year.go).
 	SeriesYearConflict func(ctx context.Context, show core.RatingKey, title string, year int) (bool, error)
-	// ReleaseTitleIDs independently resolves an unmatched release name through
-	// metadata. It must return no identity for ambiguous searches.
+	// ReleaseTitleIDs independently resolves unmatched names; ambiguity returns no IDs.
 	ReleaseTitleIDs func(context.Context, core.MediaType, string) (core.IDs, error)
 	// AnimeCour maps multi-cour TMDB anime season episodes to their cour
 	// and cour-relative episode number; nil disables cour mapping.
@@ -206,8 +208,9 @@ type TraceLimits struct {
 }
 
 type searchCacheEntry struct {
-	results []core.Release
-	expires time.Time
+	refreshed time.Time
+	results   []core.Release
+	expires   time.Time
 }
 
 type inflight struct {
@@ -221,6 +224,7 @@ type inflight struct {
 type Service struct {
 	releaseTitles             releaseTitleCache
 	releaseTitleIDs           func(context.Context, core.MediaType, string) (core.IDs, error)
+	episodeNumbering          func(context.Context, core.SearchRequest, bool) (core.ReleaseNumbering, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
 	years                     seriesYears
@@ -271,13 +275,21 @@ type Service struct {
 	traces    []Trace
 	maxTraces int
 
-	bgCtx            context.Context
-	bgCancel         context.CancelFunc
-	bgMu             sync.Mutex
-	bgClosed         bool
-	bgWG             sync.WaitGroup
-	refills          map[string]chan struct{} // episode search key -> completion; guarded by bgMu
-	refillRetryAfter map[string]refillMark    // next detail discovery allowed; guarded by bgMu
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bgMu     sync.Mutex
+	// availPersistMu orders a queued availability write against forgetAvailability's
+	// delete, so a revoked verdict is never written back after it was cleared.
+	availPersistMu       sync.Mutex
+	bgClosed             bool
+	bookkeeping          []func(context.Context)
+	bookkeepingRunning   bool
+	bookkeepingIdle      chan struct{}
+	bgWG                 sync.WaitGroup
+	detailVariants       map[[32]byte]*detailVariantSnapshot // bgMu; lazy detail labels
+	detailVariantWorkers int                                 // bgMu
+	refills              map[string]chan struct{}            // episode search key -> completion; guarded by bgMu
+	refillRetryAfter     map[string]refillMark               // next detail discovery allowed; guarded by bgMu
 
 	flightMu sync.Mutex
 	flights  map[string]*inflight
@@ -300,7 +312,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{releaseTitleIDs: opts.ReleaseTitleIDs, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
+	s := &Service{releaseTitleIDs: opts.ReleaseTitleIDs, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, reps: map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
@@ -629,7 +641,7 @@ func flightKey(req core.ResolveRequest, profile core.QualityProfile) string {
 	if len(profile.PreferredLanguages) == 0 && req.User != nil {
 		audio = req.User.AudioLanguages
 	}
-	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%t|%t|%s", req.Title.Key, profile.Name, strings.Join(ex, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","))
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%t|%t|%s", req.Title.Key, profile.Name, strings.Join(ex, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec+"|"+req.PlayedRelease, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","))
 }
 
 // Resolve implements core.Resolver. Concurrent calls for the same
@@ -700,6 +712,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			resolved = &copy
 		}
 	}()
+	ctx = context.WithValue(ctx, requestBookkeepingKey{}, true)
+	ctx = context.WithValue(ctx, speculativeChecksKey{}, new(atomic.Int64))
 	started := time.Now()
 	// An indexer that was paused or did not answer leaves the search
 	// incomplete; nothing found then does not prove the title unavailable.
@@ -718,7 +732,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			s.log.Info("resolver: below 4K", "title", trace.TitleName, "profile", profile.Name, "why", trace.Ceiling)
 		}
 		s.addTrace(trace)
-		s.recordHistory(ctx, trace)
+		history := compactTrace(trace)
+		s.persistBookkeeping(ctx, func(ctx context.Context) { s.recordHistory(ctx, history) })
 	}()
 
 	// The owner's pin for this title, when it applies to this request
@@ -731,7 +746,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		trace.Pinned = pinID
 		// A stored pin already has the complete source. Do not search, rescue,
 		// race other releases or return alternates for automatic failover.
-		sreq := s.searchRequest(ctx, t)
+		sreq := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
 		results := withRelease(nil, pin.Release)
 		cands, _, err := s.rankCandidates(ctx, req, sreq, profile, results, &trace, pinID)
 		if err != nil {
@@ -851,7 +866,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 
 	searchStart := time.Now()
-	results, cached, searchErr := s.searchCached(ctx, sreq, forceFresh)
+	results, cached, searchErr := s.searchWithNumbering(ctx, &sreq, forceFresh)
 	if os.Getenv("ETHER_TRACE_PLAYBACK") != "" {
 		s.log.Info("playback trace: resolver.searchCached",
 			"key", t.Key,
@@ -883,7 +898,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 	s.rememberReleases(t, results)
 	if s.searchObserved != nil {
-		s.searchObserved(ctx, t, results)
+		observed := append([]core.Release(nil), results...)
+		s.persistBookkeeping(ctx, func(ctx context.Context) { s.searchObserved(ctx, t, observed) })
 	}
 	for _, r := range discovered {
 		results = withRelease(results, r)
@@ -914,12 +930,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 				break
 			}
 		}
-		cands = pinFirst(cands, pinID)
+		cands = pinFirst(acceptableVariantAudio(clearIdentityVariants(cands)), pinID)
 		pool := cands
-		auto := core.Release{}
-		if len(cands) > 0 {
-			auto = cands[0].rel
-		}
+		auto := s.slotAuto(req, cands)
 		if s.resolverCfg().OfferHigherVersions && slot.Kind != "auto" && slot.Kind != "alternative" {
 			if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
 				if ranked, _, e := s.rankCandidates(ctx, req, sreq, relaxed, results, &trace, pinID); e == nil {
@@ -1008,6 +1021,16 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable))
 	}
 
+	// A quality change may prefer a known HD source that saves decoding work.
+	// This is a soft preference: never promote unknown/SD, ambiguous, starved,
+	// wrong-audio or below-score sources, and never discard a healthy fallback.
+	if req.Prefer == "" && pin == nil && req.Client.PreferredSourceHeight >= 720 {
+		suitable := func(c candidate) bool {
+			return c.rel.Info.Height >= 720 && c.rel.Info.Height <= req.Client.PreferredSourceHeight && !c.identityWeak && !c.identityConflict && !c.starved && !c.belowScore && c.langOK
+		}
+		sort.SliceStable(cands, func(i, j int) bool { return suitable(cands[i]) && !suitable(cands[j]) })
+	}
+
 	// Preserve normal ranking within each codec family, after policy gates.
 	if req.PreferVideoCodec != "" {
 		sort.SliceStable(cands, func(i, j int) bool {
@@ -1061,6 +1084,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			return nil, errOnDemandForeground
 		}
 		at := time.Now()
+		if !reserveSpeculativeCheck(ctx) {
+			return nil, errHealthBudget
+		}
 		nzb, err := s.indexer.FetchNZB(ctx, cands[0].rel)
 		trace.Candidates[cands[0].trace].Attempted = true
 		trace.Candidates[cands[0].trace].FetchDuration = time.Since(at)
@@ -1244,7 +1270,7 @@ func titleOriginalLanguage(t *core.Title) string {
 }
 
 func searchCacheKey(req core.SearchRequest) string {
-	return fmt.Sprintf("%s|%v|%s|%d|%d|%d", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode)
+	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|aliases:%v|packs:%v|known:%t|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, core.EpisodeAliases(req), req.ReleasePackTargets, req.ReleaseNumberingKnown, req.ReleaseAliasesOnly)
 }
 
 type rescueSearcher interface {
@@ -1280,7 +1306,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	s.mu.Lock()
 	now := s.now()
 	boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL())}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 	s.mu.Unlock()
 	// Merge rescued results into the primary search cache entry so Play
 	// Version (Variants) and subsequent resolves see the full candidate set.
@@ -1326,7 +1352,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		s.mu.Lock()
 		now := s.now()
 		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
-		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL())}
+		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 		s.mu.Unlock()
 	}
 	return results
@@ -1406,7 +1432,7 @@ func (s *Service) searchCached(ctx context.Context, req core.SearchRequest, fres
 		ctx, coverage = core.WithSearchCoverage(ctx)
 	}
 	partial := false
-	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok {
+	if early, ok := ctx.Value(searchPreparationKey{}).(*searchPreparation); ok && early != nil {
 		if streaming, ok := s.indexer.(core.StreamingIndexer); ok {
 			results, partial, err = early.searchLive(ctx, streaming, req)
 		} else {
@@ -1478,7 +1504,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	if len(results) == 0 && ttl > freshReleaseCooloff {
 		ttl = freshReleaseCooloff
 	}
-	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl)}
+	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
 	s.mu.Unlock()
 }
 
@@ -1566,6 +1592,19 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		ids[i] = r.ID
 	}
 	verifiedIDs := s.verifiedAmong(ctx, ids)
+	var subtitles map[string]bool
+	if rcfg.HardSubtitles != "allow" {
+		subtitleIDs := ids
+		if sreq.Type == core.TypeEpisode {
+			// The candidate loop narrows season packs to episode identities before
+			// checking subtitles. Read verdicts for those same identities.
+			subtitleIDs = make([]string, len(results))
+			for n, rel := range results {
+				subtitleIDs[n] = withTarget(rel, sreq).ID
+			}
+		}
+		subtitles = s.subtitleVerdicts(ctx, subtitleIDs)
+	}
 	// One instant ages every candidate. Reading the clock per release made
 	// identical releases differ by the nanoseconds between their scores, so
 	// ties broke on scoring order and clock resolution (a single tick on
@@ -1586,6 +1625,19 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			if identity.reject(rel, t, sreq) == "" && episodeIdentityEvidence(rel, sreq) && rejectIdentityYears(rel, t, sreq, env.lang, func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }) == "" {
 				corroborated = true
 				break
+			}
+		}
+	}
+	// Unknown height is not evidence that a source fits an explicit client
+	// ceiling excluding every measured release. Owner profiles still permit
+	// conservative SD fallbacks when their preferred quality is unavailable.
+	aboveCeiling, withinCeiling := false, false
+	if req.Client.ExplicitMaxHeight && req.Client.MaxHeight > 0 && profile.MaxHeight == req.Client.MaxHeight {
+		for _, rel := range results {
+			if rel.Info.Height > profile.MaxHeight {
+				aboveCeiling = true
+			} else if rel.Info.Height > 0 {
+				withinCeiling = true
 			}
 		}
 	}
@@ -1612,7 +1664,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 		policyResult := policy.Evaluate(rel, policyContext)
-		if env.rcfg.HardSubtitles != "allow" && s.hardSubbed(ctx, rel) {
+		hardSubbed := subtitles[rel.ID] || releaseparse.HardSubbed(rel.Name)
+		if rcfg.HardSubtitles != "allow" && hardSubbed {
 			policyResult.Fallback += 100
 		}
 		if len(profile.ReleaseRules) > 0 {
@@ -1621,7 +1674,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		preferred := pinned || (req.Prefer != "" && rel.ID == req.Prefer)
 		var reason string
 		identityReason := identity.reject(rel, t, sreq)
-		if s.HardSubtitleBlocked(ctx, rel) {
+		if rcfg.HardSubtitles == "exclude" && hardSubbed {
 			reason = "blocked hardcoded subtitles"
 		} else if s.rejectedFor(t.Key, rel) {
 			reason = "release rejected for this title"
@@ -1633,6 +1686,9 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			reason = "ambiguous series identity (name only)"
 		} else if pinned {
 			reason = s.pinRejectReason(rel, sreq, req.Client, exclude)
+		} else if rel.Info.Height <= 0 && aboveCeiling && !withinCeiling {
+			clientRejected = true
+			reason = "unknown source resolution under a resolution limit"
 		} else if policyResult.Rejected {
 			reason = preferenceReason(policyResult)
 		} else {
@@ -1980,8 +2036,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 	return rejectIdentityMetadata(rel, t, sreq, catalogLang, acceptYear, false)
 }
 
-// metadataMatch is independent metadata evidence for the parsed title, kept
-// separate from the identifiers an indexer reports on the release.
+// metadataMatch is independent metadata evidence, separate from reported IDs.
 func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool, metadataMatch bool) string {
 	if releaseparse.IsPlaceholderResult(rel.Name) {
 		return "indexer placeholder"
@@ -2045,8 +2100,8 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 			return "obfuscated, no usable info"
 		}
 		// Querying by ID does not prove that the indexer honored it.
-		// A result needs reported identifiers or an independent metadata
-		// match to establish an otherwise alternate title's identity.
+		// Independent metadata or reported identifiers are needed to
+		// establish an otherwise alternate title's identity.
 		return formatTitleMismatch(rel.Info.Title, expectedTitlesFor(t, sreq))
 	}
 	if isEpisode {
@@ -2064,7 +2119,7 @@ func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchReq
 			if rel.Protocol != core.ProtocolTorrent && rel.Protocol != core.ProtocolUsenet {
 				return "season pack (skipped in v1)"
 			}
-			packEpisode := sreq.Episode
+			_, packEpisode := releaseNumbers(rel.Info, sreq)
 			if rel.Info.Cour > 0 && rel.Info.Cour == sreq.Cour && sreq.CourEpisode > 0 {
 				packEpisode = sreq.CourEpisode
 			}
@@ -2176,11 +2231,19 @@ func episodeMatchesRequest(info core.ReleaseInfo, sreq core.SearchRequest) bool 
 		}
 		return false
 	}
-	return releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq))
+	if releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq)) {
+		return true
+	}
+	for _, n := range core.EpisodeAliases(sreq) {
+		if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+			return true
+		}
+	}
+	return false
 }
 
 func packCoversSeasonCour(info core.ReleaseInfo, sreq core.SearchRequest) bool {
-	if !packCoversSeason(info, sreq.Season) {
+	if _, _, ok := packNumbers(info, sreq); !ok {
 		return false
 	}
 	if info.Cour > 1 && sreq.Cour > 0 && info.Cour != sreq.Cour {
@@ -2365,6 +2428,57 @@ func regionTagConflicts(releaseTitle, wantTitle string, countries []string) bool
 	return true
 }
 
+// releaseNumbers keeps canonical single-episode numbers when they fit. Packs
+// covering the chosen order use that order, including complete-series packs.
+func releaseNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int) {
+	// Without aliases, even a rejected pack retains its canonical target and
+	// per-episode release ID. Coverage validation belongs to the ranking gate.
+	if !req.ReleaseNumberingKnown && len(core.EpisodeAliases(req)) == 0 {
+		return req.Season, req.Episode
+	}
+	if info.FullSeason {
+		season, episode, _ := packNumbers(info, req)
+		return season, episode
+	}
+	if !releaseparse.EpisodeMatchesNumbering(info, req.Season, req.Episode, absoluteEpisode(req)) && info.Cour == 0 {
+		for _, n := range core.EpisodeAliases(req) {
+			if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+				return n.Season, n.Episode
+			}
+		}
+	}
+	return req.Season, req.Episode
+}
+
+// A pack cannot select different files under two fitting numbering systems.
+func packNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int, bool) {
+	if info.Cour > 0 {
+		return req.Season, req.Episode, packCoversSeason(info, req.Season)
+	}
+	if req.ReleaseNumberingKnown {
+		chosen := core.EpisodeNumber{}
+		for _, n := range req.ReleasePackTargets {
+			if !packCoversSeason(info, n.Season) || (len(info.Episodes) > 0 && !slices.Contains(info.Episodes, n.Episode)) {
+				continue
+			}
+			if chosen.Episode > 0 && chosen != n {
+				return 0, 0, false
+			}
+			chosen = n
+		}
+		return chosen.Season, chosen.Episode, chosen.Episode > 0
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		if packCoversSeason(info, n.Season) && (len(info.Episodes) == 0 || slices.Contains(info.Episodes, n.Episode)) {
+			return n.Season, n.Episode, true
+		}
+	}
+	if packCoversSeason(info, req.Season) {
+		return req.Season, req.Episode, true
+	}
+	return 0, 0, false
+}
+
 // withTarget marks a torrent candidate for an episode request with the
 // wanted episode, so debrid streams that file of a multi-file torrent. A
 // season pack gets a per-episode release ID: health, bad marks, pins and
@@ -2383,13 +2497,25 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 	if sreq.Type != core.TypeEpisode || sreq.Episode <= 0 {
 		return rel
 	}
+	targetSeason, targetEpisode := releaseNumbers(rel.Info, sreq)
+	if rel.Info.FullSeason && targetEpisode <= 0 {
+		return rel
+	}
+	alternate := targetSeason != sreq.Season || targetEpisode != sreq.Episode
 	// A Usenet season pack is narrowed to the episode's files when its NZB
 	// is fetched; other Usenet releases need no target.
-	if rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
+	if !alternate && rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
 		return rel
 	}
 	if rel.Target != nil {
 		target := *rel.Target
+		if alternate {
+			target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
+			target.Season, target.Episode = targetSeason, targetEpisode
+			if target.PackID != "" {
+				rel.ID = core.TargetReleaseID(target.PackID, target)
+			}
+		}
 		target.ShowYear, target.EpisodeTitle = sreq.Year, sreq.EpisodeTitle
 		target.FileName = rel.FileName
 		if sreq.Season == 0 {
@@ -2397,11 +2523,18 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		}
 		target.AbsoluteEpisode = releaseparse.AnimeSearchEpisode(sreq)
 		target.Cour, target.CourEpisode = sreq.Cour, sreq.CourEpisode
+		if alternate {
+			target.Cour, target.CourEpisode = 0, 0
+		}
 		target.ExpectedIDs, target.ReportedIDs = sreq.IDs, rel.ReportedTitleIDs()
 		rel.Target = &target
 		return rel // enrich cached identities without deriving their ID again
 	}
-	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: sreq.Season, Episode: sreq.Episode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	if alternate {
+		target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
+		target.Cour, target.CourEpisode = 0, 0
+	}
 	if sreq.Season == 0 {
 		target.ShowTitles, target.SpecialTitles = specialShowTitles(sreq), sreq.SpecialTitles
 	}

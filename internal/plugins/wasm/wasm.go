@@ -71,6 +71,7 @@ type Request struct {
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
 // as its body field (usually a JSON string), passed through untouched.
 type Response struct {
+	Blob    json.RawMessage   `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -95,7 +96,7 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 // host functions. Wall time adds 1 unit per WallUnitInterval.
 var DefaultCosts = map[string]int64{
 	"log": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,

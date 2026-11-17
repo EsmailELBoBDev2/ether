@@ -22,6 +22,7 @@ func TestConfiguredVersionSlots(t *testing.T) {
 			cfg.Resolver.OfferHigherVersions = mode != "default"
 			idx := &fakeIndexer{releases: variantReleases()}
 			svc := New(idx, fakeHealth{}, nil, cfg, Options{})
+			defer svc.Close()
 			req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()}
 			ctx := context.Background()
 			cold, err := svc.VersionSlots(ctx, req, core.MaxVariants, false)
@@ -66,6 +67,18 @@ func TestConfiguredVersionSlots(t *testing.T) {
 			if !found {
 				t.Fatal("known releases lost their labels")
 			}
+			// Local responses keep the configured identities immediately and
+			// acquire labels only through the bounded background snapshot.
+			local := core.WithLocalResponse(ctx)
+			immediate, e := svc.VersionSlots(local, req, core.MaxVariants, true)
+			if e != nil || !reflect.DeepEqual(ids(immediate), before) {
+				t.Fatalf("local slots: %v", e)
+			}
+			svc.bgWG.Wait()
+			labelled, e := svc.VersionSlots(local, req, core.MaxVariants, true)
+			if e != nil || !reflect.DeepEqual(labelled, warm) {
+				t.Fatalf("local labels differ: %v", e)
+			}
 			for _, v := range warm[1:] {
 				if v.Release.ID == v.ID {
 					continue
@@ -108,6 +121,7 @@ func TestConfiguredVersionSlots(t *testing.T) {
 		cfg.Resolver.OfferHigherVersions = true
 		idx := &fakeIndexer{releases: []core.Release{rel("high", "The.Signal.1999.2160p.WEB-DL.HEVC.DDP5.1-GRP", 20000), rel("hd", "The.Signal.1999.1080p.WEB-DL.H.264.DDP5.1-GRP", 8000)}}
 		svc := New(idx, fakeHealth{}, nil, cfg, Options{})
+		defer svc.Close()
 		req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()}
 		slots, err := svc.VersionSlots(context.Background(), req, core.MaxVariants, false)
 		if err != nil {
@@ -134,4 +148,62 @@ func TestConfiguredVersionSlots(t *testing.T) {
 		}
 	})
 
+}
+
+// Menu labels, reservation and admission must share the same Auto identity as
+// discovery changes, whether Auto is fresh, remembered, or owner-pinned.
+func TestVersionSlotSourceAgreement(t *testing.T) {
+	for _, mode := range []string{"fresh", "remembered", "pinned"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := testCfg()
+			cfg.Quality.Rules = nil
+			cfg.Quality.Default, cfg.Quality.Remote = "4K", "4K"
+			cfg.Resolver.AlternativesPerResolution = true
+			cfg.Resolver.OfferHigherVersions = true
+			releases := []core.Release{
+				rel("high", "The.Signal.1999.2160p.WEB-DL.HEVC.DDP5.1-GRP", 20000),
+				rel("hd", "The.Signal.1999.1080p.WEB-DL.H.264.DDP5.1-GRP", 8000),
+			}
+			svc := New(&fakeIndexer{releases: releases}, fakeHealth{}, nil, cfg, Options{})
+			defer svc.Close()
+			ctx := context.Background()
+			req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps()}
+			primeSearchCache(t, svc, req.Client)
+			if mode == "remembered" {
+				req.PlayedRelease = "hd"
+			}
+			if mode == "pinned" {
+				pinned, _ := svc.LookupRelease("hd")
+				if _, err := svc.Pin(ctx, req.Title.Key, "", pinned, ""); err != nil {
+					t.Fatal(err)
+				}
+				req.PlayedRelease = "high" // a pin wins over previous playback
+			}
+			versions, err := svc.VersionSlots(ctx, req, core.MaxVariants, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAuto := "high"
+			if mode != "fresh" {
+				wantAuto = "hd"
+			}
+			if versions[0].Release.ID != wantAuto {
+				t.Fatalf("Auto = %s, want %s", versions[0].Release.ID, wantAuto)
+			}
+			for _, version := range versions {
+				if version.Release.ID == version.ID {
+					continue
+				}
+				pick := req
+				pick.Prefer, pick.PreferredOnly = version.ID, true
+				got, err := svc.Resolve(ctx, pick)
+				if err != nil || got == nil || got.Release.ID != version.Release.ID || !got.MatchesVersion(version.ID) {
+					t.Fatalf("menu %s (%s) admitted %+v: %v", version.Label, version.Release.ID, got, err)
+				}
+			}
+			if mode != "fresh" && versions[1].Release.ID != "high" {
+				t.Fatalf("4K source consumed by Auto: %+v", versions[1])
+			}
+		})
+	}
 }

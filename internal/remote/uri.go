@@ -147,6 +147,16 @@ func BuildConnections(o BuildOptions) []Connection {
 		addIP(o.WAN, o.PublicPort, false)
 	}
 	for _, c := range parsedCustom {
+		// A container on a bridge network only sees its own address, so the
+		// owner names the host's LAN IP here. Publish its plex.direct form too:
+		// a browser client cannot use the plain-IP URL securely.
+		if ip := net.ParseIP(c.Address); ip != nil && c.Local && wantHTTPS {
+			if v4 := ip.To4(); v4 != nil {
+				ip = v4
+			}
+			add(Connection{Protocol: "https", Address: ip.String(), Port: c.Port, Local: true, IPv6: c.IPv6, Custom: true,
+				URI: "https://" + net.JoinHostPort(PlexDirectHost(ip, o.CertHash), strconv.Itoa(c.Port))})
+		}
 		if secure == SecureRequired && c.Protocol == "http" && (wantHTTPS || o.HTTPSOnPlainIP || hasCustomHTTPS) {
 			continue
 		}

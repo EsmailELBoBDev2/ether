@@ -34,6 +34,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/livetv"
 	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/logredact"
@@ -503,7 +504,17 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	}
 	// Libraries (v0.3.8 §1): seed Movies/TV Shows and move the retired
 	// config library names onto libraries 1/2 exactly once.
-	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log}); err != nil {
+	if a.libraries, err = libraries.New(ctx, a.db, libraries.Options{Logger: a.log, CompileCataloguePolicy: func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+		if a.catalog == nil {
+			return nil, fmt.Errorf("catalogue unavailable")
+		}
+		return a.catalog.CompileLibraryRules(specs, fallback)
+	}, CompilePluginPolicy: func(ctx context.Context, id core.LibraryID, specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+		if a.pluginsRT == nil || a.pluginsRT.pluginitems == nil {
+			return nil, fmt.Errorf("plugin items unavailable")
+		}
+		return a.pluginsRT.pluginitems.CompilePolicy(ctx, id, specs, fallback)
+	}}); err != nil {
 		a.Close()
 		return nil, fmt.Errorf("libraries: %w", err)
 	}

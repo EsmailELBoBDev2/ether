@@ -1,3 +1,4 @@
+import { VelaDistribution } from "./VelaDistribution";
 import { WatchButton } from "../../components/WatchButton";
 import {
   Button,
@@ -33,7 +34,7 @@ import { viewerStatus } from "../viewers/ViewerStatus";
 import { XtreamLogins } from "./XtreamLogins";
 import { AwayFromHome } from "./AwayFromHome";
 import { PlexApp } from "./PlexApp";
-import { appInstalled, appLabel, appPath, appPurpose, appRank } from "./catalog";
+import { appLabel, appPath, appPurpose, appRank } from "./catalog";
 import { LevelBadge } from "../../components/status";
 import {
   StatusRow,
@@ -52,6 +53,7 @@ type FrontendInfo = {
     version?: string;
     certifiedApps?: { name: string; steps: string[] }[];
     defaultPort?: number;
+    auth?: string;
   };
   enabled: boolean;
   status: {
@@ -353,10 +355,12 @@ function ProtocolSettings({
       setSaving(false);
     }
   }
+  if (id === "vela" && !info?.status.webPlayerReady) return hidden ? null : <VelaDistribution />;
   if (state.error)
     return hidden ? null : <ErrorPanel error={state.error} onRetry={() => void state.reload()} />;
   if (!draft) return hidden ? null : <LoadingRows />;
   const named = ["jellyfin", "emby", "silo", "dlna"].includes(id);
+  const lanViewer = info?.descriptor.auth === "none_lan";
   const more: {
     key: "discovery" | "publicViewerPicker";
     label: string;
@@ -389,11 +393,14 @@ function ProtocolSettings({
       <div hidden={hidden} className="space-y-6">
         {id === "vela" && !hidden ? (
           <>
-            <WatchButton app="vela" />
-            <VelaAppearance
-              value={draft.defaultSkinId ?? "cinematic"}
-              onChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
-            />
+            <VelaDistribution />
+            {info?.status.webPlayerReady ? <WatchButton app="vela" /> : null}
+            {info?.status.webPlayerReady ? (
+              <VelaAppearance
+                value={draft.defaultSkinId ?? "cinematic"}
+                onChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
+              />
+            ) : null}
           </>
         ) : null}
         {["jellyfin", "emby", "silo"].includes(id) ? (
@@ -419,7 +426,7 @@ function ProtocolSettings({
             </div>
           </SettingsSection>
         ) : null}
-        {id !== "plex" && id !== "dlna" ? (
+        {id !== "plex" && id !== "dlna" && !lanViewer ? (
           <SettingsSection title={t("Away from home")}>
             <SettingsRow
               title={<label htmlFor={`${id}-public-url`}>{t("Public address")}</label>}
@@ -519,6 +526,14 @@ function ProtocolSettings({
             </MoreOptions>
           </SettingsSection>
         ) : null}
+        {lanViewer && id !== "dlna" ? (
+          <SettingsSection title={t("Browse as")}>
+            <LANViewer
+              value={draft.viewerId}
+              onChange={(viewerId) => setDraft((old) => (old ? { ...old, viewerId } : old))}
+            />
+          </SettingsSection>
+        ) : null}
         {named ? (
           <SettingsSection
             title={id === "dlna" ? t("What the TV shows") : t("Find this server")}
@@ -529,7 +544,8 @@ function ProtocolSettings({
             }
           >
             {id === "dlna" ? (
-              <DLNAViewer
+              <LANViewer
+                createLivingRoomGuest
                 value={draft.viewerId}
                 onChange={(viewerId) => setDraft((old) => (old ? { ...old, viewerId } : old))}
               />
@@ -581,7 +597,15 @@ function protocolName(id: string): string {
   }
 }
 
-function DLNAViewer({ value, onChange }: { value?: number; onChange: (id?: number) => void }) {
+function LANViewer({
+  value,
+  onChange,
+  createLivingRoomGuest = false,
+}: {
+  value?: number;
+  onChange: (id?: number) => void;
+  createLivingRoomGuest?: boolean;
+}) {
   const viewers = useAsync(() => api.viewers(), []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
@@ -622,9 +646,11 @@ function DLNAViewer({ value, onChange }: { value?: number; onChange: (id?: numbe
           .filter((v) => ["owner", "active"].includes(viewerStatus(v)))
           .map((v) => ({ value: String(v.id), label: v.title || v.username }))}
       />
-      <Button disabled={busy} onClick={() => void createGuest()}>
-        {t("Create a living-room guest")}
-      </Button>
+      {createLivingRoomGuest ? (
+        <Button disabled={busy} onClick={() => void createGuest()}>
+          {t("Create a living-room guest")}
+        </Button>
+      ) : null}
       {error != null && <ErrorPanel error={error} />}
     </div>
   );
@@ -748,16 +774,16 @@ export default function Apps() {
   const [searchParams] = useSearchParams();
   const connectOpen = searchParams.get("connect") === "1";
   const navigate = useNavigate();
-  const apps = [...(state.data ?? [])]
-    .filter(appInstalled)
-    .sort((a, b) => appRank(a.descriptor.id) - appRank(b.descriptor.id));
+  const apps = [...(state.data ?? [])].sort(
+    (a, b) => appRank(a.descriptor.id) - appRank(b.descriptor.id),
+  );
   const plexInfo = apps.find((info) => info.descriptor.id === "plex");
   const plexOn = plexInfo?.enabled === true;
   const showPlex = plexOn && routeTab === "plex";
   const tabs = [
     { key: "overview", label: t("Overview") },
     ...apps
-      .filter((info) => info.enabled)
+      .filter((info) => info.enabled || info.descriptor.id === "vela")
       .map((info) => ({ key: pathFor(info.descriptor.id), label: nameFor(info) })),
   ];
   const routed = useRouteTab(tabs, "overview");
@@ -773,10 +799,9 @@ export default function Apps() {
       if (!plexEnabled) navigate("/apps/overview", { replace: true });
       return;
     }
-    const match = state.data.find(
-      (info) => pathFor(info.descriptor.id) === routeTab && appInstalled(info),
-    );
-    if (!match?.enabled) navigate("/apps/overview", { replace: true });
+    const match = state.data.find((info) => pathFor(info.descriptor.id) === routeTab);
+    if (!match?.enabled && match?.descriptor.id !== "vela")
+      navigate("/apps/overview", { replace: true });
   }, [state.data, routeTab, navigate]);
   useInterval(() => void state.reload(), 10_000);
   const [error, setError] = useState<unknown>();
@@ -818,7 +843,7 @@ export default function Apps() {
               </p>
             ) : null}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {state.data.filter(appInstalled).map((info) => (
+              {state.data.map((info) => (
                 <IntegrationAppCard
                   key={info.descriptor.id}
                   identity={{ id: info.descriptor.id, name: nameFor(info) }}
@@ -830,8 +855,16 @@ export default function Apps() {
                   disabled={busy != null && busy !== info.descriptor.id}
                   toggleLabel={t("{app} enabled", { app: nameFor(info) })}
                   onToggle={(enabled) => void toggle(info, enabled)}
-                  configureHref={info.enabled ? `/apps/${pathFor(info.descriptor.id)}` : undefined}
-                  configureLabel={t("Settings")}
+                  configureHref={
+                    info.enabled || info.descriptor.id === "vela"
+                      ? `/apps/${pathFor(info.descriptor.id)}`
+                      : undefined
+                  }
+                  configureLabel={
+                    info.descriptor.id === "vela" && !info.status.webPlayerReady
+                      ? t("Install Vela")
+                      : t("Settings")
+                  }
                 />
               ))}
             </div>
@@ -847,7 +880,11 @@ export default function Apps() {
           const info = apps.find((app) => pathFor(app.descriptor.id) === item.key);
           return (
             <div key={item.key}>
-              {tab === item.key && info ? <AppDetail info={info} startOpen={connectOpen} /> : null}
+              {tab === item.key &&
+              info &&
+              (info.descriptor.id !== "vela" || info.status.webPlayerReady) ? (
+                <AppDetail info={info} startOpen={connectOpen} />
+              ) : null}
               <ProtocolSettings id={protocolFor(item.key)} info={info} hidden={tab !== item.key} />
             </div>
           );

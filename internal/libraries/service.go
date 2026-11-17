@@ -15,7 +15,7 @@ import (
 
 // List returns every library in owner order: sort, then id (§1.3).
 func (s *Service) listDB(ctx context.Context) ([]core.Library, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+libraryCols+` FROM libraries ORDER BY sort, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+libraryCols+` FROM libraries WHERE deleted=0 ORDER BY sort, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +128,8 @@ func (s *Service) ByKey(ctx context.Context, key string) (core.Library, error) {
 
 // Create saves a library with sources and visible visibility rules.
 func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaType, rules []core.LibraryExclusion, fallback string, p core.Presentations) (core.Library, error) {
+	mediaType = core.MediaType(core.NormalizeRuleMediaType(string(mediaType)))
+	rules = core.NormalizeLibraryRules(rules)
 	name = strings.TrimSpace(name)
 	slug := slugify(name)
 	if name == "" || slug == "" {
@@ -136,7 +138,7 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 	if mediaType != core.TypeMovie && mediaType != core.TypeShow {
 		return core.Library{}, fmt.Errorf("%w: library type must be movie or show", ErrInvalid)
 	}
-	if _, err := libraryfilter.CompilePolicy(rules, fallback); err != nil {
+	if _, err := s.compileCatalogueRules(rules, fallback); err != nil {
 		return core.Library{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -284,8 +286,14 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 }
 
 func (s *Service) libraryForPluginKind(ctx context.Context, pluginID, kindKey string) (core.Library, error) {
+	var deleted int
+	if err := s.db.QueryRowContext(ctx, "SELECT deleted FROM libraries WHERE source='plugin' AND plugin_id=? AND kind_key=?", pluginID, kindKey).Scan(&deleted); err == nil && deleted != 0 {
+		return core.Library{}, ErrDeleted
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return core.Library{}, err
+	}
 	lib, err := scanLibrary(s.db.QueryRowContext(ctx,
-		`SELECT `+libraryCols+` FROM libraries WHERE source = 'plugin' AND plugin_id = ? AND kind_key = ?`, pluginID, kindKey))
+		`SELECT `+libraryCols+` FROM libraries WHERE source = 'plugin' AND plugin_id = ? AND kind_key = ? AND deleted=0`, pluginID, kindKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Library{}, core.ErrNotFound
 	}
@@ -347,13 +355,13 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		pinnedType = "mixed"
 	}
 	switch {
-	case lib.ID == core.LibraryMovies || lib.MediaType == core.TypeMovie:
+	case lib.MediaType == core.TypeMovie:
 		pinnedType = string(core.TypeMovie)
-	case lib.ID == core.LibraryShows || lib.MediaType == core.TypeShow:
+	case lib.MediaType == core.TypeShow:
 		pinnedType = string(core.TypeShow)
 	}
 	normalized := make([]core.LibraryExclusion, len(rules))
-	for i, r := range rules {
+	for i, r := range core.NormalizeLibraryRules(rules) {
 		cp := cloneRule(r)
 		if pinnedType != "" {
 			cp.MediaType = pinnedType
@@ -362,9 +370,14 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 		}
 		normalized[i] = cp
 	}
-	compile := libraryfilter.CompilePolicy
+	compile := s.compileCatalogueRules
 	if lib.Source == core.LibraryPlugin {
-		compile = libraryfilter.CompilePluginPolicy
+		compile = func(specs []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+			if s.compilePluginPolicy != nil {
+				return s.compilePluginPolicy(ctx, lib.ID, specs, fallback)
+			}
+			return libraryfilter.CompilePluginPolicy(specs, fallback, nil)
+		}
 	}
 	if _, err := compile(normalized, visibilityDefault); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
@@ -393,21 +406,81 @@ func (s *Service) SetRules(ctx context.Context, id core.LibraryID, rules []core.
 	return nil
 }
 
-// Delete removes a filter or plugin library. Built-ins are refused:
-// Movies and TV Shows exist forever. Plugin libraries are deleted
-// only through plugin removal (§2.5), which calls this after purging
-// the plugin's items.
+// Delete withdraws publication and retains the declaration as a tombstone.
+// Media, source membership and watch history survive removal. Retained rules
+// are available only to already admitted playback and explicit restoration.
 func (s *Service) Delete(ctx context.Context, id core.LibraryID) error {
-	lib, err := s.Get(ctx, id)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if lib.Source == core.LibraryBuiltin {
-		return ErrBuiltinLibrary
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE libraries SET deleted=1 WHERE id=? AND deleted=0", int64(id))
+	if err != nil {
+		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM libraries WHERE id = ?`, int64(id)); err != nil {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return core.ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	s.gen.Add(1)
 	return nil
+}
+
+// ListCurrent bypasses the presentation cache for admission decisions.
+func (s *Service) ListCurrent(ctx context.Context) ([]core.Library, error) { return s.listDB(ctx) }
+
+// RestorePluginLibrary is an explicit owner action. Keeping the original row
+// preserves item references, owner settings and the exact plugin/kind identity.
+func (s *Service) RestorePluginLibrary(ctx context.Context, plugin, kind string, decl PluginLibraryDecl) (core.Library, error) {
+	plugin, kind = strings.TrimSpace(plugin), strings.TrimSpace(kind)
+	if plugin == "" || kind == "" || strings.TrimSpace(decl.Name) == "" || slugify(plugin) == "" || slugify(kind) == "" {
+		return core.Library{}, ErrInvalid
+	}
+	_, err := s.db.ExecContext(ctx, "UPDATE libraries SET deleted=0 WHERE source='plugin' AND plugin_id=? AND kind_key=?", strings.TrimSpace(plugin), strings.TrimSpace(kind))
+	if err != nil {
+		return core.Library{}, err
+	}
+	s.gen.Add(1)
+	return s.UpsertPluginLibrary(ctx, plugin, kind, decl)
+}
+
+// Purge removes an automatically withdrawn declaration, but retains owner
+// tombstones even across uninstall/reinstall of the same plugin identity.
+func (s *Service) Purge(ctx context.Context, id core.LibraryID) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM libraries WHERE id=? AND deleted=0", int64(id))
+	if err == nil {
+		s.gen.Add(1)
+	}
+	return err
+}
+
+// Retained returns declaration identity for plugin cleanup, including tombstones.
+func (s *Service) Retained(ctx context.Context, id core.LibraryID) (core.Library, error) {
+	return scanLibrary(s.db.QueryRowContext(ctx, "SELECT "+libraryCols+" FROM libraries WHERE id=?", int64(id)))
+}
+
+// ListRetained includes deleted declarations solely for already admitted media.
+// Their original membership lets current viewer restrictions keep applying.
+func (s *Service) ListRetained(ctx context.Context) ([]core.Library, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+libraryCols+" FROM libraries ORDER BY sort,id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.Library
+	for rows.Next() {
+		lib, err := scanLibrary(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lib)
+	}
+	return out, rows.Err()
 }

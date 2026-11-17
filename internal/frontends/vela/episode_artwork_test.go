@@ -59,13 +59,23 @@ func TestVelaEpisodeArtwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exp := &episodeArtworkExperience{images: map[core.RatingKey][]frontend.Image{}}
+	exp := &episodeArtworkExperience{images: map[core.RatingKey][]frontend.Image{
+		core.ShowKey(42): {{Kind: frontend.ImagePoster, Path: "series-poster"}},
+	}}
 	titles := []frontend.Title{}
 	for n := 1; n <= 5; n++ {
 		key := core.EpisodeKey(42, 1, n)
+		if n == 5 {
+			key = core.EpisodeKey(43, 1, n) // Neither episode nor show has art.
+		}
 		titles = append(titles, frontend.Title{Key: key})
 		if n < 5 {
 			exp.images[key] = []frontend.Image{{Kind: frontend.ImagePoster, Path: "poster"}}
+		}
+		if n == 1 {
+			titles[len(titles)-1].PosterPath = "/own-portrait.jpg"
+			exp.images[key][0].Width = 500
+			exp.images[key][0].Height = 750
 		}
 		if n < 4 {
 			exp.images[key] = append(exp.images[key], frontend.Image{Kind: frontend.ImageBackdrop, Path: "show-art"})
@@ -103,8 +113,19 @@ func TestVelaEpisodeArtwork(t *testing.T) {
 			continue
 		}
 		want := []string{"still", "still", "backdrop", "poster"}[n]
-		if len(art) != 1 || art[0]["kind"] != want {
+		wantCount := 2
+		if n == 3 {
+			wantCount = 1
+		}
+		if len(art) != wantCount || art[0]["kind"] != want {
 			t.Fatalf("episode %d artwork=%v", n+1, art)
+		}
+		posterPath := "series-poster"
+		if n == 0 {
+			posterPath = "poster"
+		}
+		if art[len(art)-1]["kind"] != "poster" || art[len(art)-1]["id"] != hash(posterPath) {
+			t.Fatalf("episode %d lacks portrait fallback: %v", n+1, art)
 		}
 		u, err := url.Parse(art[0]["sizes"].([]object)[0]["url"].(string))
 		if err != nil {
@@ -119,11 +140,15 @@ func TestVelaEpisodeArtwork(t *testing.T) {
 			return w
 		}
 		w := serve()
-		expected := []string{"still-one", "still-two", "show-art", "poster"}[n]
+		expected := []string{"still-one", "still-two", "show-art", "series-poster"}[n]
 		if w.Code != 200 || w.Body.String() != expected {
 			t.Fatalf("episode %d image=%d %q", n+1, w.Code, w.Body.String())
 		}
-		delete(exp.images, titles[n].Key)
+		if n == 3 {
+			delete(exp.images, core.ShowKey(42))
+		} else {
+			delete(exp.images, titles[n].Key)
+		}
 		if w := serve(); w.Code != 404 {
 			t.Fatalf("lost artwork still served: %d", w.Code)
 		}

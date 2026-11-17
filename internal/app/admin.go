@@ -25,6 +25,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/trakt"
 	"github.com/braedonsaunders/ether/internal/transcode"
 	"github.com/braedonsaunders/ether/internal/usenet"
+	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
 func (a *App) buildAdmin() http.Handler {
@@ -63,6 +64,7 @@ func (a *App) buildAdmin() http.Handler {
 		AuthenticatePlex: a.users.Authenticate, LinkPlex: a.users.LinkPlex, LocalIdentity: local, IdentityGrants: grants, IdentityLimiter: limiter, OwnerCredentialChanged: a.syncOwnerRecovery, PollLimiter: pollLimiter, QuickConnect: quick, RefreshViewers: a.users.RefreshViewers, OwnerConfigured: func(ctx context.Context) bool { _, err := a.users.Owner(ctx); return err == nil },
 		Config:           a.cfg,
 		Frontends:        a.frontends.control,
+		Vela:             veladist.New(a.frontendClientsDir(), a.opts.Version, func() string { return a.cfg.Get().Vela.ChannelURL }),
 		Extensions:       a.extensionHandlers(),
 		PublicExtensions: a.publicExtensionHandlers(),
 		ValidateExtra:    a.validateExtra,

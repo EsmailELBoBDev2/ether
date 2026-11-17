@@ -56,6 +56,7 @@ type CompatDevice = {
 };
 
 type CapabilityOverride = {
+  force?: boolean;
   id?: string;
   product?: string;
   productExact?: boolean;
@@ -80,7 +81,19 @@ type ObservedClient = {
   lastSeen: string;
 };
 
+type SeenDevice = {
+  clientIdentifier: string;
+  name: string;
+  platform: string;
+  device: string;
+  app: string;
+  lastSeen: string;
+  viewer: string;
+  overrideIndex?: number;
+};
+
 type Catalog = {
+  seenDevices?: SeenDevice[];
   apps: CompatApp[];
   devices: CompatDevice[];
   observed: ObservedClient[];
@@ -88,6 +101,8 @@ type Catalog = {
 };
 
 type Draft = {
+  force: boolean;
+  platform: string;
   pick: string;
   match: string;
   profiles: string[];
@@ -238,6 +253,8 @@ function resolutionName(height: number) {
 
 function blankDraft(): Draft {
   return {
+    force: false,
+    platform: "",
     pick: "",
     match: "",
     profiles: [],
@@ -255,6 +272,8 @@ function blankDraft(): Draft {
 function listsFrom(saved?: CapabilityOverride, builtinHeight = 0) {
   const height = saved?.maxHeight ?? 0;
   return {
+    force: Boolean(saved?.force),
+    platform: saved?.platform ?? "",
     profiles: saved?.dolbyVisionProfiles?.map(String) ?? [],
     subtitles: [...(saved?.subtitleCodecs ?? [])],
     video: [...(saved?.videoCodecs ?? [])],
@@ -307,6 +326,8 @@ function applyCapabilityDiff(
   builtinHeight: number,
   keepProduct: boolean,
 ) {
+  if (draft.force) override.force = true;
+  else delete override.force;
   if (!sameList(draft.profiles, baseline.profiles)) {
     const profiles = draft.profiles
       .map((part) => Number(part))
@@ -503,6 +524,24 @@ export function DeviceCapabilities() {
     );
   };
 
+  const seenOverride = (row: SeenDevice) =>
+    row.overrideIndex === undefined ? undefined : overrides[row.overrideIndex];
+
+  const openSeenDevice = (row: SeenDevice) => {
+    const matched = seenOverride(row);
+    const saved = matched && isDeviceMatch(matched) ? matched : undefined;
+    openDraft(
+      { mode: "device", name: row.name || row.device, device: row.device, custom: true, saved },
+      {
+        ...blankDraft(),
+        ...listsFrom(saved),
+        match: saved?.device || row.device,
+        platform: saved?.platform || row.platform,
+        product: saved?.product || "",
+      },
+    );
+  };
+
   const openCreate = () => {
     openDraft({ mode: "create", view }, blankDraft());
   };
@@ -533,10 +572,18 @@ export function DeviceCapabilities() {
       const appsSide = editing.mode === "create" && editing.view === "apps";
       const saved = appsSide
         ? appOverride(match)
-        : overrides.find((item) => isDeviceMatch(item) && sameText(item.device, match));
+        : editing.mode === "device"
+          ? editing.saved
+          : overrides.find(
+              (item) =>
+                isDeviceMatch(item) &&
+                sameText(item.device, match) &&
+                sameText(item.platform, draft.platform),
+            );
       const override: CapabilityOverride = { ...saved };
       delete override.id;
       delete override.platform;
+      if (!appsSide && draft.platform.trim()) override.platform = draft.platform.trim();
       if (appsSide) {
         delete override.device;
         override.product = match;
@@ -602,7 +649,9 @@ export function DeviceCapabilities() {
     );
     const renamed =
       (target.override.product ?? "") !== (target.saved?.product ?? "") ||
-      (target.override.device ?? "") !== (target.saved?.device ?? "");
+      (target.override.device ?? "") !== (target.saved?.device ?? "") ||
+      (target.override.platform ?? "") !== (target.saved?.platform ?? "") ||
+      Boolean(target.override.force) !== Boolean(target.saved?.force);
     if (!capabilityChanged(target.override) && !renamed) {
       setEditing(null);
       return;
@@ -897,7 +946,9 @@ export function DeviceCapabilities() {
               <PagedTable
                 rows={deviceRows}
                 rowKey={(row) =>
-                  row.kind === "known" ? deviceKey(row.row) : `custom:${row.saved.device}`
+                  row.kind === "known"
+                    ? deviceKey(row.row)
+                    : `custom:${row.saved.platform}:${row.saved.device}:${row.saved.product}`
                 }
                 searchable
                 pageSize={15}
@@ -988,6 +1039,55 @@ export function DeviceCapabilities() {
                 ]}
               />
             )}
+            {view === "devices" ? (
+              <section className="space-y-3">
+                <h2 className="text-lg font-medium">{t("Seen devices")}</h2>
+                <PagedTable
+                  rows={matrix.data.seenDevices ?? []}
+                  rowKey={(row) => row.clientIdentifier}
+                  pageSize={15}
+                  searchable
+                  labels={pagedTableLabels()}
+                  empty={<EmptyState title={t("No seen devices yet")} />}
+                  onRowClick={openSeenDevice}
+                  columns={[
+                    {
+                      key: "name",
+                      header: t("Device"),
+                      cell: (row) => (
+                        <span className="inline-flex items-center gap-2">
+                          {row.name || row.device}
+                          {seenOverride(row) ? (
+                            <Badge variant="warning">{t("Changed")}</Badge>
+                          ) : null}
+                        </span>
+                      ),
+                    },
+                    { key: "platform", header: t("Platform"), cell: (row) => row.platform },
+                    { key: "app", header: t("App"), cell: (row) => row.app || t("Unknown") },
+                    {
+                      key: "lastSeen",
+                      header: t("Last seen"),
+                      cell: (row) => relativeTime(row.lastSeen),
+                    },
+                    {
+                      key: "viewer",
+                      header: t("Viewer"),
+                      cell: (row) => row.viewer || t("Unknown"),
+                    },
+                    {
+                      key: "edit",
+                      header: t("Settings"),
+                      cell: (row) => (
+                        <Button size="sm" onClick={() => openSeenDevice(row)}>
+                          {t("Edit")}
+                        </Button>
+                      ),
+                    },
+                  ]}
+                />
+              </section>
+            ) : null}
           </>
         )}
         <RecordDrawer
@@ -1121,6 +1221,19 @@ export function DeviceCapabilities() {
             }
             value={draft.dolby}
             onChange={(dolby) => setDraft({ ...draft, dolby })}
+          />
+          {editing?.mode === "device" && editing.custom ? (
+            <TextRow
+              label={t("Platform")}
+              value={draft.platform}
+              onChange={(platform) => setDraft({ ...draft, platform })}
+            />
+          ) : null}
+          <BoolRow
+            label={t("Use these settings even when the app reports otherwise")}
+            help={t("Use this when your device can play something its app is too cautious about.")}
+            value={draft.force}
+            onChange={(force) => setDraft({ ...draft, force })}
           />
           {showProduct ? (
             <TextRow

@@ -536,8 +536,18 @@ type Request struct {
 	Locale string `json:"locale,omitempty"`
 }
 
+// FrontendBlob asks the host to serve cached bytes without passing them through
+// guest memory. LibraryKey scopes Ref to an owned, viewer-visible kind library.
+// MemberIndex selects an archive member; nil serves the entire blob.
+type FrontendBlob struct {
+	LibraryKey  string `json:"libraryKey"`
+	Ref         string `json:"ref"`
+	MemberIndex *int   `json:"memberIndex,omitempty"`
+}
+
 // Response is a plugin's answer to a Request.
 type Response struct {
+	Blob    *FrontendBlob     `json:"blob,omitempty"`
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    json.RawMessage   `json:"body,omitempty"`
@@ -650,10 +660,11 @@ type Host interface {
 
 // FetchRequest is one plugin outbound HTTP call.
 type FetchRequest struct {
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    []byte            `json:"body,omitempty"`
+	TimeoutMS int64             `json:"timeoutMs,omitempty"`
+	Method    string            `json:"method"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      []byte            `json:"body,omitempty"`
 }
 
 // FetchResponse is the answer to a FetchRequest (body capped at 10 MiB).

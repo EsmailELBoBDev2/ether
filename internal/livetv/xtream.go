@@ -190,6 +190,11 @@ func fetchXtream(ctx context.Context, s *Service, src *Source) (Fetched, error) 
 	if err := x.get(ctx, "get_live_streams", &streams); err != nil {
 		return Fetched{}, err
 	}
+	if len(streams) == 0 {
+		if err := s.refuseEmptyLineup(ctx, src); err != nil {
+			return Fetched{}, err
+		}
+	}
 	old, err := s.sourceStreamIDs(ctx, src.ID)
 	if err != nil {
 		return Fetched{}, err

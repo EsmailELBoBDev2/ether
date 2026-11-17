@@ -58,16 +58,19 @@ type BrokerDeps struct {
 	// prepared through KindPlayback so it shares the decision, HLS and
 	// stream-limit machinery with catalogue titles (spec §15.1).
 	KindSource func(context.Context, *core.Viewer, core.RatingKey) (*core.KindInput, error)
-	// MediaLookup checks current title policy using local facts only; it must
-	// never resolve a release or fetch remote metadata on a segment request.
-	// If nil, Lookup must satisfy the same requirement.
-	MediaLookup   func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error)
-	Playback      core.Playback
-	Transcoder    core.Transcoder
-	Progress      ProgressWriter
-	SourceHistory SourceHistoryWriter
-	ActiveViewer  func(context.Context, int64) (*core.Viewer, error)
-	CanPlay       func(*core.Viewer, bool, time.Time) bool
+	// CurrentMediaLookup checks already admitted playback using local facts.
+	// When nil, MediaLookup retains its historical behavior. MediaLookup checks
+	// admission policy, including lazy issuance. Neither lookup may resolve a
+	// release or refresh remote metadata. If MediaLookup is nil, Lookup must
+	// satisfy that same local-only requirement.
+	CurrentMediaLookup func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error)
+	MediaLookup        func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error)
+	Playback           core.Playback
+	Transcoder         core.Transcoder
+	Progress           ProgressWriter
+	SourceHistory      SourceHistoryWriter
+	ActiveViewer       func(context.Context, int64) (*core.Viewer, error)
+	CanPlay            func(*core.Viewer, bool, time.Time) bool
 	// CurrentPlay rechecks a running item without imposing bedtime.
 	// FreshPlay re-reads fenced membership and safety policy for admission. A returned viewer
 	// replaces the cached one for the rest of the call. ErrPolicyUnconfirmed
@@ -174,6 +177,12 @@ type retiredSession struct {
 
 // Broker coordinates playback admission for every protocol, including Plex.
 type Broker struct {
+	timelineReserved int
+	timelineEffects  []timelineEffect
+	timelineRunning  bool
+	timelineCancel   context.CancelFunc
+	timelineDone     chan struct{}
+
 	previews            map[string]previewSession
 	previewPending      map[int64]bool
 	previewPreparations map[int64]*previewPreparation
@@ -477,7 +486,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		}
 		return b.planKind(ctx, req, v)
 	}
-	title, err := b.deps.Lookup(ctx, v, req.Device, req.Item)
+	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
@@ -681,7 +690,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			planErr = fmt.Errorf("release %s: %w", ps.Resolution.Release.ID, planErr)
 		}
 	}()
-	if req.Intent.ExactVersion && (ps.Resolution == nil || ps.Resolution.Release.ID != req.Version) {
+	if req.Intent.ExactVersion && !ps.Resolution.MatchesVersion(req.Version) {
 		if !existed || previous == nil || previous.ID != ps.ID {
 			b.deps.Playback.Stop(ps.ID)
 		}
@@ -753,9 +762,9 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	exactRelease := ""
-	if req.Intent.ExactVersion {
-		exactRelease = req.Version
-	} else if versionHandle != "" && ps.Resolution != nil && ps.Resolution.Release.ID != "" {
+	// The selected logical slot was validated above. Pin its admitted
+	// concrete release for Open and all later source-revision checks.
+	if (req.Intent.ExactVersion || versionHandle != "") && ps.Resolution != nil && ps.Resolution.Release.ID != "" {
 		exactRelease = ps.Resolution.Release.ID
 	}
 	if detail != nil {
@@ -853,7 +862,7 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 		}
 	} else {
 		var lerr error
-		title, lerr = b.deps.Lookup(ctx, v, req.Device, p.request.Item)
+		title, lerr = b.deps.Lookup(core.WithLiveApp(ctx, string(p.request.Protocol)), v, req.Device, p.request.Item)
 		if lerr != nil {
 			return frontend.Session{}, lerr
 		}
@@ -1015,6 +1024,10 @@ func (b *Broker) access(ctx context.Context, a frontend.SessionAccess, id string
 }
 
 func (b *Broker) accessSession(ctx context.Context, a frontend.SessionAccess, id string, enforcePlaybackPolicy bool) (*brokerSession, *core.Viewer, error) {
+	return b.accessSessionBinding(ctx, a, id, enforcePlaybackPolicy, true)
+}
+
+func (b *Broker) accessSessionBinding(ctx context.Context, a frontend.SessionAccess, id string, enforcePlaybackPolicy, restore bool) (*brokerSession, *core.Viewer, error) {
 	viewer, err := b.viewer(ctx, a.Viewer)
 	if err != nil {
 		return nil, nil, err
@@ -1031,6 +1044,9 @@ func (b *Broker) accessSession(ctx context.Context, a frontend.SessionAccess, id
 	}
 	b.mu.Unlock()
 	if !ok {
+		if !restore {
+			return nil, nil, core.ErrNotFound
+		}
 		if err := b.restoreNeutralBinding(ctx, id, &a, "", string(a.Protocol)); err != nil {
 			return nil, nil, err
 		}
@@ -1263,8 +1279,32 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 		originSession = s.playbackID
 	}
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.public.Protocol, SessionID: originSession, ClientID: s.public.Device.ID})
+	var notify func()
+	reserved := false
+	if s.public.Protocol == "vela" {
+		b.mu.Lock()
+		if b.closed || b.timelineReserved >= 256 {
+			b.mu.Unlock()
+			rollbackSequence()
+			return errors.New("sessions: timeline effects capacity reached")
+		}
+		b.timelineReserved++
+		b.mu.Unlock()
+		reserved = true
+		defer func() {
+			if reserved {
+				b.mu.Lock()
+				b.timelineReserved--
+				b.mu.Unlock()
+			}
+		}()
+	}
 	if sequenced {
 		err = b.deps.Progress.(receiptProgress).ProgressWithReceipt(ctx, s.public.ViewerID, s.public.Item, t.Position, t.Duration, t.State, b.sampleReceipt(ctx, s, report))
+	} else if progress, ok := b.deps.Progress.(interface {
+		AcceptProgress(context.Context, int64, core.RatingKey, time.Duration, time.Duration, string) (func(), error)
+	}); ok && s.public.Protocol == "vela" && s.public.Item.Kind() != core.KindExtra {
+		notify, err = progress.AcceptProgress(ctx, s.public.ViewerID, s.public.Item, t.Position, t.Duration, t.State)
 	} else {
 		err = RecordProgress(ctx, b.deps.Progress, s.public.ViewerID, s.public.Item, t.Position, t.Duration, t.State)
 	}
@@ -1284,23 +1324,23 @@ func (b *Broker) Report(ctx context.Context, a frontend.SessionAccess, id string
 	if toucher, ok := b.deps.Playback.(interface{ Touch(string) }); ok && (t.State == "playing" || t.State == "paused") {
 		toucher.Touch(s.playID)
 	}
-	NotifyTranscodeActivity(b.deps.Transcoder, s.public.ID, t.State)
-	if progress, ok := b.deps.Playback.(core.PlaybackTimeline); ok {
-		progress.PlaybackProgress(s.public.ViewerID, s.clientID, s.public.Item, t.Position, t.State)
+	if s.public.Protocol != "vela" {
+		b.applyTimelineEffects(ctx, s, v, t)
+	} else {
+		b.enqueueTimelineEffect(s, v, t, notify)
+		reserved = false
 	}
-	if b.deps.OnTimeline != nil {
-		b.deps.OnTimeline(v, s.public.Item, t.Position, t.Duration, t.State)
-	}
-	b.publish(ctx, sessionEvent("SessionUpdated", s.public, &t))
 	if t.State == "stopped" {
 		return b.stopLocked(ctx, s)
 	}
 	if err = b.saveNeutralBinding(ctx, id, true); err != nil {
 		return err
 	}
-	b.ensureTrickplay(ctx, s, t.Position)
-	if t.State == "playing" {
-		b.enqueueSubtitleWork(s)
+	if s.public.Protocol != "vela" {
+		b.ensureTrickplay(ctx, s, t.Position)
+		if t.State == "playing" {
+			b.enqueueSubtitleWork(s)
+		}
 	}
 	return nil
 }
@@ -1617,6 +1657,10 @@ func (b *Broker) Close(ctx context.Context) {
 	if b.historyCancel != nil {
 		b.historyCancel()
 	}
+	if b.timelineCancel != nil {
+		b.timelineCancel()
+	}
+	timelineDone := b.timelineDone
 	var transferCancels []context.CancelFunc
 	for _, transfers := range b.lazyTransfers {
 		for _, cancel := range transfers {
@@ -1649,6 +1693,12 @@ func (b *Broker) Close(ctx context.Context) {
 	// canceled; bound the cleanup so an unresponsive gate cannot block forever.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.shutdownTimeout)
 	defer cancel()
+	if timelineDone != nil {
+		select {
+		case <-timelineDone:
+		case <-cleanupCtx.Done():
+		}
+	}
 	if b.historyDone != nil {
 		drainCtx, drainCancel := context.WithTimeout(cleanupCtx, 150*time.Millisecond)
 		select {

@@ -1,4 +1,4 @@
-// Package episodeorder provides presentation-only TV ordering. Canonical TMDB
+// Package episodeorder provides TV presentation and independent release preferences. Canonical TMDB
 // keys and season/episode identity never change, including during playback.
 package episodeorder
 
@@ -23,6 +23,7 @@ import (
 
 func init() {
 	store.Register("episodeorder", 1, `CREATE TABLE episodeorder_preferences(user_id INTEGER NOT NULL,show_key INTEGER NOT NULL,group_id TEXT NOT NULL,specials TEXT NOT NULL DEFAULT 'last',PRIMARY KEY(user_id,show_key)); CREATE TABLE episodeorder_groups(id TEXT PRIMARY KEY,body TEXT NOT NULL,updated_at INTEGER NOT NULL);`)
+	store.Register("episodeorder", 2, `CREATE TABLE episodeorder_release_preferences(show_key INTEGER PRIMARY KEY,mode TEXT NOT NULL,group_id TEXT NOT NULL);`)
 }
 
 type Source interface {
@@ -505,4 +506,42 @@ func (s *Service) Position(ctx context.Context, u *core.User, k core.RatingKey) 
 	}
 	p, ok := l.positions[k]
 	return p.season, p.episode, p.name, ok
+}
+
+// SearchNumbering reads only the independent owner release group.
+func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, season, episode int, cachedOnly bool) (int, int, error) {
+	p, err := s.ReleasePreference(ctx, show)
+	if err != nil || p.Mode != "group" {
+		return 0, 0, err
+	}
+	var g *tmdb.EpisodeGroup
+	if cachedOnly {
+		var body string
+		if err := s.db.QueryRowContext(ctx, `SELECT body FROM episodeorder_groups WHERE id=?`, p.GroupID).Scan(&body); err != nil {
+			return 0, 0, nil
+		}
+		g = &tmdb.EpisodeGroup{}
+		if json.Unmarshal([]byte(body), g) != nil {
+			return 0, 0, nil
+		}
+	} else {
+		g, err = s.group(ctx, p.GroupID)
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	var found bool
+	var sn, en int
+	for _, group := range g.Groups {
+		for _, ep := range group.Episodes {
+			if ep.SeasonNumber == season && ep.EpisodeNumber == episode {
+				if found {
+					return 0, 0, nil
+				} // ambiguous membership
+				found = true
+				sn, en = group.Order+1, ep.Order+1
+			}
+		}
+	}
+	return sn, en, nil
 }

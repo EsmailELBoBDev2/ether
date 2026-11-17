@@ -20,6 +20,12 @@ export function installMockBackend(): void {
     latencyMs: 120,
     // `?vela` previews an owner-installed Vela client.
     velaInstalled: params.has("vela"),
+    velaDistribution:
+      params.get("velaDist") === "installing"
+        ? "installing"
+        : params.get("velaDist") === "rollback"
+          ? "rollback"
+          : undefined,
     liveTVEmpty: params.get("livetv") === "empty",
     onAirLayout: params.get("onair") ?? undefined,
     householdAudio: true,
@@ -262,6 +268,12 @@ export function installMockBackend(): void {
       input instanceof Request ? input.url : String(input),
       window.location.origin,
     );
+    if (url.origin === window.location.origin && url.pathname === "/vela/skins/catalog.json")
+      return Promise.resolve(
+        new Response(JSON.stringify({ documents: [] }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
     if (url.origin === window.location.origin && url.pathname.startsWith("/ether/api/"))
       return fake.fetch(url.toString(), init);
     return real(input, init);

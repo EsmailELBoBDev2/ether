@@ -71,6 +71,7 @@ var tierTouchSources = []touchSource{
 	{table: "collections_members", column: "key", tierA: true},
 	{table: "collections_specs", column: "spec_json", form: touchScan},
 	{table: "episodeorder_preferences", column: "show_key", tierA: true},
+	{table: "episodeorder_release_preferences", column: "show_key", tierA: true},
 	{table: "trackprefs_memory", column: "show_id", form: touchIDOrKey},
 	{table: "trackprefs_scoped", column: "scope_id", form: touchIDOrKey},
 	{table: "viewer_episode_alerts", column: "episode_key", form: touchKeyText, tierA: true},
@@ -164,6 +165,7 @@ var tierTouchSources = []touchSource{
 // the titles behind them would keep every title an Xtream client ever
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
+	"transcode_decode_caps", // Device capabilities hold no title references.
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Startup upgrade markers (credential conversion progress).
@@ -180,7 +182,7 @@ var tierUntouchedTables = []string{
 	"subtitles_auto_attempts", "subtitles_auto_provider_pause",
 	// Libraries hold owner filter definitions and plugin-owned items; a
 	// plugin match naming a removed title is promoted again on open.
-	"libraries", "libraries_", "plugin_", "plugins_setup",
+	"libraries", "libraries_", "plugin_", "plugins_setup", "plugins_schedule_runs",
 	// Id mappings (see above).
 	"frontend_compact_ids", "frontend_compact_id_counters", "silo_source_offer_ids", "frontend_client_families", "frontend_clients_seen",
 	// Encrypted idempotency responses contain transient authority, not durable title intent.
@@ -207,7 +209,7 @@ var tierUntouchedTables = []string{
 	"prerolls", "prerolls_settings", "stats_costs", "stats_device_registry", "stats_device_registry_counter", "stats_indexer_days",
 	"stats_debrid_days", "stats_stream_days",
 	"stats_newsletter_", "stats_provider_days", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
-	"plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
+	"plugins_remote_hashes", "plugins_remote_hash_budget", "plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
 	"plugins_proposals", "plugins_settings", "agent_approvals", "agent_audit", "agent_secret_requests",
 	"agent_threads", "schema_migrations", "sqlite_",
 }

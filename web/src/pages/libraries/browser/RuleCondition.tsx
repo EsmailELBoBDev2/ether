@@ -1,10 +1,24 @@
 import { Button, Input, Select } from "@braedonsaunders/appkit-ui";
+import { catalogValueLabel } from "./catalogValueLabel";
 import { t } from "../../../i18n";
+import type { MediaKind } from "../api";
 import type { Rule, RuleField } from "../../../lib/contract";
 
 // The extended rules use the catalogue's existing indexed predicates. These
 // are individual rule conditions, never a second saved library filter.
-export function browseFields(): [string, string][] {
+export function browseFields(kind?: MediaKind): [string, string][] {
+  if (kind)
+    return [
+      ["__group", t("Rules")],
+      ...["year", "rating", "released"].map((key): [string, string] => [
+        key,
+        kind.fields?.find((f) => f.key === key)?.label ??
+          (key === "year" ? t("Year") : key === "rating" ? t("Rating") : t("Recently released")),
+      ]),
+      ...(kind.fields ?? [])
+        .filter((f) => f.indexed && !["year", "rating", "released"].includes(f.key))
+        .map((f): [string, string] => [f.key, f.label]),
+    ];
   return [
     ["__group", t("Rules")],
     ["__unwatched", t("Unwatched")],
@@ -65,11 +79,11 @@ export function browseFields(): [string, string][] {
     ["releasedFilters", t("Release / air date") + " · " + t("Rules")],
   ];
 }
-export function conditionTitle(rule: Rule): string {
+export function conditionTitle(rule: Rule, kind?: MediaKind): string {
   if (rule.field === "group")
     return rule.op === "in" ? t("Any") : rule.op === "isNot" ? t("Not") : t("All");
   if (rule.field === "viewer") return t("Viewer activity");
-  return browseFields().find(([key]) => `browse:${key}` === rule.field)?.[1] ?? t("Rule");
+  return browseFields(kind).find(([key]) => `browse:${key}` === rule.field)?.[1] ?? t("Rule");
 }
 function valueLabel(key: string): string {
   const labels: Record<string, string> = {
@@ -93,14 +107,41 @@ function valueLabel(key: string): string {
   };
   return labels[key] ?? browseFields().find(([field]) => field === key)?.[1] ?? t("Value");
 }
+// Wire values are separate from translated labels for every finite browse enum.
+function enumValues(field: string): string[] | undefined {
+  return (
+    {
+      type: ["movie", "show"],
+      releaseGate: ["admitted", "held", "unknown"],
+      playable: ["yes", "unknown"],
+      debridCached: ["yes", "unknown"],
+      qualities: ["4k", "hdr", "dv", "atmos"],
+      statuses: ["Returning Series", "Ended", "Canceled", "In Production"],
+    } as Record<string, string[]>
+  )[field];
+}
+function enumLabel(field: string, value: string): string {
+  const labelField =
+    (
+      {
+        releaseGate: "gate",
+        debridCached: "cached",
+        qualities: "quality",
+        statuses: "status",
+      } as Record<string, string>
+    )[field] ?? field;
+  return catalogValueLabel(labelField, value);
+}
 function ValueEditor({
   value,
   onChange,
   field = "",
+  choices,
 }: {
   value: unknown;
   onChange: (v: unknown) => void;
   field?: string;
+  choices?: string[];
 }) {
   if (
     typeof value === "number" &&
@@ -124,6 +165,7 @@ function ValueEditor({
             <ValueEditor
               value={v}
               field={field}
+              choices={choices}
               onChange={(next) => onChange(value.map((old, j) => (j === i ? next : old)))}
             />
             <Button
@@ -159,6 +201,20 @@ function ValueEditor({
         ))}
       </div>
     );
+  const options = choices ?? enumValues(field);
+  if (options)
+    return (
+      <Select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
+        {!options.includes(String(value ?? "")) ? (
+          <option value={String(value ?? "")}>{value ? String(value) : t("Choose")}</option>
+        ) : null}
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {choices ? option : enumLabel(field, option)}
+          </option>
+        ))}
+      </Select>
+    );
   if (typeof value === "boolean")
     return (
       <Select value={String(value)} onChange={(e) => onChange(e.target.value === "true")}>
@@ -181,7 +237,9 @@ export function ExtendedCondition({
   onChange,
   onRemove,
   renderChild,
+  kind,
 }: {
+  kind?: MediaKind;
   rule: Rule;
   onChange: (r: Rule) => void;
   onRemove: () => void;
@@ -193,7 +251,7 @@ export function ExtendedCondition({
   ) => React.ReactNode;
 }) {
   const children = Array.isArray(rule.value) ? (rule.value as Rule[]) : [];
-  const runtime = rule.field.includes("Runtime") || rule.field.includes("Runtimes");
+  const runtime = !kind && (rule.field.includes("Runtime") || rule.field.includes("Runtimes"));
   const convert = (value: unknown, mult: number): unknown =>
     Array.isArray(value)
       ? value.map((v) => convert(v, mult))
@@ -204,7 +262,7 @@ export function ExtendedCondition({
   return (
     <div className="space-y-3 rounded-xl border border-border p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="font-medium">{conditionTitle(rule)}</span>
+        <span className="font-medium">{conditionTitle(rule, kind)}</span>
         <Button size="sm" variant="ghost" onClick={onRemove}>
           {t("Remove")}
         </Button>
@@ -232,11 +290,14 @@ export function ExtendedCondition({
             value=""
             onChange={(e) => {
               if (e.target.value)
-                onChange({ ...rule, value: [...children, newBrowseCondition(e.target.value)] });
+                onChange({
+                  ...rule,
+                  value: [...children, newBrowseCondition(e.target.value, kind)],
+                });
             }}
           >
             <option value="">{t("More conditions")}</option>
-            {browseFields().map(([key, label]) => (
+            {browseFields(kind).map(([key, label]) => (
               <option key={key} value={key}>
                 {label}
               </option>
@@ -246,23 +307,49 @@ export function ExtendedCondition({
             size="sm"
             variant="outline"
             onClick={() =>
-              onChange({ ...rule, value: [...children, { field: "genre", op: "in", value: [] }] })
+              onChange({
+                ...rule,
+                value: [
+                  ...children,
+                  kind ? newBrowseCondition("year", kind) : { field: "genre", op: "in", value: [] },
+                ],
+              })
             }
           >
             {t("Add condition")}
           </Button>
         </>
       ) : (
-        <ValueEditor
-          field={rule.field.replace("browse:", "")}
-          value={displayValue}
-          onChange={(value) => onChange({ ...rule, value: runtime ? convert(value, 60e9) : value })}
-        />
+        <>
+          {kind ? (
+            <Select
+              value={rule.op}
+              onChange={(e) => onChange({ ...rule, op: e.target.value as Rule["op"] })}
+            >
+              <option value="is">{t("is")}</option>
+              <option value="isNot">{t("is not")}</option>
+            </Select>
+          ) : null}
+          <ValueEditor
+            field={kind ? "" : rule.field.replace("browse:", "")}
+            value={displayValue}
+            choices={kind?.fields?.find((field) => `browse:${field.key}` === rule.field)?.enum}
+            onChange={(value) =>
+              onChange({ ...rule, value: runtime ? convert(value, 60e9) : value })
+            }
+          />
+        </>
       )}
     </div>
   );
 }
-export function newBrowseCondition(key: string): Rule {
+export function newBrowseCondition(key: string, kind?: MediaKind): Rule {
+  if (kind && key !== "__group")
+    return {
+      field: `browse:${key}`,
+      op: "is",
+      value: kind.fields?.find((field) => field.key === key)?.enum?.[0] ?? "",
+    };
   if (key === "__group") return { field: "group", op: "is", value: [] };
   if (key.startsWith("__"))
     return {
@@ -304,30 +391,33 @@ export function newBrowseCondition(key: string): Rule {
   return {
     field: `browse:${key}` as RuleField,
     op: "is",
-    value: ["anime", "kids"].includes(key)
-      ? true
-      : arrays.includes(key)
-        ? [
-            key.includes("Years") ||
-            [
-              "years",
-              "excludeRatings",
-              "excludeRuntimes",
-              "collections",
-              "excludeCollections",
-            ].includes(key)
-              ? 0
-              : "",
-          ]
-        : key === "credits"
-          ? [{ kind: "cast", names: [""] }]
-          : ["titleFilters", "studioFilters"].includes(key)
-            ? [{ op: "contains", value: "" }]
-            : key === "releasedFilters"
-              ? [{ op: ">=", unix: 0, spanDay: true }]
-              : numeric
-                ? 0
-                : "",
+    value:
+      enumValues(key) && !arrays.includes(key)
+        ? enumValues(key)![0]
+        : ["anime", "kids"].includes(key)
+          ? true
+          : arrays.includes(key)
+            ? [
+                key.includes("Years") ||
+                [
+                  "years",
+                  "excludeRatings",
+                  "excludeRuntimes",
+                  "collections",
+                  "excludeCollections",
+                ].includes(key)
+                  ? 0
+                  : (enumValues(key)?.[0] ?? ""),
+              ]
+            : key === "credits"
+              ? [{ kind: "cast", names: [""] }]
+              : ["titleFilters", "studioFilters"].includes(key)
+                ? [{ op: "contains", value: "" }]
+                : key === "releasedFilters"
+                  ? [{ op: ">=", unix: 0, spanDay: true }]
+                  : numeric
+                    ? 0
+                    : "",
   };
 }
 

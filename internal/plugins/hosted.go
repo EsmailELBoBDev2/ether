@@ -209,7 +209,13 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 	if err != nil {
 		return Response{}, err
 	}
-	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body}, nil
+	var blob *FrontendBlob
+	if len(resp.Blob) > 0 {
+		if err := json.Unmarshal(resp.Blob, &blob); err != nil {
+			return Response{}, fmt.Errorf("invalid frontend blob response: %w", err)
+		}
+	}
+	return Response{Status: resp.Status, Headers: resp.Headers, Body: resp.Body, Blob: blob}, nil
 }
 
 func (r *hostedRuntime) Close() error       { return r.p.Close() }
@@ -370,7 +376,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "http.fetchToCache", "cache.read", "archive.list", "archive.open":
+	case "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -409,6 +415,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			Body    string            `json:"body"`
 			// BodyBase64 carries a binary request body; it wins over Body.
 			BodyBase64 string `json:"bodyBase64"`
+			TimeoutMS  int64  `json:"timeoutMs"`
 		}
 		if len(args) > 0 {
 			if err := json.Unmarshal(args[0], &req); err != nil {
@@ -426,7 +433,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 			body = decoded
 		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body})
+		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body, TimeoutMS: req.TimeoutMS})
 		if err != nil {
 			return nil, mapHostError(err)
 		}

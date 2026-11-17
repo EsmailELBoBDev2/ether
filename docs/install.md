@@ -125,6 +125,13 @@ if you connect Jellyfin apps to `http://HOST:32400/jellyfin`, or you can
 optionally publish `-p 8096:8096` (and `8097:8097`, `8090:8090`) if you want
 dedicated per-app ports without a path prefix.
 
+In bridge mode Ether sees only its container address (such as `172.17.0.2`),
+so Plex apps and app.plex.tv cannot reach the address it advertises and report
+that the server can't connect securely. Add your host's LAN address under
+**Apps › Away from home › Address and port › Custom server URLs**, for example
+`http://192.168.1.50:32400`. Ether also publishes the secure plex.direct form of
+that address.
+
 Already running Plex on 32400? Use bridge mode and `ETHER_PORT` so Ether does
 not take that port:
 

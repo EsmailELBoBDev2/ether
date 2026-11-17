@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
+	"github.com/braedonsaunders/ether/internal/store"
 	"net/http"
 	"strings"
 	"time"
@@ -98,8 +99,8 @@ func (s *ImageGrantService) pageKey() []byte {
 // revocation and current artwork policy before returning bytes.
 func (s *ImageGrantService) SignPage(ctx context.Context, req frontend.ImagePageRequest) ([]frontend.ImageBatchItem, error) {
 	// A page grant writes nothing per title, so one call signs a whole
-	// listing page (an export's 250), up to the input bound.
-	if len(req.Titles) > maxImageBatchInput || len(req.Kinds) > 6 {
+	// listing or home page, up to the trusted page input bound.
+	if len(req.Titles) > 10000 || len(req.Kinds) > 6 {
 		return nil, frontend.ErrImageBatchLimit
 	}
 	kinds := req.Kinds
@@ -531,9 +532,16 @@ func (s *ImageGrantService) withCheckedTags(ctx context.Context, master []byte, 
 			}
 		}
 	}
-	for start := 0; start < len(digests); start += 400 {
-		part := digests[start:min(start+400, len(digests))]
-		rows, err := s.db.QueryContext(ctx, `SELECT hash FROM frontend_image_grants WHERE surface=? AND revoked<>0 AND hash IN (?`+strings.Repeat(",?", len(part)-1)+`)`, append([]any{string(s.surface)}, part...)...)
+	if len(digests) > 0 {
+		data, err := json.Marshal(digests)
+		if err != nil {
+			return ctx
+		}
+		source := "SELECT value FROM json_each(?)"
+		if store.DialectOf(s.db) == store.Postgres {
+			source = "SELECT value FROM json_array_elements_text(CAST(? AS JSON))"
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT hash FROM frontend_image_grants WHERE surface=? AND revoked<>0 AND hash IN (`+source+`)`, string(s.surface), string(data))
 		if err != nil {
 			return ctx
 		}

@@ -39,6 +39,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 
 func (c *RemoteHostClient) dataCall(ctx context.Context, name string, args []any, out any) error {
@@ -85,4 +88,25 @@ func (c *RemoteHostClient) ArchiveOpen(ctx context.Context, blob string, member 
 		return nil, err
 	}
 	return c.dataRead(ctx, "archive.open", []any{blob, member, r})
+}
+
+// HashRequest requests an on-demand host-side remote digest without storing bytes.
+type HashRequest struct {
+	URL        string `json:"url"`
+	Algo       string `json:"algo"`
+	ExpectSize *int64 `json:"expectSize,omitempty"`
+}
+type HashResult struct {
+	Pending   bool   `json:"pending,omitempty"`
+	RetryInMS int64  `json:"retryInMs,omitempty"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256,omitempty"`
+	SHA1      string `json:"sha1,omitempty"`
+	MD5       string `json:"md5,omitempty"`
+}
+
+func (c *RemoteHostClient) Hash(ctx context.Context, r HashRequest) (HashResult, error) {
+	var out HashResult
+	err := c.dataCall(ctx, "http.hash", []any{r}, &out)
+	return out, err
 }

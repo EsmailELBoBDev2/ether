@@ -1,6 +1,7 @@
 package libraryfilter
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -48,15 +49,52 @@ func (f *Filter) PluginCatchCountsSQL(typ core.MediaType, fields map[string]stri
 }
 
 // CompilePluginPolicy rejects catalogue-only conditions instead of silently
-// treating an unsupported plugin condition as a non-match.
-func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string) (*Filter, error) {
-	f, err := CompilePolicy(specs, fallback)
+// treating an unsupported plugin condition as a non-match. declared maps the
+// kind's indexed field keys to their declared types; nil means the library's
+// kind is unknown, so only built-in conditions compile. It takes plain types,
+// not the plugin declaration, so this package never imports internal/plugins.
+func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string, declared map[string]string) (*Filter, error) {
+	var browse BrowseCompiler
+	if declared != nil {
+		types := declared
+		browse = func(key string, raw json.RawMessage) (string, []any, error) {
+			if _, ok := types[key]; !ok && !envelopeFacet(key) {
+				return "", nil, fmt.Errorf("unknown browse condition %q", key)
+			}
+			values, err := textValues(raw)
+			if err != nil { // Facet values travel as text, including numeric/bool fields.
+				var scalar any
+				if json.Unmarshal(raw, &scalar) != nil || scalar == nil {
+					return "", nil, fmt.Errorf("%s needs a facet value", key)
+				}
+				switch scalar.(type) {
+				case float64, bool:
+					values = []string{fmt.Sprint(scalar)}
+				default:
+					return "", nil, err
+				}
+			}
+			if len(values) == 0 || len(values) > 100 {
+				return "", nil, fmt.Errorf("%s needs 1–100 values", key)
+			}
+			for _, value := range values {
+				if strings.TrimSpace(value) == "" {
+					return "", nil, fmt.Errorf("%s needs a facet value", key)
+				}
+			}
+			var where strings.Builder
+			var args []any
+			AppendPluginFacetClauses(&where, &args, map[string][]string{key: values}, types)
+			return strings.TrimPrefix(where.String(), " AND "), args, nil
+		}
+	}
+	f, err := compilePolicy(specs, fallback, browse)
 	if err != nil {
 		return nil, err
 	}
 	var validate func(condition) error
 	validate = func(c condition) error {
-		if c.predicate != nil {
+		if c.predicate != nil && c.predicateSQL == "" {
 			return fmt.Errorf("condition %q is only available for catalogue sources", c.field)
 		}
 		for _, child := range c.children {

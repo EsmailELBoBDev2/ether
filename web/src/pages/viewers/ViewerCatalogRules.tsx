@@ -10,6 +10,7 @@ import { useAsync } from "../../lib/hooks";
 import { RulesPanel, type VisibilityRule } from "../libraries/browser/LibraryVisibility";
 
 type Policy = {
+  broken?: boolean;
   mode: string;
   exclusions: VisibilityRule[];
   visibilityDefault: string;
@@ -60,6 +61,13 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
         "Choose which catalogue rules this viewer uses. Parental controls always apply.",
       )}
     >
+      {data.policy.broken ? (
+        <p role="alert" className="text-sm text-danger">
+          {t(
+            "Some saved rules could not be read. Titles stay hidden until you edit or remove the rules and save.",
+          )}
+        </p>
+      ) : null}
       <SettingsRow
         title={t("Catalogue rules")}
         control={
@@ -86,7 +94,10 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
             >
               {t("Cancel")}
             </Button>
-            <Button disabled={!draft.dirty || saving} onClick={() => void save()}>
+            <Button
+              disabled={(!draft.dirty && !data.policy.broken) || saving}
+              onClick={() => void save()}
+            >
               {t("Save changes")}
             </Button>
           </div>

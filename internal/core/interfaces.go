@@ -553,8 +553,15 @@ type SearchRequest struct {
 	Year          int
 	Season        int
 	Episode       int
-	EpisodeTitle  string   // optional title used to distinguish same-numbered episodes
-	SpecialTitles []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
+	// AltSeason/AltEpisode are additional release numbers from independent release numbering (zero when unset).
+	AltSeason             int
+	AltEpisode            int
+	ReleaseAliases        []EpisodeNumber
+	ReleasePackTargets    []EpisodeNumber
+	ReleaseNumberingKnown bool
+	ReleaseAliasesOnly    bool     // canonical discovery already ran; query additional forms only
+	EpisodeTitle          string   // optional title used to distinguish same-numbered episodes
+	SpecialTitles         []string `json:"SpecialTitles,omitempty"` // locally stored sibling special titles
 	// AbsoluteEpisode is the episode's number counted from the series
 	// start (0 = unknown), and Anime marks a series whose releases are
 	// commonly numbered that way (additive).
@@ -705,6 +712,28 @@ type MediaSource interface {
 // Usenet.
 type OriginSource interface {
 	Origin() string
+}
+
+// DirectSourceLink is one provider-issued URL for a source's file: the same
+// bytes Ether reads, at an address a client may fetch by itself. Edge names
+// the host in the URL so a redirect is auditable without logging a signed
+// link; it is display metadata, never part of the address.
+type DirectSourceLink struct {
+	URL      string
+	Provider string
+	Edge     string
+	Expires  time.Time
+}
+
+// DirectURLSource is implemented by a MediaSource whose bytes also exist at a
+// provider URL that authorises its own read (additive). A frontend may then
+// redirect a client to that URL instead of relaying the bytes itself, which
+// lets the client re-decide its connection on every request rather than
+// inheriting the one route Ether's session pinned. ok is false when no live
+// URL is held, or when fetching it needs something a client cannot provide
+// (an addon's request headers, a private route, an expired signature).
+type DirectURLSource interface {
+	DirectURL() (link DirectSourceLink, ok bool)
 }
 
 type Engine interface {

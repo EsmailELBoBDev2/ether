@@ -209,6 +209,11 @@ type User struct {
 // ClientCaps is what a Plex client can play, derived from X-Plex-* headers,
 // the client profile and its declared limits.
 type ClientCaps struct {
+	DVProfilesExplicit bool `json:"dvProfilesExplicit,omitempty"` // preserves an owner-forced empty profile set
+	// DVProfilesForced records an owner-forced non-empty Dolby Vision profile list.
+	DVProfilesForced bool `json:"-"`
+	// ForcedOverrideApplied records a runtime declaration replaced by an owner edit.
+	ForcedOverrideApplied bool `json:"-"`
 	// Broadcast inputs are selected for the channel rendition, independently
 	// of viewer quality preferences. Exclusions last only for this airing.
 	BroadcastBitrateKbps  int      `json:"-"`
@@ -245,8 +250,11 @@ type ClientCaps struct {
 	ClientID        string                    `json:"clientId"` // X-Plex-Client-Identifier
 	Version         string                    `json:"version"`
 
-	MaxHeight         int  `json:"maxHeight"`                   // 2160, 1080, 720...
-	ExplicitMaxHeight bool `json:"explicitMaxHeight,omitempty"` // true when MaxHeight came from a request header/query limitation rather than a product default
+	// PreferredSourceHeight softly favors a known HD source for a new quality
+	// request. It never constrains eligibility or replaces an active source.
+	PreferredSourceHeight int  `json:"preferredSourceHeight,omitempty"`
+	MaxHeight             int  `json:"maxHeight"`                   // 2160, 1080, 720...
+	ExplicitMaxHeight     bool `json:"explicitMaxHeight,omitempty"` // true when MaxHeight came from a request header/query limitation rather than a product default
 	// HDRFormats preserves explicit display range declarations for Vela.
 	HDRFormats           []string            `json:"hdrFormats,omitempty"`
 	HDR10                bool                `json:"hdr10"`
@@ -259,7 +267,7 @@ type ClientCaps struct {
 	MaxBitrateKbps       int                 `json:"maxBitrateKbps"`                 // 0 = unlimited
 	DefaultRemoteBitrate bool                `json:"defaultRemoteBitrate,omitempty"` // true when MaxBitrateKbps came from the server's default remote cap rather than a client limitation
 	SubtitleCodecs       []string            `json:"subtitleCodecs,omitempty"`       // native image/text subtitle rendering
-	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses product defaults
+	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses defaults unless DVProfilesExplicit
 	VideoProfiles        map[string][]string `json:"videoProfiles,omitempty"`
 	VideoLevels          map[string]int      `json:"videoLevels,omitempty"` // codec level in ffprobe units (H.264 51 = 5.1)
 	Remote               bool                `json:"remote"`                // not on the server's LAN

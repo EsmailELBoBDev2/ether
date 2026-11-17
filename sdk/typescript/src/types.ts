@@ -497,7 +497,12 @@ export interface KindResolveRequest {
   client?: Record<string, unknown>;
 }
 
+export interface PendingReply { pending: true; retryInMs?: number; job?: string; sources?: never; matches?: never }
+
 export interface KindResolveResponse {
+  pending?: boolean;
+  retryInMs?: number;
+  job?: string;
   sources: PlayableSource[];
   ttlSec?: number;
 }
@@ -988,7 +993,15 @@ export interface RawRequest {
   locale?: string;
 }
 
+/** Host-served cached bytes for an authenticated frontend adapter response. */
+export interface FrontendBlob {
+  libraryKey: string;
+  ref: string;
+  memberIndex?: number;
+}
+
 export interface RawResponse {
+  blob?: FrontendBlob;
   status: number;
   headers?: Record<string, string>;
   body?: unknown;

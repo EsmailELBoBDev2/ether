@@ -34,6 +34,10 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	// Decode a tiny bounded sample outside the session lock. Only proven
 	// embedded side bars matching the existing picture are removed.
 	s.mu.Lock()
+	if s.liveRejected[inputURL] {
+		s.mu.Unlock()
+		return fmt.Errorf("transcode: source exceeds fixed live target; new session required")
+	}
 	if s.headerRejected[inputURL] {
 		s.mu.Unlock()
 		return fmt.Errorf("transcode: input rejected after deterministic header failure")

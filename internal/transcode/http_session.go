@@ -274,7 +274,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "transcode failed", http.StatusInternalServerError)
 			return
 		}
-		s.life.fenceProcess(proc)
+		s.life.fenceProcess(proc, work[2])
 		s.proc = proc
 		s.pipe = pr
 		s.life.markStarted()
@@ -311,7 +311,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientWriteFailed := false
 		if n > 0 {
 			s.writeHTTPHeaders(w)
-			fw := &httpWriteTracker{writer: flushWriter{ResponseWriter: w, s: s}}
+			fw := &httpWriteTracker{writer: flushWriter{ResponseWriter: w, s: s, timeout: s.m.opts.stallTimeout}}
 			if spec.usesHW() {
 				copyErr = copyHTTPMatroska(fw, io.MultiReader(bytes.NewReader(buf[:n]), pr))
 			} else {
@@ -415,7 +415,8 @@ func (s *httpSession) Close() error {
 
 type flushWriter struct {
 	http.ResponseWriter
-	s *httpSession
+	s       *httpSession
+	timeout time.Duration
 }
 
 type httpWriteTracker struct {
@@ -435,12 +436,36 @@ func (w flushWriter) Write(p []byte) (int, error) {
 	if w.s != nil {
 		w.s.Touch()
 	}
+	// Bound each transport operation, not the lifetime of the movie. Clear
+	// the deadline even on error: waiting for the encoder's next bytes must
+	// not consume the next write's budget or poison a reused connection.
+	rc := http.NewResponseController(w.ResponseWriter)
+	timeout := w.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	arm := func() error {
+		err := rc.SetWriteDeadline(time.Now().Add(timeout))
+		if errors.Is(err, http.ErrNotSupported) {
+			return nil // e.g. in-memory recorders
+		}
+		return err
+	}
+	defer rc.SetWriteDeadline(time.Time{})
+	if err := arm(); err != nil {
+		return 0, err
+	}
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 && w.s != nil {
 		w.s.delivered.Store(true)
 	}
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+	if err == nil {
+		if err = arm(); err == nil {
+			err = rc.Flush()
+			if errors.Is(err, http.ErrNotSupported) {
+				err = nil
+			}
+		}
 	}
 	return n, err
 }

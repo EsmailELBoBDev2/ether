@@ -508,6 +508,7 @@ func TestIntegrationToneMap(t *testing.T) {
 			}
 			e := newRealEnv(t, opts...)
 			e.gen(t, "hdr.mkv", 8, "-map", "0:v", "-map", "1:a", "-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le",
+				"-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
 				"-x265-params", "log-level=error:keyint=24:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
 				"-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc", "-c:a", "aac")
 			ctx := context.Background()

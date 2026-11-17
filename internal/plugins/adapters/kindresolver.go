@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -574,7 +575,7 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 				r.flightMu.Unlock()
 				close(fl.done)
 			}()
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal)
 			defer cancel()
 			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, nil, accept)
 		}()
@@ -613,7 +614,13 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		Body:   body,
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, core.ErrNotAvailable
+		}
 		return nil, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, err)
+	}
+	if resp.Status == http.StatusAccepted {
+		return nil, core.ErrNotAvailable
 	}
 	if resp.Status == http.StatusNotFound {
 		if partIdx == nil {

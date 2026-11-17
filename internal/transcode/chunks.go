@@ -835,6 +835,7 @@ func (s *Session) collectChunks(r *run, exited bool) {
 	s.mu.Lock()
 	skip := s.closed || (r.stopped && s.cur != r)
 	stopped := r.stopped
+	eof := !skip && exited && !stopped && r.proc.Err() == nil
 	s.mu.Unlock()
 	if skip {
 		return
@@ -930,7 +931,7 @@ func (s *Session) collectChunks(r *run, exited bool) {
 		}
 	}
 	if exited {
-		outs = append(outs, cr.sl.flush(!stopped && r.proc.Err() == nil)...)
+		outs = append(outs, cr.sl.flush(eof)...)
 	}
 	if len(outs) == 0 {
 		return

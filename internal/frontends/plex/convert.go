@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -630,7 +631,11 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 		stamp = 1
 	}
 	if source, ok := s.svc().variants.(frontend.VersionSlots); ok && !sessionMedia {
-		req := frontend.ResolveRequest{Title: t, Client: s.clientCapsForKey(pr, t.Key), User: pr.User}
+		caps := s.clientCapsForKey(pr, t.Key)
+		// Menu ranking describes the source, just like admission. Remote and
+		// requested bitrate ceilings belong to the output decision.
+		caps.MaxBitrateKbps, caps.DefaultRemoteBitrate = 0, false
+		req := frontend.ResolveRequest{Title: t, Client: caps, User: pr.User}
 		if ps != nil && ps.Resolution != nil {
 			req.PlayedRelease = ps.Resolution.Release.ID
 		} else if !info.Estimated {
@@ -1593,12 +1598,18 @@ func (s *Server) stateFor(ctx context.Context, pr *Request, ts []frontend.Title)
 	for i := range ts {
 		keys[i] = ts[i].Key
 	}
-	st, err := s.state().GetMany(ctx, pr.User.ID, keys)
+	st, err := reqmemo.Do(ctx, fmt.Sprintf("plex:state:%d:%v", pr.User.ID, keys), func() (map[frontend.RatingKey]frontend.WatchStatus, error) {
+		return s.state().GetMany(ctx, pr.User.ID, keys)
+	})
 	if err != nil {
 		s.log.Warn("load watch state", "err", err)
 		return nil
 	}
-	return st
+	copy := make(map[frontend.RatingKey]frontend.WatchStatus, len(st))
+	for key, value := range st {
+		copy[key] = value
+	}
+	return copy
 }
 
 // applyLeafCounts fills viewedLeafCount for shows and seasons by loading
@@ -1647,6 +1658,36 @@ func (s *Server) prefetchListEpisodesWith(ctx context.Context, pr *Request, ts [
 func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []model.Metadata, ts []frontend.Title, memo showEpisodes, states map[frontend.RatingKey]frontend.WatchStatus) {
 	if s.state() == nil || pr.User == nil {
 		return
+	}
+	// Read all displayed containers' episode state once. This keeps the
+	// pending-write overlay (fresh progress may not be flushed yet), while
+	// avoiding a separate GetMany for each season.
+	if memo == nil {
+		memo = showEpisodes{}
+	}
+	if states == nil {
+		seen := map[frontend.RatingKey]bool{}
+		var all []frontend.Title
+		complete := true
+		for _, title := range ts {
+			if title.Type != frontend.TypeShow && title.Type != frontend.TypeSeason {
+				continue
+			}
+			show := frontend.ShowKey(title.Key.TMDB())
+			if seen[show] {
+				continue
+			}
+			seen[show] = true
+			episodes, err := s.episodesOfShow(ctx, pr, memo, show)
+			if err != nil {
+				complete = false
+				break
+			}
+			all = append(all, episodes...)
+		}
+		if complete && len(all) > 0 {
+			states = s.stateFor(ctx, pr, all)
+		}
 	}
 	byKey := map[string]int{}
 	for i := range items {
@@ -1710,7 +1751,7 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 			}
 		}
 		var st map[frontend.RatingKey]frontend.WatchStatus
-		if _, prefetched := memo[title.Key]; prefetched && states != nil && title.Type == frontend.TypeShow {
+		if _, covered := states[eps[0].Key]; states != nil && covered {
 			st = states
 		} else {
 			st = s.stateFor(ctx, pr, eps)

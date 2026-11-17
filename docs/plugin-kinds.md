@@ -336,7 +336,7 @@ synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
 `cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
-`archive.list(blob)` returns `[{index, name, size}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
+`archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
 without loading all compressed bytes. `archive.open(blob, memberIndex,
 {offset, length})` returns at most 1 MiB from the **uncompressed** member.
 Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
@@ -348,11 +348,19 @@ The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList` an
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Member names are limited to 1024 bytes. ZIP supports Store/Deflate and ZIP64;
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`.
+Their stored names are identifiers only: opening one returns a typed
+`UnsafeArchiveMemberError` (a descriptive error through hosted/remote calls),
+while other members remain readable. Empty names, names over 1024 bytes, NUL,
+backslashes, absolute paths (including drive-rooted paths), and traversal or
+noncanonical path segments are unsafe. Colons in ordinary member names are
+allowed: reads use member indexes and never write stored names to disk.
+These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-unsafe paths, links and other special files are refused. Directories may appear
+links and other special files are refused. Unsafe paths are listed but cannot
+be opened. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -414,3 +422,18 @@ Viewer browse/search/playback calls retain tight budgets: `/stream/`, `/catalog/
 route/caller deadlines. Ranking budgets stay unchanged. Administrative setup,
 actions, tools, events and jobs use owner grants. Health/configuration/view/options
 keep short protocol deadlines. See the SDK README for exact fields and APIs.
+
+### Pending resolve and match replies
+
+Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
+`job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
+25 seconds total per Play, and keeps each invocation within five seconds.
+Pending is neutral for health. When the total expires the item is not available
+yet; this result is not saved as a negative resolution. A job receives the
+original request body, uses promoted deadlines and continuation replies, and
+is deduplicated per plugin/kind/item. Job completion wakes the next resolve.
+
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
+A miss returns pending while a bounded host worker streams digests without
+storing bytes; the next resolve reads the cached result. See the worked example
+and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).

@@ -78,7 +78,7 @@ export function NewLibraryDrawer({
     }
     setBusy(true);
     try {
-      const setup = await librariesApi.ensurePluginSetup(source.pluginId);
+      const setup = await librariesApi.ensurePluginSetup(source.pluginId, source.kindKey);
       const libId = setup.libraries.find((lib) => lib.kindKey === source.kindKey)?.id;
       if (!setup.steps.length) {
         onPluginOpened(libId);

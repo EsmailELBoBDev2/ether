@@ -231,6 +231,39 @@ func TestLazyStreamCapabilityReusesSessionAndRevalidatesGrant(t *testing.T) {
 	grants.mu.Lock()
 	grants.revoked = false
 	grants.mu.Unlock()
+	unstartedReq := req
+	unstartedReq.Device.ID = "not-yet-playing"
+	unstartedPath, err := lazy.Issue(ctx, "account-credential-secret", unstartedReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPlanLookup := b.deps.Lookup
+	originalMediaLookup := b.deps.MediaLookup
+	b.deps.CurrentMediaLookup = originalMediaLookup
+	deleted := func(context.Context, *core.Viewer, core.Device, core.RatingKey) (*core.Title, error) {
+		return nil, core.ErrNotFound
+	}
+	b.deps.Lookup, b.deps.MediaLookup = deleted, deleted
+	if _, err := lazy.Issue(ctx, "account-credential-secret", req); err == nil {
+		t.Fatal("deleted membership issued lazy capability")
+	}
+	replay := httptest.NewRecorder()
+	lazy.ServeHTTP(replay, httptest.NewRequest(http.MethodGet, unstartedPath, nil))
+	if replay.Code != http.StatusNotFound {
+		t.Fatalf("unstarted capability replay admitted: %d", replay.Code)
+	}
+	running := httptest.NewRecorder()
+	lazy.ServeHTTP(running, httptest.NewRequest(http.MethodGet, path, nil))
+	if running.Code != http.StatusOK {
+		t.Fatalf("running lazy stream interrupted: %d", running.Code)
+	}
+	runningAuth := httptest.NewRecorder()
+	lazy.(frontend.AuthenticatedLazyStreams).ServeAuthenticated(runningAuth, httptest.NewRequest(http.MethodGet, "/dav/movie.mkv", nil), "account-credential-secret", authenticated)
+	if runningAuth.Code != http.StatusOK {
+		t.Fatalf("running authenticated stream interrupted: %d", runningAuth.Code)
+	}
+	b.deps.Lookup, b.deps.MediaLookup = originalPlanLookup, originalMediaLookup
+	b.deps.CurrentMediaLookup = nil
 	mediaHidden = true
 	hiddenRange := httptest.NewRecorder()
 	lazy.(frontend.AuthenticatedLazyStreams).ServeAuthenticated(hiddenRange, httptest.NewRequest(http.MethodGet, "/dav/movie.mkv", nil), "account-credential-secret", authenticated)

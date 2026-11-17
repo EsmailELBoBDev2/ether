@@ -6,12 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
 type observationTitleKey struct{}
+type speculativeChecksKey struct{}
+
+// One allowance follows the whole resolve through discovery, preparation and
+// ranked validation. Candidate positions cannot enforce this limit because
+// later search results can reorder releases already checked during discovery.
+func reserveSpeculativeCheck(ctx context.Context) bool {
+	if !core.IsSpeculative(ctx) {
+		return true
+	}
+	budget, _ := ctx.Value(speculativeChecksKey{}).(*atomic.Int64)
+	return budget == nil || budget.Add(1) <= speculativeHealthAttempts
+}
 
 // launchValidation runs one candidate check in its own goroutine: a
 // per-candidate timeout over workCtx, reusing a prepared check when present,
@@ -39,6 +52,9 @@ func (s *Service) launchValidation(wg *sync.WaitGroup, workCtx context.Context, 
 }
 
 func (s *Service) validateOne(ctx context.Context, rel core.Release) validation {
+	if !reserveSpeculativeCheck(ctx) {
+		return validation{err: errHealthBudget}
+	}
 	v := validation{}
 	at := time.Now()
 	v.nzb, v.err = s.indexer.FetchNZB(ctx, rel)
@@ -64,7 +80,7 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 			v.healthy, v.healthCached, v.err = s.checkHealthCached(ctx, rel.ID, v.nzb)
 			if v.healthy && v.err == nil && !v.healthCached && s.observed != nil {
 				if title, ok := ctx.Value(observationTitleKey{}).(*core.Title); ok {
-					s.observed(ctx, title, rel)
+					s.persistBookkeeping(ctx, func(ctx context.Context) { s.observed(ctx, title, rel) })
 				}
 			}
 			v.healthDuration = time.Since(at)
@@ -85,7 +101,7 @@ type candidateCheck struct {
 func (c *candidateCheck) wait(ctx context.Context) validation {
 	select {
 	case <-c.done:
-		if c.retrySpeculative != nil && (errors.Is(c.result.err, core.ErrNotCached) || errors.Is(c.result.err, core.ErrBudgetExhausted) || errors.Is(c.result.err, core.ErrForegroundOnly)) {
+		if c.retrySpeculative != nil && (errors.Is(c.result.err, core.ErrNotCached) || errors.Is(c.result.err, core.ErrBudgetExhausted) || errors.Is(c.result.err, core.ErrForegroundOnly) || (!core.IsSpeculative(ctx) && errors.Is(c.result.err, errHealthBudget))) {
 			return c.retrySpeculative(ctx)
 		}
 		return c.result

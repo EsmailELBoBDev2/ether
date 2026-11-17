@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -43,6 +44,9 @@ type playSession struct {
 	diagnosticHistory []object
 	clientErrors      []object
 
+	commandActive                    bool
+	stopping                         bool
+	commandMu                        sync.Mutex
 	mu                               sync.Mutex
 	viewer                           int64
 	device                           string
@@ -400,8 +404,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_request")
 		return
 	}
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.commandActive = true
+	defer func() { s.commandActive = false; s.mu.Unlock() }()
 	if stale(w, s, b.SourceGeneration, b.SeekGeneration) {
 		return
 	}
@@ -422,7 +429,13 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 	}
 	switch b.Kind {
 	case "stop":
-		if e := i.host.Sessions.Stop(r.Context(), i.access(r, v), id); e != nil {
+		s.stopping = true
+		defer func() { s.stopping = false }()
+		var e error
+		if !s.stopPort(w, func() { e = i.host.Sessions.Stop(r.Context(), i.access(r, v), id) }) {
+			return
+		}
+		if e != nil {
 			fail(w, e, r)
 			return
 		}
@@ -455,7 +468,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		}
 		path := paths[selected]
 		if rung := s.rungFor(path); rung != "" {
-			if !i.qualityAllowed(r.Context(), i.access(r, v), id, rung) {
+			allowed := false
+			if !s.port(w, func() { allowed = i.qualityAllowed(r.Context(), i.access(r, v), id, rung) }) {
+				return
+			}
+			if !allowed {
 				problem(w, 403, "policy", "quality_unavailable")
 				return
 			}
@@ -472,7 +489,13 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		url, err := i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: format, Position: origin, LazyStart: true, Continuous: true})
+		var url string
+		var err error
+		if !s.port(w, func() {
+			url, err = i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: format, Position: origin, LazyStart: true, Continuous: true})
+		}) {
+			return
+		}
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -495,14 +518,18 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		}
 		s.plan["selectedPathId"] = b.PathID
 		if format == frontend.StreamHLS {
-			i.refreshTrackDelivery(r.Context(), i.access(r, v), id, s)
+			if !s.portSnapshot(w, func(copy *playSession) { i.refreshTrackDelivery(r.Context(), i.access(r, v), id, copy) }) {
+				return
+			}
 		}
 		s.position = pos
 		s.retainDiagnostics()
 		s.source++
 		s.seek++
 		s.plan["fallback"] = object{"state": "idle"}
-		i.refreshOutput(r.Context(), id, s)
+		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
+			return
+		}
 	case "seek":
 		pos, ok := seconds(b.PositionSeconds)
 		if b.AtSeconds != nil {
@@ -513,7 +540,13 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, extra := s.plan["extraId"]; extra {
-			if e := i.host.Sessions.Report(r.Context(), i.access(r, v), id, frontend.Timeline{Position: pos, State: "playing"}); e != nil {
+			var e error
+			if !s.port(w, func() {
+				e = i.host.Sessions.Report(r.Context(), i.access(r, v), id, frontend.Timeline{Position: pos, State: "playing"})
+			}) {
+				return
+			}
+			if e != nil {
 				fail(w, e, r)
 				return
 			}
@@ -524,7 +557,13 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		paths := s.plan["paths"].([]object)
 		path := selectedPlaybackPath(s.plan, paths)
 		if path["transport"] == "hls" {
-			url, e := i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, LazyStart: true, Continuous: true})
+			var url string
+			var e error
+			if !s.port(w, func() {
+				url, e = i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: frontend.StreamHLS, Position: pos, LazyStart: true, Continuous: true})
+			}) {
+				return
+			}
 			if e != nil {
 				fail(w, e, r)
 				return
@@ -539,7 +578,9 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.retainDiagnostics()
 		s.seek++
 		s.position = pos
-		i.refreshOutput(r.Context(), id, s)
+		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
+			return
+		}
 
 	case "tracks":
 		if _, ok := i.host.Sessions.(frontend.StreamDecisionReader); !ok {
@@ -584,7 +625,14 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			problem(w, 400, "request", "invalid_request")
 			return
 		}
-		url, err := i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: frontend.StreamHLS, Position: s.position, LazyStart: true, Continuous: true, AudioStream: audio, SubtitleStream: sub, BurnImageSubtitles: true})
+		position := s.position
+		var url string
+		var err error
+		if !s.port(w, func() {
+			url, err = i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: frontend.StreamHLS, Position: position, LazyStart: true, Continuous: true, AudioStream: audio, SubtitleStream: sub, BurnImageSubtitles: true})
+		}) {
+			return
+		}
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -614,7 +662,12 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		path["qualities"] = []object{}
 		path["timelineOriginSeconds"] = s.position.Seconds()
 		if reader, ok := i.host.Sessions.(frontend.StreamDecisionReader); ok {
-			if d, e := reader.StreamDecision(r.Context(), i.access(r, v), id); e == nil {
+			var d frontend.Decision
+			var e error
+			if !s.port(w, func() { d, e = reader.StreamDecision(r.Context(), i.access(r, v), id) }) {
+				return
+			}
+			if e == nil {
 				kind := "remux"
 				if d.Kind == frontend.DecisionTranscode {
 					kind = "transcode"
@@ -626,7 +679,13 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 					if subID != nil {
 						selected, _ = strconv.Atoi(subID.(string))
 					}
-					audioTracks, subtitleTracks, _, _ := i.playbackTracks(r.Context(), i.access(r, v), id, s.media, d, selected, false, s.subtitleFormats, s.canBurn)
+					var audioTracks, subtitleTracks []object
+					media, formats, burn := s.media, s.subtitleFormats, s.canBurn
+					if !s.port(w, func() {
+						audioTracks, subtitleTracks, _, _ = i.playbackTracks(r.Context(), i.access(r, v), id, media, d, selected, false, formats, burn)
+					}) {
+						return
+					}
 					s.plan["audioTracks"], s.plan["subtitleTracks"] = audioTracks, subtitleTracks
 				}
 			}
@@ -642,13 +701,22 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.source++
 		s.seek++
 		s.preparation = []frontend.HLSPreparationEvent{{Stage: "decision", At: time.Now().UTC()}}
-		i.refreshOutput(r.Context(), id, s)
+		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
+			return
+		}
 	case "pause", "resume":
 		state := "paused"
 		if b.Kind == "resume" {
 			state = "playing"
 		}
-		if e := i.host.Sessions.Report(r.Context(), i.access(r, v), id, frontend.Timeline{Position: s.position, State: state}); e != nil {
+		position := s.position
+		var e error
+		if !s.port(w, func() {
+			e = i.host.Sessions.Report(r.Context(), i.access(r, v), id, frontend.Timeline{Position: position, State: state})
+		}) {
+			return
+		}
+		if e != nil {
 			fail(w, e, r)
 			return
 		}
@@ -690,7 +758,7 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 	if stale(w, s, b.SourceGeneration, b.SeekGeneration) {
 		return
 	}
-	if !s.ended.IsZero() {
+	if !s.ended.IsZero() || s.stopping {
 		send(w, 200, object{"accepted": true})
 		return
 	}
@@ -741,7 +809,19 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 		}
 		subtitleIndex = &n
 	}
-	if e := i.host.Sessions.Report(r.Context(), i.access(r, v), r.PathValue("id"), frontend.Timeline{Sequence: b.Sequence, Position: pos, State: b.State, AudioStreamIndex: audioIndex, SubtitleStreamIndex: subtitleIndex}); e != nil {
+	s.mu.Unlock()
+	err := func() error {
+		defer s.mu.Lock()
+		return i.host.Sessions.Report(r.Context(), i.access(r, v), r.PathValue("id"), frontend.Timeline{Sequence: b.Sequence, Position: pos, State: b.State, AudioStreamIndex: audioIndex, SubtitleStreamIndex: subtitleIndex})
+	}()
+	if stale(w, s, b.SourceGeneration, b.SeekGeneration) {
+		return
+	}
+	if b.Sequence <= s.sequence || !s.ended.IsZero() || s.stopping {
+		send(w, 200, object{"accepted": true})
+		return
+	}
+	if e := err; e != nil {
 		fail(w, e, r)
 		return
 	}
@@ -766,7 +846,24 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 		s.plan["selectedSubtitleTrackId"] = subtitleID
 	}
 	if b.State == "ended" {
-		if e := i.host.Sessions.Stop(r.Context(), i.access(r, v), r.PathValue("id")); e != nil {
+		s.mu.Unlock()
+		s.commandMu.Lock()
+		s.mu.Lock()
+		defer s.commandMu.Unlock()
+		if stale(w, s, b.SourceGeneration, b.SeekGeneration) {
+			return
+		}
+		if b.Sequence != s.sequence || !s.ended.IsZero() {
+			send(w, 200, object{"accepted": true})
+			return
+		}
+		s.stopping = true
+		defer func() { s.stopping = false }()
+		var stopErr error
+		if !s.stopPort(w, func() { stopErr = i.host.Sessions.Stop(r.Context(), i.access(r, v), r.PathValue("id")) }) {
+			return
+		}
+		if e := stopErr; e != nil {
 			fail(w, e, r)
 			return
 		}
@@ -818,14 +915,26 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 	last, _ := strconv.ParseUint(cursor, 10, 64)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	keepAlive := true // connect, then only the existing heartbeat cadence
 	for {
 		identity, ok := i.host.Identity.(frontend.GrantScopes)
 		if !ok {
 			return
 		}
-		if _, err := identity.GrantScopeCurrent(r.Context(), s.scope, requestDevice(r)); err != nil {
+		viewer, err := identity.GrantScopeCurrent(ctx, s.scope, requestDevice(r))
+		if err != nil {
 			return
 		}
+		s.mu.Lock()
+		ended := !s.ended.IsZero()
+		s.mu.Unlock()
+		if keepAlive && !ended {
+			// Backends without activity-only renewal retain their existing SSE behavior.
+			if err := i.host.Sessions.KeepAlive(ctx, i.access(r, viewer), r.PathValue("id")); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
+				return
+			}
+		}
+		keepAlive = false
 		s.mu.Lock()
 		events := []object{}
 		snapshot := last == 0 || last > s.cursor || (len(s.events) > 0 && last+uint64(len(s.events)) < s.cursor)
@@ -848,7 +957,7 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 			chunks = append(chunks, fmt.Sprintf("id: %s\nevent: %s\ndata: %s\n\n", e["cursor"], e["type"], b))
 		}
 		signal := s.signal
-		ended := !s.ended.IsZero()
+		ended = !s.ended.IsZero()
 		s.mu.Unlock()
 		for _, chunk := range chunks {
 			if _, e := fmt.Fprint(w, chunk); e != nil {
@@ -866,6 +975,7 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-signal:
 		case <-ticker.C:
+			keepAlive = true
 			if _, e := fmt.Fprint(w, ": heartbeat\n\n"); e != nil {
 				return
 			}

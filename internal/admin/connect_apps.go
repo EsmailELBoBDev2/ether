@@ -185,6 +185,26 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 }
 
 // Credentials are decrypted only after owner authentication and explicit CSRF admission.
+// xtreamServerURL is the server address IPTV apps sign in to, or "" when the
+// server has no reachable viewer address. It is not secret, so existing logins
+// can show it after the one-time create response is gone.
+func (h *Handler) xtreamServerURL(r *http.Request) string {
+	if h.deps.ViewerPortalURL == nil {
+		return ""
+	}
+	portal, err := h.deps.ViewerPortalURL(r.Context(), r)
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(portal)
+	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/ether/me") {
+		return ""
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/ether/me") + "/xtream"
+	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	return u.String()
+}
+
 func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	access, ok := RequestAccess(r.Context())
@@ -222,5 +242,5 @@ func (h *Handler) ownerXtreamLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not_found", "login unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"available": available, "username": username, "password": password})
+	writeJSON(w, 200, map[string]any{"available": available, "url": h.xtreamServerURL(r), "username": username, "password": password})
 }

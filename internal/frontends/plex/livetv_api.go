@@ -87,23 +87,27 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 		return nil
 	}
 	filters := s.liveGuideFilters(ctx, u)
-	return &model.MediaProvider{Extra: []model.Attr{model.A("id", 1), model.A("parentID", 1), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: frontend.LiveTVProvider, Title: "Live TV", Types: "video", Protocols: "livetv", Feature: []model.Feature{
+	provider := &model.MediaProvider{Extra: []model.Attr{model.A("id", 1), model.A("parentID", 1), model.A("providerIdentifier", "tv.plex.providers.epg.xmltv"), model.A("epgSource", "XMLTV")}, Identifier: frontend.LiveTVProvider, Title: "Live TV", Types: "video", Protocols: "livetv", Feature: []model.Feature{
 		{
 			Type: "content",
 			Key:  liveProviderPath + "/sections",
-			// Keep one keyed Live TV directory for clients that discover by key,
-			// with the native What's On / Guide pivots and separate grid filters.
+			// Android uses the DVR provider shape for What's On and Guide
+			// pivots. Other clients retain their single directory below.
 			Directory: []model.ProviderDirectory{
 				{
-					ID:     "livetv",
-					Key:    liveProviderPath + "/lineups/dvr/channels",
-					Type:   "livetv",
+					ID:     frontend.LiveTVProvider,
 					HubKey: liveProviderPath + "/hubs/discover",
 					Title:  "Live TV & DVR",
 					Pivot: []model.Pivot{
 						{ID: "dvr.whatson", Key: liveProviderPath + "/hubs/discover", Type: "hub", Title: "What's On", Context: "content.dvr.discover", Symbol: "star"},
 						{ID: "dvr.guide", Key: "view://dvr/guide", Type: "view", Title: "Guide", Context: "content.dvr.guide", Symbol: "guide"},
 					},
+				},
+				{
+					Icon:  "/:/resources/dvr/dvr-watchnow-icon.png",
+					Key:   liveProviderPath + "/watchnow",
+					Title: "Guide",
+					Type:  "mixed",
 				},
 			},
 		},
@@ -113,6 +117,17 @@ func (s *Server) liveTVProvider(ctx context.Context, u *frontend.User) *model.Me
 		{Type: "livetv", Key: "/livetv/dvrs"},
 		{Type: "promoted", Key: liveProviderPath + "/hubs/discover?promoted=1&includeTypeFirst=1"},
 	}}
+	// Native Android needs the DVR directory shape to expose its pivots.
+	// Other clients retain the single keyed entry, avoiding duplicate Live TV.
+	pr := FromContext(ctx)
+	if pr == nil || !strings.EqualFold(pr.Platform, "Android") {
+		entry := &provider.Feature[0].Directory[0]
+		entry.ID = "livetv"
+		entry.Key = liveProviderPath + "/lineups/dvr/channels"
+		entry.Type = "livetv"
+		provider.Feature[0].Directory = provider.Feature[0].Directory[:1]
+	}
+	return provider
 }
 
 func (s *Server) registerLiveTVRoutes(r chi.Router) {
@@ -768,7 +783,9 @@ func (s *Server) handleLiveHubs(w http.ResponseWriter, r *http.Request) {
 	if h := s.liveTVHub(r); h != nil {
 		hubs = append(hubs, *h)
 	}
-	hubs = append(hubs, s.liveCategoryHubs(r)...)
+	if r.URL.Query().Get("promoted") != "1" {
+		hubs = append(hubs, s.liveCategoryHubs(r)...)
+	}
 	if len(hubs) > 0 {
 		mc.Hub = hubs
 		mc.Size = len(hubs)

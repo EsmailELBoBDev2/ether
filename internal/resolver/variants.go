@@ -29,6 +29,16 @@ const (
 // single Auto media; the detail page's PreResolve populates the cache, so
 // a later load shows versions.
 func (s *Service) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
+	if core.LocalResponse(ctx) {
+		// Detail responses expose stable logical choices immediately. Only
+		// the background snapshot may attach policy-checked concrete sources;
+		// a cold snapshot must never make the client's version menu disappear.
+		return s.VersionSlots(ctx, req, max, true)
+	}
+	return s.variants(ctx, req, max)
+}
+
+func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
 	if req.Title == nil {
 		return nil, fmt.Errorf("resolver: nil title")
 	}

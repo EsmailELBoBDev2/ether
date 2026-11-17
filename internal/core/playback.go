@@ -25,6 +25,9 @@ type HLSRamp struct {
 }
 
 type HLSRequest struct {
+	// PMSDASH selects the single-video PMS manifest and five-second grid for Plex TV apps.
+	PMSDASH bool
+
 	// MediaGeneration is a trusted presentation namespace retained across encoder
 	// recovery. A new playback start must use a fresh value; empty mints one.
 	MediaGeneration string `json:",omitempty"`
@@ -341,6 +344,16 @@ type Playback interface {
 	Failover(ctx context.Context, sessionID string, at time.Duration) (*PlaySession, error)
 	Stop(sessionID string)
 	Sessions() []*PlaySession
+}
+
+// DirectDeliverer is implemented by a Playback that can name the provider URL
+// a direct play of one of its sessions may be redirected to (additive). A
+// runtime without it — a remote cluster playback, a fixture — always relays.
+type DirectDeliverer interface {
+	// DirectDelivery reports the provider URL this session's file can be
+	// fetched from directly, and records the read as a direct play of a live
+	// session, the way a relayed range read would.
+	DirectDelivery(sessionID string) (link DirectSourceLink, ok bool)
 }
 
 // SurfaceScopedPlayback separates client identifiers by their authenticated

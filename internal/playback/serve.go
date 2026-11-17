@@ -37,6 +37,13 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		http.Error(w, "unknown playback session", http.StatusNotFound)
 		return
 	}
+	if measurement := core.MediaCapWaitFrom(r.Context()); measurement != nil {
+		if g := s.current(); g != nil {
+			if source, ok := g.src.(core.MediaCapWaitSource); ok && source.MediaCapWaitKnown() {
+				measurement.MarkKnown()
+			}
+		}
+	}
 	s.activeReads.Add(1)
 	defer func() {
 		s.activeReads.Add(-1)
@@ -383,6 +390,14 @@ func (m *Manager) copyFrom(ctx context.Context, w io.Writer, g *generation, off,
 		}
 		return 0, errRetired, nil
 	}
+	// A tiny header or tail request is container discovery, not a playhead.
+	if g.warmReads != nil && !background && off >= firstReadAlign && off < g.src.Size()-(32<<20) {
+		g.warmReads.Observe(off)
+		if g.prewarmReads != nil {
+			g.prewarmReads.Observe(off)
+		}
+	}
+	ctx = core.WithReadOrigin(ctx, "playback.loopback", "client Range")
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	g.sess.mu.Lock()

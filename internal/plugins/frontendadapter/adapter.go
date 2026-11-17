@@ -99,6 +99,7 @@ func (f *Frontend) Describe() frontend.Descriptor {
 	}
 	return frontend.Descriptor{
 		ID:             f.ID(),
+		Auth:           f.decl.Meta.Auth,
 		Name:           name,
 		Logo:           f.decl.Icon,
 		Version:        f.decl.Version,

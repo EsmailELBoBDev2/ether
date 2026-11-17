@@ -164,11 +164,25 @@ func (i *instance) manifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.observeClient(r, credential, viewer)
-	catalogs := []any{
-		map[string]any{"type": "movie", "id": "ether-movies", "name": "Ether Movies", "extra": []any{map[string]any{"name": "search"}, map[string]any{"name": "skip"}, map[string]any{"name": "genre"}}},
-		map[string]any{"type": "series", "id": "ether-series", "name": "Ether Series", "extra": []any{map[string]any{"name": "search"}, map[string]any{"name": "skip"}, map[string]any{"name": "genre"}}},
+	views, err := i.host.Experience.Views(r.Context(), viewer)
+	if err != nil {
+		http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	types := map[string]bool{}
+	catalogs := []any{}
+	for _, view := range views {
+		types[stremioLibraryType(view)] = true
 	}
 	for _, typ := range []string{"movie", "series"} {
+		if !types[typ] {
+			continue
+		}
+		alias, name := "ether-movies", "Ether Movies"
+		if typ == "series" {
+			alias, name = "ether-series", "Ether Series"
+		}
+		catalogs = append(catalogs, map[string]any{"type": typ, "id": alias, "name": name, "extra": []any{map[string]any{"name": "search"}, map[string]any{"name": "skip"}, map[string]any{"name": "genre"}}})
 		for _, row := range []struct{ id, name string }{{"continue", "Continue Watching"}, {"recent", "Recently Released"}, {"recommendations", "Recommendations"}} {
 			catalogs = append(catalogs, map[string]any{"type": typ, "id": "ether-" + row.id, "name": row.name, "extra": []any{map[string]any{"name": "skip"}}})
 		}

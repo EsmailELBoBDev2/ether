@@ -177,7 +177,7 @@ func (b *Broker) trailerSession(ctx context.Context, req PreviewRequest, purpose
 	if err != nil {
 		return unavailable, err
 	}
-	title, err := b.deps.Lookup(ctx, viewer, req.Device, req.Item)
+	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if err != nil {
 		return unavailable, err
 	}
@@ -243,7 +243,7 @@ func (b *Broker) trailerSession(ctx context.Context, req PreviewRequest, purpose
 	if err != nil {
 		return unavailable, err
 	}
-	title, err = b.deps.Lookup(ctx, viewer, req.Device, req.Item)
+	title, err = b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), viewer, req.Device, req.Item)
 	if err != nil {
 		return unavailable, err
 	}
@@ -339,11 +339,14 @@ func (b *Broker) servePreview(protocol frontend.Protocol, access *frontend.Sessi
 		deny()
 		return true
 	}
-	lookup := b.deps.MediaLookup
+	lookup := b.deps.CurrentMediaLookup
+	if lookup == nil {
+		lookup = b.deps.MediaLookup
+	}
 	if lookup == nil {
 		lookup = b.deps.Lookup
 	}
-	title, err := lookup(r.Context(), viewer, s.public.Device, s.public.Item)
+	title, err := lookup(core.WithLiveApp(r.Context(), string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
 	if err != nil || title == nil || title.Key != s.public.Item || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		deny()
 		return true

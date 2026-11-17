@@ -161,17 +161,19 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 				dto.ItemCount = &n
 			}
 		}
-	case core.LibraryCatalog:
-		if page, err := c.browseTitles(ctx, lib, core.Filter{}, core.BrowseQuery{Limit: 1}); err == nil {
-			dto.ItemCount = &page.Total
+	case core.LibraryCatalog, core.LibraryCollection:
+		// The listing never counts a library-sized scope on the request: the
+		// cached count refreshes in the background, and the count is omitted
+		// until the first one completes. A deleted collection counts as empty.
+		if c.app.collections == nil {
+			break
 		}
-	case core.LibraryCollection:
-		// A deleted collection leaves the library empty: the browse reads
-		// no members rather than failing the console listing.
-		if page, err := c.browseTitles(ctx, lib, core.Filter{}, core.BrowseQuery{Limit: 1}); err == nil {
-			dto.ItemCount = &page.Total
-		} else if c.app.log != nil {
-			c.app.log.Warn("libraries: collection library could not be counted", "id", int64(lib.ID), "collection", lib.CollectionID, "err", err)
+		if n, pending, err := c.app.collections.ConsoleCount(ctx, libraryScopeFilter(lib, core.Filter{})); err != nil {
+			if c.app.log != nil {
+				c.app.log.Warn("libraries: library could not be counted", "id", int64(lib.ID), "source", lib.Source, "err", err)
+			}
+		} else if !pending || n > 0 {
+			dto.ItemCount = &n
 		}
 	}
 	return dto
@@ -413,10 +415,6 @@ func (c *librariesConsole) handler() http.Handler {
 			if body.VisibilityDefault != nil {
 				visDefault = *body.VisibilityDefault
 			}
-			if _, err := libraryfilter.CompilePolicy(rules, visDefault); err != nil {
-				libError(w, http.StatusBadRequest, "Invalid visibility rules")
-				return
-			}
 			if err := svc.SetRules(ctx, lib.ID, rules, visDefault); err != nil {
 				libError(w, libErrStatus(err), "Could not save visibility rules")
 				return
@@ -440,12 +438,15 @@ func (c *librariesConsole) handler() http.Handler {
 		if !ok {
 			return
 		}
-		if lib.Source == core.LibraryPlugin {
-			libError(w, http.StatusConflict, "Plugin libraries are removed with their plugin")
-			return
-		}
 		if err := c.app.libraries.Delete(r.Context(), lib.ID); err != nil {
 			libError(w, libErrStatus(err), "Could not delete the library")
+			return
+		}
+		if lib.Source == core.LibraryPlugin && c.app.pluginsRT != nil && c.app.pluginsRT.pluginitems != nil {
+			c.app.pluginsRT.pluginitems.StopKindSync(lib.PluginID, lib.KindKey)
+		}
+		if err := c.app.refreshLibraryPolicies(r.Context()); err != nil {
+			libError(w, http.StatusInternalServerError, "Could not save visibility rules")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -500,7 +501,7 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 			libError(w, http.StatusServiceUnavailable, "Plugin items are unavailable")
 			return
 		}
-		policy, err := pluginitems.LibraryPolicy(r.Context(), lib)
+		policy, err := items.LibraryPolicy(r.Context(), lib)
 		if err != nil {
 			libError(w, 400, "Invalid filter")
 			return
@@ -512,7 +513,7 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 				libError(w, 400, "Invalid filter")
 				return
 			}
-			policy, err = libraryfilter.CompilePolicy(specs, p.Get("ruleFallback"))
+			policy, err = items.CompilePolicy(r.Context(), lib.ID, specs, p.Get("ruleFallback"))
 			if err != nil {
 				libError(w, 400, "Invalid filter")
 				return
@@ -1125,7 +1126,26 @@ func (c *librariesConsole) setupHandler() http.Handler {
 			libError(w, http.StatusInternalServerError, "Plugin items are unavailable")
 			return
 		}
+		selectedKind := r.URL.Query().Get("kind")
+		if selectedKind != "" {
+			found := false
+			for _, decl := range e.Contributes.MediaKinds {
+				if decl.Key == selectedKind && decl.HasLibrary() {
+					found = true
+				}
+			}
+			if !found {
+				libError(w, http.StatusNotFound, "Library kind not found")
+				return
+			}
+		}
 		for _, decl := range e.Contributes.MediaKinds {
+			if selectedKind != "" && decl.Key != selectedKind {
+				continue
+			}
+			if !decl.HasLibrary() {
+				continue
+			}
 			name := strings.TrimSpace(decl.Library.Name)
 			if name == "" {
 				name = strings.TrimSpace(decl.Label)
@@ -1133,7 +1153,7 @@ func (c *librariesConsole) setupHandler() http.Handler {
 			if name == "" {
 				name = rec.Name
 			}
-			lib, err := c.app.libraries.UpsertPluginLibrary(ctx, pluginID, decl.Key, libraries.PluginLibraryDecl{
+			lib, err := c.app.libraries.RestorePluginLibrary(ctx, pluginID, decl.Key, libraries.PluginLibraryDecl{
 				Name:    name,
 				Present: decl.Present,
 			})
@@ -1145,6 +1165,9 @@ func (c *librariesConsole) setupHandler() http.Handler {
 				libError(w, http.StatusBadRequest, "Could not initialize plugin library kind")
 				return
 			}
+		}
+		if c.app.pluginsRT.kindCatalog != nil {
+			c.app.pluginsRT.kindCatalog.RefreshPlugin(ctx, rec)
 		}
 		out, err := c.setupFor(ctx, pluginID)
 		if err != nil {

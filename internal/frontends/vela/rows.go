@@ -44,11 +44,15 @@ func (i *instance) rowPage(r *http.Request, v *frontend.Viewer, id string, offse
 		return frontend.Row{}, e
 	}
 	noteBootstrapDeadline(r, page.ExpiresAt)
+	return rowFromPage(id, page), nil
+}
+
+func rowFromPage(id string, page frontend.RowViewPage) frontend.Row {
 	kind := ""
 	if page.Truncated {
 		kind = "truncated"
 	}
-	return frontend.Row{RankedTop10: page.RankedTop10, Kind: kind, ID: id, Entries: page.Entries, Handle: page.ImpressionHandle, More: page.More}, nil
+	return frontend.Row{RankedTop10: page.RankedTop10, Kind: kind, ID: id, Entries: page.Entries, Handle: page.ImpressionHandle, More: page.More}
 }
 func (i *instance) rowToken(r *http.Request, v *frontend.Viewer, id string, offset int, exclude []string) string {
 	return i.sealRowCursor(rowCursor{Row: id, Scope: i.cursorScope(r, v), Offset: offset, Exclude: exclude, Expires: time.Now().Add(10 * time.Minute).Unix()})

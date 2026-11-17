@@ -364,4 +364,11 @@ func TestCapabilityOverrideChangesRegistryAndYieldsToProfile(t *testing.T) {
 	if !runtime.SupportsVideo("h264") || !runtime.SupportsVideo("hevc") {
 		t.Fatalf("profile extra should add hevc on top of the override: %+v", runtime)
 	}
+	forced := pr.ClientCapsWith(0, []core.ClientCapabilityOverride{{ID: "apple-tv", Force: true, VideoCodecs: []string{"h264"}}})
+	if forced.SupportsVideo("hevc") || !forced.SupportsVideo("h264") || !forced.ForcedOverrideApplied {
+		t.Fatalf("forced codec declaration: %+v", forced)
+	}
+	if !slices.Equal(forced.AudioCodecs, runtime.AudioCodecs) {
+		t.Fatal("force replaced an unedited audio declaration")
+	}
 }

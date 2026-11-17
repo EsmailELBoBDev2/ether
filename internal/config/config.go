@@ -21,7 +21,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+type Vela struct {
+	ChannelURL string `json:"channelURL,omitempty"`
+}
+
 type Config struct {
+	Vela Vela `json:"vela,omitempty"`
 	// Frontends selects protocol listeners by their registered ID.
 	Frontends map[string]Frontend `json:"frontends,omitempty"`
 	// FrontendPorts are node-local listener port overrides.
@@ -151,6 +156,11 @@ type Plex struct {
 	// apps still display Plex's own rating. Date-added stays the catalogue
 	// release/air date.
 	UsePlexMetadata bool `json:"usePlexMetadata,omitempty"`
+	// Delivery is how a direct-play media route reaches the client: "relay"
+	// (default) streams the bytes through Ether; "redirect" answers an
+	// eligible TorBox part read with a temporary file URL after admission.
+	// The player fetches the bytes directly. Unrecognised values relay.
+	Delivery string `json:"delivery,omitempty"`
 	// Remote access
 	RemoteAccess bool     `json:"remoteAccess"`
 	UseUPnP      bool     `json:"useUpnp"`

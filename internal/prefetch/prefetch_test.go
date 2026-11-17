@@ -511,11 +511,11 @@ func TestKeepWarmTimelineUsesNewPosition(t *testing.T) {
 		f.wait(t)
 	}
 	calls := f.engine.got()
-	if len(calls) != 3 {
+	if len(calls) != 2 {
 		t.Fatalf("timeline warm calls = %v", calls)
 	}
 	for _, c := range calls {
-		if c != (call{"resume", "nzb", 199999, 35001}) {
+		if c != (call{"resume", "nzb", 200000, 35000}) {
 			t.Fatalf("resume keyframe window = %+v", c)
 		}
 	}

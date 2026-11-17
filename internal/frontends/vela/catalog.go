@@ -1,6 +1,7 @@
 package vela
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -67,7 +68,25 @@ func titleWire(t frontend.Title) object {
 func watchWire(s frontend.WatchStatus) object {
 	return object{"positionSeconds": s.ViewOffset.Seconds(), "played": s.ViewCount > 0, "favorite": s.IsFavorite, "watchlisted": s.InWatchlist}
 }
+
+type homeTitlesKey struct{}
+
 func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title) ([]object, error) {
+	if cached, ok := r.Context().Value(homeTitlesKey{}).(map[frontend.RatingKey]object); ok {
+		out := make([]object, 0, len(ts))
+		complete := true
+		for _, title := range ts {
+			wire, found := cached[title.Key]
+			if !found {
+				complete = false
+				break
+			}
+			out = append(out, wire)
+		}
+		if complete {
+			return out, nil
+		}
+	}
 	keys := make([]frontend.RatingKey, 0, len(ts))
 	for _, t := range ts {
 		keys = append(keys, t.Key)
@@ -76,18 +95,62 @@ func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts 
 	if err != nil {
 		return nil, err
 	}
+	return i.titlesWithUserData(r, v, token, ts, states)
+}
+
+// Detail already owns the watch/favorite/watchlist state. Do not load it again
+// only to overwrite it with the authorized detail's state below.
+func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token string, ts []frontend.Title, states map[frontend.RatingKey]frontend.WatchStatus) ([]object, error) {
 	art := map[frontend.RatingKey][]object{}
 	if signer, ok := i.host.ImageGrants.(frontend.ImagePageSigner); ok {
-		for start := 0; start < len(ts); start += 50 {
-			end := min(start+50, len(ts))
-			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: ts[start:end], Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
+		if len(ts) > 0 {
+			// Include series in the same authorization, artwork and signing batch.
+			// Their poster keeps its show scope, including overlays and policy checks.
+			page := append([]frontend.Title(nil), ts...)
+			seen := make(map[frontend.RatingKey]bool, len(ts))
+			for _, title := range ts {
+				seen[title.Key] = true
+			}
+			for _, title := range ts {
+				if show := episodePosterShow(title); show != 0 && !seen[show] {
+					seen[show] = true
+					page = append(page, frontend.Title{Key: show})
+				}
+			}
+			images, e := signer.SignPage(r.Context(), frontend.ImagePageRequest{Credential: token, Device: requestDevice(r), Titles: page, Kinds: []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}})
 			if e != nil {
 				return nil, e
 			}
+			byKey := make(map[frontend.RatingKey][]frontend.GrantedImage, len(images))
 			for _, item := range images {
-				for _, g := range titleArtwork(item.Item, item.Images) {
+				byKey[item.Item] = item.Images
+			}
+			seen = make(map[frontend.RatingKey]bool, len(ts))
+			for _, title := range ts {
+				if seen[title.Key] {
+					continue
+				}
+				seen[title.Key] = true
+				selected := titleArtwork(title.Key, byKey[title.Key])
+				if show := episodePosterShow(title); show != 0 && !hasPortrait(selected) {
+					for _, image := range byKey[show] {
+						if image.Image.Kind == frontend.ImagePoster && image.Image.Path != "" && image.Secret != "" {
+							// A poster-only landscape fallback is replaced by the
+							// actual series poster; stills and backdrops keep priority.
+							if len(selected) > 0 {
+								selected = selected[:1]
+								if selected[0].Image.Kind == frontend.ImagePoster {
+									selected = nil
+								}
+							}
+							selected = append(selected, image)
+							break
+						}
+					}
+				}
+				for _, g := range selected {
 					im := g.Image
-					art[item.Item] = append(art[item.Item], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
+					art[title.Key] = append(art[title.Key], object{"id": hash(im.Path), "kind": im.Kind, "tag": im.Tag, "sizes": []object{imageSize(im, g.Secret)}, "blurHash": im.BlurHash, "thumbHash": im.ThumbHash})
 				}
 			}
 		}
@@ -115,9 +178,37 @@ func (i *instance) titles(r *http.Request, v *frontend.Viewer, token string, ts 
 	return out, nil
 }
 
-// Episode cards have one landscape image: their own still, or an explicitly
-// typed fallback. Do not leave inherited series art competing with a still.
-// Selection happens after batch signing, so every URL retains its item scope.
+// episodePosterShow requests a show fallback only when the episode has no
+// portrait of its own. Packed catalogue keys also cover cards without ShowKey.
+func episodePosterShow(title frontend.Title) frontend.RatingKey {
+	// Episodes often carry an inherited or unmeasured PosterPath that
+	// titleArtwork does not select as a portrait, so the show is always
+	// fetched; it is only used when the card ends up without a portrait.
+	if title.Key.Kind() != frontend.KindEpisode {
+		return 0
+	}
+	if title.ShowKey != 0 {
+		return title.ShowKey
+	}
+	if !title.Key.IsPluginKey() {
+		return title.Key.Parent().Parent()
+	}
+	return 0
+}
+
+func hasPortrait(images []frontend.GrantedImage) bool {
+	for i, image := range images {
+		// A poster in first place is a landscape fallback, not a portrait.
+		if i > 0 && image.Image.Kind == frontend.ImagePoster {
+			return true
+		}
+	}
+	return false
+}
+
+// Episode cards keep their still (or landscape fallback) first, followed by
+// an available portrait. Selection happens after batch signing, so every URL
+// retains its item scope.
 func titleArtwork(key frontend.RatingKey, images []frontend.GrantedImage) []frontend.GrantedImage {
 	if key.Kind() != frontend.KindEpisode {
 		return images
@@ -125,7 +216,16 @@ func titleArtwork(key frontend.RatingKey, images []frontend.GrantedImage) []fron
 	for _, kind := range []string{frontend.ImageStill, frontend.ImageBackdrop, frontend.ImagePoster} {
 		for _, image := range images {
 			if image.Image.Kind == kind && image.Image.Path != "" && image.Secret != "" {
-				return []frontend.GrantedImage{image}
+				out := []frontend.GrantedImage{image}
+				if kind != frontend.ImagePoster {
+					for _, portrait := range images {
+						if portrait.Image.Kind == frontend.ImagePoster && portrait.Image.Width > 0 && portrait.Image.Height > portrait.Image.Width && portrait.Image.Path != "" && portrait.Secret != "" {
+							out = append(out, portrait)
+							break
+						}
+					}
+				}
+				return out
 			}
 		}
 	}
@@ -197,7 +297,21 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 		outerMore = len(vv) > limit(r)
 		vv = vv[:min(len(vv), limit(r))]
-		for _, view := range vv {
+		var pages []frontend.RowViewPage
+		if batch, ok := i.host.Experience.(frontend.RowViewPages); ok && len(vv) > 1 {
+			reqs := make([]frontend.RowViewPageRequest, len(vv))
+			for n, view := range vv {
+				reqs[n] = frontend.RowViewPageRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", ID: view.ID, Limit: rowItemLimit(r)}
+			}
+			pages, e = batch.ResolveRowViews(r.Context(), reqs)
+			if e != nil {
+				return nil, false, e
+			}
+			if len(pages) != len(vv) {
+				return nil, false, frontend.ErrRowViewStale
+			}
+		}
+		for n, view := range vv {
 			noteBootstrapDeadline(r, view.ExpiresAt)
 			i.rowMu.Lock()
 			if len(i.rowMeta) >= 2000 {
@@ -205,7 +319,14 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 			}
 			i.rowMeta[view.ID] = view
 			i.rowMu.Unlock()
-			row, e := i.rowPage(r, v, view.ID, 0, rowItemLimit(r))
+			var row frontend.Row
+			var e error
+			if pages != nil {
+				row = rowFromPage(view.ID, pages[n])
+				noteBootstrapDeadline(r, pages[n].ExpiresAt)
+			} else {
+				row, e = i.rowPage(r, v, view.ID, 0, rowItemLimit(r))
+			}
 			if e != nil {
 				if errors.Is(e, frontend.ErrNotFound) {
 					e = frontend.ErrRowViewStale
@@ -232,6 +353,38 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		outerMore = true
 		rows = rows[:limit(r)]
 	}
+	// Share card state, ratings and artwork across all shelves in this page.
+	var pageTitles []frontend.Title
+	seenTitles := map[frontend.RatingKey]bool{}
+	for _, row := range rows {
+		ts := row.Items
+		if len(row.Entries) > 0 {
+			ts = nil
+			for _, entry := range row.Entries {
+				if entry.Title != nil {
+					ts = append(ts, *entry.Title)
+				}
+			}
+		}
+		if row.RankedTop10 {
+			ts = ts[:min(len(ts), 10)]
+		}
+		for _, title := range ts {
+			if !seenTitles[title.Key] {
+				seenTitles[title.Key] = true
+				pageTitles = append(pageTitles, title)
+			}
+		}
+	}
+	converted, err := i.titles(r, v, token, pageTitles)
+	if err != nil {
+		return nil, false, err
+	}
+	cardCache := make(map[frontend.RatingKey]object, len(converted))
+	for n, title := range pageTitles {
+		cardCache[title.Key] = converted[n]
+	}
+	r = r.WithContext(context.WithValue(r.Context(), homeTitlesKey{}, cardCache))
 	out := []object{}
 	for _, row := range rows {
 		if len(sources) > 0 {
@@ -388,6 +541,7 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	return out, nil
 }
 func (i *instance) rows(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(i.host.Experience.NoProviderWait(r.Context()))
 	v, t, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)
@@ -428,6 +582,8 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
+	r = r.WithContext(ctx)
 	d, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k})
 	if e != nil {
 		fail(w, e, r)
@@ -446,10 +602,10 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		extras = append(extras, object{"id": ids.RatingKeyGUID(x.Key), "parentId": ids.RatingKeyGUID(x.ParentKey), "kind": kind, "name": x.Title, "durationSeconds": x.Duration.Seconds(), "availability": availability})
 	}
 	if strings.HasSuffix(r.URL.Path, "/extras") {
-		cache(w, r, object{"items": extras})
+		cacheDetail(w, r, object{"items": extras}, pending)
 		return
 	}
-	ts, e := i.titles(r, v, t, []frontend.Title{d.Title})
+	ts, e := i.titlesWithUserData(r, v, t, []frontend.Title{d.Title}, map[frontend.RatingKey]frontend.WatchStatus{d.Title.Key: d.UserData})
 	if e != nil {
 		fail(w, e, r)
 		return
@@ -458,12 +614,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		ts[0]["themeMusic"] = theme
 	}
 	ts[0]["watch"] = watchWire(d.UserData)
-	cast, e := i.cast(r, t, d)
-	if e != nil {
-		fail(w, e, r)
-		return
-	}
-	crew, e := i.crew(r, t, d)
+	cast, crew, e := i.credits(r, t, d)
 	if e != nil {
 		fail(w, e, r)
 		return
@@ -480,7 +631,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.warmDetail(r, v, d)
-	cache(w, r, out)
+	cacheDetail(w, r, out, pending)
 }
 func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	v, t, e := i.viewer(r)
@@ -496,6 +647,8 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+	ctx, pending := frontend.WithDetailPending(frontend.WithColdDetail(r.Context(), k), k)
+	r = r.WithContext(ctx)
 	p, e := i.host.Experience.Children(r.Context(), v, requestDevice(r), k, frontend.ItemQuery{Limit: limit(r), NoTotal: true})
 	if e != nil {
 		fail(w, e, r)
@@ -510,7 +663,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	if len(ts) == limit(r) {
 		c = "unknown"
 	}
-	cache(w, r, object{"items": ts, "continuation": c})
+	cacheDetail(w, r, object{"items": ts, "continuation": c}, pending)
 }
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	v, t, e := i.viewer(r)

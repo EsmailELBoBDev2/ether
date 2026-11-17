@@ -106,6 +106,12 @@ func (v Visibility) TitleAllowed(viewer *core.User, title *core.Title) bool {
 		return true
 	}
 	id, ok := v.SectionFor(title.Type)
+	if !ok {
+		switch title.Type {
+		case core.TypeMovie, core.TypeShow, core.TypeSeason, core.TypeEpisode:
+			return false
+		}
+	}
 	return !ok || SectionAllowed(viewer, id)
 }
 

@@ -12,6 +12,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+type deferAiredCountsKey struct{}
+
 // seasonAired is what the mirror knows about one season's aired episodes.
 type seasonAired struct {
 	date       int64 // zero means unknown; negative values are historical dates
@@ -42,6 +44,9 @@ func (s seasonAired) count() int {
 // its air date passes, without waiting for a refresh. A show the mirror
 // holds no seasons for keeps its stored counts.
 func applyAiredCounts(ctx context.Context, db *sql.DB, now time.Time, items []*core.Title, generation ...uint64) error {
+	if deferred, _ := ctx.Value(deferAiredCountsKey{}).(bool); deferred {
+		return nil
+	}
 	var showArgs []any
 	seen := map[core.RatingKey]bool{}
 	for _, t := range items {

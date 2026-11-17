@@ -24,18 +24,19 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 	if s.rejectedFor(t.Key, rel) {
 		return false
 	}
-	req := s.searchRequest(ctx, t)
+	req := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
+	if rel.Info.Title == "" {
+		rel.Info = releaseparse.Parse(rel.Name)
+	}
 	if req.Type == core.TypeEpisode {
-		if rel.Target != nil && (rel.Target.Season != req.Season || rel.Target.Episode != req.Episode) {
+		season, episode := releaseNumbers(rel.Info, req)
+		if rel.Target != nil && (rel.Target.Season != season || rel.Target.Episode != episode) {
 			return false
 		}
 		// Cached torrent descriptors must carry today's file-selection target.
 		if rel.Protocol == core.ProtocolTorrent && t.ShowYear > 0 && (rel.Target == nil || rel.Target.ShowYear != t.ShowYear || rel.Target.EpisodeTitle != t.Title) {
 			return false
 		}
-	}
-	if rel.Info.Title == "" {
-		rel.Info = releaseparse.Parse(rel.Name)
 	}
 	identity := s.localEpisodeIdentity(ctx, t, req, []core.Release{rel})
 	if identity.reject(rel, t, req) != "" {

@@ -248,7 +248,9 @@ function LibrariesList() {
                       <ArrowDown size={14} />
                     </Button>
                   </span>
-                  {lib.source === "catalogue" ? (
+                  {lib.source === "catalogue" ||
+                  lib.source === "collection" ||
+                  lib.source === "plugin" ? (
                     <Button
                       size="icon"
                       variant="ghost"
@@ -257,12 +259,9 @@ function LibrariesList() {
                       onClick={() => {
                         if (
                           window.confirm(
-                            t(
-                              "Delete the library “{name}”? Its titles stay in Movies and TV Shows.",
-                              {
-                                name: lib.name,
-                              },
-                            ),
+                            t("Delete the library “{name}”? Media and watch history are kept.", {
+                              name: lib.name,
+                            }),
                           )
                         )
                           void act(() => librariesApi.remove(lib.id), t("Library deleted"));

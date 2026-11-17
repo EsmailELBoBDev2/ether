@@ -674,7 +674,7 @@ func (s *Server) preparePlayback(ctx context.Context, pr *Request, p *playReques
 	}
 	releaseID := s.resolveVariantSelection(ctx, pr, p)
 	p.variantRelease = releaseID
-	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.caps, releaseID)
+	ps, err := s.prepareForRelease(ctx, pr.User, p.key, p.sourceSelectionCaps(), releaseID)
 	if err != nil {
 		s.endVersionFlow(ctx, s.playIdentityFor(pr, p.key))
 	}

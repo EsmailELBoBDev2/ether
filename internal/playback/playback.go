@@ -278,8 +278,8 @@ type Manager struct {
 	// by warm-ups (onDemandWarmAdmit); lazily created under mu.
 	onDemandWarmAt      map[int64]time.Time
 	onDemandWarmByAddon map[string][]time.Time
-	stalePrefers        map[stalePreferKey]time.Time // picked releases that fell back (stalePreferTTL)
-	namesake            map[core.RatingKey]bool      // cached namesake lookups (namesake.go)
+	stalePrefers        map[stalePreferKey]stalePreference // picked releases that fell back (stalePreferTTL)
+	namesake            map[core.RatingKey]bool            // cached namesake lookups (namesake.go)
 
 	pinMu        sync.Mutex
 	livePins     map[string]int
@@ -856,7 +856,7 @@ func (m *Manager) PrepareWithin(ctx context.Context, wait time.Duration, user *c
 	return ps, err
 }
 
-func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (*core.PlaySession, core.SourceRetirement, error) {
+func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, user *core.User, key core.RatingKey, caps core.ClientCaps, prefer string, exact, deferSupersession, playRequested bool) (prepared *core.PlaySession, retired core.SourceRetirement, prepareErr error) {
 	prepareStarted := time.Now()
 	if user == nil {
 		return nil, nil, core.ErrUnauthorized
@@ -882,6 +882,21 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			return nil, nil, errors.New("playback: shutting down")
 		}
 		if prefer != "" && !exact && m.preferenceStaleLocked(key, prefer, m.now()) {
+			entry := m.stalePrefers[stalePreferKey{key, prefer}]
+			latchedPick := prefer
+			retry := stalePreferTTL - m.now().Sub(entry.at)
+			// Record after admission, outside m.mu, including when Auto reused
+			// an existing session and never called Resolve.
+			defer func() {
+				entry.played = ""
+				if prepared != nil && prepared.Resolution != nil {
+					entry.played = prepared.Resolution.Release.ID
+				}
+				if prepareErr != nil {
+					entry.reason += "; automatic preparation: " + prepareErr.Error()
+				}
+				m.recordPreferenceFallback(ctx, key, latchedPick, entry, retry, true)
+			}()
 			// The picked version fell back moments ago: this open is the
 			// automatic choice (stale_prefer.go).
 			prefer = ""
@@ -891,7 +906,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 		}
 		m.lastCaps[user.ID] = caps
 		if s := m.byIdent[id]; s != nil {
-			if s.exact == exact && (prefer == "" || s.current().releaseID() == prefer || (!exact && s.prefer == prefer)) {
+			if s.exact == exact && (prefer == "" || s.current().releaseID() == prefer || (!exact && s.current().res.MatchesVersion(prefer))) {
 				now := m.now()
 				if !m.sessionCountsForLimit(s, now) {
 					cfg := m.config()
@@ -1238,6 +1253,9 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 		c.RecordPlay(g.releaseID(), cacheTitle(*s.title), g.src.Size())
 	}
 	ginfo := g.infoSnapshot()
+	if s.caps.ForcedOverrideApplied {
+		log.Debug("forced device override replaced a runtime declaration", "session", s.id, "device", s.caps.Device, "product", s.caps.Product)
+	}
 	log.Debug("playback session started", "session", s.id, "release", g.res.Release.Name,
 		"container", ginfo.Container, "size", g.src.Size(), "duration", ginfo.Duration, "estimated", ginfo.Estimated)
 	m.emitEvent("start", s, nil)
@@ -1566,6 +1584,22 @@ func (m *Manager) Sessions() []*core.PlaySession {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+// KeepAlive renews only an existing session's activity. An open control stream
+// is not media delivery or a new play: leave lastRead, timeline and stop intact.
+func (m *Manager) KeepAlive(id string) bool {
+	s := m.lookup(id)
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	s.lastActive = m.now()
+	return true
 }
 
 // Stop ends a session: its source is closed once reads finish, its live

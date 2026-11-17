@@ -148,14 +148,6 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	if len(keys) == 1 && pr.User != nil && isPlayableKey(keys[0]) {
-		// A subtitle pick for this title may still be downloading; the
-		// re-read that selects the new track must already list it (#389).
-		s.subtitlePicks.wait(ctx, pr.User.ID, keys[0])
-		if ctx.Err() != nil {
-			return
-		}
-	}
 	var mc *model.MediaContainer
 	for _, k := range keys {
 		var md model.Metadata
@@ -203,6 +195,9 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				mc = libraryContainer()
 			}
 		default:
+			if len(keys) == 1 {
+				ctx = frontend.WithColdDetail(ctx, k)
+			}
 			t, err := s.metadataTitle(ctx, pr, k)
 			// A plugin item is authorized by the Experience lookup itself; the
 			// built-in visibility policy maps a projected type onto a built-in
@@ -239,6 +234,15 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if len(keys) == 1 && isPlayable(t.Type) {
+				// Android TV builds its subtitle picker from this refresh after
+				// a manual pick. Join only an already pending download for this
+				// exact Part and client session; browsing never starts one.
+				if pr.User != nil && plexMobileOrTVBedrockClient(pr) {
+					partID := s.playIDs.selectedPart(s.playIdentityFor(pr, t.Key))
+					s.subtitlePicks.waitForPart(ctx, subtitlePickKey{
+						user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,
+					})
+				}
 				// Version discovery belongs to the open detail page, not to
 				// admission of the independent playback warm-up. Start it first
 				// so a warm-up that needs a search can join the same work.
@@ -254,7 +258,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 						pr.detailRefill = variants.RefillSearchCache(t)
 					}
 				}
-				s.warmDetail(ctx, pr, t)
+				s.scheduleDetailWarm(ctx, pr, t)
 			}
 			if len(keys) == 1 {
 				// Live session intent (#32): a single-item detail open.
@@ -347,7 +351,7 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 			// The show page's Play button plays this episode: resolve,
 			// open and probe it so OnDeck and the following Play have its tracks.
 			if noWarm, _ := ctx.Value(structuralProjectionKey{}).(bool); !noWarm {
-				s.warmDetail(ctx, pr, ep)
+				s.scheduleDetailWarm(ctx, pr, ep)
 			}
 			if items := s.renderTitles(ctx, pr, []frontend.Title{*ep}, renderOpts{media: true, state: st}); len(items) > 0 {
 				if extras {
@@ -489,6 +493,7 @@ func (s *Server) seasonNextEpisode(ctx context.Context, pr *Request, eps []front
 }
 
 func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
@@ -505,6 +510,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		s.handlePlaylistItems(w, r)
 		return
 	}
+	ctx = frontend.WithColdDetail(ctx, k)
 	parent, err := s.metadataTitle(ctx, pr, k)
 	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
@@ -620,7 +626,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 	page := kids[lo:hi]
 	if parent.Type == frontend.TypeSeason {
 		if ep := s.seasonNextEpisode(ctx, pr, page); ep != nil {
-			s.warmDetail(ctx, pr, ep)
+			s.scheduleDetailWarm(ctx, pr, ep)
 		}
 	}
 	if len(future) == 0 {
@@ -676,6 +682,7 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
@@ -684,6 +691,7 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
+	ctx = frontend.WithColdDetail(ctx, k)
 	parent, err := s.metadataTitle(ctx, pr, k)
 	if err == nil && !k.IsPluginKey() && !s.visibleTitle(ctx, pr.User, parent) {
 		err = frontend.ErrNotFound
@@ -885,7 +893,7 @@ func (s *Server) handleItemOnDeck(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ep, st := s.showOnDeck(ctx, pr, k, nil); ep != nil {
-			s.warmDetail(ctx, pr, ep)
+			s.scheduleDetailWarm(ctx, pr, ep)
 			mc.Metadata = s.renderTitles(ctx, pr, []frontend.Title{*ep}, renderOpts{media: true, state: st})
 		}
 	}
@@ -1325,4 +1333,28 @@ func (s *Server) detailSearchAllowed(pr *Request) bool {
 	}
 	c := s.cfg().Cache
 	return !c.DisableSpeculation && c.Mode != "off" && c.DetailWarmup != "off"
+}
+
+// Detail-family GETs schedule preparation. Flagged Plex clients retain their
+// bounded cached-source probe exception so their first subtitle picker works.
+func (s *Server) scheduleDetailWarm(ctx context.Context, pr *Request, t *frontend.Title) {
+	if t == nil || pr == nil || pr.User == nil || !isPlayable(t.Type) {
+		return
+	}
+	// Persisted tracks already describe the selected resume source. Version
+	// discovery is scheduled independently; do not reopen that source just
+	// because a client refreshed its detail page after a restart.
+	if _, _, ok := s.resumedTracks(ctx, pr, t); ok {
+		return
+	}
+	if plexMobileOrTVBedrockClient(pr) {
+		// These Plex clients build their subtitle picker from the first
+		// response. The playback manager permits this wait only for an
+		// already resolved/cached source, never a fresh search.
+		s.warmDetail(ctx, pr, t)
+		return
+	}
+	if warm, ok := s.playback().(frontend.Prewarmer); ok {
+		warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
+	}
 }

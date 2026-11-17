@@ -214,6 +214,13 @@ func (s surface) ServeSessionMedia(w http.ResponseWriter, r *http.Request, a fro
 	}
 	media.ServeSessionMedia(w, r, a, sessionID, resource)
 }
+func (s surface) KeepAlive(ctx context.Context, a frontend.SessionAccess, id string) error {
+	if a.Protocol != s.protocol {
+		return core.ErrUnauthorized
+	}
+	return s.broker.KeepAlive(ctx, a, id)
+}
+
 func (s surface) Report(ctx context.Context, a frontend.SessionAccess, id string, t frontend.Timeline) error {
 	if a.Protocol != s.protocol {
 		return core.ErrUnauthorized

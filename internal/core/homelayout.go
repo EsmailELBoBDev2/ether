@@ -47,7 +47,11 @@ type LayoutTuning struct {
 type RowPolicy struct {
 	RankedTop10 *bool `json:"rankedTop10,omitempty"`
 	// Nil inherits the collection setting; false explicitly disables previews.
-	PreviewOnFocus *bool       `json:"previewOnFocus,omitempty"`
+	PreviewOnFocus *bool `json:"previewOnFocus,omitempty"`
+	// ShowRepeats keeps titles that other rows on the page also show (a
+	// Top 10 under a full Trending row). Such a row neither loses titles to
+	// other rows nor takes titles from them. Nil or false: page-wide dedupe.
+	ShowRepeats    *bool       `json:"showRepeats,omitempty"`
 	Row            string      `json:"row"`
 	Status         string      `json:"status"`
 	Slot           int         `json:"slot,omitempty"`

@@ -11,14 +11,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // HostFetchRequest describes an outbound HTTP call via the host service.
 type HostFetchRequest struct {
-	Method  string            `json:"method,omitempty"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
+	TimeoutMS int64             `json:"timeoutMs,omitempty"`
+	Method    string            `json:"method,omitempty"`
+	URL       string            `json:"url"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      string            `json:"body,omitempty"`
 }
 
 // HostFetchResponse is returned by Host.Fetch.
@@ -272,6 +274,11 @@ func (c *RemoteHostClient) SecretGet(_ context.Context, _ string) (string, error
 
 // Fetch performs an outbound HTTP request.
 func (c *RemoteHostClient) Fetch(ctx context.Context, r HostFetchRequest) (HostFetchResponse, error) {
+	if r.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(r.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
 	method := r.Method
 	if method == "" {
 		method = http.MethodGet

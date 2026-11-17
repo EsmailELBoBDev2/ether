@@ -180,7 +180,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 }
 
 func (s *Service) allowedFilterLibraries(ctx context.Context, v *core.User) []core.Library {
-	if s.d.PluginLibraries == nil || v == nil || v.IsOwner || len(v.AllowedLibraries) == 0 {
+	if s.d.PluginLibraries == nil || v == nil {
 		return nil
 	}
 	libs, err := reqmemo.Do(ctx, "experience:filterlibs:"+strconv.FormatInt(v.ID, 10), func() ([]core.Library, error) {
@@ -217,26 +217,42 @@ func (s *Service) sectionOrFilterAllowed(ctx context.Context, v *core.User, titl
 		return false
 	}
 	id, ok := sectionFor(title.Type)
-	if !ok {
-		return false
-	}
-	if SectionAllowed(v, id) {
+	if ok && SectionAllowed(v, id) {
 		if s.d.PluginLibraries == nil {
 			return true
 		}
 		// Ensure the canonical built-in library itself has not been hidden on this protocol.
 		if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil {
 			_, _, pub := s.publishedLibrary(ctx, lib)
-			if pub {
+			if pub && lib.Source == core.LibraryBuiltin {
 				return true
 			}
-		} else {
-			return true
 		}
 	}
 	filterLibs := s.allowedFilterLibraries(ctx, v)
 	if len(filterLibs) == 0 {
 		return false
+	}
+	// A published, unrestricted TMDB source includes remote search summaries
+	// as well as stored rows. Requiring a row here both hides those summaries
+	// and adds a membership query for every card on Home. Viewer safety is
+	// still applied by the caller after this library-admission check.
+	kind := title.Type
+	if kind == core.TypeEpisode || kind == core.TypeSeason {
+		kind = core.TypeShow
+	}
+	for _, lib := range filterLibs {
+		if lib.Source != core.LibraryCatalog || filterMediaType(lib) != kind || lib.RulesBroken || len(lib.Rules) != 0 || (lib.VisibilityDefault != "" && lib.VisibilityDefault != "show") {
+			continue
+		}
+		if len(lib.Sources) == 0 {
+			return true
+		}
+		for _, source := range lib.Sources {
+			if kind == core.TypeMovie && source == "tmdb-movies" || kind == core.TypeShow && source == "tmdb-tv" {
+				return true
+			}
+		}
 	}
 	target := title
 	if (title.Type == core.TypeSeason || title.Type == core.TypeEpisode) && title.ShowKey != 0 && s.d.CachedGet != nil {

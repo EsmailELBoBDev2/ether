@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -483,6 +484,11 @@ func (s *Server) extraSessionFor(ctx context.Context, pr *Request, p *playReques
 	if s.extraPlay != nil {
 		if sess, ok := s.extraPlay.get(p.sessionID); ok && sess.extra.Key == e.Key && sess.userID == pr.User.ID {
 			if sess.resolved.Expires.IsZero() || s.now().Before(sess.resolved.Expires) {
+				if sess.resolved.LocalPath != "" {
+					if _, err := os.Stat(sess.resolved.LocalPath); err != nil {
+						return s.prepareExtra(ctx, pr, p, e)
+					}
+				}
 				return sess, nil
 			}
 		}
@@ -497,7 +503,7 @@ func (s *Server) extraDecision(w http.ResponseWriter, r *http.Request, pr *Reque
 		if ctx.Err() != nil {
 			return
 		}
-		s.log.Info("extra decision failed", "key", e.Key, "err", err)
+		// Shared fill failures are logged by the extras service.
 		msg := "This trailer could not be played right now. Try again in a moment."
 		mc := s.itemContainer(parent.Type)
 		md := s.extraMetadata(e, parent, false)
@@ -554,7 +560,7 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	}
 	sess, err := s.extraSessionFor(ctx, pr, &p, e)
 	if err != nil {
-		s.log.Info("extra start failed", "key", e.Key, "err", err)
+		// Shared fill failures are logged by the extras service.
 		s.writeErr(w, r, err)
 		return
 	}
@@ -595,6 +601,7 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 		SessionID: p.sessionID, InputURL: sess.resolved.Input(),
 		InputHeaders: sess.resolved.Headers, Info: sess.info,
 		Decision: dec, StartOffset: p.offset, Protocol: proto,
+		PMSDASH: dash && !strings.EqualFold(strings.TrimSpace(pr.Product), "Plex Web"),
 	})
 	if err != nil {
 		s.log.Warn("start extra session", "session", p.sessionID, "key", e.Key, "err", err)
@@ -632,8 +639,8 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 	s.writeMasterPlaylist(w, r, p.sessionID, hs, sess.info, dec)
 }
 
-// handleExtraPart serves direct-play part requests for extras by
-// proxying byte ranges from the resolved URL (or the local file).
+// handleExtraPart serves complete cached extras with byte-range support,
+// or proxies a single-file resolved URL.
 // It returns false when the part is not an extra.
 func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 	id, err := strconv.ParseInt(chi.URLParam(r, "part"), 10, 64)
@@ -668,8 +675,24 @@ func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 	s.prewarmFeature(ctx, pr, s.featureForExtra(pr, e), s.clientCaps(pr))
 	resolved, err := s.extrasResolve(ctx, e)
 	if err != nil {
-		s.log.Info("extra part resolve failed", "key", e.Key, "err", err)
+		// The extras service logs shared fill failures once per cooldown.
 		writeHTTPError(w, http.StatusNotFound)
+		return true
+	}
+	if resolved.LocalPath != "" {
+		file, err := os.Open(resolved.LocalPath)
+		if err != nil {
+			writeHTTPError(w, http.StatusBadGateway)
+			return true
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			writeHTTPError(w, http.StatusBadGateway)
+			return true
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "extra.mp4", info.ModTime(), file)
 		return true
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)

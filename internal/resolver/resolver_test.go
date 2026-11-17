@@ -542,6 +542,10 @@ func TestUnavailableRecheckAfterHealthFailurePrunePersisted(t *testing.T) {
 	if idx.searches.Load() != 1 || healthChecks.Load() != 1 {
 		t.Fatalf("searches=%d health checks=%d want 1 and 1 (health-failed path)", idx.searches.Load(), healthChecks.Load())
 	}
+	// A new service reads persisted evidence, after the asynchronous write.
+	if err := svc.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	idx.mu.Lock()
 	idx.releases = []core.Release{rel("good", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-GRP", 8000)}
 	idx.mu.Unlock()
@@ -853,6 +857,10 @@ func TestHealthCheckCachedUntilTTLOrMarkBad(t *testing.T) {
 
 	// Same release again within the TTL, even from a fresh service sharing
 	// the database: no new health checks for it.
+	// Resolve publishes the result before its optional evidence write drains.
+	if err := svc.flushBookkeeping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	svc2 := New(idx, h, db, testCfg(), Options{Now: clock.now, HealthTTL: time.Hour})
 	if _, err := svc2.checkHealth(ctx, first.Release.ID, nil); err != nil {
 		t.Fatal(err)

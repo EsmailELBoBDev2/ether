@@ -299,16 +299,18 @@ func (o *subtitleOffers) get(id int64, key frontend.RatingKey, user int64) (int6
 // answers before the download finishes, as on PMS. Clients that do not
 // follow the activity socket (Plex for Android TV during playback, #389)
 // re-read the item at once and look the new track up in it, so a
-// single-item metadata read waits briefly for a pick of that title to
-// land instead of answering without the track.
+// single-item metadata read waits briefly for that client's existing pick
+// to land instead of answering without the track.
 type subtitlePicks struct {
 	mu      sync.Mutex
 	pending map[subtitlePickKey]*subtitlePick
 }
 
 type subtitlePickKey struct {
-	user int64
-	key  frontend.RatingKey
+	user            int64
+	key             frontend.RatingKey
+	client, session string
+	part            int64
 }
 
 type subtitlePick struct {
@@ -319,10 +321,9 @@ type subtitlePick struct {
 // subtitlePickWait bounds how long one metadata read waits for a pick.
 // Downloads are a small text file; a client that polls several times gets
 // a fresh wait on each read.
-const subtitlePickWait = 5 * time.Second
+const subtitlePickWait = 2 * time.Second
 
-func (p *subtitlePicks) begin(user int64, key frontend.RatingKey) func() {
-	k := subtitlePickKey{user, key}
+func (p *subtitlePicks) begin(k subtitlePickKey) func() {
 	p.mu.Lock()
 	if p.pending == nil {
 		p.pending = map[subtitlePickKey]*subtitlePick{}
@@ -346,18 +347,53 @@ func (p *subtitlePicks) begin(user int64, key frontend.RatingKey) func() {
 }
 
 func (p *subtitlePicks) wait(ctx context.Context, user int64, key frontend.RatingKey) {
+	p.waitMatching(ctx, func(k subtitlePickKey) bool { return k.user == user && k.key == key })
+}
+
+func (p *subtitlePicks) waitForPart(ctx context.Context, k subtitlePickKey) {
+	if k.part == 0 {
+		// A stopped player has cleared its selected Part, but this whole-item
+		// refresh still renders the Parts issued to the same client/session.
+		p.waitMatching(ctx, func(pending subtitlePickKey) bool {
+			return pending.user == k.user && pending.key == k.key && pending.client == k.client && pending.session == k.session
+		})
+		return
+	}
 	p.mu.Lock()
-	cur := p.pending[subtitlePickKey{user, key}]
+	cur := p.pending[k]
 	p.mu.Unlock()
 	if cur == nil {
 		return
 	}
+	waitSubtitlePicks(ctx, []<-chan struct{}{cur.done})
+}
+
+func (p *subtitlePicks) waitMatching(ctx context.Context, matches func(subtitlePickKey) bool) {
+	p.mu.Lock()
+	var done []<-chan struct{}
+	for k, cur := range p.pending {
+		if matches(k) {
+			done = append(done, cur.done)
+		}
+	}
+	p.mu.Unlock()
+	waitSubtitlePicks(ctx, done)
+}
+
+func waitSubtitlePicks(ctx context.Context, done []<-chan struct{}) {
+	if len(done) == 0 {
+		return
+	}
 	timer := time.NewTimer(subtitlePickWait)
 	defer timer.Stop()
-	select {
-	case <-cur.done:
-	case <-timer.C:
-	case <-ctx.Done():
+	for _, ready := range done {
+		select {
+		case <-ready:
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -529,7 +565,9 @@ func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 	activity := rand.Text()
 	// Register the pick before answering, so a metadata re-read racing
 	// this response waits for the download instead of missing the track.
-	finishPick := sync.OnceFunc(s.subtitlePicks.begin(pr.User.ID, t.Key))
+	finishPick := sync.OnceFunc(s.subtitlePicks.begin(subtitlePickKey{
+		user: pr.User.ID, key: t.Key, client: pr.ClientID, session: pr.SessionID, part: partID,
+	}))
 	w.Header().Set("X-Plex-Activity", activity)
 	w.WriteHeader(http.StatusOK)
 	s.wg.Add(1)
@@ -554,7 +592,7 @@ func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 			sel.subtitle, sel.subtitleSet, sel.subtitleStream, sel.subtitlePart = -1, true, &st, partID
 		})
 		// Metadata can expose the stream now; saving preferences must not
-		// hold the client behind another five-second polling wait.
+		// hold the client behind another polling wait.
 		finishPick()
 		s.log.Info("subtitle pick ready", "key", t.Key, "part", partID, "offer", providerID)
 		s.finishSubtitleActivity(activity, pr.User.ID)

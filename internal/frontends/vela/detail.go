@@ -130,26 +130,32 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 	return nil
 }
 
-// cast and crew use only portraits selected with the authorized title detail.
-func (i *instance) cast(r *http.Request, token string, d frontend.ItemDetail) ([]object, error) {
-	out := make([]object, 0, len(d.Title.Cast))
-	for _, person := range d.Title.Cast {
-		out = append(out, object{"name": person.Name, "role": person.Role})
-	}
-	return i.creditArtwork(r, token, d, d.Title.Cast, out)
-}
-
-func (i *instance) crew(r *http.Request, token string, d frontend.ItemDetail) ([]object, error) {
-	people := crewPeople(d.Title)
+// Cast and crew share one current-credit proof and admission transaction.
+func (i *instance) credits(r *http.Request, token string, d frontend.ItemDetail) ([]object, []object, error) {
+	people := append([]frontend.Person(nil), d.Title.Cast...)
 	out := make([]object, 0, len(people))
 	for _, person := range people {
+		out = append(out, object{"name": person.Name, "role": person.Role})
+	}
+	castCount := len(out)
+	crew := crewPeople(d.Title)
+	people = append(people, crew...)
+	for _, person := range crew {
 		entry := object{"name": person.Name}
 		if person.Role != "" {
 			entry["role"] = person.Role
 		}
 		out = append(out, entry)
 	}
-	return i.creditArtwork(r, token, d, people, out)
+	out, err := i.creditArtwork(r, token, d, people, out)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Keep empty groups as JSON arrays.
+	castOut, crewOut := []object{}, []object{}
+	castOut = append(castOut, out[:castCount]...)
+	crewOut = append(crewOut, out[castCount:]...)
+	return castOut, crewOut, nil
 }
 
 // Each batch proves current credit membership and admits portrait grants;

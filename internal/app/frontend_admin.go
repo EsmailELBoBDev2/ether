@@ -148,7 +148,8 @@ func validateFrontendSettings(s frontend.Settings, protocolValidator bool) error
 	return nil
 }
 func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s frontend.Settings) error {
-	if _, ok := f.descriptor(id); !ok {
+	descriptor, ok := f.descriptor(id)
+	if !ok {
 		return frontend.ErrNotRegistered
 	}
 	s = withoutServerName(s)
@@ -164,11 +165,26 @@ func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s
 			return err
 		}
 	}
-	supported, err := f.registry.ValidateSettings(id, s)
+	// The LAN viewer is host-owned, independent of a plugin's settings schema.
+	protocolSettings := s
+	if descriptor.Auth == "none_lan" {
+		protocolSettings = make(frontend.Settings, len(s))
+		for key, value := range s {
+			if key == "viewerId" {
+				n, ok := value.(float64)
+				if !ok || math.IsNaN(n) || math.IsInf(n, 0) || n < 1 || n > 9007199254740991 || math.Trunc(n) != n {
+					return errors.New("invalid viewerId")
+				}
+				continue
+			}
+			protocolSettings[key] = value
+		}
+	}
+	supported, err := f.registry.ValidateSettings(id, protocolSettings)
 	if err != nil {
 		return err
 	}
-	if err := validateFrontendSettings(s, supported); err != nil {
+	if err := validateFrontendSettings(protocolSettings, supported); err != nil {
 		return err
 	}
 	if frontendHostPolicy(id).MainListener {

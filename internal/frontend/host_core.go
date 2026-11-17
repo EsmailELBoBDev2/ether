@@ -130,3 +130,15 @@ func WithSearchListFacts(ctx context.Context) context.Context {
 
 // ErrBedtime carries the next playback admission time.
 type ErrBedtime = core.ErrBedtime
+
+// WithColdDetail identifies the single title page allowed a minimum cold fill.
+func WithColdDetail(ctx context.Context, key RatingKey) context.Context {
+	return core.WithColdDetail(ctx, key)
+}
+
+// DetailPending is the exact-page enrichment snapshot.
+type DetailPending = core.DetailPending
+
+func WithDetailPending(ctx context.Context, key RatingKey) (context.Context, *DetailPending) {
+	return core.WithDetailPending(ctx, key)
+}

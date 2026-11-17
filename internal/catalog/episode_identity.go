@@ -17,7 +17,7 @@ func init() {
 // show index and a fixed row limit, independent of the library's size. It
 // neither fetches missing episodes nor schedules background work.
 func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, season, episode int, names []string) (core.EpisodeIdentity, error) {
-	out := core.EpisodeIdentity{OtherShows: map[string][]core.EpisodeNamesake{}, Seasons: map[int]string{}}
+	out := core.EpisodeIdentity{OtherShows: map[string][]core.EpisodeNamesake{}, Seasons: map[int]string{}, Episodes: map[int]string{}}
 	if len(names) > 8 {
 		names = names[:8]
 	}
@@ -33,13 +33,17 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 		args = append(args, show)
 		seen := map[int64]bool{}
 		for _, column := range []string{"title", "original_title"} {
+			index := "catalog_titles_type_lower_title"
+			if column == "original_title" {
+				index = "catalog_titles_type_lower_original"
+			}
 			// The scalar episode lookup uses catalog_titles_show and never fetches
 			// remote metadata. Keeping it in SQL avoids per-match round trips.
 			queryArgs := []any{season, episode}
 			queryArgs = append(queryArgs, args...)
 			rows, err := c.db.QueryContext(ctx, `SELECT s.key, s.`+column+`, s.year,
-                COALESCE((SELECT e.title FROM catalog_titles e WHERE e.show_key=s.key AND e.season=? AND e.episode=? AND e.type='episode' LIMIT 1), '')
-                FROM catalog_titles s WHERE s.type=? AND LOWER(s.`+column+`) IN (`+strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")+`) AND s.key<>? LIMIT 16`, queryArgs...)
+                COALESCE((SELECT e.title FROM catalog_titles e`+c.indexedBy("catalog_titles_show")+` WHERE e.show_key=s.key AND e.season=? AND e.episode=? AND e.type='episode' LIMIT 1), '')
+                FROM catalog_titles s`+c.indexedBy(index)+` WHERE s.type=? AND LOWER(s.`+column+`) IN (`+strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")+`) AND s.key<>? LIMIT 16`, queryArgs...)
 			if err != nil {
 				return out, err
 			}
@@ -65,7 +69,7 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 			}
 		}
 	}
-	rows, err := c.db.QueryContext(ctx, `SELECT season, title FROM catalog_titles WHERE show_key=? AND type='season' ORDER BY season LIMIT 128`, show)
+	rows, err := c.db.QueryContext(ctx, `SELECT season, title FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE show_key=? AND type='season' ORDER BY season LIMIT 128`, show)
 	if err != nil {
 		return out, err
 	}
@@ -78,5 +82,25 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 		}
 		out.Seasons[n] = title
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil || season <= 0 {
+		return out, err
+	}
+	// Sibling titles let the resolver reject a release that names another
+	// episode of this season (TMDB segment vs broadcast numbering).
+	eps, err := c.db.QueryContext(ctx, `SELECT episode, title FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE show_key=? AND season=? AND type='episode' LIMIT 512`, show, season)
+	if err != nil {
+		return out, err
+	}
+	defer eps.Close()
+	for eps.Next() {
+		var n int
+		var title string
+		if err := eps.Scan(&n, &title); err != nil {
+			return out, err
+		}
+		if n != episode && title != "" {
+			out.Episodes[n] = title
+		}
+	}
+	return out, eps.Err()
 }

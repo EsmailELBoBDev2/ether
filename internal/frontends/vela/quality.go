@@ -50,11 +50,23 @@ func (i *instance) prepareFallback(w http.ResponseWriter, r *http.Request, v *fr
 		return false
 	}
 	q, ok := i.host.Sessions.(frontend.QualitySessions)
-	if !ok || !q.ProactiveFallbackAvailable() || len(s.qualityRungs) == 0 {
+	if !ok || len(s.qualityRungs) == 0 {
 		i.unavailable(w, r)
 		return false
 	}
-	rungs, err := q.QualityRungs(r.Context(), i.access(r, v), id)
+	available := false
+	if !s.port(w, func() { available = q.ProactiveFallbackAvailable() }) {
+		return false
+	}
+	if !available {
+		i.unavailable(w, r)
+		return false
+	}
+	var rungs []frontend.HLSRung
+	var err error
+	if !s.port(w, func() { rungs, err = q.QualityRungs(r.Context(), i.access(r, v), id) }) {
+		return false
+	}
 	if err != nil {
 		fail(w, err, r)
 		return false
@@ -74,7 +86,12 @@ func (i *instance) prepareFallback(w http.ResponseWriter, r *http.Request, v *fr
 	defer cancel()
 	s.plan["fallback"] = object{"state": "preparing", "pathId": pathID}
 	s.publish("plan")
-	url, origin, err := q.PrepareQuality(ctx, i.access(r, v), id, chosen.ID, s.position)
+	position := s.position
+	var url string
+	var origin time.Duration
+	if !s.port(w, func() { url, origin, err = q.PrepareQuality(ctx, i.access(r, v), id, chosen.ID, position) }) {
+		return false
+	}
 	if err != nil {
 		s.plan["fallback"] = object{"state": "unavailable", "pathId": pathID}
 		s.publish("plan")
@@ -89,8 +106,7 @@ func (i *instance) prepareFallback(w http.ResponseWriter, r *http.Request, v *fr
 		}
 	}
 	s.plan["fallback"] = object{"state": "ready", "pathId": pathID}
-	i.refreshOutput(ctx, id, s)
-	return true
+	return s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(ctx, id, copy) })
 }
 
 func (s *playSession) rungFor(path object) string {

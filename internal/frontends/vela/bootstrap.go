@@ -112,6 +112,13 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 		lease := &bootstrapDeadline{expires: time.Now().Add(bootstrapTTL)}
 		buildRequest := r.WithContext(context.WithValue(r.Context(), bootstrapDeadlineKey{}, lease))
+		if cacheable {
+			if source, ok := i.host.Experience.(interface {
+				BeginBootstrapRead(context.Context, *frontend.Viewer, frontend.HomeRevision) context.Context
+			}); ok {
+				buildRequest = buildRequest.WithContext(source.BeginBootstrapRead(buildRequest.Context(), v, before))
+			}
+		}
 		out, buildErr := i.buildBootstrap(buildRequest, v, token, attempt > 0)
 		var payload json.RawMessage
 		if buildErr == nil {

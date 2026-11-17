@@ -56,7 +56,8 @@ func (e Extra) IsTrailer() bool { return e.Subtype == "trailer" || e.Subtype == 
 
 // Resolved is a playable location for an extra.
 type Resolved struct {
-	URL       string // direct media URL
+	URL       string // direct media URL (video when AudioURL is set)
+	AudioURL  string // optional separate audio input
 	Headers   map[string]string
 	Expires   time.Time
 	Container string
@@ -101,29 +102,35 @@ type listEntry struct {
 
 // Service lists, registers and resolves extras. Safe for concurrent use.
 type Service struct {
-	themeCtx        context.Context
-	themeCancel     context.CancelFunc
-	themeFFmpeg     func() string
-	themeWork       sync.Mutex
-	themeMu         sync.Mutex
-	themeRetry      map[string]time.Time
-	cacheDir        string
-	cacheHTTP       *http.Client
-	cacheMu         sync.Mutex
-	cacheDownloadMu sync.Mutex
-	videos          VideoProvider
-	cfgFn           func() config.Extras
-	log             *slog.Logger
-	now             func() time.Time
-	ttl             time.Duration
-	runner          CommandRunner
-	look            func(string) (string, error)
-	downloader      *Downloader
+	themeCtx         context.Context
+	themeCancel      context.CancelFunc
+	themeFFmpeg      func() string
+	themeWork        sync.Mutex
+	themeMu          sync.Mutex
+	themeRetry       map[string]time.Time
+	cacheDir         string
+	cacheHTTP        *http.Client
+	cacheMu          sync.Mutex
+	cacheDownloadMu  sync.Mutex
+	cacheFlightsMu   sync.Mutex
+	cacheFlights     map[string]*trailerFill
+	downloadTrailers bool
+	videos           VideoProvider
+	cfgFn            func() config.Extras
+	log              *slog.Logger
+	now              func() time.Time
+	ttl              time.Duration
+	runner           CommandRunner
+	look             func(string) (string, error)
+	downloader       *Downloader
 
-	mu       sync.Mutex
-	registry map[core.RatingKey]Extra
-	lists    map[string]listEntry
-	resolved map[string]Resolved
+	listWG      sync.WaitGroup
+	listClosed  bool
+	listPending map[string]bool
+	mu          sync.Mutex
+	registry    map[core.RatingKey]Extra
+	lists       map[string]listEntry
+	resolved    map[string]Resolved
 }
 
 const (
@@ -146,6 +153,7 @@ func New(o Options) *Service {
 	if o.CacheTTL <= 0 {
 		o.CacheTTL = time.Hour
 	}
+	downloadTrailers := o.Runner == nil
 	if o.Runner == nil {
 		o.Runner = execRunner
 	}
@@ -163,7 +171,7 @@ func New(o Options) *Service {
 	}
 	themeCtx, themeCancel := context.WithCancel(context.Background())
 	return &Service{
-		themeCtx: themeCtx, themeCancel: themeCancel,
+		themeCtx: themeCtx, themeCancel: themeCancel, downloadTrailers: downloadTrailers,
 		themeFFmpeg: o.ThemeFFmpeg, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
 		videos: o.Videos, cfgFn: o.Config,
 		log: o.Logger.With("component", "extras"), now: o.Now,
@@ -258,6 +266,31 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 		}
 		s.mu.Unlock()
 		return out, nil
+	}
+	if core.LocalResponse(ctx) {
+		if !s.listClosed && !s.listPending[cacheKey] && len(s.listPending) < 2 {
+			if s.listPending == nil {
+				s.listPending = map[string]bool{}
+			}
+			s.listPending[cacheKey] = true
+			s.listWG.Add(1)
+			// Video lookup reads only this immutable identity snapshot.
+			owned := *parent
+			go func() {
+				defer s.listWG.Done()
+				bg, cancel := context.WithTimeout(s.themeCtx, 5*time.Second)
+				defer cancel()
+				_, _ = s.List(bg, &owned, lang)
+				s.mu.Lock()
+				delete(s.listPending, cacheKey)
+				s.mu.Unlock()
+			}()
+		}
+		if s.listPending[cacheKey] {
+			core.ReportDetailPending(ctx, parent.Key, "extras")
+		}
+		s.mu.Unlock()
+		return nil, nil
 	}
 	s.mu.Unlock()
 

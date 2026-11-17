@@ -130,7 +130,9 @@ func (s *Service) FacetPage(ctx context.Context, viewer *core.Viewer, device cor
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	if s.d.PluginLibraries != nil && viewID != "" {
 		if id, err := strconv.Atoi(viewID); err == nil {
-			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil && lib.Source != core.LibraryBuiltin {
+			// Catalogue libraries, including the migrated defaults, retain
+			// indexed paging; other sources use their own facet providers.
+			if lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id)); err == nil && lib.Source != core.LibraryBuiltin && lib.Source != core.LibraryCatalog {
 				facets, err := s.Facets(ctx, viewer, device, viewID, name)
 				if err != nil {
 					return nil, 0, err
@@ -174,9 +176,14 @@ func (s *Service) pagedFacets(ctx context.Context, viewer *core.Viewer, viewID, 
 	}
 	base := core.Filter{Type: lib.Type}
 	if s.d.PluginLibraries != nil {
-		if stored, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lib.ID)); err == nil {
-			base = s.libraryBrowseFilter(ctx, v, stored, base)
+		stored, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lib.ID))
+		if err != nil {
+			return nil, 0, false, core.ErrNotFound
 		}
+		if _, _, published := s.publishedLibrary(ctx, stored); !published {
+			return nil, 0, false, core.ErrNotFound
+		}
+		base = s.libraryBrowseFilter(ctx, v, stored, base)
 	}
 	filter, fits, none := viewerBrowseFilter(base, v, ex, lib.Type)
 	if !fits {
@@ -203,8 +210,19 @@ func (s *Service) resolveStudio(ctx context.Context, viewer *core.Viewer, viewID
 		if err != nil {
 			return core.FacetValue{}, err
 		}
-		for _, lib := range s.libraries() {
-			if strconv.Itoa(lib.ID) == viewID && !SectionAllowed(v, lib.ID) {
+		libs, err := s.facetLibraries(v, viewID)
+		if err != nil {
+			return core.FacetValue{}, err
+		}
+		for _, lib := range libs {
+			if s.d.PluginLibraries == nil {
+				continue
+			}
+			stored, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(lib.ID))
+			if err != nil {
+				return core.FacetValue{}, core.ErrNotFound
+			}
+			if _, _, published := s.publishedLibrary(ctx, stored); !published {
 				return core.FacetValue{}, core.ErrNotFound
 			}
 		}

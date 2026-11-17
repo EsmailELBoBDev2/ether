@@ -341,15 +341,6 @@ func (s *Server) continueHub(ctx context.Context, pr *Request, v cwVariant, sec 
 			}
 		}
 	}
-	if v == cwHome {
-		resuming := items[:0]
-		for _, item := range items {
-			if state[item.Key].ViewOffset > 0 {
-				resuming = append(resuming, item)
-			}
-		}
-		items = resuming
-	}
 	items = s.takeVisible(pr.User, items, count)
 	hs := hubSpec{Hub: frontend.Hub{Title: "Continue Watching", Style: "hero", Promoted: true}, state: state}
 	switch v {
@@ -1178,6 +1169,7 @@ func (s *Server) detailRelated(ctx context.Context, pr *Request) frontend.Detail
 // handleMetadataHubs is /hubs/metadata/{key}[/related] and
 // /library/metadata/{key}/related.
 func (s *Server) handleMetadataHubs(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	k, err := keyParam(r)
@@ -1251,6 +1243,7 @@ func (s *Server) upNextHub(ctx context.Context, pr *Request, k frontend.RatingKe
 // pre-buffered), then the related rows. Without a PostPlayer this is the
 // old behaviour: Up Next, then related.
 func (s *Server) handlePostplay(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	k, err := frontend.ParseRatingKey(chi.URLParam(r, "key"))

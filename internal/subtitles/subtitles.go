@@ -1130,7 +1130,7 @@ func missingForPreferences(user *core.User, embedded []core.StreamInfo, p Prefer
 	for _, st := range embedded {
 		title := strings.ToLower(st.Title)
 		hi := strings.Contains(title, "sdh") || strings.Contains(title, "hearing impaired") || strings.Contains(title, "[cc]") || title == "cc"
-		if selectionSatisfies(selection{Forced: st.Forced, SDH: hi}, p) {
+		if selectionSatisfies(selection{Forced: st.Forced || langtag.ForcedSubtitleTitle(st.Title), SDH: hi}, p) {
 			suitable = append(suitable, st)
 		}
 	}

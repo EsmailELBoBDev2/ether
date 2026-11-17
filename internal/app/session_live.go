@@ -59,6 +59,14 @@ func (l sessionLive) Serve(w http.ResponseWriter, r *http.Request, viewer *core.
 	if offset := r.URL.Query().Get("offset"); offset != "" {
 		clean.URL.RawQuery = url.Values{"offset": []string{offset}}.Encode()
 	}
+	if normalizeLiveTail(tail) == "stream.ts" {
+		// Continuous MPEG-TS for IPTV apps that ask for ".ts". Timelines that
+		// are not MPEG-TS fall back to the HLS playlist beside it.
+		if !l.service.ServeContinuous(w, clean, id, viewer) {
+			http.Redirect(w, clean, "index.m3u8", http.StatusTemporaryRedirect)
+		}
+		return
+	}
 	sessionPrefix := "/livetv/sessions/" + id + "/0/"
 	p := &livePlaylistWriter{
 		ResponseWriter: w,

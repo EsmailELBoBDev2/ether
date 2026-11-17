@@ -93,10 +93,12 @@ func (s *Service) markVerified(ctx context.Context, releaseID string) {
 	s.verified[releaseID] = now
 	delete(s.verifiedMiss, releaseID)
 	s.mu.Unlock()
-	if s.db != nil {
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO resolver_verified(release_id, checked_at, sample_version) VALUES (?, ?, 1)
+	s.persistBookkeeping(ctx, func(ctx context.Context) {
+		if s.db != nil {
+			_, _ = s.db.ExecContext(ctx, `INSERT INTO resolver_verified(release_id, checked_at, sample_version) VALUES (?, ?, 1)
 			ON CONFLICT(release_id) DO UPDATE SET checked_at=excluded.checked_at, sample_version=excluded.sample_version`, releaseID, now.Unix())
-	}
+		}
+	})
 }
 
 func (s *Service) recentlyVerified(ctx context.Context, releaseID string) bool {

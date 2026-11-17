@@ -112,7 +112,9 @@ type sessionInput struct {
 	liveFailures        int
 	liveRecovering      bool
 	liveDiscontinuities map[int]bool
-	liveDurations       map[int]time.Duration // live: each published segment's real length (session_playlist.go)
+	liveTarget          time.Duration                 // fixed before the first live media playlist
+	liveRejected        map[string]bool               // sources that exceeded this session target
+	liveDurations       map[int]map[int]time.Duration // live: each published segment's real length (session_playlist.go)
 
 	// Header recovery survives input swaps and HTTP retries.
 	headerInputs          map[string]int // deterministic header attempts, retained across swaps

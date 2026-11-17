@@ -100,7 +100,10 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			if a.resolver == nil {
 				return nil, core.ErrNotAvailable
 			}
-			return scorecardVariants(ctx, a, v, t, caps)
+			// Handle authorization must see the same stable logical selectors
+			// that detail pages issued. Concrete sources are checked when the
+			// selected slot is resolved, never by reranking this listing.
+			return scorecardVariants(core.WithLocalResponse(ctx), a, v, t, caps)
 		},
 		SelectScopedTracks: func(ctx context.Context, viewer *core.Viewer, device core.Device, title *core.Title, info core.MediaInfo, opts core.DecideOptions, audioSet, subtitleSet bool) (core.DecideOptions, error) {
 			if a.trackprefs == nil {
@@ -125,11 +128,14 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			return selectBrokerTracks(ctx, prefs, viewer, title, info, opts, audioSet, subtitleSet, func(err error) { a.log.Warn("track preferences unavailable", "err", err) })
 		},
 		Lookup: func(ctx context.Context, v *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
-			return a.sessionTitle(ctx, v, key, visibility, false)
+			return a.admissionSessionTitle(ctx, v, key, visibility, false)
+		},
+		CurrentMediaLookup: func(ctx context.Context, v *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
+			return a.librarySessionTitle(ctx, v, key, visibility, true, true)
 		},
 		KindSource: a.kindSourceFunc(),
 		MediaLookup: func(ctx context.Context, v *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
-			return a.sessionTitle(ctx, v, key, visibility, true)
+			return a.admissionSessionTitle(ctx, v, key, visibility, true)
 		},
 		Playback: playback, Transcoder: tc, Progress: a.state, SourceHistory: a.state,
 		ActiveViewer: func(ctx context.Context, id int64) (*core.Viewer, error) {
@@ -248,4 +254,70 @@ func (a *App) cachedTrailerSource(ctx context.Context, clip extras.Extra) (sessi
 		return sessions.PreviewSource{}, err
 	}
 	return sessions.PreviewSource{MIMEType: cached.MIMEType, SourceGeneration: cached.SourceGeneration, Open: func() (*os.File, error) { return a.extras.OpenCachedTrailer(cached) }}, nil
+}
+
+// admissionSessionTitle separates current publication from retained playback.
+// Both full planning and lazy issuance pass here. Only local library and
+// catalogue facts are used for membership, including inherited show membership.
+func (a *App) admissionSessionTitle(ctx context.Context, v *core.Viewer, key core.RatingKey, visibility experience.Visibility, cached bool) (*core.Title, error) {
+	return a.librarySessionTitle(ctx, v, key, visibility, cached, false)
+}
+
+func (a *App) librarySessionTitle(ctx context.Context, v *core.Viewer, key core.RatingKey, visibility experience.Visibility, cached, retained bool) (*core.Title, error) {
+	if a.libraries == nil || (a.spikeLibrary != nil && key.Kind() == core.KindLocal) {
+		return a.sessionTitle(ctx, v, key, visibility, cached)
+	}
+	visibility.SectionFor = nil
+	if a.safety != nil {
+		visibility.Policy = sessionSafetyPolicy{a}
+	}
+	title, err := a.sessionTitle(ctx, v, key, visibility, cached)
+	if err != nil {
+		return nil, err
+	}
+	var libs []core.Library
+	if retained {
+		libs, err = a.libraries.ListRetained(ctx)
+	} else {
+		libs, err = a.libraries.ListCurrent(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, lib := range libs {
+		if lib.Hidden || lib.Source == core.LibraryPlugin || lib.RulesBroken || !frontend.SectionAllowed(v, int(lib.ID)) {
+			continue
+		}
+		if lib.MediaType != "" && string(lib.MediaType) != titleMedia(title) {
+			continue
+		}
+		published := false
+		for protocol := range libraryPresentations {
+			if app := core.LiveApp(ctx); app != "" && app != string(protocol) {
+				continue
+			}
+			if _, _, ok := presentLibraryForProtocol(lib.Present, protocol, lib.MediaType); ok {
+				published = true
+				break
+			}
+		}
+		if !published {
+			continue
+		}
+		ok, err := a.catalog.TitleInFilter(core.WithCatalogViewer(ctx, v), libraryScopeFilter(lib, core.Filter{}), libraryProfileKey(title))
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return title, nil
+		}
+	}
+	return nil, core.ErrNotFound
+}
+
+// Library publication is evaluated separately from mandatory viewer safety.
+type sessionSafetyPolicy struct{ app *App }
+
+func (p sessionSafetyPolicy) Allowed(v *core.User, t *core.Title) bool {
+	return p.app.safety.PolicyAllowed(v, t)
 }

@@ -198,6 +198,9 @@ func fetchError(host string, err error) error {
 	case errors.Is(err, safefetch.ErrBlocked):
 		return fmt.Errorf("%w: %s is not allowed (%w)", ErrFetchFailed, host, safefetch.ErrBlocked)
 	}
+	if reason == "timed out" {
+		return fmt.Errorf("%w: %s: %w", ErrFetchFailed, host, context.DeadlineExceeded)
+	}
 	return fmt.Errorf("%w: %s: %s", ErrFetchFailed, host, reason)
 }
 
@@ -259,6 +262,11 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 }
 
 func (h *host) HTTPFetch(ctx context.Context, req FetchRequest) (FetchResponse, error) {
+	if req.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
 	resp, err := h.openFetch(ctx, req)
 	if err != nil {
 		return FetchResponse{}, err

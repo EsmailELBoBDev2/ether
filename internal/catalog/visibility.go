@@ -297,3 +297,9 @@ func (c *Catalog) bindLibraryRulesMode(f *libraryfilter.Filter, membershipOnly b
 		return err == nil && count > 0
 	})
 }
+
+// CompileLibraryRules validates library writes using the same bound predicates
+// as startup and serving, without evaluating or fetching any title.
+func (c *Catalog) CompileLibraryRules(rules []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
+	return c.compileLibraryRules(rules, fallback)
+}

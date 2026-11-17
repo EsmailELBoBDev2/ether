@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"path"
-	"strings"
 	"time"
 )
 
@@ -154,6 +152,9 @@ type ArchiveMember struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Size  uint64 `json:"size"`
+	// Unsafe names identify members only and must never be used as output paths.
+	Unsafe       bool   `json:"unsafe,omitempty"`
+	UnsafeReason string `json:"unsafeReason,omitempty"`
 }
 
 func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits) (*zip.Reader, error) {
@@ -161,6 +162,11 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if len(grants) > 0 {
 		limits = grants[0]
 	}
+	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
+	return parseDataZIP(rc, ra, limits)
+}
+
+func parseDataZIP(rc io.ReadSeeker, ra *archiveIOBudget, limits RuntimeLimits) (*zip.Reader, error) {
 	directoryCap := min(int64(maxArchiveDirectory), int64(limits.ArchiveMembers)*65536, archiveMemory(limits)/8)
 
 	size, err := rc.Seek(0, io.SeekEnd)
@@ -170,7 +176,6 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	if size < 22 || size > limits.FetchBytes {
 		return nil, fmt.Errorf("plugins: ZIP size outside limit")
 	}
-	ra := &archiveIOBudget{r: seekReaderAt{ctx, rc}, left: limits.FetchBytes}
 	tailSize := min(size, int64(65557))
 	tail := make([]byte, tailSize)
 	if _, err := ra.ReadAt(tail, size-tailSize); err != nil {
@@ -247,7 +252,9 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 		return nil, fmt.Errorf("plugins: ZIP directory not found")
 	}
 	z, err := zip.NewReader(ra, size)
-	if err != nil {
+	// With zipinsecurepath=0, Go still returns the directory alongside this
+	// warning. Names are identifiers here; the per-member guard controls opens.
+	if err != nil && err != zip.ErrInsecurePath {
 		return nil, err
 	}
 	if len(z.File) > limits.ArchiveMembers {
@@ -256,10 +263,9 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	var total uint64
 	names := 0
 	for _, f := range z.File {
-		name := strings.TrimSuffix(f.Name, "/")
 		names += len(f.Name)
-		if name == "" || len(f.Name) > 1024 || int64(names) > directoryCap || strings.ContainsAny(name, "\\:\x00") || strings.HasPrefix(name, "/") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
-			return nil, fmt.Errorf("plugins: unsafe ZIP member name")
+		if int64(names) > directoryCap {
+			return nil, fmt.Errorf("plugins: ZIP member names exceed directory grant")
 		}
 		if !f.FileInfo().IsDir() && !f.Mode().IsRegular() {
 			return nil, fmt.Errorf("plugins: unsupported ZIP member type")
@@ -278,8 +284,8 @@ func openDataZIP(ctx context.Context, rc io.ReadSeeker, grants ...RuntimeLimits)
 	return z, nil
 }
 
-// CallDataHost is the shared hosted/remote data-service funnel. Only the four
-// named services are accepted; cache access rechecks plugin ownership each call.
+// CallDataHost is the shared hosted/remote data-service funnel. Only named
+// services are accepted; cache access rechecks plugin ownership each call.
 func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage) (json.RawMessage, error) {
 	// Remote callers receive the same maximum I/O deadline as hosted calls.
 	limits := defaultDataLimits()
@@ -299,7 +305,22 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		return nil, err
 	}
 	var value any
-	if name == "http.fetchToCache" {
+	if name == "http.hash" {
+		var req HashRequest
+		if len(args) != 1 {
+			return nil, fmt.Errorf("plugins: hash takes one request")
+		}
+		if err = json.Unmarshal(args[0], &req); err != nil {
+			return nil, err
+		}
+		service, ok := h.(interface {
+			HTTPHash(context.Context, HashRequest) (HashResult, error)
+		})
+		if !ok {
+			return nil, ErrUnavailable
+		}
+		value, err = service.HTTPHash(ctx, req)
+	} else if name == "http.fetchToCache" {
 		var req struct {
 			Method     string            `json:"method"`
 			URL        string            `json:"url"`
@@ -374,7 +395,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			opt.Offset = 0
 			value, err = readDataRange(ctx, rc, opt)
 		} else {
-			archive, e := openDataArchive(ctx, rc, limits)
+			var archive *dataArchive
+			var e error
+			if owner, ok := h.(interface{ archiveDirectoryCache() *archiveDirectoryCache }); ok {
+				archive, e = owner.archiveDirectoryCache().open(ctx, ref, rc, limits)
+			} else {
+				archive, e = openDataArchive(ctx, rc, limits)
+			}
 			if e != nil {
 				return nil, e
 			}
@@ -385,6 +412,9 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
+				if f.Unsafe {
+					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
+				}
 				if uint64(opt.Offset) > f.Size {
 					return nil, fmt.Errorf("plugins: archive member offset outside range")
 				}

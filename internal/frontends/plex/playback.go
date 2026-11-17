@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -199,6 +200,7 @@ type playRequest struct {
 	key            frontend.RatingKey
 	collection     string
 	caps           frontend.ClientCaps
+	sourceLimits   *frontend.ClientCaps
 	opts           frontend.DecideOptions
 	sessionID      string // client transcode session id
 	offset         time.Duration
@@ -230,7 +232,8 @@ type playRequest struct {
 	mde bool
 	// listAllTracks: Android-family clients receive every probed track in
 	// the decision response; recorded PMS decisions for web, iOS and Apple
-	// TV are selected-only, so those clients keep that shape. Set from the
+	// TV are selected-only. On-demand subtitles are listed independently
+	// because their tracks may only become known at Play. Set from the
 	// request context in decisionContainer; zeroed by sameSettings because
 	// it is response shaping, not a playback setting (an asymmetric compare
 	// would re-prepare and restart the encoder on every start).
@@ -342,6 +345,7 @@ func (p playRequest) sameSettings(other playRequest) bool {
 	p.profileResult, other.profileResult = nil, nil
 	p.offset, other.offset = 0, 0
 	p.caps, other.caps = frontend.ClientCaps{}, frontend.ClientCaps{}
+	p.sourceLimits, other.sourceLimits = nil, nil
 	p.listAllTracks, other.listAllTracks = false, false
 	p.variantRelease, other.variantRelease = "", ""
 	p.mediaID, other.mediaID = 0, 0
@@ -393,13 +397,17 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	if s.segmentedSurroundOff(pr) {
 		caps.SegmentedSurroundOff = true // a stream stalled on copied surround audio
 	}
+	// Save device/source limits before the quality slider sets output limits.
+	sourceLimits := caps
+	sourceLimits.MaxBitrateKbps = 0
+	sourceLimits.DefaultRemoteBitrate = false
 	applyDecisionQuery(&caps, q)
 	// The decision query can identify WAN even when the metadata request
-	// looked local. Apply the remote ceiling before source resolution too.
+	// looked local. This ceiling constrains delivery, including direct play.
 	if limit := s.cfg().Transcode.RemoteMaxBitrateKbps; caps.Remote && limit > 0 && (caps.MaxBitrateKbps == 0 || limit < caps.MaxBitrateKbps) {
 		caps.MaxBitrateKbps = limit
 	}
-	p := playRequest{copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
+	p := playRequest{copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, sourceLimits: &sourceLimits, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
 	for _, raw := range []string{q.Get("path"), q.Get("key")} {
 		if partID, ok := partIDFromPath(raw); ok {
 			p.requestedPart = partID
@@ -494,6 +502,24 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	}
 	p.offset = durationParam(q.Get("offset"), time.Second)
 	return p, nil
+}
+
+// sourceSelectionCaps keeps request quality limits at delivery selection. Device
+// decoder limits and owner quality rules still govern which source may open.
+// An HD output request may softly prefer a suitable HD source on new admission.
+func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
+	caps := p.caps
+	if p.sourceLimits != nil {
+		caps.MaxHeight = p.sourceLimits.MaxHeight
+		caps.ExplicitMaxHeight = p.sourceLimits.ExplicitMaxHeight
+		caps.MaxBitrateKbps = p.sourceLimits.MaxBitrateKbps
+		caps.DefaultRemoteBitrate = p.sourceLimits.DefaultRemoteBitrate
+	}
+	// SD delivery caps always shape the encode, never source selection.
+	if p.opts.MaxHeight >= 720 && !p.opts.DirectPlay && !p.opts.DirectStream {
+		caps.PreferredSourceHeight = p.opts.MaxHeight
+	}
+	return caps
 }
 
 func isPlayableKey(k frontend.RatingKey) bool {
@@ -628,16 +654,30 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			p.opts.BurnTextSubtitles = true
 		}
 		if androidImageSubtitle(pr, ps.Info, p.opts) {
+			dec := frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{})
 			// Source-change remuxing is also a conversion, even when MDE
-			// initially allowed direct play of the original file.
+			// initially allowed direct play of the original file. Skip the
+			// proactive Usenet burn when the client can direct-play PGS itself.
 			converting := !p.opts.DirectPlay || ps.RequiresRemux
 			if onDemandSession(ps) && p.mde && p.opts.DirectStream && ps.Resolution != nil {
+				// A preliminary direct-play decision can still become an optional
+				// source-safety remux in the broker. Exempt only the native paths
+				// that sessions.Decide also keeps out of that remux.
+				native := false
+				if v := ps.Info.Video(); v != nil && dec.Kind == frontend.DecisionDirectPlay {
+					targets := streamingVideoTarget(pr.ProfileExtra, p.protocol)
+					if len(p.caps.VideoCodecs) > 0 {
+						targets = slices.DeleteFunc(targets, func(c string) bool { return !p.caps.SupportsVideo(c) })
+					}
+					native = (v.DolbyVision && strings.EqualFold(p.caps.Platform, "Android") && frontend.SupportsDVProfile(p.caps, v.DolbyVisionProfile)) ||
+						(v.Codec != "" && len(targets) > 0 && !slices.Contains(targets, v.Codec))
+				}
 				protocol := ps.Resolution.Release.Protocol
-				converting = converting || (protocol != frontend.ProtocolHTTP && protocol != frontend.ProtocolTorrent)
+				converting = converting || (!native && protocol != frontend.ProtocolHTTP && protocol != frontend.ProtocolTorrent)
 			}
 			// A quality/codec limit can require conversion even though the
 			// client allowed direct play.
-			if converting || frontend.DecideTranscode(ps.Info, p.caps, p.opts, frontend.TranscodePolicy{}).Kind != frontend.DecisionDirectPlay {
+			if converting || dec.Kind != frontend.DecisionDirectPlay {
 				p.opts.BurnSubtitles = true
 			}
 		}
@@ -842,7 +882,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 	}
 	// Wait for the result instead of converting slow preparation to an error.
 	// A genuine failure is answered now so admission does not repeat the search.
-	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.caps, "", false); err != nil {
+	if _, err := pw.PrepareWithin(ctx, decisionSourceWait, pr.User, p.key, p.sourceSelectionCaps(), "", false); err != nil {
 		return t, err
 	}
 	return nil, nil
@@ -1084,8 +1124,11 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 	// Android builds its picker from this response even while some source
 	// facts remain estimated. Preserve every known track across quality changes.
 	selectedOnly := !p.listAllTracks
+	// Local files already publish their complete tracks before Play. On-demand
+	// versions may discover subtitles only now; publish their whole menu.
+	allSubtitles := onDemandSession(ps)
 	if dec.Kind == frontend.DecisionDirectPlay {
-		return directPlayMedia(m, streams, selectedOnly, p.subtitles)
+		return directPlayMedia(m, streams, selectedOnly, !allSubtitles && selectedOnly, p.subtitles)
 	}
 	applyTranscodeMedia(&m, dec, p.protocol)
 	var kept []model.Stream
@@ -1094,7 +1137,7 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		if rerr != nil && !streamMiss(rerr) {
 			continue
 		}
-		if shaped, keep := applyStreamDecision(st, binding.Info, dec, selectedOnly, p.subtitles, p.softText); keep {
+		if shaped, keep := applyStreamDecision(st, binding.Info, dec, selectedOnly, !allSubtitles && selectedOnly, p.subtitles, p.softText); keep {
 			if plexAndroidClient(&Request{Product: p.caps.Product, Device: p.caps.Device}) && shaped.Decision == "burn" && frontend.IsImageSubtitle(binding.Info.Codec) && p.protocol == frontend.ProtocolHLS {
 				shaped.Location = "segments-av"
 				shaped.Extra = append(shaped.Extra, model.A("burn", "1"))
@@ -1117,11 +1160,10 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 }
 
 // directPlayMedia preserves stream ordering. For Android-family clients
-// every audio and subtitle stays in the list and selected marks the one
-// that will play: Plex Android builds its playback track menu from this
-// response, so dropping the alternates leaves the menu empty. Other
-// clients keep the recorded PMS shape (video + selected tracks), which
-// TestDecisionConformsToPMS and the goldens pin.
+// every audio stays in the list and selected marks the one that will play.
+// On-demand playback lists all subtitle tracks: an unresolved version has no
+// embedded tracks before Play, so this response populates its track picker.
+// Other clients retain the recorded PMS shape for audio (selected only).
 //
 // The selected subtitle stays selected whatever subtitles= says, and its
 // row names the delivery as PMS 1.42 does for a direct play: subtitles=none
@@ -1131,12 +1173,12 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 // /subtitles/:/transcode/universal/start). An image subtitle only reaches
 // direct play when the client can draw it; otherwise Decide burns it and
 // this function is not used.
-func directPlayMedia(m model.Media, streams []model.Stream, selectedOnly bool, subtitles string) model.Media {
+func directPlayMedia(m model.Media, streams []model.Stream, selectedOnly, selectedSubtitleOnly bool, subtitles string) model.Media {
 	part := &m.Part[0]
 	part.Decision = "directplay"
 	var kept []model.Stream
 	for _, st := range streams {
-		if selectedOnly && st.StreamType != 1 && (st.Selected == nil || !*st.Selected) {
+		if (selectedOnly && st.StreamType == 2 || selectedSubtitleOnly && st.StreamType == 3) && (st.Selected == nil || !*st.Selected) {
 			continue
 		}
 		st.Location = "direct"
@@ -1223,11 +1265,12 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 }
 
 // applyStreamDecision shapes one already-resolved stream without registry
-// I/O. When selectedOnly is false (Android-family decisions), an unselected
-// stream stays in the list bare: it keeps its index and gets no decision or
-// location, the same shape its streams carry in library metadata. That is
-// the shape under review against a real PMS Android capture; the selected
-// stream's shape never changes.
+// I/O. Unselected audio is kept when selectedOnly is false (Android-family
+// decisions); subtitles are kept when selectedSubtitleOnly is false (also
+// on-demand versions). These rows keep their source index with no decision or
+// location, as in library metadata. Selected tracks describe their delivery.
+// The Android subtitle row retains an index because Plex for Android turns a
+// missing index into -1 and disables the text track (#191).
 //
 // The selected subtitle row follows PMS 1.42 (recorded PMS 1.42.2 capture):
 // subtitles=none is decision="ignore" with nothing delivered (except a
@@ -1237,7 +1280,7 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 // decision="transcode", location="segments-subs") and read from
 // /video/:/transcode/universal/subtitles; a text track copied into
 // Matroska segments keeps its format.
-func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.Decision, selectedOnly bool, subtitles string, softText bool) (model.Stream, bool) {
+func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.Decision, selectedOnly, selectedSubtitleOnly bool, subtitles string, softText bool) (model.Stream, bool) {
 	idx := st.Index
 	st.Index = nil // segments carry their own stream layout
 	switch st.StreamType {
@@ -1297,7 +1340,7 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 		st.Location = "segments-av"
 	case 3:
 		if st.Selected == nil || !*st.Selected {
-			if selectedOnly {
+			if selectedSubtitleOnly {
 				return st, false
 			}
 			st.Index = idx
@@ -1356,6 +1399,20 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			st.Location = "segments-av"
 			st.Key = ""
 			st.Format = st.Codec
+			// Plex for Android copies this selected row into the player on
+			// the way into playback. The engine turns a missing index into
+			// -1, and the track selector treats -1 as Disabled, so the
+			// subtitle muxed into the segment is never drawn even though
+			// the row stays selected in the panel (#191). Measured on
+			// 2026.22.0: "Selecting subtitle stream with index -1" while
+			// the panel showed the embedded SRT. A direct play matches
+			// this source index to the extractor id. On a transcode the
+			// app replaces any present index with 2, which is the output
+			// index of this mux: one video, one audio, then this subtitle.
+			// Other clients keep the index off the selected row.
+			if !selectedOnly {
+				st.Index = idx
+			}
 		}
 	}
 	return st, true
@@ -2245,6 +2302,13 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", contentDisposition(filename))
 	}
 	unlockOwner()
+	// Direct delivery hands the client the provider's URL for a file it has
+	// already been allowed to play. A download keeps Ether's file name, and a
+	// HEAD stays with the relay so the client's size probe is answered by the
+	// session that knows the container.
+	if !download && r.Method == http.MethodGet && s.partDirectDelivery(w, r, ps.ID) {
+		return
+	}
 	cw := s.newCountWriter(w, r)
 	s.plexSources().ServePart(cw, parts.Request(r), ps.ID)
 	cw.finish()

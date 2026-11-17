@@ -230,6 +230,7 @@ func (m *Manager) DeliverOutbox(ctx context.Context, pluginID string) error {
 // every_node plugins run everywhere. Health checks run on every node.
 func (m *Manager) Run(ctx context.Context) {
 	defer m.cancelActionJobs("")
+	defer m.cancelRemoteHashes("")
 	defer func() {
 		m.hashMu.Lock()
 		defer m.hashMu.Unlock()
@@ -308,15 +309,34 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 			m.mu.Lock()
 			next, seen := m.nextRun[key]
 			if !seen {
-				m.nextRun[key] = now.Add(every)
-				m.mu.Unlock()
-				continue
+				last, err := m.store.scheduleLastRun(ctx, r.ID, job.Call)
+				if err != nil {
+					m.mu.Unlock()
+					m.log.Warn("plugin schedule: read last run", "plugin", r.ID, "call", job.Call, "err", err)
+					continue
+				}
+				if !last.IsZero() {
+					next = last.Add(every)
+					m.nextRun[key] = next
+				}
 			}
 			if now.Before(next) {
 				m.mu.Unlock()
 				continue
 			}
-			m.nextRun[key] = now.Add(every)
+			if ctx.Err() != nil {
+				m.mu.Unlock()
+				return
+			}
+			// Record dispatch before calling: failures (or a restart during a
+			// long job) must not produce a first-run storm on the next boot.
+			dispatched := m.now()
+			if err := m.store.markScheduleRun(ctx, r.ID, job.Call, dispatched); err != nil {
+				m.mu.Unlock()
+				m.log.Warn("plugin schedule: save last run", "plugin", r.ID, "call", job.Call, "err", err)
+				continue
+			}
+			m.nextRun[key] = dispatched.Add(every)
 			m.mu.Unlock()
 			_, _ = m.Call(ctx, r.ID, Request{Method: "POST", Path: job.Call})
 		}

@@ -61,6 +61,12 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			}
 		}
 	}
+	// For a new quality request, look for an HD source matching the output
+	// before reusing an oversized stored source. Active sessions are reused by
+	// prepareOwnedWithin before this path; explicit picks remain authoritative.
+	if res != nil && prefer == "" && s.caps.PreferredSourceHeight >= 720 && (res.Release.Info.Height == 0 || res.Release.Info.Height > s.caps.PreferredSourceHeight) {
+		return nil, nil, false
+	}
 	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}
@@ -89,7 +95,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			// Resolve only the explicit pick. Resolving a fresh automatic
 			// fallback would health-check a source we then discard in favour
 			// of the already checked remembered source below.
-			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true})
+			pick, err := m.deps.Resolver.Resolve(core.WithIndexerPurpose(ctx, core.IndexerPurposePlayback), core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: s.prefer, PreferredOnly: true, PlayedRelease: auto.Release.ID})
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -97,7 +103,11 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				res = pick
 			} else if err == nil || errors.Is(err, core.ErrNotAvailable) {
 				res, cached, fromResume = auto, facts, remembered
-				m.notePreferenceStale(s.ident.key, s.prefer, auto.Release.ID)
+				reason := "picked version failed availability checks"
+				if err != nil {
+					reason = err.Error()
+				}
+				m.notePreferenceStale(ctx, s, auto.Release.ID, reason)
 			} else {
 				return nil, err
 			}
@@ -134,10 +144,10 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				// automatic choice the warm-up (or resume) already holds, so
 				// the opening prefetch is not wasted on another release, and
 				// stop asking for the pick on every open.
-				m.notePreferenceStale(s.ident.key, s.prefer, res.Release.ID)
 				if auto, autoCached, autoResume := m.preparedResolution(ctx, s, profile, original, ""); auto != nil {
 					res, cached, fromResume = auto, autoCached, autoResume
 				}
+				m.notePreferenceStale(ctx, s, res.Release.ID, "picked version was unavailable; resolver selected Auto")
 			}
 			if err != nil {
 				if fallbackGen != nil {
@@ -474,7 +484,12 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	share := src
 	src = inner
 	openedRevision := core.SourceRevision(&core.PlaySession{Key: s.ident.key, Source: src})
-	g := &generation{sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
+	g := &generation{warmReads: new(core.WarmReadWindow), sess: s, n: s.nextGen(), token: randomID(16), src: src, share: share, sharedClose: closeShared, finishSource: finish, res: res, indexReady: make(chan struct{})}
+	if len(cached) > 0 && cached[0] != nil && cached[0].warmReads != nil &&
+		cached[0].releaseID == res.Release.ID && cached[0].info.Size == src.Size() &&
+		(cached[0].nzbHash == "" || (len(res.NZB) > 0 && cached[0].nzbHash == nzbHash(res.NZB))) {
+		g.prewarmReads = cached[0].warmReads
+	}
 	g.ctx, g.cancel = context.WithCancel(m.ctx)
 	if core.IsBackgroundAnalysis(ctx) {
 		g.ctx = core.WithBackgroundAnalysis(g.ctx)
@@ -626,7 +641,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 func (m *Manager) probeMedia(ctx context.Context, g *generation, src core.MediaSource) (*core.MediaInfo, string, error) {
 	if m.deps.NativeProbe != nil {
 		started := time.Now()
-		info, err := m.deps.NativeProbe(ctx, src)
+		info, err := m.deps.NativeProbe(core.WithReadOrigin(ctx, "playback.probe", "container facts"), src)
 		if err == nil && info != nil {
 			if m.opts.VerifyNativeProbe && g.res != nil {
 				m.startProbeVerify(g.sess.sources, g.res, *info)
@@ -675,7 +690,7 @@ func (m *Manager) startTrailerFill(g *generation) {
 		ctx, cancel := context.WithTimeout(g.ctx, m.opts.IndexTimeout)
 		defer cancel()
 		info := g.infoSnapshot()
-		if !m.deps.NativeTrailer(ctx, g.src, &info) {
+		if !m.deps.NativeTrailer(core.WithReadOrigin(ctx, "playback.trailer", "container facts"), g.src, &info) {
 			return
 		}
 		g.mu.Lock()
@@ -808,7 +823,7 @@ func (m *Manager) startIndexFill(g *generation) {
 		defer g.markIndexReady()
 		ctx, cancel := context.WithTimeout(g.ctx, m.opts.IndexTimeout)
 		defer cancel()
-		points := containerIndex(ctx, g.src, g.src.Size())
+		points := containerIndex(core.WithReadOrigin(ctx, "playback.index", "container keyframes"), g.src, g.src.Size())
 		if len(points) == 0 {
 			return
 		}

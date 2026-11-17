@@ -163,12 +163,15 @@ func hlsAudioOK(codec string) bool {
 	return false
 }
 
-// matroskaAudioOK reports audio Matroska carries beyond hlsAudioOK: DTS
-// (including DTS-HD MA), TrueHD, Vorbis and PCM, as PMS copies them into
-// the Matroska streams Plex for Android TV requests.
-func matroskaAudioOK(codec string) bool {
+// matroskaAudioOK reports audio Matroska carries beyond hlsAudioOK.
+// TrueHD/MLP may be copied into files, but not segmented Matroska: their
+// sub-millisecond packets produce non-monotonic DTS in the stream segment
+// muxer and silent playback, regardless of the client's decoder support.
+func matroskaAudioOK(codec string, segmented bool) bool {
 	switch codec {
-	case "dts", "truehd", "vorbis":
+	case "truehd", "mlp":
+		return !segmented
+	case "dts", "vorbis":
 		return true
 	}
 	return hlsAudioOK(codec) || strings.HasPrefix(codec, "pcm")
@@ -475,8 +478,8 @@ func collectIssues(info core.MediaInfo, v, a, sub *core.StreamInfo, ctx issueCon
 // codec is supported and carried in HLS, else transcode to the client's
 // target; on a narrow connection, high-bitrate audio is converted to
 // stereo AAC to preserve room for video.
-func planAudio(a *core.StreamInfo, caps core.ClientCaps, audioIssues []string, bitrateCap int, matroskaOut bool) (audioCopy bool, audioCodec string, audioKbps int, audioNote string) {
-	audioCopy = a == nil || (len(audioIssues) == 0 && (hlsAudioOK(a.Codec) || matroskaOut && matroskaAudioOK(a.Codec)))
+func planAudio(a *core.StreamInfo, caps core.ClientCaps, audioIssues []string, bitrateCap int, matroskaOut, segmented bool) (audioCopy bool, audioCodec string, audioKbps int, audioNote string) {
+	audioCopy = a == nil || (len(audioIssues) == 0 && (hlsAudioOK(a.Codec) || matroskaOut && matroskaAudioOK(a.Codec, segmented)))
 	if a != nil {
 		if audioCopy {
 			audioCodec = a.Codec
@@ -641,7 +644,8 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 			caps: caps, heightCap: heightCap, bitrateCap: bitrateCap, burn: burn, audioFilters: d.AudioFilters,
 		})
 	}
-	// Some segmented players stall on audio their streaming target lists:
+	// Segmented Matroska cannot copy TrueHD/MLP. Some players also stall
+	// on other audio their streaming target lists:
 	// Plex for Android phones on copied E-AC-3, Google TV sticks on DTS
 	// (clientreg segmented-audio), or any client after a remembered stall.
 	// Progressive Matroska and downloads keep the file's audio.
@@ -682,11 +686,11 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 	why = append(why, otherIssues...)
 
 	// Audio plan, shared by remux and transcode.
-	// Matroska output (Plex for Android's HLS target, or HTTP) carries DTS,
-	// TrueHD and PCM, which TS/fMP4 HLS cannot; the client's declared
-	// target codecs still decide (audioIssues).
+	// Matroska carries DTS and PCM beyond TS/fMP4 HLS. TrueHD/MLP
+	// requires file output; the client's declared target codecs still
+	// decide which supported audio can be copied (audioIssues).
 	matroskaOut := a != nil && outputContainer(caps, opts, "h264", a.Codec) == ContainerMatroska
-	audioCopy, audioCodec, audioKbps, audioNote := planAudio(a, caps, audioIssues, bitrateCap, matroskaOut)
+	audioCopy, audioCodec, audioKbps, audioNote := planAudio(a, caps, audioIssues, bitrateCap, matroskaOut, opts.Protocol != core.ProtocolHTTP && !caps.Download)
 
 	// 2. Remux: copy video into HLS.
 	videoCopyable := v == nil || (len(videoIssues) == 0 && hlsVideoOK(v.Codec))
@@ -704,7 +708,7 @@ func Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions, 
 		// layer (above). Once Ether copies the stream anyway, deliver a real
 		// base-only stream: keeping the configuration and RPUs makes some
 		// players pick a Dolby Vision decoder for an HDR10 fallback (#328).
-		d.StripDolbyVision = hdr10Base || (hasHDR10Base(v, caps) && !supportsDVStream(caps, v))
+		d.StripDolbyVision = hdr10Base || (hasHDR10Base(v, caps) && (!supportsDVStream(caps, v) || (androidClient(caps) && v.DolbyVisionProfile == 7)))
 		if d.StripDolbyVision && !hdr10Base {
 			why = append([]string{fmt.Sprintf("client lacks Dolby Vision profile %d: delivering its HDR10 base layer", v.DolbyVisionProfile)}, why...)
 		}
@@ -972,7 +976,8 @@ func SegmentedVideoCopyOK(caps core.ClientCaps, codec string) bool {
 
 // SegmentedAudioCopyOK reports whether codec may be copied into this
 // client's segmented output: its streaming target lists it, when it declares
-// one, and neither the client registry nor a remembered stall refuses it.
+// one, the muxer supports it, and neither the client registry nor a
+// remembered stall refuses it.
 func SegmentedAudioCopyOK(caps core.ClientCaps, codec string) bool {
 	if len(caps.TranscodeAudioCodecs) > 0 && !slices.Contains(caps.TranscodeAudioCodecs, codec) {
 		return false
@@ -981,6 +986,9 @@ func SegmentedAudioCopyOK(caps core.ClientCaps, codec string) bool {
 }
 
 func segmentedAudioRefused(caps core.ClientCaps, codec string) bool {
+	if HLSContainer(caps, "", codec) == ContainerMatroska && !matroskaAudioOK(codec, true) {
+		return true
+	}
 	if caps.SegmentedSurroundOff && core.IsSurroundAudioCodec(codec) {
 		return true
 	}
@@ -1007,6 +1015,10 @@ func supportsDVStream(caps core.ClientCaps, v *core.StreamInfo) bool {
 	switch v.DolbyVisionProfile {
 	case 5:
 		return v.DolbyVisionELPresent == nil || !*v.DolbyVisionELPresent
+	case 7:
+		return caps.DVProfilesForced &&
+			v.DolbyVisionCompatibilityID == 6 &&
+			(v.DolbyVisionBLPresent == nil || *v.DolbyVisionBLPresent)
 	case 8:
 		return v.DolbyVisionCompatibilityID == 1 &&
 			(v.DolbyVisionBLPresent == nil || *v.DolbyVisionBLPresent) &&

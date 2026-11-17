@@ -1,7 +1,6 @@
 import { formatBitrate } from "../../lib/format";
 import { Badge, Button, EmptyState, Select, toast } from "@braedonsaunders/appkit-ui";
 import {
-  ArrowRight,
   Cpu,
   Gauge,
   Globe,
@@ -22,25 +21,23 @@ import { Segmented } from "../../components/fields";
 import { Kpi, KpiRow } from "../../components/Kpi";
 import { apiFetch, errorMessage } from "../../lib/api";
 import { t, tn } from "../../i18n";
-import { formatNumber, formatPercent } from "../../lib/format";
+import { formatNumber } from "../../lib/format";
 import { channelLabel, decisionLabel, type NowPlaying as Stream } from "../../lib/health";
 import type { AsyncState } from "../../lib/hooks";
 import { qualityFallback } from "../../lib/quality-fallback";
 import { useTitle } from "../../lib/titles";
-
-const clockOf = (ms: number) => {
-  const total = Math.max(0, Math.round(ms / 1000));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const sec = String(total % 60).padStart(2, "0");
-  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
-};
+import { clockOf, Flow, PlayDrawer, progressLabel, usePlayParam } from "./PlayDrawer";
 
 /** Mbps, the unit Activity uses everywhere. */
 export const mbpsOf = formatBitrate;
 
 const isTranscoding = (s: Stream) =>
   s.decision === "transcode" || (s.decision === "copy" && !s.audioCopy);
+
+const streamIdOf = (s: Stream) => s.id || s.key;
+
+const isNestedControl = (target: EventTarget | null) =>
+  Boolean((target as Element | null)?.closest?.("button, a"));
 
 /** One labelled fact on a stream card; hidden when there's nothing to say. */
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -50,19 +47,6 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
       <dt className="text-[11px] font-medium uppercase tracking-wider text-fg-subtle">{label}</dt>
       <dd className="mt-0.5 line-clamp-2 break-words text-sm text-fg">{children}</dd>
     </div>
-  );
-}
-
-/** Source → output, or just the source when it's passed through unchanged. */
-function Flow({ from, to }: { from: string; to: string }) {
-  if (!from && !to) return null;
-  if (!to || to === from) return <>{from}</>;
-  return (
-    <span>
-      <span className="text-fg-muted">{from || "—"}</span>
-      <ArrowRight size={12} className="mx-1 inline text-fg-subtle" aria-label={t("becomes")} />
-      <span>{to}</span>
-    </span>
   );
 }
 
@@ -89,10 +73,21 @@ function ClusterDetails({ s }: { s: Stream }) {
   );
 }
 
-function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onStop: () => void }) {
+function StreamCard({
+  s,
+  stopping,
+  onOpen,
+  onStop,
+}: {
+  s: Stream;
+  stopping: boolean;
+  onOpen: () => void;
+  onStop: () => void;
+}) {
   const title = useTitle(s.ratingKey ? String(s.ratingKey) : s.key || undefined);
   const converting = isTranscoding(s);
   const elapsed = s.progress !== null && s.durationMs ? s.progress * s.durationMs : null;
+  const displayTitle = title?.title || s.title;
   const subtitle =
     title?.type === "episode" && title.showTitle
       ? `${title.showTitle} · ${t("S{season} E{episode}", { season: title.season ?? 0, episode: title.episode ?? 0 })}`
@@ -101,7 +96,13 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
         : "";
   const rate = mbpsOf((s.bitrateKbps ?? 0) * 1000);
   return (
-    <article className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
+    <article
+      onClick={(e) => {
+        if (isNestedControl(e.target)) return;
+        onOpen();
+      }}
+      className="cursor-pointer overflow-hidden rounded-2xl border border-border bg-surface shadow-xs transition hover:border-primary/40 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-ring/60"
+    >
       <div className="relative isolate h-44 overflow-hidden">
         <Artwork
           src={title?.backdrop || title?.poster}
@@ -129,9 +130,16 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
             </div>
             <div className="min-w-0">
               <h3 className="truncate text-lg font-semibold text-on-scrim">
-                {title?.title || s.title}
+                <button
+                  type="button"
+                  data-stream-open
+                  onClick={onOpen}
+                  className="max-w-full cursor-pointer truncate text-left hover:underline focus-visible:outline-none"
+                >
+                  {displayTitle}
+                </button>
               </h3>
-              {channelLabel(s) && channelLabel(s) !== (title?.title || s.title) ? (
+              {channelLabel(s) && channelLabel(s) !== displayTitle ? (
                 <p className="truncate text-sm text-on-scrim/75">{channelLabel(s)}</p>
               ) : null}
               {subtitle ? <p className="truncate text-sm text-on-scrim/75">{subtitle}</p> : null}
@@ -162,7 +170,10 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
             size="sm"
             className="shrink-0 self-start border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
             disabled={stopping}
-            onClick={onStop}
+            onClick={(e) => {
+              e.stopPropagation();
+              onStop();
+            }}
             aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
           >
             <Square size={13} /> {t("Stop")}
@@ -231,10 +242,21 @@ function StreamCard({ s, stopping, onStop }: { s: Stream; stopping: boolean; onS
 
 /** A rich single-row view of one stream: artwork wash, who and where, the
  * conversion, the network and the position. */
-function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onStop: () => void }) {
+function StreamRow({
+  s,
+  stopping,
+  onOpen,
+  onStop,
+}: {
+  s: Stream;
+  stopping: boolean;
+  onOpen: () => void;
+  onStop: () => void;
+}) {
   const title = useTitle(s.ratingKey ? String(s.ratingKey) : s.key || undefined);
   const converting = isTranscoding(s);
   const elapsed = s.progress !== null && s.durationMs ? s.progress * s.durationMs : null;
+  const displayTitle = title?.title || s.title;
   const subtitle =
     title?.type === "episode" && title.showTitle
       ? `${title.showTitle} · ${t("S{season} E{episode}", { season: title.season ?? 0, episode: title.episode ?? 0 })}`
@@ -242,7 +264,13 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
         ? String(title.year)
         : "";
   return (
-    <li className="relative isolate overflow-hidden">
+    <li
+      onClick={(e) => {
+        if (isNestedControl(e.target)) return;
+        onOpen();
+      }}
+      className="relative isolate cursor-pointer overflow-hidden transition hover:bg-surface-hover/50 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-inset has-[button[data-stream-open]:focus-visible]:ring-ring/60"
+    >
       <Artwork
         src={title?.backdrop || title?.poster}
         alt=""
@@ -260,13 +288,20 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
         <div className="min-w-0 space-y-1">
           <div className="flex min-w-0 flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2">
             <p className="max-w-full truncate text-base font-semibold text-fg">
-              {title?.title || s.title}
+              <button
+                type="button"
+                data-stream-open
+                onClick={onOpen}
+                className="max-w-full cursor-pointer truncate text-left hover:underline focus-visible:outline-none"
+              >
+                {displayTitle}
+              </button>
             </p>
             <Badge variant={converting ? "warning" : "success"} className="shrink-0">
               {decisionLabel(s)}
             </Badge>
           </div>
-          {channelLabel(s) && channelLabel(s) !== (title?.title || s.title) ? (
+          {channelLabel(s) && channelLabel(s) !== displayTitle ? (
             <p className="truncate text-sm text-fg-muted">{channelLabel(s)}</p>
           ) : null}
           {subtitle ? <p className="truncate text-sm text-fg-muted">{subtitle}</p> : null}
@@ -352,7 +387,10 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
           variant="outline"
           size="sm"
           disabled={stopping}
-          onClick={onStop}
+          onClick={(e) => {
+            e.stopPropagation();
+            onStop();
+          }}
           aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
           className="col-start-3 row-start-1 lg:col-auto lg:row-auto"
         >
@@ -367,15 +405,6 @@ function StreamRow({ s, stopping, onStop }: { s: Stream; stopping: boolean; onSt
 /** Card or list layout for Now Playing, remembered on this browser. */
 type NowView = "cards" | "list";
 const VIEW_KEY = "ether.activity.nowView";
-/** Watched share, plus the read-ahead buffer when it runs past the playhead. */
-function progressLabel(progress: number, buffered: number) {
-  return buffered > progress
-    ? t("{watched} watched · {buffered} buffered", {
-        watched: formatPercent(progress),
-        buffered: formatPercent(buffered),
-      })
-    : t("{percent}% watched", { percent: Math.round(progress * 100) });
-}
 
 export function useNowView(): [NowView, (v: NowView) => void] {
   const [view, setView] = useState<NowView>(() =>
@@ -461,10 +490,13 @@ export function NowPlaying({
   view?: NowView;
 }) {
   const [stopping, setStopping] = useState<string | null>(null);
+  const [playId, openPlay] = usePlayParam();
   const streams = state.data ?? [];
   const filtered = protocol ? streams.filter((stream) => stream.protocol === protocol) : streams;
   const converting = filtered.filter(isTranscoding).length;
   const throughput = filtered.reduce((sum, s) => sum + (s.speedBps || 0), 0);
+  const activeStream = playId ? (streams.find((s) => streamIdOf(s) === playId) ?? null) : null;
+  const drawer = <PlayDrawer id={playId} session={activeStream} onClose={() => openPlay(null)} />;
 
   const stop = async (id: string) => {
     setStopping(id);
@@ -483,7 +515,12 @@ export function NowPlaying({
   };
 
   if (state.error && !state.data)
-    return <ErrorPanel error={state.error} onRetry={() => void state.reload()} />;
+    return (
+      <>
+        <ErrorPanel error={state.error} onRetry={() => void state.reload()} />
+        {drawer}
+      </>
+    );
   const ready = Boolean(state.data);
   return (
     <>
@@ -521,9 +558,10 @@ export function NowPlaying({
           <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
             {filtered.map((s) => (
               <StreamRow
-                key={s.id || s.key}
+                key={streamIdOf(s)}
                 s={s}
                 stopping={stopping === s.id}
+                onOpen={() => openPlay(streamIdOf(s))}
                 onStop={() => void stop(s.id)}
               />
             ))}
@@ -532,9 +570,10 @@ export function NowPlaying({
           <div className="grid gap-4 xl:grid-cols-2">
             {filtered.map((s) => (
               <StreamCard
-                key={s.id || s.key}
+                key={streamIdOf(s)}
                 s={s}
                 stopping={stopping === s.id}
+                onOpen={() => openPlay(streamIdOf(s))}
                 onStop={() => void stop(s.id)}
               />
             ))}
@@ -549,6 +588,7 @@ export function NowPlaying({
           description={t("Streams appear here as soon as a viewer presses play.")}
         />
       )}
+      {drawer}
     </>
   );
 }

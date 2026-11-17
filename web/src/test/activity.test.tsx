@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, it, expect, vi } from "vitest";
 import { setToken } from "../lib/api";
 import { descriptors as notifyDescriptors } from "../mock/extend/descriptors/notify";
@@ -7,6 +7,7 @@ import Activity from "../pages/activity/Activity";
 import Notifications from "../pages/notifications/Notifications";
 import { HardwareStatus } from "../pages/playback/Hardware";
 import { SourceStatistics } from "../pages/sources/statistics/Statistics";
+import { renderApp } from "./harness";
 
 const WAIT = { timeout: 4000 };
 const emptySummary = {
@@ -74,6 +75,42 @@ function backend(cluster = false) {
       else if (url.includes("/extend/registry")) v = { version: 1, descriptors: notifyDescriptors };
       else if (url.includes("/stats/summary")) v = emptySummary;
       else if (url.includes("/stats/history")) v = [];
+      else if (url.endsWith("/stats/plays/other"))
+        v = {
+          id: "other",
+          userId: 12,
+          username: "Alex",
+          ratingKey: 0,
+          title: "Other film",
+          platform: "Android TV",
+          device: "TV",
+          decision: "transcode",
+          started: Math.floor(Date.now() / 1000) - 900,
+          updated: Math.floor(Date.now() / 1000),
+          ended: 0,
+          watchedMs: 900_000,
+          durationMs: 3_600_000,
+          bytes: 800 * 1024 ** 2,
+          completed: false,
+          failovers: 1,
+          switches: 1,
+          origin: "Usenet",
+          release: "Other.Film.2025.2160p.WEB-DL.HDR10.DTS-GRP",
+          ip: "198.51.100.8",
+          remote: true,
+          measured: true,
+          startMs: 2400,
+          bufferEvents: 2,
+          bufferMs: 4200,
+          failed: false,
+          error: "",
+          reasonKind: "audio_codec",
+          reasonDetail: "dts",
+          sourceKbps: 24000,
+          avgBitrateKbps: 7450,
+          uhd: true,
+          hdr: true,
+        };
       else if (url.endsWith("/users"))
         v = {
           users: [
@@ -94,9 +131,33 @@ function backend(cluster = false) {
             },
             {
               ID: "other",
+              UserID: 12,
               TitleName: "Other film",
               Username: "Alex",
-              Client: { deviceName: "TV", protocol: "jellyfin" },
+              Decision: "transcode",
+              decisionReason: "transcode; audio codec dts not supported; video -> h264 1080p",
+              bitrateKbps: 8000,
+              SpeedBps: 1_250_000,
+              BytesServed: 800 * 1024 ** 2,
+              Failovers: 1,
+              sourceVideo: "HEVC 2160p HDR10",
+              outputVideo: "H.264 1080p SDR",
+              sourceAudio: "DTS 5.1",
+              outputAudio: "AAC 2.0",
+              container: "hls",
+              origin: "Usenet",
+              ip: "198.51.100.8",
+              viewOffset: 900_000,
+              BufferedUntil: 1_200e9,
+              Info: { size: 10.8 * 1024 ** 3, duration: 3_600e9, bitrateKbps: 24000 },
+              Resolution: { release: { name: "Other.Film.2025.2160p.WEB-DL.HDR10.DTS-GRP" } },
+              Client: {
+                deviceName: "TV",
+                product: "Jellyfin Android TV",
+                platform: "Android TV",
+                protocol: "jellyfin",
+                remote: true,
+              },
             },
           ],
         };
@@ -232,9 +293,15 @@ function backend(cluster = false) {
   return calls;
 }
 
+function LocationSearch() {
+  const loc = useLocation();
+  return <output data-testid="search">{loc.search}</output>;
+}
+
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <LocationSearch />
       <Routes>
         <Route path="/activity/:tab?" element={<Activity />} />
         <Route path="/notifications/:tab?" element={<Notifications />} />
@@ -275,6 +342,7 @@ describe("Activity", () => {
         calls.some((c) => c.url.endsWith("/stats/sessions/live/stop") && c.init?.method === "POST"),
       ).toBe(true),
     );
+    expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "History" }));
     expect(
       await screen.findByText(
@@ -283,6 +351,70 @@ describe("Activity", () => {
         WAIT,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("opens the stream drawer from Now Playing cards, list rows and Overview without intercepting Stop", async () => {
+    localStorage.removeItem("ether.activity.nowView");
+    const calls = backend();
+    const view = renderAt("/activity");
+    expect(await screen.findByText("Other film", {}, WAIT)).toBeInTheDocument();
+
+    // Clicking anywhere on the stream card opens the live PlayDrawer and syncs ?play=<id>.
+    const card = screen.getByText("Other film").closest("article")!;
+    fireEvent.click(within(card).getByText("Alex"));
+    expect(screen.getByTestId("search")).toHaveTextContent("?play=other");
+    const drawer = await screen.findByRole("dialog", { name: "Other film" }, WAIT);
+    expect(within(drawer).getByText(/25% watched · 33% buffered/)).toBeInTheDocument();
+    expect(within(drawer).getByText("HEVC 2160p HDR10")).toBeInTheDocument();
+    expect(within(drawer).getByText("H.264 1080p SDR")).toBeInTheDocument();
+    expect(within(drawer).getByText("DTS 5.1")).toBeInTheDocument();
+    expect(within(drawer).getByText("AAC 2.0")).toBeInTheDocument();
+    expect(
+      await within(drawer).findByText(/Converted because of the audio format \(DTS\)/, {}, WAIT),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText("8.0 Mbps")).toBeInTheDocument();
+    expect(within(drawer).getByText("Source 24.0 Mbps")).toBeInTheDocument();
+    expect(within(drawer).getByText("10 Mbps")).toBeInTheDocument();
+    expect(
+      within(drawer).getByText("Other.Film.2025.2160p.WEB-DL.HDR10.DTS-GRP"),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText("Usenet")).toBeInTheDocument();
+    expect(within(drawer).getByText("Away from home")).toBeInTheDocument();
+    expect(within(drawer).getByText("198.51.100.8")).toBeInTheDocument();
+    expect(within(drawer).getByText(/2 times, 4\.2\s*s/)).toBeInTheDocument();
+    expect(calls.some((c) => c.url.endsWith("/stats/plays/other"))).toBe(true);
+
+    // Close the drawer, switch to List view, verify Stop does not open the drawer, then click the row.
+    fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("search")).toHaveTextContent("");
+
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
+    const row = screen.getByText("Example film").closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Stop stream for Sam" }));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.url.endsWith("/stats/sessions/live/stop") && c.init?.method === "POST"),
+      ).toBe(true),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // Keyboard-accessible button on the row opens the drawer too.
+    fireEvent.click(within(row).getByRole("button", { name: "Example film" }));
+    expect(screen.getByTestId("search")).toHaveTextContent("?play=live");
+    expect(await screen.findByRole("dialog", { name: "Example film" }, WAIT)).toBeInTheDocument();
+    view.unmount();
+    localStorage.removeItem("ether.activity.nowView");
+
+    // Overview Now Playing card opens the same live stream drawer in place.
+    const overview = renderApp("/");
+    const samSession = await screen.findByText(/Sam Rivera · Living Room/, {}, WAIT);
+    fireEvent.click(samSession.closest("li")!);
+    const overviewDrawer = await screen.findByRole("dialog", {}, WAIT);
+    expect(within(overviewDrawer).getByText("Sam Rivera")).toBeInTheDocument();
+    expect(within(overviewDrawer).getByText("Real-Debrid")).toBeInTheDocument();
+    expect(within(overviewDrawer).getByText("192.168.1.42")).toBeInTheDocument();
+    overview.unmount();
   });
 
   it("joins cluster assignments without duplicating the source session and includes remote executions", async () => {

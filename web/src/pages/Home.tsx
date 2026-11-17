@@ -54,6 +54,7 @@ import { useStreamEvent } from "../lib/stream";
 import { useTitle } from "../lib/titles";
 import type { EtherConfig } from "../lib/types";
 import { useLocale } from "../i18n/react";
+import { PlayDrawer, usePlayParam } from "./activity/PlayDrawer";
 import { connectDevicePath } from "./setup/connect-path";
 
 const GETTING_STARTED_KEY = "ether.getting-started.dismissed";
@@ -230,7 +231,9 @@ export default function Home() {
     void activity.reload();
     void rows.reload();
   });
+  const [playId, openPlay] = usePlayParam();
   const sessions = live.data ?? [];
+  const activeSession = playId ? (sessions.find((s) => (s.id || s.key) === playId) ?? null) : null;
   const hw = dashboard?.sections.hwaccel as
     { hwaccel?: { name?: string }; ffmpeg?: string; error?: string } | undefined;
   const problems = health.filter((h) => !h.setupGap && (h.level === "error" || h.level === "warn"));
@@ -296,6 +299,7 @@ export default function Home() {
                 error={live.data ? null : live.error}
                 onRetry={() => void live.reload()}
                 sessions={sessions}
+                onSelect={openPlay}
                 className="shrink-0 cockpit:max-h-[58%]"
               />
               <ActivityPanel state={activity} className="cockpit:min-h-0 cockpit:flex-1" />
@@ -313,6 +317,7 @@ export default function Home() {
           <PanelSlots slot="dashboard.panel" />
         </div>
       </div>
+      <PlayDrawer id={playId} session={activeSession} onClose={() => openPlay(null)} />
     </div>
   );
 }
@@ -325,12 +330,14 @@ function NowPlayingPanel({
   error,
   onRetry,
   sessions,
+  onSelect,
   className,
 }: {
   loading: boolean;
   error: unknown;
   onRetry: () => void;
   sessions: NowPlaying[];
+  onSelect: (id: string) => void;
   className?: string;
 }) {
   const total = sessions.reduce((n, s) => n + s.speedBps, 0);
@@ -368,7 +375,7 @@ function NowPlayingPanel({
       ) : (
         <ul className="space-y-3">
           {sessions.map((s) => (
-            <SessionCard key={s.id || s.key} s={s} />
+            <SessionCard key={s.id || s.key} s={s} onOpen={() => onSelect(s.id || s.key)} />
           ))}
         </ul>
       )}
@@ -376,10 +383,17 @@ function NowPlayingPanel({
   );
 }
 
-function SessionCard({ s }: { s: NowPlaying }) {
+function SessionCard({ s, onOpen }: { s: NowPlaying; onOpen: () => void }) {
   const title = useTitle(s.key);
+  const displayTitle = title?.title ?? s.title;
   return (
-    <li className="relative overflow-hidden rounded-lg border border-border">
+    <li
+      onClick={(e) => {
+        if ((e.target as Element | null)?.closest?.("button, a")) return;
+        onOpen();
+      }}
+      className="relative cursor-pointer overflow-hidden rounded-lg border border-border transition hover:border-primary/40 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-ring/60"
+    >
       <Artwork src={title?.backdrop} alt="" title="" className="absolute inset-0" icon={<span />} />
       <div className="scrim-left absolute inset-0" />
       <div className="relative flex gap-3 p-3">
@@ -390,8 +404,17 @@ function SessionCard({ s }: { s: NowPlaying }) {
           className="aspect-[2/3] w-14 shrink-0 rounded-md shadow-md sm:w-16"
         />
         <div className="min-w-0 flex-1 text-on-scrim">
-          <p className="truncate font-semibold">{title?.title ?? s.title}</p>
-          {channelLabel(s) && channelLabel(s) !== (title?.title ?? s.title) ? (
+          <p className="truncate font-semibold">
+            <button
+              type="button"
+              data-stream-open
+              onClick={onOpen}
+              className="max-w-full cursor-pointer truncate text-left hover:underline focus-visible:outline-none"
+            >
+              {displayTitle}
+            </button>
+          </p>
+          {channelLabel(s) && channelLabel(s) !== displayTitle ? (
             <p className="truncate text-sm opacity-80">{channelLabel(s)}</p>
           ) : null}
           <p className="truncate text-sm opacity-80">

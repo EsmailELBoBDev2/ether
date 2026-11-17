@@ -81,13 +81,14 @@ type CollectionSource struct {
 	MaxItems int `json:"maxItems,omitempty"`
 }
 
-// CollectionRule is one condition. Value is typed by Field; Label is display
-// text for ids.
+// CollectionRule is one condition. Value is typed by Field; Label and Labels
+// are display text for ids.
 type CollectionRule struct {
-	Field string          `json:"field"`
-	Op    string          `json:"op"`
-	Value json.RawMessage `json:"value"`
-	Label string          `json:"label,omitempty"`
+	Field  string          `json:"field"`
+	Op     string          `json:"op"`
+	Value  json.RawMessage `json:"value"`
+	Label  string          `json:"label,omitempty"`
+	Labels []string        `json:"labels,omitempty"`
 }
 
 // CollectionRotate shows a rotating subset of the members.

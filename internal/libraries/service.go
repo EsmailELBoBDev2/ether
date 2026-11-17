@@ -93,6 +93,9 @@ func cloneRule(r core.LibraryExclusion) core.LibraryExclusion {
 				copy(v, c.Value)
 				c.Value = v
 			}
+			if len(c.Labels) > 0 {
+				c.Labels = append([]string(nil), c.Labels...)
+			}
 			conds[i] = c
 		}
 		r.Rules = conds

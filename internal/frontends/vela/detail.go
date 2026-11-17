@@ -130,18 +130,55 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 	return nil
 }
 
+func (i *instance) creditIDs(r *http.Request, v *frontend.Viewer, d frontend.ItemDetail) map[int64]string {
+	var ids []int64
+	seen := map[int64]bool{}
+	for _, group := range [][]frontend.Person{d.Title.Cast, d.Title.Crew, d.Title.Directors, d.Title.Writers} {
+		for _, person := range group {
+			if person.TMDB > 0 && !seen[person.TMDB] {
+				seen[person.TMDB] = true
+				ids = append(ids, person.TMDB)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	result := make(map[int64]string, len(ids))
+	for start := 0; start < len(ids); start += 256 {
+		allowed, err := i.host.Experience.PersonFacetIDs(r.Context(), v, requestDevice(r), d.Title.Key, ids[start:min(start+256, len(ids))])
+		if err != nil {
+			return nil
+		}
+		for id, value := range allowed {
+			if seen[id] && value != "" {
+				result[id] = value
+			}
+		}
+	}
+	return result
+}
+
 // Cast and crew share one current-credit proof and admission transaction.
-func (i *instance) credits(r *http.Request, token string, d frontend.ItemDetail) ([]object, []object, error) {
+func (i *instance) credits(r *http.Request, v *frontend.Viewer, token string, d frontend.ItemDetail) ([]object, []object, error) {
+	facetIDs := i.creditIDs(r, v, d)
 	people := append([]frontend.Person(nil), d.Title.Cast...)
 	out := make([]object, 0, len(people))
 	for _, person := range people {
-		out = append(out, object{"name": person.Name, "role": person.Role})
+		entry := object{"name": person.Name, "role": person.Role}
+		if id := facetIDs[person.TMDB]; id != "" {
+			entry["id"] = id
+		}
+		out = append(out, entry)
 	}
 	castCount := len(out)
 	crew := crewPeople(d.Title)
 	people = append(people, crew...)
 	for _, person := range crew {
 		entry := object{"name": person.Name}
+		if id := facetIDs[person.TMDB]; id != "" {
+			entry["id"] = id
+		}
 		if person.Role != "" {
 			entry["role"] = person.Role
 		}

@@ -250,6 +250,31 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	if placement != frontend.PlacementHome && placement != frontend.PlacementDetail && placement != frontend.PlacementLibrary {
 		return nil, false, frontend.ErrNotFound
 	}
+	if rawLib, exists := r.URL.Query()["libraryId"]; exists {
+		if len(rawLib) != 1 || (rawLib[0] != "" && placement != frontend.PlacementLibrary) {
+			return nil, false, frontend.ErrInvalidPreferences
+		}
+	}
+	libraryID := r.URL.Query().Get("libraryId")
+	if placement == frontend.PlacementLibrary && libraryID != "" && r.PathValue("id") == "" {
+		visibleViews, err := i.host.Experience.Views(r.Context(), v)
+		if err != nil {
+			return nil, false, err
+		}
+		var matched *frontend.View
+		for idx := range visibleViews {
+			if visibleViews[idx].ID == libraryID {
+				matched = &visibleViews[idx]
+				break
+			}
+		}
+		if matched == nil {
+			return nil, false, frontend.ErrNotFound
+		}
+		if matched.PluginID != "" || matched.KindKey != "" {
+			return []object{}, false, nil
+		}
+	}
 	var item frontend.RatingKey
 	if s := r.URL.Query().Get("titleId"); s != "" {
 		var err error
@@ -291,7 +316,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		row.RankedTop10 = row.RankedTop10 || meta.Layout.RankedTop10
 		rows = append(rows, row)
 	} else if hasViews {
-		vv, e := views.ListRowViews(r.Context(), frontend.RowViewRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", Placement: placement, Item: item, Refresh: refresh})
+		vv, e := views.ListRowViews(r.Context(), frontend.RowViewRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", Placement: placement, ViewID: libraryID, Item: item, Refresh: refresh})
 		if e != nil {
 			return nil, false, e
 		}
@@ -344,7 +369,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 	} else {
 		var e error
-		rows, e = i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: requestDevice(r), Placement: placement, Item: item, Limit: rowItemLimit(r)})
+		rows, e = i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: requestDevice(r), Placement: placement, ViewID: libraryID, Item: item, Limit: rowItemLimit(r)})
 		if e != nil {
 			return nil, false, e
 		}
@@ -415,9 +440,12 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 		row.More = false
 	}
 	ts := []frontend.Title{}
+	cols := []frontend.Collection{}
 	for _, e := range row.Entries {
 		if e.Kind == frontend.RowEntryTitle && e.Title != nil {
 			ts = append(ts, *e.Title)
+		} else if e.Kind == frontend.RowEntryCollection && e.Collection != nil {
+			cols = append(cols, *e.Collection)
 		}
 	}
 	if len(row.Entries) == 0 {
@@ -431,6 +459,16 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 	for _, t := range converted {
 		byID[t["id"].(string)] = t
 	}
+	colByID := map[string]object{}
+	if len(cols) > 0 {
+		convertedCols, err := i.collectionsWire(r, v, token, cols)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range convertedCols {
+			colByID[c["id"].(string)] = c
+		}
+	}
 	entries := []object{}
 	for _, e := range row.Entries {
 		base := object{"receiptToken": e.Handle}
@@ -439,6 +477,11 @@ func (i *instance) rowWire(r *http.Request, v *frontend.Viewer, token string, ro
 			base["id"] = ids.RatingKeyGUID(e.Title.Key)
 			base["kind"] = "title"
 			base["title"] = byID[base["id"].(string)]
+		case e.Collection != nil:
+			colID := ids.RatingKeyGUID(e.Collection.Key)
+			base["id"] = colID
+			base["kind"] = "collection"
+			base["collection"] = colByID[colID]
 		case e.LiveChannel != nil:
 			c := e.LiveChannel
 			base["id"] = c.ID
@@ -614,7 +657,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		ts[0]["themeMusic"] = theme
 	}
 	ts[0]["watch"] = watchWire(d.UserData)
-	cast, crew, e := i.credits(r, t, d)
+	cast, crew, e := i.credits(r, v, t, d)
 	if e != nil {
 		fail(w, e, r)
 		return

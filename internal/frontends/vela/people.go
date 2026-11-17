@@ -1,0 +1,329 @@
+package vela
+
+import (
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
+)
+
+func (i *instance) personPhotoWire(r *http.Request, token string, person frontend.PersonDetail) (any, error) {
+	if person.ArtworkItem == 0 || person.TMDB <= 0 || i.host.ImageGrants == nil {
+		return nil, nil
+	}
+	subject := "tmdb:" + strconv.FormatInt(person.TMDB, 10)
+	for _, image := range person.Images {
+		if image.Kind != frontend.ImagePerson || image.Subject != subject || image.Path == "" {
+			continue
+		}
+		var secret string
+		if batch, ok := i.host.ImageGrants.(frontend.PersonImageGrantBatch); ok {
+			secrets, err := batch.IssuePersonImages(r.Context(), token, requestDevice(r), []frontend.PersonImageTarget{{Item: person.ArtworkItem, Image: image}})
+			if err != nil {
+				return nil, err
+			}
+			if len(secrets) == 1 {
+				secret = secrets[0]
+			}
+		} else {
+			issued, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: token, Device: requestDevice(r), Item: person.ArtworkItem, Image: image})
+			if err == nil {
+				secret = issued
+			}
+		}
+		if secret == "" {
+			continue
+		}
+		return object{
+			"id":        hash(image.Path),
+			"kind":      frontend.ImagePerson,
+			"tag":       image.Tag,
+			"sizes":     []object{imageSize(image, secret)},
+			"blurHash":  image.BlurHash,
+			"thumbHash": image.ThumbHash,
+		}, nil
+	}
+	return nil, nil
+}
+
+func (i *instance) person(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(i.host.Experience.NoProviderWait(r.Context()))
+	v, token, err := i.viewer(r)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	reader, ok := i.host.Experience.(frontend.PeopleReader)
+	if !ok {
+		i.unavailable(w, r)
+		return
+	}
+	id := r.PathValue("id")
+	person, err := reader.Person(r.Context(), v, requestDevice(r), id, frontend.PersonReadOptions{})
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	if person.ID != id || person.Name == "" {
+		problem(w, 404, "not-found", "not_found")
+		return
+	}
+	photo, err := i.personPhotoWire(r, token, person)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	roles := person.Roles
+	if roles == nil {
+		roles = []string{}
+	}
+	knownFor := person.KnownFor
+	if knownFor == "" && len(roles) > 0 {
+		knownFor = roles[0]
+	}
+	out := object{
+		"id":       person.ID,
+		"name":     person.Name,
+		"photo":    photo,
+		"knownFor": knownFor,
+		"roles":    roles,
+	}
+	if person.Biography != "" {
+		out["biography"] = person.Biography
+	}
+	if person.Birthday != "" {
+		out["birthday"] = person.Birthday
+	}
+	cache(w, r, out)
+}
+
+func personTitleRole(t frontend.Title, tmdb int64) string {
+	var roles []string
+	seen := map[string]bool{}
+	add := func(role string) {
+		role = strings.TrimSpace(role)
+		if role != "" && !seen[role] {
+			seen[role] = true
+			roles = append(roles, role)
+		}
+	}
+	for _, group := range []struct {
+		fallback string
+		people   []frontend.Person
+	}{
+		{"Actor", t.Cast},
+		{"Director", t.Directors},
+		{"Writer", t.Writers},
+		{"Crew", t.Crew},
+	} {
+		for _, p := range group.people {
+			if p.TMDB != tmdb {
+				continue
+			}
+			if strings.TrimSpace(p.Role) != "" {
+				add(p.Role)
+			} else {
+				add(group.fallback)
+			}
+		}
+	}
+	return strings.Join(roles, ", ")
+}
+
+func personFilmographyBefore(a, b frontend.Title) bool {
+	if !a.Released.Equal(b.Released) {
+		return a.Released.After(b.Released)
+	}
+	if a.Year != b.Year {
+		return a.Year > b.Year
+	}
+	if a.Title != b.Title {
+		return a.Title < b.Title
+	}
+	return a.Key < b.Key
+}
+
+func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(i.host.Experience.NoProviderWait(r.Context()))
+	v, token, err := i.viewer(r)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	reader, ok := i.host.Experience.(frontend.PeopleReader)
+	if !ok {
+		i.unavailable(w, r)
+		return
+	}
+	values := r.URL.Query()
+	for name, entries := range values {
+		switch name {
+		case "libraryId", "cursor", "limit":
+		default:
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		if len(entries) != 1 {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+	}
+	personID := r.PathValue("id")
+	person, err := reader.Person(r.Context(), v, requestDevice(r), personID, frontend.PersonReadOptions{Prefetch: true})
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	if person.ID != personID || person.TMDB <= 0 {
+		problem(w, 404, "not-found", "not_found")
+		return
+	}
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	libraryID := values.Get("libraryId")
+	var targetViews []frontend.View
+	if libraryID != "" {
+		found := false
+		for _, candidate := range views {
+			if candidate.ID == libraryID {
+				found = true
+				if candidate.PluginID == "" && candidate.KindKey == "" {
+					targetViews = append(targetViews, candidate)
+				}
+				break
+			}
+		}
+		if !found {
+			problem(w, 404, "not-found", "not_found")
+			return
+		}
+	} else {
+		for _, candidate := range views {
+			if candidate.PluginID == "" && candidate.KindKey == "" {
+				targetViews = append(targetViews, candidate)
+			}
+		}
+	}
+
+	pageLimit := limit(r)
+	scope, err := i.livePageScope(r, v, token)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"person-titles", personID, libraryID, pageLimit}))
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	snapshot := hashJSON(views)
+	if c.Offset > 10000 || (c.Snapshot != "" && c.Snapshot != snapshot) {
+		fail(w, frontend.ErrLiveGuideStale)
+		return
+	}
+	if len(targetViews) == 0 {
+		cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
+		return
+	}
+
+	var pageItems []frontend.Title
+	hasMore := false
+	nextOffset := 0
+
+	if len(targetViews) == 1 {
+		q := frontend.ItemQuery{
+			Filter:  frontend.Filter{Person: person.TMDB},
+			Sort:    frontend.SortReleased,
+			Desc:    true,
+			Offset:  c.Offset,
+			Limit:   pageLimit,
+			NoTotal: true,
+		}
+		page, err := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), targetViews[0].ID, q)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		if len(page.Items) > pageLimit {
+			page.Items = page.Items[:pageLimit]
+			hasMore = true
+		} else if len(page.Items) == pageLimit {
+			lookahead := q
+			lookahead.Offset = c.Offset + len(page.Items)
+			lookahead.Limit = 1
+			more, err := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), targetViews[0].ID, lookahead)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			hasMore = len(more.Items) > 0
+		}
+		pageItems = page.Items
+		nextOffset = c.Offset + len(pageItems)
+	} else {
+		window := c.Offset + pageLimit + 1
+		merged := make([]frontend.Title, 0, pageLimit)
+		seen := map[frontend.RatingKey]bool{}
+		for _, view := range targetViews {
+			q := frontend.ItemQuery{
+				Filter:  frontend.Filter{Person: person.TMDB},
+				Sort:    frontend.SortReleased,
+				Desc:    true,
+				Offset:  0,
+				Limit:   window,
+				NoTotal: true,
+			}
+			page, err := i.host.Experience.LibraryItems(r.Context(), v, requestDevice(r), view.ID, q)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			for _, item := range page.Items {
+				if !seen[item.Key] {
+					seen[item.Key] = true
+					merged = append(merged, item)
+				}
+			}
+		}
+		sort.Slice(merged, func(a, b int) bool {
+			return personFilmographyBefore(merged[a], merged[b])
+		})
+		start := min(c.Offset, len(merged))
+		end := min(start+pageLimit, len(merged))
+		pageItems = merged[start:end]
+		hasMore = end < len(merged)
+		nextOffset = end
+	}
+
+	converted, err := i.titles(r, v, token, pageItems)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	entries := make([]object, 0, len(converted))
+	for idx, title := range converted {
+		entry := object{
+			"id":           title["id"],
+			"kind":         "title",
+			"title":        title,
+			"role":         personTitleRole(pageItems[idx], person.TMDB),
+			"receiptToken": "",
+		}
+		entries = append(entries, entry)
+	}
+	out := object{"items": entries, "continuation": "exhausted"}
+	if hasMore {
+		next, err := i.nextLiveCursor(c, nextOffset, snapshot)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		out["continuation"], out["nextCursor"] = "more", next
+	}
+	cache(w, r, out)
+}

@@ -11,8 +11,9 @@ import (
 // DefaultMaxPerHost bounds concurrent requests to any single indexer origin
 // (scheme://host:port), so a shared proxy such as Prowlarr, Jackett or
 // FlareSolverr with dozens of configured feeds is not hit with all of them at
-// once.
-const DefaultMaxPerHost = 4
+// once. Eight keeps a 20-feed Prowlarr search to three short waves, so
+// first-play search time barely moves while Prowlarr is never flooded.
+const DefaultMaxPerHost = 8
 
 // HostLimiter bounds in-flight HTTP requests per origin (scheme://host:port).
 // Idle host entries are dropped once their last holder or waiter leaves.

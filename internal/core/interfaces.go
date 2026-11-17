@@ -571,7 +571,11 @@ type SearchRequest struct {
 	// seasons (0 when unmapped or Cour 1).
 	Cour        int
 	CourEpisode int
-	Anime       bool
+	// CourTVDBSeason and CourTVDBEpisode are the anime-lists TVDB season and
+	// episode for an offset TMDB anime season entry (0 when unmapped).
+	CourTVDBSeason  int
+	CourTVDBEpisode int
+	Anime           bool
 	// AlternativeTitles are other names of the movie or series (TMDB
 	// alternative titles) a release name may use; matching only, never
 	// part of a query or cache key (additive).

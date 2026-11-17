@@ -410,3 +410,59 @@ func TestSearchAnimeCourFallback(t *testing.T) {
 		t.Fatalf("cour search fallback: got %+v err=%v", res, err)
 	}
 }
+
+func TestSearchAnimeCourTVDBSeason(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch q.Get("t") {
+		case "caps":
+			fmt.Fprint(w, `<caps><searching><search available="yes" supportedParams="q"/><tv-search available="yes" supportedParams="q,tvdbid,tmdbid,season,ep"/></searching></caps>`)
+		default:
+			queries = append(queries, fmt.Sprintf("t=%s|tvdb=%s|tmdb=%s|s=%s|ep=%s|q=%s",
+				q.Get("t"), q.Get("tvdbid"), q.Get("tmdbid"), q.Get("season"), q.Get("ep"), q.Get("q")))
+			fmt.Fprint(w, `<rss version="2.0"><channel></channel></rss>`)
+		}
+	}))
+	defer srv.Close()
+	cfg := testConfig(srv.URL)
+	cfg.Protocol = "torrent"
+	c := New(cfg, nil, Options{SearchCacheTTL: -1})
+	_, err := c.Search(context.Background(), core.SearchRequest{
+		Type:   core.TypeEpisode,
+		IDs:    core.IDs{TMDB: 237150, TVDB: 434704},
+		Title:  "Tensei Kizoku",
+		Season: 1, Episode: 25,
+		Cour: 3, CourEpisode: 1,
+		CourTVDBSeason: 3, CourTVDBEpisode: 1,
+		Anime: true,
+	})
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	want := []string{
+		"t=tvsearch|tvdb=434704|tmdb=|s=3|ep=1|q=",
+		"t=tvsearch|tvdb=|tmdb=237150|s=1|ep=25|q=",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S01E25",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S03E01",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 3rd Season - 01",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 25",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S01 Part 3 01",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku Part 3 01",
+		"t=tvsearch|tvdb=434704|tmdb=|s=3|ep=|q=",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku S03",
+		"t=search|tvdb=|tmdb=|s=|ep=|q=Tensei Kizoku 3rd Season",
+	}
+	gotSet := map[string]bool{}
+	for _, q := range queries {
+		gotSet[q] = true
+	}
+	for _, wq := range want {
+		if !gotSet[wq] {
+			t.Errorf("missing expected query %q in %v", wq, queries)
+		}
+	}
+	if gotSet["t=tvsearch|tvdb=434704|tmdb=|s=1|ep=25|q="] {
+		t.Fatalf("sent TMDB season/ep to tvdbid tvsearch: %v", queries)
+	}
+}

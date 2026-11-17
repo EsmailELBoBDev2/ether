@@ -14,8 +14,9 @@ import (
 )
 
 // fixture mirrors the dataset's shape with synthetic ids: a show split
-// into seasons and cours (with a special filed under season 4), a show
-// with one whole-series entry, an ambiguous season, and films.
+// into seasons and cours (with a special filed under season 4), a long
+// TMDB season whose cours are separate TVDB seasons (#559), a show with
+// one whole-series entry, an ambiguous season, and films.
 const fixture = `[
  {"type":"TV","kitsu_id":101,"mal_id":201,"anilist_id":301,"anidb_id":401,"themoviedb_id":{"tv":1000},"season":{"tvdb":1,"tmdb":1}},
  {"type":"OVA","kitsu_id":102,"themoviedb_id":{"tv":1000},"season":{"tvdb":0,"tmdb":0}},
@@ -31,7 +32,12 @@ const fixture = `[
  {"type":"MOVIE","kitsu_id":301,"themoviedb_id":{"movie":[6000]}},
  {"type":"MOVIE","kitsu_id":302,"themoviedb_id":{"movie":[6000]}},
  {"type":"TV","mal_id":999,"themoviedb_id":{"tv":4000},"season":{"tmdb":1}},
- {"type":"TV","kitsu_id":null,"themoviedb_id":{"tv":"5000"},"season":{"tmdb":1}}
+ {"type":"TV","kitsu_id":null,"themoviedb_id":{"tv":"5000"},"season":{"tmdb":1}},
+ {"type":"TV","kitsu_id":501,"mal_id":54724,"themoviedb_id":{"tv":226119},"season":{"tvdb":1,"tmdb":1}},
+ {"type":"TV","kitsu_id":502,"mal_id":59131,"themoviedb_id":{"tv":226119},"season":{"tvdb":2,"tmdb":1},"episode_offset":{"tmdb":12}},
+ {"type":"TV","kitsu_id":503,"mal_id":60608,"themoviedb_id":{"tv":226119},"season":{"tvdb":3,"tmdb":1},"episode_offset":{"tmdb":24}},
+ {"type":"TV","kitsu_id":601,"themoviedb_id":{"tv":7000},"season":{"tvdb":"a","tmdb":1}},
+ {"type":"TV","kitsu_id":602,"themoviedb_id":{"tv":7000},"season":{"tvdb":"a","tmdb":1},"episode_offset":{"tmdb":12}}
 ]`
 
 func serve(t *testing.T, body string, hits *atomic.Int64) *httptest.Server {
@@ -98,23 +104,25 @@ func TestLookupCour(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		req  core.SearchRequest
-		cour int
-		ep   int
+		want core.CourMapping
 		ok   bool
 	}{
-		{"single-cour season", ep(1000, 1, 5, 5), 0, 0, false},
-		{"season part one stays cour 1", ep(1000, 3, 12, 0), 0, 0, false},
-		{"season part two first episode", ep(1000, 3, 13, 0), 2, 1, true},
-		{"season part two tenth episode", ep(1000, 3, 22, 0), 2, 10, true},
-		{"special offset ignored for cour numbering", ep(1000, 4, 30, 0), 2, 14, true},
-		{"whole-series entry has no cour offset", ep(2000, 21, 180, 1071), 0, 0, false},
+		{"single-cour season", ep(1000, 1, 5, 5), core.CourMapping{}, false},
+		{"season part one stays cour 1", ep(1000, 3, 12, 0), core.CourMapping{}, false},
+		{"season part two first episode with tvdb offset", ep(1000, 3, 13, 0), core.CourMapping{Cour: 2, Episode: 1, TVDBSeason: 3, TVDBEpisode: 13}, true},
+		{"season part two tenth episode with tvdb offset", ep(1000, 3, 22, 0), core.CourMapping{Cour: 2, Episode: 10, TVDBSeason: 3, TVDBEpisode: 22}, true},
+		{"special offset ignored for cour numbering", ep(1000, 4, 30, 0), core.CourMapping{Cour: 2, Episode: 14, TVDBSeason: 4, TVDBEpisode: 30}, true},
+		{"long TMDB season cour 3 maps to TVDB S03E01", ep(226119, 1, 25, 25), core.CourMapping{Cour: 3, Episode: 1, TVDBSeason: 3, TVDBEpisode: 1}, true},
+		{"long TMDB season cour 3 sixth episode maps to TVDB S03E06", ep(226119, 1, 30, 30), core.CourMapping{Cour: 3, Episode: 6, TVDBSeason: 3, TVDBEpisode: 6}, true},
+		{"non-numeric tvdb season ignored without breaking cour", ep(7000, 1, 13, 13), core.CourMapping{Cour: 2, Episode: 1}, true},
+		{"whole-series entry has no cour offset", ep(2000, 21, 180, 1071), core.CourMapping{}, false},
 	} {
-		cour, episode, ok, err := s.LookupCour(context.Background(), tc.req)
+		got, ok, err := s.LookupCour(context.Background(), tc.req)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if cour != tc.cour || episode != tc.ep || ok != tc.ok {
-			t.Errorf("%s: got cour=%d ep=%d ok=%v, want cour=%d ep=%d ok=%v", tc.name, cour, episode, ok, tc.cour, tc.ep, tc.ok)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("%s: got %+v ok=%v, want %+v ok=%v", tc.name, got, ok, tc.want, tc.ok)
 		}
 	}
 }

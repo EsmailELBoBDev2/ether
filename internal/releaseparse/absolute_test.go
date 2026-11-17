@@ -67,9 +67,20 @@ func TestSeasonDashEpisode(t *testing.T) {
 	if !reflect.DeepEqual(info.Seasons, []int{3}) || !reflect.DeepEqual(info.Episodes, []int{5}) || info.FullSeason || info.Title != "Kimetsu no Yaiba" {
 		t.Fatalf("S3 - 05: title=%q seasons=%v episodes=%v full=%v", info.Title, info.Seasons, info.Episodes, info.FullSeason)
 	}
+	info = Parse("[Erai-raws] Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season - 01 [1080p CR WEB-DL AVC AAC][MultiSub]")
+	if !reflect.DeepEqual(info.Seasons, []int{3}) || !reflect.DeepEqual(info.Episodes, []int{1}) || info.FullSeason || len(info.AbsoluteEpisodes) != 0 || info.Title != "Tensei Kizoku, Kantei Skill de Nariagaru" {
+		t.Fatalf("3rd Season - 01: title=%q seasons=%v episodes=%v full=%v absolute=%v", info.Title, info.Seasons, info.Episodes, info.FullSeason, info.AbsoluteEpisodes)
+	}
+	info = Parse("[Batch] Tensei Kizoku, Kantei Skill de Nariagaru 3rd Season [1080p]")
+	if !reflect.DeepEqual(info.Seasons, []int{3}) || !info.FullSeason || len(info.Episodes) != 0 || info.Title != "Tensei Kizoku, Kantei Skill de Nariagaru" {
+		t.Fatalf("3rd Season pack: title=%q seasons=%v episodes=%v full=%v", info.Title, info.Seasons, info.Episodes, info.FullSeason)
+	}
 	// A cour ("Part 2") between the season and the number is parsed with Cour=2.
 	if info = Parse("[G] Show S3 Part 2 - 03 (1080p)"); !reflect.DeepEqual(info.Seasons, []int{3}) || info.Cour != 2 || !reflect.DeepEqual(info.Episodes, []int{3}) || len(info.AbsoluteEpisodes) != 0 {
 		t.Fatalf("S3 Part 2 - 03: got seasons=%v cour=%d episodes=%v absolute=%v", info.Seasons, info.Cour, info.Episodes, info.AbsoluteEpisodes)
+	}
+	if info = Parse("[G] Show 2nd Season Part 2 - 03 (1080p)"); !reflect.DeepEqual(info.Seasons, []int{2}) || info.Cour != 2 || !reflect.DeepEqual(info.Episodes, []int{3}) || info.Title != "Show" {
+		t.Fatalf("2nd Season Part 2 - 03: title=%q seasons=%v cour=%d episodes=%v", info.Title, info.Seasons, info.Cour, info.Episodes)
 	}
 	// A season range is still a range.
 	info = Parse("Show Seasons 1 - 5 1080p BluRay")

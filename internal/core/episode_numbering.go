@@ -3,6 +3,15 @@ package core
 // EpisodeNumber is a season/episode pair in one numbering system.
 type EpisodeNumber struct{ Season, Episode int }
 
+// CourMapping describes how an anime season entry in anime-lists maps an
+// offset TMDB season episode to its cour (part) and TVDB season/episode.
+type CourMapping struct {
+	Cour        int
+	Episode     int
+	TVDBSeason  int
+	TVDBEpisode int
+}
+
 // EpisodeLayout contains bounded, local canonical facts. A missing episode in
 // an incompletely mirrored season is unknown, rather than evidence of absence.
 type EpisodeLayout struct {
@@ -43,6 +52,6 @@ func AliasSearchRequest(req SearchRequest, n EpisodeNumber) SearchRequest {
 	req.AltSeason, req.AltEpisode = 0, 0
 	req.ReleaseAliases, req.ReleasePackTargets = nil, nil
 	req.ReleaseAliasesOnly, req.ReleaseNumberingKnown = false, false
-	req.Cour, req.CourEpisode, req.Anime = 0, 0, false
+	req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode, req.Anime = 0, 0, 0, 0, false
 	return req
 }

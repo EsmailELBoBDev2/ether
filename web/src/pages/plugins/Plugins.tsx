@@ -106,7 +106,6 @@ export default function Plugins() {
     [plugins.length, locale],
   );
   const active = useRouteTab(tabs, "installed");
-  const installedIds = useMemo(() => new Set(plugins.map((p) => p.id)), [plugins]);
 
   const toggle = async (p: PluginSummary, on: boolean) => {
     setToggling(p.id);
@@ -211,7 +210,6 @@ export default function Plugins() {
         <RuntimeLimitsEditor />
       ) : (
         <CatalogueTab
-          installedIds={installedIds}
           onInstalled={(id) => void installed(id)}
           onSelectInstalled={(id) => {
             navigate("/plugins/installed");

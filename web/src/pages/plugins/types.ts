@@ -1,4 +1,4 @@
-import { Bell, Blocks, FolderOpen, Globe, Network, Plug, Puzzle, Tv } from "lucide-react";
+import { Bell, Blocks, FolderOpen, Globe, Library, Network, Plug, Puzzle, Tv } from "lucide-react";
 import { createElement, type ReactNode } from "react";
 import { getLocale, t } from "../../i18n";
 import type { Viewer } from "../../lib/contract";
@@ -69,6 +69,7 @@ export interface DeclaredPermissions {
   };
   collections?: string;
   folders?: string;
+  sources?: string;
   secrets?: string[];
 }
 
@@ -175,26 +176,40 @@ export interface JournalEntry {
   created: string;
 }
 
+export interface CatalogueVersion {
+  version: string;
+  url: string;
+  sha256: string;
+  releasedAt?: string;
+  minEther?: string;
+  permissions?: DeclaredPermissions;
+}
+
 export interface CatalogueEntry {
   id: string;
   name: string;
-  version: string;
-  kind: string;
-  category?: string;
   summary: string;
   description?: string;
-  author?: { name?: string; url?: string };
-  repo?: string;
+  kind: string;
+  category?: string;
   icon?: string;
-  verified: boolean;
+  repo?: string;
+  homepage?: string;
+  author?: string;
+  license?: string;
   capabilities?: string[];
-  permissions: string[];
-  needsViewers?: boolean;
-  needsFolders?: boolean;
+  permissions?: DeclaredPermissions;
   screenshots?: string[];
-  limits?: string[];
-  url: string;
-  manifest?: PluginManifest;
+  versions: CatalogueVersion[];
+  revoked?: boolean;
+  reason?: string;
+  latestVersion?: string;
+  artifactUrl?: string;
+  sha256?: string;
+  permissionLines?: string[];
+  installed: boolean;
+  installedVersion?: string;
+  updateAvailable?: boolean;
 }
 
 /** A plugin that answers as a Stremio add-on, edited in Studio or not. */
@@ -215,6 +230,8 @@ export function kindLabel(kind?: string, addon?: boolean): string {
       return t("Live TV");
     case "extension":
       return t("Extension");
+    case "content":
+      return t("Content");
     default:
       return t("Plugin");
   }
@@ -251,6 +268,8 @@ export function kindIcon(kind?: string, size = 18): ReactNode {
       return createElement(Tv, { size });
     case "extension":
       return createElement(Blocks, { size });
+    case "content":
+      return createElement(Library, { size });
     default:
       return createElement(Puzzle, { size });
   }

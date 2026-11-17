@@ -223,11 +223,52 @@ describe("Server › Plugins (WS10a)", () => {
     expect(screen.getAllByText("Preview plugin").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("browses, filters, and installs from the Marketplace tab, and shows 'The catalogue is not available yet' when empty", async () => {
+  it("browses, filters, refreshes, and installs from the Marketplace tab using the real catalogue contract", async () => {
+    let refreshed = false;
+    let installBody: Record<string, unknown> | null = null;
+    customIntercept = async (url, init) => {
+      if (url.pathname === "/ether/api/plugins/catalogue/refresh" && init?.method === "POST") {
+        refreshed = true;
+      }
+      if (url.pathname === "/ether/api/plugins/install" && init?.method === "POST") {
+        installBody = JSON.parse(String(init.body ?? "{}")) as Record<string, unknown>;
+      }
+      return null;
+    };
+
     renderPlugins("/plugins/marketplace");
 
     expect(await screen.findByText("SubDL Subtitles")).toBeTruthy();
     expect(screen.getByText("Local folders")).toBeTruthy();
+    expect(screen.getByText("Pluto TV")).toBeTruthy();
+
+    // Every catalogue entry has a Reviewed badge, and Pluto TV shows Installed + Update available.
+    expect(screen.getAllByText("Reviewed").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByText("Update available")).toBeTruthy();
+
+    // Submit link and Refresh action live in the section header.
+    const submitLink = screen.getByRole("link", { name: /Submit a plugin/i });
+    expect(submitLink.getAttribute("href")).toBe(
+      "https://github.com/braedonsaunders/ether-plugins#submit-a-plugin",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(refreshed).toBe(true));
+
+    // Real kind filters (no fake webhook/folder/composite filters).
+    const kindGroup = screen.getByRole("group", { name: "Filter by kind" });
+    expect(
+      within(kindGroup)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([
+      "All kinds",
+      "Source",
+      "Integration",
+      "Notification",
+      "Live TV",
+      "Extension",
+      "Content",
+    ]);
 
     // Search filter
     const searchInput = screen.getByLabelText("Search catalogue");
@@ -235,7 +276,7 @@ describe("Server › Plugins (WS10a)", () => {
     expect(screen.getByText("SubDL Subtitles")).toBeTruthy();
     expect(screen.queryByText("Local folders")).toBeNull();
 
-    // Open SubDL Subtitles card drawer and install
+    // Open SubDL Subtitles card drawer and install via {kind:"catalogue", id}
     fireEvent.click(screen.getByText("SubDL Subtitles"));
     const sheet = await screen.findByTestId("permission-sheet");
     expect(within(sheet).getByText("Connects to api.subdl.com")).toBeTruthy();
@@ -244,6 +285,10 @@ describe("Server › Plugins (WS10a)", () => {
 
     // Navigates to Installed tab and opens the new plugin's drawer
     expect(await screen.findByRole("tablist", { name: "Plugin sections" })).toBeTruthy();
+    expect(installBody).toMatchObject({
+      kind: "catalogue",
+      id: "community.subdl.subtitles",
+    });
   });
 
   it("pairs and revokes a remote sidecar", async () => {
@@ -277,11 +322,18 @@ describe("Server › Plugins (WS10a)", () => {
     expect(await screen.findByText("No sidecars connected.")).toBeTruthy();
   });
 
-  it("shows 'The catalogue is not available yet' when GET /api/plugins/catalogue is empty or 404", async () => {
+  it("shows 'No plugins in the marketplace yet' with a submit link when configured with zero entries, and unavailable only when unconfigured or unreachable", async () => {
+    let mode: "empty" | "unconfigured" | "unreachable" = "empty";
     customIntercept = (url) => {
-      if (url.pathname.startsWith("/ether/api/plugins/catalogue")) {
-        return new Response(JSON.stringify({ entries: [] }), {
-          status: 200,
+      if (url.pathname === "/ether/api/plugins/catalogue") {
+        if (mode === "empty") {
+          return Response.json({ entries: [], configured: true, fetchedAt: 1700000000 });
+        }
+        if (mode === "unconfigured") {
+          return Response.json({ entries: [], configured: false, fetchedAt: 0 });
+        }
+        return new Response(JSON.stringify({ error: { message: "bad gateway" } }), {
+          status: 502,
           headers: { "Content-Type": "application/json" },
         });
       }
@@ -289,7 +341,20 @@ describe("Server › Plugins (WS10a)", () => {
     };
 
     renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("No plugins in the marketplace yet")).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: /Submit a plugin/i }).length).toBeGreaterThanOrEqual(
+      1,
+    );
+    expect(screen.queryByText(/not available/i)).toBeNull();
+    cleanup();
 
-    expect(await screen.findByText("The catalogue is not available yet")).toBeTruthy();
+    mode = "unconfigured";
+    renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("No marketplace configured")).toBeTruthy();
+    cleanup();
+
+    mode = "unreachable";
+    renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("Could not reach the marketplace")).toBeTruthy();
   });
 });

@@ -2325,20 +2325,40 @@ export function createFakeServer(opts: FakeOptions = {}) {
             ID: "s1",
             UserID: 2,
             Key: session.key,
+            ratingKey: Number(session.key) || 0,
             TitleName: `${session.title} (${session.year})`,
             Username: "Sam Rivera",
-            Client: { product: "Plex for Apple TV", deviceName: "Living Room", remote: false },
+            Client: {
+              product: "Plex for Apple TV",
+              deviceName: "Living Room",
+              platform: "tvOS",
+              remote: false,
+            },
+            ip: "192.168.1.42",
             Decision: "directplay",
             decisionVideoCopy: true,
             decisionAudioCopy: true,
+            bitrateKbps: 6540,
+            sourceVideo: "H.264 1080p SDR",
+            outputVideo: "H.264 1080p SDR",
+            sourceAudio: "EAC3 5.1",
+            outputAudio: "EAC3 5.1",
+            container: "mkv",
             BytesServed: 2.1 * 1024 ** 3,
             BufferedBytes: 183 * 1024 ** 2,
             BufferedUntil: 3000e9,
             SpeedBps: 3.2e6,
             StartedAt: new Date(Date.now() - 40 * 60000).toISOString(),
-            Info: { size: 5.4 * 1024 ** 3, duration: 118 * 60 * 1e9 },
+            Info: { size: 5.4 * 1024 ** 3, duration: 118 * 60 * 1e9, bitrateKbps: 6540 },
             viewOffset: 46 * 60 * 1000,
             origin: "Real-Debrid",
+            experience: {
+              requested: true,
+              pictured: true,
+              startTime: 1.8e9,
+              bufferEvents: 0,
+              buffering: 0,
+            },
             Resolution: {
               release: {
                 name: `${session.title.replace(/ /g, ".")}.${session.year}.1080p.WEB-DL.H264`,
@@ -3501,6 +3521,70 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const mr = maintenance.handle(method, seg, body);
     if (mr) return json(mr.body, mr.status);
 
+    if (
+      method === "GET" &&
+      seg[0] === "stats" &&
+      seg[1] === "plays" &&
+      seg[2] &&
+      seg.length === 3
+    ) {
+      const targetId = decodeURIComponent(seg[2]);
+      const exPlay = experience.handle(method, seg, q);
+      if (exPlay && exPlay.status === 200) return json(exPlay.body, exPlay.status);
+      const liveSession = (dashboard().sections.sessions as Array<Record<string, unknown>>).find(
+        (s) => s.ID === targetId || s.id === targetId,
+      );
+      if (liveSession) {
+        const started = liveSession.StartedAt
+          ? Math.floor(new Date(String(liveSession.StartedAt)).getTime() / 1000)
+          : Math.floor(Date.now() / 1000);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const info = (liveSession.Info ?? {}) as Record<string, unknown>;
+        const client = (liveSession.Client ?? {}) as Record<string, unknown>;
+        const exp = (liveSession.experience ?? {}) as Record<string, unknown>;
+        const res = (liveSession.Resolution ?? {}) as Record<string, unknown>;
+        const rel = (res.release ?? {}) as Record<string, unknown>;
+        const durationMs = Math.round(Number(info.duration || 0) / 1e6);
+        const watchedMs = Math.max(0, (nowSec - started) * 1000);
+        const bytes = Number(liveSession.BytesServed || 0);
+        return json({
+          id: targetId,
+          userId: Number(liveSession.UserID || 0),
+          username: String(liveSession.Username || ""),
+          ratingKey: Number(liveSession.ratingKey || liveSession.Key || 0),
+          title: String(liveSession.TitleName || ""),
+          platform: String(client.platform || client.product || ""),
+          device: String(client.deviceName || client.product || ""),
+          decision: String(liveSession.Decision || ""),
+          started,
+          updated: nowSec,
+          ended: 0,
+          watchedMs,
+          durationMs,
+          bytes,
+          completed: false,
+          failovers: Number(liveSession.Failovers || 0),
+          switches: Number(liveSession.Failovers || 0),
+          origin: String(liveSession.origin || ""),
+          release: String(rel.name || ""),
+          ip: String(liveSession.ip || ""),
+          remote: Boolean(client.remote),
+          measured: Boolean(exp.requested),
+          startMs: exp.pictured ? Math.round(Number(exp.startTime || 0) / 1e6) : null,
+          bufferEvents: exp.requested ? Number(exp.bufferEvents || 0) : null,
+          bufferMs: exp.requested ? Math.round(Number(exp.buffering || 0) / 1e6) : null,
+          failed: false,
+          error: "",
+          reasonKind: "",
+          reasonDetail: "",
+          sourceKbps: Number(info.bitrateKbps || liveSession.bitrateKbps || 0),
+          avgBitrateKbps: watchedMs > 0 && bytes > 0 ? Math.round((bytes * 8) / watchedMs) : 0,
+          uhd: /2160p|4k/i.test(String(liveSession.sourceVideo || "")),
+          hdr: /hdr|dolby vision|hlg/i.test(String(liveSession.sourceVideo || "")),
+        });
+      }
+      if (exPlay) return json(exPlay.body, exPlay.status);
+    }
     const ex = experience.handle(method, seg, q);
     if (ex) return json(ex.body, ex.status);
 

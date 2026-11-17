@@ -987,9 +987,11 @@ export interface NowPlaying {
   channelId: string;
   channelName: string;
   channelNumber: string;
+  userId?: number;
   user: string;
   device: string;
   product: string;
+  platform?: string;
   decision: string;
   decisionReason: string;
   qualityFallback?: string;
@@ -1014,6 +1016,8 @@ export interface NowPlaying {
   ip: string;
   /** Delivered bitrate now (or the encode's target), kbps; 0 when unknown. */
   bitrateKbps: number;
+  /** Overall bitrate of the source media in kbps, when probed or derivable. */
+  sourceKbps?: number;
   /** Short human descriptions, e.g. "HEVC 2160p HDR10" → "H.264 1080p SDR". */
   sourceVideo: string;
   outputVideo: string;
@@ -1024,6 +1028,10 @@ export interface NowPlaying {
   ratingKey: number;
   /** Selected subtitle, e.g. "English SRT" or "English PGS (burned)". */
   subtitle: string;
+  /** Viewer-experience accounting on the live session, when playback was requested. */
+  startMs?: number | null;
+  bufferEvents?: number | null;
+  bufferMs?: number | null;
 }
 
 function pick(o: Record<string, unknown>, ...keys: string[]): unknown {
@@ -1040,7 +1048,20 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
     const channel = pick(s, "liveChannel", "LiveChannel");
     const liveChannel = isPlainObject(channel) ? channel : null;
     const resolution = (pick(s, "Resolution", "resolution") ?? {}) as Record<string, unknown>;
-    const release = isPlainObject(resolution.release) ? resolution.release : {};
+    const releaseObj = pick(resolution, "release", "Release");
+    const release = isPlainObject(releaseObj) ? releaseObj : {};
+    const expObj = pick(s, "experience", "Experience");
+    const exp =
+      isPlainObject(expObj) && pick(expObj, "requested", "Requested") === true ? expObj : null;
+    const expPictured = exp ? pick(exp, "pictured", "Pictured") === true : false;
+    const expStartNs = exp ? num(pick(exp, "startTime", "StartTime")) : -1;
+    const startMs = exp
+      ? expPictured && expStartNs >= 0
+        ? Math.round(expStartNs / 1e6)
+        : null
+      : undefined;
+    const bufferEvents = exp ? num(pick(exp, "bufferEvents", "BufferEvents")) : undefined;
+    const bufferMs = exp ? Math.round(num(pick(exp, "buffering", "Buffering")) / 1e6) : undefined;
     const durationNs = num(pick(info, "duration", "Duration"));
     const offsetMs = pick(s, "viewOffset", "ViewOffset", "positionMs", "PositionMs");
     const durationMs = durationNs / 1e6;
@@ -1051,6 +1072,13 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
     else if (typeof offsetMs === "number" && Number.isFinite(offsetMs) && durationMs > 0)
       progress = Math.max(0, Math.min(1, offsetMs / durationMs));
     const size = num(pick(info, "size", "Size"));
+    const infoBitrateKbps = num(pick(info, "bitrateKbps", "BitrateKbps"));
+    const sourceKbps =
+      infoBitrateKbps > 0
+        ? infoBitrateKbps
+        : size > 0 && durationMs > 0
+          ? Math.round((size * 8) / durationMs)
+          : 0;
     const bufferedBytes = num(pick(s, "BufferedBytes", "bufferedBytes"));
     const bufferedUntilNs = num(pick(s, "BufferedUntil", "bufferedUntil"));
     let buffered = 0;
@@ -1058,6 +1086,8 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       buffered = Math.min(1, bufferedUntilNs / 1e6 / durationMs);
     else if (size > 0 && bufferedBytes > 0)
       buffered = Math.min(1, (progress ?? 0) + bufferedBytes / size);
+    const userId = num(pick(s, "UserID", "userId"));
+    const platform = str(pick(client, "platform", "Platform"));
     return {
       node: str(s.node),
       processor: isPlainObject(s.encoder) ? str(s.encoder.processor) : undefined,
@@ -1069,18 +1099,20 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       channelId: liveChannel ? str(pick(liveChannel, "id", "ID")).trim() : "",
       channelName: liveChannel ? str(pick(liveChannel, "name", "Name")).trim() : "",
       channelNumber: liveChannel ? str(pick(liveChannel, "number", "Number")).trim() : "",
+      ...(userId ? { userId } : {}),
       user: str(pick(s, "Username", "username")) || t("Someone"),
       device:
         str(pick(client, "deviceName", "device")) ||
         str(pick(client, "product")) ||
         t("Unknown device"),
       product: str(pick(client, "product")),
+      ...(platform ? { platform } : {}),
       decision: str(pick(s, "Decision", "decision")),
       decisionReason: str(pick(s, "decisionReason", "DecisionReason")),
       qualityFallback: str(pick(s, "qualityFallback", "QualityFallback")),
       videoCopy: pick(s, "decisionVideoCopy", "DecisionVideoCopy") === true,
       audioCopy: pick(s, "decisionAudioCopy", "DecisionAudioCopy") === true,
-      remote: pick(client, "remote") === true,
+      remote: pick(client, "remote", "Remote") === true,
       bytesServed: num(pick(s, "BytesServed", "bytesServed")),
       size,
       buffered,
@@ -1088,11 +1120,14 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       startedAt: parseTime(pick(s, "StartedAt", "startedAt")),
       durationMs,
       progress,
-      release: str(release.name),
+      release: str(pick(release, "name", "Name")) || str(pick(s, "release", "Release")),
       origin: str(pick(s, "origin", "Origin")),
       failovers: num(pick(s, "Failovers", "failovers")),
-      ip: str(pick(s, "ip", "IP", "Ip")) || str(pick(client, "ip", "address")),
+      ip:
+        str(pick(s, "ip", "IP", "Ip")) ||
+        str(pick(client, "clientIp", "ClientIP", "ip", "address")),
       bitrateKbps: num(pick(s, "bitrateKbps", "BitrateKbps")),
+      ...(sourceKbps ? { sourceKbps } : {}),
       sourceVideo: str(pick(s, "sourceVideo", "SourceVideo")),
       outputVideo: str(pick(s, "outputVideo", "OutputVideo")),
       sourceAudio: str(pick(s, "sourceAudio", "SourceAudio")),
@@ -1100,6 +1135,7 @@ export function normalizeSessions(v: unknown): NowPlaying[] {
       container: str(pick(s, "container", "Container")),
       ratingKey: num(pick(s, "ratingKey", "RatingKey")),
       subtitle: str(pick(s, "subtitle", "Subtitle")),
+      ...(exp ? { startMs, bufferEvents, bufferMs } : {}),
     };
   });
 }

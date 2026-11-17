@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
 	"sort"
@@ -237,6 +238,7 @@ type ServiceDeps struct {
 	HomeRevision        func(context.Context, *core.User) (frontend.HomeRevision, error)
 	NoProviderWait      func(context.Context) context.Context
 	Now                 func() time.Time
+	Log                 *slog.Logger
 }
 
 type Service struct {
@@ -997,15 +999,27 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 			return frontend.ItemDetail{}, err
 		}
 		if s.d.IsFavorite != nil {
-			d.UserData.IsFavorite, err = s.d.IsFavorite(ctx, v, piv.Title.Key)
+			if fav, ferr := s.d.IsFavorite(ctx, v, piv.Title.Key); ferr != nil {
+				s.logPluginEnrichError("favorites", piv.Title.Key, ferr)
+			} else {
+				d.UserData.IsFavorite = fav
+			}
 		}
-		if err == nil && s.d.IsNotInterested != nil {
-			d.UserData.IsNotInterested, err = s.d.IsNotInterested(ctx, v, piv.Title.Key)
+		if s.d.IsNotInterested != nil {
+			if ni, nerr := s.d.IsNotInterested(ctx, v, piv.Title.Key); nerr != nil {
+				s.logPluginEnrichError("not_interested", piv.Title.Key, nerr)
+			} else {
+				d.UserData.IsNotInterested = ni
+			}
 		}
-		if err == nil && s.d.IsWatchlisted != nil {
-			d.UserData.InWatchlist, err = s.d.IsWatchlisted(ctx, v, piv.Title.Key)
+		if s.d.IsWatchlisted != nil {
+			if wl, werr := s.d.IsWatchlisted(ctx, v, piv.Title.Key); werr != nil {
+				s.logPluginEnrichError("watchlist", piv.Title.Key, werr)
+			} else {
+				d.UserData.InWatchlist = wl
+			}
 		}
-		return d, err
+		return d, nil
 	}
 	if req.Key.Kind() == core.KindCollection || req.Key.Kind() == core.KindSmart {
 		if s.d.Collections == nil {
@@ -1979,24 +1993,60 @@ func (s *Service) UserData(ctx context.Context, viewer *core.Viewer, keys []core
 	return data, nil
 }
 
-func (s *Service) fillFavorites(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
-	if s.d.IsFavoriteMany != nil {
-		flags, err := s.d.IsFavoriteMany(ctx, v, keys)
-		if err != nil {
-			return err
+func (s *Service) logPluginEnrichError(field string, key core.RatingKey, err error) {
+	log := s.d.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Warn("plugin item enrichment omitted", "field", field, "key", key, "err", err)
+}
+
+func splitPluginKeys(keys []core.RatingKey) (catalog, plugin []core.RatingKey) {
+	for _, key := range keys {
+		if key.IsPluginKey() {
+			plugin = append(plugin, key)
+		} else {
+			catalog = append(catalog, key)
 		}
-		for _, key := range keys {
-			status := data[key]
-			status.Key = key
-			status.IsFavorite = flags[key]
-			data[key] = status
+	}
+	return catalog, plugin
+}
+
+func (s *Service) fillFavorites(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
+	catalogKeys, pluginKeys := splitPluginKeys(keys)
+	if s.d.IsFavoriteMany != nil {
+		if len(catalogKeys) > 0 {
+			flags, err := s.d.IsFavoriteMany(ctx, v, catalogKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range catalogKeys {
+				status := data[key]
+				status.Key = key
+				status.IsFavorite = flags[key]
+				data[key] = status
+			}
+		}
+		if len(pluginKeys) > 0 {
+			flags, err := s.d.IsFavoriteMany(ctx, v, pluginKeys)
+			if err != nil {
+				s.logPluginEnrichError("favorites", pluginKeys[0], err)
+			}
+			for _, key := range pluginKeys {
+				status := data[key]
+				status.Key = key
+				if err == nil {
+					status.IsFavorite = flags[key]
+				}
+				data[key] = status
+			}
 		}
 		return nil
 	}
 	if s.d.IsFavorite == nil {
 		return nil
 	}
-	for _, key := range keys {
+	for _, key := range catalogKeys {
 		favorite, err := s.d.IsFavorite(ctx, v, key)
 		if err != nil {
 			return err
@@ -2006,26 +2056,51 @@ func (s *Service) fillFavorites(ctx context.Context, v *core.User, keys []core.R
 		status.IsFavorite = favorite
 		data[key] = status
 	}
+	for _, key := range pluginKeys {
+		status := data[key]
+		status.Key = key
+		if favorite, err := s.d.IsFavorite(ctx, v, key); err != nil {
+			s.logPluginEnrichError("favorites", key, err)
+		} else {
+			status.IsFavorite = favorite
+		}
+		data[key] = status
+	}
 	return nil
 }
 
 func (s *Service) fillNotInterested(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
+	catalogKeys, pluginKeys := splitPluginKeys(keys)
 	if s.d.IsNotInterestedMany != nil {
-		flags, err := s.d.IsNotInterestedMany(ctx, v, keys)
-		if err != nil {
-			return err
+		if len(catalogKeys) > 0 {
+			flags, err := s.d.IsNotInterestedMany(ctx, v, catalogKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range catalogKeys {
+				status := data[key]
+				status.IsNotInterested = flags[key]
+				data[key] = status
+			}
 		}
-		for _, key := range keys {
-			status := data[key]
-			status.IsNotInterested = flags[key]
-			data[key] = status
+		if len(pluginKeys) > 0 {
+			flags, err := s.d.IsNotInterestedMany(ctx, v, pluginKeys)
+			if err != nil {
+				s.logPluginEnrichError("not_interested", pluginKeys[0], err)
+			} else {
+				for _, key := range pluginKeys {
+					status := data[key]
+					status.IsNotInterested = flags[key]
+					data[key] = status
+				}
+			}
 		}
 		return nil
 	}
 	if s.d.IsNotInterested == nil {
 		return nil
 	}
-	for _, key := range keys {
+	for _, key := range catalogKeys {
 		value, err := s.d.IsNotInterested(ctx, v, key)
 		if err != nil {
 			return err
@@ -2034,26 +2109,50 @@ func (s *Service) fillNotInterested(ctx context.Context, v *core.User, keys []co
 		status.IsNotInterested = value
 		data[key] = status
 	}
+	for _, key := range pluginKeys {
+		if value, err := s.d.IsNotInterested(ctx, v, key); err != nil {
+			s.logPluginEnrichError("not_interested", key, err)
+		} else {
+			status := data[key]
+			status.IsNotInterested = value
+			data[key] = status
+		}
+	}
 	return nil
 }
 
 func (s *Service) fillWatchlist(ctx context.Context, v *core.User, keys []core.RatingKey, data map[core.RatingKey]core.WatchStatus) error {
+	catalogKeys, pluginKeys := splitPluginKeys(keys)
 	if s.d.IsWatchlistedMany != nil {
-		flags, err := s.d.IsWatchlistedMany(ctx, v.ID, keys)
-		if err != nil {
-			return err
+		if len(catalogKeys) > 0 {
+			flags, err := s.d.IsWatchlistedMany(ctx, v.ID, catalogKeys)
+			if err != nil {
+				return err
+			}
+			for _, key := range catalogKeys {
+				status := data[key]
+				status.InWatchlist = flags[key]
+				data[key] = status
+			}
 		}
-		for _, key := range keys {
-			status := data[key]
-			status.InWatchlist = flags[key]
-			data[key] = status
+		if len(pluginKeys) > 0 {
+			flags, err := s.d.IsWatchlistedMany(ctx, v.ID, pluginKeys)
+			if err != nil {
+				s.logPluginEnrichError("watchlist", pluginKeys[0], err)
+			} else {
+				for _, key := range pluginKeys {
+					status := data[key]
+					status.InWatchlist = flags[key]
+					data[key] = status
+				}
+			}
 		}
 		return nil
 	}
 	if s.d.IsWatchlisted == nil {
 		return nil
 	}
-	for _, key := range keys {
+	for _, key := range catalogKeys {
 		value, err := s.d.IsWatchlisted(ctx, v, key)
 		if err != nil {
 			return err
@@ -2061,6 +2160,15 @@ func (s *Service) fillWatchlist(ctx context.Context, v *core.User, keys []core.R
 		status := data[key]
 		status.InWatchlist = value
 		data[key] = status
+	}
+	for _, key := range pluginKeys {
+		if value, err := s.d.IsWatchlisted(ctx, v, key); err != nil {
+			s.logPluginEnrichError("watchlist", key, err)
+		} else {
+			status := data[key]
+			status.InWatchlist = value
+			data[key] = status
+		}
 	}
 	return nil
 }
@@ -2726,7 +2834,12 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 		}
 		favorite, err := s.d.IsFavorite(ctx, v, t.Key)
 		if err != nil {
-			return false, err
+			if t.Key.IsPluginKey() {
+				s.logPluginEnrichError("favorites", t.Key, err)
+				favorite = false
+			} else {
+				return false, err
+			}
 		}
 		if favorite != *q.Favorite {
 			return false, nil

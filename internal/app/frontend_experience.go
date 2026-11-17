@@ -606,6 +606,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		})
 	}
 	deps.Now = parityClock()
+	deps.Log = a.log
 	if a.db != nil {
 		db := a.db
 		deps.HomeRevision = func(ctx context.Context, u *core.User) (frontend.HomeRevision, error) {

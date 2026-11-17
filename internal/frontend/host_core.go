@@ -128,6 +128,11 @@ func WithSearchListFacts(ctx context.Context) context.Context {
 	return core.WithSearchListFacts(ctx)
 }
 
+// WithSearchClient attaches the client identifier for search-as-you-type single-flight.
+func WithSearchClient(ctx context.Context, clientID string) context.Context {
+	return core.WithSearchClient(ctx, clientID)
+}
+
 // ErrBedtime carries the next playback admission time.
 type ErrBedtime = core.ErrBedtime
 

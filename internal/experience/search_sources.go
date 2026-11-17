@@ -15,5 +15,6 @@ func SearchFor(src SearchSources, vis Visibility, unrestricted func(*core.User) 
 		Catalog: src.Catalog, Natural: src.Natural, Familiar: src.Familiar, Details: src.Details,
 		Visibility: vis, Unrestricted: unrestricted,
 		Vibe: VibeSearch{Source: src.Vibe, Visibility: vis, Unrestricted: unrestricted},
+		gate: newDescriptiveGate(),
 	}
 }

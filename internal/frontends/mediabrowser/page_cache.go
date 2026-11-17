@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/route"
 )
 
 const browseCacheLimit = 128
@@ -102,7 +103,13 @@ func cacheableBrowse(r *http.Request) bool {
 	if strings.HasSuffix(p, "/Views") || strings.HasSuffix(p, "/UserViews") {
 		return false
 	}
-	return strings.Contains(p, "/Items") || strings.HasSuffix(p, "/NextUp") || strings.HasSuffix(p, "/Search/Hints")
+	// Search responses can reflect superseded search-as-you-type waits or
+	// bounded AI partial/keyword fallbacks before the background AI job caches
+	// its finished set, so search requests must not be frozen in browseCache.
+	if strings.HasSuffix(p, "/Search/Hints") || len(route.Query(r.URL.Query(), "SearchTerm")) > 0 {
+		return false
+	}
+	return strings.Contains(p, "/Items") || strings.HasSuffix(p, "/NextUp")
 }
 
 func browseCacheKey(f frontend.PageFreshness, r *http.Request) string {
@@ -134,8 +141,9 @@ func (c *bodyCapture) WriteHeader(code int) {
 
 func (c *bodyCapture) Write(p []byte) (int, error) {
 	if !c.wrote {
-		c.WriteHeader(http.StatusOK)
+		c.code = http.StatusOK
+		c.wrote = true
 	}
-	c.buf.Write(p)
+	_, _ = c.buf.Write(p)
 	return c.ResponseWriter.Write(p)
 }

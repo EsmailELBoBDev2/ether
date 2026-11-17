@@ -21,7 +21,11 @@ func NewDirectService(d ServiceDeps) *Service {
 		d.JudgedOnFacts = d.Visibility.JudgedOnFacts
 	}
 	d.Dashboard, d.Resources = Statistics(d.Dashboard, d.Resources, d.Now)
-	return &Service{d: d, cursors: &episodeCursors{}}
+	gate := newDescriptiveGate()
+	if d.Search.gate == nil {
+		d.Search.gate = gate
+	}
+	return &Service{d: d, cursors: &episodeCursors{}, searchGate: gate}
 }
 
 func (*Service) NewRecent(o frontend.RecentOptions) frontend.Recent {
@@ -74,8 +78,18 @@ func (*Service) NewDiscoverySelection(o frontend.DiscoverySelectionOptions) fron
 func (*Service) NewTrackPreferenceSelector(o frontend.TrackPreferenceSelectorOptions) frontend.TrackPreferenceSelector {
 	return TrackPreferences{Source: o.Source, GetTitle: o.GetTitle}
 }
-func (*Service) SearchFor(src frontend.SearchSources, vis frontend.Visibility, unrestricted func(*core.User) bool) frontend.Search {
-	return SearchFor(src, vis, unrestricted)
+func (s *Service) SearchFor(src frontend.SearchSources, vis frontend.Visibility, unrestricted func(*core.User) bool) frontend.Search {
+	out := SearchFor(src, vis, unrestricted)
+	if s != nil {
+		out.gate = s.ensureSearchGate()
+		if s.d.Search.WaitBound != 0 {
+			out.WaitBound = s.d.Search.WaitBound
+		}
+		if s.d.Search.SettleDelay != 0 {
+			out.SettleDelay = s.d.Search.SettleDelay
+		}
+	}
+	return out
 }
 func (*Service) StatisticsDefaults(dashboard frontend.Dashboard, resources frontend.ResourceStatistics, now func() time.Time) (frontend.Dashboard, frontend.ResourceStatistics) {
 	return Statistics(dashboard, resources, now)

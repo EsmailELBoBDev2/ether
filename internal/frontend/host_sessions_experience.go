@@ -1263,6 +1263,8 @@ type SearchResults struct {
 	Collection       *core.Collection
 	Items            []core.Title
 	CollectionSearch bool
+	// AIItems is the leading prefix of Items produced by descriptive AI search.
+	AIItems int
 }
 
 // IssuedTrackIdentity is the selection resolvePlaySelection already holds

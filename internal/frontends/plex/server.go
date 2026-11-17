@@ -215,8 +215,7 @@ type Server struct {
 	// Stalled-start watches and Dolby Vision base-layer fallbacks.
 	starts frontend.StartGuard
 
-	liveDiscovery    liveDiscoveryCache
-	liveProviderList liveProvidersCache
+	liveDiscovery liveDiscoveryCache
 
 	ctx    context.Context
 	cancel context.CancelFunc

@@ -426,8 +426,13 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 	if part.Begin >= 1 && part.End >= part.Begin && part.End-part.Begin+1 > max(int64(len(data)), maxArticleBytes) {
 		return nil, fmt.Errorf("stream: %s part %d implausible yEnc range %d-%d: %w", pf.Name(), i+1, part.Begin, part.End, ErrCorrupt)
 	}
+	// Some obfuscated uploaders emit each segment of a multi-segment file as a
+	// standalone single-part yEnc article (=ybegin size=<segLen>, no =ypart).
+	// Treat that per-segment wrapper as unranged so it neither pins slot i>0 at
+	// offset 0 nor poisons pf.Size() with one segment's byte count.
+	perSegSingle := pf.numSlots() > 1 && part.Part == 1 && part.Total == 1 && part.Begin == 1 && part.End == int64(len(data)) && part.FileSize <= part.End
 	seg := &segData{fileSize: part.FileSize, total: part.Total, name: part.Name}
-	if part.Begin >= 1 && part.End >= part.Begin {
+	if !perSegSingle && part.Begin >= 1 && part.End >= part.Begin {
 		seg.begin = part.Begin - 1
 		want := part.End - part.Begin + 1
 		if int64(len(data)) != want {
@@ -435,7 +440,10 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 		}
 		seg.rangeExact = part.Part == i+1 && part.Total >= part.Part && part.FileSize >= part.End
 	} else {
-		// No part header: trust the index estimate.
+		// No multipart range header: trust the index estimate.
+		if perSegSingle {
+			seg.fileSize, seg.total = 0, 0
+		}
 		seg.begin, _, _ = pf.rangeOf(i)
 		if seg.fileSize == 0 && pf.numSlots() == 1 {
 			seg.fileSize = int64(len(data))

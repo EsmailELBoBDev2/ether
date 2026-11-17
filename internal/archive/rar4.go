@@ -62,6 +62,9 @@ func readRAR4(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 		if headersEncrypted {
 			salt := make([]byte, 8)
 			if err := readAt(r, salt, pos, size); err != nil {
+				if o.SizeEstimated && mainSeen && atEstimatedVolumeEnd(r, pos) {
+					break
+				}
 				return nil, err
 			}
 			keys, err := crypto.rar4(salt)
@@ -76,6 +79,9 @@ func readRAR4(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 			headerBytes = 8 + padded
 		} else {
 			if err := readAt(r, base[:], pos, size); err != nil {
+				if o.SizeEstimated && mainSeen && atEstimatedVolumeEnd(r, pos) {
+					break
+				}
 				return nil, err
 			}
 			length := int64(binary.LittleEndian.Uint16(base[5:]))

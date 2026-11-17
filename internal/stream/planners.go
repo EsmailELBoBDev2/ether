@@ -123,7 +123,7 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 			return nil, err
 		}
 		var err error
-		v0, err = archive.ReadRARVolume(b.reader(ctx, vols[0]), vols[0].Size(), b.rarOptions(ctx, 0))
+		v0, err = archive.ReadRARVolume(b.reader(ctx, vols[0]), vols[0].Size(), b.rarOptionsFor(ctx, vols[0], 0))
 		if err != nil {
 			return nil, fmt.Errorf("stream: rar %s: %w", vols[0].Name(), err)
 		}
@@ -162,7 +162,7 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 	}
 	if v0 == nil {
 		var err error
-		v0, err = archive.ReadRARVolume(b.reader(ctx, vols[0]), vols[0].Size(), b.rarOptions(ctx, 0))
+		v0, err = archive.ReadRARVolume(b.reader(ctx, vols[0]), vols[0].Size(), b.rarOptionsFor(ctx, vols[0], 0))
 		if err != nil {
 			return nil, fmt.Errorf("stream: rar %s: %w", vols[0].Name(), err)
 		}
@@ -173,18 +173,22 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 	if n == 1 {
 		return b.rarFromVolumes(ctx, vols, []*archive.RARVolume{v0})
 	}
+	main := pickRARFile(v0.Files, v0.Format)
+	v0Size := vols[0].Size()
+	if main != nil {
+		v0Size = rarVolSize(vols[0], main.DataOffset, main.PackedSize)
+	}
 	// Estimated decoded size of the whole set (middle volumes as volume 2).
-	setBytes := vols[0].Size() + vols[n-1].Size()
+	setBytes := v0Size + vols[n-1].Size()
 	if n > 2 {
 		setBytes += int64(n-2) * vols[1].Size()
 	}
-	main := pickRARFile(v0.Files, v0.Format)
 	if main == nil || main.Encrypted || b.startsWithRAR(ctx, vols[0], main) || !main.SplitAfter || main.SplitBefore || main.UnpackedSize <= 0 || main.UnpackedSize*2 < setBytes {
 		for _, k := range []int{1, n - 1} {
 			if k <= 0 || k >= n {
 				continue
 			}
-			v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptions(ctx, 0))
+			v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptionsFor(ctx, vols[k], 0))
 			if err != nil {
 				return nil, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, vols[k].Name(), err)
 			}
@@ -198,7 +202,7 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 	}
 
 	read := func(k int) (*archive.RARFile, error) {
-		v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptions(ctx, 1))
+		v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptionsFor(ctx, vols[k], 1))
 		if err != nil {
 			return nil, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, vols[k].Name(), err)
 		}
@@ -226,9 +230,9 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 
 	info := make([]volInfo, n)
 	verified := make([]bool, n)
-	info[0] = volInfo{size: vols[0].Size(), dataOff: main.DataOffset, dataSize: main.PackedSize}
-	info[1] = volInfo{size: vols[1].Size(), dataOff: f1.DataOffset, dataSize: f1.PackedSize}
-	info[n-1] = volInfo{size: vols[n-1].Size(), dataOff: fl.DataOffset, dataSize: fl.PackedSize}
+	info[0] = volInfo{size: rarVolSize(vols[0], main.DataOffset, main.PackedSize), dataOff: main.DataOffset, dataSize: main.PackedSize}
+	info[1] = volInfo{size: rarVolSize(vols[1], f1.DataOffset, f1.PackedSize), dataOff: f1.DataOffset, dataSize: f1.PackedSize}
+	info[n-1] = volInfo{size: rarVolSize(vols[n-1], fl.DataOffset, fl.PackedSize), dataOff: fl.DataOffset, dataSize: fl.PackedSize}
 	verified[0], verified[1], verified[n-1] = true, true, true
 	rar5 := v0.Format == archive.FormatRAR5
 	for k := 2; k < n-1; k++ {
@@ -268,7 +272,7 @@ func (b *builder) holdsOnlyOtherEpisode(ctx context.Context, vols []*postedFile)
 	}
 	var parsed [2]*archive.RARVolume
 	for i, pf := range ends {
-		v, err := archive.ReadRARVolume(b.reader(ctx, pf), pf.Size(), b.rarOptions(ctx, 0))
+		v, err := archive.ReadRARVolume(b.reader(ctx, pf), pf.Size(), b.rarOptionsFor(ctx, pf, 0))
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
@@ -308,7 +312,7 @@ func (b *builder) rarFullScan(ctx context.Context, vols []*postedFile) (*plan, e
 	}
 	parsed := make([]*archive.RARVolume, len(vols))
 	err := b.parallel(ctx, len(vols), func(ctx context.Context, k int) error {
-		v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptions(ctx, 0))
+		v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptionsFor(ctx, vols[k], 0))
 		if err != nil {
 			return fmt.Errorf("stream: rar volume %d (%s): %w", k+1, vols[k].Name(), err)
 		}
@@ -352,6 +356,11 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 			verified[k] = true
 		}
 		if m.Encryption != nil {
+			for _, x := range m.Extents {
+				if x.Volume >= 0 && x.Volume < len(vols) {
+					info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
+				}
+			}
 			return b.encryptedPlan(ctx, kindRAR, m, vols, info)
 		}
 		for _, x := range m.Extents {
@@ -362,6 +371,7 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 				return nil, fmt.Errorf("stream: rar member %s has two extents in volume %d: %w", m.Name, x.Volume, ErrUnsupported)
 			}
 			info[x.Volume].dataOff, info[x.Volume].dataSize = x.Offset, x.Size
+			info[x.Volume].size = rarVolSize(vols[x.Volume], x.Offset, x.Size)
 		}
 		p := newPlan(b.rel, kindRAR, path.Base(m.Name), m.Size, vols, info, verified)
 		p.member = m.Name
@@ -653,7 +663,7 @@ func (b *builder) readCachedRARVolume(ctx context.Context, pf *postedFile, head 
 	r := bytes.NewReader(head)
 	var last *archive.RARVolume
 	for maxFiles := 1; maxFiles <= 8; maxFiles++ {
-		v, err := archive.ReadRARVolume(r, volSize, b.rarOptions(ctx, maxFiles))
+		v, err := archive.ReadRARVolume(r, volSize, b.rarOptionsFor(ctx, pf, maxFiles))
 		if err != nil {
 			if last != nil {
 				return last, nil

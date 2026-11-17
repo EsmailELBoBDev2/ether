@@ -135,6 +135,9 @@ func readRAR5(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 		if blockKey != nil {
 			var iv [16]byte
 			if err := readAt(r, iv[:], pos, size); err != nil {
+				if o.SizeEstimated && mainSeen && atEstimatedVolumeEnd(r, pos) {
+					break
+				}
 				return nil, err
 			}
 			var padded int64
@@ -150,6 +153,9 @@ func readRAR5(r io.ReaderAt, size int64, o RAROptions) (*RARVolume, error) {
 			}
 			pre := prefix[:min(int64(rar5Prefix), size-pos)]
 			if err := readAt(r, pre, pos, size); err != nil {
+				if o.SizeEstimated && mainSeen && atEstimatedVolumeEnd(r, pos) {
+					break
+				}
 				return nil, err
 			}
 			hs, n := uvarint(pre[4:])

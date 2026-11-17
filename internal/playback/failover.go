@@ -1257,11 +1257,13 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		m.dropGeneration(fallbackGen)
 	}
 	if g == nil {
-		log.Error("failover found no working release", "err", lastErr)
 		if lastErr == nil {
 			lastErr = core.ErrNotAvailable
 		}
-		if !fo.quietFailure {
+		if fo.quietFailure {
+			log.Debug("failover found no working release", "err", lastErr)
+		} else {
+			log.Error("failover found no working release", "err", lastErr)
 			m.emitEvent("error", s, lastErr)
 		}
 		if fo.down {

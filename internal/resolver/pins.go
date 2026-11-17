@@ -288,6 +288,8 @@ func (s *Service) pinRejectReason(rel core.Release, sreq core.SearchRequest, _ c
 		return "excluded (already tried)"
 	case s.isBad(rel.ID):
 		return "marked bad"
+	case nonVideoRelease(rel, nil, sreq):
+		return ReasonNotAVideoFile
 	case sreq.Type == core.TypeEpisode && rel.Info.FullSeason && rel.Protocol != core.ProtocolTorrent && rel.Protocol != core.ProtocolUsenet:
 		return "season pack (skipped in v1)"
 	case sreq.Type == core.TypeEpisode && rel.Info.FullSeason && !packCoversSeasonCour(rel.Info, sreq):

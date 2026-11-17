@@ -71,6 +71,10 @@ var imageExts = map[string]bool{"jpg": true, "jpeg": true, "png": true, "gif": t
 var otherExts = map[string]bool{
 	"txt": true, "nzb": true, "srr": true, "img": true, "url": true, "exe": true,
 	"md5": true, "sha1": true, "db": true, "log": true, "cue": true, "nfo2": true,
+	"lnk": true, "scr": true, "bat": true, "cmd": true, "msi": true, "ps1": true,
+	"vbs": true, "hta": true, "pif": true, "epub": true, "mobi": true, "azw3": true,
+	"cbz": true, "cbr": true, "pdf": true, "m4b": true, "mp3": true, "flac": true,
+	"ogg": true, "opus": true, "wav": true, "m4a": true,
 }
 
 // IsVideoExt reports whether ext (without dot, any case) is a video container.

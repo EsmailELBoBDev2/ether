@@ -16,6 +16,9 @@ func (s *Service) DiscoveryCandidate(t *core.Title, r core.Release) string {
 }
 
 func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, explicit bool) string {
+	if nonVideoRelease(r, t, core.SearchRequest{}) {
+		return ReasonNotAVideoFile
+	}
 	// Reparse the name: saved feed payloads can contain older parser results.
 	info := releaseparse.Parse(r.Name)
 	if !p.AllowCam {

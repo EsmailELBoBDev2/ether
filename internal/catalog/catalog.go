@@ -335,6 +335,7 @@ type Catalog struct {
 
 	personMu       sync.Mutex
 	personHydrated map[int64]time.Time
+	personMeta     map[int64]personMetaEntry
 	// listMirrored is when each related list's summaries were last saved
 	// (mirror_lists.go), guarded by personMu.
 	listMirrored map[string]time.Time

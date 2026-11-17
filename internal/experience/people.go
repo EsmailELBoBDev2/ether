@@ -102,6 +102,9 @@ func (s *Service) Person(ctx context.Context, viewer *core.Viewer, device core.D
 	err = s.readPeople(ctx, viewer, func(snapshot *Service) error {
 		var readErr error
 		result, readErr = snapshot.person(ctx, viewer, device, id, options)
+		if readErr == nil {
+			result, readErr = snapshot.enrichPersonDetail(ctx, viewer, result, options.Prefetch)
+		}
 		return readErr
 	})
 	if err != nil {

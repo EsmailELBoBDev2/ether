@@ -15,3 +15,10 @@ type PersonCreditForm struct {
 	Name     string
 	Portrait bool
 }
+
+// PersonMetadata holds optional cached person profile facts from the metadata provider.
+type PersonMetadata struct {
+	KnownFor  string
+	Biography string
+	Birthday  string
+}

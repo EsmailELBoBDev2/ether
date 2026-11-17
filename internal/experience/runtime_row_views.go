@@ -23,6 +23,7 @@ type RuntimeRowViews struct {
 	Receipts            *Receipts
 	Visibility          Visibility
 	Libraries           []Library
+	LiveLibraries       func() []Library
 	Active              func(context.Context, int64) (*core.User, error)
 	CachedGet           func(context.Context, core.RatingKey) (*core.Title, error)
 	CachedGetMany       func(context.Context, []core.RatingKey) (map[core.RatingKey]core.Title, error)
@@ -73,7 +74,13 @@ type rowRevisionProof struct {
 }
 
 func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
-	protocol, receipts, visibility, libraries := d.Protocol, d.Receipts, d.Visibility, d.Libraries
+	protocol, receipts, visibility := d.Protocol, d.Receipts, d.Visibility
+	currentLibraries := func() []Library {
+		if d.LiveLibraries != nil {
+			return d.LiveLibraries()
+		}
+		return d.Libraries
+	}
 	// A row snapshot is already drawn from the local catalogue. Revalidation
 	// must never trigger a per-title network refresh while a client pages it.
 	cacheVisibility := visibility
@@ -161,7 +168,7 @@ func NewRuntimeRowViews(d RuntimeRowViews) (*RowViewService, error) {
 			case frontend.PlacementLibrary:
 				id, err := strconv.Atoi(s.ViewID)
 				valid := false
-				for _, lib := range libraries {
+				for _, lib := range currentLibraries() {
 					if lib.ID == id {
 						valid = true
 						break

@@ -132,6 +132,8 @@ type ServiceDeps struct {
 	// its related shelves on the facts their ranking reads and reads only
 	// its page in full. Optional.
 	RankingDetails    func(context.Context, []core.Title) ([]core.Title, error)
+	PersonMetadata    func(context.Context, int64, bool) core.PersonMetadata
+	LibraryMembers    func(context.Context, core.LibraryID, []core.RatingKey) (map[core.RatingKey]bool, int64, bool, error)
 	PersonCreditForms func(context.Context, int64, []core.MediaType) ([]core.PersonCreditForm, error)
 	PersonFormKeys    func(context.Context, int64, []core.MediaType, []core.PersonCreditForm, core.RatingKey, int) ([]core.RatingKey, error)
 	// peopleVisibleTitles is the people read's VisibleTitles (readPeople).
@@ -561,6 +563,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		if library == nil || !SectionAllowed(v, id) || s.d.Browse == nil {
 			return core.Page{}, core.ErrNotFound
 		}
+	}
+	if q.CollectionKey != 0 {
+		return s.libraryCollectionItems(ctx, v, device, library, stored, q)
 	}
 	// Recursive show browsing can produce the show, its seasons, and its episodes.
 	// Skip the library when the requested types cannot appear in that tree.

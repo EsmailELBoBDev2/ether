@@ -48,11 +48,13 @@ func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 		}
 		channel := object{"id": c.ID, "number": c.Number, "name": c.Name, "kind": c.Kind, "artwork": art, "favorite": c.Favorite, "rating": c.Rating}
 		if c.Groups != nil {
-			groups := []object{}
+			// The Vela protocol names an owner's channel groups "guides"
+			// (Channel.guides, LiveGuide); Vela builds its guide tabs from it.
+			guides := []object{}
 			for _, group := range c.Groups {
-				groups = append(groups, object{"id": group.ID, "name": group.Name})
+				guides = append(guides, object{"id": group.ID, "name": group.Name})
 			}
-			channel["groups"] = groups
+			channel["guides"] = guides
 		}
 		if c.Group != "" {
 			channel["group"] = c.Group

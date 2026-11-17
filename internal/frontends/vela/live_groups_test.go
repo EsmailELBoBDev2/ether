@@ -43,25 +43,25 @@ func TestLiveOwnerGroups(t *testing.T) {
 		return w, page.Items
 	}
 	first, items := fetch()
-	if _, ok := items[0]["groups"]; ok {
+	if _, ok := items[0]["guides"]; ok {
 		t.Fatal("unknown groups advertised")
 	}
-	if string(items[1]["groups"]) != "[]" {
-		t.Fatalf("empty groups: %s", items[1]["groups"])
+	if string(items[1]["guides"]) != "[]" {
+		t.Fatalf("empty groups: %s", items[1]["guides"])
 	}
 	var guides []struct{ ID, Name string }
-	if err := json.Unmarshal(items[2]["groups"], &guides); err != nil {
+	if err := json.Unmarshal(items[2]["guides"], &guides); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(guides, []struct{ ID, Name string }{{"family", "Family"}, {"news", "News"}}) || string(items[2]["group"]) != `"Provider news"` {
-		t.Fatalf("memberships: %s group=%s", items[2]["groups"], items[2]["group"])
+		t.Fatalf("memberships: %s group=%s", items[2]["guides"], items[2]["group"])
 	}
 	source.channels[2].Groups[0].Name = "Renamed"
 	next, items := fetch()
 	if first.Header().Get("ETag") == next.Header().Get("ETag") {
 		t.Fatal("group rename did not invalidate channel cache")
 	}
-	if err := json.Unmarshal(items[2]["groups"], &guides); err != nil || guides[0].ID != "family" || guides[0].Name != "Renamed" {
+	if err := json.Unmarshal(items[2]["guides"], &guides); err != nil || guides[0].ID != "family" || guides[0].Name != "Renamed" {
 		t.Fatalf("rename: %+v %v", guides, err)
 	}
 }

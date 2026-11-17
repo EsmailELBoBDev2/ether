@@ -1872,10 +1872,9 @@ func (m *Manager) expire() {
 		list = append(list, s)
 	}
 	m.mu.Unlock()
-	pauseRetention := max(m.opts.IdleTimeout, core.PausedSessionRetention)
 	for _, s := range list {
 		s.mu.Lock()
-		last, lastMedia, pausedAt, stopAt, viewerState := s.lastActive, s.lastRead, s.pausedAt, s.stopAt, s.viewerState
+		last, stopAt, viewerState := s.lastActive, s.stopAt, s.viewerState
 		backgroundHeld := s.preparedOnly && s.backgroundHold.active(now)
 		s.mu.Unlock()
 		if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
@@ -1883,9 +1882,13 @@ func (m *Manager) expire() {
 				last = la
 			}
 		}
-		pausedSince := pausedAt
-		if pausedSince.IsZero() {
-			pausedSince = lastMedia
+		// Clients without a liveness signal (Plex, Jellyfin) may go quiet
+		// while paused, so a paused session keeps its source for
+		// PausedSessionRetention. Vela, which holds an events stream, ends a
+		// crashed player's session itself within seconds.
+		idleTimeout := m.opts.IdleTimeout
+		if viewerState == "paused" {
+			idleTimeout = max(idleTimeout, core.PausedSessionRetention)
 		}
 		inFlight := s.activeReads.Load() > 0
 		switch {
@@ -1895,16 +1898,8 @@ func (m *Manager) expire() {
 		case !stopAt.IsZero() && !now.Before(stopAt):
 			m.log.Debug("session stopped by client", "session", s.id)
 			m.Stop(s.id)
-		// Any session with no media reads, no timeline/commands and no
-		// open events stream (KeepAlive) ends at IdleTimeout, even if its
-		// last reported state was "paused" before the client crashed.
-		case !backgroundHeld && !inFlight && now.Sub(last) > m.opts.IdleTimeout:
+		case !backgroundHeld && !inFlight && now.Sub(last) > idleTimeout:
 			m.log.Debug("session idle", "session", s.id, "idle", now.Sub(last))
-			m.Stop(s.id)
-		// A genuinely paused player keeping its events stream or timeline
-		// alive retains its source up to PausedSessionRetention (30 min).
-		case viewerState == "paused" && !backgroundHeld && !inFlight && now.Sub(pausedSince) > pauseRetention:
-			m.log.Debug("paused session retention elapsed", "session", s.id, "paused", now.Sub(pausedSince))
 			m.Stop(s.id)
 		}
 	}

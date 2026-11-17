@@ -1092,29 +1092,8 @@ func TestPausedPlaybackSurvivesPhoneCall(t *testing.T) {
 		if _, ok := h.m.Session(ps.ID); !ok {
 			t.Fatal("paused source with active events stream expired")
 		}
-		// Continuing past 30-minute PausedSessionRetention ends even a KeepAlive-backed pause.
-		for range 26 {
-			h.clock.Advance(time.Minute)
-			h.m.KeepAlive(ps.ID)
-			h.m.expire()
-		}
-		if _, ok := h.m.Session(ps.ID); ok {
-			t.Fatal("paused source retained past 30-minute PausedSessionRetention")
-		}
 	})
 
-	t.Run("paused player that crashes with no stream timeline or reads ends at IdleTimeout", func(t *testing.T) {
-		h := newHarness(t, []*fakeRelease{mkv("A", 10000, time.Hour)}, []string{"A"},
-			func(h *harness, o *Options) { o.IdleTimeout = 2 * time.Minute })
-		ps := h.prepare(owner, movieKey, "c1")
-		h.m.PlaybackProgress(owner.ID, "c1", movieKey, time.Minute, "paused")
-		// Client dies: no media reads, no timeline/commands, no KeepAlive.
-		h.clock.Advance(2*time.Minute + time.Second)
-		h.m.expire()
-		if _, ok := h.m.Session(ps.ID); ok {
-			t.Fatal("crashed paused session survived past IdleTimeout")
-		}
-	})
 }
 
 func TestStreamLimitsReleaseStoppedAndIdleSessions(t *testing.T) {

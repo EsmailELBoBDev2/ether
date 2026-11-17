@@ -105,6 +105,14 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		n, err := s.UpdateChannels(r.Context(), change)
 		ownerResult(w, map[string]int{"updated": n}, err)
 	})
+	r.Post("/channels/apps", func(w http.ResponseWriter, r *http.Request) {
+		var change ChannelAppChange
+		if !ownerBody(w, r, &change) {
+			return
+		}
+		n, err := s.SetChannelsApp(r.Context(), change)
+		ownerResult(w, map[string]int{"updated": n}, err)
+	})
 	r.Get("/channels", func(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Channels(r.Context())
 		if e == nil {

@@ -600,6 +600,10 @@ export function GuideGrid({
         </div>
       </div>
 
+      {!lineup && !full ? (
+        <OnNowStrip channels={loadedChannels} guide={guide} now={now} onSelect={onSelect} compact />
+      ) : null}
+
       <div
         ref={scroller}
         role="grid"
@@ -1095,11 +1099,13 @@ export function OnNowStrip({
   guide,
   now,
   onSelect,
+  compact = false,
 }: {
   channels: Channel[];
   guide: Map<string, Programme[]>;
   now: number;
   onSelect: (id: string) => void;
+  compact?: boolean;
 }) {
   const picks = useMemo(() => {
     const live = channels
@@ -1121,7 +1127,8 @@ export function OnNowStrip({
       })
       .slice(0, 10);
   }, [channels, guide, now]);
-  if (!picks.length)
+  if (!picks.length) {
+    if (compact) return null;
     return (
       <section
         aria-label={t("On now")}
@@ -1150,6 +1157,85 @@ export function OnNowStrip({
         </div>
       </section>
     );
+  }
+  if (compact) {
+    return (
+      <section
+        aria-label={t("On now")}
+        className="flex shrink-0 items-center gap-2.5 border-b border-border bg-bg-subtle/60 px-3 py-1.5 sm:px-4"
+      >
+        <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
+          <span className="relative flex size-2">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-danger/60" />
+            <span className="relative inline-flex size-2 rounded-full bg-danger" />
+          </span>
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+            {t("On now")}
+          </h2>
+        </div>
+        <div className="app-scroll flex min-w-0 flex-1 gap-2 overflow-x-auto py-0.5 [scrollbar-gutter:auto]">
+          {picks.map(({ c, p }) => {
+            const hue = hueOf(c.id);
+            const hasArt = Boolean(p.item.thumb || c.logo);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onSelect(c.id)}
+                aria-label={t("{channel} on now: {title}", {
+                  channel: c.name,
+                  title: p.item.title,
+                })}
+                className="group relative flex h-14 w-52 shrink-0 overflow-hidden rounded-lg border border-border text-left shadow-xs transition-all hover:-translate-y-0.5 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                style={{
+                  background: `linear-gradient(120deg, hsl(${hue} 60% 22%), hsl(${(hue + 50) % 360} 55% 12%))`,
+                }}
+              >
+                {hasArt ? (
+                  <Artwork
+                    src={programmeArtwork(p.item.thumb) || c.logo}
+                    alt=""
+                    title=""
+                    className="absolute inset-y-0 right-0 w-16 opacity-85 [mask-image:linear-gradient(to_left,black_35%,transparent)]"
+                    imgClassName="object-cover"
+                  />
+                ) : null}
+                <span className="relative flex min-w-0 flex-1 flex-col justify-between px-2.5 py-1.5">
+                  <span className="flex min-w-0 items-center gap-1.5 pr-10">
+                    <ChannelLogo
+                      name={c.name}
+                      logo={c.logo}
+                      seed={c.id}
+                      channelId={c.id}
+                      size={16}
+                      className="rounded"
+                    />
+                    <span className="truncate text-[10px] font-medium text-white/80">
+                      {c.number} · {c.name}
+                    </span>
+                  </span>
+                  <span className="flex min-w-0 items-baseline justify-between gap-2 pr-8">
+                    <span className="min-w-0 truncate text-xs font-semibold text-white">
+                      {p.item.title}
+                    </span>
+                    <span className="shrink-0 text-[10px] tabular-nums text-white/70">
+                      {clock(p.end)}
+                    </span>
+                  </span>
+                </span>
+                <span className="absolute inset-x-0 bottom-0 h-0.5 bg-white/15">
+                  <span
+                    className="block h-full bg-white/80"
+                    style={{ width: `${progress(p, now) * 100}%` }}
+                  />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    );
+  }
   return (
     <section aria-label={t("On now")} className="flex min-w-0 flex-1 items-center bg-surface px-2">
       <div className="sr-only">

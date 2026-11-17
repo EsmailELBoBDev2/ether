@@ -554,59 +554,87 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     return saved;
   };
 
-  // Dedicated large editor fixture: ordinary guide/player mocks stay small.
-  const guideChannels = Array.from({ length: 10000 }, (_, i) => ({
-    id: `guide-${i}`,
-    name: i === 41 ? "World News" : `Channel ${i + 1}`,
-    number: String(i + 1),
-    sourceId: "large-lineup",
-    group: `${["News", "Sports", "Movies", "Kids", "Music"][Math.floor(i / 40) % 5]} ${Math.floor(i / 40) + 1}`,
-  }));
-  const guideGroups = [
-    ...new Map(
-      guideChannels.map((c) => [
-        c.group,
-        { sourceId: c.sourceId, name: c.group, sourceName: "10,000 channel lineup", count: 40 },
-      ]),
-    ).values(),
-  ];
-  let ownerGuides = [
+  let ownerGroups = [
     {
       id: "news",
-      name: "News and current affairs",
-      groups: guideGroups.filter((g) => g.name.startsWith("News")),
+      name: "News",
+      groups: [{ sourceId: "demo-fast", name: "News" }],
       channels: [] as string[],
-      hidden: false,
     },
     {
       id: "sports",
       name: "Sports",
-      groups: guideGroups.filter((g) => g.name.startsWith("Sports")),
+      groups: [{ sourceId: "demo-fast", name: "Sports" }],
       channels: [] as string[],
-      hidden: false,
     },
     {
       id: "family",
-      name: "Family favourites",
-      groups: guideGroups.filter((g) => g.name.startsWith("Kids")),
-      channels: ["guide-41"],
-      hidden: false,
+      name: "Kids & Family",
+      groups: [{ sourceId: "demo-fast", name: "Kids" }],
+      channels: ["v-family"],
     },
     {
       id: "movies",
       name: "Movies",
-      groups: guideGroups.filter((g) => g.name.startsWith("Movies")),
-      channels: [] as string[],
-      hidden: true,
+      groups: [{ sourceId: "demo-fast", name: "Movies" }],
+      channels: ["v-movie-night", "v-80s", "v-horror"],
     },
   ];
   function handle(method: string, seg: string[], q: URLSearchParams, body: unknown) {
     if (seg[0] !== "livetv") return null;
     const route = `${method} /${seg.slice(1).join("/")}`;
     const now = Date.now();
-    if (route === "PUT /guides") {
-      ownerGuides = body as typeof ownerGuides;
-      return { body: { guides: ownerGuides, groups: guideGroups, channels: guideChannels } };
+    if (route === "GET /groups") return { body: ownerGroups };
+    if (route === "PUT /groups") {
+      ownerGroups = Array.isArray(body) ? (body as typeof ownerGroups) : ownerGroups;
+      return { body: ownerGroups };
+    }
+    if (route === "POST /channels/apps") {
+      const b = (body ?? {}) as {
+        app: string;
+        show: boolean;
+        channels?: string[];
+        source?: string;
+        group?: string;
+        ownerGroup?: string;
+      };
+      let targets: Channel[] = [];
+      if (Array.isArray(b.channels)) {
+        const ids = new Set(b.channels);
+        targets = channels.filter((c) => ids.has(c.id));
+      } else if (b.ownerGroup) {
+        const g = ownerGroups.find((x) => x.id === b.ownerGroup);
+        if (!g) return { status: 404, body: { error: { code: "livetv", message: "not found" } } };
+        const cset = new Set(g.channels ?? []);
+        const pset = new Set((g.groups ?? []).map((p) => `${p.sourceId}\u0000${p.name}`));
+        targets = channels.filter(
+          (c) =>
+            cset.has(c.id) ||
+            (c.kind !== "virtual" && pset.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`)),
+        );
+      } else if (b.source !== undefined) {
+        targets = channels.filter((c) => {
+          if (b.source === "virtual") return c.kind === "virtual";
+          if (c.kind === "virtual" || (c.sourceId ?? "") !== b.source) return false;
+          if (b.group !== undefined && (c.group ?? "") !== b.group) return false;
+          return true;
+        });
+      }
+      let updated = 0;
+      for (const c of targets) {
+        const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
+        const had = hidden.has(b.app);
+        if (b.show && had) {
+          hidden.delete(b.app);
+          c.hiddenApps = hidden.size ? [...hidden].sort() : undefined;
+          updated++;
+        } else if (!b.show && !had) {
+          hidden.add(b.app);
+          c.hiddenApps = [...hidden].sort();
+          updated++;
+        }
+      }
+      return { body: { updated } };
     }
     if (route === "GET /search") {
       const query = (q.get("q") ?? "").toLowerCase();
@@ -632,8 +660,6 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
         },
       };
     }
-    if (route === "GET /guides")
-      return { body: { guides: ownerGuides, groups: guideGroups, channels: guideChannels } };
     if (route === "GET /usage")
       return { body: { sessions: 0, viewers: 0, watching: [], sources: [] } };
     if (method === "GET" && seg[1] === "channels" && seg[3] === "timeline") {

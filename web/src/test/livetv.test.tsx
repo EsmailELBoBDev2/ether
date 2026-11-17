@@ -200,7 +200,7 @@ describe("Live TV studio", () => {
       })),
     );
     renderLiveTV();
-    const lineup = await screen.findByRole("grid", { name: "Programme guide" });
+    const lineup = await screen.findByRole("region", { name: "Channels" });
     await within(lineup).findByRole("button", { name: "1 Station 1" }, WAIT);
     fireEvent.change(screen.getByRole("searchbox", { name: "Search channels" }), {
       target: { value: "Weather" },
@@ -672,7 +672,7 @@ describe("Live TV studio", () => {
     fireEvent.click(screen.getByRole("button", { name: /Create channel/ }));
     await waitFor(() => expect(sent(calls, "POST", /\/livetv\/channels$/)).toHaveLength(1));
     expect(await screen.findByLabelText("Name")).toHaveValue("Movie night");
-    const lineup = screen.getByRole("grid", { name: "Programme guide" });
+    const lineup = screen.getByRole("region", { name: "Channels" });
     fireEvent.click(await within(lineup).findByRole("button", { name: "2 News 24" }));
     expect(await screen.findByLabelText("Name")).toHaveValue("News 24");
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
@@ -1087,7 +1087,7 @@ describe("Live TV access on the viewer profile", () => {
   );
 });
 
-it("bulk selects matching channels beyond the loaded page without fetching full rows", async () => {
+it("bulk selects matching channels beyond the virtualised viewport without fetching full rows", async () => {
   const channels = Array.from({ length: 450 }, (_, i) =>
     iptv(`paged-${i}`, {
       number: String(i + 1),
@@ -1098,6 +1098,9 @@ it("bulk selects matching channels beyond the loaded page without fetching full 
   const calls = backend(channels);
   renderLiveTV();
   await screen.findByRole("button", { name: "1 Paged 1" }, WAIT);
+  expect(screen.getByText(/1 disabled/)).toBeInTheDocument();
+  const statusBar = screen.getByRole("radiogroup", { name: "Status" });
+  fireEvent.click(within(statusBar).getByRole("radio", { name: /^Enabled/ }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Select all matches" }));
   fireEvent.click(await screen.findByRole("button", { name: /^Favourite$/ }));
   await waitFor(() => expect(sent(calls, "PATCH", /\/livetv\/channels\/bulk$/)).toHaveLength(1));
@@ -1107,41 +1110,90 @@ it("bulk selects matching channels beyond the loaded page without fetching full 
   expect(edit.ids).not.toContain("paged-449");
   expect(edit.favorite).toBe(true);
   expect(sent(calls, "GET", /\/livetv\/channels$/)).toHaveLength(0);
-  expect(
-    calls
-      .filter((c) => c.url.includes("/livetv/channels/page"))
-      .every((c) => new URL(c.url, "http://local").searchParams.get("offset") === "0"),
-  ).toBe(true);
 });
 
-it("keeps placeholder rows aligned while a deep page is loading", async () => {
-  const channels = Array.from({ length: 450 }, (_, i) =>
-    iptv(`sparse-${i}`, { number: String(i + 1), name: `Sparse ${i + 1}` }),
-  );
-  let release: (() => void) | undefined;
-  backend(channels, (url) => {
-    if (
-      url.includes("/livetv/channels/page") &&
-      new URL(url, "http://local").searchParams.get("offset") === "200"
-    )
-      return new Promise((resolve) => {
-        release = () => resolve(channelPage(channels, url));
-      });
+it("organises per-app visibility, status filters and header guide-mapping link without a Guides tab", async () => {
+  const channels = [
+    iptv("uk1", { number: "101", name: "BBC One", group: "UK", guideId: "bbc1", hiddenApps: [] }),
+    iptv("uk2", { number: "102", name: "ITV1", group: "UK", guideId: "", hiddenApps: ["plex"] }),
+    iptv("sp1", {
+      number: "201",
+      name: "Sky Sports",
+      group: "Sports",
+      enabled: false,
+      hiddenApps: [],
+    }),
+  ];
+  const calls = backend(channels, (url, init) => {
+    if (url.endsWith("/livetv/sources") && (init?.method ?? "GET") === "GET") {
+      return [
+        { id: "src1", name: "Strong IPTV", hasPlaylist: true, updatedAt: "2026-10-19T00:00:00Z" },
+      ];
+    }
+    if (url.endsWith("/livetv/guide/coverage")) {
+      return [
+        { channelId: "uk1", programmes: 24 },
+        { channelId: "uk2", programmes: 0 },
+        { channelId: "sp1", programmes: 0 },
+      ];
+    }
+    if (url.includes("/livetv/guide?")) {
+      const now = Date.now();
+      return [
+        {
+          id: "prog-uk1",
+          channelId: "uk1",
+          start: new Date(now - 600_000).toISOString(),
+          end: new Date(now + 1_800_000).toISOString(),
+          item: { key: 1, durationMs: 2_400_000, title: "Six O'Clock News" },
+        },
+      ];
+    }
+    if (url.endsWith("/livetv/channels/apps") && init?.method === "POST") {
+      return { updated: 1 };
+    }
     return undefined;
   });
   renderLiveTV();
-  await screen.findByRole("button", { name: "1 Sparse 1" }, WAIT);
-  const grid = screen.getByRole("grid", { name: "Programme guide" });
-  fireEvent.scroll(grid, { target: { scrollTop: 21000 } });
-  await waitFor(() =>
-    expect(grid.querySelectorAll('[role="row"][aria-busy="true"]').length).toBeGreaterThan(0),
+  const list = await screen.findByRole("region", { name: "Channels" }, WAIT);
+  await within(list).findByRole("button", { name: "101 BBC One" }, WAIT);
+
+  const topTabs = screen.getByRole("tablist", { name: "Live TV" });
+  expect(within(topTabs).queryByRole("tab", { name: "Guides" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "On now" })).toBeNull();
+  expect(within(topTabs).getByRole("tab", { name: "Channels" })).toHaveAttribute(
+    "aria-selected",
+    "true",
   );
-  await waitFor(() => expect(release).toBeDefined());
-  release!();
-  await within(grid).findByRole("button", { name: "351 Sparse 351" }, WAIT);
-  await waitFor(() =>
-    expect(grid.querySelectorAll('[role="row"][aria-busy="true"]').length).toBe(0),
-  );
+  expect(within(topTabs).getByRole("tab", { name: "Guide" })).toBeInTheDocument();
+
+  const showingFor = screen.getByRole("toolbar", { name: "Showing for" });
+  expect(within(showingFor).getByRole("button", { name: /Vela/ })).toBeInTheDocument();
+  fireEvent.click(within(showingFor).getByRole("button", { name: /^Plex/ }));
+
+  const statusBar = screen.getByRole("radiogroup", { name: "Status" });
+  fireEvent.click(within(statusBar).getByRole("radio", { name: /^Hidden from Plex/ }));
+  expect(within(list).getByRole("button", { name: "102 ITV1" })).toBeInTheDocument();
+  expect(within(list).queryByRole("button", { name: "101 BBC One" })).toBeNull();
+
+  const tree = screen.getByRole("navigation", { name: "Channel groups" });
+  fireEvent.click(within(tree).getByRole("checkbox", { name: "Show UK in Plex" }));
+  await waitFor(() => expect(sent(calls, "POST", /\/livetv\/channels\/apps$/)).toHaveLength(1));
+  expect(body(sent(calls, "POST", /\/livetv\/channels\/apps$/)[0])).toEqual({
+    app: "plex",
+    show: true,
+    source: "src1",
+    group: "UK",
+  });
+
+  fireEvent.click(within(topTabs).getByRole("tab", { name: "Guide" }));
+  const onNow = await screen.findByRole("region", { name: "On now" }, WAIT);
+  expect(within(onNow).getByRole("button", { name: /BBC One on now:/ })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("link", { name: "1 needs a guide" }));
+  expect(
+    await screen.findByRole("button", { name: /Map guide for ITV1/ }, WAIT),
+  ).toBeInTheDocument();
 });
 
 it("uses saved source state when a different cluster node has no import progress", async () => {

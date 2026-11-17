@@ -1,6 +1,7 @@
 import type { ScreenStyle } from "./onair/ScreenPicker";
 import { personalRecipe } from "./onair/defaults";
 import type { PersonalRecipe, ChannelLook, ClockSlot } from "./onair/model";
+import type { LiveApp } from "./ChannelApps";
 import { getLocale, localized, t, tn } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { unit } from "../../lib/format";
@@ -178,6 +179,31 @@ export type ChannelPage = {
   coverage: Record<string, boolean>;
   nextNumber: string;
 };
+/** A provider group reference inside one of the owner's groups. */
+export type ProviderGroupRef = {
+  sourceId: string;
+  name: string;
+  sourceName?: string;
+  count?: number;
+};
+/** One of the owner's ordered channel groups ("Your groups"). */
+export type OwnerGroup = {
+  id: string;
+  name: string;
+  groups: ProviderGroupRef[];
+  channels?: string[];
+  all?: boolean;
+  hidden?: boolean;
+  unratedRating?: string;
+  apps?: Record<string, boolean>;
+  hiddenApps?: string[];
+};
+/** Request payload for POST /livetv/channels/apps. */
+export type ChannelAppChange =
+  | { app: LiveApp; show: boolean; channels: string[] }
+  | { app: LiveApp; show: boolean; source: string; group?: string }
+  | { app: LiveApp; show: boolean; ownerGroup: string };
+
 export type StreamSource = {
   id: string;
   name: string;
@@ -417,6 +443,72 @@ const json = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
+function unpackOwnerGroups(raw: unknown): OwnerGroup[] {
+  if (Array.isArray(raw)) return raw as OwnerGroup[];
+  if (raw && typeof raw === "object" && "groups" in raw) {
+    const groups = (raw as { groups?: unknown }).groups;
+    if (Array.isArray(groups)) return groups as OwnerGroup[];
+  }
+  return [];
+}
+
+/**
+ * Effective visibility of a channel in one Live TV app, combining per-channel
+ * hiddenApps with any per-group app rules from the channel's owner groups.
+ */
+export function channelVisibleInApp(
+  c: Pick<ChannelSummary, "hiddenApps">,
+  app: LiveApp,
+  memberGroups?: readonly OwnerGroup[],
+): boolean {
+  if (c.hiddenApps?.includes(app)) return false;
+  if (memberGroups?.length) {
+    for (const g of memberGroups) {
+      if (g.hiddenApps?.includes(app) || g.apps?.[app] === false) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Compresses a channel membership set into whole provider groups where every
+ * channel of that provider group is selected, keeping individual channel IDs
+ * for partial selections so future provider additions join whole groups.
+ */
+export function compressOwnerGroupMembers(
+  base: OwnerGroup,
+  memberIds: ReadonlySet<string>,
+  allChannels: readonly ChannelSummary[],
+): OwnerGroup {
+  const byProviderGroup = new Map<string, { sourceId: string; name: string; ids: string[] }>();
+  for (const c of allChannels) {
+    if (c.kind === "virtual") continue;
+    const sourceId = c.sourceId ?? "";
+    const name = c.group ?? "";
+    const k = `${sourceId}\u0000${name}`;
+    let entry = byProviderGroup.get(k);
+    if (!entry) {
+      entry = { sourceId, name, ids: [] };
+      byProviderGroup.set(k, entry);
+    }
+    entry.ids.push(c.id);
+  }
+  const remaining = new Set(memberIds);
+  const groups: ProviderGroupRef[] = [];
+  for (const entry of byProviderGroup.values()) {
+    if (entry.ids.length > 0 && entry.ids.every((id) => remaining.has(id))) {
+      groups.push({ sourceId: entry.sourceId, name: entry.name });
+      for (const id of entry.ids) remaining.delete(id);
+    }
+  }
+  return {
+    ...base,
+    all: false,
+    groups,
+    channels: [...remaining],
+  };
+}
+
 /**
  * One viewer's Live TV access: the only channel allow-list. The viewer's page
  * and each channel's Viewers tab both edit it. Restricted viewers see only
@@ -509,6 +601,15 @@ export const tv = {
     apiFetch<Channel>(`/livetv/channels/${enc(id)}`, { signal }),
   channelSummaries: (signal?: AbortSignal) =>
     apiFetch<ChannelSummary[]>("/livetv/channels/summary", { signal }),
+  groups: async (signal?: AbortSignal): Promise<OwnerGroup[]> =>
+    unpackOwnerGroups(await apiFetch<unknown>("/livetv/groups", { signal })),
+  saveGroups: async (groups: OwnerGroup[]): Promise<OwnerGroup[]> => {
+    const res = await apiFetch<unknown>("/livetv/groups", json("PUT", groups));
+    const saved = unpackOwnerGroups(res);
+    return saved.length || groups.length === 0 ? saved : groups;
+  },
+  setChannelsApp: (change: ChannelAppChange) =>
+    apiFetch<{ updated: number }>("/livetv/channels/apps", json("POST", change)),
   sources: (signal?: AbortSignal) => apiFetch<Source[]>("/livetv/sources", { signal }),
   guide: (from: Date, until: Date, channels?: string[], signal?: AbortSignal) => {
     const p = new URLSearchParams({
@@ -846,7 +947,7 @@ export function byNumber(a: Channel, b: Channel): number {
  * Channels in lineup order (see byNumber). Each number is parsed once rather
  * than per comparison, which matters for provider lineups of 16,000.
  */
-export function sortByNumber(channels: Channel[]): Channel[] {
+export function sortByNumber<C extends Pick<Channel, "number" | "name">>(channels: C[]): C[] {
   const keyed = channels.map((c) => ({ c, n: parseFloat(c.number) || 0 }));
   keyed.sort(
     (a, b) =>
@@ -866,7 +967,7 @@ export function groupBy<T>(items: T[], key: (t: T) => string): Map<string, T[]> 
   return out;
 }
 
-export function nextNumber(channels: Channel[]): string {
+export function nextNumber(channels: Pick<Channel, "number">[]): string {
   const max = channels.reduce((n, c) => Math.max(n, Math.floor(parseFloat(c.number) || 0)), 0);
   return String(max + 1);
 }

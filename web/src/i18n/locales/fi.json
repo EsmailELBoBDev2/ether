@@ -905,7 +905,6 @@
   "m_031743be409e25": "Ladataan esikatselua",
   "m_0317a9912b4274": "Kuvaile se -kokoelmat, teemoitetut etusivun rivit, luonnollisen kielen haku ja kertaukset.",
   "m_031e5b1c1a2e74": "Suodata nimikkeen tai julkaisun mukaan…",
-  "m_031f7d1b37fc4b": "Lisää jokaisen mukaan otetun kanavaryhmän omaksi riviksi Plexin Nyt TV:ssä -näkymään.",
   "m_0320d1c6a83c9a": "Aika (tuntia)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Katsotut tunnit päivittäin",
@@ -6799,7 +6798,6 @@
   "m_17974440a17035": "Hakee artikkelit suoraan ensisijaisilta ja vara-NNTP-palveluilta.",
   "m_1798257d73583a": "Kielet",
   "m_1798a2aafbb24a": "Plex-rivi: {title}",
-  "m_179910abc86aaf": "Näytä kanavaryhmät Nyt TV:ssä -näkymässä",
   "m_179abc2f697e0c": "Jokaisen nimikkeen alussa toistetaan yksi pre-roll, joka valitaan satunnaisesti sopivien joukosta.",
   "m_179bf042c3e16c": {
     "one": "Kirjoitetaan {count} odottava päivitys",

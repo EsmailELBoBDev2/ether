@@ -62,7 +62,7 @@ func init() {
  `)
 }
 
-// SearchLiveTV searches identities once, regardless of guide overlap. Only a
+// SearchLiveTV searches identities once, regardless of group overlap. Only a
 // bounded candidate window is decoded and checked by the normal viewer policy.
 func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query string, limit int) (frontend.LiveSearchResults, error) {
 	out := frontend.LiveSearchResults{Channels: []frontend.LiveTVChannel{}, Programmes: []frontend.LiveTVProgramme{}}
@@ -208,8 +208,9 @@ func (h liveTVHost) SearchLiveTV(ctx context.Context, viewer *core.Viewer, query
 	if re != nil {
 		return out, re
 	}
+	ctx = h.s.withOwnerGroupIndex(ctx)
 	unique := uniqueIDs(append([]string(nil), ids...))
-	visible, err := h.s.searchVisibleGuideIDs(ctx, unique)
+	visible, err := h.s.searchVisibleGroupIDs(ctx, unique)
 	if err != nil {
 		return out, err
 	}
@@ -384,6 +385,7 @@ func (s *Service) ownerSearchRoute(w http.ResponseWriter, r *http.Request) {
 // Search consumes only existing schedules. In particular a name hit must not
 // prepare an unwatched virtual channel as a side effect of policy checking.
 func (s *Service) searchAllowedChannels(ctx context.Context, viewer *core.Viewer, ids []string) ([]Channel, error) {
+	ctx = s.withOwnerGroupIndex(ctx)
 	ctx, policy, err := s.withPolicy(ctx, viewer)
 	if err != nil {
 		return nil, err

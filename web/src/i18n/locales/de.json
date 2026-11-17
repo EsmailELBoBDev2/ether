@@ -905,7 +905,6 @@
   "m_031743be409e25": "Vorschau wird geladen",
   "m_0317a9912b4274": "„Beschreib es“-Sammlungen, thematische Startseitenreihen, Suche in natürlicher Sprache und Rückblicke.",
   "m_031e5b1c1a2e74": "Nach Titel oder Release filtern…",
-  "m_031f7d1b37fc4b": "Fügt jede einbezogene Sendergruppe als eigene Reihe unter Läuft gerade in Plex hinzu.",
   "m_0320d1c6a83c9a": "Zeit (Stunden)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Angesehene Stunden pro Tag",
@@ -6799,7 +6798,6 @@
   "m_17974440a17035": "Ruft Artikel direkt von primären und Ersatz-NNTP-Anbietern ab.",
   "m_1798257d73583a": "Sprachen",
   "m_1798a2aafbb24a": "Plex-Reihe: {title}",
-  "m_179910abc86aaf": "Sendergruppen unter Läuft gerade anzeigen",
   "m_179abc2f697e0c": "Pro Titel läuft ein Pre-Roll, zufällig ausgewählt aus den passenden.",
   "m_179bf042c3e16c": {
     "one": "{count} zurückgehaltene Änderung wird geschrieben",

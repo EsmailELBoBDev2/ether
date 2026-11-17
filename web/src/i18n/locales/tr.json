@@ -905,7 +905,6 @@
   "m_031743be409e25": "Önizleme yükleniyor",
   "m_0317a9912b4274": "Tarif et koleksiyonları, temalı Ana Sayfa satırları, doğal dil araması ve özetler.",
   "m_031e5b1c1a2e74": "Başlığa veya sürüme göre filtrele…",
-  "m_031f7d1b37fc4b": "Dahil edilen her kanal grubunu Plex’teki Yayında bölümüne bir satır olarak ekler.",
   "m_0320d1c6a83c9a": "Süre (saat)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Günlere göre izlenen saatler",
@@ -6799,7 +6798,6 @@
   "m_17974440a17035": "Makaleleri birincil ve yedek NNTP sağlayıcılarından doğrudan alır.",
   "m_1798257d73583a": "Diller",
   "m_1798a2aafbb24a": "Plex satırı: {title}",
-  "m_179910abc86aaf": "Kanal gruplarını Yayında bölümünde göster",
   "m_179abc2f697e0c": "Her içerikten önce, eşleşenler arasından rastgele seçilen bir pre-roll oynatılır.",
   "m_179bf042c3e16c": {
     "one": "Bekletilen {count} güncelleme yazılıyor",

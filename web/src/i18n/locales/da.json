@@ -905,7 +905,6 @@
   "m_031743be409e25": "Indlæser forhåndsvisning",
   "m_0317a9912b4274": "Beskriv-den-samlinger, tematiske Hjem-rækker, søgning på naturligt sprog og resuméer.",
   "m_031e5b1c1a2e74": "Filtrer efter titel eller udgivelse…",
-  "m_031f7d1b37fc4b": "Tilføjer hver inkluderet kanalgruppe som en række under På tv i Plex.",
   "m_0320d1c6a83c9a": "Tid (timer)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Sete timer pr. dag",
@@ -6799,7 +6798,6 @@
   "m_17974440a17035": "Henter artikler direkte fra primære NNTP-leverandører og reserveleverandører.",
   "m_1798257d73583a": "Sprog",
   "m_1798a2aafbb24a": "Plex-række: {title}",
-  "m_179910abc86aaf": "Vis kanalgrupper i På tv",
   "m_179abc2f697e0c": "Der afspilles én pre-roll pr. titel, valgt tilfældigt blandt dem, der passer.",
   "m_179bf042c3e16c": {
     "one": "Skriver {count} tilbageholdt opdatering",

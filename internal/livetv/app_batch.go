@@ -61,18 +61,17 @@ func (s *Service) SetChannelsApp(ctx context.Context, change ChannelAppChange) (
 		}
 	}
 
-	var ownerGroupIDs []string
 	if change.OwnerGroup != "" {
-		ids, handled, count, err := s.applyOwnerGroupAppRule(ctx, change.OwnerGroup, change.App, *change.Show)
+		_, handled, count, err := s.applyOwnerGroupAppRule(ctx, change.OwnerGroup, change.App, *change.Show)
 		if err != nil {
 			return 0, err
 		}
 		if handled {
 			return count, nil
 		}
-		ownerGroupIDs = ids
 	}
 
+	groupIdx, _ := s.cachedOwnerGroupIndex(ctx)
 	d := store.DialectOf(s.o.DB)
 	tx, err := s.o.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -97,13 +96,6 @@ func (s *Service) SetChannelsApp(ctx context.Context, change ChannelAppChange) (
 		if err != nil {
 			return 0, err
 		}
-	case change.OwnerGroup != "":
-		ids = ownerGroupIDs
-		if len(ids) > 0 {
-			if err := s.lockChannelBatchSources(ctx, tx, ids); err != nil {
-				return 0, err
-			}
-		}
 	}
 
 	if len(ids) > maxAppBatchChannels {
@@ -111,7 +103,7 @@ func (s *Service) SetChannelsApp(ctx context.Context, change ChannelAppChange) (
 	}
 
 	if len(ids) > 0 {
-		current, err := channelHiddenApps(ctx, d, tx, ids)
+		current, err := channelAppOverrides(ctx, d, tx, ids)
 		if err != nil {
 			return 0, err
 		}
@@ -124,16 +116,24 @@ func (s *Service) SetChannelsApp(ctx context.Context, change ChannelAppChange) (
 			if !ok {
 				continue
 			}
-			var next []string
+			var nextHidden, nextShown []string
 			if *change.Show {
-				next = slices.DeleteFunc(slices.Clone(cur), func(app string) bool { return app == change.App })
+				nextHidden = slices.DeleteFunc(slices.Clone(cur.hidden), func(app string) bool { return app == change.App })
+				nextShown = slices.DeleteFunc(slices.Clone(cur.shown), func(app string) bool { return app == change.App })
+				if groupShow, hasRule := groupIdx.groupAppRule(cur.sourceID, cur.group, id, change.App); hasRule && !groupShow {
+					nextShown, _ = normalizeHiddenApps(append(nextShown, change.App))
+				}
 			} else {
-				next, _ = normalizeHiddenApps(append(slices.Clone(cur), change.App))
+				nextHidden, _ = normalizeHiddenApps(append(slices.Clone(cur.hidden), change.App))
+				nextShown = slices.DeleteFunc(slices.Clone(cur.shown), func(app string) bool { return app == change.App })
 			}
-			if slices.Equal(cur, next) {
+			if slices.Equal(cur.hidden, nextHidden) && slices.Equal(cur.shown, nextShown) {
 				continue
 			}
-			payload, err := json.Marshal(map[string]any{"hiddenApps": next})
+			payload, err := json.Marshal(map[string]any{
+				"hiddenApps": nextHidden,
+				"shownApps":  nextShown,
+			})
 			if err != nil {
 				return 0, err
 			}
@@ -190,29 +190,38 @@ func selectSourceGroupChannelIDs(ctx context.Context, d store.Dialect, tx *sql.T
 	return ids, nil
 }
 
-// applyOwnerGroupAppRule resolves an owner group's member channels for a bulk
-// app toggle. When group-level app rules are present, routing the group rule
-// update here keeps SetChannelsApp's contract unchanged.
-func (s *Service) applyOwnerGroupAppRule(ctx context.Context, groupID, _ string, _ bool) (ids []string, handled bool, updated int, err error) {
-	guides, err := s.OwnerGuides(ctx)
+// applyOwnerGroupAppRule persists a group-level app rule on OwnerGroup.Apps so
+// channels imported on later provider refreshes inherit it automatically
+// (Decision A), and clears any per-channel overrides for that app on current
+// members in the same transaction.
+func (s *Service) applyOwnerGroupAppRule(ctx context.Context, groupID, app string, show bool) (ids []string, handled bool, updated int, err error) {
+	gs, err := s.OwnerGroups(ctx)
 	if err != nil {
 		return nil, false, 0, err
 	}
-	var chosen *OwnerGuide
-	for i := range guides {
-		if guides[i].ID == groupID {
-			chosen = &guides[i]
-			break
-		}
-	}
-	if chosen == nil {
+	idx := slices.IndexFunc(gs, func(g OwnerGroup) bool { return g.ID == groupID })
+	if idx < 0 {
 		return nil, false, 0, core.ErrNotFound
 	}
+	chosen := &gs[idx]
+	if chosen.Apps == nil {
+		chosen.Apps = map[string]bool{}
+	}
+	chosen.Apps[app] = show
+	normalized, err := validateAndNormalizeOwnerGroups(gs)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	rawGroups, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, false, 0, err
+	}
+
 	summaries, err := s.ChannelSummaries(ctx)
 	if err != nil {
 		return nil, false, 0, err
 	}
-	groupSet := make(map[GuideGroup]bool, len(chosen.Groups))
+	groupSet := make(map[OwnerGroupSource]bool, len(chosen.Groups))
 	for _, g := range chosen.Groups {
 		groupSet[g] = true
 	}
@@ -221,11 +230,71 @@ func (s *Service) applyOwnerGroupAppRule(ctx context.Context, groupID, _ string,
 		explicit[id] = true
 	}
 	for _, c := range summaries {
-		if chosen.All || groupSet[GuideGroup{SourceID: c.SourceID, Name: c.Group}] || explicit[c.ID] {
+		if chosen.All || groupSet[OwnerGroupSource{SourceID: c.SourceID, Name: c.Group}] || explicit[c.ID] {
 			ids = append(ids, c.ID)
 		}
 	}
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
-	return ids, false, 0, nil
+	if len(ids) > maxAppBatchChannels {
+		return nil, false, 0, fmt.Errorf("target exceeds %d channels", maxAppBatchChannels)
+	}
+
+	d := store.DialectOf(s.o.DB)
+	tx, err := s.o.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, 0, err
+	}
+	defer tx.Rollback()
+
+	if len(ids) > 0 {
+		if err := s.lockChannelBatchSources(ctx, tx, ids); err != nil {
+			return nil, false, 0, err
+		}
+		current, err := channelAppOverrides(ctx, d, tx, ids)
+		if err != nil {
+			return nil, false, 0, err
+		}
+		patches := map[string][]string{}
+		for _, id := range ids {
+			cur, ok := current[id]
+			if !ok {
+				continue
+			}
+			nextHidden := slices.DeleteFunc(slices.Clone(cur.hidden), func(a string) bool { return a == app })
+			nextShown := slices.DeleteFunc(slices.Clone(cur.shown), func(a string) bool { return a == app })
+			if slices.Equal(cur.hidden, nextHidden) && slices.Equal(cur.shown, nextShown) {
+				continue
+			}
+			payload, err := json.Marshal(map[string]any{
+				"hiddenApps": nextHidden,
+				"shownApps":  nextShown,
+			})
+			if err != nil {
+				return nil, false, 0, err
+			}
+			patches[string(payload)] = append(patches[string(payload)], id)
+		}
+		expression := "json_patch(data,?)"
+		if d == store.Postgres {
+			expression = "(data::jsonb || ?::jsonb)::text"
+		}
+		for payload, batch := range patches {
+			if err := patchChannels(ctx, tx, expression, payload, batch); err != nil {
+				return nil, false, 0, err
+			}
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO livetv_owner_groups(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, rawGroups); err != nil {
+		return nil, false, 0, err
+	}
+	if err := saveGroupVisibility(ctx, tx, normalized); err != nil {
+		return nil, false, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, 0, err
+	}
+	s.bumpLineup()
+	return ids, true, len(ids), nil
 }

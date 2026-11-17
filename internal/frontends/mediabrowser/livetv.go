@@ -72,7 +72,7 @@ func (i *instance) channelDTO(r *http.Request, token string, ch frontend.LiveCha
 		return nil, false
 	}
 	tags := []string{}
-	for _, g := range ch.Guides {
+	for _, g := range ch.Groups {
 		tags = append(tags, g.Name)
 	}
 	item := map[string]any{

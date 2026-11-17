@@ -1,4 +1,5 @@
 import { scheduleFixture } from "./schedule-timeline";
+import type { OwnerGroup } from "../pages/livetv/model";
 import type { ChannelLook } from "../pages/livetv/onair/model";
 /**
  * Live TV for the mock backend: a few virtual channels built from the fake
@@ -554,7 +555,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     return saved;
   };
 
-  let ownerGroups = [
+  let ownerGroups: OwnerGroup[] = [
     {
       id: "news",
       name: "News",
@@ -605,6 +606,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       } else if (b.ownerGroup) {
         const g = ownerGroups.find((x) => x.id === b.ownerGroup);
         if (!g) return { status: 404, body: { error: { code: "livetv", message: "not found" } } };
+        g.apps = { ...(g.apps ?? {}), [b.app]: b.show };
         const cset = new Set(g.channels ?? []);
         const pset = new Set((g.groups ?? []).map((p) => `${p.sourceId}\u0000${p.name}`));
         targets = channels.filter(
@@ -612,6 +614,17 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
             cset.has(c.id) ||
             (c.kind !== "virtual" && pset.has(`${c.sourceId ?? ""}\u0000${c.group ?? ""}`)),
         );
+        let updated = 0;
+        for (const c of targets) {
+          const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
+          const shown = new Set<string>((c.shownApps as string[] | undefined) ?? []);
+          if (hidden.delete(b.app) || shown.delete(b.app)) {
+            c.hiddenApps = hidden.size ? [...hidden].sort() : undefined;
+            c.shownApps = shown.size ? [...shown].sort() : undefined;
+            updated++;
+          }
+        }
+        return { body: { updated } };
       } else if (b.source !== undefined) {
         targets = channels.filter((c) => {
           if (b.source === "virtual") return c.kind === "virtual";
@@ -623,15 +636,21 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       let updated = 0;
       for (const c of targets) {
         const hidden = new Set<string>((c.hiddenApps as string[] | undefined) ?? []);
-        const had = hidden.has(b.app);
-        if (b.show && had) {
-          hidden.delete(b.app);
-          c.hiddenApps = hidden.size ? [...hidden].sort() : undefined;
-          updated++;
-        } else if (!b.show && !had) {
-          hidden.add(b.app);
-          c.hiddenApps = [...hidden].sort();
-          updated++;
+        const shown = new Set<string>((c.shownApps as string[] | undefined) ?? []);
+        if (b.show) {
+          if (hidden.delete(b.app) || !shown.has(b.app)) {
+            shown.add(b.app);
+            c.hiddenApps = hidden.size ? [...hidden].sort() : undefined;
+            c.shownApps = [...shown].sort();
+            updated++;
+          }
+        } else {
+          if (shown.delete(b.app) || !hidden.has(b.app)) {
+            hidden.add(b.app);
+            c.hiddenApps = [...hidden].sort();
+            c.shownApps = shown.size ? [...shown].sort() : undefined;
+            updated++;
+          }
         }
       }
       return { body: { updated } };

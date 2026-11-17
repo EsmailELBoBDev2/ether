@@ -58,12 +58,12 @@ func liveCategoryFilter(id, title string) model.GridChannelFilter {
 
 func (s *Server) liveGuideFilters(ctx context.Context, u *frontend.User) []model.GridChannelFilter {
 	out := []model.GridChannelFilter{}
-	if g, ok := s.svc().liveTV.(frontend.LiveTVGuides); ok {
-		guides, err := g.Guides(ctx, u)
+	if g, ok := s.svc().liveTV.(frontend.LiveTVGroups); ok {
+		groups, err := g.Groups(ctx, u)
 		if err != nil {
-			s.log.Warn("live guides unavailable", "error", err)
+			s.log.Warn("live groups unavailable", "error", err)
 		}
-		for _, g := range guides {
+		for _, g := range groups {
 			out = append(out, model.GridChannelFilter{Identifier: "guide-" + g.ID, Key: liveProviderPath + "/guides/" + url.PathEscape(g.ID) + "/channels", GenreRatingKey: "ether.guide." + g.ID, Title: g.Name})
 		}
 	}

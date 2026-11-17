@@ -191,7 +191,6 @@ func (s *Server) registerLiveTVRoutes(r chi.Router) {
 	get(liveProviderPath+"/watchnow/all", s.handleLiveGuide)
 	get(liveProviderPath+"/watchnow/tonight", s.handleLiveGuide)
 	get(liveProviderPath+"/watchnow/categories/{category}", s.handleLiveGuide)
-	get(liveProviderPath+"/watchnow/groups/{sourceID}/{group}", s.handleLiveGuide)
 	get(liveProviderPath+"/sections/{section}/all", s.handleLiveGuide)
 	get("/livetv/guide.xml", func(w http.ResponseWriter, r *http.Request) {
 		s.svc().liveTV.ServeXMLTV(w, r, FromContext(r.Context()).User)
@@ -394,8 +393,8 @@ func (s *Server) handleLiveChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id := chi.URLParam(r, "guide"); id != "" {
-		if g, ok := s.svc().liveTV.(frontend.LiveTVGuides); ok {
-			cs, err = g.GuideChannels(r.Context(), FromContext(r.Context()).User, id)
+		if g, ok := s.svc().liveTV.(frontend.LiveTVGroups); ok {
+			cs, err = g.GroupChannels(r.Context(), FromContext(r.Context()).User, id)
 		} else {
 			err = frontend.ErrNotFound
 		}

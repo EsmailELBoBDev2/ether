@@ -89,7 +89,7 @@ export function ProviderAccountCard({ account }: { account: SourceAccount }) {
 }
 
 type Rules = Required<Pick<GroupRules, "excludeGroups" | "groupOrder">> &
-  Pick<GroupRules, "newGroups" | "hideAdult" | "hubGroups">;
+  Pick<GroupRules, "newGroups" | "hideAdult">;
 
 const read = (r: GroupRules): Rules => ({
   ...r,
@@ -284,12 +284,6 @@ export function ChannelGroups({
           hint={t("Leaves out every group your provider marks as adult, now and later.")}
           checked={hideAdult}
           onChange={(on) => update(() => ({ hideAdult: on }))}
-        />
-        <SwitchRow
-          label={t("Show channel groups in What's On")}
-          hint={t("Adds each included channel group as a shelf under What's On in Plex.")}
-          checked={Boolean(rules.hubGroups)}
-          onChange={(on) => update(() => ({ hubGroups: on }))}
         />
       </div>
 

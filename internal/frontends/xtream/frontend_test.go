@@ -132,6 +132,28 @@ func TestStartupSequenceAndRevocation(t *testing.T) {
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `group-title="News & Weather"`) || !strings.Contains(response.Body.String(), `group-title="Sports"`) {
 		t.Fatalf("export groups: %d %s", response.Code, response.Body.String())
 	}
+	ownerGroupedHost, _ := testHost(t)
+	ownerGroupedHost.LiveTV = frontendtest.LiveTV{
+		GroupsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveGroup, error) {
+			return []frontend.LiveGroup{{ID: "top-picks", Name: "Top Picks"}}, nil
+		},
+		ChannelsFunc: func(context.Context, *frontend.Viewer) ([]frontend.LiveChannel, error) {
+			return []frontend.LiveChannel{
+				{ID: "news", Name: "News", Kind: "iptv", Group: "Provider News", Groups: []frontend.LiveGroup{{ID: "top-picks", Name: "Top Picks"}}},
+				{ID: "sport", Name: "Sport", Kind: "iptv", Group: "Sports"},
+			}, nil
+		},
+	}
+	ownerGrouped := mount(t, ownerGroupedHost)
+	categories = nil
+	response = request(ownerGrouped, "/player_api.php?"+authQuery()+"&action=get_live_categories")
+	if err := json.Unmarshal(response.Body.Bytes(), &categories); err != nil || len(categories) != 2 || categories[0]["category_name"] != "Top Picks" || categories[1]["category_name"] != "Sports" {
+		t.Fatalf("owner groups first + ungrouped provider fallback: %s %v", response.Body.String(), err)
+	}
+	response = request(ownerGrouped, "/get.php?"+authQuery()+"&type=m3u_plus")
+	if response.Code != 200 || !strings.Contains(response.Body.String(), `group-title="Top Picks"`) || strings.Contains(response.Body.String(), `group-title="Provider News"`) || !strings.Contains(response.Body.String(), `group-title="Sports"`) {
+		t.Fatalf("owner export groups: %d %s", response.Code, response.Body.String())
+	}
 	a.revoked = true
 	if w = request(h, "/player_api.php?"+authQuery()); w.Code != 401 {
 		t.Fatal("revocation ignored")

@@ -905,7 +905,6 @@
   "m_031743be409e25": "Laster inn forhåndsvisning",
   "m_0317a9912b4274": "Beskriv-det-samlinger, tematiske Hjem-rader, søk med naturlig språk og oppsummeringer.",
   "m_031e5b1c1a2e74": "Filtrer etter tittel eller utgivelse …",
-  "m_031f7d1b37fc4b": "Legger til hver inkluderte kanalgruppe som en rad under På TV i Plex.",
   "m_0320d1c6a83c9a": "Tid (timer)",
   "m_0321994680f79d": "Matched to {name}",
   "m_0321bbda114ac9": "Timer sett per dag",
@@ -6799,7 +6798,6 @@
   "m_17974440a17035": "Henter artikler direkte fra primære NNTP-leverandører og reserveleverandører.",
   "m_1798257d73583a": "Språk",
   "m_1798a2aafbb24a": "Plex-rad: {title}",
-  "m_179910abc86aaf": "Vis kanalgrupper i På TV",
   "m_179abc2f697e0c": "Én pre-roll spilles per tittel, valgt tilfeldig blant dem som passer.",
   "m_179bf042c3e16c": {
     "one": "Skriver {count} ventende oppdatering",

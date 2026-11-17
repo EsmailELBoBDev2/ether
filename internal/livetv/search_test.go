@@ -48,7 +48,7 @@ func TestLiveSearchAcrossGuidesScale(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.SaveOwnerGuides(ctx, []OwnerGuide{{ID: "news", Name: "News", Groups: []GuideGroup{{"provider", "News"}}}, {ID: "overlap", Name: "Overlap", Channels: []string{"c00042"}}, {ID: "hidden", Name: "Hidden", Hidden: true, Groups: []GuideGroup{{"provider", "Hidden"}}}}); err != nil {
+	if err = s.SaveOwnerGroups(ctx, []OwnerGroup{{ID: "news", Name: "News", Groups: []OwnerGroupSource{{SourceID: "provider", Name: "News"}}}, {ID: "overlap", Name: "Overlap", Channels: []string{"c00042"}}, {ID: "hidden", Name: "Hidden", Hidden: true, Groups: []OwnerGroupSource{{SourceID: "provider", Name: "Hidden"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	host := liveTVHost{s: s}

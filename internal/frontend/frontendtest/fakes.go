@@ -663,9 +663,24 @@ var _ frontend.Preferences = Preferences{}
 type LiveTV struct {
 	EnabledFunc          func() bool
 	ChannelsFunc         func(context.Context, *core.Viewer) ([]frontend.LiveChannel, error)
+	GroupsFunc           func(context.Context, *core.Viewer) ([]frontend.LiveGroup, error)
+	GroupChannelsFunc    func(context.Context, *core.Viewer, string) ([]frontend.LiveChannel, error)
 	GuideFunc            func(context.Context, *core.Viewer, frontend.LiveGuideQuery) ([]frontend.LiveProgramme, error)
 	ResolveChannelFunc   func(context.Context, *core.Viewer, string) (frontend.LiveChannel, error)
 	ResolveProgrammeFunc func(context.Context, *core.Viewer, string, frontend.LiveGuideQuery) (frontend.LiveProgramme, error)
+}
+
+func (f LiveTV) Groups(ctx context.Context, v *core.Viewer) ([]frontend.LiveGroup, error) {
+	if f.GroupsFunc != nil {
+		return f.GroupsFunc(ctx, v)
+	}
+	return nil, nil
+}
+func (f LiveTV) GroupChannels(ctx context.Context, v *core.Viewer, id string) ([]frontend.LiveChannel, error) {
+	if f.GroupChannelsFunc != nil {
+		return f.GroupChannelsFunc(ctx, v, id)
+	}
+	return nil, core.ErrNotFound
 }
 
 func (f LiveTV) Enabled() bool {

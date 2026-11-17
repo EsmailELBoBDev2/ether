@@ -30,8 +30,8 @@ func TestSetChannelsApp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SaveOwnerGuides(ctx, []OwnerGuide{
-		{ID: "picks", Name: "Picks", Groups: []GuideGroup{{SourceID: "uk", Name: "Sports"}}, Channels: []string{"us-news"}},
+	if err := s.SaveOwnerGroups(ctx, []OwnerGroup{
+		{ID: "picks", Name: "Picks", Groups: []OwnerGroupSource{{SourceID: "uk", Name: "Sports"}}, Channels: []string{"us-news"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,15 +86,31 @@ func TestSetChannelsApp(t *testing.T) {
 		t.Fatalf("uk-ent-2 hiddenApps: %v %v", c.HiddenApps, err)
 	}
 
-	// Owner group toggle updates both provider-group and explicit channel members.
+	// Decision A: Owner group toggle persists rule on OwnerGroup.Apps and hides current + future members.
 	code, res = post(`{"app":"m3u","show":false,"ownerGroup":"picks"}`)
 	if code != http.StatusOK || res["updated"] != float64(2) {
 		t.Fatalf("ownerGroup hide m3u: %d %+v", code, res)
 	}
-	for _, id := range []string{"uk-sport", "us-news"} {
-		if c, err := s.Channel(ctx, id); err != nil || !slices.Contains(c.HiddenApps, "m3u") {
-			t.Fatalf("%s missing m3u hide: %v %v", id, c.HiddenApps, err)
+	gs, err := s.OwnerGroups(ctx)
+	if err != nil || len(gs) != 1 || gs[0].Apps["m3u"] != false {
+		t.Fatalf("ownerGroup rule not persisted: %+v %v", gs, err)
+	}
+	m3uChans, err := s.AllowedChannels(core.WithLiveApp(ctx, "m3u"), viewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range m3uChans {
+		if c.ID == "uk-sport" || c.ID == "us-news" {
+			t.Fatalf("%s remained visible in m3u after ownerGroup hide", c.ID)
 		}
+	}
+	// Explicit per-channel re-show overrides the group hide via ShownApps.
+	code, res = post(`{"app":"m3u","show":true,"channels":["us-news"]}`)
+	if code != http.StatusOK || res["updated"] != float64(1) {
+		t.Fatalf("explicit re-show over group hide: %d %+v", code, res)
+	}
+	if c, err := s.Channel(ctx, "us-news"); err != nil || !slices.Equal(c.ShownApps, []string{"m3u"}) {
+		t.Fatalf("us-news shownApps: %+v %v", c, err)
 	}
 
 	// Virtual source selector.

@@ -100,6 +100,8 @@ export type Pin = {
 export type Channel = {
   /** Apps that leave this channel out of their lineup; every other app lists it. */
   hiddenApps?: string[];
+  /** Apps where this channel is explicitly shown even if one of its owner groups hides the app. */
+  shownApps?: string[];
   pins?: Pin[];
   personal?: PersonalRecipe;
   look?: ChannelLook;
@@ -197,6 +199,7 @@ export type OwnerGroup = {
   unratedRating?: string;
   apps?: Record<string, boolean>;
   hiddenApps?: string[];
+  channelCount?: number;
 };
 /** Request payload for POST /livetv/channels/apps. */
 export type ChannelAppChange =
@@ -281,8 +284,6 @@ export type GroupRules = {
   hideAdult?: boolean;
   /** Empty: the provider's order and numbers. Otherwise channels are numbered 1… down this group order. */
   groupOrder?: string[];
-  /** Show each included channel group as a What's On shelf in Plex. */
-  hubGroups?: boolean;
 };
 /** How gently Ether uses a provider's streams (see SourceLimits). */
 export type SourceLimitRules = {
@@ -457,14 +458,16 @@ function unpackOwnerGroups(raw: unknown): OwnerGroup[] {
  * hiddenApps with any per-group app rules from the channel's owner groups.
  */
 export function channelVisibleInApp(
-  c: Pick<ChannelSummary, "hiddenApps">,
+  c: Pick<ChannelSummary, "hiddenApps" | "shownApps">,
   app: LiveApp,
   memberGroups?: readonly OwnerGroup[],
 ): boolean {
   if (c.hiddenApps?.includes(app)) return false;
+  if (c.shownApps?.includes(app)) return true;
   if (memberGroups?.length) {
     for (const g of memberGroups) {
-      if (g.hiddenApps?.includes(app) || g.apps?.[app] === false) return false;
+      if (g.hiddenApps?.includes(app)) return false;
+      if (g.apps && app in g.apps) return Boolean(g.apps[app]);
     }
   }
   return true;

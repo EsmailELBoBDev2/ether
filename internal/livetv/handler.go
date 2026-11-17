@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +30,68 @@ type channelLogoFetcher interface {
 	GetUntrustedURL(context.Context, string) ([]byte, string, error)
 }
 
+func (s *Service) presentOwnerChannels(ctx context.Context, cs []Channel) {
+	idx, err := s.cachedOwnerGroupIndex(ctx)
+	if err != nil || idx == nil {
+		return
+	}
+	for i := range cs {
+		cs[i].HiddenApps = idx.effectiveHiddenApps(cs[i])
+	}
+}
+
+// reconcileOwnerChannelApps translates an owner HTTP channel save whose body
+// carries effective HiddenApps (and no explicit ShownApps) into per-channel
+// HiddenApps/ShownApps overrides relative to the channel's group rules.
+func (s *Service) reconcileOwnerChannelApps(ctx context.Context, c *Channel) {
+	if c.ShownApps != nil {
+		return
+	}
+	idx, err := s.cachedOwnerGroupIndex(ctx)
+	if err != nil || idx == nil || len(idx.groups) == 0 {
+		return
+	}
+	var old Channel
+	if c.ID != "" {
+		old, _ = s.Channel(ctx, c.ID)
+	}
+	var hidden, shown []string
+	for _, app := range Apps {
+		wantHidden := slices.Contains(c.HiddenApps, app)
+		groupShow, hasRule := idx.groupAppRule(c.SourceID, c.Group, c.ID, app)
+		groupHides := hasRule && !groupShow
+		switch {
+		case wantHidden && groupHides:
+			if slices.Contains(old.HiddenApps, app) {
+				hidden = append(hidden, app)
+			}
+		case wantHidden && !groupHides:
+			hidden = append(hidden, app)
+		case !wantHidden && groupHides:
+			shown = append(shown, app)
+		}
+	}
+	for _, app := range c.HiddenApps {
+		if !slices.Contains(Apps, app) {
+			hidden = append(hidden, app)
+		}
+	}
+	c.HiddenApps = hidden
+	c.ShownApps = shown
+}
+
 func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/search", s.ownerSearchRoute)
-	r.Get("/guides", s.ownerGuidesRoute)
-	r.Put("/guides", s.ownerGuidesRoute)
+	r.Get("/groups", s.ownerGroupsRoute)
+	r.Put("/groups", s.ownerGroupsRoute)
+	r.Post("/groups", s.ownerGroupsRoute)
+	r.Put("/groups/order", s.ownerGroupsOrderRoute)
+	r.Put("/groups/{id}", s.ownerGroupItemRoute)
+	r.Patch("/groups/{id}", s.ownerGroupItemRoute)
+	r.Delete("/groups/{id}", s.ownerGroupItemRoute)
+	r.Put("/groups/{id}/apps", s.ownerGroupAppsRoute)
+	r.Patch("/groups/{id}/apps", s.ownerGroupAppsRoute)
 	r.Post("/channels/decades", func(w http.ResponseWriter, r *http.Request) {
 		err := s.AddShowcaseDefaults(r.Context())
 		ownerResult(w, map[string]bool{"ok": err == nil}, err)
@@ -117,6 +175,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		v, e := s.Channels(r.Context())
 		if e == nil {
 			s.redactAddonChannels(r.Context(), v)
+			s.presentOwnerChannels(r.Context(), v)
 		}
 		ownerResult(w, v, e)
 	})
@@ -130,10 +189,11 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		offset, _ := strconv.Atoi(q.Get("offset"))
 		v, e := s.ChannelPage(r.Context(), ChannelPageQuery{
 			Limit: limit, Offset: offset, Q: q.Get("q"), Filter: q.Get("filter"), Source: q.Get("source"),
-			Group: q.Get("group"), Sort: q.Get("sort"),
+			Group: q.Get("group"), OwnerGroup: q.Get("ownerGroup"), App: q.Get("app"), Sort: q.Get("sort"),
 		})
 		if e == nil {
 			s.redactAddonChannels(r.Context(), v.Channels)
+			s.presentOwnerChannels(r.Context(), v.Channels)
 		}
 		ownerResult(w, v, e)
 	})
@@ -142,6 +202,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 		if e == nil {
 			one := []Channel{v}
 			s.redactAddonChannels(r.Context(), one)
+			s.presentOwnerChannels(r.Context(), one)
 			v = one[0]
 		}
 		ownerResult(w, v, e)
@@ -162,10 +223,12 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 			ownerResult(w, nil, e)
 			return
 		}
+		s.reconcileOwnerChannelApps(r.Context(), &c)
 		v, e := s.SaveChannel(r.Context(), c)
 		if e == nil {
 			one := []Channel{v}
 			s.redactAddonChannels(r.Context(), one)
+			s.presentOwnerChannels(r.Context(), one)
 			v = one[0]
 		}
 		ownerResult(w, v, e)

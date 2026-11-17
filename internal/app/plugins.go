@@ -506,6 +506,12 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		unsubscribe()
 		return nil, err
 	}
+	// Auto-import Live TV channels when a native channels plugin is newly installed.
+	mgr.OnInstall(func(_ context.Context, rec plugins.Record) {
+		if !rec.Manifest.SpeaksStremio() {
+			a.startPluginLiveTV(rec)
+		}
+	})
 	// Removing a plugin removes the drafts it was installed from.
 	mgr.OnRemove(func(ctx context.Context, id string) { studioSvc.ForgetPlugin(ctx, id) })
 
@@ -661,8 +667,8 @@ func (a *App) pluginTextResolver() extend.TextResolver {
 	return a.pluginsRT.mgr.TextResolver()
 }
 
-// startPluginLiveTV adds a Live TV source for a channels plugin installed
-// from Studio, so its lineup lands in the guide without a second setup step.
+// startPluginLiveTV adds a Live TV source for a newly installed channels
+// plugin, so its lineup lands in the guide without a second setup step.
 // It runs once per install; an owner who later removes the source keeps
 // that choice.
 func (a *App) startPluginLiveTV(rec plugins.Record) {
@@ -671,6 +677,8 @@ func (a *App) startPluginLiveTV(rec plugins.Record) {
 	}
 	kind := extend.PluginID(rec.ID, "channels")
 	go func() {
+		a.pluginLiveTVMu.Lock()
+		defer a.pluginLiveTVMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		// The source kind registers when the install syncs; wait for it.

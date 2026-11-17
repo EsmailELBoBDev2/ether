@@ -104,8 +104,18 @@ func (h *consoleAPI) previewRules(w http.ResponseWriter, r *http.Request) {
 			return out[i].Rank < out[j].Rank
 		})
 	} else {
+		hot := h.s.rankingSession(ctx, core.ClientCaps{})
+		if hot != nil {
+			defer hot.Close()
+		}
 		for _, rel := range results {
-			v := policy.Evaluate(rel, releasepolicy.Context{})
+			pctx := releasepolicy.Context{}
+			if hot != nil {
+				pctx.ExternalMatch = func(r core.Release, c core.ReleaseCondition) (bool, bool) {
+					return hot.Match(r, c, false)
+				}
+			}
+			v := policy.Evaluate(rel, pctx)
 			out = append(out, ConsoleRelease{Release: browserRelease(rel), Preferences: &v, Rejected: v.Rejected})
 		}
 		// Filenames alone have no quality order or formats to compare; the

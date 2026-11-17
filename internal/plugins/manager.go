@@ -104,7 +104,9 @@ type Manager struct {
 	sidecarState SidecarState
 	catalogue    Catalogue
 	fatories     map[string]RuntimeFactory
+	busOrigin    string
 	runtimes     map[string]Runtime
+	installHooks []func(ctx context.Context, r Record)
 	removeHooks  []func(context.Context, string)
 	syncHooks    []func(ctx context.Context, r Record)
 	eventSubs    map[string]map[string]Record
@@ -165,6 +167,7 @@ func New(deps Deps) (*Manager, error) {
 		client = (&safefetch.Guard{}).Client(egress.Client(egress.CapPlugins, 30*time.Second))
 	}
 	m := &Manager{
+		busOrigin: newEventID(),
 		store: &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
 		log: log, now: now, client: client,
 		fatories: map[string]RuntimeFactory{}, runtimes: map[string]Runtime{}, warming: map[string]bool{}, shadow: map[string]bool{},
@@ -242,7 +245,7 @@ func (m *Manager) isLeader() bool {
 
 func (m *Manager) broadcast(ctx context.Context) {
 	if m.deps.Bus != nil {
-		_ = m.deps.Bus.Publish(ctx, "invalidate:plugins", []byte("plugins"))
+		_ = m.deps.Bus.Publish(ctx, "invalidate:plugins", []byte(m.busOrigin))
 	}
 }
 
@@ -252,7 +255,10 @@ func (m *Manager) SubscribeInvalidations() func() {
 	if m.deps.Bus == nil {
 		return func() {}
 	}
-	return m.deps.Bus.Subscribe("invalidate:plugins", func([]byte) {
+	return m.deps.Bus.Subscribe("invalidate:plugins", func(origin []byte) {
+		if m.busOrigin != "" && string(origin) == m.busOrigin {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		recs, err := m.store.list(ctx)
@@ -262,8 +268,8 @@ func (m *Manager) SubscribeInvalidations() func() {
 		seen := map[string]bool{}
 		for _, r := range recs {
 			seen[r.ID] = true
-			m.syncDescriptors(ctx, r)
 			m.closeRuntime(r.ID)
+			m.syncDescriptors(ctx, r)
 		}
 		m.mu.Lock()
 		for _, subscribers := range m.eventSubs {
@@ -832,14 +838,19 @@ func (m *Manager) SetSidecarState(f SidecarState) {
 // liveHealth overlays the live sidecar state on a stored health record: an
 // enabled plugin whose sidecar is not connected needs attention however its
 // last check went, so the console never calls it healthy.
-func (m *Manager) liveHealth(r Record, h Health) Health {
+func (m *Manager) sidecarWaiting(r Record) bool {
 	m.mu.Lock()
 	f := m.sidecarState
 	m.mu.Unlock()
 	if f == nil || !r.Enabled {
-		return h
+		return false
 	}
-	if needs, connected := f(r); needs && !connected {
+	needs, connected := f(r)
+	return needs && !connected
+}
+
+func (m *Manager) liveHealth(r Record, h Health) Health {
+	if m.sidecarWaiting(r) {
 		h.Status, h.Reason, h.Sidecar = "attention", sidecarWaitingReason, "waiting"
 	}
 	return h
@@ -1103,6 +1114,16 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	}
 	m.broadcast(ctx)
 	return nil
+}
+
+// OnInstall registers a callback run once when a plugin is newly installed.
+func (m *Manager) OnInstall(fn func(ctx context.Context, r Record)) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	m.installHooks = append(m.installHooks, fn)
+	m.mu.Unlock()
 }
 
 // OnRemove registers a callback run after a plugin is uninstalled.

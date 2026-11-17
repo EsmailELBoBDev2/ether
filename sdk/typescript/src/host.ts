@@ -295,8 +295,13 @@ export function createHostedClient(): EtherHost {
     },
     secret: {
       get(name: string): string {
-        if (g.ether?.secret) return g.ether.secret.get(name);
-        return callHost<string>("secret.get", [name]);
+        try {
+          if (g.ether?.secret) return g.ether.secret.get(name) ?? "";
+          return callHost<string>("secret.get", [name]) ?? "";
+        } catch (err) {
+          if (err instanceof Error && /is not saved/i.test(err.message)) return "";
+          throw err;
+        }
       },
     },
     http: {

@@ -323,12 +323,20 @@ func (m *Manager) warmAsync(pluginID string) {
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		r, err := m.Get(ctx, pluginID)
-		if err != nil || !r.Enabled {
-			return
-		}
-		if _, err := m.runtimeFor(ctx, r); err != nil {
+		for attempt := 0; attempt < 3; attempt++ {
+			r, err := m.Get(ctx, pluginID)
+			if err != nil || !r.Enabled {
+				return
+			}
+			_, err = m.runtimeFor(ctx, r)
+			if err == nil {
+				return
+			}
+			if errors.Is(err, ErrUnavailable) && attempt < 2 {
+				continue
+			}
 			m.log.Warn("plugins: warm hot runtime", "plugin", pluginID, "err", err)
+			return
 		}
 	}()
 }

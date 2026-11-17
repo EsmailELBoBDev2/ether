@@ -151,6 +151,7 @@ type App struct {
 	support          *diagnostics.Recorder
 	cfg              *config.Store
 	proxyMu          sync.Mutex
+	pluginLiveTVMu   sync.Mutex
 	prowlarrMu       sync.Mutex
 	prowlarrState    string
 	prowlarrKept     bool

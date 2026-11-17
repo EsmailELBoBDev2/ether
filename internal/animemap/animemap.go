@@ -99,10 +99,12 @@ func New(opts Options) *Service {
 
 // entry is one anime database entry (a season, cour, film or special).
 type entry struct {
-	ids    map[string]int64
-	kind   string // TV, ONA, OVA, MOVIE, SPECIAL
-	season int    // TMDB season; -1 when the entry names none
-	offset int    // TMDB episodes before the entry's first episode
+	ids        map[string]int64
+	kind       string // TV, ONA, OVA, MOVIE, SPECIAL
+	season     int    // TMDB season; -1 when the entry names none
+	offset     int    // TMDB episodes before the entry's first episode
+	tvdbSeason int    // TVDB season; -1 when the entry names none or non-numeric
+	tvdbOffset int    // TVDB episodes before the entry's first episode
 }
 
 type index struct {
@@ -111,7 +113,8 @@ type index struct {
 }
 
 // rawEntry is the part of a dataset entry Ether reads. Numbers may come
-// as numbers or numeric strings; TMDB movie ids as a number or a list.
+// as numbers or numeric strings; TMDB movie ids as a number or a list;
+// TVDB seasons may be non-numeric strings (such as "a"), which are ignored.
 type rawEntry struct {
 	Type    string          `json:"type"`
 	Kitsu   json.Number     `json:"kitsu_id"`
@@ -120,11 +123,28 @@ type rawEntry struct {
 	AniDB   json.Number     `json:"anidb_id"`
 	TMDB    json.RawMessage `json:"themoviedb_id"`
 	Season  struct {
-		TMDB *int `json:"tmdb"`
+		TMDB *int            `json:"tmdb"`
+		TVDB json.RawMessage `json:"tvdb"`
 	} `json:"season"`
 	Offset struct {
-		TMDB *int `json:"tmdb"`
+		TMDB *int            `json:"tmdb"`
+		TVDB json.RawMessage `json:"tvdb"`
 	} `json:"episode_offset"`
+}
+
+func optionalNonNegInt(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var n json.Number
+	if json.Unmarshal(raw, &n) != nil {
+		return 0, false
+	}
+	v, err := strconv.Atoi(n.String())
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 func parse(r io.Reader) (*index, error) {
@@ -139,7 +159,7 @@ func parse(r io.Reader) (*index, error) {
 		if err := dec.Decode(&raw); err != nil {
 			return nil, fmt.Errorf("animemap: bad dataset entry: %w", err)
 		}
-		e := entry{ids: map[string]int64{}, kind: raw.Type, season: -1}
+		e := entry{ids: map[string]int64{}, kind: raw.Type, season: -1, tvdbSeason: -1}
 		for db, n := range map[string]json.Number{Kitsu: raw.Kitsu, MAL: raw.MAL, AniList: raw.AniList, AniDB: raw.AniDB} {
 			if v, err := strconv.ParseInt(n.String(), 10, 64); err == nil && v > 0 {
 				e.ids[db] = v
@@ -160,6 +180,12 @@ func parse(r io.Reader) (*index, error) {
 		}
 		if raw.Offset.TMDB != nil && *raw.Offset.TMDB > 0 {
 			e.offset = *raw.Offset.TMDB
+		}
+		if v, ok := optionalNonNegInt(raw.Season.TVDB); ok {
+			e.tvdbSeason = v
+		}
+		if v, ok := optionalNonNegInt(raw.Offset.TVDB); ok && v > 0 {
+			e.tvdbOffset = v
 		}
 		for _, tv := range numbers(tmdb.TV) {
 			idx.shows[tv] = append(idx.shows[tv], e)
@@ -205,22 +231,21 @@ func (s *Service) Lookup(ctx context.Context, req core.SearchRequest, db string)
 	return id, episode, ok, nil
 }
 
-// LookupCour maps a multi-cour TMDB season episode to its 1-based cour (part)
-// number within that season and the episode's 1-based number inside that cour.
-// ok is true only when the season is split into multiple regular entries and
-// req.Episode falls in a subsequent cour (offset > 0).
-func (s *Service) LookupCour(ctx context.Context, req core.SearchRequest) (cour int, episode int, ok bool, err error) {
+// LookupCour maps an offset TMDB anime season episode to its 1-based cour
+// (part) number within that season, its 1-based episode inside that cour, and
+// its anime-lists TVDB season/episode numbering when present.
+func (s *Service) LookupCour(ctx context.Context, req core.SearchRequest) (core.CourMapping, bool, error) {
 	idx, err := s.load(ctx)
 	if err != nil {
-		return 0, 0, false, err
+		return core.CourMapping{}, false, err
 	}
-	cour, episode, ok = idx.lookupCour(req)
-	return cour, episode, ok, nil
+	m, ok := idx.lookupCour(req)
+	return m, ok, nil
 }
 
-func (idx *index) lookupCour(req core.SearchRequest) (int, int, bool) {
+func (idx *index) lookupCour(req core.SearchRequest) (core.CourMapping, bool) {
 	if req.Type != core.TypeEpisode || req.IDs.TMDB <= 0 || req.Season <= 0 || req.Episode <= 1 {
-		return 0, 0, false
+		return core.CourMapping{}, false
 	}
 	entries := idx.shows[req.IDs.TMDB]
 	rank := func(kind string) int {
@@ -257,37 +282,58 @@ func (idx *index) lookupCour(req core.SearchRequest) (int, int, bool) {
 			bestEntries = append(bestEntries, e)
 		}
 	}
-	if best <= 0 || len(bestEntries) == 0 || !offsets[0] {
-		return 0, 0, false
+	if best <= 0 || len(bestEntries) == 0 {
+		return core.CourMapping{}, false
 	}
 	for _, db := range []string{Kitsu, MAL, AniList, AniDB} {
 		var seen int64
 		for _, e := range bestEntries {
 			if id := e.ids[db]; id > 0 {
 				if seen != 0 && seen != id {
-					return 0, 0, false
+					return core.CourMapping{}, false
 				}
 				seen = id
 			}
 		}
 	}
-	sorted := make([]int, 0, len(offsets))
-	for off := range offsets {
-		sorted = append(sorted, off)
+	tvdbSeason, tvdbOffset := -1, 0
+	for i, e := range bestEntries {
+		if i == 0 {
+			tvdbSeason, tvdbOffset = e.tvdbSeason, e.tvdbOffset
+		} else if e.tvdbSeason != tvdbSeason || e.tvdbOffset != tvdbOffset {
+			tvdbSeason, tvdbOffset = -1, 0
+			break
+		}
 	}
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j] < sorted[i] {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
+	var out core.CourMapping
+	if tvdbSeason > 0 {
+		out.TVDBSeason = tvdbSeason
+		out.TVDBEpisode = (req.Episode - best) + tvdbOffset
+	}
+	if offsets[0] {
+		sorted := make([]int, 0, len(offsets))
+		for off := range offsets {
+			sorted = append(sorted, off)
+		}
+		for i := 0; i < len(sorted); i++ {
+			for j := i + 1; j < len(sorted); j++ {
+				if sorted[j] < sorted[i] {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			}
+		}
+		for i, off := range sorted {
+			if off == best {
+				out.Cour = i + 1
+				out.Episode = req.Episode - best
+				break
 			}
 		}
 	}
-	for i, off := range sorted {
-		if off == best {
-			return i + 1, req.Episode - best, true
-		}
+	if out.Cour <= 0 && out.TVDBSeason <= 0 {
+		return core.CourMapping{}, false
 	}
-	return 0, 0, false
+	return out, true
 }
 
 func (idx *index) lookup(req core.SearchRequest, db string) (int64, int, bool) {

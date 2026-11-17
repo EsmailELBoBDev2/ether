@@ -216,15 +216,15 @@ func DefaultNZBClient() *http.Client {
 // add-on needs it; installed add-ons share it (internal/plugins/adapters).
 func (s *Service) AnimeIDs() AnimeIDs { return lazyAnime{s} }
 
-// LookupCour maps a multi-cour TMDB season episode to its 1-based cour (part)
-// number within that season and the episode's 1-based number inside that cour.
-func (s *Service) LookupCour(ctx context.Context, req core.SearchRequest) (int, int, bool, error) {
+// LookupCour maps an offset TMDB anime season episode to its cour and TVDB
+// season/episode numbering when present.
+func (s *Service) LookupCour(ctx context.Context, req core.SearchRequest) (core.CourMapping, bool, error) {
 	if cl, ok := s.animeIDs().(interface {
-		LookupCour(context.Context, core.SearchRequest) (int, int, bool, error)
+		LookupCour(context.Context, core.SearchRequest) (core.CourMapping, bool, error)
 	}); ok {
 		return cl.LookupCour(ctx, req)
 	}
-	return 0, 0, false, nil
+	return core.CourMapping{}, false, nil
 }
 
 type lazyAnime struct{ s *Service }

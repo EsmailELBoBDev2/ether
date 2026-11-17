@@ -61,10 +61,10 @@ const (
 	unavailableRecheck = 5 * time.Minute
 )
 
-// AnimeCour maps a multi-cour TMDB anime season episode to its 1-based cour
-// (part) number and 1-based episode number within that cour.
+// AnimeCour maps an offset TMDB anime season episode to its 1-based cour
+// (part) number, cour-relative episode, and anime-lists TVDB season/episode.
 type AnimeCour interface {
-	LookupCour(ctx context.Context, req core.SearchRequest) (cour int, episode int, ok bool, err error)
+	LookupCour(ctx context.Context, req core.SearchRequest) (core.CourMapping, bool, error)
 }
 
 // LibraryProfiles answers which library a title belongs to and the quality
@@ -586,8 +586,9 @@ func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchR
 		req.SpecialTitles = s.specialTitles(ctx, req.IDs.TMDB)
 	}
 	if s != nil && s.animeCour != nil && req.Anime && req.Type == core.TypeEpisode && req.Season > 0 && req.Episode > 1 && req.IDs.TMDB > 0 {
-		if cour, ep, ok, err := s.animeCour.LookupCour(ctx, req); err == nil && ok {
-			req.Cour, req.CourEpisode = cour, ep
+		if m, ok, err := s.animeCour.LookupCour(ctx, req); err == nil && ok {
+			req.Cour, req.CourEpisode = m.Cour, m.Episode
+			req.CourTVDBSeason, req.CourTVDBEpisode = m.TVDBSeason, m.TVDBEpisode
 		}
 	}
 	return req
@@ -1282,7 +1283,11 @@ func titleOriginalLanguage(t *core.Title) string {
 }
 
 func searchCacheKey(req core.SearchRequest) string {
-	return fmt.Sprintf("%s|%v|%s|%d|%d|%d|aliases:%v|packs:%v|known:%t|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, core.EpisodeAliases(req), req.ReleasePackTargets, req.ReleaseNumberingKnown, req.ReleaseAliasesOnly)
+	key := fmt.Sprintf("%s|%v|%s|%d|%d|%d|aliases:%v|packs:%v|known:%t|only:%t", req.Type, req.IDs, strings.ToLower(req.Title), req.Year, req.Season, req.Episode, core.EpisodeAliases(req), req.ReleasePackTargets, req.ReleaseNumberingKnown, req.ReleaseAliasesOnly)
+	if req.Cour > 0 || req.CourTVDBSeason > 0 {
+		key += fmt.Sprintf("|cour:%d:%d|tvdb:%d:%d", req.Cour, req.CourEpisode, req.CourTVDBSeason, req.CourTVDBEpisode)
+	}
+	return key
 }
 
 type rescueSearcher interface {
@@ -2228,7 +2233,7 @@ func formatTitleMismatch(parsed string, expected []string) string {
 	}
 }
 
-var reCourEpisodeMarker = regexp.MustCompile(`(?i)\b(?:S\d{1,2}|(?:Season|Saison|Stagione|Temporada)\s*\d{1,2})[\s._-]+(?:Part|Cour)[\s._-]*\d{1,2}(?:[\s._-]+-[\s._-]+|[\s._-]+E?)\d{1,3}(?:v\d)?\b`)
+var reCourEpisodeMarker = regexp.MustCompile(`(?i)\b(?:S\d{1,2}|(?:Season|Saison|Stagione|Temporada)\s*\d{1,2}|[1-9]\d?(?:st|nd|rd|th)[\s._-]+Season)[\s._-]+(?:Part|Cour)[\s._-]*\d{1,2}(?:[\s._-]+-[\s._-]+|[\s._-]+E?)\d{1,3}(?:v\d)?\b`)
 
 func episodeTitleMatchesRelease(rel core.Release, want string) bool {
 	if rel.Info.Cour > 0 {
@@ -2241,17 +2246,34 @@ func episodeTitleMatchesRelease(rel core.Release, want string) bool {
 	return releaseparse.EpisodeTitleMatches(rel.Name, want)
 }
 
+func courTVDBEpisodeMatch(info core.ReleaseInfo, sreq core.SearchRequest) bool {
+	if sreq.CourTVDBSeason <= 0 || sreq.CourTVDBEpisode <= 0 || info.Cour > 0 || len(info.Seasons) == 0 {
+		return false
+	}
+	if len(info.AbsoluteEpisodes) > 0 {
+		if abs := absoluteEpisode(sreq); abs > 0 && !releaseparse.EpisodeMatchesAbsolute(info, abs) {
+			return false
+		}
+	}
+	return releaseparse.EpisodeMatches(info, sreq.CourTVDBSeason, sreq.CourTVDBEpisode)
+}
+
 func episodeMatchesRequest(info core.ReleaseInfo, sreq core.SearchRequest) bool {
 	if info.Cour == 1 && sreq.Cour > 1 {
 		return false
 	}
 	if info.Cour > 1 {
-		if sreq.Cour == info.Cour && sreq.CourEpisode > 0 && releaseparse.EpisodeMatches(info, sreq.Season, sreq.CourEpisode) {
+		if sreq.Cour == info.Cour && sreq.CourEpisode > 0 &&
+			(releaseparse.EpisodeMatches(info, sreq.Season, sreq.CourEpisode) ||
+				(sreq.CourTVDBSeason > 0 && releaseparse.EpisodeMatches(info, sreq.CourTVDBSeason, sreq.CourEpisode))) {
 			return true
 		}
 		return false
 	}
 	if releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq)) {
+		return true
+	}
+	if courTVDBEpisodeMatch(info, sreq) {
 		return true
 	}
 	for _, n := range core.EpisodeAliases(sreq) {
@@ -2453,14 +2475,20 @@ func regionTagConflicts(releaseTitle, wantTitle string, countries []string) bool
 func releaseNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int) {
 	// Without aliases, even a rejected pack retains its canonical target and
 	// per-episode release ID. Coverage validation belongs to the ranking gate.
-	if !req.ReleaseNumberingKnown && len(core.EpisodeAliases(req)) == 0 {
+	if !req.ReleaseNumberingKnown && len(core.EpisodeAliases(req)) == 0 && (req.CourTVDBSeason <= 0 || req.CourTVDBEpisode <= 0) {
 		return req.Season, req.Episode
 	}
 	if info.FullSeason {
-		season, episode, _ := packNumbers(info, req)
+		season, episode, ok := packNumbers(info, req)
+		if !ok && !req.ReleaseNumberingKnown && len(core.EpisodeAliases(req)) == 0 {
+			return req.Season, req.Episode
+		}
 		return season, episode
 	}
 	if !releaseparse.EpisodeMatchesNumbering(info, req.Season, req.Episode, absoluteEpisode(req)) && info.Cour == 0 {
+		if courTVDBEpisodeMatch(info, req) {
+			return req.CourTVDBSeason, req.CourTVDBEpisode
+		}
 		for _, n := range core.EpisodeAliases(req) {
 			if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
 				return n.Season, n.Episode
@@ -2473,7 +2501,13 @@ func releaseNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int) {
 // A pack cannot select different files under two fitting numbering systems.
 func packNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int, bool) {
 	if info.Cour > 0 {
-		return req.Season, req.Episode, packCoversSeason(info, req.Season)
+		if packCoversSeason(info, req.Season) {
+			return req.Season, req.Episode, true
+		}
+		if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 && len(info.Seasons) > 0 && packCoversSeason(info, req.CourTVDBSeason) {
+			return req.CourTVDBSeason, req.CourTVDBEpisode, true
+		}
+		return req.Season, req.Episode, false
 	}
 	if req.ReleaseNumberingKnown {
 		chosen := core.EpisodeNumber{}
@@ -2486,12 +2520,26 @@ func packNumbers(info core.ReleaseInfo, req core.SearchRequest) (int, int, bool)
 			}
 			chosen = n
 		}
-		return chosen.Season, chosen.Episode, chosen.Episode > 0
+		if chosen.Episode > 0 {
+			return chosen.Season, chosen.Episode, true
+		}
+		if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 && len(info.Seasons) > 0 &&
+			slices.Contains(info.Seasons, req.CourTVDBSeason) &&
+			(len(info.Episodes) == 0 || slices.Contains(info.Episodes, req.CourTVDBEpisode)) {
+			return req.CourTVDBSeason, req.CourTVDBEpisode, true
+		}
+		return 0, 0, false
 	}
 	for _, n := range core.EpisodeAliases(req) {
 		if packCoversSeason(info, n.Season) && (len(info.Episodes) == 0 || slices.Contains(info.Episodes, n.Episode)) {
 			return n.Season, n.Episode, true
 		}
+	}
+	if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 &&
+		(req.CourTVDBSeason != req.Season || req.CourTVDBEpisode != req.Episode) &&
+		len(info.Seasons) > 0 && slices.Contains(info.Seasons, req.CourTVDBSeason) &&
+		(len(info.Episodes) == 0 || slices.Contains(info.Episodes, req.CourTVDBEpisode)) {
+		return req.CourTVDBSeason, req.CourTVDBEpisode, true
 	}
 	if packCoversSeason(info, req.Season) {
 		return req.Season, req.Episode, true

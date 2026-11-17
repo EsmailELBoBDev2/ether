@@ -781,6 +781,9 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 		if req.Cour > 0 && req.CourEpisode > 0 {
 			fmt.Fprintf(h, "|cour:%d:%d", req.Cour, req.CourEpisode)
 		}
+		if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 {
+			fmt.Fprintf(h, "|courtvdb:%d:%d", req.CourTVDBSeason, req.CourTVDBEpisode)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -869,6 +872,21 @@ func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Id
 	return out
 }
 
+func ordinalSeason(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("%d%s Season", n, suffix)
+}
+
 func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
 	cfg := c.Config()
 	if req.Category != "" {
@@ -903,22 +921,31 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id c
 	titles := queryTitles(req)
 	var attempts []url.Values
 	if isTV {
-		mk := func(idKey, idVal string) url.Values {
+		mkWith := func(idKey, idVal string, season, episode int) url.Values {
 			v := base()
 			v.Set("t", "tvsearch")
 			if idKey != "" {
 				v.Set(idKey, idVal)
 			}
-			if req.Season > 0 {
-				v.Set("season", strconv.Itoa(req.Season))
+			if season > 0 {
+				v.Set("season", strconv.Itoa(season))
 			}
-			if req.Episode > 0 {
-				v.Set("ep", strconv.Itoa(req.Episode))
+			if episode > 0 {
+				v.Set("ep", strconv.Itoa(episode))
 			}
 			return v
 		}
+		mk := func(idKey, idVal string) url.Values {
+			return mkWith(idKey, idVal, req.Season, req.Episode)
+		}
 		if req.IDs.TVDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tvdbid"))) {
-			attempts = append(attempts, mk("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10)))
+			tvdbSeason, tvdbEp := req.Season, req.Episode
+			if req.CourTVDBSeason > 0 && req.Episode > 0 && req.CourTVDBEpisode > 0 {
+				tvdbSeason, tvdbEp = req.CourTVDBSeason, req.CourTVDBEpisode
+			} else if req.CourTVDBSeason > 0 && req.Episode == 0 {
+				tvdbSeason = req.CourTVDBSeason
+			}
+			attempts = append(attempts, mkWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason, tvdbEp))
 		}
 		if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 			attempts = append(attempts, mk("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
@@ -941,6 +968,27 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id c
 			v2.Set("t", "search")
 			v2.Set("q", q)
 			attempts = append(attempts, v2)
+		}
+		// Long TMDB anime seasons often map to separate TVDB seasons in
+		// Fribb/anime-lists ("S03E01", "3rd Season - 01"); search those before
+		// bare absolute numbers so season-1 batches do not short-circuit.
+		if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 && req.Episode > 0 {
+			for _, title := range titles {
+				if req.CourTVDBSeason != req.Season || req.CourTVDBEpisode != req.Episode {
+					q := fmt.Sprintf("%s S%02dE%02d", title, req.CourTVDBSeason, req.CourTVDBEpisode)
+					v := mkWith("", "", req.CourTVDBSeason, req.CourTVDBEpisode)
+					v.Set("q", q)
+					attempts = append(attempts, v)
+					v2 := base()
+					v2.Set("t", "search")
+					v2.Set("q", q)
+					attempts = append(attempts, v2)
+				}
+				vOrd := base()
+				vOrd.Set("t", "search")
+				vOrd.Set("q", fmt.Sprintf("%s %s - %02d", title, ordinalSeason(req.CourTVDBSeason), req.CourTVDBEpisode))
+				attempts = append(attempts, vOrd)
+			}
 		}
 		// Anime releases are numbered from the series start ("Show - 1071")
 		// and indexers rarely map them to seasons: search the absolute
@@ -972,24 +1020,49 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id c
 		// on torrent indexers often exist only as full-season or complete
 		// packs, which an episode-specific query (ep=N / SxxExx) misses.
 		if cfg.IsTorrent() && req.Season > 0 {
-			mkSeason := func(idKey, idVal string) url.Values {
+			mkSeasonWith := func(idKey, idVal string, season int) url.Values {
 				v := base()
 				v.Set("t", "tvsearch")
 				if idKey != "" {
 					v.Set(idKey, idVal)
 				}
-				v.Set("season", strconv.Itoa(req.Season))
+				v.Set("season", strconv.Itoa(season))
 				return v
+			}
+			mkSeason := func(idKey, idVal string) url.Values {
+				return mkSeasonWith(idKey, idVal, req.Season)
 			}
 			if req.Episode > 0 {
 				if req.IDs.TVDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tvdbid"))) {
-					attempts = append(attempts, mkSeason("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10)))
+					tvdbSeason := req.Season
+					if req.CourTVDBSeason > 0 {
+						tvdbSeason = req.CourTVDBSeason
+					}
+					attempts = append(attempts, mkSeasonWith("tvdbid", strconv.FormatInt(req.IDs.TVDB, 10), tvdbSeason))
 				}
 				if req.IDs.TMDB > 0 && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "tmdbid"))) {
 					attempts = append(attempts, mkSeason("tmdbid", strconv.FormatInt(req.IDs.TMDB, 10)))
 				}
 				if imdb != "" && (caps == nil || (!caps.TVAvail || hasParam(caps.TVParams, "imdbid"))) {
 					attempts = append(attempts, mkSeason("imdbid", imdb))
+				}
+				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
+					for _, title := range titles {
+						q := fmt.Sprintf("%s S%02d", title, req.CourTVDBSeason)
+						v := mkSeasonWith("", "", req.CourTVDBSeason)
+						v.Set("q", q)
+						attempts = append(attempts, v)
+						for _, sq := range []string{
+							q,
+							fmt.Sprintf("%s %s", title, ordinalSeason(req.CourTVDBSeason)),
+							fmt.Sprintf("%s Season %d", title, req.CourTVDBSeason),
+						} {
+							v2 := base()
+							v2.Set("t", "search")
+							v2.Set("q", sq)
+							attempts = append(attempts, v2)
+						}
+					}
 				}
 				for _, title := range titles {
 					q := fmt.Sprintf("%s S%02d", title, req.Season)
@@ -1344,7 +1417,19 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Id
 	if isTV {
 		for _, title := range titles {
 			if req.Season > 0 && req.Episode > 0 {
-				// Season pack queries (S01 / Season 1 / Complete).
+				// Season pack queries (mapped TVDB season first, then S01 / Season 1 / Complete).
+				if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
+					for _, sq := range []string{
+						fmt.Sprintf("%s S%02d", title, req.CourTVDBSeason),
+						fmt.Sprintf("%s %s", title, ordinalSeason(req.CourTVDBSeason)),
+						fmt.Sprintf("%s Season %d", title, req.CourTVDBSeason),
+					} {
+						vTVDB := base()
+						vTVDB.Set("t", "search")
+						vTVDB.Set("q", sq)
+						add(vTVDB)
+					}
+				}
 				vS := base()
 				vS.Set("t", "search")
 				vS.Set("q", fmt.Sprintf("%s S%02d", title, req.Season))
@@ -1433,6 +1518,13 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 			}
 		}
 		if req.Season > 0 && req.Episode > 0 {
+			if req.CourTVDBSeason > 0 && req.CourTVDBSeason != req.Season {
+				tvdbPack := req
+				tvdbPack.Season, tvdbPack.Episode = req.CourTVDBSeason, 0
+				if rs, err := c.backendSearch(ctx, tvdbPack); err == nil {
+					appendUnique(rs)
+				}
+			}
 			packReq := req
 			packReq.Episode = 0
 			if rs, err := c.backendSearch(ctx, packReq); err == nil {

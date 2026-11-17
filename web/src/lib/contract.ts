@@ -68,6 +68,7 @@ export interface TitleLibraryStatus {
 }
 
 const RULE_FIELDS = [
+  "title",
   "genre",
   "keyword",
   "person",
@@ -112,6 +113,7 @@ export interface Rule {
   op: RuleOp;
   value: unknown;
   label?: string;
+  labels?: string[];
 }
 
 type TmdbListName =

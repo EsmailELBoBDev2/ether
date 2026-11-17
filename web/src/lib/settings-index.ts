@@ -72,6 +72,7 @@ export function settingsIndex(): SettingHit[] {
   const general = t("General");
   const quality = t("Quality");
   const playback = t("Playback");
+  const cachePreloading = `${t("Cache")} › ${t("Preloading")}`;
   const moviesSettings = t("Movies · Settings");
   const viewers = t("Viewers");
   const plex = "Plex";
@@ -105,6 +106,46 @@ export function settingsIndex(): SettingHit[] {
       href: "/services/overview",
       keywords: "poster API key",
     })),
+    // Cache › Preloading
+    ...rows("/cache/preloading", cachePreloading, [
+      ["allow-opening-and-resume-warming", t("Allow opening and resume warming")],
+      ["warm-detail-pages", t("Warm detail pages")],
+      ["prepare-the-next-episode", t("Prepare the next episode")],
+      ["keep-resume-points-warm", t("Keep resume points warm")],
+      ["warm-up-new-arrivals", t("Warm up new arrivals")],
+      ["read-ahead-while-playing", t("Read ahead while playing")],
+      ["preload-movies-and-tv", t("Preload movies & TV")],
+      ["keep-warm", t("Keep warm")],
+      ["speculative-warming", t("Speculative warming")],
+      ["preload-allocation", t("Preload allocation")],
+      ["include-in-your-shelf", t("Include in your shelf")],
+      ["selection-strategy", t("Selection strategy")],
+      ["household-influence", t("Household influence")],
+      ["learn-from", t("Learn from")],
+      ["episode-window-per-show", t("Episode window per show")],
+    ]),
+    ...rows(
+      "/cache/preloading",
+      cachePreloading,
+      [
+        ["opening-window", t("Opening window")],
+        ["next-episode-resume-window", t("Next episode / resume window")],
+        ["prepare-next-episode-at", t("Prepare next episode at")],
+      ],
+      "playback-warming",
+    ),
+    ...rows(
+      "/cache/preloading",
+      cachePreloading,
+      [
+        ["household-history-window", t("Household history window")],
+        ["maximum-preloaded-titles", t("Maximum preloaded titles")],
+        ["preload-speed", t("Preload speed")],
+        ["keep-disk-space-free", t("Keep disk space free")],
+        ["preload-during-playback", t("Preload during playback")],
+      ],
+      "local-shelf",
+    ),
     // General
     ...groupHits(S.SERVER, "/server", general),
     ...rows("/server", general, [

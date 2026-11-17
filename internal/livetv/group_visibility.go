@@ -34,6 +34,9 @@ func saveGroupVisibility(ctx context.Context, tx *sql.Tx, gs []OwnerGroup) error
 		return err
 	}
 	for _, g := range gs {
+		if len(g.Rules) > 0 {
+			continue
+		}
 		prefix := ""
 		if g.Hidden {
 			prefix = "hidden_"
@@ -66,6 +69,38 @@ func (s *Service) searchVisibleGroupIDs(ctx context.Context, ids []string) (map[
 	d := store.DialectOf(s.o.DB)
 	sourceExpr := `coalesce(` + store.JSONText(d, "c.data", "sourceId") + `,'')`
 	groupExpr := `coalesce(` + store.JSONText(d, "c.data", "group") + `,'')`
+	if idx, err := s.cachedOwnerGroupIndex(ctx); err == nil && idx != nil && idx.hasRules {
+		for start := 0; start < len(ids); start += 400 {
+			chunk := ids[start:min(start+400, len(ids))]
+			args := make([]any, len(chunk))
+			for i, id := range chunk {
+				args[i] = id
+			}
+			query := `SELECT c.id, ` + sourceExpr + `, ` + groupExpr + ` FROM livetv_channels c WHERE c.id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",") + `)`
+			rows, err := s.o.DB.QueryContext(ctx, query, args...)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var id, srcID, grp string
+				if err = rows.Scan(&id, &srcID, &grp); err != nil {
+					break
+				}
+				if len(idx.memberships(srcID, grp, id)) > 0 || !idx.inHiddenGroup(srcID, grp, id) {
+					visible[id] = true
+				}
+			}
+			re := rows.Err()
+			rows.Close()
+			if err != nil {
+				return nil, err
+			}
+			if re != nil {
+				return nil, re
+			}
+		}
+		return visible, nil
+	}
 	for start := 0; start < len(ids); start += 400 {
 		chunk := ids[start:min(start+400, len(ids))]
 		args := make([]any, len(chunk))

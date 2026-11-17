@@ -65,7 +65,7 @@ func (s *Service) reconcileOwnerChannelApps(ctx context.Context, c *Channel) {
 	var hidden, shown []string
 	for _, app := range Apps {
 		wantHidden := slices.Contains(c.HiddenApps, app)
-		groupShow, hasRule := idx.groupAppRule(c.SourceID, c.Group, c.ID, app)
+		groupShow, hasRule := idx.groupAppRuleForChannel(*c, app)
 		groupHides := hasRule && !groupShow
 		switch {
 		case wantHidden && groupHides:
@@ -93,6 +93,7 @@ func (s *Service) ownerHandler(logos channelLogoFetcher) http.Handler {
 	r.Get("/groups", s.ownerGroupsRoute)
 	r.Put("/groups", s.ownerGroupsRoute)
 	r.Post("/groups", s.ownerGroupsRoute)
+	r.Post("/groups/preview", s.ownerGroupPreviewRoute)
 	r.Put("/groups/order", s.ownerGroupsOrderRoute)
 	r.Put("/groups/{id}", s.ownerGroupItemRoute)
 	r.Patch("/groups/{id}", s.ownerGroupItemRoute)
@@ -497,8 +498,13 @@ func ownerResult(w http.ResponseWriter, v any, err error) {
 			status = http.StatusServiceUnavailable
 			w.Header().Set("Retry-After", "1")
 		}
+		errBody := map[string]any{"code": "livetv", "message": err.Error()}
+		var verr *ownerValidationError
+		if errors.As(err, &verr) && len(verr.fields) > 0 {
+			errBody["fields"] = verr.fields
+		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "livetv", "message": err.Error()}})
+		json.NewEncoder(w).Encode(map[string]any{"error": errBody})
 		return
 	}
 	json.NewEncoder(w).Encode(v)

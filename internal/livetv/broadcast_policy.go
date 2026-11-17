@@ -62,7 +62,7 @@ func (s *Service) broadcastPolicyContext(ctx context.Context, ss *session, u *co
 	}
 	groupIdx := prevGroupIdx
 	if groupIdx == nil || epoch != prevGroupRev {
-		decoded, err := decodeOwnerGroupIndex(rawGroups)
+		decoded, err := s.loadOwnerGroupIndex(ctx, epoch, rawGroups)
 		if err != nil {
 			return ctx, err
 		}

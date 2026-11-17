@@ -219,3 +219,171 @@ func TestOwnerGroupDecisionALateProviderChannel(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnerGroupRulesAndPreview(t *testing.T) {
+	ctx := context.Background()
+	s := testService(t, Options{})
+	if _, err := s.SavePendingSource(ctx, Source{ID: "tuli", Name: "Tuliprox US"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Channel{
+		{ID: "cbs", Name: "CBS WCBS HD", Number: "2", Kind: "iptv", Enabled: true, SourceID: "tuli", Group: "US Locals", GuideID: "cbs.wcbs", StreamURL: "https://example.invalid/cbs"},
+		{ID: "espn", Name: "ESPN HD", Number: "206", Kind: "iptv", Enabled: true, SourceID: "tuli", Group: "US Sports", GuideID: "espn.us", StreamURL: "https://example.invalid/espn"},
+		{ID: "espn-bak", Name: "ESPN Backup", Number: "207", Kind: "iptv", Enabled: true, SourceID: "tuli", Group: "US Sports", GuideID: "espn.us", StreamURL: "https://example.invalid/espn-bak"},
+		{ID: "golf", Name: "Golf Channel SD", Number: "218", Kind: "iptv", Enabled: true, SourceID: "tuli", Group: "US Sports", GuideID: "golf.us", StreamURL: "https://example.invalid/golf"},
+		{ID: "bbc", Name: "BBC News HD", Number: "501", Kind: "iptv", Enabled: true, SourceID: "uk", Group: "UK News", GuideID: "bbc.news", StreamURL: "https://example.invalid/bbc"},
+	} {
+		if _, err := s.SaveChannel(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 1. Invalid pattern returns HTTP 400 with the bad pattern and RE2 error text on both preview and save.
+	badPattern := `(?i)^(cbs\.wcbs|espn\.us`
+	badPayloadBytes, _ := json.Marshal(OwnerGroup{
+		Name:  "Broken",
+		Rules: []OwnerGroupRule{{Field: "guideId", Op: "matches", Value: badPattern}},
+	})
+	badBody := string(badPayloadBytes)
+	for _, target := range []struct{ method, path, payload string }{
+		{http.MethodPost, "/groups/preview", badBody},
+		{http.MethodPut, "/groups", `[` + badBody + `]`},
+	} {
+		rec := call(target.method, target.path, target.payload)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s %s status=%d body=%s", target.method, target.path, rec.Code, rec.Body.String())
+		}
+		var errEnv struct {
+			Error struct {
+				Message string            `json:"message"`
+				Fields  []ownerFieldError `json:"fields"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &errEnv); err != nil {
+			t.Fatalf("%s %s decode error: %v (%s)", target.method, target.path, err, rec.Body.String())
+		}
+		if (!strings.Contains(errEnv.Error.Message, badPattern) && !strings.Contains(errEnv.Error.Message, `(?i)^(cbs\\.wcbs|espn\\.us`)) ||
+			!strings.Contains(errEnv.Error.Message, "missing closing )") {
+			t.Fatalf("%s %s expected bad pattern and RE2 error in %+v", target.method, target.path, errEnv.Error)
+		}
+		if len(errEnv.Error.Fields) != 1 || errEnv.Error.Fields[0].Field != "rules.0.value" || !strings.Contains(errEnv.Error.Fields[0].Message, "missing closing )") {
+			t.Fatalf("%s %s unexpected field errors: %+v", target.method, target.path, errEnv.Error.Fields)
+		}
+	}
+
+	// 2. Preview endpoint evaluates Tuliprox-style (?i) alternation + exclude subtraction before saving.
+	previewReq := `{
+		"name": "US Sports",
+		"groups": [],
+		"match": "any",
+		"rules": [
+			{"field": "guideId", "op": "matches", "value": "(?i)^(cbs\\.wcbs|espn\\.us|fs1\\.us)$"},
+			{"field": "name", "op": "notContains", "value": "backup"}
+		]
+	}`
+	rec := call(http.MethodPost, "/groups/preview", previewReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /groups/preview: %d %s", rec.Code, rec.Body.String())
+	}
+	var preview OwnerGroupPreview
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Count != 2 || len(preview.Channels) != 2 || preview.Channels[0].ID != "cbs" || preview.Channels[1].ID != "espn" {
+		t.Fatalf("unexpected preview result: %+v", preview)
+	}
+
+	// 3. Save groups testing Match="any" (with (?i) regex + provider group + exclude) and Match="all" (source + name + notMatches).
+	putGroups := `[
+		{
+			"id": "us-sports",
+			"name": "US Sports",
+			"groups": [{"sourceId": "tuli", "name": "US Sports"}],
+			"match": "any",
+			"rules": [
+				{"field": "guideId", "op": "matches", "value": "(?i)^(cbs\\.wcbs|espn\\.us|fs1\\.us)$"},
+				{"field": "name", "op": "notContains", "value": "Backup"},
+				{"field": "name", "op": "notMatches", "value": "\\bSD$"}
+			],
+			"unratedRating": "TV-PG",
+			"apps": {"plex": false}
+		},
+		{
+			"id": "hd-tuli",
+			"name": "Tuliprox HD",
+			"groups": [],
+			"match": "all",
+			"rules": [
+				{"field": "source", "op": "contains", "value": "tuliprox"},
+				{"field": "name", "op": "contains", "value": "hd"},
+				{"field": "number", "op": "is", "value": "206"}
+			]
+		}
+	]`
+	rec = call(http.MethodPut, "/groups", putGroups)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /groups: %d %s", rec.Code, rec.Body.String())
+	}
+	var saved []OwnerGroup
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil || len(saved) != 2 {
+		t.Fatalf("unmarshal PUT /groups: %v %+v", err, saved)
+	}
+	// us-sports: provider group US Sports={espn, espn-bak, golf} U regex={cbs, espn, espn-bak} - {espn-bak, golf} = {cbs, espn}.
+	if saved[0].ChannelCount != 2 || len(saved[0].Rules) != 3 || saved[0].Match != "any" {
+		t.Fatalf("unexpected us-sports saved group: %+v", saved[0])
+	}
+	// hd-tuli (match=all): source contains tuliprox AND name contains hd AND number is 206 => {espn}.
+	if saved[1].ChannelCount != 1 || saved[1].Match != "all" {
+		t.Fatalf("unexpected hd-tuli saved group: %+v", saved[1])
+	}
+
+	host := liveTVHost{s: s}
+	viewer := &core.User{ID: 1, IsOwner: true}
+	hdMembers, err := host.GroupChannels(ctx, viewer, "hd-tuli")
+	if err != nil || len(hdMembers) != 1 || hdMembers[0].ID != "espn" {
+		t.Fatalf("hd-tuli members: %+v %v", hdMembers, err)
+	}
+
+	// 4. Decision A: provider later imports fs1.us in a DIFFERENT provider group ("Extras").
+	// Because guideId matches (?i)^(cbs\.wcbs|espn\.us|fs1\.us)$, it automatically joins us-sports
+	// and inherits both Apps["plex"]=false and UnratedRating="TV-PG".
+	fs1, err := s.SaveChannel(ctx, Channel{
+		ID: "fs1", Name: "FS1 HD", Number: "219", Kind: "iptv",
+		Enabled: true, SourceID: "tuli", Group: "Extras", GuideID: "FS1.US", StreamURL: "https://example.invalid/fs1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupsForFS1, err := s.ChannelGroups(ctx, fs1.SourceID, fs1.Group, fs1.ID)
+	if err != nil || !reflect.DeepEqual(groupsForFS1, []frontend.LiveGroup{{ID: "us-sports", Name: "US Sports"}}) {
+		t.Fatalf("late rule-matched channel did not join us-sports: %+v %v", groupsForFS1, err)
+	}
+	plexAllowed, err := s.AllowedChannels(core.WithLiveApp(ctx, "plex"), viewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range plexAllowed {
+		if ch.ID == "fs1" || ch.ID == "cbs" || ch.ID == "espn" {
+			t.Fatalf("rule-matched channel %s leaked into plex despite group hide", ch.ID)
+		}
+	}
+	// Excluded channels (espn-bak, golf) in provider group "US Sports" were subtracted, so they remain visible in Plex.
+	plexIDs := make([]string, 0, len(plexAllowed))
+	for _, ch := range plexAllowed {
+		plexIDs = append(plexIDs, ch.ID)
+	}
+	if !slices.Contains(plexIDs, "espn-bak") || !slices.Contains(plexIDs, "golf") {
+		t.Fatalf("excluded channels should not inherit group hide: %v", plexIDs)
+	}
+	if gotRating := s.channelContentRating(ctx, fs1, nil); gotRating != "TV-PG" {
+		t.Fatalf("fs1 inherited rating = %q, want TV-PG", gotRating)
+	}
+}

@@ -60,6 +60,7 @@ type Preview = {
 };
 
 const FIELDS: RuleField[] = [
+  "title",
   "genre",
   "keyword",
   "studio",
@@ -76,6 +77,7 @@ const FIELDS: RuleField[] = [
 function metaFor(field: RuleField): FieldMeta | undefined {
   const base = fieldMeta(field);
   if (!base) return undefined;
+  if (field === "title") return { ...base, label: t("Specific titles") };
   const extra = [...base.ops, "unknown" as const, "known" as const];
   if (field === "keyword")
     return { ...base, kind: "facet", facet: "keyword", ops: extra, defaultOp: "in" };
@@ -125,7 +127,11 @@ function conditionLine(rule: Rule, kind?: MediaKind): string {
 }
 
 /** "Hide · Genre is Horror, Thriller". The stored name stays in the drawer. */
-function ruleLabel(rule: VisibilityRule, pinnedMediaType?: "movie" | "show", kind?: MediaKind) {
+export function ruleLabel(
+  rule: VisibilityRule,
+  pinnedMediaType?: "movie" | "show",
+  kind?: MediaKind,
+) {
   const action = actionOf(rule) === "show" ? t("Show") : t("Hide");
   const bits = rule.rules.filter(isRuleComplete).map((r) => conditionLine(r, kind));
   const body =
@@ -280,7 +286,7 @@ export function RulesPanel({
         rule={rule}
         index={j}
         kind="include"
-        mediaType={mediaType ?? "mixed"}
+        mediaType={mediaType ?? editing?.mediaType ?? "mixed"}
         region={region}
         allowedFields={allowedFields}
         facetLibraryId={pluginLibrary?.id}

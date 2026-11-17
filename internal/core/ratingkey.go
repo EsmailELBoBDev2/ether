@@ -48,6 +48,10 @@ const (
 
 const keyBase = 1_000_000_000_000_000 // 10^15
 
+// MaxTitleRuleKeys bounds the number of rating keys in one "title" visibility
+// condition so compiled key IN (...) predicates stay bounded.
+const MaxTitleRuleKeys = 500
+
 // PluginKeyBase and PluginKeyMaxSeq carve out the KindLocal payload range
 // [PluginKeyBase+1, PluginKeyBase+PluginKeyMaxSeq) for plugin items while
 // keeping every RatingKey below 2^53 (spec §2.2).
@@ -226,6 +230,21 @@ func (k RatingKey) Valid() bool {
 	switch k.Kind() {
 	case KindMovie, KindShow, KindSeason, KindEpisode, KindCollection, KindSmart, KindPlaylist, KindExtra, KindLocal:
 		return k.payload() > 0 || k.Kind() == KindSeason
+	}
+	return false
+}
+
+// IsTitleKey reports whether k is a catalogue movie, show, or non-plugin local
+// title RatingKey (the keys stored in catalog_titles).
+func (k RatingKey) IsTitleKey() bool {
+	if !k.Valid() {
+		return false
+	}
+	switch k.Kind() {
+	case KindMovie, KindShow:
+		return true
+	case KindLocal:
+		return k.payload() > 0 && k.payload() < PluginKeyBase
 	}
 	return false
 }

@@ -937,6 +937,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   function fieldValues(t: FakeTitle, field: string): (string | number | boolean)[] {
     switch (field) {
+      case "title":
+        return [t.key];
       case "genre":
         return t.genres ?? [];
       case "keyword":
@@ -1011,7 +1013,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
     if (r.field === "contentRating") return ratingMatches(t, r);
     const vals = fieldValues(t, r.field);
-    const eq = (a: unknown, b: unknown) => String(a).toLowerCase() === String(b).toLowerCase();
+    const norm = (v: unknown) =>
+      typeof v === "object" && v !== null && "key" in v ? (v as { key: unknown }).key : v;
+    const eq = (a: unknown, b: unknown) =>
+      String(norm(a)).toLowerCase() === String(norm(b)).toLowerCase();
     switch (r.op) {
       case "in":
         return Array.isArray(r.value) && r.value.some((v) => vals.some((x) => eq(x, v)));

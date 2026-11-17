@@ -94,7 +94,7 @@ func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string, declare
 	}
 	var validate func(condition) error
 	validate = func(c condition) error {
-		if c.predicate != nil && c.predicateSQL == "" {
+		if c.field == "title" || (c.predicate != nil && c.predicateSQL == "") {
 			return fmt.Errorf("condition %q is only available for catalogue sources", c.field)
 		}
 		for _, child := range c.children {

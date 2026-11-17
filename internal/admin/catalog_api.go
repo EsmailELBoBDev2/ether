@@ -620,7 +620,7 @@ func (h *Handler) handleVisibilityPreview(w http.ResponseWriter, r *http.Request
 		writeError(w, 400, "bad_json", "Invalid filter")
 		return
 	}
-	if _, err := libraryfilter.CompilePolicy(body.Exclusions, body.VisibilityDefault); err != nil && body.LibraryID == 0 {
+	if _, err := libraryfilter.CompilePolicy(body.Exclusions, body.VisibilityDefault); err != nil && (body.LibraryID == 0 || body.LibraryID == core.LibraryMovies || body.LibraryID == core.LibraryShows) {
 		writeError(w, 400, "invalid_filter", "Could not preview catalogue")
 		return
 	}

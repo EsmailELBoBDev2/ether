@@ -15,15 +15,16 @@ import { textOf } from "./extend";
 
 /**
  * Rule value encoding (the contract leaves `value` typed by field):
- *   in / notIn   → array of keys (facet keys as strings, lookup ids as numbers)
+ *   in / notIn   → array of keys (facet keys as strings, lookup ids as numbers, title rating keys as strings)
  *   is / isNot   → a single key, number or boolean
  *   gte / lte    → a number, or an ISO date (YYYY-MM-DD) for date fields
  *   between      → [min, max] with the same element type as gte/lte
  *   within       → a relative window "<n><unit>", unit d|w|m|y ("30d", "6m")
- * Lookup-backed rules also carry `label`: the display names joined by ", ".
+ * Lookup-backed rules carry `label`: the display names joined by ", ".
+ * Title-backed rules carry `labels`: display names parallel to `value`.
  */
 
-type ValueKind = "facet" | "lookup" | "number" | "date" | "bool";
+type ValueKind = "facet" | "lookup" | "title" | "number" | "date" | "bool";
 
 export interface FieldMeta {
   field: RuleField;
@@ -278,7 +279,19 @@ export const FIELDS = localized<FieldMeta[]>(() => [
 ]);
 
 export const FIELD_BY_NAME: Record<RuleField, FieldMeta> = localized(
-  () => Object.fromEntries(FIELDS.map((f) => [f.field, f])) as Record<RuleField, FieldMeta>,
+  () =>
+    ({
+      ...Object.fromEntries(FIELDS.map((f) => [f.field, f])),
+      title: {
+        field: "title",
+        label: t("Title"),
+        group: t("Content"),
+        kind: "title",
+        ops: SET_OPS,
+        defaultOp: "in",
+        hint: t("Pick individual movies or shows"),
+      },
+    }) as Record<RuleField, FieldMeta>,
 );
 
 export function fieldMeta(field: string): FieldMeta | undefined {
@@ -303,7 +316,53 @@ export function opLabel(op: RuleOp, kind?: ValueKind): string {
     if (op === "gte") return t("on or after");
     if (op === "lte") return t("on or before");
   }
+  if (kind === "title") {
+    if (op === "in" || op === "is") return OP_LABELS.is;
+    if (op === "notIn" || op === "isNot") return OP_LABELS.isNot;
+  }
   return OP_LABELS[op];
+}
+
+export interface PickedTitle {
+  key: string;
+  title?: string;
+}
+
+/** Picked title keys and optional stored display names from a `title` rule. */
+export function pickedTitlesOf(rule: Rule): PickedTitle[] {
+  const raw = Array.isArray(rule.value)
+    ? rule.value
+    : rule.value === "" || rule.value == null
+      ? []
+      : [rule.value];
+  const labels = Array.isArray(rule.labels) ? rule.labels : [];
+  const out: PickedTitle[] = [];
+  const seen = new Set<string>();
+  raw.forEach((item, i) => {
+    let key = "";
+    let objTitle: string | undefined;
+    if (typeof item === "object" && item !== null) {
+      const rec = item as Record<string, unknown>;
+      if (rec.key != null) key = String(rec.key).trim();
+      for (const k of ["title", "label", "name"]) {
+        if (typeof rec[k] === "string" && rec[k].trim()) {
+          objTitle = rec[k].trim();
+          break;
+        }
+      }
+    } else if (item != null) {
+      key = String(item).trim();
+    }
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    const stored = typeof labels[i] === "string" && labels[i].trim() ? labels[i].trim() : undefined;
+    const singleLabel =
+      raw.length === 1 && typeof rule.label === "string" && rule.label.trim()
+        ? rule.label.trim()
+        : undefined;
+    out.push({ key, title: stored ?? objTitle ?? singleLabel });
+  });
+  return out;
 }
 
 export const WITHIN_UNITS = localized(
@@ -343,6 +402,14 @@ export function valueFor(meta: FieldMeta, op: RuleOp, prev?: unknown): unknown {
   switch (meta.kind) {
     case "bool":
       return typeof prev === "boolean" ? prev : true;
+    case "title":
+      return list
+        .map((x) =>
+          typeof x === "object" && x !== null && "key" in x
+            ? String((x as { key: unknown }).key).trim()
+            : String(x).trim(),
+        )
+        .filter(Boolean);
     case "facet":
     case "lookup":
       if (op === "in" || op === "notIn") return list;
@@ -409,6 +476,7 @@ export function isRuleComplete(rule: Rule): boolean {
   if (rule.op === "unknown" || rule.op === "known") return true;
   const meta = fieldMeta(rule.field);
   if (!meta) return true;
+  if (meta.kind === "title") return pickedTitlesOf(rule).length > 0;
   const v = rule.value;
   if (meta.kind === "bool") return typeof v === "boolean";
   if (Array.isArray(v)) {
@@ -444,6 +512,20 @@ export function describeRule(rule: Rule): string {
     return t("{field} in the last {window}", { field: label, window: formatWithin(v) });
   if (rule.op === "unknown") return t("{field} is not set", { field: label });
   if (rule.op === "known") return t("{field} is set", { field: label });
+  if (meta?.field === "title") {
+    const names = pickedTitlesOf(rule).map((p) => p.title || `#${p.key}`);
+    const shown =
+      names.length === 0
+        ? "…"
+        : names.length <= 2
+          ? names.join(", ")
+          : t("{names} +{count}", {
+              names: names.slice(0, 2).join(", "),
+              count: names.length - 2,
+            });
+    const op: RuleOp = rule.op === "notIn" || rule.op === "isNot" ? "isNot" : "is";
+    return opPhrase(op, meta.kind, label, shown);
+  }
   if (meta?.field === "contentRating") {
     const values = (Array.isArray(v) ? v : [v]).filter((x) => x !== "" && x != null);
     const shown = [...new Set(values.map((x) => ratingLevelLabel(String(x))))];

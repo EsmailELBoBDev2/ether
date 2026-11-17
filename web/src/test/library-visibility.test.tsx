@@ -318,4 +318,113 @@ describe("Library visibility", () => {
       expect(screen.queryByRole("button", { name: "Where to hide" })).not.toBeInTheDocument();
     });
   });
+
+  it("builds and summarizes Specific titles rules for Show and Hide", async () => {
+    const { fake } = renderApp("/libraries/1/rules", {}, (server) => {
+      (server.state.config.catalog as { exclusions?: unknown }).exclusions = [
+        {
+          name: "",
+          action: "show",
+          mediaType: "movie",
+          match: "all",
+          rules: [
+            {
+              field: "title",
+              op: "in",
+              value: ["1000001", "1000002", "1000003", "1000004", "1000005"],
+              labels: ["Alien", "Monsters, Inc.", "Psycho", "Saw", "Ring"],
+            },
+          ],
+        },
+        {
+          name: "",
+          action: "hide",
+          mediaType: "movie",
+          match: "all",
+          rules: [
+            {
+              field: "title",
+              op: "notIn",
+              value: ["1000001"],
+              labels: ["Alien"],
+            },
+          ],
+        },
+      ];
+    });
+    await settleUi(() => {
+      expect(screen.getByText("Show · Title is Alien, Monsters, Inc. +3")).toBeInTheDocument();
+      expect(screen.getByText("Hide · Title is not Alien")).toBeInTheDocument();
+    });
+
+    // Clear stored rules and create a new Specific titles rule from the picker.
+    fireEvent.click(screen.getByRole("button", { name: "Delete rule 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete rule 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "Rule action" })).getByRole("radio", {
+        name: "Show",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rule 1 field" }));
+    await settleUi(() => {
+      expect(screen.getByRole("option", { name: /Specific titles/ })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("option", { name: /Specific titles/ }));
+
+    expect(screen.getByRole("button", { name: "Rule 1 condition" })).toHaveTextContent("is");
+    const search = screen.getByRole("textbox", { name: "Rule 1 search" });
+    fireEvent.change(search, { target: { value: "The " } });
+
+    let firstTitle = "";
+    let secondTitle = "";
+    await settleUi(() => {
+      const results = screen.getByRole("list", { name: "Search results" });
+      const buttons = within(results).getAllByRole("button");
+      expect(buttons.length).toBeGreaterThanOrEqual(2);
+      firstTitle = buttons[0]!.querySelector("span.text-fg")?.textContent ?? "";
+      secondTitle = buttons[1]!.querySelector("span.text-fg")?.textContent ?? "";
+      expect(firstTitle).not.toBe("");
+      expect(secondTitle).not.toBe("");
+    });
+
+    const results = screen.getByRole("list", { name: "Search results" });
+    fireEvent.click(within(results).getAllByRole("button")[0]!);
+    fireEvent.click(within(results).getAllByRole("button")[1]!);
+
+    await settleUi(() => {
+      expect(screen.getByRole("button", { name: `Remove ${firstTitle}` })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: `Remove ${secondTitle}` })).toBeInTheDocument();
+    });
+
+    // Search included unbrowsable titles (all=1) so currently hidden items can be rescued.
+    expect(
+      fake.state.calls.some(
+        (c) => c.path.startsWith("/catalog/search?") && c.path.includes("all=1"),
+      ),
+    ).toBe(true);
+
+    // Remove the second chip and save.
+    fireEvent.click(screen.getByRole("button", { name: `Remove ${secondTitle}` }));
+    await settleUi(() => {
+      expect(screen.getAllByText(`Show · Title is ${firstTitle}`).length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      expect(calls(fake, "PATCH", "/libraries/1")).toHaveLength(1);
+    });
+    const saved = calls(fake, "PATCH", "/libraries/1")[0]?.body as {
+      rules: {
+        action: string;
+        rules: { field: string; op: string; value: string[]; labels: string[] }[];
+      }[];
+    };
+    expect(saved.rules).toHaveLength(1);
+    expect(saved.rules[0]?.action).toBe("show");
+    expect(saved.rules[0]?.rules[0]?.field).toBe("title");
+    expect(saved.rules[0]?.rules[0]?.op).toBe("in");
+    expect(saved.rules[0]?.rules[0]?.value).toHaveLength(1);
+    expect(saved.rules[0]?.rules[0]?.labels).toEqual([firstTitle]);
+  });
 });

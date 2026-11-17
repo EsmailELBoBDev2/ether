@@ -31,6 +31,8 @@ type condition struct {
 	allCountries bool
 	values       []string
 	nums         []float64
+	keys         []core.RatingKey
+	keySet       map[core.RatingKey]struct{}
 	// levels are a content-rating rule's age levels. Unrated is the explicit
 	// "Not rated" choice. gte and lte hold exactly one rated level.
 	levels []contentrating.Level
@@ -242,6 +244,13 @@ func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompil
 		}
 	}
 	switch field {
+	case "title":
+		keys, set, err := compileTitles(r.Op, r.Value)
+		if err != nil {
+			return condition{}, err
+		}
+		c.keys = keys
+		c.keySet = set
 	case "contentRating":
 		levels, err := compileRatings(r.Op, r.Value)
 		if err != nil {
@@ -301,6 +310,66 @@ func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompil
 		return condition{}, fmt.Errorf("unsupported catalogue field %q", r.Field)
 	}
 	return c, nil
+}
+
+func compileTitles(op string, raw json.RawMessage) ([]core.RatingKey, map[core.RatingKey]struct{}, error) {
+	switch op {
+	case "in", "notIn", "is", "isNot":
+	default:
+		return nil, nil, fmt.Errorf("unsupported title comparison")
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil, fmt.Errorf("title needs 1–%d titles", core.MaxTitleRuleKeys)
+	}
+	var decVal any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&decVal); err != nil {
+		return nil, nil, fmt.Errorf("title needs rating keys")
+	}
+	var items []any
+	switch x := decVal.(type) {
+	case []any:
+		items = x
+	case string, json.Number, map[string]any:
+		items = []any{x}
+	default:
+		return nil, nil, fmt.Errorf("title needs rating keys")
+	}
+	if len(items) == 0 || len(items) > core.MaxTitleRuleKeys {
+		return nil, nil, fmt.Errorf("title needs 1–%d titles", core.MaxTitleRuleKeys)
+	}
+	keys := make([]core.RatingKey, 0, len(items))
+	set := make(map[core.RatingKey]struct{}, len(items))
+	for _, item := range items {
+		var keyStr string
+		switch x := item.(type) {
+		case string:
+			keyStr = strings.TrimSpace(x)
+		case json.Number:
+			keyStr = strings.TrimSpace(x.String())
+		case map[string]any:
+			switch k := x["key"].(type) {
+			case string:
+				keyStr = strings.TrimSpace(k)
+			case json.Number:
+				keyStr = strings.TrimSpace(k.String())
+			default:
+				return nil, nil, fmt.Errorf("invalid title key")
+			}
+		default:
+			return nil, nil, fmt.Errorf("invalid title key")
+		}
+		rk, err := core.ParseRatingKey(keyStr)
+		if err != nil || !rk.IsTitleKey() {
+			return nil, nil, fmt.Errorf("unknown title key %q", keyStr)
+		}
+		if _, dup := set[rk]; !dup {
+			set[rk] = struct{}{}
+			keys = append(keys, rk)
+		}
+	}
+	return keys, set, nil
 }
 
 func textValues(raw json.RawMessage) ([]string, error) {
@@ -564,7 +633,7 @@ func (f *Filter) SQLUndecidable() string {
 		}
 		var unknown []string
 		for _, c := range g.rules {
-			if c.op == "unknown" || c.op == "known" || c.field == "votes" {
+			if c.op == "unknown" || c.op == "known" || c.field == "votes" || c.field == "title" {
 				continue
 			}
 			if q := c.knownSQL(); q != "" {
@@ -633,6 +702,16 @@ func (c condition) matches(t *core.Title) bool {
 
 	if c.op == "unknown" || c.op == "known" {
 		return c.known(t) == (c.op == "known")
+	}
+	if c.field == "title" {
+		if t == nil || t.Key == 0 {
+			return false
+		}
+		_, in := c.keySet[t.Key]
+		if c.op == "notIn" || c.op == "isNot" {
+			return !in
+		}
+		return in
 	}
 	if c.field == "contentRating" {
 		l := contentrating.LevelOf(t.ContentRating)
@@ -733,6 +812,8 @@ func (c condition) known(t *core.Title) bool {
 		return true
 	}
 	switch c.field {
+	case "title":
+		return t != nil && t.Key != 0
 	case "year":
 		return t.Year != 0
 	case "rating":
@@ -915,6 +996,23 @@ func (c condition) sql() (string, []any) {
 		}
 		return q, nil
 	}
+	if c.field == "title" {
+		if len(c.keys) == 0 {
+			if c.op == "notIn" || c.op == "isNot" {
+				return "1=1", nil
+			}
+			return "0=1", nil
+		}
+		args := make([]any, len(c.keys))
+		for i, k := range c.keys {
+			args[i] = int64(k)
+		}
+		op := " IN ("
+		if c.op == "notIn" || c.op == "isNot" {
+			op = " NOT IN ("
+		}
+		return "t.key" + op + store.Placeholders(len(c.keys)) + ")", args
+	}
 	if c.field == "contentRating" {
 		var q string
 		switch c.op {
@@ -1001,7 +1099,7 @@ func (c condition) knownSQL() string {
 	if c.field == "group" {
 		parts := []string{"1=1"}
 		for _, child := range c.children {
-			if child.op == "known" || child.op == "unknown" || child.field == "votes" {
+			if child.op == "known" || child.op == "unknown" || child.field == "votes" || child.field == "title" {
 				continue
 			}
 			parts = append(parts, "("+child.knownSQL()+")")
@@ -1009,6 +1107,8 @@ func (c condition) knownSQL() string {
 		return strings.Join(parts, " AND ")
 	}
 	switch c.field {
+	case "title":
+		return "1=1"
 	case "year":
 		return "t.year>0"
 	case "rating":

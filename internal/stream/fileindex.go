@@ -124,13 +124,37 @@ func (pf *postedFile) rangeLocked(i int) (int64, int64, bool) {
 	size := pf.sizeLocked()
 	// Nearest anchor before i.
 	k := sort.SearchInts(pf.anchors, i) // first anchor >= i (i itself is not an anchor)
-	var begin int64
+	startSlot := 0
+	var base int64
 	if k > 0 {
 		a := pf.anchors[k-1]
-		begin = pf.slots[a].end + int64(i-a-1)*p
-	} else {
-		begin = int64(i) * p
+		startSlot = a + 1
+		base = pf.slots[a].end
 	}
+	limit := size
+	endSlot := len(pf.slots)
+	if k < len(pf.anchors) {
+		endSlot = pf.anchors[k]
+		limit = pf.slots[endSlot].begin
+	}
+	if nSlots := endSlot - startSlot; nSlots > 0 && limit > base && (p <= 0 || p <= (limit-base-1)/int64(nSlots)) {
+		// Available span exceeds nSlots*p (e.g. a non-representative first
+		// article set a smaller partSize): partition [base, limit) evenly so
+		// mid-volume offsets do not land in a dead gap or oversized tail slot.
+		span := limit - base
+		j := int64(i - startSlot)
+		q, r := span/int64(nSlots), span%int64(nSlots)
+		begin := base + j*q + min(j, r)
+		end := base + (j+1)*q + min(j+1, r)
+		if end > size {
+			end = size
+		}
+		if end < begin {
+			end = begin
+		}
+		return begin, end, false
+	}
+	begin := base + int64(i-startSlot)*p
 	// Keep estimates monotonic and below the next anchor.
 	if k < len(pf.anchors) {
 		next := pf.slots[pf.anchors[k]].begin
@@ -211,7 +235,7 @@ func (pf *postedFile) learn(i int, begin, end, fileSize int64, total int) (chang
 		// not allocate an enormous slot table.
 		pf.slots = append(pf.slots, make([]slot, total-len(pf.slots))...)
 	}
-	if fileSize > 0 && (!pf.known || pf.size != fileSize) {
+	if fileSize > 0 && fileSize >= end && (i >= len(pf.slots)-1 || fileSize > end) && (!pf.known || pf.size != fileSize) {
 		pf.size, pf.known = fileSize, true
 		changed = true
 	}

@@ -16,6 +16,25 @@ func (b *builder) rarOptions(ctx context.Context, maxFiles int) *archive.RAROpti
 	return &archive.RAROptions{Context: ctx, Password: b.rel.doc.Password(), MaxFiles: maxFiles, PasswordCache: &b.rel.rarPasswords}
 }
 
+func (b *builder) rarOptionsFor(ctx context.Context, pf *postedFile, maxFiles int) *archive.RAROptions {
+	opts := b.rarOptions(ctx, maxFiles)
+	opts.SizeEstimated = pf != nil && !pf.SizeKnown()
+	return opts
+}
+
+// rarVolSize returns the volume size to record in a RAR layout: pf.Size() when
+// exact, else at least dataOff+dataSize so an underestimated postedFile size
+// cannot reject a header-verified RAR extent.
+func rarVolSize(pf *postedFile, dataOff, dataSize int64) int64 {
+	size := pf.Size()
+	if !pf.SizeKnown() && dataOff >= 0 && dataSize >= 0 && dataSize <= math.MaxInt64-dataOff {
+		if end := dataOff + dataSize; end > size {
+			size = end
+		}
+	}
+	return size
+}
+
 // encryptedPlan retains ciphertext in the existing segment caches. Only bounded
 // requested ranges are decrypted, and neither keys nor plaintext are persisted.
 func (b *builder) encryptedPlan(ctx context.Context, kind planKind, member *archive.Member, vols []*postedFile, info []volInfo) (*plan, error) {
@@ -23,7 +42,13 @@ func (b *builder) encryptedPlan(ctx context.Context, kind planKind, member *arch
 		return nil, ErrCorrupt
 	}
 	for i, pf := range vols {
-		if !pf.SizeKnown() || info[i].size != pf.Size() {
+		if pf.SizeKnown() {
+			if info[i].size != pf.Size() {
+				return nil, fmt.Errorf("stream: encrypted archive volume size is unverified: %w", ErrCorrupt)
+			}
+		} else if kind == kindRAR && info[i].size >= pf.Size() {
+			pf.setAssumed(info[i].size)
+		} else {
 			return nil, fmt.Errorf("stream: encrypted archive volume size is unverified: %w", ErrCorrupt)
 		}
 	}

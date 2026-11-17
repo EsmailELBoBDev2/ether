@@ -328,13 +328,15 @@ func (r *fileReader) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, fmt.Errorf("stream: negative offset")
 	}
-	size := r.pf.Size()
-	if off >= size {
-		return 0, io.EOF
-	}
 	want := p
-	if rem := size - off; int64(len(want)) > rem {
-		want = want[:rem]
+	if r.pf.SizeKnown() {
+		size := r.pf.Size()
+		if off >= size {
+			return 0, io.EOF
+		}
+		if rem := size - off; int64(len(want)) > rem {
+			want = want[:rem]
+		}
 	}
 	n, err := r.b.e.readFile(r.ctx, r.b.rel, r.pf, want, off, r.prio, r.b.fo)
 	if err == nil && n < len(p) {

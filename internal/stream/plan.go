@@ -161,7 +161,7 @@ func (p *plan) buildLocked(version int) (*layout, error) {
 		if vi.size < 0 || vi.dataSize < 0 {
 			return nil, fmt.Errorf("stream: volume %d has a negative size: %w", k, ErrCorrupt)
 		}
-		if !p.verified[k] {
+		if !p.verified[k] || !p.vols[k].SizeKnown() {
 			p.vols[k].setAssumed(vi.size)
 		}
 	}
@@ -322,7 +322,7 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 	size := pf.Size()
 	switch p.kind {
 	case kindRAR:
-		vol, err := archive.ReadRARVolume(b.reader(ctx, pf), size, b.rarOptions(ctx, 1))
+		vol, err := archive.ReadRARVolume(b.reader(ctx, pf), size, b.rarOptionsFor(ctx, pf, 1))
 		if err != nil {
 			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, pf.Name(), err)
 		}
@@ -336,7 +336,7 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 		if m := rarMember(vol.Format, &f); m.Streamable() != nil {
 			return volInfo{}, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, pf.Name(), m.Streamable())
 		}
-		return volInfo{size: size, dataOff: f.DataOffset, dataSize: f.PackedSize}, nil
+		return volInfo{size: rarVolSize(pf, f.DataOffset, f.PackedSize), dataOff: f.DataOffset, dataSize: f.PackedSize}, nil
 	case kind7z, kindZIP:
 		return volInfo{size: size}, nil
 	default:

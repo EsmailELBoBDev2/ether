@@ -62,14 +62,20 @@ func hasUnnamedFiles(data []byte) bool {
 // The stream engine then plays that episode like any single-episode
 // release. A pack with no file for the episode wraps core.ErrNotAvailable.
 func EpisodeNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
-	if t != nil && len(t.MovieTitles) > 0 {
+	if t != nil && t.Episode <= 0 && (len(t.MovieTitles) > 0 || len(t.WantedLanguages) > 0) {
 		doc, err := nzb.Parse(data)
 		if err != nil {
 			return nil, err
 		}
+		hint := nzb.MovieHint{
+			Titles:           t.MovieTitles,
+			Year:             t.MovieYear,
+			WantedLanguages:  t.WantedLanguages,
+			OriginalLanguage: t.OriginalLanguage,
+		}
 		out, ok := doc.SubsetMeta(func(f *nzb.File) bool {
 			return true // the engine arbitrates after learning the complete playable file list
-		}, map[string]string{nzb.MetaMovie: (nzb.MovieHint{Titles: t.MovieTitles, Year: t.MovieYear}).String()})
+		}, map[string]string{nzb.MetaMovie: hint.String()})
 		if !ok {
 			return nil, core.ErrWrongContent
 		}

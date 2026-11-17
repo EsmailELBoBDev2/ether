@@ -102,9 +102,6 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 		return nil, err
 	}
 	n := len(vols)
-	if _, ok := b.rel.doc.MovieHint(); ok && n > 1 {
-		return b.rarFullScan(ctx, vols)
-	}
 	if _, ok := b.rel.doc.EpisodeHint(); ok && n > 1 {
 		// A season in one archive: the wanted episode is not the member that
 		// spans the set from volume 1, so the uniform-layout shortcut below
@@ -183,7 +180,8 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 	if n > 2 {
 		setBytes += int64(n-2) * vols[1].Size()
 	}
-	if main == nil || main.Encrypted || b.startsWithRAR(ctx, vols[0], main) || !main.SplitAfter || main.SplitBefore || main.UnpackedSize <= 0 || main.UnpackedSize*2 < setBytes {
+	_, hasMovieHint := b.rel.doc.MovieHint()
+	if main == nil || main.Encrypted || (hasMovieHint && rarVideoFileCount(v0.Files) > 1) || b.startsWithRAR(ctx, vols[0], main) || !main.SplitAfter || main.SplitBefore || main.UnpackedSize <= 0 || main.UnpackedSize*2 < setBytes {
 		for _, k := range []int{1, n - 1} {
 			if k <= 0 || k >= n {
 				continue
@@ -202,12 +200,19 @@ func (b *builder) planRAR(ctx context.Context, vols []*postedFile) (*plan, error
 	}
 
 	read := func(k int) (*archive.RARFile, error) {
-		v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptionsFor(ctx, vols[k], 1))
+		maxFiles := 1
+		if hasMovieHint && k == n-1 {
+			maxFiles = 0
+		}
+		v, err := archive.ReadRARVolume(b.reader(ctx, vols[k]), vols[k].Size(), b.rarOptionsFor(ctx, vols[k], maxFiles))
 		if err != nil {
 			return nil, fmt.Errorf("stream: rar volume %d (%s): %w", k+1, vols[k].Name(), err)
 		}
 		if err := b.checkRARVolume(v); err != nil {
 			return nil, err
+		}
+		if hasMovieHint && rarVideoFileCount(v.Files) > 1 {
+			return nil, nil
 		}
 		if len(v.Files) == 0 || v.Files[0].Name != main.Name || !v.Files[0].SplitBefore {
 			return nil, nil
@@ -557,21 +562,33 @@ func (b *builder) planZIP(ctx context.Context, vols []*postedFile) (*plan, error
 // never played in its place.
 func (b *builder) chooseMember(members []archive.Member) *archive.Member {
 	if movie, ok := b.rel.doc.MovieHint(); ok {
-		features := 0
+		var features []archive.Member
 		for _, m := range members {
 			info := nzb.Classify(m.Name)
-			if !m.Dir && info.Kind == nzb.KindVideo && !info.Sample && !info.Extra {
-				features++
+			if !m.Dir && (info.Kind == nzb.KindVideo || info.Kind == nzb.KindISO) && !info.Sample && !info.Extra {
+				features = append(features, m)
 			}
 		}
-		if features <= 1 {
+		if len(features) <= 1 {
 			return chooseMember(members)
 		}
-		var matching []archive.Member
-		for _, m := range members {
-			if releaseparse.MovieFileMatches(m.Name, movie.Titles, movie.Year) {
-				matching = append(matching, m)
+		matching := features
+		if len(movie.Titles) > 0 {
+			matching = nil
+			for _, m := range features {
+				if releaseparse.MovieFileMatches(m.Name, movie.Titles, movie.Year) {
+					matching = append(matching, m)
+				}
 			}
+		}
+		if len(matching) > 1 && len(movie.WantedLanguages) > 0 {
+			mc := make([]releaseparse.MovieCandidate, len(matching))
+			for i, m := range matching {
+				mc[i] = releaseparse.MovieCandidate{Path: m.Name, Size: m.Size}
+			}
+			order := releaseparse.OrderMovieCandidates(mc, movie.Titles, movie.OriginalLanguage, movie.WantedLanguages)
+			chosen := matching[order[0]]
+			return &chosen
 		}
 		return chooseMember(matching)
 	}
@@ -648,6 +665,12 @@ func (b *builder) checkRARVolume(v *archive.RARVolume) error {
 		return nil
 	}
 	files := v.Files
+	if movie, ok := b.rel.doc.MovieHint(); ok && rarVideoFileCount(v.Files) > 1 {
+		// A multi-movie RAR chooses its member after scanning all volumes; do
+		// not reject the set early on a sibling version.
+		_ = movie
+		return nil
+	}
 	if h, ok := b.rel.doc.EpisodeHint(); ok {
 		// A season archive: only the wanted episode's member matters, so
 		// another episode's compression or encryption must not reject it.
@@ -1217,6 +1240,17 @@ func vintLen(v uint64) int {
 	for v >= 0x80 {
 		v >>= 7
 		n++
+	}
+	return n
+}
+
+func rarVideoFileCount(files []archive.RARFile) int {
+	n := 0
+	for _, f := range files {
+		info := nzb.Classify(f.Name)
+		if !f.Dir && (info.Kind == nzb.KindVideo || info.Kind == nzb.KindISO) && !info.Sample && !info.Extra {
+			n++
+		}
 	}
 	return n
 }

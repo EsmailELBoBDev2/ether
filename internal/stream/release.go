@@ -230,7 +230,52 @@ func (b *builder) candidates(files []*postedFile) []candidate {
 		out = append(out, c)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].bytes > out[j].bytes })
+	if movie, ok := b.rel.doc.MovieHint(); ok && len(movie.WantedLanguages) > 0 && len(out) > 1 {
+		mc := make([]releaseparse.MovieCandidate, len(out))
+		for i, c := range out {
+			name := ""
+			switch {
+			case c.set != nil:
+				name = c.set.Name + ".mkv"
+			case len(c.files) > 0:
+				name = c.files[0].Name()
+			}
+			mc[i] = releaseparse.MovieCandidate{Path: name, Size: c.bytes}
+		}
+		order := releaseparse.OrderMovieCandidates(mc, movie.Titles, movie.OriginalLanguage, movie.WantedLanguages)
+		reordered := make([]candidate, len(out))
+		for i, idx := range order {
+			reordered[i] = out[idx]
+		}
+		out = reordered
+	}
 	return out
+}
+
+func (b *builder) hasMultipleMovieCandidates(cands []candidate) bool {
+	if len(cands) <= 1 {
+		return false
+	}
+	var maxBytes int64
+	plainVideos := 0
+	for _, c := range cands {
+		if c.bytes > maxBytes {
+			maxBytes = c.bytes
+		}
+		if c.kind == nzb.KindVideo || c.kind == nzb.KindISO {
+			plainVideos++
+		}
+	}
+	if plainVideos > 1 {
+		return true
+	}
+	features := 0
+	for _, c := range cands {
+		if maxBytes <= 0 || c.bytes*100 >= 35*maxBytes {
+			features++
+		}
+	}
+	return features > 1
 }
 
 func (b *builder) planFor(ctx context.Context, c candidate) (*plan, error) {
@@ -247,7 +292,7 @@ func (b *builder) planFor(ctx context.Context, c candidate) (*plan, error) {
 	}
 	switch c.kind {
 	case nzb.KindVideo, nzb.KindISO:
-		if movie, ok := b.rel.doc.MovieHint(); ok && len(b.candidates(b.rel.files)) > 1 && !releaseparse.MovieFileMatches(c.files[0].Name(), movie.Titles, movie.Year) {
+		if movie, ok := b.rel.doc.MovieHint(); ok && len(movie.Titles) > 0 && b.hasMultipleMovieCandidates(b.candidates(b.rel.files)) && !releaseparse.MovieFileMatches(c.files[0].Name(), movie.Titles, movie.Year) {
 			return nil, ErrNoPlayableFile
 		}
 		return b.planPlain(ctx, c.files[0])

@@ -776,6 +776,14 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	}
 	sort.SliceStable(videos, func(i, j int) bool { return videos[i].Size > videos[j].Size })
 	if target == nil || target.Episode <= 0 {
+		if target != nil && len(videos) > 1 && len(target.WantedLanguages) > 0 {
+			mc := make([]releaseparse.MovieCandidate, len(videos))
+			for i, v := range videos {
+				mc[i] = releaseparse.MovieCandidate{Path: v.Path, Size: v.Size}
+			}
+			order := releaseparse.OrderMovieCandidates(mc, target.MovieTitles, target.OriginalLanguage, target.WantedLanguages)
+			return videos[order[0]], nil
+		}
 		return videos[0], nil
 	}
 	if target.Season == 0 {

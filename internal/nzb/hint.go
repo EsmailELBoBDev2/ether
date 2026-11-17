@@ -33,17 +33,20 @@ func (n *NZB) EpisodeHint() (EpisodeHint, bool) {
 	return h, true
 }
 
-// MetaMovie carries the requested movie identity into an archive's member selector.
+// MetaMovie carries the requested movie identity and audio language preferences
+// into multi-file NZB and archive member selection.
 const MetaMovie = "ether-movie"
 
 type MovieHint struct {
-	Titles []string
-	Year   int
+	Titles           []string `json:"Titles,omitempty"`
+	Year             int      `json:"Year,omitempty"`
+	WantedLanguages  []string `json:"WantedLanguages,omitempty"`
+	OriginalLanguage string   `json:"OriginalLanguage,omitempty"`
 }
 
 func (h MovieHint) String() string { b, _ := json.Marshal(h); return string(b) }
 func (n *NZB) MovieHint() (MovieHint, bool) {
 	var h MovieHint
 	err := json.Unmarshal([]byte(n.MetaValue(MetaMovie)), &h)
-	return h, err == nil && len(h.Titles) > 0
+	return h, err == nil && (len(h.Titles) > 0 || len(h.WantedLanguages) > 0)
 }

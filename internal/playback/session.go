@@ -273,6 +273,7 @@ type session struct {
 	exact            bool   // exact selection must never switch releases
 	lastActive       time.Time
 	lastRead         time.Time
+	pausedAt         time.Time // set when viewerState enters "paused"
 	stopAt           time.Time // set by a "stopped" timeline; expiry after a grace
 	decision         core.DecisionKind
 	decisionReason   string
@@ -387,6 +388,17 @@ func (s *session) invalidateDirectRetryLocked() {
 	}
 }
 
+func (s *session) setViewerStateLocked(state string, now time.Time) {
+	if state == "paused" {
+		if s.viewerState != "paused" || s.pausedAt.IsZero() {
+			s.pausedAt = now
+		}
+	} else {
+		s.pausedAt = time.Time{}
+	}
+	s.viewerState = state
+}
+
 func (s *session) touch(now time.Time) {
 	s.mu.Lock()
 	s.lastActive = now
@@ -394,7 +406,7 @@ func (s *session) touch(now time.Time) {
 	s.stopAt = time.Time{}
 	s.stoppedBySurface = false
 	if s.viewerState == "stopped" {
-		s.viewerState = ""
+		s.setViewerStateLocked("", now)
 	}
 	s.mu.Unlock()
 }
@@ -416,7 +428,7 @@ func (s *session) touchTimeline(now time.Time) {
 	s.lastActive = now
 	s.stopAt = time.Time{}
 	if s.viewerState == "stopped" {
-		s.viewerState = ""
+		s.setViewerStateLocked("", now)
 	}
 	s.mu.Unlock()
 }

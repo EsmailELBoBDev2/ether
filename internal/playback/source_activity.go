@@ -39,7 +39,7 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 	firstPos := s.viewerAt.IsZero() || s.viewerState != state
 	s.viewerPosition = position
 	s.viewerAt = time.Now()
-	s.viewerState = state
+	s.setViewerStateLocked(state, now)
 	if state == "paused" || state == "stopped" {
 		s.invalidateDirectRetryLocked()
 	}

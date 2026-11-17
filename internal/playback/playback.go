@@ -951,7 +951,7 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 						// in openFailures and the resolver's bad-source store.
 						s.invalidateDirectRetryLocked()
 						s.tried = nil
-						s.viewerState = ""
+						s.setViewerStateLocked("", now)
 						s.failovers, s.downFailovers, s.stallContinues = 0, 0, 0
 						if s.cur != nil {
 							s.alternates = s.cur.res.Alternates
@@ -1513,7 +1513,7 @@ func (m *Manager) setSurfacePrepared(id string, prepared bool) bool {
 		s.lastRead = now
 		s.stopAt = time.Time{}
 		if s.viewerState == "stopped" {
-			s.viewerState = ""
+			s.setViewerStateLocked("", now)
 		}
 	}
 	s.mu.Unlock()
@@ -1676,6 +1676,10 @@ func (m *Manager) detachSessionLocked(s *session) *generation {
 
 func (m *Manager) finishSessionStop(s *session, g *generation) {
 	id := s.id
+	// Announce detach before source/transcoder cleanup so open consoles and
+	// cluster peers drop the ended stream immediately even if Close blocks.
+	m.reg.poke()
+	m.emitEvent("stop", s, nil)
 	if g != nil {
 		g.retire()
 		m.unpinLive(g.releaseID())
@@ -1683,8 +1687,6 @@ func (m *Manager) finishSessionStop(s *session, g *generation) {
 	if hls, ok := m.deps.HLSLookup(id); ok && hls != nil {
 		m.deps.Transcoder.Stop(hls.ID())
 	}
-	m.reg.poke()
-	m.emitEvent("stop", s, nil)
 	m.kickPins()
 	m.log.Debug("playback session ended", "session", id, "key", s.ident.key, "bytes", s.bytes.Load())
 }
@@ -1793,13 +1795,13 @@ func (m *Manager) Timeline(userID int64, key core.RatingKey, state string) {
 		if state == "stopped" {
 			s.mu.Lock()
 			s.stopAt = now.Add(m.opts.StoppedGrace)
-			s.viewerState = "stopped"
+			s.setViewerStateLocked("stopped", now)
 			s.invalidateDirectRetryLocked()
 			s.mu.Unlock()
 		} else if state == "playing" || state == "paused" {
 			s.touchTimeline(now)
 			s.mu.Lock()
-			s.viewerState = state
+			s.setViewerStateLocked(state, now)
 			if state == "paused" {
 				s.invalidateDirectRetryLocked()
 			}
@@ -1870,9 +1872,10 @@ func (m *Manager) expire() {
 		list = append(list, s)
 	}
 	m.mu.Unlock()
+	pauseRetention := max(m.opts.IdleTimeout, core.PausedSessionRetention)
 	for _, s := range list {
 		s.mu.Lock()
-		last, stopAt, viewerState := s.lastActive, s.stopAt, s.viewerState
+		last, lastMedia, pausedAt, stopAt, viewerState := s.lastActive, s.lastRead, s.pausedAt, s.stopAt, s.viewerState
 		backgroundHeld := s.preparedOnly && s.backgroundHold.active(now)
 		s.mu.Unlock()
 		if hls, ok := m.deps.HLSLookup(s.id); ok && hls != nil {
@@ -1880,10 +1883,11 @@ func (m *Manager) expire() {
 				last = la
 			}
 		}
-		idleTimeout := m.opts.IdleTimeout
-		if viewerState == "paused" {
-			idleTimeout = max(idleTimeout, core.PausedSessionRetention)
+		pausedSince := pausedAt
+		if pausedSince.IsZero() {
+			pausedSince = lastMedia
 		}
+		inFlight := s.activeReads.Load() > 0
 		switch {
 		// A client stop ends at stopAt regardless of media activity after
 		// it: segment reads from the stopped player must not disarm the
@@ -1891,8 +1895,16 @@ func (m *Manager) expire() {
 		case !stopAt.IsZero() && !now.Before(stopAt):
 			m.log.Debug("session stopped by client", "session", s.id)
 			m.Stop(s.id)
-		case !backgroundHeld && now.Sub(last) > idleTimeout:
+		// Any session with no media reads, no timeline/commands and no
+		// open events stream (KeepAlive) ends at IdleTimeout, even if its
+		// last reported state was "paused" before the client crashed.
+		case !backgroundHeld && !inFlight && now.Sub(last) > m.opts.IdleTimeout:
 			m.log.Debug("session idle", "session", s.id, "idle", now.Sub(last))
+			m.Stop(s.id)
+		// A genuinely paused player keeping its events stream or timeline
+		// alive retains its source up to PausedSessionRetention (30 min).
+		case viewerState == "paused" && !backgroundHeld && !inFlight && now.Sub(pausedSince) > pauseRetention:
+			m.log.Debug("paused session retention elapsed", "session", s.id, "paused", now.Sub(pausedSince))
 			m.Stop(s.id)
 		}
 	}

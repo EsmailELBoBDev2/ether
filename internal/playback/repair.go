@@ -38,7 +38,7 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 		stateChanged := s.viewerAt.IsZero() || s.viewerState != state
 		s.viewerPosition = max(0, position)
 		s.viewerAt = time.Now()
-		s.viewerState = state
+		s.setViewerStateLocked(state, now)
 		if state == "paused" || state == "stopped" {
 			s.invalidateDirectRetryLocked()
 		}

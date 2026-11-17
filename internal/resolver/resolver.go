@@ -1026,6 +1026,22 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 		sort.SliceStable(cands, func(i, j int) bool { return suitable(cands[i]) && !suitable(cands[j]) })
 	}
+	if req.Prefer == "" && pin == nil && req.Client.MaxBitrateKbps > 0 && !req.Client.DefaultRemoteBitrate {
+		cleanHD := func(c candidate) bool {
+			return c.rel.Info.Height >= 720 && !c.identityWeak && !c.identityConflict && !c.starved && !c.belowScore && c.langOK
+		}
+		fitsCap := func(c candidate) bool { return cleanHD(c) && c.bandwidth > 0 }
+		if slices.ContainsFunc(cands, fitsCap) {
+			sort.SliceStable(cands, func(i, j int) bool {
+				return fitsCap(cands[i]) && !fitsCap(cands[j]) && cands[j].bandwidth <= 0
+			})
+		} else if req.Client.MaxBitrateKbps <= 12000 && !slices.ContainsFunc(cands, func(c candidate) bool { return c.bandwidth > 0 }) {
+			hd1080 := func(c candidate) bool { return cleanHD(c) && c.rel.Info.Height <= 1080 }
+			sort.SliceStable(cands, func(i, j int) bool {
+				return hd1080(cands[i]) && !hd1080(cands[j]) && cands[j].rel.Info.Height > 1080
+			})
+		}
+	}
 
 	// Preserve normal ranking within each codec family, after policy gates.
 	if req.PreferVideoCodec != "" {

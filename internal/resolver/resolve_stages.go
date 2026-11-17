@@ -79,7 +79,7 @@ func (s *Service) resolvePreferred(ctx context.Context, req core.ResolveRequest,
 	switch {
 	case err != nil:
 		note(PinUnavailable, err.Error(), "unavailable: "+err.Error())
-		if ctx.Err() != nil || len(candidates) == 1 {
+		if ctx.Err() != nil || (!req.PreferredOnly && len(candidates) == 1) {
 			trace.Err = err.Error()
 			return out, err
 		}

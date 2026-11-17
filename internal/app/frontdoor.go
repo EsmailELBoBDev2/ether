@@ -120,6 +120,7 @@ func (f *frontDoor) serve(ln net.Listener) {
 	})
 	f.srv = &http.Server{
 		Handler:           f.gate,
+		ConnContext:       sockerr.WithConn,
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          slog.NewLogLogger(f.log.Handler(), slog.LevelDebug),

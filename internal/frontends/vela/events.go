@@ -63,6 +63,7 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				ended := !s.ended.IsZero()
 				if err != nil && !ended {
 					s.ended = time.Now()
+					s.clearDisconnectTimerLocked()
 					s.plan["state"] = "ended"
 					s.publish("ended")
 				}
@@ -87,6 +88,7 @@ func (i *instance) watchSession(viewer *frontend.Viewer, device frontend.Device,
 				case "SessionStopped":
 					s.plan["state"] = "ended"
 					s.ended = time.Now()
+					s.clearDisconnectTimerLocked()
 					s.publish("ended")
 					s.mu.Unlock()
 					return

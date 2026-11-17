@@ -79,6 +79,10 @@ type instance struct {
 	rowMu           sync.Mutex
 	rowMeta         map[string]frontend.RowView
 
+	eventsHeartbeat    time.Duration
+	eventsWriteTimeout time.Duration
+	disconnectGrace    time.Duration
+
 	host            frontend.Host
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -107,8 +111,20 @@ func (*instance) Discovery() []frontend.Announcer { return nil }
 func (i *instance) Status(context.Context) frontend.Status {
 	return frontend.Status{TargetVersion: "0", Conformance: "unverified", WebPlayerReady: webclient.VelaReady(i.assets)}
 }
-func (i *instance) Close(context.Context) error { i.cancel(); return nil }
-func hash(s string) string                      { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+func (i *instance) Close(context.Context) error {
+	if i.cancel != nil {
+		i.cancel()
+	}
+	i.mu.Lock()
+	for _, s := range i.sessions {
+		s.mu.Lock()
+		s.clearDisconnectTimerLocked()
+		s.mu.Unlock()
+	}
+	i.mu.Unlock()
+	return nil
+}
+func hash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
 func send(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

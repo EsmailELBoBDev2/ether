@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"github.com/braedonsaunders/ether/internal/sockerr"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +34,7 @@ type client struct {
 	HDR              []string                               `json:"hdr,omitempty"`
 }
 type playSession struct {
+	id                string
 	qualityRungs      map[string]string
 	scope             string
 	media             frontend.MediaInfo
@@ -44,12 +47,17 @@ type playSession struct {
 	diagnosticHistory []object
 	clientErrors      []object
 
+	mediaReads       atomic.Int32
+	lastActivityNano atomic.Int64
+
 	commandActive                    bool
 	stopping                         bool
 	commandMu                        sync.Mutex
 	mu                               sync.Mutex
 	viewer                           int64
 	device                           string
+	accessViewer                     *frontend.Viewer
+	accessDevice                     frontend.Device
 	plan                             object
 	source, seek, revision, sequence uint64
 	position                         time.Duration
@@ -57,6 +65,9 @@ type playSession struct {
 	events                           []object
 	signal                           chan struct{}
 	stream                           context.CancelFunc
+	streamSeq                        uint64
+	streamOpen                       bool
+	disconnectTimer                  *time.Timer
 	ended                            time.Time
 	previewExpires                   time.Time
 }
@@ -289,7 +300,9 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		}
 		p["paths"] = []object{path, {"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}}}
 	}
-	ps := &playSession{scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: requestDevice(r).ID, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
+	dev := requestDevice(r)
+	ps := &playSession{id: s.ID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
+	ps.noteActivity()
 
 	if !plan.SourceChosenAt.IsZero() {
 		ps.preparation = append(ps.preparation, frontend.HLSPreparationEvent{Stage: "source-chosen", At: plan.SourceChosenAt})
@@ -306,6 +319,9 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	for id, old := range i.sessions {
 		old.mu.Lock()
 		expired := !old.ended.IsZero() && time.Since(old.ended) > 10*time.Minute
+		if expired {
+			old.clearDisconnectTimerLocked()
+		}
 		old.mu.Unlock()
 		if expired {
 			delete(i.sessions, id)
@@ -314,7 +330,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	i.sessions[s.ID] = ps
 	i.mu.Unlock()
 	send(w, 200, p)
-	i.watchSession(v, requestDevice(r), s.ID, scope, ps)
+	i.watchSession(v, dev, s.ID, scope, ps)
 }
 func (i *instance) session(w http.ResponseWriter, r *http.Request) (*frontend.Viewer, *playSession) {
 	v, token, e := i.viewer(r)
@@ -322,27 +338,40 @@ func (i *instance) session(w http.ResponseWriter, r *http.Request) (*frontend.Vi
 		fail(w, e, r)
 		return nil, nil
 	}
-	scope, e := i.grantScope(r.Context(), token, requestDevice(r))
+	dev := requestDevice(r)
+	scope, e := i.grantScope(r.Context(), token, dev)
 	if e != nil {
 		fail(w, e, r)
 		return nil, nil
 	}
+	id := r.PathValue("id")
 	i.mu.Lock()
-	s := i.sessions[r.PathValue("id")]
+	s := i.sessions[id]
 	if s != nil {
 		s.mu.Lock()
 		expired := (!s.ended.IsZero() && time.Since(s.ended) >= 10*time.Minute) || (!s.previewExpires.IsZero() && !s.previewExpires.After(time.Now()))
+		if expired {
+			s.clearDisconnectTimerLocked()
+		}
 		s.mu.Unlock()
 		if expired {
-			delete(i.sessions, r.PathValue("id"))
+			delete(i.sessions, id)
 			s = nil
 		}
 	}
 	i.mu.Unlock()
-	if s == nil || s.viewer != v.ID || s.device != requestDevice(r).ID || s.scope != scope {
+	if s == nil || s.viewer != v.ID || s.device != dev.ID || s.scope != scope {
 		problem(w, 404, "not-found", "session_not_found")
 		return nil, nil
 	}
+	s.noteActivity()
+	s.mu.Lock()
+	if s.id == "" {
+		s.id = id
+	}
+	s.accessViewer = v
+	s.accessDevice = dev
+	s.mu.Unlock()
 	return v, s
 }
 func (s *playSession) snapshot() object {
@@ -440,6 +469,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.ended = time.Now()
+		s.clearDisconnectTimerLocked()
 		s.plan["state"] = "ended"
 	case "prepare-fallback":
 		if !i.prepareFallback(w, r, v, s, id, b.MaxBitrate) {
@@ -868,6 +898,7 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.ended = time.Now()
+		s.clearDisconnectTimerLocked()
 		s.plan["state"] = "ended"
 		s.publish("ended")
 	} else {
@@ -897,14 +928,46 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		i.unavailable(w, r)
 		return
 	}
+	sockerr.EnableFastDeadPeer(r.Context(), i.deadPeerTimeout())
+	writeTimeout := i.streamWriteTimeout()
+	rc := http.NewResponseController(unwrapResponseWriter(w))
+	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()
+
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	id := r.PathValue("id")
 	s.mu.Lock()
+	if id == "" {
+		id = s.id
+	}
+	if id == "" {
+		id, _ = s.plan["sessionId"].(string)
+	}
 	if s.stream != nil {
 		s.stream()
 	}
+	s.clearDisconnectTimerLocked()
+	s.streamSeq++
+	seq := s.streamSeq
 	s.stream = cancel
+	s.streamOpen = true
 	s.mu.Unlock()
+	s.noteActivity()
+
+	defer func() {
+		s.mu.Lock()
+		if s.streamSeq == seq {
+			s.stream = nil
+			s.streamOpen = false
+			if s.ended.IsZero() && !s.stopping && id != "" && (i.ctx == nil || i.ctx.Err() == nil) {
+				grace := i.streamDisconnectGrace()
+				s.armDisconnectTimerLocked(grace, func() { i.checkDisconnectedSession(id, s) })
+			}
+		}
+		s.mu.Unlock()
+	}()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -913,9 +976,9 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		cursor = r.URL.Query().Get("cursor")
 	}
 	last, _ := strconv.ParseUint(cursor, 10, 64)
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(i.heartbeatInterval())
 	defer ticker.Stop()
-	keepAlive := true // connect, then only the existing heartbeat cadence
+	keepAlive := true // connect, then on every heartbeat tick
 	for {
 		identity, ok := i.host.Identity.(frontend.GrantScopes)
 		if !ok {
@@ -930,8 +993,23 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		if keepAlive && !ended {
 			// Backends without activity-only renewal retain their existing SSE behavior.
-			if err := i.host.Sessions.KeepAlive(ctx, i.access(r, viewer), r.PathValue("id")); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
-				return
+			if err := i.host.Sessions.KeepAlive(ctx, i.access(r, viewer), id); err != nil && !errors.Is(err, frontend.ErrNotAvailable) {
+				if errors.Is(err, frontend.ErrNotFound) {
+					s.mu.Lock()
+					if s.ended.IsZero() {
+						s.ended = time.Now()
+						s.clearDisconnectTimerLocked()
+						if s.plan != nil {
+							s.plan["state"] = "ended"
+						}
+						if s.signal != nil {
+							s.publish("ended")
+						}
+					}
+					s.mu.Unlock()
+				} else {
+					return
+				}
 			}
 		}
 		keepAlive = false
@@ -959,27 +1037,37 @@ func (i *instance) events(w http.ResponseWriter, r *http.Request) {
 		signal := s.signal
 		ended = !s.ended.IsZero()
 		s.mu.Unlock()
-		for _, chunk := range chunks {
-			if _, e := fmt.Fprint(w, chunk); e != nil {
+		if len(chunks) > 0 {
+			_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+			for _, chunk := range chunks {
+				if _, e := fmt.Fprint(w, chunk); e != nil {
+					return
+				}
+			}
+			if err := flushSSE(rc, flush, writeTimeout); err != nil {
 				return
 			}
+			s.noteActivity()
 		}
-		flush.Flush()
 		if ended {
 			return
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-i.ctx.Done():
+		case <-i.done():
 			return
 		case <-signal:
 		case <-ticker.C:
 			keepAlive = true
+			_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if _, e := fmt.Fprint(w, ": heartbeat\n\n"); e != nil {
 				return
 			}
-			flush.Flush()
+			if err := flushSSE(rc, flush, writeTimeout); err != nil {
+				return
+			}
+			s.noteActivity()
 		}
 	}
 }

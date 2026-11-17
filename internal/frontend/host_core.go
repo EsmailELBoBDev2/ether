@@ -131,6 +131,12 @@ func WithSearchListFacts(ctx context.Context) context.Context {
 // ErrBedtime carries the next playback admission time.
 type ErrBedtime = core.ErrBedtime
 
+// WithLocalResponse requests an answer from local snapshots and caches,
+// without searches or source opens.
+func WithLocalResponse(ctx context.Context) context.Context {
+	return core.WithLocalResponse(ctx)
+}
+
 // WithColdDetail identifies the single title page allowed a minimum cold fill.
 func WithColdDetail(ctx context.Context, key RatingKey) context.Context {
 	return core.WithColdDetail(ctx, key)

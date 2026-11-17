@@ -653,7 +653,7 @@ func (s *Server) recommendSection(ctx context.Context, pr *Request, t frontend.M
 // cached/debrid link (no opening prefetch), and Prewarm's existing per-user
 // / rate budgets still apply.
 func (s *Server) warmBrowseLink(ctx context.Context, pr *Request, rows []model.Hub) {
-	if pr == nil || pr.User == nil {
+	if pr == nil || pr.User == nil || libraryToolClient(pr) {
 		return
 	}
 	pw, ok := s.playback().(frontend.Prewarmer)

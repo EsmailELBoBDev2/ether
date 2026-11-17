@@ -487,7 +487,7 @@ func (s *Server) recordCompactImpressions(pr *Request, hc frontend.HubContext, r
 }
 
 func (s *Server) warmKey(ctx context.Context, pr *Request, key frontend.RatingKey) {
-	if key == 0 || pr == nil || pr.User == nil {
+	if key == 0 || pr == nil || pr.User == nil || libraryToolClient(pr) {
 		return
 	}
 	if pw, ok := s.playback().(frontend.Prewarmer); ok {

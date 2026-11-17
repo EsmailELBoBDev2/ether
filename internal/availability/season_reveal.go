@@ -18,7 +18,10 @@ const (
 	seasonRevealCooldown  = 6 * time.Hour
 	seasonRevealHourlyMax = 20
 	seasonRevealMaxChecks = 12
-	seasonRevealTimeout   = 25 * time.Second
+	// seasonRevealEpisodeSearches bounds per-episode lookups after the season
+	// search, for sources that return only packs to a season search.
+	seasonRevealEpisodeSearches = 4
+	seasonRevealTimeout         = 25 * time.Second
 )
 
 func init() {
@@ -237,9 +240,10 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 	qctx, cancel := context.WithTimeout(sctx, seasonRevealTimeout)
 	releases, err := s.d.Search(qctx, req)
 	cancel()
-	if ctx.Err() != nil || (err != nil && len(releases) == 0) || len(releases) == 0 {
+	if ctx.Err() != nil {
 		return
 	}
+	_ = err // an empty or failed season search still leaves the per-episode lookups below
 	for i := range releases {
 		if releases[i].Info.Title == "" && releases[i].Name != "" {
 			releases[i].Info = releaseparse.Parse(releases[i].Name)
@@ -247,9 +251,6 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 	}
 
 	kept, verifiedHashes := s.cachedTorrentsForReveal(rctx, releases)
-	if len(kept) == 0 {
-		return
-	}
 
 	type packState struct {
 		checked bool
@@ -288,9 +289,9 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 	}
 	var revealed []verifiedEpisode
 
-	for _, ep := range unreleased {
+	evaluate := func(ep core.Title, kept []core.Release, verifiedHashes map[string]bool) *verifiedEpisode {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 		type candidatePair struct {
 			raw      core.Release
@@ -354,7 +355,7 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 			verr := s.d.Validator.VerifyFeedCandidate(hctx, &ep, top)
 			stop()
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
 			if verr == nil {
 				src := revealFeedFor(feeds, top)
@@ -367,7 +368,42 @@ func (s *Service) runRevealSeason(ctx context.Context, seasonKey core.RatingKey)
 			}
 		}
 
-		if chosen != nil {
+		return chosen
+	}
+	var missed []core.Title
+	for _, ep := range unreleased {
+		if ctx.Err() != nil {
+			return
+		}
+		if chosen := evaluate(ep, kept, verifiedHashes); chosen != nil {
+			revealed = append(revealed, *chosen)
+		} else {
+			missed = append(missed, ep)
+		}
+	}
+	// Search-only sources (Stremio add-ons) answer a season search with packs
+	// only, so a drop released as single episodes needs its own lookup. The
+	// earliest hidden episodes go first, a few per run.
+	for i, ep := range missed {
+		if i >= seasonRevealEpisodeSearches || ctx.Err() != nil {
+			break
+		}
+		ereq := req
+		ereq.Episode = ep.Episode
+		ereq.EpisodeTitle = ep.Title
+		ectx, stop := context.WithTimeout(sctx, seasonRevealTimeout)
+		found, _ := s.d.Search(ectx, ereq)
+		stop()
+		if ctx.Err() != nil {
+			return
+		}
+		for j := range found {
+			if found[j].Info.Title == "" && found[j].Name != "" {
+				found[j].Info = releaseparse.Parse(found[j].Name)
+			}
+		}
+		ekept, ehashes := s.cachedTorrentsForReveal(rctx, found)
+		if chosen := evaluate(ep, ekept, ehashes); chosen != nil {
 			revealed = append(revealed, *chosen)
 		}
 	}

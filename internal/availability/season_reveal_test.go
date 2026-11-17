@@ -133,8 +133,8 @@ func TestRevealSeason(t *testing.T) {
 		if !core.IsUnattendedSearch(sctx) {
 			t.Errorf("season reveal search missing WithUnattendedSearch: %+v", req)
 		}
-		if req.Season <= 0 || req.Episode != 0 {
-			t.Errorf("expected season-level search (Season>0, Episode=0), got %+v", req)
+		if req.Season <= 0 {
+			t.Errorf("expected a season or episode search, got %+v", req)
 		}
 		mu.Lock()
 		searches = append(searches, req)
@@ -232,11 +232,20 @@ func TestRevealSeason(t *testing.T) {
 	svc.bg.Wait()
 	svc.Close()
 
+	// One season search per eligible season; still-hidden episodes then get
+	// bounded per-episode lookups (Weekly Noise's unverified E02/E03).
 	mu.Lock()
-	gotSearches := len(searches)
+	seasonSearches, episodeSearches := 0, 0
+	for _, req := range searches {
+		if req.Episode == 0 {
+			seasonSearches++
+		} else {
+			episodeSearches++
+		}
+	}
 	mu.Unlock()
-	if gotSearches != 2 {
-		t.Fatalf("expected exactly 2 season searches (Weekly Noise + Cunk on Cinema), got %d", gotSearches)
+	if seasonSearches != 2 || episodeSearches > 2*seasonRevealEpisodeSearches {
+		t.Fatalf("searches: %d season (want 2), %d per-episode", seasonSearches, episodeSearches)
 	}
 
 	noisePage, err := cat.SeasonEpisodePage(ctx, noiseShow, 1, 0, 20)
@@ -275,6 +284,9 @@ func TestRevealSeason(t *testing.T) {
 		}
 	}
 
+	mu.Lock()
+	beforeCooldown := len(searches)
+	mu.Unlock()
 	// 4. Persisted 6h cooldown suppresses duplicate search across restart even if
 	// TMDB later lists another unreleased episode (E06).
 	ep6 := core.Title{
@@ -292,7 +304,7 @@ func TestRevealSeason(t *testing.T) {
 	mu.Lock()
 	afterCooldownHit := len(searches)
 	mu.Unlock()
-	if afterCooldownHit != 2 {
+	if afterCooldownHit != beforeCooldown {
 		t.Fatalf("expected persisted 6h cooldown to suppress search across restart, got %d searches", afterCooldownHit)
 	}
 
@@ -305,7 +317,7 @@ func TestRevealSeason(t *testing.T) {
 	mu.Lock()
 	afterExpiry := len(searches)
 	mu.Unlock()
-	if afterExpiry != 3 {
+	if afterExpiry <= afterCooldownHit {
 		t.Fatalf("expected search after 6h cooldown expiry, got %d searches", afterExpiry)
 	}
 }

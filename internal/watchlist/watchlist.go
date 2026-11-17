@@ -886,7 +886,13 @@ func (s *Service) prewarm(ctx context.Context, res *core.Resolution) error {
 	job, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if s.o.Cache != nil {
-		s.o.Cache.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, Title: res.Release.Name, Source: res.Release.Name, Cause: core.CacheCauseWatchlist})
+		origin := "Usenet"
+		if res.Release.Protocol == core.ProtocolTorrent {
+			origin = "Debrid"
+		} else if res.Release.Protocol == core.ProtocolHTTP {
+			origin = "HTTP"
+		}
+		s.o.Cache.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, RatingKey: res.Title, Title: res.Release.Name, Source: res.Release.Name, Indexer: res.Release.Indexer, Origin: origin, Cause: core.CacheCauseWatchlist})
 	}
 	return s.o.Engine.Prefetch(job, res.Release.ID, res.NZB, 0, s.o.PrewarmBytes)
 }

@@ -401,7 +401,7 @@ func (m *Manager) noteWarmCause(res *core.Resolution, src core.MediaSource, reas
 		return
 	}
 	if rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder); ok {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, File: src.Name(), Size: src.Size(), Source: releaseLabel(res.Release), Title: title, Cause: cause})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: res.Release.ID, RatingKey: res.Title, File: src.Name(), Size: src.Size(), Source: releaseLabel(res.Release), Indexer: res.Release.Indexer, Origin: sourceOrigin(src, res.Release.Protocol), Title: title, Cause: cause})
 	}
 }
 
@@ -1248,7 +1248,7 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	m.reg.poke()
 	m.saveResume(ctx, s, g)
 	if rec, ok := m.deps.Cache.(core.CacheProvenanceRecorder); ok {
-		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Title: cacheTitle(*s.title), Cause: core.CacheCausePlaying, Play: true})
+		rec.RecordProvenance(core.CacheProvenance{ReleaseID: g.releaseID(), RatingKey: s.title.Key, File: g.src.Name(), Size: g.src.Size(), Source: releaseLabel(g.res.Release), Indexer: g.res.Release.Indexer, Origin: sourceOrigin(g.src, g.res.Release.Protocol), Title: cacheTitle(*s.title), Cause: core.CacheCausePlaying, Play: true})
 	} else if c, ok := m.deps.Cache.(core.CachePlayRecorder); ok {
 		c.RecordPlay(g.releaseID(), cacheTitle(*s.title), g.src.Size())
 	}

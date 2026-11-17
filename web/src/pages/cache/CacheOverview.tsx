@@ -101,6 +101,7 @@ export function CacheOverview({
           bodyClassName="flex flex-col gap-4 cockpit:overflow-y-auto"
           actions={
             <button
+              type="button"
               onClick={onExplore}
               className="text-xs font-medium text-primary hover:underline"
             >
@@ -315,6 +316,7 @@ export function CacheOverview({
             </div>
           </dl>
           <button
+            type="button"
             onClick={onPreloading}
             className="flex items-center gap-1.5 text-left text-xs text-primary hover:underline"
           >

@@ -702,7 +702,9 @@ describe("Playback", () => {
     );
     expect(screen.queryByRole("button", { name: /Edit cache/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit policy" }));
-    fireEvent.click(screen.getAllByRole("switch")[0]!);
+    fireEvent.change(screen.getByLabelText("Expire after inactivity"), {
+      target: { value: "14" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/cache")).toHaveLength(1));
   });

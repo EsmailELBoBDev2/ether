@@ -86,24 +86,32 @@ describe("Cache management", () => {
     await waitFor(() => expect(fake.state.config.cache.storage).toBe("shared"));
     expect(fake.state.config.cache.dir).toBe("/Volumes/media/ether-cache");
   });
-  it("disables speculation controls in no-media mode and saves the off policy", async () => {
+  it("disables speculation controls on Preloading in no-media mode and keeps Edit policy storage-only", async () => {
     const { fake } = renderApp("/cache");
     fireEvent.click(await screen.findByRole("button", { name: "Edit policy" }, WAIT));
+    const dialog = await screen.findByRole("dialog", { name: "Edit cache policy" }, WAIT);
+    expect(
+      within(dialog).queryByRole("switch", { name: "Warm detail pages" }),
+    ).not.toBeInTheDocument();
     await pickToolbarOption("Retention strategy", "No persistent media");
-    expect(screen.getByRole("switch", { name: "Warm detail pages" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
     await waitFor(() => expect(fake.state.config.cache.mode).toBe("off"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: "Preloading" }));
+    expect(await screen.findByRole("switch", { name: "Warm detail pages" }, WAIT)).toBeDisabled();
+    expect(screen.getByText(/Persistent media caching is turned off/)).toBeInTheDocument();
   });
-  it("saves the playback read-ahead depth and disables it without media caching", async () => {
-    const { fake } = renderApp("/cache");
-    fireEvent.click(await screen.findByRole("button", { name: "Edit policy" }, WAIT));
+  it("saves the playback read-ahead depth from Preloading and disables it without media caching", async () => {
+    const { fake } = renderApp("/cache/preloading");
     const ahead = await screen.findByRole("button", { name: "Read ahead while playing" }, WAIT);
     expect(ahead).toHaveTextContent("5 minutes (recommended)");
     await pickToolbarOption("Read ahead while playing", "10 minutes");
-    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(fake.state.config.cache.playbackReadAheadMinutes).toBe(10));
     fireEvent.click(await screen.findByRole("button", { name: "Edit policy" }, WAIT));
     await pickToolbarOption("Retention strategy", "No persistent media");
+    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+    await waitFor(() => expect(fake.state.config.cache.mode).toBe("off"));
     expect(screen.getByRole("button", { name: "Read ahead while playing" })).toBeDisabled();
   });
   it("filters retained titles and updates an owner pin", async () => {
@@ -117,12 +125,17 @@ describe("Cache management", () => {
     await waitFor(() => expect(calls(fake, "POST", "/cache/pin")).toHaveLength(1));
     expect((await screen.findAllByText("Kept by you")).length).toBeGreaterThan(0);
   });
-  it("saves a household blend and rolling TV window with explanations", async () => {
+  it("saves a household blend and rolling TV window from Preloading with explanations", async () => {
     const { fake } = renderApp("/cache");
     await chooseProfile(/Cinema node/);
-    expect(screen.getByRole("button", { name: "Selection strategy" })).toHaveTextContent(
-      "Smart household blend",
+    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Save policy" })).not.toBeInTheDocument(),
     );
+    fireEvent.click(screen.getByRole("tab", { name: "Preloading" }));
+    expect(
+      await screen.findByRole("button", { name: "Selection strategy" }, WAIT),
+    ).toHaveTextContent("Smart household blend");
     expect(screen.getByRole("button", { name: "Include in your shelf" })).toHaveTextContent(
       "Movies & TV episodes",
     );
@@ -130,18 +143,64 @@ describe("Cache management", () => {
     fireEvent.change(screen.getByLabelText("Household influence"), { target: { value: "80" } });
     fireEvent.change(screen.getByLabelText("Episode window per show"), { target: { value: "6" } });
     await pickToolbarOption("Learn from", "All active shared viewers");
-    expect(calls(fake, "PUT", "/config/cache")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    await waitFor(() => expect(fake.state.config.cache.preloadEpisodesAhead).toBe(6));
+    const savesBefore = calls(fake, "PUT", "/config/cache").length;
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/config/cache").length).toBeGreaterThan(savesBefore),
+    );
+    expect(fake.state.config.cache.preloadEpisodesAhead).toBe(6);
     expect(fake.state.config.cache.preloadContent).toBe("tv");
     expect(fake.state.config.cache.preloadHouseholdWeight).toBe(80);
     expect(fake.state.config.cache.preloadHouseholdScope).toBe("all");
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Save policy" })).not.toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByRole("tab", { name: "Preloading" }));
     expect((await screen.findAllByText(/Severance · S02E04/)).length).toBeGreaterThan(0);
     expect(screen.getByText(/Next in a household viewing sequence/)).toBeInTheDocument();
+  });
+  it("edits plugin library cache quotas with standard inputs and SaveBar", async () => {
+    let cacheState = {
+      used: 512 * 1024 ** 2,
+      blobs: 3,
+      maxBytes: 4 * 1024 ** 3,
+      ttlSeconds: 7 * 86400,
+    };
+    const { fake } = renderAppWith("/cache/libraries", (method, path, body) => {
+      if (method === "GET" && path === "/libraries") {
+        return {
+          libraries: [
+            {
+              id: 42,
+              key: "audiobooks",
+              name: "Audiobooks",
+              source: "plugin",
+              sort: 1,
+              hidden: false,
+              createdAt: "",
+              updatedAt: "",
+            },
+          ],
+        };
+      }
+      if (method === "GET" && path === "/libraries/42/cache") {
+        return cacheState;
+      }
+      if (method === "PUT" && path === "/libraries/42/cache") {
+        cacheState = { ...cacheState, ...(body as { maxBytes: number; ttlSeconds: number }) };
+        return cacheState;
+      }
+      return undefined;
+    });
+    expect(await screen.findByRole("heading", { name: "Audiobooks" }, WAIT)).toBeInTheDocument();
+    const keep = screen.getByLabelText("Keep at most");
+    const forget = screen.getByLabelText("Forget files after");
+    expect(keep).toHaveValue(4);
+    expect(forget).toHaveValue(7);
+    fireEvent.change(keep, { target: { value: "8" } });
+    fireEvent.change(forget, { target: { value: "14" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/libraries/42/cache")).toHaveLength(1));
+    expect(calls(fake, "PUT", "/libraries/42/cache")[0]!.body).toEqual({
+      maxBytes: 8 * 1024 ** 3,
+      ttlSeconds: 14 * 86400,
+    });
   });
   it("explains releases by reason, file name, filters, and drawer detail", async () => {
     renderApp("/cache/explorer");

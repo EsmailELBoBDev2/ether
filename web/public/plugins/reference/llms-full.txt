@@ -197,12 +197,12 @@ Bundle hosted SDK imports into the entry artifact. Bare package imports cannot r
 
 ```sh
 ether plugin check ./my-plugin
-ether plugin pack ./my-plugin
+ether plugin publish --url https://github.com/<owner>/<repo>/releases/download/v0.1.0/<id>-0.1.0.etherpkg ./my-plugin
 ```
 
 Keep identity stable and increment version. New permissions require owner review; removing or retyping kind declarations can require explicit replacement approval. Test upgrades and the owner's rollback flow before release.
 
-A marketplace catalogue distributes packages with pinned SHA-256 digests and an Ed25519-signed index. Review every version's permissions, retain revocation reasons, and publish the index and signature together. The catalogue-template guide below describes repository variables, secret key handling, and artifact checks.
+Ether reads the official signed marketplace (`https://github.com/braedonsaunders/ether-plugins`, served at `https://braedonsaunders.github.io/ether-plugins/index.json`) by default under Plugins → Marketplace. Upload `<id>-<version>.etherpkg` to a GitHub release, run `ether plugin publish --url <release-asset-url> ./my-plugin` to pack the archive and print a validated `plugins/<id>.yaml` entry with its SHA-256 digest, and open a pull request against `https://github.com/braedonsaunders/ether-plugins`. Marketplace CI verifies the package digest and runs `ether plugin check` before publishing the Ed25519-signed index. Owners running their own catalogue can use the template below and set `plugins.indexUrl` and `plugins.publicKey` together.
 
 ## Go SDK
 
@@ -999,30 +999,60 @@ storing bytes; the next resolve reads the cached result. See the worked example
 and exact timeout, cache, cancellation and byte limits in [the authoring recipe](../sdk/AGENTS.md#slow-resolution-and-remote-verification).
 
 
+## Source: internal/config/plugins.go#OfficialCatalogueURL
+
+``````
+// OfficialCatalogueURL is the Ether plugin marketplace: the signed index
+// built from https://github.com/braedonsaunders/ether-plugins, where plugin
+// authors submit entries by pull request.
+const OfficialCatalogueURL = "https://braedonsaunders.github.io/ether-plugins/index.json"
+``````
+
+## Source: internal/config/plugins.go#OfficialCataloguePublicKey
+
+``````
+// OfficialCataloguePublicKey verifies OfficialCatalogueURL's index.json.sig.
+const OfficialCataloguePublicKey = "vy26IJ+BfNVKqj9jHhrSszio24Jab76fC2L33cfBEm8="
+``````
+
 ## Source: internal/config/plugins.go#Plugins.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `runtimeLimits` | `PluginRuntimeLimits` | may be omitted (see validation for conditions) |  |
 | `runtimeOverrides` | `map[string]PluginRuntimeLimits` | may be omitted (see validation for conditions) |  |
-| `indexUrl` | `string` | may be omitted (see validation for conditions) | IndexURL is the URL of index.json (with a sibling index.json.sig). Empty disables automatic catalogue fetches. |
+| `indexUrl` | `string` | may be omitted (see validation for conditions) | IndexURL is the URL of index.json (with a sibling index.json.sig). Empty means the official marketplace. |
 | `publicKey` | `string` | may be omitted (see validation for conditions) | PublicKey is the base64-encoded ed25519 public key that signs index.json. |
 
 
 ## Source: internal/config/plugins.go#Plugins
 
 ``````
-// Plugins configures the signed plugin catalogue (SPEC WS12). Ether ships
-// no third-party catalogue URL; the owner sets IndexURL and PublicKey when
-// connecting a catalogue they trust.
+// Plugins configures the signed plugin catalogue (SPEC WS12). With no
+// IndexURL Ether reads the official marketplace; an owner who runs their
+// own catalogue sets both IndexURL and the PublicKey that signs it.
 type Plugins struct {
 	RuntimeLimits    PluginRuntimeLimits            `json:"runtimeLimits,omitempty"`
 	RuntimeOverrides map[string]PluginRuntimeLimits `json:"runtimeOverrides,omitempty"`
 	// IndexURL is the URL of index.json (with a sibling index.json.sig).
-	// Empty disables automatic catalogue fetches.
+	// Empty means the official marketplace.
 	IndexURL string `json:"indexUrl,omitempty"`
 	// PublicKey is the base64-encoded ed25519 public key that signs index.json.
 	PublicKey string `json:"publicKey,omitempty"`
+}
+``````
+
+## Source: internal/config/plugins.go#Plugins.Catalogue
+
+``````
+// Catalogue returns the index URL and the key that must sign it: the
+// owner's own catalogue when IndexURL is set, else the official marketplace.
+// An owner URL is never paired with the official key.
+func (p Plugins) Catalogue() (indexURL, publicKey string) {
+	if url := strings.TrimSpace(p.IndexURL); url != "" {
+		return url, strings.TrimSpace(p.PublicKey)
+	}
+	return OfficialCatalogueURL, OfficialCataloguePublicKey
 }
 ``````
 
@@ -20811,7 +20841,7 @@ to its admin token in your shell and run:
 ./ether plugin dev ./my-plugin --server http://localhost:32400 --once
 ```
 
-Alternatively open Plugins → Add plugin and upload `my-plugin.etherpkg`. Review
+Alternatively open Plugins → Add and upload `my-plugin.etherpkg`. Review
 requested permissions and enable it. Do not use a production server for iteration.
 `check --json` is the structured report for agents. `dev` installs hosted
 packages; remote Python/Go sidecars must run separately and be connected by
@@ -20819,6 +20849,15 @@ manifest URL or tunnel. `test` also runs recorded
 fixtures; ETHER_BIN enables its headless integration check, ETHER_PLUGIN_URL tests
 an already running remote sidecar. `pack` compiles TypeScript and checks the
 package. No separate npm install is needed for generated hosted templates.
+
+Ether reads the official signed marketplace (`https://github.com/braedonsaunders/ether-plugins`,
+served at `https://braedonsaunders.github.io/ether-plugins/index.json`) by default
+under Plugins → Marketplace. To publish a plugin there, upload `<id>-<version>.etherpkg`
+to a GitHub release, run `./ether plugin publish --url <release-asset-url> ./my-plugin`
+to pack the archive and print a validated `plugins/<id>.yaml` entry with its SHA-256
+digest, and open a pull request against `https://github.com/braedonsaunders/ether-plugins`.
+Marketplace CI verifies the artifact digest and runs `ether plugin check` before
+signing the updated index.
 
 ## Manifest decisions
 
@@ -21118,7 +21157,9 @@ this descriptor is for the hosted JSON response envelope.
 
 # Ether catalogue template
 
-Set the repository variable `ETHER_REF` to an immutable Ether release tag or commit that includes `ether plugin check` and `ether-release-sign index -check`. The workflow installs both tools from that ref. Set the `ETHER_CATALOGUE_PRIVATE_KEY` and `ETHER_CATALOGUE_PUBLIC_KEY` repository secrets to the base64 Ed25519 signing key and corresponding public key. Keep the private key secret. Pull requests validate without access to signing secrets; pushes to `main` sign and upload `index.json` and `index.json.sig` as a workflow artifact. Publish both files together at the URL configured in Ether.
+Ether reads the official signed plugin marketplace (`https://github.com/braedonsaunders/ether-plugins`, published at `https://braedonsaunders.github.io/ether-plugins/index.json`) by default. To submit a plugin to the official marketplace, upload `<id>-<version>.etherpkg` to a GitHub release, run `ether plugin publish --url <release-asset-url> <dir>` to generate `plugins/<id>.yaml`, and open a pull request against `https://github.com/braedonsaunders/ether-plugins`. Use this template only when operating your own catalogue and setting `plugins.indexUrl` and `plugins.publicKey` together in Ether's configuration.
+
+Set the repository variable `ETHER_REF` to an immutable Ether release tag or commit that includes `ether plugin check` and `ether-release-sign index -check`. The workflow installs both tools from that ref. Set the `ETHER_CATALOGUE_PRIVATE_KEY` and `ETHER_CATALOGUE_PUBLIC_KEY` repository secrets to the base64 Ed25519 signing key and corresponding public key. Keep the private key secret. Pull requests validate without access to signing secrets; pushes to `main` sign and upload `index.json` and `index.json.sig` as a workflow artifact. Publish both files together at the `plugins.indexUrl` configured in Ether.
 
 Add one reviewed YAML file per plugin under `plugins/`; `examples/` contains an illustrative file with placeholder URLs and checksums. Each version must reference a publicly downloadable `.etherpkg` and its SHA-256 digest. CI downloads every non-revoked version, verifies the digest and identity, and runs `ether plugin check` on its unpacked files. The command runs the conformance kit, including copy lint. The index compiler also validates catalogue copy. A revoked entry requires a reason; it is retained in the signed index and its packages are not executed by CI.
 

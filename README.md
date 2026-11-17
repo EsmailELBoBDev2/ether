@@ -464,5 +464,8 @@ Ether is an independent, clean-room implementation of the HTTP protocols used by
 ## Build a plugin
 
 Start with [the plugin author and coding-agent guide](sdk/AGENTS.md): ten recipes,
-manifest decisions, local live reload, conformance, and packaging. The console
+manifest decisions, local live reload, conformance, and packaging. Ether reads the
+signed community marketplace at [`braedonsaunders/ether-plugins`](https://github.com/braedonsaunders/ether-plugins)
+by default; run `ether plugin publish --url <release-asset-url> <dir>` to pack a
+release archive and generate `plugins/<id>.yaml` for a pull request. The console
 also includes a searchable reference under Plugins → Reference.

@@ -170,7 +170,10 @@ The default download and expanded-member ceilings are **8 GiB** each, total
 archive expansion **32 GiB**, and archive members **65,535**. Downloads also obey
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
-`runtimeLimits` in install preview and detail, displayed side by side.
+`runtimeLimits` in install preview and detail, displayed side by side, and exposes
+the live grant at runtime via `ctx.ether.runtime!.limits()` — including
+`readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)` for sizing `cache.read`,
+`archive.open`, and `archive.read` batches without guessing.
 
 Viewer request-path calls remain bounded: `/stream/`, `/catalog/`, `/meta/`,
 `/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,

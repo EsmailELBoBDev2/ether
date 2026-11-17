@@ -75,6 +75,7 @@ export interface RuntimeLimits {
   archiveExpandedBytes?: number;
   archiveMembers?: number;
   memoryBytes?: number;
+  readBytes?: number;
   deadline?: string;
   unitBudget?: number;
 }

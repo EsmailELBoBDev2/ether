@@ -47,6 +47,7 @@ export interface MockHostState {
   kinds: Map<string, import("./types.ts").KindItem[]>;
   sources: import("./types.ts").SourceCandidate[];
   blobs: Map<string, Uint8Array>;
+  limits: import("./types.ts").RuntimeLimits;
   folders: Map<string, FolderEntry[]>;
   notifications: string[];
   logs: RecordedLog[];
@@ -70,6 +71,15 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     kinds: initial?.kinds ?? new Map(),
     sources: initial?.sources ?? [],
     blobs: initial?.blobs ?? new Map(),
+    limits: initial?.limits ?? {
+      memoryBytes: 32 * 1024 * 1024,
+      readBytes: 8 * 1024 * 1024,
+      fetchBytes: 8 * 1024 * 1024 * 1024,
+      archiveMemberBytes: 8 * 1024 * 1024 * 1024,
+      archiveExpandedBytes: 32 * 1024 * 1024 * 1024,
+      archiveMembers: 65535,
+      deadline: "12h",
+    },
     folders: initial?.folders ?? new Map<string, FolderEntry[]>(),
     notifications: initial?.notifications ?? [],
     logs: initial?.logs ?? [],
@@ -84,6 +94,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
 
   return {
     state,
+    runtime: {
+      limits: () => ({ ...state.limits }),
+    },
     kv: {
       get: (key: string) => state.kv.get(key) ?? null,
       put: (key: string, value: string) => {
@@ -183,6 +196,15 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         const b = state.blobs.get(blobRef);
         if (!b) throw new Error(`blob ${blobRef} not found`);
         return new Uint8Array(b);
+      },
+      read: (blobRef, range) => {
+        const cap = state.limits.readBytes ?? 8 * 1024 * 1024;
+        if (range.offset < 0 || range.length <= 0 || range.length > cap) {
+          throw new Error(`Data range needs nonnegative offset and length 1..${cap}`);
+        }
+        const b = state.blobs.get(blobRef);
+        if (!b) throw new Error(`blob ${blobRef} not found`);
+        return b.slice(range.offset, range.offset + range.length);
       },
     },
     frontend: {

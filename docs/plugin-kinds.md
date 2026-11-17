@@ -320,20 +320,42 @@ reason does not grant playback to a nonplayable level.
 ### Large downloads and archive members (v0.3.12)
 
 Hosted and remote clients can keep large data in the host's existing library
-blob cache, without copying the complete file into guest memory:
+blob cache, reading only the metadata or descriptor bytes the plugin itself must parse.
+Big media (video/audio streams, ROMs, disc images, firmware downloads) never goes through
+`cache.read`, `archive.open`, or `archive.read` — Ether streams cached blobs and archive
+members directly to clients itself (for example via frontend `{ blob: { libraryKey, ref, memberIndex } }`
+descriptors in `internal/plugins/frontend_blob.go`, `frontend.streamURL`, and playable container sources):
 
 ```ts
+const limits = await ctx.ether.runtime!.limits();
+const readBudget = limits.readBytes ?? 8 * 1024 * 1024; // clamp(memoryBytes / 4, 8 MiB, 512 MiB)
 const cached = await ctx.ether.http.fetchToCache!({
   url: "https://datasets.example/platform.zip",
   libraryKey: "pk-community-example-library-games", // this plugin's own library
   name: "platform.zip",
 });
 const members = await ctx.ether.archive!.list(cached.blob);
-const member = members.find(m => m.name === "games/example.json")!;
-const chunk = await ctx.ether.archive!.open(cached.blob, member.index, {
-  offset: 0, length: Math.min(member.size, 1048576),
-}); // Uint8Array; request another range for the next piece
-const extracted = await ctx.ether.archive!.extract(cached.blob, member.index);
+
+// Batch up to 4096 small/medium members per call within readBytes:
+const xmlMembers = members.filter(m => !m.unsafe && m.name.endsWith(".xml") && m.size > 0);
+let batch: Array<{ member: number; offset: number; length: number }> = [];
+let batchBytes = 0;
+for (const m of xmlMembers) {
+  const length = Math.min(m.size, readBudget);
+  if (batch.length === 4096 || batchBytes + length > readBudget) {
+    const results = await ctx.ether.archive!.read(cached.blob, batch);
+    // results: [{ index, member, size, body: Uint8Array }] in request order
+    batch = [];
+    batchBytes = 0;
+  }
+  batch.push({ member: m.index, offset: 0, length });
+  batchBytes += length;
+}
+if (batch.length > 0) {
+  await ctx.ether.archive!.read(cached.blob, batch);
+}
+
+const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.index);
 // {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
@@ -349,14 +371,28 @@ and library cache quota apply; no new permission is needed. The operation is
 synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
 
-`cache.read(blob, {offset, length})` reads at most 1 MiB from a cached blob.
+The per-call byte ceiling `readBytes` for `cache.read`, `archive.open`, and `archive.read`
+scales with the plugin's granted memory: `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)`
+(default 32 MiB plugin memory → 8 MiB per call; declaring `runtime.limits.memoryBytes` of 1 GiB
+grants 256 MiB per call). Plugins read their live grant via `runtime.limits`
+(`ctx.ether.runtime!.limits()` in TypeScript, `BlobHost.RuntimeLimits(ctx)` in Go,
+`host.runtime.limits()` in Python, or `GET /ether/plugin-host/limits`) so batch sizes never rely
+on hardcoded guesses.
+
+`cache.read(blob, {offset, length})` reads `1..readBytes` from a cached blob.
 `archive.list(blob)` returns `[{index, name, size, unsafe?, unsafeReason?}]`, reading ZIP, 7z or RAR (4.x/5.x) headers
-without loading all compressed bytes. `archive.open(blob, memberIndex,
-{offset, length})` returns at most 1 MiB from the **uncompressed** member.
-Offsets are nonnegative integers; lengths are 1..1048576. A read at EOF returns
-empty bytes and reads crossing EOF return the available suffix. Raw host calls
-return `{bodyBase64, size}`; SDK clients decode this into bytes. Every call opens
-only the calling plugin's cache namespace and closes the reader afterward.
+without loading all compressed bytes. `archive.open(blob, memberIndex, {offset, length})`
+returns `1..readBytes` from one **uncompressed** member, while `archive.read(blob, reads)`
+reads `1..4096` `{member, offset, length}` ranges in one call whose requested `length`s sum
+to at most `readBytes` (returning an error rather than truncating when exceeded) and returns
+`[{index, member, size, body}]` in request order (`bodyBase64` on raw JSON wire calls).
+Use `archive.open` when reading a single member or stepping sequentially through one large
+file across range calls. Use `archive.read` when parsing many small or medium members from the
+same cached archive (such as thousands of XML, DAT, or CUE descriptors), amortizing cache
+ownership checks, directory lookup, and host crossings into one call.
+Offsets are nonnegative integers; a read at EOF returns empty bytes and reads crossing EOF
+return the available suffix. Every call opens only the calling plugin's cache namespace and
+closes every member stream and blob handle before returning.
 `archive.extract(blob, memberIndex[, {libraryKey?, name?}])` streams the
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
@@ -364,10 +400,10 @@ computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enfor
 `archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
 index with `UnsafeArchiveMemberError` and directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
-The Go `RemoteHostClient` provides `FetchToCache`, `CacheRead`, `ArchiveList`,
-`ArchiveOpen` and `ArchiveExtract` through the optional `BlobHost` interface; the
-Python `RemoteHostClient` and `MockHostClient` expose `archive.list`, `archive.open`
-and `archive.extract`.
+The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
+`ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
+`RemoteHostClient` and `MockHostClient` expose `runtime.limits()` and `archive.list`,
+`archive.open`, `archive.read`, and `archive.extract`.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
@@ -409,14 +445,14 @@ An HTTP `Content-Encoding: gzip` response may be transparently decoded by the
 HTTP client; its digests then describe the decoded bytes. A `.gz` file is not
 automatically decompressed by this archive service.
 
-Direct `http.fetch` still limits the raw response to 10 MiB. Its JSON result
-allowance now includes encoding expansion (binary base64 or escaped text), so the
-4 MiB general host-result cap no longer blocks that documented limit. This is
-an I/O ceiling, not a guarantee of guest heap space: the default guest has 32 MiB
-and the owner ceiling defaults to 2 GiB (adjustable up to wasm32 4 GiB), with temporary JSON strings and parsed objects
-using additional memory. Use fetch-to-cache and ranged reads for large inputs;
-do not concatenate all chunks into one guest buffer. Other host results remain
-capped at 4 MiB.
+Direct `http.fetch` still limits the raw response to 10 MiB, with its JSON result
+allowance including encoding expansion. Hosted WASM host-result envelopes also scale
+automatically with the plugin's `readBytes` grant (including base64 and JSON framing
+overhead, with a 4 MiB baseline floor), while hosted QuickJS binary reads (`cache.read`,
+`archive.open`, `archive.read`) transfer decoded bytes directly into guest `ArrayBuffer`s.
+Remember that big media never goes through these read calls — Ether streams blobs and
+archive members directly to clients itself (`internal/plugins/frontend_blob.go`); reserve
+`cache.read`, `archive.open`, and `archive.read` for bytes the plugin must parse.
 
 ### Owner-started multi-call work and resource requests
 

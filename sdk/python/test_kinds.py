@@ -252,6 +252,72 @@ class ArchiveExtractSdkTest(unittest.TestCase):
         self.assertEqual(out, extracted)
         self.assertEqual(seen, [("POST", "/ether/plugin-host/data/archive.extract", [archive_ref, 0])])
 
+    def test_mock_and_remote_archive_read_and_runtime_limits(self):
+        import base64
+        import io
+        import zipfile
+        from ether_plugin import RemoteHostClient
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("sets/a.xml", b"alpha-xml")
+            zf.writestr("sets/b.xml", b"bravo-xml")
+            zf.writestr("../bad.xml", b"unsafe")
+
+        mock = create_mock_host_client()
+        self.assertEqual(mock.runtime.limits()["readBytes"], 8 * 1024 * 1024)
+        archive_ref = mock.cache.put("pk-test-games", "sets.zip", buf.getvalue())
+        batch = mock.archive.read(
+            archive_ref,
+            [
+                {"member": 1, "offset": 0, "length": 5},
+                {"member": 0, "offset": 6, "length": 3},
+            ],
+        )
+        self.assertEqual(
+            batch,
+            [
+                {"index": 0, "member": 1, "size": 5, "body": b"bravo"},
+                {"index": 1, "member": 0, "size": 3, "body": b"xml"},
+            ],
+        )
+        with self.assertRaises(ValueError):
+            mock.archive.read(archive_ref, [])
+        with self.assertRaises(ValueError):
+            mock.archive.read(
+                archive_ref,
+                [
+                    {"member": 0, "offset": 0, "length": 5 * 1024 * 1024},
+                    {"member": 1, "offset": 0, "length": 4 * 1024 * 1024},
+                ],
+            )
+        with self.assertRaises(RuntimeError):
+            mock.archive.read(archive_ref, [{"member": 2, "offset": 0, "length": 4}])
+
+        seen = []
+        client = RemoteHostClient(base_url="http://ether.local", credential="cred")
+
+        def fake_call(method, path, body=None, allow_404=False):
+            seen.append((method, path, body))
+            if path == "/ether/plugin-host/limits":
+                return {"memoryBytes": 1 << 30, "readBytes": 256 << 20}
+            return [
+                {
+                    "index": 0,
+                    "member": 1,
+                    "size": 5,
+                    "bodyBase64": base64.b64encode(b"bravo").decode("ascii"),
+                }
+            ]
+
+        client.runtime._call = fake_call  # type: ignore[method-assign]
+        client.archive._call = fake_call  # type: ignore[method-assign]
+        self.assertEqual(client.runtime.limits()["readBytes"], 256 << 20)
+        remote_out = client.archive.read(archive_ref, [{"member": 1, "offset": 0, "length": 5}])
+        self.assertEqual(remote_out, [{"index": 0, "member": 1, "size": 5, "body": b"bravo"}])
+        self.assertEqual(seen[0], ("GET", "/ether/plugin-host/limits", None))
+        self.assertEqual(seen[1][1], "/ether/plugin-host/data/archive.read")
+
 
 if __name__ == "__main__":
     unittest.main()

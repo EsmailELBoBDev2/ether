@@ -194,7 +194,7 @@ func (c *RemoteHostClient) callJSON(
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (MaxDataReadBytes+2)/3*4+(4<<20)))
 	if err != nil {
 		return false, err
 	}

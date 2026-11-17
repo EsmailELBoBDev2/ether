@@ -121,6 +121,7 @@ type RuntimeLimits struct {
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
+	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"`
 }

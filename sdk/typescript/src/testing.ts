@@ -138,7 +138,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         return state.folders.get(key) ?? [];
       },
       stat: (root: string, path: string) => {
-        const list = state.folders.get(root) ?? [];
+        const slash = path.lastIndexOf("/");
+        const parent = slash > 0 ? `${root}/${path.slice(0, slash)}` : root;
+        const list = state.folders.get(parent) ?? state.folders.get(root) ?? [];
         const found = list.find((f) => f.path === path || f.name === path);
         return found ?? { name: path, path, dir: false, size: 0 };
       },

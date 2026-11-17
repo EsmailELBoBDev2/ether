@@ -44,3 +44,44 @@ test("maps recorded channels, guide, and streams without network", async () => {
   assert.ok(s.streams[0].url.includes(id));
   assert.ok(s.streams[0].url.includes("fixture-token"));
 });
+
+test("inlines timelines from channels.json and skips Testing channels", async () => {
+  const base = JSON.parse(channels);
+  const withTimelines = [
+    {
+      ...base[0],
+      timelines: [
+        {
+          _id: "tl-1",
+          start: "2026-11-02T00:00:00Z",
+          stop: "2026-11-02T01:00:00Z",
+          title: "Market Open",
+          episode: { description: "Live market coverage" },
+        },
+      ],
+    },
+    {
+      ...base[0],
+      _id: "testing-chan",
+      name: "Deal Zone",
+      category: "Testing",
+    },
+  ];
+  const urls: string[] = [];
+  const host = createMockHostClient({
+    httpHandler: (r) => {
+      urls.push(r.url);
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify(withTimelines),
+      };
+    },
+  });
+  const p = createPlugin(host);
+  const list = (await p.dispatch({ path: "/ether/channels.json" })).body as any;
+  assert.equal(list.channels.length, 1);
+  assert.ok(urls[0].includes("start=") && urls[0].includes("stop="));
+  assert.equal(list.channels[0].programmes.length, 1);
+  assert.equal(list.channels[0].programmes[0].title, "Market Open");
+});

@@ -8,6 +8,13 @@ import {
 import manifest from "./manifest.json" with { type: "json" };
 
 type Settings = { region: string };
+type Timeline = {
+  _id?: string;
+  start: string;
+  stop: string;
+  title: string;
+  episode?: { description?: string };
+};
 type Channel = {
   _id: string;
   name: string;
@@ -15,13 +22,7 @@ type Channel = {
   category?: string;
   colorLogoPNG?: { path?: string };
   stitched?: { urls?: { type: string; url: string }[] };
-  timelines?: {
-    _id?: string;
-    start: string;
-    stop: string;
-    title: string;
-    episode?: { description?: string };
-  }[];
+  timelines?: Timeline[];
 };
 function fetchJSON(ctx: PluginContext<Settings>, path: string): unknown {
   const region = ctx.settings.region || "auto";
@@ -33,8 +34,29 @@ function fetchJSON(ctx: PluginContext<Settings>, path: string): unknown {
     throw new Error(`Pluto TV returned HTTP ${result.status}`);
   return JSON.parse(result.body);
 }
-function getChannels(ctx: PluginContext<Settings>): Channel[] {
-  const data = fetchJSON(ctx, "/v2/channels.json");
+function mapTimelines(channelId: string, timelines?: Timeline[]) {
+  return (timelines || [])
+    .filter((t) => t.start && t.stop && t.title)
+    .map((t) => ({
+      id: t._id,
+      channelId,
+      title: t.title,
+      start: t.start,
+      stop: t.stop,
+      description: t.episode?.description,
+    }));
+}
+function getChannels(
+  ctx: PluginContext<Settings>,
+  withGuideWindow = false,
+): Channel[] {
+  let path = "/v2/channels.json";
+  if (withGuideWindow) {
+    const start = new Date(Date.now() - 6 * 3600000).toISOString();
+    const stop = new Date(Date.now() + 24 * 3600000).toISOString();
+    path += `?start=${encodeURIComponent(start)}&stop=${encodeURIComponent(stop)}`;
+  }
+  const data = fetchJSON(ctx, path);
   if (!Array.isArray(data)) return [];
   const configured = ctx.settings.region || "auto";
   const url = data[0]?.stitched?.urls?.[0]?.url || "";
@@ -78,26 +100,31 @@ export function createPlugin(host?: EtherHost) {
     routes: {
       channels(ctx) {
         return {
-          channels: getChannels(ctx)
+          channels: getChannels(ctx, true)
             .filter(
               (c) =>
                 c._id &&
                 c.name &&
+                c.category?.toLowerCase() !== "testing" &&
                 c.stitched?.urls?.some((u) => u.type === "hls" && u.url),
             )
-            .map((c) => ({
-              id: c._id,
-              name: c.name,
-              number: c.number,
-              group: c.category,
-              logo: c.colorLogoPNG?.path,
-              guideId: c._id,
-              inputs: [
-                {
-                  url: `plugin://tv.ether.examples.pluto/stream/tv/${encodeURIComponent(c._id)}`,
-                },
-              ],
-            })),
+            .map((c) => {
+              const programmes = mapTimelines(c._id, c.timelines);
+              return {
+                id: c._id,
+                name: c.name,
+                number: c.number,
+                group: c.category,
+                logo: c.colorLogoPNG?.path,
+                guideId: c._id,
+                inputs: [
+                  {
+                    url: `plugin://tv.ether.examples.pluto/stream/tv/${encodeURIComponent(c._id)}`,
+                  },
+                ],
+                ...(programmes.length > 0 ? { programmes } : {}),
+              };
+            }),
         };
       },
       guide(req, ctx) {
@@ -107,16 +134,7 @@ export function createPlugin(host?: EtherHost) {
           `/v2/channels/${encodeURIComponent(req.channelId)}${query}`,
         ) as Channel;
         return {
-          programmes: (channel.timelines || [])
-            .filter((t) => t.start && t.stop && t.title)
-            .map((t) => ({
-              id: t._id,
-              channelId: req.channelId,
-              title: t.title,
-              start: t.start,
-              stop: t.stop,
-              description: t.episode?.description,
-            })),
+          programmes: mapTimelines(req.channelId, channel.timelines),
         };
       },
       stream(req, ctx) {

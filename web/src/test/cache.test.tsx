@@ -26,6 +26,7 @@ describe("cache preset suggestion", () => {
 
 describe("Cache management", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
   it("keeps a preset as a draft until saved and discards it without a request", async () => {
@@ -349,5 +350,115 @@ describe("Cache management", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
     expect(await screen.findByText("Playback readiness")).toBeInTheDocument();
     expect(screen.queryByLabelText("Search cached releases")).not.toBeInTheDocument();
+  });
+  it("styles Clear cache as outline and points Media disk budget to Back to presets → Pass-through", async () => {
+    renderApp("/cache");
+    const clearBtn = await screen.findByRole("button", { name: "Clear cache" }, WAIT);
+    const editBtn = screen.getByRole("button", { name: "Edit policy" });
+    expect(clearBtn.className).toContain("border-border");
+    expect(clearBtn.className).not.toContain("bg-primary ");
+    expect(editBtn.className).toContain("bg-primary");
+
+    fireEvent.click(editBtn);
+    const dialog = await screen.findByRole("dialog", { name: "Edit cache policy" }, WAIT);
+    expect(
+      within(dialog).getByText(
+        /Use Back to presets and choose Pass-through to turn disk caching off/,
+      ),
+    ).toBeInTheDocument();
+  });
+  it("hides raw SHA1 keys behind a compact copyable drawer field and merges live playback pills", async () => {
+    const sha1 = "8b8ad7ac4ea04925d6c6775d072c9e397f177c36";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderAppWith("/cache/explorer", (method, path) => {
+      if (method !== "GET" || path !== "/cache/") return undefined;
+      return {
+        used: 100 * 1024 ** 2,
+        budget: 10 * 1024 ** 3,
+        directory: "/cache",
+        protectedBytes: 100 * 1024 ** 2,
+        metrics: { hits: 1, misses: 0, servedBytes: 100, evictedBytes: 0 },
+        prefetch: { queued: 0, running: 0, completed: 0, failed: 0, dropped: 0 },
+        preload: {
+          state: "idle",
+          message: "",
+          title: "",
+          fetched: 0,
+          size: 0,
+          allocated: 0,
+          ready: 0,
+          failed: 0,
+          paused: false,
+          items: [],
+        },
+        releases: [
+          {
+            ReleaseID: sha1,
+            Title: "Allen.[2026].2160p.4K.WEB-DL",
+            Bytes: 52.4 * 1024 ** 2,
+            Size: 0,
+            Segments: 12,
+            Plays: 1,
+            LastUsed: new Date().toISOString(),
+            LastPlayed: new Date().toISOString(),
+            Pins: ["playback:live", "playback:inprogress"],
+            reason: {
+              causes: [{ code: "playing", firstSeen: new Date().toISOString() }],
+              retention: { kind: "pinned", pins: ["playback:live", "playback:inprogress"] },
+              file: "",
+              source: "",
+            },
+          },
+        ],
+      };
+    });
+
+    expect(await screen.findByText("Allen.[2026].2160p.4K.WEB-DL", {}, WAIT)).toBeInTheDocument();
+    expect(screen.getByText("Unmatched release")).toBeInTheDocument();
+    expect(screen.queryByText(sha1)).not.toBeInTheDocument();
+    expect(screen.queryByText("Watching now")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Allen.[2026].2160p.4K.WEB-DL"));
+    const dialog = await screen.findByRole(
+      "dialog",
+      { name: "Allen.[2026].2160p.4K.WEB-DL" },
+      WAIT,
+    );
+    expect(within(dialog).getByText("Unmatched release")).toBeInTheDocument();
+    expect(within(dialog).queryByText(sha1)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Watching now")).not.toBeInTheDocument();
+    // Hero status pill + Fetched because list item = 2 occurrences, not duplicate pills in hero.
+    const heroBadges = dialog.querySelectorAll('[class*="rounded-full"]');
+    const playingBadges = Array.from(heroBadges).filter((el) => el.textContent === "Playing now");
+    expect(playingBadges).toHaveLength(1);
+
+    expect(within(dialog).getByText("8b8ad7ac…177c36")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy cache key" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(sha1));
+  });
+  it("switches Explorer rows to a stacked card layout below 640px", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: query === "(max-width: 639px)",
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+
+    const { fake } = renderApp("/cache/explorer");
+    expect(await screen.findByText("Arrival", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    const cards = screen.getAllByRole("listitem");
+    expect(cards.length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pin Interstellar" }));
+    await waitFor(() => expect(calls(fake, "POST", "/cache/pin")).toHaveLength(1));
+
+    fireEvent.click(screen.getByText("Arrival"));
+    expect(await screen.findByRole("dialog", { name: "Arrival" }, WAIT)).toBeInTheDocument();
   });
 });

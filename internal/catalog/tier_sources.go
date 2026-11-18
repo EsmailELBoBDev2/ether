@@ -208,7 +208,7 @@ var tierUntouchedTables = []string{
 	"backup_", "notify_channels", "notify_once", "notify_push_keys", "notify_settings", "overlays_settings",
 	"prerolls", "prerolls_settings", "stats_costs", "stats_device_registry", "stats_device_registry_counter", "stats_indexer_days",
 	"stats_debrid_days", "stats_stream_days",
-	"stats_newsletter_", "stats_provider_days", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
+	"stats_newsletter_", "stats_provider_days", "stats_play_timeline", "plugins_artifacts", "plugins_calls", "plugins_catalogue_",
 	"plugins_remote_hashes", "plugins_remote_hash_budget", "plugins_hash_cache", "plugins_event_log", "plugins_grants", "plugins_health", "plugins_installed", "plugins_logs",
 	"plugins_proposals", "plugins_settings", "agent_approvals", "agent_audit", "agent_secret_requests",
 	"agent_threads", "schema_migrations", "sqlite_",

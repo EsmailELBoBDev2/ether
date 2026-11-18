@@ -388,8 +388,15 @@ type sessionLogHandler struct {
 	attrs   []string
 }
 
-func (h *sessionLogHandler) Enabled(_ context.Context, l slog.Level) bool {
-	return l >= slog.LevelDebug
+// Enabled keeps Debug as cheap as before: a Debug record is built only when
+// the server logs Debug anyway or the logger is already bound to a session.
+// Otherwise every Debug call in the app would be formatted just to be
+// checked for a session attribute.
+func (h *sessionLogHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	if l >= slog.LevelInfo || h.session != "" {
+		return true
+	}
+	return h.next != nil && h.next.Enabled(ctx, l)
 }
 
 func (h *sessionLogHandler) Handle(ctx context.Context, r slog.Record) error {

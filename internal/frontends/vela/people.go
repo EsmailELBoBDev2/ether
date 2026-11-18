@@ -9,6 +9,17 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
+func personPhotoObject(image frontend.Image, secret string) object {
+	return object{
+		"id":        hash(image.Path),
+		"kind":      frontend.ImagePerson,
+		"tag":       image.Tag,
+		"sizes":     []object{imageSize(image, secret)},
+		"blurHash":  image.BlurHash,
+		"thumbHash": image.ThumbHash,
+	}
+}
+
 func (i *instance) personPhotoWire(r *http.Request, token string, person frontend.PersonDetail) (any, error) {
 	if person.ArtworkItem == 0 || person.TMDB <= 0 || i.host.ImageGrants == nil {
 		return nil, nil
@@ -36,16 +47,83 @@ func (i *instance) personPhotoWire(r *http.Request, token string, person fronten
 		if secret == "" {
 			continue
 		}
-		return object{
-			"id":        hash(image.Path),
-			"kind":      frontend.ImagePerson,
-			"tag":       image.Tag,
-			"sizes":     []object{imageSize(image, secret)},
-			"blurHash":  image.BlurHash,
-			"thumbHash": image.ThumbHash,
-		}, nil
+		return personPhotoObject(image, secret), nil
 	}
 	return nil, nil
+}
+
+func (i *instance) facetPeopleWire(r *http.Request, token string, items []frontend.FacetPerson) ([]object, error) {
+	photos := make([]any, len(items))
+	if len(items) > 0 && i.host.ImageGrants != nil {
+		type targetPos struct {
+			entryIdx int
+			target   frontend.PersonImageTarget
+		}
+		var pending []targetPos
+		for idx, fp := range items {
+			if fp.Person.ArtworkItem == 0 || fp.Person.TMDB <= 0 {
+				continue
+			}
+			subject := "tmdb:" + strconv.FormatInt(fp.Person.TMDB, 10)
+			for _, image := range fp.Person.Images {
+				if image.Kind == frontend.ImagePerson && image.Subject == subject && image.Path != "" {
+					pending = append(pending, targetPos{
+						entryIdx: idx,
+						target:   frontend.PersonImageTarget{Item: fp.Person.ArtworkItem, Image: image},
+					})
+					break
+				}
+			}
+		}
+		dev := requestDevice(r)
+		if batch, ok := i.host.ImageGrants.(frontend.PersonImageGrantBatch); ok {
+			const chunkSize = 100
+			for start := 0; start < len(pending); start += chunkSize {
+				chunk := pending[start:min(start+chunkSize, len(pending))]
+				targets := make([]frontend.PersonImageTarget, len(chunk))
+				for j, p := range chunk {
+					targets[j] = p.target
+				}
+				secrets, err := batch.IssuePersonImages(r.Context(), token, dev, targets)
+				if err != nil {
+					return nil, err
+				}
+				for j, p := range chunk {
+					if j < len(secrets) && secrets[j] != "" {
+						photos[p.entryIdx] = personPhotoObject(p.target.Image, secrets[j])
+					}
+				}
+			}
+		} else {
+			for _, p := range pending {
+				secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{
+					Credential: token,
+					Device:     dev,
+					Item:       p.target.Item,
+					Image:      p.target.Image,
+				})
+				if err == nil && secret != "" {
+					photos[p.entryIdx] = personPhotoObject(p.target.Image, secret)
+				}
+			}
+		}
+	}
+
+	entries := make([]object, 0, len(items))
+	for idx, fp := range items {
+		entries = append(entries, object{
+			"id":   "person:" + fp.Person.ID,
+			"kind": "person",
+			"person": object{
+				"id":    fp.Person.ID,
+				"name":  fp.Person.Name,
+				"photo": photos[idx],
+			},
+			"itemCount":    fp.ItemCount,
+			"receiptToken": "",
+		})
+	}
+	return entries, nil
 }
 
 func (i *instance) person(w http.ResponseWriter, r *http.Request) {

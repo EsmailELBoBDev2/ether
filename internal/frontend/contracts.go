@@ -73,6 +73,7 @@ type ViewTab struct {
 	Label     string `json:"label"`
 	Kind      string `json:"kind"`
 	Facet     string `json:"facet,omitempty"`
+	Order     string `json:"order,omitempty"`
 	Sort      string `json:"sort,omitempty"`
 	Direction string `json:"direction,omitempty"`
 }
@@ -113,9 +114,9 @@ type LibraryFacetBuckets interface {
 }
 
 // LibraryFacetCollections is an optional Experience capability returning a
-// single page of facet-backed collections ordered most-items-first.
+// single page of facet-backed collections ordered by count (default) or name.
 type LibraryFacetCollections interface {
-	LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field string, page PageQuery) (FacetCollectionPage, error)
+	LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field, order string, page PageQuery) (FacetCollectionPage, error)
 }
 
 // PluginLibraryRowsReader is an optional Experience capability returning the

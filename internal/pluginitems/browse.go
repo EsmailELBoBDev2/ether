@@ -143,10 +143,38 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
 	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
 
+	// Build person + facet predicates first so we know whether to drive the
+	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
+	var filterWhere strings.Builder
+	var filterArgs []any
+	driveFromFields := false
+
+	if q.PersonID > 0 {
+		ok, err := s.appendBrowsePersonFilter(ctx, q.LibraryID, &filterWhere, &filterArgs, q.PersonID)
+		if err != nil {
+			return BrowsePage{}, err
+		}
+		if !ok {
+			return BrowsePage{Items: []core.KindItem{}, Total: 0}, nil
+		}
+		driveFromFields = true
+	}
+	usedFacetIndex, err := s.appendBrowseFacets(ctx, q.LibraryID, &filterWhere, &filterArgs, q.Facets)
+	if err != nil {
+		return BrowsePage{}, err
+	}
+	if usedFacetIndex {
+		driveFromFields = true
+	}
+
 	// Base filter predicate.
 	var baseWhere strings.Builder
 	baseArgs := []any{int64(q.LibraryID)}
-	baseWhere.WriteString(`i.library_id = ?`)
+	if driveFromFields && parentRef == "" {
+		baseWhere.WriteString(`i.library_id + 0 = ?`)
+	} else {
+		baseWhere.WriteString(`i.library_id = ?`)
+	}
 	if parentRef != "" {
 		baseWhere.WriteString(` AND i.parent_ref = ?`)
 		baseArgs = append(baseArgs, parentRef)
@@ -164,17 +192,9 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		// Default to root items when neither Level nor ParentRef is specified.
 		baseWhere.WriteString(` AND i.parent_ref = ''`)
 	}
-	if q.PersonID > 0 {
-		ok, err := s.appendPersonFilter(ctx, q.LibraryID, &baseWhere, &baseArgs, q.PersonID)
-		if err != nil {
-			return BrowsePage{}, err
-		}
-		if !ok {
-			return BrowsePage{Items: []core.KindItem{}, Total: 0}, nil
-		}
-	}
-	if err := s.appendFacets(ctx, q.LibraryID, &baseWhere, &baseArgs, q.Facets); err != nil {
-		return BrowsePage{}, err
+	if filterWhere.Len() > 0 {
+		baseWhere.WriteString(filterWhere.String())
+		baseArgs = append(baseArgs, filterArgs...)
 	}
 	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden); err != nil {
 		return BrowsePage{}, err
@@ -856,6 +876,201 @@ func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *s
 	return nil
 }
 
+// appendBrowseFacets emits IN-subquery predicates on plugin_item_fields for
+// positive Browse queries so SQLite/PostgreSQL drive execution from
+// plugin_item_fields_lookup / plugin_item_fields_lookup_int instead of scanning
+// all library items with correlated EXISTS checks.
+func (s *Service) appendBrowseFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string) (bool, error) {
+	if !hasActiveFacets(facets) {
+		return false, nil
+	}
+	rec, err := s.GetKindByLibrary(ctx, lib)
+	if err != nil {
+		return false, err
+	}
+	types := map[string]string{}
+	for _, field := range rec.Decl.Fields {
+		if field.Indexed || field.Type == "people" {
+			types[field.Key] = field.Type
+		}
+	}
+	keys := make([]string, 0, len(facets))
+	for k := range facets {
+		if strings.TrimSpace(k) != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	usedFieldIndex := false
+	for _, key := range keys {
+		var cleanVals []string
+		for _, v := range facets[key] {
+			if v = strings.TrimSpace(v); v != "" {
+				cleanVals = append(cleanVals, v)
+			}
+		}
+		if len(cleanVals) == 0 {
+			continue
+		}
+		ftype := types[key]
+		if envelopeFacet(key) || ftype == "float" {
+			libraryfilter.AppendPluginFacetClauses(where, args, map[string][]string{key: cleanVals}, types)
+			continue
+		}
+		switch ftype {
+		case "int", "date", "duration":
+			appendBrowseIntFieldClause(where, args, key, ftype, cleanVals, &usedFieldIndex)
+		case "people":
+			appendBrowsePeopleFieldClause(where, args, key, cleanVals, &usedFieldIndex)
+		default:
+			if ftype == "" && browseAllIntRanges(cleanVals) {
+				appendBrowseIntFieldClause(where, args, key, "int", cleanVals, &usedFieldIndex)
+				continue
+			}
+			placeholders := make([]string, len(cleanVals))
+			*args = append(*args, key)
+			for idx, v := range cleanVals {
+				placeholders[idx] = "?"
+				*args = append(*args, v)
+			}
+			where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
+			usedFieldIndex = true
+		}
+	}
+	return usedFieldIndex, nil
+}
+
+func browseAllIntRanges(vals []string) bool {
+	if len(vals) == 0 {
+		return false
+	}
+	for _, v := range vals {
+		if !strings.Contains(v, "..") {
+			return false
+		}
+		parts := strings.SplitN(v, "..", 2)
+		lo, e1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+		hi, e2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if e1 != nil || e2 != nil || lo > hi {
+			return false
+		}
+	}
+	return true
+}
+
+func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype string, vals []string, used *bool) {
+	var disjuncts []string
+	var dargs []any
+	var exactPh []string
+	var exactArgs []any
+	for _, v := range vals {
+		if ftype == "duration" {
+			if lo, hi, ok := libraryfilter.ParseDurationBucket(v); ok {
+				if hi == math.MaxInt64 {
+					disjuncts = append(disjuncts, `f.v_int >= ?`)
+					dargs = append(dargs, lo)
+				} else {
+					disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
+					dargs = append(dargs, lo, hi)
+				}
+				continue
+			}
+		}
+		if ftype == "date" {
+			if lo, hi, ok := libraryfilter.ParseDateYearBucket(v); ok {
+				disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
+				dargs = append(dargs, lo, hi)
+				continue
+			}
+		}
+		if strings.Contains(v, "..") {
+			parts := strings.SplitN(v, "..", 2)
+			lo, e1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+			hi, e2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+			if e1 == nil && e2 == nil && lo <= hi {
+				disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
+				dargs = append(dargs, lo, hi)
+				continue
+			}
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			continue
+		}
+		exactPh = append(exactPh, "?")
+		exactArgs = append(exactArgs, n)
+	}
+	if len(exactPh) > 0 {
+		disjuncts = append(disjuncts, `f.v_int IN (`+strings.Join(exactPh, ", ")+`)`)
+		dargs = append(dargs, exactArgs...)
+	}
+	if len(disjuncts) == 0 {
+		where.WriteString(` AND 0=1`)
+		return
+	}
+	*args = append(*args, key)
+	*args = append(*args, dargs...)
+	pred := disjuncts[0]
+	if len(disjuncts) > 1 {
+		pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
+	}
+	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + pred + `)`)
+	*used = true
+}
+
+func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool) {
+	var pids []int64
+	for _, v := range vals {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && core.IsPluginPersonID(n) {
+			pids = append(pids, n)
+			continue
+		}
+		if pid := core.PluginPersonID(v); pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	if len(pids) == 0 {
+		where.WriteString(` AND 0=1`)
+		return
+	}
+	placeholders := make([]string, len(pids))
+	*args = append(*args, key)
+	for idx, pid := range pids {
+		placeholders[idx] = "?"
+		*args = append(*args, pid)
+	}
+	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
+	*used = true
+}
+
+func (s *Service) appendBrowsePersonFilter(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, personID int64) (bool, error) {
+	if !core.IsPluginPersonID(personID) {
+		return false, nil
+	}
+	rec, err := s.GetKindByLibrary(ctx, lib)
+	if err != nil {
+		return false, err
+	}
+	var pFields []string
+	for _, field := range rec.Decl.Fields {
+		if field.Type == "people" {
+			pFields = append(pFields, field.Key)
+		}
+	}
+	if len(pFields) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(pFields))
+	for i, fk := range pFields {
+		placeholders[i] = "?"
+		*args = append(*args, fk)
+	}
+	*args = append(*args, personID)
+	where.WriteString(` AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int = ?)`)
+	return true, nil
+}
+
 func (s *Service) appendPersonFilter(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, personID int64) (bool, error) {
 	if !core.IsPluginPersonID(personID) {
 		return false, nil
@@ -884,13 +1099,14 @@ func (s *Service) appendPersonFilter(ctx context.Context, lib core.LibraryID, wh
 }
 
 // FacetCollectionsQuery requests a single page of facet-backed collections
-// ordered most-items-first, hydrating artwork only for the newest item of each
-// bucket on the page.
+// ordered by item count (default) or bucket name, hydrating artwork only for
+// the newest item of each bucket on the page in one batched query.
 type FacetCollectionsQuery struct {
 	LibraryID core.LibraryID
 	Level     string
 	Policy    *libraryfilter.Filter
 	FieldKey  string
+	Order     string // "count" (default) | "name"
 	Offset    int
 	Limit     int
 }
@@ -910,8 +1126,8 @@ type FacetCollectionsPage struct {
 }
 
 // FacetCollections returns one page of facet buckets ordered most-items-first
-// (tie-broken alphabetically) and resolves the newest visible item + artwork
-// strictly for the buckets on this page (O(page)).
+// (default) or alphabetically by name (Order: "name"), resolving the newest
+// visible item + artwork across the whole page in one batched lookup.
 func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery) (FacetCollectionsPage, error) {
 	if s == nil || s.db == nil {
 		return FacetCollectionsPage{}, fmt.Errorf("pluginitems: nil service")
@@ -932,20 +1148,10 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		limit = 200
 	}
 	offset := max(q.Offset, 0)
+	orderByName := strings.EqualFold(strings.TrimSpace(q.Order), "name")
 
-	var itemWhere strings.Builder
-	itemArgs := []any{int64(q.LibraryID)}
-	itemWhere.WriteString(`i.library_id = ?`)
-	if lv := strings.TrimSpace(q.Level); lv != "" {
-		itemWhere.WriteString(` AND i.level = ?`)
-		itemArgs = append(itemArgs, lv)
-	} else if len(rec.Decl.Levels) > 0 {
-		itemWhere.WriteString(` AND i.level = ?`)
-		itemArgs = append(itemArgs, rec.Decl.Levels[0].Key)
-	} else {
-		itemWhere.WriteString(` AND i.parent_ref = ''`)
-	}
-	if err := s.appendVisibility(ctx, &itemWhere, &itemArgs, q.LibraryID, q.Policy, false); err != nil {
+	itemWhere, fieldDrivenWhere, itemArgs, err := s.buildRootItemPredicates(ctx, rec, q.Level, q.Policy)
+	if err != nil {
 		return FacetCollectionsPage{}, err
 	}
 
@@ -966,60 +1172,74 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 	}
 
 	var pageBuckets []FacetBucket
+	var pagePersonIDs []int64
 	more := false
 
 	switch {
 	case !envelopeFacet(fieldKey) && fieldType == "people":
+		orderClause := `cnt DESC, LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
+		if orderByName {
+			orderClause = `LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
+		}
 		qArgs := append(append([]any(nil), itemArgs...), fieldKey, limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
-			`SELECT MIN(f.v_text) AS label, COUNT(*) AS cnt
+			`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
 			 FROM plugin_item_fields f
 			 JOIN plugin_items i ON i.item_ref = f.item_ref
-			 WHERE `+itemWhere.String()+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''
+			 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''
 			 GROUP BY f.v_int
-			 ORDER BY cnt DESC, LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC
+			 ORDER BY `+orderClause+`
 			 LIMIT ? OFFSET ?`, qArgs...)
 		if err != nil {
 			return FacetCollectionsPage{}, err
 		}
-		defer rows.Close()
 		for rows.Next() {
+			var pid int64
 			var label string
 			var cnt int
-			if err := rows.Scan(&label, &cnt); err != nil {
+			if err := rows.Scan(&pid, &label, &cnt); err != nil {
+				rows.Close()
 				return FacetCollectionsPage{}, err
 			}
 			label = strings.TrimSpace(label)
 			if label != "" && cnt > 0 {
 				pageBuckets = append(pageBuckets, FacetBucket{ID: label, Label: label, Count: cnt})
+				pagePersonIDs = append(pagePersonIDs, pid)
 			}
 		}
 		if err := rows.Err(); err != nil {
+			rows.Close()
 			return FacetCollectionsPage{}, err
 		}
+		rows.Close()
 		if len(pageBuckets) > limit {
 			pageBuckets = pageBuckets[:limit]
+			pagePersonIDs = pagePersonIDs[:limit]
 			more = true
 		}
 
 	case !envelopeFacet(fieldKey) && (fieldType == "string" || fieldType == "strings" || fieldType == "enum" || fieldType == "bool"):
+		orderClause := `cnt DESC, LOWER(f.v_text) ASC, f.v_text ASC`
+		if orderByName {
+			orderClause = `LOWER(f.v_text) ASC, f.v_text ASC`
+		}
 		qArgs := append(append([]any(nil), itemArgs...), fieldKey, limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT f.v_text, COUNT(*) AS cnt
 			 FROM plugin_item_fields f
 			 JOIN plugin_items i ON i.item_ref = f.item_ref
-			 WHERE `+itemWhere.String()+` AND f.field = ? AND f.v_text <> ''
+			 WHERE `+itemWhere+` AND f.field = ? AND f.v_text <> ''
 			 GROUP BY f.v_text
-			 ORDER BY cnt DESC, LOWER(f.v_text) ASC, f.v_text ASC
+			 ORDER BY `+orderClause+`
 			 LIMIT ? OFFSET ?`, qArgs...)
 		if err != nil {
 			return FacetCollectionsPage{}, err
 		}
-		defer rows.Close()
 		for rows.Next() {
 			var val string
 			var cnt int
 			if err := rows.Scan(&val, &cnt); err != nil {
+				rows.Close()
 				return FacetCollectionsPage{}, err
 			}
 			if val != "" && cnt > 0 {
@@ -1027,8 +1247,10 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 			}
 		}
 		if err := rows.Err(); err != nil {
+			rows.Close()
 			return FacetCollectionsPage{}, err
 		}
+		rows.Close()
 		if len(pageBuckets) > limit {
 			pageBuckets = pageBuckets[:limit]
 			more = true
@@ -1039,12 +1261,18 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if err != nil {
 			return FacetCollectionsPage{}, err
 		}
-		sort.SliceStable(all, func(i, j int) bool {
-			if all[i].Count != all[j].Count {
-				return all[i].Count > all[j].Count
-			}
-			return facetNameLess(all[i].Label, all[j].Label)
-		})
+		if orderByName {
+			sort.SliceStable(all, func(i, j int) bool {
+				return facetNameLess(all[i].Label, all[j].Label)
+			})
+		} else {
+			sort.SliceStable(all, func(i, j int) bool {
+				if all[i].Count != all[j].Count {
+					return all[i].Count > all[j].Count
+				}
+				return facetNameLess(all[i].Label, all[j].Label)
+			})
+		}
 		if offset < len(all) {
 			end := min(offset+limit, len(all))
 			pageBuckets = all[offset:end]
@@ -1056,40 +1284,28 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		return FacetCollectionsPage{Items: []FacetCollection{}}, nil
 	}
 
+	var newest []*core.KindItem
+	switch {
+	case !envelopeFacet(fieldKey) && fieldType == "people":
+		newest, err = s.resolveNewestByPersonIDs(ctx, fieldKey, pagePersonIDs, fieldDrivenWhere, itemArgs)
+	case !envelopeFacet(fieldKey) && (fieldType == "string" || fieldType == "strings" || fieldType == "enum" || fieldType == "bool"):
+		newest, err = s.resolveNewestByTextBuckets(ctx, fieldKey, pageBuckets, fieldDrivenWhere, itemArgs)
+	default:
+		newest, err = s.resolveNewestByPredicateBuckets(ctx, fieldKey, fieldTypes, pageBuckets, itemWhere, itemArgs)
+	}
+	if err != nil {
+		return FacetCollectionsPage{}, err
+	}
+
 	out := make([]FacetCollection, len(pageBuckets))
-	newestItems := make([]core.KindItem, 0, len(pageBuckets))
-	bucketForNewest := make([]int, 0, len(pageBuckets))
 	for i, b := range pageBuckets {
 		out[i] = FacetCollection{
 			ID:    b.ID,
 			Label: b.Label,
 			Count: b.Count,
 		}
-		var w strings.Builder
-		w.WriteString(itemWhere.String())
-		wArgs := append([]any(nil), itemArgs...)
-		libraryfilter.AppendPluginFacetClauses(&w, &wArgs, map[string][]string{fieldKey: {b.ID}}, fieldTypes)
-		wArgs = append(wArgs, 1)
-		items, err := s.queryItems(ctx, `SELECT `+prefixedItemCols("i.")+`
-FROM plugin_items i
-WHERE `+w.String()+`
-ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC
-LIMIT ?`, wArgs, false)
-		if err != nil {
-			return FacetCollectionsPage{}, err
-		}
-		if len(items) > 0 {
-			newestItems = append(newestItems, items[0])
-			bucketForNewest = append(bucketForNewest, i)
-		}
-	}
-	if len(newestItems) > 0 {
-		if err := s.hydrateArtSlice(ctx, newestItems); err != nil {
-			return FacetCollectionsPage{}, err
-		}
-		for idx, bucketIdx := range bucketForNewest {
-			itemCopy := newestItems[idx]
-			out[bucketIdx].NewestItem = &itemCopy
+		if i < len(newest) && newest[i] != nil {
+			out[i].NewestItem = newest[i]
 		}
 	}
 	return FacetCollectionsPage{Items: out, More: more}, nil

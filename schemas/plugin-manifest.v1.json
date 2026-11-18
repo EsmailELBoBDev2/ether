@@ -414,11 +414,18 @@
                               "enum": [
                                 "recommended",
                                 "library",
-                                "collections"
+                                "collections",
+                                "people"
                               ]
                             },
                             "label": {
                               "type": "string"
+                            },
+                            "order": {
+                              "enum": [
+                                "count",
+                                "name"
+                              ]
                             },
                             "sort": {
                               "enum": [

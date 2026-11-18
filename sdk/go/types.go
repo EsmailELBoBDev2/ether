@@ -267,8 +267,9 @@ type KindLibraryDecl struct {
 type KindLibraryTab struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
-	Kind      string `json:"kind"`                // recommended|library|collections
-	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections only)
+	Kind      string `json:"kind"`                // recommended|library|collections|people
+	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (optional on collections; required people-type facet on people)
+	Order     string `json:"order,omitempty"`     // count|name (default count on collections, name on people)
 	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
 	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
 }

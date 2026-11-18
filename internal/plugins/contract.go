@@ -426,10 +426,11 @@ type KindLibraryDecl struct {
 type KindLibraryTab struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
-	Kind      string `json:"kind"`                // recommended|library|collections
-	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections only)
+	Kind      string `json:"kind"`                // recommended|library|collections|people
+	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections or people)
 	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
 	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
+	Order     string `json:"order,omitempty"`     // count|name (facet collections or people)
 }
 
 // IsZero reports whether every field of the library declaration is empty.

@@ -37,7 +37,7 @@ var kindLibraryCards = map[string]bool{
 }
 
 var kindLibraryTabKinds = map[string]bool{
-	"recommended": true, "library": true, "collections": true,
+	"recommended": true, "library": true, "collections": true, "people": true,
 }
 
 var mediaBrowserCollectionTypes = map[string]bool{
@@ -103,7 +103,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			seenTab[tab.Key] = true
 			label(tbase+".label", tab.Label, 40)
 			if !kindLibraryTabKinds[tab.Kind] {
-				add(tbase+".kind", "must be recommended, library or collections")
+				add(tbase+".kind", "must be recommended, library, collections or people")
 			}
 		}
 	}
@@ -207,9 +207,37 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	if !k.Library.IsZero() {
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
-			if tab.Kind != "collections" {
-				if tab.Facet != "" {
-					add(tbase+".facet", "only collections tabs may set facet")
+			switch tab.Kind {
+			case "collections":
+				if tab.Facet != "" && !seenFacet[tab.Facet] {
+					add(tbase+".facet", "must name a declared browse facet")
+				}
+				if tab.Sort != "" {
+					if tab.Facet == "" {
+						add(tbase+".sort", "requires facet to be set")
+					} else if !seenSort[tab.Sort] {
+						add(tbase+".sort", "must name a declared browse sort")
+					}
+				}
+				if tab.Direction != "" {
+					if tab.Facet == "" {
+						add(tbase+".direction", "requires facet to be set")
+					} else if tab.Direction != "asc" && tab.Direction != "desc" {
+						add(tbase+".direction", "must be asc or desc")
+					}
+				}
+				if tab.Order != "" {
+					if tab.Facet == "" {
+						add(tbase+".order", "requires facet to be set")
+					} else if tab.Order != "count" && tab.Order != "name" {
+						add(tbase+".order", "must be count or name")
+					}
+				}
+			case "people":
+				if tab.Facet == "" || !seenFacet[tab.Facet] {
+					add(tbase+".facet", "must name a declared browse facet")
+				} else if fields[tab.Facet].Type != "people" {
+					add(tbase+".facet", "must name a people field")
 				}
 				if tab.Sort != "" {
 					add(tbase+".sort", "only collections tabs may set sort")
@@ -217,23 +245,21 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Direction != "" {
 					add(tbase+".direction", "only collections tabs may set direction")
 				}
-				continue
-			}
-			if tab.Facet != "" && !seenFacet[tab.Facet] {
-				add(tbase+".facet", "must name a declared browse facet")
-			}
-			if tab.Sort != "" {
-				if tab.Facet == "" {
-					add(tbase+".sort", "requires facet to be set")
-				} else if !seenSort[tab.Sort] {
-					add(tbase+".sort", "must name a declared browse sort")
+				if tab.Order != "" && tab.Order != "count" && tab.Order != "name" {
+					add(tbase+".order", "must be count or name")
 				}
-			}
-			if tab.Direction != "" {
-				if tab.Facet == "" {
-					add(tbase+".direction", "requires facet to be set")
-				} else if tab.Direction != "asc" && tab.Direction != "desc" {
-					add(tbase+".direction", "must be asc or desc")
+			default:
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
 				}
 			}
 		}

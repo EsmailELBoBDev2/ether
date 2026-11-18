@@ -58,17 +58,21 @@ func TestContentManifestValidates(t *testing.T) {
 	if err := contentManifest().Validate(); err != nil {
 		t.Fatalf("valid content manifest: %v", err)
 	}
-	// Landscape card + facet collections tab validate cleanly.
+	// Landscape card + facet collections tab (with order) + people tab validate cleanly.
 	m := contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Fields[1].Indexed = true
+	m.Ether.Contributes.MediaKinds[0].Browse.Facets = []string{"genre", "recordist"}
 	m.Ether.Contributes.MediaKinds[0].Browse.Sorts = []string{"released", "title", "added"}
 	m.Ether.Contributes.MediaKinds[0].Library.Card = "landscape"
 	m.Ether.Contributes.MediaKinds[0].Library.Tabs = []KindLibraryTab{
 		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
-		{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Sort: "released", Direction: "desc"},
+		{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Order: "name", Sort: "released", Direction: "desc"},
+		{Key: "recordists", Label: "Recordists", Kind: "people", Facet: "recordist", Order: "name"},
+		{Key: "top-recordists", Label: "Top recordists", Kind: "people", Facet: "recordist", Order: "count"},
 	}
 	if err := m.Validate(); err != nil {
-		t.Fatalf("landscape + facet collections tab: %v", err)
+		t.Fatalf("landscape + facet collections + people tabs: %v", err)
 	}
 	// Vela-only presentation (movies on 1 level, shows on >=2 levels) validates.
 	m = contentManifest()
@@ -185,6 +189,39 @@ func TestContentManifestRules(t *testing.T) {
 		{"bad direction on collections tab", func(m *Manifest) {
 			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Direction: "newest"}}
 		}, "library.tabs[0].direction"},
+		{"bad order on collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Order: "popular"}}
+		}, "library.tabs[0].order"},
+		{"order without facet on collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cols", Label: "Collections", Kind: "collections", Order: "name"}}
+		}, "library.tabs[0].order"},
+		{"order on library tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "library", Label: "Library", Kind: "library", Order: "name"}}
+		}, "library.tabs[0].order"},
+		{"people tab without facet", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people"}}
+		}, "library.tabs[0].facet"},
+		{"people tab undeclared browse facet", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "recordist"}}
+		}, "library.tabs[0].facet"},
+		{"people tab non-people facet", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "genre"}}
+		}, "library.tabs[0].facet"},
+		{"people tab with sort", func(m *Manifest) {
+			kind(m).Fields[1].Indexed = true
+			kind(m).Browse.Facets = []string{"genre", "recordist"}
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "recordist", Sort: "title"}}
+		}, "library.tabs[0].sort"},
+		{"people tab with direction", func(m *Manifest) {
+			kind(m).Fields[1].Indexed = true
+			kind(m).Browse.Facets = []string{"genre", "recordist"}
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "recordist", Direction: "asc"}}
+		}, "library.tabs[0].direction"},
+		{"bad order on people tab", func(m *Manifest) {
+			kind(m).Fields[1].Indexed = true
+			kind(m).Browse.Facets = []string{"genre", "recordist"}
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "recordist", Order: "asc"}}
+		}, "library.tabs[0].order"},
 		{"no levels", func(m *Manifest) { kind(m).Levels = nil }, ".levels"},
 		{"six levels", func(m *Manifest) {
 			for i := 0; i < 4; i++ {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,13 +23,18 @@ import (
 
 type pluginPresExperience struct {
 	frontendtest.Experience
-	images      map[core.RatingKey][]frontend.Image
-	buckets     map[string][]frontend.FacetBucket
-	colPages    map[string]frontend.FacetCollectionPage
-	pluginRows  map[string][]frontend.Row
-	lastLibID   string
-	lastQuery   frontend.ItemQuery
-	rowRequests []frontend.RowRequest
+	images             map[core.RatingKey][]frontend.Image
+	buckets            map[string][]frontend.FacetBucket
+	colPages           map[string]frontend.FacetCollectionPage
+	peoplePages        map[string]frontend.FacetPersonPage
+	peopleByID         map[string]frontend.PersonDetail
+	pluginRows         map[string][]frontend.Row
+	lastLibID          string
+	lastQuery          frontend.ItemQuery
+	lastColOrder       string
+	lastPeopleOrder    string
+	personImageBatches int
+	rowRequests        []frontend.RowRequest
 }
 
 func (e *pluginPresExperience) ItemArtworkPage(_ context.Context, _ *core.Viewer, _ core.Device, keys []core.RatingKey) (map[core.RatingKey][]frontend.Image, error) {
@@ -46,19 +52,93 @@ func (e *pluginPresExperience) LibraryFacetBuckets(_ context.Context, _ *core.Vi
 	return append([]frontend.FacetBucket(nil), e.buckets[field]...), nil
 }
 
-func (e *pluginPresExperience) LibraryFacetCollections(_ context.Context, _ *core.Viewer, _ core.Device, viewID, field string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
+func (e *pluginPresExperience) LibraryFacetCollections(_ context.Context, _ *core.Viewer, _ core.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
 	if viewID != "77" {
 		return frontend.FacetCollectionPage{}, core.ErrNotFound
 	}
-	all := e.colPages[field].Items
+	e.lastColOrder = order
+	all := append([]frontend.FacetCollection(nil), e.colPages[field].Items...)
+	if order == "name" {
+		sort.Slice(all, func(i, j int) bool {
+			return strings.ToLower(all[i].Name) < strings.ToLower(all[j].Name)
+		})
+	}
 	if page.Offset >= len(all) {
 		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
 	end := min(page.Offset+page.Limit, len(all))
 	return frontend.FacetCollectionPage{
-		Items: append([]frontend.FacetCollection(nil), all[page.Offset:end]...),
+		Items: all[page.Offset:end],
 		More:  end < len(all),
 	}, nil
+}
+
+func (e *pluginPresExperience) LibraryFacetPeople(_ context.Context, _ *core.Viewer, _ core.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetPersonPage, error) {
+	if viewID != "77" {
+		return frontend.FacetPersonPage{}, core.ErrNotFound
+	}
+	e.lastPeopleOrder = order
+	all := append([]frontend.FacetPerson(nil), e.peoplePages[field].Items...)
+	if order == "count" {
+		sort.Slice(all, func(i, j int) bool {
+			if all[i].ItemCount != all[j].ItemCount {
+				return all[i].ItemCount > all[j].ItemCount
+			}
+			return strings.ToLower(all[i].Person.Name) < strings.ToLower(all[j].Person.Name)
+		})
+	} else {
+		sort.Slice(all, func(i, j int) bool {
+			return strings.ToLower(all[i].Person.Name) < strings.ToLower(all[j].Person.Name)
+		})
+	}
+	if page.Offset >= len(all) {
+		return frontend.FacetPersonPage{Items: []frontend.FacetPerson{}}, nil
+	}
+	end := min(page.Offset+page.Limit, len(all))
+	return frontend.FacetPersonPage{
+		Items: all[page.Offset:end],
+		More:  end < len(all),
+	}, nil
+}
+
+func (e *pluginPresExperience) People(_ context.Context, _ *core.Viewer, _ core.Device, _ frontend.PeopleQuery) ([]frontend.PersonDetail, error) {
+	return nil, nil
+}
+
+func (e *pluginPresExperience) Person(_ context.Context, _ *core.Viewer, _ core.Device, id string, _ frontend.PersonReadOptions) (frontend.PersonDetail, error) {
+	p, ok := e.peopleByID[id]
+	if !ok {
+		return frontend.PersonDetail{}, core.ErrNotFound
+	}
+	return p, nil
+}
+
+func (e *pluginPresExperience) PersonCredit(_ context.Context, _ *core.Viewer, _ core.Device, _ core.RatingKey, tmdb int64) (frontend.PersonDetail, error) {
+	for _, p := range e.peopleByID {
+		if p.TMDB == tmdb {
+			return p, nil
+		}
+	}
+	return frontend.PersonDetail{}, core.ErrNotFound
+}
+
+func (e *pluginPresExperience) AuthorizePersonImages(_ context.Context, _ *core.Viewer, _ core.Device, targets []frontend.PersonImageTarget) ([]bool, error) {
+	e.personImageBatches++
+	allowed := make([]bool, len(targets))
+	for i, target := range targets {
+		allowed[i] = target.Item != 0 && target.Image.Kind == frontend.ImagePerson && target.Image.Path != ""
+	}
+	return allowed, nil
+}
+
+func (e *pluginPresExperience) AuthorizePersonImage(ctx context.Context, _ *core.Viewer, _ core.Device, item core.RatingKey, image frontend.Image, admission func(context.Context) error) error {
+	if item == 0 || image.Kind != frontend.ImagePerson || image.Path == "" {
+		return core.ErrUnauthorized
+	}
+	if admission != nil {
+		return admission(ctx)
+	}
+	return nil
 }
 
 func (e *pluginPresExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
@@ -102,6 +182,39 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 		Year:      2016,
 	}
 
+	ashleyNum := core.PluginPersonID("Ashley Johnson")
+	lauraNum := core.PluginPersonID("Laura Bailey")
+	troyNum := core.PluginPersonID("Troy Baker")
+	ashleyID := core.FacetID("person", fmt.Sprintf("%d", ashleyNum))
+	lauraID := core.FacetID("person", fmt.Sprintf("%d", lauraNum))
+	troyID := core.FacetID("person", fmt.Sprintf("%d", troyNum))
+
+	ashleyImg := frontend.Image{Kind: frontend.ImagePerson, Path: "cast-ashley", Tag: "v1", Subject: fmt.Sprintf("tmdb:%d", ashleyNum), Width: 185, Height: 278}
+	lauraImg := frontend.Image{Kind: frontend.ImagePerson, Path: "cast-laura", Tag: "v1", Subject: fmt.Sprintf("tmdb:%d", lauraNum), Width: 185, Height: 278}
+
+	ashleyDetail := frontend.PersonDetail{
+		ID:          ashleyID,
+		TMDB:        ashleyNum,
+		Name:        "Ashley Johnson",
+		ArtworkItem: game1.Key,
+		Images:      []frontend.Image{ashleyImg},
+		KnownFor:    "Acting",
+	}
+	lauraDetail := frontend.PersonDetail{
+		ID:          lauraID,
+		TMDB:        lauraNum,
+		Name:        "Laura Bailey",
+		ArtworkItem: game1.Key,
+		Images:      []frontend.Image{lauraImg},
+		KnownFor:    "Acting",
+	}
+	troyDetail := frontend.PersonDetail{
+		ID:       troyID,
+		TMDB:     troyNum,
+		Name:     "Troy Baker",
+		KnownFor: "Acting",
+	}
+
 	views := []frontend.View{
 		{
 			ID:        "23",
@@ -121,12 +234,14 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 			Tabs: []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
 				{ID: "library", Label: "Library", Kind: "library"},
-				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers"},
+				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "count"},
+				{ID: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name"},
 			},
 			Sorts: []string{"released", "added", "title", "year", "rating", "index"},
 			Facets: []frontend.ViewFacet{
 				{ID: "platforms", Label: "Platforms", Type: "strings", Multi: true},
-				{ID: "developers", Label: "Developers", Type: "people", Multi: true},
+				{ID: "developers", Label: "Developers", Type: "strings", Multi: true},
+				{ID: "voiceCast", Label: "Voice cast", Type: "people", Multi: true},
 				{ID: "genres", Label: "Genres", Type: "strings", Multi: true},
 				{ID: "released", Label: "Released", Type: "date", Multi: true},
 				{ID: "playtime", Label: "Playtime", Type: "duration", Multi: true},
@@ -160,6 +275,20 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 				},
 			},
 		},
+		peoplePages: map[string]frontend.FacetPersonPage{
+			"voiceCast": {
+				Items: []frontend.FacetPerson{
+					{Person: troyDetail, ItemCount: 1},
+					{Person: lauraDetail, ItemCount: 3},
+					{Person: ashleyDetail, ItemCount: 2},
+				},
+			},
+		},
+		peopleByID: map[string]frontend.PersonDetail{
+			ashleyID: ashleyDetail,
+			lauraID:  lauraDetail,
+			troyID:   troyDetail,
+		},
 		pluginRows: map[string][]frontend.Row{
 			"77": {
 				{
@@ -186,11 +315,11 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	}
 	exp.FacetsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, viewID, facet string) ([]core.FacetValue, error) {
 		if viewID == "23" && facet == "genre" {
-			return []core.FacetValue{{Title: "Sci-Fi"}}, nil
+			return []core.FacetValue{{Title: "Sci-Fi"}} , nil
 		}
 		return nil, nil
 	}
-	exp.ItemArtworkFunc = func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) ([]frontend.Image, bool, error) {
+	exp.ItemArtworkFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, k core.RatingKey) ([]frontend.Image, bool, error) {
 		return exp.images[k], true, nil
 	}
 	exp.LibraryItemsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, id string, q frontend.ItemQuery) (frontend.Page, error) {
@@ -280,7 +409,7 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 		t.Fatalf("bootstrap capabilities.searchLibraries = %v (code=%d)", boot["capabilities"], code)
 	}
 
-	// 2. GET /vela/v0/libraries: presentation.card, tabs, plugin sorts & facets, catalogue genres untouched.
+	// 2. GET /vela/v0/libraries: presentation.card, collections+people tabs (with order), plugin sorts & facets, catalogue genres untouched.
 	code, libsResp := doReq(http.MethodGet, "/vela/v0/libraries", nil)
 	if code != 200 {
 		t.Fatalf("libraries code=%d body=%v", code, libsResp)
@@ -304,16 +433,23 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 		t.Fatalf("plugin presentation = %v", plugLib["presentation"])
 	}
 	plugTabs := plugLib["tabs"].([]any)
+	if len(plugTabs) != 4 {
+		t.Fatalf("expected 4 plugin tabs, got %v", plugTabs)
+	}
 	devTab := plugTabs[2].(map[string]any)
-	if devTab["id"] != "developers" || devTab["kind"] != "collections" || devTab["facet"] != "developers" || devTab["sort"] != "released" || devTab["direction"] != "desc" {
+	if devTab["id"] != "developers" || devTab["kind"] != "collections" || devTab["facet"] != "developers" || devTab["order"] != "count" || devTab["sort"] != "released" || devTab["direction"] != "desc" {
 		t.Fatalf("unexpected developers collections tab: %v", devTab)
+	}
+	castTab := plugTabs[3].(map[string]any)
+	if castTab["id"] != "cast" || castTab["label"] != "Voice cast" || castTab["kind"] != "people" || castTab["facet"] != "voiceCast" || castTab["order"] != "name" {
+		t.Fatalf("unexpected voiceCast people tab: %v", castTab)
 	}
 	plugBrowse := plugLib["browse"].(map[string]any)
 	if plugBrowse["defaultSort"] != "released" || plugBrowse["defaultDirection"] != "desc" || len(plugBrowse["sorts"].([]any)) != 6 {
 		t.Fatalf("unexpected plugin browse sorts: %v", plugBrowse)
 	}
 	plugFilters := plugBrowse["filters"].(map[string]any)
-	if plugFilters["genre"] != nil || plugFilters["genres"] != nil || len(plugFilters["facets"].([]any)) != 5 {
+	if plugFilters["genre"] != nil || plugFilters["genres"] != nil || len(plugFilters["facets"].([]any)) != 6 {
 		t.Fatalf("unexpected plugin browse filters: %v", plugFilters)
 	}
 
@@ -364,8 +500,8 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 
 	// 5. GET /vela/v0/libraries/{id}/collections?tab=developers: paged facet collections with landscape thumb art.
 	code, colP1 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&limit=1", nil)
-	if code != 200 || colP1["continuation"] != "more" {
-		t.Fatalf("facet collections page1 = %d %v", code, colP1)
+	if code != 200 || colP1["continuation"] != "more" || exp.lastColOrder != "count" {
+		t.Fatalf("facet collections page1 = %d order=%q %v", code, exp.lastColOrder, colP1)
 	}
 	cEntry := colP1["items"].([]any)[0].(map[string]any)
 	cObj := cEntry["collection"].(map[string]any)
@@ -383,6 +519,61 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	}
 	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=missing", nil); code != 404 {
 		t.Fatalf("unknown collections tab status=%d, want 404", code)
+	}
+
+	// 5b. GET /vela/v0/libraries/{id}/collections?tab=cast: people tab lists 3 people alphabetically with counts,
+	// batch-signs headshots in one call, and each person ID resolves on GET /vela/v0/people/{id} and /people/{id}/titles.
+	exp.personImageBatches = 0
+	code, castPage := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=cast", nil)
+	if code != 200 || castPage["continuation"] != "exhausted" || exp.lastPeopleOrder != "name" {
+		t.Fatalf("people tab = %d order=%q body=%v", code, exp.lastPeopleOrder, castPage)
+	}
+	if exp.personImageBatches != 1 {
+		t.Fatalf("expected exactly 1 batch portrait signing call, got %d", exp.personImageBatches)
+	}
+	castItems := castPage["items"].([]any)
+	if len(castItems) != 3 {
+		t.Fatalf("expected 3 people on cast tab, got %d: %v", len(castItems), castItems)
+	}
+	wantCast := []struct {
+		id       string
+		name     string
+		count    float64
+		hasPhoto bool
+	}{
+		{ashleyID, "Ashley Johnson", 2, true},
+		{lauraID, "Laura Bailey", 3, true},
+		{troyID, "Troy Baker", 1, false},
+	}
+	for idx, w := range wantCast {
+		entry := castItems[idx].(map[string]any)
+		if entry["id"] != "person:"+w.id || entry["kind"] != "person" || entry["itemCount"] != w.count || entry["receiptToken"] != "" {
+			t.Fatalf("cast[%d] envelope = %v, want id=person:%s kind=person itemCount=%v receiptToken=\"\"", idx, entry, w.id, w.count)
+		}
+		pWire := entry["person"].(map[string]any)
+		if pWire["id"] != w.id || pWire["name"] != w.name {
+			t.Fatalf("cast[%d] person = %v, want id=%s name=%s", idx, pWire, w.id, w.name)
+		}
+		pCode, personEndpoint := doReq(http.MethodGet, "/vela/v0/people/"+url.PathEscape(w.id), nil)
+		if pCode != 200 {
+			t.Fatalf("GET /vela/v0/people/%s status=%d body=%v", w.id, pCode, personEndpoint)
+		}
+		tCode, titlesEndpoint := doReq(http.MethodGet, "/vela/v0/people/"+url.PathEscape(w.id)+"/titles", nil)
+		if tCode != 200 {
+			t.Fatalf("GET /vela/v0/people/%s/titles status=%d body=%v", w.id, tCode, titlesEndpoint)
+		}
+		if w.hasPhoto {
+			tabPhoto, ok := pWire["photo"].(map[string]any)
+			if !ok || tabPhoto["kind"] != "person" || len(tabPhoto["sizes"].([]any)) != 1 {
+				t.Fatalf("cast[%d] expected personPhotoWire with 1 size, got %v", idx, pWire["photo"])
+			}
+			epPhoto, ok := personEndpoint["photo"].(map[string]any)
+			if !ok || tabPhoto["id"] != epPhoto["id"] || tabPhoto["kind"] != epPhoto["kind"] || len(tabPhoto["sizes"].([]any)) != len(epPhoto["sizes"].([]any)) {
+				t.Fatalf("cast[%d] photo shape %v != /people/{id} photo shape %v", idx, tabPhoto, epPhoto)
+			}
+		} else if pWire["photo"] != nil {
+			t.Fatalf("cast[%d] expected nil photo when person has no portrait, got %v", idx, pWire["photo"])
+		}
 	}
 
 	// 6. GET /vela/v0/libraries/{id}/rows: plugin recommended rows & catalogue PlacementLibrary rows.

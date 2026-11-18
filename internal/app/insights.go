@@ -70,6 +70,10 @@ func (a *App) buildInsights() {
 	}, Newsletter: func(ctx context.Context, html string) error {
 		return a.notifications.Emit(ctx, notify.Event{Kind: "newsletter.weekly", Title: "Your week on Ether", Message: "Weekly viewing summary", HTML: html})
 	}})
+	if a.playLogs != nil {
+		a.playLogs.SetResolver(a.resolvePlayLogSession)
+		a.stats.AttachLogSink(a.playLogs)
+	}
 	a.closers = append(a.closers, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -85,6 +89,25 @@ func (a *App) buildInsights() {
 		notifyPlayback = func(ev playback.Event) { go a.notifications.ObservePlayback(ev) }
 	}
 	a.closers = append(a.closers, a.playback.Subscribe(a.stats.ObservePlayback), a.playback.Subscribe(notifyPlayback), a.state.Subscribe(a.stats.ObserveState), a.indexers.Subscribe(a.stats.ObserveIndexer), a.indexers.Subscribe(a.notifications.ObserveIndexer))
+}
+
+func (a *App) resolvePlayLogSession(id string) string {
+	if id == "" || a == nil {
+		return id
+	}
+	if a.frontends != nil && a.frontends.broker != nil {
+		if playID := a.frontends.broker.PlayIDFor(id); playID != "" {
+			return playID
+		}
+	}
+	return id
+}
+
+func (a *App) observePlayTimeline(ev playback.TimelineEvent) {
+	if a == nil || a.stats == nil {
+		return
+	}
+	a.stats.ObserveTimeline(ev)
 }
 
 func (a *App) widgetStatus(context.Context) any {

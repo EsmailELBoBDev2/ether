@@ -151,6 +151,18 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		info.Size = size
 		return info
 	}
+	if res != nil {
+		msg := "Reused prepared release " + releaseLabel(res.Release)
+		if fromResume {
+			msg = "Reused remembered release " + releaseLabel(res.Release)
+		}
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "resolve",
+			Level:   "info",
+			Message: msg,
+			Detail:  timelineCandidateDetail(res.Release, len(res.Alternates)),
+		})
+	}
 	for attempt := 0; attempt < m.opts.MaxAttempts; attempt++ {
 		if res == nil {
 			fromResume = false
@@ -188,9 +200,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 					if !errors.Is(err, core.ErrNotCached) && !errors.Is(err, core.ErrNoSources) {
 						switch {
 						case errors.Is(lastErr, context.DeadlineExceeded):
-							return nil, fmt.Errorf("%w: %w", err, context.DeadlineExceeded)
+							return nil, fmt.Errorf("%w (last failure: %v): %w", err, lastErr, context.DeadlineExceeded)
 						case errors.Is(lastErr, core.ErrSourceUnavailable), errors.Is(lastErr, core.ErrArticleMissing), errors.Is(lastErr, core.ErrArticleCorrupt), errors.Is(lastErr, core.ErrReleaseRejected):
-							return nil, fmt.Errorf("%w: %w", err, core.ErrSourceUnavailable)
+							return nil, fmt.Errorf("%w (last failure: %v): %w", err, lastErr, core.ErrSourceUnavailable)
 						}
 					}
 					return nil, fmt.Errorf("%w (last failure: %v)", err, lastErr)
@@ -247,7 +259,13 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			if burned {
 				reason = "burned-in subtitles detected"
 			}
-			m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reason)
+			m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", reason)
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "info",
+				Message: "Skipped candidate " + releaseLabel(res.Release),
+				Detail:  reason,
+			})
 			if fallbackGen == nil || fallbackBurned && !burned {
 				if fallbackGen != nil {
 					m.dropGeneration(fallbackGen)
@@ -290,7 +308,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			return nil, fmt.Errorf("%w: selected release could not be opened", core.ErrNotAvailable)
 		}
 		allUncached = allUncached && errors.Is(err, core.ErrNotCached)
-		m.log.Warn("release failed to open", "release", res.Release.Name, "err", err)
+		m.log.Warn("release failed to open", "session", s.id, "release", res.Release.Name, "err", err)
 		tried = append(tried, res.Release.ID)
 		if len(res.Alternates) > 0 {
 			alternates = res.Alternates
@@ -325,9 +343,9 @@ func releasesFailed(n int, lastErr error, allUncached bool) error {
 		// UncachedError's settings, for the protocol adapter to explain.
 		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, context.DeadlineExceeded):
-		return fmt.Errorf("%w: %d releases failed: %w", core.ErrNotAvailable, n, context.DeadlineExceeded)
+		return fmt.Errorf("%w: %d releases failed (last: %v): %w", core.ErrNotAvailable, n, lastErr, context.DeadlineExceeded)
 	case errors.Is(lastErr, core.ErrSourceUnavailable), errors.Is(lastErr, core.ErrArticleMissing), errors.Is(lastErr, core.ErrArticleCorrupt), errors.Is(lastErr, core.ErrReleaseRejected):
-		return fmt.Errorf("%w: %d releases failed: %w", core.ErrNotAvailable, n, core.ErrSourceUnavailable)
+		return fmt.Errorf("%w: %d releases failed (last: %v): %w", core.ErrNotAvailable, n, lastErr, core.ErrSourceUnavailable)
 	}
 	return fmt.Errorf("%w: %d releases failed (last: %v)", core.ErrNotAvailable, n, lastErr)
 }
@@ -362,12 +380,25 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
-				m.log.Warn("alternate nzb fetch failed", "release", alt.Name, "err", err)
+				m.log.Warn("alternate nzb fetch failed", "session", s.id, "release", alt.Name, "err", err)
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "warn",
+					Failing: true,
+					Message: "Candidate failed: " + releaseLabel(alt),
+					Detail:  OwnerError(err),
+				})
 				fetchErr = err
 				// A fresh Resolve must not retry a link that just timed out.
 				tried = append(tried, alt.ID)
 				continue
 			}
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "resolve",
+				Level:   "info",
+				Message: "Selected alternate " + releaseLabel(alt),
+				Detail:  timelineCandidateDetail(alt, len(alternates)-i-1),
+			})
 			return &core.Resolution{
 				Title:      s.ident.key,
 				Release:    alt,
@@ -413,6 +444,15 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 		ExactHEVCTranscode: s.exact && s.ident.surface != "" && allowsH264Transcode(s.caps),
 	})
 	if err != nil {
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "resolve",
+				Level:   "warn",
+				Failing: true,
+				Message: "Release search failed",
+				Detail:  OwnerError(err),
+			})
+		}
 		return nil, err
 	}
 	if res == nil || res.Release.ID == "" || len(res.NZB) == 0 {
@@ -421,6 +461,12 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 	if slices.Contains(tried, res.Release.ID) {
 		return nil, fmt.Errorf("%w: resolver returned an excluded release", core.ErrNotAvailable)
 	}
+	m.recordTimeline(s, TimelineEvent{
+		Kind:    "resolve",
+		Level:   "info",
+		Message: "Resolved " + releaseLabel(res.Release),
+		Detail:  timelineCandidateDetail(res.Release, len(res.Alternates)),
+	})
 	return res, nil
 }
 
@@ -470,11 +516,31 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 		if permanentSourceFailure(err) {
 			m.markBad(res.Release.ID, "invalid source on open")
 		}
-		return nil, fmt.Errorf("open %s: %w", res.Release.Name, err)
+		openErr := fmt.Errorf("open %s: %w", res.Release.Name, err)
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(res.Release),
+				Detail:  OwnerError(openErr),
+			})
+		}
+		return nil, openErr
 	}
 	if src.Size() <= 0 {
 		finish(src.Close())
-		return nil, fmt.Errorf("open %s: empty media file", res.Release.Name)
+		openErr := fmt.Errorf("open %s: empty media file", res.Release.Name)
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(res.Release),
+				Detail:  OwnerError(openErr),
+			})
+		}
+		return nil, openErr
 	}
 	g, err := m.probeGeneration(ctx, s, res, src, finish, fallback, cached...)
 	if err == nil && g != nil && s.caps.BroadcastBitrateKbps > 0 {
@@ -487,11 +553,41 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 		}
 		if !m.channelSourceAllowed(s, file) {
 			m.dropGeneration(g)
-			return nil, fmt.Errorf("%w: selected file exceeds channel delivery budget", core.ErrNotAvailable)
+			budgetErr := fmt.Errorf("%w: selected file exceeds channel delivery budget", core.ErrNotAvailable)
+			if ctx.Err() == nil {
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "warn",
+					Failing: true,
+					Message: "Candidate failed: " + releaseLabel(res.Release),
+					Detail:  OwnerError(budgetErr),
+				})
+			}
+			return nil, budgetErr
 		}
 	}
 	m.rememberOpenFailure(s, res.Release, err)
-	return g, err
+	if err != nil {
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(res.Release),
+				Detail:  OwnerError(err),
+			})
+		}
+		return nil, err
+	}
+	if g != nil {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "candidate",
+			Level:   "info",
+			Message: "Opened candidate " + releaseLabel(res.Release),
+			Detail:  timelineOpenedDetail(g.infoSnapshot(), res.Release, src.Size()),
+		})
+	}
+	return g, nil
 }
 
 func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Resolution, src core.MediaSource, finish func(error), fallback func(int64) core.MediaInfo, cached ...*probeCache) (*generation, error) {
@@ -554,7 +650,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 		m.markBad(res.Release.ID, "invalid source while probing")
 		return nil, perr
 	case perr != nil || info == nil:
-		m.log.Warn("probe failed; using estimated media info", "release", res.Release.Name, "err", perr)
+		m.log.Warn("probe failed; using estimated media info", "session", s.id, "release", res.Release.Name, "err", perr)
 		mi = core.CloneMediaInfo(fallback(src.Size()))
 		mi.Estimated = true
 		// An estimated catalogue runtime is not a container duration. A
@@ -567,7 +663,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	// failed/incomplete probe cannot supply those identities. Let the bounded
 	// candidate loop try another release, without blacklisting this one.
 	if s.caps.Protocol == "vela" && (mi.Estimated || mi.Duration <= 0 || mi.Video() == nil || len(mi.Streams) == 0) {
-		m.log.Warn("source lacks verified playback facts", "release", res.Release.Name, "sourceSize", src.Size(), "releaseSize", res.Release.Size, "duration", mi.Duration, "estimated", mi.Estimated, "probeError", perr)
+		m.log.Warn("source lacks verified playback facts", "session", s.id, "release", res.Release.Name, "sourceSize", src.Size(), "releaseSize", res.Release.Size, "duration", mi.Duration, "estimated", mi.Estimated, "probeError", perr)
 		m.dropGeneration(g)
 		return nil, fmt.Errorf("probe %s: %w", res.Release.Name, frontend.ErrTrackSourceUnavailable)
 	}
@@ -581,7 +677,7 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 		if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
 			return nil, fmt.Errorf("remember runtime rejection: %w", err)
 		}
-		m.log.Info("trying next candidate", "release", res.Release.Name, "reason", "runtime doesn't match this title",
+		m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
 			"probed", mi.Duration, "catalogue", s.title.Runtime)
 		return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
 	}
@@ -1008,6 +1104,17 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	}
 	log := m.log.With("session", s.id, "key", s.ident.key, "at", at)
 	log.Warn("failing over", "release", cur.res.Release.Name, "reason", fo.reason, "down", fo.down)
+	failMsg := "Failing over from " + releaseLabel(cur.res.Release)
+	if fo.down {
+		failMsg = "Adapting down from " + releaseLabel(cur.res.Release)
+	}
+	m.recordTimeline(s, TimelineEvent{
+		Kind:    "failover",
+		Level:   "warn",
+		Failing: true,
+		Message: failMsg,
+		Detail:  fo.reason,
+	})
 	// A provider outage is not evidence that the release itself is invalid.
 	if failure := cur.sourceFailure(); !fo.encoder && permanentSourceFailure(failure) {
 		m.markBad(cur.releaseID(), fo.reason)
@@ -1429,8 +1536,29 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 	s.resetSpeed(m.now(), m.opts.SpeedGrace)
 
 	if fo.down {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "quality",
+			Level:   "warn",
+			Failing: true,
+			Message: "Switched to lower-bitrate release " + releaseLabel(g.res.Release),
+			Detail:  timelineOpenedDetail(newInfo, g.res.Release, g.src.Size()),
+		})
 		m.emitEvent("downfailover", s, nil)
 	} else {
+		detail := timelineOpenedDetail(newInfo, g.res.Release, g.src.Size())
+		if remuxSwitch {
+			if detail != "" {
+				detail += " · switching to remux"
+			} else {
+				detail = "switching to remux"
+			}
+		}
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "failover",
+			Level:   "info",
+			Message: "Switched to " + releaseLabel(g.res.Release),
+			Detail:  detail,
+		})
 		m.emitEvent("failover", s, nil)
 	}
 	log.Info("failed over", "release", g.res.Release.Name, "size", g.src.Size(), "duration", newInfo.Duration, "remuxSwitch", remuxSwitch)

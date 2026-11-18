@@ -360,6 +360,7 @@ func (m *Manager) checkSpeed(s *session, now time.Time) {
 	if hasHLS && hls != nil && m.checkEncoderSpeed(s, g, hls, time.Now()) {
 		return // encoder-bound output is not evidence against the provider
 	}
+	m.noteTimelineStall(s, now)
 	m.observeTimelineStall(s, now)
 	if downs+misses >= m.opts.MaxDownFailovers {
 		return

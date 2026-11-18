@@ -51,9 +51,8 @@ func (a *App) extensionHandlers() map[string]http.Handler {
 	}
 	if a.stats != nil {
 		m["stats"] = a.stats.Handler()
-	}
-	if a.stats != nil {
 		m["experience"] = a.stats.ExperienceHandler()
+		m["activity"] = a.stats.ActivityHandler()
 	}
 	m["indexer-usage"] = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.indexers == nil {

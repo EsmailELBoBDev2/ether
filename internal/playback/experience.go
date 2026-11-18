@@ -1,8 +1,10 @@
 package playback
 
 import (
-	"github.com/braedonsaunders/ether/internal/core"
+	"errors"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Viewer-experience accounting: how long a play took to show a picture and
@@ -190,8 +192,17 @@ func (m *Manager) NotePlayRequest(id string, at time.Time) {
 // it reported playing (a stalled start the server ended).
 func (m *Manager) NoteFailedStart(id, reason string) {
 	if s := m.lookup(id); s != nil && reason != "" {
+		clean := OwnerError(errors.New(reason))
 		s.mu.Lock()
-		s.exp.failure = reason
+		s.exp.failure = clean
 		s.mu.Unlock()
+		m.log.Warn("playback start failed", "session", s.id, "reason", clean)
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "error",
+			Level:   "error",
+			Failing: true,
+			Message: "Playback failed before first frame",
+			Detail:  clean,
+		})
 	}
 }

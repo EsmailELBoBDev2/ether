@@ -53,6 +53,7 @@ func (m *Manager) SourcePlaybackProgress(ctx context.Context, id, revision strin
 		pausedRelease = s.cur.releaseID()
 	}
 	s.mu.Unlock()
+	m.noteTimelineStall(s, now)
 	if firstPos {
 		m.emitEvent("progress", s, nil)
 	}

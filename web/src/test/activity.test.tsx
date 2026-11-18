@@ -713,3 +713,270 @@ describe("Hardware status", () => {
     expect(screen.getByText("No hardware encoders detected")).toBeInTheDocument();
   });
 });
+
+describe("Play timeline drawer", () => {
+  it("shows highlighted failure cause, collapsible session logs, offsets, and copy for a failed play", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    const cause =
+      "every release failed (3 tried): open Blade.Runner.2049.2160p: news.primary: 430 no such article";
+    const startedSec = 1_763_400_000;
+    const calls: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        let v: unknown = { ok: true };
+        if (url.endsWith("/cluster/")) v = { mode: "solo" };
+        else if (url.endsWith("/users"))
+          v = { users: [{ id: 7, title: "Sam", username: "sam", isOwner: true }] };
+        else if (url.endsWith("/status/sessions")) v = { value: [] };
+        else if (url.endsWith("/status/hwaccel"))
+          v = { value: { hwaccel: { name: "none", encoders: [] } } };
+        else if (url.includes("/stats/summary")) v = { ...emptySummary, plays: 1 };
+        else if (url.includes("/stats/history"))
+          v = [
+            {
+              id: "fail-1",
+              userId: 7,
+              username: "Sam",
+              ratingKey: 2049,
+              title: "Blade Runner 2049",
+              platform: "tvOS",
+              device: "Living Room TV",
+              decision: "",
+              started: startedSec,
+              updated: startedSec + 3,
+              ended: startedSec + 3,
+              bytes: 0,
+              watchedMs: 0,
+              durationMs: 0,
+              completed: false,
+              failovers: 0,
+              error: cause,
+            },
+          ];
+        else if (url.endsWith("/stats/plays/fail-1"))
+          v = {
+            id: "fail-1",
+            userId: 7,
+            username: "Sam",
+            ratingKey: 2049,
+            title: "Blade Runner 2049",
+            platform: "tvOS",
+            device: "Living Room TV",
+            decision: "",
+            started: startedSec,
+            updated: startedSec + 3,
+            ended: startedSec + 3,
+            watchedMs: 0,
+            durationMs: 0,
+            bytes: 0,
+            completed: false,
+            failovers: 0,
+            switches: 0,
+            origin: "Usenet",
+            release: "Blade.Runner.2049.2160p",
+            ip: "192.168.1.20",
+            remote: false,
+            measured: true,
+            startMs: null,
+            bufferEvents: 0,
+            bufferMs: 0,
+            failed: true,
+            error: cause,
+            reasonKind: "",
+            reasonDetail: "",
+            sourceKbps: 0,
+            avgBitrateKbps: 0,
+            uhd: false,
+            hdr: false,
+          };
+        else if (url.endsWith("/activity/plays/fail-1/timeline"))
+          v = {
+            playId: "fail-1",
+            startedMs: startedSec * 1000,
+            failed: true,
+            error: cause,
+            entries: [
+              {
+                seq: 1,
+                atMs: startedSec * 1000,
+                offsetMs: 0,
+                type: "event",
+                kind: "started",
+                level: "info",
+                message: "Playback requested",
+                detail: "Plex for Apple TV on Living Room TV · tvOS",
+              },
+              {
+                seq: 2,
+                atMs: startedSec * 1000 + 200,
+                offsetMs: 200,
+                type: "log",
+                level: "debug",
+                message: "probing candidate header",
+                detail: "release=Blade.Runner.2049.2160p · apikey=[redacted]",
+              },
+              {
+                seq: 3,
+                atMs: startedSec * 1000 + 500,
+                offsetMs: 500,
+                type: "log",
+                level: "info",
+                message: "opening nzb segments",
+                detail: "provider=news.primary",
+              },
+              {
+                seq: 4,
+                atMs: startedSec * 1000 + 800,
+                offsetMs: 800,
+                type: "event",
+                kind: "candidate",
+                level: "warn",
+                message: "Candidate failed: Blade.Runner.2049.2160p",
+                detail: "news.primary: 430 no such article",
+              },
+              {
+                seq: 5,
+                atMs: startedSec * 1000 + 1600,
+                offsetMs: 1600,
+                type: "log",
+                level: "warn",
+                message: "source read failed",
+                detail: "provider=news.primary · err=430 no such article",
+              },
+              {
+                seq: 6,
+                atMs: startedSec * 1000 + 2400,
+                offsetMs: 2400,
+                type: "event",
+                kind: "error",
+                level: "error",
+                message: "Playback failed",
+                detail: cause,
+              },
+            ],
+          };
+        return new Response(JSON.stringify(v), { status: 200 });
+      }),
+    );
+
+    renderAt("/activity/history");
+    const rowTitle = await screen.findByText("Blade Runner 2049", {}, WAIT);
+    expect(screen.getByText(cause)).toBeInTheDocument();
+
+    fireEvent.click(rowTitle);
+    const drawer = await screen.findByRole("dialog", { name: "Blade Runner 2049" }, WAIT);
+    expect(within(drawer).getByRole("tab", { name: "Overview" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    fireEvent.click(within(drawer).getByRole("tab", { name: "Timeline" }));
+    const alert = await within(drawer).findByRole("alert", {}, WAIT);
+    expect(alert).toHaveTextContent("Playback failed");
+    expect(alert).toHaveTextContent(cause);
+
+    // Offsets, events, and warn/error logs show by default; routine info + debug logs are hidden.
+    const list = within(drawer).getByRole("list", { name: "Playback timeline" });
+    expect(within(list).getByText("+0.0 s")).toBeInTheDocument();
+    expect(within(list).getByText("+0.8 s")).toBeInTheDocument();
+    expect(within(list).getByText("+2.4 s")).toBeInTheDocument();
+    expect(within(list).getByText("Playback requested")).toBeInTheDocument();
+    expect(within(list).getByText("source read failed")).toBeInTheDocument();
+    expect(within(list).queryByText("probing candidate header")).toBeNull();
+    expect(within(list).queryByText("opening nzb segments")).toBeNull();
+    expect(within(drawer).getByText("2 routine log lines hidden")).toBeInTheDocument();
+
+    // Toggling Show all reveals both info and debug session logs.
+    fireEvent.click(within(drawer).getByRole("switch", { name: "Show all" }));
+    expect(within(list).getByText("probing candidate header")).toBeInTheDocument();
+    expect(within(list).getByText("opening nzb segments")).toBeInTheDocument();
+
+    // Copy timeline copies the full redacted timeline text.
+    fireEvent.click(within(drawer).getByRole("button", { name: "Copy timeline" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = String(writeText.mock.calls[0]?.[0] ?? "");
+    expect(copied).toContain("Blade Runner 2049");
+    expect(copied).toContain(cause);
+    expect(copied).toContain("+0.2 s [DEBUG] (log) probing candidate header");
+    expect(copied).toContain("apikey=[redacted]");
+    expect(calls.some((u) => u.endsWith("/ether/api/activity/plays/fail-1/timeline"))).toBe(true);
+  });
+
+  it("shows an empty state for plays recorded before timelines existed without scanning logs", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        calls.push(url);
+        let v: unknown = { ok: true };
+        if (url.endsWith("/cluster/")) v = { mode: "solo" };
+        else if (url.endsWith("/users")) v = { users: [] };
+        else if (url.endsWith("/status/sessions")) v = { value: [] };
+        else if (url.endsWith("/status/hwaccel"))
+          v = { value: { hwaccel: { name: "none", encoders: [] } } };
+        else if (url.includes("/stats/summary")) v = emptySummary;
+        else if (url.includes("/stats/history")) v = [];
+        else if (url.endsWith("/stats/plays/legacy-1"))
+          v = {
+            id: "legacy-1",
+            userId: 7,
+            username: "Sam",
+            ratingKey: 101,
+            title: "Alien",
+            platform: "tvOS",
+            device: "Apple TV",
+            decision: "directplay",
+            started: 1_700_000_000,
+            updated: 1_700_003_600,
+            ended: 1_700_003_600,
+            watchedMs: 3_600_000,
+            durationMs: 3_600_000,
+            bytes: 4 * 1024 ** 3,
+            completed: true,
+            failovers: 0,
+            switches: 0,
+            origin: "Usenet",
+            release: "Alien.1979.1080p",
+            ip: "192.168.1.20",
+            remote: false,
+            measured: false,
+            startMs: null,
+            bufferEvents: null,
+            bufferMs: null,
+            failed: false,
+            error: "",
+            reasonKind: "",
+            reasonDetail: "",
+            sourceKbps: 12000,
+            avgBitrateKbps: 12000,
+            uhd: false,
+            hdr: false,
+          };
+        else if (url.endsWith("/activity/plays/legacy-1/timeline"))
+          v = {
+            playId: "legacy-1",
+            startedMs: 1_700_000_000_000,
+            failed: false,
+            error: "",
+            entries: [],
+          };
+        return new Response(JSON.stringify(v), { status: 200 });
+      }),
+    );
+
+    renderAt("/activity/history?play=legacy-1");
+    const drawer = await screen.findByRole("dialog", { name: "Alien" }, WAIT);
+    fireEvent.click(within(drawer).getByRole("tab", { name: "Timeline" }));
+    expect(
+      await within(drawer).findByText("No timeline was recorded for this play.", {}, WAIT),
+    ).toBeInTheDocument();
+    expect(calls.some((u) => u.includes("/logs"))).toBe(false);
+  });
+});

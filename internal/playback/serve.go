@@ -50,7 +50,14 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 		s.touchMedia(m.now())
 	}()
 	s.touchMedia(m.now())
-	s.markDirectPlay()
+	if s.markDirectPlay() {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "decision",
+			Level:   "info",
+			Message: "Delivery: Direct play",
+			Detail:  "Serving original container byte ranges",
+		})
+	}
 	if !s.directRangeCompatible() {
 		// The client still holds the original file's container headers and
 		// byte coordinates. A remux handoff needs a new playback decision;
@@ -170,6 +177,14 @@ func (m *Manager) streamClient(ctx context.Context, w io.Writer, s *session, vst
 		case errors.Is(rerr, errDirectReadDeadline) && ctx.Err() == nil:
 			// The backend has not returned a chunk in the entire budget;
 			// do not wait for its internal retries before replacing it.
+			m.log.Warn("direct-play source read stalled", "session", s.id, "release", g.releaseID(), "offset", srcpos)
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "stall",
+				Level:   "warn",
+				Failing: true,
+				Message: "Source read stalled during direct play",
+				Detail:  releaseLabel(g.res.Release),
+			})
 			g.noteReadFailure(core.ErrSourceUnavailable)
 			at = g.timeMapSnapshot().TimeAt(srcpos)
 			res, err := m.failoverWith(ctx, s, g, at, failoverOpts{reason: "media source stalled", strictDirect: true, stallRecovery: true})

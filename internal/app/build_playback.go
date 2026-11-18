@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,6 +79,7 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 		},
 		DB:             a.db,
 		Logger:         log,
+		Timeline:       a.observePlayTimeline,
 		Cluster:        a.clusterNode(),
 		DescribeGroup:  a.describeLiveGroup,
 		Availability:   a.dbAvail,
@@ -157,6 +159,16 @@ func (a *App) buildEncoder(ctx context.Context, cfg config.Config) error {
 	a.tracePlayback = tracePlayback
 	if a.opts.FixtureTranscoder == nil {
 		a.transcoder, err = transcode.New(cfg.Transcode, log, transcode.WithDecodeStore(a.db), transcode.WithRuntimeDir(filepath.Join(dataDir, "tools")), transcode.WithTracePlayback(tracePlayback), transcode.WithOnChange(a.publishDashboard), transcode.WithEncoderObserver(func(sessionID string, started bool, excerpt string) {
+			if !started && excerpt != "" {
+				a.observePlayTimeline(playback.TimelineEvent{
+					SessionID: a.resolvePlayLogSession(sessionID),
+					Kind:      "error",
+					Level:     "error",
+					Failing:   true,
+					Message:   "Encoder failed",
+					Detail:    playback.OwnerError(errors.New(excerpt)),
+				})
+			}
 			if a.support == nil {
 				return
 			}

@@ -26,6 +26,31 @@ import {
 } from "./model";
 
 const HOUR = 60 * MINUTE;
+const GUIDE_APP_KEY = "ether:guide-app";
+const GUIDE_GROUP_KEY = "ether:guide-group";
+
+function readStored(key: string): string | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(key, value);
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+function initialGuideApp(stored: string | null): GuideAppFilter {
+  if (stored === "all" || stored === "vela") return stored;
+  return LIVE_APPS.includes(stored as (typeof LIVE_APPS)[number])
+    ? (stored as GuideAppFilter)
+    : "all";
+}
 
 function windowStart(shiftHours: number): Date {
   const d = new Date();
@@ -79,8 +104,16 @@ export function GuidePage({
   onReload: () => Promise<void>;
 }) {
   const [sub, setSub] = useState<Sub>(initialSub);
-  const [app, setApp] = useState<GuideAppFilter>("all");
-  const [group, setGroup] = useState("");
+  const [app, setApp] = useState<GuideAppFilter>(() => initialGuideApp(readStored(GUIDE_APP_KEY)));
+  const [group, setGroup] = useState<string>(() => readStored(GUIDE_GROUP_KEY) ?? "");
+  const changeApp = (next: GuideAppFilter) => {
+    setApp(next);
+    writeStored(GUIDE_APP_KEY, next);
+  };
+  const changeGroup = (next: string) => {
+    setGroup(next);
+    writeStored(GUIDE_GROUP_KEY, next);
+  };
   const [now, setNow] = useState(() => Date.now());
   useInterval(() => setNow(Date.now()), 30_000);
 
@@ -124,7 +157,7 @@ export function GuidePage({
       <ToolbarPicker
         ariaLabel={t("As seen in")}
         value={app}
-        onChange={(v) => setApp(v as GuideAppFilter)}
+        onChange={(v) => changeApp(v as GuideAppFilter)}
         options={[
           { value: "all", label: t("All apps") },
           ...LIVE_APPS.map((a) => ({ value: a, label: liveAppName(a) })),
@@ -135,7 +168,7 @@ export function GuidePage({
       <ToolbarPicker
         ariaLabel={t("Group")}
         value={group}
-        onChange={setGroup}
+        onChange={changeGroup}
         className="max-w-[11rem]"
         options={[
           { value: "", label: t("All groups") },

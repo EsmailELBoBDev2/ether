@@ -128,6 +128,14 @@ type KVUsageHost interface {
 	KVUsage(ctx context.Context) (KVUsage, error)
 }
 
+// BadgesHost pushes, clears, and inspects plugin-owned poster badges (#594).
+// RemoteHostClient and MockHost implement it.
+type BadgesHost interface {
+	BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error
+	BadgesClear(ctx context.Context, setKey string) error
+	BadgesUsage(ctx context.Context) (BadgeUsage, error)
+}
+
 // PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
 // part of a multi-file kind item (#576). RemoteHostClient and MockHost
 // implement it; Context.StreamPartURL uses it automatically.
@@ -294,6 +302,37 @@ func (c *RemoteHostClient) KVUsage(ctx context.Context) (KVUsage, error) {
 	var res KVUsage
 	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/kv-usage", nil, &res, false); err != nil {
 		return KVUsage{}, err
+	}
+	return res, nil
+}
+
+// BadgesSet pushes poster badges for one declared badge set (#594).
+func (c *RemoteHostClient) BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error {
+	if entries == nil {
+		entries = []BadgeEntry{}
+	}
+	_, err := c.callJSON(
+		ctx,
+		http.MethodPut,
+		"/ether/plugin-host/badges/"+url.PathEscape(setKey),
+		map[string]any{"entries": entries},
+		nil,
+		false,
+	)
+	return err
+}
+
+// BadgesClear removes every badge in one declared set (#594).
+func (c *RemoteHostClient) BadgesClear(ctx context.Context, setKey string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/badges/"+url.PathEscape(setKey), nil, nil, false)
+	return err
+}
+
+// BadgesUsage reads the plugin's current badged title count and quota (#594).
+func (c *RemoteHostClient) BadgesUsage(ctx context.Context) (BadgeUsage, error) {
+	var res BadgeUsage
+	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/badges-usage", nil, &res, false); err != nil {
+		return BadgeUsage{}, err
 	}
 	return res, nil
 }

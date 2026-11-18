@@ -346,6 +346,127 @@ class _KVClient:
         return dict(res) if isinstance(res, dict) else {}
 
 
+MAX_POSTER_BADGE_SETS = 4
+MAX_BADGE_ENTRIES_PER_CALL = 500
+MAX_BADGE_LABELS_PER_TITLE = 3
+MAX_BADGE_LABEL_LEN = 16
+POSTER_BADGE_QUOTA_TITLES = 200_000
+
+_BADGE_SET_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_BADGE_LABEL_RE = re.compile(r"^[A-Z0-9 +&'./-]+$")
+_IMDB_BADGE_RE = re.compile(r"^tt[0-9]{1,12}$")
+
+
+class PosterBadgeSetMeta(TypedDict, total=False):
+    key: str
+    label: str
+    description: str
+
+
+class BadgeTitleRef(TypedDict, total=False):
+    type: str
+    tmdb: int
+    imdb: str
+
+
+class BadgeEntry(TypedDict):
+    title: BadgeTitleRef
+    labels: List[str]
+
+
+class BadgeUsage(TypedDict):
+    titles: int
+    quotaTitles: int
+
+
+def _check_badge_set_key(set_key: str) -> str:
+    if not isinstance(set_key, str) or not _BADGE_SET_KEY_RE.match(set_key):
+        raise ValueError("badge set key must match ^[a-z][a-z0-9_]{0,31}$")
+    return set_key
+
+
+def _normalize_badge_label(raw: str) -> str:
+    if not isinstance(raw, str):
+        raise ValueError("badge label must be a string")
+    upper = "".join(chr(ord(ch) - 32) if "a" <= ch <= "z" else ch for ch in raw)
+    if (
+        len(upper) < 1
+        or len(upper) > MAX_BADGE_LABEL_LEN
+        or not upper.strip()
+        or not _BADGE_LABEL_RE.match(upper)
+    ):
+        raise ValueError(
+            f"badge label must be 1..{MAX_BADGE_LABEL_LEN} characters from [A-Z0-9 +&'./-]"
+        )
+    return upper
+
+
+def _resolve_badge_title_key(
+    title: Dict[str, Any],
+    catalog_store: Dict[str, Dict[str, Any]],
+) -> str:
+    if not isinstance(title, dict):
+        raise ValueError("badge title must be an object")
+    t_type = title.get("type")
+    if t_type not in ("movie", "show"):
+        raise ValueError('badge title.type must be "movie" or "show"')
+    tmdb_raw = title.get("tmdb")
+    tmdb = 0
+    if tmdb_raw is not None:
+        if isinstance(tmdb_raw, bool) or not isinstance(tmdb_raw, int) or tmdb_raw <= 0:
+            raise ValueError("badge title.tmdb must be a positive integer")
+        tmdb = tmdb_raw
+    imdb_raw = title.get("imdb")
+    imdb = ""
+    if imdb_raw is not None and imdb_raw != "":
+        if not isinstance(imdb_raw, str):
+            raise ValueError("badge title.imdb must be a string")
+        norm = imdb_raw.strip().lower()
+        if not _IMDB_BADGE_RE.match(norm):
+            raise ValueError("badge title.imdb must match tt<digits>")
+        imdb = norm
+    if tmdb == 0 and not imdb:
+        raise ValueError("badge title requires tmdb or imdb")
+    if tmdb > 0:
+        for item in catalog_store.values():
+            if item.get("type") == t_type and item.get("tmdbId") == tmdb:
+                return str(item.get("id"))
+    if imdb:
+        for item in catalog_store.values():
+            if item.get("type") == t_type and str(item.get("imdbId") or "").lower() == imdb:
+                return str(item.get("id"))
+    return f"tmdb:{t_type}:{tmdb}" if tmdb > 0 else f"imdb:{t_type}:{imdb}"
+
+
+def _count_distinct_badge_titles(store: Dict[str, Dict[str, List[str]]]) -> int:
+    seen = set()
+    for set_map in store.values():
+        seen.update(set_map.keys())
+    return len(seen)
+
+
+class _BadgesClient:
+    def __init__(self, call_fn: Callable[..., Any]) -> None:
+        self._call = call_fn
+
+    def set(self, set_key: str, entries: List[BadgeEntry]) -> None:
+        encoded = urllib.parse.quote(str(set_key), safe="")
+        self._call("PUT", f"/ether/plugin-host/badges/{encoded}", {"entries": list(entries)})
+
+    def clear(self, set_key: str) -> None:
+        encoded = urllib.parse.quote(str(set_key), safe="")
+        self._call("DELETE", f"/ether/plugin-host/badges/{encoded}")
+
+    def usage(self) -> BadgeUsage:
+        res = self._call("GET", "/ether/plugin-host/badges-usage")
+        if not isinstance(res, dict):
+            return {"titles": 0, "quotaTitles": 0}
+        return {
+            "titles": int(res.get("titles", 0)),
+            "quotaTitles": int(res.get("quotaTitles", 0)),
+        }
+
+
 MIN_DATA_READ_BYTES = 8 * 1024 * 1024
 MAX_DATA_READ_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_READ_ITEMS = 4096
@@ -609,6 +730,7 @@ class RemoteHostClient:
             credential if credential is not None else os.environ.get("ETHER_PLUGIN_CREDENTIAL", "")
         )
         self.kv = _KVClient(self._call_json)
+        self.badges = _BadgesClient(self._call_json)
         self.http = _HttpClient(self._call_json)
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
@@ -2073,6 +2195,8 @@ class MockHostClient:
 
     def __init__(self) -> None:
         self.kv_store: Dict[str, str] = {}
+        self.badges_store: Dict[str, Dict[str, List[str]]] = {}
+        self.badge_quota_titles: int = POSTER_BADGE_QUOTA_TITLES
         self.secrets_store: Dict[str, str] = {}
         self.catalog_store: Dict[str, Dict[str, Any]] = {}
         self.history_store: Dict[int, List[Dict[str, Any]]] = {}
@@ -2089,6 +2213,7 @@ class MockHostClient:
         }
 
         self.kv = self._KV(self)
+        self.badges = self._Badges(self)
         self.secret = self._Secret(self)
         self.http = self._Http(self)
         self.catalog = self._Catalog(self)
@@ -2317,6 +2442,62 @@ class MockHostClient:
                 "keys": keys,
                 "quotaBytes": 50 * 1024 * 1024,
                 "quotaKeys": 10000,
+            }
+
+    class _Badges:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def set(self, set_key: str, entries: List[BadgeEntry]) -> None:
+            _check_badge_set_key(set_key)
+            if not isinstance(entries, list):
+                raise ValueError("badges.set entries must be a list")
+            if len(entries) > MAX_BADGE_ENTRIES_PER_CALL:
+                raise ValueError(
+                    f"badges.set accepts at most {MAX_BADGE_ENTRIES_PER_CALL} entries per call"
+                )
+            next_set = dict(self._p.badges_store.get(set_key, {}))
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("labels"), list):
+                    raise ValueError("badge entry labels must be a list")
+                raw_labels = entry["labels"]
+                if len(raw_labels) > MAX_BADGE_LABELS_PER_TITLE:
+                    raise ValueError(
+                        f"badge entry may have at most {MAX_BADGE_LABELS_PER_TITLE} labels per title"
+                    )
+                title_key = _resolve_badge_title_key(entry.get("title"), self._p.catalog_store)
+                if len(raw_labels) == 0:
+                    next_set.pop(title_key, None)
+                    continue
+                deduped: List[str] = []
+                for lbl in raw_labels:
+                    norm = _normalize_badge_label(lbl)
+                    if norm not in deduped:
+                        deduped.append(norm)
+                next_set[title_key] = deduped
+            preview = dict(self._p.badges_store)
+            if next_set:
+                preview[set_key] = next_set
+            else:
+                preview.pop(set_key, None)
+            total_titles = _count_distinct_badge_titles(preview)
+            if total_titles > self._p.badge_quota_titles:
+                raise RuntimeError(
+                    f"poster badge quota exceeded ({total_titles} > {self._p.badge_quota_titles} titles)"
+                )
+            if next_set:
+                self._p.badges_store[set_key] = next_set
+            else:
+                self._p.badges_store.pop(set_key, None)
+
+        def clear(self, set_key: str) -> None:
+            _check_badge_set_key(set_key)
+            self._p.badges_store.pop(set_key, None)
+
+        def usage(self) -> BadgeUsage:
+            return {
+                "titles": _count_distinct_badge_titles(self._p.badges_store),
+                "quotaTitles": self._p.badge_quota_titles,
             }
 
     class _Secret:

@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { resetRegistryCache } from "../lib/extend";
 import { calls } from "./harness";
 import { renderAppWith } from "./routes";
 
@@ -110,6 +111,8 @@ describe("Metadata episode orders", () => {
 });
 
 describe("Metadata artwork studio", () => {
+  beforeEach(() => resetRegistryCache());
+
   it("previews a draft without saving, compares originals, discards and persists the complete design", async () => {
     const { fake } = renderAppWith("/metadata", (_method, path) =>
       path === "/collections/preview" ? { items: [ARTWORK_TITLES[0]!], total: 1 } : undefined,
@@ -335,6 +338,88 @@ describe("Metadata artwork studio", () => {
     await waitFor(() => expect(calls(fake, "PUT", "/discovery/overlays/settings")).toHaveLength(2));
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("hides From plugins when no plugin declares poster badges and toggles disabledBadgeSets when present", async () => {
+    let badgeDescriptors: unknown[] = [];
+    const { unmount } = renderAppWith("/metadata/artwork", (_method, path, _body, query) => {
+      if (path === "/collections/preview") return { items: [ARTWORK_TITLES[0]!], total: 1 };
+      if (path === "/extend/registry" && query.get("kinds") === "posterBadge") {
+        return { version: 1, descriptors: badgeDescriptors };
+      }
+      return undefined;
+    });
+    const layers = await screen.findByRole("region", { name: "Poster layers" }, WAIT);
+    expect(within(layers).queryByRole("group", { name: "From plugins" })).toBeNull();
+    expect(screen.queryByText("From plugins")).not.toBeInTheDocument();
+    unmount();
+    resetRegistryCache();
+
+    badgeDescriptors = [
+      {
+        kind: "posterBadge",
+        id: "plugin:org.example.anime/dub_languages",
+        owner: "org.example.anime",
+        label: { resolved: "Dub languages" },
+        hint: { resolved: "Spoken dub languages available for anime." },
+        group: "Anime Hub",
+        meta: {
+          key: "dub_languages",
+          layerKey: "plugin:org.example.anime:dub_languages",
+          pluginName: "Anime Hub",
+        },
+      },
+      {
+        kind: "posterBadge",
+        id: "plugin:org.example.editions/editions",
+        owner: "org.example.editions",
+        label: { resolved: "Editions" },
+        group: "Cinema Cuts",
+        meta: {
+          key: "editions",
+          layerKey: "plugin:org.example.editions:editions",
+          pluginName: "Cinema Cuts",
+        },
+      },
+    ];
+    const { fake } = renderAppWith("/metadata/artwork", (_method, path, _body, query) => {
+      if (path === "/collections/preview") return { items: [ARTWORK_TITLES[0]!], total: 1 };
+      if (path === "/extend/registry" && query.get("kinds") === "posterBadge") {
+        return { version: 2, descriptors: badgeDescriptors };
+      }
+      return undefined;
+    });
+
+    const pluginGroup = await screen.findByRole("group", { name: "From plugins" }, WAIT);
+    const dubSwitch = within(pluginGroup).getByRole("switch", {
+      name: "Dub languages · Anime Hub",
+    });
+    const editionsSwitch = within(pluginGroup).getByRole("switch", {
+      name: "Editions · Cinema Cuts",
+    });
+    expect(dubSwitch).toBeChecked();
+    expect(editionsSwitch).toBeChecked();
+    expect(
+      within(pluginGroup).getByText("Spoken dub languages available for anime."),
+    ).toBeInTheDocument();
+
+    fireEvent.click(dubSwitch);
+    expect(dubSwitch).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/discovery/overlays/settings").at(-1)?.body).toMatchObject({
+        disabledBadgeSets: ["org.example.anime:dub_languages"],
+      }),
+    );
+
+    fireEvent.click(dubSwitch);
+    expect(dubSwitch).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/discovery/overlays/settings").at(-1)?.body).toMatchObject({
+        disabledBadgeSets: [],
+      }),
     );
   });
 

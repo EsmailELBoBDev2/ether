@@ -29,7 +29,8 @@ export type Capability =
   | "catalog_provider"
   | "kind_resolver"
   | "frontend_adapter"
-  | "matcher";
+  | "matcher"
+  | "poster_badges";
 
 export type EtherEventName =
   | "playback.started"
@@ -234,6 +235,28 @@ export interface RuleConditionMeta {
   editor?: unknown;
 }
 
+export interface PosterBadgeSetMeta {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+export interface BadgeTitleRef {
+  type: "movie" | "show";
+  tmdb?: number;
+  imdb?: string;
+}
+
+export interface BadgeEntry {
+  title: BadgeTitleRef;
+  labels: string[];
+}
+
+export interface BadgeUsage {
+  titles: number;
+  quotaTitles: number;
+}
+
 export interface ToolMeta {
   name: string;
   title: string;
@@ -290,6 +313,7 @@ export interface Contributes {
   listSources?: ListSourceMeta[];
   rankingSteps?: RankingStepMeta[];
   ruleConditions?: RuleConditionMeta[];
+  posterBadges?: PosterBadgeSetMeta[];
   tools?: ToolMeta[];
   pages?: PageMeta[];
   slots?: SlotMeta[];

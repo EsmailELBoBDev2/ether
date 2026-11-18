@@ -7,8 +7,10 @@
  * `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`.
  */
 
-import type { MaybePromise, RuntimeLimits } from "./types.ts";
+import type { BadgeEntry, BadgeTitleRef, BadgeUsage, MaybePromise, RuntimeLimits } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
+
+export type { BadgeEntry, BadgeTitleRef, BadgeUsage };
 
 export interface HostFetchRequest {
   /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
@@ -33,6 +35,12 @@ export interface HashResult { pending?: boolean; retryInMs?: number; size?: numb
 export const MinDataReadBytes = 8 * 1024 * 1024;
 export const MaxDataReadBytes = 512 * 1024 * 1024;
 export const MaxArchiveReadItems = 4096;
+
+export const MaxPosterBadgeSets = 4;
+export const MaxBadgeEntriesPerCall = 500;
+export const MaxBadgeLabelsPerTitle = 3;
+export const MaxBadgeLabelLen = 16;
+export const PosterBadgeQuotaTitles = 200_000;
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -323,6 +331,11 @@ export interface EtherHost {
     list(prefix?: string): MaybePromise<string[]>;
     usage(): MaybePromise<KVUsage>;
   };
+  badges: {
+    set(setKey: string, entries: BadgeEntry[]): MaybePromise<void>;
+    clear(setKey: string): MaybePromise<void>;
+    usage(): MaybePromise<BadgeUsage>;
+  };
   secret: {
     get(name: string): MaybePromise<string>;
   };
@@ -415,6 +428,11 @@ interface GlobalEtherBindings {
       delete: (k: string) => void;
       list: (prefix?: string) => string[];
       usage?: () => KVUsage;
+    };
+    badges?: {
+      set: (setKey: string, entries: BadgeEntry[]) => void;
+      clear: (setKey: string) => void;
+      usage: () => BadgeUsage;
     };
     secret: {
       get: (name: string) => string;
@@ -540,6 +558,26 @@ export function createHostedClient(): EtherHost {
       usage(): KVUsage {
         if (g.ether?.kv?.usage) return g.ether.kv.usage();
         return callHost<KVUsage>("kv.usage", []);
+      },
+    },
+    badges: {
+      set(setKey: string, entries: BadgeEntry[]): void {
+        if (g.ether?.badges) {
+          g.ether.badges.set(setKey, entries);
+          return;
+        }
+        callHost("badges.set", [setKey, entries]);
+      },
+      clear(setKey: string): void {
+        if (g.ether?.badges) {
+          g.ether.badges.clear(setKey);
+          return;
+        }
+        callHost("badges.clear", [setKey]);
+      },
+      usage(): BadgeUsage {
+        if (g.ether?.badges) return g.ether.badges.usage();
+        return callHost<BadgeUsage>("badges.usage", []);
       },
     },
     secret: {
@@ -786,6 +824,19 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
       async usage(): Promise<KVUsage> {
         return (await callJson<KVUsage>("GET", "/ether/plugin-host/kv-usage"))!;
+      },
+    },
+    badges: {
+      async set(setKey: string, entries: BadgeEntry[]): Promise<void> {
+        await callJson("PUT", `/ether/plugin-host/badges/${encodeURIComponent(setKey)}`, {
+          entries,
+        });
+      },
+      async clear(setKey: string): Promise<void> {
+        await callJson("DELETE", `/ether/plugin-host/badges/${encodeURIComponent(setKey)}`);
+      },
+      async usage(): Promise<BadgeUsage> {
+        return (await callJson<BadgeUsage>("GET", "/ether/plugin-host/badges-usage"))!;
       },
     },
     secret: {

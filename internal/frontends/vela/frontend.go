@@ -4,6 +4,8 @@ package vela
 import (
 	"context"
 	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -58,6 +60,9 @@ func (f Frontend) Mount(ctx context.Context, host frontend.Host) (frontend.Insta
 	i.rowMeta = map[string]frontend.RowView{}
 	i.db = f.DB
 	i.seal = seal
+	if len(f.ReplayKey) > 0 {
+		i.nonceKey = append([]byte(nil), f.ReplayKey...)
+	}
 	i.routes()
 	return i, nil
 }
@@ -77,6 +82,8 @@ type instance struct {
 	bootstraps      map[string]*bootstrapEntry
 	db              *sql.DB
 	seal            cipher.AEAD
+	nonceMu         sync.Mutex
+	nonceKey        []byte
 	rowMu           sync.Mutex
 	rowMeta         map[string]frontend.RowView
 
@@ -102,6 +109,31 @@ type instance struct {
 	warmMu          sync.Mutex
 	warmClients     map[string]negotiatedClient
 	warmPending     map[string]bool
+}
+
+func (i *instance) cursorNonce(domain string, plain []byte) ([]byte, error) {
+	i.nonceMu.Lock()
+	if len(i.nonceKey) == 0 {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			i.nonceMu.Unlock()
+			return nil, err
+		}
+		i.nonceKey = key
+	}
+	key := i.nonceKey
+	i.nonceMu.Unlock()
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("vela-cursor-nonce\x00"))
+	mac.Write([]byte(domain))
+	mac.Write([]byte{0})
+	mac.Write(plain)
+	sum := mac.Sum(nil)
+	return sum[:i.seal.NonceSize()], nil
+}
+
+func cursorExpiry(now time.Time) int64 {
+	return (now.Unix()/120)*120 + 600
 }
 
 func (i *instance) Handler() http.Handler { return http.HandlerFunc(i.serve) }

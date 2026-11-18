@@ -545,10 +545,9 @@ type PersonalHomeStore interface {
 }
 
 // PageFreshness is every input of a cached browse response. A change drops
-// the cached body. ArtBucket rotates image grants before they expire.
+// the cached body.
 type PageFreshness struct {
 	Catalog, Config, Layout, Watch, Favorite, Hidden, Listed, Images, Grants, Accounts, Safety, Libraries, KindSync uint64
-	ArtBucket                                                                                                       int64
 }
 
 var ErrNotRegistered = errors.New("frontend not registered")

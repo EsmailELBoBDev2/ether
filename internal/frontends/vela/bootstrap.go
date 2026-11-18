@@ -173,5 +173,5 @@ func (i *instance) bootstrapFreshness() frontend.PageFreshness {
 		return frontend.PageFreshness{}
 	}
 	f := i.host.PageFreshness()
-	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, KindSync: f.KindSync, ArtBucket: f.ArtBucket}
+	return frontend.PageFreshness{Config: f.Config, Layout: f.Layout, Grants: f.Grants, Accounts: f.Accounts, Safety: f.Safety, Libraries: f.Libraries, KindSync: f.KindSync}
 }

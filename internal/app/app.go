@@ -32,7 +32,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
-	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
@@ -1016,9 +1015,9 @@ func (a *App) runQualitySync(ctx context.Context) {
 func (a *App) housekeeping(ctx context.Context) {
 	pins := time.NewTicker(5 * time.Minute)
 	defer pins.Stop()
-	imageTimer := time.NewTicker(5 * time.Second)
-	defer imageTimer.Stop()
-	var imageSweep, receiptSweep headerMaintenance
+	receiptTimer := time.NewTicker(5 * time.Second)
+	defer receiptTimer.Stop()
+	var receiptSweep headerMaintenance
 	// The PMS release check is cluster-wide: leader only. Pins and
 	// seen-token flushes are this node's own.
 	lastCompat := time.Now()
@@ -1031,15 +1030,8 @@ func (a *App) housekeeping(ctx context.Context) {
 		case <-ctx.Done():
 			_ = a.users.FlushSeen(context.Background())
 			return
-		case <-imageTimer.C:
-			err := imageSweep.pass(ctx, a.cluster.IsLeader(), time.Now, func(ctx context.Context, now time.Time, shard int64) error {
-				_, err := identity.PruneImageGrantShard(ctx, a.db, now, shard)
-				return err
-			})
-			if err != nil && ctx.Err() == nil {
-				a.log.Warn("image grant maintenance failed", "err", err)
-			}
-			err = receiptSweep.pass(ctx, a.cluster.IsLeader(), time.Now, func(ctx context.Context, now time.Time, shard int64) error {
+		case <-receiptTimer.C:
+			err := receiptSweep.pass(ctx, a.cluster.IsLeader(), time.Now, func(ctx context.Context, now time.Time, shard int64) error {
 				_, err := experience.PruneReceiptShard(ctx, a.db, now, shard)
 				return err
 			})

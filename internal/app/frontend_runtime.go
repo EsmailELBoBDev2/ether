@@ -835,7 +835,7 @@ func (r *frontendRuntime) backgroundBusy() int {
 }
 
 func (a *App) browseFreshness() frontend.PageFreshness {
-	f := frontend.PageFreshness{ArtBucket: time.Now().Unix() / 120}
+	var f frontend.PageFreshness
 	if a == nil {
 		return f
 	}

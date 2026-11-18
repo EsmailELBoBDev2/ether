@@ -13,17 +13,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
-func (i *instance) liveArtGrantBucket() string {
-	if bucket, ok := i.host.ImageGrants.(frontend.ImageGrantBucket); ok {
-		return bucket.GrantBucket()
-	}
-	return ""
-}
-
 func (i *instance) liveETag(r *http.Request, payload any) string {
 	return `"` + hashJSON([]any{
 		payload,
-		i.liveArtGrantBucket(),
 		requestDevice(r),
 		r.Header.Get("Authorization"),
 		r.Header.Get("X-Vela-Device-Id"),
@@ -474,19 +466,17 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 	writeLiveCached(w, r, tag, out)
 }
 
-// Issue bounded, current-policy image capabilities for this response page.
+// Issue signed, current-policy image capabilities for this response page.
 // Source URLs and credentials never enter the Vela wire model.
 //
-// One response reuses a grant for an image it already issued (a channel's
-// logo repeats on every programme), and a viewer whose image admission is
-// full gets the page without the remaining artwork rather than no guide.
+// One response reuses a signed URL for an image it already issued (a channel's
+// logo repeats on every programme).
 func (i *instance) liveArtwork(r *http.Request, token string, item frontend.RatingKey, channel string, images []frontend.Image) ([]object, error) {
 	return i.liveArtworkCached(r, token, item, channel, images, nil)
 }
 
 type liveArtCache struct {
 	issued map[string]object
-	full   bool
 }
 
 func newLiveArtCache() *liveArtCache { return &liveArtCache{issued: map[string]object{}} }
@@ -503,16 +493,9 @@ func (i *instance) liveArtworkCached(r *http.Request, token string, item fronten
 				out = append(out, art)
 				continue
 			}
-			if memo.full {
-				continue
-			}
 		}
 		secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: token, Device: requestDevice(r), Item: item, Channel: channel, Image: img})
 		if err != nil {
-			if memo != nil && errors.Is(err, frontend.ErrImageCapacity) {
-				memo.full = true
-				continue
-			}
 			return nil, err
 		}
 		art := object{"id": hash(img.Path), "kind": img.Kind, "tag": img.Tag, "sizes": []object{imageSize(img, secret)}}

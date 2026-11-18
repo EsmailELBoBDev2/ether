@@ -55,8 +55,8 @@ func (e *peopleTestExperience) AuthorizePersonImages(_ context.Context, viewer *
 	return allowed, nil
 }
 
-func (e *peopleTestExperience) AuthorizePersonImage(ctx context.Context, viewer *core.Viewer, device core.Device, item core.RatingKey, image frontend.Image, admission func(context.Context) error) error {
-	if !e.visiblePerson || viewer.ID != 1 || device.ID != "tv" || item != e.personDetail.ArtworkItem || !frontend.SameImage(image, e.personImage) {
+func (e *peopleTestExperience) AuthorizePersonImage(ctx context.Context, viewer *core.Viewer, _ core.Device, item core.RatingKey, image frontend.Image, admission func(context.Context) error) error {
+	if !e.visiblePerson || viewer.ID != 1 || item != e.personDetail.ArtworkItem || !frontend.SameImage(image, e.personImage) {
 		return core.ErrUnauthorized
 	}
 	if admission != nil {
@@ -155,7 +155,7 @@ func TestVelaPeopleAndFilmographyVisibility(t *testing.T) {
 		}
 		return out, nil
 	}
-	exp.LibraryItemsFunc = func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, viewID string, q frontend.ItemQuery) (frontend.Page, error) {
+	exp.LibraryItemsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, viewID string, q frontend.ItemQuery) (frontend.Page, error) {
 		exp.itemCalls = append(exp.itemCalls, viewID)
 		if q.Filter.Person != 77 || q.Sort != frontend.SortReleased || !q.Desc || !q.NoTotal {
 			t.Fatalf("unexpected filmography query on %s: %+v", viewID, q)

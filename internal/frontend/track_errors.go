@@ -16,10 +16,6 @@ var ErrTrackSourceUnavailable = errors.New("verified track source unavailable")
 // ErrReceiptCapacity reports a device whose retained receipts are all in use.
 var ErrReceiptCapacity = errors.New("experience: receipt limit reached")
 
-// ErrImageCapacity means a viewer's image grants are full for now; a page
-// can still be served without its remaining artwork.
-var ErrImageCapacity = errors.New("frontend: image grant capacity reached")
-
 // ReceiptCapacityError carries the earliest time retained authority expires.
 type ReceiptCapacityError struct{ RetryAfter time.Duration }
 

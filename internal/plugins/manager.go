@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/agent/tools"
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -95,6 +96,7 @@ type Manager struct {
 	// relay holds the add-on settings pages open in the console.
 	relay        *addonRelay
 	relayOnce    sync.Once
+	iconRaster   *artwork.SVGRasterizer
 	store        *storage
 	deps         Deps
 	log          *slog.Logger
@@ -170,8 +172,9 @@ func New(deps Deps) (*Manager, error) {
 		client = (&safefetch.Guard{}).Client(egress.Client(egress.CapPlugins, 30*time.Second))
 	}
 	m := &Manager{
-		busOrigin: newEventID(),
-		store:     &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
+		busOrigin:  newEventID(),
+		iconRaster: artwork.NewSVGRasterizer(),
+		store:      &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
 		log: log, now: now, client: client,
 		fatories: map[string]RuntimeFactory{}, runtimes: map[string]Runtime{}, warming: map[string]bool{}, shadow: map[string]bool{},
 		eventSubs: map[string]map[string]Record{},

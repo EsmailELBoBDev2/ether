@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
@@ -44,7 +46,9 @@ type Preview struct {
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
 	// Summary is the manifest summary with any "$t:" reference resolved
 	// from the package's own strings.
-	Summary          string   `json:"summary,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// Icon is a browser-loadable URL or rasterized PNG data URI for preview.
+	Icon             string   `json:"icon,omitempty"`
 	PermissionLines  []string `json:"permissions"`
 	NeedsViewers     bool     `json:"needsViewers"`
 	NeedsFolders     bool     `json:"needsFolders"`
@@ -472,6 +476,7 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 	if err := p.resolve(); err != nil {
 		return nil, err
 	}
+	p.Icon = m.previewIcon(ctx, man, files, src)
 	// The conformance kit checks packages Ether runs; a plain Stremio add-on
 	// is a remote service whose manifest was validated above.
 	if m.deps.CheckPackage != nil && !man.IsStremioOnly() {
@@ -485,6 +490,33 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 		p.AddedPermissions = PermissionDiff(cur.Manifest, man)
 	}
 	return p, nil
+}
+
+func (m *Manager) previewIcon(ctx context.Context, man Manifest, files map[string][]byte, src Source) string {
+	if man.Ether != nil {
+		icon := strings.TrimSpace(man.Ether.Icon)
+		if isHTTPURL(icon) {
+			return icon
+		}
+		if icon != "" && !unsafePath(icon) && m.iconRaster != nil {
+			if raw, ok := files[icon]; ok && len(raw) > 0 {
+				if data, ct, err := m.iconRaster.Rasterize(
+					ctx,
+					"preview-icon:"+man.ID+":"+digestOf(raw),
+					raw,
+					artwork.RasterOptions{Width: 128, Height: 128, Format: "png"},
+				); err == nil && len(data) > 0 {
+					return "data:" + ct + ";base64," + base64.StdEncoding.EncodeToString(data)
+				}
+			}
+		}
+	} else if logo := strings.TrimSpace(man.Logo); isHTTPURL(logo) {
+		return logo
+	}
+	if src.reviewed != nil && isHTTPURL(strings.TrimSpace(src.reviewed.Icon)) {
+		return strings.TrimSpace(src.reviewed.Icon)
+	}
+	return ""
 }
 
 // InstallOptions carries the owner's install-time picks.

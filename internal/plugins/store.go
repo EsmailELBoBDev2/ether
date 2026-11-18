@@ -362,6 +362,12 @@ func (s *storage) file(ctx context.Context, plugin, version, path string) ([]byt
 	return b, true
 }
 
+func (s *storage) hasFile(ctx context.Context, plugin, version, path string) bool {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM plugins_artifacts WHERE plugin=? AND version=? AND path=?`, plugin, version, path).Scan(&one)
+	return err == nil
+}
+
 func (s *storage) grants(ctx context.Context, plugin string) (Grants, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT grants FROM plugins_grants WHERE plugin=?`, plugin).Scan(&raw)

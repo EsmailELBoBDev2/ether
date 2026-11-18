@@ -158,6 +158,8 @@ export interface InstallPreview {
   manifest: PluginManifest;
   /** Manifest summary with any "$t:" reference resolved by the server. */
   summary?: string;
+  /** Resolved preview icon URL or data URI (packaged SVGs are rasterized). */
+  icon?: string;
   permissions: string[];
   needsViewers: boolean;
   needsFolders: boolean;

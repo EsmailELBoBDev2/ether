@@ -150,6 +150,9 @@ export function InstallDrawer({
     preview?.manifest.description ||
     t("No description provided.");
   const kind = preview?.manifest.ether?.kind;
+  const rawPreviewIcon = preview?.icon ?? preview?.manifest.ether?.icon ?? preview?.manifest.logo;
+  const previewIcon =
+    rawPreviewIcon && /^(https?:|data:|\/)/.test(rawPreviewIcon) ? rawPreviewIcon : undefined;
 
   return (
     <Drawer
@@ -297,13 +300,23 @@ export function InstallDrawer({
         ) : (
           <div className="space-y-5">
             <div className="flex items-start gap-3.5 rounded-xl border border-border bg-surface p-4">
-              <Artwork
-                src={preview.manifest.ether?.icon ?? preview.manifest.logo}
-                alt={preview.manifest.name}
-                title=""
-                icon={kindIcon(kind, 18)}
-                className="size-10 shrink-0 rounded-lg border border-border"
-              />
+              {previewIcon ? (
+                <Artwork
+                  src={previewIcon}
+                  alt={preview.manifest.name}
+                  title=""
+                  icon={kindIcon(kind, 18)}
+                  className="size-10 shrink-0 rounded-lg bg-bg-subtle"
+                  imgClassName="object-contain"
+                />
+              ) : (
+                <span
+                  aria-hidden
+                  className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+                >
+                  {kindIcon(kind, 20)}
+                </span>
+              )}
               <div className="min-w-0 flex-1 space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-semibold text-fg">{preview.manifest.name}</h3>

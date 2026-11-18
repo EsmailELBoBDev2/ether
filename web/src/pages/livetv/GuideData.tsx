@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Segmented } from "../../components/fields";
+import { ToolbarPicker } from "../../components/ToolbarPicker";
+import { filterGuideChannels, groupGuideChannels } from "./guide-filter";
 import { errorMessage, isAbort } from "../../lib/api";
 import { t, tn, tx } from "../../i18n";
 import { formatNumber, relativeTime } from "../../lib/format";
@@ -326,13 +328,23 @@ export function GuideWorkbench({
 }) {
   type Show = "missing" | "all" | "using";
   const [show, setShow] = useState<Show>("missing");
+  const [group, setGroup] = useState("");
   const [limit, setLimit] = useState(ROW_PAGE);
   const [proposals, setProposals] = useState<MatchChange[] | null>(null);
   const [matchCounts, setMatchCounts] = useState({ ambiguous: 0, regionRejected: 0 });
   const [accepted, setAccepted] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const iptv = useMemo(() => channels.filter((c) => c.kind === "iptv"), [channels]);
+  const groups = useMemo(() => groupGuideChannels(channels), [channels]);
+  const scopedChannels = useMemo(
+    () => (group ? filterGuideChannels(channels, { app: "all", group }) : channels),
+    [channels, group],
+  );
+  const scopedIds = useMemo(
+    () => (group ? new Set(scopedChannels.map((c) => c.id)) : null),
+    [group, scopedChannels],
+  );
+  const iptv = useMemo(() => scopedChannels.filter((c) => c.kind === "iptv"), [scopedChannels]);
   const live = useMemo(() => iptv.filter((c) => c.enabled), [iptv]);
   const missing = useMemo(
     () => live.filter((c) => (coverage?.get(c.id)?.programmes ?? 0) === 0),
@@ -359,7 +371,10 @@ export function GuideWorkbench({
     }),
     [matches, using, iptv, missing],
   );
-  useEffect(() => setLimit(ROW_PAGE), [needle]);
+  useEffect(() => {
+    setLimit(ROW_PAGE);
+    setProposals(null);
+  }, [needle, group]);
   const byId = useMemo(() => new Map(channels.map((c) => [c.id, c])), [channels]);
   const sourceName = (id?: string) => {
     const s = sources.find((x) => x.id === id);
@@ -383,7 +398,9 @@ export function GuideWorkbench({
     setBusy(true);
     try {
       const r = await tv.match({ dryRun: true });
-      const changes = (r.changes ?? []).filter((c) => !sourceId || c.guideSourceId === sourceId);
+      const changes = (r.changes ?? []).filter(
+        (c) => (!sourceId || c.guideSourceId === sourceId) && (!scopedIds || scopedIds.has(c.channelId)),
+      );
       setProposals(changes);
       setMatchCounts({ ambiguous: r.ambiguous ?? 0, regionRejected: r.regionRejected ?? 0 });
       setAccepted(new Set(changes.filter((c) => !c.reviewRegion).map((c) => c.channelId)));
@@ -612,7 +629,7 @@ export function GuideWorkbench({
           <div className="min-w-0 basis-full sm:basis-auto sm:flex-1">
             <h2 className="text-sm font-semibold text-fg">{t("Channel mapping")}</h2>
             {showMatchActions ? (
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
                   onClick={() => void propose()}
@@ -622,12 +639,45 @@ export function GuideWorkbench({
                   {t("Auto-match")}
                 </Button>
                 <GuideAIAction
-                  channels={channels}
+                  channels={scopedChannels}
                   sources={sources}
                   coverage={coverage}
                   sourceId={sourceId}
                   onApplied={onReload}
                 />
+                {groups.yours.length || groups.provider.length ? (
+                  <ToolbarPicker
+                    ariaLabel={t("Group")}
+                    value={group}
+                    onChange={setGroup}
+                    className="max-w-[12rem]"
+                    options={[
+                      { value: "", label: t("All groups") },
+                      ...(groups.yours.length
+                        ? [{ value: "yours", label: t("Your groups"), group: t("Your groups") }]
+                        : []),
+                      ...groups.yours.map((g) => ({
+                        value: `name:${g}`,
+                        label: g,
+                        group: t("Your groups"),
+                      })),
+                      ...(groups.provider.length
+                        ? [
+                            {
+                              value: "provider",
+                              label: t("Provider groups"),
+                              group: t("Provider groups"),
+                            },
+                          ]
+                        : []),
+                      ...groups.provider.map((g) => ({
+                        value: `name:${g}`,
+                        label: g,
+                        group: t("Provider groups"),
+                      })),
+                    ]}
+                  />
+                ) : null}
               </div>
             ) : null}
             <p className="mt-1 text-xs text-fg-muted">

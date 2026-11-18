@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
@@ -42,6 +45,13 @@ type BrowsePage struct {
 // FacetCount is a single facet value and item count.
 type FacetCount struct {
 	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+// FacetBucket is one discrete facet bucket (id, label, count) for browse UIs.
+type FacetBucket struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 	Count int    `json:"count"`
 }
 
@@ -457,6 +467,400 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 	return page, nil
 }
 
+// FacetBuckets returns discrete filter buckets for a declared or envelope facet
+// field on libraryID, respecting library visibility policy:
+//   - date (and envelope released): UTC years ("2024"), newest year first
+//   - duration: discrete duration ranges ("Under 10 min", ...), omitting empty
+//   - int (and envelope year): distinct values when <= 50, else clean ranges
+//   - float (and envelope rating): distinct values when <= 50, else clean ranges
+//   - enum: declared order
+//   - string, strings, bool, people: alphabetical order
+func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, level string, policy *libraryfilter.Filter, fieldKey string) ([]FacetBucket, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("pluginitems: nil service")
+	}
+	fieldKey = strings.TrimSpace(fieldKey)
+	if libraryID <= 0 || fieldKey == "" {
+		return nil, fmt.Errorf("pluginitems: library_id and field_key are required")
+	}
+	rec, err := s.GetKindByLibrary(ctx, libraryID)
+	if err != nil {
+		return nil, err
+	}
+
+	var itemWhere strings.Builder
+	itemArgs := []any{int64(libraryID)}
+	itemWhere.WriteString(`i.library_id = ?`)
+	if lv := strings.TrimSpace(level); lv != "" {
+		itemWhere.WriteString(` AND i.level = ?`)
+		itemArgs = append(itemArgs, lv)
+	} else if len(rec.Decl.Levels) > 0 {
+		itemWhere.WriteString(` AND i.level = ?`)
+		itemArgs = append(itemArgs, rec.Decl.Levels[0].Key)
+	} else {
+		itemWhere.WriteString(` AND i.parent_ref = ''`)
+	}
+	if err := s.appendVisibility(ctx, &itemWhere, &itemArgs, libraryID, policy, false); err != nil {
+		return nil, err
+	}
+
+	switch fieldKey {
+	case "year":
+		vals, err := s.scanIntFacetCounts(ctx, `SELECT i.year, COUNT(*) FROM plugin_items i WHERE `+itemWhere.String()+` AND i.year > 0 GROUP BY i.year ORDER BY i.year ASC`, itemArgs)
+		if err != nil {
+			return nil, err
+		}
+		return bucketIntValues(vals, true), nil
+	case "released":
+		vals, err := s.scanIntFacetCounts(ctx, `SELECT i.released, COUNT(*) FROM plugin_items i WHERE `+itemWhere.String()+` AND i.released <> 0 GROUP BY i.released`, itemArgs)
+		if err != nil {
+			return nil, err
+		}
+		return bucketDateYears(vals), nil
+	case "rating":
+		vals, err := s.scanFloatFacetCounts(ctx, `SELECT i.rating, COUNT(*) FROM plugin_items i WHERE `+itemWhere.String()+` AND i.rating > 0 GROUP BY i.rating ORDER BY i.rating ASC`, itemArgs)
+		if err != nil {
+			return nil, err
+		}
+		return bucketFloatValues(vals), nil
+	}
+
+	var fieldType string
+	var enumVals []string
+	found := false
+	for _, fd := range rec.Decl.Fields {
+		if fd.Key == fieldKey && (fd.Indexed || fd.Type == "people") {
+			fieldType = fd.Type
+			enumVals = fd.Enum
+			found = true
+			break
+		}
+	}
+	if !found {
+		return []FacetBucket{}, nil
+	}
+
+	args := append(append([]any(nil), itemArgs...), fieldKey)
+	switch fieldType {
+	case "date":
+		vals, err := s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere.String()+` AND f.field = ? AND f.v_int <> 0 GROUP BY f.v_int`, args)
+		if err != nil {
+			return nil, err
+		}
+		return bucketDateYears(vals), nil
+	case "duration":
+		vals, err := s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere.String()+` AND f.field = ? AND f.v_int >= 0 GROUP BY f.v_int`, args)
+		if err != nil {
+			return nil, err
+		}
+		return bucketDurationValues(vals), nil
+	case "int":
+		vals, err := s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere.String()+` AND f.field = ? GROUP BY f.v_int ORDER BY f.v_int ASC`, args)
+		if err != nil {
+			return nil, err
+		}
+		return bucketIntValues(vals, false), nil
+	case "float":
+		vals, err := s.scanFloatFacetCounts(ctx, `SELECT f.v_real, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere.String()+` AND f.field = ? GROUP BY f.v_real ORDER BY f.v_real ASC`, args)
+		if err != nil {
+			return nil, err
+		}
+		return bucketFloatValues(vals), nil
+	case "people":
+		rows, err := s.db.QueryContext(ctx, `SELECT MIN(f.v_text), COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere.String()+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> '' GROUP BY f.v_int`, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []FacetBucket
+		for rows.Next() {
+			var name string
+			var cnt int
+			if err := rows.Scan(&name, &cnt); err != nil {
+				return nil, err
+			}
+			name = strings.TrimSpace(name)
+			if name != "" && cnt > 0 {
+				out = append(out, FacetBucket{ID: name, Label: name, Count: cnt})
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		sort.SliceStable(out, func(i, j int) bool { return facetNameLess(out[i].Label, out[j].Label) })
+		if out == nil {
+			return []FacetBucket{}, nil
+		}
+		return out, nil
+	default:
+		rows, err := s.db.QueryContext(ctx, `SELECT f.v_text, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere.String()+` AND f.field = ? AND f.v_text <> '' GROUP BY f.v_text`, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var raw []FacetCount
+		for rows.Next() {
+			var fc FacetCount
+			if err := rows.Scan(&fc.Value, &fc.Count); err != nil {
+				return nil, err
+			}
+			if fc.Value != "" && fc.Count > 0 {
+				raw = append(raw, fc)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		orderFacetValues(raw, fieldType, enumVals)
+		out := make([]FacetBucket, 0, len(raw))
+		for _, fc := range raw {
+			out = append(out, FacetBucket{ID: fc.Value, Label: fc.Value, Count: fc.Count})
+		}
+		return out, nil
+	}
+}
+
+type intFacetPair struct {
+	val   int64
+	count int
+}
+
+type floatFacetPair struct {
+	val   float64
+	count int
+}
+
+func (s *Service) scanIntFacetCounts(ctx context.Context, query string, args []any) ([]intFacetPair, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []intFacetPair
+	for rows.Next() {
+		var p intFacetPair
+		if err := rows.Scan(&p.val, &p.count); err != nil {
+			return nil, err
+		}
+		if p.count > 0 {
+			out = append(out, p)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) scanFloatFacetCounts(ctx context.Context, query string, args []any) ([]floatFacetPair, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []floatFacetPair
+	for rows.Next() {
+		var p floatFacetPair
+		if err := rows.Scan(&p.val, &p.count); err != nil {
+			return nil, err
+		}
+		if p.count > 0 {
+			out = append(out, p)
+		}
+	}
+	return out, rows.Err()
+}
+
+func bucketDateYears(vals []intFacetPair) []FacetBucket {
+	if len(vals) == 0 {
+		return []FacetBucket{}
+	}
+	byYear := make(map[int]int)
+	for _, p := range vals {
+		y := time.Unix(p.val, 0).UTC().Year()
+		if y >= 1000 && y <= 9999 {
+			byYear[y] += p.count
+		}
+	}
+	years := make([]int, 0, len(byYear))
+	for y := range byYear {
+		years = append(years, y)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(years)))
+	out := make([]FacetBucket, 0, len(years))
+	for _, y := range years {
+		s := strconv.Itoa(y)
+		out = append(out, FacetBucket{ID: s, Label: s, Count: byYear[y]})
+	}
+	return out
+}
+
+func bucketDurationValues(vals []intFacetPair) []FacetBucket {
+	if len(vals) == 0 {
+		return []FacetBucket{}
+	}
+	counts := make([]int, len(libraryfilter.DurationBucketDefs))
+	for _, p := range vals {
+		if p.val < 0 {
+			continue
+		}
+		for i, def := range libraryfilter.DurationBucketDefs {
+			if p.val >= def.Min && p.val <= def.Max {
+				counts[i] += p.count
+				break
+			}
+		}
+	}
+	out := make([]FacetBucket, 0, len(libraryfilter.DurationBucketDefs))
+	for i, def := range libraryfilter.DurationBucketDefs {
+		if counts[i] > 0 {
+			out = append(out, FacetBucket{ID: def.ID, Label: def.Label, Count: counts[i]})
+		}
+	}
+	return out
+}
+
+func bucketIntValues(vals []intFacetPair, descDistinct bool) []FacetBucket {
+	if len(vals) == 0 {
+		return []FacetBucket{}
+	}
+	if len(vals) <= 50 {
+		out := make([]FacetBucket, len(vals))
+		for i, p := range vals {
+			idx := i
+			if descDistinct {
+				idx = len(vals) - 1 - i
+			}
+			s := strconv.FormatInt(p.val, 10)
+			out[idx] = FacetBucket{ID: s, Label: s, Count: p.count}
+		}
+		return out
+	}
+	minVal, maxVal := vals[0].val, vals[len(vals)-1].val
+	step := niceIntBucketStep(minVal, maxVal, 10)
+	firstLo := floorDivInt64(minVal, step) * step
+	type rangeAccum struct {
+		lo, hi int64
+		count  int
+	}
+	byIdx := make(map[int64]*rangeAccum)
+	var order []int64
+	for _, p := range vals {
+		bIdx := floorDivInt64(p.val-firstLo, step)
+		acc := byIdx[bIdx]
+		if acc == nil {
+			lo := firstLo + bIdx*step
+			acc = &rangeAccum{lo: lo, hi: lo + step - 1}
+			byIdx[bIdx] = acc
+			order = append(order, bIdx)
+		}
+		acc.count += p.count
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	out := make([]FacetBucket, 0, len(order))
+	for _, bIdx := range order {
+		acc := byIdx[bIdx]
+		if acc.count <= 0 {
+			continue
+		}
+		id := fmt.Sprintf("%d..%d", acc.lo, acc.hi)
+		label := fmt.Sprintf("%d-%d", acc.lo, acc.hi)
+		if acc.lo == acc.hi {
+			label = strconv.FormatInt(acc.lo, 10)
+		} else if acc.lo < 0 {
+			label = fmt.Sprintf("%d to %d", acc.lo, acc.hi)
+		}
+		out = append(out, FacetBucket{ID: id, Label: label, Count: acc.count})
+	}
+	return out
+}
+
+func bucketFloatValues(vals []floatFacetPair) []FacetBucket {
+	if len(vals) == 0 {
+		return []FacetBucket{}
+	}
+	if len(vals) <= 50 {
+		out := make([]FacetBucket, len(vals))
+		for i, p := range vals {
+			s := strconv.FormatFloat(p.val, 'f', -1, 64)
+			out[i] = FacetBucket{ID: s, Label: s, Count: p.count}
+		}
+		return out
+	}
+	minInt := int64(math.Floor(vals[0].val))
+	maxInt := int64(math.Ceil(vals[len(vals)-1].val))
+	step := niceIntBucketStep(minInt, maxInt, 10)
+	firstLo := floorDivInt64(minInt, step) * step
+	type rangeAccum struct {
+		lo, hi int64
+		count  int
+	}
+	byIdx := make(map[int64]*rangeAccum)
+	var order []int64
+	for _, p := range vals {
+		iv := int64(math.Floor(p.val))
+		bIdx := floorDivInt64(iv-firstLo, step)
+		acc := byIdx[bIdx]
+		if acc == nil {
+			lo := firstLo + bIdx*step
+			acc = &rangeAccum{lo: lo, hi: lo + step}
+			byIdx[bIdx] = acc
+			order = append(order, bIdx)
+		}
+		acc.count += p.count
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	out := make([]FacetBucket, 0, len(order))
+	for _, bIdx := range order {
+		acc := byIdx[bIdx]
+		if acc.count <= 0 {
+			continue
+		}
+		id := fmt.Sprintf("%d..%d", acc.lo, acc.hi)
+		label := fmt.Sprintf("%d-%d", acc.lo, acc.hi)
+		if acc.lo < 0 {
+			label = fmt.Sprintf("%d to %d", acc.lo, acc.hi)
+		}
+		out = append(out, FacetBucket{ID: id, Label: label, Count: acc.count})
+	}
+	return out
+}
+
+func niceIntBucketStep(minVal, maxVal int64, targetBuckets int64) int64 {
+	if targetBuckets <= 0 {
+		targetBuckets = 10
+	}
+	span := float64(maxVal-minVal) + 1
+	if span <= float64(targetBuckets) {
+		return 1
+	}
+	raw := span / float64(targetBuckets)
+	exp := math.Pow(10, math.Floor(math.Log10(raw)))
+	if exp < 1 {
+		exp = 1
+	}
+	for _, mult := range []float64{1, 2, 5, 10} {
+		cand := mult * exp
+		if cand >= raw {
+			if cand > float64(math.MaxInt64/2) {
+				return math.MaxInt64 / 2
+			}
+			step := int64(cand)
+			if step < 1 {
+				return 1
+			}
+			return step
+		}
+	}
+	return 1
+}
+
+func floorDivInt64(a, b int64) int64 {
+	q := a / b
+	r := a % b
+	if r != 0 && ((r < 0) != (b < 0)) {
+		q--
+	}
+	return q
+}
+
 // orderFacetValues orders a facet page for reading. Numbers keep the most
 // common first; labels read alphabetically; an enum follows its declaration.
 func orderFacetValues(values []FacetCount, fieldType string, enum []string) {
@@ -477,7 +881,7 @@ func orderFacetValues(values []FacetCount, fieldType string, enum []string) {
 			}
 			return facetNameLess(values[i].Value, values[j].Value)
 		})
-	case "string", "strings", "people":
+	case "string", "strings", "bool", "people":
 		sort.SliceStable(values, func(i, j int) bool { return facetNameLess(values[i].Value, values[j].Value) })
 	}
 }

@@ -382,11 +382,39 @@
                   },
                   "library": {
                     "properties": {
+                      "card": {
+                        "enum": [
+                          "poster",
+                          "landscape",
+                          "square"
+                        ]
+                      },
                       "icon": {
                         "type": "string"
                       },
                       "name": {
                         "type": "string"
+                      },
+                      "tabs": {
+                        "items": {
+                          "properties": {
+                            "key": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "recommended",
+                                "library",
+                                "collections"
+                              ]
+                            },
+                            "label": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
                       }
                     },
                     "type": "object"

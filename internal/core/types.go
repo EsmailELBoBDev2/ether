@@ -53,8 +53,10 @@ type Title struct {
 	// declared MediaKindMeta level key a projected plugin item came from
 	// (empty for catalogue titles); LibraryID is the owning library, set so
 	// protocols can type and section a plugin item without a re-lookup.
-	KindLevel string    `json:"kindLevel,omitempty"`
-	LibraryID LibraryID `json:"-"`
+	KindLevel     string    `json:"kindLevel,omitempty"`
+	LibraryID     LibraryID `json:"-"`
+	ItemIndex     int       `json:"-"`
+	LandscapeCard bool      `json:"-"`
 
 	// Seasons and episodes.
 	ShowKey           RatingKey `json:"showKey,omitempty"`
@@ -126,6 +128,7 @@ type Title struct {
 	BackdropPath string `json:"backdropPath,omitempty"`
 	StillPath    string `json:"stillPath,omitempty"` // episodes
 	LogoPath     string `json:"logoPath,omitempty"`
+	ThumbPath    string `json:"-"` // plugin item 16:9 thumb role when present
 
 	Cast      []Person `json:"cast,omitempty"`
 	Directors []Person `json:"directors,omitempty"`

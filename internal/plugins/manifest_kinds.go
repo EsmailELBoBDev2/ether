@@ -32,6 +32,14 @@ var kindSorts = map[string]bool{
 	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true,
 }
 
+var kindLibraryCards = map[string]bool{
+	"poster": true, "landscape": true, "square": true,
+}
+
+var kindLibraryTabKinds = map[string]bool{
+	"recommended": true, "library": true, "collections": true,
+}
+
 var mediaBrowserCollectionTypes = map[string]bool{
 	"movies": true, "tvshows": true, "music": true, "audiobooks": true,
 	"books": true, "photos": true, "homevideos": true,
@@ -72,10 +80,31 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		add(base+".key", "must be lower case letters, digits and dashes, at most 32 characters")
 	}
 	label(base+".label", k.Label, 60)
-	if k.Library != (KindLibraryDecl{}) {
+	if !k.Library.IsZero() {
 		label(base+".library.name", k.Library.Name, 60)
 		if unsafePath(k.Library.Icon) {
 			add(base+".library.icon", "must stay inside the package")
+		}
+		if k.Library.Card != "" && !kindLibraryCards[k.Library.Card] {
+			add(base+".library.card", "must be poster, landscape or square")
+		}
+		if len(k.Library.Tabs) > 6 {
+			add(base+".library.tabs", "at most six tabs may be declared")
+		}
+		seenTab := map[string]bool{}
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			switch {
+			case !kindKeyRe.MatchString(tab.Key):
+				add(tbase+".key", "must be lower case letters, digits and dashes, at most 32 characters")
+			case seenTab[tab.Key]:
+				add(tbase+".key", "is listed twice")
+			}
+			seenTab[tab.Key] = true
+			label(tbase+".label", tab.Label, 40)
+			if !kindLibraryTabKinds[tab.Kind] {
+				add(tbase+".kind", "must be recommended, library or collections")
+			}
 		}
 	}
 
@@ -166,7 +195,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		field, ok := fields[f]
 		if !ok {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "must name a declared field")
-		} else if !field.Indexed {
+		} else if !field.Indexed && field.Type != "people" {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
 		}
 	}

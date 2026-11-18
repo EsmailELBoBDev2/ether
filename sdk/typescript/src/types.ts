@@ -329,11 +329,24 @@ export interface KindArt {
   label: string;
 }
 
+export interface KindLibraryTab {
+  key: string;
+  label: string;
+  kind: "recommended" | "library" | "collections";
+}
+
+export interface KindLibraryDecl {
+  name: string;
+  icon?: string;
+  card?: "poster" | "landscape" | "square";
+  tabs?: KindLibraryTab[];
+}
+
 /** One declared content kind; each kind becomes its own library. */
 export interface MediaKindMeta {
   key: string;
   label: string;
-  library: { name: string; icon?: string };
+  library: KindLibraryDecl;
   levels: KindLevel[];
   fields?: KindField[];
   art?: KindArt[];

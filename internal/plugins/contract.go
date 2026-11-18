@@ -192,7 +192,7 @@ type RuntimeLimits struct {
 	// ReadBytes is the granted per-call byte ceiling for cache.read,
 	// archive.open and archive.read, derived from MemoryBytes:
 	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
-	ReadBytes  int64  `json:"readBytes,omitempty"`
+	ReadBytes int64 `json:"readBytes,omitempty"`
 	// Deadline and UnitBudget are the granted ceilings in manifests/detail
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
@@ -409,8 +409,45 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the optional library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string `json:"name"` // default name; the owner may rename it after
-	Icon string `json:"icon,omitempty"`
+	Name string           `json:"name"` // default name; the owner may rename it after
+	Icon string           `json:"icon,omitempty"`
+	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
+	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+}
+
+// KindLibraryTab declares one sub-tab shown inside a plugin library.
+type KindLibraryTab struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"` // recommended|library|collections
+}
+
+// IsZero reports whether every field of the library declaration is empty.
+func (d KindLibraryDecl) IsZero() bool {
+	return d.Name == "" && d.Icon == "" && d.Card == "" && len(d.Tabs) == 0
+}
+
+// EffectiveCard returns the library's card aspect ("poster" by default).
+func (d KindLibraryDecl) EffectiveCard() string {
+	switch d.Card {
+	case "landscape", "square":
+		return d.Card
+	default:
+		return "poster"
+	}
+}
+
+// EffectiveTabs returns the declared tabs, or the default Recommended and Library tabs.
+func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
+	if len(d.Tabs) > 0 {
+		out := make([]KindLibraryTab, len(d.Tabs))
+		copy(out, d.Tabs)
+		return out
+	}
+	return []KindLibraryTab{
+		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "library", Label: "Library", Kind: "library"},
+	}
 }
 
 // KindLevel is one hierarchy level of a kind.

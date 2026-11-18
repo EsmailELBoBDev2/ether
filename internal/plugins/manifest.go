@@ -500,6 +500,9 @@ func contributesUseT(c Contributes) bool {
 	for _, k := range c.MediaKinds {
 		check(k.Label)
 		check(k.Library.Name)
+		for _, t := range k.Library.Tabs {
+			check(t.Label)
+		}
 		for _, lv := range k.Levels {
 			check(lv.Label)
 		}

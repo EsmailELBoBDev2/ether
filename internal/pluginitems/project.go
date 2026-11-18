@@ -42,16 +42,18 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 	}
 
 	t := core.Title{
-		Key:        item.Key,
-		Type:       mediaType,
-		KindLevel:  item.Level,
-		Title:      item.Title,
-		SortTitle:  sortTitle,
-		Summary:    projectSummary(item, decl),
-		Year:       item.Year,
-		Rating:     item.Rating,
-		ChildCount: item.ChildCount,
-		LeafCount:  item.LeafCount,
+		Key:           item.Key,
+		Type:          mediaType,
+		KindLevel:     item.Level,
+		ItemIndex:     item.Index,
+		LandscapeCard: decl.Library.EffectiveCard() == "landscape",
+		Title:         item.Title,
+		SortTitle:     sortTitle,
+		Summary:       projectSummary(item, decl),
+		Year:          item.Year,
+		Rating:        item.Rating,
+		ChildCount:    item.ChildCount,
+		LeafCount:     item.LeafCount,
 	}
 
 	if item.Released > 0 {
@@ -99,6 +101,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 				}
 			}
 		}
+		t.ThumbPath = thumb
 		if mediaType == core.TypeEpisode {
 			t.StillPath = thumb
 			if t.PosterPath == "" {

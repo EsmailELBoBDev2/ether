@@ -9,11 +9,13 @@ import {
   Link2,
   Link2Off,
   Pencil,
+  Plus,
   RefreshCw,
   Search,
   Wand2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { filterGuideChannels, groupGuideChannels } from "./guide-filter";
@@ -99,8 +101,13 @@ export function GuideChannelSearch({
             >
               <ChannelLogo name={g.name} logo={g.logo} seed={g.guideId} size={28} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-fg">{g.name}</span>
-                <span className="block truncate text-[11px] text-fg-muted">
+                <span className="block truncate text-sm text-fg" title={g.name}>
+                  {g.name}
+                </span>
+                <span
+                  className="block truncate text-[11px] text-fg-muted"
+                  title={`${g.guideId} · ${g.sourceName}`}
+                >
                   {g.guideId} · {g.sourceName}
                 </span>
               </span>
@@ -140,7 +147,7 @@ export function MapGuideButton({
       open={open}
       onOpenChange={setOpen}
       align="end"
-      className="w-[22rem] p-3"
+      className="w-[22rem] max-w-[calc(100vw-1.5rem)] p-3"
       trigger={
         <Button
           size="sm"
@@ -201,14 +208,15 @@ export function guideSourceStatus(
 }
 
 /**
- * The Guide tab's lineup: overall coverage, then every guide source. Picking
- * one opens its workbench on the right; "All guide sources" is the whole lineup.
+ * Channel mapping's guide source rail: scopes the mapping workbench on the right
+ * to one guide source, or shows all guide sources.
  */
 export function GuideSourceList({
   lineup,
   sources,
   selected,
   onSelect,
+  onAddGuideSource,
   now,
   query = "",
 }: {
@@ -219,18 +227,18 @@ export function GuideSourceList({
   /** The selected guide source id, or null for all guide sources. */
   selected: string | null;
   onSelect: (id: string | null) => void;
+  onAddGuideSource?: () => void;
   now: number;
 }) {
   const needle = query.trim().toLowerCase();
-  const guides = sources
-    .filter(isGuideSource)
-    .filter((s) => !needle || sourceTitle(s).toLowerCase().includes(needle));
+  const allGuides = sources.filter(isGuideSource);
+  const guides = allGuides.filter((s) => !needle || sourceTitle(s).toLowerCase().includes(needle));
 
   return (
-    <div className="space-y-4 p-3 sm:p-4">
+    <div className="min-w-0 space-y-3 p-3">
       <div className="space-y-1.5">
-        <div className="flex min-h-7 items-center gap-2 px-1">
-          <h2 className="flex-1 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+        <div className="flex min-h-7 min-w-0 flex-wrap items-center gap-2 px-1">
+          <h2 className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
             {t("Guide sources")}
           </h2>
           {selected !== null ? (
@@ -238,18 +246,41 @@ export function GuideSourceList({
               {t("Show all guide sources")}
             </Button>
           ) : null}
+          <Link
+            to="/sources/iptv"
+            className="shrink-0 text-xs font-medium text-primary hover:underline"
+          >
+            {t("Sources")}
+          </Link>
         </div>
-        {guides.length === 0 ? (
-          <p className="px-1 text-xs text-fg-muted">
-            {t(
-              "No guide sources yet. Add an XMLTV guide or your Plex guide to give channels listings.",
+        {allGuides.length === 0 ? (
+          <div className="space-y-2.5 rounded-xl border border-dashed border-border p-3">
+            <p className="text-xs text-fg-muted">
+              {t(
+                "No guide sources yet. Add an XMLTV guide or your Plex guide to give channels listings.",
+              )}
+            </p>
+            {onAddGuideSource ? (
+              <Button size="sm" variant="outline" className="w-full" onClick={onAddGuideSource}>
+                <Plus size={14} /> {t("New guide source")}
+              </Button>
+            ) : (
+              <Link
+                to="/sources/iptv?new=guide"
+                className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+              >
+                <Plus size={13} /> {t("New guide source")}
+              </Link>
             )}
-          </p>
+          </div>
+        ) : guides.length === 0 ? (
+          <p className="px-1 text-xs text-fg-muted">{t("No channels match.")}</p>
         ) : null}
         {guides.map((s) => {
           const on = selected === s.id;
           const used = lineup.filter((c) => usesGuide(c, s)).length;
           const status = guideSourceStatus(s, used, now);
+          const title = sourceTitle(s);
           return (
             <button
               key={s.id}
@@ -257,29 +288,36 @@ export function GuideSourceList({
               onClick={() => onSelect(on ? null : s.id)}
               aria-current={on ? "true" : undefined}
               className={cn(
-                "flex w-full items-start gap-3 rounded-xl border bg-surface p-3 text-left transition-colors hover:border-border-strong",
+                "flex w-full min-w-0 items-start gap-2.5 rounded-xl border bg-surface p-2.5 text-left transition-colors hover:border-border-strong",
                 on ? "border-primary/40 ring-1 ring-primary/30" : "border-border",
               )}
             >
-              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-info/15 text-info">
-                <CalendarRange size={17} />
+              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-info/15 text-info">
+                <CalendarRange size={16} />
               </span>
               <span className="min-w-0 flex-1 space-y-1">
-                <span className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-fg">{sourceTitle(s)}</span>
-                  {s.disabled ? <Badge>{t("Disabled")}</Badge> : null}
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className="min-w-0 flex-1 truncate text-sm font-medium text-fg"
+                    title={title}
+                  >
+                    {title}
+                  </span>
+                  {s.disabled ? <Badge className="shrink-0">{t("Disabled")}</Badge> : null}
                   <Badge variant="secondary" className="shrink-0">
                     {s.kind === "plex" ? t("Plex") : s.hasPlaylist ? t("M3U guide") : t("XMLTV")}
                   </Badge>
                 </span>
                 <span
                   className={cn(
-                    "flex items-center gap-1 text-xs",
+                    "flex min-w-0 items-center gap-1 text-xs",
                     status.warn ? "text-warning" : "text-fg-muted",
                   )}
                 >
                   {status.warn ? <AlertTriangle size={12} className="shrink-0" /> : null}
-                  <span className="truncate">{status.text}</span>
+                  <span className="min-w-0 truncate" title={status.text}>
+                    {status.text}
+                  </span>
                 </span>
               </span>
             </button>
@@ -291,10 +329,10 @@ export function GuideSourceList({
 }
 
 /**
- * The guide workbench on the right of the Guide tab. For all guide sources: how
- * much of the lineup has listings, suggested matches, and every channel's
- * mapping. For one source: its health, the channels using it, and the
- * channels it could cover. Mapping a channel opens its guide drawer.
+ * The guide workbench on the right of Channel mapping. For all guide sources:
+ * suggested matches and every channel's mapping. For one source: its health,
+ * the channels using it, and the channels it could cover. Mapping a channel
+ * opens its guide drawer.
  */
 export function GuideWorkbench({
   channels,
@@ -303,6 +341,7 @@ export function GuideWorkbench({
   coverage,
   source,
   onMapChannel,
+  onAddPlaylistSource,
   onEditSource,
   onReload,
   now,
@@ -326,6 +365,7 @@ export function GuideWorkbench({
   /** The Live TV search: narrows the channel mapping list (not the coverage figures). */
   query?: string;
   onMapChannel: (id: string) => void;
+  onAddPlaylistSource?: () => void;
   onEditSource: (id: string) => void;
   onReload: () => Promise<void>;
   now: number;
@@ -463,16 +503,16 @@ export function GuideWorkbench({
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 p-3 sm:p-6">
+    <div className="min-w-0 w-full space-y-4 p-3 sm:p-4">
       {source || showCoverageCard ? (
         <section
           className={cn(
-            "relative overflow-hidden rounded-2xl border border-border bg-surface shadow-xs",
+            "relative min-w-0 overflow-hidden rounded-xl border border-border bg-surface shadow-xs",
             "px-4 py-3",
           )}
         >
           {source ? (
-            <div className="relative flex flex-wrap items-center gap-4">
+            <div className="relative flex min-w-0 flex-wrap items-center gap-4">
               <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-info/15 text-info">
                 <CalendarRange size={18} />
               </span>
@@ -480,7 +520,10 @@ export function GuideWorkbench({
                 <p className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
                   {source.kind === "plex" ? t("Plex guide") : t("XMLTV guide")}
                 </p>
-                <h2 className="mt-0.5 truncate text-base font-semibold tracking-tight text-fg">
+                <h2
+                  className="mt-0.5 truncate text-base font-semibold tracking-tight text-fg"
+                  title={sourceTitle(source)}
+                >
                   {sourceTitle(source)}
                 </h2>
                 <p className={cn("mt-0.5 text-sm", status.warn ? "text-warning" : "text-fg-muted")}>
@@ -490,7 +533,7 @@ export function GuideWorkbench({
                     : ""}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex shrink-0 flex-wrap gap-2">
                 <Button variant="outline" onClick={() => void refresh()} disabled={refreshing}>
                   <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />{" "}
                   {t("Refresh")}
@@ -502,14 +545,14 @@ export function GuideWorkbench({
               {source.lastError ? (
                 <p
                   role="alert"
-                  className="relative w-full rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
+                  className="relative w-full break-words rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
                 >
                   {sourceImportError(source.lastError)}
                 </p>
               ) : null}
             </div>
           ) : (
-            <div className="relative flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="relative flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
               <p className="text-2xl font-semibold tracking-tight tabular-nums text-fg">
                 {coverage === null ? "—" : `${Math.round(pct * 100)}%`}
               </p>
@@ -544,17 +587,17 @@ export function GuideWorkbench({
       {proposals !== null ? (
         <section
           aria-label={t("Suggested matches")}
-          className="space-y-3 rounded-2xl border border-primary/30 bg-primary-subtle/40 p-4"
+          className="min-w-0 space-y-3 rounded-xl border border-primary/30 bg-primary-subtle/40 p-4"
         >
-          <div className="flex flex-wrap items-center gap-2">
-            <Wand2 size={15} className="text-primary" />
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Wand2 size={15} className="shrink-0 text-primary" />
             <h2 className="text-sm font-semibold text-fg">
               {tn(proposals.length, "{count} suggested match", "{count} suggested matches")}
             </h2>
             <span className="text-xs text-fg-muted">
               {t("Matched by guide id, then by channel name.")}
             </span>
-            <div className="ml-auto flex gap-2">
+            <div className="flex flex-wrap gap-2 sm:ml-auto">
               <Button variant="ghost" size="sm" onClick={() => setProposals(null)}>
                 {t("Dismiss")}
               </Button>
@@ -587,13 +630,14 @@ export function GuideWorkbench({
               {t("Select all")}
             </label>
           ) : null}
-          <ul className="max-h-80 space-y-1 overflow-y-auto">
+          <ul className="max-h-80 min-w-0 space-y-1 overflow-x-hidden overflow-y-auto">
             {proposals.map((p) => {
               const c = byId.get(p.channelId);
               const on = accepted.has(p.channelId);
+              const proposalChannelName = c?.name ?? p.channelName ?? p.channelId;
               return (
-                <li key={p.channelId}>
-                  <label className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 sm:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)] rounded-lg bg-surface px-3 py-2 text-sm">
+                <li key={p.channelId} className="min-w-0">
+                  <label className="grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 rounded-lg bg-surface px-3 py-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)]">
                     <input
                       type="checkbox"
                       checked={on}
@@ -609,11 +653,14 @@ export function GuideWorkbench({
                         channel: c?.name ?? p.channelId,
                       })}
                     />
-                    <span className="min-w-0 break-words text-fg">
-                      {c?.name ?? p.channelName ?? p.channelId}
+                    <span className="min-w-0 truncate text-fg" title={proposalChannelName}>
+                      {proposalChannelName}
                     </span>
                     <ArrowRight size={13} className="hidden shrink-0 text-fg-subtle sm:block" />
-                    <span className="col-start-2 min-w-0 break-words text-fg-muted sm:col-start-auto">
+                    <span
+                      className="col-start-2 min-w-0 truncate text-fg-muted sm:col-start-auto"
+                      title={`${p.guideName} · ${p.guideSourceName || sourceName(p.guideSourceId)}`}
+                    >
                       {p.guideName}{" "}
                       <span className="text-fg-subtle">
                         · {p.guideSourceName || sourceName(p.guideSourceId)}
@@ -621,7 +668,7 @@ export function GuideWorkbench({
                       </span>
                     </span>
                     {p.reviewRegion ? (
-                      <span className="col-start-2 text-xs text-fg-muted sm:col-span-3">
+                      <span className="col-start-2 min-w-0 break-words text-xs text-fg-muted sm:col-span-3">
                         <Badge variant="warning" className="mr-2">
                           {t("Check region")}
                         </Badge>
@@ -636,14 +683,23 @@ export function GuideWorkbench({
         </section>
       ) : null}
 
-      <section aria-label={t("Channel guide mapping")} className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="min-w-0 basis-full sm:basis-auto sm:flex-1">
+      <section
+        aria-label={t("Channel guide mapping")}
+        className="min-w-0 overflow-hidden rounded-xl border border-border bg-surface"
+      >
+        <div className="space-y-2.5 border-b border-border px-3 py-3 sm:px-4">
+          <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <h2 className="text-sm font-semibold text-fg">{t("Channel mapping")}</h2>
+            <p className="min-w-0 text-xs text-fg-muted">
+              {t("Map a channel from Missing or All IPTV, or run Auto-match.")}
+            </p>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {showMatchActions ? (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
+              <>
                 <Button
                   size="sm"
+                  className="shrink-0"
                   onClick={() => void propose()}
                   disabled={busy || coverage === null}
                 >
@@ -662,7 +718,7 @@ export function GuideWorkbench({
                     ariaLabel={t("Group")}
                     value={group}
                     onChange={setGroup}
-                    className="max-w-[12rem]"
+                    className="max-w-full sm:max-w-[12rem]"
                     options={[
                       { value: "", label: t("All groups") },
                       ...ownerGroups.map((g) => ({
@@ -695,42 +751,40 @@ export function GuideWorkbench({
                     ]}
                   />
                 ) : null}
-              </div>
+              </>
             ) : null}
-            <p className="mt-1 text-xs text-fg-muted">
-              {t("Map a channel from Missing or All IPTV, or run Auto-match.")}
-            </p>
+            <Segmented
+              ariaLabel={t("Show channels")}
+              size="sm"
+              className="max-w-full sm:ml-auto"
+              value={show}
+              onChange={(v) => {
+                setShow(v);
+                setLimit(ROW_PAGE);
+              }}
+              options={[
+                ...(source
+                  ? [
+                      {
+                        value: "using" as Show,
+                        label: t("Using this guide ({count})", { count: shown.using.length }),
+                      },
+                    ]
+                  : []),
+                {
+                  value: "missing" as Show,
+                  label: t("Missing ({count})", { count: shown.missing.length }),
+                },
+                {
+                  value: "all" as Show,
+                  label: t("All IPTV ({count})", { count: shown.all.length }),
+                },
+              ]}
+            />
           </div>
-          <Segmented
-            ariaLabel={t("Show channels")}
-            size="sm"
-            value={show}
-            onChange={(v) => {
-              setShow(v);
-              setLimit(ROW_PAGE);
-            }}
-            options={[
-              ...(source
-                ? [
-                    {
-                      value: "using" as Show,
-                      label: t("Using this guide ({count})", { count: shown.using.length }),
-                    },
-                  ]
-                : []),
-              {
-                value: "missing" as Show,
-                label: t("Missing ({count})", { count: shown.missing.length }),
-              },
-              {
-                value: "all" as Show,
-                label: t("All IPTV ({count})", { count: shown.all.length }),
-              },
-            ]}
-          />
         </div>
         {rows.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border p-8 text-center">
+          <div className="p-8 text-center">
             <CheckCircle2 className="mx-auto text-success" size={26} />
             <p className="mt-2 text-sm font-medium text-fg">
               {needle
@@ -750,22 +804,43 @@ export function GuideWorkbench({
                     ? t("Every live channel is getting listings.")
                     : t("Add an M3U source to bring in IPTV channels.")}
             </p>
+            {!needle && show !== "using" && !iptv.length ? (
+              <div className="mt-4">
+                {onAddPlaylistSource ? (
+                  <Button size="sm" variant="outline" onClick={onAddPlaylistSource}>
+                    <Plus size={14} /> {t("Add IPTV")}
+                  </Button>
+                ) : (
+                  <Link
+                    to="/sources/iptv?new=playlist"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <Plus size={13} /> {t("Add IPTV")}
+                  </Link>
+                )}
+              </div>
+            ) : null}
           </div>
         ) : (
-          <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
+          <ul className="min-w-0 divide-y divide-border">
             {rows.slice(0, limit).map((c) => {
               const cov = coverage?.get(c.id);
               const ok = has(c);
               const guideSrc = c.guideSourceId || c.sourceId;
+              const channelLabel = `${c.number} ${c.name}`;
+              const channelMeta = `${sourceName(c.sourceId)}${!c.enabled ? ` · ${t("disabled")}` : ""}`;
+              const mappedLabel = c.guideId
+                ? `${c.guideId}${guideSrc ? ` · ${sourceName(guideSrc)}` : ""}`
+                : "";
               return (
                 <li
                   key={c.id}
-                  className="flex flex-wrap items-center gap-3 px-3 py-2 sm:flex-nowrap"
+                  className="flex min-w-0 flex-col gap-2 px-3 py-2.5 sm:grid sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:gap-3 sm:px-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto_auto]"
                 >
                   <button
                     type="button"
                     onClick={() => onMapChannel(c.id)}
-                    className="flex min-w-0 basis-full items-center gap-2.5 text-left sm:basis-auto sm:flex-1"
+                    className="flex min-w-0 items-center gap-2.5 text-left"
                   >
                     <ChannelLogo
                       name={c.name}
@@ -774,18 +849,23 @@ export function GuideWorkbench({
                       channelId={c.id}
                       size={30}
                     />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-fg">
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className="block truncate text-sm font-medium text-fg"
+                        title={channelLabel}
+                      >
                         <span className="mr-1.5 font-mono text-xs text-fg-subtle">{c.number}</span>
                         {c.name}
                       </span>
-                      <span className="block truncate text-[11px] text-fg-muted">
-                        {sourceName(c.sourceId)}
-                        {!c.enabled ? ` · ${t("disabled")}` : ""}
+                      <span
+                        className="block truncate text-[11px] text-fg-muted"
+                        title={channelMeta || undefined}
+                      >
+                        {channelMeta}
                       </span>
                     </span>
                   </button>
-                  <span className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
+                  <span className="hidden min-w-0 items-center gap-2 md:flex">
                     {c.guideId ? (
                       <>
                         {ok ? (
@@ -793,32 +873,40 @@ export function GuideWorkbench({
                         ) : (
                           <Link2Off size={13} className="shrink-0 text-warning" />
                         )}
-                        <span className="min-w-0 truncate text-xs text-fg-muted">
+                        <span
+                          className="min-w-0 truncate text-xs text-fg-muted"
+                          title={mappedLabel}
+                        >
                           <span className="font-mono">{c.guideId}</span>
                           {guideSrc ? ` · ${sourceName(guideSrc)}` : ""}
                         </span>
                       </>
                     ) : (
-                      <span className="text-xs text-fg-subtle">{t("Not mapped")}</span>
+                      <span className="truncate text-xs text-fg-subtle">{t("Not mapped")}</span>
                     )}
                   </span>
-                  <span className="ml-auto shrink-0 text-right text-[11px] text-fg-muted sm:ml-0 sm:w-36">
-                    {ok ? (
-                      <Badge variant="success" className="whitespace-nowrap">
-                        {cov?.until ? t("to {time}", { time: dayClock(cov.until) }) : t("Listed")}
-                      </Badge>
-                    ) : (
-                      <Badge variant="warning">{t("No listings")}</Badge>
-                    )}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant={ok ? "ghost" : "outline"}
-                    aria-label={t("Map guide for {channel}", { channel: c.name })}
-                    onClick={() => onMapChannel(c.id)}
-                  >
-                    <Link2 size={13} /> {c.guideId ? t("Change") : t("Map")}
-                  </Button>
+                  <div className="flex min-w-0 items-center justify-between gap-2 pl-10 sm:contents">
+                    <span className="min-w-0 shrink-0 text-[11px] text-fg-muted sm:justify-self-end">
+                      {ok ? (
+                        <Badge variant="success" className="shrink-0 whitespace-nowrap">
+                          {cov?.until ? t("to {time}", { time: dayClock(cov.until) }) : t("Listed")}
+                        </Badge>
+                      ) : (
+                        <Badge variant="warning" className="shrink-0 whitespace-nowrap">
+                          {t("No listings")}
+                        </Badge>
+                      )}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant={ok ? "ghost" : "outline"}
+                      className="shrink-0"
+                      aria-label={t("Map guide for {channel}", { channel: c.name })}
+                      onClick={() => onMapChannel(c.id)}
+                    >
+                      <Link2 size={13} /> {c.guideId ? t("Change") : t("Map")}
+                    </Button>
+                  </div>
                 </li>
               );
             })}

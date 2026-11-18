@@ -1,14 +1,19 @@
-import { Badge, Button, toast } from "@braedonsaunders/appkit-ui";
-import { Pencil, Tv } from "lucide-react";
+import { Badge, Button, cn, toast } from "@braedonsaunders/appkit-ui";
+import { CalendarRange, Pencil, RefreshCw, Tv } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { ErrorPanel } from "../../components/feedback";
 import { t, tn } from "../../i18n";
 import { errorMessage } from "../../lib/api";
-import { ProviderAccountCard } from "../livetv/SourceGroups";
+import { relativeTime } from "../../lib/format";
+import { useInterval } from "../../lib/hooks";
 import { SourceDrawer } from "../livetv/SourceEditor";
-import { isChannelSource, plexLineupName, tv, type Source } from "../livetv/model";
+import { ProviderAccountCard } from "../livetv/SourceGroups";
+import { dayClock, isChannelSource, plexLineupName, tv, type Source } from "../livetv/model";
+import { sourceImportError } from "../livetv/sourceErrors";
+
+const STALE_MS = 6 * 60 * 60 * 1000;
 
 /** The canonical connection editor for provider, playlist and guide sources.
  * Live TV reads and edits the same source records in place over its lineup. */
@@ -16,6 +21,10 @@ export function IPTVProviders() {
   const [params, setParams] = useSearchParams();
   const [sources, setSources] = useState<Source[] | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [refreshing, setRefreshing] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useInterval(() => setNow(Date.now()), 30_000);
+
   const reload = useCallback(async () => {
     try {
       setSources(await tv.sources());
@@ -36,6 +45,20 @@ export function IPTVProviders() {
     return () => window.clearInterval(timer);
   }, [reload, id, adding]);
   const close = () => setParams(new URLSearchParams());
+
+  const refresh = async (source: Source) => {
+    setRefreshing(source.id);
+    const name = source.kind === "plex" ? plexLineupName(source.name) : source.name;
+    try {
+      await tv.refreshSource(source.id);
+      toast.success(t("{name} refreshed", { name }));
+      await reload();
+    } catch (e) {
+      toast.error(t("Refresh failed"), { description: sourceImportError(e) });
+    } finally {
+      setRefreshing(null);
+    }
+  };
 
   return (
     <>
@@ -72,8 +95,16 @@ export function IPTVProviders() {
               const channelRank = isChannelSource(source)
                 ? channelSources.findIndex((s) => s.id === source.id) + 1
                 : 0;
+              const name = source.kind === "plex" ? plexLineupName(source.name) : source.name;
+              const guideOnly = source.hasPlaylist === false && source.auth?.type !== "xtream";
+              const urlBacked =
+                source.kind === "plex" ||
+                source.auth?.type === "xtream" ||
+                Boolean(source.playlistUrl || source.guideUrl || source.playlistGuide);
+              const busy = refreshing === source.id;
+              const until = source.guideUntil ? Date.parse(source.guideUntil) : 0;
               return (
-                <article className="flex items-start gap-3 rounded-xl border border-border bg-surface p-4">
+                <article className="flex flex-wrap items-start gap-3 rounded-xl border border-border bg-surface p-4 sm:flex-nowrap">
                   {sources.length > 1 ? (
                     <DragHandle
                       handle={handle}
@@ -81,13 +112,18 @@ export function IPTVProviders() {
                       className="mt-1.5"
                     />
                   ) : null}
-                  <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-bg-subtle text-fg-muted">
-                    <Tv size={20} />
+                  <span
+                    className={cn(
+                      "flex size-11 shrink-0 items-center justify-center rounded-lg",
+                      guideOnly ? "bg-info/15 text-info" : "bg-bg-subtle text-fg-muted",
+                    )}
+                  >
+                    {guideOnly ? <CalendarRange size={20} /> : <Tv size={20} />}
                   </span>
                   <div className="min-w-0 flex-1 space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-semibold text-fg">
-                        {source.kind === "plex" ? plexLineupName(source.name) : source.name}
+                      <h3 className="min-w-0 truncate font-semibold text-fg" title={name}>
+                        {name}
                       </h3>
                       {channelRank > 0 && channelSources.length > 1 ? (
                         <Badge>{t("Priority #{rank}", { rank: channelRank })}</Badge>
@@ -105,21 +141,48 @@ export function IPTVProviders() {
                     </div>
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-fg-muted">
                       {source.useLiveTV !== false ? (
-                        <span>
-                          {source.hasPlaylist === false && source.auth?.type !== "xtream"
-                            ? tn(
+                        <>
+                          <span>
+                            {guideOnly
+                              ? tn(
+                                  source.guideChannelCount ?? 0,
+                                  "{count} guide channel",
+                                  "{count} guide channels",
+                                )
+                              : tn(source.channelCount ?? 0, "{count} channel", "{count} channels")}
+                          </span>
+                          {!guideOnly && (source.guideChannelCount ?? 0) > 0 ? (
+                            <span>
+                              {tn(
                                 source.guideChannelCount ?? 0,
                                 "{count} guide channel",
                                 "{count} guide channels",
-                              )
-                            : tn(source.channelCount ?? 0, "{count} channel", "{count} channels")}
-                        </span>
+                              )}
+                            </span>
+                          ) : null}
+                          {until > 0 ? (
+                            <span
+                              className={cn(
+                                (until <= now || until - now < STALE_MS) && "text-warning",
+                              )}
+                            >
+                              {until <= now
+                                ? t("Listings have run out")
+                                : t("to {time}", { time: dayClock(new Date(until)) })}
+                            </span>
+                          ) : null}
+                        </>
                       ) : null}
                       {source.useVOD ? (
                         <span>
                           {t("Movies & shows index")}:{" "}
                           {tn(source.vodStatus?.movies ?? 0, "{count} movie", "{count} movies")} ·{" "}
                           {tn(source.vodStatus?.series ?? 0, "{count} show", "{count} shows")}
+                        </span>
+                      ) : null}
+                      {source.updatedAt ? (
+                        <span>
+                          {t("refreshed {when}", { when: relativeTime(source.updatedAt) })}
                         </span>
                       ) : null}
                     </div>
@@ -144,21 +207,39 @@ export function IPTVProviders() {
                         </div>
                       </details>
                     ) : null}
-                    {source.lastError || source.vodStatus?.error ? (
-                      <p className="text-sm text-danger">
+                    {source.lastError ? (
+                      <p role="alert" className="break-words text-sm text-danger">
+                        {sourceImportError(source.lastError)}
+                      </p>
+                    ) : source.vodStatus?.error ? (
+                      <p role="alert" className="text-sm text-danger">
                         {t("Provider unavailable; retry scheduled")}
                       </p>
                     ) : null}
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    aria-label={t("Edit {name}", { name: source.name })}
-                    onClick={() => setParams(new URLSearchParams({ source: source.id }))}
-                  >
-                    <Pencil size={13} />
-                    {t("Edit")}
-                  </Button>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy || !urlBacked || Boolean(source.disabled)}
+                      title={
+                        urlBacked ? undefined : t("Uploaded files can't be refreshed; upload again")
+                      }
+                      onClick={() => void refresh(source)}
+                    >
+                      <RefreshCw size={13} className={cn(busy && "animate-spin")} />
+                      {t("Refresh")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={t("Edit {name}", { name: source.name })}
+                      onClick={() => setParams(new URLSearchParams({ source: source.id }))}
+                    >
+                      <Pencil size={13} />
+                      {t("Edit")}
+                    </Button>
+                  </div>
                 </article>
               );
             }}

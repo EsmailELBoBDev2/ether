@@ -275,7 +275,7 @@ export default function LiveTV() {
       setBaseline("");
     }
     // Only re-seed when the selected record (or its saved copy) changes.
-    // eslint-disable-next-line react-hooks-exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection.kind, selection.kind === "channel" ? selection.id : "", savedChannel]);
 
   // Fetch programmes only for an open channel drawer; GuidePage loads its own visible window.
@@ -651,6 +651,7 @@ export default function LiveTV() {
     })();
   };
   const addGuideSource = () => openNewSource("guide");
+  const addPlaylistSource = () => openNewSource("playlist");
   const closeSourceDrawer = useCurrentCallback(() => {
     setParams((prev) => {
       const p = new URLSearchParams(prev);
@@ -897,6 +898,7 @@ export default function LiveTV() {
                 onMapChannel={(id) => void go({ kind: "map", id })}
                 onToggleFavorite={toggleFavorite}
                 onAddGuideSource={addGuideSource}
+                onAddPlaylistSource={addPlaylistSource}
                 onEditSource={(id) => void go({ kind: "source", id })}
                 onReload={reloadAll}
               />

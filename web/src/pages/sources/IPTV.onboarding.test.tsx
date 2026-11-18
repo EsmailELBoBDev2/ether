@@ -70,6 +70,9 @@ function mockBackend(sources: unknown[] = [], extraDescriptors: Descriptor[] = [
       if (url.endsWith("/api/livetv/sources") && method === "GET") {
         return jsonResponse(sources);
       }
+      if (/\/api\/livetv\/sources\/[^/]+\/refresh$/.test(url) && method === "POST") {
+        return jsonResponse((sources[0] as Record<string, unknown>) ?? { id: "refreshed" });
+      }
       if (url.includes("/api/livetv/sources") && (method === "POST" || method === "PUT")) {
         const parsed = body ? (JSON.parse(body) as Record<string, unknown>) : {};
         return jsonResponse({
@@ -274,6 +277,56 @@ describe("IPTV source onboarding", () => {
     expect(within(dialog).queryByText("From plugins")).not.toBeInTheDocument();
     expect(within(dialog).getByText("Player identity")).toBeInTheDocument();
     expect(within(dialog).getByText("Rating for channels without one")).toBeInTheDocument();
+  });
+
+  it("surfaces per-source Refresh, last-refresh status, guide horizon and specific refresh errors on Streaming › Sources cards", async () => {
+    const requests = mockBackend([
+      {
+        id: "guide-1",
+        name: "Regional XMLTV",
+        guideUrl: "https://epg.example/regional.xml.gz",
+        hasPlaylist: false,
+        hasGuide: true,
+        guideChannelCount: 48,
+        guideUntil: "2020-01-01T00:00:00Z",
+        updatedAt: "2026-11-16T00:00:00Z",
+        lastError: "404 Not Found",
+      },
+      {
+        id: "vod-1",
+        name: "Xtream Provider",
+        auth: { type: "xtream", server: "http://panel.example", username: "u" },
+        hasPlaylist: true,
+        channelCount: 200,
+        useVOD: true,
+        vodStatus: { movies: 10, series: 4, error: "timeout" },
+      },
+    ]);
+
+    renderIPTV("/sources/iptv");
+
+    const guideHeading = await screen.findByRole("heading", { name: "Regional XMLTV" });
+    const guideCard = guideHeading.closest("article")!;
+    expect(within(guideCard).getByText("Guide source")).toBeInTheDocument();
+    expect(within(guideCard).getByText("48 guide channels")).toBeInTheDocument();
+    expect(within(guideCard).getByText("Listings have run out")).toBeInTheDocument();
+    expect(within(guideCard).getByText(/refreshed /)).toBeInTheDocument();
+    expect(within(guideCard).getByRole("alert")).toHaveTextContent(/404/);
+
+    fireEvent.click(within(guideCard).getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(
+        requests.some(
+          (r) => r.method === "POST" && r.url.endsWith("/api/livetv/sources/guide-1/refresh"),
+        ),
+      ).toBe(true);
+    });
+
+    const vodHeading = screen.getByRole("heading", { name: "Xtream Provider" });
+    const vodCard = vodHeading.closest("article")!;
+    expect(within(vodCard).getByRole("alert")).toHaveTextContent(
+      "Provider unavailable; retry scheduled",
+    );
   });
 
   it("anchors Guide source and IPTV source drawers over Live TV instead of navigating to /sources/iptv", async () => {

@@ -1068,15 +1068,6 @@
           }
         },
         {
-          "key": "sources",
-          "label": {
-            "source": "IPTV sources"
-          },
-          "keywords": {
-            "source": "m3u xmltv playlist"
-          }
-        },
-        {
           "key": "guide",
           "label": {
             "source": "Guide"
@@ -1512,6 +1503,15 @@
           },
           "keywords": {
             "source": "nntp backfill connections"
+          }
+        },
+        {
+          "key": "iptv",
+          "label": {
+            "source": "IPTV"
+          },
+          "keywords": {
+            "source": "m3u xmltv playlist"
           }
         },
         {

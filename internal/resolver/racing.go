@@ -26,7 +26,8 @@ type candidate struct {
 	langOK           bool            // declares no audio, or an accepted audio language (acceptedAudio)
 	langWanted       bool            // explicitly declares the viewer's wanted audio or MULTI on a foreign title
 	starved          bool            // below its resolution's bitrate floor (bitrateScore) or a presumed upscale
-	bandwidth        int             // fits client cap (+1), unknown (0), or exceeds it (-1)
+	bandwidth        int             // fits client cap (+1), unknown (0), or exceeds hard cap / stall limit (-1)
+	delivery         int             // soft unverified source-delivery tie-break: fits/unknown (0) or above recent read rate (-1)
 	identityConflict bool            // region evidence contradicts the original language
 	yearGuessed      bool            // accepted despite a series year that differs from the show's
 	cf               int             // custom format score: every matching format, plugin points included

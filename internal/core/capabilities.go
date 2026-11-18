@@ -198,10 +198,11 @@ type UserPolicySource interface{ UserPolicy(*User) *User }
 // ViewerInvalidator exposes the optional Invalidate capability.
 type ViewerInvalidator interface{ Invalidate(userID int64) }
 
-// SourceDeliveryObserver receives uncached source throughput evidence. It is
-// neither client bandwidth nor a claim about an entire provider network.
+// SourceDeliveryObserver receives uncached source throughput and stall evidence.
+// It is neither client bandwidth nor a claim about an entire provider network.
 type SourceDeliveryObserver interface {
 	ObserveSourceDelivery(Release, float64)
+	ObserveSourceStall(Release, float64)
 }
 
 // ConcurrentRangeReaderAt keeps active demuxer range requests independent.

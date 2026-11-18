@@ -1815,7 +1815,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			trace.Candidates = append(trace.Candidates, ct)
 			tr = len(trace.Candidates) - 1
 		}
-		bandwidth, bandwidthReason := s.deliveryFitReason(sizedForEpisode(rel), req.Client, t)
+		bandwidth, delivery, bandwidthReason := s.deliveryFitReason(sizedForEpisode(rel), req.Client, t)
 		if trace != nil {
 			note := func(n string) {
 				trace.Candidates[tr].CompatibilityReason = strings.TrimPrefix(trace.Candidates[tr].CompatibilityReason+"; "+n, "; ")
@@ -1826,8 +1826,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			case lowBitrate:
 				note("too little bitrate for its resolution: ranked one resolution lower")
 			}
-			if bandwidth < 0 {
-				note("larger than the client's connection carries: " + bandwidthReason)
+			if bandwidth < 0 && bandwidthReason != "" {
+				note(bandwidthReason)
 			}
 			if yearGuessed {
 				note("series year differs but names no other show: ranked after correctly-labelled releases")
@@ -1836,7 +1836,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 				note("ranked after releases in an accepted audio language")
 			}
 		}
-		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, sreq), identityConflict: namesake && episodeRegionConflict(rel, t), fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
+		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, sreq), identityConflict: namesake && episodeRegionConflict(rel, t), fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, delivery: delivery, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
 	}
 	if hot != nil && len(cands) > 0 {
 		s.addPluginScores(hot, profile, cands, trace)

@@ -203,6 +203,7 @@ type session struct {
 	viewerAt              time.Time
 	viewerState           string
 	exp                   experienceState // guarded by mu
+	stallObserved         int             // guarded by mu; timeline stalls evaluated against delivery
 	encoderRecoveryReason string
 	encoderRunway         *time.Duration
 	warm                  warmState // the encoder input range being prefetched

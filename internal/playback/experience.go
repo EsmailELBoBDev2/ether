@@ -111,6 +111,7 @@ func (e *experienceState) observeStart(now time.Time, explicit bool, pos time.Du
 	if explicit {
 		if state == "playing" {
 			e.pictureAt = now
+			e.lastAt, e.lastPos = now, pos
 		}
 		return
 	}
@@ -150,6 +151,16 @@ func (e *experienceState) snapshot(now time.Time) *core.PlayExperience {
 		out.Buffering += d
 	}
 	return out
+}
+
+// stallCount returns the number of mid-play stalls observed so far, including
+// an active explicit buffering spell once it crosses stallMinimum.
+func (e *experienceState) stallCount(now time.Time) int {
+	n := e.events
+	if _, ok := e.explicitStall(now); ok {
+		n++
+	}
+	return n
 }
 
 // explicitStall reports a Plex buffering spell as a stall: one that began

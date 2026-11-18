@@ -57,6 +57,10 @@ func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req cor
 			reasons["audio in another language"]++
 		case strings.Contains(c.CompatibilityReason, "connection carries"):
 			reasons["too large for the client's connection"]++
+		case strings.Contains(c.CompatibilityReason, "Usenet provider"):
+			reasons["faster than recent Usenet provider reads"]++
+		case strings.Contains(c.CompatibilityReason, "debrid account recently delivered"), strings.Contains(c.CompatibilityReason, "recent reads from this source"):
+			reasons["faster than recent source reads"]++
 		default:
 			reasons["ranked lower by the owner's release preferences"]++
 		}

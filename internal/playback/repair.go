@@ -56,6 +56,7 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 			pausedRelease = s.cur.releaseID()
 		}
 		s.mu.Unlock()
+		m.observeTimelineStall(s, now)
 		if stateChanged {
 			m.emitEvent("progress", s, nil)
 		}

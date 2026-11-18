@@ -195,9 +195,10 @@ describe("Playback devices", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Devices" }, WAIT));
     fireEvent.click(await screen.findByRole("button", { name: "Edit Apple TV" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "Edit Apple TV" });
-    expect(within(drawer).getByText("Built in: Profile 5, Profile 8")).toBeInTheDocument();
+    expect(within(drawer).getAllByText("Profile 5").length).toBeGreaterThan(0);
     expect(within(drawer).getAllByText("Built in: 4K").length).toBeGreaterThan(0);
-    await pick(drawer, "Dolby Vision profiles", "Profile 5", "Profile 7", "Profile 8");
+    // The built-in profiles start ticked; adding one keeps them.
+    await pick(drawer, "Dolby Vision profiles", "Profile 7");
     fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/clients")).toHaveLength(1));
     expect(calls(fake, "PUT", "/config/clients")[0]!.body).toMatchObject({

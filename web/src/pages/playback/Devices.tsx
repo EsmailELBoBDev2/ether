@@ -380,6 +380,17 @@ function capabilityChanged(override: CapabilityOverride) {
   );
 }
 
+function sameValues(a: string[], b: string[]) {
+  if (a.length !== b.length) return false;
+  const seen = new Set(a.map((v) => v.toLowerCase()));
+  return b.every((v) => seen.has(v.toLowerCase()));
+}
+
+/**
+ * A list the owner can override. With no override the built-in values show
+ * ticked, so editing starts from them; choosing exactly the built-in list
+ * again stores no override.
+ */
 function ChoiceRow({
   label,
   value,
@@ -387,6 +398,7 @@ function ChoiceRow({
   options,
   placeholder,
   help,
+  builtin = [],
 }: {
   label: string;
   value: string[];
@@ -394,7 +406,11 @@ function ChoiceRow({
   options: { value: string; label: string }[];
   placeholder: string;
   help?: ReactNode;
+  builtin?: string[];
 }) {
+  const shown = value.length > 0 ? value : builtin;
+  const change = (next: string[]) =>
+    onChange(builtin.length > 0 && sameValues(next, builtin) ? [] : next);
   return (
     <SettingsRow
       title={label}
@@ -403,8 +419,8 @@ function ChoiceRow({
         <div className="w-full sm:w-80">
           <MultiSelect
             ariaLabel={label}
-            value={value}
-            onChange={onChange}
+            value={shown}
+            onChange={change}
             options={options}
             placeholder={placeholder}
             searchPlaceholder={t("Search…")}
@@ -1110,6 +1126,11 @@ export function DeviceCapabilities() {
           saveLabel={t("Save")}
           saveDisabled={editing?.mode === "create" && !draft.pick && !draft.match.trim()}
           onRemove={savedNow ? () => void remove(savedNow) : undefined}
+          removeLabel={
+            editing && editing.mode !== "create" && editing.custom
+              ? t("Remove")
+              : t("Reset to defaults")
+          }
           error={saveError}
         >
           {editing?.mode === "create" ? (
@@ -1145,6 +1166,7 @@ export function DeviceCapabilities() {
             value={draft.profiles}
             options={profileOptions}
             placeholder={profilePlaceholder}
+            builtin={(builtin?.dolbyVisionProfiles ?? []).map(String)}
             onChange={(profiles) => setDraft({ ...draft, profiles })}
           />
           <ChoiceRow
@@ -1152,6 +1174,7 @@ export function DeviceCapabilities() {
             value={draft.subtitles}
             options={subtitleOptions}
             placeholder={subtitlePlaceholder}
+            builtin={builtin?.subtitleCodecs ?? sourceApp?.subtitles ?? []}
             onChange={(subtitles) => setDraft({ ...draft, subtitles })}
           />
           <ChoiceRow
@@ -1160,6 +1183,7 @@ export function DeviceCapabilities() {
             value={draft.video}
             options={videoOptions}
             placeholder={videoPlaceholder}
+            builtin={builtin?.videoCodecs ?? sourceApp?.videoCodecs ?? []}
             onChange={(video) => setDraft({ ...draft, video })}
           />
           <ChoiceRow
@@ -1168,6 +1192,7 @@ export function DeviceCapabilities() {
             value={draft.audio}
             options={audioOptions}
             placeholder={builtIn(audioBuiltin)}
+            builtin={audioBuiltin}
             onChange={(audio) => setDraft({ ...draft, audio })}
           />
           <ChoiceRow
@@ -1176,6 +1201,7 @@ export function DeviceCapabilities() {
             value={draft.containers}
             options={containerOptions}
             placeholder={builtIn(containersBuiltin)}
+            builtin={containersBuiltin}
             onChange={(containers) => setDraft({ ...draft, containers })}
           />
           <SettingsRow

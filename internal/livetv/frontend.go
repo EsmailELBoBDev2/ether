@@ -2,6 +2,9 @@ package livetv
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -155,7 +158,8 @@ type liveTVHost struct {
 	s *Service
 }
 
-func (h liveTVHost) Enabled() bool { return h.s.Enabled() }
+func (h liveTVHost) Enabled() bool                  { return h.s.Enabled() }
+func (h liveTVHost) LiveGuideWindowAvailable() bool { return h.s != nil }
 
 func (h liveTVHost) Channels(ctx context.Context, v *core.Viewer) ([]frontend.LiveChannel, error) {
 	cs, err := h.s.AllowedChannels(ctx, v)
@@ -205,6 +209,61 @@ func (h liveTVHost) Guide(ctx context.Context, v *core.Viewer, q frontend.LiveGu
 		}
 	}
 	return out, nil
+}
+
+func (h liveTVHost) GuideWindowBatch(ctx context.Context, v *core.Viewer, q frontend.LiveGuideWindowQuery) (frontend.LiveGuideWindow, error) {
+	if h.s == nil {
+		return frontend.LiveGuideWindow{}, core.ErrNotAvailable
+	}
+	w, err := h.s.GuideWindowForChannels(ctx, v, q.From, q.Until, q.Channels)
+	if err != nil {
+		return frontend.LiveGuideWindow{}, err
+	}
+	fingerprint := sha256.New()
+	enc := json.NewEncoder(fingerprint)
+	if err := enc.Encode([]any{q.From.UTC(), q.Until.UTC()}); err != nil {
+		return frontend.LiveGuideWindow{}, err
+	}
+	rows := make([]frontend.LiveGuideWindowChannel, len(w.Channels))
+	for i, ch := range w.Channels {
+		if err := enc.Encode([]any{ch.ChannelID, ch.State}); err != nil {
+			return frontend.LiveGuideWindow{}, err
+		}
+		ps := make([]frontend.LiveProgramme, len(ch.Programmes))
+		for j, p := range ch.Programmes {
+			if err := enc.Encode([]any{p.ID, p.ChannelID, p.Start.UTC(), p.End.UTC(), p.Item.Key, p.Item.Title, p.Item.Summary, p.Item.Rating, p.Item.ShowTitle, p.Item.EpisodeTitle, p.Item.Season, p.Item.Episode, p.Item.Thumb, p.Item.Art, p.Item.Genres}); err != nil {
+				return frontend.LiveGuideWindow{}, err
+			}
+			ps[j] = frontend.LiveProgramme{
+				ID:           p.ID,
+				ChannelID:    p.ChannelID,
+				Start:        p.Start,
+				End:          p.End,
+				Genres:       p.Item.Genres,
+				MediaType:    p.Item.MediaType,
+				Item:         p.Item.Key,
+				Title:        p.Item.Title,
+				Summary:      p.Item.Summary,
+				Rating:       p.Item.Rating,
+				ShowTitle:    p.Item.ShowTitle,
+				EpisodeTitle: p.Item.EpisodeTitle,
+				Season:       p.Item.Season,
+				Episode:      p.Item.Episode,
+			}
+		}
+		rows[i] = frontend.LiveGuideWindowChannel{
+			ChannelID:  ch.ChannelID,
+			State:      ch.State,
+			Programmes: ps,
+		}
+	}
+	return frontend.LiveGuideWindow{
+		From:       w.From,
+		Until:      w.Until,
+		Revision:   hex.EncodeToString(fingerprint.Sum(nil)),
+		ValidUntil: w.ValidUntil,
+		Channels:   rows,
+	}, nil
 }
 
 func (h liveTVHost) ResolveChannelGUID(context.Context, *core.Viewer, string) (frontend.LiveChannel, error) {
@@ -427,3 +486,5 @@ func (h liveTVHost) FilterDiscovery(ctx context.Context, u *frontend.User, ps []
 	}
 	return out, toFrontendChannels(cs), nil
 }
+
+var _ frontend.LiveGuideWindowReader = liveTVHost{}

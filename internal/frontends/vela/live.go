@@ -1,13 +1,16 @@
 package vela
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/braedonsaunders/ether/internal/frontend"
+	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
@@ -124,22 +127,10 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 	out := []object{}
 	memo := newLiveArtCache()
 	for _, p := range programmes.Items {
-		art := []object{}
-		for _, img := range p.Images {
-			item, channel := p.Item, ""
-			if img.Subject == p.ID {
-				item, channel = 0, p.ChannelID
-			}
-			images, err := i.liveArtworkCached(r, token, item, channel, []frontend.Image{img}, memo)
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			art = append(art, images...)
-		}
-		programme := object{"id": p.ID, "channelId": p.ChannelID, "name": p.Title, "summary": p.Summary, "start": p.Start.UTC().Format(time.RFC3339), "end": p.End.UTC().Format(time.RFC3339), "episodeTitle": p.EpisodeTitle, "seasonNumber": p.Season, "episodeNumber": p.Episode, "artwork": art, "rating": p.Rating}
-		if len(p.Genres) > 0 {
-			programme["genres"] = p.Genres
+		programme, err := i.liveProgrammeWire(r, token, p, memo)
+		if err != nil {
+			fail(w, err, r)
+			return
 		}
 		out = append(out, programme)
 	}
@@ -157,6 +148,188 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		page["continuation"], page["nextCursor"] = "more", next
 	}
 	cache(w, r, page)
+}
+
+func (i *instance) liveGuideWindowReader() (frontend.LiveGuideWindowReader, bool) {
+	if i.host.LiveTV == nil {
+		return nil, false
+	}
+	_, live := i.host.LiveTV.(frontend.LiveGuidePager)
+	reader, ok := i.host.LiveTV.(frontend.LiveGuideWindowReader)
+	if !live || !ok || !reader.LiveGuideWindowAvailable() {
+		return nil, false
+	}
+	return reader, true
+}
+
+func (i *instance) liveProgrammeWire(r *http.Request, token string, p frontend.LiveProgramme, memo *liveArtCache) (object, error) {
+	art := []object{}
+	for _, img := range p.Images {
+		item, channel := p.Item, ""
+		if img.Subject == p.ID {
+			item, channel = 0, p.ChannelID
+		}
+		images, err := i.liveArtworkCached(r, token, item, channel, []frontend.Image{img}, memo)
+		if err != nil {
+			return nil, err
+		}
+		art = append(art, images...)
+	}
+	programme := object{
+		"id":            p.ID,
+		"channelId":     p.ChannelID,
+		"name":          p.Title,
+		"summary":       p.Summary,
+		"start":         p.Start.UTC().Format(time.RFC3339),
+		"end":           p.End.UTC().Format(time.RFC3339),
+		"episodeTitle":  p.EpisodeTitle,
+		"seasonNumber":  p.Season,
+		"episodeNumber": p.Episode,
+		"artwork":       art,
+		"rating":        p.Rating,
+	}
+	if len(p.Genres) > 0 {
+		programme["genres"] = p.Genres
+	}
+	return programme, nil
+}
+
+func rawRequestBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, bool) {
+	if b, ok := r.Context().Value(bodyKey{}).(json.RawMessage); ok {
+		return b, true
+	}
+	var raw json.RawMessage
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if dec.Decode(&raw) != nil {
+		return nil, false
+	}
+	var trailing any
+	if dec.Decode(&trailing) != io.EOF {
+		return nil, false
+	}
+	return raw, true
+}
+
+func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
+	v, token, e := i.viewer(r)
+	if e != nil {
+		fail(w, e, r)
+		return
+	}
+	reader, ok := i.liveGuideWindowReader()
+	if !ok {
+		i.unavailable(w, r)
+		return
+	}
+	raw, ok := rawRequestBody(w, r)
+	if !ok {
+		problem(w, 400, "request", "invalid_json")
+		return
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	var req struct {
+		ChannelIDs     []string `json:"channelIds"`
+		From           string   `json:"from"`
+		Until          string   `json:"until"`
+		IdempotencyKey *string  `json:"idempotencyKey"`
+	}
+	if json.Unmarshal(raw, &req) != nil {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	if req.IdempotencyKey != nil && (*req.IdempotencyKey == "" || len(*req.IdempotencyKey) > 256) {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	from, e1 := time.Parse(time.RFC3339Nano, req.From)
+	until, e2 := time.Parse(time.RFC3339Nano, req.Until)
+	maxWindow := time.Duration(frontend.MaxLiveGuideWindowMinutes) * time.Minute
+	if e1 != nil || e2 != nil || !until.After(from) || until.Sub(from) > maxWindow {
+		problem(w, 400, "request", "invalid_guide_window")
+		return
+	}
+	if len(req.ChannelIDs) == 0 {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	if len(req.ChannelIDs) > frontend.MaxLiveGuideWindowChannels {
+		problem(w, 400, "request", "too_many_channels")
+		return
+	}
+	seen := make(map[string]struct{}, len(req.ChannelIDs))
+	for _, id := range req.ChannelIDs {
+		if id == "" {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		if _, dup := seen[id]; dup {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		seen[id] = struct{}{}
+	}
+
+	ctx := r.Context()
+	if i.host.Experience != nil {
+		ctx = i.host.Experience.NoProviderWait(ctx)
+	}
+	window, err := reader.GuideWindowBatch(ctx, v, frontend.LiveGuideWindowQuery{
+		Channels: req.ChannelIDs,
+		From:     from,
+		Until:    until,
+		Device:   requestDevice(r),
+	})
+	if err != nil {
+		var dense *frontend.LiveGuideWindowTooDenseError
+		if errors.As(err, &dense) {
+			send(w, 400, object{
+				"error": object{
+					"class":   "request",
+					"code":    "guide_window_too_dense",
+					"message": "guide window too dense",
+					"retry":   object{"allowed": false},
+					"suggest": object{
+						"maxChannels":      dense.MaxChannels,
+						"maxWindowMinutes": dense.MaxWindowMinutes,
+					},
+				},
+			})
+			return
+		}
+		fail(w, err, r)
+		return
+	}
+
+	channels := make([]object, len(window.Channels))
+	memo := newLiveArtCache()
+	for idx, ch := range window.Channels {
+		programmes := make([]object, len(ch.Programmes))
+		for j, p := range ch.Programmes {
+			programme, err := i.liveProgrammeWire(r, token, p, memo)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			programmes[j] = programme
+		}
+		channels[idx] = object{
+			"channelId":  ch.ChannelID,
+			"state":      string(ch.State),
+			"programmes": programmes,
+		}
+	}
+	out := object{
+		"from":       from.UTC().Format(time.RFC3339),
+		"until":      until.UTC().Format(time.RFC3339),
+		"revision":   window.Revision,
+		"validUntil": window.ValidUntil.UTC().Format(time.RFC3339),
+		"channels":   channels,
+	}
+	cache(w, r, out)
 }
 
 // Issue bounded, current-policy image capabilities for this response page.

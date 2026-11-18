@@ -39,6 +39,10 @@ func (s surfaceLiveTV) Enabled() bool {
 	return s.app != nil && s.app.livetv != nil && s.app.livetv.Enabled()
 }
 
+func (s surfaceLiveTV) LiveGuideWindowAvailable() bool {
+	return s.app != nil && s.app.livetv != nil
+}
+
 func (s surfaceLiveTV) host() frontend.LiveTV {
 	if s.app == nil || s.app.livetv == nil {
 		return nil
@@ -268,6 +272,141 @@ func (s surfaceLiveTV) guidePage(ctx context.Context, v *core.Viewer, pageQuery 
 		out = append(out, item)
 	}
 	return frontend.LiveGuidePage{Items: out, Snapshot: snapshot, More: more}, nil
+}
+
+func (s surfaceLiveTV) GuideWindowBatch(ctx context.Context, v *core.Viewer, q frontend.LiveGuideWindowQuery) (frontend.LiveGuideWindow, error) {
+	ctx = s.withApp(ctx)
+	maxWindow := time.Duration(frontend.MaxLiveGuideWindowMinutes) * time.Minute
+	if !q.Until.After(q.From) || q.Until.Sub(q.From) > maxWindow || len(q.Channels) == 0 || len(q.Channels) > frontend.MaxLiveGuideWindowChannels {
+		return frontend.LiveGuideWindow{}, errLiveQuery
+	}
+	viewer, err := s.viewer(ctx, v)
+	if err != nil {
+		return frontend.LiveGuideWindow{}, err
+	}
+	if s.app == nil || s.app.livetv == nil {
+		return frontend.LiveGuideWindow{}, core.ErrNotAvailable
+	}
+	s.app.livetv.NoteClientActivity()
+	window, err := s.app.livetv.GuideWindowForChannels(ctx, viewer, q.From, q.Until, q.Channels)
+	if err != nil {
+		return frontend.LiveGuideWindow{}, err
+	}
+
+	var cachedTitles map[core.RatingKey]core.Title
+	if s.app.catalog != nil {
+		seenKeys := make(map[core.RatingKey]bool)
+		var keys []core.RatingKey
+		for _, ch := range window.Channels {
+			for _, p := range ch.Programmes {
+				if p.Item.Key != 0 && !seenKeys[p.Item.Key] {
+					seenKeys[p.Item.Key] = true
+					keys = append(keys, p.Item.Key)
+				}
+			}
+		}
+		if len(keys) > 0 {
+			cachedTitles = make(map[core.RatingKey]core.Title, len(keys))
+			for start := 0; start < len(keys); start += 400 {
+				batch := keys[start:min(start+400, len(keys))]
+				found, e := s.app.catalog.CachedGetMany(ctx, batch)
+				if e != nil {
+					return frontend.LiveGuideWindow{}, e
+				}
+				for k, t := range found {
+					cachedTitles[k] = t
+				}
+			}
+		}
+	}
+
+	fingerprint := sha256.New()
+	encoder := json.NewEncoder(fingerprint)
+	if err := encoder.Encode([]any{q.From.UTC(), q.Until.UTC()}); err != nil {
+		return frontend.LiveGuideWindow{}, err
+	}
+
+	imageCache := make(map[core.RatingKey][]frontend.Image)
+	rows := make([]frontend.LiveGuideWindowChannel, len(window.Channels))
+	for i, ch := range window.Channels {
+		if err := encoder.Encode([]any{ch.ChannelID, ch.State}); err != nil {
+			return frontend.LiveGuideWindow{}, err
+		}
+		items := make([]frontend.LiveProgramme, len(ch.Programmes))
+		for j, p := range ch.Programmes {
+			item := frontend.LiveProgramme{
+				ID:           p.ID,
+				ChannelID:    p.ChannelID,
+				Start:        p.Start,
+				End:          p.End,
+				Item:         p.Item.Key,
+				Title:        p.Item.Title,
+				Summary:      p.Item.Summary,
+				Rating:       p.Item.Rating,
+				ShowTitle:    p.Item.ShowTitle,
+				EpisodeTitle: p.Item.EpisodeTitle,
+				Season:       p.Item.Season,
+				Episode:      p.Item.Episode,
+				Genres:       p.Item.Genres,
+			}
+			if s.programmeArtwork != nil {
+				item.Images = s.programmeArtwork(viewer, p)
+			}
+			if p.Item.Key != 0 && s.app.catalog != nil {
+				title, hasTitle := cachedTitles[p.Item.Key]
+				if hasTitle {
+					if item.ShowTitle == "" {
+						item.ShowTitle = title.ShowTitle
+					}
+					if item.EpisodeTitle == "" && title.Type == core.TypeEpisode {
+						item.EpisodeTitle = title.Title
+					}
+					if item.Season == 0 {
+						item.Season = title.Season
+					}
+					if item.Episode == 0 {
+						item.Episode = title.Episode
+					}
+					if len(item.Genres) == 0 {
+						item.Genres = title.Genres
+					}
+				}
+				if s.artwork != nil && len(item.Images) == 0 {
+					images, found := imageCache[p.Item.Key]
+					if !found {
+						artCtx := ctx
+						if hasTitle {
+							artCtx = frontend.WithArtworkTitle(ctx, &title)
+						}
+						var complete bool
+						images, complete, _ = s.artwork.List(artCtx, frontend.ArtworkRequest{Viewer: viewer, Device: q.Device, Item: p.Item.Key})
+						if !complete {
+							images = nil
+						}
+						imageCache[p.Item.Key] = images
+					}
+					item.Images = images
+				}
+			}
+			if err := encoder.Encode([]any{item.ID, item.ChannelID, item.Start.UTC(), item.End.UTC(), item.Item, item.Title, item.Summary, item.Rating, item.ShowTitle, item.EpisodeTitle, item.Season, item.Episode, item.Genres, p.Item.Thumb, p.Item.Art}); err != nil {
+				return frontend.LiveGuideWindow{}, err
+			}
+			items[j] = item
+		}
+		rows[i] = frontend.LiveGuideWindowChannel{
+			ChannelID:  ch.ChannelID,
+			State:      ch.State,
+			Programmes: items,
+		}
+	}
+
+	return frontend.LiveGuideWindow{
+		From:       window.From,
+		Until:      window.Until,
+		Revision:   hex.EncodeToString(fingerprint.Sum(nil)),
+		ValidUntil: window.ValidUntil,
+		Channels:   rows,
+	}, nil
 }
 
 func normalizeLiveGUID(raw string, kind ids.Kind) (string, error) {
@@ -525,9 +664,11 @@ func (s surfaceLiveTV) LogoKey() []byte {
 }
 
 var (
-	_ frontend.LiveTV       = surfaceLiveTV{}
-	_ frontend.LiveTVGroups = surfaceLiveTV{}
-	_ frontend.LiveTVSearch = surfaceLiveTV{}
+	_ frontend.LiveTV                = surfaceLiveTV{}
+	_ frontend.LiveTVGroups          = surfaceLiveTV{}
+	_ frontend.LiveTVSearch          = surfaceLiveTV{}
+	_ frontend.LiveGuidePager        = surfaceLiveTV{}
+	_ frontend.LiveGuideWindowReader = surfaceLiveTV{}
 )
 
 func (s surfaceLiveTV) FilterDiscovery(ctx context.Context, u *frontend.User, ps []frontend.LiveTVProgramme) ([]frontend.LiveTVProgramme, []frontend.LiveTVChannel, error) {

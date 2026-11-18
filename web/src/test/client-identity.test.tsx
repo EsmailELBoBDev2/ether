@@ -171,12 +171,12 @@ describe("Sources › Indexers client identity", () => {
     expect(screen.queryByText(/inherit this policy/)).toBeNull();
   });
 
-  it("labels the disclosure Less options while it is open", async () => {
+  it("labels the disclosure Fewer options while it is open", async () => {
     renderApp("/sources/indexers");
     await screen.findByRole("heading", { name: "Client identity" }, WAIT);
     const more = screen.getByRole("button", { name: "More options: Client identity" });
     fireEvent.click(more);
-    expect(more).toHaveTextContent("Less options");
+    expect(more).toHaveTextContent("Fewer options");
     fireEvent.click(more);
     expect(more).toHaveTextContent("More options");
   });

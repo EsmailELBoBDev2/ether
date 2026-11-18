@@ -101,6 +101,8 @@ export interface FakeOptions {
   liveTVEmpty?: boolean;
   onAirLayout?: string;
   capabilityOverrides?: Array<Record<string, unknown>>;
+  /** Override /status/hwaccel and dashboard.sections.hwaccel for OS/GPU tests. */
+  hwaccel?: Record<string, unknown>;
   bootstrap?: Partial<Bootstrap>;
   /** Artificial latency for realism in the browser; 0 in tests. */
   latencyMs?: number;
@@ -2269,7 +2271,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
             { protocol: "torrent", average: 410_000_000, last: 380_000_000, samples: 22 },
           ],
         },
-        hwaccel: {
+        hwaccel: opts.hwaccel ?? {
+          os: "darwin",
+          arch: "arm64",
           ffmpeg: "8.0.1",
           filtersProbed: true,
           toneMap: ["videotoolbox"],

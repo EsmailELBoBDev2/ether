@@ -214,9 +214,8 @@ function greeting(now = new Date()): string {
 }
 
 /**
- * The Overview is a cockpit: on a wide, tall enough window every panel is on
- * one screen with no page scroll (panels scroll inside); narrower windows
- * stack the panels and scroll the page.
+ * Overview lays out Now playing, Activity, Server, Health and Best rows at
+ * their natural heights so cards never clip rows inside short scrollboxes.
  */
 export default function Home() {
   useLiveDashboard();
@@ -254,7 +253,7 @@ export default function Home() {
   return (
     <div className="@container flex min-h-0 flex-1 flex-col">
       <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
-        <div className="reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-col gap-4 p-4 sm:p-6 cockpit:h-full cockpit:max-w-none cockpit:min-h-0 cockpit:pb-5">
+        <div className="reveal mx-auto flex w-full max-w-(--breakpoint-2xl) flex-col gap-4 p-4 sm:p-6 @5xl:max-w-none">
           <header className="flex shrink-0 flex-wrap items-end justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-xl font-semibold text-fg">{t("Overview")}</h1>
@@ -290,28 +289,21 @@ export default function Home() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 @3xl:grid-cols-2 cockpit:min-h-0 cockpit:flex-1 cockpit:grid-cols-12">
-            {/* Each cockpit column is its own stack: the upper panel sizes to
-                its content (up to a cap) and the lower one takes the rest. */}
-            <div className="flex min-w-0 flex-col gap-4 @3xl:col-span-2 cockpit:col-span-5 cockpit:min-h-0">
+          <div className="grid items-start gap-4 @3xl:grid-cols-2 @5xl:grid-cols-12">
+            <div className="flex min-w-0 flex-col gap-4 @3xl:col-span-2 @5xl:col-span-5">
               <NowPlayingPanel
                 loading={!live.data && !live.error}
                 error={live.data ? null : live.error}
                 onRetry={() => void live.reload()}
                 sessions={sessions}
                 onSelect={openPlay}
-                className="shrink-0 cockpit:max-h-[58%]"
               />
-              <ActivityPanel state={activity} className="cockpit:min-h-0 cockpit:flex-1" />
+              <ActivityPanel state={activity} />
             </div>
-            <ServerPanel hwaccel={hw?.hwaccel?.name} className="cockpit:col-span-4" />
-            <div className="flex min-w-0 flex-col gap-4 cockpit:col-span-3 cockpit:min-h-0">
-              <HealthPanel
-                loading={!dashboard}
-                items={health}
-                className="shrink-0 cockpit:max-h-[68%]"
-              />
-              <RowsPanel state={rows} className="cockpit:min-h-0 cockpit:flex-1" />
+            <ServerPanel hwaccel={hw?.hwaccel?.name} className="@5xl:col-span-4" />
+            <div className="flex min-w-0 flex-col gap-4 @5xl:col-span-3">
+              <HealthPanel loading={!dashboard} items={health} />
+              <RowsPanel state={rows} />
             </div>
           </div>
           <PanelSlots slot="dashboard.panel" />
@@ -321,9 +313,6 @@ export default function Home() {
     </div>
   );
 }
-
-/** Lists inside a fixed cockpit cell scroll on their own. */
-const scrollBody = "cockpit:overflow-y-auto";
 
 function NowPlayingPanel({
   loading,
@@ -346,7 +335,6 @@ function NowPlayingPanel({
       title={t("Now playing")}
       icon={<PlayCircle size={16} />}
       className={className}
-      bodyClassName={scrollBody}
       actions={
         <span className="flex items-center gap-2">
           {sessions.length ? (
@@ -495,7 +483,7 @@ export function HealthPanel({
       title={t("Health")}
       icon={<HeartPulse size={16} />}
       className={className}
-      bodyClassName={cn("px-3 py-2", scrollBody)}
+      bodyClassName="px-3 py-2"
       actions={null}
     >
       {loading ? (
@@ -658,8 +646,8 @@ function ActivityPanel({
     <DashboardPanel
       title={t("Activity · last 30 days")}
       icon={<BarChart3 size={16} />}
-      className={className}
-      bodyClassName="flex min-h-0 flex-col gap-3"
+      className={cn(asTable && "overflow-clip", className)}
+      bodyClassName="flex flex-col gap-3"
       actions={
         <div className="flex items-center gap-1">
           <div
@@ -695,7 +683,7 @@ function ActivityPanel({
       }
     >
       {state.loading && !state.data ? (
-        <Skeleton className="h-full min-h-40 w-full" />
+        <Skeleton className="h-44 w-full" />
       ) : (
         <>
           <dl className="grid shrink-0 grid-cols-3 gap-3">
@@ -731,34 +719,32 @@ function ActivityPanel({
               className="py-6"
             />
           ) : asTable ? (
-            <div className="max-h-56 min-h-0 overflow-auto cockpit:max-h-none cockpit:flex-1">
-              <Table containerClassName="border-0 shadow-none">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("Day")}</TableHead>
-                    <TableHead className="text-right">{t("Plays")}</TableHead>
-                    <TableHead className="text-right">{t("Hours")}</TableHead>
-                    <TableHead className="text-right">{t("Viewers")}</TableHead>
+            <Table containerClassName="overflow-visible rounded-none border-0 shadow-none">
+              <TableHeader className="sticky top-0 z-10 bg-surface">
+                <TableRow>
+                  <TableHead>{t("Day")}</TableHead>
+                  <TableHead className="text-right">{t("Plays")}</TableHead>
+                  <TableHead className="text-right">{t("Hours")}</TableHead>
+                  <TableHead className="text-right">{t("Viewers")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[...days].reverse().map((d) => (
+                  <TableRow key={d.date}>
+                    <TableCell>{d.date}</TableCell>
+                    <TableCell className="text-right tabular-nums">{d.plays}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatNumber(d.hours, 1)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{d.uniqueViewers}</TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {[...days].reverse().map((d) => (
-                    <TableRow key={d.date}>
-                      <TableCell>{d.date}</TableCell>
-                      <TableCell className="text-right tabular-nums">{d.plays}</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatNumber(d.hours, 1)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{d.uniqueViewers}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                ))}
+              </TableBody>
+            </Table>
           ) : (
             <TimeBars
-              fill
-              className="h-44 cockpit:h-auto cockpit:flex-1"
+              height={176}
+              className="h-44"
               data={data}
               ariaLabel={
                 metric === "plays"
@@ -774,6 +760,26 @@ function ActivityPanel({
   );
 }
 
+const DYNAMIC_KIND_TITLES: Record<string, string> = {
+  "genre-showcase": "Acclaimed by Genre",
+  "era-favourites": "Best by Decade",
+  "world-cinema": "World Cinema for You",
+  "top-rated-in-genre": "Top-Rated by Genre",
+  "taste-bridge": "Where Favourites Meet",
+  "more-from-studio": "More by Studio",
+  "more-from-network": "More by Network",
+};
+
+function cleanInsightTitle(r: RowInsight): string {
+  if (!r.title.includes("<")) return r.title;
+  return DYNAMIC_KIND_TITLES[r.hubId] ?? r.title.replace(/\s*<[^>]+>/g, "").trim();
+}
+
+function effectivePlayRate(r: RowInsight): number | null {
+  if (!(r.impressions7d > 0) || !Number.isFinite(r.playRate)) return null;
+  return Math.min(1, Math.max(0, r.playRate));
+}
+
 function RowsPanel({
   state,
   className,
@@ -781,14 +787,21 @@ function RowsPanel({
   state: ReturnType<typeof useAsync<RowInsight[]>>;
   className?: string;
 }) {
-  const rows = [...(state.data ?? [])].sort((a, b) => b.playRate - a.playRate).slice(0, 6);
-  const maxRate = Math.max(0.0001, ...rows.map((r) => r.playRate));
+  const rows = [...(state.data ?? [])]
+    .sort((a, b) => {
+      const ra = effectivePlayRate(a);
+      const rb = effectivePlayRate(b);
+      if ((ra !== null) !== (rb !== null)) return ra !== null ? -1 : 1;
+      if (ra !== null && rb !== null && rb !== ra) return rb - ra;
+      return b.plays7d - a.plays7d;
+    })
+    .slice(0, 6);
+  const maxRate = Math.max(0.0001, ...rows.map((r) => effectivePlayRate(r) ?? 0));
   return (
     <DashboardPanel
       title={t("Best rows")}
       icon={<TrendingUp size={16} />}
       className={className}
-      bodyClassName={scrollBody}
       actions={
         <Link to="/home" className="text-xs font-medium text-primary hover:underline">
           {t("Home")}
@@ -810,37 +823,40 @@ function RowsPanel({
         />
       ) : (
         <ol className="space-y-2.5">
-          {rows.map((r, i) => (
-            <li
-              key={r.hubId}
-              title={tn(
-                r.plays7d,
-                "{count} play from {impressions} impressions in 7 days",
-                "{count} plays from {impressions} impressions in 7 days",
-                { impressions: formatNumber(r.impressions7d, 0) },
-              )}
-            >
-              <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
-                <span className="min-w-0 truncate text-fg">
-                  <span className="mr-1.5 tabular-nums text-fg-subtle">{i + 1}</span>
-                  {r.title}
-                </span>
-                <span className="shrink-0 tabular-nums text-fg-muted">
-                  {formatPercent(r.playRate, 1)}
-                </span>
-              </div>
-              <div className="h-1.5 rounded-full bg-bg-subtle">
-                <div
-                  className="h-full rounded-full bg-primary"
-                  style={{ width: `${(r.playRate / maxRate) * 100}%` }}
-                />
-              </div>
-              <p className="mt-0.5 text-[11px] text-fg-subtle">
-                {tn(r.plays7d, "{count} play", "{count} plays")} ·{" "}
-                {tn(r.impressions7d, "{count} impression", "{count} impressions")}
-              </p>
-            </li>
-          ))}
+          {rows.map((r, i) => {
+            const rate = effectivePlayRate(r);
+            return (
+              <li
+                key={r.hubId}
+                title={tn(
+                  r.plays7d,
+                  "{count} play from {impressions} impressions in 7 days",
+                  "{count} plays from {impressions} impressions in 7 days",
+                  { impressions: formatNumber(r.impressions7d, 0) },
+                )}
+              >
+                <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
+                  <span className="min-w-0 truncate text-fg">
+                    <span className="mr-1.5 tabular-nums text-fg-subtle">{i + 1}</span>
+                    {cleanInsightTitle(r)}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-fg-muted">
+                    {rate !== null ? formatPercent(rate, 1) : "—"}
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-bg-subtle">
+                  <div
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${rate !== null ? (rate / maxRate) * 100 : 0}%` }}
+                  />
+                </div>
+                <p className="mt-0.5 text-[11px] text-fg-subtle">
+                  {tn(r.plays7d, "{count} play", "{count} plays")} ·{" "}
+                  {tn(r.impressions7d, "{count} impression", "{count} impressions")}
+                </p>
+              </li>
+            );
+          })}
         </ol>
       )}
     </DashboardPanel>

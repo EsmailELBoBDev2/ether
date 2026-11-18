@@ -103,7 +103,7 @@ function StreamCard({
       }}
       className="cursor-pointer overflow-hidden rounded-2xl border border-border bg-surface shadow-xs transition hover:border-primary/40 has-[button[data-stream-open]:focus-visible]:ring-2 has-[button[data-stream-open]:focus-visible]:ring-ring/60"
     >
-      <div className="relative isolate h-44 overflow-hidden">
+      <div className="relative isolate overflow-hidden sm:h-44">
         <Artwork
           src={title?.backdrop || title?.poster}
           alt=""
@@ -112,14 +112,14 @@ function StreamCard({
           imgClassName="size-full object-cover"
         />
         <div className="absolute inset-0 -z-10 bg-gradient-to-t from-black/90 via-black/55 to-black/20" />
-        <div className="flex h-full items-end gap-4 p-4">
+        <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-end gap-x-3.5 gap-y-3 p-4 sm:h-full sm:grid-cols-[5rem_minmax(0,1fr)_auto] sm:gap-x-4">
           <SessionArtwork
             s={s}
             poster={title?.poster}
             posterTitle=""
-            className="aspect-[2/3] w-20 shrink-0 rounded-lg shadow-lg ring-1 ring-white/15"
+            className="aspect-[2/3] w-18 shrink-0 rounded-lg shadow-lg ring-1 ring-white/15 sm:w-20"
           />
-          <div className="min-w-0 flex-1 space-y-2 pb-0.5">
+          <div className="min-w-0 space-y-2 pb-0.5">
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant={converting ? "warning" : "success"}>{decisionLabel(s)}</Badge>
               {s.failovers ? (
@@ -165,19 +165,21 @@ function StreamCard({
               <p className="text-xs text-on-scrim/75">{t("Waiting for playback position")}</p>
             )}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0 self-start border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
-            disabled={stopping}
-            onClick={(e) => {
-              e.stopPropagation();
-              onStop();
-            }}
-            aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
-          >
-            <Square size={13} /> {t("Stop")}
-          </Button>
+          <div className="col-span-full flex justify-end border-t border-white/15 pt-2.5 sm:col-span-1 sm:self-start sm:border-t-0 sm:pt-0">
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0 border-white/25 bg-black/30 text-on-scrim hover:bg-black/50"
+              disabled={stopping}
+              onClick={(e) => {
+                e.stopPropagation();
+                onStop();
+              }}
+              aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
+            >
+              <Square size={13} /> {t("Stop")}
+            </Button>
+          </div>
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 p-4 sm:grid-cols-3">
@@ -278,7 +280,7 @@ function StreamRow({
         className="absolute inset-y-0 left-0 -z-10 w-2/3 opacity-30 [mask-image:linear-gradient(to_right,black,transparent)]"
         imgClassName="size-full object-cover"
       />
-      <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-x-5 gap-y-3 p-4 lg:grid-cols-[3.5rem_minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.9fr)_11rem_auto]">
+      <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-x-5 gap-y-3 p-4 sm:grid-cols-[3.5rem_minmax(0,1fr)_auto] lg:grid-cols-[3.5rem_minmax(0,1.7fr)_minmax(0,1.25fr)_minmax(0,1fr)_13rem_auto]">
         <SessionArtwork
           s={s}
           poster={title?.poster}
@@ -316,24 +318,32 @@ function StreamRow({
                 .map((v) => ` · ${v}`)}
             </span>
           </p>
+          {s.qualityFallback ? (
+            <p className="truncate text-xs text-fg-muted">{qualityFallback(s.qualityFallback)}</p>
+          ) : null}
+          {s.release ? (
+            <p className="truncate font-mono text-[11px] text-fg-subtle" title={s.release}>
+              {s.release}
+            </p>
+          ) : null}
         </div>
         <dl className="hidden min-w-0 space-y-1 text-xs lg:block">
           <div className="flex min-w-0 gap-2">
             <dt className="w-14 shrink-0 text-fg-subtle">{t("Video")}</dt>
-            <dd className="truncate text-fg">
+            <dd className="min-w-0 flex-1 truncate text-fg">
               <Flow from={s.sourceVideo} to={s.outputVideo} />
             </dd>
           </div>
           <div className="flex min-w-0 gap-2">
             <dt className="w-14 shrink-0 text-fg-subtle">{t("Audio")}</dt>
-            <dd className="truncate text-fg">
+            <dd className="min-w-0 flex-1 truncate text-fg">
               <Flow from={s.sourceAudio} to={s.outputAudio} />
             </dd>
           </div>
           {s.subtitle ? (
             <div className="flex min-w-0 gap-2">
               <dt className="w-14 shrink-0 text-fg-subtle">{t("Subtitles")}</dt>
-              <dd className="truncate text-fg">{s.subtitle}</dd>
+              <dd className="min-w-0 flex-1 truncate text-fg">{s.subtitle}</dd>
             </div>
           ) : null}
         </dl>
@@ -344,7 +354,7 @@ function StreamRow({
             ) : (
               <Home size={12} className="shrink-0 text-success" />
             )}
-            {s.remote ? t("Away") : t("Home")}
+            <span className="shrink-0">{s.remote ? t("Away") : t("Home")}</span>
             {s.ip ? <span className="truncate font-mono text-fg-muted">{s.ip}</span> : null}
           </p>
           <p className="truncate text-fg-muted">
@@ -354,7 +364,7 @@ function StreamRow({
             {s.origin ? ` · ${s.origin}` : ""}
           </p>
         </div>
-        <div className="col-span-2 min-w-0 lg:col-span-1">
+        <div className="col-span-full min-w-0 lg:col-span-1">
           {s.isLive ? (
             <p className="text-xs text-fg-muted">{t("Live")}</p>
           ) : s.progress !== null ? (
@@ -375,27 +385,21 @@ function StreamRow({
             <p className="text-xs text-fg-muted">{t("Waiting for playback position")}</p>
           )}
         </div>
-        {s.qualityFallback ? (
-          <p className="text-xs text-fg-muted">{qualityFallback(s.qualityFallback)}</p>
-        ) : null}
-        {s.release ? (
-          <p className="truncate font-mono text-[11px] text-fg-subtle" title={s.release}>
-            {s.release}
-          </p>
-        ) : null}
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={stopping}
-          onClick={(e) => {
-            e.stopPropagation();
-            onStop();
-          }}
-          aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
-          className="col-start-3 row-start-1 lg:col-auto lg:row-auto"
-        >
-          <Square size={13} /> {t("Stop")}
-        </Button>
+        <div className="col-span-full flex justify-end border-t border-border/60 pt-3 sm:col-span-1 sm:col-start-3 sm:row-start-1 sm:border-t-0 sm:pt-0 lg:col-auto lg:row-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={stopping}
+            onClick={(e) => {
+              e.stopPropagation();
+              onStop();
+            }}
+            aria-label={t("Stop stream for {viewer}", { viewer: s.user })}
+            className="shrink-0"
+          >
+            <Square size={13} /> {t("Stop")}
+          </Button>
+        </div>
       </div>
       <ClusterDetails s={s} />
     </li>

@@ -31,7 +31,7 @@ const schedule = {
   lastStatus: "",
 };
 
-function backend(cluster = false) {
+function backend(cluster = false, summaryOverride: Record<string, unknown> = emptySummary) {
   const calls: { url: string; init?: RequestInit }[] = [];
   vi.stubGlobal(
     "fetch",
@@ -73,7 +73,7 @@ function backend(cluster = false) {
           events: [{ sessionId: "execution", status: "recovering" }],
         };
       else if (url.includes("/extend/registry")) v = { version: 1, descriptors: notifyDescriptors };
-      else if (url.includes("/stats/summary")) v = emptySummary;
+      else if (url.includes("/stats/summary")) v = summaryOverride;
       else if (url.includes("/stats/history")) v = [];
       else if (url.endsWith("/stats/plays/other"))
         v = {
@@ -390,6 +390,21 @@ describe("Activity", () => {
     expect(screen.getByTestId("search")).toHaveTextContent("");
 
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
+    const otherRow = screen.getByText("Other film").closest("li")!;
+    const otherGrid = otherRow.querySelector(":scope > div.grid")!;
+    // Keep strictly 6 grid cells (poster, title+release, codecs, network, progress, action) so long filenames never shift columns.
+    expect(otherGrid.children).toHaveLength(6);
+    expect(
+      within(otherGrid.children[1] as HTMLElement).getByText(
+        "Other.Film.2025.2160p.WEB-DL.HDR10.DTS-GRP",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(otherGrid.children[5] as HTMLElement).getByRole("button", {
+        name: "Stop stream for Alex",
+      }),
+    ).toBeInTheDocument();
+
     const row = screen.getByText("Example film").closest("li")!;
     fireEvent.click(within(row).getByRole("button", { name: "Stop stream for Sam" }));
     await waitFor(() =>
@@ -456,6 +471,38 @@ describe("Activity", () => {
     expect(screen.getByText("Watch time")).toBeInTheDocument();
     expect(screen.getByText("Top titles")).toBeInTheDocument();
     expect(screen.getByText("Top viewers")).toBeInTheDocument();
+  });
+
+  it("normalises and merges Apps and devices platform buckets on the Delivery tab", async () => {
+    backend(false, {
+      ...emptySummary,
+      plays: 64,
+      bytes: 28 * 1024 ** 3,
+      platforms: [
+        { label: "web", plays: 18, watchedMs: 60_000, bytes: 4 * 1024 ** 3 },
+        { label: "Web", plays: 15, watchedMs: 60_000, bytes: 4 * 1024 ** 3 },
+        { label: "tvos", plays: 10, watchedMs: 60_000, bytes: 8 * 1024 ** 3 },
+        { label: "tvOS", plays: 7, watchedMs: 60_000, bytes: 6 * 1024 ** 3 },
+        { label: "androidtv", plays: 6, watchedMs: 60_000, bytes: 3 * 1024 ** 3 },
+        { label: "Android", plays: 3, watchedMs: 60_000, bytes: 1024 ** 3 },
+        { label: "android", plays: 3, watchedMs: 60_000, bytes: 1024 ** 3 },
+        { label: "linux", plays: 2, watchedMs: 60_000, bytes: 1024 ** 3 },
+      ],
+    });
+    renderAt("/activity/delivery");
+    const panel = (await screen.findByRole("heading", { name: "Apps and devices" }, WAIT)).closest(
+      "section",
+    )!;
+    expect(within(panel).getByText("Web")).toBeInTheDocument();
+    expect(within(panel).getByText(/33 plays/)).toBeInTheDocument();
+    expect(within(panel).getByText("Apple TV")).toBeInTheDocument();
+    expect(within(panel).getByText(/17 plays/)).toBeInTheDocument();
+    expect(within(panel).getByText("Android TV")).toBeInTheDocument();
+    expect(within(panel).getByText("Android")).toBeInTheDocument();
+    expect(within(panel).getByText("Linux")).toBeInTheDocument();
+    expect(within(panel).queryByText("web")).toBeNull();
+    expect(within(panel).queryByText("tvos")).toBeNull();
+    expect(within(panel).queryByText("androidtv")).toBeNull();
   });
 });
 

@@ -536,8 +536,9 @@ function insightFor(all: RowInsight[], e: PoolEntry): RowInsight | undefined {
 }
 
 function Engagement({ insight }: { insight?: RowInsight }) {
-  if (!insight || insight.impressions7d < 5) return null;
-  const pct = Math.round(insight.playRate * 1000) / 10;
+  if (!insight || insight.impressions7d < 5 || !Number.isFinite(insight.playRate)) return null;
+  const rate = Math.min(1, Math.max(0, insight.playRate));
+  const pct = Math.round(rate * 1000) / 10;
   return (
     <span
       className="inline-flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums text-fg-muted"
@@ -551,7 +552,7 @@ function Engagement({ insight }: { insight?: RowInsight }) {
       <span className="relative h-1 w-10 overflow-hidden rounded-full bg-border">
         <span
           className="absolute inset-y-0 left-0 rounded-full bg-primary"
-          style={{ width: `${Math.min(100, insight.playRate * 400)}%` }}
+          style={{ width: `${Math.min(100, rate * 400)}%` }}
         />
       </span>
       {t("{pct}% played", { pct: formatNumber(pct, 1) })}

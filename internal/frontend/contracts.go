@@ -60,6 +60,68 @@ type View struct {
 	// Native is the protocol-native presentation string on the bound protocol
 	// (for example, MediaBrowser CollectionType or Plex base type).
 	Native string
+	// Plugin library presentation metadata (optional; populated for plugin libraries).
+	Card   string      `json:"card,omitempty"`
+	Tabs   []ViewTab   `json:"tabs,omitempty"`
+	Sorts  []string    `json:"sorts,omitempty"`
+	Facets []ViewFacet `json:"facets,omitempty"`
+}
+
+// ViewTab describes one sub-tab of a library view.
+type ViewTab struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Kind      string `json:"kind"`
+	Facet     string `json:"facet,omitempty"`
+	Sort      string `json:"sort,omitempty"`
+	Direction string `json:"direction,omitempty"`
+}
+
+// ViewFacet describes one plugin-declared filter facet on a library view.
+type ViewFacet struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
+	Multi bool   `json:"multi"`
+}
+
+// FacetBucket is one discrete filter bucket for a plugin library facet.
+type FacetBucket struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+// FacetCollection is one facet-backed collection entry with its newest item.
+type FacetCollection struct {
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	ItemCount  int         `json:"itemCount"`
+	NewestItem *core.Title `json:"-"`
+}
+
+// FacetCollectionPage is one page of facet-backed collections.
+type FacetCollectionPage struct {
+	Items []FacetCollection
+	More  bool
+}
+
+// LibraryFacetBuckets is an optional Experience capability returning discrete
+// filter buckets for a plugin library's declared facet field.
+type LibraryFacetBuckets interface {
+	LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field string) ([]FacetBucket, error)
+}
+
+// LibraryFacetCollections is an optional Experience capability returning a
+// single page of facet-backed collections ordered most-items-first.
+type LibraryFacetCollections interface {
+	LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, device core.Device, viewID, field string, page PageQuery) (FacetCollectionPage, error)
+}
+
+// PluginLibraryRowsReader is an optional Experience capability returning the
+// Recommended tab shelves for a plugin library.
+type PluginLibraryRowsReader interface {
+	PluginLibraryRows(ctx context.Context, viewer *core.Viewer, device core.Device, viewID string) ([]Row, error)
 }
 
 // RowEntryKind identifies a neutral entry independently of wire formats.

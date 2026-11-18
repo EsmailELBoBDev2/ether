@@ -19,6 +19,7 @@ const (
 	SortYear       SortOrder = "year"
 	SortRating     SortOrder = "rating"
 	SortDuration   SortOrder = "duration"
+	SortIndex      SortOrder = "index"   // plugin item ordinal index
 	SortAdded      SortOrder = "added"   // movie/episode release or air date; series and seasons use the latest aired episode, then the premiere
 	SortUpdated    SortOrder = "updated" // actual catalogue metadata update time
 	// SortPlayed orders a viewer's played titles by when they last played
@@ -190,12 +191,13 @@ type Filter struct {
 	// NameStartsWith, NameStartsWithOrGreater and NameLessThan are
 	// Jellyfin and Emby's alphabet jump: bounds on the sort title in the
 	// same order as FirstCharacter's buckets (catalog sort_name.go).
-	NameStartsWith          string         `json:"nameStartsWith,omitempty"`
-	NameStartsWithOrGreater string         `json:"nameStartsWithOrGreater,omitempty"`
-	NameLessThan            string         `json:"nameLessThan,omitempty"`
-	Query                   string         `json:"query,omitempty"` // title substring
-	TitleFilters            []StringFilter `json:"titleFilters,omitempty"`
-	ReleasedFilters         []DateFilter   `json:"releasedFilters,omitempty"`
+	NameStartsWith          string              `json:"nameStartsWith,omitempty"`
+	NameStartsWithOrGreater string              `json:"nameStartsWithOrGreater,omitempty"`
+	NameLessThan            string              `json:"nameLessThan,omitempty"`
+	Query                   string              `json:"query,omitempty"`  // title / in-library search query
+	Facets                  map[string][]string `json:"facets,omitempty"` // plugin library facet bucket filters (OR within field, AND across fields)
+	TitleFilters            []StringFilter      `json:"titleFilters,omitempty"`
+	ReleasedFilters         []DateFilter        `json:"releasedFilters,omitempty"`
 	// MinContentRating is an additive share-policy predicate (plex.tv share
 	// filters). It does not replace MaxContentRating or ContentRatings.
 	MinContentRating string `json:"-"`

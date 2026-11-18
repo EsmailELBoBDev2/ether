@@ -1,0 +1,461 @@
+package vela
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/frontendtest"
+	"github.com/braedonsaunders/ether/internal/identity"
+	"github.com/braedonsaunders/ether/internal/store"
+)
+
+type pluginPresExperience struct {
+	frontendtest.Experience
+	images      map[core.RatingKey][]frontend.Image
+	buckets     map[string][]frontend.FacetBucket
+	colPages    map[string]frontend.FacetCollectionPage
+	pluginRows  map[string][]frontend.Row
+	lastLibID   string
+	lastQuery   frontend.ItemQuery
+	rowRequests []frontend.RowRequest
+}
+
+func (e *pluginPresExperience) ItemArtworkPage(_ context.Context, _ *core.Viewer, _ core.Device, keys []core.RatingKey) (map[core.RatingKey][]frontend.Image, error) {
+	out := make(map[core.RatingKey][]frontend.Image, len(keys))
+	for _, k := range keys {
+		out[k] = e.images[k]
+	}
+	return out, nil
+}
+
+func (e *pluginPresExperience) LibraryFacetBuckets(_ context.Context, _ *core.Viewer, _ core.Device, viewID, field string) ([]frontend.FacetBucket, error) {
+	if viewID != "77" {
+		return nil, core.ErrNotFound
+	}
+	return append([]frontend.FacetBucket(nil), e.buckets[field]...), nil
+}
+
+func (e *pluginPresExperience) LibraryFacetCollections(_ context.Context, _ *core.Viewer, _ core.Device, viewID, field string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
+	if viewID != "77" {
+		return frontend.FacetCollectionPage{}, core.ErrNotFound
+	}
+	all := e.colPages[field].Items
+	if page.Offset >= len(all) {
+		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
+	}
+	end := min(page.Offset+page.Limit, len(all))
+	return frontend.FacetCollectionPage{
+		Items: append([]frontend.FacetCollection(nil), all[page.Offset:end]...),
+		More:  end < len(all),
+	}, nil
+}
+
+func (e *pluginPresExperience) PluginLibraryRows(_ context.Context, _ *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+	return append([]frontend.Row(nil), e.pluginRows[viewID]...), nil
+}
+
+func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(db, castMembers{}, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := grants.Issue(ctx, 1, nil, "vela", core.Device{ID: "tv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	game1 := frontend.Title{
+		Key:       core.PluginKey(501),
+		LibraryID: 77,
+		Type:      core.TypeMovie,
+		Title:     "Chrono Quest",
+		Year:      2025,
+	}
+	game2 := frontend.Title{
+		Key:       core.PluginKey(502),
+		LibraryID: 77,
+		Type:      core.TypeEpisode,
+		Title:     "Galaxy Racers",
+		Year:      2024,
+	}
+	catMovie := frontend.Title{
+		Key:       core.MovieKey(10),
+		LibraryID: 23,
+		Type:      core.TypeMovie,
+		Title:     "Arrival",
+		Year:      2016,
+	}
+
+	views := []frontend.View{
+		{
+			ID:        "23",
+			LibraryID: 23,
+			Name:      "Movies",
+			Type:      frontend.TypeMovie,
+			Revision:  "r1",
+		},
+		{
+			ID:        "77",
+			LibraryID: 77,
+			Name:      "Video Games",
+			Type:      frontend.TypeMovie,
+			PluginID:  "community.games",
+			KindKey:   "game",
+			Card:      "landscape",
+			Tabs: []frontend.ViewTab{
+				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
+				{ID: "library", Label: "Library", Kind: "library"},
+				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers"},
+			},
+			Sorts: []string{"released", "added", "title", "year", "rating", "index"},
+			Facets: []frontend.ViewFacet{
+				{ID: "platforms", Label: "Platforms", Type: "strings", Multi: true},
+				{ID: "developers", Label: "Developers", Type: "people", Multi: true},
+				{ID: "genres", Label: "Genres", Type: "strings", Multi: true},
+				{ID: "released", Label: "Released", Type: "date", Multi: true},
+				{ID: "playtime", Label: "Playtime", Type: "duration", Multi: true},
+			},
+			Revision: "r1",
+		},
+	}
+
+	exp := &pluginPresExperience{
+		images: map[core.RatingKey][]frontend.Image{
+			game1.Key:    {{Kind: frontend.ImageThumb, Path: "g1-thumb", Width: 1280, Height: 720}},
+			game2.Key:    {{Kind: frontend.ImageThumb, Path: "g2-backdrop-as-thumb", Width: 1920, Height: 1080}, {Kind: frontend.ImageBackdrop, Path: "g2-backdrop", Width: 1920, Height: 1080}},
+			catMovie.Key: {{Kind: frontend.ImagePoster, Path: "cat-poster", Width: 1000, Height: 1500}},
+		},
+		buckets: map[string][]frontend.FacetBucket{
+			"platforms": {
+				{ID: "snes", Label: "Super Nintendo", Count: 12},
+				{ID: "gba", Label: "Game Boy Advance", Count: 7},
+				{ID: "ps2", Label: "PlayStation 2", Count: 4},
+			},
+			"playtime": {
+				{ID: "under-10m", Label: "Under 10 min", Count: 3},
+				{ID: "1-2h", Label: "1-2 h", Count: 9},
+			},
+		},
+		colPages: map[string]frontend.FacetCollectionPage{
+			"developers": {
+				Items: []frontend.FacetCollection{
+					{ID: "nintendo", Name: "Nintendo", ItemCount: 15, NewestItem: &game1},
+					{ID: "capcom", Name: "Capcom", ItemCount: 8, NewestItem: &game2},
+				},
+			},
+		},
+		pluginRows: map[string][]frontend.Row{
+			"77": {
+				{
+					ID:      "plugin:77:added",
+					Title:   "Recently Added",
+					Purpose: frontend.RowRecentlyAdded,
+					Kind:    "recentlyAdded",
+					Style:   "shelf",
+					Items:   []frontend.Title{game1, game2},
+				},
+				{
+					ID:      "plugin:77:facet:developers:nintendo",
+					Title:   "From Nintendo",
+					Purpose: frontend.RowRecommendation,
+					Kind:    "facet",
+					Style:   "shelf",
+					Items:   []frontend.Title{game1},
+				},
+			},
+		},
+	}
+	exp.ViewsFunc = func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
+		return views, nil
+	}
+	exp.FacetsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, viewID, facet string) ([]core.FacetValue, error) {
+		if viewID == "23" && facet == "genre" {
+			return []core.FacetValue{{Title: "Sci-Fi"}}, nil
+		}
+		return nil, nil
+	}
+	exp.ItemArtworkFunc = func(_ context.Context, _ *core.Viewer, _ core.Device, k core.RatingKey) ([]frontend.Image, bool, error) {
+		return exp.images[k], true, nil
+	}
+	exp.LibraryItemsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, id string, q frontend.ItemQuery) (frontend.Page, error) {
+		exp.lastLibID = id
+		exp.lastQuery = q
+		if q.Offset > 0 {
+			return frontend.Page{Items: []frontend.Title{}}, nil
+		}
+		if id == "23" {
+			return frontend.Page{Items: []frontend.Title{catMovie}}, nil
+		}
+		return frontend.Page{Items: []frontend.Title{game1, game2}}, nil
+	}
+	exp.RowsFunc = func(_ context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
+		exp.rowRequests = append(exp.rowRequests, req)
+		if req.Placement == frontend.PlacementLibrary && req.ViewID == "23" {
+			return []frontend.Row{{
+				ID:      "cat-lib-23",
+				Title:   "Recently Added Movies",
+				Purpose: frontend.RowRecentlyAdded,
+				Style:   "shelf",
+				Items:   []frontend.Title{catMovie},
+			}}, nil
+		}
+		return []frontend.Row{}, nil
+	}
+
+	imgSvc, err := identity.NewArtworkImageGrantService(db, "vela", grants, func() frontend.Experience { return exp }, castArtwork{}, time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &instance{
+		ctx:     ctx,
+		db:      db,
+		seal:    seal,
+		replays: make(map[string]*replay),
+		mux:     http.NewServeMux(),
+		host: frontend.Host{
+			Identity:       identityFake{},
+			Experience:     exp,
+			ImageGrants:    imgSvc,
+			ServerIdentity: frontend.ServerIdentity{MachineID: "srv-1", FriendlyName: "Ether", Version: "0.3.15"},
+		},
+	}
+	inst.routes()
+
+	idemSeq := 0
+	doReq := func(method, path string, reqBody object) (int, object) {
+		t.Helper()
+		var r *http.Request
+		if reqBody != nil {
+			idemSeq++
+			if _, ok := reqBody["idempotencyKey"]; !ok {
+				reqBody["idempotencyKey"] = fmt.Sprintf("test-idem-%d", idemSeq)
+			}
+			raw, err := json.Marshal(reqBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r = httptest.NewRequest(method, path, bytes.NewReader(raw))
+			r.Header.Set("Content-Type", "application/json")
+		} else {
+			r = httptest.NewRequest(method, path, nil)
+		}
+		r.Header.Set("Authorization", "Bearer "+credential)
+		r.Header.Set("X-Vela-Device-Id", "tv")
+		w := httptest.NewRecorder()
+		inst.serve(w, r)
+		var out object
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s %s decode: %v body=%s", method, path, err, w.Body.String())
+		}
+		return w.Code, out
+	}
+
+	// 1. Capabilities and bootstrap advertise searchLibraries: true.
+	code, caps := doReq(http.MethodGet, "/vela/v0/capabilities", nil)
+	if code != 200 || caps["searchLibraries"] != true {
+		t.Fatalf("capabilities searchLibraries = %v (code=%d)", caps["searchLibraries"], code)
+	}
+	code, boot := doReq(http.MethodGet, "/vela/v0/bootstrap", nil)
+	if code != 200 || boot["capabilities"].(map[string]any)["searchLibraries"] != true {
+		t.Fatalf("bootstrap capabilities.searchLibraries = %v (code=%d)", boot["capabilities"], code)
+	}
+
+	// 2. GET /vela/v0/libraries: presentation.card, tabs, plugin sorts & facets, catalogue genres untouched.
+	code, libsResp := doReq(http.MethodGet, "/vela/v0/libraries", nil)
+	if code != 200 {
+		t.Fatalf("libraries code=%d body=%v", code, libsResp)
+	}
+	libItems := libsResp["items"].([]any)
+	catLib := libItems[0].(map[string]any)
+	plugLib := libItems[1].(map[string]any)
+
+	if catLib["presentation"].(map[string]any)["card"] != "poster" {
+		t.Fatalf("catalogue presentation = %v", catLib["presentation"])
+	}
+	catFilters := catLib["browse"].(map[string]any)["filters"].(map[string]any)
+	if catFilters["facets"] != nil || !reflect.DeepEqual(catFilters["genres"], []any{"Sci-Fi"}) {
+		t.Fatalf("catalogue filters altered: %v", catFilters)
+	}
+	if len(catLib["tabs"].([]any)) != 3 {
+		t.Fatalf("catalogue tabs = %v", catLib["tabs"])
+	}
+
+	if plugLib["presentation"].(map[string]any)["card"] != "landscape" {
+		t.Fatalf("plugin presentation = %v", plugLib["presentation"])
+	}
+	plugTabs := plugLib["tabs"].([]any)
+	devTab := plugTabs[2].(map[string]any)
+	if devTab["id"] != "developers" || devTab["kind"] != "collections" || devTab["facet"] != "developers" || devTab["sort"] != "released" || devTab["direction"] != "desc" {
+		t.Fatalf("unexpected developers collections tab: %v", devTab)
+	}
+	plugBrowse := plugLib["browse"].(map[string]any)
+	if plugBrowse["defaultSort"] != "released" || plugBrowse["defaultDirection"] != "desc" || len(plugBrowse["sorts"].([]any)) != 6 {
+		t.Fatalf("unexpected plugin browse sorts: %v", plugBrowse)
+	}
+	plugFilters := plugBrowse["filters"].(map[string]any)
+	if plugFilters["genre"] != nil || plugFilters["genres"] != nil || len(plugFilters["facets"].([]any)) != 5 {
+		t.Fatalf("unexpected plugin browse filters: %v", plugFilters)
+	}
+
+	// 3. GET /vela/v0/libraries/{id}/facets/{field}: paging, query filter, 404 on unknown.
+	code, facetPage1 := doReq(http.MethodGet, "/vela/v0/libraries/77/facets/platforms?limit=2", nil)
+	if code != 200 || facetPage1["continuation"] != "more" || len(facetPage1["items"].([]any)) != 2 {
+		t.Fatalf("facets page1 = %d %v", code, facetPage1)
+	}
+	fCursor := facetPage1["nextCursor"].(string)
+	code, facetPage2 := doReq(http.MethodGet, "/vela/v0/libraries/77/facets/platforms?limit=2&cursor="+url.QueryEscape(fCursor), nil)
+	if code != 200 || facetPage2["continuation"] != "exhausted" || len(facetPage2["items"].([]any)) != 1 {
+		t.Fatalf("facets page2 = %d %v", code, facetPage2)
+	}
+	code, facetFiltered := doReq(http.MethodGet, "/vela/v0/libraries/77/facets/platforms?query=advance", nil)
+	if code != 200 || len(facetFiltered["items"].([]any)) != 1 || facetFiltered["items"].([]any)[0].(map[string]any)["id"] != "gba" {
+		t.Fatalf("facets query=advance = %d %v", code, facetFiltered)
+	}
+	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/facets/unknown", nil); code != 404 {
+		t.Fatalf("undeclared facet status=%d, want 404", code)
+	}
+	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/23/facets/genre", nil); code != 404 {
+		t.Fatalf("catalogue facet route status=%d, want 404", code)
+	}
+
+	// 4. GET /vela/v0/libraries/{id}/items: repeatable facet.<field>=, query=, sort=index, landscape kind="thumb" art.
+	code, itemsResp := doReq(http.MethodGet, "/vela/v0/libraries/77/items?facet.platforms=snes&facet.platforms=gba&facet.genres=rpg&query=chrono&sort=index&direction=asc", nil)
+	if code != 200 {
+		t.Fatalf("plugin items status=%d body=%v", code, itemsResp)
+	}
+	if exp.lastQuery.Sort != frontend.SortIndex || exp.lastQuery.Desc || exp.lastQuery.Filter.Query != "chrono" {
+		t.Fatalf("plugin items query not mapped: %+v", exp.lastQuery)
+	}
+	if !reflect.DeepEqual(exp.lastQuery.Filter.Facets, map[string][]string{"platforms": {"snes", "gba"}, "genres": {"rpg"}}) {
+		t.Fatalf("plugin items facets = %+v", exp.lastQuery.Filter.Facets)
+	}
+	for idx, rawEntry := range itemsResp["items"].([]any) {
+		art := rawEntry.(map[string]any)["title"].(map[string]any)["artwork"].([]any)
+		if len(art) == 0 || art[0].(map[string]any)["kind"] != "thumb" {
+			t.Fatalf("item[%d] expected first artwork kind=thumb on landscape library, got %v", idx, art)
+		}
+	}
+	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/23/items?facet.platforms=snes", nil); code != 400 {
+		t.Fatalf("catalogue facet.* status=%d, want 400", code)
+	}
+	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/items?facet.undeclared=x", nil); code != 400 {
+		t.Fatalf("undeclared facet.* status=%d, want 400", code)
+	}
+
+	// 5. GET /vela/v0/libraries/{id}/collections?tab=developers: paged facet collections with landscape thumb art.
+	code, colP1 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&limit=1", nil)
+	if code != 200 || colP1["continuation"] != "more" {
+		t.Fatalf("facet collections page1 = %d %v", code, colP1)
+	}
+	cEntry := colP1["items"].([]any)[0].(map[string]any)
+	cObj := cEntry["collection"].(map[string]any)
+	if cEntry["id"] != "facet:developers:nintendo" || cObj["name"] != "Nintendo" || cObj["itemCount"] != float64(15) {
+		t.Fatalf("unexpected facet collection entry: %v", cEntry)
+	}
+	cArt := cObj["artwork"].([]any)
+	if len(cArt) != 1 || cArt[0].(map[string]any)["kind"] != "thumb" {
+		t.Fatalf("expected signed thumb art on landscape facet collection, got %v", cArt)
+	}
+	cNext := colP1["nextCursor"].(string)
+	code, colP2 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&limit=1&cursor="+url.QueryEscape(cNext), nil)
+	if code != 200 || colP2["continuation"] != "exhausted" || colP2["items"].([]any)[0].(map[string]any)["id"] != "facet:developers:capcom" {
+		t.Fatalf("facet collections page2 = %d %v", code, colP2)
+	}
+	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=missing", nil); code != 404 {
+		t.Fatalf("unknown collections tab status=%d, want 404", code)
+	}
+
+	// 6. GET /vela/v0/libraries/{id}/rows: plugin recommended rows & catalogue PlacementLibrary rows.
+	code, pRows := doReq(http.MethodGet, "/vela/v0/libraries/77/rows", nil)
+	if code != 200 || len(pRows["items"].([]any)) != 2 {
+		t.Fatalf("plugin library rows = %d %v", code, pRows)
+	}
+	r0 := pRows["items"].([]any)[0].(map[string]any)
+	r0Art := r0["items"].([]any)[0].(map[string]any)["title"].(map[string]any)["artwork"].([]any)
+	if r0["name"] != "Recently Added" || len(r0Art) == 0 || r0Art[0].(map[string]any)["kind"] != "thumb" {
+		t.Fatalf("unexpected plugin row wire: %v", r0)
+	}
+
+	code, cRows := doReq(http.MethodGet, "/vela/v0/libraries/23/rows", nil)
+	if code != 200 || len(cRows["items"].([]any)) != 1 || cRows["items"].([]any)[0].(map[string]any)["id"] != "cat-lib-23" {
+		t.Fatalf("catalogue library rows = %d %v", code, cRows)
+	}
+	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/hidden/rows", nil); code != 404 {
+		t.Fatalf("hidden library rows status=%d, want 404", code)
+	}
+
+	// 7. POST /vela/v0/search with "library" for catalogue & plugin libraries, sort+direction+kind, and 400 invalid_library.
+	code, sPlug := doReq(http.MethodPost, "/vela/v0/search", object{
+		"query":      "chrono",
+		"mode":       "fast",
+		"library":    "77",
+		"sort":       "index",
+		"direction":  "asc",
+		"generation": 1,
+	})
+	if code != 200 || exp.lastLibID != "77" || exp.lastQuery.Filter.Query != "chrono" || exp.lastQuery.Sort != frontend.SortIndex {
+		t.Fatalf("plugin library search = %d lib=%s q=%+v body=%v", code, exp.lastLibID, exp.lastQuery, sPlug)
+	}
+	sPlugArt := sPlug["items"].([]any)[0].(map[string]any)["artwork"].([]any)
+	if len(sPlugArt) == 0 || sPlugArt[0].(map[string]any)["kind"] != "thumb" {
+		t.Fatalf("plugin library search missing landscape thumb art: %v", sPlugArt)
+	}
+
+	code, sCat := doReq(http.MethodPost, "/vela/v0/search", object{
+		"query":      "arrival",
+		"mode":       "fast",
+		"library":    "23",
+		"sort":       "released",
+		"direction":  "desc",
+		"kind":       "movie",
+		"generation": 2,
+	})
+	if code != 200 || exp.lastLibID != "23" || exp.lastQuery.Filter.Query != "arrival" || !exp.lastQuery.Desc {
+		t.Fatalf("catalogue library search = %d lib=%s q=%+v body=%v", code, exp.lastLibID, exp.lastQuery, sCat)
+	}
+
+	// Incompatible library + kind returns empty items without error.
+	code, sMismatch := doReq(http.MethodPost, "/vela/v0/search", object{
+		"query":      "arrival",
+		"mode":       "fast",
+		"library":    "23",
+		"kind":       "show",
+		"generation": 3,
+	})
+	if code != 200 || len(sMismatch["items"].([]any)) != 0 {
+		t.Fatalf("mismatched kind+library search = %d %v", code, sMismatch)
+	}
+
+	// Unknown / not-visible library returns 400 invalid_library.
+	code, sBad := doReq(http.MethodPost, "/vela/v0/search", object{
+		"query":      "chrono",
+		"mode":       "fast",
+		"library":    "999",
+		"generation": 4,
+	})
+	errObj, _ := sBad["error"].(map[string]any)
+	errCode, _ := errObj["code"].(string)
+	if code != 400 || !strings.Contains(errCode, "invalid_library") {
+		t.Fatalf("invalid library search = %d %v, want 400 invalid_library", code, sBad)
+	}
+}

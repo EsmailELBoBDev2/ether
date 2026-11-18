@@ -97,6 +97,7 @@ const (
 	SortRating     = core.SortRating
 	SortReleased   = core.SortReleased
 	SortTitle      = core.SortTitle
+	SortIndex      = core.SortIndex
 	SortUpdated    = core.SortUpdated
 	SortYear       = core.SortYear
 )

@@ -257,8 +257,20 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string `json:"name"`
-	Icon string `json:"icon,omitempty"`
+	Name string           `json:"name"`
+	Icon string           `json:"icon,omitempty"`
+	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
+	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+}
+
+// KindLibraryTab declares one sub-tab shown inside a plugin library.
+type KindLibraryTab struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Kind      string `json:"kind"`                // recommended|library|collections
+	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections only)
+	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
+	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
 }
 
 // KindLevel is one hierarchy level of a kind.

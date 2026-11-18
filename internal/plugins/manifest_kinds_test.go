@@ -58,8 +58,20 @@ func TestContentManifestValidates(t *testing.T) {
 	if err := contentManifest().Validate(); err != nil {
 		t.Fatalf("valid content manifest: %v", err)
 	}
-	// Vela-only presentation (movies on 1 level, shows on >=2 levels) validates.
+	// Landscape card + facet collections tab validate cleanly.
 	m := contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Browse.Sorts = []string{"released", "title", "added"}
+	m.Ether.Contributes.MediaKinds[0].Library.Card = "landscape"
+	m.Ether.Contributes.MediaKinds[0].Library.Tabs = []KindLibraryTab{
+		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "library", Label: "Library", Kind: "library"},
+		{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Sort: "released", Direction: "desc"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("landscape + facet collections tab: %v", err)
+	}
+	// Vela-only presentation (movies on 1 level, shows on >=2 levels) validates.
+	m = contentManifest()
 	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{
 		Vela: &struct {
 			Type string `json:"type"`
@@ -143,6 +155,36 @@ func TestContentManifestRules(t *testing.T) {
 		{"duplicate kind key", func(m *Manifest) {
 			m.Ether.Contributes.MediaKinds = append(m.Ether.Contributes.MediaKinds, validMediaKind())
 		}, "mediaKinds[1].key"},
+		{"bad library card", func(m *Manifest) { kind(m).Library.Card = "banner" }, "library.card"},
+		{"too many library tabs", func(m *Manifest) {
+			for i := 0; i < 7; i++ {
+				kind(m).Library.Tabs = append(kind(m).Library.Tabs, KindLibraryTab{Key: "tab", Label: "Tab", Kind: "library"})
+			}
+		}, "library.tabs"},
+		{"duplicate tab key", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{
+				{Key: "library", Label: "Library", Kind: "library"},
+				{Key: "library", Label: "All", Kind: "library"},
+			}
+		}, "library.tabs[1].key"},
+		{"bad tab kind", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "grid", Label: "Grid", Kind: "grid"}}
+		}, "library.tabs[0].kind"},
+		{"facet on non-collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "library", Label: "Library", Kind: "library", Facet: "genre"}}
+		}, "library.tabs[0].facet"},
+		{"undeclared facet on collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "moods", Label: "Moods", Kind: "collections", Facet: "mood"}}
+		}, "library.tabs[0].facet"},
+		{"undeclared sort on collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Sort: "rating"}}
+		}, "library.tabs[0].sort"},
+		{"sort without facet on collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cols", Label: "Collections", Kind: "collections", Sort: "title"}}
+		}, "library.tabs[0].sort"},
+		{"bad direction on collections tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Direction: "newest"}}
+		}, "library.tabs[0].direction"},
 		{"no levels", func(m *Manifest) { kind(m).Levels = nil }, ".levels"},
 		{"six levels", func(m *Manifest) {
 			for i := 0; i < 4; i++ {

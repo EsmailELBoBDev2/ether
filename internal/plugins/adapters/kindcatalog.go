@@ -76,8 +76,9 @@ type KindCatalog struct {
 }
 
 var (
-	_ experience.PluginLibraries       = (*KindCatalog)(nil)
-	_ experience.PluginPeopleLibraries = (*KindCatalog)(nil)
+	_ experience.PluginLibraries             = (*KindCatalog)(nil)
+	_ experience.PluginPeopleLibraries       = (*KindCatalog)(nil)
+	_ experience.PluginPresentationLibraries = (*KindCatalog)(nil)
 )
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
@@ -501,7 +502,7 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	return experience.PluginItemView{
 		Library:     lib,
 		Title:       titles[0],
-		Images:      projectImages(item.Art),
+		Images:      projectImages(item.Art, rec.Decl.Library.EffectiveCard() == "landscape"),
 		Unavailable: item.Unavailable,
 		Playable:    item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
 	}, nil
@@ -550,7 +551,7 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		out[key] = experience.PluginItemView{
 			Library:     lib,
 			Title:       titles[0],
-			Images:      projectImages(item.Art),
+			Images:      projectImages(item.Art, rec.Decl.Library.EffectiveCard() == "landscape"),
 			Unavailable: item.Unavailable,
 			Playable:    item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
 		}
@@ -804,25 +805,40 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	if err != nil {
 		return nil, err
 	}
+	facets := mapFilterToFacets(rec.Decl, q.Filter)
 	combined := localPage.Items
 	if rec.Decl.Browse.LiveSearch && c.mgr != nil && c.IsPluginLibraryActive(ctx, lib) {
 		liveItems := c.runLiveSearch(ctx, rec, query, limit)
 		if len(liveItems) > 0 {
-			seen := make(map[core.RatingKey]bool, len(combined)+len(liveItems))
-			merged := make([]core.KindItem, 0, len(combined)+len(liveItems))
-			for _, it := range combined {
-				if it.Key != 0 && !seen[it.Key] {
-					seen[it.Key] = true
-					merged = append(merged, it)
+			if len(facets) > 0 {
+				if refreshed, rErr := c.items.Search(ctx, pluginitems.SearchQuery{
+					Policy:    policy,
+					LibraryID: lib.ID,
+					Query:     query,
+					Levels:    searchLevels,
+					PersonID:  q.Filter.Person,
+					Facets:    facets,
+					Limit:     limit,
+				}); rErr == nil {
+					combined = refreshed.Items
 				}
-			}
-			for _, it := range liveItems {
-				if it.Key != 0 && !seen[it.Key] {
-					seen[it.Key] = true
-					merged = append(merged, it)
+			} else {
+				seen := make(map[core.RatingKey]bool, len(combined)+len(liveItems))
+				merged := make([]core.KindItem, 0, len(combined)+len(liveItems))
+				for _, it := range combined {
+					if it.Key != 0 && !seen[it.Key] {
+						seen[it.Key] = true
+						merged = append(merged, it)
+					}
 				}
+				for _, it := range liveItems {
+					if it.Key != 0 && !seen[it.Key] {
+						seen[it.Key] = true
+						merged = append(merged, it)
+					}
+				}
+				combined = merged
 			}
-			combined = merged
 		}
 	}
 	allowed := combined[:0]
@@ -1112,11 +1128,13 @@ func extractContentRating(fields map[string]json.RawMessage) string {
 	return ""
 }
 
-func projectImages(art []core.KindArtRef) []frontend.Image {
+func projectImages(art []core.KindArtRef, landscape bool) []frontend.Image {
 	if len(art) == 0 {
 		return nil
 	}
-	out := make([]frontend.Image, 0, len(art))
+	out := make([]frontend.Image, 0, len(art)+1)
+	hasThumb := false
+	var backdrop *frontend.Image
 	for _, a := range art {
 		u := strings.TrimSpace(a.URL)
 		if u == "" {
@@ -1126,12 +1144,27 @@ func projectImages(art []core.KindArtRef) []frontend.Image {
 		if kind == "" {
 			kind = "poster"
 		}
-		out = append(out, frontend.Image{
+		im := frontend.Image{
 			Kind:   kind,
 			Path:   u,
 			Width:  a.Width,
 			Height: a.Height,
-		})
+		}
+		switch kind {
+		case frontend.ImageThumb:
+			hasThumb = true
+		case frontend.ImageBackdrop:
+			if backdrop == nil {
+				cp := im
+				backdrop = &cp
+			}
+		}
+		out = append(out, im)
+	}
+	if landscape && !hasThumb && backdrop != nil {
+		cp := *backdrop
+		cp.Kind = frontend.ImageThumb
+		out = append(out, cp)
 	}
 	return out
 }
@@ -1261,6 +1294,8 @@ func mapBrowseSort(sortBy core.SortOrder, desc bool) string {
 		col = "rating"
 	case core.SortPopularity:
 		col = "rating"
+	case core.SortIndex:
+		col = "index"
 	default:
 		col = "title"
 	}
@@ -1293,26 +1328,39 @@ func resolveFacetFields(decl plugins.MediaKindMeta, facet string) []string {
 }
 
 func mapFilterToFacets(decl plugins.MediaKindMeta, f core.Filter) map[string][]string {
-	if len(f.Genres) == 0 && f.Studio == "" {
+	if len(f.Genres) == 0 && f.Studio == "" && len(f.Facets) == 0 {
 		return nil
 	}
 	indexed := make(map[string]bool, len(decl.Fields))
+	filterable := make(map[string]bool, len(decl.Fields)+3)
+	filterable["year"] = true
+	filterable["released"] = true
+	filterable["rating"] = true
 	for _, fd := range decl.Fields {
 		if fd.Indexed {
 			indexed[fd.Key] = true
 		}
+		if fd.Indexed || fd.Type == "people" {
+			filterable[fd.Key] = true
+		}
 	}
 	out := make(map[string][]string)
+	for k, vals := range f.Facets {
+		if !filterable[k] || len(vals) == 0 {
+			continue
+		}
+		out[k] = append([]string(nil), vals...)
+	}
 	if len(f.Genres) > 0 {
 		fields := resolveFacetFields(decl, "genre")
 		if len(fields) > 0 && indexed[fields[0]] {
-			out[fields[0]] = append([]string(nil), f.Genres...)
+			out[fields[0]] = append(out[fields[0]], f.Genres...)
 		}
 	}
 	if f.Studio != "" {
 		for _, cand := range []string{"studio", "studios", "publisher", "author", "channel"} {
 			if indexed[cand] {
-				out[cand] = []string{f.Studio}
+				out[cand] = append(out[cand], f.Studio)
 				break
 			}
 		}
@@ -1337,4 +1385,192 @@ func parseKindDuration(raw string, fallback time.Duration) time.Duration {
 		return d
 	}
 	return fallback
+}
+
+// Presentation implements experience.PluginPresentationLibraries.
+func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (experience.PluginPresentation, bool) {
+	if c == nil || c.items == nil || lib.Source != core.LibraryPlugin {
+		return experience.PluginPresentation{}, false
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return experience.PluginPresentation{}, false
+	}
+	decl := rec.Decl
+	sorts := append([]string(nil), decl.Browse.Sorts...)
+
+	rawTabs := decl.Library.EffectiveTabs()
+	tabs := make([]frontend.ViewTab, 0, len(rawTabs))
+	for _, tab := range rawTabs {
+		vt := frontend.ViewTab{
+			ID:    tab.Key,
+			Label: c.resolvePluginText(ctx, rec.PluginID, tab.Label),
+			Kind:  tab.Kind,
+		}
+		if tab.Kind == "collections" && tab.Facet != "" {
+			vt.Facet = tab.Facet
+			effSort := tab.Sort
+			if effSort == "" {
+				if slices.Contains(sorts, "released") {
+					effSort = "released"
+				} else if len(sorts) > 0 {
+					effSort = sorts[0]
+				} else {
+					effSort = "server"
+				}
+			}
+			effDir := tab.Direction
+			if effDir == "" {
+				switch effSort {
+				case "server", "title", "index":
+					effDir = "asc"
+				default:
+					effDir = "desc"
+				}
+			}
+			vt.Sort = effSort
+			vt.Direction = effDir
+		}
+		tabs = append(tabs, vt)
+	}
+
+	fieldsByKey := make(map[string]plugins.KindField, len(decl.Fields))
+	for _, fd := range decl.Fields {
+		fieldsByKey[fd.Key] = fd
+	}
+	facets := make([]frontend.ViewFacet, 0, len(decl.Browse.Facets))
+	for _, fk := range decl.Browse.Facets {
+		switch fk {
+		case "year":
+			facets = append(facets, frontend.ViewFacet{ID: "year", Label: "Year", Type: "int", Multi: true})
+		case "released":
+			facets = append(facets, frontend.ViewFacet{ID: "released", Label: "Released", Type: "date", Multi: true})
+		case "rating":
+			facets = append(facets, frontend.ViewFacet{ID: "rating", Label: "Rating", Type: "int", Multi: true})
+		default:
+			fd, ok := fieldsByKey[fk]
+			if !ok {
+				continue
+			}
+			facets = append(facets, frontend.ViewFacet{
+				ID:    fk,
+				Label: c.resolvePluginText(ctx, rec.PluginID, fd.Label),
+				Type:  mapVelaFacetType(fd.Type),
+				Multi: true,
+			})
+		}
+	}
+
+	return experience.PluginPresentation{
+		Card:   decl.Library.EffectiveCard(),
+		Tabs:   tabs,
+		Sorts:  sorts,
+		Facets: facets,
+	}, true
+}
+
+func mapVelaFacetType(raw string) string {
+	switch raw {
+	case "enum", "bool":
+		return "enum"
+	case "people":
+		return "people"
+	case "int", "float":
+		return "int"
+	case "date":
+		return "date"
+	case "duration":
+		return "duration"
+	default:
+		return "strings"
+	}
+}
+
+// FacetBuckets implements experience.PluginPresentationLibraries.
+func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error) {
+	if c == nil || c.items == nil {
+		return []frontend.FacetBucket{}, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return nil, err
+	}
+	rootLevel := ""
+	if len(rec.Decl.Levels) > 0 {
+		rootLevel = rec.Decl.Levels[0].Key
+	}
+	policy, err := c.items.LibraryPolicy(ctx, lib)
+	if err != nil {
+		return nil, err
+	}
+	buckets, err := c.items.FacetBuckets(ctx, lib.ID, rootLevel, policy, field)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]frontend.FacetBucket, len(buckets))
+	for i, b := range buckets {
+		out[i] = frontend.FacetBucket{
+			ID:    b.ID,
+			Label: b.Label,
+			Count: b.Count,
+		}
+	}
+	return out, nil
+}
+
+// FacetCollections implements experience.PluginPresentationLibraries.
+func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field string, offset, limit int) (frontend.FacetCollectionPage, error) {
+	if c == nil || c.items == nil {
+		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return frontend.FacetCollectionPage{}, err
+	}
+	rootLevel := ""
+	if len(rec.Decl.Levels) > 0 {
+		rootLevel = rec.Decl.Levels[0].Key
+	}
+	policy, err := c.items.LibraryPolicy(ctx, lib)
+	if err != nil {
+		return frontend.FacetCollectionPage{}, err
+	}
+	page, err := c.items.FacetCollections(ctx, pluginitems.FacetCollectionsQuery{
+		LibraryID: lib.ID,
+		Level:     rootLevel,
+		Policy:    policy,
+		FieldKey:  field,
+		Offset:    offset,
+		Limit:     limit,
+	})
+	if err != nil {
+		return frontend.FacetCollectionPage{}, err
+	}
+	var newestRaw []core.KindItem
+	newestIdx := make([]int, 0, len(page.Items))
+	for i, col := range page.Items {
+		if col.NewestItem != nil {
+			newestRaw = append(newestRaw, *col.NewestItem)
+			newestIdx = append(newestIdx, i)
+		}
+	}
+	var projected []core.Title
+	if len(newestRaw) > 0 {
+		projected = c.projectItems(ctx, rec, lib, newestRaw)
+	}
+	out := make([]frontend.FacetCollection, len(page.Items))
+	for i, col := range page.Items {
+		out[i] = frontend.FacetCollection{
+			ID:        col.ID,
+			Name:      col.Label,
+			ItemCount: col.Count,
+		}
+	}
+	for j, bucketIdx := range newestIdx {
+		if j < len(projected) {
+			t := projected[j]
+			out[bucketIdx].NewestItem = &t
+		}
+	}
+	return frontend.FacetCollectionPage{Items: out, More: page.More}, nil
 }

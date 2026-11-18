@@ -416,8 +416,48 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the optional library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string `json:"name"` // default name; the owner may rename it after
-	Icon string `json:"icon,omitempty"`
+	Name string           `json:"name"` // default name; the owner may rename it after
+	Icon string           `json:"icon,omitempty"`
+	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
+	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+}
+
+// KindLibraryTab declares one sub-tab shown inside a plugin library.
+type KindLibraryTab struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Kind      string `json:"kind"`                // recommended|library|collections
+	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections only)
+	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
+	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
+}
+
+// IsZero reports whether every field of the library declaration is empty.
+func (d KindLibraryDecl) IsZero() bool {
+	return d.Name == "" && d.Icon == "" && d.Card == "" && len(d.Tabs) == 0
+}
+
+// EffectiveCard returns the library's card aspect ("poster" by default).
+func (d KindLibraryDecl) EffectiveCard() string {
+	switch d.Card {
+	case "landscape", "square":
+		return d.Card
+	default:
+		return "poster"
+	}
+}
+
+// EffectiveTabs returns the declared tabs, or the default Recommended and Library tabs.
+func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
+	if len(d.Tabs) > 0 {
+		out := make([]KindLibraryTab, len(d.Tabs))
+		copy(out, d.Tabs)
+		return out
+	}
+	return []KindLibraryTab{
+		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "library", Label: "Library", Kind: "library"},
+	}
 }
 
 // KindLevel is one hierarchy level of a kind.

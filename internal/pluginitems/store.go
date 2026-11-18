@@ -36,7 +36,7 @@ type SyncState struct {
 	Items       int64     `json:"items"`
 }
 
-const itemCols = `item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx, title, sort_title, summary, year, released, rating, playable, child_count, leaf_count, hints, fields, etag, unavailable`
+const itemCols = `item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx, title, sort_title, summary, year, released, rating, playable, child_count, leaf_count, hints, fields, etag, unavailable, added_at`
 
 func prefixedItemCols(prefix string) string {
 	parts := strings.Split(itemCols, ", ")
@@ -71,7 +71,7 @@ func scanItemRow(sc rowScanner) (core.KindItem, core.LibraryID, int64, error) {
 	if err := sc.Scan(
 		&refStr, &seq, &pluginID, &kindKey, &libID, &it.ID, &parentRef, &it.Level, &idx,
 		&it.Title, &it.SortTitle, &it.Summary, &year, &it.Released, &it.Rating,
-		&playable, &childCount, &leafCount, &hintsRaw, &fieldsRaw, &it.ETag, &unavailableRaw,
+		&playable, &childCount, &leafCount, &hintsRaw, &fieldsRaw, &it.ETag, &unavailableRaw, &it.AddedAt,
 	); err != nil {
 		return core.KindItem{}, 0, 0, err
 	}

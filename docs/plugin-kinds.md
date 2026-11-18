@@ -22,7 +22,14 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 {
   "key": "recordings",              // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
   "label": "Field recordings",
-  "library": { "name": "Field Recordings" },   // default name; the owner can rename
+  "library": {
+    "name": "Field recordings",     // default name; the owner can rename
+    "card": "landscape",            // optional: poster (default) | landscape | square
+    "tabs": [                       // optional (<= 6); defaults to Recommended + Library
+      { "key": "recommended", "label": "Recommended", "kind": "recommended" },
+      { "key": "library", "label": "Library", "kind": "library" }
+    ]
+  },
   "levels": [                       // 1–5 levels, first is the root
     { "key": "collection", "label": "Collection" },
     { "key": "album", "label": "Album", "container": true },
@@ -30,10 +37,10 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
   ],
   "fields": [                       // validated per item; indexed ones can facet
     { "key": "genre", "type": "string", "label": "Genre", "indexed": true },
-    { "key": "durationSec", "type": "duration", "label": "Duration" }
+    { "key": "durationSec", "type": "duration", "label": "Duration", "indexed": true }
   ],
   "present": { /* see "Publishing" */ },
-  "browse": { "sorts": ["title", "index"], "facets": ["genre"], "search": true, "liveSearch": true },
+  "browse": { "sorts": ["title", "index"], "facets": ["genre", "durationSec"], "search": true, "liveSearch": true },
   "sync": { "mode": "pull", "refresh": "1h" },
   "cache": { "maxBytes": 2147483648 },        // optional; per-library blob cache
   "match": { "thresholdDefault": 0.8 }        // optional
@@ -45,6 +52,15 @@ Rules that will bite if ignored: at least one level must be
 envelope names (`id`, `title`, …); declarations are **additive across
 versions** — removing or retyping a field/level is refused at upgrade
 unless the owner agrees to replace the library's contents.
+
+### Library presentation, sub-tabs, sorts and facets in Vela
+
+`library` and `browse` shape how Vela renders the library without per-plugin client logic:
+
+- `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
+- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, or `"collections"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). A `"collections"` tab may set `facet` (one of `browse.facets`), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared); `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>` pages those facet buckets most-items-first with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=`.
+- `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
+- Recommended rows (`GET /vela/v0/libraries/{id}/rows`): Ether builds up to 8 shelves (20 items each) from your stored items — Continue watching, Recently added, Newest, Top rated (when `rating` is a declared sort), and top values of your first declared facet.
 
 ## The item envelope
 

@@ -282,7 +282,15 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			Category: strings.TrimSpace(q.Category),
 		})
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			// One broken indexer (a missing site definition, an outage)
+			// fails the whole fan-out when nobody else had a match. For a
+			// plugin that is simply "no releases": its search must not
+			// throw because of an indexer it never chose.
+			r.log.Debug("plugin indexer search found nothing; some indexers failed", "query", q.Query, "err", err)
+			return []core.SourceCandidate{}, nil
 		}
 		out := make([]core.SourceCandidate, 0, len(rels))
 		for _, rel := range rels {

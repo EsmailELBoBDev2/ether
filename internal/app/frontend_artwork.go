@@ -48,7 +48,7 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		}
 		return a.playback.Sessions()
 	}, []experience.Library{{ID: 1, Type: core.TypeMovie}, {ID: 2, Type: core.TypeShow}})
-	source := &artworkservice.Source{OwnerEnabled: func() bool { enabled := a.cfg.Read().Posters.OwnerEnabled; return enabled == nil || *enabled }, Assets: &artwork.LocalAssets{}, AssetFolder: func() string { return a.cfg.Read().Posters.AssetFolder }, OwnerDir: filepath.Join(a.opts.DataDir, "artwork", "owner"), Catalog: a.catalog, Collections: collections, Playlists: a.playlists, Visibility: visibility, Discovery: a.discoveryFeatures.Frontend(), Images: images, ImageURL: imageURL, Palettes: palettes, Now: now, Raster: artwork.NewSVGRasterizer()}
+	source := &artworkservice.Source{OwnerEnabled: func() bool { enabled := a.cfg.Read().Posters.OwnerEnabled; return enabled == nil || *enabled }, Assets: &artwork.LocalAssets{}, AssetFolder: func() string { return a.cfg.Read().Posters.AssetFolder }, OwnerDir: filepath.Join(a.opts.DataDir, "artwork", "owner"), Catalog: pluginArtworkTitles{catalog: a.catalog, app: a}, Collections: collections, Playlists: a.playlists, Visibility: visibility, Discovery: a.discoveryFeatures.Frontend(), Images: images, ImageURL: imageURL, Palettes: palettes, Now: now, Raster: artwork.NewSVGRasterizer()}
 	if a.livetv != nil {
 		source.LiveTV = a.livetv
 	}
@@ -102,4 +102,28 @@ func (a *App) titlePosters() *artwork.Renderer {
 		a.titlePosterRenderer = artwork.NewRenderer(nil, dir, a.log.With("component", "artwork"))
 	})
 	return a.titlePosterRenderer
+}
+
+// pluginArtworkTitles lets the shared artwork reader find plugin library
+// items, whose keys are not in the catalogue. The viewer's grant for the
+// image was issued by the experience layer, which already applied library
+// access to the item.
+type pluginArtworkTitles struct {
+	catalog core.StoredTitleLookup
+	app     *App
+}
+
+func (p pluginArtworkTitles) StoredTitle(ctx context.Context, key core.RatingKey) (*core.Title, error) {
+	if key.IsPluginKey() {
+		if p.app == nil || p.app.pluginsRT == nil || p.app.pluginsRT.kindCatalog == nil {
+			return nil, core.ErrNotFound
+		}
+		piv, err := p.app.pluginsRT.kindCatalog.Item(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		t := piv.Title
+		return &t, nil
+	}
+	return p.catalog.StoredTitle(ctx, key)
 }

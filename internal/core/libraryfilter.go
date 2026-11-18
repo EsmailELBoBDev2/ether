@@ -186,6 +186,48 @@ func SearchSummaryFacts(ctx context.Context) bool {
 	return v
 }
 
+type searchTypesKey struct{}
+
+// WithSearchTypes attaches the media types a search accepts to ctx, so sources
+// with a type-agnostic signature (such as PeopleTitles) restrict their lookup
+// to the caller's requested types.
+func WithSearchTypes(ctx context.Context, types []MediaType) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, searchTypesKey{}, types)
+}
+
+// SearchTypesFrom returns WithSearchTypes' media types, or nil.
+func SearchTypesFrom(ctx context.Context) []MediaType {
+	if ctx == nil {
+		return nil
+	}
+	t, _ := ctx.Value(searchTypesKey{}).([]MediaType)
+	return t
+}
+
+type exactPeopleOnlyKey struct{}
+
+// WithExactPeopleOnly marks a people-to-titles lookup where title matches
+// already fill the caller's window, so only exact or near-exact full-name
+// person matches (which rank right after exact title matches) can surface.
+func WithExactPeopleOnly(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, exactPeopleOnlyKey{}, true)
+}
+
+// ExactPeopleOnly reports WithExactPeopleOnly.
+func ExactPeopleOnly(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(exactPeopleOnlyKey{}).(bool)
+	return v
+}
+
 // TitleFacts is a set of the facts a title keeps outside its own row, in
 // tables of their own: what a visibility rule, a viewer's policy, the release
 // gate or a query filter may read beyond the row.

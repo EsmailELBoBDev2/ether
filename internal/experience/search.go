@@ -1,6 +1,7 @@
 package experience
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"strings"
@@ -25,10 +26,11 @@ const (
 // Search resolves discovery-first keyword searches for the viewer's libraries.
 // Natural is optional; false falls back to the catalogue.
 type Search struct {
-	Visibility Visibility
-	Vibe       VibeSearch
-	Natural    func(context.Context, *core.User, string, int) ([]core.Title, bool)
-	Catalog    func(context.Context, string, []core.MediaType, int) ([]core.Title, error)
+	Visibility   Visibility
+	Vibe         VibeSearch
+	Natural      func(context.Context, *core.User, string, int) ([]core.Title, bool)
+	Catalog      func(context.Context, string, []core.MediaType, int) ([]core.Title, error)
+	PeopleTitles func(context.Context, *core.User, string, int) ([]core.Title, error)
 	// Unrestricted is a trusted host policy capability. Nil uses the
 	// restricted, inherited-policy and availability path.
 	Unrestricted func(*core.User) bool
@@ -187,6 +189,72 @@ func (s Search) withViewer(ctx context.Context, viewer *core.User) context.Conte
 	})
 }
 
+func mergeRankedSearchTitles(titles, people []core.Title) []core.Title {
+	if len(people) == 0 {
+		return titles
+	}
+	if len(titles) == 0 {
+		return people
+	}
+	out := make([]core.Title, 0, len(titles)+len(people))
+	at := make(map[core.RatingKey]int, len(titles)+len(people))
+	for _, t := range titles {
+		if idx, ok := at[t.Key]; ok {
+			if t.SearchScore > out[idx].SearchScore {
+				out[idx] = t
+			}
+			continue
+		}
+		at[t.Key] = len(out)
+		out = append(out, t)
+	}
+	for _, t := range people {
+		if idx, ok := at[t.Key]; ok {
+			if t.SearchScore > out[idx].SearchScore {
+				out[idx] = t
+			}
+			continue
+		}
+		at[t.Key] = len(out)
+		out = append(out, t)
+	}
+	slices.SortStableFunc(out, func(a, b core.Title) int {
+		if c := cmp.Compare(b.SearchScore, a.SearchScore); c != 0 {
+			return c
+		}
+		return cmp.Compare(b.Popularity, a.Popularity)
+	})
+	return out
+}
+
+func titleWindowCoversWeakPeople(items []core.Title, want int) bool {
+	return want > 0 && len(items) >= want && items[want-1].SearchScore >= 0.50
+}
+
+func (s Search) peopleTitlesFor(ctx context.Context, viewer *core.User, query string, types []core.MediaType, want int, titleHits []core.Title, restricted bool, allowed map[core.MediaType]bool) ([]core.Title, error) {
+	if s.PeopleTitles == nil {
+		return nil, nil
+	}
+	pctx := core.WithSearchTypes(ctx, types)
+	if titleWindowCoversWeakPeople(titleHits, want) {
+		pctx = core.WithExactPeopleOnly(pctx)
+	}
+	raw, err := s.PeopleTitles(pctx, viewer, query, want)
+	if err != nil || len(raw) == 0 {
+		return nil, err
+	}
+	if !restricted {
+		return s.filterCandidates(viewer, raw, allowed, len(allowed) > 0), nil
+	}
+	out := make([]core.Title, 0, len(raw))
+	for i := range raw {
+		if (len(allowed) == 0 || allowed[raw[i].Type]) && s.Visibility.Visible(ctx, viewer, &raw[i]) {
+			out = append(out, raw[i])
+		}
+	}
+	return out, nil
+}
+
 // Find is an explicit search: catalogue rules the owner limited to browsing
 // do not apply, so those titles can still be found.
 func (s Search) Find(ctx context.Context, viewer *core.User, query string, types []core.MediaType, limit int) ([]core.Title, error) {
@@ -198,6 +266,10 @@ func (s Search) Find(ctx context.Context, viewer *core.User, query string, types
 	allowed := make(map[core.MediaType]bool, len(types))
 	for _, typ := range types {
 		allowed[typ] = true
+	}
+	want := limit
+	if want <= 0 {
+		want = 20
 	}
 	if s.Unrestricted != nil && s.Unrestricted(viewer) {
 		var items []core.Title
@@ -212,15 +284,22 @@ func (s Search) Find(ctx context.Context, viewer *core.User, query string, types
 				return nil, err
 			}
 		}
-		return s.filterCandidates(viewer, items, allowed, natural), nil
+		filtered := s.filterCandidates(viewer, items, allowed, natural)
+		if !natural && s.PeopleTitles != nil {
+			pItems, pErr := s.peopleTitlesFor(ctx, viewer, query, types, want, filtered, false, allowed)
+			if pErr != nil && len(filtered) == 0 {
+				return nil, pErr
+			}
+			filtered = mergeRankedSearchTitles(filtered, pItems)
+			if limit > 0 && len(filtered) > limit {
+				filtered = filtered[:limit]
+			}
+		}
+		return filtered, nil
 	}
 	// The catalogue and natural-search APIs limit candidates, not permitted
 	// results. Expand only when policy removed candidates and the source may
 	// have more; cap work for sources which never exhaust.
-	want := limit
-	if want <= 0 {
-		want = 20
-	}
 	fetch := want
 	for {
 		var items []core.Title
@@ -240,6 +319,13 @@ func (s Search) Find(ctx context.Context, viewer *core.User, query string, types
 			if allowed[items[i].Type] && s.Visibility.Visible(ctx, viewer, &items[i]) {
 				filtered = append(filtered, items[i])
 			}
+		}
+		if !ok && s.PeopleTitles != nil {
+			pItems, pErr := s.peopleTitlesFor(ctx, viewer, query, types, fetch, filtered, true, allowed)
+			if pErr != nil && len(filtered) == 0 {
+				return nil, pErr
+			}
+			filtered = mergeRankedSearchTitles(filtered, pItems)
 		}
 		if len(filtered) >= want {
 			return filtered[:want], nil
@@ -266,6 +352,11 @@ func fullSearch(ctx context.Context) context.Context {
 // ("1917" is the film, not the films of 1917).
 const TitleMatchScore = 0.96
 
+// PersonMatchScore is the relevance floor of an exact or near-exact full-name
+// person match in PeopleTitles: a viewer typing "brad pitt" gets that person's
+// filmography immediately rather than waiting on descriptive AI search.
+const PersonMatchScore = 0.935
+
 // HasTitleMatch reports whether keyword results contain a title matching the
 // query at or above TitleMatchScore.
 func HasTitleMatch(keyword []core.Title) bool {
@@ -274,11 +365,19 @@ func HasTitleMatch(keyword []core.Title) bool {
 	})
 }
 
+// HasPersonOrTitleMatch reports whether keyword results contain an exact or
+// near-exact title or person match.
+func HasPersonOrTitleMatch(keyword []core.Title) bool {
+	return slices.ContainsFunc(keyword, func(t core.Title) bool {
+		return t.SearchScore >= PersonMatchScore
+	})
+}
+
 // IsDescriptiveQuery classifies a search from its already-computed keyword
-// results: any query of two or more words without a TitleMatchScore hit is
-// descriptive when AI descriptive search is configured.
+// results: any query of two or more words without a strong title or full-name
+// person match is descriptive when AI descriptive search is configured.
 func IsDescriptiveQuery(query string, keyword []core.Title, aiAvailable bool) bool {
-	if !aiAvailable || HasTitleMatch(keyword) {
+	if !aiAvailable || HasPersonOrTitleMatch(keyword) {
 		return false
 	}
 	return len(strings.Fields(query)) >= 2
@@ -353,11 +452,33 @@ func (s Search) Keyword(ctx context.Context, viewer *core.User, query string, ty
 	if strings.TrimSpace(query) == "" {
 		return nil, nil
 	}
-	items, err := s.Catalog(s.withViewer(core.WithExplicitSearch(ctx), viewer), query, types, limit)
+	searchCtx := s.withViewer(core.WithExplicitSearch(ctx), viewer)
+	items, err := s.Catalog(searchCtx, query, types, limit)
 	if err != nil {
 		return nil, err
 	}
 	keyword := s.filterCandidates(viewer, items, nil, false)
+	if s.PeopleTitles != nil {
+		want := limit
+		if want <= 0 {
+			want = 20
+		}
+		var allowed map[core.MediaType]bool
+		if len(types) > 0 {
+			allowed = make(map[core.MediaType]bool, len(types))
+			for _, t := range types {
+				allowed[t] = true
+			}
+		}
+		pItems, pErr := s.peopleTitlesFor(searchCtx, viewer, query, types, want, keyword, false, allowed)
+		if pErr != nil && len(keyword) == 0 {
+			return nil, pErr
+		}
+		keyword = mergeRankedSearchTitles(keyword, pItems)
+		if limit > 0 && len(keyword) > limit {
+			keyword = keyword[:limit]
+		}
+	}
 	ds, ok := s.Vibe.Source.(core.DescriptiveSearcher)
 	if !ok {
 		return keyword, nil

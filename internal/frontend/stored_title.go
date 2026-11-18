@@ -76,6 +76,11 @@ type SearchListDetailsCatalog interface {
 	SearchListDetails(context.Context, []Title) ([]Title, error)
 }
 
+// PeopleTitlesCatalog resolves titles credited to people matching query for a viewer.
+type PeopleTitlesCatalog interface {
+	PeopleTitles(context.Context, *User, string, int) ([]Title, error)
+}
+
 // SQLAvailabilityCatalog reports whether browse queries apply availability filtering in SQL.
 type SQLAvailabilityCatalog interface {
 	BrowseAvailabilityInSQL() bool

@@ -10,6 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
@@ -320,10 +322,41 @@ func mergeVisiblePerson(old visiblePerson, person core.Person, item core.RatingK
 func peopleWords(value string) []string {
 	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
 }
+
+func peopleFoldedWords(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range norm.NFD.String(strings.ToLower(value)) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		switch r {
+		case 'ł':
+			b.WriteByte('l')
+		case 'ø':
+			b.WriteByte('o')
+		case 'đ':
+			b.WriteByte('d')
+		case 'ß':
+			b.WriteString("ss")
+		case 'æ':
+			b.WriteString("ae")
+		case 'œ':
+			b.WriteString("oe")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.FieldsFunc(b.String(), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
+}
+
 func peopleTerms(value string) []string {
 	seen := map[string]bool{}
 	terms := []string{}
-	for _, word := range peopleWords(value) {
+	for _, word := range peopleFoldedWords(value) {
 		if !seen[word] {
 			seen[word] = true
 			terms = append(terms, word)
@@ -335,7 +368,7 @@ func peopleTerms(value string) []string {
 	return terms
 }
 func personMatches(name string, terms []string) bool {
-	words := peopleWords(name)
+	words := peopleFoldedWords(name)
 	for _, term := range terms {
 		found := false
 		for _, word := range words {
@@ -351,12 +384,16 @@ func personMatches(name string, terms []string) bool {
 	return true
 }
 func personBefore(a, b frontend.PersonDetail, exact string) bool {
-	left, right := strings.Join(peopleWords(a.Name), " "), strings.Join(peopleWords(b.Name), " ")
+	left, right := strings.Join(peopleFoldedWords(a.Name), " "), strings.Join(peopleFoldedWords(b.Name), " ")
 	if (left == exact) != (right == exact) {
 		return left == exact
 	}
 	if left != right {
 		return left < right
+	}
+	rawLeft, rawRight := strings.Join(peopleWords(a.Name), " "), strings.Join(peopleWords(b.Name), " ")
+	if rawLeft != rawRight {
+		return rawLeft < rawRight
 	}
 	return a.ID < b.ID
 }
@@ -401,7 +438,7 @@ func (s *Service) people(ctx context.Context, viewer *core.Viewer, device core.D
 		q.Limit = 20
 	}
 	terms := peopleTerms(q.Query)
-	exact := strings.Join(peopleWords(q.Query), " ")
+	exact := strings.Join(peopleFoldedWords(q.Query), " ")
 	if len(terms) > 0 && s.d.PeopleIndex != nil && s.d.PersonCreditsMany != nil && s.d.peopleVisibleTitles != nil {
 		return s.pagedPeople(ctx, viewer, q, terms, exact)
 	}
@@ -487,7 +524,11 @@ func (s *Service) indexedPeople(ctx context.Context, viewer *core.Viewer, q fron
 	if s.d.CachedGetMany == nil {
 		return nil, core.ErrNotAvailable
 	}
-	found, err := s.d.PeopleIndex(ctx, terms, peopleCandidateLimit)
+	candidateCap := peopleCandidateLimit
+	if len(terms) > 0 {
+		candidateCap = min(max(q.Limit*8, 64), 256)
+	}
+	found, err := s.d.PeopleIndex(ctx, terms, candidateCap)
 	if err != nil {
 		return nil, err
 	}
@@ -556,7 +597,8 @@ func (s *Service) pagedPeople(ctx context.Context, viewer *core.Viewer, q fronte
 	if err != nil {
 		return nil, err
 	}
-	found, err := s.d.PeopleIndex(ctx, terms, peopleCandidateLimit)
+	candidateCap := min(max(q.Limit*8, 64), 256)
+	found, err := s.d.PeopleIndex(ctx, terms, candidateCap)
 	if err != nil {
 		return nil, err
 	}

@@ -79,11 +79,13 @@ func (s *storage) markScheduleRun(ctx context.Context, plugin, call string, at t
 
 // Limits from SPEC §5.1.5, §5.7 and §5.13.
 const (
-	KVQuotaBytes   = 50 << 20
-	OutboxCap      = 1000
-	CallsCap       = 200
-	LogsCap        = 200
-	EventLogMaxAge = 7 * 24 * time.Hour
+	KVQuotaBytes     = 50 << 20
+	KVQuotaKeys      = 10000
+	KVKeyChargeBytes = 256
+	OutboxCap        = 1000
+	CallsCap         = 200
+	LogsCap          = 200
+	EventLogMaxAge   = 7 * 24 * time.Hour
 	// JournalSettledMaxAge is how long an undone or shadow journal entry
 	// (one undo can no longer act on) stays in the activity history.
 	JournalSettledMaxAge = 90 * 24 * time.Hour
@@ -472,6 +474,20 @@ func (s *storage) kvUsed(ctx context.Context, plugin string) (int64, error) {
 	return n.Int64, err
 }
 
+func (s *storage) kvUsage(ctx context.Context, plugin string) (KVUsage, error) {
+	var used int64
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0),COUNT(*) FROM plugins_kv WHERE plugin=?`, plugin).Scan(&used, &count); err != nil {
+		return KVUsage{}, err
+	}
+	return KVUsage{
+		Bytes:      used + count*KVKeyChargeBytes,
+		Keys:       count,
+		QuotaBytes: KVQuotaBytes,
+		QuotaKeys:  KVQuotaKeys,
+	}, nil
+}
+
 func (s *storage) kvGet(ctx context.Context, plugin, key string) ([]byte, bool, error) {
 	var b []byte
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM plugins_kv WHERE plugin=? AND kkey=?`, plugin, key).Scan(&b)
@@ -517,7 +533,7 @@ func (s *storage) kvPut(ctx context.Context, plugin, key string, value []byte) e
 	if !exists {
 		count++
 	}
-	if count > 10000 || used-old+int64(len(value))+count*256 > KVQuotaBytes {
+	if count > KVQuotaKeys || used-old+int64(len(value))+count*KVKeyChargeBytes > KVQuotaBytes {
 		return ErrQuotaExceeded
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO plugins_kv(plugin,kkey,value,size) VALUES(?,?,?,?) ON CONFLICT(plugin,kkey) DO UPDATE SET value=excluded.value,size=excluded.size`, plugin, key, value, len(value))

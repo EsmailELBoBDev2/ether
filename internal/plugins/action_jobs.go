@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"net/http"
 	"runtime"
@@ -14,9 +15,11 @@ import (
 )
 
 const (
-	ActionJobTotal    = 12 * time.Hour
-	ActionJobAttempts = 1000000
-	actionJobMinDelay = 100 * time.Millisecond
+	ActionJobTotal         = 12 * time.Hour
+	ActionJobAttempts      = 1000000
+	ActionJobConcurrency   = 2
+	ResolverJobConcurrency = 4
+	actionJobMinDelay      = 100 * time.Millisecond
 )
 
 // ActionJobStatus is a bounded, in-memory snapshot. Checkpoints belong in plugin
@@ -46,8 +49,9 @@ func (j *actionJob) finish(state, reason string) {
 	j.status.State, j.status.Error = state, reason
 }
 
-// startActionJob runs only owner-started work. At most two jobs run per plugin;
-// at most sixteen route snapshots are retained per plugin, including running jobs.
+// startActionJob runs owner-started work. At most ActionJobConcurrency owner or
+// scheduled jobs and ResolverJobConcurrency resolver jobs run concurrently per
+// plugin; at most sixteen route snapshots are retained per plugin.
 func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
 	_, err := m.startResolverJob(pluginID, body, nil, "")
 	return err
@@ -76,26 +80,60 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 	if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
 		return old.(*actionJob), nil
 	}
-	active, count := 0, 0
+	isResolver := suffix != ""
+	resolverPrefix := pluginID + "|resolver|"
+	activeAction, activeResolver, count := 0, 0, 0
 	oldestKey := ""
 	var oldest time.Time
 	m.jobs.Range(func(k, v any) bool {
-		if !strings.HasPrefix(k.(string), pluginID+"|") {
+		ks := k.(string)
+		if !strings.HasPrefix(ks, pluginID+"|") {
 			return true
 		}
 		s := v.(*actionJob).snapshot()
 		count++
 		if s.State == "running" {
-			active++
+			if strings.HasPrefix(ks, resolverPrefix) {
+				activeResolver++
+			} else {
+				activeAction++
+			}
 		} else if oldestKey == "" || s.Started.Before(oldest) {
-			oldestKey, oldest = k.(string), s.Started
+			oldestKey, oldest = ks, s.Started
 		}
 		return true
 	})
-	if active >= 2 {
+	if !isResolver && activeAction >= ActionJobConcurrency {
 		return nil, fmt.Errorf("two background jobs are already running; wait for one to finish")
 	}
-	if _, exists := m.jobs.Load(key); !exists && count >= 16 {
+	if isResolver && activeResolver >= ResolverJobConcurrency {
+		msg := "Four playback preparation jobs are already running; wait for one to finish."
+		refusedKey := pluginID + "|resolver:refused|" + path
+		if _, exists := m.jobs.Load(refusedKey); !exists && count >= 16 && oldestKey != "" {
+			m.jobs.Delete(oldestKey)
+		}
+		done := make(chan struct{})
+		close(done)
+		started := time.Now().UTC()
+		if m.now != nil {
+			started = m.now()
+		}
+		m.jobs.Store(refusedKey, &actionJob{
+			cancel: func() {},
+			done:   done,
+			status: ActionJobStatus{
+				Path:         path,
+				State:        "error",
+				Error:        msg,
+				Started:      started,
+				TotalLimitMS: m.runtimeCeilings(pluginID).deadline.Milliseconds(),
+				AttemptLimit: ActionJobAttempts,
+			},
+		})
+		m.log.Warn("plugins: resolver job refused", "plugin", pluginID, "job", path, "err", msg)
+		return nil, &core.JobsBusyError{Message: msg}
+	}
+	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {
 		m.jobs.Delete(oldestKey)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.runtimeCeilings(pluginID).deadline)
@@ -208,6 +246,23 @@ func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(con
 }
 
 func (m *Manager) cancelActionJobs(id string) {
+	var flights []*scheduleFlight
+	m.mu.Lock()
+	for k, f := range m.scheduleInFlight {
+		if id == "" || strings.HasPrefix(k, id+"|") {
+			flights = append(flights, f)
+			delete(m.scheduleInFlight, k)
+		}
+	}
+	for k := range m.scheduleJobs {
+		if id == "" || strings.HasPrefix(k, id+"|") {
+			delete(m.scheduleJobs, k)
+		}
+	}
+	m.mu.Unlock()
+	for _, f := range flights {
+		f.cancel()
+	}
 	m.jobs.Range(func(k, v any) bool {
 		if id == "" || strings.HasPrefix(k.(string), id+"|") {
 			v.(*actionJob).cancel()

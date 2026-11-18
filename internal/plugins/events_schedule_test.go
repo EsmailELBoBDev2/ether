@@ -55,7 +55,10 @@ func TestScheduleCadenceAcrossRestarts(t *testing.T) {
 		m.RegisterRuntime("hosted", func(Installed) (Runtime, error) { return env.fake, nil })
 		env.m = m
 	}
-	tick := func() { env.m.runOnce(ctx, map[string]time.Time{}) }
+	tick := func() {
+		env.m.runOnce(ctx, map[string]time.Time{})
+		env.m.waitSchedule()
+	}
 
 	setEnabled(false)
 	tick()

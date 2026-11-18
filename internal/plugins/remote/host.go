@@ -28,6 +28,7 @@ type Host interface {
 	KVPut(ctx context.Context, pluginID, key string, value []byte) error
 	KVDelete(ctx context.Context, pluginID, key string) error
 	KVList(ctx context.Context, pluginID, prefix string) ([]string, error)
+	KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error)
 
 	CatalogSearch(ctx context.Context, pluginID, query string, limit, offset int) (json.RawMessage, error)
 	CatalogGet(ctx context.Context, pluginID, id string) (json.RawMessage, error)
@@ -95,6 +96,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ether/plugin-host/data/{service}", h.dataCall)
 	mux.HandleFunc("GET /ether/plugin-host/kv", h.kvList)
+	mux.HandleFunc("GET /ether/plugin-host/kv-usage", h.kvUsage)
 	mux.HandleFunc("GET /ether/plugin-host/kv/{key...}", h.kvGet)
 	mux.HandleFunc("PUT /ether/plugin-host/kv/{key...}", h.kvPut)
 	mux.HandleFunc("DELETE /ether/plugin-host/kv/{key...}", h.kvDelete)
@@ -203,6 +205,14 @@ func (h *HostHandler) kvList(w http.ResponseWriter, r *http.Request) {
 		keys = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+
+func (h *HostHandler) kvUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := h.host.KVUsage(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
 }
 
 // --- Catalog ---

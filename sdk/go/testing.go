@@ -95,6 +95,23 @@ func (m *MockHost) KVList(_ context.Context, prefix string) ([]string, error) {
 	return keys, nil
 }
 
+// KVUsage returns in-memory KV usage matching the host's 256-byte key charge.
+func (m *MockHost) KVUsage(_ context.Context) (KVUsage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var used int64
+	for _, v := range m.KV {
+		used += int64(len(v))
+	}
+	keys := int64(len(m.KV))
+	return KVUsage{
+		Bytes:      used + keys*256,
+		Keys:       keys,
+		QuotaBytes: 50 << 20,
+		QuotaKeys:  10000,
+	}, nil
+}
+
 // SecretGet reads a secret from the in-memory secrets map.
 func (m *MockHost) SecretGet(_ context.Context, name string) (string, error) {
 	m.mu.RLock()

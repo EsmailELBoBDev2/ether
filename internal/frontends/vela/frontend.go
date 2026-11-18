@@ -178,6 +178,11 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		seconds := frontend.PreparingRetrySeconds(err, 5)
 		w.Header().Set("Retry-After", strconv.Itoa(seconds))
 		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "source", "code": "preparing", "message": "item is still being prepared", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrJobsBusy):
+		seconds := frontend.JobsBusyRetrySeconds(err, 5)
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		w.Header().Set("X-Ether-Media-Error", "jobs_busy")
+		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "capacity", "code": "jobs_busy", "message": frontend.JobsBusyMessage(err), "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
 	case errors.Is(err, frontend.ErrBudgetExhausted):
 		problem(w, 429, "capacity", "indexer_budget_exhausted")
 	case errors.Is(err, frontend.ErrDownloadLimit), errors.Is(err, frontend.ErrDownloadPaused):

@@ -306,6 +306,13 @@ export interface ViewerWatchEntry {
   completed?: boolean;
 }
 
+export interface KVUsage {
+  bytes: number;
+  keys: number;
+  quotaBytes: number;
+  quotaKeys: number;
+}
+
 export interface EtherHost {
   runtime?: { limits(): MaybePromise<RuntimeLimits> };
   settings?: { get(): MaybePromise<Record<string, unknown>> };
@@ -314,6 +321,7 @@ export interface EtherHost {
     put(key: string, value: string): MaybePromise<void>;
     delete(key: string): MaybePromise<void>;
     list(prefix?: string): MaybePromise<string[]>;
+    usage(): MaybePromise<KVUsage>;
   };
   secret: {
     get(name: string): MaybePromise<string>;
@@ -406,6 +414,7 @@ interface GlobalEtherBindings {
       put: (k: string, v: string) => void;
       delete: (k: string) => void;
       list: (prefix?: string) => string[];
+      usage?: () => KVUsage;
     };
     secret: {
       get: (name: string) => string;
@@ -527,6 +536,10 @@ export function createHostedClient(): EtherHost {
       list(prefix = ""): string[] {
         if (g.ether?.kv) return g.ether.kv.list(prefix) ?? [];
         return callHost<string[]>("kv.list", [prefix]) ?? [];
+      },
+      usage(): KVUsage {
+        if (g.ether?.kv?.usage) return g.ether.kv.usage();
+        return callHost<KVUsage>("kv.usage", []);
       },
     },
     secret: {
@@ -770,6 +783,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         const q = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
         const res = await callJson<{ keys: string[] }>("GET", `/ether/plugin-host/kv${q}`);
         return res?.keys ?? [];
+      },
+      async usage(): Promise<KVUsage> {
+        return (await callJson<KVUsage>("GET", "/ether/plugin-host/kv-usage"))!;
       },
     },
     secret: {

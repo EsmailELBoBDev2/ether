@@ -341,6 +341,10 @@ class _KVClient:
         res = self._call("GET", f"/ether/plugin-host/kv{q}")
         return list(res.get("keys", [])) if isinstance(res, dict) else []
 
+    def usage(self) -> Dict[str, int]:
+        res = self._call("GET", "/ether/plugin-host/kv-usage")
+        return dict(res) if isinstance(res, dict) else {}
+
 
 MIN_DATA_READ_BYTES = 8 * 1024 * 1024
 MAX_DATA_READ_BYTES = 512 * 1024 * 1024
@@ -2304,6 +2308,16 @@ class MockHostClient:
 
         def list(self, prefix: str = "") -> List[str]:
             return sorted(k for k in self._p.kv_store if k.startswith(prefix))
+
+        def usage(self) -> Dict[str, int]:
+            used = sum(len(v.encode("utf-8")) for v in self._p.kv_store.values())
+            keys = len(self._p.kv_store)
+            return {
+                "bytes": used + keys * 256,
+                "keys": keys,
+                "quotaBytes": 50 * 1024 * 1024,
+                "quotaKeys": 10000,
+            }
 
     class _Secret:
         def __init__(self, parent: "MockHostClient") -> None:

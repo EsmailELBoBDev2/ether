@@ -21,13 +21,15 @@ import type {
   ViewResponse,
   ViewSpecDocument,
 } from "./types.ts";
-import type {
-  CatalogTitleSummary,
-  EtherHost,
-  FolderEntry,
-  HostFetchRequest,
-  HostFetchResponse,
-  ViewerWatchEntry,
+import {
+  encodeText,
+  type CatalogTitleSummary,
+  type EtherHost,
+  type FolderEntry,
+  type HostFetchRequest,
+  type HostFetchResponse,
+  type KVUsage,
+  type ViewerWatchEntry,
 } from "./host.ts";
 import { plugin, type PluginDefinition, type PluginInstance } from "./router.ts";
 
@@ -111,6 +113,19 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         Array.from(state.kv.keys())
           .filter((k) => k.startsWith(prefix))
           .sort(),
+      usage: (): KVUsage => {
+        let used = 0;
+        for (const v of state.kv.values()) {
+          used += encodeText(v).byteLength;
+        }
+        const keys = state.kv.size;
+        return {
+          bytes: used + keys * 256,
+          keys,
+          quotaBytes: 50 * 1024 * 1024,
+          quotaKeys: 10000,
+        };
+      },
     },
     secret: {
       get: (name: string) => state.secrets.get(name) ?? "",

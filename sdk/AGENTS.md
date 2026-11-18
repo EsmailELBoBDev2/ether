@@ -257,9 +257,14 @@ opening a page should read saved data, not repeatedly scan the catalogue.
 The job recipe includes `ether.schedule: [{"every":"1h","call":"/ether/refresh"}]` to the manifest
 and a handler for that path. The first run happens right after install (within one
 scheduler tick once enabled); later runs keep their cadence across server restarts,
-including failed attempts. Store a cursor/etag in KV and process a bounded batch per
-run. Do not create timers in plugin code. Cache external results; keep the job
-unconfigured until the owner needs it. Settings changes must be read each run.
+including failed attempts. Scheduled calls run off the scheduler pass, never overlap
+for the same entry, and may return `{job:"/ether/job/import"}` to hand multi-step
+work (for example importing platform game catalogues) to a lowered-priority
+continuation job with progress and cancel. Store a cursor/etag in KV (`ether.kv.usage()`
+reports `{bytes, keys, quotaBytes, quotaKeys}` including the 256-byte charge per key)
+and process a bounded batch per run. Do not create timers in plugin code. Cache
+external results; keep the job unconfigured until the owner needs it. Settings
+changes must be read each run.
 
 ### 7. Settings and setup steps
 
@@ -349,7 +354,9 @@ deduplicates running jobs per plugin, kind, item and `partIndex`, passes the
 original request body, and uses the existing promoted job deadline and
 continuation protocol. A completed
 job wakes the resolver before the retry timer. Persist results in KV; never do
-work ahead of an actual request. At most two jobs run per plugin.
+work ahead of an actual request. Owner/scheduled jobs (up to 2) and playback
+resolver jobs (up to 4) have separate limits per plugin; if all four resolver
+slots are busy, Ether returns `503` with `code: "jobs_busy"` and `Retry-After`.
 
 `ether.http.fetch({url,timeoutMs:1200})` bounds a slow remote request by the
 remaining call deadline. Hosted code can catch `e.code === "timeout"`.

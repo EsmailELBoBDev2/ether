@@ -105,6 +105,8 @@ func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil || media == nil {
 		if errors.Is(err, core.ErrPreparing) {
 			w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
+		} else if errors.Is(err, core.ErrJobsBusy) {
+			w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(err, 5)))
 		}
 		status, code, message := openFailure(err)
 		h.refuse(w, status, code, message, err, grant.ItemID)
@@ -140,6 +142,8 @@ func openFailure(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, core.ErrPreparing):
 		return http.StatusServiceUnavailable, "preparing", "The item is still being prepared. Try again shortly."
+	case errors.Is(err, core.ErrJobsBusy):
+		return http.StatusServiceUnavailable, "jobs_busy", core.JobsBusyMessage(err)
 	case err == nil, errors.Is(err, core.ErrNotAvailable):
 		return http.StatusConflict, "no_source", "The item has no playable source."
 	case errors.Is(err, core.ErrNotFound):

@@ -113,6 +113,21 @@ type Host interface {
 	StreamURL(ctx context.Context, viewerID int64, itemRef string) (string, error)
 }
 
+// KVUsage reports a plugin's current KV bytes (including the 256-byte charge
+// per key), key count, and configured quotas (#591).
+type KVUsage struct {
+	Bytes      int64 `json:"bytes"`
+	Keys       int64 `json:"keys"`
+	QuotaBytes int64 `json:"quotaBytes"`
+	QuotaKeys  int64 `json:"quotaKeys"`
+}
+
+// KVUsageHost reports current KV usage and quotas (#591).
+// RemoteHostClient and MockHost implement it.
+type KVUsageHost interface {
+	KVUsage(ctx context.Context) (KVUsage, error)
+}
+
 // PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
 // part of a multi-file kind item (#576). RemoteHostClient and MockHost
 // implement it; Context.StreamPartURL uses it automatically.
@@ -272,6 +287,15 @@ func (c *RemoteHostClient) KVList(ctx context.Context, prefix string) ([]string,
 		return nil, err
 	}
 	return res.Keys, nil
+}
+
+// KVUsage reads the plugin's current KV byte/key usage and quotas.
+func (c *RemoteHostClient) KVUsage(ctx context.Context) (KVUsage, error) {
+	var res KVUsage
+	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/kv-usage", nil, &res, false); err != nil {
+		return KVUsage{}, err
+	}
+	return res, nil
 }
 
 // SecretGet is only available in hosted mode; remote plugins receive secrets via /ether/configure.

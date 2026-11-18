@@ -1288,6 +1288,21 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 		out, _ := json.Marshal(keys)
 		return out, nil
 
+	case "kv.usage":
+		var used int64
+		for _, v := range p.kv {
+			used += int64(len(v))
+		}
+		keys := int64(len(p.kv))
+		h.s.mu.Unlock()
+		out, _ := json.Marshal(plugins.KVUsage{
+			Bytes:      used + keys*plugins.KVKeyChargeBytes,
+			Keys:       keys,
+			QuotaBytes: plugins.KVQuotaBytes,
+			QuotaKeys:  plugins.KVQuotaKeys,
+		})
+		return out, nil
+
 	case "collections.upsert":
 		var colDoc map[string]any
 		var rawDoc json.RawMessage

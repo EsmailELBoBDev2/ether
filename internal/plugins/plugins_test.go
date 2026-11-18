@@ -111,6 +111,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		return env.fake, nil
 	})
 	env.m = m
+	t.Cleanup(func() {
+		env.m.cancelActionJobs("")
+		env.m.waitSchedule()
+	})
 	return env
 }
 

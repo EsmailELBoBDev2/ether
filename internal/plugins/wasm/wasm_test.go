@@ -55,6 +55,24 @@ func (h *fakeHost) CallHost(ctx context.Context, name string, args json.RawMessa
 		_ = json.Unmarshal(argv[0], &k)
 		h.kv[k] = argv[1]
 		return json.RawMessage("null"), nil
+	case "kv.usage":
+		var used int
+		for _, raw := range h.kv {
+			var s string
+			if json.Unmarshal(raw, &s) == nil {
+				used += len(s)
+			} else {
+				used += len(raw)
+			}
+		}
+		keys := len(h.kv)
+		b, _ := json.Marshal(map[string]int64{
+			"bytes":      int64(used + keys*256),
+			"keys":       int64(keys),
+			"quotaBytes": 50 << 20,
+			"quotaKeys":  10000,
+		})
+		return b, nil
 	case "log":
 		return json.RawMessage("null"), nil
 	}
@@ -642,5 +660,36 @@ func TestRawStartFunctionRespectsDeadline(t *testing.T) {
 	_, err := e.LoadWASM("test.start", "1", module, nil, Limits{Deadline: 100 * time.Millisecond})
 	if err == nil {
 		t.Fatal("endless start accepted")
+	}
+}
+
+func TestGuestKVUsage(t *testing.T) {
+	e := testEngine(t)
+	h := newFakeHost()
+	p, err := e.LoadJS("test.kv-usage", "1.0.0", `
+globalThis.handle = function() {
+  ether.kv.put("save:1", "hello");
+  return { status: 200, body: ether.kv.usage() };
+};
+`, h, Limits{Deadline: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	resp, _, err := p.CallDetailed(context.Background(), Request{Method: "POST", Path: "/"})
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("Handle: status=%d err=%v", resp.Status, err)
+	}
+	var u struct {
+		Bytes      int64 `json:"bytes"`
+		Keys       int64 `json:"keys"`
+		QuotaBytes int64 `json:"quotaBytes"`
+		QuotaKeys  int64 `json:"quotaKeys"`
+	}
+	if err := json.Unmarshal(resp.Body, &u); err != nil {
+		t.Fatalf("decode usage: %v (%s)", err, string(resp.Body))
+	}
+	if u.Bytes != 5+256 || u.Keys != 1 || u.QuotaBytes != 50<<20 || u.QuotaKeys != 10000 {
+		t.Fatalf("unexpected usage: %+v", u)
 	}
 }

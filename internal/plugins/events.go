@@ -228,7 +228,70 @@ func (m *Manager) DeliverOutbox(ctx context.Context, pluginID string) error {
 // Run drives health checks, scheduled jobs and outbox delivery until ctx
 // ends. Leader plugins run jobs and event delivery only on the leader;
 // every_node plugins run everywhere. Health checks run on every node.
+type scheduleFlight struct {
+	cancel context.CancelFunc
+}
+
+func (m *Manager) waitSchedule() {
+	m.scheduleWG.Wait()
+}
+
+func (m *Manager) scheduleBusyLocked(pluginID, callPath string) bool {
+	key := pluginID + "|" + callPath
+	if m.scheduleInFlight[key] != nil {
+		return true
+	}
+	if j := m.scheduleJobs[key]; j != nil {
+		if j.snapshot().State == "running" {
+			return true
+		}
+		delete(m.scheduleJobs, key)
+	}
+	if strings.HasPrefix(callPath, "/ether/job/") {
+		if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, pluginID, callPath, key string) {
+	defer m.scheduleWG.Done()
+	defer flight.cancel()
+	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
+	var started *actionJob
+	var startErr error
+	if err == nil && ctx.Err() == nil && resp.Status >= 200 && resp.Status < 300 && len(resp.Body) > 0 {
+		started, startErr = m.startResolverJob(pluginID, resp.Body, nil, "")
+		if started != nil && ctx.Err() != nil {
+			started.cancel()
+			started = nil
+		}
+	}
+	var cancelStarted *actionJob
+	m.mu.Lock()
+	if m.scheduleInFlight[key] == flight {
+		delete(m.scheduleInFlight, key)
+		if started != nil {
+			if m.scheduleJobs == nil {
+				m.scheduleJobs = map[string]*actionJob{}
+			}
+			m.scheduleJobs[key] = started
+		}
+	} else if started != nil {
+		cancelStarted = started
+	}
+	m.mu.Unlock()
+	if cancelStarted != nil {
+		cancelStarted.cancel()
+	}
+	if startErr != nil {
+		m.log.Warn("plugin schedule: start job", "plugin", pluginID, "call", callPath, "err", startErr)
+	}
+}
+
 func (m *Manager) Run(ctx context.Context) {
+	defer m.scheduleWG.Wait()
 	defer m.cancelActionJobs("")
 	defer m.cancelRemoteHashes("")
 	defer func() {
@@ -328,6 +391,10 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				m.mu.Unlock()
 				return
 			}
+			if m.scheduleBusyLocked(r.ID, job.Call) {
+				m.mu.Unlock()
+				continue
+			}
 			// Record dispatch before calling: failures (or a restart during a
 			// long job) must not produce a first-run storm on the next boot.
 			dispatched := m.now()
@@ -337,8 +404,15 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				continue
 			}
 			m.nextRun[key] = dispatched.Add(every)
+			callCtx, cancel := context.WithCancel(ctx)
+			flight := &scheduleFlight{cancel: cancel}
+			if m.scheduleInFlight == nil {
+				m.scheduleInFlight = map[string]*scheduleFlight{}
+			}
+			m.scheduleInFlight[key] = flight
+			m.scheduleWG.Add(1)
 			m.mu.Unlock()
-			_, _ = m.Call(ctx, r.ID, Request{Method: "POST", Path: job.Call})
+			go m.runScheduledCall(callCtx, flight, r.ID, job.Call, key)
 		}
 		_ = m.DeliverOutbox(ctx, r.ID)
 		// Capability refreshes ride the schedule: list sources and

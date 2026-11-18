@@ -5,6 +5,8 @@ import {
   assertValidViewSpec,
   createCatalogTemplate,
   createConditionTemplate,
+  createHostedHostClient,
+  type KVUsage,
   createI18n,
   createMockHostClient,
   createRankerTemplate,
@@ -520,6 +522,11 @@ test("createRemoteHostClient talks to /ether/plugin-host/* endpoints with creden
       res.end(JSON.stringify({ key: "greeting", value: "hello" }));
       return;
     }
+    if (req.url === "/ether/plugin-host/kv-usage" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ bytes: 263, keys: 1, quotaBytes: 52428800, quotaKeys: 10000 }));
+      return;
+    }
     if (req.url?.startsWith("/ether/plugin-host/kv") && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ keys: ["greeting"] }));
@@ -542,6 +549,8 @@ test("createRemoteHostClient talks to /ether/plugin-host/* endpoints with creden
     await client.kv.put("greeting", "updated");
     const keys = await client.kv.list("");
     assert.deepEqual(keys, ["greeting"]);
+    const usage: KVUsage = await client.kv.usage();
+    assert.deepEqual(usage, { bytes: 263, keys: 1, quotaBytes: 52428800, quotaKeys: 10000 });
 
     await client.collections.upsert({ name: "Top picks", itemIds: ["tt0133093"] });
     await client.notify.owner("Sync complete.");
@@ -625,4 +634,49 @@ test("subtitle listing is separate from viewer-picked downloads", async () => {
   const download = await instance.handle({ method: "POST", path: "/ether/subtitles/download", headers: { "X-Ether-Pick": "pick" }, body: { id: "a", lang: "en", format: "srt" } });
   assert.equal(download.status, 200);
   assert.deepEqual(download.body, { format: "srt", encoding: "utf8", data: "a" });
+});
+
+test("kv.usage reports value bytes plus 256-byte key charge in mock and hosted clients", async () => {
+  const mock = createMockHostClient();
+  assert.deepEqual(mock.kv.usage(), {
+    bytes: 0,
+    keys: 0,
+    quotaBytes: 50 * 1024 * 1024,
+    quotaKeys: 10000,
+  });
+  mock.kv.put("save:slot-1", "abcd");
+  mock.kv.put("index:snes", "0123456789");
+  assert.deepEqual(mock.kv.usage(), {
+    bytes: 4 + 10 + 2 * 256,
+    keys: 2,
+    quotaBytes: 50 * 1024 * 1024,
+    quotaKeys: 10000,
+  });
+  mock.kv.delete("save:slot-1");
+  assert.deepEqual(mock.kv.usage(), {
+    bytes: 10 + 256,
+    keys: 1,
+    quotaBytes: 50 * 1024 * 1024,
+    quotaKeys: 10000,
+  });
+
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  g.__ether_host = (name: string, argsJson: string) => {
+    assert.equal(name, "kv.usage");
+    assert.equal(argsJson, "[]");
+    return JSON.stringify({ bytes: 1024, keys: 3, quotaBytes: 52428800, quotaKeys: 10000 });
+  };
+  try {
+    const hosted = createHostedHostClient();
+    assert.deepEqual(hosted.kv.usage(), {
+      bytes: 1024,
+      keys: 3,
+      quotaBytes: 52428800,
+      quotaKeys: 10000,
+    });
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
 });

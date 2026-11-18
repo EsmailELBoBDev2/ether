@@ -168,7 +168,7 @@
     "id": "host-kv",
     "title": "Key/value storage",
     "group": "Host services",
-    "body": "Plugin-scoped string values survive instance restarts. Missing get returns null in JS; Go also returns a found flag. Use prefixes for list. Remote values are capped at 5 MiB, with the per-plugin quota also enforced. Never store secrets here.\n\n```ts\nether.kv.put(\"counter\", \"1\");\nconst value = ether.kv.get(\"counter\");\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
+    "body": "Plugin-scoped string values survive instance restarts. Missing get returns null in JS; Go also returns a found flag. Use prefixes for list, and call usage() to inspect `{bytes, keys, quotaBytes, quotaKeys}` (values plus 256 bytes per key, capped at 50 MiB and 10,000 keys) before writing user state such as game saves alongside a catalogue index. Remote values are capped at 5 MiB, with the per-plugin quota also enforced. Never store secrets here.\n\n```ts\nconst usage = ether.kv.usage();\nif (usage.bytes + saveJson.length + 256 <= usage.quotaBytes && usage.keys < usage.quotaKeys) {\n  ether.kv.put(\"save:slot-1\", saveJson);\n}\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
     "patterns": ["@host:KV"]
   },
   {

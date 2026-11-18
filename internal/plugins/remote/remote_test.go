@@ -818,6 +818,22 @@ func (f *fakeHost) KVList(_ context.Context, pluginID, prefix string) ([]string,
 	return keys, nil
 }
 
+func (f *fakeHost) KVUsage(_ context.Context, pluginID string) (plugins.KVUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var used int64
+	for _, v := range f.kv[pluginID] {
+		used += int64(len(v))
+	}
+	keys := int64(len(f.kv[pluginID]))
+	return plugins.KVUsage{
+		Bytes:      used + keys*plugins.KVKeyChargeBytes,
+		Keys:       keys,
+		QuotaBytes: plugins.KVQuotaBytes,
+		QuotaKeys:  plugins.KVQuotaKeys,
+	}, nil
+}
+
 func (f *fakeHost) CatalogSearch(_ context.Context, _, query string, limit, offset int) (json.RawMessage, error) {
 	if f.denyCatalog {
 		return nil, ErrPermissionDenied

@@ -512,6 +512,21 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 		}
 		return marshalResult(keys)
 
+	case "kv.usage":
+		h.mu.Lock()
+		var used int64
+		for _, v := range h.kv {
+			used += int64(len(v))
+		}
+		keys := int64(len(h.kv))
+		h.mu.Unlock()
+		return marshalResult(plugins.KVUsage{
+			Bytes:      used + keys*plugins.KVKeyChargeBytes,
+			Keys:       keys,
+			QuotaBytes: plugins.KVQuotaBytes,
+			QuotaKeys:  plugins.KVQuotaKeys,
+		})
+
 	case "secret.get":
 		secName := str(0)
 		if !h.secretDeclared(secName) {

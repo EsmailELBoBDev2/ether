@@ -887,9 +887,9 @@ func (s *Service) rekeyTimelineRows(ctx context.Context, from, into string, seqB
 		return err
 	}
 	type row struct {
-		atMS                         int64
-		entryType, kind, level, msg  string
-		detail                       string
+		atMS                        int64
+		entryType, kind, level, msg string
+		detail                      string
 	}
 	var moved []row
 	for rows.Next() {
@@ -962,10 +962,10 @@ func (s *Service) PlayTimeline(ctx context.Context, id string) (*PlayTimeline, e
 	}
 
 	var (
-		startedSec, endedSec                        int64
-		errText                                     string
-		measured, played, pictured, startFailed     int
-		foundRow                                    bool
+		startedSec, endedSec                    int64
+		errText                                 string
+		measured, played, pictured, startFailed int
+		foundRow                                bool
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT started,ended,error,measured,played,pictured,start_failed FROM stats_plays WHERE id=?`,

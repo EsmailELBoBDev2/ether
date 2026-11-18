@@ -226,7 +226,7 @@ func TestHiddenLibraryAnswers404(t *testing.T) {
 // TestMissingCredentialAnswers401 checks the unauthenticated path.
 func TestMissingCredentialAnswers401(t *testing.T) {
 	mgr := &fakeManager{handler: func(req plugins.Request) (plugins.Response, io.ReadCloser, error) {
-		return plugins.Response{Status: 200}, io.NopCloser(strings.NewReader("")) , nil
+		return plugins.Response{Status: 200}, io.NopCloser(strings.NewReader("")), nil
 	}}
 	f, _ := New(testDecl(core.LibraryMovies), mgr)
 	inst, err := f.Mount(context.Background(), testHost(map[string]*core.Viewer{"tok1": viewerWithLibraries(7, "A", core.LibraryMovies)}))

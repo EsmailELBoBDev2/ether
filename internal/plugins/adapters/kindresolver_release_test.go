@@ -37,11 +37,13 @@ type stubMediaSource struct {
 	data []byte
 }
 
-func (s stubMediaSource) ReleaseID() string                       { return s.id }
-func (s stubMediaSource) Name() string                            { return "file.epub" }
-func (s stubMediaSource) Size() int64                             { return int64(len(s.data)) }
-func (s stubMediaSource) ReadAt(p []byte, off int64) (int, error) { return bytes.NewReader(s.data).ReadAt(p, off) }
-func (s stubMediaSource) Close() error                            { return nil }
+func (s stubMediaSource) ReleaseID() string { return s.id }
+func (s stubMediaSource) Name() string      { return "file.epub" }
+func (s stubMediaSource) Size() int64       { return int64(len(s.data)) }
+func (s stubMediaSource) ReadAt(p []byte, off int64) (int, error) {
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+func (s stubMediaSource) Close() error { return nil }
 
 func TestKindResolverReleaseExplicitSelectorsEnableAllowNonVideo(t *testing.T) {
 	ctx := context.Background()

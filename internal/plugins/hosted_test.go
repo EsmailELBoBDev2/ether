@@ -234,7 +234,6 @@ func (memHost) FoldersHashCancel(context.Context, string) (FolderHashJob, error)
 	return FolderHashJob{}, nil
 }
 
-
 func TestHostedEffectiveCallLimitsAndGovernance(t *testing.T) {
 	eng := wasm.NewEngine(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { _ = eng.Close() })
@@ -341,14 +340,21 @@ globalThis.handle = function(req) {
 
 	// Exceeding the 50,000-unit budget states the route and 5 s budget clearly.
 	_, err = callLimits("/ether/v1/kinds/games/resolve", 5005)
-	if err == nil || !strings.Contains(err.Error(), "used the whole 5 s budget for /ether/v1/kinds/games/resolve") {
+	// Units are wall-time units, so the unit budget and the 5 s deadline are
+	// the same limit and either can trip first on a slow host. Both must name
+	// the route and its 5 s limit.
+	honest := func(msg string) bool {
+		return strings.Contains(msg, "used the whole 5 s budget for /ether/v1/kinds/games/resolve") ||
+			strings.Contains(msg, "call exceeded its 5 s deadline for /ether/v1/kinds/games/resolve")
+	}
+	if err == nil || !honest(err.Error()) {
 		t.Fatalf("expected honest governance error, got: %v", err)
 	}
 	health, err := env.m.HealthOf(ctx, rec.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(health.LastError, "used the whole 5 s budget for /ether/v1/kinds/games/resolve") {
+	if !honest(health.LastError) {
 		t.Fatalf("health lastError = %q", health.LastError)
 	}
 

@@ -910,6 +910,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 }
 
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(frontend.WithSearchMemo(r.Context()))
 	v, _, err := i.viewer(r)
 	if err != nil || v == nil {
 		http.Error(w, "Unauthorized", 401)

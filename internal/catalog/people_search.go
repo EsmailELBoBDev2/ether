@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -61,7 +62,7 @@ $$;`)
 const (
 	// peopleSearchCandidateCap bounds how many person rows one FTS or trigram
 	// candidate probe reads before Go-side ranking.
-	peopleSearchCandidateCap = 256
+	peopleSearchCandidateCap = 192
 	// maxPeopleForTitles bounds how many matched people expand to credits on a
 	// single search.
 	maxPeopleForTitles = 4
@@ -147,6 +148,33 @@ func (c *Catalog) matchPeople(ctx context.Context, terms []string, limit int) ([
 		return nil, nil
 	}
 	fetchLimit := min(max(limit*4, 64), peopleSearchCandidateCap)
+	// One search request reads the same names for its title results and
+	// its person results; a wider read already made answers a narrower one.
+	memo := core.SearchMemoFrom(ctx)
+	key := "people\x00" + strings.Join(tokens, "\x00")
+	if v, ok := memo.Load(key); ok {
+		if hit := v.(personMatchesMemo); hit.fetch >= fetchLimit {
+			return slices.Clone(hit.sorted[:min(limit, len(hit.sorted))]), nil
+		}
+	}
+	out, err := c.readPeopleMatches(ctx, tokens, fetchLimit)
+	if err != nil {
+		return nil, err
+	}
+	memo.Store(key, personMatchesMemo{fetch: fetchLimit, sorted: out})
+	return slices.Clone(out[:min(limit, len(out))]), nil
+}
+
+// personMatchesMemo is one request's candidate read for a name, sorted by
+// credits, and how wide the read was.
+type personMatchesMemo struct {
+	fetch  int
+	sorted []PersonMatch
+}
+
+// readPeopleMatches reads up to fetchLimit candidates per probe and returns
+// them sorted by (credits DESC, person_tmdb ASC).
+func (c *Catalog) readPeopleMatches(ctx context.Context, tokens []string, fetchLimit int) ([]PersonMatch, error) {
 	byID := make(map[int64]PersonMatch, fetchLimit)
 	addRows := func(q string, args ...any) error {
 		rows, err := c.db.QueryContext(ctx, q, args...)
@@ -179,8 +207,10 @@ func (c *Catalog) matchPeople(ctx context.Context, terms []string, limit int) ([
 		}
 	} else {
 		// 1. Exact lowercase B-tree seek via catalog_person_names_exact.
+		// SQLite only: PostgreSQL takes the folded seek above, so the
+		// PostgreSQL plan check skips statements marked this way.
 		if err := addRows(
-			`SELECT person_tmdb, name, credits FROM catalog_person_names WHERE LOWER(name)=? AND credits>0 LIMIT ?`,
+			store.SQLiteOnly+`SELECT person_tmdb, name, credits FROM catalog_person_names WHERE LOWER(name)=? AND credits>0 LIMIT ?`,
 			joinedName, 16,
 		); err != nil {
 			return nil, err
@@ -217,9 +247,6 @@ func (c *Catalog) matchPeople(ctx context.Context, terms []string, limit int) ([
 		}
 		return cmp.Compare(a.TMDB, b.TMDB)
 	})
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out, nil
 }
 
@@ -515,6 +542,15 @@ func (c *Catalog) PeopleTitles(ctx context.Context, viewer *core.User, query str
 	if len(matches) == 0 {
 		return nil, nil
 	}
+	// Matches are sorted strongest first. A name typed in full expands up to
+	// maxPeopleForTitles people sharing it; a partial name ("star" inside
+	// "Starr") only adds its best match's titles under the title results,
+	// so a short word never reads several whole filmographies.
+	if !matches[0].exactOrNear() {
+		matches = matches[:1]
+	} else if n := slices.IndexFunc(matches, func(m scoredPersonMatch) bool { return !m.exactOrNear() }); n > 0 {
+		matches = matches[:n]
+	}
 	if len(matches) > maxPeopleForTitles {
 		matches = matches[:maxPeopleForTitles]
 	}
@@ -545,14 +581,14 @@ func (c *Catalog) PeopleTitles(ctx context.Context, viewer *core.User, query str
 		personRankByID[m.TMDB] = i
 		personMatchByID[m.TMDB] = m
 		capRows := secondaryPersonCreditCap
-		if i == 0 {
+		if i == 0 && m.exactOrNear() {
 			capRows = primaryPersonCreditCap
 		}
 		parts = append(parts, `SELECT * FROM (SELECT `+cols+`, cr.person_tmdb, cr.kind, cr.ord, cr.role
 			FROM catalog_credits cr
 			JOIN catalog_titles t ON t.key=cr.key
 			WHERE cr.person_tmdb=? AND t.adult=0 AND t.type IN (`+inTypes+`)`+gateWhere+`
-			LIMIT ?)`)
+			LIMIT ?) AS person_`+strconv.Itoa(i))
 		args = append(args, m.TMDB)
 		args = append(args, typeArgs...)
 		args = append(args, gateArgs...)

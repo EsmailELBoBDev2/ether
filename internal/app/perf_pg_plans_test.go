@@ -293,6 +293,9 @@ func plansSeedStatistics(t *testing.T, ctx context.Context, db *sql.DB, s perfha
 // on PostgreSQL 14 (EXPLAIN (GENERIC_PLAN) needs 16): no parameter value
 // steers it.
 func plansExplain(ctx context.Context, db *sql.DB, schema, q string) ([]string, error) {
+	if strings.HasPrefix(q, store.SQLiteOnly) {
+		return nil, fmt.Errorf("SQLite-only statement")
+	}
 	upper := strings.ToUpper(strings.TrimSpace(q))
 	if !(strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH")) {
 		return nil, fmt.Errorf("not a read")

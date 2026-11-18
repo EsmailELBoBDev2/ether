@@ -48,23 +48,23 @@ type Preview struct {
 	// from the package's own strings.
 	Summary string `json:"summary,omitempty"`
 	// Icon is a browser-loadable URL or rasterized PNG data URI for preview.
-	Icon             string   `json:"icon,omitempty"`
-	PermissionLines  []string `json:"permissions"`
+	Icon                 string   `json:"icon,omitempty"`
+	PermissionLines      []string `json:"permissions"`
 	NeedsViewers         bool     `json:"needsViewers"`
 	NeedsFolders         bool     `json:"needsFolders"`
 	NeedsOperatorHosts   bool     `json:"needsOperatorHosts,omitempty"`
 	LocalHosts           []string `json:"localHosts,omitempty"`
 	PendingOperatorHosts []string `json:"pendingOperatorHosts,omitempty"`
-	Verified         bool     `json:"verified"`
-	StremioOnly      bool     `json:"stremioOnly"`
-	AlreadyInstalled bool     `json:"alreadyInstalled,omitempty"`
-	InstalledVersion string   `json:"installedVersion,omitempty"`
-	AddedPermissions []string `json:"addedPermissions,omitempty"`
-	source           Source
-	files            map[string][]byte
-	manifestRaw      json.RawMessage
-	resolvedSettings json.RawMessage
-	resolvedStrings  map[string]map[string]string
+	Verified             bool     `json:"verified"`
+	StremioOnly          bool     `json:"stremioOnly"`
+	AlreadyInstalled     bool     `json:"alreadyInstalled,omitempty"`
+	InstalledVersion     string   `json:"installedVersion,omitempty"`
+	AddedPermissions     []string `json:"addedPermissions,omitempty"`
+	source               Source
+	files                map[string][]byte
+	manifestRaw          json.RawMessage
+	resolvedSettings     json.RawMessage
+	resolvedStrings      map[string]map[string]string
 }
 
 // IsGitHubURL classifies a github.com repo URL.

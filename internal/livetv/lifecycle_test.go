@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -165,7 +166,9 @@ func TestIPTVSlowProbeStartupBudget(t *testing.T) {
 			name = "steady"
 		}
 		t.Run(name, func(t *testing.T) {
-			db, err := store.OpenMemory(context.Background())
+			// SQLite always: a PostgreSQL connection's timers belong to
+			// no synctest bubble, so closing one inside it panics.
+			db, err := store.OpenPath(context.Background(), filepath.Join(t.TempDir(), "ether.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

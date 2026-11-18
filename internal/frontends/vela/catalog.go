@@ -819,6 +819,7 @@ func (i *instance) children(w http.ResponseWriter, r *http.Request) {
 	cacheDetail(w, r, object{"items": ts, "continuation": c}, pending)
 }
 func (i *instance) search(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(frontend.WithSearchMemo(r.Context()))
 	v, t, e := i.viewer(r)
 	if e != nil {
 		fail(w, e, r)

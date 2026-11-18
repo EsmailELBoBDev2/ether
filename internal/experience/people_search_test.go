@@ -214,7 +214,6 @@ func TestPartialPersonMatchesNeverPushDownTitleResults(t *testing.T) {
 	}
 }
 
-
 type mockDescriptiveVibeSource struct {
 	onDescribe func(string) core.DescriptiveResult
 }
@@ -222,8 +221,8 @@ type mockDescriptiveVibeSource struct {
 func (m *mockDescriptiveVibeSource) VibeCollection(context.Context, *core.User, string) (*core.Collection, []core.Title, bool, error) {
 	return nil, nil, false, nil
 }
-func (m *mockDescriptiveVibeSource) DescriptiveSearchAvailable() bool { return true }
-func (m *mockDescriptiveVibeSource) DescribeCached(*core.User, string) bool { return true }
+func (m *mockDescriptiveVibeSource) DescriptiveSearchAvailable() bool        { return true }
+func (m *mockDescriptiveVibeSource) DescribeCached(*core.User, string) bool  { return true }
 func (m *mockDescriptiveVibeSource) CancelDescribeSearch(*core.User, string) {}
 func (m *mockDescriptiveVibeSource) DescribeSearch(_ context.Context, _ *core.User, q string, _ bool) (core.DescriptiveResult, error) {
 	return m.onDescribe(q), nil

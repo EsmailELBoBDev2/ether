@@ -1830,7 +1830,7 @@ func searchLimit(w http.ResponseWriter, r *http.Request, fallback, ceiling int) 
 }
 
 func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
+	r = r.WithContext(frontend.WithSearchMemo(s.exp().NoProviderWait(r.Context())))
 	ctx := r.Context()
 	pr := FromContext(ctx)
 	q := r.URL.Query()

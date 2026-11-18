@@ -1023,13 +1023,13 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	// wrong-audio or below-score sources, and never discard a healthy fallback.
 	if req.Prefer == "" && pin == nil && req.Client.PreferredSourceHeight >= 720 {
 		suitable := func(c candidate) bool {
-			return c.rel.Info.Height >= 720 && c.rel.Info.Height <= req.Client.PreferredSourceHeight && !c.identityWeak && !c.identityConflict && !c.starved && !c.belowScore && c.langOK
+			return c.rel.Info.Height >= 720 && c.rel.Info.Height <= req.Client.PreferredSourceHeight && !c.identityWeak && !c.identityConflict && !c.audioUnverified && !c.starved && !c.belowScore && c.langOK
 		}
 		sort.SliceStable(cands, func(i, j int) bool { return suitable(cands[i]) && !suitable(cands[j]) })
 	}
 	if req.Prefer == "" && pin == nil && req.Client.MaxBitrateKbps > 0 && !req.Client.DefaultRemoteBitrate {
 		cleanHD := func(c candidate) bool {
-			return c.rel.Info.Height >= 720 && !c.identityWeak && !c.identityConflict && !c.starved && !c.belowScore && c.langOK
+			return c.rel.Info.Height >= 720 && !c.identityWeak && !c.identityConflict && !c.audioUnverified && !c.starved && !c.belowScore && c.langOK
 		}
 		fitsCap := func(c candidate) bool { return cleanHD(c) && c.bandwidth > 0 }
 		if slices.ContainsFunc(cands, fitsCap) {
@@ -1638,7 +1638,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	namesake := sreq.Type == core.TypeEpisode && (identity.shared(sreq) || s.hasSeriesNamesake(ctx, t, sreq))
 	if namesake {
 		for _, rel := range results {
-			if identity.reject(rel, t, sreq) == "" && episodeIdentityEvidence(rel, sreq) && rejectIdentityYears(rel, t, sreq, env.lang, func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }) == "" {
+			if identity.reject(rel, t, sreq) == "" && identity.evidence(rel, t, sreq) != "" && rejectIdentityYears(rel, t, sreq, env.lang, func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }) == "" {
 				corroborated = true
 				break
 			}
@@ -1688,7 +1688,13 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 				return hot.Match(r, c, verifiedIDs[r.ID])
 			}
 		}
+		preferred := pinned || (req.Prefer != "" && rel.ID == req.Prefer)
 		policyResult := policy.Evaluate(rel, policyContext)
+		var unverifiedLangs []string
+		audioUnverified := false
+		if !pinned {
+			unverifiedLangs, audioUnverified = classifyAudioVerification(policy, policyContext, &policyResult, profile, t, rel)
+		}
 		hardSubbed := subtitles[rel.ID] || releaseparse.HardSubbed(rel.Name)
 		if rcfg.HardSubtitles != "allow" && hardSubbed {
 			policyResult.Fallback += 100
@@ -1696,9 +1702,9 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 		if len(profile.ReleaseRules) > 0 {
 			ct.Preferences = &policyResult
 		}
-		preferred := pinned || (req.Prefer != "" && rel.ID == req.Prefer)
 		var reason string
 		identityReason := identity.reject(rel, t, sreq)
+		identityEv := identity.evidence(rel, t, sreq)
 		if rcfg.HardSubtitles == "exclude" && hardSubbed {
 			reason = "blocked hardcoded subtitles"
 		} else if s.rejectedFor(t.Key, rel) {
@@ -1707,17 +1713,17 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			reason = ReasonNotAVideoFile
 		} else if !pinned && identityReason != "" {
 			reason = identityReason
-		} else if !pinned && namesake && episodeNamesakeConflict(rel, t, sreq) {
-			reason = "conflicting namesake identity"
-		} else if !pinned && corroborated && releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year) == 0 && !episodeIdentityEvidence(rel, sreq) {
-			reason = "ambiguous series identity (name only)"
+		} else if !pinned && namesake && identityEv == "" && episodeNamesakeConflict(rel, t, sreq) {
+			reason = identityAmbiguousReason("conflicting namesake audio/region", sreq, identity.animeIdentifiesTarget(t, sreq), true)
+		} else if !pinned && corroborated && releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year) == 0 && identityEv == "" {
+			reason = identityAmbiguousReason("shared series title (name only)", sreq, identity.animeIdentifiesTarget(t, sreq), true)
 		} else if pinned {
 			reason = s.pinRejectReason(rel, sreq, req.Client, exclude)
 		} else if rel.Info.Height <= 0 && aboveCeiling && !withinCeiling {
 			clientRejected = true
 			reason = "unknown source resolution under a resolution limit"
 		} else if policyResult.Rejected {
-			reason = preferenceReason(policyResult)
+			reason = audioAbsentPolicyReason(policy, policyContext, rel, policyResult)
 		} else {
 			reason = s.rejectReason(rel, t, sreq, profile, rcfg, req.Client, exclude, preferred)
 			if reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
@@ -1727,9 +1733,13 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 				caps.VideoCodecs = append(slices.Clone(caps.VideoCodecs), rel.Info.VideoCodec)
 				reason = s.rejectReason(rel, t, sreq, profile, rcfg, caps, exclude, preferred)
 			}
+			if strings.HasPrefix(reason, "audio is not in the profile's language (") {
+				clientRejected = true
+				reason = audioAbsentProfileReason(reason, profile)
+			}
 		}
 		if reason != "" {
-			if strings.HasPrefix(reason, "release preference:") {
+			if strings.HasPrefix(reason, "release preference:") || strings.HasPrefix(reason, "audio language absent:") || strings.HasPrefix(reason, "audio language unverified:") {
 				clientRejected = true
 			}
 			ct.Rejected = true
@@ -1835,32 +1845,66 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			if !langOK {
 				note("ranked after releases in an accepted audio language")
 			}
+			if identityEv == AnimeReleaseStyleIdentityReason {
+				note(AnimeReleaseStyleIdentityReason)
+			} else if !pinned && identity.ambiguous(rel, t, sreq) {
+				note(identityAmbiguousReason("shared series title (ranked after corroborated releases)", sreq, identity.animeIdentifiesTarget(t, sreq), true))
+			}
+			if audioUnverified {
+				note(audioUnverifiedCompatNote(unverifiedLangs))
+			}
 		}
-		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, sreq), identityConflict: namesake && episodeRegionConflict(rel, t), fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
+		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, t, sreq), identityConflict: namesake && identityEv == "" && episodeRegionConflict(rel, t), audioUnverified: audioUnverified, unverifiedLangs: unverifiedLangs, fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
 	}
 	if hot != nil && len(cands) > 0 {
 		s.addPluginScores(hot, profile, cands, trace)
 	}
 
-	return s.orderCandidates(cands, req.Title, trace), clientRejected, nil
+	ordered := s.orderCandidates(cands, req.Title, trace)
+	capCtx := releasepolicy.Context{OriginalLanguage: titleOriginalLanguage(t)}
+	if hot != nil {
+		capCtx.ExternalMatch = func(r core.Release, c core.ReleaseCondition) (bool, bool) {
+			return hot.Match(r, c, verifiedIDs[r.ID])
+		}
+	}
+	ordered, capped := capUnverifiedAudioCandidates(ordered, results, sreq, exclude, policy, capCtx, profile, t, trace)
+	if capped {
+		clientRejected = true
+	}
+	return ordered, clientRejected, nil
 }
 
 func (s *Service) orderCandidates(cands []candidate, title *core.Title, trace *Trace) []candidate {
 	// Rank strict matches in isolation so additional closest matches cannot
-	// affect their existing sort or source routing. Keep input order within
-	// each partition, including for stable tie-breaks.
-	strict := make([]candidate, 0, len(cands))
-	soft := make([]candidate, 0)
+	// affect their existing sort or source routing, and keep unverified-audio
+	// candidates strictly behind candidates with confirmed required audio.
+	confirmed := make([]candidate, 0, len(cands))
+	unverified := make([]candidate, 0)
 	for _, c := range cands {
-		if c.belowScore || c.fallback {
-			soft = append(soft, c)
+		if c.audioUnverified {
+			unverified = append(unverified, c)
 		} else {
-			strict = append(strict, c)
+			confirmed = append(confirmed, c)
 		}
 	}
-	strict = s.orderPreferenceCandidates(strict, title, trace)
-	soft = s.orderPreferenceCandidates(soft, title, trace)
-	return append(strict, soft...)
+	orderGroup := func(group []candidate) []candidate {
+		if len(group) == 0 {
+			return nil
+		}
+		strict := make([]candidate, 0, len(group))
+		soft := make([]candidate, 0)
+		for _, c := range group {
+			if c.belowScore || c.fallback {
+				soft = append(soft, c)
+			} else {
+				strict = append(strict, c)
+			}
+		}
+		strict = s.orderPreferenceCandidates(strict, title, trace)
+		soft = s.orderPreferenceCandidates(soft, title, trace)
+		return append(strict, soft...)
+	}
+	return append(orderGroup(confirmed), orderGroup(unverified)...)
 }
 
 func (s *Service) orderPreferenceCandidates(cands []candidate, title *core.Title, trace *Trace) []candidate {
@@ -2704,7 +2748,7 @@ func languageConflict(rel core.Release, t *core.Title) bool {
 	}
 	named := false
 	for _, l := range info.Languages {
-		if l == releaseparse.LanguageMulti {
+		if l == releaseparse.LanguageMulti || l == releaseparse.LanguageDual {
 			return false
 		}
 		named = true

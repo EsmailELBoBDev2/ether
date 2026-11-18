@@ -108,7 +108,7 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 		}
 		if found {
 			identity := s.localEpisodeIdentity(ctx, req.Title, sreq, results)
-			if identity.reject(r, req.Title, sreq) != "" || (identity.ambiguous(r, sreq) && !strict[0].identityWeak) {
+			if identity.reject(r, req.Title, sreq) != "" || (identity.ambiguous(r, req.Title, sreq) && !strict[0].identityWeak) {
 				played = ""
 			}
 		}

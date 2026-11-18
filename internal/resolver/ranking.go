@@ -53,6 +53,11 @@ func compareCandidates(a, b candidate) bool {
 	if a.identityWeak != b.identityWeak {
 		return !a.identityWeak
 	}
+	// Releases with confirmed required audio languages always precede releases
+	// whose audio tracks still require media-probe verification.
+	if a.audioUnverified != b.audioUnverified {
+		return !a.audioUnverified
+	}
 	// Soft profile preferences precede the ordinary quality comparer.
 	if a.belowScore != b.belowScore {
 		return !a.belowScore
@@ -266,6 +271,6 @@ func preferredSource(mode string) string {
 }
 
 func samePreferenceTier(a, b candidate) bool {
-	return a.belowScore == b.belowScore && a.fallback == b.fallback &&
+	return a.audioUnverified == b.audioUnverified && a.belowScore == b.belowScore && a.fallback == b.fallback &&
 		(!a.belowScore || a.counted == b.counted) && (!a.fallback || a.keys.height == b.keys.height)
 }

@@ -47,12 +47,13 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 		return false
 	}
 	if req.Type == core.TypeEpisode && (identity.shared(req) || s.hasSeriesNamesake(ctx, t, req)) {
+		evidence := identity.evidence(rel, t, req)
 		// Old indexer IDs may have been copied from the query. Contradictory
-		// regional evidence needs a year or episode subtitle before reuse.
-		if episodeNamesakeConflict(rel, t, req) {
+		// regional evidence needs positive identity evidence before reuse.
+		if evidence == "" && episodeNamesakeConflict(rel, t, req) {
 			return false
 		}
-		return episodeIdentityEvidence(rel, req)
+		return evidence != ""
 	}
 	return true
 }

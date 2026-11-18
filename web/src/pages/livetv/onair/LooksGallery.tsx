@@ -163,10 +163,12 @@ export function LooksGallery({
   looks,
   onSelect,
   query = "",
+  inDrawer = false,
 }: {
   looks: Style[];
   /** The lineup panel's search text. */
   query?: string;
+  inDrawer?: boolean;
   onNew(): void;
   onSelect(id: string): void;
 }) {
@@ -185,6 +187,22 @@ export function LooksGallery({
   const owned = looks.filter((l) => !deleted.includes(l.id));
   // Owners with styles land on their styles; a fresh install lands on templates.
   const { view, show } = styleFilter(params, owned.length);
+  const heading =
+    view === "yours"
+      ? show === "onair"
+        ? t("On air")
+        : show === "unused"
+          ? t("Not on air")
+          : t("Your styles")
+      : show === "decades"
+        ? t("Decades")
+        : show === "timeless"
+          ? t("Timeless")
+          : t("Make it yours");
+  const subtitle =
+    view === "yours"
+      ? t("Your channel identities, ready for their next moment on air.")
+      : t("Choose an era. Set the mood. Make every frame your own.");
   const matches = (name: string) => name.toLowerCase().includes(query.trim().toLowerCase());
   const create = async (style: Style) => {
     setWorking(true);
@@ -215,39 +233,47 @@ export function LooksGallery({
     }
   };
   return (
-    <div className="mx-auto max-w-[1600px] space-y-12 p-4 sm:p-8">
+    <div className={inDrawer ? "space-y-6" : "mx-auto max-w-[1600px] space-y-6 p-4 sm:p-6"}>
       {error ? (
         <p role="alert" className="rounded-lg bg-danger-subtle p-4 text-danger">
           {error}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <SubtabNav
-          ariaLabel={t("Styles")}
-          active={view}
-          onSelect={(next) =>
-            setParams((p) => {
-              p.set("view", next);
-              p.delete("show");
-              return p;
-            })
-          }
-          tabs={[
-            { key: "yours", label: t("Your styles") },
-            { key: "make", label: t("Make it yours") },
-          ]}
-        />
-        <div className="flex gap-2">
+      {inDrawer ? (
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <SubtabNav
+            ariaLabel={t("Styles")}
+            active={view}
+            onSelect={(next) =>
+              setParams((p) => {
+                p.set("view", next);
+                p.delete("show");
+                return p;
+              })
+            }
+            tabs={[
+              { key: "yours", label: t("Your styles") },
+              { key: "make", label: t("Make it yours") },
+            ]}
+          />
           <Button disabled={working} onClick={() => void create(blankStyle())}>
             {t("Start from blank")}
           </Button>
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-fg">{heading}</h2>
+            <p className="text-sm text-fg-muted">{subtitle}</p>
+          </div>
+          <Button disabled={working} onClick={() => void create(blankStyle())}>
+            {t("Start from blank")}
+          </Button>
+        </div>
+      )}
       {view === "yours" ? (
         <section className="space-y-6">
-          <p className="text-sm text-fg-muted">
-            {t("Your channel identities, ready for their next moment on air.")}
-          </p>
+          {inDrawer ? <p className="text-sm text-fg-muted">{subtitle}</p> : null}
           {owned.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-border p-10 text-center">
               <p className="font-medium">{t("No styles yet")}</p>
@@ -365,11 +391,7 @@ export function LooksGallery({
         </section>
       ) : (
         <section className="space-y-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <p className="text-sm text-fg-muted">
-              {t("Choose an era. Set the mood. Make every frame your own.")}
-            </p>
-          </div>
+          {inDrawer ? <p className="text-sm text-fg-muted">{subtitle}</p> : null}
           <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
             {templates
               .filter((x) => matches(x.name))
@@ -390,9 +412,11 @@ export function LooksGallery({
                       style={template.style}
                       slots={{ ...slots, "channel.name": template.name }}
                     />
-                    <span className="pointer-events-none absolute bottom-3 left-3 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1 text-xs text-white">
-                      <Play size={12} />
-                      {t("Hover to play")}
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute right-2.5 top-2.5 grid size-7 place-items-center rounded-full bg-black/55 text-white/90 backdrop-blur-xs transition-opacity group-hover:opacity-0"
+                    >
+                      <Play size={12} fill="currentColor" className="translate-x-[0.5px]" />
                     </span>
                   </div>
                   <div className="space-y-4 p-5">
@@ -522,6 +546,7 @@ export function LookSurfaces({ looks, reload }: { looks: Style[]; reload(): void
       {params.get("look") === "new" ? (
         <Drawer open size="2xl" title={t("New style")} onClose={close}>
           <LooksGallery
+            inDrawer
             looks={looks}
             onNew={() => {}}
             onSelect={(id) => {

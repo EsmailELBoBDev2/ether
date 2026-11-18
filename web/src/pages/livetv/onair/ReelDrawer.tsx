@@ -1,4 +1,5 @@
 import { LinkImport } from "./LinkImport";
+import { friendlyMediaError } from "./mediaErrors";
 import { Badge, Button, Input, Popover, Select, Switch } from "@braedonsaunders/appkit-ui";
 import { MoreHorizontal, Play, UploadCloud } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -406,7 +407,9 @@ export function ReelDrawer({
                     {c.attribution ? (
                       <p className="text-xs text-fg-muted">{c.attribution}</p>
                     ) : null}
-                    {c.error ? <p className="text-xs text-danger">{c.error}</p> : null}
+                    {c.error ? (
+                      <p className="text-xs text-danger">{friendlyMediaError(c.error)}</p>
+                    ) : null}
                     {c.status === "converting" || c.status === "downloading" ? (
                       <progress
                         className="mt-1 h-1 w-full accent-primary"

@@ -147,7 +147,7 @@ func (s *Service) Handler(resources ...func(chi.Router)) http.Handler {
 	})
 	r.Get("/artwork", s.serveArtwork)
 	s.LibraryRoutes(r)
-	r.Get("/assets", func(w http.ResponseWriter, r *http.Request) { v, e := s.Assets(r.Context()); result(w, v, e) })
+	r.Get("/assets", func(w http.ResponseWriter, r *http.Request) { v, e := s.Library(r.Context()); result(w, v, e) })
 	r.Post("/assets", func(w http.ResponseWriter, r *http.Request) {
 		if !multipart(w, r, assetLimit) {
 			return

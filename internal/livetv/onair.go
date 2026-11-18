@@ -300,6 +300,9 @@ func (s *Service) clipRequest(c Channel, p Programme, snapshots ...[]Programme) 
 			if ref := ArtworkRef(next.Item.Key, next.Item.Thumb, "poster"); ref != "" {
 				r.Art["next.poster"] = ref
 			}
+			if ref := ArtworkRef(next.Item.Key, next.Item.Art, "art"); ref != "" {
+				r.Art["next.backdrop"] = ref
+			}
 			if p.Item.Slate != "tonight" {
 				break
 			}

@@ -34,30 +34,36 @@ import {
   loadStyleFonts,
   type SceneBindings,
 } from "../scene-renderer";
-import { onair } from "../model";
+import { onair, type Bindings } from "../model";
 import { LibraryPicker } from "../../library/LibraryPicker";
 
-export function styleBindings(style: Style, slots: Record<string, string> = {}): SceneBindings {
-  const bindings = engineBindings(style);
+export function styleBindings(
+  style: Style,
+  slots: Record<string, string> = {},
+  live?: Bindings,
+): SceneBindings {
+  const bindings = engineBindings(style, live);
   return { ...bindings, slots: { ...bindings.slots, ...slots } };
 }
 export function StyleThumbnail({
   style,
   scene = style.scenes.find((x) => x.role === "ident"),
   slots = {},
+  bindings,
   playing = false,
   time,
 }: {
   style: Style;
   scene?: StyleScene;
   slots?: Record<string, string>;
+  bindings?: Bindings;
   playing?: boolean;
   time?: number;
 }) {
   const ref = useRef<HTMLCanvasElement>(null),
     [hover, setHover] = useState(false);
   const [loaded, setLoaded] = useState<SceneBindings | null>(null);
-  const bindingKey = JSON.stringify(styleBindings(style, slots));
+  const bindingKey = JSON.stringify(styleBindings(style, slots, bindings));
   const documentKey = JSON.stringify(scene?.document);
   useEffect(() => {
     let live = true;

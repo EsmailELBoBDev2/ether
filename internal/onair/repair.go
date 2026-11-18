@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/onair/scene"
 )
@@ -62,7 +63,8 @@ func MissingRoles(l Look) []string {
 
 // ParseLookDraft repairs common model mistakes in raw Look JSON (unsupported
 // layer types such as "line", missing/duplicate IDs, out-of-range durations,
-// unordered keyframes, low-contrast palettes) before strict scene decoding.
+// unordered keyframes, low-contrast palettes, unsupported slot/words syntax,
+// and unaligned centred headlines) before strict scene decoding.
 func ParseLookDraft(data []byte) (Look, error) {
 	var raw map[string]any
 	dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(data)))
@@ -97,7 +99,7 @@ func ParseSceneDraft(data []byte) (StyleScene, error) {
 		}
 		return StyleScene{}, fmt.Errorf("scene must be a JSON object")
 	}
-	repairSceneMap(raw, nil, 1, map[string]bool{})
+	repairSceneMap(raw, nil, 1, map[string]bool{}, nil)
 	repaired, err := json.Marshal(raw)
 	if err != nil {
 		return StyleScene{}, err
@@ -135,6 +137,23 @@ func repairLookMap(raw map[string]any) {
 	repairBrandMap(brand)
 	raw["brand"] = brand
 
+	seenCtrl := map[string]bool{}
+	if ctrls, ok := raw["controls"].([]any); ok {
+		outCtrls := make([]any, 0, len(ctrls))
+		for i, item := range ctrls {
+			cm, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if repairControlMap(cm, i+1, seenCtrl) {
+				outCtrls = append(outCtrls, cm)
+			}
+		}
+		raw["controls"] = outCtrls
+	} else if raw["controls"] == nil {
+		raw["controls"] = []any{}
+	}
+
 	roles := map[string]float64{}
 	if rm, ok := raw["roles"].(map[string]any); ok {
 		for k, v := range rm {
@@ -160,7 +179,7 @@ func repairLookMap(raw map[string]any) {
 			if !ok {
 				continue
 			}
-			repairSceneMap(sm, roles, i+1, seenSceneIDs)
+			repairSceneMap(sm, roles, i+1, seenSceneIDs, seenCtrl)
 			outScenes = append(outScenes, sm)
 		}
 		raw["scenes"] = outScenes
@@ -174,22 +193,6 @@ func repairLookMap(raw map[string]any) {
 	}
 	raw["roles"] = rolesOut
 
-	if ctrls, ok := raw["controls"].([]any); ok {
-		seenCtrl := map[string]bool{}
-		outCtrls := make([]any, 0, len(ctrls))
-		for i, item := range ctrls {
-			cm, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if repairControlMap(cm, i+1, seenCtrl) {
-				outCtrls = append(outCtrls, cm)
-			}
-		}
-		raw["controls"] = outCtrls
-	} else if raw["controls"] == nil {
-		raw["controls"] = []any{}
-	}
 	if raw["channelIds"] == nil {
 		raw["channelIds"] = []any{}
 	}
@@ -318,13 +321,14 @@ func repairControlMap(cm map[string]any, idx int, seen map[string]bool) bool {
 	case "text", "image":
 		cm["value"] = strOr(cm["value"], "")
 	default:
+		delete(seen, id)
 		return false
 	}
 	cm["kind"] = kind
 	return true
 }
 
-func repairSceneMap(sm map[string]any, roles map[string]float64, idx int, seenSceneIDs map[string]bool) {
+func repairSceneMap(sm map[string]any, roles map[string]float64, idx int, seenSceneIDs map[string]bool, controls map[string]bool) {
 	doc, _ := sm["document"].(map[string]any)
 	if doc == nil {
 		doc = map[string]any{}
@@ -385,7 +389,7 @@ func repairSceneMap(sm map[string]any, roles map[string]float64, idx int, seenSc
 	if m := strings.TrimSpace(strOr(doc["moment"], "")); strings.HasPrefix(m, "plugin:") || strings.HasPrefix(m, "screen.") {
 		moment = m
 	}
-	repairDocumentMap(doc, moment, dur)
+	repairDocumentMap(doc, moment, dur, controls)
 	sm["document"] = doc
 
 	if soundsRaw, ok := sm["sounds"].([]any); ok {
@@ -463,7 +467,7 @@ var allowedDocKeys = map[string]bool{
 	"poster": true, "slots": true, "layers": true, "post": true,
 }
 
-func repairDocumentMap(doc map[string]any, moment string, dur float64) {
+func repairDocumentMap(doc map[string]any, moment string, dur float64, controls map[string]bool) {
 	for k := range doc {
 		if !allowedDocKeys[k] {
 			delete(doc, k)
@@ -494,27 +498,33 @@ func repairDocumentMap(doc map[string]any, moment string, dur float64) {
 		delete(doc, "audio")
 	}
 
-	if slotsRaw, ok := doc["slots"].([]any); ok {
-		var slots []string
-		for _, item := range slotsRaw {
-			if s := strings.TrimSpace(strOr(item, "")); s != "" {
-				slots = append(slots, s)
-			}
-		}
-		if len(slots) > 0 {
-			doc["slots"] = slots
-		} else {
-			delete(doc, "slots")
-		}
-	} else {
-		delete(doc, "slots")
-	}
-
-	budget := &sceneBudget{maxLayers: 200, maxParticles: 2000, seenIDs: map[string]bool{}}
+	budget := &sceneBudget{maxLayers: 200, maxParticles: 2000, seenIDs: map[string]bool{}, controls: controls}
 	if layersRaw, ok := doc["layers"].([]any); ok {
-		doc["layers"] = repairLayerSlice(layersRaw, dur, 0, 1, budget)
+		doc["layers"] = repairLayerSlice(layersRaw, dur, 0, 1, 0, budget)
 	} else {
 		doc["layers"] = []any{}
+	}
+
+	slotSet := map[string]bool{}
+	if slotsRaw, ok := doc["slots"].([]any); ok {
+		for _, item := range slotsRaw {
+			if s := canonicalSlotName(strOr(item, ""), controls); s != "" && scene.IsLiveSlotKey(s) {
+				slotSet[s] = true
+			}
+		}
+	}
+	if layersOut, ok := doc["layers"].([]any); ok {
+		collectLiveSlotsFromLayers(layersOut, controls, slotSet)
+	}
+	if len(slotSet) > 0 {
+		slots := make([]string, 0, len(slotSet))
+		for s := range slotSet {
+			slots = append(slots, s)
+		}
+		sort.Strings(slots)
+		doc["slots"] = slots
+	} else {
+		delete(doc, "slots")
 	}
 
 	if postRaw, ok := doc["post"].([]any); ok {
@@ -528,7 +538,7 @@ func repairDocumentMap(doc map[string]any, moment string, dur float64) {
 			if !sliceContains(scene.PostEffects, pt) {
 				continue
 			}
-			amt := repairValue(pm["amount"], dur, false)
+			amt := repairValue(pm["amount"], dur, false, false, controls)
 			if amt == nil {
 				amt = 0.12
 			}
@@ -554,6 +564,7 @@ type sceneBudget struct {
 	maxParticles int
 	seq          int
 	seenIDs      map[string]bool
+	controls     map[string]bool
 }
 
 var allowedLayerKeys = map[string]bool{
@@ -568,11 +579,12 @@ var allowedLayerKeys = map[string]bool{
 	"repeat": true, "behave": true, "reveal": true, "layers": true,
 }
 
-func repairLayerSlice(raw []any, dur float64, depth, mult int, budget *sceneBudget) []any {
+func repairLayerSlice(raw []any, dur float64, depth, mult int, parentOffsetX float64, budget *sceneBudget) []any {
 	if depth > 16 {
 		return []any{}
 	}
 	out := make([]any, 0, len(raw))
+	explicitAlign := make([]bool, 0, len(raw))
 	for _, item := range raw {
 		lm, ok := item.(map[string]any)
 		if !ok {
@@ -581,15 +593,21 @@ func repairLayerSlice(raw []any, dur float64, depth, mult int, budget *sceneBudg
 		if budget.layers >= budget.maxLayers {
 			break
 		}
-		repaired, ok := repairLayerMap(lm, dur, depth, mult, budget)
+		aliasKey(lm, "textAlign", "align")
+		hadAlign := strings.TrimSpace(strOr(lm["align"], "")) != ""
+		repaired, ok := repairLayerMap(lm, dur, depth, mult, parentOffsetX, budget)
 		if ok {
 			out = append(out, repaired)
+			explicitAlign = append(explicitAlign, hadAlign)
 		}
+	}
+	if math.Abs(parentOffsetX) <= 1 {
+		repairCenteredTextSlice(out, explicitAlign)
 	}
 	return out
 }
 
-func repairLayerMap(lm map[string]any, dur float64, depth, mult int, budget *sceneBudget) (map[string]any, bool) {
+func repairLayerMap(lm map[string]any, dur float64, depth, mult int, parentOffsetX float64, budget *sceneBudget) (map[string]any, bool) {
 	budget.seq++
 
 	// Map common model aliases before stripping unsupported fields.
@@ -600,6 +618,7 @@ func repairLayerMap(lm map[string]any, dur float64, depth, mult int, budget *sce
 	aliasKey(lm, "fontSize", "size")
 	aliasKey(lm, "fontWeight", "weight")
 	aliasKey(lm, "letterSpacing", "track")
+	aliasKey(lm, "textAlign", "align")
 	aliasKey(lm, "color", "fill")
 	aliasKey(lm, "colour", "fill")
 	aliasKey(lm, "d", "path")
@@ -739,7 +758,7 @@ func repairLayerMap(lm map[string]any, dur float64, depth, mult int, budget *sce
 
 	for _, key := range []string{"x", "y", "w", "h", "scale", "scaleX", "scaleY", "rotate", "opacity", "strokeWidth", "text", "font", "size", "track", "src"} {
 		if val, exists := lm[key]; exists {
-			if repaired := repairValue(val, dur, false); repaired != nil {
+			if repaired := repairValue(val, dur, false, key == "src", budget.controls); repaired != nil {
 				lm[key] = repaired
 			} else {
 				delete(lm, key)
@@ -748,13 +767,38 @@ func repairLayerMap(lm map[string]any, dur float64, depth, mult int, budget *sce
 	}
 	for _, key := range []string{"fill", "stroke", "tint"} {
 		if val, exists := lm[key]; exists {
-			if repaired := repairValue(val, dur, true); repaired != nil {
+			if repaired := repairValue(val, dur, true, false, budget.controls); repaired != nil {
 				lm[key] = repaired
 			} else {
 				delete(lm, key)
 			}
 		}
 	}
+
+	if src := strings.TrimSpace(strOr(lm["src"], "")); strings.Contains(src, "{next.poster}") || strings.Contains(src, "{next.backdrop}") {
+		if ltype == "image" || ltype == "logo" {
+			lm["type"] = "art"
+			ltype = "art"
+		}
+	}
+	if ltype == "art" && strings.TrimSpace(strOr(lm["src"], "")) == "" {
+		return nil, false
+	}
+
+	// If a model treats text x/w as a centred CSS box spanning the safe area
+	// (e.g. x:160, w:1600, align:"center"), convert x to the box midpoint and w to maxWidth.
+	if ltype == "text" && strOr(lm["align"], "") == "center" {
+		if xVal, okX := lm["x"].(float64); okX {
+			if wVal, okW := lm["w"].(float64); okW && xVal >= 0 && xVal < 600 && wVal >= 600 && math.Abs((xVal+wVal/2)-(960-parentOffsetX)) <= 40 {
+				lm["x"] = xVal + wVal/2
+				if lm["maxWidth"] == nil {
+					lm["maxWidth"] = wVal
+				}
+				delete(lm, "w")
+			}
+		}
+	}
+
 	for _, sKey := range []string{"path", "clip"} {
 		if s, ok := lm[sKey].(string); ok && strings.TrimSpace(s) != "" {
 			lm[sKey] = strings.TrimSpace(s)
@@ -785,7 +829,15 @@ func repairLayerMap(lm map[string]any, dur float64, depth, mult int, budget *sce
 	}
 
 	if children, ok := lm["layers"].([]any); ok && ltype == "group" {
-		lm["layers"] = repairLayerSlice(children, dur, depth+1, n, budget)
+		groupX, okX := settledCoord(lm["x"])
+		if !okX {
+			if lm["x"] == nil {
+				groupX = 0
+			} else {
+				groupX = 1e6
+			}
+		}
+		lm["layers"] = repairLayerSlice(children, dur, depth+1, n, parentOffsetX+groupX, budget)
 	} else {
 		delete(lm, "layers")
 	}
@@ -796,6 +848,105 @@ func repairLayerMap(lm map[string]any, dur float64, depth, mult int, budget *sce
 		}
 	}
 	return lm, true
+}
+
+// repairCenteredTextSlice sets align:"center" on text layers placed near the
+// 1920px canvas horizontal midpoint (x ≈ 960) when align was omitted and the
+// surrounding slice clearly uses a centred stack rather than a two-column split.
+func repairCenteredTextSlice(layers []any, explicitAlign []bool) {
+	for i, item := range layers {
+		lm, ok := item.(map[string]any)
+		if !ok || strOr(lm["type"], "") != "text" {
+			continue
+		}
+		if (i < len(explicitAlign) && explicitAlign[i]) || lm["align"] != nil {
+			continue
+		}
+		x, okX := settledCoord(lm["x"])
+		if !okX || math.Abs(x-960) > 32 {
+			continue
+		}
+		y, hasY := settledCoord(lm["y"])
+		mw, hasMW := optFloat(lm["maxWidth"])
+		overflowsRight := hasMW && x+mw > 1800
+
+		sameRowLeftText := false
+		leftColumnCard := false
+		if hasY {
+			for j, other := range layers {
+				if j == i {
+					continue
+				}
+				om, ok := other.(map[string]any)
+				if !ok {
+					continue
+				}
+				otype := strOr(om["type"], "")
+				ox, okOX := settledCoord(om["x"])
+				oy, okOY := settledCoord(om["y"])
+				if !okOX || !okOY {
+					continue
+				}
+				if otype == "text" && ox < 880 && math.Abs(oy-y) <= 12 {
+					sameRowLeftText = true
+					break
+				}
+				if otype == "art" || otype == "image" || otype == "rect" {
+					ow, okOW := optFloat(om["w"])
+					oh, okOH := optFloat(om["h"])
+					if okOW && okOH && ox >= 60 && ow >= 200 && ox+ow <= 940 && y >= oy && y <= oy+oh {
+						leftColumnCard = true
+					}
+				}
+			}
+		}
+		if sameRowLeftText {
+			continue
+		}
+		if leftColumnCard && !overflowsRight {
+			continue
+		}
+		lm["align"] = "center"
+	}
+}
+
+func settledCoord(v any) (float64, bool) {
+	if v == nil {
+		return 0, true
+	}
+	if f, ok := optFloat(v); ok {
+		return f, true
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	keys, ok := m["keys"].([]any)
+	if !ok || len(keys) == 0 {
+		return 0, false
+	}
+	var vals []float64
+	for _, k := range keys {
+		arr, ok := k.([]any)
+		if !ok || len(arr) < 2 {
+			return 0, false
+		}
+		fv, ok := optFloat(arr[1])
+		if !ok {
+			return 0, false
+		}
+		vals = append(vals, fv)
+	}
+	if len(vals) == 0 {
+		return 0, false
+	}
+	mid := vals[len(vals)/2]
+	for _, fv := range vals {
+		if math.Abs(fv-mid) > 80 {
+			return 0, false
+		}
+	}
+	return mid, true
 }
 
 // repairLayerType maps unsupported or hallucinated layer types (most notably
@@ -905,14 +1056,17 @@ func promoteFillToStroke(lm map[string]any) {
 	}
 }
 
-func repairValue(v any, dur float64, isColor bool) any {
+func repairValue(v any, dur float64, isColor, isSrc bool, controls map[string]bool) any {
 	switch x := v.(type) {
 	case nil:
 		return nil
 	case string:
-		s := strings.ReplaceAll(x, "{type.mono}", "{type.body}")
+		s := repairBindingString(x, isColor, isSrc, controls)
 		if isColor {
 			s = normalizePaintColor(s)
+			if s == "" {
+				return nil
+			}
 		}
 		return s
 	case float64:
@@ -946,7 +1100,7 @@ func repairValue(v any, dur float64, isColor bool) any {
 				if _, nested := arr[1].(map[string]any); nested {
 					continue
 				}
-				kv := repairValue(arr[1], dur, isColor)
+				kv := repairValue(arr[1], dur, isColor, isSrc, controls)
 				if kv == nil {
 					continue
 				}
@@ -1012,7 +1166,7 @@ func repairValue(v any, dur float64, isColor bool) any {
 			if !ok {
 				continue
 			}
-			col := normalizePaintColor(strings.ReplaceAll(fmt.Sprint(arr[1]), "{type.mono}", "{type.body}"))
+			col := normalizePaintColor(repairBindingString(fmt.Sprint(arr[1]), true, false, controls))
 			if col == "" {
 				continue
 			}
@@ -1032,6 +1186,389 @@ func repairValue(v any, dur float64, isColor bool) any {
 		return map[string]any{kind: coords, "stops": outStops}
 	}
 	return nil
+}
+
+// repairBindingString rewrites unsupported model slot/token forms (dot-indexed
+// or aliased schedule arrays, bracket property access, snake/camel/custom
+// {words.*} tokens, and common slot aliases) onto the binder's supported grammar,
+// dropping unknown placeholders cleanly instead of leaving unresolvable slots.
+func repairBindingString(s string, isColor, isSrc bool, controls map[string]bool) string {
+	if !strings.Contains(s, "{") {
+		return s
+	}
+	// Collapse Mustache-style double braces {{slot}} -> {slot}.
+	for strings.Contains(s, "{{") && strings.Contains(s, "}}") {
+		next := strings.ReplaceAll(strings.ReplaceAll(s, "{{", "{"), "}}", "}")
+		if next == s {
+			break
+		}
+		s = next
+	}
+	var out strings.Builder
+	droppedAny := false
+	rem := s
+	for {
+		start := strings.IndexByte(rem, '{')
+		if start < 0 {
+			out.WriteString(rem)
+			break
+		}
+		endRel := strings.IndexByte(rem[start:], '}')
+		if endRel < 0 {
+			out.WriteString(rem)
+			break
+		}
+		out.WriteString(rem[:start])
+		rawKey := strings.TrimSpace(rem[start+1 : start+endRel])
+		rem = rem[start+endRel+1:]
+
+		alphaSuffix := ""
+		if at := strings.IndexByte(rawKey, '@'); at >= 0 {
+			alphaSuffix = rawKey[at:]
+			rawKey = strings.TrimSpace(rawKey[:at])
+		}
+		repl, dropped := rewriteSlotPlaceholder(rawKey, isColor, isSrc, controls)
+		if dropped {
+			droppedAny = true
+			if alphaSuffix != "" && strings.HasPrefix(rem, "@") {
+				// Nothing to strip; rem already carries its own suffix.
+			}
+			continue
+		}
+		out.WriteString(repl)
+		if alphaSuffix != "" && strings.HasPrefix(repl, "{") && strings.HasSuffix(repl, "}") {
+			out.WriteString(alphaSuffix)
+		}
+	}
+	res := out.String()
+	if droppedAny && !isColor && !isSrc {
+		res = cleanDroppedSeparators(res)
+	}
+	return res
+}
+
+func rewriteSlotPlaceholder(rawKey string, isColor, isSrc bool, controls map[string]bool) (string, bool) {
+	key := strings.TrimPrefix(strings.TrimSpace(rawKey), "$")
+	if key == "" {
+		return "", true
+	}
+	key = normalizeBracketProps(key)
+	if key == "type.mono" {
+		return "{type.body}", false
+	}
+	if scene.IsSupportedBinding(key, controls) {
+		return "{" + key + "}", false
+	}
+
+	// Array / schedule row forms: list.0.title, schedule[0].title, items[1].time, etc.
+	if arrName, idxStr, field, ok := parseIndexedSlot(key); ok {
+		switch arrName {
+		case "list", "schedule", "lineup", "items", "rows", "programmes", "programs", "upcoming", "tonight", "slots", "entries":
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 0 || idx > 3 {
+				return "", true
+			}
+			switch normTokenPart(field) {
+			case "", "title", "name", "label", "show", "programme", "program":
+				return fmt.Sprintf("{list[%d].title}", idx), false
+			case "time", "start", "at", "hour", "clock":
+				return fmt.Sprintf("{list[%d].time}", idx), false
+			case "meta", "subtitle", "sub", "info", "detail", "details", "summary", "description", "logline", "genre", "duration", "year":
+				return fmt.Sprintf("{list[%d].meta}", idx), false
+			case "poster", "thumb", "thumbnail":
+				return "{next.poster}", false
+			case "backdrop", "art", "image", "banner":
+				return "{next.backdrop}", false
+			default:
+				return "", true
+			}
+		}
+	}
+
+	lower := strings.ToLower(key)
+
+	// {words.*} and {word.*} forms: map onto SupportedWordTokens or humanize custom labels.
+	if strings.HasPrefix(lower, "words.") || strings.HasPrefix(lower, "word.") {
+		sub := key[strings.IndexByte(key, '.')+1:]
+		switch normTokenPart(sub) {
+		case "upnext", "next", "comingup":
+			return "{words.upNext}", false
+		case "tonight", "lineup", "schedule", "evening":
+			return "{words.tonight}", false
+		case "now", "nowplaying", "playing", "onair", "live":
+			return "{words.now}", false
+		case "break", "intermission", "commercial", "commercials", "adbreak", "standby", "pause":
+			return "{words.break}", false
+		case "back", "return", "resuming", "nowresuming", "welcomeback", "backfrombreak":
+			return "{words.back}", false
+		case "offair", "closedown", "signoff", "goodnight", "closed":
+			return "{words.offair}", false
+		case "tagline", "slogan", "motto", "subtitle":
+			return "{words.tagline}", false
+		case "welcome", "greeting", "hello":
+			return "{viewer.greeting}", false
+		case "channel", "station", "name":
+			return "{channel.name}", false
+		default:
+			if isColor || isSrc {
+				return "", true
+			}
+			label := humanizeWordsToken(sub)
+			if label == "" {
+				return "", true
+			}
+			return label, false
+		}
+	}
+
+	// Brand / control / top-level slot aliases.
+	switch normTokenPart(key) {
+	case "bg", "background", "palettebackground", "brandpalettebackground":
+		return "{bg}", false
+	case "accent", "paletteaccent", "brandpaletteaccent", "brandaccent", "channelaccent":
+		return "{accent}", false
+	case "text", "foreground", "fg", "palettetext", "brandpalettetext":
+		return "{text}", false
+	case "glow", "paletteglow", "brandpaletteglow", "brandglow":
+		return "{glow}", false
+	case "energy", "brandenergy":
+		return "{energy}", false
+	case "typedisplay", "fontdisplay", "brandtypedisplay", "displayfont":
+		return "{type.display}", false
+	case "typebody", "typemono", "fontbody", "fontmono", "brandtypebody", "bodyfont":
+		return "{type.body}", false
+	case "tagline", "brandtagline", "channeltagline", "stationtagline":
+		return "{words.tagline}", false
+	case "channel", "channelname", "channeltitle", "station", "stationname", "brandname":
+		return "{channel.name}", false
+	case "logo", "brandlogo", "channellogo", "stationlogo":
+		return "{brand.logo}", false
+	case "offairmessage", "offairtext", "offairsubtitle", "offairreason":
+		return "{offair.message}", false
+	case "viewer", "viewername", "viewertitle", "username", "user":
+		return "{viewer.name}", false
+	case "viewergreeting", "usergreeting", "greeting", "welcomegreeting":
+		return "{viewer.greeting}", false
+	case "lineupheading", "tonightheading", "scheduleheading":
+		return "{words.tonight}", false
+	}
+
+	if id, ok := strings.CutPrefix(key, "controls."); ok && id != "" {
+		if controls == nil || controls[id] {
+			return "{control." + id + "}", false
+		}
+		return "", true
+	}
+	if tex, ok := strings.CutPrefix(lower, "texture."); ok {
+		cand := "textures." + tex
+		if scene.IsSupportedBinding(cand, controls) {
+			return "{" + cand + "}", false
+		}
+	}
+
+	// Prefix-qualified programme slots: next.*, upnext.*, upcoming.*, now.*, current.*, etc.
+	if prefix, field, ok := strings.Cut(key, "."); ok {
+		switch normTokenPart(prefix) {
+		case "next", "upnext", "upcoming", "list":
+			if mapped := mapProgrammeField("next", field); mapped != "" {
+				return "{" + mapped + "}", false
+			}
+		case "now", "current", "playing", "programme", "program", "show":
+			if mapped := mapProgrammeField("now", field); mapped != "" {
+				return "{" + mapped + "}", false
+			}
+		}
+	}
+
+	return "", true
+}
+
+func mapProgrammeField(target, field string) string {
+	switch normTokenPart(field) {
+	case "title", "name", "label":
+		return target + ".title"
+	case "meta", "subtitle", "sub", "info", "detail", "details", "genre", "year", "duration":
+		return target + ".meta"
+	case "logline", "summary", "description", "synopsis", "plot":
+		return target + ".logline"
+	case "time", "start", "at", "hour":
+		return "next.time"
+	case "reason", "because", "note":
+		return "next.reason"
+	case "poster", "thumb", "thumbnail":
+		return "next.poster"
+	case "backdrop", "art", "image", "banner":
+		return "next.backdrop"
+	}
+	return ""
+}
+
+func canonicalSlotName(raw string, controls map[string]bool) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(strings.TrimSuffix(s, "}"), "{")
+	repl, dropped := rewriteSlotPlaceholder(s, false, false, controls)
+	if dropped || !strings.HasPrefix(repl, "{") || !strings.HasSuffix(repl, "}") {
+		return ""
+	}
+	return repl[1 : len(repl)-1]
+}
+
+func collectLiveSlotsFromLayers(layers []any, controls map[string]bool, dst map[string]bool) {
+	var visitValue func(any)
+	visitValue = func(v any) {
+		switch x := v.(type) {
+		case string:
+			rem := x
+			for {
+				start := strings.IndexByte(rem, '{')
+				if start < 0 {
+					return
+				}
+				endRel := strings.IndexByte(rem[start:], '}')
+				if endRel < 0 {
+					return
+				}
+				key := rem[start+1 : start+endRel]
+				if at := strings.IndexByte(key, '@'); at >= 0 {
+					key = key[:at]
+				}
+				if scene.IsLiveSlotKey(key) && scene.IsSupportedBinding(key, controls) {
+					dst[key] = true
+				}
+				rem = rem[start+endRel+1:]
+			}
+		case map[string]any:
+			for _, child := range x {
+				visitValue(child)
+			}
+		case []any:
+			for _, child := range x {
+				visitValue(child)
+			}
+		}
+	}
+	for _, item := range layers {
+		lm, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for k, v := range lm {
+			if k == "layers" {
+				if children, ok := v.([]any); ok {
+					collectLiveSlotsFromLayers(children, controls, dst)
+				}
+				continue
+			}
+			visitValue(v)
+		}
+	}
+}
+
+// normalizeBracketProps rewrites quoted bracket property access such as
+// next["title"] or list[0]['title'] into dot property access while preserving
+// integer array indices like list[0].title.
+func normalizeBracketProps(key string) string {
+	var b strings.Builder
+	for i := 0; i < len(key); {
+		if key[i] == '[' {
+			end := strings.IndexByte(key[i:], ']')
+			if end > 1 {
+				inner := strings.TrimSpace(key[i+1 : i+end])
+				unquoted := strings.Trim(inner, `"'`)
+				if unquoted != inner && unquoted != "" {
+					if b.Len() > 0 {
+						b.WriteByte('.')
+					}
+					b.WriteString(unquoted)
+					i += end + 1
+					continue
+				}
+				if _, err := strconv.Atoi(inner); err != nil && inner != "" {
+					if b.Len() > 0 {
+						b.WriteByte('.')
+					}
+					b.WriteString(inner)
+					i += end + 1
+					continue
+				}
+			}
+		}
+		b.WriteByte(key[i])
+		i++
+	}
+	return b.String()
+}
+
+func parseIndexedSlot(key string) (arr, idx, field string, ok bool) {
+	// Bracket form: arr[0].field or arr[0]
+	if lb := strings.IndexByte(key, '['); lb > 0 {
+		rb := strings.IndexByte(key[lb:], ']')
+		if rb > 1 {
+			arr = strings.ToLower(strings.TrimSpace(key[:lb]))
+			idx = strings.TrimSpace(key[lb+1 : lb+rb])
+			rest := strings.TrimPrefix(key[lb+rb+1:], ".")
+			if _, err := strconv.Atoi(idx); err == nil {
+				return arr, idx, rest, true
+			}
+		}
+	}
+	// Dot form: arr.0.field or arr.0
+	parts := strings.SplitN(key, ".", 3)
+	if len(parts) >= 2 {
+		if _, err := strconv.Atoi(parts[1]); err == nil {
+			if len(parts) == 3 {
+				return strings.ToLower(parts[0]), parts[1], parts[2], true
+			}
+			return strings.ToLower(parts[0]), parts[1], "", true
+		}
+	}
+	return "", "", "", false
+}
+
+func normTokenPart(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func humanizeWordsToken(s string) string {
+	var b strings.Builder
+	var prev rune
+	for _, r := range strings.TrimSpace(s) {
+		if r == '_' || r == '-' || r == '.' || unicode.IsSpace(r) {
+			if b.Len() > 0 && prev != ' ' {
+				b.WriteByte(' ')
+				prev = ' '
+			}
+			continue
+		}
+		if unicode.IsUpper(r) && b.Len() > 0 && prev != ' ' && unicode.IsLower(prev) {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(unicode.ToUpper(r))
+		prev = r
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func cleanDroppedSeparators(s string) string {
+	for _, sep := range []string{"·", "|", "—", "–", "/"} {
+		for {
+			next := strings.ReplaceAll(s, sep+" "+sep, sep)
+			next = strings.ReplaceAll(next, sep+sep, sep)
+			if next == s {
+				break
+			}
+			s = next
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	s = strings.Trim(s, " ·|—–/-:")
+	return strings.TrimSpace(s)
 }
 
 func repairBehaviors(raw any) []any {

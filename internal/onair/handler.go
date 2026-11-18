@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -143,8 +145,9 @@ func (s *Service) Handler(resources ...func(chi.Router)) http.Handler {
 		v, e := s.o.Bindings(r.Context(), r.URL.Query().Get("channel"), r.URL.Query().Get("viewer"), at)
 		result(w, v, e)
 	})
+	r.Get("/artwork", s.serveArtwork)
 	s.LibraryRoutes(r)
-	r.Get("/assets", func(w http.ResponseWriter, r *http.Request) { v, e := s.Library(r.Context()); result(w, v, e) })
+	r.Get("/assets", func(w http.ResponseWriter, r *http.Request) { v, e := s.Assets(r.Context()); result(w, v, e) })
 	r.Post("/assets", func(w http.ResponseWriter, r *http.Request) {
 		if !multipart(w, r, assetLimit) {
 			return
@@ -283,6 +286,32 @@ func (s *Service) Handler(resources ...func(chi.Router)) http.Handler {
 		result(w, nil, ErrNotFound)
 	})
 	return r
+}
+
+func (s *Service) serveArtwork(w http.ResponseWriter, r *http.Request) {
+	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
+	if ref == "" || s.o.ArtworkBytes == nil {
+		result(w, nil, ErrNotFound)
+		return
+	}
+	data, ct, err := s.o.ArtworkBytes(r.Context(), ref)
+	if err != nil || len(data) == 0 {
+		result(w, nil, ErrNotFound)
+		return
+	}
+	if ct == "" {
+		ct = http.DetectContentType(data)
+	}
+	h := w.Header()
+	h.Set("Content-Type", ct)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox")
+	h.Set("Cache-Control", "private, max-age=300")
+	h.Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(data)
+	}
 }
 
 // DownloaderStatus returns the active yt-dlp-compatible command status for link imports.

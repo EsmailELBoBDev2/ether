@@ -2,7 +2,7 @@ import "./create-reveal.css";
 import { AgentPanel } from "@braedonsaunders/appkit-ai/react";
 import { Button } from "@braedonsaunders/appkit-ui";
 import { Check, Pencil, RotateCcw, Undo2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   agentPanelLabels,
@@ -12,21 +12,63 @@ import {
 import { t } from "../../../../i18n";
 import { apiStream, errorMessage } from "../../../../lib/api";
 import { readAgentStream } from "../../../plugins/LiveStage";
+import type { Bindings } from "../model";
 import { ROLES, studio, type Style } from "../studio-model";
 import { StyleThumbnail } from "./RemixPanel";
+
+const SAMPLE_BINDINGS: Bindings = {
+  viewer: { name: "Alex", greeting: "Good evening" },
+  now: {
+    title: "Carnival of Souls",
+    time: "20:00",
+    meta: "1962 · 1h 18m",
+    logline: "A church organist drifts toward a deserted pavilion.",
+  },
+  next: {
+    title: "The Grand Budapest Hotel",
+    time: "21:30",
+    reason: "Picked for your evening",
+    meta: "2014 · 1h 39m",
+    logline: "A legendary concierge and his lobby boy are swept into an alpine caper.",
+  },
+  offair: { message: "Back on air soon" },
+  list: [
+    { time: "20:00", title: "Carnival of Souls", meta: "1962 · 1h 18m" },
+    { time: "21:30", title: "The Grand Budapest Hotel", meta: "2014 · 1h 39m" },
+    { time: "23:15", title: "Moonrise Kingdom", meta: "2012 · 1h 34m" },
+    { time: "01:00", title: "Fantastic Mr. Fox", meta: "2009 · 1h 27m" },
+  ],
+};
 
 export function CreateTab({
   style,
   onChange,
   selectedSceneId: sceneId,
   sceneOnly = false,
+  bindings,
+  active = true,
 }: {
   style: Style;
   onChange(style: Style): void;
   selectedSceneId?: string;
   sceneOnly?: boolean;
+  bindings?: Bindings;
+  active?: boolean;
 }) {
   const selectedSceneId = sceneOnly ? sceneId : undefined;
+  const previewBindings = useMemo<Bindings>(
+    () =>
+      bindings &&
+      (bindings.now?.title || bindings.next?.title || bindings.list?.some((item) => item.title))
+        ? bindings
+        : {
+            ...SAMPLE_BINDINGS,
+            ...(bindings?.channel?.name ? { channel: bindings.channel } : {}),
+            ...(bindings?.viewer?.name ? { viewer: bindings.viewer } : {}),
+            ...(bindings?.offair?.message ? { offair: bindings.offair } : {}),
+          },
+    [bindings],
+  );
   const [proposal, setProposal] = useState<Style | null>(null);
   const [revealed, setRevealed] = useState<number | null>(null);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -395,7 +437,12 @@ export function CreateTab({
               preview.scenes.some((next) => next.id === scene.id) &&
               (revealed === null || index < revealed) ? (
                 <div className="studio-create-scene">
-                  <StyleThumbnail style={preview} scene={scene} playing={!reducedMotion} />
+                  <StyleThumbnail
+                    style={preview}
+                    scene={scene}
+                    bindings={previewBindings}
+                    playing={active && !reducedMotion}
+                  />
                 </div>
               ) : (
                 <div className="studio-create-placeholder">

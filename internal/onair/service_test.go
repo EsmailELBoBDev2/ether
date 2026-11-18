@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -352,5 +353,168 @@ func TestStyleDraftGuideAndCompleteRoles(t *testing.T) {
 	model.calls = 0
 	if _, err := s.Generate(ctx, "Create a channel style", "", Look{}); err == nil || !strings.Contains(err.Error(), "missing required roles") {
 		t.Fatalf("expected incomplete style to be rejected, got: %v", err)
+	}
+}
+
+// Slot grammar in StyleDraftGuide must equal the binder's supported set, and
+// RepairLook must rewrite bracket/dot schedule slots, {words.*} forms, and
+// unaligned centred headlines at x:960.
+func TestSlotGrammarAndRepair(t *testing.T) {
+	extractCSVLine := func(prefix string) []string {
+		for _, line := range strings.Split(StyleDraftGuide, "\n") {
+			if after, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
+				after = strings.TrimSuffix(after, ".")
+				parts := strings.Split(after, ",")
+				out := make([]string, 0, len(parts))
+				for _, p := range parts {
+					if v := strings.TrimSpace(p); v != "" {
+						out = append(out, v)
+					}
+				}
+				return out
+			}
+		}
+		t.Fatalf("guide missing line starting with %q", prefix)
+		return nil
+	}
+
+	if got := extractCSVLine("Supported slots:"); !reflect.DeepEqual(got, scene.SupportedSlots) {
+		t.Fatalf("guide Supported slots %v != binder %v", got, scene.SupportedSlots)
+	}
+	if got := extractCSVLine("Word tokens:"); !reflect.DeepEqual(got, scene.SupportedWordTokens) {
+		t.Fatalf("guide Word tokens %v != binder %v", got, scene.SupportedWordTokens)
+	}
+	if got := extractCSVLine("Brand tokens:"); !reflect.DeepEqual(got, scene.SupportedBrandTokens) {
+		t.Fatalf("guide Brand tokens %v != binder %v", got, scene.SupportedBrandTokens)
+	}
+
+	// Every {placeholder} token taught in StyleDraftGuide (excluding JSON/schema
+	// metavariables containing ':', ',', or '<') must be supported by the binder.
+	placeholderRE := regexp.MustCompile(`\{([^{}\s]+)\}`)
+	for _, m := range placeholderRE.FindAllStringSubmatch(StyleDraftGuide, -1) {
+		key := m[1]
+		if strings.ContainsAny(key, ":,<") {
+			continue
+		}
+		if !scene.IsSupportedBinding(key, nil) {
+			t.Fatalf("StyleDraftGuide teaches unsupported placeholder {%s}", key)
+		}
+	}
+
+	s := testService(t, Options{})
+	ctx := context.Background()
+	look := familyLook("clean", "Cinema 1")
+	look.ID = "cinema-1"
+	look.Brand.Tagline = "Late features"
+	s.mu.Lock()
+	s.looks[look.ID] = look
+	s.mu.Unlock()
+
+	bindMap := map[string]string{}
+	artMap := map[string]string{}
+	for _, slot := range scene.SupportedSlots {
+		switch slot {
+		case "next.poster", "next.backdrop":
+			artMap[slot] = "/sample.jpg"
+		default:
+			bindMap[slot] = "val:" + slot
+		}
+	}
+	job, ok := s.planRaw(core.ClipRequest{
+		LookID: look.ID,
+		Moment: "tonight",
+		Bind:   bindMap,
+		Art:    artMap,
+	})
+	if !ok {
+		t.Fatal("planRaw failed")
+	}
+	for _, tok := range append(append([]string{}, scene.SupportedWordTokens...), scene.SupportedBrandTokens...) {
+		if tok == "brand.logo" {
+			if _, exists := job.Bind.Slots[tok]; !exists {
+				t.Fatalf("binder missing slot %q", tok)
+			}
+			continue
+		}
+		if got := scene.Eval("{"+tok+"}", job.Bind.Bindings, 0); got == "" || got == "{"+tok+"}" {
+			t.Fatalf("binder did not resolve {%s}, got %#v", tok, got)
+		}
+	}
+	for _, slot := range scene.SupportedSlots {
+		if slot == "brand.logo" || slot == "next.poster" || slot == "next.backdrop" {
+			continue
+		}
+		if got := scene.Eval("{"+slot+"}", job.Bind.Bindings, 0); got != "val:"+slot {
+			t.Fatalf("binder slot {%s} resolved to %#v, want %q", slot, got, "val:"+slot)
+		}
+	}
+
+	rawDraft := `{
+		"name": "Retro Night",
+		"brand": {"palette": {"background": "#0a0e18", "accent": "#f59e0b", "text": "#f8fafc", "glow": "#1e293b"}, "type": {"display": "orbitron", "body": "inter"}, "tagline": "All night movies"},
+		"controls": [{"id": "headline", "label": "Headline", "kind": "text", "value": "RETRO"}],
+		"scenes": [
+			{"role": "tonight", "document": {"duration": 8, "poster": 4, "layers": [
+				{"id": "bg", "type": "rect", "x": 0, "y": 0, "w": 1920, "h": 1080, "fill": "{bg}"},
+				{"id": "kicker", "type": "text", "text": "{words.tonight} · {station.name}", "x": 960, "y": 220, "size": 30, "font": "{type.body}", "fill": "{accent}", "maxWidth": 1200},
+				{"id": "row0", "type": "text", "text": "{list.0.time} {list.0.title}", "x": 960, "y": 340, "size": 44, "font": "{type.display}", "fill": "{text}", "maxWidth": 1200},
+				{"id": "row2", "type": "text", "text": "{schedule[2].time} · {items[2].meta} · {list[5].title}", "x": 160, "y": 460, "size": 34, "font": "{type.body}", "fill": "{text}", "maxWidth": 1400},
+				{"id": "explicit-left", "type": "text", "text": "{controls.headline}", "x": 960, "y": 560, "size": 32, "align": "left", "font": "{type.body}", "fill": "{text}", "maxWidth": 600}
+			]}},
+			{"role": "upnext", "document": {"duration": 8, "poster": 4, "layers": [
+				{"id": "bg", "type": "rect", "x": 0, "y": 0, "w": 1920, "h": 1080, "fill": "{bg}"},
+				{"id": "poster", "type": "image", "src": "{next.poster}", "x": 1280, "y": 200, "w": 420, "h": 630, "fit": "cover"},
+				{"id": "badge", "type": "text", "text": "{words.up_next} · {words.specialEvent}", "x": 200, "y": 280, "size": 28, "font": "{type.body}", "fill": "{accent}", "maxWidth": 900},
+				{"id": "title", "type": "text", "text": "{next[\"title\"]}", "x": 200, "y": 380, "size": 72, "font": "{type.display}", "fill": "{text}", "maxWidth": 900}
+			]}},
+			{"role": "offair", "document": {"duration": 8, "poster": 4, "layers": [
+				{"id": "bg", "type": "rect", "x": 0, "y": 0, "w": 1920, "h": 1080, "fill": "{bg}"},
+				{"id": "slate", "type": "text", "text": "{words.off_air}", "x": 960, "y": 520, "size": 96, "font": "{type.display}", "fill": "{text}", "maxWidth": 1200}
+			]}}
+		]
+	}`
+	repaired, err := ParseLookDraft([]byte(rawDraft))
+	if err != nil {
+		t.Fatalf("ParseLookDraft failed: %v", err)
+	}
+	repaired, err = s.Draft(ctx, repaired)
+	if err != nil {
+		t.Fatalf("Draft failed: %v", err)
+	}
+
+	tonightLayers := repaired.Scenes[0].Document.Layers
+	if got := tonightLayers[1].Text; got != "{words.tonight} · {channel.name}" {
+		t.Fatalf("expected tonight kicker rewrite, got %#v", got)
+	}
+	if tonightLayers[1].Align != "center" || tonightLayers[2].Align != "center" {
+		t.Fatalf("expected x:960 unaligned headlines centred, got %q and %q", tonightLayers[1].Align, tonightLayers[2].Align)
+	}
+	if got := tonightLayers[2].Text; got != "{list[0].time} {list[0].title}" {
+		t.Fatalf("expected dot list slots rewritten to bracket form, got %#v", got)
+	}
+	if got := tonightLayers[3].Text; got != "{list[2].time} · {list[2].meta}" {
+		t.Fatalf("expected schedule/items rewritten and out-of-range list[5] dropped cleanly, got %#v", got)
+	}
+	if tonightLayers[3].Align != "" {
+		t.Fatalf("expected left-margin x:160 text to keep default align, got %q", tonightLayers[3].Align)
+	}
+	if tonightLayers[4].Align != "left" || tonightLayers[4].Text != "{control.headline}" {
+		t.Fatalf("expected explicit align:left and {control.headline} preserved, got align=%q text=%#v", tonightLayers[4].Align, tonightLayers[4].Text)
+	}
+
+	upnextLayers := repaired.Scenes[1].Document.Layers
+	if upnextLayers[1].Type != "art" || upnextLayers[1].Src != "{next.poster}" {
+		t.Fatalf("expected {next.poster} image promoted to art layer, got type=%q src=%#v", upnextLayers[1].Type, upnextLayers[1].Src)
+	}
+	if got := upnextLayers[2].Text; got != "{words.upNext} · SPECIAL EVENT" {
+		t.Fatalf("expected words.up_next and custom words.specialEvent rewritten, got %#v", got)
+	}
+	if got := upnextLayers[3].Text; got != "{next.title}" {
+		t.Fatalf("expected bracket property next[\"title\"] rewritten to {next.title}, got %#v", got)
+	}
+
+	offairLayers := repaired.Scenes[2].Document.Layers
+	if offairLayers[1].Text != "{words.offair}" || offairLayers[1].Align != "center" {
+		t.Fatalf("expected offair slate {words.offair} centred, got text=%#v align=%q", offairLayers[1].Text, offairLayers[1].Align)
 	}
 }

@@ -376,6 +376,9 @@ func (h *memHost) CacheOpen(context.Context, string) (io.ReadSeekCloser, error) 
 	return nil, ErrUnavailable
 }
 func (h *memHost) StreamURL(context.Context, string) (string, error) { return "", ErrUnavailable }
+func (h *memHost) StreamPartURL(context.Context, string, *int) (string, error) {
+	return "", ErrUnavailable
+}
 
 func errFrom(b []byte, err error) error {
 	if err != nil {

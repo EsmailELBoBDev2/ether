@@ -385,13 +385,39 @@ func (h *HostHandler) cacheOpen(w http.ResponseWriter, r *http.Request) {
 // id is the one the adapter proxied the request for.
 func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ViewerID int64  `json:"viewerId"`
-		ItemRef  string `json:"itemRef"`
+		ViewerID  int64  `json:"viewerId"`
+		ItemRef   string `json:"itemRef"`
+		PartIndex *int   `json:"partIndex,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
 	}
-	u, err := h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+	if body.PartIndex != nil && *body.PartIndex < 0 {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "partIndex must be non-negative")
+		return
+	}
+	var (
+		u   string
+		err error
+	)
+	if body.PartIndex != nil {
+		if ph, ok := h.host.(interface {
+			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+		}); ok {
+			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
+		} else {
+			u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+			if err == nil {
+				sep := "?"
+				if strings.Contains(u, "?") {
+					sep = "&"
+				}
+				u = u + sep + "part=" + strconv.Itoa(*body.PartIndex)
+			}
+		}
+	} else {
+		u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+	}
 	if !h.finishErr(w, err) {
 		return
 	}

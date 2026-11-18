@@ -389,10 +389,14 @@ regenerate the reference instead of duplicating contracts in prose.
 Kind `/resolve` and `/match` handlers may return `{pending:true,retryInMs:1000}`.
 Ether retries after 250–5000 ms (clamped), for at most 25 seconds per Play;
 each invocation still has a five-second cap. Pending does not damage health.
-After 25 seconds the item is not available yet; another Play may find it ready.
-For slow searches, also return `job:"/ether/job/prepare"`. Ether deduplicates
-running jobs per plugin, kind and item, passes the original request body, and
-uses the existing promoted job deadline and continuation protocol. A completed
+If a call is still `pending` after the 25-second wait budget, Ether answers
+`503` with `code: "preparing"` and `Retry-After` (from `retryInMs`, or `5` s by
+default) on `kind-media`, Vela, Jellyfin and Plex API routes without caching a
+negative resolution; only a real empty `sources: []` / `404` answer becomes `409`
+`no_source`. For slow searches, also return `job:"/ether/job/prepare"`. Ether
+deduplicates running jobs per plugin, kind, item and `partIndex`, passes the
+original request body, and uses the existing promoted job deadline and
+continuation protocol. A completed
 job wakes the resolver before the retry timer. Persist results in KV; never do
 work ahead of an actual request. At most two jobs run per plugin.
 
@@ -431,11 +435,22 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
-Hosted adapters can return a redirect to a host-minted item stream URL:
+Hosted adapters can return a redirect to a host-minted item stream URL (or a
+specific zero-based part when an item declares `hints.parts`):
 
 ```js
-return {status:302, headers:{Location:ether.frontend.streamURL(itemRef)}};
+// Whole item (concatenated sequence for multi-part items):
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
+// Single part (resolves with KindResolveRequest.partIndex = partIndex):
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
 ```
+
+In the SDKs, call `streamUrl(ctx, itemRef, partIndex?)` (TypeScript),
+`ctx.StreamPartURL(itemRef, partIndex)` (Go), or `ctx.stream_url(item_ref, part_index)`
+(Python); an unpinned item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`.
+Multi-file items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]`
+(or a declared `parts` field) so Ether resolves and caches each part with its
+zero-based `KindResolveRequest.partIndex`.
 
 Only root-relative local redirect URLs are forwarded. External URLs, authority
 changes, control characters, backslashes and known account credential query

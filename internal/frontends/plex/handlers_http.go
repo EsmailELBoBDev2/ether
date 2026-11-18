@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"slices"
 
@@ -58,7 +59,7 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		writePlaybackStatus(w, http.StatusForbidden)
 		return
 	}
-	if err, failed := s.transcodes.takeFailure(p.sessionID, pr.User.ID, p.key, s.now()); failed {
+	if err, failed := s.transcodes.takeFailure(p.sessionID, pr.User.ID, p.key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) && !errors.Is(err, frontend.ErrPreparing) {
 		s.log.Info("start playback failed", "key", p.key, "reason", playbackMessage(err), "err", err, "decision", "remembered")
 		s.writeStartErr(w, r, pr, err)
 		return

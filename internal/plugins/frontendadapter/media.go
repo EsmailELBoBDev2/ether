@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,14 +31,18 @@ type MediaDeps struct {
 	// request's accepted MIME types. It runs the same authorization path
 	// kind playback uses.
 	Open func(ctx context.Context, viewer *core.Viewer, itemRef string, accept []string) (*frontend.KindMedia, error)
+	// OpenPart opens one zero-based part of a multi-part plugin item ref for
+	// the granted viewer (#576). Used when the ticket is part-scoped or when
+	// the request names ?part=<n>.
+	OpenPart func(ctx context.Context, viewer *core.Viewer, itemRef string, partIndex int, accept []string) (*frontend.KindMedia, error)
 	// Log records each refused request with its cause (optional).
 	Log *slog.Logger
 }
 
 // MediaHandler serves /ether/v1/kind-media/{ticket}: it redeems the ticket,
-// loads the viewer, opens the item through KindStreams and streams the
-// bytes with Range support. The ticket is the only credential the request
-// needs.
+// loads the viewer, opens the item (or one part of it) through KindStreams
+// and streams the bytes with Range support. The ticket is the only
+// credential the request needs.
 type MediaHandler struct {
 	deps MediaDeps
 	now  func() time.Time
@@ -63,14 +68,44 @@ func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.refuse(w, http.StatusNotFound, "ticket_invalid", "The media ticket is unknown, expired or out of scope.", err, "")
 		return
 	}
+
+	var partIdx *int
+	if rawPart := strings.TrimSpace(r.URL.Query().Get("part")); rawPart != "" {
+		n, perr := strconv.Atoi(rawPart)
+		if perr != nil || n < 0 {
+			h.refuse(w, http.StatusBadRequest, "invalid_part", "The requested part index must be a non-negative integer.", perr, grant.ItemID)
+			return
+		}
+		if grant.PartIndex != nil && *grant.PartIndex != n {
+			h.refuse(w, http.StatusNotFound, "ticket_invalid", "The media ticket is unknown, expired or out of scope.", ErrTicketInvalid, grant.ItemID)
+			return
+		}
+		partIdx = &n
+	} else if grant.PartIndex != nil {
+		n := *grant.PartIndex
+		partIdx = &n
+	}
+
 	viewer, err := h.deps.Viewer(r.Context(), grant.ViewerID)
 	if err != nil || viewer == nil {
 		h.refuse(w, http.StatusForbidden, "viewer_invalid", "The viewer this ticket was issued to can no longer play.", err, grant.ItemID)
 		return
 	}
 	accept := parseAccept(r.Header.Get("Accept"))
-	media, err := h.deps.Open(r.Context(), viewer, grant.ItemID, accept)
+	var media *frontend.KindMedia
+	if partIdx != nil {
+		if h.deps.OpenPart == nil {
+			h.refuse(w, http.StatusNotFound, "item_not_found", "The requested item part is not available.", core.ErrNotFound, grant.ItemID)
+			return
+		}
+		media, err = h.deps.OpenPart(r.Context(), viewer, grant.ItemID, *partIdx, accept)
+	} else {
+		media, err = h.deps.Open(r.Context(), viewer, grant.ItemID, accept)
+	}
 	if err != nil || media == nil {
+		if errors.Is(err, core.ErrPreparing) {
+			w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
+		}
 		status, code, message := openFailure(err)
 		h.refuse(w, status, code, message, err, grant.ItemID)
 		return
@@ -103,6 +138,8 @@ func (h *MediaHandler) refuse(w http.ResponseWriter, status int, code, message s
 // openFailure classifies why an authorized item could not be opened.
 func openFailure(err error) (int, string, string) {
 	switch {
+	case errors.Is(err, core.ErrPreparing):
+		return http.StatusServiceUnavailable, "preparing", "The item is still being prepared. Try again shortly."
 	case err == nil, errors.Is(err, core.ErrNotAvailable):
 		return http.StatusConflict, "no_source", "The item has no playable source."
 	case errors.Is(err, core.ErrNotFound):

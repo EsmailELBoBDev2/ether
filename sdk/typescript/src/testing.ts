@@ -54,6 +54,8 @@ export interface MockHostState {
   httpHandler: (req: HostFetchRequest) => HostFetchResponse | Promise<HostFetchResponse>;
   /** The most recent frontend.streamUrl call: [viewerId, itemRef]. */
   lastStreamUrl?: [number, string];
+  /** Zero-based part index of the most recent part-scoped frontend.streamUrl call. */
+  lastStreamUrlPart?: number;
 }
 
 export interface MockHostClient extends EtherHost {
@@ -208,9 +210,14 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       },
     },
     frontend: {
-      streamUrl: (viewerId: number, itemRef: string) => {
+      streamUrl: (viewerId: number, itemRef: string, partIndex?: number) => {
+        if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
+          throw new Error("stream url: partIndex must be a non-negative integer");
+        }
         state.lastStreamUrl = [viewerId, itemRef];
-        return `/ether/v1/kind-media/mock-${viewerId}`;
+        state.lastStreamUrlPart = partIndex;
+        const base = `/ether/v1/kind-media/mock-${viewerId}`;
+        return partIndex === undefined ? base : `${base}?part=${partIndex}`;
       },
     },
     log: (level: string, message: string, attrs?: Record<string, unknown>) => {

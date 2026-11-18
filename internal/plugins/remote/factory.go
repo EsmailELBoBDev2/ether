@@ -438,11 +438,15 @@ func (a HostAdapter) CacheOpen(ctx context.Context, pluginID, blobRef string) (i
 }
 
 func (a HostAdapter) StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
+	return a.StreamPartURL(ctx, pluginID, viewerID, itemRef, nil)
+}
+
+func (a HostAdapter) StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
 	h, err := a.host(pluginID)
 	if err != nil {
 		return "", err
 	}
-	u, err := h.StreamURL(plugins.WithViewer(ctx, viewerID), itemRef)
+	u, err := h.StreamPartURL(plugins.WithViewer(ctx, viewerID), itemRef, partIndex)
 	return u, mapHostErr(err)
 }
 

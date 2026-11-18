@@ -11,7 +11,6 @@ import {
 import { Film, Plug, Tv } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { useApp } from "../../app-context";
 import { SettingsRow } from "../../components/SettingsRow";
 import { SaveBar, useDraft } from "../../components/SaveBar";
@@ -27,153 +26,177 @@ import { librariesApi, publishedTo, type Library, type Presentations } from "./a
 import { LibraryCacheCard } from "./LibraryCache";
 import { TitlesComeFrom } from "./TitlesComeFrom";
 import { NarrowingEditor } from "./NarrowingEditor";
-function presentationLabel(value: string): string {
-  const labels: Record<string, string> = {
-    movie: t("Movies"),
-    show: t("TV shows"),
-    shows: t("TV shows"),
-    series: t("TV shows"),
-    movies: t("Movies"),
-    tvshows: t("TV shows"),
-    artist: t("Music"),
-    music: t("Music"),
-    photo: t("Photos"),
-    photos: t("Photos"),
-    audiobooks: t("Audiobooks"),
-    books: t("Books"),
-    homevideos: t("Home videos"),
-    channel: t("Channels"),
-    live: t("Live TV"),
-    tv: t("Live TV"),
+
+function presentationHint(value: string): string {
+  const hints: Record<string, string> = {
+    movie: t("Shown as a movie library"),
+    movies: t("Shown as a movie library"),
+    Movie: t("Shown as a movie library"),
+    show: t("Shown as a show library with seasons"),
+    shows: t("Shown as a show library with seasons"),
+    series: t("Shown as a show library with seasons"),
+    tvshows: t("Shown as a show library with seasons"),
+    Series: t("Shown as a show library with seasons"),
+    Season: t("Shown as a show library with seasons"),
+    Episode: t("Shown as a show library with seasons"),
+    artist: t("Shown as a music library"),
+    music: t("Shown as a music library"),
+    MusicAlbum: t("Shown as a music library"),
+    Audio: t("Shown as a music library"),
+    photo: t("Shown as a photo library"),
+    photos: t("Shown as a photo library"),
+    PhotoAlbum: t("Shown as a photo library"),
+    Photo: t("Shown as a photo library"),
+    audiobooks: t("Shown as an audiobook library"),
+    books: t("Shown as a book library"),
+    Book: t("Shown as a book library"),
+    homevideos: t("Shown as a home video library"),
+    channel: t("Shown as a channel library"),
+    live: t("Shown as a live TV library"),
+    tv: t("Shown as a live TV library"),
   };
-  return labels[value] ?? value;
+  return hints[value] ?? value;
 }
-const VELA_TYPES = ["movies", "shows"];
-const PLEX_BASES = ["movie", "show", "artist", "photo"];
-const MB_TYPES = ["movies", "tvshows", "music", "audiobooks", "books", "photos", "homevideos"];
-const STREMIO_TYPES = ["movie", "series", "channel", "tv"];
-const XTREAM_TYPES = ["movie", "series", "live"];
 
 function defaultPlexBase(lib: Library): string {
-  if (lib.source === "plugin") return (lib.kind?.levels.length ?? 1) >= 3 ? "show" : "movie";
+  if (lib.source === "plugin") {
+    const declared = lib.kind?.present?.plex?.base;
+    if (declared) return declared;
+    return (lib.kind?.levels.length ?? 1) >= 3 ? "show" : "movie";
+  }
   return lib.mediaType === "show" ? "show" : "movie";
 }
-function defaultVelaType(lib: Library): string {
-  const declared = lib.present?.vela?.type ?? lib.kind?.present?.vela?.type;
-  if (declared) return declared;
-  return defaultPlexBase(lib) === "show" ? "shows" : "movies";
+
+interface DerivedPresentations {
+  vela: NonNullable<Presentations["vela"]>;
+  plex: NonNullable<Presentations["plex"]>;
+  mediaBrowser: NonNullable<Presentations["mediaBrowser"]>;
+  stremio: NonNullable<Presentations["stremio"]>;
+  xtream: NonNullable<Presentations["xtream"]>;
+  silo: NonNullable<Presentations["silo"]>;
 }
-function defaultMBType(lib: Library): string {
-  const declared =
-    lib.present?.mediaBrowser?.collectionType ?? lib.kind?.present?.mediaBrowser?.collectionType;
-  if (declared) return declared;
-  return defaultPlexBase(lib) === "show" ? "tvshows" : "movies";
+
+function derivedPresentations(lib: Library): DerivedPresentations {
+  const plexBase = defaultPlexBase(lib);
+  if (lib.source !== "plugin") {
+    const isShow = plexBase === "show";
+    return {
+      vela: { type: isShow ? "shows" : "movies" },
+      plex: { base: plexBase },
+      mediaBrowser: { collectionType: isShow ? "tvshows" : "movies" },
+      stremio: { type: isShow ? "series" : "movie" },
+      xtream: { category: isShow ? "series" : "movie" },
+      silo: { type: isShow ? "tvshows" : "movies" },
+    };
+  }
+  const kp = lib.kind?.present;
+  const mbType = kp?.mediaBrowser?.collectionType ?? (plexBase === "show" ? "tvshows" : "movies");
+  const mbItemTypes = kp?.mediaBrowser?.itemTypes;
+  const velaType =
+    kp?.vela?.type ??
+    (mbType === "tvshows"
+      ? "shows"
+      : mbType === "movies"
+        ? "movies"
+        : plexBase === "show"
+          ? "shows"
+          : "movies");
+  return {
+    vela: { type: velaType },
+    plex: { base: plexBase },
+    mediaBrowser: mbItemTypes
+      ? { collectionType: mbType, itemTypes: mbItemTypes }
+      : { collectionType: mbType },
+    stremio: { type: kp?.stremio?.type ?? (plexBase === "show" ? "series" : "movie") },
+    xtream: { category: kp?.xtream?.category ?? (plexBase === "show" ? "series" : "movie") },
+    silo: { type: kp?.silo?.type ?? mbType },
+  };
+}
+
+function materializePresent(lib: Library, present: Presentations): Presentations {
+  const derived = derivedPresentations(lib);
+  const next: Presentations = {};
+  if (lib.source === "plugin" && present.adapterOnly) next.adapterOnly = true;
+  if (present.vela) next.vela = derived.vela;
+  if (present.plex) next.plex = derived.plex;
+  if (present.mediaBrowser) next.mediaBrowser = derived.mediaBrowser;
+  if (present.stremio) next.stremio = derived.stremio;
+  if (present.xtream) next.xtream = derived.xtream;
+  if (present.silo) next.silo = derived.silo;
+  return next;
+}
+
+function libraryKindValue(lib: Library): string {
+  if (lib.source === "plugin") {
+    const kind = lib.kind?.label?.trim() || lib.kindKey || lib.name;
+    const plugin = lib.pluginName?.trim() || lib.pluginId?.trim() || "";
+    return plugin ? t("{kind} from {plugin}", { kind, plugin }) : kind;
+  }
+  return lib.mediaType === "show" ? t("TV shows") : t("Movies");
 }
 
 /** "Show in apps", per protocol (spec §6.2, §15.3). Builtins are synthesised. */
 function PresentationsEditor({
   library,
+  name,
   present,
   onChange,
 }: {
   library: Library;
+  name: string;
   present: Presentations;
   onChange: (value: Presentations) => void;
 }) {
-  const toggle = (key: keyof Presentations, on: boolean, make: () => unknown) =>
-    onChange(
-      (() => {
-        const p = present;
-        const next: Presentations = { ...p };
-        if (on) (next as Record<string, unknown>)[key] = make();
-        else delete (next as Record<string, unknown>)[key];
-        return next;
-      })(),
-    );
+  const derived = derivedPresentations(library);
+  const toggle = (key: keyof Presentations, on: boolean, make: () => unknown) => {
+    const next: Presentations = { ...present };
+    if (on) (next as Record<string, unknown>)[key] = make();
+    else delete (next as Record<string, unknown>)[key];
+    onChange(next);
+  };
 
   const row = (
     key: "vela" | "plex" | "mediaBrowser" | "stremio" | "xtream" | "silo",
     title: string,
-    value: string,
-    options: string[],
-    make: (v: string) => unknown,
-    current: string,
+    hintValue: string,
+    make: () => unknown,
   ) => (
     <SettingsRow
       title={title}
+      description={presentationHint(hintValue)}
       control={
-        <span className="library-present-row">
-          <Switch
-            aria-label={t("Show in {app}", { app: title })}
-            checked={Boolean(present[key])}
-            onChange={(e) => toggle(key, e.target.checked, () => make(current))}
-          />
-          {present[key] ? (
-            <ToolbarPicker
-              ariaLabel={t("How {app} shows it", { app: title })}
-              value={value}
-              options={options.map((o) => ({ value: o, label: presentationLabel(o) }))}
-              onChange={(v) => toggle(key, true, () => make(v))}
-            />
-          ) : null}
-        </span>
+        <Switch
+          aria-label={t("Show in {app}", { app: title })}
+          checked={Boolean(present[key])}
+          onChange={(e) => toggle(key, e.target.checked, make)}
+        />
       }
     />
   );
 
   return (
-    <SettingsSection title={t("Show in apps")}>
-      <p className="px-5 pt-4 pb-2 text-sm text-fg-muted">
-        {t("Choose where this library appears. Anything off stays just in this console.")}
-      </p>
-      {row(
-        "vela",
-        "Vela",
-        present.vela?.type ?? defaultVelaType(library),
-        VELA_TYPES,
-        (v) => ({ type: v }),
-        defaultVelaType(library),
-      )}
-      {row(
-        "plex",
-        "Plex",
-        present.plex?.base ?? defaultPlexBase(library),
-        PLEX_BASES,
-        (v) => ({ base: v }),
-        defaultPlexBase(library),
-      )}
+    <SettingsSection
+      title={t("Show in apps")}
+      description={t("Each app shows {name} as its own library. Pick which apps show it.", {
+        name: name.trim() || library.name,
+      })}
+    >
+      <SettingsRow
+        title={t("Kind")}
+        description={t("What this library holds.")}
+        control={<span className="text-sm font-medium text-fg">{libraryKindValue(library)}</span>}
+      />
+      {row("vela", "Vela", derived.vela.type, () => derived.vela)}
+      {row("plex", "Plex", derived.plex.base, () => derived.plex)}
       {row(
         "mediaBrowser",
         t("Jellyfin & Emby"),
-        present.mediaBrowser?.collectionType ?? defaultMBType(library),
-        MB_TYPES,
-        (v) => ({ collectionType: v }),
-        defaultMBType(library),
+        derived.mediaBrowser.collectionType,
+        () => derived.mediaBrowser,
       )}
-      {row(
-        "stremio",
-        "Stremio",
-        present.stremio?.type ?? (defaultPlexBase(library) === "show" ? "series" : "movie"),
-        STREMIO_TYPES,
-        (v) => ({ type: v }),
-        defaultPlexBase(library) === "show" ? "series" : "movie",
-      )}
-      {row(
-        "xtream",
-        "Xtream",
-        present.xtream?.category ?? (defaultPlexBase(library) === "show" ? "series" : "movie"),
-        XTREAM_TYPES,
-        (v) => ({ category: v }),
-        defaultPlexBase(library) === "show" ? "series" : "movie",
-      )}
-      {row(
-        "silo",
-        "Silo",
-        present.silo?.type ?? defaultMBType(library),
-        MB_TYPES,
-        (v) => ({ type: v }),
-        defaultMBType(library),
-      )}
+      {row("stremio", "Stremio", derived.stremio.type, () => derived.stremio)}
+      {row("xtream", "Xtream", derived.xtream.category, () => derived.xtream)}
+      {row("silo", "Silo", derived.silo.type, () => derived.silo)}
       {library.source === "plugin" ? (
         <SettingsRow
           title={t("Only in its own app")}
@@ -286,7 +309,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       };
       if (library.source !== "plugin" && draft.qualityProfile !== stored.qualityProfile)
         body.qualityProfile = draft.qualityProfile;
-      if (library.source !== "builtin") body.present = draft.present;
+      if (library.source !== "builtin") body.present = materializePresent(library, draft.present);
       if (JSON.stringify(draft.sources) !== JSON.stringify(stored.sources))
         body.sources = draft.sources;
       if (draft.collectionId !== stored.collectionId) body.collectionId = draft.collectionId;
@@ -380,6 +403,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
           ) : (
             <PresentationsEditor
               library={library}
+              name={draft.name}
               present={draft.present}
               onChange={(present) => setDraft({ ...draft, present })}
             />

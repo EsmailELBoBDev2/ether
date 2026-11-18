@@ -209,17 +209,72 @@ describe("Libraries workspace", () => {
     });
   });
 
-  it("shows plugin-only sections in a plugin library's settings", async () => {
-    renderApp("/libraries/3/settings");
+  it("shows plugin-only sections and declared kind in a plugin library's settings", async () => {
+    const { fake } = renderApp("/libraries/3/settings", {}, (server) => {
+      const base = server.fetch;
+      server.fetch = async (input, init) => {
+        const res = await base(input, init);
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname !== "/ether/api/libraries/3" || (init?.method && init.method !== "GET")) {
+          return res;
+        }
+        const lib = await res.json();
+        return new Response(
+          JSON.stringify({
+            ...lib,
+            present: {},
+            kind: {
+              ...lib.kind,
+              present: {
+                mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+                silo: { type: "Book" },
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      };
+    });
     expect(await screen.findByText("Basics", {}, { timeout: 15000 })).toBeInTheDocument();
     expect(screen.queryByText("Keeping it up to date")).not.toBeInTheDocument();
     expect(screen.queryByText("New releases")).not.toBeInTheDocument();
     expect(screen.queryByText("Source: TMDB")).not.toBeInTheDocument();
+
+    expect(
+      screen.getByText("Each app shows Books as its own library. Pick which apps show it."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Kind")).toBeInTheDocument();
+    expect(screen.getByText("Books from Demo books")).toBeInTheDocument();
+    expect(screen.getAllByText("Shown as a book library")).toHaveLength(2);
+    expect(screen.getAllByText("Shown as a movie library")).toHaveLength(4);
+    expect(screen.getByRole("switch", { name: "Only in its own app" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Jellyfin & Emby" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Vela" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      const patch = calls(fake, "PATCH", "/libraries/3").at(-1);
+      expect(patch?.body).toMatchObject({
+        present: {
+          vela: { type: "movies" },
+          mediaBrowser: { collectionType: "books", itemTypes: { book: "Book" } },
+        },
+      });
+    });
   });
 
-  it("lists Vela first in Show in apps and saves its type picker", async () => {
+  it("derives Show in apps hints from the library kind without per-app pickers", async () => {
     const { fake } = renderApp("/libraries/7/settings");
     await screen.findByText("Show in apps", {}, { timeout: 15000 });
+    expect(
+      screen.getByText("Each app shows Anime Shows as its own library. Pick which apps show it."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Kind")).toBeInTheDocument();
+    expect(screen.getByText("TV shows")).toBeInTheDocument();
+
     const switches = screen
       .getAllByRole("switch")
       .map((el) => el.getAttribute("aria-label"))
@@ -232,20 +287,21 @@ describe("Libraries workspace", () => {
       "Show in Xtream",
       "Show in Silo",
     ]);
+    expect(screen.getAllByText("Shown as a show library with seasons")).toHaveLength(6);
+    expect(screen.queryByRole("button", { name: /How .* shows it/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Only in its own app" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "Show in Vela" }));
-    const picker = await screen.findByRole("button", { name: "How Vela shows it" });
-    expect(picker).toHaveTextContent("TV shows");
-    expect(screen.getByText("In apps: Vela")).toBeInTheDocument();
-
-    fireEvent.click(picker);
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Movies" }));
-    expect(screen.getByRole("button", { name: "How Vela shows it" })).toHaveTextContent("Movies");
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Plex" }));
+    expect(screen.queryByRole("button", { name: /How .* shows it/ })).not.toBeInTheDocument();
+    expect(screen.getByText("In apps: Vela, Plex")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await settleUi(() => {
       const patch = calls(fake, "PATCH", "/libraries/7").at(-1);
-      expect(patch?.body).toMatchObject({ present: { vela: { type: "movies" } } });
+      expect(patch?.body).toMatchObject({
+        present: { vela: { type: "shows" }, plex: { base: "show" } },
+      });
     });
   });
 

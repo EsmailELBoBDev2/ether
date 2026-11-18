@@ -67,8 +67,7 @@
 }
 .library-field input,
 .library-field select,
-.library-cache-input input,
-.library-present-row input {
+.library-cache-input input {
   border: 1px solid var(--color-border);
   border-radius: 0.45rem;
   background: var(--color-bg);
@@ -80,7 +79,6 @@
 .library-field-error {
   color: var(--color-danger, #b3261e);
 }
-.library-present-row,
 .library-cache-input {
   display: inline-flex;
   align-items: center;

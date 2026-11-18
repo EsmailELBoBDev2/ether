@@ -24,6 +24,7 @@ import { useDebouncedValue } from "../../lib/hooks";
 import { ChannelLogo } from "./ChannelLogo";
 import {
   clock,
+  compileOwnerGroupMatcher,
   dayClock,
   progress,
   isGuideSource,
@@ -34,6 +35,7 @@ import {
   type Coverage,
   type GuideChannel,
   type MatchChange,
+  type OwnerGroup,
   type Programme,
   type Source,
 } from "./model";
@@ -297,6 +299,7 @@ export function GuideSourceList({
 export function GuideWorkbench({
   channels,
   sources,
+  ownerGroups = [],
   coverage,
   source,
   onMapChannel,
@@ -310,6 +313,7 @@ export function GuideWorkbench({
 }: {
   channels: ChannelSummary[];
   sources: Source[];
+  ownerGroups?: OwnerGroup[];
   coverage: Map<string, Coverage> | null;
   /** The selected guide source, or undefined for all guide sources. */
   source?: Source;
@@ -336,10 +340,20 @@ export function GuideWorkbench({
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const groups = useMemo(() => groupGuideChannels(channels), [channels]);
-  const scopedChannels = useMemo(
-    () => (group ? filterGuideChannels(channels, { app: "all", group }) : channels),
-    [channels, group],
+  const sourceNames = useMemo(
+    () => new Map(sources.map((s) => [s.id, sourceTitle(s)])),
+    [sources],
   );
+  const scopedChannels = useMemo(() => {
+    if (!group) return channels;
+    if (group.startsWith("owner:")) {
+      const og = ownerGroups.find((x) => x.id === group.slice(6));
+      if (!og) return channels;
+      const matchesOwner = compileOwnerGroupMatcher(og, sourceNames);
+      return channels.filter(matchesOwner);
+    }
+    return filterGuideChannels(channels, { app: "all", group });
+  }, [channels, group, ownerGroups, sourceNames]);
   const scopedIds = useMemo(
     () => (group ? new Set(scopedChannels.map((c) => c.id)) : null),
     [group, scopedChannels],
@@ -645,7 +659,7 @@ export function GuideWorkbench({
                   sourceId={sourceId}
                   onApplied={onReload}
                 />
-                {groups.yours.length || groups.provider.length ? (
+                {ownerGroups.length || groups.yours.length || groups.provider.length ? (
                   <ToolbarPicker
                     ariaLabel={t("Group")}
                     value={group}
@@ -653,7 +667,12 @@ export function GuideWorkbench({
                     className="max-w-[12rem]"
                     options={[
                       { value: "", label: t("All groups") },
-                      ...(groups.yours.length
+                      ...ownerGroups.map((g) => ({
+                        value: `owner:${g.id}`,
+                        label: g.name,
+                        group: t("Your groups"),
+                      })),
+                      ...(groups.yours.length && !ownerGroups.length
                         ? [{ value: "yours", label: t("Your groups"), group: t("Your groups") }]
                         : []),
                       ...groups.yours.map((g) => ({

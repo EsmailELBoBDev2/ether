@@ -21,6 +21,7 @@ import {
   type Channel,
   type ChannelSummary,
   type Coverage,
+  type OwnerGroup,
   type Programme,
   type Source,
 } from "./model";
@@ -68,6 +69,7 @@ export function GuidePage({
   initialSub = "grid",
   channels,
   sources,
+  ownerGroups = [],
   coverage,
   query,
   guideUntil,
@@ -87,6 +89,7 @@ export function GuidePage({
   initialSub?: Sub;
   channels: ChannelSummary[];
   sources: Source[];
+  ownerGroups?: OwnerGroup[];
   coverage: Map<string, Coverage> | null;
   query: string;
   /** When listings run out (ms); undefined when some channel never runs out. */
@@ -239,6 +242,7 @@ export function GuidePage({
               channels={channels}
               query={query}
               sources={sources}
+              ownerGroups={ownerGroups}
               coverage={coverage}
               source={guideSource}
               showCoverageCard={false}

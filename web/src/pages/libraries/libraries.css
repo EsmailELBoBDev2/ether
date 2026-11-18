@@ -5,6 +5,7 @@
   margin-bottom: 1.5rem;
 }
 .library-card {
+  height: 100%;
   border: 1px solid var(--color-border);
   border-radius: 0.75rem;
   background: var(--color-surface);
@@ -46,15 +47,17 @@
 .library-card-actions {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex-wrap: nowrap;
   margin-top: auto;
+  padding-top: 0.2rem;
 }
 .library-card-hide {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   font-size: 0.85rem;
+  white-space: nowrap;
 }
 .library-field {
   display: flex;

@@ -1059,7 +1059,7 @@ export function ConnectedServices({
                     : s.tab === "trakt"
                       ? ownerPath === "/viewers"
                         ? "/viewers"
-                        : `${ownerPath}/limits`
+                        : `${ownerPath}/sign-in?signin=sync`
                       : "/viewers"
               }
               usage={
@@ -1071,7 +1071,7 @@ export function ConnectedServices({
                       ? t("Powers search, collections and Home recommendations.")
                       : s.tab === "trakt"
                         ? t(
-                            "Connect Trakt under each viewer's Limits tab, or let viewers connect at /ether/me.",
+                            "Connect Trakt under each viewer's Sign-in & devices tab, or let viewers connect at /ether/me.",
                           )
                         : t("Connect viewer accounts to sync watch history.")
               }

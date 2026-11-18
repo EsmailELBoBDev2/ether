@@ -186,11 +186,13 @@ export function DivergingBars({
   ariaLabel,
   onSelect,
   selectedKey,
+  valueFormat,
 }: {
   data: WeightDatum[];
   ariaLabel: string;
   onSelect?: (d: WeightDatum) => void;
   selectedKey?: string;
+  valueFormat?: (weight: number) => string;
 }) {
   return (
     <ul className="space-y-1.5" aria-label={ariaLabel}>
@@ -204,7 +206,10 @@ export function DivergingBars({
               {...(onSelect ? { type: "button" as const, onClick: () => onSelect(d) } : {})}
               title={d.hint}
               className={cn(
-                "grid w-full grid-cols-[minmax(5rem,9rem)_1fr_2.75rem] items-center gap-2 rounded-md px-1 py-0.5 text-left",
+                "grid w-full items-center gap-2 rounded-md px-1 py-0.5 text-left",
+                valueFormat
+                  ? "grid-cols-[minmax(5rem,9rem)_1fr_minmax(4rem,auto)]"
+                  : "grid-cols-[minmax(5rem,9rem)_1fr_2.75rem]",
                 onSelect &&
                   "hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                 selectedKey === d.key && "bg-primary-subtle",
@@ -222,8 +227,14 @@ export function DivergingBars({
                 />
               </span>
               <span className="text-right text-xs tabular-nums text-fg-muted">
-                {w > 0 ? "+" : ""}
-                {fixed(w, 2)}
+                {valueFormat ? (
+                  valueFormat(w)
+                ) : (
+                  <>
+                    {w > 0 ? "+" : ""}
+                    {fixed(w, 2)}
+                  </>
+                )}
               </span>
             </Row>
           </li>

@@ -671,7 +671,7 @@ unless the owner agrees to replace the library's contents.
 `library` and `browse` shape how Vela renders the library without per-plugin client logic:
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
-- `library.tabs`: up to 6 entries of `{key, label, kind}` where `kind` is `"recommended"`, `"library"`, or `"collections"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, or `"collections"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). A `"collections"` tab may set `facet` (one of `browse.facets`), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared); `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>` pages those facet buckets most-items-first with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=`.
 - `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
 - Recommended rows (`GET /vela/v0/libraries/{id}/rows`): Ether builds up to 8 shelves (20 items each) from your stored items — Continue watching, Recently added, Newest, Top rated (when `rating` is a declared sort), and top values of your first declared facet.
 
@@ -1472,6 +1472,7 @@ type KindItem struct {
 	Unavailable *ItemUnavailable           `json:"unavailable,omitempty"`
 	Ref         ItemRef                    `json:"-" ` // assigned by Ether, never sent to the plugin
 	Key         RatingKey                  `json:"-" ` // allocated PluginKey(seq), populated on store reads
+	AddedAt     int64                      `json:"-"`  // store insertion unix seconds, populated on store reads
 	ID          string                     `json:"id"` // externalID
 	Level       string                     `json:"level"`
 	ParentID    string                     `json:"parentId,omitempty"`
@@ -3262,6 +3263,9 @@ type KindLibraryDecl struct {
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
 | `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections |
+| `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (collections only) |
+| `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts (facet collections only) |
+| `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections only) |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryTab
@@ -3269,9 +3273,12 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
-	Kind  string `json:"kind"` // recommended|library|collections
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Kind      string `json:"kind"`                // recommended|library|collections
+	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections only)
+	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
+	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
 }
 ``````
 
@@ -14342,7 +14349,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		seenSort[s] = true
 	}
+	seenFacet := map[string]bool{}
 	for j, f := range k.Browse.Facets {
+		if seenFacet[f] {
+			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "is listed twice")
+		}
+		seenFacet[f] = true
 		if f == "year" || f == "released" || f == "rating" {
 			continue
 		}
@@ -14351,6 +14363,40 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "must name a declared field")
 		} else if !field.Indexed && field.Type != "people" {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
+		}
+	}
+	if !k.Library.IsZero() {
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			if tab.Kind != "collections" {
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections tabs may set direction")
+				}
+				continue
+			}
+			if tab.Facet != "" && !seenFacet[tab.Facet] {
+				add(tbase+".facet", "must name a declared browse facet")
+			}
+			if tab.Sort != "" {
+				if tab.Facet == "" {
+					add(tbase+".sort", "requires facet to be set")
+				} else if !seenSort[tab.Sort] {
+					add(tbase+".sort", "must name a declared browse sort")
+				}
+			}
+			if tab.Direction != "" {
+				if tab.Facet == "" {
+					add(tbase+".direction", "requires facet to be set")
+				} else if tab.Direction != "asc" && tab.Direction != "desc" {
+					add(tbase+".direction", "must be asc or desc")
+				}
+			}
 		}
 	}
 	for j, f := range k.Browse.SearchFields {
@@ -22420,9 +22466,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.icon` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.name` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].direction` | `any` | false | {"enum":["asc","desc"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].facet` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].kind` | `any` | false | {"enum":["recommended","library","collections"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index"]} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
 | `ether.contributes.mediaKinds[].present` | `object` | false | {} |
@@ -22937,6 +22986,15 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                       "tabs": {
                         "items": {
                           "properties": {
+                            "direction": {
+                              "enum": [
+                                "asc",
+                                "desc"
+                              ]
+                            },
+                            "facet": {
+                              "type": "string"
+                            },
                             "key": {
                               "type": "string"
                             },
@@ -22949,6 +23007,16 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                             },
                             "label": {
                               "type": "string"
+                            },
+                            "sort": {
+                              "enum": [
+                                "title",
+                                "added",
+                                "released",
+                                "year",
+                                "rating",
+                                "index"
+                              ]
                             }
                           },
                           "type": "object"
@@ -23846,7 +23914,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors, pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections`); see generated types |
+| ether.contributes | Capability descriptors, pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections`, with optional `facet`/`sort`/`direction` on `collections` tabs); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -36575,6 +36643,9 @@ type KindLibraryDecl struct {
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
 | `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections |
+| `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (collections only) |
+| `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts (facet collections only) |
+| `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections only) |
 
 
 ## Source: sdk/go/types.go#KindLibraryTab
@@ -36582,9 +36653,12 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
-	Kind  string `json:"kind"` // recommended|library|collections
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Kind      string `json:"kind"`                // recommended|library|collections
+	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections only)
+	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
+	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
 }
 ``````
 
@@ -45714,6 +45788,9 @@ export interface KindLibraryTab {
   key: string;
   label: string;
   kind: "recommended" | "library" | "collections";
+  facet?: string;
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  direction?: "asc" | "desc";
 }
 
 export interface KindLibraryDecl {

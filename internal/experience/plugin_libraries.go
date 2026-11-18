@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +55,28 @@ type PluginLibraries interface {
 	// library's collection. It is one indexed read, never a walk.
 	MemberOf(ctx context.Context, lib core.Library, key core.RatingKey) (bool, error)
 }
+
+// PluginPresentation carries manifest-declared Vela library presentation metadata.
+type PluginPresentation struct {
+	Card   string
+	Tabs   []frontend.ViewTab
+	Sorts  []string
+	Facets []frontend.ViewFacet
+}
+
+// PluginPresentationLibraries is implemented by plugin library adapters that
+// expose card/tabs/sorts/facets presentation metadata and discrete facet buckets.
+type PluginPresentationLibraries interface {
+	Presentation(ctx context.Context, lib core.Library) (PluginPresentation, bool)
+	FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error)
+	FacetCollections(ctx context.Context, lib core.Library, field string, offset, limit int) (frontend.FacetCollectionPage, error)
+}
+
+var (
+	_ frontend.LibraryFacetBuckets     = (*Service)(nil)
+	_ frontend.LibraryFacetCollections = (*Service)(nil)
+	_ frontend.PluginLibraryRowsReader = (*Service)(nil)
+)
 
 const maxPluginCursorEntries = 512
 
@@ -165,7 +188,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 		if !lib.UpdatedAt.IsZero() {
 			revision = lib.UpdatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")
 		}
-		out = append(out, frontend.View{
+		view := frontend.View{
 			Revision:  revision,
 			ID:        strconv.FormatInt(int64(lib.ID), 10),
 			LibraryID: lib.ID,
@@ -175,7 +198,18 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 			KindKey:   lib.KindKey,
 			PluginID:  lib.PluginID,
 			Native:    native,
-		})
+		}
+		if lib.Source == core.LibraryPlugin {
+			if pres, hasPres := s.d.PluginLibraries.(PluginPresentationLibraries); hasPres {
+				if p, ok := pres.Presentation(ctx, lib); ok {
+					view.Card = p.Card
+					view.Tabs = p.Tabs
+					view.Sorts = p.Sorts
+					view.Facets = p.Facets
+				}
+			}
+		}
+		out = append(out, view)
 	}
 	return out, nil
 }
@@ -361,7 +395,7 @@ func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core
 		if err != nil {
 			return core.Page{}, err
 		}
-		if ppl, ok := s.d.PluginLibraries.(PluginPeopleLibraries); ok {
+		if ppl, ok := s.d.PluginLibraries.(PluginPeopleLibraries); ok && len(subQ.Filter.Facets) == 0 {
 			_, peopleTitles, pErr := s.searchPluginPeopleInLibraries(ctx, v, []core.Library{lib}, ppl, query, subQ, 20)
 			if pErr != nil && errors.Is(pErr, context.Canceled) {
 				return core.Page{}, pErr
@@ -760,4 +794,237 @@ func (s *Service) presentLibrary(p core.Presentations, mt core.MediaType) (core.
 		return "", "", false
 	}
 	return s.d.LibraryPresentation(p, mt)
+}
+
+func (s *Service) pluginLibraryByViewID(ctx context.Context, v *core.User, viewID string) (core.Library, PluginPresentationLibraries, PluginPresentation, error) {
+	if s.d.PluginLibraries == nil || v == nil {
+		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+	}
+	idNum, err := strconv.ParseInt(strings.TrimSpace(viewID), 10, 64)
+	if err != nil || idNum <= 0 {
+		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+	}
+	lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(idNum))
+	if err != nil || lib.Source != core.LibraryPlugin || !v.AllowsLibrary(lib.ID) {
+		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+	}
+	if _, _, ok := s.publishedLibrary(ctx, lib); !ok {
+		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+	}
+	pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
+	if !ok {
+		return lib, nil, PluginPresentation{}, nil
+	}
+	p, _ := pres.Presentation(ctx, lib)
+	return lib, pres, p, nil
+}
+
+// LibraryFacetBuckets implements frontend.LibraryFacetBuckets.
+func (s *Service) LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field string) ([]frontend.FacetBucket, error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
+	if err != nil || pres == nil {
+		return nil, core.ErrNotFound
+	}
+	declared := false
+	for _, f := range p.Facets {
+		if f.ID == field {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return nil, core.ErrNotFound
+	}
+	return pres.FacetBuckets(ctx, lib, field)
+}
+
+// LibraryFacetCollections implements frontend.LibraryFacetCollections.
+func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return frontend.FacetCollectionPage{}, err
+	}
+	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
+	if err != nil || pres == nil {
+		return frontend.FacetCollectionPage{}, core.ErrNotFound
+	}
+	declared := false
+	for _, f := range p.Facets {
+		if f.ID == field {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return frontend.FacetCollectionPage{}, core.ErrNotFound
+	}
+	out, err := pres.FacetCollections(ctx, lib, field, page.Offset, page.Limit)
+	if err != nil {
+		return frontend.FacetCollectionPage{}, err
+	}
+	for i := range out.Items {
+		if out.Items[i].NewestItem != nil {
+			piv := PluginItemView{Library: lib, Title: *out.Items[i].NewestItem}
+			if !s.pluginItemAllowed(ctx, v, piv) {
+				out.Items[i].NewestItem = nil
+			}
+		}
+	}
+	return out, nil
+}
+
+// PluginLibraryRows implements frontend.PluginLibraryRowsReader: up to 8 shelves
+// (20 items each) built from the plugin library's stored items.
+func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
+	if err != nil {
+		return nil, err
+	}
+	const (
+		maxRows  = 8
+		rowLimit = 20
+	)
+	var rows []frontend.Row
+	appendRow := func(id, title string, purpose frontend.RowPurpose, kind string, items []core.Title) {
+		if len(items) == 0 || len(rows) >= maxRows {
+			return
+		}
+		if len(items) > rowLimit {
+			items = items[:rowLimit]
+		}
+		copied := make([]core.Title, len(items))
+		copy(copied, items)
+		entries := make([]frontend.RowEntry, len(copied))
+		for i := range copied {
+			entries[i] = frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &copied[i]}
+		}
+		rows = append(rows, frontend.Row{
+			ID:      id,
+			Title:   title,
+			Purpose: purpose,
+			Kind:    kind,
+			Style:   "shelf",
+			Entries: entries,
+			Items:   copied,
+		})
+	}
+
+	// 1. Continue watching.
+	if s.d.State != nil {
+		if sts, sErr := s.d.State.InProgress(ctx, v.ID, 200); sErr == nil && len(sts) > 0 {
+			var keys []core.RatingKey
+			for _, st := range sts {
+				if st.ViewOffset > 0 && st.Key.IsPluginKey() {
+					keys = append(keys, st.Key)
+				}
+			}
+			if len(keys) > 0 {
+				if pivs, pErr := s.d.PluginLibraries.ItemsMany(ctx, keys); pErr == nil {
+					var cont []core.Title
+					for _, k := range keys {
+						piv, ok := pivs[k]
+						if !ok || piv.Library.ID != lib.ID || !s.pluginItemAllowed(ctx, v, piv) {
+							continue
+						}
+						cont = append(cont, piv.Title)
+						if len(cont) >= rowLimit {
+							break
+						}
+					}
+					appendRow("plugin:"+viewID+":continue", "Continue Watching", frontend.RowContinue, "continue", cont)
+				}
+			}
+		}
+	}
+
+	// 2. Recently added.
+	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
+		Sort:    core.SortAdded,
+		Desc:    true,
+		Limit:   rowLimit,
+		NoTotal: true,
+	}); pErr == nil {
+		appendRow("plugin:"+viewID+":added", "Recently Added", frontend.RowRecentlyAdded, "recentlyAdded", page.Items)
+	}
+
+	// 3. Newest.
+	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
+		Sort:    core.SortReleased,
+		Desc:    true,
+		Limit:   rowLimit,
+		NoTotal: true,
+	}); pErr == nil {
+		appendRow("plugin:"+viewID+":released", "Newest", frontend.RowRecentlyReleased, "recentlyReleased", page.Items)
+	}
+
+	// 4. Top rated (when rating is a declared sort).
+	if slices.Contains(p.Sorts, "rating") && len(rows) < maxRows {
+		if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
+			Sort:    core.SortRating,
+			Desc:    true,
+			Limit:   rowLimit,
+			NoTotal: true,
+		}); pErr == nil {
+			appendRow("plugin:"+viewID+":rating", "Top Rated", frontend.RowRecommendation, "topRated", page.Items)
+		}
+	}
+
+	// 5. Top values of the first declared facet (most items first).
+	if pres != nil && len(p.Facets) > 0 && len(rows) < maxRows {
+		firstFacet := p.Facets[0]
+		if buckets, bErr := pres.FacetBuckets(ctx, lib, firstFacet.ID); bErr == nil && len(buckets) > 0 {
+			sort.SliceStable(buckets, func(i, j int) bool {
+				if buckets[i].Count != buckets[j].Count {
+					return buckets[i].Count > buckets[j].Count
+				}
+				return strings.ToLower(buckets[i].Label) < strings.ToLower(buckets[j].Label)
+			})
+			for _, b := range buckets {
+				if len(rows) >= maxRows {
+					break
+				}
+				page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
+					Sort:    core.SortReleased,
+					Desc:    true,
+					Limit:   rowLimit,
+					NoTotal: true,
+					Filter: core.Filter{
+						Facets: map[string][]string{firstFacet.ID: {b.ID}},
+					},
+				})
+				if pErr != nil || len(page.Items) == 0 {
+					continue
+				}
+				title := b.Label
+				if isOriginFacetKey(firstFacet.ID) {
+					title = "From " + b.Label
+				}
+				appendRow("plugin:"+viewID+":facet:"+firstFacet.ID+":"+b.ID, title, frontend.RowRecommendation, "facet", page.Items)
+			}
+		}
+	}
+	if rows == nil {
+		return []frontend.Row{}, nil
+	}
+	return rows, nil
+}
+
+func isOriginFacetKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "developer", "developers", "publisher", "publishers", "channel", "channels", "network", "networks", "author", "authors":
+		return true
+	default:
+		return false
+	}
 }

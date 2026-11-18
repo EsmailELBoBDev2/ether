@@ -56,6 +56,7 @@ type Title struct {
 	KindLevel     string    `json:"kindLevel,omitempty"`
 	LibraryID     LibraryID `json:"-"`
 	ItemIndex     int       `json:"-"`
+	PluginAddedAt int64     `json:"-"`
 	LandscapeCard bool      `json:"-"`
 
 	// Seasons and episodes.

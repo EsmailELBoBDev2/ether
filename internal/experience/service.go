@@ -2393,7 +2393,7 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		}
 	}
 	switch q.Sort {
-	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortRating, core.SortPopularity:
+	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortYear, core.SortRating, core.SortPopularity, core.SortIndex:
 	case core.SortPlayed:
 		// A played order comes from the viewer's watch rows, which the
 		// catalogue rows do not carry; the listing already produced it.
@@ -2402,6 +2402,12 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		return errors.New("experience: unsupported sort")
 	}
 	now := time.Now()
+	addedTime := func(t core.Title) time.Time {
+		if t.Key.IsPluginKey() && t.PluginAddedAt > 0 {
+			return time.Unix(t.PluginAddedAt, 0).UTC()
+		}
+		return t.DateAdded(now)
+	}
 	// A title missing the sorted value goes last in either direction; a
 	// sort never drops it or floats it to the top of an ascending list.
 	missing := func(t core.Title) bool {
@@ -2409,7 +2415,9 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		case core.SortReleased:
 			return t.Released.IsZero()
 		case core.SortAdded:
-			return t.DateAdded(now).IsZero()
+			return addedTime(t).IsZero()
+		case core.SortYear:
+			return t.Year == 0
 		case core.SortRating:
 			return t.Rating == 0
 		case core.SortPopularity:
@@ -2434,7 +2442,7 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 			}
 			cmp = strings.Compare(strings.ToLower(at), strings.ToLower(bt))
 		case core.SortAdded:
-			ad, bd := a.DateAdded(now), b.DateAdded(now)
+			ad, bd := addedTime(a), addedTime(b)
 			if ad.Before(bd) {
 				cmp = -1
 			} else if ad.After(bd) {
@@ -2444,6 +2452,12 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 			if a.Released.Before(b.Released) {
 				cmp = -1
 			} else if a.Released.After(b.Released) {
+				cmp = 1
+			}
+		case core.SortYear:
+			if a.Year < b.Year {
+				cmp = -1
+			} else if a.Year > b.Year {
 				cmp = 1
 			}
 		case core.SortRating:
@@ -2456,6 +2470,12 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 			if a.Popularity < b.Popularity {
 				cmp = -1
 			} else if a.Popularity > b.Popularity {
+				cmp = 1
+			}
+		case core.SortIndex:
+			if a.ItemIndex < b.ItemIndex {
+				cmp = -1
+			} else if a.ItemIndex > b.ItemIndex {
 				cmp = 1
 			}
 		}

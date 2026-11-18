@@ -398,6 +398,15 @@
                       "tabs": {
                         "items": {
                           "properties": {
+                            "direction": {
+                              "enum": [
+                                "asc",
+                                "desc"
+                              ]
+                            },
+                            "facet": {
+                              "type": "string"
+                            },
                             "key": {
                               "type": "string"
                             },
@@ -410,6 +419,16 @@
                             },
                             "label": {
                               "type": "string"
+                            },
+                            "sort": {
+                              "enum": [
+                                "title",
+                                "added",
+                                "released",
+                                "year",
+                                "rating",
+                                "index"
+                              ]
                             }
                           },
                           "type": "object"

@@ -116,6 +116,7 @@ type KindItem struct {
 	Unavailable *ItemUnavailable           `json:"unavailable,omitempty"`
 	Ref         ItemRef                    `json:"-" ` // assigned by Ether, never sent to the plugin
 	Key         RatingKey                  `json:"-" ` // allocated PluginKey(seq), populated on store reads
+	AddedAt     int64                      `json:"-"`  // store insertion unix seconds, populated on store reads
 	ID          string                     `json:"id"` // externalID
 	Level       string                     `json:"level"`
 	ParentID    string                     `json:"parentId,omitempty"`

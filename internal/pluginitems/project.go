@@ -46,6 +46,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		Type:          mediaType,
 		KindLevel:     item.Level,
 		ItemIndex:     item.Index,
+		PluginAddedAt: item.AddedAt,
 		LandscapeCard: decl.Library.EffectiveCard() == "landscape",
 		Title:         item.Title,
 		SortTitle:     sortTitle,

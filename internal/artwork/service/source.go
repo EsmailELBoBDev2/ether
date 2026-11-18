@@ -489,19 +489,31 @@ func (a Source) pluginEntries(ctx context.Context, req frontend.ArtworkRequest) 
 		switch item.kind {
 		case frontend.ImagePoster:
 			raw = byKind[frontend.ImagePoster]
-			path = firstNonEmptyPath(raw.Path, title.PosterPath, byKind[frontend.ImageThumb].Path, title.StillPath)
-			if raw.Path == "" {
-				raw = byKind[frontend.ImageThumb]
+			if title.LandscapeCard && frontend.ArtworkKindWanted(ctx, frontend.ImageThumb) {
+				path = raw.Path
+			} else {
+				path = firstNonEmptyPath(raw.Path, title.PosterPath, byKind[frontend.ImageThumb].Path, title.StillPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImageThumb]
+				}
 			}
 		case frontend.ImageThumb:
 			raw = byKind[frontend.ImageThumb]
-			if title.Type == core.TypeEpisode {
+			if title.LandscapeCard {
+				path = firstNonEmptyPath(raw.Path, title.ThumbPath, byKind[frontend.ImageBackdrop].Path, title.BackdropPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImageBackdrop]
+				}
+			} else if title.Type == core.TypeEpisode {
 				path = firstNonEmptyPath(raw.Path, title.StillPath, byKind[frontend.ImagePoster].Path, title.PosterPath)
+				if raw.Path == "" {
+					raw = byKind[frontend.ImagePoster]
+				}
 			} else {
 				path = firstNonEmptyPath(raw.Path, byKind[frontend.ImagePoster].Path, title.PosterPath)
-			}
-			if raw.Path == "" {
-				raw = byKind[frontend.ImagePoster]
+				if raw.Path == "" {
+					raw = byKind[frontend.ImagePoster]
+				}
 			}
 		case frontend.ImageBackdrop:
 			raw = byKind[frontend.ImageBackdrop]

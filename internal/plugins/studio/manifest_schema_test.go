@@ -39,6 +39,8 @@ func schemaType(typ reflect.Type) map[string]any {
 			props["card"] = map[string]any{"enum": []string{"poster", "landscape", "square"}}
 		case reflect.TypeFor[plugins.KindLibraryTab]():
 			props["kind"] = map[string]any{"enum": []string{"recommended", "library", "collections"}}
+			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index"}}
+			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}
 		}
 		return map[string]any{"type": "object", "properties": props}
 	case reflect.Slice, reflect.Array:

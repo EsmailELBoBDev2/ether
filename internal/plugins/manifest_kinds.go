@@ -188,7 +188,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		seenSort[s] = true
 	}
+	seenFacet := map[string]bool{}
 	for j, f := range k.Browse.Facets {
+		if seenFacet[f] {
+			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "is listed twice")
+		}
+		seenFacet[f] = true
 		if f == "year" || f == "released" || f == "rating" {
 			continue
 		}
@@ -197,6 +202,40 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "must name a declared field")
 		} else if !field.Indexed && field.Type != "people" {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
+		}
+	}
+	if !k.Library.IsZero() {
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			if tab.Kind != "collections" {
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections tabs may set direction")
+				}
+				continue
+			}
+			if tab.Facet != "" && !seenFacet[tab.Facet] {
+				add(tbase+".facet", "must name a declared browse facet")
+			}
+			if tab.Sort != "" {
+				if tab.Facet == "" {
+					add(tbase+".sort", "requires facet to be set")
+				} else if !seenSort[tab.Sort] {
+					add(tbase+".sort", "must name a declared browse sort")
+				}
+			}
+			if tab.Direction != "" {
+				if tab.Facet == "" {
+					add(tbase+".direction", "requires facet to be set")
+				} else if tab.Direction != "asc" && tab.Direction != "desc" {
+					add(tbase+".direction", "must be asc or desc")
+				}
+			}
 		}
 	}
 	for j, f := range k.Browse.SearchFields {

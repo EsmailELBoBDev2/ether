@@ -121,6 +121,13 @@ func AppendPluginFacetClauses(where *strings.Builder, args *[]any, facets map[st
 			var exactArgs []any
 			invalid := false
 			for _, value := range cleanVals {
+				if key == "released" {
+					if lo, hi, ok := ParseDateYearBucket(value); ok {
+						disjuncts = append(disjuncts, `i.released BETWEEN ? AND ?`)
+						dargs = append(dargs, lo, hi)
+						continue
+					}
+				}
 				if lo, hi, ok := parseFloatRange(value); ok {
 					disjuncts = append(disjuncts, `i.`+key+` BETWEEN ? AND ?`)
 					dargs = append(dargs, lo, hi)

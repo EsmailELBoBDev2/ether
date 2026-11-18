@@ -334,6 +334,9 @@ export interface KindLibraryTab {
   key: string;
   label: string;
   kind: "recommended" | "library" | "collections";
+  facet?: string;
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  direction?: "asc" | "desc";
 }
 
 export interface KindLibraryDecl {

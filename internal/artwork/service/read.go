@@ -55,6 +55,9 @@ func (a Source) Read(ctx context.Context, req frontend.ArtworkRequest, img front
 		}
 		return a.transform(ctx, img.Path, data, "image/jpeg", transform)
 	}
+	if req.Item.IsPluginKey() && (strings.HasPrefix(img.Path, "https://") || strings.HasPrefix(img.Path, "http://")) {
+		return a.readPluginItemArt(ctx, req, img, transform)
+	}
 	entries, _, err := a.entries(ctx, req)
 	if err != nil {
 		return nil, "", err
@@ -292,4 +295,32 @@ func (a Source) transform(ctx context.Context, reference string, data []byte, co
 		return a.Raster.Rasterize(ctx, reference, data, artwork.RasterOptions{Width: transform.Width, Height: transform.Height, Format: transform.Format, Blur: transform.Blur})
 	}
 	return Transform(data, contentType, transform)
+}
+
+// readPluginItemArt serves a plugin library item's own artwork URL. Plugin
+// items grant their images by the URL the plugin returned, not by a
+// catalogue artwork reference; the URL must be one of the item's own.
+func (a Source) readPluginItemArt(ctx context.Context, req frontend.ArtworkRequest, img frontend.Image, transform frontend.ArtworkTransform) ([]byte, string, error) {
+	if req.Viewer == nil {
+		return nil, "", core.ErrUnauthorized
+	}
+	t, err := a.title(ctx, req.Item)
+	if err != nil || t == nil {
+		return nil, "", core.ErrNotFound
+	}
+	own := false
+	for _, p := range []string{t.PosterPath, t.BackdropPath, t.StillPath, t.LogoPath} {
+		if p != "" && p == img.Path {
+			own = true
+			break
+		}
+	}
+	if !own {
+		return nil, "", core.ErrUnauthorized
+	}
+	data, ct, err := a.remote(ctx, img.Path, transform.Width)
+	if err != nil || len(data) == 0 || len(data) > MaxImageBytes {
+		return nil, "", core.ErrNotAvailable
+	}
+	return a.transform(ctx, img.Path, data, ct, transform)
 }

@@ -157,6 +157,9 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		problem(w, 422, "playback", "track_not_found")
 	case errors.Is(err, frontend.ErrDownloadNeedsTranscode), errors.Is(err, frontend.ErrSubtitleAuthoringUnavailable), errors.Is(err, frontend.ErrSubtitleFontsUnavailable):
 		problem(w, 422, "playback", "unsupported_conversion")
+	case errors.Is(err, frontend.ErrArchiveUnstreamable):
+		logFailure(err, requests...)
+		send(w, http.StatusUnprocessableEntity, object{"error": object{"class": "source", "code": "archive_unstreamable", "message": frontend.ErrArchiveUnstreamable.Error(), "retry": object{"allowed": false}}})
 	case errors.Is(err, frontend.ErrInvalidPreferences), errors.Is(err, frontend.ErrBadPlaylist), errors.Is(err, frontend.ErrPeopleQuery), errors.Is(err, frontend.ErrImageBatchLimit):
 		problem(w, 400, "request", "invalid_request")
 	case errors.Is(err, frontend.ErrPreferencesLimit), errors.Is(err, frontend.ErrDownloadBudget):
@@ -467,6 +470,7 @@ func body(r *http.Request, v any) error {
 	b, _ := r.Context().Value(bodyKey{}).(json.RawMessage)
 	return json.Unmarshal(b, v)
 }
+
 func (i *instance) route(method, path string, h http.HandlerFunc) {
 	i.mux.HandleFunc(method+" /vela/v0"+path, h)
 }

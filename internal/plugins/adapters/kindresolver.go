@@ -75,6 +75,15 @@ type KindResolver struct {
 
 var _ frontend.KindStreams = (*KindResolver)(nil)
 
+func defaultKindHTTPClient() *http.Client {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt != nil {
+		tr := dt.Clone()
+		tr.ResponseHeaderTimeout = 30 * time.Second
+		return &http.Client{Transport: tr}
+	}
+	return &http.Client{}
+}
+
 // NewKindResolver constructs a KindResolver.
 func NewKindResolver(deps KindResolverDeps) *KindResolver {
 	log := deps.Logger
@@ -83,7 +92,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 	}
 	hc := deps.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
+		hc = defaultKindHTTPClient()
 	}
 	return &KindResolver{
 		mgr:       deps.Manager,
@@ -440,17 +449,17 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 }
 
 func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem) kindstream.Deps {
+	var quota blobcache.Quota
+	if r.catalog != nil && lib.Key != "" {
+		quota = r.catalog.QuotaFor(rec.PluginID, lib.Key)
+	} else {
+		quota = blobcache.Quota{
+			MaxBytes: rec.Decl.Cache.MaxBytes,
+			TTL:      parseKindDuration(rec.Decl.Cache.TTL, 0),
+		}
+	}
 	var ns *blobcache.Namespace
 	if r.blobs != nil && lib.Key != "" {
-		var quota blobcache.Quota
-		if r.catalog != nil {
-			quota = r.catalog.QuotaFor(rec.PluginID, lib.Key)
-		} else {
-			quota = blobcache.Quota{
-				MaxBytes: rec.Decl.Cache.MaxBytes,
-				TTL:      parseKindDuration(rec.Decl.Cache.TTL, 0),
-			}
-		}
 		r.blobs.BindPluginLibrary(rec.PluginID, lib.Key)
 		ns = r.blobs.Namespace(lib.Key, quota)
 	}
@@ -492,7 +501,7 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		OpenRelease:      r.openRelease,
 		Secret:           secretFn,
 		AllowHost:        allowHost,
-		MaxDownloadBytes: rec.Decl.Cache.EffectiveMaxBytes(),
+		MaxDownloadBytes: quota.EffectiveMaxBytes(),
 		ItemIndex:        item.Index,
 		Backoff:          r.backoff,
 	}
@@ -535,6 +544,14 @@ func (r *KindResolver) openItemByteSource(ctx context.Context, rec pluginitems.K
 	}
 	bs, winning, err := kindstream.OpenSources(ctx, sources, ksDeps)
 	if err != nil {
+		if errors.Is(err, core.ErrArchiveUnstreamable) && r.log != nil {
+			r.log.Warn("this archive format or compression method cannot be streamed",
+				"plugin", rec.PluginID,
+				"library", lib.Key,
+				"item", item.ID,
+				"err", err,
+			)
+		}
 		return nil, err
 	}
 	if partIdx == nil {
@@ -714,7 +731,11 @@ func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (
 		return nil, fmt.Errorf("release fileIndex must be non-negative")
 	}
 	if fileIndex != nil || strings.TrimSpace(hint.File) != "" {
-		rel.Target = &core.ReleaseTarget{FileIndex: fileIndex, ExactFile: strings.TrimSpace(hint.File)}
+		rel.Target = &core.ReleaseTarget{
+			FileIndex:     fileIndex,
+			ExactFile:     strings.TrimSpace(hint.File),
+			AllowNonVideo: true,
+		}
 	}
 	if hint.Candidate != nil {
 		rel.InfoHash = strings.ToLower(strings.TrimSpace(hint.Candidate.InfoHash))
@@ -864,4 +885,9 @@ type kindLocalFile struct {
 
 func (f *kindLocalFile) Size() int64  { return f.size }
 func (f *kindLocalFile) Name() string { return filepath.Base(f.File.Name()) }
-func (f *kindLocalFile) MIME() string { return f.mime }
+func (f *kindLocalFile) MIME() string {
+	if strings.TrimSpace(f.mime) == "" {
+		return "application/octet-stream"
+	}
+	return f.mime
+}

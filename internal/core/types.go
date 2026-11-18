@@ -164,16 +164,17 @@ func (t *Title) IsFutureRelease(now time.Time) bool {
 }
 
 var (
-	ErrNotFound          = errors.New("not found")
-	ErrNotAvailable      = errors.New("not available yet") // no acceptable release exists
-	ErrUnreleased        = errors.New("title has not been released")
-	ErrArticleMissing    = errors.New("article missing on all providers")
-	ErrArticleCorrupt    = errors.New("corrupt article or media data")
-	ErrReleaseRejected   = errors.New("release cannot be streamed")
-	ErrSourceUnavailable = errors.New("media source temporarily unavailable")
-	ErrBudgetExhausted   = errors.New("indexer daily budget exhausted")
-	ErrStreamLimit       = errors.New("stream limit reached")
-	ErrUnauthorized      = errors.New("unauthorized")
+	ErrNotFound            = errors.New("not found")
+	ErrNotAvailable        = errors.New("not available yet") // no acceptable release exists
+	ErrUnreleased          = errors.New("title has not been released")
+	ErrArticleMissing      = errors.New("article missing on all providers")
+	ErrArticleCorrupt      = errors.New("corrupt article or media data")
+	ErrReleaseRejected     = errors.New("release cannot be streamed")
+	ErrArchiveUnstreamable = errors.New("this archive format or compression method cannot be streamed")
+	ErrSourceUnavailable   = errors.New("media source temporarily unavailable")
+	ErrBudgetExhausted     = errors.New("indexer daily budget exhausted")
+	ErrStreamLimit         = errors.New("stream limit reached")
+	ErrUnauthorized        = errors.New("unauthorized")
 	// ErrPolicyUnconfirmed means the durable policy store could not be read.
 	// Callers may keep an unrestricted cached decision. Restricted viewers fail closed.
 	ErrPolicyUnconfirmed = errors.New("policy store unavailable")
@@ -266,7 +267,7 @@ type ClientCaps struct {
 	HLSContainers        []string            `json:"hlsContainers,omitempty"`        // explicit segmented output targets; distinct from direct-play containers
 	MaxBitrateKbps       int                 `json:"maxBitrateKbps"`                 // 0 = unlimited
 	DefaultRemoteBitrate bool                `json:"defaultRemoteBitrate,omitempty"` // true when MaxBitrateKbps came from the server's default remote cap rather than a client limitation
-	SubtitleCodecs       []string            `json:"subtitleCodecs,omitempty"`       // native image/text subtitle rendering
+	SubtitleCodecs       []string            `json:"subtitleCodecs"`                 // native image/text subtitle rendering
 	DVProfiles           []int               `json:"dvProfiles,omitempty"`           // explicit Dolby Vision profiles; empty uses defaults unless DVProfilesExplicit
 	VideoProfiles        map[string][]string `json:"videoProfiles,omitempty"`
 	VideoLevels          map[string]int      `json:"videoLevels,omitempty"` // codec level in ffprobe units (H.264 51 = 5.1)

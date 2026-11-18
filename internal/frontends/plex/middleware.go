@@ -679,6 +679,9 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, frontend.ErrStreamLimit), errors.Is(err, frontend.ErrTooManyTranscodes):
 		w.Header().Set("Retry-After", "5")
 		writeHTTPError(w, http.StatusServiceUnavailable)
+	case errors.Is(err, frontend.ErrArchiveUnstreamable):
+		s.log.Warn("archive format or compression method cannot be streamed", "path", r.URL.Path, "err", err)
+		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
 	case errors.Is(err, frontend.ErrNotAvailable), errors.Is(err, frontend.ErrUnreleased), errors.Is(err, frontend.ErrDebridAuth), errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, context.DeadlineExceeded), errors.Is(err, frontend.ErrPrepareSlow):
 		// The title exists; nothing can play it right now (no release yet,
 		// nothing cached, no sources, a rejected debrid key). A 404 here

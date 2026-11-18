@@ -719,6 +719,9 @@ func payloadKey(rel core.Release) string {
 		if rel.Target.ExactFile != "" {
 			k += fmt.Sprintf("|exactFile:%q", rel.Target.ExactFile)
 		}
+		if rel.Target.AllowNonVideo {
+			k += "|allowNonVideo"
+		}
 	}
 	return k
 }

@@ -667,7 +667,7 @@ func isVideo(p string) bool {
 	return videoExts[strings.ToLower(path.Ext(p))]
 }
 
-// playableVideo is shared by automatic selection and explicit plugin hints.
+// playableVideo is shared by automatic selection and video-only selectors.
 // A filename must name a supported video, and a specific provider MIME type
 // must agree. Providers commonly report generic binary data for valid videos.
 func playableVideo(f File) bool {
@@ -696,9 +696,53 @@ func isExtra(p string) bool {
 	return false
 }
 
-// ChooseFile honors explicit plugin file selectors only for playable videos.
-// Otherwise it picks the main video: the target episode or largest video.
+// ChooseFile selects an explicitly named file (including non-video files when
+// target.AllowNonVideo is set) or picks the main playable video: the target
+// episode or largest video.
 func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
+	exactMatch := func(f File) bool {
+		want := strings.ReplaceAll(target.ExactFile, "\\", "/")
+		if want == "" {
+			return true
+		}
+		name := strings.ReplaceAll(f.Path, "\\", "/")
+		if strings.TrimPrefix(name, "/") == strings.TrimPrefix(want, "/") {
+			return true
+		}
+		return !strings.Contains(want, "/") && path.Base(name) == want
+	}
+	if target != nil && target.AllowNonVideo && (target.FileIndex != nil || target.ExactFile != "") {
+		if target.FileIndex != nil {
+			i := *target.FileIndex
+			if i < 0 || i >= len(files) {
+				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d: %w", i, len(files), core.ErrWrongContent)
+			}
+			f := files[i]
+			if !exactMatch(f) {
+				return File{}, fmt.Errorf("debrid: selected file does not match target: %w", core.ErrWrongContent)
+			}
+			if f.Size <= 0 {
+				return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", f.Path, core.ErrReleaseRejected)
+			}
+			return f, nil
+		}
+		var chosen File
+		count := 0
+		for _, f := range files {
+			if exactMatch(f) {
+				chosen = f
+				count++
+			}
+		}
+		if count != 1 {
+			return File{}, fmt.Errorf("debrid: file matched %d files: %w", count, core.ErrWrongContent)
+		}
+		if chosen.Size <= 0 {
+			return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", chosen.Path, core.ErrReleaseRejected)
+		}
+		return chosen, nil
+	}
+
 	featureCount := 0
 	for _, f := range files {
 		if playableVideo(f) {
@@ -711,11 +755,6 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 	movieMatches := func(f File) bool { return featureCount <= 1 || movieFileMatches(f.Path, target) }
 
 	if target != nil && (target.FileIndex != nil || target.ExactFile != "") {
-		matches := func(f File) bool {
-			want := strings.ReplaceAll(target.ExactFile, "\\", "/")
-			name := strings.ReplaceAll(f.Path, "\\", "/")
-			return want == "" || name == want || (!strings.Contains(want, "/") && path.Base(name) == want)
-		}
 		if target.FileIndex != nil {
 			i := *target.FileIndex
 			if i < 0 || i >= len(files) {
@@ -725,7 +764,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			if !playableVideo(f) {
 				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
 			}
-			if !matches(f) || !movieMatches(f) {
+			if !exactMatch(f) || !movieMatches(f) {
 				return File{}, fmt.Errorf("debrid: selected file does not match target: %w", core.ErrWrongContent)
 			}
 			return f, nil
@@ -733,10 +772,10 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		var chosen File
 		count := 0
 		for _, f := range files {
-			if matches(f) && !playableVideo(f) {
+			if exactMatch(f) && !playableVideo(f) {
 				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
 			}
-			if playableVideo(f) && matches(f) && movieMatches(f) {
+			if playableVideo(f) && exactMatch(f) && movieMatches(f) {
 				chosen = f
 				count++
 			}

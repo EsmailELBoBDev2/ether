@@ -92,6 +92,7 @@ func TestVelaProtocolInvariants(t *testing.T) {
 			class, code string
 		}{
 			{&frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "hls", Reasons: []string{"transcode not allowed"}}}}, 422, "playback", "no_compatible_path"},
+			{frontend.ErrArchiveUnstreamable, 422, "source", "archive_unstreamable"},
 			{frontend.ErrNotAvailable, 409, "source", "not_available"},
 			{frontend.ErrNotFound, 404, "not-found", "not_found"},
 			{frontend.ErrPolicyUnconfirmed, 403, "policy", "policy_unconfirmed"},
@@ -102,9 +103,9 @@ func TestVelaProtocolInvariants(t *testing.T) {
 			fail(w, tc.err)
 			var wire struct {
 				Error struct {
-					Class, Code   string
-					RejectedPaths []frontend.RejectedPlaybackPath
-					Retry         struct{ Allowed bool }
+					Class, Code, Message string
+					RejectedPaths        []frontend.RejectedPlaybackPath
+					Retry                struct{ Allowed bool }
 				}
 			}
 			if err := json.Unmarshal(w.Body.Bytes(), &wire); err != nil {
@@ -115,6 +116,9 @@ func TestVelaProtocolInvariants(t *testing.T) {
 			}
 			if tc.code == "no_compatible_path" && (len(wire.Error.RejectedPaths) != 1 || wire.Error.RejectedPaths[0].Reasons[0] != "transcode not allowed") {
 				t.Fatal("rejected paths lost", w.Body)
+			}
+			if tc.code == "archive_unstreamable" && wire.Error.Message != "this archive format or compression method cannot be streamed" {
+				t.Fatalf("archive_unstreamable message = %q", wire.Error.Message)
 			}
 		}
 	})

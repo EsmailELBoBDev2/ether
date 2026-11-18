@@ -408,7 +408,6 @@
   "m_015bee8cceee5b": "Aralar ve reklamlar",
   "m_015c2b07d92862": "Katalog sorgusu geçici olarak başarısız oldu. Önceki öğeler korundu.",
   "m_015f6c1164ab16": "{name} kaldırıldı",
-  "m_016092af66360a": "Tüm indeksleyiciler",
   "m_01609b7d026e66": "Seçili satırları Herkes ayarına sıfırla",
   "m_01611b2cfb0ba0": "~{minutes} dk kaldı",
   "m_0163dd4bc62033": "Önceki sürüm geri yükleniyor…",
@@ -573,6 +572,7 @@
   "m_01fc1a0db354dc": "{label} değeri",
   "m_01fd5b63526986": "Bu, indirilen medya dosyalarını değil, üst veri aramalarını denetler. Başka bir kaynak eklemek o kaynağın aramalarını etkinleştirir.",
   "m_01fd896f496dd9": "Örnek URL'si",
+  "m_01fd9f811ec861": "Tanım eksik · arama yapmak için Dizinleyiciler sekmesinden bu sitenin tanımını yükleyin.",
   "m_01fddfd8378627": "Kapalı",
   "m_01fe9ce47eddbe": "Fragman ısıtma",
   "m_01fecdf6edee82": "İlgilenmiyorum",
@@ -1817,6 +1817,7 @@
   "m_061faebf66749d": "Bağlı",
   "m_0620728b070495": "Engellenen bir şey yok",
   "m_0621aedf5635a9": "Kümedeki bir düğümün, güncellemeyi kurmadan önce süren oynatmanın bitmesini ne kadar bekleyeceği. 30 dakika için boş bırakın. Tek başına bir sunucu, kimse izlemeyene kadar bekler.",
+  "m_0621c37a6b5396": "hatalardan sonra duraklatıldı",
   "m_0621d6397c8b58": "Yalnızca izin verdiğiniz izleyiciler izleyebilir; sonradan eklediğiniz kişiler de buna dahil.",
   "m_0622cf421a2c90": {
     "one": "Bu hesap için bu Plex sunucusunda {count} geçmiş kaydı var.",
@@ -4647,6 +4648,10 @@
   "m_1000a24c58347f": "Taslağınız hazır",
   "m_1000d5da1b1b1b": "Ether bir güncellemeyi kendisi yükledi ve sorunsuz çalışıyor; sürüm başına bir uyarı.",
   "m_100301b70a8468": "Test ediliyor…",
+  "m_10033bfc57a96d": {
+    "one": "{count} dizinleyiciden {missing} tanesinin tanımı eksik",
+    "other": "{count} dizinleyiciden {missing} tanesinin tanımı eksik"
+  },
   "m_10037dfcec018d": "Pazar yeri",
   "m_100569c139cb38": "{title} öğesini yeniden sırala",
   "m_100658d8fdb73d": {
@@ -4786,6 +4791,7 @@
   "m_107bc8b81584dd": "Hayao Miyazaki'nin tüm uzun metrajlı filmleri.",
   "m_107c55bf7f5fde": "Oluşturulan görseli renklendirir. Otomatik, ilk posterle eşleşir.",
   "m_107e66090c813c": "Bu adres farklı bir Plex Media Server. Bunun yerine yeni bir sunucu olarak ekleyin.",
+  "m_107f8830a04486": "Tekrarlayan hatalardan sonra duraklatıldı · {time} sonrasında otomatik yeniden dener",
   "m_10815a5071e78a": "Bu sunucudan uzaktan denetimler kullanılamıyor.",
   "m_10816f12b17447": "Arkadaşların izleme listeleri",
   "m_1082d1a6a743cc": "Simkl hesabı bağlandı.",
@@ -5148,6 +5154,7 @@
   "m_119cbed8861c8b": "En fazla genişlik",
   "m_119ead3a497118": "Tek bir başlığa kendi posterini veya arka planını verin.",
   "m_119f3066c8a3d1": "Sonraki bölüm / devam penceresi",
+  "m_11a1224007065f": "Tüm etiketler",
   "m_11a184edfb18d8": "Bu öğenin hangi dosyayı açacağını siz seçtiniz. Ether her seferinde onu kullanır.",
   "m_11a206c10d1413": "Önerilen eşleşmeler",
   "m_11a2bb4827b16b": "Geri yüklenen veriler de bir geri alma klasöründe saklanır, böylece yeniden fikrinizi değiştirebilirsiniz.",
@@ -5891,6 +5898,7 @@
   "m_1417e84947b481": "Ara",
   "m_1419120360c0eb": "Cartoon Network",
   "m_141a29a7187586": "Bu kaynağın girişini kullan",
+  "m_141c2f7f41bb91": "Hesap bağlantı sınırına ulaşıldı.",
   "m_141c93412ec4e1": "Komedi filmleri",
   "m_14235bc084cc2d": "Katılım belirteci",
   "m_1423d1a563ae0b": "Kendi sertifikanızı kullanın",
@@ -6077,6 +6085,7 @@
     "other": "{count} oynatma hiç görüntü göstermedi. En yaygın neden: {reason}"
   },
   "m_14d13f20435259": "Üst bilgi {number} değeri",
+  "m_14d13f26abd17e": "Hesap başka bir IP adresinden kullanılıyor.",
   "m_14d2606347a796": "Eşleştirmeyi duraklat",
   "m_14d2e5c39a1071": "{title} için önbellekteki baytlar temizlensin ve bu sürüm gelecekteki oynatmalardan engellensin mi? Etkin veya duraklatılmış oynatma önce durdurulmalıdır. Korunan baytlar arka plan işleri bitene kadar kalabilir. Engeli sürüm denetimlerinden kaldırabilirsiniz.",
   "m_14d3599fb4d0bd": "Vekil sunucu yanıt vermedi. Yanıt verene kadar kaynaklar bu yoldan gitmez.",
@@ -7090,6 +7099,10 @@
   "m_184e92a994dd30": "Rehber kaynağı",
   "m_184f0295dd28ed": "Bir günlüğü, puanları veya izleme listesini CSV olarak dışa veya içe aktarın. Letterboxd eşleşmeleri için aynı başlık ve yıl gerekir.",
   "m_184fa8e85128b7": "Oturumu açık kalan telefonlar, TV'ler ve tarayıcılar.",
+  "m_1850bc9040b107": {
+    "one": "{count} dizinleyiciden {paused} tanesi hatalardan sonra duraklatıldı",
+    "other": "{count} dizinleyiciden {paused} tanesi hatalardan sonra duraklatıldı"
+  },
   "m_1852dec654cbd9": "Tüm sürümler",
   "m_1853803c77fc10": "Eklentinin yükleme bağlantısı (https:// veya stremio://). Yalnızca doğrudan veya proxy üzerinden oynatma bağlantılarını değil, torrent sonuçlarını da sunmalıdır. Ether debrid hesaplarınızı kendisi denetler, bu yüzden bağlantıda debrid anahtarı gerekmez.",
   "m_185422dc543135": "Filmler (Radarr)",
@@ -9257,6 +9270,7 @@
   "m_1fab2e6e9c7dbb": "Ether henüz geri gelmedi. Bir hizmet yöneticisi veya kapsayıcı yeniden başlatma ilkesi olmadan çalışıyorsa onu kendiniz yeniden başlatın; bu sayfa, Ether yanıt verir vermez onu algılar.",
   "m_1faba88e7fc859": "{name} önizlemesini aç",
   "m_1fabe56d8a2476": "Çökme uyarısı hedeflerini seçin",
+  "m_1fad50e989b653": "Duraklatıldı · otomatik yeniden dener",
   "m_1faeb11ebc91a6": "Uydu",
   "m_1fb01ec8cfe42d": "Kanal silindi",
   "m_1fb0202809c713": "Tanım dosyası",
@@ -9318,6 +9332,7 @@
   "m_1fdbb599d542fe": "{date} tarihine kadar",
   "m_1fdc064b963229": "Gizli tutulur. Kayıtlı URL'yi korumak için [configured] değerini değiştirmeyin.",
   "m_1fdc62d4ba7181": "Henüz hiçbir uygulamada gösterilmiyor",
+  "m_1fdd3fda018ecf": "tanım eksik",
   "m_1fdda9559f19b7": "Ether, pre-roll'ların seçilme şeklini değiştiremedi.",
   "m_1fddcd7c1dea78": "yok",
   "m_1fde2db89ccee9": "Dizi açılışı",

@@ -25,6 +25,19 @@ function niceMax(v: number): number {
   return step * p;
 }
 
+/** Size an axis gutter so 10px tabular tick labels never clip at the SVG edge. */
+function axisPad(labels: string[], minPad = 32): number {
+  let maxPx = 0;
+  for (const s of labels) {
+    let px = 0;
+    for (const ch of s) {
+      px += (ch.codePointAt(0) ?? 0) > 0x2e7f ? 10 : 6.2;
+    }
+    if (px > maxPx) maxPx = px;
+  }
+  return Math.max(minPad, Math.ceil(maxPx) + 10);
+}
+
 interface BarDatum {
   key: string;
   label: string;
@@ -39,6 +52,7 @@ export function TimeBars({
   fill = false,
   ariaLabel,
   valueFormat = (v) => String(v),
+  tickFormat,
   className,
 }: {
   data: BarDatum[];
@@ -47,21 +61,23 @@ export function TimeBars({
   fill?: boolean;
   ariaLabel: string;
   valueFormat?: (v: number) => string;
+  tickFormat?: (v: number) => string;
   className?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const [ref, size] = useElementSize<HTMLDivElement>();
   const width = Math.max(240, Math.round(size.width || 600));
   const height = fill ? Math.max(96, Math.round(size.height || fixedHeight)) : fixedHeight;
-  const padL = 32;
   const padB = 22;
   const padT = 8;
   const max = niceMax(Math.max(0, ...data.map((d) => d.value)));
+  const ticks = [0, max / 2, max];
+  const fmtTick = tickFormat ?? valueFormat;
+  const padL = axisPad(ticks.map(fmtTick));
   const plotH = height - padB - padT;
   const slot = data.length ? (width - padL) / data.length : 0;
   const gap = Math.min(2, slot * 0.25);
   const barW = Math.max(1, slot - gap);
-  const ticks = [0, max / 2, max];
   const labelIdx = data.length ? [0, Math.floor((data.length - 1) / 2), data.length - 1] : [];
   const h = hover !== null ? data[hover] : undefined;
   return (
@@ -94,7 +110,7 @@ export function TimeBars({
                 textAnchor="end"
                 className="fill-fg-subtle text-[10px] tabular-nums"
               >
-                {valueFormat(tick)}
+                {fmtTick(tick)}
               </text>
             </g>
           );
@@ -663,6 +679,7 @@ export function StackedColumns({
   height = 180,
   ariaLabel,
   valueFormat = (v) => String(v),
+  tickFormat,
 }: {
   data: StackDatum[];
   aLabel: string;
@@ -670,14 +687,17 @@ export function StackedColumns({
   height?: number;
   ariaLabel: string;
   valueFormat?: (v: number) => string;
+  tickFormat?: (v: number) => string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const [ref, size] = useElementSize<HTMLDivElement>();
   const width = Math.max(240, Math.round(size.width || 600));
-  const padL = 32;
   const padB = 22;
   const padT = 8;
   const max = niceMax(Math.max(0, ...data.map((d) => d.a + d.b)));
+  const ticks = [0, max / 2, max];
+  const fmtTick = tickFormat ?? valueFormat;
+  const padL = axisPad(ticks.map(fmtTick));
   const plotH = height - padB - padT;
   const slot = data.length ? (width - padL) / data.length : 0;
   const gap = Math.min(2, slot * 0.25);
@@ -696,7 +716,7 @@ export function StackedColumns({
           aria-label={ariaLabel}
           onMouseLeave={() => setHover(null)}
         >
-          {[0, max / 2, max].map((tick) => {
+          {ticks.map((tick) => {
             const y = padT + plotH - (tick / max) * plotH;
             return (
               <g key={tick}>
@@ -715,7 +735,7 @@ export function StackedColumns({
                   textAnchor="end"
                   className="fill-fg-subtle text-[10px] tabular-nums"
                 >
-                  {valueFormat(tick)}
+                  {fmtTick(tick)}
                 </text>
               </g>
             );
@@ -829,22 +849,26 @@ export function SeriesLines({
   height = 200,
   ariaLabel,
   valueFormat = (v) => String(v),
+  tickFormat,
 }: {
   labels: string[];
   series: LineSeries[];
   height?: number;
   ariaLabel: string;
   valueFormat?: (v: number) => string;
+  tickFormat?: (v: number) => string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const [ref, size] = useElementSize<HTMLDivElement>();
   const width = Math.max(240, Math.round(size.width || 600));
-  const padL = 32;
   const padR = 8;
   const padB = 22;
   const padT = 10;
   const n = labels.length;
   const max = niceMax(Math.max(0, ...series.flatMap((s) => s.values)));
+  const ticks = [0, max / 2, max];
+  const fmtTick = tickFormat ?? valueFormat;
+  const padL = axisPad(ticks.map(fmtTick));
   const plotW = width - padL - padR;
   const plotH = height - padB - padT;
   const x = (i: number) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
@@ -870,7 +894,7 @@ export function SeriesLines({
           onMouseMove={(e) => pick(e.clientX, e.currentTarget)}
           onMouseLeave={() => setHover(null)}
         >
-          {[0, max / 2, max].map((tick) => (
+          {ticks.map((tick) => (
             <g key={tick}>
               <line
                 x1={padL}
@@ -887,7 +911,7 @@ export function SeriesLines({
                 textAnchor="end"
                 className="fill-fg-subtle text-[10px] tabular-nums"
               >
-                {valueFormat(tick)}
+                {fmtTick(tick)}
               </text>
             </g>
           ))}
@@ -1080,6 +1104,8 @@ export function ComboChart({
   ariaLabel,
   leftFormat = (v) => String(v),
   rightFormat = (v) => String(v),
+  leftTickFormat,
+  rightTickFormat,
   leftUnit,
   rightUnit,
   detail,
@@ -1091,6 +1117,8 @@ export function ComboChart({
   ariaLabel: string;
   leftFormat?: (v: number) => string;
   rightFormat?: (v: number) => string;
+  leftTickFormat?: (v: number) => string;
+  rightTickFormat?: (v: number) => string;
   /** Short captions over each axis, e.g. "Plays" and "GB". */
   leftUnit?: string;
   rightUnit?: string;
@@ -1107,8 +1135,17 @@ export function ComboChart({
   const right = plotted.filter((s) => s.axis === "right");
   const hasLeft = left.length > 0 || right.length === 0;
   const hasRight = right.length > 0;
-  const padL = hasLeft ? 34 : 10;
-  const padR = hasRight ? 38 : 10;
+  const maxOf = (list: ComboSeries[]) => niceMax(Math.max(0, ...list.flatMap((s) => s.values)));
+  const maxL = maxOf(left);
+  const maxR = maxOf(right);
+  const fmtTickL = leftTickFormat ?? leftFormat;
+  const fmtTickR = rightTickFormat ?? rightFormat;
+  const padL = hasLeft
+    ? axisPad([0, 0.5, 1].map((f) => fmtTickL(f * maxL)).concat(leftUnit ? [leftUnit] : []), 34)
+    : 10;
+  const padR = hasRight
+    ? axisPad([0, 0.5, 1].map((f) => fmtTickR(f * maxR)).concat(rightUnit ? [rightUnit] : []), 38)
+    : 10;
   const padT = leftUnit || rightUnit ? 18 : 8;
   const laneTop = height - 22;
   const total = height + lanes.length * LANE + (lanes.length ? 4 : 0);
@@ -1116,9 +1153,6 @@ export function ComboChart({
   const plotW = width - padL - padR;
   const plotH = laneTop - padT;
   const base = padT + plotH;
-  const maxOf = (list: ComboSeries[]) => niceMax(Math.max(0, ...list.flatMap((s) => s.values)));
-  const maxL = maxOf(left);
-  const maxR = maxOf(right);
   const scale = (s: ComboSeries) => (s.axis === "right" ? maxR : maxL);
   const slot = n ? plotW / n : 0;
   const cx = (i: number) => padL + (i + 0.5) * slot;
@@ -1222,7 +1256,7 @@ export function ComboChart({
                   textAnchor="end"
                   className="fill-fg-subtle text-[10px] tabular-nums"
                 >
-                  {leftFormat(f * maxL)}
+                  {fmtTickL(f * maxL)}
                 </text>
               ) : null}
               {hasRight ? (
@@ -1232,7 +1266,7 @@ export function ComboChart({
                   textAnchor="start"
                   className="fill-fg-subtle text-[10px] tabular-nums"
                 >
-                  {rightFormat(f * maxR)}
+                  {fmtTickR(f * maxR)}
                 </text>
               ) : null}
             </g>

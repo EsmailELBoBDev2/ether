@@ -279,6 +279,9 @@ func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 		}
 		p.sem.Release(prio)
 		if !errors.Is(err, errAtLimit) || try >= 3 {
+			if errors.Is(err, errAtLimit) {
+				p.limitUnusable(err)
+			}
 			return nil, err
 		}
 		// The pool just shrank to what the server allows, or the server is
@@ -291,6 +294,29 @@ func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 // connection limit while other connections of this pool are working, or
 // because the server had not yet released a socket Ether just closed.
 var errAtLimit = errors.New("usenet: provider connection limit reached")
+
+type atLimitError struct{ err error }
+
+func (e atLimitError) Error() string        { return fmt.Sprintf("%v: %v", errAtLimit, e.err) }
+func (e atLimitError) Unwrap() error        { return e.err }
+func (e atLimitError) Is(target error) bool { return target == errAtLimit }
+
+// limitUnusable records a server capacity refusal that left this pool with no
+// established connections at all (for example, another client holds every slot
+// on the account), so health reflects that the provider cannot serve traffic.
+func (p *pool) limitUnusable(err error) {
+	var al atLimitError
+	if !errors.As(err, &al) || p.establishedCount() > 0 {
+		return
+	}
+	p.errs.Add(1)
+	p.dialFailed()
+	if d := p.brk.connFailure(al.err); d > 0 {
+		p.log.Warn("usenet: connect failed; backing off", "err", al.err, "backoff", d)
+	} else {
+		p.log.Warn("usenet: connect failed", "err", al.err)
+	}
+}
 
 // takeIdle returns a live idle connection, or (nil, nil) when the caller
 // must dial. The caller already holds a semaphore slot.
@@ -378,7 +404,7 @@ func (p *pool) dialNew(ctx context.Context, probe bool) (*Conn, error) {
 			// is still tearing down a socket we closed. Either way keep the
 			// provider in rotation.
 			p.brk.noteError(err)
-			return nil, fmt.Errorf("%w: %w", errAtLimit, err)
+			return nil, atLimitError{err: err}
 		default:
 			p.errs.Add(1)
 			if !errors.Is(err, ErrServiceUnavailable) || errors.Is(err, ErrConnectionLimit) {
@@ -564,6 +590,7 @@ func (p *pool) warmLoop() {
 		p.warmActive = false
 		p.mu.Unlock()
 	}()
+	limitTries := 0
 	for {
 		floor := p.idleFloor()
 		if floor == 0 {
@@ -587,6 +614,13 @@ func (p *pool) warmLoop() {
 			if p.ctx.Err() != nil {
 				return
 			}
+			if errors.Is(err, errAtLimit) && limitTries < 3 {
+				limitTries++
+				continue
+			}
+			if errors.Is(err, errAtLimit) {
+				p.limitUnusable(err)
+			}
 			p.redialFails.Add(1)
 			p.mu.Lock()
 			p.warmFails++
@@ -595,6 +629,7 @@ func (p *pool) warmLoop() {
 			p.log.Debug("usenet: background warm redial failed; backing off", "err", err)
 			return
 		}
+		limitTries = 0
 		p.bgRedials.Add(1)
 		p.brk.connectOK()
 		p.mu.Lock()

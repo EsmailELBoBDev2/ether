@@ -285,6 +285,10 @@ export function IndexerList({
   const status = dashboard?.sections?.indexers;
   const live = Array.isArray(status) ? status.filter(isPlainObject) : [];
   const statFor = (ix: Indexer) => live.find((s) => s.indexer === ix.name || s.id === ix.id);
+  const notifyDefinitionsChanged = () => {
+    setSitesVersion((v) => v + 1);
+    void refreshDashboard();
+  };
 
   async function commit(list: Indexer[], message: string) {
     await api.putSection(
@@ -561,7 +565,7 @@ export function IndexerList({
                       {site ? (
                         <>
                           <Badge variant="outline">{siteKindLabel(ix.protocol)}</Badge>
-                          {definitions && !def ? (
+                          {(definitions && !def) || s?.missingDefinition === true ? (
                             <Badge variant="destructive">{t("Definition missing")}</Badge>
                           ) : null}
                           {tested ? (
@@ -581,7 +585,9 @@ export function IndexerList({
                         <Badge variant="outline">{protocolLabel(ix)}</Badge>
                       )}
                       {!ix.enabled ? <Badge variant="secondary">{t("Disabled")}</Badge> : null}
-                      {s && Number(s.retryAt ?? 0) > Date.now() / 1000 ? (
+                      {s && Number(s.pausedUntil ?? 0) > Date.now() / 1000 ? (
+                        <Badge variant="warning">{t("Paused · retries automatically")}</Badge>
+                      ) : s && Number(s.retryAt ?? 0) > Date.now() / 1000 ? (
                         <Badge variant="warning">
                           {t("Waiting for service · retries automatically")}
                         </Badge>
@@ -627,7 +633,7 @@ export function IndexerList({
         onAdd={addSite}
         onUpload={() => setUploading("install")}
         onConfigSaved={() => config.reload()}
-        onDefinitionsChanged={() => setSitesVersion((v) => v + 1)}
+        onDefinitionsChanged={notifyDefinitionsChanged}
       />
 
       <UploadDrawer
@@ -636,7 +642,7 @@ export function IndexerList({
         onInstalled={(def) => {
           const next = uploading;
           setUploading(null);
-          setSitesVersion((v) => v + 1);
+          notifyDefinitionsChanged();
           if (next === "add") addSite(def);
         }}
       />
@@ -656,7 +662,7 @@ export function IndexerList({
           <SitePicker
             definitions={definitions}
             inUse={inUse}
-            onInstalled={() => setSitesVersion((v) => v + 1)}
+            onInstalled={notifyDefinitionsChanged}
             onPick={addSite}
             onUpload={() => {
               setPicking(false);

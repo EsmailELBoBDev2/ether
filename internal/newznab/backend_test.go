@@ -3,6 +3,7 @@ package newznab
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -86,6 +87,36 @@ func TestBuiltinWithoutBackendFails(t *testing.T) {
 	c := New(cfg, nil, Options{})
 	if _, err := c.Search(context.Background(), core.SearchRequest{Type: core.TypeMovie, Title: "x"}); err == nil {
 		t.Fatal("built-in indexer searched without a backend")
+	}
+}
+
+func TestBuiltinMissingDefinitionReportedInRemainingAndUsage(t *testing.T) {
+	ctx := context.Background()
+	installed := map[string]bool{"ok-def": true}
+	m := NewManager(nil, []config.Indexer{
+		{ID: "missing", Name: "Missing Site", Kind: config.IndexerKindCardigann, Definition: "gone", Protocol: "torrent", Enabled: true},
+		{ID: "present", Name: "Present Site", Kind: config.IndexerKindCardigann, Definition: "ok-def", Protocol: "torrent", Enabled: true},
+	}, Options{
+		Backend: func(c config.Indexer) (Backend, error) {
+			if !installed[c.Definition] {
+				return nil, fmt.Errorf("missing %q: %w", c.Definition, ErrMissingDefinition)
+			}
+			return &fakeBackend{}, nil
+		},
+	})
+	rem, err := m.Remaining(ctx)
+	if err != nil || len(rem) != 2 {
+		t.Fatalf("Remaining: %v %v", rem, err)
+	}
+	if !rem[0].MissingDefinition || rem[1].MissingDefinition {
+		t.Fatalf("unexpected MissingDefinition in Remaining: %+v", rem)
+	}
+	usage, err := m.Usage(ctx)
+	if err != nil || len(usage.Indexers) != 2 {
+		t.Fatalf("Usage: %v %v", usage, err)
+	}
+	if !usage.Indexers[0].MissingDefinition || usage.Indexers[1].MissingDefinition {
+		t.Fatalf("unexpected MissingDefinition in Usage: %+v", usage.Indexers)
 	}
 }
 

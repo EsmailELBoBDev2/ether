@@ -39,22 +39,40 @@ CREATE TABLE newznab_caps (
 );`)
 }
 
+// ErrMissingDefinition reports a built-in site indexer whose definition is not
+// installed on the server.
+var ErrMissingDefinition = fmt.Errorf("indexer definition is not installed: %w", core.ErrSourceUnavailable)
+
 // Remaining reports one indexer's budget state for today (UTC).
 // A remaining value of -1 means there is no personal cap; service limits still apply.
 type Remaining struct {
-	Indexer        string `json:"indexer"`
-	Day            string `json:"day"`
-	HitsUsed       int    `json:"hitsUsed"`
-	HitsLimit      int    `json:"hitsLimit"`
-	HitsRemaining  int    `json:"hitsRemaining"`
-	GrabsUsed      int    `json:"grabsUsed"`
-	GrabsLimit     int    `json:"grabsLimit"`
-	GrabsRemaining int    `json:"grabsRemaining"`
-	RetryAt        int64  `json:"retryAt,omitempty"` // service-reported throttling; automatic retry (Unix seconds)
+	Indexer           string `json:"indexer"`
+	Day               string `json:"day"`
+	HitsUsed          int    `json:"hitsUsed"`
+	HitsLimit         int    `json:"hitsLimit"`
+	HitsRemaining     int    `json:"hitsRemaining"`
+	GrabsUsed         int    `json:"grabsUsed"`
+	GrabsLimit        int    `json:"grabsLimit"`
+	GrabsRemaining    int    `json:"grabsRemaining"`
+	RetryAt           int64  `json:"retryAt,omitempty"`     // service-reported throttling; automatic retry (Unix seconds)
+	PausedUntil       int64  `json:"pausedUntil,omitempty"` // circuit-breaker pause after repeated failures (Unix seconds)
+	MissingDefinition bool   `json:"missingDefinition,omitempty"`
 	// Enabled and Torrent let the dashboard warn when nothing can be
 	// searched, or when debrid has no torrent indexer to search.
 	Enabled bool `json:"enabled"`
 	Torrent bool `json:"torrent"` // Torznab, a Stremio addon or a torrent built-in site
+}
+
+func (c *Client) missingDefinition() bool {
+	cfg := c.Config()
+	if !cfg.IsBuiltin() {
+		return false
+	}
+	if c.backends == nil {
+		return true
+	}
+	_, err := c.backends(cfg)
+	return errors.Is(err, ErrMissingDefinition)
 }
 
 func (c *Client) indexerID() string {
@@ -189,11 +207,14 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 func (c *Client) Remaining(ctx context.Context) (Remaining, error) {
 	hits, grabs, err := c.counts(ctx)
 	cfg := c.Config()
+	now := c.now()
 	r := Remaining{
 		Indexer: c.Name(), Day: c.today(),
 		HitsUsed: hits, HitsLimit: cfg.DailyLimit, HitsRemaining: -1,
 		GrabsUsed: grabs, GrabsLimit: cfg.DailyGrabs, GrabsRemaining: -1,
-		Enabled: cfg.Enabled, Torrent: cfg.IsTorrent(),
+		PausedUntil:       c.br.pausedUntil(now),
+		MissingDefinition: c.missingDefinition(),
+		Enabled:           cfg.Enabled, Torrent: cfg.IsTorrent(),
 	}
 	if cfg.DailyLimit > 0 {
 		r.HitsRemaining = max(0, cfg.DailyLimit-hits)
@@ -203,7 +224,7 @@ func (c *Client) Remaining(ctx context.Context) (Remaining, error) {
 	}
 	if until, rateErr := c.rateLimitUntil(ctx); rateErr != nil && err == nil {
 		err = rateErr
-	} else if c.now().Before(until) {
+	} else if now.Before(until) {
 		r.RetryAt = until.Unix()
 	}
 	return r, err

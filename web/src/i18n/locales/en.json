@@ -408,7 +408,6 @@
   "m_015bee8cceee5b": "Breaks & commercials",
   "m_015c2b07d92862": "Catalogue lookup failed temporarily. Previous items were kept.",
   "m_015f6c1164ab16": "Removed {name}",
-  "m_016092af66360a": "Every indexer",
   "m_01609b7d026e66": "Reset the selected rows to Everyone",
   "m_01611b2cfb0ba0": "~{minutes}m left",
   "m_0163dd4bc62033": "Restoring previous version…",
@@ -573,6 +572,7 @@
   "m_01fc1a0db354dc": "{label} value",
   "m_01fd5b63526986": "This controls metadata lookups, not downloaded media files. Adding another source enables its lookups.",
   "m_01fd896f496dd9": "Instance URL",
+  "m_01fd9f811ec861": "Definition missing · install this site's definition on the Indexers tab to search it.",
   "m_01fddfd8378627": "Turned off",
   "m_01fe9ce47eddbe": "Trailer warming",
   "m_01fecdf6edee82": "Not interested",
@@ -1820,6 +1820,7 @@
   "m_061faebf66749d": "Connected",
   "m_0620728b070495": "Nothing is blocked",
   "m_0621aedf5635a9": "How long a clustered node waits for current playback to end before installing. Leave empty to wait 30 minutes. A server on its own waits until nobody is watching.",
+  "m_0621c37a6b5396": "paused after failures",
   "m_0621d6397c8b58": "Only viewers you give it to can watch, including people you add later.",
   "m_0622cf421a2c90": {
     "one": "{count} history entry on this Plex server for this account.",
@@ -4654,6 +4655,10 @@
   "m_1000a24c58347f": "Your draft is ready",
   "m_1000d5da1b1b1b": "Ether installed an update by itself and it is running well; one alert per version.",
   "m_100301b70a8468": "Testing…",
+  "m_10033bfc57a96d": {
+    "one": "{missing} of {count} indexer missing its definition",
+    "other": "{missing} of {count} indexers missing their definition"
+  },
   "m_10037dfcec018d": "Marketplace",
   "m_100569c139cb38": "Reorder {title}",
   "m_100658d8fdb73d": {
@@ -4793,6 +4798,7 @@
   "m_107bc8b81584dd": "Every feature by Hayao Miyazaki.",
   "m_107c55bf7f5fde": "Tints generated artwork. Automatic matches the lead poster.",
   "m_107e66090c813c": "That address is a different Plex Media Server. Add it as a new server instead.",
+  "m_107f8830a04486": "Paused after repeated failures · retries automatically after {time}",
   "m_10815a5071e78a": "Remote controls are not available from this server.",
   "m_10816f12b17447": "Friends' watchlists",
   "m_1082d1a6a743cc": "Simkl account connected.",
@@ -5155,6 +5161,7 @@
   "m_119cbed8861c8b": "Max width",
   "m_119ead3a497118": "Give an individual title its own poster or backdrop.",
   "m_119f3066c8a3d1": "Next episode / resume window",
+  "m_11a1224007065f": "All tags",
   "m_11a184edfb18d8": "You picked which file this item opens. Ether uses it every time.",
   "m_11a206c10d1413": "Suggested matches",
   "m_11a2bb4827b16b": "The restored data is kept in a rollback folder too, so you can change your mind again.",
@@ -5898,6 +5905,7 @@
   "m_1417e84947b481": "Search",
   "m_1419120360c0eb": "Cartoon Network",
   "m_141a29a7187586": "Use this source's login",
+  "m_141c2f7f41bb91": "Account connection limit reached.",
   "m_141c93412ec4e1": "Comedy Movies",
   "m_14235bc084cc2d": "Join token",
   "m_1423d1a563ae0b": "Use your own certificate",
@@ -6084,6 +6092,7 @@
     "other": "{count} plays never reached a picture. The most common reason: {reason}"
   },
   "m_14d13f20435259": "Header {number} value",
+  "m_14d13f26abd17e": "Account in use from another IP address.",
   "m_14d2606347a796": "Pause matching",
   "m_14d2e5c39a1071": "Clear cached bytes for {title} and block this release from future playback? Active or paused playback must be stopped first. Protected bytes may remain until background work ends. You can unblock it in the release controls.",
   "m_14d3599fb4d0bd": "The proxy did not answer. Sources stay off that route until it does.",
@@ -7100,6 +7109,10 @@
   "m_184e92a994dd30": "Guide source",
   "m_184f0295dd28ed": "Export or import a diary, ratings or watchlist as CSV. Letterboxd matches need the same title and year.",
   "m_184fa8e85128b7": "Phones, TVs and browsers that stay signed in.",
+  "m_1850bc9040b107": {
+    "one": "{paused} of {count} indexer paused after failures",
+    "other": "{paused} of {count} indexers paused after failures"
+  },
   "m_1852dec654cbd9": "All releases",
   "m_1853803c77fc10": "The addon's install link (https:// or stremio://). It must expose torrent results, not only direct or proxied playback links. Ether checks your debrid accounts itself, so the link needs no debrid key.",
   "m_185422dc543135": "Movies (Radarr)",
@@ -9278,6 +9291,7 @@
   "m_1fab2e6e9c7dbb": "Ether hasn't come back yet. If it runs without a service manager or container restart policy, start it again yourself; this page picks it up as soon as it answers.",
   "m_1faba88e7fc859": "Open {name} preview",
   "m_1fabe56d8a2476": "Choose crash alert destinations",
+  "m_1fad50e989b653": "Paused · retries automatically",
   "m_1faeb11ebc91a6": "Satellite",
   "m_1fb01ec8cfe42d": "Channel deleted",
   "m_1fb0202809c713": "Definition file",
@@ -9339,6 +9353,7 @@
   "m_1fdbb599d542fe": "until {date}",
   "m_1fdc064b963229": "Kept private. Leave [configured] unchanged to retain the saved URL.",
   "m_1fdc62d4ba7181": "Not shown in any app yet",
+  "m_1fdd3fda018ecf": "definition missing",
   "m_1fdda9559f19b7": "Ether couldn't change how pre-rolls are picked.",
   "m_1fddcd7c1dea78": "none",
   "m_1fde2db89ccee9": "Series opening",

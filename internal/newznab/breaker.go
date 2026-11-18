@@ -59,6 +59,17 @@ type breaker struct {
 	n, next int
 }
 
+// pausedUntil returns the Unix timestamp until which the breaker skips the
+// indexer after repeated failures, or 0 when the breaker is closed.
+func (b *breaker) pausedUntil(now time.Time) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.openUntil.IsZero() && now.Before(b.openUntil) {
+		return b.openUntil.Unix()
+	}
+	return 0
+}
+
 // blocked reports whether a search must skip the indexer without a request.
 func (b *breaker) blocked(now time.Time) bool {
 	b.mu.Lock()

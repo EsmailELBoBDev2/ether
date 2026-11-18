@@ -18,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -340,6 +341,15 @@ func sectionsKey(sections []core.LibraryID) string {
 	return string(b)
 }
 
+// GrantBucket reports the current stateless image-grant expiry window and
+// revocation generation so response ETags rotate before embedded URLs expire.
+func (s *ImageGrantService) GrantBucket() string {
+	if s == nil {
+		return ""
+	}
+	return strconv.FormatInt(s.pageExpires(), 10) + ":" + strconv.FormatUint(s.Generation(), 10)
+}
+
 // pageExpires keeps one image tag stable inside a minute so clients can cache
 // it, and moves the tag when that window or a revocation generation changes.
 func (s *ImageGrantService) pageExpires() int64 {
@@ -355,6 +365,38 @@ func (s *ImageGrantService) pageExpires() int64 {
 	return now - (now % step) + ttl
 }
 
+func (s *ImageGrantService) issueChannelGrant(viewerID int64, source string, deviceJSON []byte, channel string, img frontend.Image) (string, error) {
+	master := s.pageKey()
+	if master == nil {
+		return "", core.ErrNotAvailable
+	}
+	claims := pageClaims{
+		Kind:    img.Kind,
+		Path:    img.Path,
+		Tag:     img.Tag,
+		Subject: img.Subject,
+		Channel: channel,
+		Device:  deviceJSON,
+		Source:  source,
+		Viewer:  viewerID,
+		Expires: s.pageExpires(),
+		Gen:     s.Generation(),
+	}
+	secret, err := sealPageGrant(master, string(s.surface), claims)
+	if err != nil {
+		return "", err
+	}
+	if s.isDenied(pageDigest(secret)) {
+		if claims.Gen == 0 {
+			claims.Gen = 1
+		} else {
+			claims.Gen++
+		}
+		return sealPageGrant(master, string(s.surface), claims)
+	}
+	return secret, nil
+}
+
 func pageRequestKey(master []byte, viewer, expires int64, surface string) []byte {
 	mac := hmac.New(sha256.New, master)
 	var buf [16]byte
@@ -365,9 +407,51 @@ func pageRequestKey(master []byte, viewer, expires int64, surface string) []byte
 	return mac.Sum(nil)
 }
 
+func pageGrantNonce(master []byte, viewer, expires int64, surface string, plain []byte, size int) []byte {
+	mac := hmac.New(sha256.New, master)
+	_, _ = mac.Write([]byte("ether-page-grant-nonce\x00"))
+	var buf [24]byte
+	binary.BigEndian.PutUint64(buf[:8], uint64(viewer))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(expires))
+	binary.BigEndian.PutUint64(buf[16:24], uint64(len(surface)))
+	_, _ = mac.Write(buf[:])
+	_, _ = mac.Write([]byte(surface))
+	_, _ = mac.Write(plain)
+	return mac.Sum(nil)[:size]
+}
+
+func sealPageGrant(master []byte, surface string, claims pageClaims) (string, error) {
+	if len(master) != 32 || claims.Viewer <= 0 || claims.Expires <= 0 || claims.Source == "" || (claims.Item == 0) == (claims.Channel == "") {
+		return "", core.ErrUnauthorized
+	}
+	plain, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(pageRequestKey(master, claims.Viewer, claims.Expires, surface))
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := pageGrantNonce(master, claims.Viewer, claims.Expires, surface, plain, gcm.NonceSize())
+	sealed := gcm.Seal(nonce, nonce, plain, nil)
+	body := make([]byte, 16+len(sealed))
+	binary.BigEndian.PutUint64(body[:8], uint64(claims.Viewer))
+	binary.BigEndian.PutUint64(body[8:16], uint64(claims.Expires))
+	copy(body[16:], sealed)
+	return pageGrantPrefix + base64.RawURLEncoding.EncodeToString(body), nil
+}
+
 func openPageGrant(master []byte, surface, secret string, now int64) (pageClaims, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(secret, pageGrantPrefix))
-	if err != nil || len(raw) < 16+12+16 {
+	if !strings.HasPrefix(secret, pageGrantPrefix) {
+		return pageClaims{}, core.ErrUnauthorized
+	}
+	encoded := strings.TrimPrefix(secret, pageGrantPrefix)
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(raw) < 16+12+16 || base64.RawURLEncoding.EncodeToString(raw) != encoded {
 		return pageClaims{}, core.ErrUnauthorized
 	}
 	viewer := int64(binary.BigEndian.Uint64(raw[:8]))
@@ -389,11 +473,17 @@ func openPageGrant(master []byte, surface, secret string, now int64) (pageClaims
 		return pageClaims{}, core.ErrUnauthorized
 	}
 	var claims pageClaims
-	if json.Unmarshal(plain, &claims) != nil || claims.Viewer != viewer || claims.Expires != expires || claims.Source == "" || claims.Item == 0 {
+	if json.Unmarshal(plain, &claims) != nil || claims.Viewer != viewer || claims.Expires != expires || claims.Source == "" || claims.Item < 0 || (claims.Item == 0) == (claims.Channel == "") || len(claims.Channel) > 512 || len(claims.Device) > 4096 {
 		return pageClaims{}, core.ErrUnauthorized
 	}
+	if claims.Channel != "" {
+		if len(claims.Images) != 0 || claims.Kind == "" || claims.Kind == frontend.ImagePerson || claims.Path == "" || len(claims.Path) > 1024 || len(claims.Kind) > 128 || len(claims.Tag) > 256 || len(claims.Subject) > 256 {
+			return pageClaims{}, core.ErrUnauthorized
+		}
+		return claims, nil
+	}
 	if len(claims.Images) == 0 {
-		if claims.Kind == "" || claims.Path == "" {
+		if claims.Kind == "" || claims.Path == "" || len(claims.Path) > 1024 || len(claims.Kind) > 128 || len(claims.Tag) > 256 || len(claims.Subject) > 256 {
 			return pageClaims{}, core.ErrUnauthorized
 		}
 		return claims, nil
@@ -728,24 +818,69 @@ func imageItemKey(path string) (core.RatingKey, bool) {
 	return key, true
 }
 
+func extractItemsSegment(path string) (string, bool) {
+	const marker = "/items/"
+	i := strings.Index(strings.ToLower(path), marker)
+	if i < 0 {
+		return "", false
+	}
+	rest := path[i+len(marker):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return "", false
+	}
+	return rest[:slash], true
+}
+
+func claimMatchesURLTarget(claims pageClaims, r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return true
+	}
+	seg, ok := extractItemsSegment(r.URL.Path)
+	if !ok {
+		return true
+	}
+	if claims.Channel != "" {
+		if seg == claims.Channel {
+			return true
+		}
+		canonical := strings.ToLower(strings.ReplaceAll(seg, "-", ""))
+		if want, err := ids.StringGUID(ids.Channel, claims.Channel); err == nil && canonical == want {
+			return true
+		}
+		if claims.Subject != "" {
+			if want, err := ids.StringGUID(ids.Programme, claims.Subject); err == nil && canonical == want {
+				return true
+			}
+		}
+		return false
+	}
+	if _, err := ids.ParseGUID(ids.Channel, seg); err == nil {
+		return false
+	}
+	return true
+}
+
 func (s *ImageGrantService) servePageGrant(w http.ResponseWriter, r *http.Request, secret string) {
-	if s.isDenied(pageDigest(secret)) {
+	digest := pageDigest(secret)
+	if s.isDenied(digest) {
 		http.NotFound(w, r)
 		return
 	}
 	now := s.now().UnixMilli()
+	claims, err := openPageGrant(s.pageKey(), string(s.surface), secret, now)
+	if err != nil || !claimMatchesURLTarget(claims, r) {
+		http.NotFound(w, r)
+		return
+	}
 	var revoked int
-	err := s.db.QueryRowContext(r.Context(), `SELECT revoked FROM frontend_image_grants WHERE hash=? AND surface=?`, pageDigest(secret), string(s.surface)).Scan(&revoked)
+	err = s.db.QueryRowContext(r.Context(), `SELECT revoked FROM frontend_image_grants WHERE hash=? AND surface=?`, digest, string(s.surface)).Scan(&revoked)
 	if err == nil && revoked != 0 {
+		s.deny(digest, claims.Expires)
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		http.NotFound(w, r)
-		return
-	}
-	claims, err := openPageGrant(s.pageKey(), string(s.surface), secret, now)
-	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -814,6 +949,13 @@ func (s *ImageGrantService) persistRevocation(ctx context.Context, viewerID int6
 		return fmt.Errorf("identity: persist image grant revocation: %w", err)
 	}
 	defer tx.Rollback()
+	var existing int
+	if tx.QueryRowContext(ctx, `SELECT revoked FROM frontend_image_grants WHERE hash=? AND source_hash=? AND viewer_id=? AND surface=?`, digest, source, viewerID, string(s.surface)).Scan(&existing) == nil && existing != 0 {
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("identity: persist image grant revocation: %w", err)
+		}
+		return nil
+	}
 	row := imageBatchRow{hash: digest, item: core.RatingKey(claims.Item), image: frontend.Image{Kind: claims.Kind, Path: claims.Path, Tag: claims.Tag, Subject: claims.Subject}}
 	if err = s.insertAdmitted(ctx, tx, viewerID, source, deviceID(claims.Device), string(claims.Device), claims.Channel, []imageBatchRow{row}); err != nil {
 		return fmt.Errorf("identity: persist image grant revocation: %w", err)

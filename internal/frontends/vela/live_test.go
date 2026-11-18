@@ -1,6 +1,7 @@
 package vela
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -215,5 +216,133 @@ func TestVelaLiveGuideArtwork(t *testing.T) {
 	}
 	if issued != 2 {
 		t.Fatal("unbounded image issue", issued)
+	}
+}
+
+func TestVelaLiveETagsAndZeroGrantsOn304(t *testing.T) {
+	now := time.Date(2026, 11, 18, 18, 0, 0, 0, time.UTC)
+	progImg := frontend.Image{Kind: frontend.ImageStill, Path: "epg-still", Subject: "p-1", Tag: "t1"}
+	chanImg := frontend.Image{Kind: frontend.ImageChannel, Path: "ch-logo", Tag: "t1"}
+	prog := frontend.LiveProgramme{
+		ID:        "p-1",
+		ChannelID: "ch-1",
+		Title:     "Evening News",
+		Start:     now,
+		End:       now.Add(time.Hour),
+		Images:    []frontend.Image{progImg},
+	}
+	source := &liveWindowFake{
+		livePageFake: livePageFake{
+			snapshot:   "snap-1",
+			channels:   []frontend.LiveChannel{{ID: "ch-1", Name: "News", Kind: "iptv", Images: []frontend.Image{chanImg}}},
+			programmes: []frontend.LiveProgramme{prog},
+		},
+		available: true,
+		response: frontend.LiveGuideWindow{
+			From:       now,
+			Until:      now.Add(time.Hour),
+			Revision:   "rev-1",
+			ValidUntil: now.Add(6 * time.Hour),
+			Channels: []frontend.LiveGuideWindowChannel{
+				{ChannelID: "ch-1", State: frontend.LiveGuideWindowReady, Programmes: []frontend.LiveProgramme{prog}},
+			},
+		},
+	}
+
+	bucket := "bucket-1"
+	issued := 0
+	grants := frontendtest.ImageGrants{
+		GrantBucketFunc: func() string { return bucket },
+		IssueFunc: func(_ context.Context, req frontend.ImageGrantRequest) (string, error) {
+			issued++
+			return fmt.Sprintf("e1.det-%s-%s-%s", bucket, req.Channel, req.Image.Path), nil
+		},
+	}
+	inst, _ := newVelaWindowInstance(t, source, grants)
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{
+			name:   "channels",
+			method: http.MethodGet,
+			path:   "/vela/v0/live/channels?limit=50",
+		},
+		{
+			name:   "guide",
+			method: http.MethodGet,
+			path:   "/vela/v0/live/guide?limit=50&from=2026-11-18T18:00:00Z&until=2026-11-18T19:00:00Z",
+		},
+		{
+			name:   "guide-window",
+			method: http.MethodPost,
+			path:   "/vela/v0/live/guide/window",
+			body:   `{"channelIds":["ch-1"],"from":"2026-11-18T18:00:00Z","until":"2026-11-18T19:00:00Z"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bucket = "bucket-1"
+			do := func(ifNoneMatch string) *httptest.ResponseRecorder {
+				var body *strings.Reader
+				if tc.body != "" {
+					body = strings.NewReader(tc.body)
+				} else {
+					body = strings.NewReader("")
+				}
+				r := httptest.NewRequest(tc.method, tc.path, body)
+				r.Header.Set("Authorization", "Bearer token")
+				r.Header.Set("X-Vela-Device-Id", "tv-1")
+				if ifNoneMatch != "" {
+					r.Header.Set("If-None-Match", ifNoneMatch)
+				}
+				w := httptest.NewRecorder()
+				inst.serve(w, r)
+				return w
+			}
+
+			issued = 0
+			first := do("")
+			if first.Code != http.StatusOK || first.Header().Get("ETag") == "" {
+				t.Fatalf("first status=%d etag=%q body=%s", first.Code, first.Header().Get("ETag"), first.Body.String())
+			}
+			if issued != 1 {
+				t.Fatalf("expected 1 grant on first 200, got %d", issued)
+			}
+			etag := first.Header().Get("ETag")
+
+			// Full 200 inside the same expiry bucket is byte-identical with identical ETag.
+			second := do("")
+			if second.Code != http.StatusOK || second.Header().Get("ETag") != etag {
+				t.Fatalf("second status=%d etag=%q want %q", second.Code, second.Header().Get("ETag"), etag)
+			}
+			if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+				t.Fatalf("expected byte-identical 200 body inside bucket:\ngot:  %s\nwant: %s", second.Body.String(), first.Body.String())
+			}
+
+			// Conditional request returns 304, issues zero grants, and keeps ETag unchanged.
+			issued = 0
+			notMod := do(etag)
+			if notMod.Code != http.StatusNotModified {
+				t.Fatalf("expected 304, got %d", notMod.Code)
+			}
+			if issued != 0 {
+				t.Fatalf("expected 0 grants on 304, got %d", issued)
+			}
+			if notMod.Header().Get("ETag") != etag {
+				t.Fatalf("expected unchanged ETag %q on 304, got %q", etag, notMod.Header().Get("ETag"))
+			}
+
+			// Rotating the grant expiry bucket rotates ETag before old image URLs expire.
+			bucket = "bucket-2"
+			rotated := do(etag)
+			if rotated.Code != http.StatusOK || rotated.Header().Get("ETag") == etag {
+				t.Fatalf("expected 200 and new ETag after bucket rotation, got %d etag=%q", rotated.Code, rotated.Header().Get("ETag"))
+			}
+		})
 	}
 }

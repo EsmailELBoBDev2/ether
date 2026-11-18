@@ -28,6 +28,13 @@ type ImageGrants interface {
 	Serve(http.ResponseWriter, *http.Request, string)
 }
 
+// ImageGrantBucket reports the current stateless image-grant window so a
+// cached response rotates its ETag before embedded image URLs expire or after
+// a grant revocation.
+type ImageGrantBucket interface {
+	GrantBucket() string
+}
+
 // ImageBatchRequest requests primary artwork for a page of items. At most 50
 // distinct keys and 256 input keys are accepted; duplicates are removed in
 // first-occurrence order. Empty Kinds selects poster. Person and channel

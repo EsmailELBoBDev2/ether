@@ -13,6 +13,52 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
+func (i *instance) liveArtGrantBucket() string {
+	if bucket, ok := i.host.ImageGrants.(frontend.ImageGrantBucket); ok {
+		return bucket.GrantBucket()
+	}
+	return ""
+}
+
+func (i *instance) liveETag(r *http.Request, payload any) string {
+	return `"` + hashJSON([]any{
+		payload,
+		i.liveArtGrantBucket(),
+		requestDevice(r),
+		r.Header.Get("Authorization"),
+		r.Header.Get("X-Vela-Device-Id"),
+		r.URL.RequestURI(),
+	}) + `"`
+}
+
+func liveNotModified(w http.ResponseWriter, r *http.Request, tag string) bool {
+	for _, candidate := range strings.Split(r.Header.Get("If-None-Match"), ",") {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == tag || trimmed == "*" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+			w.Header().Set("ETag", tag)
+			w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+			w.WriteHeader(http.StatusNotModified)
+			return true
+		}
+	}
+	return false
+}
+
+func writeLiveCached(w http.ResponseWriter, r *http.Request, tag string, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	w.Header().Set("ETag", tag)
+	w.Header().Set("Vary", "Authorization, X-Vela-Device-Id")
+	_, _ = w.Write(b)
+}
+
 func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 	v, token, e := i.viewer(r)
 	if e != nil {
@@ -38,7 +84,6 @@ func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
-	out := []object{}
 	snapshot := hashJSON(channels)
 	if cursor.Snapshot != "" && cursor.Snapshot != snapshot {
 		fail(w, frontend.ErrLiveGuideStale)
@@ -46,6 +91,11 @@ func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 	}
 	start := min(cursor.Offset, len(channels))
 	end := start + min(limit(r), len(channels)-start)
+	tag := i.liveETag(r, []any{"channels", snapshot, start, end, end < len(channels)})
+	if liveNotModified(w, r, tag) {
+		return
+	}
+	out := []object{}
 	memo := newLiveArtCache()
 	for _, c := range channels[start:end] {
 		art, err := i.liveArtworkCached(r, token, 0, c.ID, c.Images, memo)
@@ -77,8 +127,9 @@ func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 		}
 		page["continuation"], page["nextCursor"] = "more", next
 	}
-	cache(w, r, page)
+	writeLiveCached(w, r, tag, page)
 }
+
 func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 	v, token, e := i.viewer(r)
 	if e != nil {
@@ -124,8 +175,25 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		fail(w, e, r)
 		return
 	}
+	if programmes.More && (len(programmes.Items) == 0 || programmes.Snapshot == "") {
+		fail(w, frontend.ErrLiveGuideStale)
+		return
+	}
+	tag := i.liveETag(r, []any{
+		"guide",
+		from.UTC().Format(time.RFC3339),
+		until.UTC().Format(time.RFC3339),
+		cursor.Offset,
+		programmes.Snapshot,
+		programmes.More,
+		programmes.Items,
+	})
+	if liveNotModified(w, r, tag) {
+		return
+	}
 	out := []object{}
 	memo := newLiveArtCache()
+	i.liveProgrammeTitleArt(r, token, programmes.Items, memo)
 	for _, p := range programmes.Items {
 		programme, err := i.liveProgrammeWire(r, token, p, memo)
 		if err != nil {
@@ -136,10 +204,6 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 	}
 	page := object{"items": out, "from": from.UTC().Format(time.RFC3339), "until": until.UTC().Format(time.RFC3339), "continuation": "exhausted"}
 	if programmes.More {
-		if len(out) == 0 || programmes.Snapshot == "" {
-			fail(w, frontend.ErrLiveGuideStale)
-			return
-		}
 		next, err := i.nextLiveCursor(cursor, cursor.Offset+len(out), programmes.Snapshot)
 		if err != nil {
 			fail(w, err, r)
@@ -147,7 +211,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		}
 		page["continuation"], page["nextCursor"] = "more", next
 	}
-	cache(w, r, page)
+	writeLiveCached(w, r, tag, page)
 }
 
 func (i *instance) liveGuideWindowReader() (frontend.LiveGuideWindowReader, bool) {
@@ -160,6 +224,59 @@ func (i *instance) liveGuideWindowReader() (frontend.LiveGuideWindowReader, bool
 		return nil, false
 	}
 	return reader, true
+}
+
+func (i *instance) liveProgrammeTitleArt(r *http.Request, token string, programmes []frontend.LiveProgramme, memo *liveArtCache) {
+	signer, ok := i.host.ImageGrants.(frontend.ImagePageSigner)
+	if !ok || memo == nil {
+		return
+	}
+	var titles []frontend.Title
+	seenTitles := map[frontend.RatingKey]bool{}
+	seenKinds := map[string]bool{}
+	var kinds []string
+	for _, p := range programmes {
+		if p.Item == 0 {
+			continue
+		}
+		for _, img := range p.Images {
+			if img.Subject == p.ID || img.Path == "" {
+				continue
+			}
+			switch img.Kind {
+			case frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageLogo, frontend.ImageThumb, frontend.ImageBanner, frontend.ImageStill:
+				if !seenKinds[img.Kind] {
+					seenKinds[img.Kind] = true
+					kinds = append(kinds, img.Kind)
+				}
+				if !seenTitles[p.Item] {
+					seenTitles[p.Item] = true
+					titles = append(titles, frontend.Title{Key: p.Item})
+				}
+			}
+		}
+	}
+	if len(titles) == 0 || len(kinds) == 0 {
+		return
+	}
+	signed, err := signer.SignPage(r.Context(), frontend.ImagePageRequest{
+		Credential: token,
+		Device:     requestDevice(r),
+		Titles:     titles,
+		Kinds:      kinds,
+	})
+	if err != nil {
+		return
+	}
+	for _, batch := range signed {
+		for _, g := range batch.Images {
+			if g.Image.Path == "" || g.Secret == "" {
+				continue
+			}
+			key := fmt.Sprintf("%d\x00\x00%s\x00%s\x00%s", batch.Item, g.Image.Kind, g.Image.Path, g.Image.Tag)
+			memo.issued[key] = object{"id": hash(g.Image.Path), "kind": g.Image.Kind, "tag": g.Image.Tag, "sizes": []object{imageSize(g.Image, g.Secret)}}
+		}
+	}
 }
 
 func (i *instance) liveProgrammeWire(r *http.Request, token string, p frontend.LiveProgramme, memo *liveArtCache) (object, error) {
@@ -304,8 +421,33 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tag := i.liveETag(r, []any{
+		"guide-window",
+		req.ChannelIDs,
+		from.UTC().Format(time.RFC3339),
+		until.UTC().Format(time.RFC3339),
+		window.Revision,
+		window.ValidUntil.UTC().Format(time.RFC3339),
+		window.Channels,
+	})
+	if liveNotModified(w, r, tag) {
+		return
+	}
+
 	channels := make([]object, len(window.Channels))
 	memo := newLiveArtCache()
+	var allProgrammes []frontend.LiveProgramme
+	for _, ch := range window.Channels {
+		for _, p := range ch.Programmes {
+			if p.Item != 0 {
+				allProgrammes = append(allProgrammes, ch.Programmes...)
+				break
+			}
+		}
+	}
+	if len(allProgrammes) > 0 {
+		i.liveProgrammeTitleArt(r, token, allProgrammes, memo)
+	}
 	for idx, ch := range window.Channels {
 		programmes := make([]object, len(ch.Programmes))
 		for j, p := range ch.Programmes {
@@ -329,7 +471,7 @@ func (i *instance) guideWindow(w http.ResponseWriter, r *http.Request) {
 		"validUntil": window.ValidUntil.UTC().Format(time.RFC3339),
 		"channels":   channels,
 	}
-	cache(w, r, out)
+	writeLiveCached(w, r, tag, out)
 }
 
 // Issue bounded, current-policy image capabilities for this response page.

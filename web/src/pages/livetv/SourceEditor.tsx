@@ -580,11 +580,6 @@ export function SourceEditor({
         />
       ) : null}
 
-      <UnratedChannelRating
-        value={draft.unratedRating ?? ""}
-        onChange={(unratedRating) => setDraft({ ...draft, unratedRating })}
-      />
-
       {onTab === "limits" ? (
         <section className="rounded-2xl border border-border bg-surface p-5">
           <SourceLimits
@@ -1154,6 +1149,12 @@ export function SourceEditor({
             </Field>
           </div>
         ) : null}
+        <div className="border-t border-border pt-4">
+          <UnratedChannelRating
+            value={draft.unratedRating ?? ""}
+            onChange={(unratedRating) => setDraft({ ...draft, unratedRating })}
+          />
+        </div>
       </section>
       <div className="space-y-3">
         {error ? (

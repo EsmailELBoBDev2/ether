@@ -144,6 +144,9 @@ type Manager struct {
 	// blockedLocal records up to maxBlockedLocalHosts distinct private hosts
 	// blocked per plugin (guarded by mu) so the console can offer a one-click allow.
 	blockedLocal map[string][]string
+	// blockedOperator records up to maxBlockedOperatorHosts distinct hosts
+	// blocked for plugins declaring "operator" in permissions.network.
+	blockedOperator map[string][]string
 }
 
 func (m *Manager) notificationLock(id string) *sync.Mutex {
@@ -333,10 +336,18 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 		}
 		g.LocalHosts = normalized
 	}
+	if g.OperatorHosts != nil {
+		normalized, err := normalizeOperatorHosts(g.OperatorHosts)
+		if err != nil {
+			return &ValidationError{Fields: []FieldError{{Field: "operatorHosts", Message: err.Error()}}}
+		}
+		g.OperatorHosts = normalized
+	}
 	if err := m.store.putGrants(ctx, id, g); err != nil {
 		return err
 	}
 	m.pruneBlockedLocalHosts(id, g.LocalHosts)
+	m.pruneBlockedOperatorHosts(id, g.OperatorHosts)
 	m.closeRuntime(id)
 	m.broadcast(ctx)
 	return nil
@@ -1082,6 +1093,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 		return err
 	}
 	m.clearBlockedLocalHosts(id)
+	m.clearBlockedOperatorHosts(id)
 	m.mu.Lock()
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {

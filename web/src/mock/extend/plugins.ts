@@ -56,11 +56,14 @@ interface PluginDetail extends PluginSummary {
       revoked?: string[];
       lan?: boolean;
       localHosts?: string[];
+      operatorHosts?: string[];
     };
     needsViewers: boolean;
     needsFolders: boolean;
+    needsOperatorHosts?: boolean;
   };
   blockedLocalHosts?: string[];
+  pendingOperatorHosts?: string[];
   healthDetail: PluginHealth;
   privacy: {
     declaredHosts: string[];
@@ -761,6 +764,8 @@ function summary(d: PluginDetail): PluginSummary {
   const {
     manifest: _m,
     permissions: _p,
+    blockedLocalHosts: _bl,
+    pendingOperatorHosts: _po,
     healthDetail,
     privacy: _pr,
     impact: _i,
@@ -769,6 +774,85 @@ function summary(d: PluginDetail): PluginSummary {
     ...s
   } = d;
   return { ...s, health: healthDetail.status };
+}
+
+function mockOperatorHostCovers(approved: string[], candidate: string): boolean {
+  const target = candidate.toLowerCase();
+  const targetName = target.split(":")[0]!;
+  return approved.some((entry) => {
+    const clean = entry.toLowerCase();
+    if (clean === target || clean === targetName) return true;
+    if (clean.startsWith("*.")) {
+      const suffix = clean.slice(1);
+      return targetName.endsWith(suffix) && targetName.length > suffix.length;
+    }
+    return false;
+  });
+}
+
+function extractMockSettingsHosts(
+  settings: Record<string, unknown>,
+  schema: Record<string, unknown>,
+): string[] {
+  const secretKeys = new Set(
+    ((schema as { fields?: { key: string; kind?: string }[] }).fields ?? [])
+      .filter((f) => f.kind === "secret")
+      .map((f) => f.key),
+  );
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (host: string) => {
+    const clean = host.trim().toLowerCase();
+    if (!clean || clean === "*" || clean === "operator" || seen.has(clean)) return;
+    seen.add(clean);
+    out.push(clean);
+  };
+  for (const key of Object.keys(settings).sort()) {
+    if (secretKeys.has(key)) continue;
+    const raw = settings[key];
+    const values = Array.isArray(raw) ? raw : [raw];
+    for (const item of values) {
+      if (typeof item !== "string" || !item.trim()) continue;
+      if (/^https?:\/\//i.test(item.trim())) {
+        try {
+          const u = new URL(item.trim());
+          if (u.host) add(u.host);
+        } catch {
+          // ignore malformed URL
+        }
+      } else if (/url|host|server|endpoint|address|domain/i.test(key)) {
+        const candidate = item.trim().split(/[/?#\s]/)[0] ?? "";
+        if (candidate.includes(".") || candidate.includes(":")) add(candidate);
+      }
+    }
+  }
+  return out;
+}
+
+function recomputePendingOperatorHosts(
+  d: PluginDetail,
+  settings: Record<string, unknown>,
+  schema: Record<string, unknown>,
+  blockedOperatorHosts: string[] = [],
+) {
+  if (!d.permissions.needsOperatorHosts) {
+    d.pendingOperatorHosts = undefined;
+    return;
+  }
+  const declaredFixed = ((d.permissions.declared.network as string[] | undefined) ?? []).filter(
+    (h) => h !== "operator",
+  );
+  const approved = [...declaredFixed, ...(d.permissions.grants.operatorHosts ?? [])];
+  const candidates = [...extractMockSettingsHosts(settings, schema), ...blockedOperatorHosts];
+  const pending: string[] = [];
+  const seen = new Set<string>();
+  for (const host of candidates) {
+    const lower = host.toLowerCase();
+    if (seen.has(lower) || mockOperatorHostCovers(approved, lower)) continue;
+    seen.add(lower);
+    pending.push(lower);
+  }
+  d.pendingOperatorHosts = pending.length > 0 ? pending : undefined;
 }
 
 function descriptorsFromManifest(
@@ -1000,6 +1084,7 @@ export function createPluginsMock(): {
         (perms.viewers?.write_watch_state && perms.viewers.write_watch_state !== "none"),
       );
       const needsFolders = perms.folders === "read";
+      const needsOperatorHosts = Boolean(perms.network?.includes("operator"));
       return {
         manifest: catMatch.manifest,
         summary: catMatch.item.summary,
@@ -1007,6 +1092,7 @@ export function createPluginsMock(): {
         permissions: catMatch.item.permissionLines ?? [],
         needsViewers,
         needsFolders,
+        needsOperatorHosts: needsOperatorHosts || undefined,
         verified: req.kind === "catalogue",
         stremioOnly: false,
         alreadyInstalled: Boolean(existing),
@@ -1040,14 +1126,17 @@ export function createPluginsMock(): {
     }
     const isFolderUrl = rawUrl.includes("folder");
     const isViewerUrl = rawUrl.includes("viewer");
+    const isOperatorUrl = rawUrl.includes("operator");
     const host = safeHost(rawUrl);
-    const permissions = [`Connects to ${host}`];
+    const permissions = [
+      isOperatorUrl ? "Connects to addresses you approve" : `Connects to ${host}`,
+    ];
     if (isViewerUrl) permissions.push("Reads watch history");
     if (isFolderUrl) permissions.push("Reads folders you choose");
     const man = req.manifest ?? {
-      id: "community.example.preview",
+      id: isOperatorUrl ? "community.example.selfhosted" : "community.example.preview",
       version: "1.0.0",
-      name: "Preview plugin",
+      name: isOperatorUrl ? "Self-hosted connector" : "Preview plugin",
       ether: {
         protocol: 1,
         kind: "extension",
@@ -1055,7 +1144,7 @@ export function createPluginsMock(): {
         author: { name: "Community author", url: rawUrl },
         capabilities: ["ui"],
         permissions: {
-          network: [host],
+          network: [isOperatorUrl ? "operator" : host],
           ...(isViewerUrl ? { viewers: { watch_history: "granted_viewers" } } : {}),
           ...(isFolderUrl ? { folders: "read" } : {}),
         },
@@ -1064,11 +1153,19 @@ export function createPluginsMock(): {
         },
       },
     };
+    const declaredNet =
+      (man as { ether?: { permissions?: { network?: string[] } } }).ether?.permissions?.network ??
+      [];
+    const needsOperatorHosts = declaredNet.includes("operator");
+    const pendingOperatorHosts =
+      needsOperatorHosts && rawUrl.includes("default") ? ["library.example.com"] : undefined;
     return {
       manifest: man,
       permissions,
       needsViewers: isViewerUrl,
       needsFolders: isFolderUrl,
+      needsOperatorHosts: needsOperatorHosts || undefined,
+      pendingOperatorHosts,
       verified: false,
       stremioOnly: rawUrl.includes("stremio"),
     };
@@ -1257,6 +1354,7 @@ export function createPluginsMock(): {
           grants: req.grants ?? {},
           needsViewers: prev.needsViewers,
           needsFolders: prev.needsFolders,
+          needsOperatorHosts: (prev as { needsOperatorHosts?: boolean }).needsOperatorHosts,
         },
         healthDetail: {
           status: "ok",
@@ -1283,10 +1381,24 @@ export function createPluginsMock(): {
         },
       };
       const existingIdx = fixtures.findIndex((f) => f.detail.id === id);
+      const defaultSchema = detail.permissions.needsOperatorHosts
+        ? {
+            fields: [
+              { key: "serverUrl", kind: "url", label: "Server URL" },
+              { key: "apiKey", kind: "secret", label: "API token" },
+            ],
+          }
+        : {};
+      recomputePendingOperatorHosts(
+        detail,
+        req.settings ?? {},
+        defaultSchema,
+        (prev as { pendingOperatorHosts?: string[] }).pendingOperatorHosts ?? [],
+      );
       const newFixture: Fixture = {
         detail,
         settings: req.settings ?? {},
-        schema: {},
+        schema: defaultSchema,
         descriptors: descriptorsFromManifest(id, name, prev.manifest),
         journal: [],
         shadowJournal: [],
@@ -1370,6 +1482,7 @@ export function createPluginsMock(): {
         }
       }
       f.settings = nextSettings;
+      recomputePendingOperatorHosts(d, f.settings, f.schema, d.pendingOperatorHosts ?? []);
       return json({ status: "saved" });
     }
     if (method === "GET" && seg[2] === "options") {
@@ -1396,6 +1509,21 @@ export function createPluginsMock(): {
     }
     if (method === "PUT" && seg[2] === "grants") {
       const next = (body ?? {}) as PluginDetail["permissions"]["grants"];
+      if (
+        next.operatorHosts?.some(
+          (h) => !h.trim() || h.trim() === "*" || h.trim().toLowerCase() === "operator",
+        )
+      ) {
+        return json(
+          {
+            error: {
+              code: "validation",
+              message: "Approve a specific server address, not a wildcard.",
+            },
+          },
+          400,
+        );
+      }
       if (next.localHosts && d.blockedLocalHosts?.length) {
         const allowed = new Set(next.localHosts.map((h) => h.toLowerCase()));
         d.blockedLocalHosts = d.blockedLocalHosts.filter(
@@ -1403,6 +1531,7 @@ export function createPluginsMock(): {
         );
       }
       d.permissions.grants = next;
+      recomputePendingOperatorHosts(d, f.settings, f.schema, d.pendingOperatorHosts ?? []);
       return json({ status: "saved", grants: d.permissions.grants });
     }
     if (method === "POST" && seg[2] === "shadow") {

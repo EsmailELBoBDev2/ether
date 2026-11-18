@@ -591,4 +591,71 @@ describe("Server › Plugins (WS10a)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Account/ }));
     expect(await screen.findByText("Anonymous access works and is rate-limited.")).toBeTruthy();
   });
+
+  it("reviews, approves, and revokes operator-configured server addresses at install and in plugin settings", async () => {
+    renderPlugins("/plugins");
+    await screen.findByText("Pluto TV");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /From a link/i }));
+    fireEvent.change(await screen.findByLabelText("Plugin address"), {
+      target: { value: "https://plugins.example.test/operator-default/manifest.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Review permissions/i }));
+
+    const sheet = await screen.findByTestId("permission-sheet");
+    expect(within(sheet).getByText("Connects to addresses you approve")).toBeTruthy();
+    expect(
+      within(sheet).getByText("Needs approval to connect to library.example.com"),
+    ).toBeTruthy();
+
+    // Wildcard input is ignored in the address picker.
+    const addrInput = within(sheet).getByLabelText("Server address");
+    fireEvent.change(addrInput, { target: { value: "*" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Approve address" }));
+    expect(within(sheet).queryByLabelText("Approved addresses")).toBeNull();
+
+    // Approve the pending default address during install review.
+    fireEvent.click(within(sheet).getByRole("button", { name: "Approve" }));
+    const approvedAtInstall = within(sheet).getByRole("list", { name: "Approved addresses" });
+    expect(within(approvedAtInstall).getByText("library.example.com")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Install$/i }));
+
+    // Installed drawer opens for Self-hosted connector.
+    const tabs = await screen.findByRole("tablist", { name: "Plugin sections" });
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+
+    // Save a new server URL in settings -> prompts for approval immediately.
+    const serverUrlInput = await screen.findByLabelText("Server URL");
+    fireEvent.change(serverUrlInput, {
+      target: { value: "https://books.example.com:8443/api" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(
+      await screen.findByText("Needs approval to connect to books.example.com:8443"),
+    ).toBeTruthy();
+
+    // Overview tab also shows the approval banner until approved.
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Overview" }));
+    expect(
+      await screen.findByText("Needs approval to connect to books.example.com:8443"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(screen.queryByText("Needs approval to connect to books.example.com:8443")).toBeNull();
+    });
+
+    // Back in Settings: both addresses are listed and revocable.
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+    const approvedList = await screen.findByRole("list", { name: "Approved addresses" });
+    expect(within(approvedList).getByText("library.example.com")).toBeTruthy();
+    expect(within(approvedList).getByText("books.example.com:8443")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Revoke library.example.com" }));
+    await waitFor(() => {
+      expect(within(approvedList).queryByText("library.example.com")).toBeNull();
+    });
+  });
 });

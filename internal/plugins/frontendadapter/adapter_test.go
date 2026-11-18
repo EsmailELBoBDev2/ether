@@ -79,6 +79,19 @@ func testHost(viewers map[string]*core.Viewer) frontend.Host {
 	return frontend.Host{Identity: frontend.BindIdentity(fakeIdentity{viewers: viewers}, "plugin:plug1:feed")}
 }
 
+func TestDescribeExposesPathPrefixAndDefaultAuth(t *testing.T) {
+	decl := testDecl(core.LibraryMovies)
+	decl.Meta.Auth = ""
+	f, err := New(decl, &fakeManager{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := f.Describe()
+	if got.ID != "plugin:plug1:feed" || got.PathPrefix != "/opds" || got.Auth != AuthEtherToken {
+		t.Fatalf("Describe() = %+v", got)
+	}
+}
+
 // TestProxyInjectsViewerHeadersAndHidesCredential proves the plugin never
 // sees an Ether credential and receives the viewer headers §6.5 defines.
 func TestProxyInjectsViewerHeadersAndHidesCredential(t *testing.T) {
@@ -213,7 +226,7 @@ func TestHiddenLibraryAnswers404(t *testing.T) {
 // TestMissingCredentialAnswers401 checks the unauthenticated path.
 func TestMissingCredentialAnswers401(t *testing.T) {
 	mgr := &fakeManager{handler: func(req plugins.Request) (plugins.Response, io.ReadCloser, error) {
-		return plugins.Response{Status: 200}, io.NopCloser(strings.NewReader("")), nil
+		return plugins.Response{Status: 200}, io.NopCloser(strings.NewReader("")) , nil
 	}}
 	f, _ := New(testDecl(core.LibraryMovies), mgr)
 	inst, err := f.Mount(context.Background(), testHost(map[string]*core.Viewer{"tok1": viewerWithLibraries(7, "A", core.LibraryMovies)}))

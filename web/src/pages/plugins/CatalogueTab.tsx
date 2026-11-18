@@ -85,6 +85,7 @@ export function CatalogueTab({
   const [preview, setPreview] = useState<InstallPreview | null>(null);
   const [viewers, setViewers] = useState<number[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
+  const [operatorHosts, setOperatorHosts] = useState<string[]>([]);
   const [shadow, setShadow] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installErr, setInstallErr] = useState<string | null>(null);
@@ -183,6 +184,7 @@ export function CatalogueTab({
     setSelected(entry);
     setViewers([]);
     setFolders([]);
+    setOperatorHosts([]);
     setShadow(false);
     setInstallErr(null);
   };
@@ -200,6 +202,7 @@ export function CatalogueTab({
           grants: {
             viewers: preview.needsViewers ? viewers : undefined,
             folders: preview.needsFolders ? folders : undefined,
+            operatorHosts: preview.needsOperatorHosts ? operatorHosts : undefined,
           },
           shadow,
           acceptAddedPermissions: !!preview.addedPermissions?.length,
@@ -672,10 +675,14 @@ export function CatalogueTab({
                   verified={preview.verified}
                   needsViewers={preview.needsViewers}
                   needsFolders={preview.needsFolders}
+                  needsOperatorHosts={preview.needsOperatorHosts}
                   viewers={viewers}
                   onChangeViewers={setViewers}
                   folders={folders}
                   onChangeFolders={setFolders}
+                  operatorHosts={operatorHosts}
+                  pendingOperatorHosts={preview.pendingOperatorHosts}
+                  onChangeOperatorHosts={setOperatorHosts}
                   addedPermissions={preview.addedPermissions}
                 />
               </>

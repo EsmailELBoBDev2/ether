@@ -13,6 +13,7 @@ import {
   Code2,
   ExternalLink,
   FlaskConical,
+  Globe,
   Info,
   MoreHorizontal,
   Network,
@@ -180,6 +181,19 @@ export function InstalledPluginDrawer({
       await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/grants`, {
         method: "PUT",
         body: JSON.stringify({ ...cur, localHosts }),
+      });
+      await reload();
+      toast.success(t("Access updated"));
+    });
+
+  const approveOperatorHost = (host: string) =>
+    run(`approve-host:${host}`, async () => {
+      const cur = detail!.permissions.grants ?? {};
+      const existing = cur.operatorHosts ?? [];
+      const operatorHosts = existing.includes(host) ? existing : [...existing, host];
+      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/grants`, {
+        method: "PUT",
+        body: JSON.stringify({ ...cur, operatorHosts }),
       });
       await reload();
       toast.success(t("Access updated"));
@@ -419,6 +433,25 @@ export function InstalledPluginDrawer({
         <ErrorPanel error={loadError} onRetry={() => pluginId && void loadDetail(pluginId)} />
       ) : detail ? (
         <div className="space-y-5">
+          {active !== "setup" && detail.pendingOperatorHosts?.length
+            ? detail.pendingOperatorHosts.map((host) => (
+                <Banner
+                  key={`op:${host}`}
+                  icon={<Globe size={16} className="text-warning" />}
+                  text={t("Needs approval to connect to {host}", { host })}
+                  action={
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy === `approve-host:${host}`}
+                      onClick={() => void approveOperatorHost(host)}
+                    >
+                      {t("Approve")}
+                    </Button>
+                  }
+                />
+              ))
+            : null}
           {active !== "setup" && detail.blockedLocalHosts?.length
             ? detail.blockedLocalHosts.map((host) => (
                 <Banner

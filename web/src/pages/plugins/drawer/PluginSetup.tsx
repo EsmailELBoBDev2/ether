@@ -10,7 +10,12 @@ import { t } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
 import { ApiError, apiFetch, errorMessage } from "../../../lib/api";
 import { SchemaGroups } from "../../settings/SchemaForm";
-import { FolderGrantsPicker, LocalHostGrantsPicker, ViewerGrantsPicker } from "../PermissionSheet";
+import {
+  FolderGrantsPicker,
+  LocalHostGrantsPicker,
+  OperatorHostGrantsPicker,
+  ViewerGrantsPicker,
+} from "../PermissionSheet";
 import { RuntimeLimitsEditor } from "../RuntimeLimitsEditor";
 import { SearchSetting } from "./SearchSetting";
 import { AddonSettings } from "./AddonSettings";
@@ -98,6 +103,7 @@ export function PluginSetup({
       });
       toast.success(t("Settings saved"));
       await load();
+      await onDetail();
       onChanged();
     } catch (e) {
       onError(e);
@@ -121,8 +127,10 @@ export function PluginSetup({
           ? { status: "ok", durationMs: Date.now() - started, message: res.message }
           : { status: "fail", message: res.message || t("Test failed") },
       );
+      await onDetail();
     } catch (e) {
       setTest({ status: "fail", message: errorMessage(e) });
+      void onDetail();
     }
   };
 
@@ -172,6 +180,11 @@ export function PluginSetup({
   const revoked = new Set(grants.revoked ?? []);
   const grantItems = buildGrantItems(detail).filter((g) => g.revocable);
   const access = detail.permissions.needsViewers || detail.permissions.needsFolders;
+  const showOperatorHosts = Boolean(
+    detail.permissions.needsOperatorHosts ||
+    (grants.operatorHosts?.length ?? 0) > 0 ||
+    (detail.pendingOperatorHosts?.length ?? 0) > 0,
+  );
   const canReachLocalHosts = detail.manifest.ether?.runtime?.kind !== "data";
   const hasRuntimeLimits = Boolean(
     detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data",
@@ -230,7 +243,7 @@ export function PluginSetup({
         </Section>
       )}
 
-      {access || canReachLocalHosts ? (
+      {access || showOperatorHosts || canReachLocalHosts ? (
         <div className="space-y-4">
           {detail.permissions.needsViewers ? (
             <ViewerGrantsPicker
@@ -242,6 +255,13 @@ export function PluginSetup({
             <FolderGrantsPicker
               value={grants.folders ?? []}
               onChange={(f) => void updateGrants({ ...grants, folders: f })}
+            />
+          ) : null}
+          {showOperatorHosts ? (
+            <OperatorHostGrantsPicker
+              value={grants.operatorHosts ?? []}
+              pending={detail.pendingOperatorHosts ?? []}
+              onChange={(operatorHosts) => void updateGrants({ ...grants, operatorHosts })}
             />
           ) : null}
           {canReachLocalHosts ? (

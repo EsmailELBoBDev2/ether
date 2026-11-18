@@ -4213,9 +4213,12 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	p := man.Ether.Permissions
 	var localHosts []string
 	for _, h := range p.Network {
-		if IsLocalNetworkHost(h) {
+		switch {
+		case strings.EqualFold(strings.TrimSpace(h), OperatorNetworkEntry):
+			lines = append(lines, "Connects to addresses you approve")
+		case IsLocalNetworkHost(h):
 			localHosts = append(localHosts, h)
-		} else {
+		default:
 			lines = append(lines, "Connects to "+h)
 		}
 	}
@@ -4295,9 +4298,12 @@ func PermissionDiff(cur, next Manifest) []string {
 	var addedLocal []string
 	for _, h := range b.Network {
 		if !have[h] {
-			if IsLocalNetworkHost(h) {
+			switch {
+			case strings.EqualFold(strings.TrimSpace(h), OperatorNetworkEntry):
+				added = append(added, "Connects to addresses you approve")
+			case IsLocalNetworkHost(h):
 				addedLocal = append(addedLocal, h)
-			} else {
+			default:
 				added = append(added, "Connects to "+h)
 			}
 		}
@@ -5159,12 +5165,25 @@ func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName strin
 	if err != nil || r.Manifest.Ether == nil {
 		return false
 	}
-	if err := h.deny(r, g, "network", "", func(string) bool {
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName) || g.allowsLocalHostName(hostName)
-	}); err != nil {
+	if g.revoked("network") {
+		h.noteDenied("network")
 		return false
 	}
-	return true
+	if hostAllowed(r.Manifest.Ether.Permissions.Network, hostName) ||
+		g.allowsLocalHostName(hostName) ||
+		(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorHostName(hostName)) {
+		return true
+	}
+	if DeclaresOperatorHosts(r.Manifest) {
+		m.noteBlockedOperatorHost(ctx, pluginID, hostName)
+		return false
+	}
+	if IsLocalNetworkHost(hostName) {
+		m.noteBlockedLocalHost(ctx, pluginID, hostName)
+		return false
+	}
+	h.noteDenied("network")
+	return false
 }
 ``````
 
@@ -5175,7 +5194,10 @@ func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName strin
 func hostAllowed(patterns []string, host string) bool {
 	host = strings.ToLower(host)
 	for _, p := range patterns {
-		p = strings.ToLower(p)
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == OperatorNetworkEntry {
+			continue
+		}
 		if strings.HasPrefix(p, "*.") {
 			if strings.HasSuffix(host, p[1:]) && host != p[2:] {
 				return true
@@ -5207,6 +5229,10 @@ func fetchError(host string, err error) error {
 	var blocked *BlockedLocalHostError
 	if errors.As(err, &blocked) {
 		return blocked
+	}
+	var blockedOp *BlockedOperatorHostError
+	if errors.As(err, &blockedOp) {
+		return blockedOp
 	}
 	reason := "network error"
 	switch {
@@ -5246,7 +5272,14 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
-	if !networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) && !g.allowsLocalURL(u) {
+	if !networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) &&
+		!g.allowsLocalURL(u) &&
+		!(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorURL(u)) {
+		if DeclaresOperatorHosts(r.Manifest) {
+			blocked := urlHostPortDisplay(u)
+			h.m.noteBlockedOperatorHost(ctx, h.plugin, blocked)
+			return nil, &BlockedOperatorHostError{Host: blocked}
+		}
 		if IsLocalNetworkHost(u.Hostname()) {
 			blocked := urlHostPortDisplay(u)
 			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
@@ -5255,8 +5288,8 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
-	if len(g.LocalHosts) > 0 {
-		ctx = safefetch.WithTrustedHosts(ctx, g.LocalHosts)
+	if trusted := trustedFetchHosts(r.Manifest, g); len(trusted) > 0 {
+		ctx = safefetch.WithTrustedHosts(ctx, trusted)
 	}
 	method := req.Method
 	if method == "" {
@@ -5287,7 +5320,14 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 			h.noteDenied("network")
 			return fmt.Errorf("%w: network", ErrPermissionDenied)
 		}
-		if !networkAllowedURL(current.Manifest.Ether.Permissions.Network, next.URL) && !grants.allowsLocalURL(next.URL) {
+		if !networkAllowedURL(current.Manifest.Ether.Permissions.Network, next.URL) &&
+			!grants.allowsLocalURL(next.URL) &&
+			!(DeclaresOperatorHosts(current.Manifest) && grants.allowsOperatorURL(next.URL)) {
+			if DeclaresOperatorHosts(current.Manifest) {
+				blocked := urlHostPortDisplay(next.URL)
+				h.m.noteBlockedOperatorHost(next.Context(), h.plugin, blocked)
+				return &BlockedOperatorHostError{Host: blocked}
+			}
 			if IsLocalNetworkHost(next.URL.Hostname()) {
 				blocked := urlHostPortDisplay(next.URL)
 				h.m.noteBlockedLocalHost(next.Context(), h.plugin, blocked)
@@ -5296,7 +5336,7 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 			h.noteDenied("network")
 			return fmt.Errorf("%w: network", ErrPermissionDenied)
 		}
-		*next = *next.WithContext(safefetch.WithTrustedHosts(next.Context(), grants.LocalHosts))
+		*next = *next.WithContext(safefetch.WithTrustedHosts(next.Context(), trustedFetchHosts(current.Manifest, grants)))
 		if previousRedirect != nil {
 			return previousRedirect(next, via)
 		}
@@ -8784,9 +8824,12 @@ func mapHostError(err error) error {
 	var input *CollectionInputError
 	var valid *ValidationError
 	var blocked *BlockedLocalHostError
+	var blockedOp *BlockedOperatorHostError
 	switch {
 	case errors.As(err, &blocked):
 		return &wasm.Fault{Code: "host_error", Message: blocked.PluginMessage()}
+	case errors.As(err, &blockedOp):
+		return wasm.Forbidden(blockedOp.PluginMessage())
 	case errors.As(err, &fault):
 		return fault
 	case errors.As(err, &input):
@@ -9308,24 +9351,55 @@ func relLuminance(r, g, b float64) float64 {
 // recordingHost implements wasm.Host for conformance checking, recording
 // outbound http.fetch hosts and auditing them against manifest permissions.
 type recordingHost struct {
-	mu       sync.Mutex
-	man      plugins.Manifest
-	kv       map[string]string
-	observed map[string]int
-	undecl   map[string]bool
-	deferred int
+	mu               sync.Mutex
+	man              plugins.Manifest
+	operatorDefaults []string
+	kv               map[string]string
+	observed         map[string]int
+	undecl           map[string]bool
+	deferred         int
+}
+``````
+
+## Source: internal/plugins/kit/check.go#resolvedSettingsSchema
+
+``````
+func resolvedSettingsSchema(man plugins.Manifest, files map[string][]byte) json.RawMessage {
+	if man.Ether == nil || len(man.Ether.Settings) == 0 {
+		return nil
+	}
+	raw := man.Ether.Settings
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) == nil {
+		if ref, ok := doc["$ref"].(string); ok && ref != "" {
+			if b, exists := files[ref]; exists {
+				raw = b
+			}
+		}
+	}
+	return raw
 }
 ``````
 
 ## Source: internal/plugins/kit/check.go#newRecordingHost
 
 ``````
-func newRecordingHost(man plugins.Manifest) *recordingHost {
+func newRecordingHost(man plugins.Manifest, files map[string][]byte) *recordingHost {
+	var opDefaults []string
+	if plugins.DeclaresOperatorHosts(man) {
+		schema := resolvedSettingsSchema(man, files)
+		for _, cand := range plugins.SettingsCandidateHosts(nil, schema, man.Ether.Permissions.Secrets, false) {
+			if u, err := url.Parse("https://" + cand); err == nil && u.Hostname() != "" {
+				opDefaults = append(opDefaults, strings.ToLower(u.Hostname()))
+			}
+		}
+	}
 	return &recordingHost{
-		man:      man,
-		kv:       map[string]string{},
-		observed: map[string]int{},
-		undecl:   map[string]bool{},
+		man:              man,
+		operatorDefaults: opDefaults,
+		kv:               map[string]string{},
+		observed:         map[string]int{},
+		undecl:           map[string]bool{},
 	}
 }
 ``````
@@ -9439,7 +9513,8 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		host := strings.ToLower(u.Hostname())
 		h.observed[host]++
-		if !hostMatches(h.man.Ether.Permissions.Network, host) {
+		if !hostMatches(h.man.Ether.Permissions.Network, host) &&
+			!(plugins.DeclaresOperatorHosts(h.man) && hostMatches(h.operatorDefaults, host)) {
 			h.undecl[host] = true
 			return nil, wasm.Forbidden("undeclared network host " + host)
 		}
@@ -9508,7 +9583,10 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 func hostMatches(patterns []string, host string) bool {
 	host = strings.ToLower(host)
 	for _, p := range patterns {
-		p = strings.ToLower(p)
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == plugins.OperatorNetworkEntry {
+			continue
+		}
 		if strings.HasPrefix(p, "*.") {
 			if strings.HasSuffix(host, p[1:]) && host != p[2:] {
 				return true
@@ -9530,7 +9608,7 @@ func checkHostedRuntime(ctx context.Context, rep *Report, man plugins.Manifest, 
 	eng := wasm.NewEngine(nil)
 	defer func() { _ = eng.Close() }()
 
-	host := newRecordingHost(man)
+	host := newRecordingHost(man, files)
 	decl := man.Ether.Runtime
 	var plug *wasm.Plugin
 	var err error
@@ -12446,6 +12524,9 @@ func localListCoversHost(entries []string, hostName string) bool {
 		return false
 	}
 	for _, raw := range entries {
+		if strings.EqualFold(strings.TrimSpace(raw), OperatorNetworkEntry) {
+			continue
+		}
 		norm, ok := safefetch.NormalizeTrustedHost(raw)
 		if !ok {
 			continue
@@ -12490,10 +12571,10 @@ func localGrantCoversBlockedEntry(granted []string, blocked string) bool {
 ``````
 // IsLocalNetworkHost reports whether raw is an exact non-public LAN host
 // (dotless hostname, .local, .lan, .home.arpa, or a private/CGNAT IP literal).
-// Loopback (localhost, 127.0.0.1, ::1) and wildcards are excluded so a
-// manifest never pre-grants loopback access.
+// Loopback (localhost, 127.0.0.1, ::1), "operator", and wildcards are excluded
+// so a manifest never pre-grants loopback or operator-placeholder access.
 func IsLocalNetworkHost(raw string) bool {
-	if strings.Contains(raw, "*") {
+	if strings.Contains(raw, "*") || strings.EqualFold(strings.TrimSpace(raw), OperatorNetworkEntry) {
 		return false
 	}
 	norm, ok := safefetch.NormalizeTrustedHost(raw)
@@ -12548,7 +12629,10 @@ func DeclaredLocalHosts(man Manifest) []string {
 
 ``````
 func isValidManifestNetworkEntry(raw string) bool {
-	if strings.Contains(raw, "://") {
+	if raw == OperatorNetworkEntry {
+		return true
+	}
+	if strings.EqualFold(raw, OperatorNetworkEntry) || strings.Contains(raw, "://") {
 		return false
 	}
 	lower := strings.ToLower(raw)
@@ -12567,7 +12651,7 @@ func isValidManifestNetworkEntry(raw string) bool {
 
 ``````
 func networkAllowedURL(patterns []string, u *url.URL) bool {
-	if u == nil {
+	if u == nil || strings.EqualFold(u.Hostname(), OperatorNetworkEntry) {
 		return false
 	}
 	if hostAllowed(patterns, u.Hostname()) {
@@ -12583,6 +12667,9 @@ func networkAllowedURL(patterns []string, u *url.URL) bool {
 func networkHostDeclaredOrGranted(man Manifest, g Grants, host string) bool {
 	if man.Ether != nil {
 		if hostAllowed(man.Ether.Permissions.Network, host) || localListCoversHost(man.Ether.Permissions.Network, host) {
+			return true
+		}
+		if DeclaresOperatorHosts(man) && g.allowsOperatorHostName(host) {
 			return true
 		}
 	}
@@ -12638,8 +12725,15 @@ func (h *host) allowNetworkURL(ctx context.Context, u *url.URL) error {
 		h.noteDenied("network")
 		return fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
-	if networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) || g.allowsLocalURL(u) {
+	if networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) ||
+		g.allowsLocalURL(u) ||
+		(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorURL(u)) {
 		return nil
+	}
+	if DeclaresOperatorHosts(r.Manifest) {
+		blocked := urlHostPortDisplay(u)
+		h.m.noteBlockedOperatorHost(ctx, h.plugin, blocked)
+		return &BlockedOperatorHostError{Host: blocked}
 	}
 	if IsLocalNetworkHost(u.Hostname()) {
 		blocked := urlHostPortDisplay(u)
@@ -13143,7 +13237,7 @@ func isHTTPSURL(s string) bool {
 func validatePermissions(p Permissions, add func(string, string)) {
 	for i, h := range p.Network {
 		if !isValidManifestNetworkEntry(h) {
-			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, with a wildcard only as *.example.com")
+			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, \"operator\", or a wildcard only as *.example.com")
 		}
 	}
 	level := func(field, v string, allowed ...string) {
@@ -14196,6 +14290,506 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 }
 ``````
 
+## Source: internal/plugins/operator_hosts.go#OperatorNetworkEntry
+
+``````
+// OperatorNetworkEntry is the manifest token in ether.permissions.network that
+// declares the plugin connects to server addresses chosen and approved by the
+// server owner, without allowing a wildcard.
+const OperatorNetworkEntry = "operator"
+``````
+
+## Source: internal/plugins/operator_hosts.go#maxBlockedOperatorHosts
+
+``````
+const maxBlockedOperatorHosts = 10
+``````
+
+## Source: internal/plugins/operator_hosts.go#BlockedOperatorHostError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/operator_hosts.go#BlockedOperatorHostError
+
+``````
+// BlockedOperatorHostError reports that a plugin declaring "operator" in
+// permissions.network targeted an address the owner has not yet approved in
+// Grants.OperatorHosts.
+type BlockedOperatorHostError struct {
+	Host string
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*BlockedOperatorHostError.PluginMessage
+
+``````
+// PluginMessage returns the message exposed to the plugin runtime.
+func (e *BlockedOperatorHostError) PluginMessage() string {
+	return fmt.Sprintf("%s needs owner approval; the owner can approve it in this plugin's settings", e.Host)
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*BlockedOperatorHostError.Error
+
+``````
+func (e *BlockedOperatorHostError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrPermissionDenied, e.PluginMessage())
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*BlockedOperatorHostError.Unwrap
+
+``````
+func (e *BlockedOperatorHostError) Unwrap() []error {
+	return []error{ErrPermissionDenied, ErrFetchFailed}
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#DeclaresOperatorHosts
+
+``````
+// DeclaresOperatorHosts reports whether man declares "operator" in
+// ether.permissions.network for an executable plugin.
+func DeclaresOperatorHosts(man Manifest) bool {
+	if man.Ether == nil || man.Ether.Runtime.Kind == "data" {
+		return false
+	}
+	for _, entry := range man.Ether.Permissions.Network {
+		if strings.EqualFold(strings.TrimSpace(entry), OperatorNetworkEntry) {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#NormalizeOperatorHost
+
+``````
+// NormalizeOperatorHost validates a single owner-approved host grant ("host"
+// or "host:port", or a single IP literal with optional port, without schemes,
+// wildcards, or CIDRs) and returns its canonical lowercase form. Wildcards
+// (including bare "*") and the manifest token "operator" are rejected.
+func NormalizeOperatorHost(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if strings.Contains(trimmed, "*") {
+		return "", fmt.Errorf("wildcards are not allowed; enter a specific host name or IP address")
+	}
+	if strings.EqualFold(trimmed, OperatorNetworkEntry) {
+		return "", fmt.Errorf("must be a specific host name or IP address")
+	}
+	norm, ok := safefetch.NormalizeTrustedHost(trimmed)
+	if !ok {
+		return "", fmt.Errorf("must be a host name or single IP address (with optional :port), without wildcards or CIDRs")
+	}
+	return norm, nil
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#normalizeOperatorHosts
+
+``````
+func normalizeOperatorHosts(in []string) ([]string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		norm, err := NormalizeOperatorHost(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[norm] {
+			seen[norm] = true
+			out = append(out, norm)
+		}
+	}
+	return out, nil
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#Grants.allowsOperatorURL
+
+``````
+func (g Grants) allowsOperatorURL(u *url.URL) bool {
+	if u == nil || strings.EqualFold(u.Hostname(), OperatorNetworkEntry) {
+		return false
+	}
+	return safefetch.TrustedHostMatchesURL(g.OperatorHosts, u)
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#Grants.allowsOperatorHostName
+
+``````
+func (g Grants) allowsOperatorHostName(hostName string) bool {
+	if strings.EqualFold(strings.TrimSpace(hostName), OperatorNetworkEntry) {
+		return false
+	}
+	return localListCoversHost(g.OperatorHosts, hostName)
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#isExplicitLoopbackEntry
+
+``````
+func isExplicitLoopbackEntry(raw string) bool {
+	norm, ok := safefetch.NormalizeTrustedHost(raw)
+	if !ok {
+		return false
+	}
+	host := norm
+	if h, _, err := net.SplitHostPort(norm); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#trustedFetchHosts
+
+``````
+// trustedFetchHosts returns the exact destinations allowed to resolve to
+// non-public addresses during safefetch: Grants.LocalHosts plus, for plugins
+// declaring "operator", any explicitly approved LAN or loopback literal in
+// Grants.OperatorHosts. Public DNS names in OperatorHosts stay on the public
+// pool so DNS-rebinding SSRF protection remains enforced.
+func trustedFetchHosts(man Manifest, g Grants) []string {
+	if !DeclaresOperatorHosts(man) || len(g.OperatorHosts) == 0 {
+		return g.LocalHosts
+	}
+	var extra []string
+	for _, entry := range g.OperatorHosts {
+		if IsLocalNetworkHost(entry) || isExplicitLoopbackEntry(entry) {
+			extra = append(extra, entry)
+		}
+	}
+	if len(extra) == 0 {
+		return g.LocalHosts
+	}
+	out := make([]string, 0, len(g.LocalHosts)+len(extra))
+	out = append(out, g.LocalHosts...)
+	out = append(out, extra...)
+	return out
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#isOperatorHostField
+
+``````
+func isOperatorHostField(key string, field map[string]any) bool {
+	if field != nil {
+		for _, prop := range []string{"kind", "type", "format"} {
+			if s, _ := field[prop].(string); s == "url" || s == "uri" {
+				return true
+			}
+		}
+	}
+	lower := strings.ToLower(key)
+	for _, token := range []string{"url", "host", "endpoint", "server", "origin", "address"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#extractSettingHost
+
+``````
+func extractSettingHost(raw string, hostField bool) (string, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", false
+	}
+	if strings.Contains(s, "://") {
+		u, err := url.Parse(s)
+		if err != nil || u.Hostname() == "" {
+			return "", false
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https", "stremio", "ws", "wss":
+		default:
+			return "", false
+		}
+		norm, err := NormalizeOperatorHost(urlHostPortDisplay(u))
+		if err != nil {
+			return "", false
+		}
+		return norm, true
+	}
+	if !hostField || strings.ContainsAny(s, " /\\?#@%") {
+		return "", false
+	}
+	norm, err := NormalizeOperatorHost(s)
+	if err != nil {
+		return "", false
+	}
+	return norm, true
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#SettingsCandidateHosts
+
+``````
+// SettingsCandidateHosts extracts normalized host or host:port candidates from
+// a plugin's non-secret settings (including schema defaults when settings omit
+// a field). Secret fields are never inspected.
+func SettingsCandidateHosts(settings map[string]any, schema json.RawMessage, declaredSecrets []string, excludeLoopback bool) []string {
+	public := NonSecretSettings(settings, schema, declaredSecrets)
+	if len(public) == 0 {
+		return nil
+	}
+	hostFields := map[string]bool{}
+	var doc map[string]any
+	if len(schema) > 0 && json.Unmarshal(schema, &doc) == nil {
+		visitSettingsFields(doc, func(key string, field map[string]any) {
+			if isOperatorHostField(key, field) {
+				hostFields[key] = true
+			}
+		})
+	}
+	keys := make([]string, 0, len(public))
+	for key := range public {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	var out []string
+	seen := map[string]bool{}
+	add := func(raw string, hostField bool) {
+		norm, ok := extractSettingHost(raw, hostField)
+		if !ok || seen[norm] {
+			return
+		}
+		if excludeLoopback && isExplicitLoopbackEntry(norm) {
+			return
+		}
+		seen[norm] = true
+		out = append(out, norm)
+	}
+	for _, key := range keys {
+		val := public[key]
+		hf := hostFields[key] || isOperatorHostField(key, nil)
+		switch v := val.(type) {
+		case string:
+			add(v, hf)
+		case []string:
+			for _, item := range v {
+				add(item, hf)
+			}
+		case []any:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					add(s, hf)
+				}
+			}
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#operatorCandidateCovered
+
+``````
+func operatorCandidateCovered(man Manifest, g Grants, cand string) bool {
+	norm, err := NormalizeOperatorHost(cand)
+	if err != nil {
+		return true
+	}
+	hostSpec := norm
+	if ip, ipErr := netip.ParseAddr(norm); ipErr == nil && ip.Is6() {
+		hostSpec = "[" + ip.String() + "]"
+	}
+	u, parseErr := url.Parse("https://" + hostSpec)
+	if parseErr != nil || u.Hostname() == "" {
+		return true
+	}
+	var declared []string
+	if man.Ether != nil {
+		for _, entry := range man.Ether.Permissions.Network {
+			if !strings.EqualFold(strings.TrimSpace(entry), OperatorNetworkEntry) {
+				declared = append(declared, entry)
+			}
+		}
+	}
+	if u.Port() != "" {
+		return networkAllowedURL(declared, u) || g.allowsLocalURL(u) || g.allowsOperatorURL(u)
+	}
+	return hostAllowed(declared, u.Hostname()) ||
+		localGrantCoversBlockedEntry(declared, norm) ||
+		localGrantCoversBlockedEntry(g.LocalHosts, norm) ||
+		localGrantCoversBlockedEntry(g.OperatorHosts, norm)
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#PendingOperatorHosts
+
+``````
+// PendingOperatorHosts returns distinct unapproved host or host:port entries
+// referenced by a plugin's non-secret settings or recently blocked at runtime
+// for a plugin declaring "operator" in permissions.network.
+func PendingOperatorHosts(man Manifest, g Grants, settings map[string]any, schema json.RawMessage, blocked []string, excludeLoopback bool) []string {
+	if !DeclaresOperatorHosts(man) {
+		return nil
+	}
+	var secrets []string
+	if man.Ether != nil {
+		secrets = man.Ether.Permissions.Secrets
+	}
+	candidates := SettingsCandidateHosts(settings, schema, secrets, excludeLoopback)
+	out := make([]string, 0, len(candidates)+len(blocked))
+	seen := map[string]bool{}
+	for _, cand := range append(candidates, blocked...) {
+		norm, err := NormalizeOperatorHost(cand)
+		if err != nil || seen[norm] {
+			continue
+		}
+		if excludeLoopback && isExplicitLoopbackEntry(norm) {
+			continue
+		}
+		if operatorCandidateCovered(man, g, norm) {
+			continue
+		}
+		seen[norm] = true
+		out = append(out, norm)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#operatorGrantCoversBlockedEntry
+
+``````
+func operatorGrantCoversBlockedEntry(granted []string, blocked string) bool {
+	hostSpec := blocked
+	if ip, err := netip.ParseAddr(blocked); err == nil && ip.Is6() {
+		hostSpec = "[" + ip.String() + "]"
+	}
+	u, err := url.Parse("https://" + hostSpec)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	if u.Port() != "" {
+		return safefetch.TrustedHostMatchesURL(granted, u)
+	}
+	for _, g := range granted {
+		norm, err := NormalizeOperatorHost(g)
+		if err != nil {
+			continue
+		}
+		if norm == blocked {
+			return true
+		}
+		if h, _, splitErr := net.SplitHostPort(norm); splitErr == nil && strings.Trim(h, "[]") == blocked {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*Manager.noteBlockedOperatorHost
+
+``````
+func (m *Manager) noteBlockedOperatorHost(ctx context.Context, pluginID, blocked string) {
+	norm, err := NormalizeOperatorHost(blocked)
+	if err != nil || pluginID == "" {
+		return
+	}
+	if g, gErr := m.store.grants(ctx, pluginID); gErr == nil {
+		if operatorGrantCoversBlockedEntry(g.OperatorHosts, norm) || localGrantCoversBlockedEntry(g.LocalHosts, norm) {
+			return
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.blockedOperator == nil {
+		m.blockedOperator = map[string][]string{}
+	}
+	cur := m.blockedOperator[pluginID]
+	next := make([]string, 0, min(len(cur)+1, maxBlockedOperatorHosts))
+	for _, existing := range cur {
+		if existing != norm {
+			next = append(next, existing)
+		}
+	}
+	next = append(next, norm)
+	if len(next) > maxBlockedOperatorHosts {
+		next = next[len(next)-maxBlockedOperatorHosts:]
+	}
+	m.blockedOperator[pluginID] = next
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*Manager.BlockedOperatorHosts
+
+``````
+// BlockedOperatorHosts returns recently blocked operator-configurable hosts
+// (up to 10 distinct entries) for one plugin, oldest to newest.
+func (m *Manager) BlockedOperatorHosts(pluginID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.blockedOperator[pluginID]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*Manager.pruneBlockedOperatorHosts
+
+``````
+func (m *Manager) pruneBlockedOperatorHosts(pluginID string, granted []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur := m.blockedOperator[pluginID]
+	if len(cur) == 0 {
+		return
+	}
+	kept := cur[:0]
+	for _, b := range cur {
+		if !operatorGrantCoversBlockedEntry(granted, b) {
+			kept = append(kept, b)
+		}
+	}
+	if len(kept) == 0 {
+		delete(m.blockedOperator, pluginID)
+		return
+	}
+	m.blockedOperator[pluginID] = kept
+}
+``````
+
+## Source: internal/plugins/operator_hosts.go#*Manager.clearBlockedOperatorHosts
+
+``````
+func (m *Manager) clearBlockedOperatorHosts(pluginID string) {
+	m.mu.Lock()
+	delete(m.blockedOperator, pluginID)
+	m.mu.Unlock()
+}
+``````
+
 ## Source: internal/plugins/pending.go#ResolverTotal
 
 ``````
@@ -14912,6 +15506,11 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 	var blockedLocal *plugins.BlockedLocalHostError
 	if errors.As(err, &blockedLocal) {
 		writeHostError(w, http.StatusForbidden, "permission_denied", blockedLocal.PluginMessage())
+		return false
+	}
+	var blockedOp *plugins.BlockedOperatorHostError
+	if errors.As(err, &blockedOp) {
+		writeHostError(w, http.StatusForbidden, "permission_denied", blockedOp.PluginMessage())
 		return false
 	}
 	switch {
@@ -22740,7 +23339,7 @@ and special files are refused. Other 7z coder chains are unsupported.
 
 FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they return
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
-Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed.
+Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed. For user-hosted services whose hostname comes from plugin settings, declare `"operator"` in `permissions.network` (never `"*"`); Ether prompts the owner to approve each server address per plugin before requests or stream resolvers admit it.
 Host calls enforce permissions again on every request; revocation is immediate.
 
 ## Per-route call limits and owner ceilings

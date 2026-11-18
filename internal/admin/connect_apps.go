@@ -7,15 +7,38 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	qrcode "github.com/skip2/go-qrcode"
 )
 
 // Protocol identities exposed by the console app chooser.
 var connectableSurfaces = []string{"jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream"}
+
+type connectAdapterMeta struct {
+	Name string `json:"name"`
+	Logo string `json:"logo,omitempty"`
+	Auth string `json:"auth,omitempty"`
+}
+
+func isConnectablePluginAdapter(d frontend.Descriptor) bool {
+	if !strings.HasPrefix(string(d.ID), "plugin:") {
+		return false
+	}
+	if !strings.HasPrefix(d.PathPrefix, "/") || d.PathPrefix == "/" {
+		return false
+	}
+	switch d.Auth {
+	case "", "ether_token", "basic":
+		return true
+	default:
+		return false
+	}
+}
 
 func connectAppUsername(viewer *core.Viewer) string {
 	if viewer == nil {
@@ -74,12 +97,23 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		allowed[s] = true
 	}
 	enabled := map[string]bool{}
+	pluginAdapters := map[string]frontend.Descriptor{}
+	var pluginOrder []string
 	for _, info := range infos {
+		if !info.Enabled {
+			continue
+		}
 		id := string(info.Descriptor.ID)
-		if info.Enabled && (allowed[id] || consoleFrontendPolicy(id).ExternalIdentity) {
+		if allowed[id] || consoleFrontendPolicy(id).ExternalIdentity {
 			enabled[id] = true
+		} else if isConnectablePluginAdapter(info.Descriptor) {
+			enabled[id] = true
+			allowed[id] = true
+			pluginAdapters[id] = info.Descriptor
+			pluginOrder = append(pluginOrder, id)
 		}
 	}
+	sort.Strings(pluginOrder)
 	if r.Method == http.MethodGet {
 		out := make([]string, 0, len(enabled))
 		// The externally managed account frontend appears first in the chooser.
@@ -91,7 +125,25 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 				out = append(out, id)
 			}
 		}
-		writeJSON(w, 200, map[string]any{"apps": out})
+		out = append(out, pluginOrder...)
+		resp := map[string]any{"apps": out}
+		if len(pluginOrder) > 0 {
+			adapters := make(map[string]connectAdapterMeta, len(pluginOrder))
+			for _, id := range pluginOrder {
+				d := pluginAdapters[id]
+				auth := d.Auth
+				if auth == "" {
+					auth = "ether_token"
+				}
+				name := strings.TrimSpace(d.Name)
+				if name == "" {
+					name = id
+				}
+				adapters[id] = connectAdapterMeta{Name: name, Logo: d.Logo, Auth: auth}
+			}
+			resp["adapters"] = adapters
+		}
+		writeJSON(w, 200, resp)
 		return
 	}
 	if !csrfOK(r) {
@@ -130,7 +182,12 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		writeError(w, 503, "unavailable", "app unavailable")
 		return
 	}
-	device := core.Device{ID: surface + "-" + hex.EncodeToString(id[:]), Client: surface, Product: surface}
+	pluginDesc, isPlugin := pluginAdapters[surface]
+	clientName := surface
+	if isPlugin && strings.TrimSpace(pluginDesc.Name) != "" {
+		clientName = strings.TrimSpace(pluginDesc.Name)
+	}
+	device := core.Device{ID: surface + "-" + hex.EncodeToString(id[:]), Client: clientName, Product: clientName}
 	var secret, xtreamUsername, xtreamPassword string
 	if surface == "xtream" {
 		xtreamUsername, xtreamPassword, secret, err = h.deps.IdentityGrants.IssueXtream(r.Context(), viewer.ID, device)
@@ -166,6 +223,15 @@ func (h *Handler) connectApps(w http.ResponseWriter, r *http.Request, viewer *co
 		result["url"] = u.String()
 		result["username"] = strconv.FormatInt(viewer.ID, 10)
 		result["password"] = secret
+	case isPlugin:
+		u.Path = prefix + pluginDesc.PathPrefix
+		result["url"] = u.String()
+		if pluginDesc.Auth == "basic" {
+			result["username"] = connectAppUsername(viewer)
+			result["password"] = secret
+		} else {
+			result["token"] = secret
+		}
 	}
 	qrValue := result["url"]
 	if surface == "webdav" {

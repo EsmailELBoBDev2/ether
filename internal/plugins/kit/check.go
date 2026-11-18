@@ -434,20 +434,47 @@ func relLuminance(r, g, b float64) float64 {
 // recordingHost implements wasm.Host for conformance checking, recording
 // outbound http.fetch hosts and auditing them against manifest permissions.
 type recordingHost struct {
-	mu       sync.Mutex
-	man      plugins.Manifest
-	kv       map[string]string
-	observed map[string]int
-	undecl   map[string]bool
-	deferred int
+	mu               sync.Mutex
+	man              plugins.Manifest
+	operatorDefaults []string
+	kv               map[string]string
+	observed         map[string]int
+	undecl           map[string]bool
+	deferred         int
 }
 
-func newRecordingHost(man plugins.Manifest) *recordingHost {
+func resolvedSettingsSchema(man plugins.Manifest, files map[string][]byte) json.RawMessage {
+	if man.Ether == nil || len(man.Ether.Settings) == 0 {
+		return nil
+	}
+	raw := man.Ether.Settings
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) == nil {
+		if ref, ok := doc["$ref"].(string); ok && ref != "" {
+			if b, exists := files[ref]; exists {
+				raw = b
+			}
+		}
+	}
+	return raw
+}
+
+func newRecordingHost(man plugins.Manifest, files map[string][]byte) *recordingHost {
+	var opDefaults []string
+	if plugins.DeclaresOperatorHosts(man) {
+		schema := resolvedSettingsSchema(man, files)
+		for _, cand := range plugins.SettingsCandidateHosts(nil, schema, man.Ether.Permissions.Secrets, false) {
+			if u, err := url.Parse("https://" + cand); err == nil && u.Hostname() != "" {
+				opDefaults = append(opDefaults, strings.ToLower(u.Hostname()))
+			}
+		}
+	}
 	return &recordingHost{
-		man:      man,
-		kv:       map[string]string{},
-		observed: map[string]int{},
-		undecl:   map[string]bool{},
+		man:              man,
+		operatorDefaults: opDefaults,
+		kv:               map[string]string{},
+		observed:         map[string]int{},
+		undecl:           map[string]bool{},
 	}
 }
 
@@ -557,7 +584,8 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		host := strings.ToLower(u.Hostname())
 		h.observed[host]++
-		if !hostMatches(h.man.Ether.Permissions.Network, host) {
+		if !hostMatches(h.man.Ether.Permissions.Network, host) &&
+			!(plugins.DeclaresOperatorHosts(h.man) && hostMatches(h.operatorDefaults, host)) {
 			h.undecl[host] = true
 			return nil, wasm.Forbidden("undeclared network host " + host)
 		}
@@ -622,7 +650,10 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 func hostMatches(patterns []string, host string) bool {
 	host = strings.ToLower(host)
 	for _, p := range patterns {
-		p = strings.ToLower(p)
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == plugins.OperatorNetworkEntry {
+			continue
+		}
 		if strings.HasPrefix(p, "*.") {
 			if strings.HasSuffix(host, p[1:]) && host != p[2:] {
 				return true
@@ -640,7 +671,7 @@ func checkHostedRuntime(ctx context.Context, rep *Report, man plugins.Manifest, 
 	eng := wasm.NewEngine(nil)
 	defer func() { _ = eng.Close() }()
 
-	host := newRecordingHost(man)
+	host := newRecordingHost(man, files)
 	decl := man.Ether.Runtime
 	var plug *wasm.Plugin
 	var err error

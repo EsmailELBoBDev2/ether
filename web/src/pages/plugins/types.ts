@@ -58,6 +58,7 @@ export interface PluginGrants {
   revoked?: string[];
   lan?: boolean;
   localHosts?: string[];
+  operatorHosts?: string[];
 }
 
 export interface DeclaredPermissions {
@@ -130,8 +131,10 @@ export interface PluginDetail extends PluginSummary {
     grants: PluginGrants;
     needsViewers: boolean;
     needsFolders: boolean;
+    needsOperatorHosts?: boolean;
   };
   blockedLocalHosts?: string[];
+  pendingOperatorHosts?: string[];
   healthDetail: PluginHealth;
   privacy: {
     declaredHosts: string[];
@@ -163,7 +166,9 @@ export interface InstallPreview {
   permissions: string[];
   needsViewers: boolean;
   needsFolders: boolean;
+  needsOperatorHosts?: boolean;
   localHosts?: string[];
+  pendingOperatorHosts?: string[];
   verified: boolean;
   stremioOnly: boolean;
   alreadyInstalled?: boolean;
@@ -325,7 +330,8 @@ export function translatePermissionLine(line: string): string {
   if (
     line.startsWith(CONNECTS_PREFIX) &&
     line !== "Connects to the add-on address you gave" &&
-    line !== "Connects to the add-on it was made from"
+    line !== "Connects to the add-on it was made from" &&
+    line !== "Connects to addresses you approve"
   ) {
     const rest = line.slice(CONNECTS_PREFIX.length);
     return rest.includes(", ")
@@ -350,12 +356,21 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
   const items: GrantItem[] = [];
 
   if (d.network && d.network.length > 0) {
+    const fixed = d.network.filter((h) => h !== "operator");
+    const hasOperator = d.network.includes("operator");
+    let label: string;
+    if (hasOperator && fixed.length === 0) {
+      label = t("Connects to addresses you approve");
+    } else {
+      const parts = hasOperator ? [...fixed, t("addresses you approve")] : fixed;
+      label =
+        parts.length === 1
+          ? t("Connects to {host}", { host: parts[0]! })
+          : t("Connects to {hosts}", { hosts: parts.join(", ") });
+    }
     items.push({
       key: "network",
-      label:
-        d.network.length === 1
-          ? t("Connects to {host}", { host: d.network[0]! })
-          : t("Connects to {hosts}", { hosts: d.network.join(", ") }),
+      label,
       revocable: true,
     });
   }

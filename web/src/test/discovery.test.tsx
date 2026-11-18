@@ -161,47 +161,62 @@ describe("Watchlists (Viewers)", () => {
         }),
       ),
     );
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Unsaved changes" })).toBeNull(),
+    );
   });
 
-  it("shows Plex watchlist RSS accounts and syncs on demand", async () => {
-    const { fake } = renderAppWith("/services/watchlists", discoveryRoutes());
-    const friends = await screen.findByLabelText("Friends watchlist RSS URL", {}, WAIT);
-    expect(screen.queryByText(/Paste the RSS links from Plex/)).toBeNull();
-    fireEvent.change(friends, { target: { value: "https://rss.plex.tv/friends" } });
+  it("saves Plex Friends' Watchlist RSS URLs, redacts them on reload, and shows shared-row status", async () => {
+    const { fake } = renderAppWith("/viewers", discoveryRoutes({ enabled: true }));
+    const friendsRss = await screen.findByLabelText("Friends' Watchlist RSS", {}, WAIT);
+    expect(
+      screen.getByText(
+        /Plex doesn't say which friend added what, so it shows as a shared “Your friends want to watch” row\./,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.change(friendsRss, {
+      target: { value: "https://rss.plex.tv/11111111-2222-3333-4444-555555555555" },
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(puts(fake, "/discovery/settings")).toContainEqual(
-        expect.objectContaining({ plexFriendsRssUrl: "https://rss.plex.tv/friends" }),
+        expect.objectContaining({
+          enabled: true,
+          plexFriendsRssUrl: "https://rss.plex.tv/11111111-2222-3333-4444-555555555555",
+        }),
       ),
     );
-    expect(await screen.findByText(/3 titles read · 1 not in TMDB/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Sync RSS now" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Unsaved changes" })).toBeNull(),
+    );
+    expect(screen.getByLabelText("Friends' Watchlist RSS")).toHaveValue("••••");
+    expect(
+      screen.getByText("Saved. Leave as is to keep it, or type a new value to replace it."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/3 titles in set/)).toBeInTheDocument();
+    expect(screen.getByText(/1 unmatched title/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Read RSS feeds now/ }));
     await waitFor(() => expect(calls(fake, "POST", "/discovery/rss/sync")).toHaveLength(1));
-    expect(await screen.findByText(/Plex rate-limited the RSS feed/)).toBeInTheDocument();
+    expect(await screen.findByText(/4 titles in set/)).toBeInTheDocument();
+    expect(screen.getByText(/0 unmatched titles/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Plex asked Ether to slow down. Ether will try again."),
+    ).toBeInTheDocument();
   });
+});
 
-  it("clears a saved RSS URL without putting the masked value back", async () => {
-    const { fake } = renderAppWith(
-      "/services/watchlists",
-      discoveryRoutes({
-        extra: {
-          plexFriendsRssUrl: "••••",
-          plexFriendsRssStatus: { configured: true, imported: 2 },
-        },
-      }),
-    );
-    const friends = await screen.findByLabelText("Friends watchlist RSS URL", {}, WAIT);
-    expect(friends).toHaveValue("••••");
-    fireEvent.focus(friends);
-    fireEvent.change(friends, { target: { value: "" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
-    await waitFor(() =>
-      expect(puts(fake, "/discovery/settings")).toContainEqual(
-        expect.objectContaining({ plexFriendsRssUrl: "" }),
-      ),
-    );
+describe("Warm up new arrivals (Cache › Preloading)", () => {
+  it("keeps the prefetch toggle with the cache, off until monitoring is on", async () => {
+    renderAppWith("/cache/preloading", discoveryRoutes());
+    const warm = await screen.findByLabelText("Warm up new arrivals", {}, WAIT);
+    expect(warm).toBeDisabled();
+    expect(warm).not.toBeChecked();
+    expect(screen.queryByLabelText("Watchlist monitoring")).toBeNull();
   });
+});
 
+describe("A viewer's watchlist (viewer profile › Watchlist)", () => {
   it("lists watched-for titles and syncs, checks and removes them", async () => {
     const { fake } = renderAppWith(
       "/viewers/2/lists",

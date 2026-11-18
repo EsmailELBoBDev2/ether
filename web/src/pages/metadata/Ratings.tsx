@@ -24,7 +24,6 @@ import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { apiFetch, errorMessage } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
-import { nativeSelect } from "./shared";
 import { MetadataWorkspace } from "./MetadataWorkspace";
 
 export type RatingSettings = {

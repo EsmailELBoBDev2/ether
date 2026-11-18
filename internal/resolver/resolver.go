@@ -1765,7 +1765,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 			continue
 		}
-		langOK := audioAcceptable(rel.Info, accepted)
+		langOK := audioAcceptable(rel.Info, accepted, t)
 		langWanted := langOK && foreignTitleWantedAudio(rel.Info, rel.SourceLanguage, wanted, t)
 		lowBitrate := bitrateScore(sizedForEpisode(rel), t) < 0
 		starved := lowBitrate || upscales[ri]

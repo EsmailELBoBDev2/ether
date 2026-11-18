@@ -134,13 +134,30 @@ func acceptedAudio(profile core.QualityProfile, user *core.User, serverLang stri
 
 // audioAcceptable reports whether a release's declared audio fits the
 // accepted languages. A release that declares nothing is in the title's
-// original language as far as anyone knows, and MULTI / DUAL carry more
-// than one track (including the original language), so all three are
-// acceptable; so is a regional variant of an accepted language (Castilian
-// for a Latino preference).
-func audioAcceptable(info core.ReleaseInfo, accepted []string) bool {
-	if len(accepted) == 0 || len(info.Languages) == 0 {
+// original language as far as anyone knows, so it is acceptable when that
+// language is; MULTI / DUAL carry more than one track and are acceptable;
+// so is a regional variant of an accepted language (Castilian for a Latino
+// preference).
+func audioAcceptable(info core.ReleaseInfo, accepted []string, t *core.Title) bool {
+	if len(accepted) == 0 {
 		return true
+	}
+	if len(info.Languages) == 0 {
+		// An untagged release is presumed to carry the title's original
+		// language. When the profile accepts only other languages (an
+		// English-dub profile on an anime), it is not acceptable, so a
+		// declared dub outranks it at any resolution; it still plays as a
+		// fallback when no acceptable release exists.
+		orig := titleOriginalLanguage(t)
+		if orig == "" {
+			return true
+		}
+		for _, want := range accepted {
+			if releaseparse.LanguageMatch(orig, want) != releaseparse.LanguageNoMatch {
+				return true
+			}
+		}
+		return false
 	}
 	for _, l := range info.Languages {
 		if l == releaseparse.LanguageMulti || l == releaseparse.LanguageDual {

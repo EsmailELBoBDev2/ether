@@ -531,7 +531,7 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
 		auth = source.AuthenticationFeatures()
 	}
-	return object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []string{"movie", "show"}, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	return object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 }
 func (i *instance) negotiate(w http.ResponseWriter, r *http.Request) {
 	var b struct {
@@ -565,6 +565,11 @@ func (i *instance) grantScope(ctx context.Context, token string, device frontend
 
 func (i *instance) requestCapabilities(r *http.Request) object {
 	c := i.capabilities()
+	// A signed-in viewer also sees the plugin kinds they can open; a
+	// request without a viewer never learns plugin library names.
+	if v, _, err := i.viewer(r); err == nil && v != nil {
+		c["searchKinds"], _ = i.searchKinds(r, v)
+	}
 	if i.host.SecureOrigins != nil {
 		if origins := i.host.SecureOrigins(r.Context(), r); len(origins) > 0 {
 			c["secureOrigins"] = origins

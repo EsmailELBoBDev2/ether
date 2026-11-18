@@ -762,13 +762,21 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "invalid_direction")
 		return
 	}
+	// Kind is one of searchKinds: movie, show, or a plugin kind the viewer
+	// can see ("<pluginID>/<kindKey>"), matched by its library.
+	var kindLibrary frontend.LibraryID
 	switch b.Kind {
 	case "":
 	case "movie", "show":
 		iq.Types = []frontend.MediaType{frontend.MediaType(b.Kind)}
 	default:
-		problem(w, 400, "request", "invalid_kind")
-		return
+		_, libs := i.searchKinds(r, v)
+		lib, ok := libs[b.Kind]
+		if !ok {
+			problem(w, 400, "request", "invalid_kind")
+			return
+		}
+		kindLibrary = lib
 	}
 	if b.Cursor != "" {
 		problem(w, 409, "conflict", "cursor_expired")
@@ -780,6 +788,11 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	}
 	n = min(n, 100)
 	iq.Limit = n
+	if kindLibrary != 0 {
+		// Plugin items are filtered by library after the search, so ask
+		// for the widest page and trim.
+		iq.Limit = 100
+	}
 	var p frontend.SearchPage
 	switch b.Mode {
 	case "descriptive":
@@ -798,6 +811,15 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		fail(w, e, r)
 		return
+	}
+	if kindLibrary != 0 {
+		kept := p.Page.Items[:0]
+		for _, item := range p.Page.Items {
+			if item.LibraryID == kindLibrary && len(kept) < n {
+				kept = append(kept, item)
+			}
+		}
+		p.Page.Items = kept
 	}
 	ts, e := i.titles(r, v, t, p.Page.Items)
 	if e != nil {
@@ -910,4 +932,31 @@ func descriptiveWire(status *frontend.DescriptiveSearchStatus) object {
 		retry = object{"allowed": true, "afterSeconds": seconds}
 	}
 	return object{"state": state, "retry": retry}
+}
+
+// searchKinds lists the result kinds a viewer can filter search by: movies,
+// shows, and every plugin library kind the viewer can open. Plugin kinds are
+// keyed "<pluginID>/<kindKey>" and labelled with their library's name.
+func (i *instance) searchKinds(r *http.Request, v *frontend.Viewer) ([]object, map[string]frontend.LibraryID) {
+	kinds := []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}
+	libs := map[string]frontend.LibraryID{}
+	if v == nil {
+		return kinds, libs
+	}
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return kinds, libs
+	}
+	for _, view := range views {
+		if view.PluginID == "" || view.KindKey == "" || view.LibraryID == 0 {
+			continue
+		}
+		id := view.PluginID + "/" + view.KindKey
+		if _, seen := libs[id]; seen {
+			continue
+		}
+		libs[id] = view.LibraryID
+		kinds = append(kinds, object{"id": id, "label": view.Name})
+	}
+	return kinds, libs
 }

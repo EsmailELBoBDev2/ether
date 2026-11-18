@@ -451,6 +451,13 @@ function Shell() {
   const location = useLocation();
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const wideSearch = useMediaQuery("(min-width: 640px)");
+  const firstRunSetupRef = useRef(false);
+  if (location.pathname !== "/setup") {
+    firstRunSetupRef.current = false;
+  } else if (!boot.setupComplete) {
+    firstRunSetupRef.current = true;
+  }
+  const hideSetupNav = location.pathname === "/setup" && firstRunSetupRef.current;
   const {
     descriptors: navDescriptors,
     loading: registryLoading,
@@ -460,7 +467,6 @@ function Shell() {
   const remoteSession = boot.authRequired && Boolean(getToken());
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether";
-  const isSetup = location.pathname === "/setup";
   const signOut = () => {
     // End the session on the server too, so a copy cannot outlive
     // sign-out; leave the browser either way.
@@ -487,9 +493,9 @@ function Shell() {
       }),
   };
   return (
-    <div className={isSetup ? "ether-shell ether-setup contents" : "ether-shell contents"}>
+    <div className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}>
       <AppShell
-        groups={isSetup ? [] : buildNavigation(navDescriptors)}
+        groups={hideSetupNav ? [] : buildNavigation(navDescriptors)}
         pathname={location.pathname}
         navigationMode="sidebar"
         linkRender={linkRender}
@@ -505,7 +511,7 @@ function Shell() {
         headerMiddle={
           wideSearch ? (
             <CommandSearch />
-          ) : isSetup ? (
+          ) : hideSetupNav ? (
             <span
               className="inline-flex min-w-0 max-w-full items-center gap-2 py-1 text-sm font-medium text-fg"
               title={serverName}

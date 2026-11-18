@@ -200,7 +200,7 @@ function PlexAccount({
     <>
       <>
         <StatusRow
-          state={claimed ? "reachable" : "unknown"}
+          state={claimed ? "reachable" : "warning"}
           title={
             claimed
               ? owner

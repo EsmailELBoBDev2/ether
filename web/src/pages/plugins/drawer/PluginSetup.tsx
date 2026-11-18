@@ -4,12 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { TestButton, type TestState } from "../../../components/fields";
 import { Section } from "../../../components/layout";
 import { useViewers } from "../../../components/pickers";
+import { SaveBarHost } from "../../../components/SaveBar";
 import { SettingsRow } from "../../../components/SettingsRow";
 import { t } from "../../../i18n";
 import { useLocale } from "../../../i18n/react";
 import { ApiError, apiFetch, errorMessage } from "../../../lib/api";
 import { SchemaGroups } from "../../settings/SchemaForm";
 import { FolderGrantsPicker, LocalHostGrantsPicker, ViewerGrantsPicker } from "../PermissionSheet";
+import { RuntimeLimitsEditor } from "../RuntimeLimitsEditor";
 import { SearchSetting } from "./SearchSetting";
 import { AddonSettings } from "./AddonSettings";
 import {
@@ -23,7 +25,7 @@ import {
 
 /**
  * How the plugin is set up: its own settings, who and what it may use,
- * and, out of the way, auto-update and the sites it may reach.
+ * and, out of the way, auto-update, permissions and runtime limits.
  */
 export function PluginSetup({
   detail,
@@ -171,6 +173,9 @@ export function PluginSetup({
   const grantItems = buildGrantItems(detail).filter((g) => g.revocable);
   const access = detail.permissions.needsViewers || detail.permissions.needsFolders;
   const canReachLocalHosts = detail.manifest.ether?.runtime?.kind !== "data";
+  const hasRuntimeLimits = Boolean(
+    detail.manifest.ether?.runtime?.kind && detail.manifest.ether.runtime.kind !== "data",
+  );
   // Updates come from where the plugin was installed; Studio builds and
   // add-ons that always follow their link have nothing to auto-update.
   const updatable = detail.sourceKind !== "studio" && !detail.stremioOnly;
@@ -249,7 +254,7 @@ export function PluginSetup({
         </div>
       ) : null}
 
-      {updatable || grantItems.length ? (
+      {updatable || grantItems.length || hasRuntimeLimits ? (
         <section className="overflow-hidden rounded-xl border border-border bg-surface">
           <button
             type="button"
@@ -302,6 +307,21 @@ export function PluginSetup({
                   />
                 );
               })}
+              {hasRuntimeLimits ? (
+                <SaveBarHost>
+                  <RuntimeLimitsEditor
+                    key={detail.id}
+                    plugin={detail.id}
+                    limits={detail.runtimeLimits}
+                    requested={detail.manifest.ether?.runtime?.limits}
+                    flush
+                    onSaved={() => {
+                      void onDetail();
+                      onChanged();
+                    }}
+                  />
+                </SaveBarHost>
+              ) : null}
             </div>
           ) : null}
         </section>

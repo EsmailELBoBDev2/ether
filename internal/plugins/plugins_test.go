@@ -815,3 +815,124 @@ func TestWaitingSidecarDoesNotAutoDisableOnHealthTicks(t *testing.T) {
 		t.Fatalf("unexpected waiting sidecar health: %+v", h)
 	}
 }
+
+type stubCatalogueIcon struct {
+	icons map[string]string
+}
+
+func (stubCatalogueIcon) ServeHTTP(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+func (stubCatalogueIcon) Resolve(context.Context, string, string) (CatalogueArtifact, error) {
+	return CatalogueArtifact{}, ErrNotFound
+}
+func (s stubCatalogueIcon) EntryIcon(id string) string { return s.icons[id] }
+
+func TestPackagedIconServedAndResolvedAfterInstall(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="15" fill="#412095"/><path d="m27 21 14 9.5L27 40z" fill="#fff"/></svg>`)
+	man := map[string]any{
+		"id": "community.example.iconpkg", "version": "1.0.0", "name": "Icon Plugin",
+		"ether": map[string]any{
+			"protocol": 1, "kind": "extension", "summary": "Plugin with packaged icon.",
+			"icon":         "assets/icon.svg",
+			"capabilities": []string{"ui"},
+			"runtime":      map[string]any{"kind": "hosted", "entry": "plugin.js"},
+			"contributes": map[string]any{
+				"pages": []any{map[string]any{"key": "home", "label": "Home", "route": "/ether/view/home"}},
+			},
+		},
+	}
+	manRaw, err := json.Marshal(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"manifest.json":   manRaw,
+		"plugin.js":       []byte("export default {};\n"),
+		"assets/icon.svg": svg,
+	}
+	files["digest"] = []byte(PkgDigest(files) + "\n")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for k, v := range files {
+		w, err := zw.Create(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	prev, err := env.m.PreviewInstall(ctx, Source{Kind: "pkg", Pkg: buf.Bytes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prev.Icon, "data:image/png;base64,") {
+		t.Fatalf("expected rasterized preview icon data URI, got %q", prev.Icon)
+	}
+	if _, err := env.m.Install(ctx, prev, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := env.m.Handler()
+	listReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	listRec := httptest.NewRecorder()
+	srv.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", listRec.Code)
+	}
+	var listBody struct {
+		Plugins []Summary `json:"plugins"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(listBody.Plugins) != 1 {
+		t.Fatalf("plugins len = %d", len(listBody.Plugins))
+	}
+	gotIcon := listBody.Plugins[0].Icon
+	if !strings.HasPrefix(gotIcon, "/ether/api/plugins/community.example.iconpkg/icon?v=1.0.0") {
+		t.Fatalf("expected served icon URL, got %q", gotIcon)
+	}
+
+	iconReq := httptest.NewRequest(http.MethodGet, "/community.example.iconpkg/icon", nil)
+	iconRec := httptest.NewRecorder()
+	srv.ServeHTTP(iconRec, iconReq)
+	if iconRec.Code != http.StatusOK {
+		t.Fatalf("icon status = %d", iconRec.Code)
+	}
+	if ct := iconRec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("icon Content-Type = %q, want image/png", ct)
+	}
+	if !bytes.HasPrefix(iconRec.Body.Bytes(), []byte("\x89PNG")) {
+		t.Fatal("expected PNG payload from /icon")
+	}
+
+	// Missing packaged icon falls back to catalogue EntryIcon when available, never raw relative path.
+	env.m.SetCatalogue(stubCatalogueIcon{icons: map[string]string{
+		"community.example.nofile": "https://catalogue.example/icons/nofile.svg",
+	}})
+	noFileMan := []byte(`{"id":"community.example.nofile","version":"1.0.0","name":"No File","ether":{"protocol":1,"kind":"extension","summary":"Missing local icon.","icon":"assets/icon.svg","capabilities":["ui"],"runtime":{"kind":"hosted","entry":"plugin.js"},"contributes":{"pages":[{"key":"home","label":"Home","route":"/ether/view/home"}]}}}`)
+	_, err = env.m.Install(ctx, &Preview{
+		Manifest:    mustParseTestManifest(t, noFileMan),
+		manifestRaw: noFileMan,
+		files:       map[string][]byte{"manifest.json": noFileMan, "plugin.js": []byte("export default {};")},
+		source:      Source{Kind: "pkg", ID: "community.example.nofile"},
+	}, InstallOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listRec2 := httptest.NewRecorder()
+	srv.ServeHTTP(listRec2, httptest.NewRequest(http.MethodGet, "/community.example.nofile", nil))
+	var detail Detail
+	if err := json.Unmarshal(listRec2.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Icon != "https://catalogue.example/icons/nofile.svg" {
+		t.Fatalf("expected catalogue icon fallback, got %q", detail.Icon)
+	}
+}

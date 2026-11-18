@@ -15,11 +15,13 @@ export function RuntimeLimitsEditor({
   plugin = "",
   limits,
   requested,
+  flush = false,
   onSaved,
 }: {
   plugin?: string;
   limits?: RuntimeLimits;
   requested?: Partial<RuntimeLimits>;
+  flush?: boolean;
   onSaved?: () => void;
 }) {
   const [policy, setPolicy] = useState<Policy | null>(null);
@@ -130,7 +132,11 @@ export function RuntimeLimitsEditor({
   }
   return (
     <>
-      <div className="space-y-4 rounded-xl border border-border bg-surface p-4">
+      <div
+        className={
+          flush ? "space-y-4 px-5 py-4" : "space-y-4 rounded-xl border border-border bg-surface p-4"
+        }
+      >
         {plugin ? (
           <>
             <h3 className="text-sm font-medium">{t("Limits")}</h3>

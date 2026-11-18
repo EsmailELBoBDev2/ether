@@ -54,8 +54,8 @@ type DrawerTab = "overview" | "adds" | "setup" | "activity";
 
 /**
  * One installed plugin. The header carries what you reach for every time
- * (health, on/off, Studio, and the ⋯ menu for updates, undo and removal);
- * the tabs are Overview, what it adds, Setup and Activity.
+ * (health, on/off, and the ⋯ menu for Studio, updates, undo and removal);
+ * the tabs are Overview, what it adds, Settings and Activity.
  */
 export function InstalledPluginDrawer({
   pluginId,
@@ -298,26 +298,6 @@ export function InstalledPluginDrawer({
       headerActions={
         detail ? (
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label={t("Open in Studio")}
-              disabled={busy === "studio"}
-              onClick={() => {
-                setBusy("studio");
-                void openInStudio(detail.id)
-                  .then((to) => navigate(to))
-                  .catch((e) => {
-                    setMutationError(e);
-                    setBusy(null);
-                  });
-              }}
-            >
-              <Code2 size={14} />
-              <span className="hidden sm:inline">
-                {busy === "studio" ? t("Opening…") : t("Open in Studio")}
-              </span>
-            </Button>
             <label
               className="ml-1 hidden text-xs font-medium text-fg-muted sm:inline"
               htmlFor="drawer-plugin-enabled"
@@ -350,6 +330,21 @@ export function InstalledPluginDrawer({
               }
             >
               <div role="menu" aria-label={t("More actions")}>
+                <MenuItem
+                  icon={<Code2 size={14} />}
+                  label={busy === "studio" ? t("Opening…") : t("Open in Studio")}
+                  disabled={busy === "studio"}
+                  onClick={() => {
+                    setMenu(false);
+                    setBusy("studio");
+                    void openInStudio(detail.id)
+                      .then((to) => navigate(to))
+                      .catch((e) => {
+                        setMutationError(e);
+                        setBusy(null);
+                      });
+                  }}
+                />
                 {detail.sourceKind !== "studio" && !detail.stremioOnly ? (
                   <MenuItem
                     icon={<RefreshCw size={14} />}

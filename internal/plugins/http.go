@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"github.com/braedonsaunders/ether/internal/viewspec"
 )
@@ -26,6 +27,7 @@ func (m *Manager) Handler() http.Handler {
 	mux.HandleFunc("POST /install/preview", m.handlePreview)
 	mux.HandleFunc("POST /install", m.handleInstall)
 	mux.HandleFunc("GET /{id}", m.handleGet)
+	mux.HandleFunc("GET /{id}/icon", m.handleIcon)
 	mux.HandleFunc("GET /runtime-limits", m.handleRuntimeLimits)
 	mux.HandleFunc("PUT /runtime-limits", m.handleRuntimeLimits)
 	mux.HandleFunc("GET /{id}/jobs", m.handleActionJobs)
@@ -119,7 +121,7 @@ func (m *Manager) summary(r Record, h Health) Summary {
 		}
 	}
 	if r.Manifest.IsStremioOnly() {
-		s.Summary, s.Icon = r.Manifest.Description, r.Manifest.Logo
+		s.Summary = r.Manifest.Description
 		for _, c := range r.Manifest.EffectiveEther().Capabilities {
 			s.Capabilities = append(s.Capabilities, string(c))
 		}
@@ -132,11 +134,11 @@ func (m *Manager) summary(r Record, h Health) Summary {
 				s.Summary = v
 			}
 		}
-		s.Icon = r.Manifest.Ether.Icon
 		for _, c := range r.Manifest.Ether.Capabilities {
 			s.Capabilities = append(s.Capabilities, string(c))
 		}
 	}
+	s.Icon = m.resolveIconURL(context.Background(), r)
 	// Plugin copy is often a "$t:" key; owners see the plugin's own text.
 	if key, ok := strings.CutPrefix(s.Summary, "$t:"); ok {
 		s.Summary = r.Manifest.Description
@@ -145,6 +147,67 @@ func (m *Manager) summary(r Record, h Health) Summary {
 		}
 	}
 	return s
+}
+
+func isHTTPURL(raw string) bool {
+	return strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://")
+}
+
+func (m *Manager) resolveIconURL(ctx context.Context, r Record) string {
+	if r.Manifest.Ether != nil {
+		icon := strings.TrimSpace(r.Manifest.Ether.Icon)
+		if isHTTPURL(icon) {
+			return icon
+		}
+		if icon != "" && !unsafePath(icon) && m.store.hasFile(ctx, r.ID, r.Version, icon) {
+			rev := r.Version
+			if !r.UpdatedAt.IsZero() {
+				rev += "-" + strconv.FormatInt(r.UpdatedAt.Unix(), 10)
+			}
+			return "/ether/api/plugins/" + url.PathEscape(r.ID) + "/icon?v=" + url.QueryEscape(rev)
+		}
+	} else if logo := strings.TrimSpace(r.Manifest.Logo); isHTTPURL(logo) {
+		return logo
+	}
+	if cat, ok := m.getCatalogue().(interface{ EntryIcon(string) string }); ok {
+		if catIcon := strings.TrimSpace(cat.EntryIcon(r.ID)); isHTTPURL(catIcon) {
+			return catIcon
+		}
+	}
+	return ""
+}
+
+func (m *Manager) handleIcon(w http.ResponseWriter, r *http.Request) {
+	rec, err := m.store.record(r.Context(), r.PathValue("id"))
+	if err != nil || rec.Manifest.Ether == nil {
+		http.NotFound(w, r)
+		return
+	}
+	iconPath := strings.TrimSpace(rec.Manifest.Ether.Icon)
+	if iconPath == "" || isHTTPURL(iconPath) || unsafePath(iconPath) {
+		http.NotFound(w, r)
+		return
+	}
+	raw, ok := m.store.file(r.Context(), rec.ID, rec.Version, iconPath)
+	if !ok || len(raw) == 0 || m.iconRaster == nil {
+		http.NotFound(w, r)
+		return
+	}
+	data, ct, err := m.iconRaster.Rasterize(
+		r.Context(),
+		"plugin-icon:"+rec.ID+":"+digestOf(raw),
+		raw,
+		artwork.RasterOptions{Width: 128, Height: 128, Format: "png"},
+	)
+	if err != nil || len(data) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	_, _ = w.Write(data)
 }
 
 // Detail is the plugin drawer payload: overview, permissions, health, the

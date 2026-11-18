@@ -442,4 +442,60 @@ describe("Server › Plugins (WS10a)", () => {
     renderPlugins("/plugins/marketplace");
     expect(await screen.findByText("Could not reach the marketplace")).toBeTruthy();
   });
+
+  it("replaces card Open in Studio with Configure, keeps Open in Studio in ⋯, moves Limits behind More options, and avoids sliced initials on missing icons", async () => {
+    customIntercept = async (url, init) => {
+      if (url.pathname === "/ether/api/plugins" && (!init?.method || init.method === "GET")) {
+        const res = await fakeServer.fetch(url.toString(), init);
+        const data = (await res.json()) as { plugins: Record<string, unknown>[] };
+        data.plugins = data.plugins.map((p) =>
+          p.id === "community.plutotv.ether"
+            ? { ...p, icon: "https://broken.example.invalid/404.png" }
+            : p,
+        );
+        return Response.json(data);
+      }
+      return null;
+    };
+
+    renderPlugins("/plugins");
+    const plutoCard = await screen.findByRole("article", { name: "Pluto TV" });
+    const dubCard = screen.getByRole("article", { name: "Dub language" });
+
+    // Card faces show Configure, never Open in Studio.
+    expect(screen.queryByRole("button", { name: /Open in Studio/i })).toBeNull();
+    expect(within(plutoCard).getByRole("button", { name: "Configure" })).toBeTruthy();
+    const dubConfigure = within(dubCard).getByRole("button", { name: "Configure" });
+
+    // A 404 icon falls back to the centred glyph without two-letter initials ("PT"), and cards without icons show no initials ("DL").
+    const brokenImg = plutoCard.querySelector("img");
+    expect(brokenImg).not.toBeNull();
+    fireEvent.error(brokenImg!);
+    expect(within(plutoCard).queryByText("PT")).toBeNull();
+    expect(within(dubCard).queryByText("DL")).toBeNull();
+
+    // Clicking Configure on a hosted plugin opens its drawer; Overview has no Limits table; Open in Studio lives in ⋯.
+    fireEvent.click(dubConfigure);
+    const tabs = await screen.findByRole("tablist", { name: "Plugin sections" });
+    expect(screen.queryByRole("button", { name: "Open in Studio" })).toBeNull();
+    expect(screen.queryByText("Memory (MiB)")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Open in Studio" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+
+    // Limits appear in Settings only after opening More options.
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Settings" }));
+    expect(await screen.findByRole("button", { name: "More options" })).toBeTruthy();
+    expect(screen.queryByText("Memory (MiB)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    expect(await screen.findByText("Memory (MiB)")).toBeTruthy();
+
+    // Marketplace cards without icons show no two-letter initials.
+    cleanup();
+    customIntercept = null;
+    renderPlugins("/plugins/marketplace");
+    expect(await screen.findByText("Local folders")).toBeTruthy();
+    expect(screen.queryByText("LF")).toBeNull();
+  });
 });

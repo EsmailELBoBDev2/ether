@@ -337,6 +337,7 @@ export function CatalogueTab({
   }
 
   const isSelectedInstalled = Boolean(selected?.installed);
+  const selectedIcon = selected?.icon || preview?.icon;
 
   return (
     <div className="space-y-6">
@@ -461,12 +462,23 @@ export function CatalogueTab({
                 className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-surface p-4 text-left transition-colors hover:border-border-strong hover:bg-surface-hover"
               >
                 <div className="flex items-start gap-3.5">
-                  <Artwork
-                    src={entry.icon}
-                    alt={entry.name}
-                    className="h-11 w-11 shrink-0 rounded-lg"
-                    icon={kindIcon(entry.kind, 18)}
-                  />
+                  {entry.icon ? (
+                    <Artwork
+                      src={entry.icon}
+                      alt={entry.name}
+                      title=""
+                      className="size-11 shrink-0 rounded-lg bg-bg-subtle"
+                      imgClassName="object-contain"
+                      icon={kindIcon(entry.kind, 20)}
+                    />
+                  ) : (
+                    <span
+                      aria-hidden
+                      className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+                    >
+                      {kindIcon(entry.kind, 22)}
+                    </span>
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="truncate text-sm font-semibold text-fg">{entry.name}</span>
@@ -552,12 +564,23 @@ export function CatalogueTab({
             ) : null}
 
             <div className="flex items-start gap-3.5 rounded-xl border border-border bg-bg-subtle p-4">
-              <Artwork
-                src={selected.icon}
-                alt={selected.name}
-                className="h-12 w-12 shrink-0 rounded-lg"
-                icon={kindIcon(selected.kind, 20)}
-              />
+              {selectedIcon ? (
+                <Artwork
+                  src={selectedIcon}
+                  alt={selected.name}
+                  title=""
+                  className="size-12 shrink-0 rounded-lg bg-bg-subtle"
+                  imgClassName="object-contain"
+                  icon={kindIcon(selected.kind, 20)}
+                />
+              ) : (
+                <span
+                  aria-hidden
+                  className="flex size-12 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"
+                >
+                  {kindIcon(selected.kind, 22)}
+                </span>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-semibold text-fg">{selected.name}</h3>

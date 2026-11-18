@@ -1003,6 +1003,7 @@ export function createPluginsMock(): {
       return {
         manifest: catMatch.manifest,
         summary: catMatch.item.summary,
+        icon: catMatch.item.icon,
         permissions: catMatch.item.permissionLines ?? [],
         needsViewers,
         needsFolders,
@@ -1232,13 +1233,14 @@ export function createPluginsMock(): {
       const id = man.id || "community.example.preview";
       const name = man.name || "Preview plugin";
       const declared = (man.ether?.permissions ?? {}) as { network?: string[] };
+      const rawIcon = (prev as { icon?: string }).icon ?? man.ether?.icon;
       const detail: PluginDetail = {
         id,
         name,
         version: man.version || "1.0.0",
         kind: man.ether?.kind ?? "extension",
         summary: man.ether?.summary ?? "A plugin from a link",
-        icon: man.ether?.icon,
+        icon: rawIcon && /^(https?:|data:|\/)/.test(rawIcon) ? rawIcon : undefined,
         enabled: true,
         verified: prev.verified,
         shadow: Boolean(req.shadow),

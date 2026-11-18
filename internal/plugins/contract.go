@@ -777,6 +777,7 @@ type CatalogueArtifact struct {
 	Version      string
 	URL          string
 	SHA256       string
+	Icon         string
 	Kind         Kind
 	Permissions  Permissions
 	Capabilities []Capability

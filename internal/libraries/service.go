@@ -303,6 +303,14 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 	if err := validatePresentations(decl.Present); err != nil {
 		return core.Library{}, err
 	}
+	// A plugin library that declares video for the other apps also shows in
+	// Vela unless the plugin says otherwise, set once when the library is
+	// created; the owner can switch it off in Show in apps.
+	if t := inferVelaType(decl.Present); t != "" {
+		decl.Present.Vela = &struct {
+			Type string `json:"type"`
+		}{Type: t}
+	}
 	existing, err := s.libraryForPluginKind(ctx, pluginID, kindKey)
 	if err == nil {
 		return existing, nil

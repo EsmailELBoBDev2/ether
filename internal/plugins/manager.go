@@ -742,6 +742,12 @@ func redactValue(v any) any {
 // from 1s to 5 minutes, and five failures in ten minutes disables the
 // plugin with a console notice.
 func (m *Manager) recordFailure(ctx context.Context, pluginID, reason string, restart bool) {
+	// A cancelled call (Ether shutting down or restarting the plugin, or a
+	// caller that stopped waiting) says nothing about the plugin; counting it
+	// switched plugins off on every restart that interrupted a sync.
+	if errors.Is(ctx.Err(), context.Canceled) || strings.Contains(reason, context.Canceled.Error()) {
+		return
+	}
 	// A timed-out call still needs its health failure persisted.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()

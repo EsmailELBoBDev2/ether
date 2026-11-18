@@ -20,19 +20,14 @@ type ImageGrantRequest struct {
 	Image      Image
 }
 
-// ImageGrants issues and validates short-lived opaque image capabilities.
+// ImageGrants issues and validates signed, stateless opaque image capabilities.
 // Serve requires a capability, even when the client cannot send account tokens.
+// Revoke is retained as a documented no-op for callers; serve-time checks
+// enforce viewer status and current item/channel/image policy on every read.
 type ImageGrants interface {
 	Issue(context.Context, ImageGrantRequest) (string, error)
 	Revoke(context.Context, string, string) error
 	Serve(http.ResponseWriter, *http.Request, string)
-}
-
-// ImageGrantBucket reports the current stateless image-grant window so a
-// cached response rotates its ETag before embedded image URLs expire or after
-// a grant revocation.
-type ImageGrantBucket interface {
-	GrantBucket() string
 }
 
 // ImageBatchRequest requests primary artwork for a page of items. At most 50
@@ -99,7 +94,7 @@ type ImagePageRequest struct {
 }
 
 // ImagePageSigner is the list path for image URLs. Serve still rechecks the
-// credential, expiry, revocation and current artwork policy.
+// active viewer and current artwork policy on every read.
 type ImagePageSigner interface {
 	SignPage(context.Context, ImagePageRequest) ([]ImageBatchItem, error)
 }
@@ -112,10 +107,8 @@ type ImagePageRenewal struct {
 	Items      []ImageBatchItem
 }
 
-// ImagePageRenewer keeps a cached listing's image URLs valid past the page
-// grant lifetime: each renewal starts a full lifetime for Credential. It
-// authorizes nothing by itself; Serve still rechecks the credential,
-// expiry, revocation and current artwork policy.
+// ImagePageRenewer is an optional listing-cache extension for implementations
+// whose page image tokens require periodic renewal.
 type ImagePageRenewer interface {
 	RenewPage(context.Context, ImagePageRenewal) error
 }
@@ -169,7 +162,7 @@ func ArtworkTitle(ctx context.Context, key core.RatingKey) (*core.Title, bool) {
 // the row, with the facts the viewer's policy reads, and no credits. Only a
 // request that never lists credited people's portraits (a grant of a
 // title's own images: poster, art, logo...) reads titles this way; its
-// authorization and its image read then share them (ArtworkTitle).
+// authorization and its image read then share them (ArtworkRows).
 type ArtworkRows struct {
 	mu     sync.Mutex
 	titles map[core.RatingKey]core.Title

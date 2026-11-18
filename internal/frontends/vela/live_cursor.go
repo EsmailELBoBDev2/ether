@@ -1,7 +1,6 @@
 package vela
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -9,17 +8,6 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 )
-
-// Cursors are issued per five-minute bucket and last at least ten minutes
-// past the end of it. Within a bucket the same page always gets the same
-// cursor, so a page answered 304 still holds a usable cursor: its ETag
-// carries the bucket and changes before the cursor can expire.
-const (
-	liveCursorBucket = 5 * time.Minute
-	liveCursorLife   = 10 * time.Minute
-)
-
-func liveCursorBucketStart(now time.Time) time.Time { return now.Truncate(liveCursorBucket) }
 
 type liveCursor struct {
 	Scope, Query, Snapshot string
@@ -36,7 +24,7 @@ func (i *instance) livePageScope(r *http.Request, v *frontend.Viewer, token stri
 }
 
 func (i *instance) readLiveCursor(r *http.Request, scope, query string) (liveCursor, error) {
-	c := liveCursor{Scope: scope, Query: query, Expires: liveCursorBucketStart(time.Now()).Add(liveCursorBucket + liveCursorLife).Unix()}
+	c := liveCursor{Scope: scope, Query: query, Expires: cursorExpiry(time.Now())}
 	token := r.URL.Query().Get("cursor")
 	if token == "" {
 		return c, nil
@@ -61,9 +49,9 @@ func (i *instance) nextLiveCursor(c liveCursor, offset int, snapshot string) (st
 	if err != nil {
 		return "", err
 	}
-	// A nonce derived from the plaintext: the same cursor seals to the same
-	// token, and a nonce only ever seals the plaintext it came from.
-	sum := sha256.Sum256(append([]byte("vela-live-cursor\x00"), b...))
-	nonce := append([]byte(nil), sum[:i.seal.NonceSize()]...)
+	nonce, err := i.cursorNonce("vela-live", b)
+	if err != nil {
+		return "", err
+	}
 	return base64.RawURLEncoding.EncodeToString(i.seal.Seal(nonce, nonce, b, []byte("vela-live"))), nil
 }

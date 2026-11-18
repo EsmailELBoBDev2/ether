@@ -21,21 +21,19 @@ func (i *instance) themeAvailable() bool {
 	return i.host.Themes != nil && i.host.ThemeTitle != nil && i.host.Themes.ThemeEnabled()
 }
 
-// Grants have no playback session/watch side effects. Reopening detail refreshes
-// the ten-minute capability; revocation and current item policy apply per read.
+// Grants have no playback session/watch side effects. Reopening detail reuses an
+// active capability with comfortable lifetime remaining so detail ETags stay stable;
+// revocation and current item policy apply per read.
 func (i *instance) detailTheme(r *http.Request, token string, t frontend.Title) object {
 	if !i.themeAvailable() || !i.host.Themes.Theme(t, true) {
 		return nil
 	}
-	scope, err := i.grantScope(r.Context(), token, requestDevice(r))
+	dev := requestDevice(r)
+	scope, err := i.grantScope(r.Context(), token, dev)
 	if err != nil {
 		return nil
 	}
-	var nonce [32]byte
-	if _, err = rand.Read(nonce[:]); err != nil {
-		return nil
-	}
-	secret := hex.EncodeToString(nonce[:])
+	origin := themeOrigin(r)
 	now := time.Now()
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -45,13 +43,22 @@ func (i *instance) detailTheme(r *http.Request, token string, t frontend.Title) 
 	for k, g := range i.themes {
 		if !g.expires.After(now) {
 			delete(i.themes, k)
+			continue
+		}
+		if g.scope == scope && g.host == origin && g.device == dev && g.key == t.Key && g.expires.Sub(now) >= 2*time.Minute {
+			return object{"url": "/vela/v0/themes/" + k + "/theme.m4a", "expiresAt": g.expires.UTC().Format(time.RFC3339)}
 		}
 	}
 	if len(i.themes) >= 1024 {
 		return nil
 	}
+	var nonce [32]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		return nil
+	}
+	secret := hex.EncodeToString(nonce[:])
 	expiry := now.Add(10 * time.Minute)
-	i.themes[secret] = themeGrant{scope: scope, host: themeOrigin(r), device: requestDevice(r), key: t.Key, expires: expiry}
+	i.themes[secret] = themeGrant{scope: scope, host: origin, device: dev, key: t.Key, expires: expiry}
 	return object{"url": "/vela/v0/themes/" + secret + "/theme.m4a", "expiresAt": expiry.UTC().Format(time.RFC3339)}
 }
 

@@ -37,7 +37,7 @@ func (e *episodeArtworkExperience) ItemArtworkPage(_ context.Context, v *core.Vi
 type episodeArtworkReader struct{ frontendtest.Artwork }
 
 func (episodeArtworkReader) Read(_ context.Context, req frontend.ArtworkRequest, image frontend.Image, _ frontend.ArtworkTransform) ([]byte, string, error) {
-	if req.Viewer.ID != 1 || req.Device.ID != "tv" {
+	if req.Viewer.ID != 1 {
 		return nil, "", core.ErrUnauthorized
 	}
 	return []byte(image.Path), "image/jpeg", nil
@@ -84,8 +84,8 @@ func TestVelaEpisodeArtwork(t *testing.T) {
 			exp.images[key] = append(exp.images[key], frontend.Image{Kind: frontend.ImageStill, Path: []string{"still-one", "still-two"}[n-1]})
 		}
 	}
-	exp.ItemArtworkFunc = func(_ context.Context, v *core.Viewer, d core.Device, k core.RatingKey) ([]frontend.Image, bool, error) {
-		if v.ID != 1 || d.ID != "tv" {
+	exp.ItemArtworkFunc = func(_ context.Context, v *core.Viewer, _ core.Device, k core.RatingKey) ([]frontend.Image, bool, error) {
+		if v.ID != 1 {
 			return nil, false, core.ErrUnauthorized
 		}
 		return exp.images[k], true, nil

@@ -51,7 +51,7 @@ import { GuidePage } from "./GuidePage";
 import { LivePreview } from "./LivePreview";
 import { ProgrammeInspector, type InspectedProgramme } from "./ProgrammeInspector";
 import type { Selection } from "./Lineup";
-import type { SourceKind } from "./SourceEditor";
+import { SourceDrawer, type SourceKind } from "./SourceEditor";
 import {
   MINUTE,
   TEMPLATES,
@@ -88,10 +88,8 @@ function windowStart(shiftHours: number): Date {
 
 function selectionFrom(params: URLSearchParams): Selection {
   const c = params.get("channel");
-  const s = params.get("source");
   if (c === "new") return { kind: "new" };
   if (c) return { kind: "channel", id: c };
-  if (s) return { kind: "source", id: s };
   const g = params.get("guide");
   if (g) return { kind: "map", id: g };
   return { kind: "guide" };
@@ -116,15 +114,13 @@ export default function LiveTV() {
   const [params, setParams] = useCurrentParams();
   const selection = selectionFrom(params);
   const guideSourceId = params.get("gsrc");
+  const rawSourceId = params.get("source");
+  const sourceId = rawSourceId && rawSourceId !== "new" ? rawSourceId : null;
+  const addingSource = params.get("new") ?? (rawSourceId === "new" ? "playlist" : null);
 
   useEffect(() => {
-    if (selection.kind === "source")
-      navigate(
-        `/sources/iptv?${new URLSearchParams(selection.id === "new" ? { new: "playlist" } : { source: selection.id })}`,
-        { replace: true },
-      );
-    else if (tab === "sources") navigate("/sources/iptv", { replace: true });
-  }, [selection.kind, selection.kind === "source" ? selection.id : null, tab, navigate]);
+    if (tab === "sources") navigate("/sources/iptv", { replace: true });
+  }, [tab, navigate]);
 
   const activeTab: LiveTVTab =
     tab === "library"
@@ -147,6 +143,7 @@ export default function LiveTV() {
   const [guideNonce, setGuideNonce] = useState(0);
   const [coverageNonce, setCoverageNonce] = useState(0);
   const [sources, setSources] = useState<Source[]>([]);
+  const [sourcesLoaded, setSourcesLoaded] = useState(false);
   const [users, setUsers] = useState<EtherUser[]>([]);
   const [policies, setPolicies] = useState<Map<number, LiveTVPolicy>>(new Map());
   const [collections, setCollections] = useState<CollectionChoice[]>([]);
@@ -186,6 +183,9 @@ export default function LiveTV() {
       })
       .catch((e) => {
         if (!ctl.signal.aborted) setError(e);
+      })
+      .finally(() => {
+        if (!ctl.signal.aborted) setSourcesLoaded(true);
       });
     return () => ctl.abort();
   }, []);
@@ -369,23 +369,33 @@ export default function LiveTV() {
     return () => window.removeEventListener("ether:channels-changed", changed);
   }, [reloadAll]);
 
+  const confirmDiscard = useCallback(
+    () =>
+      confirmDialog({
+        title: t("Discard unsaved changes?"),
+        message: draft?.channel.name
+          ? t("Your changes to {name} haven't been saved.", { name: draft.channel.name })
+          : t("Your changes to this channel haven't been saved."),
+        confirmLabel: t("Discard"),
+        tone: "danger",
+      }),
+    [draft],
+  );
+
   const go = useCallback(
     async (next: Selection, opts?: { force?: boolean }) => {
-      if (dirty && !opts?.force) {
-        const ok = await confirmDialog({
-          title: t("Discard unsaved changes?"),
-          message: draft?.channel.name
-            ? t("Your changes to {name} haven't been saved.", { name: draft.channel.name })
-            : t("Your changes to this channel haven't been saved."),
-          confirmLabel: t("Discard"),
-          tone: "danger",
-        });
-        if (!ok) return;
-      }
+      if (dirty && !opts?.force && !(await confirmDiscard())) return false;
       if (next.kind === "source") {
-        navigate(
-          `/sources/iptv?${new URLSearchParams(next.id === "new" ? { new: "playlist" } : { source: next.id })}`,
-        );
+        setParams((prev) => {
+          const p = new URLSearchParams(prev);
+          p.delete("channel");
+          p.delete("guide");
+          p.delete("new");
+          p.delete("source");
+          if (next.id === "new") p.set("new", "playlist");
+          else p.set("source", next.id);
+          return p;
+        });
         return true;
       }
       const p = new URLSearchParams();
@@ -397,7 +407,7 @@ export default function LiveTV() {
       setParams(p);
       return true;
     },
-    [dirty, draft, navigate, params, setParams],
+    [dirty, confirmDiscard, params, setParams],
   );
 
   const startNew = async (templateKey: string) => {
@@ -627,13 +637,30 @@ export default function LiveTV() {
   // ---- header actions ---------------------------------------------------------------
 
   const editing = (selection.kind === "channel" || selection.kind === "new") && !!draft;
-  const addGuideSource = () => {
+  const updateParams = useCurrentCallback(setParams);
+  const openNewSource = (kind: "playlist" | "guide" | "addon" | "xtream") => {
     void (async () => {
-      if (await go({ kind: "guide" })) navigate("/sources/iptv?new=guide");
+      if (dirty && !(await confirmDiscard())) return;
+      updateParams((prev) => {
+        const p = new URLSearchParams(prev);
+        p.delete("channel");
+        p.delete("guide");
+        p.delete("source");
+        p.set("new", kind);
+        return p;
+      });
     })();
   };
+  const addGuideSource = () => openNewSource("guide");
+  const closeSourceDrawer = useCurrentCallback(() => {
+    setParams((prev) => {
+      const p = new URLSearchParams(prev);
+      p.delete("source");
+      p.delete("new");
+      return p;
+    });
+  });
 
-  const updateParams = useCurrentCallback(setParams);
   const libraryQuery = params.get("q");
   const librarySort = params.get("sort");
 
@@ -700,27 +727,15 @@ export default function LiveTV() {
             if (await go({ kind: "new" })) await startNew("personal");
           })()
         }
-        onSource={(k) => {
-          if (k === "guide") {
-            addGuideSource();
-            return;
-          }
-          void (async () => {
-            if (await go({ kind: "guide" })) navigate("/sources/iptv?new=playlist");
-          })();
-        }}
-        onAddon={() => {
-          void (async () => {
-            if (await go({ kind: "guide" })) navigate("/sources/iptv?new=addon");
-          })();
-        }}
+        onSource={(k) => openNewSource(k)}
+        onAddon={() => openNewSource("addon")}
       />
     </div>
   );
 
   // ---- render -----------------------------------------------------------------------------
 
-  if (tab === "sources" || selection.kind === "source") return null;
+  if (tab === "sources") return null;
 
   const state = error ? (
     <div className="p-6">
@@ -836,7 +851,7 @@ export default function LiveTV() {
         >
           {t("Add the four decade channels")}
         </Button>
-        <Button variant="outline" onClick={() => navigate("/sources/iptv?new=playlist")}>
+        <Button variant="outline" onClick={() => openNewSource("playlist")}>
           {t("Add IPTV")}
         </Button>
       </div>
@@ -907,6 +922,7 @@ export default function LiveTV() {
                 onPlay={setPreviewChannel}
                 onMapChannel={(id) => void go({ kind: "map", id })}
                 onToggleFavorite={toggleFavorite}
+                onAddGuideSource={addGuideSource}
                 onEditSource={(id) => void go({ kind: "source", id })}
                 onReload={reloadAll}
               />
@@ -1119,6 +1135,32 @@ export default function LiveTV() {
           onClose={() => setPreviewChannel(null)}
         />
       ) : null}
+      <SourceDrawer
+        sourceId={sourceId}
+        adding={addingSource}
+        sources={sourcesLoaded ? sources : null}
+        onClose={closeSourceDrawer}
+        onSaved={async (s) => {
+          await reloadAll();
+          updateParams((prev) => {
+            const p = new URLSearchParams(prev);
+            p.delete("new");
+            p.set("source", s.id);
+            return p;
+          });
+        }}
+        onDeleted={async () => {
+          const deletedId = sourceId;
+          updateParams((prev) => {
+            const p = new URLSearchParams(prev);
+            p.delete("source");
+            p.delete("new");
+            if (deletedId && p.get("gsrc") === deletedId) p.delete("gsrc");
+            return p;
+          });
+          await reloadAll();
+        }}
+      />
       <LookSurfaces looks={looks} reload={reloadLooks} />
     </>
   );

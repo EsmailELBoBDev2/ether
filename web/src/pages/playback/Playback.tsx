@@ -1,11 +1,20 @@
 import * as S from "../settings/schema";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
+import { useApp } from "../../app-context";
 import { ConfigSection } from "../../components/ConfigSection";
 import { SectionHeading } from "../../components/feedback";
 import { DomainPage, useRouteTab } from "../../components/layout";
 import { localized, t, tx } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { DeviceCapabilities } from "./Devices";
-import { HardwareStatus } from "./Hardware";
+import {
+  HardwareStatus,
+  canUseRtxVideo,
+  canUseVaapi,
+  useHardwareStatus,
+  type Hardware,
+} from "./Hardware";
 import { MarkerCoverage } from "./Markers";
 import { SkipButtons } from "./SkipButtons";
 import { HouseholdAudio } from "./HouseholdAudio";
@@ -42,9 +51,24 @@ function TrailerStatus({ draft }: { draft: Record<string, unknown> }) {
  */
 export default function Playback() {
   const tab = useRouteTab(TABS);
+  const { locale } = useLocale();
+  const { dashboard } = useApp();
+  const hw = useHardwareStatus(tab === "transcoding");
+  const hwData = hw.data ?? (dashboard?.sections?.hwaccel as Hardware | undefined) ?? null;
+  const showVaapi = canUseVaapi(hwData);
+  const showRtx = canUseRtxVideo(hwData);
+  const transcodeGroups = useMemo(
+    () =>
+      S.TRANSCODE.filter((g) => g.id !== "enhance" || showRtx).map((g) =>
+        g.id === "convert" && !showVaapi
+          ? { ...g, more: g.more?.filter((f) => f.key !== "vaapiDevice") }
+          : g,
+      ),
+    [locale, showRtx, showVaapi],
+  );
   return (
     <DomainPage title={t("Playback")} base="/playback" tabs={TABS} active={tab}>
-      {tab === "transcoding" ? <HardwareStatus /> : null}
+      {tab === "transcoding" ? <HardwareStatus state={hw} /> : null}
       <ConfigSection
         hidden={tab !== "transcoding"}
         configKey="server"
@@ -56,7 +80,7 @@ export default function Playback() {
         hidden={tab !== "transcoding"}
         configKey="transcode"
         endpoint="transcode"
-        groups={S.TRANSCODE}
+        groups={transcodeGroups}
         label={t("Streams & transcoding")}
       />
       <ConfigSection

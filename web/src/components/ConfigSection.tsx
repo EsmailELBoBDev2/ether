@@ -54,7 +54,7 @@ export function MoreOptions({
         data-more={setting}
         onClick={() => setOpen((v) => !v)}
       >
-        {open && !text ? t("Less options") : (text ?? t("More options"))}
+        {open && !text ? t("Fewer options") : (text ?? t("More options"))}
       </button>
       {open ? children : null}
     </div>

@@ -323,6 +323,7 @@ export function RecordDrawer({
   onRemove,
   removeLabel = t("Remove"),
   removeDisabled,
+  subtabs,
   tools,
   error,
   children,
@@ -343,6 +344,7 @@ export function RecordDrawer({
   onRemove?: () => void;
   removeLabel?: string;
   removeDisabled?: boolean;
+  subtabs?: ReactNode;
   /** Extra footer controls on the left, e.g. a connection test. */
   tools?: ReactNode;
   error?: unknown;
@@ -354,6 +356,7 @@ export function RecordDrawer({
       onClose={onClose}
       title={title}
       description={description}
+      subtabs={subtabs}
       size="lg"
       footer={
         <div className="flex w-full flex-wrap items-center gap-2">

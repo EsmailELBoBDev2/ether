@@ -94,7 +94,7 @@ func (a *App) buildDiscovery() {
 	}
 	a.discoveryPersonal = personalize.NewDiscovery(a.db, a.catalog, a.state, a.safety.Allowed)
 	a.discoveryPersonal.NotInterested = a.notInterestedSignals
-	a.overlays = overlays.New(a.db, overlays.Options{CacheDir: filepath.Join(a.opts.DataDir, "cache", "overlays"), Images: a.images, Allowed: a.safety.Allowed, Ratings: a.ratings, FactsFor: a.overlayFacts, PreparePage: a.prepareOverlayPage, Variants: a.artworkVariants, Taste: func(ctx context.Context, u *core.User) []string {
+	a.overlays = overlays.New(a.db, overlays.Options{CacheDir: filepath.Join(a.opts.DataDir, "cache", "overlays"), Images: a.images, Allowed: a.safety.Allowed, Ratings: a.ratings, FactsFor: a.overlayFacts, PreparePage: a.prepareOverlayPage, Variants: a.artworkVariants, PluginBadges: a.overlayPluginBadgeSets, Taste: func(ctx context.Context, u *core.User) []string {
 		p, err := a.personalize.Taste(ctx, u)
 		if err != nil {
 			return nil
@@ -402,4 +402,26 @@ func applyOverlayQuality(f *overlays.Facts, info core.MediaInfo) {
 			}
 		}
 	}
+}
+
+func (a *App) overlayPluginBadgeSets(ctx context.Context) []overlays.PluginBadgeSet {
+	if a == nil || a.pluginsRT == nil || a.pluginsRT.mgr == nil {
+		return nil
+	}
+	active := a.pluginsRT.mgr.ActivePosterBadgeSets(ctx)
+	if len(active) == 0 {
+		return nil
+	}
+	out := make([]overlays.PluginBadgeSet, len(active))
+	for i, ps := range active {
+		out[i] = overlays.PluginBadgeSet{
+			PluginID:    ps.PluginID,
+			PluginName:  ps.PluginName,
+			Key:         ps.Key,
+			LayerKey:    ps.LayerKey,
+			Label:       ps.Label,
+			Description: ps.Description,
+		}
+	}
+	return out
 }

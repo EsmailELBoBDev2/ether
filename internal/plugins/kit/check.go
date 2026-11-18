@@ -438,6 +438,7 @@ type recordingHost struct {
 	man              plugins.Manifest
 	operatorDefaults []string
 	kv               map[string]string
+	badges           map[string]map[string][]string
 	observed         map[string]int
 	undecl           map[string]bool
 	deferred         int
@@ -537,6 +538,60 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			QuotaBytes: plugins.KVQuotaBytes,
 			QuotaKeys:  plugins.KVQuotaKeys,
 		})
+		return b, nil
+	case "badges.set":
+		var entries []plugins.BadgeEntry
+		if len(args) > 1 && len(args[1]) > 0 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &entries); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "badges.set takes (setKey, entries[])"}
+			}
+		}
+		norm, err := plugins.ValidateBadgeSetCall(h.man, str(0), entries)
+		if err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		if h.badges == nil {
+			h.badges = map[string]map[string][]string{}
+		}
+		if h.badges[str(0)] == nil {
+			h.badges[str(0)] = map[string][]string{}
+		}
+		for _, e := range norm {
+			tmdbK, imdbK := plugins.ExternalBadgeKeys(e.Title)
+			k := tmdbK
+			if k == "" {
+				k = imdbK
+			}
+			if len(e.Labels) == 0 {
+				delete(h.badges[str(0)], k)
+			} else {
+				h.badges[str(0)][k] = e.Labels
+			}
+		}
+		return json.RawMessage("null"), nil
+	case "badges.clear":
+		if err := plugins.ValidateBadgeClearCall(h.man, str(0)); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		delete(h.badges, str(0))
+		return json.RawMessage("null"), nil
+	case "badges.usage":
+		if !h.man.HasCapability(plugins.CapPosterBadges) {
+			return nil, wasm.Forbidden("poster_badges capability is required")
+		}
+		distinct := map[string]bool{}
+		for _, setMap := range h.badges {
+			for k := range setMap {
+				distinct[k] = true
+			}
+		}
+		b, _ := json.Marshal(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
 		return b, nil
 	case "secret.get":
 		sec := str(0)

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -151,7 +152,7 @@ func TestDesignerDefaultsAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.Settings(ctx)
-	if err != nil || got != saved || got.Accent != "#abcdef" || got.Style != "glass" {
+	if err != nil || !reflect.DeepEqual(got, saved) || got.Accent != "#abcdef" || got.Style != "glass" {
 		t.Fatalf("normalized settings: %+v %+v %v", saved, got, err)
 	}
 }

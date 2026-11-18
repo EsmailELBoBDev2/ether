@@ -129,6 +129,31 @@ func (s *Service) presentation(ctx context.Context, u *core.User, t *core.Title,
 		}
 	}
 	add("details", cfg.Details, details, "Year, runtime and content rating from the catalogue", "No catalogue details available")
+	pluginSets := s.PluginBadgeSets(ctx)
+	if len(pluginSets) > 0 {
+		pluginLabels := s.pluginBadgeLabelsForTitle(ctx, t, cfg, pluginSets)
+		for _, ps := range pluginSets {
+			layerKey := ps.LayerKey
+			if layerKey == "" {
+				layerKey = "plugin:" + ps.PluginID + ":" + ps.Key
+			}
+			on := !cfg.IsBadgeSetDisabled(ps.PluginID, ps.Key)
+			setLabel := ps.Label
+			if setLabel == "" {
+				setLabel = ps.Key
+			}
+			pluginName := ps.PluginName
+			if pluginName == "" {
+				pluginName = ps.PluginID
+			}
+			readyReason := fmt.Sprintf("%s badges from %s", setLabel, pluginName)
+			if ps.Description != "" {
+				readyReason = fmt.Sprintf("%s (%s): %s", setLabel, pluginName, ps.Description)
+			}
+			missingReason := fmt.Sprintf("No %s badges pushed for this title by %s", setLabel, pluginName)
+			add(layerKey, on, pluginLabels[layerKey], readyReason, missingReason)
+		}
+	}
 	return out
 }
 

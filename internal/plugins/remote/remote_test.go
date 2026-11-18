@@ -805,6 +805,18 @@ func (f *fakeHost) KVDelete(_ context.Context, pluginID, key string) error {
 	return nil
 }
 
+func (f *fakeHost) BadgesSet(_ context.Context, _, _ string, _ []plugins.BadgeEntry) error {
+	return nil
+}
+
+func (f *fakeHost) BadgesClear(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (f *fakeHost) BadgesUsage(_ context.Context, _ string) (plugins.BadgeUsage, error) {
+	return plugins.BadgeUsage{Titles: 0, QuotaTitles: plugins.PosterBadgeQuotaTitles}, nil
+}
+
 func (f *fakeHost) KVList(_ context.Context, pluginID, prefix string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

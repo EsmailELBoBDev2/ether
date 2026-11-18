@@ -30,6 +30,10 @@ type Host interface {
 	KVList(ctx context.Context, pluginID, prefix string) ([]string, error)
 	KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error)
 
+	BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error
+	BadgesClear(ctx context.Context, pluginID, setKey string) error
+	BadgesUsage(ctx context.Context, pluginID string) (plugins.BadgeUsage, error)
+
 	CatalogSearch(ctx context.Context, pluginID, query string, limit, offset int) (json.RawMessage, error)
 	CatalogGet(ctx context.Context, pluginID, id string) (json.RawMessage, error)
 
@@ -100,6 +104,13 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/kv/{key...}", h.kvGet)
 	mux.HandleFunc("PUT /ether/plugin-host/kv/{key...}", h.kvPut)
 	mux.HandleFunc("DELETE /ether/plugin-host/kv/{key...}", h.kvDelete)
+	mux.HandleFunc("GET /ether/plugin-host/badges/usage", h.badgesUsage)
+	mux.HandleFunc("GET /ether/plugin-host/badges-usage", h.badgesUsage)
+	mux.HandleFunc("PUT /ether/plugin-host/badges/{setKey}", h.badgesSet)
+	mux.HandleFunc("POST /ether/plugin-host/badges/{setKey}", h.badgesPost)
+	mux.HandleFunc("POST /ether/plugin-host/badges/{setKey}/set", h.badgesSet)
+	mux.HandleFunc("DELETE /ether/plugin-host/badges/{setKey}", h.badgesClear)
+	mux.HandleFunc("POST /ether/plugin-host/badges/{setKey}/clear", h.badgesClear)
 	mux.HandleFunc("GET /ether/plugin-host/catalog/search", h.catalogSearch)
 	mux.HandleFunc("GET /ether/plugin-host/catalog/{id...}", h.catalogGet)
 	mux.HandleFunc("GET /ether/plugin-host/viewers/{viewerId}/history", h.viewerHistory)
@@ -209,6 +220,87 @@ func (h *HostHandler) kvList(w http.ResponseWriter, r *http.Request) {
 
 func (h *HostHandler) kvUsage(w http.ResponseWriter, r *http.Request) {
 	usage, err := h.host.KVUsage(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
+}
+
+// --- Poster badges (#594) ---
+
+func decodeBadgeEntries(raw []byte) ([]plugins.BadgeEntry, string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(trimmed, "[") {
+		var entries []plugins.BadgeEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, "", false
+		}
+		return entries, "", true
+	}
+	var body struct {
+		SetKey  string               `json:"setKey"`
+		Entries []plugins.BadgeEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, "", false
+	}
+	return body.Entries, body.SetKey, true
+}
+
+func (h *HostHandler) badgesSet(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	entries, _, ok := decodeBadgeEntries(raw)
+	if !ok {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"entries": [...]}`)
+		return
+	}
+	if !h.finishErr(w, h.host.BadgesSet(r.Context(), pluginIDOf(r), r.PathValue("setKey"), entries)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) badgesPost(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	pathKey := r.PathValue("setKey")
+	entries, bodySetKey, ok := decodeBadgeEntries(raw)
+	if !ok {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"entries": [...]}`)
+		return
+	}
+	if pathKey == "clear" && bodySetKey != "" {
+		if !h.finishErr(w, h.host.BadgesClear(r.Context(), pluginIDOf(r), bodySetKey)) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if pathKey == "set" && bodySetKey != "" {
+		pathKey = bodySetKey
+	}
+	if !h.finishErr(w, h.host.BadgesSet(r.Context(), pluginIDOf(r), pathKey, entries)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) badgesClear(w http.ResponseWriter, r *http.Request) {
+	if !h.finishErr(w, h.host.BadgesClear(r.Context(), pluginIDOf(r), r.PathValue("setKey"))) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *HostHandler) badgesUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := h.host.BadgesUsage(r.Context(), pluginIDOf(r))
 	if !h.finishErr(w, err) {
 		return
 	}
@@ -540,6 +632,9 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 		writeHostError(w, http.StatusForbidden, "permission_denied", "This plugin does not have the grant this call needs")
 	case errors.Is(err, ErrNotFound):
 		writeHostError(w, http.StatusNotFound, "not_found", "Not found")
+	case errors.Is(err, plugins.ErrQuotaExceeded):
+		msg := strings.TrimPrefix(err.Error(), "remote: response body too large: ")
+		writeHostError(w, http.StatusRequestEntityTooLarge, "quota_exceeded", msg)
 	case errors.Is(err, ErrTooLarge):
 		writeHostError(w, http.StatusRequestEntityTooLarge, "too_large", "Request body is too large")
 	case errors.Is(err, ErrInvalid):

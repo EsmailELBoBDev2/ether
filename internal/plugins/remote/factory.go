@@ -286,7 +286,7 @@ func mapHostErr(err error) error {
 	case errors.Is(err, plugins.ErrUnavailable):
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	case errors.Is(err, plugins.ErrQuotaExceeded):
-		return fmt.Errorf("%w: %v", ErrTooLarge, err)
+		return fmt.Errorf("%w: %w", ErrTooLarge, err)
 	default:
 		var ve *plugins.ValidationError
 		var collectionInput *plugins.CollectionInputError
@@ -338,6 +338,31 @@ func (a HostAdapter) KVUsage(ctx context.Context, pluginID string) (plugins.KVUs
 		return plugins.KVUsage{}, err
 	}
 	usage, err := h.KVUsage(ctx)
+	return usage, mapHostErr(err)
+}
+
+func (a HostAdapter) BadgesSet(ctx context.Context, pluginID, setKey string, entries []plugins.BadgeEntry) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.BadgesSet(ctx, setKey, entries))
+}
+
+func (a HostAdapter) BadgesClear(ctx context.Context, pluginID, setKey string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.BadgesClear(ctx, setKey))
+}
+
+func (a HostAdapter) BadgesUsage(ctx context.Context, pluginID string) (plugins.BadgeUsage, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.BadgeUsage{}, err
+	}
+	usage, err := h.BadgesUsage(ctx)
 	return usage, mapHostErr(err)
 }
 

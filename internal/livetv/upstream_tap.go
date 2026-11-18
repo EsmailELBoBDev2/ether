@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -72,9 +73,14 @@ var (
 	// keyframe without waiting for one.
 	tapJoinBacklog = 2 << 20
 	tapIdle        = 20 * time.Second
-	// tapStallAfter is the data age that counts as a stalled provider: raw
-	// TS arrives continuously, so two seconds of silence is not jitter.
+	// tapStallAfter is the floor data age that counts as a stalled provider:
+	// continuous raw TS arrives without silent gaps, so two seconds of silence
+	// is not jitter. Bursty providers (HLS segments restreamed as TS) raise a
+	// tap's threshold toward tapStallMax as healthy inter-burst gaps are seen.
 	tapStallAfter = 2 * time.Second
+	// tapStallMax caps a tap's learned stall threshold and burst runway so a
+	// source that goes silent for good still fails over quickly.
+	tapStallMax = 8 * time.Second
 	// tapYoung is how much media a tap may hold and still serve new readers
 	// from its first byte (the probe-then-ffmpeg sequence of a tune).
 	tapYoung = 20 * time.Second
@@ -104,6 +110,16 @@ const (
 	tapHealthy     = 4 * time.Second
 	tapBurstLimit  = 28
 	tapBurstWindow = 30 * time.Second
+	// tapBurstGapFloor separates inter-burst silences from ordinary packet
+	// spacing inside a burst or on a continuous stream.
+	tapBurstGapFloor = 250 * time.Millisecond
+	// tapBurstGrace covers tsSplicer's one-frame hold and small segment
+	// delivery jitter when a burst's own media covers the following silence.
+	tapBurstGrace = 500 * time.Millisecond
+	// tapRhythmWindow and tapRhythmHistory bound the sliding window of
+	// healthy inter-burst gaps so old gaps age out on continuous delivery.
+	tapRhythmWindow  = 8 * time.Second
+	tapRhythmHistory = 6
 	// tapMarkLimit bounds the index (marks are at most 10 a second plus
 	// keyframes; this is several minutes).
 	tapMarkLimit = 8192
@@ -263,6 +279,25 @@ type upstreamTap struct {
 	attempts   []time.Time // reconnect attempts in the burst window
 	bitrate    int64       // bits per second
 	ringBytes  int64       // bytes charged to tapRingInUse
+	// Adaptive stall detection (TS only, guarded by mu): tracks healthy
+	// inter-burst gaps (~1x media progress over a window) and the latest
+	// burst's media lead so HLS-as-TS restreamers are not cut between bursts.
+	stallAfter     time.Duration
+	stallLogged    bool
+	recentGaps     []time.Duration
+	rhythmAt       time.Time
+	rhythmClock    int64
+	rhythmGap      time.Duration
+	pendingGap     time.Duration
+	gapClock       int64
+	burstAt        time.Time
+	burstClock     int64
+	paceAt         time.Time
+	paceClock      int64
+	haveBurst      bool
+	epochReads     int
+	epochBytes     int64
+	burstProbeUsed bool
 }
 
 func tapKey(raw string, h http.Header) string {
@@ -982,8 +1017,10 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	// can index and splice; anything else is relayed as before.
 	ts := tsPrefix(body)
 	t.mu.Lock()
+	now := time.Now()
 	t.body = res.Body
-	t.lastData, t.epochStart = time.Now(), time.Now()
+	t.lastData, t.epochStart = now, now
+	t.dataAt.Store(now.UnixNano())
 	if ts {
 		t.ts = newTSSplicer()
 		t.allocRingLocked(tapRingSize(tapRing))
@@ -1058,12 +1095,20 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 				return io.EOF
 			}
 			now := time.Now()
+			prev := t.lastData
 			t.lastData = now
 			t.dataAt.Store(now.UnixNano())
+			t.epochReads++
+			t.epochBytes += int64(n)
+			var gap time.Duration
+			if t.epochReads > 1 && !prev.IsZero() && now.After(prev) {
+				gap = now.Sub(prev)
+			}
 			recovered := t.stalled && t.body != nil
 			if recovered {
 				t.stalled = false
 			}
+			clockBefore := t.ts.clock
 			var marks []tsMark
 			out, marks = t.ts.feed(buf[:n], out[:0], t.written)
 			if len(out) > 0 {
@@ -1071,16 +1116,22 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 				t.indexLocked(marks)
 				t.cond.Broadcast()
 			}
+			adaptLog, learnedGap, stallAfter := t.observeRhythmLocked(now, gap, clockBefore, marks)
 			if t.ts.format != t.published {
 				// A program change: tell consumers now, not at the next tick.
 				t.published = t.ts.format
 				t.publishLocked()
 			}
-			healthy := t.failures > 0 && time.Duration(t.ts.clock-t.epochClock)*time.Second/tsClockHz >= tapHealthy
-			if healthy {
-				t.failures, t.failed = 0, false
+			if time.Duration(t.ts.clock-t.epochClock)*time.Second/tsClockHz >= tapHealthy {
+				t.burstProbeUsed = false
+				if t.failures > 0 {
+					t.failures, t.failed = 0, false
+				}
 			}
 			t.mu.Unlock()
+			if adaptLog != nil {
+				adaptLog.Info("live provider stall threshold adapted", "gap", learnedGap, "stall_after", stallAfter)
+			}
 			if recovered {
 				t.emit(InputRecovered, nil)
 			}
@@ -1089,6 +1140,120 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 			return err
 		}
 	}
+}
+
+// observeRhythmLocked tracks inter-burst gaps and burst lead while the stream
+// keeps up with real time. It returns a logger and the newly learned gap and
+// threshold the first time this tap raises its threshold above tapStallAfter.
+func (t *upstreamTap) observeRhythmLocked(now time.Time, gap time.Duration, clockBefore int64, marks []tsMark) (*slog.Logger, time.Duration, time.Duration) {
+	if gap >= tapBurstGapFloor {
+		if gap > t.pendingGap {
+			t.pendingGap, t.gapClock = gap, clockBefore
+		}
+		if t.haveBurst {
+			t.burstAt, t.burstClock = now, clockBefore
+			t.paceAt, t.paceClock = now, clockBefore
+		}
+	}
+	if t.ts == nil || !t.ts.haveClock || t.ts.seeking {
+		return nil, 0, 0
+	}
+	if !t.haveBurst {
+		startClock := clockBefore
+		if len(marks) > 0 {
+			startClock = marks[0].clock
+		}
+		t.haveBurst = true
+		t.burstAt, t.burstClock = now, startClock
+		t.paceAt, t.paceClock = now, startClock
+		t.rhythmAt, t.rhythmClock = now, startClock
+		if t.pendingGap > 0 {
+			// A gap already elapsed before the splicer entered (for example
+			// after deduplicating a reconnect's initial burst): measure the
+			// window across that gap so this burst can confirm it.
+			t.rhythmAt = now.Add(-t.pendingGap)
+			t.gapClock = startClock
+		}
+	} else if gap < tapBurstGapFloor && now.Sub(t.paceAt) >= 1500*time.Millisecond {
+		// Continuous ~1x delivery retires any earlier connect backlog so a
+		// later stall on a continuous source is still detected at 2 s.
+		stepWall := now.Sub(t.paceAt)
+		stepMedia := time.Duration(t.ts.clock-t.paceClock) * time.Second / tsClockHz
+		if stepMedia <= stepWall*5/4 {
+			t.burstAt, t.burstClock = t.paceAt, t.paceClock
+		}
+		t.paceAt, t.paceClock = now, t.ts.clock
+	}
+	if t.pendingGap > 0 {
+		postMedia := time.Duration(t.ts.clock-t.gapClock) * time.Second / tsClockHz
+		if postMedia >= min(time.Second, t.pendingGap/2) {
+			t.rhythmGap = max(t.rhythmGap, t.pendingGap)
+			t.pendingGap = 0
+		}
+	}
+	wall := now.Sub(t.rhythmAt)
+	media := time.Duration(t.ts.clock-t.rhythmClock) * time.Second / tsClockHz
+	healthy := wall >= 2*time.Second && media >= wall*4/5
+	if wall >= tapRhythmWindow && healthy {
+		t.recentGaps = append(t.recentGaps, t.rhythmGap)
+		if len(t.recentGaps) > tapRhythmHistory {
+			copy(t.recentGaps, t.recentGaps[len(t.recentGaps)-tapRhythmHistory:])
+			t.recentGaps = t.recentGaps[:tapRhythmHistory]
+		}
+		t.rhythmAt, t.rhythmClock, t.rhythmGap = now, t.ts.clock, 0
+	} else if wall >= 2*tapRhythmWindow {
+		// Unhealthy trickle: discard this window without learning its gaps.
+		t.rhythmAt, t.rhythmClock, t.rhythmGap, t.pendingGap = now, t.ts.clock, 0, 0
+	}
+	var maxGap time.Duration
+	for _, g := range t.recentGaps {
+		maxGap = max(maxGap, g)
+	}
+	if healthy {
+		maxGap = max(maxGap, t.rhythmGap)
+	}
+	if len(t.recentGaps) == 0 && (!healthy || t.rhythmGap == 0) {
+		return nil, 0, 0
+	}
+	next := min(max(tapStallAfter, 3*maxGap/2), max(tapStallAfter, tapStallMax))
+	t.stallAfter = next
+	if next > tapStallAfter && !t.stallLogged {
+		t.stallLogged = true
+		for ref := range t.refs {
+			if ref.log != nil {
+				return ref.log, maxGap, next
+			}
+		}
+	}
+	return nil, 0, 0
+}
+
+// stallThresholdLocked is how long t.lastData may sit idle at now before the
+// connection counts as stalled.
+func (t *upstreamTap) stallThresholdLocked(now time.Time) time.Duration {
+	limit := max(tapStallAfter, t.stallAfter)
+	// Don't cut while the media delivered by the latest burst still covers
+	// the silence ahead of the readers' live edge.
+	if t.haveBurst && t.ts != nil && !t.lastData.Before(t.burstAt) {
+		burstDur := t.lastData.Sub(t.burstAt)
+		burstMedia := time.Duration(t.ts.clock-t.burstClock) * time.Second / tsClockHz
+		if lead := burstMedia - burstDur; lead > 0 {
+			if lead >= time.Second {
+				lead += tapBurstGrace
+			}
+			limit = max(limit, lead)
+		}
+	}
+	// A reconnect followed by a short burst and then silence is the signature
+	// of a bursty restreamer (mid-segment or deduplicated by tsSplicer), not a
+	// dead source. Hold one such silence up to tapStallMax so the next burst
+	// can arrive and teach the tap its rhythm instead of burning quota in a
+	// tight cut-and-reconnect loop.
+	if t.reconnects > 0 && !t.burstProbeUsed && t.epochBytes >= 4*tsPacket && t.ts != nil &&
+		time.Duration(t.ts.clock-t.epochClock)*time.Second/tsClockHz < tapHealthy {
+		limit = max(limit, tapStallMax)
+	}
+	return min(limit, max(tapStallAfter, tapStallMax))
 }
 
 // indexLocked appends marks, drops those that left the ring, measures the
@@ -1223,15 +1388,21 @@ func (t *upstreamTap) watch() {
 			return
 		}
 		t.publishLocked()
+		now := time.Now()
 		var cut io.Closer
-		stall := !t.stalled && t.body != nil && time.Since(t.lastData) >= tapStallAfter
+		silence := now.Sub(t.lastData)
+		stall := !t.stalled && t.body != nil && silence >= t.stallThresholdLocked(now)
 		if stall {
+			if t.reconnects > 0 && silence >= tapStallMax && t.ts != nil &&
+				time.Duration(t.ts.clock-t.epochClock)*time.Second/tsClockHz < tapHealthy {
+				t.burstProbeUsed = true
+			}
 			t.stalled = true
 			t.stallCount++
 			cut, t.body = t.body, nil
 		}
 		t.measureBurstLocked()
-		due := time.Since(t.rep.at) >= historyReportEvery
+		due := now.Sub(t.rep.at) >= historyReportEvery
 		t.mu.Unlock()
 		if stall {
 			t.emit(InputStalled, errors.New("provider stopped delivering"))
@@ -1401,12 +1572,19 @@ func (s *Service) reopenTap(ctx context.Context, t *upstreamTap, g *inputGrant, 
 		closer.Close()
 		return nil, io.EOF
 	}
+	now := time.Now()
 	t.body = closer
-	t.lastData, t.epochStart = time.Now(), time.Now()
+	t.lastData, t.epochStart = now, now
+	t.dataAt.Store(now.UnixNano())
 	t.epochClock = t.ts.clock
 	t.reconnects++
 	t.refusals = 0
 	t.burstDone = false
+	t.haveBurst = false
+	t.rhythmGap = 0
+	t.pendingGap = 0
+	t.epochReads = 0
+	t.epochBytes = 0
 	t.ts.reconnect(t.minDepthLocked() >= tapDedupeDepth)
 	t.mu.Unlock()
 	return body, nil

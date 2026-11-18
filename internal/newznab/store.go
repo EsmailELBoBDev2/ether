@@ -283,6 +283,9 @@ func (c *Client) cachePut(ctx context.Context, key string, results []core.Releas
 	results = c.bindReleases(results)
 	// The owner's "Remember searches for" is a hard cap: age may only shorten it.
 	ttl := min(searchCacheTTL(c.ttl(), cacheAge(ctx), c.now(), len(results) == 0), c.ttl())
+	if isRecentSearchCache(ctx) {
+		ttl = min(ttl, emptySearchCacheTTL)
+	}
 	if ttl <= 0 {
 		return
 	}

@@ -169,6 +169,7 @@ func (t *Title) IsFutureRelease(now time.Time) bool {
 var (
 	ErrNotFound            = errors.New("not found")
 	ErrNotAvailable        = errors.New("not available yet") // no acceptable release exists
+	ErrPreparing           = errors.New("item is still being prepared")
 	ErrUnreleased          = errors.New("title has not been released")
 	ErrArticleMissing      = errors.New("article missing on all providers")
 	ErrArticleCorrupt      = errors.New("corrupt article or media data")
@@ -185,6 +186,50 @@ var (
 	// filter; the caller pages by offset instead.
 	ErrSeekUnavailable = errors.New("seek title unavailable")
 )
+
+// PreparingError wraps ErrPreparing with a suggested retry delay (#580).
+type PreparingError struct {
+	RetryAfter time.Duration
+}
+
+func (e *PreparingError) Error() string        { return ErrPreparing.Error() }
+func (e *PreparingError) Is(target error) bool { return target == ErrPreparing }
+
+// PreparingFromPending constructs an ErrPreparing carrying a retry delay from
+// a plugin's PendingReply.RetryInMS hint, defaulting to 5s when unspecified.
+func PreparingFromPending(retryInMS int64) error {
+	d := 5 * time.Second
+	if retryInMS > 0 {
+		d = time.Duration(retryInMS) * time.Millisecond
+		if d < time.Second {
+			d = time.Second
+		} else if d > 60*time.Second {
+			d = 60 * time.Second
+		}
+	}
+	return &PreparingError{RetryAfter: d}
+}
+
+// PreparingRetrySeconds returns the HTTP Retry-After value in whole seconds
+// for err, rounding sub-second durations up and using fallback (default 5)
+// when err carries no explicit RetryAfter.
+func PreparingRetrySeconds(err error, fallback int) int {
+	if fallback <= 0 {
+		fallback = 5
+	}
+	var pe *PreparingError
+	if errors.As(err, &pe) && pe != nil && pe.RetryAfter > 0 {
+		sec := int((pe.RetryAfter + time.Second - 1) / time.Second)
+		if sec < 1 {
+			sec = 1
+		}
+		if sec > 300 {
+			sec = 300
+		}
+		return sec
+	}
+	return fallback
+}
 
 // User is a Plex account with access to this server: the owner or a friend
 // the owner shared with on plex.tv.

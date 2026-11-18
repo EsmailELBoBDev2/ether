@@ -143,9 +143,19 @@ func (a *App) syncAdapters(ctx context.Context) {
 // visibility. The item must belong to the calling plugin and its library
 // must be visible to the viewer; anything else is refused.
 func (a *App) adapterStreamURL(issuer *frontendadapter.TicketIssuer) func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
+	partFn := a.adapterStreamPartURL(issuer)
 	return func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
+		return partFn(ctx, pluginID, viewerID, itemRef, nil)
+	}
+}
+
+func (a *App) adapterStreamPartURL(issuer *frontendadapter.TicketIssuer) func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
+	return func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error) {
 		if issuer == nil || a.pluginsRT == nil || a.pluginsRT.pluginitems == nil || a.libraries == nil {
 			return "", plugins.ErrUnavailable
+		}
+		if partIndex != nil && *partIndex < 0 {
+			return "", core.ErrNotFound
 		}
 		ref, err := core.ParseItemRef(itemRef)
 		if err != nil {
@@ -161,18 +171,24 @@ func (a *App) adapterStreamURL(issuer *frontendadapter.TicketIssuer) func(ctx co
 		if err != nil || viewer == nil {
 			return "", plugins.ErrPermissionDenied
 		}
-		_, libID, err := a.pluginsRT.pluginitems.GetByRef(ctx, ref)
+		item, libID, err := a.pluginsRT.pluginitems.GetByRef(ctx, ref)
 		if err != nil {
 			return "", core.ErrNotFound
+		}
+		if partIndex != nil {
+			if parts := core.ExtractKindItemPartsFromItem(item); len(parts) > 0 && *partIndex >= len(parts) {
+				return "", core.ErrNotFound
+			}
 		}
 		lib, err := a.libraries.Get(ctx, libID)
 		if err != nil || lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
 			return "", core.ErrNotFound
 		}
 		return issuer.StreamURL(frontendadapter.StreamGrant{
-			ViewerID: viewerID,
-			ItemID:   ref.String(),
-			Adapter:  pluginID,
+			ViewerID:  viewerID,
+			ItemID:    ref.String(),
+			Adapter:   pluginID,
+			PartIndex: partIndex,
 		})
 	}
 }
@@ -220,6 +236,17 @@ func (a *App) adapterMediaHandler() *frontendadapter.MediaHandler {
 				return nil, err
 			}
 			return resolver.OpenKind(ctx, viewer, item.Key, accept)
+		},
+		OpenPart: func(ctx context.Context, viewer *core.Viewer, itemRef string, partIndex int, accept []string) (*frontend.KindMedia, error) {
+			ref, err := core.ParseItemRef(itemRef)
+			if err != nil {
+				return nil, err
+			}
+			item, _, err := items.GetByRef(ctx, ref)
+			if err != nil {
+				return nil, err
+			}
+			return resolver.OpenKindPart(ctx, viewer, item.Key, partIndex, accept)
 		},
 	})
 }

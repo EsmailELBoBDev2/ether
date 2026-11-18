@@ -110,7 +110,7 @@ func jellyfinStaticPlayable(protocol frontend.Protocol, channel string, opts fro
 }
 
 func jellyfinStaticFallback(err error) bool {
-	return err != nil && !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity)
+	return err != nil && !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrPreparing)
 }
 
 func offerJellyfinStatic(source map[string]any, opts frontend.DecideOptions) {
@@ -142,6 +142,15 @@ func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 			return
 		}
 		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, frontend.ErrPreparing) {
+		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
+		w.Header().Set("X-Ether-Media-Error", "preparing")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"code":"preparing","message":"The item is still being prepared. Try again shortly."}}`)
 		return
 	}
 	var capacity *frontend.TranscodeCapacityError
@@ -400,6 +409,8 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			i.playbackInfoError(w, "plan", err)
 		} else if playback && noCompatibleStream(err) {
 			i.writeNoCompatibleStream(w)
+		} else if errors.Is(err, frontend.ErrPreparing) {
+			streamError(i.protocol, w, err)
 		} else {
 			http.Error(w, "Playback unavailable", 503)
 		}
@@ -496,6 +507,8 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 			if !jellyfinStaticFallback(err) || !staticPlayable {
 				if i.protocol == "jellyfin" {
 					i.playbackInfoError(w, "open", err)
+				} else if errors.Is(err, frontend.ErrPreparing) {
+					streamError(i.protocol, w, err)
 				} else {
 					http.Error(w, "Playback unavailable", 503)
 				}
@@ -1214,7 +1227,7 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, stage string, err er
 	if i.host.Log != nil {
 		i.host.Log.Warn("PlaybackInfo failed", "protocol", i.protocol, "stage", stage, "err", err)
 	}
-	if i.protocol != "jellyfin" || errors.Is(err, frontend.ErrSessionBusy) || errors.Is(err, frontend.ErrTranscodeCapacity) {
+	if i.protocol != "jellyfin" || errors.Is(err, frontend.ErrSessionBusy) || errors.Is(err, frontend.ErrTranscodeCapacity) || errors.Is(err, frontend.ErrPreparing) {
 		streamError(i.protocol, w, err)
 		return
 	}

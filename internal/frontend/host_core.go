@@ -89,12 +89,22 @@ var (
 	ErrNotCached           = core.ErrNotCached
 	ErrPolicyUnconfirmed   = core.ErrPolicyUnconfirmed
 	ErrPrepareSlow         = core.ErrPrepareSlow
+	ErrPreparing           = core.ErrPreparing
 	ErrReleaseRejected     = core.ErrReleaseRejected
 	ErrSourceUnavailable   = core.ErrSourceUnavailable
 	ErrSourceChanged       = core.ErrSourceChanged
 	ErrSeekUnavailable     = core.ErrSeekUnavailable
 	ErrUnreleased          = core.ErrUnreleased
 )
+
+// PreparingError carries a suggested retry delay for ErrPreparing.
+type PreparingError = core.PreparingError
+
+// PreparingRetrySeconds returns the HTTP Retry-After value in whole seconds
+// for an ErrPreparing error.
+func PreparingRetrySeconds(err error, fallback int) int {
+	return core.PreparingRetrySeconds(err, fallback)
+}
 
 // FilterOutSurroundAudio returns codecs without surround audio formats.
 func FilterOutSurroundAudio(codecs []string) []string {

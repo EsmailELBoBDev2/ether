@@ -67,21 +67,29 @@ export function candidateRef(c: SourceCandidate): string {
 
 /**
  * Mint a scoped, short-lived Ether stream URL for one of this plugin's own
- * kind items (spec §6.5). The viewer is the one Ether authenticated on this
- * request (X-Ether-Viewer); bytes are served by Ether, never by the plugin.
+ * kind items (spec §6.5), or for a single zero-based part of a multi-file item
+ * when `partIndex` is provided (#576). The viewer is the one Ether
+ * authenticated on this request (X-Ether-Viewer); bytes are served by Ether,
+ * never by the plugin.
  */
 export async function streamUrl<S = Record<string, unknown>>(
   ctx: PluginContext<S>,
   itemRef: string,
+  partIndex?: number,
 ): Promise<string> {
   if (!ctx.ether?.frontend) throw new Error("stream url: no host service available");
+  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
+    throw new Error("stream url: partIndex must be a non-negative integer");
+  }
   const raw = ctx.headers["X-Ether-Viewer"] ?? ctx.headers["x-ether-viewer"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   const viewerId = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  return ctx.ether.frontend.streamUrl(viewerId, itemRef);
+  return partIndex === undefined
+    ? ctx.ether.frontend.streamUrl(viewerId, itemRef)
+    : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
 }
 
 export interface KindHandlers<S = Record<string, unknown>> {

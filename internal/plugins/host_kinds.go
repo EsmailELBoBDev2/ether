@@ -24,13 +24,15 @@ type KindBackends struct {
 	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
-	StreamURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 }
 
 // SetKindBackends wires the kind host services into the Manager's
@@ -40,10 +42,12 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
 	m.deps.Backends.StreamURL = b.StreamURL
+	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.mu.Unlock()
 }
 
@@ -54,10 +58,12 @@ func (m *Manager) kindBackends() KindBackends {
 		KindUpsert:     m.deps.Backends.KindUpsert,
 		KindDelete:     m.deps.Backends.KindDelete,
 		KindItems:      m.deps.Backends.KindItems,
+		KindItemCount:  m.deps.Backends.KindItemCount,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
 		StreamURL:      m.deps.Backends.StreamURL,
+		StreamPartURL:  m.deps.Backends.StreamPartURL,
 	}
 }
 
@@ -326,20 +332,32 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	need := "search"
 	switch q.Kind {
 	case "indexer_search":
-		if strings.TrimSpace(q.Query) == "" {
-			return nil, fmt.Errorf("plugins: indexer_search needs a query")
+		if strings.TrimSpace(q.Query) == "" && strings.TrimSpace(q.Category) == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "query",
+				Message: "indexer_search needs a query or category",
+			}}}
 		}
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
-			return nil, fmt.Errorf("plugins: debrid_check needs an info hash")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHashes",
+				Message: "debrid_check needs an info hash",
+			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" {
-			return nil, fmt.Errorf("plugins: debrid_acquire needs an info hash or magnet")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "debrid_acquire needs an info hash or magnet",
+			}}}
 		}
 	default:
-		return nil, fmt.Errorf("plugins: unknown source query kind %q", q.Kind)
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "kind",
+			Message: fmt.Sprintf("unknown source query kind %q", q.Kind),
+		}}}
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
@@ -411,6 +429,10 @@ func withViewerHeader(ctx context.Context, headers map[string]string) context.Co
 // X-Ether-Viewer. The backend re-checks that the item belongs to this plugin
 // and that the viewer may see its library.
 func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
+	return h.StreamPartURL(ctx, itemRef, nil)
+}
+
+func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error) {
 	rec, _, err := h.record(ctx)
 	if err != nil {
 		return "", err
@@ -428,11 +450,25 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 	if strings.TrimSpace(itemRef) == "" {
 		return "", fmt.Errorf("plugins: stream url needs an item ref")
 	}
-	backend := h.m.kindBackends().StreamURL
-	if backend == nil {
+	if partIndex != nil && *partIndex < 0 {
+		return "", fmt.Errorf("plugins: stream url partIndex must be non-negative")
+	}
+	backends := h.m.kindBackends()
+	if backends.StreamPartURL != nil {
+		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, partIndex)
+	}
+	if backends.StreamURL == nil {
 		return "", ErrUnavailable
 	}
-	return backend(ctx, h.plugin, viewerID, itemRef)
+	u, err := backends.StreamURL(ctx, h.plugin, viewerID, itemRef)
+	if err != nil || partIndex == nil {
+		return u, err
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + "part=" + strconv.Itoa(*partIndex), nil
 }
 
 func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error) {

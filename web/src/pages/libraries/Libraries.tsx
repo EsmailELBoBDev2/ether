@@ -282,11 +282,28 @@ function LibrariesList() {
                       {sources && lib.source === "catalogue" && Boolean(lib.rules?.length)
                         ? ` · ${t("Rules")}`
                         : ""}
-                      {typeof lib.itemCount === "number"
-                        ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
-                            count: formatNumber(lib.itemCount, 0),
-                          })}`
-                        : ""}
+                      {lib.source === "plugin" &&
+                      typeof (lib.storedItems ?? lib.itemCount) === "number" &&
+                      typeof lib.maxPluginItems === "number" &&
+                      lib.maxPluginItems > 0
+                        ? typeof lib.itemCount === "number" &&
+                          typeof lib.storedItems === "number" &&
+                          lib.storedItems !== lib.itemCount
+                          ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
+                              count: formatNumber(lib.itemCount, 0),
+                            })} · ${t("{used} of {limit} stored", {
+                              used: formatNumber(lib.storedItems, 0),
+                              limit: formatNumber(lib.maxPluginItems, 0),
+                            })}`
+                          : ` · ${t("{used} of {limit} items", {
+                              used: formatNumber(lib.storedItems ?? lib.itemCount ?? 0, 0),
+                              limit: formatNumber(lib.maxPluginItems, 0),
+                            })}`
+                        : typeof lib.itemCount === "number"
+                          ? ` · ${tn(lib.itemCount, "{count} item", "{count} items", {
+                              count: formatNumber(lib.itemCount, 0),
+                            })}`
+                          : ""}
                     </p>
                   </div>
                   {lib.source === "builtin" && catalogHealth ? (

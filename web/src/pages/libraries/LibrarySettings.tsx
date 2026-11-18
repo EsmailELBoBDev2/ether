@@ -20,6 +20,7 @@ import { ErrorPanel } from "../../components/feedback";
 import { LoadingRows } from "../../components/feedback";
 import { t, tn } from "../../i18n";
 import { errorMessage } from "../../lib/api";
+import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { useQuality } from "../releases/useQuality";
 import { librariesApi, publishedTo, type Library, type Presentations } from "./api";
@@ -454,6 +455,17 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
           {library.itemCount !== undefined ? (
             <p className="mt-4 text-2xl font-semibold">
               {tn(library.itemCount, "{count} title", "{count} titles")}
+            </p>
+          ) : null}
+          {library.source === "plugin" &&
+          typeof (library.storedItems ?? library.itemCount) === "number" &&
+          typeof library.maxPluginItems === "number" &&
+          library.maxPluginItems > 0 ? (
+            <p className="mt-1 text-xs text-fg-muted">
+              {t("{used} of {limit} items stored", {
+                used: formatNumber(library.storedItems ?? library.itemCount ?? 0, 0),
+                limit: formatNumber(library.maxPluginItems, 0),
+              })}
             </p>
           ) : null}
           <div className="mt-3">

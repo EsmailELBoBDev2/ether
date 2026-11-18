@@ -433,12 +433,13 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 		}
 	}
 	if newCount > 0 {
+		maxItems := s.MaxItemsFor(pluginID)
 		var pluginTotal int64
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ?`, pluginID).Scan(&pluginTotal); err != nil {
 			return 0, err
 		}
-		if pluginTotal+int64(newCount) > int64(s.maxPluginItems) {
-			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", s.maxPluginItems))
+		if pluginTotal+int64(newCount) > int64(maxItems) {
+			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", maxItems))
 			return 0, ErrMaxItemsExceeded
 		}
 	}
@@ -1173,11 +1174,16 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			}
 		}
 		refStr := string(t.ref)
+		partPrefix := refStr + "#part:"
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM plugin_resolutions WHERE item_ref = ? OR SUBSTR(item_ref, 1, ?) = ?`,
+			refStr, len(partPrefix), partPrefix); err != nil {
+			return err
+		}
 		for _, tbl := range []string{
 			"plugin_item_fields",
 			"plugin_item_art",
 			"plugin_matches",
-			"plugin_resolutions",
 			"plugin_items",
 		} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+tbl+` WHERE item_ref = ?`, refStr); err != nil {
@@ -1280,6 +1286,24 @@ func (s *Service) Children(ctx context.Context, parentRef core.ItemRef, cursor s
 
 // LibraryTally returns the maintained per-level item counts for libraryID
 // from plugin_item_tally (spec §2.3, §3.4).
+// PluginItemCount returns the total stored item count across all libraries
+// owned by pluginID, read in O(1) from plugin_item_tally.
+func (s *Service) PluginItemCount(ctx context.Context, pluginID string) (int, error) {
+	if s == nil || strings.TrimSpace(pluginID) == "" {
+		return 0, nil
+	}
+	var total int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(t.n), 0)
+		 FROM plugin_item_tally t
+		 JOIN plugin_kinds pk ON pk.library_id = t.library_id
+		 WHERE pk.plugin_id = ?`, pluginID).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return int(total), nil
+}
+
 func (s *Service) LibraryTally(ctx context.Context, libraryID core.LibraryID) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT level, n FROM plugin_item_tally WHERE library_id = ?`, int64(libraryID))
@@ -1437,13 +1461,17 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		"plugin_item_fields",
 		"plugin_item_art",
 		"plugin_matches",
-		"plugin_resolutions",
 	} {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM `+tbl+` WHERE item_ref IN (SELECT item_ref FROM plugin_items WHERE `+whereItems+`)`,
 			args...); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM plugin_resolutions WHERE EXISTS (SELECT 1 FROM plugin_items WHERE (`+whereItems+`) AND (plugin_resolutions.item_ref = plugin_items.item_ref OR SUBSTR(plugin_resolutions.item_ref, 1, LENGTH(plugin_items.item_ref) + 6) = plugin_items.item_ref || '#part:'))`,
+		args...); err != nil {
+		return err
 	}
 	if libraryID > 0 {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
@@ -1497,9 +1525,22 @@ const (
 	ResolutionNegativeCacheTTL = 60 * time.Second
 )
 
+func resolutionStorageKey(ref core.ItemRef, partIdx *int) string {
+	if partIdx == nil {
+		return string(ref)
+	}
+	return fmt.Sprintf("%s#part:%d", ref, *partIdx)
+}
+
 // SaveResolution caches a successful PlayableSource for ref until
 // min(src.ExpiresAt, now+15m) (spec §4.4).
 func (s *Service) SaveResolution(ctx context.Context, ref core.ItemRef, src core.PlayableSource) error {
+	return s.SavePartResolution(ctx, ref, nil, src)
+}
+
+// SavePartResolution caches a successful PlayableSource for ref and optional
+// zero-based partIdx until min(src.ExpiresAt, now+15m) (spec §4.4, #576).
+func (s *Service) SavePartResolution(ctx context.Context, ref core.ItemRef, partIdx *int, src core.PlayableSource) error {
 	now := s.now()
 	exp := now.Add(ResolutionCacheMaxTTL).Unix()
 	if src.ExpiresAt > 0 && src.ExpiresAt < exp {
@@ -1517,13 +1558,19 @@ ON CONFLICT(item_ref) DO UPDATE SET
 	source     = excluded.source,
 	negative   = 0,
 	expires_at = excluded.expires_at`,
-		string(ref), src.Pattern, string(raw), exp)
+		resolutionStorageKey(ref, partIdx), src.Pattern, string(raw), exp)
 	return err
 }
 
 // SaveNegativeResolution caches a not_available resolution result for 60s so
 // a dead kind cannot stampede the plugin (spec §4.4).
 func (s *Service) SaveNegativeResolution(ctx context.Context, ref core.ItemRef) error {
+	return s.SaveNegativePartResolution(ctx, ref, nil)
+}
+
+// SaveNegativePartResolution caches a not_available resolution result for ref
+// and optional partIdx for 60s (spec §4.4, #576).
+func (s *Service) SaveNegativePartResolution(ctx context.Context, ref core.ItemRef, partIdx *int) error {
 	exp := s.now().Add(ResolutionNegativeCacheTTL).Unix()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO plugin_resolutions(item_ref, pattern, source, negative, expires_at)
@@ -1533,13 +1580,19 @@ ON CONFLICT(item_ref) DO UPDATE SET
 	source     = '{}',
 	negative   = 1,
 	expires_at = excluded.expires_at`,
-		string(ref), exp)
+		resolutionStorageKey(ref, partIdx), exp)
 	return err
 }
 
 // GetResolution looks up a non-expired cached resolution for ref (spec §4.4).
 // If a negative cache entry is active, it returns (zero, true, core.ErrNotAvailable).
 func (s *Service) GetResolution(ctx context.Context, ref core.ItemRef) (core.PlayableSource, bool, error) {
+	return s.GetPartResolution(ctx, ref, nil)
+}
+
+// GetPartResolution looks up a non-expired cached resolution for ref and
+// optional partIdx (spec §4.4, #576).
+func (s *Service) GetPartResolution(ctx context.Context, ref core.ItemRef, partIdx *int) (core.PlayableSource, bool, error) {
 	nowUnix := s.now().Unix()
 	var (
 		sourceJSON string
@@ -1548,7 +1601,7 @@ func (s *Service) GetResolution(ctx context.Context, ref core.ItemRef) (core.Pla
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT source, negative, expires_at FROM plugin_resolutions WHERE item_ref = ?`,
-		string(ref)).Scan(&sourceJSON, &negative, &expiresAt)
+		resolutionStorageKey(ref, partIdx)).Scan(&sourceJSON, &negative, &expiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return core.PlayableSource{}, false, nil
@@ -1568,9 +1621,25 @@ func (s *Service) GetResolution(ctx context.Context, ref core.ItemRef) (core.Pla
 	return src, true, nil
 }
 
-// InvalidateResolution deletes the cached resolution for ref, e.g. on a
-// mid-stream upstream failure (spec §4.4).
+// InvalidateResolution deletes cached whole-item and per-part resolutions for
+// ref, e.g. on a mid-stream upstream failure (spec §4.4, #576).
 func (s *Service) InvalidateResolution(ctx context.Context, ref core.ItemRef) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM plugin_resolutions WHERE item_ref = ?`, string(ref))
+	refStr := string(ref)
+	partPrefix := refStr + "#part:"
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM plugin_resolutions WHERE item_ref = ? OR SUBSTR(item_ref, 1, ?) = ?`,
+		refStr, len(partPrefix), partPrefix)
+	return err
+}
+
+// InvalidatePartResolution deletes a single part's cached resolution when
+// partIdx is non-nil, or invalidates the whole item (and its parts) when nil.
+func (s *Service) InvalidatePartResolution(ctx context.Context, ref core.ItemRef, partIdx *int) error {
+	if partIdx == nil {
+		return s.InvalidateResolution(ctx, ref)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM plugin_resolutions WHERE item_ref = ?`,
+		resolutionStorageKey(ref, partIdx))
 	return err
 }

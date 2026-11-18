@@ -426,7 +426,7 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 			go func(ref slotRef, id string) {
 				defer wg.Done()
 				started := time.Now()
-				err := e.probeBody(ctx, ref, id)
+				err := e.probeSampleBody(ctx, ref, id)
 				events <- event{body: true, missing: isMissing(err), id: id, err: err, dur: time.Since(started)}
 			}(ref, id)
 		default:
@@ -583,6 +583,27 @@ func healthPriority(ctx context.Context) core.Priority {
 		return core.PriorityPrefetch
 	}
 	return core.PriorityLive
+}
+
+// probeSampleBody runs a primary BODY probe, tolerating obfuscated multi-part
+// =ybegin headers whose part/total/size are randomised when the article still
+// serves a valid yEnc header and matching =ypart range.
+func (e *Engine) probeSampleBody(ctx context.Context, ref slotRef, id string) error {
+	checker, ok := e.fetcher.(bodyPartChecker)
+	if ok && ref.pf.numSlots() > 1 && ref.pf.untrustedMeta() {
+		want := ref.pf.expectedPart(ref.slot)
+		return checker.CheckBodyPart(ctx, id, ref.pf.groups, healthPriority(ctx), core.ArticlePart{Begin: want.Begin, End: want.End})
+	}
+	err := e.probeBody(ctx, ref, id)
+	if !ok || !errors.Is(err, core.ErrArticleCorrupt) || ref.pf.numSlots() <= 1 {
+		return err
+	}
+	want := ref.pf.expectedPart(ref.slot)
+	err = checker.CheckBodyPart(ctx, id, ref.pf.groups, healthPriority(ctx), core.ArticlePart{Begin: want.Begin, End: want.End})
+	if err == nil {
+		ref.pf.markUntrustedMeta()
+	}
+	return err
 }
 
 // probeBody runs one BODY probe, preferring the yEnc-header check that

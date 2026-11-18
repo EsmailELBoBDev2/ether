@@ -123,13 +123,22 @@ func (m *Manager) openKindInitial(ctx context.Context, s *session) (*generation,
 	if err != nil {
 		openErr := fmt.Errorf("playback: open kind source: %w", err)
 		if ctx.Err() == nil {
-			m.recordTimeline(s, TimelineEvent{
-				Kind:    "candidate",
-				Level:   "warn",
-				Failing: true,
-				Message: "Plugin stream failed to open",
-				Detail:  OwnerError(openErr),
-			})
+			if errors.Is(err, core.ErrPreparing) {
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "info",
+					Message: "Plugin stream is still preparing",
+					Detail:  s.kindSourceID,
+				})
+			} else {
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "warn",
+					Failing: true,
+					Message: "Plugin stream failed to open",
+					Detail:  OwnerError(openErr),
+				})
+			}
 		}
 		return nil, openErr
 	}

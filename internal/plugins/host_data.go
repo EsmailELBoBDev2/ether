@@ -754,6 +754,7 @@ func defaultDataLimits() RuntimeLimits {
 		ArchiveMemberBytes:   maxArchiveMemberBytes,
 		ArchiveExpandedBytes: maxArchiveExpandedBytes,
 		ArchiveMembers:       maxArchiveMembers,
+		MaxItems:             DefaultMaxPluginItems,
 		Deadline:             "12h",
 	}
 }

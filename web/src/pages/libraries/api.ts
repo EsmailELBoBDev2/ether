@@ -87,6 +87,9 @@ export interface Library {
   createdAt: string;
   updatedAt: string;
   itemCount?: number;
+  storedItems?: number;
+  pluginItems?: number;
+  maxPluginItems?: number;
   sync?: LibrarySync;
   kind?: MediaKind;
   pluginName?: string;

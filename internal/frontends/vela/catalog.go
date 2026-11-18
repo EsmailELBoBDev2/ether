@@ -788,12 +788,29 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	}
 	n = min(n, 100)
 	iq.Limit = n
-	if kindLibrary != 0 {
-		// Plugin items are filtered by library after the search, so ask
-		// for the widest page and trim.
-		iq.Limit = 100
-	}
+
 	var p frontend.SearchPage
+	scoped := false
+	if kindLibrary != 0 && b.Mode == "fast" {
+		// A plugin kind searches inside its own library, so sorting and the
+		// page limit apply to that library's matches only (sorting the whole
+		// server first left none of them on the page).
+		viewID := i.viewForLibrary(r, v, kindLibrary)
+		if viewID == "" {
+			problem(w, 400, "request", "invalid_kind")
+			return
+		}
+		lq := iq
+		lq.Filter.Query = b.Query
+		page, err := i.host.Experience.LibraryItems(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), viewID, lq)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		p.Page = page
+		p.Continuation = frontend.ContinuationUnknown
+		kindLibrary, scoped = 0, true
+	}
 	switch b.Mode {
 	case "descriptive":
 		source, ok := i.host.Experience.(frontend.DescriptiveSearcher)
@@ -803,7 +820,9 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 		p, e = source.DescriptiveSearch(r.Context(), v, requestDevice(r), b.Query, iq)
 	case "fast":
-		p, e = i.host.Experience.Search(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), b.Query, iq)
+		if !scoped {
+			p, e = i.host.Experience.Search(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), b.Query, iq)
+		}
 	default:
 		problem(w, 400, "request", "invalid_search_mode")
 		return
@@ -813,6 +832,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if kindLibrary != 0 {
+		// Descriptive search for a plugin kind keeps only that library.
 		kept := p.Page.Items[:0]
 		for _, item := range p.Page.Items {
 			if item.LibraryID == kindLibrary && len(kept) < n {
@@ -959,4 +979,18 @@ func (i *instance) searchKinds(r *http.Request, v *frontend.Viewer) ([]object, m
 		kinds = append(kinds, object{"id": id, "label": view.Name})
 	}
 	return kinds, libs
+}
+
+// viewForLibrary returns the viewer's published view id for a library.
+func (i *instance) viewForLibrary(r *http.Request, v *frontend.Viewer, lib frontend.LibraryID) string {
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return ""
+	}
+	for _, view := range views {
+		if view.LibraryID == lib {
+			return view.ID
+		}
+	}
+	return ""
 }

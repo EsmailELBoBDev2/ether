@@ -114,8 +114,8 @@ type ItemUnavailable struct {
 // KindItem is the standardised plugin item envelope (spec §3.2).
 type KindItem struct {
 	Unavailable *ItemUnavailable           `json:"unavailable,omitempty"`
-	Ref         ItemRef                    `json:"-"`  // assigned by Ether, never sent to the plugin
-	Key         RatingKey                  `json:"-"`  // allocated PluginKey(seq), populated on store reads
+	Ref         ItemRef                    `json:"-" ` // assigned by Ether, never sent to the plugin
+	Key         RatingKey                  `json:"-" ` // allocated PluginKey(seq), populated on store reads
 	ID          string                     `json:"id"` // externalID
 	Level       string                     `json:"level"`
 	ParentID    string                     `json:"parentId,omitempty"`
@@ -133,6 +133,104 @@ type KindItem struct {
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"` // validated against the kind declaration
 	Hints       json.RawMessage            `json:"hints,omitempty"`  // opaque; stored and echoed to the resolver verbatim
 	ETag        string                     `json:"etag,omitempty"`
+}
+
+// KindItemPart describes one declared file/part of a multi-file KindItem in
+// hints.parts (spec §3.2, §4.1, #576).
+type KindItemPart struct {
+	Index       int     `json:"index"`
+	Name        string  `json:"name,omitempty"`
+	MIME        string  `json:"mime,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+
+// ExtractKindItemPartsFromItem inspects a KindItem for declared parts,
+// checking hints.parts first and falling back to a declared "parts" array
+// field when present (#576).
+func ExtractKindItemPartsFromItem(item KindItem) []KindItemPart {
+	if parts := ExtractKindItemParts(item.Hints); len(parts) > 0 {
+		return parts
+	}
+	if raw, ok := item.Fields["parts"]; ok && len(raw) > 0 {
+		if wrapped, err := json.Marshal(struct {
+			Parts json.RawMessage `json:"parts"`
+		}{Parts: raw}); err == nil {
+			return ExtractKindItemParts(wrapped)
+		}
+	}
+	return nil
+}
+
+// ExtractKindItemParts inspects a KindItem's Hints JSON for a non-empty
+// "parts" array and returns generic per-part metadata in declaration order.
+// Returns nil when the item does not declare parts.
+func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
+	if len(hints) == 0 {
+		return nil
+	}
+	var env struct {
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if err := json.Unmarshal(hints, &env); err != nil || len(env.Parts) == 0 {
+		return nil
+	}
+	out := make([]KindItemPart, 0, len(env.Parts))
+	for i, raw := range env.Parts {
+		part := KindItemPart{Index: i}
+		var str string
+		if err := json.Unmarshal(raw, &str); err == nil {
+			part.Name = strings.TrimSpace(str)
+			out = append(out, part)
+			continue
+		}
+		var obj struct {
+			Name        string  `json:"name"`
+			File        string  `json:"file"`
+			Filename    string  `json:"filename"`
+			Path        string  `json:"path"`
+			ROM         string  `json:"rom"`
+			Label       string  `json:"label"`
+			Title       string  `json:"title"`
+			ID          string  `json:"id"`
+			MIME        string  `json:"mime"`
+			MIMEType    string  `json:"mimeType"`
+			ContentType string  `json:"contentType"`
+			Size        int64   `json:"size"`
+			SizeBytes   int64   `json:"sizeBytes"`
+			ByteSize    int64   `json:"byteSize"`
+			DurationSec float64 `json:"durationSec"`
+			Duration    float64 `json:"duration"`
+		}
+		if err := json.Unmarshal(raw, &obj); err == nil {
+			for _, cand := range []string{obj.Name, obj.File, obj.Filename, obj.Path, obj.ROM, obj.Label, obj.Title, obj.ID} {
+				if s := strings.TrimSpace(cand); s != "" {
+					part.Name = s
+					break
+				}
+			}
+			for _, cand := range []string{obj.MIME, obj.MIMEType, obj.ContentType} {
+				if s := strings.TrimSpace(cand); s != "" {
+					part.MIME = s
+					break
+				}
+			}
+			for _, sz := range []int64{obj.Size, obj.SizeBytes, obj.ByteSize} {
+				if sz > 0 {
+					part.Size = sz
+					break
+				}
+			}
+			for _, dur := range []float64{obj.DurationSec, obj.Duration} {
+				if dur > 0 {
+					part.DurationSec = dur
+					break
+				}
+			}
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 // KindArtRef is one artwork reference on a KindItem.
@@ -199,7 +297,11 @@ type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// When set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -222,6 +324,14 @@ type SourceCandidate struct {
 	// through that indexer (an NZB needs its originating indexer).
 	Indexer   string `json:"indexer,omitempty"`
 	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video, scored against the
+	// requested (or owner default) quality profile; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns

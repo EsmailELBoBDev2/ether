@@ -955,6 +955,12 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "maxItems": {
+                  "default": 2000000,
+                  "description": "Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "memoryBytes": {
                   "default": 33554432,
                   "minimum": 0,

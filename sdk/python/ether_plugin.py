@@ -352,6 +352,7 @@ class RuntimeLimits(TypedDict, total=False):
     archiveMemberBytes: int
     archiveExpandedBytes: int
     archiveMembers: int
+    maxItems: int
     memoryBytes: int
     readBytes: int
     deadline: str
@@ -560,15 +561,32 @@ class _NotifyClient:
         self._call("POST", "/ether/plugin-host/notify", {"text": str(text)})
 
 
+def _check_part_index(part_index: Optional[int]) -> Optional[int]:
+    if part_index is None:
+        return None
+    if isinstance(part_index, bool) or not isinstance(part_index, int) or part_index < 0:
+        raise ValueError("stream url: part_index must be a non-negative integer")
+    return part_index
+
+
 class _FrontendClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
 
-    def stream_url(self, viewer_id: int, item_ref: str) -> str:
+    def stream_url(
+        self,
+        viewer_id: int,
+        item_ref: str,
+        part_index: Optional[int] = None,
+    ) -> str:
+        checked = _check_part_index(part_index)
+        payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
+        if checked is not None:
+            payload["partIndex"] = checked
         result = self._call(
             "POST",
             "/ether/plugin-host/frontend/stream-url",
-            {"viewerId": int(viewer_id), "itemRef": str(item_ref)},
+            payload,
         )
         return str((result or {}).get("url") or "")
 
@@ -715,12 +733,14 @@ class PluginContext:
     def t(self, key: str, params: Optional[Dict[str, Any]] = None) -> str:
         return self.i18n.t(key, params=params, locale=self.locale)
 
-    def stream_url(self, item_ref: str) -> str:
+    def stream_url(self, item_ref: str, part_index: Optional[int] = None) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5). The viewer is the one Ether authenticated on this
-        request (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
+        items (spec §6.5), or for one zero-based part when part_index is set
+        (#576). The viewer is the one Ether authenticated on this request
+        (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
+        checked = _check_part_index(part_index)
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -728,7 +748,9 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
-        return self.ether.frontend.stream_url(viewer_id, str(item_ref))
+        if checked is None:
+            return self.ether.frontend.stream_url(viewer_id, str(item_ref))
+        return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
 
 
 def _get_header(headers: Optional[Dict[str, Any]], name: str) -> Optional[str]:
@@ -2055,6 +2077,7 @@ class MockHostClient:
         self.notifications: List[str] = []
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
+        self.last_stream_url_part: Optional[int] = None
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -2076,6 +2099,7 @@ class MockHostClient:
             "archiveMemberBytes": 8 * 1024 * 1024 * 1024,
             "archiveExpandedBytes": 32 * 1024 * 1024 * 1024,
             "archiveMembers": 65535,
+            "maxItems": 2_000_000,
             "deadline": "12h",
         }
         self.runtime = self._Runtime(self)
@@ -2097,9 +2121,17 @@ class MockHostClient:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
 
-        def stream_url(self, viewer_id: int, item_ref: str) -> str:
+        def stream_url(
+            self,
+            viewer_id: int,
+            item_ref: str,
+            part_index: Optional[int] = None,
+        ) -> str:
+            checked = _check_part_index(part_index)
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
-            return f"/ether/v1/kind-media/mock-{int(viewer_id)}"
+            self._p.last_stream_url_part = checked
+            base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
+            return base if checked is None else f"{base}?part={checked}"
 
     class _Kinds:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -2689,10 +2721,15 @@ def candidate_ref(candidate: Dict[str, Any]) -> str:
     return str(candidate.get("title") or "")
 
 
-def stream_url(ctx: PluginContext, item_ref: str) -> str:
+def stream_url(
+    ctx: PluginContext,
+    item_ref: str,
+    part_index: Optional[int] = None,
+) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5). Kept as a thin wrapper over PluginContext.stream_url."""
-    return ctx.stream_url(item_ref)
+    (spec §6.5) or one zero-based part (#576). Kept as a thin wrapper over
+    PluginContext.stream_url."""
+    return ctx.stream_url(item_ref, part_index=part_index)
 
 
 class _KindsClient:
@@ -2712,9 +2749,13 @@ class _KindsClient:
 
     def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics). A release source
-        may set release.fileIndex or candidate.fileIndex (zero-based provider
-        torrent list), or release.file (exact path/unique basename), to open any file
+        Newznab IDs or family names, e.g. music/books/comics; with empty query,
+        fetches up to 100 recent releases) and profile (quality profile name for
+        video release scoring; default uses owner default). Video candidates
+        include score, resolution, source and codec alongside indexer/indexerId;
+        non-video candidates omit those video fields. A release source may set
+        release.fileIndex or candidate.fileIndex (zero-based provider torrent
+        list), or release.file (exact path/unique basename), to open any file
         kind. Invalid selections fail; omitted selectors retain video selection.
         Explicit file selection is supported for torrents, not NZB members.
         """

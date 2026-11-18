@@ -766,15 +766,22 @@ order. Patterns:
   on an NZB release are rejected; use a container source for archive members.
   `fileHint` retains its existing meaning as an archive member hint.
 
-`ResolveSources({kind: "indexer_search", query, category})` accepts a
+`ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
 and the query unchanged, rather than assuming a movie or TV request.
-Invalid categories are rejected. Stremio/addon sources do not support this
-filter and reject scoped searches. Omit `category` for the default media
-search. Results and acquired files are cached separately by category and
-file selection. The wire shapes are documented in
+When `query` is omitted or empty and `category` is set, Ether issues a
+recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
+the newest 100 candidates; an empty `query` with no `category` is refused.
+Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
+release names also receive `score`, `resolution`, `source` and `codec` scored
+against `profile` (or the owner's default quality profile when `profile` is
+empty); non-video candidates leave those four fields empty, and unknown profile
+names are rejected. Invalid categories are rejected. Stremio/addon sources do
+not support category filters and reject scoped searches. Omit `category` for
+the default media search. Results and acquired files are cached separately by
+category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
 URLs may carry `{itemIndex}`, `{pageNumber}` (= itemIndex + 1),
@@ -789,6 +796,51 @@ content) your resolver can ask Ether to find bytes through the
 owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
+
+### Multi-file items (`hints.parts`)
+
+When one playable item consists of several ordered files (multi-disc sets,
+CUE + BIN tracks, multi-part audiobooks, split archives), list its parts on the
+item in `hints.parts` (an array of `{name, mime?, size?, durationSec?}` objects
+or filenames; Ether also reads a declared `fields.parts` array when
+`hints.parts` is absent):
+
+```json
+{
+  "id": "ff7",
+  "level": "game",
+  "title": "Final Fantasy VII",
+  "playable": true,
+  "hints": {
+    "parts": [
+      { "name": "Disc 1.chd", "mime": "application/octet-stream", "size": 524288000 },
+      { "name": "Disc 2.chd", "mime": "application/octet-stream", "size": 512000000 },
+      { "name": "Disc 3.chd", "mime": "application/octet-stream", "size": 498000000 }
+    ]
+  }
+}
+```
+
+When `parts` is non-empty, Ether calls `/ether/v1/kinds/{kind}/resolve` per
+part with zero-based `partIndex` (`0 .. len(parts)-1`), caches and invalidates
+resolved sources per `(item, partIndex)`, and isolates pending prepare jobs per
+part:
+
+- **Whole-item opens** (standard protocol playback or `/ether/v1/kind-media/{ticket}`
+  without a part selector) resolve `partIndex: 0` for single-part items and
+  deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
+  parts (`0 .. N-1`).
+- **Per-part opens** let frontend adapters and multi-file clients fetch each
+  file individually:
+  - Mint a part-scoped ticket URL with `ether.frontend.streamURL(itemRef, partIndex).url`
+    (hosted JS), `streamUrl(ctx, itemRef, partIndex)` (TypeScript SDK),
+    `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
+    `ctx.stream_url(item_ref, part_index)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"}`.
+  - Or pass `?part=N` on an unpinned item ticket (`/ether/v1/kind-media/{ticket}?part=0`).
+    A malformed or negative `part` answers `400 invalid_part`, an out-of-range
+    part answers `404 item_not_found`, and a `?part=N` that disagrees with a
+    part-scoped ticket answers `404 ticket_invalid`.
 
 Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
@@ -820,11 +872,13 @@ defaults per library afterwards.
 
   | Status | Code | Meaning |
   |---|---|---|
-  | 404 | `ticket_invalid` | Unknown, expired (2 min) or out-of-scope ticket |
+  | 400 | `invalid_part` | `?part=` is not a non-negative integer |
+  | 404 | `ticket_invalid` | Unknown, expired (2 min), out-of-scope, or part-mismatched ticket |
   | 403 | `viewer_invalid` | The ticket's viewer can no longer play |
-  | 404 | `item_not_found` | The item is not in a library this viewer can open |
+  | 404 | `item_not_found` | The item (or requested part index) is not in a library this viewer can open |
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
+  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
   | 503 | `source_unavailable` | The source is temporarily unavailable |
   | 502 | `open_failed` | The source could not be opened |
 
@@ -1103,11 +1157,14 @@ between calls and host operations during playback, Live TV or high host load.
 They are cancellable with visible progress. Persist checkpoints in KV for
 recovery on a later owner action after restart; Ether does not resume eagerly.
 
-`ether.runtime.limits` requests memory, time, compute, download and archive
-resources within owner-controlled global/per-plugin ceilings. Defaults: 2 GiB
-memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB), 12h, effectively
-unlimited background work units, 8 GiB download/member, 32 GiB total expansion,
-and 65,535 members. The library cache quota further bounds downloads. The owner
+`ether.runtime.limits` requests memory, time, compute, download, archive and
+catalogue-item resources within owner-controlled global/per-plugin ceilings.
+Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
+12h, effectively unlimited background work units, 8 GiB download/member, 32 GiB
+total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
+(`maxItems`, with no upper cap when raised by the owner). Remote plugins can
+also request data and `maxItems` limits. The library cache quota further bounds
+downloads. The owner
 sees requested versus granted values before install and in the drawer, and can
 raise or lower ceilings under Plugins → Settings or for one plugin. Saving
 stops affected jobs so the new ceilings apply immediately.
@@ -1128,10 +1185,15 @@ per-route limits and how owners raise ceilings.
 Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
 `job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
 25 seconds total per Play, and keeps each invocation within five seconds.
-Pending is neutral for health. When the total expires the item is not available
-yet; this result is not saved as a negative resolution. A job receives the
-original request body, uses promoted deadlines and continuation replies, and
-is deduplicated per plugin/kind/item. Job completion wakes the next resolve.
+Pending is neutral for health. When the 25-second budget expires while the reply is still `pending` (or when
+background job slots are full), Ether returns `503` with `code: "preparing"` and
+`Retry-After` set from the last `retryInMs` (defaulting to `5` seconds) across
+`kind-media`, Vela, Jellyfin/MediaBrowser, and Plex API routes, and never saves
+a negative resolution — whereas a real empty `sources: []` answer stays `409`
+`no_source`. A job receives the original request body (including `partIndex` when
+resolving a multi-part item), uses promoted deadlines and continuation replies,
+and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
+the next resolve.
 
 For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
 A miss returns pending while a bounded host worker streams digests without
@@ -1204,6 +1266,7 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 | `archiveMemberBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
+| `maxItems` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | zero means effectively unlimited |
@@ -1219,6 +1282,7 @@ type PluginRuntimeLimits struct {
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
@@ -1406,8 +1470,8 @@ type ItemUnavailable struct {
 // KindItem is the standardised plugin item envelope (spec §3.2).
 type KindItem struct {
 	Unavailable *ItemUnavailable           `json:"unavailable,omitempty"`
-	Ref         ItemRef                    `json:"-"`  // assigned by Ether, never sent to the plugin
-	Key         RatingKey                  `json:"-"`  // allocated PluginKey(seq), populated on store reads
+	Ref         ItemRef                    `json:"-" ` // assigned by Ether, never sent to the plugin
+	Key         RatingKey                  `json:"-" ` // allocated PluginKey(seq), populated on store reads
 	ID          string                     `json:"id"` // externalID
 	Level       string                     `json:"level"`
 	ParentID    string                     `json:"parentId,omitempty"`
@@ -1425,6 +1489,127 @@ type KindItem struct {
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"` // validated against the kind declaration
 	Hints       json.RawMessage            `json:"hints,omitempty"`  // opaque; stored and echoed to the resolver verbatim
 	ETag        string                     `json:"etag,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#KindItemPart.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `name` | `string` | may be omitted (see validation for conditions) |  |
+| `mime` | `string` | may be omitted (see validation for conditions) |  |
+| `size` | `int64` | may be omitted (see validation for conditions) |  |
+| `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/kinditem.go#KindItemPart
+
+``````
+// KindItemPart describes one declared file/part of a multi-file KindItem in
+// hints.parts (spec §3.2, §4.1, #576).
+type KindItemPart struct {
+	Index       int     `json:"index"`
+	Name        string  `json:"name,omitempty"`
+	MIME        string  `json:"mime,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#ExtractKindItemPartsFromItem
+
+``````
+// ExtractKindItemPartsFromItem inspects a KindItem for declared parts,
+// checking hints.parts first and falling back to a declared "parts" array
+// field when present (#576).
+func ExtractKindItemPartsFromItem(item KindItem) []KindItemPart {
+	if parts := ExtractKindItemParts(item.Hints); len(parts) > 0 {
+		return parts
+	}
+	if raw, ok := item.Fields["parts"]; ok && len(raw) > 0 {
+		if wrapped, err := json.Marshal(struct {
+			Parts json.RawMessage `json:"parts"`
+		}{Parts: raw}); err == nil {
+			return ExtractKindItemParts(wrapped)
+		}
+	}
+	return nil
+}
+``````
+
+## Source: internal/core/kinditem.go#ExtractKindItemParts
+
+``````
+// ExtractKindItemParts inspects a KindItem's Hints JSON for a non-empty
+// "parts" array and returns generic per-part metadata in declaration order.
+// Returns nil when the item does not declare parts.
+func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
+	if len(hints) == 0 {
+		return nil
+	}
+	var env struct {
+		Parts []json.RawMessage `json:"parts"`
+	}
+	if err := json.Unmarshal(hints, &env); err != nil || len(env.Parts) == 0 {
+		return nil
+	}
+	out := make([]KindItemPart, 0, len(env.Parts))
+	for i, raw := range env.Parts {
+		part := KindItemPart{Index: i}
+		var str string
+		if err := json.Unmarshal(raw, &str); err == nil {
+			part.Name = strings.TrimSpace(str)
+			out = append(out, part)
+			continue
+		}
+		var obj struct {
+			Name        string  `json:"name"`
+			File        string  `json:"file"`
+			Filename    string  `json:"filename"`
+			Path        string  `json:"path"`
+			ROM         string  `json:"rom"`
+			Label       string  `json:"label"`
+			Title       string  `json:"title"`
+			ID          string  `json:"id"`
+			MIME        string  `json:"mime"`
+			MIMEType    string  `json:"mimeType"`
+			ContentType string  `json:"contentType"`
+			Size        int64   `json:"size"`
+			SizeBytes   int64   `json:"sizeBytes"`
+			ByteSize    int64   `json:"byteSize"`
+			DurationSec float64 `json:"durationSec"`
+			Duration    float64 `json:"duration"`
+		}
+		if err := json.Unmarshal(raw, &obj); err == nil {
+			for _, cand := range []string{obj.Name, obj.File, obj.Filename, obj.Path, obj.ROM, obj.Label, obj.Title, obj.ID} {
+				if s := strings.TrimSpace(cand); s != "" {
+					part.Name = s
+					break
+				}
+			}
+			for _, cand := range []string{obj.MIME, obj.MIMEType, obj.ContentType} {
+				if s := strings.TrimSpace(cand); s != "" {
+					part.MIME = s
+					break
+				}
+			}
+			for _, sz := range []int64{obj.Size, obj.SizeBytes, obj.ByteSize} {
+				if sz > 0 {
+					part.Size = sz
+					break
+				}
+			}
+			for _, dur := range []float64{obj.DurationSec, obj.Duration} {
+				if dur > 0 {
+					part.DurationSec = dur
+					break
+				}
+			}
+		}
+		out = append(out, part)
+	}
+	return out
 }
 ``````
 
@@ -1590,7 +1775,8 @@ type KindMatchResponse struct {
 |---|---|---|---|
 | `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
-| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. |
+| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
+| `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
@@ -1605,7 +1791,11 @@ type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// When set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -1626,6 +1816,10 @@ type SourceQuery struct {
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
 | `indexer` | `string` | may be omitted (see validation for conditions) | Indexer and IndexerID name the indexer an indexer_search result came from, so a plugin that hands the candidate back can be fetched through that indexer (an NZB needs its originating indexer). |
 | `indexerId` | `string` | may be omitted (see validation for conditions) |  |
+| `score` | `*int` | may be omitted (see validation for conditions) | Score, Resolution, Source and Codec are populated on indexer_search candidates whose release name identifies video, scored against the requested (or owner default) quality profile; non-video candidates leave them empty. |
+| `resolution` | `int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+| `codec` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#SourceCandidate
@@ -1648,6 +1842,14 @@ type SourceCandidate struct {
 	// through that indexer (an NZB needs its originating indexer).
 	Indexer   string `json:"indexer,omitempty"`
 	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video, scored against the
+	// requested (or owner default) quality profile; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 }
 ``````
 
@@ -2449,6 +2651,15 @@ type RuntimeDecl struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#DefaultMaxPluginItems
+
+``````
+// DefaultMaxPluginItems is the default per-plugin stored item ceiling across
+// its content libraries; owners can raise or lower it globally or per plugin
+// without an upper bound.
+const DefaultMaxPluginItems = 2_000_000
+``````
+
 ## Source: internal/plugins/contract.go#RuntimeLimits.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2457,6 +2668,7 @@ type RuntimeDecl struct {
 | `archiveMemberBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
+| `maxItems` | `int` | may be omitted (see validation for conditions) | default 2,000,000 stored items across the plugin's libraries; owner-controlled |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) | default 32 MiB, ceiling owner-controlled, up to 4 GiB |
 | `readBytes` | `int64` | may be omitted (see validation for conditions) | ReadBytes is the granted per-call byte ceiling for cache.read, archive.open and archive.read, derived from MemoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB). |
 | `deadline` | `string` | may be omitted (see validation for conditions) | Deadline and UnitBudget are the granted ceilings in manifests/detail and the active route's effective call limits when read via runtime.limits. Go duration; default 12h ceiling, clamped per route on active calls |
@@ -2466,13 +2678,15 @@ type RuntimeDecl struct {
 ## Source: internal/plugins/contract.go#RuntimeLimits
 
 ``````
-// RuntimeLimits requests per-call hosted resources. Ether grants defaults for
-// omitted fields and clamps requests to owner-controlled ceilings.
+// RuntimeLimits requests per-call hosted resources and data/catalogue ceilings.
+// Ether grants defaults for omitted fields and clamps requests to
+// owner-controlled ceilings.
 type RuntimeLimits struct {
 	FetchBytes           int64  `json:"fetchBytes,omitempty"`
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`    // default 2,000,000 stored items across the plugin's libraries; owner-controlled
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"` // default 32 MiB, ceiling owner-controlled, up to 4 GiB
 	// ReadBytes is the granted per-call byte ceiling for cache.read,
 	// archive.open and archive.read, derived from MemoryBytes:
@@ -3549,6 +3763,7 @@ type Host interface {
 	// from another plugin, or a library the viewer cannot see, are
 	// refused. Bytes are then served by Ether, never by the plugin.
 	StreamURL(ctx context.Context, itemRef string) (string, error)
+	StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error)
 
 	// FoldersList and FoldersStat need folders: read and an owner-picked
 	// root. They never return file contents.
@@ -7513,6 +7728,7 @@ func defaultDataLimits() RuntimeLimits {
 		ArchiveMemberBytes:   maxArchiveMemberBytes,
 		ArchiveExpandedBytes: maxArchiveExpandedBytes,
 		ArchiveMembers:       maxArchiveMembers,
+		MaxItems:             DefaultMaxPluginItems,
 		Deadline:             "12h",
 	}
 }
@@ -7537,13 +7753,15 @@ type KindBackends struct {
 	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
-	StreamURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 }
 ``````
 
@@ -7557,10 +7775,12 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
 	m.deps.Backends.StreamURL = b.StreamURL
+	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.mu.Unlock()
 }
 ``````
@@ -7575,10 +7795,12 @@ func (m *Manager) kindBackends() KindBackends {
 		KindUpsert:     m.deps.Backends.KindUpsert,
 		KindDelete:     m.deps.Backends.KindDelete,
 		KindItems:      m.deps.Backends.KindItems,
+		KindItemCount:  m.deps.Backends.KindItemCount,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
 		StreamURL:      m.deps.Backends.StreamURL,
+		StreamPartURL:  m.deps.Backends.StreamPartURL,
 	}
 }
 ``````
@@ -7901,20 +8123,32 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	need := "search"
 	switch q.Kind {
 	case "indexer_search":
-		if strings.TrimSpace(q.Query) == "" {
-			return nil, fmt.Errorf("plugins: indexer_search needs a query")
+		if strings.TrimSpace(q.Query) == "" && strings.TrimSpace(q.Category) == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "query",
+				Message: "indexer_search needs a query or category",
+			}}}
 		}
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
-			return nil, fmt.Errorf("plugins: debrid_check needs an info hash")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHashes",
+				Message: "debrid_check needs an info hash",
+			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" {
-			return nil, fmt.Errorf("plugins: debrid_acquire needs an info hash or magnet")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "debrid_acquire needs an info hash or magnet",
+			}}}
 		}
 	default:
-		return nil, fmt.Errorf("plugins: unknown source query kind %q", q.Kind)
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "kind",
+			Message: fmt.Sprintf("unknown source query kind %q", q.Kind),
+		}}}
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
@@ -8016,6 +8250,14 @@ func withViewerHeader(ctx context.Context, headers map[string]string) context.Co
 // X-Ether-Viewer. The backend re-checks that the item belongs to this plugin
 // and that the viewer may see its library.
 func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
+	return h.StreamPartURL(ctx, itemRef, nil)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*host.StreamPartURL
+
+``````
+func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error) {
 	rec, _, err := h.record(ctx)
 	if err != nil {
 		return "", err
@@ -8033,11 +8275,25 @@ func (h *host) StreamURL(ctx context.Context, itemRef string) (string, error) {
 	if strings.TrimSpace(itemRef) == "" {
 		return "", fmt.Errorf("plugins: stream url needs an item ref")
 	}
-	backend := h.m.kindBackends().StreamURL
-	if backend == nil {
+	if partIndex != nil && *partIndex < 0 {
+		return "", fmt.Errorf("plugins: stream url partIndex must be non-negative")
+	}
+	backends := h.m.kindBackends()
+	if backends.StreamPartURL != nil {
+		return backends.StreamPartURL(ctx, h.plugin, viewerID, itemRef, partIndex)
+	}
+	if backends.StreamURL == nil {
 		return "", ErrUnavailable
 	}
-	return backend(ctx, h.plugin, viewerID, itemRef)
+	u, err := backends.StreamURL(ctx, h.plugin, viewerID, itemRef)
+	if err != nil || partIndex == nil {
+		return u, err
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + "part=" + strconv.Itoa(*partIndex), nil
 }
 ``````
 
@@ -8784,7 +9040,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		page, err := b.h.KindItems(ctx, str(0), str(1), int(num(2)))
 		return result(page, err)
 	case "frontend.streamURL":
-		u, err := b.h.StreamURL(ctx, str(0))
+		var partIdx *int
+		if len(args) > 1 && string(args[1]) != "null" {
+			var n int
+			if err := json.Unmarshal(args[1], &n); err != nil || n < 0 {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+			}
+			partIdx = &n
+		}
+		u, err := b.h.StreamPartURL(ctx, str(0), partIdx)
 		if err != nil {
 			return nil, mapHostError(err)
 		}
@@ -9552,6 +9816,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			ArchiveMemberBytes:   8 << 30,
 			ArchiveExpandedBytes: 32 << 30,
 			ArchiveMembers:       65535,
+			MaxItems:             plugins.DefaultMaxPluginItems,
 			Deadline:             "12h",
 		}
 		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
@@ -13196,15 +13461,21 @@ func (m Manifest) Validate() error {
 		add("ether.runtime.kind", "must be hosted, remote or data")
 	}
 	if l := e.Runtime.Limits; l != nil {
-		if e.Runtime.Kind != "hosted" {
-			add("ether.runtime.limits", "only hosted plugins can request runtime limits")
+		switch e.Runtime.Kind {
+		case "hosted":
+		case "remote":
+			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 {
+				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline or unitBudget")
+			}
+		default:
+			add("ether.runtime.limits", "data packages cannot request runtime limits")
 		}
 		if l.Deadline != "" {
 			if d, err := time.ParseDuration(l.Deadline); err != nil || d <= 0 {
 				add("ether.runtime.limits.deadline", "must be a positive duration such as 120s")
 			}
 		}
-		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 {
+		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 || l.MaxItems < 0 {
 			add("ether.runtime.limits", "data ceilings must not be negative")
 		}
 		if l.UnitBudget < 0 {
@@ -14078,7 +14349,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		field, ok := fields[f]
 		if !ok {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "must name a declared field")
-		} else if !field.Indexed {
+		} else if !field.Indexed && field.Type != "people" {
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
 		}
 	}
@@ -14938,6 +15209,19 @@ type PendingReply struct {
 }
 ``````
 
+## Source: internal/plugins/pending.go#pendingBudgetBody
+
+``````
+func pendingBudgetBody(retryInMS int64) json.RawMessage {
+	if retryInMS > 0 {
+		if b, err := json.Marshal(PendingReply{Pending: true, RetryInMS: retryInMS}); err == nil {
+			return b
+		}
+	}
+	return json.RawMessage(`{"pending":true}`)
+}
+``````
+
 ## Source: internal/plugins/pending.go#*Manager.Call
 
 ``````
@@ -14949,10 +15233,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, ResolverTotal)
 	defer cancel()
-	// One job per plugin/kind/item, even across simultaneous Plays. Include the
-	// request body when older callers do not supply an item reference.
+	// One job per plugin/kind/item (and part index when set), even across
+	// simultaneous Plays. Include the request body when older callers do not
+	// supply an item reference.
 	var identity struct {
-		Item struct {
+		PartIndex *int `json:"partIndex"`
+		Item      struct {
 			Ref        string `json:"ref"`
 			ExternalID string `json:"id"`
 		} `json:"item"`
@@ -14964,9 +15250,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	}
 	if item == "" {
 		item = string(req.Body)
+	} else if identity.PartIndex != nil {
+		item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
 	}
 	suffix := fmt.Sprintf("|%x", sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimSuffix(req.Path, "/resolve"), "/match")+"|"+item)))
 	started := false
+	var lastRetryMS int64
 	var job *actionJob
 	for {
 		resp, err := m.callOnce(ctx, pluginID, req)
@@ -14975,7 +15264,7 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 				return Response{}, parent.Err()
 			}
 			if ctx.Err() != nil {
-				return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+				return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
 			}
 			return resp, err
 		}
@@ -14983,10 +15272,13 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 		if resp.Status >= 400 || json.Unmarshal(resp.Body, &pending) != nil || !pending.Pending {
 			return resp, nil
 		}
+		if pending.RetryInMS > 0 {
+			lastRetryMS = pending.RetryInMS
+		}
 		if !started && strings.HasPrefix(pending.Job, "/ether/job/") {
 			job, err = m.startResolverJob(pluginID, resp.Body, req.Body, suffix)
 			if err != nil {
-				return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+				return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
 			}
 			started = true
 		}
@@ -15001,7 +15293,7 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 			if parent.Err() != nil {
 				return Response{}, parent.Err()
 			}
-			return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+			return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
 		case <-done:
 			timer.Stop()
 			job = nil
@@ -15493,13 +15785,39 @@ func (h *HostHandler) cacheOpen(w http.ResponseWriter, r *http.Request) {
 // id is the one the adapter proxied the request for.
 func (h *HostHandler) frontendStreamURL(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ViewerID int64  `json:"viewerId"`
-		ItemRef  string `json:"itemRef"`
+		ViewerID  int64  `json:"viewerId"`
+		ItemRef   string `json:"itemRef"`
+		PartIndex *int   `json:"partIndex,omitempty"`
 	}
 	if !h.decode(w, r, maxHostBodyBytes, &body) {
 		return
 	}
-	u, err := h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+	if body.PartIndex != nil && *body.PartIndex < 0 {
+		writeHostError(w, http.StatusBadRequest, "bad_arguments", "partIndex must be non-negative")
+		return
+	}
+	var (
+		u   string
+		err error
+	)
+	if body.PartIndex != nil {
+		if ph, ok := h.host.(interface {
+			StreamPartURL(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+		}); ok {
+			u, err = ph.StreamPartURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef, body.PartIndex)
+		} else {
+			u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+			if err == nil {
+				sep := "?"
+				if strings.Contains(u, "?") {
+					sep = "&"
+				}
+				u = u + sep + "part=" + strconv.Itoa(*body.PartIndex)
+			}
+		}
+	} else {
+		u, err = h.host.StreamURL(r.Context(), pluginIDOf(r), body.ViewerID, body.ItemRef)
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
@@ -16127,6 +16445,7 @@ type runtimeCeilings struct {
 	units                   int64
 	fetch, member, expanded int64
 	members                 int
+	maxItems                int
 }
 ``````
 
@@ -16134,7 +16453,16 @@ type runtimeCeilings struct {
 
 ``````
 func defaultRuntimeCeilings() runtimeCeilings {
-	return runtimeCeilings{memory: 2 << 30, deadline: 12 * time.Hour, units: 1 << 60, fetch: 8 << 30, member: 8 << 30, expanded: 32 << 30, members: 65535}
+	return runtimeCeilings{
+		memory:   2 << 30,
+		deadline: 12 * time.Hour,
+		units:    1 << 60,
+		fetch:    8 << 30,
+		member:   8 << 30,
+		expanded: 32 << 30,
+		members:  65535,
+		maxItems: DefaultMaxPluginItems,
+	}
 }
 ``````
 
@@ -16163,6 +16491,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	if l.ArchiveMembers > 0 {
 		c.members = min(l.ArchiveMembers, 1000000)
 	}
+	if l.MaxItems > 0 {
+		c.maxItems = l.MaxItems
+	}
 	return c
 }
 ``````
@@ -16171,7 +16502,7 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 
 ``````
 func (m *Manager) runtimeConfig() config.Plugins {
-	if m.deps.ReadRuntimeConfig != nil {
+	if m != nil && m.deps.ReadRuntimeConfig != nil {
 		return m.deps.ReadRuntimeConfig()
 	}
 	return config.Plugins{}
@@ -16185,6 +16516,41 @@ func (m *Manager) runtimeCeilings(id string) runtimeCeilings {
 	cfg := m.runtimeConfig()
 	c := applyRuntimeCeilings(defaultRuntimeCeilings(), cfg.RuntimeLimits)
 	return applyRuntimeCeilings(c, cfg.RuntimeOverrides[id])
+}
+``````
+
+## Source: internal/plugins/runtime_limits.go#*Manager.grantedMaxItems
+
+``````
+func (m *Manager) grantedMaxItems(man Manifest, c runtimeCeilings) int {
+	n := c.maxItems
+	if m != nil && m.runtimeConfig().RuntimeOverrides[man.ID].MaxItems > 0 {
+		return n
+	}
+	if man.Ether != nil && man.Ether.Runtime.Limits != nil && man.Ether.Runtime.Limits.MaxItems > 0 {
+		n = min(n, man.Ether.Runtime.Limits.MaxItems)
+	}
+	return n
+}
+``````
+
+## Source: internal/plugins/runtime_limits.go#*Manager.MaxPluginItems
+
+``````
+// MaxPluginItems returns the effective stored-item ceiling across all content
+// libraries owned by id (default 2,000,000; owner-configurable globally and per
+// plugin with no upper bound).
+func (m *Manager) MaxPluginItems(id string) int {
+	if m == nil {
+		return DefaultMaxPluginItems
+	}
+	c := m.runtimeCeilings(id)
+	if m.store != nil && id != "" {
+		if rec, err := m.store.record(context.Background(), id); err == nil {
+			return m.grantedMaxItems(rec.Manifest, c)
+		}
+	}
+	return c.maxItems
 }
 ``````
 
@@ -16228,6 +16594,7 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 	r.ArchiveMemberBytes = c.member
 	r.ArchiveExpandedBytes = c.expanded
 	r.ArchiveMembers = c.members
+	r.MaxItems = m.grantedMaxItems(man, c)
 	if req := man.Ether.Runtime.Limits; req != nil {
 		if req.FetchBytes > 0 {
 			r.FetchBytes = min(r.FetchBytes, req.FetchBytes)
@@ -16259,13 +16626,13 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 {
-			m.fail(w, fmt.Errorf("memory must be at most 4 GiB and work units must not be negative"))
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
+			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB and resource limits must not be negative.", nil)
 			return
 		}
 		if req.Limits.Deadline != "" {
 			if d, err := time.ParseDuration(req.Limits.Deadline); err != nil || d <= 0 || d > 365*24*time.Hour {
-				m.fail(w, fmt.Errorf("time limit must be positive and at most one year"))
+				writeErr(w, http.StatusBadRequest, "validation", "Time limit must be positive and at most one year.", nil)
 				return
 			}
 		}
@@ -16367,11 +16734,16 @@ func (h *host) DataLimits(ctx context.Context) RuntimeLimits {
 		}
 	}
 	c := h.m.runtimeCeilings(h.plugin)
+	maxItems := c.maxItems
+	if err == nil {
+		maxItems = h.m.grantedMaxItems(rec.Manifest, c)
+	}
 	return RuntimeLimits{
 		FetchBytes:           c.fetch,
 		ArchiveMemberBytes:   c.member,
 		ArchiveExpandedBytes: c.expanded,
 		ArchiveMembers:       c.members,
+		MaxItems:             maxItems,
 		MemoryBytes:          c.memory,
 		ReadBytes:            wasm.DataReadBytes(c.memory),
 		Deadline:             c.deadline.String(),
@@ -19804,7 +20176,7 @@ globalThis.ether = (() => {
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
              open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]) },
     archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
-    frontend: { streamURL: (itemRef) => call("frontend.streamURL", [itemRef]) },
+    frontend: { streamURL: (itemRef, partIndex) => call("frontend.streamURL", partIndex == null ? [itemRef] : [itemRef, partIndex]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
                hashStart: (root, path) => call("folders.hashStart", [root, path]),
                hashPoll: (id) => call("folders.hashPoll", [id]),
@@ -22146,6 +22518,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.runtime.limits.archiveMembers` | `integer` | false | {"default":65535,"description":"Clamped to the owner ceiling; omitted or zero uses that ceiling.","minimum":0} |
 | `ether.runtime.limits.deadline` | `string` | false | {"description":"Positive Go duration; omitted uses the owner ceiling (default 12h)."} |
 | `ether.runtime.limits.fetchBytes` | `integer` | false | {"default":8589934592,"description":"Clamped to the owner ceiling; omitted or zero uses that ceiling.","minimum":0} |
+| `ether.runtime.limits.maxItems` | `integer` | false | {"default":2000000,"description":"Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.","minimum":0} |
 | `ether.runtime.limits.memoryBytes` | `integer` | false | {"default":33554432,"minimum":0} |
 | `ether.runtime.limits.unitBudget` | `integer` | false | {"default":1152921504606847000,"minimum":0} |
 | `ether.runtime.module` | `string` | false | {"description":"WASM file. Hosted only."} |
@@ -23121,6 +23494,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                   "minimum": 0,
                   "type": "integer"
                 },
+                "maxItems": {
+                  "default": 2000000,
+                  "description": "Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "memoryBytes": {
                   "default": 33554432,
                   "minimum": 0,
@@ -23257,11 +23636,16 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           ]
         },
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search text for indexer_search. May be omitted or empty when category is set to fetch the newest up to 100 recent releases."
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search only."
+          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
         },
         "infoHashes": {
           "type": "array",
@@ -23305,6 +23689,28 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         },
         "cached": {
           "type": "boolean"
+        },
+        "indexer": {
+          "type": "string"
+        },
+        "indexerId": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Owner quality-profile score for video release names on indexer_search; omitted on non-video candidates."
+        },
+        "resolution": {
+          "type": "integer",
+          "description": "Parsed vertical resolution (e.g. 2160, 1080) for video release names; omitted on non-video candidates."
+        },
+        "source": {
+          "type": "string",
+          "description": "Parsed video source (e.g. remux, bluray, webdl, webrip, hdtv) for video release names; omitted on non-video candidates."
+        },
+        "codec": {
+          "type": "string",
+          "description": "Parsed video codec (e.g. av1, hevc, h264) for video release names; omitted on non-video candidates."
         }
       }
     },
@@ -23519,7 +23925,7 @@ than billed as guest wall time):
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
 SDK) inside a hosted handler returns the **effective** `deadline` and
 `unitBudget` for the current call after route and owner clamps, alongside
-`memoryBytes`, `readBytes`, `fetchBytes` and archive limits. If a viewer-path
+`memoryBytes`, `readBytes`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 
@@ -23690,10 +24096,14 @@ regenerate the reference instead of duplicating contracts in prose.
 Kind `/resolve` and `/match` handlers may return `{pending:true,retryInMs:1000}`.
 Ether retries after 250–5000 ms (clamped), for at most 25 seconds per Play;
 each invocation still has a five-second cap. Pending does not damage health.
-After 25 seconds the item is not available yet; another Play may find it ready.
-For slow searches, also return `job:"/ether/job/prepare"`. Ether deduplicates
-running jobs per plugin, kind and item, passes the original request body, and
-uses the existing promoted job deadline and continuation protocol. A completed
+If a call is still `pending` after the 25-second wait budget, Ether answers
+`503` with `code: "preparing"` and `Retry-After` (from `retryInMs`, or `5` s by
+default) on `kind-media`, Vela, Jellyfin and Plex API routes without caching a
+negative resolution; only a real empty `sources: []` / `404` answer becomes `409`
+`no_source`. For slow searches, also return `job:"/ether/job/prepare"`. Ether
+deduplicates running jobs per plugin, kind, item and `partIndex`, passes the
+original request body, and uses the existing promoted job deadline and
+continuation protocol. A completed
 job wakes the resolver before the retry timer. Persist results in KV; never do
 work ahead of an actual request. At most two jobs run per plugin.
 
@@ -23732,11 +24142,22 @@ function resolve(req) {
 
 ## Frontend adapter downloads
 
-Hosted adapters can return a redirect to a host-minted item stream URL:
+Hosted adapters can return a redirect to a host-minted item stream URL (or a
+specific zero-based part when an item declares `hints.parts`):
 
 ```js
-return {status:302, headers:{Location:ether.frontend.streamURL(itemRef)}};
+// Whole item (concatenated sequence for multi-part items):
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef).url}};
+// Single part (resolves with KindResolveRequest.partIndex = partIndex):
+return {status:302, headers:{Location:ether.frontend.streamURL(itemRef, partIndex).url}};
 ```
+
+In the SDKs, call `streamUrl(ctx, itemRef, partIndex?)` (TypeScript),
+`ctx.StreamPartURL(itemRef, partIndex)` (Go), or `ctx.stream_url(item_ref, part_index)`
+(Python); an unpinned item ticket also accepts `/ether/v1/kind-media/{ticket}?part=N`.
+Multi-file items declare `hints.parts: [{name, mime?, size?, durationSec?}, ...]`
+(or a declared `parts` field) so Ether resolves and caches each part with its
+zero-based `KindResolveRequest.partIndex`.
 
 Only root-relative local redirect URLs are forwarded. External URLs, authority
 changes, control characters, backslashes and known account credential query
@@ -30329,6 +30750,17 @@ type Host interface {
 }
 ``````
 
+## Source: sdk/go/host.go#PartStreamHost
+
+``````
+// PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
+// part of a multi-file kind item (#576). RemoteHostClient and MockHost
+// implement it; Context.StreamPartURL uses it automatically.
+type PartStreamHost interface {
+	StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error)
+}
+``````
+
 ## Source: sdk/go/host.go#RemoteHostOptions.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -30872,6 +31304,27 @@ func (c *RemoteHostClient) StreamURL(ctx context.Context, viewerID int64, itemRe
 }
 ``````
 
+## Source: sdk/go/host.go#*RemoteHostClient.StreamPartURL
+
+``````
+// StreamPartURL mints a scoped stream ticket for one zero-based part of a
+// multi-file kind item (#576).
+func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
+		map[string]any{"viewerId": viewerID, "itemRef": itemRef, "partIndex": partIndex}, &out, false)
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+``````
+
 ## Source: sdk/go/host.go#*RemoteHostClient.FoldersHash
 
 ``````
@@ -31125,6 +31578,32 @@ type KindItem struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#KindItemPart.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `index` | `int` | emitted (validation may require a value) |  |
+| `name` | `string` | may be omitted (see validation for conditions) |  |
+| `mime` | `string` | may be omitted (see validation for conditions) |  |
+| `size` | `int64` | may be omitted (see validation for conditions) |  |
+| `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindItemPart
+
+``````
+// KindItemPart describes one declared file/part in hints.parts on a multi-file
+// KindItem (#576). Ether passes the zero-based index back in
+// KindResolveRequest.PartIndex when resolving each part.
+type KindItemPart struct {
+	Index       int     `json:"index"`
+	Name        string  `json:"name,omitempty"`
+	MIME        string  `json:"mime,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindArtRef.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -31243,7 +31722,8 @@ type KindChangesRequest struct {
 |---|---|---|---|
 | `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
-| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. |
+| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. |
+| `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
@@ -31256,8 +31736,12 @@ type KindChangesRequest struct {
 type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
-	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// Category accepts comma-separated Newznab IDs or standard family names;
+	// when set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -31276,6 +31760,12 @@ type SourceQuery struct {
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `seeders` | `int` | may be omitted (see validation for conditions) |  |
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
+| `indexer` | `string` | may be omitted (see validation for conditions) |  |
+| `indexerId` | `string` | may be omitted (see validation for conditions) |  |
+| `score` | `*int` | may be omitted (see validation for conditions) | Score, Resolution, Source and Codec are populated on indexer_search candidates whose release name identifies video; non-video candidates leave them empty. |
+| `resolution` | `int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+| `codec` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#SourceCandidate
@@ -31292,6 +31782,15 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	Indexer   string `json:"indexer,omitempty"`
+	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -31754,6 +32253,38 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
 	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+}
+``````
+
+## Source: sdk/go/kinds.go#*Context.StreamPartURL
+
+``````
+// StreamPartURL mints a short-lived, scoped ticket for one zero-based part of
+// a multi-file kind item (#576) and returns the Ether stream URL to embed in a
+// frontend adapter response.
+func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if c.Ether == nil {
+		return "", errors.New("stream url: no host service available")
+	}
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
+	if err != nil || viewerID <= 0 {
+		return "", errors.New("stream url: no authenticated viewer on this request")
+	}
+	if ph, ok := c.Ether.(PartStreamHost); ok {
+		return ph.StreamPartURL(c.Context, viewerID, itemRef, partIndex)
+	}
+	u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+	if err != nil {
+		return "", err
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + "part=" + strconv.Itoa(partIndex), nil
 }
 ``````
 
@@ -35669,6 +36200,7 @@ type RuntimeDecl struct {
 | `archiveMemberBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
+| `maxItems` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `readBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
@@ -35685,6 +36217,7 @@ type RuntimeLimits struct {
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
@@ -38201,6 +38734,7 @@ class RuntimeLimits(TypedDict, total=False):
     archiveMemberBytes: int
     archiveExpandedBytes: int
     archiveMembers: int
+    maxItems: int
     memoryBytes: int
     readBytes: int
     deadline: str
@@ -38409,15 +38943,32 @@ class _NotifyClient:
         self._call("POST", "/ether/plugin-host/notify", {"text": str(text)})
 
 
+def _check_part_index(part_index: Optional[int]) -> Optional[int]:
+    if part_index is None:
+        return None
+    if isinstance(part_index, bool) or not isinstance(part_index, int) or part_index < 0:
+        raise ValueError("stream url: part_index must be a non-negative integer")
+    return part_index
+
+
 class _FrontendClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
 
-    def stream_url(self, viewer_id: int, item_ref: str) -> str:
+    def stream_url(
+        self,
+        viewer_id: int,
+        item_ref: str,
+        part_index: Optional[int] = None,
+    ) -> str:
+        checked = _check_part_index(part_index)
+        payload: Dict[str, Any] = {"viewerId": int(viewer_id), "itemRef": str(item_ref)}
+        if checked is not None:
+            payload["partIndex"] = checked
         result = self._call(
             "POST",
             "/ether/plugin-host/frontend/stream-url",
-            {"viewerId": int(viewer_id), "itemRef": str(item_ref)},
+            payload,
         )
         return str((result or {}).get("url") or "")
 
@@ -38564,12 +39115,14 @@ class PluginContext:
     def t(self, key: str, params: Optional[Dict[str, Any]] = None) -> str:
         return self.i18n.t(key, params=params, locale=self.locale)
 
-    def stream_url(self, item_ref: str) -> str:
+    def stream_url(self, item_ref: str, part_index: Optional[int] = None) -> str:
         """Mint a scoped Ether stream URL for one of this plugin's own kind
-        items (spec §6.5). The viewer is the one Ether authenticated on this
-        request (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
+        items (spec §6.5), or for one zero-based part when part_index is set
+        (#576). The viewer is the one Ether authenticated on this request
+        (X-Ether-Viewer); bytes are served by Ether, not the plugin."""
         if self.ether is None:
             raise RuntimeError("stream url: no host service available")
+        checked = _check_part_index(part_index)
         raw = _get_header(self.headers, "X-Ether-Viewer")
         try:
             viewer_id = int(str(raw).strip()) if raw is not None else 0
@@ -38577,7 +39130,9 @@ class PluginContext:
             viewer_id = 0
         if viewer_id <= 0:
             raise RuntimeError("stream url: no authenticated viewer on this request")
-        return self.ether.frontend.stream_url(viewer_id, str(item_ref))
+        if checked is None:
+            return self.ether.frontend.stream_url(viewer_id, str(item_ref))
+        return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
 
 
 def _get_header(headers: Optional[Dict[str, Any]], name: str) -> Optional[str]:
@@ -39904,6 +40459,7 @@ class MockHostClient:
         self.notifications: List[str] = []
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
+        self.last_stream_url_part: Optional[int] = None
         self.http_handler: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda req: {
             "status": 200,
             "headers": {"Content-Type": "application/json"},
@@ -39925,6 +40481,7 @@ class MockHostClient:
             "archiveMemberBytes": 8 * 1024 * 1024 * 1024,
             "archiveExpandedBytes": 32 * 1024 * 1024 * 1024,
             "archiveMembers": 65535,
+            "maxItems": 2_000_000,
             "deadline": "12h",
         }
         self.runtime = self._Runtime(self)
@@ -39946,9 +40503,17 @@ class MockHostClient:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
 
-        def stream_url(self, viewer_id: int, item_ref: str) -> str:
+        def stream_url(
+            self,
+            viewer_id: int,
+            item_ref: str,
+            part_index: Optional[int] = None,
+        ) -> str:
+            checked = _check_part_index(part_index)
             self._p.last_stream_url = (int(viewer_id), str(item_ref))
-            return f"/ether/v1/kind-media/mock-{int(viewer_id)}"
+            self._p.last_stream_url_part = checked
+            base = f"/ether/v1/kind-media/mock-{int(viewer_id)}"
+            return base if checked is None else f"{base}?part={checked}"
 
     class _Kinds:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -40538,10 +41103,15 @@ def candidate_ref(candidate: Dict[str, Any]) -> str:
     return str(candidate.get("title") or "")
 
 
-def stream_url(ctx: PluginContext, item_ref: str) -> str:
+def stream_url(
+    ctx: PluginContext,
+    item_ref: str,
+    part_index: Optional[int] = None,
+) -> str:
     """Mint an Ether stream URL for one of this plugin's own kind items
-    (spec §6.5). Kept as a thin wrapper over PluginContext.stream_url."""
-    return ctx.stream_url(item_ref)
+    (spec §6.5) or one zero-based part (#576). Kept as a thin wrapper over
+    PluginContext.stream_url."""
+    return ctx.stream_url(item_ref, part_index=part_index)
 
 
 class _KindsClient:
@@ -40561,9 +41131,13 @@ class _KindsClient:
 
     def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics). A release source
-        may set release.fileIndex or candidate.fileIndex (zero-based provider
-        torrent list), or release.file (exact path/unique basename), to open any file
+        Newznab IDs or family names, e.g. music/books/comics; with empty query,
+        fetches up to 100 recent releases) and profile (quality profile name for
+        video release scoring; default uses owner default). Video candidates
+        include score, resolution, source and codec alongside indexer/indexerId;
+        non-video candidates omit those video fields. A release source may set
+        release.fileIndex or candidate.fileIndex (zero-based provider torrent
+        list), or release.file (exact path/unique basename), to open any file
         kind. Invalid selections fail; omitted selectors retain video selection.
         Explicit file selection is supported for torrents, not NZB members.
         """
@@ -41107,7 +41681,7 @@ then `LANG`) in the `X-Ether-Locale` header when the caller has not supplied one
 
 `ether.runtime.limits` requests `memoryBytes`, `deadline` (a positive Go duration
 such as `12h`), `unitBudget`, `fetchBytes`, `archiveMemberBytes`,
-`archiveExpandedBytes` and `archiveMembers`. Ether grants each request up to the
+`archiveExpandedBytes`, `archiveMembers` and `maxItems`. Ether grants each request up to the
 owner's global or per-plugin ceiling. Owners can raise or lower ceilings under
 Plugins → Settings and in each plugin's drawer. A per-plugin value overrides the
 global value, including raising it. Zero inherits; global zero uses the default.
@@ -41118,7 +41692,8 @@ omitted guest heap requests still use **32 MiB**, allocated only as needed.
 The default call/job time ceiling is **12 hours** and background compute is
 effectively unlimited (2^60 units per call); owners and manifests may lower it.
 The default download and expanded-member ceilings are **8 GiB** each, total
-archive expansion **32 GiB**, and archive members **65,535**. Downloads also obey
+archive expansion **32 GiB**, archive members **65,535**, and stored catalogue
+items **2,000,000** (`maxItems`, owner-adjustable with no upper bound). Downloads also obey
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
 `runtimeLimits` in install preview and detail, displayed side by side, and exposes
@@ -41257,6 +41832,12 @@ function checkArchiveReads(reads: ArchiveReadItem[]): void {
     if (total > MaxDataReadBytes) {
       throw new Error(`archive.read requested bytes exceed maximum readBytes ceiling (${MaxDataReadBytes})`);
     }
+  }
+}
+
+function checkPartIndex(partIndex: number | undefined): void {
+  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
+    throw new Error("stream url: partIndex must be a non-negative integer");
   }
 }
 
@@ -41554,11 +42135,12 @@ export interface EtherHost {
   };
   /**
    * Frontend-adapter host services (spec §6.5). streamUrl mints a scoped,
-   * short-lived Ether stream URL for one of this plugin's own kind items;
+   * short-lived Ether stream URL for one of this plugin's own kind items
+   * (or one zero-based part of a multi-file item when partIndex is given);
    * bytes are then served by Ether, never by the plugin.
    */
   frontend?: {
-    streamUrl(viewerId: number, itemRef: string): MaybePromise<string>;
+    streamUrl(viewerId: number, itemRef: string, partIndex?: number): MaybePromise<string>;
   };
   log(level: string, message: string, attrs?: Record<string, unknown>): MaybePromise<void>;
   abort(message?: string): never;
@@ -41613,7 +42195,7 @@ interface GlobalEtherBindings {
       owner: (text: string) => void;
     };
     frontend: {
-      streamURL: (itemRef: string) => { url: string };
+      streamURL: (itemRef: string, partIndex?: number) => { url: string };
     };
   };
 }
@@ -41801,11 +42383,15 @@ export function createHostedClient(): EtherHost {
       },
     },
     frontend: {
-      streamUrl(viewerId: number, itemRef: string): string {
+      streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
         // argument is accepted for parity with the remote client.
         void viewerId;
-        const r = callHost<{ url: string }>("frontend.streamURL", [itemRef]);
+        checkPartIndex(partIndex);
+        const r = callHost<{ url: string }>(
+          "frontend.streamURL",
+          partIndex === undefined ? [itemRef] : [itemRef, partIndex],
+        );
         return r?.url ?? "";
       },
     },
@@ -42083,10 +42669,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     frontend: {
-      async streamUrl(viewerId: number, itemRef: string): Promise<string> {
+      async streamUrl(viewerId: number, itemRef: string, partIndex?: number): Promise<string> {
+        checkPartIndex(partIndex);
         const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
           viewerId,
           itemRef,
+          ...(partIndex === undefined ? {} : { partIndex }),
         });
         return r?.url ?? "";
       },
@@ -42405,21 +42993,29 @@ export function candidateRef(c: SourceCandidate): string {
 
 /**
  * Mint a scoped, short-lived Ether stream URL for one of this plugin's own
- * kind items (spec §6.5). The viewer is the one Ether authenticated on this
- * request (X-Ether-Viewer); bytes are served by Ether, never by the plugin.
+ * kind items (spec §6.5), or for a single zero-based part of a multi-file item
+ * when `partIndex` is provided (#576). The viewer is the one Ether
+ * authenticated on this request (X-Ether-Viewer); bytes are served by Ether,
+ * never by the plugin.
  */
 export async function streamUrl<S = Record<string, unknown>>(
   ctx: PluginContext<S>,
   itemRef: string,
+  partIndex?: number,
 ): Promise<string> {
   if (!ctx.ether?.frontend) throw new Error("stream url: no host service available");
+  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
+    throw new Error("stream url: partIndex must be a non-negative integer");
+  }
   const raw = ctx.headers["X-Ether-Viewer"] ?? ctx.headers["x-ether-viewer"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   const viewerId = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(viewerId) || viewerId <= 0) {
     throw new Error("stream url: no authenticated viewer on this request");
   }
-  return ctx.ether.frontend.streamUrl(viewerId, itemRef);
+  return partIndex === undefined
+    ? ctx.ether.frontend.streamUrl(viewerId, itemRef)
+    : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
 }
 
 export interface KindHandlers<S = Record<string, unknown>> {
@@ -44858,6 +45454,7 @@ export interface RuntimeLimits {
   archiveMemberBytes?: number;
   archiveExpandedBytes?: number;
   archiveMembers?: number;
+  maxItems?: number;
   memoryBytes?: number;
   readBytes?: number;
   deadline?: string;
@@ -45193,6 +45790,14 @@ export interface KindItem {
   etag?: string;
 }
 
+export interface KindItemPart {
+  index?: number;
+  name?: string;
+  mime?: string;
+  size?: number;
+  durationSec?: number;
+}
+
 export interface KindPage {
   items: KindItem[];
   nextCursor?: string;
@@ -45220,8 +45825,10 @@ export interface KindChangePage {
 export interface SourceQuery {
   kind: "indexer_search" | "debrid_check" | "debrid_acquire";
   query?: string;
-  /** Comma-separated Newznab category IDs or standard family names; uses generic search. */
+  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
+  /** Quality profile name to score video release names against on indexer_search; empty uses default. */
+  profile?: string;
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
@@ -45237,6 +45844,13 @@ export interface SourceCandidate {
   size?: number;
   seeders?: number;
   cached?: boolean;
+  indexer?: string;
+  indexerId?: string;
+  /** Quality-profile score and parsed video facts; omitted on non-video candidates. */
+  score?: number;
+  resolution?: number;
+  source?: string;
+  codec?: string;
 }
 
 export interface KindMatchRequest {

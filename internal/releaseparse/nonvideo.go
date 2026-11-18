@@ -63,6 +63,13 @@ func IsBaitFile(s string) bool {
 	return baitExts[ext]
 }
 
+// IsVideoRelease reports whether name carries positive video release evidence
+// (resolution, video codec/container, HDR, or video source tag) and is not a
+// bait or non-video release (eBook, audiobook, soundtrack/OST).
+func IsVideoRelease(name string) bool {
+	return !IsNonVideoRelease(name, "") && hasVideoEvidence(name)
+}
+
 // IsNonVideoRelease reports whether a release name or file hint identifies
 // executable/shortcut bait or a non-video release (soundtrack/OST, ebook/EPUB,
 // audiobook). expectedTitles optionally lists known titles of the requested

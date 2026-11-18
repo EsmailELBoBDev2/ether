@@ -81,6 +81,12 @@ function checkArchiveReads(reads: ArchiveReadItem[]): void {
   }
 }
 
+function checkPartIndex(partIndex: number | undefined): void {
+  if (partIndex !== undefined && (!Number.isSafeInteger(partIndex) || partIndex < 0)) {
+    throw new Error("stream url: partIndex must be a non-negative integer");
+  }
+}
+
 function encodeData(data: Uint8Array): string {
   const parts: string[] = [];
   for (let i = 0; i < data.length; i += 3) {
@@ -375,11 +381,12 @@ export interface EtherHost {
   };
   /**
    * Frontend-adapter host services (spec §6.5). streamUrl mints a scoped,
-   * short-lived Ether stream URL for one of this plugin's own kind items;
+   * short-lived Ether stream URL for one of this plugin's own kind items
+   * (or one zero-based part of a multi-file item when partIndex is given);
    * bytes are then served by Ether, never by the plugin.
    */
   frontend?: {
-    streamUrl(viewerId: number, itemRef: string): MaybePromise<string>;
+    streamUrl(viewerId: number, itemRef: string, partIndex?: number): MaybePromise<string>;
   };
   log(level: string, message: string, attrs?: Record<string, unknown>): MaybePromise<void>;
   abort(message?: string): never;
@@ -434,7 +441,7 @@ interface GlobalEtherBindings {
       owner: (text: string) => void;
     };
     frontend: {
-      streamURL: (itemRef: string) => { url: string };
+      streamURL: (itemRef: string, partIndex?: number) => { url: string };
     };
   };
 }
@@ -622,11 +629,15 @@ export function createHostedClient(): EtherHost {
       },
     },
     frontend: {
-      streamUrl(viewerId: number, itemRef: string): string {
+      streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
         // argument is accepted for parity with the remote client.
         void viewerId;
-        const r = callHost<{ url: string }>("frontend.streamURL", [itemRef]);
+        checkPartIndex(partIndex);
+        const r = callHost<{ url: string }>(
+          "frontend.streamURL",
+          partIndex === undefined ? [itemRef] : [itemRef, partIndex],
+        );
         return r?.url ?? "";
       },
     },
@@ -904,10 +915,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
     },
     frontend: {
-      async streamUrl(viewerId: number, itemRef: string): Promise<string> {
+      async streamUrl(viewerId: number, itemRef: string, partIndex?: number): Promise<string> {
+        checkPartIndex(partIndex);
         const r = await callJson<{ url: string }>("POST", "/ether/plugin-host/frontend/stream-url", {
           viewerId,
           itemRef,
+          ...(partIndex === undefined ? {} : { partIndex }),
         });
         return r?.url ?? "";
       },

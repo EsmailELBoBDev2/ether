@@ -48,6 +48,17 @@ type KindItem struct {
 	ETag        string                     `json:"etag,omitempty"`
 }
 
+// KindItemPart describes one declared file/part in hints.parts on a multi-file
+// KindItem (#576). Ether passes the zero-based index back in
+// KindResolveRequest.PartIndex when resolving each part.
+type KindItemPart struct {
+	Index       int     `json:"index"`
+	Name        string  `json:"name,omitempty"`
+	MIME        string  `json:"mime,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+
 // KindArtRef is one artwork reference on a KindItem.
 type KindArtRef struct {
 	Role   string `json:"role"`
@@ -94,8 +105,12 @@ type KindChangesRequest struct {
 type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
-	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// Category accepts comma-separated Newznab IDs or standard family names;
+	// when set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -112,6 +127,15 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	Indexer   string `json:"indexer,omitempty"`
+	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -334,6 +358,34 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
 	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+}
+
+// StreamPartURL mints a short-lived, scoped ticket for one zero-based part of
+// a multi-file kind item (#576) and returns the Ether stream URL to embed in a
+// frontend adapter response.
+func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if c.Ether == nil {
+		return "", errors.New("stream url: no host service available")
+	}
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
+	if err != nil || viewerID <= 0 {
+		return "", errors.New("stream url: no authenticated viewer on this request")
+	}
+	if ph, ok := c.Ether.(PartStreamHost); ok {
+		return ph.StreamPartURL(c.Context, viewerID, itemRef, partIndex)
+	}
+	u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+	if err != nil {
+		return "", err
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + "part=" + strconv.Itoa(partIndex), nil
 }
 
 // dispatchKinds handles the /ether/v1/kinds, /ether/v1/setup and

@@ -213,7 +213,7 @@ func (e *Engine) probeLink(ctx context.Context, raw string, off, size int64) pro
 		return probeRejected
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, end))
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	resp, err := e.hcReplay.Do(req) // the probe, like the read, answers no redirects
 	if err != nil {
 		return probeRejected

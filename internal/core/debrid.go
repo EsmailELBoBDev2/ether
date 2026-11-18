@@ -78,6 +78,19 @@ var ErrWrongContent = fmt.Errorf("release contains different content: %w", ErrNo
 // so it wraps ErrNotAvailable and is not a permanent failure.
 var ErrNotCached = fmt.Errorf("not cached by any debrid provider: %w", ErrNotAvailable)
 
+// PrivateTorrentReason explains why an uncached private-tracker torrent is
+// skipped rather than added to or downloaded by a debrid service.
+const PrivateTorrentReason = "private tracker torrent: only an existing debrid cache is used"
+
+type privateUncachedError struct{}
+
+func (privateUncachedError) Error() string { return PrivateTorrentReason }
+func (privateUncachedError) Unwrap() error { return ErrNotCached }
+
+// ErrPrivateUncached reports that a private-tracker torrent is not already
+// cached on any debrid provider and therefore was never added or queued.
+var ErrPrivateUncached error = privateUncachedError{}
+
 // ErrDownloadQueued reports that an uncached torrent was handed to a debrid
 // account to download (cached-only off): not playable yet, but it will be.
 var ErrDownloadQueued = fmt.Errorf("sent to the debrid service to download: %w", ErrNotCached)

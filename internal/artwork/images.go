@@ -28,6 +28,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/flight"
 	"github.com/braedonsaunders/ether/internal/lru"
 	"github.com/braedonsaunders/ether/internal/safefetch"
@@ -562,7 +563,7 @@ func (im *Images) fetchURL(ctx context.Context, client *http.Client, rawURL stri
 	if err != nil {
 		return fetchResult{permanent: true, err: err}
 	}
-	req.Header.Set("User-Agent", "Ether (+https://github.com/braedonsaunders/ether)")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if withValidators && old != nil {
 		setConditionalHeaders(req, old.etag, old.lastModified)
 	}

@@ -182,7 +182,7 @@ func (x *Indexer) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	explain := x.explainUncached(out, cached)
 	var explained []string // ids kept only to explain a not-cached failure
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && dropUncached && !cached[r.InfoHash] {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] {
 			if explain == 0 {
 				continue
 			}
@@ -428,7 +428,7 @@ func (x *Indexer) SearchRescue(ctx context.Context, req core.SearchRequest) ([]c
 	dropUncached := definitive && x.svc.Config().CachedOnly
 	explain := x.explainUncached(out, cached)
 	for _, r := range out {
-		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && dropUncached && !cached[r.InfoHash] {
+		if r.Protocol == core.ProtocolTorrent && r.InfoHash != "" && (dropUncached || (definitive && r.Private)) && !cached[r.InfoHash] {
 			if explain == 0 {
 				continue
 			}

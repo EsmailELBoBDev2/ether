@@ -782,10 +782,10 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 		return p.Encode(), nil
 	}
 	magnet := rel.MagnetURL
-	if magnet == "" {
-		magnet = "magnet:?xt=urn:btih:" + hash
+	if rel.Private || magnet == "" {
+		magnet = bareMagnet(hash)
 	}
-	base := Payload{Key: key, ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Target: rel.Target, Release: rel.Name}
+	base := Payload{Key: key, ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Target: rel.Target, Release: rel.Name}
 	choose := func(files []File) (File, error) { return ChooseFile(files, rel.Target) }
 	if b, err, ok := s.followQueued(ctx, rel, entries, base, choose); ok {
 		return b, err
@@ -825,6 +825,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 		}
 	}
 	if len(errs) == 0 {
+		if rel.Private {
+			return nil, core.ErrPrivateUncached
+		}
 		return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
 	}
 	if notCached > 0 {
@@ -832,6 +835,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			if errors.Is(err, core.ErrDownloadLimit) {
 				return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrDownloadLimit, errors.Join(errs...))
 			}
+		}
+		if rel.Private {
+			return nil, core.ErrPrivateUncached
 		}
 		return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrNotCached, errors.Join(errs...))
 	}
@@ -854,10 +860,10 @@ func (s *Service) CachedPackMatcher(ctx context.Context, rel core.Release) (func
 		return nil, true
 	}
 	magnet := rel.MagnetURL
-	if magnet == "" {
-		magnet = "magnet:?xt=urn:btih:" + hash
+	if rel.Private || magnet == "" {
+		magnet = bareMagnet(hash)
 	}
-	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Release: rel.Name}
+	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Release: rel.Name}
 	definitive := true
 	for _, e := range entries {
 		if e.blocked(s.now()) != nil {
@@ -1000,6 +1006,9 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 // download started, and core.ErrDownloadRefused (or core.ErrDownloadLimit)
 // when no provider would take it. Background checks never start downloads.
 func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, error) {
+	if rel.Private {
+		return nil, core.ErrPrivateUncached
+	}
 	if s.Config().CachedOnly || core.IsBackgroundCheck(ctx) {
 		return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
 	}
@@ -1119,11 +1128,18 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 	cfg := s.Config()
 	hash := base.InfoHash
 
+	if base.Private {
+		download = false
+	}
 	started := s.now()
 	findStarted := time.Now()
 	torrentID := base.TorrentID
-	if torrentID == "" {
-		_, _, torrentID = s.knownFor(ctx, e.cfg.ID, hash)
+	knownCached := false
+	if kc, ok, kid := s.knownFor(ctx, e.cfg.ID, hash); ok {
+		knownCached = kc
+		if torrentID == "" {
+			torrentID = kid
+		}
 	}
 	if torrentID == "" {
 		if fast, ok := e.p.(knownTorrentFinder); ok {
@@ -1173,6 +1189,22 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		}
 		cacheOnlyBackground = true
 	}
+	req := AcquireRequest{InfoHash: hash, Magnet: base.Magnet, TorrentID: torrentID, Choose: choose, CachedOnly: !download || core.IsBackgroundCheck(ctx),
+		RemoveUncached: cfg.RemoveUncached, Private: base.Private, MayRemove: s.mayRemove(e.cfg.ID)}
+	if base.Private {
+		var perr error
+		req, perr = prepareAcquire(ctx, e.p, req, knownCached)
+		if perr != nil {
+			findDuration = time.Since(findStarted)
+			observe(perr)
+			if errors.Is(perr, core.ErrNotCached) && !errors.Is(perr, core.ErrDownloadLimit) {
+				e.count(func(st *ProviderStats) { st.NotCached++ })
+				s.setKnown(ctx, e.cfg.ID, hash, "", false)
+			}
+			return Payload{}, perr
+		}
+		torrentID = req.TorrentID
+	}
 	findDuration = time.Since(findStarted)
 	readyStarted := time.Now()
 	if torrentID == "" && !cacheOnlyBackground {
@@ -1187,16 +1219,23 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		}
 		defer release()
 		torrentID = id
+		req.TorrentID = id
 	}
-	req := AcquireRequest{InfoHash: hash, Magnet: base.Magnet, TorrentID: torrentID, Choose: choose, CachedOnly: !download || core.IsBackgroundCheck(ctx),
-		RemoveUncached: cfg.RemoveUncached, MayRemove: s.mayRemove(e.cfg.ID)}
 	acquire := func() (*Acquired, error) {
+		if req.Private && !req.privateChecked {
+			var perr error
+			req, perr = prepareAcquire(ctx, e.p, req, false)
+			if perr != nil {
+				return nil, perr
+			}
+		}
 		if req.TorrentID == "" && !cacheOnlyBackground {
 			if err := e.addsPaused(s.now()); err != nil {
 				return nil, err
 			}
 		}
 		acq, err := e.p.Acquire(ctx, req)
+		err = wrapPrivateNotCached(req.Private, err)
 		switch {
 		case errors.Is(err, ErrAddRefused):
 			if duration := e.addRefused(s.now()); duration > 0 {
@@ -1214,6 +1253,7 @@ func (s *Service) acquireOn(ctx context.Context, e *entry, base Payload, choose 
 		// The remembered torrent is gone or lacks the wanted file: add anew.
 		// One still downloading (pending) stays as it is.
 		req.TorrentID = ""
+		req.privateChecked = false
 		id, release, cerr := s.reclaimAdd(ctx, e, hash, torrentID)
 		if cerr == nil {
 			defer release()
@@ -1368,7 +1408,7 @@ func (s *Service) Refresh(ctx context.Context, p Payload, force bool) (Payload, 
 		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
 			continue
 		}
-		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release}
+		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Private: p.Private, Target: p.Target, Release: p.Release}
 		out, err := s.acquireOn(ctx, e, base, sameFile(p), false)
 		if err == nil {
 			e.count(func(st *ProviderStats) { st.LinksRefreshed++ })
@@ -1402,7 +1442,7 @@ func (s *Service) alternateProvider(ctx context.Context, p Payload) (Payload, er
 		if e.cfg.ID == p.Provider || e.blocked(s.now()) != nil {
 			continue
 		}
-		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release}
+		base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Private: p.Private, Target: p.Target, Release: p.Release}
 		out, err := s.acquireOn(ctx, e, base, sameFile(p), false)
 		if err == nil && dialAddr(out.URL) != "" && dialAddr(out.URL) != dialAddr(p.URL) {
 			s.savePayload(ctx, out)
@@ -1448,7 +1488,7 @@ func (s *Service) relink(ctx context.Context, e *entry, p Payload) (Payload, err
 		return p, err
 	}
 	// The torrent was removed from the account: re-add it by magnet.
-	base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Target: p.Target, Release: p.Release}
+	base := Payload{Key: p.Key, ReleaseID: p.ReleaseID, InfoHash: p.InfoHash, Magnet: p.Magnet, Private: p.Private, Target: p.Target, Release: p.Release}
 	s.forgetTorrent(ctx, e.cfg.ID, p.InfoHash)
 	out, err := s.acquireOn(ctx, e, base, sameFile(p), false)
 	if err != nil {

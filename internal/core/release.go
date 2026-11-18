@@ -103,8 +103,12 @@ type Release struct {
 	Protocol  string `json:"protocol,omitempty"`
 	InfoHash  string `json:"infoHash,omitempty"` // lower-case hex BitTorrent v1 info hash
 	MagnetURL string `json:"magnetUrl,omitempty"`
-	Seeders   int    `json:"seeders,omitempty"`
-	Peers     int    `json:"peers,omitempty"`
+	// Private marks a private-tracker torrent (info.private == 1 or a
+	// Cardigann definition with type: private). Debrid providers may only
+	// check or play an existing cache by bare info hash.
+	Private bool `json:"private,omitempty"`
+	Seeders int  `json:"seeders,omitempty"`
+	Peers   int  `json:"peers,omitempty"`
 	// Target narrows a multi-file release (a season pack) to the wanted
 	// episode; set by the resolver on candidates before fetching.
 	Target *ReleaseTarget `json:"target,omitempty"`

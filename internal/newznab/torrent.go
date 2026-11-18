@@ -78,6 +78,16 @@ func MagnetValues(magnet string) url.Values {
 	return values
 }
 
+// BareMagnet builds a trackerless magnet URI containing only the normalized
+// v1 info hash.
+func BareMagnet(infoHash string) string {
+	h := NormalizeInfoHash(infoHash)
+	if h == "" {
+		return ""
+	}
+	return "magnet:?xt=urn:btih:" + h
+}
+
 // MagnetFor builds a magnet URI for an info hash.
 func MagnetFor(infoHash, name string, trackers []string) string {
 	v := "magnet:?xt=urn:btih:" + infoHash
@@ -95,6 +105,7 @@ type TorrentMeta struct {
 	InfoHash string
 	Name     string
 	Trackers []string
+	Private  bool
 }
 
 // ParseTorrent computes the info hash (SHA-1 of the bencoded info
@@ -119,7 +130,7 @@ func ParseTorrent(data []byte) (TorrentMeta, error) {
 			}
 			sum := sha1.Sum(data[start:d.pos])
 			meta.InfoHash = hex.EncodeToString(sum[:])
-			meta.Name = torrentName(data[start:d.pos])
+			meta.Name, meta.Private = parseTorrentInfo(data[start:d.pos])
 		case "announce":
 			v, err := d.str()
 			if err != nil {
@@ -164,29 +175,35 @@ func appendTracker(list []string, tr string) []string {
 	return append(list, tr)
 }
 
-func torrentName(info []byte) string {
+func parseTorrentInfo(info []byte) (name string, private bool) {
 	d := &bdecoder{b: info}
 	if d.peek() != 'd' {
-		return ""
+		return "", false
 	}
 	d.pos++
 	for d.peek() == '0' || (d.peek() >= '1' && d.peek() <= '9') {
 		key, err := d.str()
 		if err != nil {
-			return ""
+			return name, private
 		}
-		if string(key) == "name" {
+		switch string(key) {
+		case "name":
 			v, err := d.str()
 			if err != nil {
-				return ""
+				return name, private
 			}
-			return string(v)
-		}
-		if err := d.skip(0); err != nil {
-			return ""
+			name = string(v)
+		case "private":
+			if n, ok := d.integer(); ok && n == 1 {
+				private = true
+			}
+		default:
+			if err := d.skip(0); err != nil {
+				return name, private
+			}
 		}
 	}
-	return ""
+	return name, private
 }
 
 // bdecoder is a minimal bencode reader: enough to find the info dictionary
@@ -203,6 +220,21 @@ func (d *bdecoder) peek() byte {
 		return 0
 	}
 	return d.b[d.pos]
+}
+
+func (d *bdecoder) integer() (int64, bool) {
+	if d.peek() != 'i' {
+		_ = d.skip(0)
+		return 0, false
+	}
+	end := bytes.IndexByte(d.b[d.pos:], 'e')
+	if end < 2 {
+		d.pos = len(d.b)
+		return 0, false
+	}
+	n, err := strconv.ParseInt(string(d.b[d.pos+1:d.pos+end]), 10, 64)
+	d.pos += end + 1
+	return n, err == nil
 }
 
 func (d *bdecoder) str() ([]byte, error) {
@@ -304,13 +336,18 @@ func (d *bdecoder) skip(depth int) error {
 func knownTorrent(r core.Release) (core.Release, bool) {
 	if h := NormalizeInfoHash(r.InfoHash); h != "" {
 		r.InfoHash = h
-		if r.MagnetURL == "" {
+		if r.Private {
+			r.MagnetURL = BareMagnet(h)
+		} else if r.MagnetURL == "" {
 			r.MagnetURL = MagnetFor(h, r.Name, nil)
 		}
 		return r, true
 	}
 	if h := InfoHashFromMagnet(r.MagnetURL); h != "" {
 		r.InfoHash = h
+		if r.Private {
+			r.MagnetURL = BareMagnet(h)
+		}
 		return r, true
 	}
 	return r, false
@@ -330,8 +367,11 @@ func (c *Client) resolveTorrentCached(ctx context.Context, r core.Release) (core
 		return known, true, nil
 	}
 	key := torrentDescriptorKey(c.Config(), r)
-	if hash, magnet, ok := c.torrents.get(key, c.now()); ok {
-		r.InfoHash, r.MagnetURL = hash, magnet
+	if hash, magnet, priv, ok := c.torrents.get(key, c.now()); ok {
+		r.InfoHash, r.MagnetURL, r.Private = hash, magnet, r.Private || priv
+		if r.Private {
+			r.MagnetURL = BareMagnet(r.InfoHash)
+		}
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true})
 		return r, true, nil
 	}
@@ -341,7 +381,7 @@ func (c *Client) resolveTorrentCached(ctx context.Context, r core.Release) (core
 	started := time.Now()
 	out, reserved, err := c.resolveTorrent(ctx, r)
 	if err == nil && out.InfoHash != "" {
-		c.torrents.put(key, out.InfoHash, out.MagnetURL, c.now())
+		c.torrents.put(key, out.InfoHash, out.MagnetURL, out.Private, c.now())
 	}
 	c.emitGrab(ctx, r.Name, started, reserved, err, false)
 	return out, false, err
@@ -396,7 +436,7 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	// the safefetch guard, like FetchNZB. Only the owner-configured
 	// indexer origin may be private; redirects away from it (other than
 	// magnet, handled below) are revalidated at dial time.
-	id := c.clientIdentityFor(releaseIsTV(r), true)
+	id := c.clientIdentity()
 	req, err := http.NewRequestWithContext(c.trustedCtx(hctx, rawURL), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return r, false, redactURLError(err)
@@ -437,7 +477,12 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	defer resp.Body.Close()
 	if loc := resp.Header.Get("Location"); resp.StatusCode/100 == 3 && strings.HasPrefix(strings.ToLower(loc), "magnet:") {
 		if h := InfoHashFromMagnet(loc); h != "" {
-			r.InfoHash, r.MagnetURL = h, loc
+			r.InfoHash = h
+			if r.Private {
+				r.MagnetURL = BareMagnet(h)
+			} else {
+				r.MagnetURL = loc
+			}
 			return r, true, nil
 		}
 		return r, true, fmt.Errorf("newznab: torrent %q redirected to a magnet without an info hash: %w", r.Name, core.ErrReleaseRejected)
@@ -459,7 +504,12 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	}
 	if trimmed := bytes.TrimSpace(body); bytes.HasPrefix(bytes.ToLower(trimmed), []byte("magnet:")) {
 		if h := InfoHashFromMagnet(string(trimmed)); h != "" {
-			r.InfoHash, r.MagnetURL = h, string(trimmed)
+			r.InfoHash = h
+			if r.Private {
+				r.MagnetURL = BareMagnet(h)
+			} else {
+				r.MagnetURL = string(trimmed)
+			}
 			return r, true, nil
 		}
 	}
@@ -474,6 +524,11 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 		return r, true, fmt.Errorf("newznab: torrent %q: %w", r.Name, err)
 	}
 	r.InfoHash = meta.InfoHash
+	r.Private = r.Private || meta.Private
+	if r.Private {
+		r.MagnetURL = BareMagnet(meta.InfoHash)
+		return r, true, nil
+	}
 	name := meta.Name
 	if name == "" {
 		name = r.Name

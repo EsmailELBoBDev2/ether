@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
@@ -52,7 +53,7 @@ type URLClient struct {
 // plainUserAgent identifies Ether honestly to third-party add-ons. An
 // add-on that serves only the Stremio app may refuse it; Ether never
 // poses as a browser or as Stremio.
-const plainUserAgent = "Ether (+https://github.com/braedonsaunders/ether)"
+func plainUserAgent() string { return httpclient.UserAgent() }
 
 // plainHeaders are the caller's headers without any X-Ether-* header.
 func plainHeaders(req Request) map[string][]string {
@@ -300,7 +301,7 @@ func (c *URLClient) do(ctx context.Context, req Request) (*http.Response, contex
 		}
 	}
 	if c.plain {
-		httpReq.Header.Set("User-Agent", plainUserAgent)
+		httpReq.Header.Set("User-Agent", plainUserAgent())
 	}
 	if len(req.Body) > 0 && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")

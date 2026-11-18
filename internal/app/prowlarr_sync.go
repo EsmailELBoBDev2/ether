@@ -237,7 +237,7 @@ func applyProwlarrSync(c *config.Config, cfg config.Prowlarr, found []config.Ind
 // imported before it was kept), every stored value is kept. Prowlarr does
 // not know the owner's per-indexer client identity, so that is kept too.
 func mergeProwlarrIndexer(old, fresh config.Indexer) config.Indexer {
-	fresh.ClientIdentity = old.ClientIdentity
+	fresh.UserAgent = old.UserAgent
 	prev := old.ProwlarrImport
 	if prev == nil || old.DailyLimit != prev.DailyLimit {
 		fresh.DailyLimit = old.DailyLimit

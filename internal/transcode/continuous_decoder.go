@@ -399,7 +399,7 @@ func liveDecoderInputArgs(r DecoderRequest, u *url.URL) []string {
 		} else if r.PrimeLive {
 			start = "-4"
 		}
-		args = append(args, "-live_start_index", start)
+		args = append(args, "-f", "hls", "-live_start_index", start)
 	case r.InputFormat == "mpegts":
 		// Keep stream identity across PMT version bumps that add or drop
 		// unrelated PIDs; a real codec change is caught by starvation.

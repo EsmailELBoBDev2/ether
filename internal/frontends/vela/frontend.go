@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -353,8 +354,21 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	// A bounded read, followed by per-key serialization, makes refresh rotation
 	// and playback admission safe to retry. No worker or allocation exists at idle.
 	var raw json.RawMessage
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&raw) != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if dec.Decode(&raw) != nil {
 		problem(w, 400, "request", "invalid_json")
+		return
+	}
+	if r.Method == "POST" && r.URL.Path == "/vela/v0/live/guide/window" {
+		// Bulk guide window is a pure read with optional idempotencyKey and
+		// ETag revalidation rather than a persisted mutation.
+		var trailing any
+		if dec.Decode(&trailing) != io.EOF {
+			problem(w, 400, "request", "invalid_json")
+			return
+		}
+		r.Body = http.NoBody
+		i.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyKey{}, raw)))
 		return
 	}
 	var envelope struct {
@@ -518,6 +532,7 @@ func (i *instance) routes() {
 	i.route("POST", "/sessions/{id}/observations", i.observe)
 	i.route("GET", "/live/channels", i.channels)
 	i.route("GET", "/live/guide", i.guide)
+	i.route("POST", "/live/guide/window", i.guideWindow)
 	i.route("POST", "/titles/{id}/watch", i.watch)
 	i.mux.HandleFunc("/vela/v0/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not-found", "not_found") })
 }
@@ -537,7 +552,14 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
 		auth = source.AuthenticationFeatures()
 	}
-	return object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	if _, ok := i.liveGuideWindowReader(); ok {
+		caps["liveGuideWindow"] = object{
+			"maxChannels":      frontend.MaxLiveGuideWindowChannels,
+			"maxWindowMinutes": frontend.MaxLiveGuideWindowMinutes,
+		}
+	}
+	return caps
 }
 func (i *instance) negotiate(w http.ResponseWriter, r *http.Request) {
 	var b struct {

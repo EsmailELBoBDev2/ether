@@ -11,6 +11,12 @@ import (
 // LiveTVProvider is the EPG provider identifier reported on Plex Live TV routes.
 const LiveTVProvider = "tv.plex.providers.epg.xmltv:1"
 
+const (
+	MaxLiveGuideWindowChannels   = 128
+	MaxLiveGuideWindowMinutes    = 180
+	MaxLiveGuideWindowProgrammes = 20000
+)
+
 // LiveGroup is an ordered owner group descriptor ("Your groups"). Its ID survives renames.
 type LiveGroup struct {
 	ID   string
@@ -66,6 +72,49 @@ type LiveGuidePage struct {
 // LiveGuidePager keeps metadata enrichment bounded to the requested page.
 type LiveGuidePager interface {
 	GuidePage(context.Context, *Viewer, LiveGuidePageQuery) (LiveGuidePage, error)
+}
+
+type LiveGuideWindowState string
+
+const (
+	LiveGuideWindowReady       LiveGuideWindowState = "ready"
+	LiveGuideWindowUnavailable LiveGuideWindowState = "unavailable"
+)
+
+// LiveGuideWindowQuery requests complete programme overlap coverage for a
+// bounded set of channels and time range without pagination.
+type LiveGuideWindowQuery struct {
+	Channels    []string
+	From, Until time.Time
+	Device      core.Device
+}
+
+type LiveGuideWindowChannel struct {
+	ChannelID  string
+	State      LiveGuideWindowState
+	Programmes []LiveProgramme
+}
+
+type LiveGuideWindow struct {
+	From, Until time.Time
+	Revision    string
+	ValidUntil  time.Time
+	Channels    []LiveGuideWindowChannel
+}
+
+type LiveGuideWindowTooDenseError struct {
+	MaxChannels      int
+	MaxWindowMinutes int
+}
+
+func (*LiveGuideWindowTooDenseError) Error() string {
+	return "live guide window exceeds maximum programme density"
+}
+
+// LiveGuideWindowReader exposes an optional unpaginated bulk live-guide window.
+type LiveGuideWindowReader interface {
+	LiveGuideWindowAvailable() bool
+	GuideWindowBatch(context.Context, *Viewer, LiveGuideWindowQuery) (LiveGuideWindow, error)
 }
 
 // LiveTVItem is the frontend boundary representation of a scheduled programme's item metadata.

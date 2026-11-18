@@ -15,33 +15,50 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/clientnet"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
-// Plex for Apple TV draws guide channel logos only from URLs that Plex's
-// cloud image service can fetch: it never loads them from the server
-// itself, so a logo on a LAN address never appears (#391, proven on the
-// device: a public HTTPS logo rendered, the same channel's LAN URL did not,
-// and the server saw no image request at all). Whatever is published there
-// leaves the network, so it must never carry a viewer's token.
+// Plex's Bedrock guide (Apple TV, iOS/iPadOS, and Android) draws guide channel
+// logos only from URLs that Plex's cloud image service can fetch: it never
+// loads them from the server itself, so a logo on a LAN address never appears
+// (#391, proven on Apple TV and reproduced on Plex for Android Mobile 2026.23.0:
+// logos rendered remotely over WAN, drew blank on LAN, and the server saw no
+// image request at all). Whatever is published there leaves the network, so it
+// must never carry a viewer's token.
 
 // signedLogoPrefix serves a channel's logo without a Plex token, to a URL
 // signed by this server.
 const signedLogoPrefix = "/livetv/logos/"
 
 func cloudGuideLogoClient(pr *Request) bool {
-	// Plex for iOS and iPadOS share the Apple TV guide and fetch its logos
-	// the same way, so a server-relative logo path draws blank there. Only
-	// Plex's own apps do this: third-party apps on the same platforms (Plezy
-	// sends Platform iOS/tvOS) load logos through this server's
-	// /photo/:/transcode and need its ordinary logo path.
-	if pr == nil {
+	// Plex's own Apple TV, iOS/iPadOS, and Android apps share the Bedrock
+	// guide and fetch channel logos through Plex's cloud. Third-party apps on
+	// the same platforms (Plezy sends Platform iOS/tvOS/Android) and Plex Web
+	// load logos from this server directly or through /photo/:/transcode and
+	// need its ordinary logo URL.
+	if pr == nil || strings.EqualFold(pr.Product, "Plex Web") {
 		return false
 	}
-	if strings.EqualFold(pr.Product, "Plex for Apple TV") || strings.EqualFold(pr.Product, "Plex for iOS") {
+	if strings.EqualFold(pr.Product, "Plex for Apple TV") || strings.EqualFold(pr.Product, "Plex for iOS") || plexAndroidClient(pr) {
 		return true
 	}
-	apple := strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Platform, "iOS") || strings.EqualFold(pr.Platform, "iPadOS")
-	return apple && (pr.Product == "" || strings.HasPrefix(strings.ToLower(pr.Product), "plex"))
+	cloud := strings.EqualFold(pr.Platform, "tvOS") || strings.EqualFold(pr.Platform, "iOS") || strings.EqualFold(pr.Platform, "iPadOS") || strings.EqualFold(pr.Platform, "Android")
+	return cloud && (pr.Product == "" || strings.HasPrefix(strings.ToLower(pr.Product), "plex"))
+}
+
+// applyGuideChannelThumb rewrites an airing's channelThumb to the same
+// cloud-fetchable logo URL as the lineup when the client's guide fetches
+// channel logos through Plex's cloud.
+func (s *Server) applyGuideChannelThumb(r *http.Request, md *model.Metadata, c frontend.LiveTVChannel) {
+	if c.ID == "" || !cloudGuideLogoClient(FromContext(r.Context())) || len(md.Media) == 0 {
+		return
+	}
+	logo := s.liveGuideLogo(r, c)
+	for i, a := range md.Media[0].Extra {
+		if a.Name == "channelThumb" {
+			md.Media[0].Extra[i].Value = logo
+		}
+	}
 }
 
 // cloudGuideLogo is the logo URL for a client whose guide fetches logos

@@ -43,7 +43,9 @@ func (s *Server) handleLiveChannelSearch(w http.ResponseWriter, r *http.Request)
 		parents[c.ID] = c
 	}
 	for _, p := range results.Programmes {
-		md := s.liveProgrammeMetadata(parents[p.ChannelID], p)
+		c := parents[p.ChannelID]
+		md := s.liveProgrammeMetadata(c, p)
+		s.applyGuideChannelThumb(r, &md, c)
 		mc.SearchResult = append(mc.SearchResult, model.SearchResult{Score: 0.9, Metadata: &md})
 	}
 	mc.Size = len(mc.SearchResult)
@@ -83,7 +85,10 @@ func (s *Server) appendLiveSearchHubs(r *http.Request, mc *model.MediaContainer,
 	if len(results.Programmes) > 0 {
 		hub := model.Hub{Title: "On TV", Type: "episode", HubIdentifier: "tv.plex.provider.epg", Style: "shelf"}
 		for _, p := range results.Programmes {
-			hub.Metadata = append(hub.Metadata, s.liveProgrammeMetadata(parents[p.ChannelID], p))
+			c := parents[p.ChannelID]
+			md := s.liveProgrammeMetadata(c, p)
+			s.applyGuideChannelThumb(r, &md, c)
+			hub.Metadata = append(hub.Metadata, md)
 		}
 		hub.Size = len(hub.Metadata)
 		mc.Hub = append(mc.Hub, hub)

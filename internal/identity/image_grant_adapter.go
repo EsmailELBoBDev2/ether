@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -41,6 +42,10 @@ func defaultImageAdmission() imageAdmission {
 // ImageCapacityError means this viewer's or shard's image-header admission is full.
 // Every image payload must have a charged reservation.
 type ImageCapacityError struct{ Scope string }
+
+// Is lets frontends recognise a full image admission without importing
+// identity.
+func (e *ImageCapacityError) Is(target error) bool { return target == frontend.ErrImageCapacity }
 
 func (e *ImageCapacityError) Error() string {
 	return "identity: image grant capacity reached (" + e.Scope + ")"

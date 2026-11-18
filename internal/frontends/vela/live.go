@@ -1,6 +1,9 @@
 package vela
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"net/http"
 	"strings"
@@ -40,8 +43,9 @@ func (i *instance) channels(w http.ResponseWriter, r *http.Request) {
 	}
 	start := min(cursor.Offset, len(channels))
 	end := start + min(limit(r), len(channels)-start)
+	memo := newLiveArtCache()
 	for _, c := range channels[start:end] {
-		art, err := i.liveArtwork(r, token, 0, c.ID, c.Images)
+		art, err := i.liveArtworkCached(r, token, 0, c.ID, c.Images, memo)
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -118,6 +122,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := []object{}
+	memo := newLiveArtCache()
 	for _, p := range programmes.Items {
 		art := []object{}
 		for _, img := range p.Images {
@@ -125,7 +130,7 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 			if img.Subject == p.ID {
 				item, channel = 0, p.ChannelID
 			}
-			images, err := i.liveArtwork(r, token, item, channel, []frontend.Image{img})
+			images, err := i.liveArtworkCached(r, token, item, channel, []frontend.Image{img}, memo)
 			if err != nil {
 				fail(w, err, r)
 				return
@@ -156,17 +161,50 @@ func (i *instance) guide(w http.ResponseWriter, r *http.Request) {
 
 // Issue bounded, current-policy image capabilities for this response page.
 // Source URLs and credentials never enter the Vela wire model.
+//
+// One response reuses a grant for an image it already issued (a channel's
+// logo repeats on every programme), and a viewer whose image admission is
+// full gets the page without the remaining artwork rather than no guide.
 func (i *instance) liveArtwork(r *http.Request, token string, item frontend.RatingKey, channel string, images []frontend.Image) ([]object, error) {
+	return i.liveArtworkCached(r, token, item, channel, images, nil)
+}
+
+type liveArtCache struct {
+	issued map[string]object
+	full   bool
+}
+
+func newLiveArtCache() *liveArtCache { return &liveArtCache{issued: map[string]object{}} }
+
+func (i *instance) liveArtworkCached(r *http.Request, token string, item frontend.RatingKey, channel string, images []frontend.Image, memo *liveArtCache) ([]object, error) {
 	out := []object{}
 	if i.host.ImageGrants == nil || (item == 0 && channel == "") {
 		return out, nil
 	}
 	for _, img := range images {
+		key := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s", item, channel, img.Kind, img.Path, img.Tag)
+		if memo != nil {
+			if art, ok := memo.issued[key]; ok {
+				out = append(out, art)
+				continue
+			}
+			if memo.full {
+				continue
+			}
+		}
 		secret, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: token, Device: requestDevice(r), Item: item, Channel: channel, Image: img})
 		if err != nil {
+			if memo != nil && errors.Is(err, frontend.ErrImageCapacity) {
+				memo.full = true
+				continue
+			}
 			return nil, err
 		}
-		out = append(out, object{"id": hash(img.Path), "kind": img.Kind, "tag": img.Tag, "sizes": []object{imageSize(img, secret)}})
+		art := object{"id": hash(img.Path), "kind": img.Kind, "tag": img.Tag, "sizes": []object{imageSize(img, secret)}}
+		if memo != nil {
+			memo.issued[key] = art
+		}
+		out = append(out, art)
 	}
 	return out, nil
 }

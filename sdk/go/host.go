@@ -113,6 +113,13 @@ type Host interface {
 	StreamURL(ctx context.Context, viewerID int64, itemRef string) (string, error)
 }
 
+// PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
+// part of a multi-file kind item (#576). RemoteHostClient and MockHost
+// implement it; Context.StreamPartURL uses it automatically.
+type PartStreamHost interface {
+	StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error)
+}
+
 // RemoteHostOptions configures a RemoteHostClient for sidecar plugins.
 type RemoteHostOptions struct {
 	BaseURL    string
@@ -530,6 +537,23 @@ func (c *RemoteHostClient) StreamURL(ctx context.Context, viewerID int64, itemRe
 	}
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
 		map[string]any{"viewerId": viewerID, "itemRef": itemRef}, &out, false)
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}
+
+// StreamPartURL mints a scoped stream ticket for one zero-based part of a
+// multi-file kind item (#576).
+func (c *RemoteHostClient) StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	var out struct {
+		URL string `json:"url"`
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/frontend/stream-url",
+		map[string]any{"viewerId": viewerID, "itemRef": itemRef, "partIndex": partIndex}, &out, false)
 	if err != nil {
 		return "", err
 	}

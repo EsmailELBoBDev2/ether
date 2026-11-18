@@ -47,14 +47,20 @@ type KindResolverDeps struct {
 	Logger    *slog.Logger
 }
 
+type resolveFlightKey struct {
+	ref  core.ItemRef
+	part int
+}
+
 type resolveFlight struct {
 	done    chan struct{}
 	sources []core.PlayableSource
 	err     error
 }
 
-// KindResolver implements frontend.KindStreams for plugin content kinds and
-// supplies the host-side ResolveSources callback for plugins.KindBackends.
+// KindResolver implements frontend.KindStreams and frontend.KindPartStreams for
+// plugin content kinds and supplies the host-side ResolveSources callback for
+// plugins.KindBackends.
 type KindResolver struct {
 	mgr       *plugins.Manager
 	libs      *libraries.Service
@@ -70,10 +76,13 @@ type KindResolver struct {
 	log       *slog.Logger
 
 	flightMu sync.Mutex
-	flights  map[core.ItemRef]*resolveFlight
+	flights  map[resolveFlightKey]*resolveFlight
 }
 
-var _ frontend.KindStreams = (*KindResolver)(nil)
+var (
+	_ frontend.KindStreams     = (*KindResolver)(nil)
+	_ frontend.KindPartStreams = (*KindResolver)(nil)
+)
 
 func defaultKindHTTPClient() *http.Client {
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt != nil {
@@ -107,7 +116,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		authorize: deps.Authorize,
 		backoff:   kindstream.NewHostBackoff(),
 		log:       log.With("component", "kindresolver"),
-		flights:   make(map[core.ItemRef]*resolveFlight),
+		flights:   make(map[resolveFlightKey]*resolveFlight),
 	}
 }
 
@@ -128,18 +137,7 @@ func (r *KindResolver) OpenKind(ctx context.Context, viewer *core.Viewer, key co
 		return nil, core.ErrNotFound
 	}
 	if lv.Playable && item.Playable {
-		bs, err := r.openItemByteSource(ctx, rec, lib, item, nil, accept)
-		if err != nil {
-			return nil, err
-		}
-		return &frontend.KindMedia{
-			ReaderAt: bs,
-			Closer:   bs,
-			Size:     bs.Size(),
-			MIME:     bs.MIME(),
-			Duration: extractItemDuration(item, rec.Decl),
-			Name:     bs.Name(),
-		}, nil
+		return r.openPlayableItemMedia(ctx, rec, lib, item, accept)
 	}
 
 	leaves, err := r.collectPlayableLeaves(ctx, rec, item)
@@ -154,13 +152,17 @@ func (r *KindResolver) OpenKind(ctx context.Context, viewer *core.Viewer, key co
 	for i, leaf := range leaves {
 		leafItem := leaf
 		totalDur += extractItemDuration(leafItem, rec.Decl)
-		leafSize, leafMIME := r.resolveLeafSizeAndMIME(ctx, rec, lib, leafItem, accept)
+		leafSize, leafMIME, lerr := r.resolveLeafSizeAndMIME(ctx, rec, lib, leafItem, accept)
+		if lerr != nil {
+			return nil, lerr
+		}
 		seqLeaves[i] = kindstream.Leaf{
 			Name: leafItem.Title,
 			MIME: leafMIME,
 			Size: leafSize,
 			Open: func(lctx context.Context) (kindstream.ByteSource, error) {
-				return r.openItemByteSource(lctx, rec, lib, leafItem, nil, accept)
+				bs, _, oerr := r.openPlayableItemByteSource(lctx, rec, lib, leafItem, accept)
+				return bs, oerr
 			},
 		}
 	}
@@ -175,27 +177,299 @@ func (r *KindResolver) OpenKind(ctx context.Context, viewer *core.Viewer, key co
 	}, nil
 }
 
-func (r *KindResolver) resolveLeafSizeAndMIME(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, leaf core.KindItem, accept []string) (int64, string) {
+// OpenKindPart implements frontend.KindPartStreams (#576). It opens one zero-based
+// part of a multi-part plugin kind item, passing KindResolveRequest.PartIndex
+// to the plugin's /resolve route.
+func (r *KindResolver) OpenKindPart(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept []string) (*frontend.KindMedia, error) {
+	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || partIndex < 0 {
+		return nil, core.ErrNotFound
+	}
+	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok {
+		return nil, core.ErrNotFound
+	}
+	if lv.Playable && item.Playable {
+		parts := core.ExtractKindItemPartsFromItem(item)
+		if len(parts) > 0 && partIndex >= len(parts) {
+			return nil, core.ErrNotFound
+		}
+		idx := partIndex
+		bs, err := r.openItemByteSource(ctx, rec, lib, item, &idx, accept)
+		if err != nil {
+			return nil, err
+		}
+		var dur time.Duration
+		if partIndex < len(parts) {
+			bs = withPartDefaults(bs, parts[partIndex], item.Title)
+			if parts[partIndex].DurationSec > 0 {
+				dur = time.Duration(parts[partIndex].DurationSec * float64(time.Second))
+			}
+		}
+		if dur == 0 && len(parts) <= 1 {
+			dur = extractItemDuration(item, rec.Decl)
+		}
+		return &frontend.KindMedia{
+			ReaderAt: bs,
+			Closer:   bs,
+			Size:     bs.Size(),
+			MIME:     bs.MIME(),
+			Duration: dur,
+			Name:     bs.Name(),
+		}, nil
+	}
+
+	leaves, err := r.collectPlayableLeaves(ctx, rec, item)
+	if err != nil {
+		return nil, err
+	}
+	if partIndex >= len(leaves) {
+		return nil, core.ErrNotFound
+	}
+	return r.openPlayableItemMedia(ctx, rec, lib, leaves[partIndex], accept)
+}
+
+// KindParts implements frontend.KindPartStreams (#576). It returns the declared
+// parts of item without opening bytes.
+func (r *KindResolver) KindParts(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]frontend.KindPart, error) {
+	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() {
+		return nil, core.ErrNotFound
+	}
+	item, _, _, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	parts := core.ExtractKindItemPartsFromItem(item)
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	out := make([]frontend.KindPart, len(parts))
+	for i, p := range parts {
+		idx := i
+		size := p.Size
+		mime := p.MIME
+		if size <= 0 || mime == "" {
+			if cachedSrc, ok, cerr := r.items.GetPartResolution(ctx, item.Ref, &idx); cerr == nil && ok {
+				if size <= 0 && cachedSrc.Size > 0 {
+					size = cachedSrc.Size
+				}
+				if mime == "" && cachedSrc.MIME != "" {
+					mime = cachedSrc.MIME
+				}
+			}
+		}
+		out[i] = frontend.KindPart{
+			Index:    i,
+			Name:     p.Name,
+			MIME:     mime,
+			Size:     size,
+			Duration: time.Duration(p.DurationSec * float64(time.Second)),
+		}
+	}
+	return out, nil
+}
+
+func (r *KindResolver) openPlayableItemMedia(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, accept []string) (*frontend.KindMedia, error) {
+	bs, dur, err := r.openPlayableItemByteSource(ctx, rec, lib, item, accept)
+	if err != nil {
+		return nil, err
+	}
+	return &frontend.KindMedia{
+		ReaderAt: bs,
+		Closer:   bs,
+		Size:     bs.Size(),
+		MIME:     bs.MIME(),
+		Duration: dur,
+		Name:     bs.Name(),
+	}, nil
+}
+
+func (r *KindResolver) openPlayableItemByteSource(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, accept []string) (kindstream.ByteSource, time.Duration, error) {
+	parts := core.ExtractKindItemPartsFromItem(item)
+	if len(parts) == 0 {
+		bs, err := r.openItemByteSource(ctx, rec, lib, item, nil, accept)
+		if err != nil {
+			return nil, 0, err
+		}
+		return bs, extractItemDuration(item, rec.Decl), nil
+	}
+	if len(parts) == 1 {
+		idx := 0
+		bs, err := r.openItemByteSource(ctx, rec, lib, item, &idx, accept)
+		if err != nil {
+			return nil, 0, err
+		}
+		bs = withPartDefaults(bs, parts[0], item.Title)
+		dur := extractItemDuration(item, rec.Decl)
+		if dur == 0 && parts[0].DurationSec > 0 {
+			dur = time.Duration(parts[0].DurationSec * float64(time.Second))
+		}
+		return bs, dur, nil
+	}
+
+	// Multi-part item (#576): open part 0 up front so any pending/unavailable
+	// status surfaces before HTTP headers are written, and assemble a Sequence
+	// over all parts so whole-item readers stream every file in order.
+	zero := 0
+	firstRaw, err := r.openItemByteSource(ctx, rec, lib, item, &zero, accept)
+	if err != nil {
+		return nil, 0, err
+	}
+	firstBS := withPartDefaults(firstRaw, parts[0], item.Title)
+
+	var firstMu sync.Mutex
+	preopened := firstBS
+	releasePreopened := func() error {
+		firstMu.Lock()
+		bs := preopened
+		preopened = nil
+		firstMu.Unlock()
+		if bs != nil {
+			return bs.Close()
+		}
+		return nil
+	}
+
+	seqLeaves := make([]kindstream.Leaf, len(parts))
+	part0Copy := parts[0]
+	seqLeaves[0] = kindstream.Leaf{
+		Name: firstNonEmpty(part0Copy.Name, firstBS.Name(), fmt.Sprintf("%s (part 1)", item.Title)),
+		MIME: firstNonEmpty(firstBS.MIME(), part0Copy.MIME),
+		Size: firstBS.Size(),
+		Open: func(lctx context.Context) (kindstream.ByteSource, error) {
+			firstMu.Lock()
+			bs := preopened
+			preopened = nil
+			firstMu.Unlock()
+			if bs != nil {
+				return bs, nil
+			}
+			idx := 0
+			reopened, oerr := r.openItemByteSource(lctx, rec, lib, item, &idx, accept)
+			if oerr != nil {
+				return nil, oerr
+			}
+			return withPartDefaults(reopened, part0Copy, item.Title), nil
+		},
+	}
+
+	var sumPartDur time.Duration
+	if parts[0].DurationSec > 0 {
+		sumPartDur += time.Duration(parts[0].DurationSec * float64(time.Second))
+	}
+
+	for i := 1; i < len(parts); i++ {
+		partCopy := parts[i]
+		partIdx := i
+		if partCopy.DurationSec > 0 {
+			sumPartDur += time.Duration(partCopy.DurationSec * float64(time.Second))
+		}
+		partSize, partMIME, perr := r.resolvePartSizeAndMIME(ctx, rec, lib, item, partCopy, accept)
+		if perr != nil {
+			_ = releasePreopened()
+			return nil, 0, perr
+		}
+		seqLeaves[i] = kindstream.Leaf{
+			Name: firstNonEmpty(partCopy.Name, fmt.Sprintf("%s (part %d)", item.Title, partIdx+1)),
+			MIME: partMIME,
+			Size: partSize,
+			Open: func(lctx context.Context) (kindstream.ByteSource, error) {
+				bs, oerr := r.openItemByteSource(lctx, rec, lib, item, &partIdx, accept)
+				if oerr != nil {
+					return nil, oerr
+				}
+				return withPartDefaults(bs, partCopy, item.Title), nil
+			},
+		}
+	}
+
+	dur := extractItemDuration(item, rec.Decl)
+	if dur == 0 {
+		dur = sumPartDur
+	}
+	seq := kindstream.NewSequence(seqLeaves)
+	return &preopenedSequence{
+		ByteSource: seq,
+		name:       firstNonEmpty(item.Title, seq.Name()),
+		cleanup:    releasePreopened,
+	}, dur, nil
+}
+
+func (r *KindResolver) resolvePartSizeAndMIME(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, part core.KindItemPart, accept []string) (int64, string, error) {
+	idx := part.Index
+	size := part.Size
+	mime := part.MIME
+	cachedSrc, ok, cerr := r.items.GetPartResolution(ctx, item.Ref, &idx)
+	if cerr != nil {
+		return 0, "", cerr
+	}
+	if ok {
+		if size <= 0 && cachedSrc.Size > 0 {
+			size = cachedSrc.Size
+		}
+		if mime == "" && cachedSrc.MIME != "" {
+			mime = cachedSrc.MIME
+		}
+	}
+	if size > 0 {
+		return size, mime, nil
+	}
+	bs, err := r.openItemByteSource(ctx, rec, lib, item, &idx, accept)
+	if err != nil {
+		return 0, "", err
+	}
+	size = bs.Size()
+	if mime == "" && bs.MIME() != "" {
+		mime = bs.MIME()
+	}
+	_ = bs.Close()
+	return size, mime, nil
+}
+
+func (r *KindResolver) resolveLeafSizeAndMIME(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, leaf core.KindItem, accept []string) (int64, string, error) {
+	if parts := core.ExtractKindItemPartsFromItem(leaf); len(parts) > 0 {
+		bs, _, err := r.openPlayableItemByteSource(ctx, rec, lib, leaf, accept)
+		if err != nil {
+			return 0, "", err
+		}
+		size := bs.Size()
+		mime := bs.MIME()
+		_ = bs.Close()
+		return size, mime, nil
+	}
 	size, mime := extractItemSizeAndMIME(leaf, rec.Decl)
 	if size > 0 {
-		return size, mime
+		return size, mime, nil
 	}
-	if cachedSrc, ok, err := r.items.GetResolution(ctx, leaf.Ref); err == nil && ok && cachedSrc.Size > 0 {
+	cachedSrc, ok, cerr := r.items.GetResolution(ctx, leaf.Ref)
+	if cerr != nil {
+		return 0, "", cerr
+	}
+	if ok && cachedSrc.Size > 0 {
 		if cachedSrc.MIME != "" {
 			mime = cachedSrc.MIME
 		}
-		return cachedSrc.Size, mime
+		return cachedSrc.Size, mime, nil
 	}
 	bs, err := r.openItemByteSource(ctx, rec, lib, leaf, nil, accept)
 	if err != nil {
-		return 0, mime
+		return 0, "", err
 	}
 	size = bs.Size()
 	if bs.MIME() != "" {
 		mime = bs.MIME()
 	}
 	_ = bs.Close()
-	return size, mime
+	return size, mime, nil
 }
 
 // KindLeaves implements frontend.KindStreams.
@@ -458,7 +732,7 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 	return leaves, nil
 }
 
-func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem) kindstream.Deps {
+func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int) kindstream.Deps {
 	var quota blobcache.Quota
 	if r.catalog != nil && lib.Key != "" {
 		quota = r.catalog.QuotaFor(rec.PluginID, lib.Key)
@@ -512,7 +786,7 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		Secret:           secretFn,
 		AllowHost:        allowHost,
 		MaxDownloadBytes: quota.EffectiveMaxBytes(),
-		ItemIndex:        item.Index,
+		ItemIndex:        effectiveItemIndex(item.Index, partIdx),
 		Backoff:          r.backoff,
 	}
 }
@@ -521,33 +795,31 @@ func (r *KindResolver) openItemByteSource(ctx context.Context, rec pluginitems.K
 	if item.Unavailable != nil {
 		return nil, core.ErrNotAvailable
 	}
-	ksDeps := r.kindstreamDeps(ctx, rec, lib, item)
+	ksDeps := r.kindstreamDeps(ctx, rec, lib, item, partIdx)
 
 	// 1. Check persisted positive/negative resolution cache first so repeat
 	// opens never call into the plugin runtime while the resolution is fresh.
-	if partIdx == nil {
-		cachedSrc, ok, err := r.items.GetResolution(ctx, item.Ref)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			bs, oerr := kindstream.Open(ctx, cachedSrc, ksDeps)
-			if oerr == nil {
-				if cachedSrc.Size <= 0 && bs.Size() > 0 {
-					cachedSrc.Size = bs.Size()
-					if cachedSrc.MIME == "" {
-						cachedSrc.MIME = bs.MIME()
-					}
-					_ = r.items.SaveResolution(ctx, item.Ref, cachedSrc)
+	cachedSrc, ok, err := r.items.GetPartResolution(ctx, item.Ref, partIdx)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		bs, oerr := kindstream.Open(ctx, cachedSrc, ksDeps)
+		if oerr == nil {
+			if cachedSrc.Size <= 0 && bs.Size() > 0 {
+				cachedSrc.Size = bs.Size()
+				if cachedSrc.MIME == "" {
+					cachedSrc.MIME = bs.MIME()
 				}
-				return bs, nil
+				_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, cachedSrc)
 			}
-			// Cached source went stale upstream: invalidate and re-resolve once.
-			_ = r.items.InvalidateResolution(ctx, item.Ref)
+			return bs, nil
 		}
+		// Cached source went stale upstream: invalidate and re-resolve once.
+		_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
 	}
 
-	// 2. Singleflight plugin /resolve call per item_ref when uncached.
+	// 2. Singleflight plugin /resolve call per (item_ref, part) when uncached.
 	sources, err := r.resolveItemSources(ctx, rec, lib, item, partIdx, accept)
 	if err != nil {
 		return nil, err
@@ -564,15 +836,13 @@ func (r *KindResolver) openItemByteSource(ctx context.Context, rec pluginitems.K
 		}
 		return nil, err
 	}
-	if partIdx == nil {
-		if winning.Size <= 0 && bs.Size() > 0 {
-			winning.Size = bs.Size()
-		}
-		if winning.MIME == "" && bs.MIME() != "" {
-			winning.MIME = bs.MIME()
-		}
-		_ = r.items.SaveResolution(ctx, item.Ref, winning)
+	if winning.Size <= 0 && bs.Size() > 0 {
+		winning.Size = bs.Size()
 	}
+	if winning.MIME == "" && bs.MIME() != "" {
+		winning.MIME = bs.MIME()
+	}
+	_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, winning)
 	return bs, nil
 }
 
@@ -583,28 +853,35 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 	if r.mgr == nil {
 		return nil, core.ErrSourceUnavailable
 	}
+	fk := resolveFlightKey{ref: item.Ref, part: -1}
+	var partCopy *int
 	if partIdx != nil {
-		return r.callPluginResolve(ctx, rec, lib, item, partIdx, accept)
+		v := *partIdx
+		partCopy = &v
+		fk.part = v
 	}
 
 	r.flightMu.Lock()
-	fl, ok := r.flights[item.Ref]
+	fl, ok := r.flights[fk]
 	if !ok {
 		fl = &resolveFlight{done: make(chan struct{})}
-		r.flights[item.Ref] = fl
+		r.flights[fk] = fl
 		go func() {
 			defer func() {
 				// Leave the map before waking waiters: a request arriving
 				// after a waiter returns must start a new resolve, never
 				// join this finished flight and reuse its result.
 				r.flightMu.Lock()
-				delete(r.flights, item.Ref)
+				delete(r.flights, fk)
 				r.flightMu.Unlock()
 				close(fl.done)
 			}()
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal)
+			// Give the detached flight slightly more headroom than Manager.Call's
+			// ResolverTotal so pending expiry returns HTTP 202 (ErrPreparing)
+			// rather than racing parent context cancellation (#580).
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), plugins.ResolverTotal+5*time.Second)
 			defer cancel()
-			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, nil, accept)
+			fl.sources, fl.err = r.callPluginResolve(rctx, rec, lib, item, partCopy, accept)
 		}()
 	}
 	r.flightMu.Unlock()
@@ -615,6 +892,14 @@ func (r *KindResolver) resolveItemSources(ctx context.Context, rec pluginitems.K
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func parsePreparingReply(body []byte) error {
+	var pending plugins.PendingReply
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &pending)
+	}
+	return core.PreparingFromPending(pending.RetryInMS)
 }
 
 func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, accept []string) ([]core.PlayableSource, error) {
@@ -647,12 +932,10 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		return nil, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, err)
 	}
 	if resp.Status == http.StatusAccepted {
-		return nil, core.ErrNotAvailable
+		return nil, parsePreparingReply(resp.Body)
 	}
 	if resp.Status == http.StatusNotFound {
-		if partIdx == nil {
-			_ = r.items.SaveNegativeResolution(ctx, item.Ref)
-		}
+		_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		return nil, core.ErrNotAvailable
 	}
 	if resp.Status != http.StatusOK {
@@ -661,6 +944,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 	var resolved core.KindResolveResponse
 	if err := json.Unmarshal(resp.Body, &resolved); err != nil {
 		return nil, fmt.Errorf("%w: invalid resolver payload: %v", core.ErrSourceUnavailable, err)
+	}
+	if resolved.Pending {
+		return nil, core.PreparingFromPending(resolved.RetryInMS)
 	}
 	for _, src := range resolved.Sources {
 		if strings.EqualFold(strings.TrimSpace(src.Pattern), "file") {
@@ -671,9 +957,7 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		}
 	}
 	if len(resolved.Sources) == 0 {
-		if partIdx == nil {
-			_ = r.items.SaveNegativeResolution(ctx, item.Ref)
-		}
+		_ = r.items.SaveNegativePartResolution(ctx, item.Ref, partIdx)
 		return nil, core.ErrNotAvailable
 	}
 	if err := r.validateNoRawSecretsInHeaders(ctx, pr.ID, pr.Manifest.Ether.Permissions.Secrets, resolved.Sources); err != nil {
@@ -902,4 +1186,71 @@ func (f *kindLocalFile) MIME() string {
 		return "application/octet-stream"
 	}
 	return f.mime
+}
+
+func effectiveItemIndex(itemIdx int, partIdx *int) int {
+	if partIdx != nil && *partIdx >= 0 && itemIdx == 0 {
+		return *partIdx
+	}
+	return itemIdx
+}
+
+type partDefaultByteSource struct {
+	kindstream.ByteSource
+	name string
+	mime string
+}
+
+func (p *partDefaultByteSource) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return p.ByteSource.Name()
+}
+
+func (p *partDefaultByteSource) MIME() string {
+	if p.mime != "" {
+		return p.mime
+	}
+	return p.ByteSource.MIME()
+}
+
+func withPartDefaults(bs kindstream.ByteSource, part core.KindItemPart, itemTitle string) kindstream.ByteSource {
+	name := bs.Name()
+	if name == "" {
+		name = firstNonEmpty(part.Name, itemTitle)
+	}
+	mime := bs.MIME()
+	if (mime == "" || mime == "application/octet-stream") && part.MIME != "" {
+		mime = part.MIME
+	}
+	if name == bs.Name() && mime == bs.MIME() {
+		return bs
+	}
+	return &partDefaultByteSource{ByteSource: bs, name: name, mime: mime}
+}
+
+type preopenedSequence struct {
+	kindstream.ByteSource
+	name    string
+	cleanup func() error
+}
+
+func (p *preopenedSequence) Name() string {
+	if p.name != "" {
+		return p.name
+	}
+	return p.ByteSource.Name()
+}
+
+func (p *preopenedSequence) Close() error {
+	err1 := p.ByteSource.Close()
+	var err2 error
+	if p.cleanup != nil {
+		err2 = p.cleanup()
+	}
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }

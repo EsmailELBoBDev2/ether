@@ -369,6 +369,23 @@ type KindStreams interface {
 	KindLeaves(ctx context.Context, viewer *core.Viewer, parent core.RatingKey) ([]KindLeaf, error)
 }
 
+// KindPart is one addressable file/part of a multi-part plugin kind item (#576).
+type KindPart struct {
+	Index    int
+	Name     string
+	MIME     string
+	Size     int64
+	Duration time.Duration
+}
+
+// KindPartStreams opens individual parts of a multi-part plugin kind item and
+// lists declared parts without opening bytes (#576). Frontends and kind-media
+// type-assert for it when serving per-part URLs.
+type KindPartStreams interface {
+	OpenKindPart(ctx context.Context, viewer *core.Viewer, key core.RatingKey, partIndex int, accept []string) (*KindMedia, error)
+	KindParts(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]KindPart, error)
+}
+
 // KindRefKeys maps between plugin RatingKeys and their ItemRefs for a viewer
 // who may see them. Protocols that address plugin items by their ItemRef
 // verbatim (the Stremio "pk:" identity, spec §2.2) use it to build catalog

@@ -20,6 +20,15 @@ type PendingReply struct {
 	Job       string `json:"job,omitempty"`
 }
 
+func pendingBudgetBody(retryInMS int64) json.RawMessage {
+	if retryInMS > 0 {
+		if b, err := json.Marshal(PendingReply{Pending: true, RetryInMS: retryInMS}); err == nil {
+			return b
+		}
+	}
+	return json.RawMessage(`{"pending":true}`)
+}
+
 // Call applies the total pending budget to kind resolvers and matchers.
 func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Response, error) {
 	if !strings.HasPrefix(req.Path, "/ether/v1/kinds/") || (!strings.HasSuffix(req.Path, "/resolve") && !strings.HasSuffix(req.Path, "/match")) {
@@ -28,10 +37,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, ResolverTotal)
 	defer cancel()
-	// One job per plugin/kind/item, even across simultaneous Plays. Include the
-	// request body when older callers do not supply an item reference.
+	// One job per plugin/kind/item (and part index when set), even across
+	// simultaneous Plays. Include the request body when older callers do not
+	// supply an item reference.
 	var identity struct {
-		Item struct {
+		PartIndex *int `json:"partIndex"`
+		Item      struct {
 			Ref        string `json:"ref"`
 			ExternalID string `json:"id"`
 		} `json:"item"`
@@ -43,9 +54,12 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 	}
 	if item == "" {
 		item = string(req.Body)
+	} else if identity.PartIndex != nil {
+		item = fmt.Sprintf("%s#part:%d", item, *identity.PartIndex)
 	}
 	suffix := fmt.Sprintf("|%x", sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimSuffix(req.Path, "/resolve"), "/match")+"|"+item)))
 	started := false
+	var lastRetryMS int64
 	var job *actionJob
 	for {
 		resp, err := m.callOnce(ctx, pluginID, req)
@@ -54,7 +68,7 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 				return Response{}, parent.Err()
 			}
 			if ctx.Err() != nil {
-				return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+				return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
 			}
 			return resp, err
 		}
@@ -62,10 +76,13 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 		if resp.Status >= 400 || json.Unmarshal(resp.Body, &pending) != nil || !pending.Pending {
 			return resp, nil
 		}
+		if pending.RetryInMS > 0 {
+			lastRetryMS = pending.RetryInMS
+		}
 		if !started && strings.HasPrefix(pending.Job, "/ether/job/") {
 			job, err = m.startResolverJob(pluginID, resp.Body, req.Body, suffix)
 			if err != nil {
-				return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+				return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
 			}
 			started = true
 		}
@@ -80,7 +97,7 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 			if parent.Err() != nil {
 				return Response{}, parent.Err()
 			}
-			return Response{Status: 202, Body: json.RawMessage(`{"pending":true}`)}, nil
+			return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
 		case <-done:
 			timer.Stop()
 			job = nil

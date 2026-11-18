@@ -174,6 +174,10 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, frontend.ErrPrepareSlow):
 		w.Header().Set("Retry-After", "2")
 		send(w, 503, object{"error": object{"class": "capacity", "code": "preparation_pending", "message": "preparation pending", "retry": object{"allowed": true, "afterSeconds": 2, "maxAttempts": 3}}})
+	case errors.Is(err, frontend.ErrPreparing):
+		seconds := frontend.PreparingRetrySeconds(err, 5)
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		send(w, http.StatusServiceUnavailable, object{"error": object{"class": "source", "code": "preparing", "message": "item is still being prepared", "retry": object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 3}}})
 	case errors.Is(err, frontend.ErrBudgetExhausted):
 		problem(w, 429, "capacity", "indexer_budget_exhausted")
 	case errors.Is(err, frontend.ErrDownloadLimit), errors.Is(err, frontend.ErrDownloadPaused):

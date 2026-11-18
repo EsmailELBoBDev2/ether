@@ -48,6 +48,17 @@ type KindItem struct {
 	ETag        string                     `json:"etag,omitempty"`
 }
 
+// KindItemPart describes one declared file/part in hints.parts on a multi-file
+// KindItem (#576). Ether passes the zero-based index back in
+// KindResolveRequest.PartIndex when resolving each part.
+type KindItemPart struct {
+	Index       int     `json:"index"`
+	Name        string  `json:"name,omitempty"`
+	MIME        string  `json:"mime,omitempty"`
+	Size        int64   `json:"size,omitempty"`
+	DurationSec float64 `json:"durationSec,omitempty"`
+}
+
 // KindArtRef is one artwork reference on a KindItem.
 type KindArtRef struct {
 	Role   string `json:"role"`
@@ -334,6 +345,34 @@ func (c *Context) StreamURL(itemRef string) (string, error) {
 		return "", errors.New("stream url: no authenticated viewer on this request")
 	}
 	return c.Ether.StreamURL(c.Context, viewerID, itemRef)
+}
+
+// StreamPartURL mints a short-lived, scoped ticket for one zero-based part of
+// a multi-file kind item (#576) and returns the Ether stream URL to embed in a
+// frontend adapter response.
+func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
+	if c.Ether == nil {
+		return "", errors.New("stream url: no host service available")
+	}
+	if partIndex < 0 {
+		return "", errors.New("stream url: partIndex must be non-negative")
+	}
+	viewerID, err := strconv.ParseInt(strings.TrimSpace(c.Headers["X-Ether-Viewer"]), 10, 64)
+	if err != nil || viewerID <= 0 {
+		return "", errors.New("stream url: no authenticated viewer on this request")
+	}
+	if ph, ok := c.Ether.(PartStreamHost); ok {
+		return ph.StreamPartURL(c.Context, viewerID, itemRef, partIndex)
+	}
+	u, err := c.Ether.StreamURL(c.Context, viewerID, itemRef)
+	if err != nil {
+		return "", err
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return u + sep + "part=" + strconv.Itoa(partIndex), nil
 }
 
 // dispatchKinds handles the /ether/v1/kinds, /ether/v1/setup and

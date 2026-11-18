@@ -56,7 +56,8 @@ type Backends struct {
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
 	// StreamURL mints a scoped stream ticket for one of a plugin's own kind
 	// items for one viewer and returns the Ether stream URL (spec §6.5).
-	StreamURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
+	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
 }
 
 // Deps are the plugin host's explicit dependencies.

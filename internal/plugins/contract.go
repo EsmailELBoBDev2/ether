@@ -642,6 +642,7 @@ type Host interface {
 	// from another plugin, or a library the viewer cannot see, are
 	// refused. Bytes are then served by Ether, never by the plugin.
 	StreamURL(ctx context.Context, itemRef string) (string, error)
+	StreamPartURL(ctx context.Context, itemRef string, partIndex *int) (string, error)
 
 	// FoldersList and FoldersStat need folders: read and an owner-picked
 	// root. They never return file contents.

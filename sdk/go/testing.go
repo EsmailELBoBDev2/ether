@@ -36,9 +36,10 @@ type MockHost struct {
 	Notifications []string
 	Logs          []RecordedLog
 	FetchHandler  func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
-	// LastStreamURLViewer/Item record the most recent StreamURL call.
+	// LastStreamURLViewer/Item/Part record the most recent StreamURL or StreamPartURL call.
 	LastStreamURLViewer int64
 	LastStreamURLItem   string
+	LastStreamURLPart   *int
 }
 
 // NewMockHost creates an initialized MockHost.
@@ -317,7 +318,23 @@ func (m *MockHost) StreamURL(_ context.Context, viewerID int64, itemRef string) 
 	defer m.mu.Unlock()
 	m.LastStreamURLViewer = viewerID
 	m.LastStreamURLItem = itemRef
+	m.LastStreamURLPart = nil
 	return "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10), nil
+}
+
+// StreamPartURL mints a deterministic part-scoped stand-in URL and records the
+// last call (#576).
+func (m *MockHost) StreamPartURL(_ context.Context, viewerID int64, itemRef string, partIndex int) (string, error) {
+	if partIndex < 0 {
+		return "", fmt.Errorf("stream url: partIndex must be non-negative")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := partIndex
+	m.LastStreamURLViewer = viewerID
+	m.LastStreamURLItem = itemRef
+	m.LastStreamURLPart = &cp
+	return "/ether/v1/kind-media/mock-" + strconv.FormatInt(viewerID, 10) + "?part=" + strconv.Itoa(partIndex), nil
 }
 
 // AssertValidViewSpec validates a ViewSpecDocument for structural rules and

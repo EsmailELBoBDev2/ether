@@ -396,6 +396,14 @@ export interface KindItem {
   etag?: string;
 }
 
+export interface KindItemPart {
+  index?: number;
+  name?: string;
+  mime?: string;
+  size?: number;
+  durationSec?: number;
+}
+
 export interface KindPage {
   items: KindItem[];
   nextCursor?: string;

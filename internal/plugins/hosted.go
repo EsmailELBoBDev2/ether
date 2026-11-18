@@ -504,7 +504,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		page, err := b.h.KindItems(ctx, str(0), str(1), int(num(2)))
 		return result(page, err)
 	case "frontend.streamURL":
-		u, err := b.h.StreamURL(ctx, str(0))
+		var partIdx *int
+		if len(args) > 1 && string(args[1]) != "null" {
+			var n int
+			if err := json.Unmarshal(args[1], &n); err != nil || n < 0 {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "frontend.streamURL partIndex must be a non-negative integer"}
+			}
+			partIdx = &n
+		}
+		u, err := b.h.StreamPartURL(ctx, str(0), partIdx)
 		if err != nil {
 			return nil, mapHostError(err)
 		}

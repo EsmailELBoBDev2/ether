@@ -161,6 +161,51 @@ owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
 
+### Multi-file items (`hints.parts`)
+
+When one playable item consists of several ordered files (multi-disc sets,
+CUE + BIN tracks, multi-part audiobooks, split archives), list its parts on the
+item in `hints.parts` (an array of `{name, mime?, size?, durationSec?}` objects
+or filenames; Ether also reads a declared `fields.parts` array when
+`hints.parts` is absent):
+
+```json
+{
+  "id": "ff7",
+  "level": "game",
+  "title": "Final Fantasy VII",
+  "playable": true,
+  "hints": {
+    "parts": [
+      { "name": "Disc 1.chd", "mime": "application/octet-stream", "size": 524288000 },
+      { "name": "Disc 2.chd", "mime": "application/octet-stream", "size": 512000000 },
+      { "name": "Disc 3.chd", "mime": "application/octet-stream", "size": 498000000 }
+    ]
+  }
+}
+```
+
+When `parts` is non-empty, Ether calls `/ether/v1/kinds/{kind}/resolve` per
+part with zero-based `partIndex` (`0 .. len(parts)-1`), caches and invalidates
+resolved sources per `(item, partIndex)`, and isolates pending prepare jobs per
+part:
+
+- **Whole-item opens** (standard protocol playback or `/ether/v1/kind-media/{ticket}`
+  without a part selector) resolve `partIndex: 0` for single-part items and
+  deliver multi-part items as an ordered, byte-rangeable `Sequence` across all
+  parts (`0 .. N-1`).
+- **Per-part opens** let frontend adapters and multi-file clients fetch each
+  file individually:
+  - Mint a part-scoped ticket URL with `ether.frontend.streamURL(itemRef, partIndex).url`
+    (hosted JS), `streamUrl(ctx, itemRef, partIndex)` (TypeScript SDK),
+    `ctx.StreamPartURL(itemRef, partIndex)` (Go SDK), or
+    `ctx.stream_url(item_ref, part_index)` (Python SDK) — backed by
+    `POST /ether/plugin-host/frontend/stream-url` with `{"viewerId", "itemRef", "partIndex"}`.
+  - Or pass `?part=N` on an unpinned item ticket (`/ether/v1/kind-media/{ticket}?part=0`).
+    A malformed or negative `part` answers `400 invalid_part`, an out-of-range
+    part answers `404 item_not_found`, and a `?part=N` that disagrees with a
+    part-scoped ticket answers `404 ticket_invalid`.
+
 Watch state and progress are keyed per playable leaf. For paged
 media, store progress against the leaf the viewer is on (its index
 is the natural unit); containers themselves carry no progress.
@@ -191,11 +236,13 @@ defaults per library afterwards.
 
   | Status | Code | Meaning |
   |---|---|---|
-  | 404 | `ticket_invalid` | Unknown, expired (2 min) or out-of-scope ticket |
+  | 400 | `invalid_part` | `?part=` is not a non-negative integer |
+  | 404 | `ticket_invalid` | Unknown, expired (2 min), out-of-scope, or part-mismatched ticket |
   | 403 | `viewer_invalid` | The ticket's viewer can no longer play |
-  | 404 | `item_not_found` | The item is not in a library this viewer can open |
+  | 404 | `item_not_found` | The item (or requested part index) is not in a library this viewer can open |
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
+  | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
   | 503 | `source_unavailable` | The source is temporarily unavailable |
   | 502 | `open_failed` | The source could not be opened |
 
@@ -499,10 +546,15 @@ per-route limits and how owners raise ceilings.
 Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
 `job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
 25 seconds total per Play, and keeps each invocation within five seconds.
-Pending is neutral for health. When the total expires the item is not available
-yet; this result is not saved as a negative resolution. A job receives the
-original request body, uses promoted deadlines and continuation replies, and
-is deduplicated per plugin/kind/item. Job completion wakes the next resolve.
+Pending is neutral for health. When the 25-second budget expires while the reply is still `pending` (or when
+background job slots are full), Ether returns `503` with `code: "preparing"` and
+`Retry-After` set from the last `retryInMs` (defaulting to `5` seconds) across
+`kind-media`, Vela, Jellyfin/MediaBrowser, and Plex API routes, and never saves
+a negative resolution — whereas a real empty `sources: []` answer stays `409`
+`no_source`. A job receives the original request body (including `partIndex` when
+resolving a multi-part item), uses promoted deadlines and continuation replies,
+and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
+the next resolve.
 
 For remote verification call `ether.http.hash({url,algo:"sha256",expectSize})`.
 A miss returns pending while a bounded host worker streams digests without

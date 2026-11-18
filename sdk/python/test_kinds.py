@@ -186,7 +186,7 @@ class KindsConformanceTest(unittest.TestCase):
         self.assertEqual(feed["entries"][0]["audio"], "https://x/e.mp3")
 
     def test_stream_url_host_service(self):
-        from ether_plugin import PluginContext, stream_url
+        from ether_plugin import PluginContext, RemoteHostClient, stream_url
 
         host = create_mock_host_client()
         ctx = PluginContext(
@@ -203,7 +203,38 @@ class KindsConformanceTest(unittest.TestCase):
         url = ctx.stream_url("pk:recordings:a")
         self.assertTrue(url.startswith("/ether/v1/kind-media/"))
         self.assertEqual(host.last_stream_url, (7, "pk:recordings:a"))
+        self.assertIsNone(host.last_stream_url_part)
         self.assertEqual(stream_url(ctx, "pk:recordings:a"), url)
+
+        part_url = ctx.stream_url("pk:recordings:a", 2)
+        self.assertTrue(part_url.endswith("?part=2"))
+        self.assertEqual(host.last_stream_url_part, 2)
+        self.assertEqual(stream_url(ctx, "pk:recordings:a", 2), part_url)
+        with self.assertRaises(ValueError):
+            ctx.stream_url("pk:recordings:a", -1)
+
+        seen = []
+        remote = RemoteHostClient(base_url="http://ether.local", credential="cred")
+        remote.frontend._call = lambda method, path, body=None, allow_404=False: (  # type: ignore[method-assign]
+            seen.append((method, path, body)) or {"url": "/ether/v1/kind-media/remote-part"}
+        )
+        rctx = PluginContext(
+            manifest={},
+            settings={},
+            locale="en",
+            pick_token=None,
+            request_id=None,
+            headers={"X-Ether-Viewer": "7"},
+            query={},
+            ether=remote,
+            i18n=None,
+        )
+        self.assertEqual(rctx.stream_url("pk:recordings:a", 3), "/ether/v1/kind-media/remote-part")
+        self.assertEqual(
+            seen,
+            [("POST", "/ether/plugin-host/frontend/stream-url", {"viewerId": 7, "itemRef": "pk:recordings:a", "partIndex": 3})],
+        )
+
         # No viewer header: refused.
         ctx.headers = {}
         with self.assertRaises(RuntimeError):

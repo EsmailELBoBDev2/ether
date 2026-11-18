@@ -576,6 +576,18 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 						if stream.Type != "subtitle" {
 							continue
 						}
+						// A track the HLS stream carries as a rendition is
+						// delivered there, as Jellyfin does for "Hls" clients.
+						if format == frontend.StreamHLS {
+							if rendition, e := subtitleService.SubtitleURL(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, stream.Index, "hls"); e == nil && rendition != "" {
+								dto := streams[n].(map[string]any)
+								dto["DeliveryMethod"] = "Hls"
+								delete(dto, "DeliveryUrl")
+								dto["IsTextSubtitleStream"] = true
+								dto["SupportsExternalStream"] = true
+								continue
+							}
+						}
 						subtitleURL, e := subtitleService.SubtitleURL(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, stream.Index, "vtt")
 						if e != nil || !strings.HasPrefix(subtitleURL, "/sessions/media/") || strings.ContainsAny(subtitleURL, "\r\n") {
 							continue

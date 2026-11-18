@@ -37,6 +37,7 @@ const (
 	CapKindResolver    Capability = "kind_resolver"
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
+	CapPosterBadges    Capability = "poster_badges"
 )
 
 // Manifest is the EPP/1 manifest document served at GET /manifest.json.
@@ -207,6 +208,7 @@ type Contributes struct {
 	ListSources      []ListSourceMeta      `json:"listSources,omitempty"`
 	RankingSteps     []RankingStepMeta     `json:"rankingSteps,omitempty"`
 	RuleConditions   []RuleConditionMeta   `json:"ruleConditions,omitempty"`
+	PosterBadges     []PosterBadgeSetMeta  `json:"posterBadges,omitempty"`
 	Tools            []ToolMeta            `json:"tools,omitempty"`
 	Pages            []PageMeta            `json:"pages,omitempty"`
 	Slots            []SlotMeta            `json:"slots,omitempty"`
@@ -214,6 +216,41 @@ type Contributes struct {
 	MediaKinds       []MediaKindMeta       `json:"mediaKinds,omitempty"`
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
+}
+
+// Poster badge bounds (#594).
+const (
+	MaxPosterBadgeSets     = 4
+	MaxBadgeEntriesPerCall = 500
+	MaxBadgeLabelsPerTitle = 3
+	MaxBadgeLabelLen       = 16
+	PosterBadgeQuotaTitles = 200_000
+)
+
+// PosterBadgeSetMeta declares one poster overlay badge set contributed by a plugin (#594).
+type PosterBadgeSetMeta struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// BadgeTitleRef identifies a canonical movie or show by TMDB and/or IMDb id.
+type BadgeTitleRef struct {
+	Type string `json:"type"`
+	TMDB int64  `json:"tmdb,omitempty"`
+	IMDB string `json:"imdb,omitempty"`
+}
+
+// BadgeEntry pushes or clears (empty Labels) poster badges for one title.
+type BadgeEntry struct {
+	Title  BadgeTitleRef `json:"title"`
+	Labels []string      `json:"labels"`
+}
+
+// BadgeUsage reports a plugin's badged title count and per-plugin title quota.
+type BadgeUsage struct {
+	Titles      int64 `json:"titles"`
+	QuotaTitles int64 `json:"quotaTitles"`
 }
 
 // Presentations declares how a library is published per protocol.

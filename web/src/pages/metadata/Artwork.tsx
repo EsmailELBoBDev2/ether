@@ -23,6 +23,7 @@ import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { useLocale } from "../../i18n/react";
 import { api, apiFetch } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
+import { isPluginDescriptor, textOf, useRegistry } from "../../lib/extend";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
 import { blankSpec } from "../../lib/rules";
 import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
@@ -43,6 +44,31 @@ function displayLanguage(locale: string, code: string) {
   } catch {
     return code;
   }
+}
+
+type PosterBadgeMeta = {
+  key?: string;
+  layerKey?: string;
+  pluginName?: string;
+};
+
+function badgeSetAliases(pluginId: string, setKey: string): string[] {
+  return [
+    `${pluginId}:${setKey}`,
+    `plugin:${pluginId}:${setKey}`,
+    `${pluginId}/${setKey}`,
+    `plugin:${pluginId}/${setKey}`,
+  ];
+}
+
+function isBadgeSetDisabled(
+  disabled: readonly string[] | undefined,
+  pluginId: string,
+  setKey: string,
+): boolean {
+  if (!disabled?.length) return false;
+  const aliases = badgeSetAliases(pluginId, setKey);
+  return disabled.some((entry) => aliases.includes(entry));
 }
 
 type Variant = { path: string; language?: string; tags?: string[] };
@@ -100,6 +126,7 @@ export function ArtworkSettings() {
     [],
   );
   const users = useAsync(() => api.users(), []);
+  const posterBadgesRegistry = useRegistry<PosterBadgeMeta>("posterBadge");
   const { draft, setDraft, dirty, reset } = useDraft(doc.data);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -179,6 +206,29 @@ export function ArtworkSettings() {
       />
     );
   const set = (patch: Partial<Overlays>) => setDraft({ ...draft, ...patch });
+  const pluginBadgeSets = posterBadgesRegistry.descriptors.filter(isPluginDescriptor).map((d) => {
+    const pluginId = d.owner;
+    const setKey = d.meta?.key || (d.id.includes("/") ? d.id.slice(d.id.indexOf("/") + 1) : d.id);
+    const entryKey = `${pluginId}:${setKey}`;
+    const layerKey = d.meta?.layerKey || `plugin:${pluginId}:${setKey}`;
+    const setLabel = textOf(d.label) || setKey;
+    const pluginName = d.meta?.pluginName || d.group || pluginId;
+    return {
+      pluginId,
+      setKey,
+      entryKey,
+      layerKey,
+      fullLabel: `${setLabel} · ${pluginName}`,
+      hint: textOf(d.hint),
+      enabled: !isBadgeSetDisabled(draft.disabledBadgeSets, pluginId, setKey),
+    };
+  });
+  const toggleBadgeSet = (pluginId: string, setKey: string, checked: boolean) => {
+    const aliases = new Set(badgeSetAliases(pluginId, setKey));
+    const kept = (draft.disabledBadgeSets ?? []).filter((entry) => !aliases.has(entry));
+    const nextDisabled = checked ? kept : [...kept, `${pluginId}:${setKey}`];
+    set({ disabledBadgeSets: nextDisabled });
+  };
   const appearanceDisabled = !draft.enabled || saving;
   const save = async () => {
     setSaving(true);
@@ -402,6 +452,48 @@ export function ArtworkSettings() {
                   />
                 </div>
               ))}
+              {pluginBadgeSets.length > 0 ? (
+                <div
+                  role="group"
+                  aria-label={t("From plugins")}
+                  className="mt-2.5 border-t border-border/60 pt-2.5"
+                >
+                  <div className="metadata-section-title">
+                    <h4 className="text-[11px] font-semibold text-fg-muted">{t("From plugins")}</h4>
+                  </div>
+                  {pluginBadgeSets.map((b) => {
+                    const layer = explanationData?.layers.find(
+                      (l) => l.key === b.layerKey && l.state !== "off",
+                    );
+                    const inputId = `overlay-plugin-${b.pluginId}-${b.setKey}`;
+                    return (
+                      <div className="metadata-toggle" key={b.entryKey}>
+                        <div>
+                          <label htmlFor={inputId}>{b.fullLabel}</label>
+                          {b.hint ? <p>{b.hint}</p> : null}
+                          {layer ? (
+                            <p
+                              className={`metadata-layer-state is-${layer.state}`}
+                              title={layer.reason}
+                            >
+                              {layer.state === "ready" ? layer.labels.join(" · ") : layer.reason}
+                            </p>
+                          ) : null}
+                        </div>
+                        <Switch
+                          id={inputId}
+                          aria-label={b.fullLabel}
+                          checked={b.enabled}
+                          disabled={appearanceDisabled}
+                          onChange={(e) =>
+                            toggleBadgeSet(b.pluginId, b.setKey, e.currentTarget.checked)
+                          }
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </section>
             <Section
               title={t("Preview title")}

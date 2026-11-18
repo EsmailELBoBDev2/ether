@@ -84,6 +84,32 @@ export default hello;
 - `tool` (`POST /ether/tool/{name}`) and `job` (`POST /ether/job/{name}`)
 - `file` (`GET /ether/file/{path...}`)
 - `rankKey` and `condMatch` hot-path exports (`rank_key`, `cond_match`)
+- `poster_badges` (`ether.contributes.posterBadges` plus `ctx.ether.badges.set`, `clear`, and `usage`)
+
+### Poster badges
+
+Plugins that declare `poster_badges` in `ether.capabilities` and up to 4 sets in
+`ether.contributes.posterBadges: [{ key, label, description? }]` (`key` matching
+`^[a-z][a-z0-9_]{0,31}$`) can push short text badges onto movie and show posters,
+such as a `"dub languages"` set (`key: "dub_languages"`, `label: "Dub languages"`)
+for an anime plugin or an `"editions"` set (`key: "editions"`, `label: "Editions"`):
+
+```ts
+await ctx.ether.badges.set("dub_languages", [
+  { title: { type: "show", tmdb: 37854 }, labels: ["EN DUB", "JA"] },
+]);
+await ctx.ether.badges.set("editions", [
+  { title: { type: "movie", imdb: "tt0083658" }, labels: ["FINAL CUT"] },
+]);
+const usage = await ctx.ether.badges.usage(); // { titles, quotaTitles }
+```
+
+Each `badges.set` call accepts up to 500 entries; empty `labels` deletes that
+title's badges in the set; each title accepts at most 3 labels per set, 1 to 16
+characters from `[A-Z0-9 +&'./-]` (lowercase input is uppercased, anything else
+is rejected), up to 200,000 titles per plugin. Ether draws the badges from its
+local badge store, the owner can switch each set off in poster overlay settings,
+and no plugin call happens while rendering.
 
 Tunnel mode currently makes one connection. Use a process supervisor to
 restart the sidecar after a disconnection.

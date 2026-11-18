@@ -15,6 +15,7 @@ export type Overlays = {
   size: "small" | "medium" | "large" | "extra-large";
   hideDenominator: boolean;
   hideDot: boolean;
+  disabledBadgeSets: string[];
 };
 export const normalizeOverlays = (s: Partial<Overlays>): Overlays => ({
   enabled: false,
@@ -32,6 +33,7 @@ export const normalizeOverlays = (s: Partial<Overlays>): Overlays => ({
   position: s.position || "bottom",
   accent: s.accent || "#d4a574",
   size: s.size || "medium",
+  disabledBadgeSets: Array.isArray(s.disabledBadgeSets) ? [...s.disabledBadgeSets] : [],
 });
 export const PRESETS: {
   key: string;
@@ -107,7 +109,7 @@ export function previewURL(
 export type ArtworkExplanation = {
   labels: string[];
   layers: {
-    key: "status" | "quality" | "ratings" | "details";
+    key: "status" | "quality" | "ratings" | "details" | (string & {});
     state: "ready" | "unavailable" | "off";
     labels: string[];
     reason: string;

@@ -7,11 +7,90 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 )
+
+var (
+	mockBadgeSetKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	mockBadgeIMDBRe   = regexp.MustCompile(`^tt[0-9]{1,12}$`)
+)
+
+func normalizeMockBadgeLabel(raw string) (string, error) {
+	if len(raw) < 1 || len(raw) > MaxBadgeLabelLen {
+		return "", fmt.Errorf("badge label must be 1 to %d characters", MaxBadgeLabelLen)
+	}
+	buf := make([]byte, len(raw))
+	nonSpace := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c >= 'a' && c <= 'z' {
+			c = c - 'a' + 'A'
+		}
+		switch {
+		case c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '+', c == '&', c == '\'', c == '.', c == '/', c == '-':
+			nonSpace = true
+		case c == ' ':
+		default:
+			return "", fmt.Errorf("badge label must contain only [A-Z0-9 +&'./-]")
+		}
+		buf[i] = c
+	}
+	if !nonSpace {
+		return "", fmt.Errorf("badge label must not be blank")
+	}
+	return string(buf), nil
+}
+
+func resolveMockBadgeTitleKey(ref BadgeTitleRef, catalog map[string]CatalogTitleSummary) (string, error) {
+	typ := strings.TrimSpace(ref.Type)
+	if typ != "movie" && typ != "show" {
+		return "", fmt.Errorf("badge title.type must be movie or show")
+	}
+	if ref.TMDB < 0 {
+		return "", fmt.Errorf("badge title.tmdb must be positive")
+	}
+	imdb := strings.ToLower(strings.TrimSpace(ref.IMDB))
+	if imdb != "" && !mockBadgeIMDBRe.MatchString(imdb) {
+		return "", fmt.Errorf("badge title.imdb must match tt<digits>")
+	}
+	if ref.TMDB == 0 && imdb == "" {
+		return "", fmt.Errorf("badge title requires tmdb or imdb")
+	}
+	if ref.TMDB > 0 {
+		for _, item := range catalog {
+			if item.Type == typ && int64(item.TMDBID) == ref.TMDB {
+				return fmt.Sprint(item.ID), nil
+			}
+		}
+	}
+	if imdb != "" {
+		for _, item := range catalog {
+			if item.Type == typ && strings.EqualFold(item.IMDBID, imdb) {
+				return fmt.Sprint(item.ID), nil
+			}
+		}
+	}
+	if ref.TMDB > 0 {
+		return fmt.Sprintf("tmdb:%s:%d", typ, ref.TMDB), nil
+	}
+	return fmt.Sprintf("imdb:%s:%s", typ, imdb), nil
+}
+
+func countDistinctMockBadgeTitles(sets map[string]map[string][]string) int64 {
+	seen := map[string]struct{}{}
+	for _, setMap := range sets {
+		for k := range setMap {
+			seen[k] = struct{}{}
+		}
+	}
+	return int64(len(seen))
+}
 
 // RecordedLog is one log message recorded by MockHost.
 type RecordedLog struct {
@@ -22,20 +101,22 @@ type RecordedLog struct {
 
 // MockHost is an in-memory Host implementation for unit tests.
 type MockHost struct {
-	mu            sync.RWMutex
-	KV            map[string]string
-	Secrets       map[string]string
-	Catalog       map[string]CatalogTitleSummary
-	History       map[int64][]ViewerWatchEntry
-	WatchState    map[string]bool
-	Collections   []map[string]any
-	Kinds         map[string][]KindItem // kindKey -> pushed items, in upsert order
-	Sources       []SourceCandidate     // returned by ResolveSources
-	Blobs         map[string][]byte     // cache blob ref -> bytes
-	Folders       map[string][]FolderEntry
-	Notifications []string
-	Logs          []RecordedLog
-	FetchHandler  func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
+	mu               sync.RWMutex
+	KV               map[string]string
+	Badges           map[string]map[string][]string
+	BadgeQuotaTitles int64
+	Secrets          map[string]string
+	Catalog          map[string]CatalogTitleSummary
+	History          map[int64][]ViewerWatchEntry
+	WatchState       map[string]bool
+	Collections      []map[string]any
+	Kinds            map[string][]KindItem // kindKey -> pushed items, in upsert order
+	Sources          []SourceCandidate     // returned by ResolveSources
+	Blobs            map[string][]byte     // cache blob ref -> bytes
+	Folders          map[string][]FolderEntry
+	Notifications    []string
+	Logs             []RecordedLog
+	FetchHandler     func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
 	// LastStreamURLViewer/Item/Part record the most recent StreamURL or StreamPartURL call.
 	LastStreamURLViewer int64
 	LastStreamURLItem   string
@@ -45,15 +126,17 @@ type MockHost struct {
 // NewMockHost creates an initialized MockHost.
 func NewMockHost() *MockHost {
 	return &MockHost{
-		KV:          map[string]string{},
-		Secrets:     map[string]string{},
-		Catalog:     map[string]CatalogTitleSummary{},
-		History:     map[int64][]ViewerWatchEntry{},
-		WatchState:  map[string]bool{},
-		Folders:     map[string][]FolderEntry{},
-		Collections: []map[string]any{},
-		Kinds:       map[string][]KindItem{},
-		Blobs:       map[string][]byte{},
+		KV:               map[string]string{},
+		Badges:           map[string]map[string][]string{},
+		BadgeQuotaTitles: PosterBadgeQuotaTitles,
+		Secrets:          map[string]string{},
+		Catalog:          map[string]CatalogTitleSummary{},
+		History:          map[int64][]ViewerWatchEntry{},
+		WatchState:       map[string]bool{},
+		Folders:          map[string][]FolderEntry{},
+		Collections:      []map[string]any{},
+		Kinds:            map[string][]KindItem{},
+		Blobs:            map[string][]byte{},
 	}
 }
 
@@ -109,6 +192,103 @@ func (m *MockHost) KVUsage(_ context.Context) (KVUsage, error) {
 		Keys:       keys,
 		QuotaBytes: 50 << 20,
 		QuotaKeys:  10000,
+	}, nil
+}
+
+func (m *MockHost) badgeQuotaLocked() int64 {
+	if m.BadgeQuotaTitles > 0 {
+		return m.BadgeQuotaTitles
+	}
+	return PosterBadgeQuotaTitles
+}
+
+// BadgesSet stores or clears (empty Labels) poster badges in memory, enforcing
+// the same label and per-plugin title bounds as Ether (#594).
+func (m *MockHost) BadgesSet(_ context.Context, setKey string, entries []BadgeEntry) error {
+	if !mockBadgeSetKeyRe.MatchString(setKey) {
+		return fmt.Errorf("badge set key must match ^[a-z][a-z0-9_]{0,31}$")
+	}
+	if len(entries) > MaxBadgeEntriesPerCall {
+		return fmt.Errorf("badges.set accepts at most %d entries per call", MaxBadgeEntriesPerCall)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Badges == nil {
+		m.Badges = map[string]map[string][]string{}
+	}
+	nextSet := map[string][]string{}
+	for k, v := range m.Badges[setKey] {
+		nextSet[k] = append([]string{}, v...)
+	}
+	hasUpsert := false
+	for _, e := range entries {
+		if len(e.Labels) > MaxBadgeLabelsPerTitle {
+			return fmt.Errorf("badge entry may have at most %d labels per title", MaxBadgeLabelsPerTitle)
+		}
+		titleKey, err := resolveMockBadgeTitleKey(e.Title, m.Catalog)
+		if err != nil {
+			return err
+		}
+		if len(e.Labels) == 0 {
+			delete(nextSet, titleKey)
+			continue
+		}
+		var clean []string
+		seen := make(map[string]bool, len(e.Labels))
+		for _, raw := range e.Labels {
+			norm, err := normalizeMockBadgeLabel(raw)
+			if err != nil {
+				return err
+			}
+			if !seen[norm] {
+				seen[norm] = true
+				clean = append(clean, norm)
+			}
+		}
+		nextSet[titleKey] = clean
+		hasUpsert = true
+	}
+	preview := make(map[string]map[string][]string, len(m.Badges)+1)
+	for k, v := range m.Badges {
+		preview[k] = v
+	}
+	if len(nextSet) == 0 {
+		delete(preview, setKey)
+	} else {
+		preview[setKey] = nextSet
+	}
+	quota := m.badgeQuotaLocked()
+	if hasUpsert {
+		if titles := countDistinctMockBadgeTitles(preview); titles > quota {
+			return fmt.Errorf("poster badge quota exceeded (%d > %d titles)", titles, quota)
+		}
+	}
+	if len(nextSet) == 0 {
+		delete(m.Badges, setKey)
+	} else {
+		m.Badges[setKey] = nextSet
+	}
+	return nil
+}
+
+// BadgesClear removes every badge in setKey from the in-memory store (#594).
+func (m *MockHost) BadgesClear(_ context.Context, setKey string) error {
+	if !mockBadgeSetKeyRe.MatchString(setKey) {
+		return fmt.Errorf("badge set key must match ^[a-z][a-z0-9_]{0,31}$")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Badges, setKey)
+	return nil
+}
+
+// BadgesUsage returns the distinct badged title count and configured quota (#594).
+func (m *MockHost) BadgesUsage(_ context.Context) (BadgeUsage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return BadgeUsage{
+		Titles:      countDistinctMockBadgeTitles(m.Badges),
+		QuotaTitles: m.badgeQuotaLocked(),
 	}, nil
 }
 

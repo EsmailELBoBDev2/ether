@@ -1,5 +1,8 @@
 import type {
   ActionResponse,
+  BadgeEntry,
+  BadgeTitleRef,
+  BadgeUsage,
   CandidateFacts,
   CatalogItem,
   CatalogResponse,
@@ -23,6 +26,10 @@ import type {
 } from "./types.ts";
 import {
   encodeText,
+  MaxBadgeEntriesPerCall,
+  MaxBadgeLabelLen,
+  MaxBadgeLabelsPerTitle,
+  PosterBadgeQuotaTitles,
   type CatalogTitleSummary,
   type EtherHost,
   type FolderEntry,
@@ -39,8 +46,94 @@ export interface RecordedLog {
   attrs?: Record<string, unknown>;
 }
 
+const BADGE_SET_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
+const BADGE_LABEL_RE = /^[A-Z0-9 +&'./-]+$/;
+const IMDB_ID_RE = /^tt[0-9]+$/;
+
+function checkBadgeSetKey(setKey: string): void {
+  if (typeof setKey !== "string" || !BADGE_SET_KEY_RE.test(setKey)) {
+    throw new Error("badge set key must match ^[a-z][a-z0-9_]{0,31}$");
+  }
+}
+
+function normalizeBadgeLabel(raw: string): string {
+  if (typeof raw !== "string") {
+    throw new Error("badge label must be a string");
+  }
+  let upper = "";
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    upper += code >= 97 && code <= 122 ? String.fromCharCode(code - 32) : raw[i]!;
+  }
+  if (
+    upper.length < 1 ||
+    upper.length > MaxBadgeLabelLen ||
+    upper.trim().length === 0 ||
+    !BADGE_LABEL_RE.test(upper)
+  ) {
+    throw new Error(
+      `badge label must be 1..${MaxBadgeLabelLen} characters from [A-Z0-9 +&'./-]`,
+    );
+  }
+  return upper;
+}
+
+function resolveBadgeTitleKey(
+  title: BadgeTitleRef,
+  catalog: Map<string, CatalogTitleSummary>,
+): string {
+  if (!title || (title.type !== "movie" && title.type !== "show")) {
+    throw new Error('badge title.type must be "movie" or "show"');
+  }
+  let tmdb = 0;
+  if (title.tmdb !== undefined) {
+    if (!Number.isSafeInteger(title.tmdb) || title.tmdb <= 0) {
+      throw new Error("badge title.tmdb must be a positive integer");
+    }
+    tmdb = title.tmdb;
+  }
+  let imdb = "";
+  if (title.imdb !== undefined && title.imdb !== "") {
+    const norm = String(title.imdb).trim().toLowerCase();
+    if (!IMDB_ID_RE.test(norm)) {
+      throw new Error("badge title.imdb must match tt<digits>");
+    }
+    imdb = norm;
+  }
+  if (tmdb === 0 && imdb === "") {
+    throw new Error("badge title requires tmdb or imdb");
+  }
+  if (tmdb > 0) {
+    for (const item of catalog.values()) {
+      if (item.type === title.type && item.tmdbId === tmdb) {
+        return String(item.id);
+      }
+    }
+  }
+  if (imdb !== "") {
+    for (const item of catalog.values()) {
+      if (item.type === title.type && item.imdbId?.toLowerCase() === imdb) {
+        return String(item.id);
+      }
+    }
+  }
+  return tmdb > 0 ? `tmdb:${title.type}:${tmdb}` : `imdb:${title.type}:${imdb}`;
+}
+
+function countDistinctBadgeTitles(badges: Map<string, Map<string, string[]>>): number {
+  const seen = new Set<string>();
+  for (const setMap of badges.values()) {
+    for (const titleKey of setMap.keys()) {
+      seen.add(titleKey);
+    }
+  }
+  return seen.size;
+}
+
 export interface MockHostState {
   kv: Map<string, string>;
+  badges: Map<string, Map<string, string[]>>;
+  badgeQuotaTitles: number;
   secrets: Map<string, string>;
   catalog: Map<string, CatalogTitleSummary>;
   history: Map<number, ViewerWatchEntry[]>;
@@ -67,6 +160,8 @@ export interface MockHostClient extends EtherHost {
 export function createMockHostClient(initial?: Partial<MockHostState>): MockHostClient {
   const state: MockHostState = {
     kv: initial?.kv ?? new Map<string, string>(),
+    badges: initial?.badges ?? new Map<string, Map<string, string[]>>(),
+    badgeQuotaTitles: initial?.badgeQuotaTitles ?? PosterBadgeQuotaTitles,
     secrets: initial?.secrets ?? new Map<string, string>(),
     catalog: initial?.catalog ?? new Map<string, CatalogTitleSummary>(),
     history: initial?.history ?? new Map<number, ViewerWatchEntry[]>(),
@@ -126,6 +221,60 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
           quotaKeys: 10000,
         };
       },
+    },
+    badges: {
+      set: (setKey: string, entries: BadgeEntry[]) => {
+        checkBadgeSetKey(setKey);
+        if (!Array.isArray(entries)) {
+          throw new Error("badges.set entries must be an array");
+        }
+        if (entries.length > MaxBadgeEntriesPerCall) {
+          throw new Error(`badges.set accepts at most ${MaxBadgeEntriesPerCall} entries per call`);
+        }
+        const nextSet = new Map<string, string[]>(state.badges.get(setKey) ?? []);
+        for (const entry of entries) {
+          if (!entry || !Array.isArray(entry.labels)) {
+            throw new Error("badge entry labels must be an array");
+          }
+          if (entry.labels.length > MaxBadgeLabelsPerTitle) {
+            throw new Error(
+              `badge entry may have at most ${MaxBadgeLabelsPerTitle} labels per title`,
+            );
+          }
+          const titleKey = resolveBadgeTitleKey(entry.title, state.catalog);
+          if (entry.labels.length === 0) {
+            nextSet.delete(titleKey);
+            continue;
+          }
+          const labels = Array.from(new Set(entry.labels.map(normalizeBadgeLabel)));
+          nextSet.set(titleKey, labels);
+        }
+        const preview = new Map(state.badges);
+        if (nextSet.size === 0) {
+          preview.delete(setKey);
+        } else {
+          preview.set(setKey, nextSet);
+        }
+        const totalTitles = countDistinctBadgeTitles(preview);
+        if (totalTitles > state.badgeQuotaTitles) {
+          throw new Error(
+            `poster badge quota exceeded (${totalTitles} > ${state.badgeQuotaTitles} titles)`,
+          );
+        }
+        if (nextSet.size === 0) {
+          state.badges.delete(setKey);
+        } else {
+          state.badges.set(setKey, nextSet);
+        }
+      },
+      clear: (setKey: string) => {
+        checkBadgeSetKey(setKey);
+        state.badges.delete(setKey);
+      },
+      usage: (): BadgeUsage => ({
+        titles: countDistinctBadgeTitles(state.badges),
+        quotaTitles: state.badgeQuotaTitles,
+      }),
     },
     secret: {
       get: (name: string) => state.secrets.get(name) ?? "",

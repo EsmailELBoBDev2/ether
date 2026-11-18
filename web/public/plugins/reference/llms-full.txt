@@ -102,6 +102,7 @@ Capabilities describe what a plugin does; permissions describe which host data i
 | stream_source | Stremio `/stream/{type}/{id}.json`; lazy streams open through `/ether/open/{id}` |
 | debrid_provider | `/ether/debrid/check`, `find`, `acquire`, `link`, `remove`, `account` |
 | list_source | `contributes.listSources`; matching Stremio catalogue |
+| poster_badges | `contributes.posterBadges`; `ether.badges.set`, `clear`, `usage` |
 | metadata | Stremio `/meta/{type}/{id}.json` |
 | plugin_directory | Plugin directory declarations and discovery routes |
 | livetv_channels | `/ether/channels.json`, `/ether/guide/{id}.json`, stream routes |
@@ -291,6 +292,25 @@ if (usage.bytes + saveJson.length + 256 <= usage.quotaBytes && usage.keys < usag
   ether.kv.put("save:slot-1", saveJson);
 }
 ```
+
+The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
+
+## Poster badges
+
+Requires `poster_badges` and up to 4 sets declared in `ether.contributes.posterBadges: [{key, label, description?}]` (`key` matching `^[a-z][a-z0-9_]{0,31}$`), such as a `"dub languages"` set (`key: "dub_languages"`, `label: "Dub languages"`) for an anime plugin or an `"editions"` set (`key: "editions"`, `label: "Editions"`).
+
+```ts
+ether.badges.set("dub_languages", [
+  { title: { type: "show", tmdb: 37854 }, labels: ["EN DUB", "JA"] },
+]);
+ether.badges.set("editions", [
+  { title: { type: "movie", imdb: "tt0083658" }, labels: ["FINAL CUT"] },
+]);
+const usage = ether.badges.usage(); // { titles, quotaTitles }
+// ether.badges.clear("editions");
+```
+
+`set(setKey, entries)` accepts up to 500 entries per call; empty `labels` deletes that title's badges in the set. At most 3 labels per title per set are allowed, each 1 to 16 characters from `[A-Z0-9 +&'./-]` (lowercase input is uppercased, anything else is rejected), up to 200,000 badged titles per plugin. Ether draws the badges itself, the owner can switch each set off in Metadata -> Artwork (`disabledBadgeSets`), and no plugin call happens while rendering.
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
@@ -24193,7 +24213,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors, pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections\|people`, with optional `facet`/`order`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count` on `people` tabs); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections\|people`, with optional `facet`/`order`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count` on `people` tabs); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -24210,6 +24230,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | Capability | Plugin surface | Host services commonly needed |
 |---|---|---|
 | list_source | contributes.listSources + `/catalog/{type}/{id}.json` | HTTPFetch, CatalogSearch/Get, KV |
+| poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
 | catalog_provider | mediaKinds; paged browse/changes or push | KindUpsert/Delete/Items, KV |
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
@@ -24247,6 +24268,38 @@ FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they retu
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
 Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed. For user-hosted services whose hostname comes from plugin settings, declare `"operator"` in `permissions.network` (never `"*"`); Ether prompts the owner to approve each server address per plugin before requests or stream resolvers admit it.
 Host calls enforce permissions again on every request; revocation is immediate.
+
+## Poster badges
+
+A plugin with capability `poster_badges` declares up to 4 badge sets in
+`ether.contributes.posterBadges: [{key, label, description?}]`, where `key`
+matches `^[a-z][a-z0-9_]{0,31}$`. Typical sets include a `"dub languages"` set
+for an anime plugin (`{"key":"dub_languages","label":"Dub languages"}`) and an
+`"editions"` set (`{"key":"editions","label":"Editions"}`).
+
+Push or remove stored badge labels from an action, event, or scheduled run:
+
+```ts
+ether.badges.set("dub_languages", [
+  { title: { type: "show", tmdb: 37854 }, labels: ["EN DUB", "JA"] },
+]);
+ether.badges.set("editions", [
+  { title: { type: "movie", imdb: "tt0083658" }, labels: ["FINAL CUT"] },
+]);
+const usage = ether.badges.usage(); // { titles, quotaTitles }
+// ether.badges.clear("editions");
+```
+
+`ether.badges.set(setKey, entries)` accepts up to 500 entries per call. Each
+entry targets a `"movie"` or `"show"` by `tmdb` and/or `imdb` ID and supplies at
+most 3 labels per title per set; an empty `labels` array deletes that title's
+badges in the set. Each label is 1 to 16 characters from `[A-Z0-9 +&'./-]`;
+lowercase input is uppercased, and any other character or length is rejected.
+Each plugin may badge up to 200,000 titles (`ether.badges.usage()` reports
+`{titles, quotaTitles}`). Ether draws the badges itself using the owner's poster
+overlay style, the owner can switch each set off in Metadata -> Artwork
+(`overlays.Settings.disabledBadgeSets` entries formatted as `"<pluginId>:<setKey>"`),
+and no plugin call happens while rendering posters.
 
 ## Per-route call limits and owner ceilings
 
@@ -31235,6 +31288,18 @@ type KVUsageHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#BadgesHost
+
+``````
+// BadgesHost pushes, clears, and inspects plugin-owned poster badges (#594).
+// RemoteHostClient and MockHost implement it.
+type BadgesHost interface {
+	BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error
+	BadgesClear(ctx context.Context, setKey string) error
+	BadgesUsage(ctx context.Context) (BadgeUsage, error)
+}
+``````
+
 ## Source: sdk/go/host.go#PartStreamHost
 
 ``````
@@ -31456,6 +31521,49 @@ func (c *RemoteHostClient) KVUsage(ctx context.Context) (KVUsage, error) {
 	var res KVUsage
 	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/kv-usage", nil, &res, false); err != nil {
 		return KVUsage{}, err
+	}
+	return res, nil
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.BadgesSet
+
+``````
+// BadgesSet pushes poster badges for one declared badge set (#594).
+func (c *RemoteHostClient) BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error {
+	if entries == nil {
+		entries = []BadgeEntry{}
+	}
+	_, err := c.callJSON(
+		ctx,
+		http.MethodPut,
+		"/ether/plugin-host/badges/"+url.PathEscape(setKey),
+		map[string]any{"entries": entries},
+		nil,
+		false,
+	)
+	return err
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.BadgesClear
+
+``````
+// BadgesClear removes every badge in one declared set (#594).
+func (c *RemoteHostClient) BadgesClear(ctx context.Context, setKey string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/badges/"+url.PathEscape(setKey), nil, nil, false)
+	return err
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.BadgesUsage
+
+``````
+// BadgesUsage reads the plugin's current badged title count and quota (#594).
+func (c *RemoteHostClient) BadgesUsage(ctx context.Context) (BadgeUsage, error) {
+	var res BadgeUsage
+	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/badges-usage", nil, &res, false); err != nil {
+		return BadgeUsage{}, err
 	}
 	return res, nil
 }
@@ -36497,6 +36605,7 @@ const (
 	CapKindResolver    Capability = "kind_resolver"
 	CapFrontendAdapter Capability = "frontend_adapter"
 	CapMatcher         Capability = "matcher"
+	CapPosterBadges    Capability = "poster_badges"
 )
 ``````
 
@@ -36920,6 +37029,7 @@ type FieldOption struct {
 | `listSources` | `[]ListSourceMeta` | may be omitted (see validation for conditions) |  |
 | `rankingSteps` | `[]RankingStepMeta` | may be omitted (see validation for conditions) |  |
 | `ruleConditions` | `[]RuleConditionMeta` | may be omitted (see validation for conditions) |  |
+| `posterBadges` | `[]PosterBadgeSetMeta` | may be omitted (see validation for conditions) |  |
 | `tools` | `[]ToolMeta` | may be omitted (see validation for conditions) |  |
 | `pages` | `[]PageMeta` | may be omitted (see validation for conditions) |  |
 | `slots` | `[]SlotMeta` | may be omitted (see validation for conditions) |  |
@@ -36944,6 +37054,7 @@ type Contributes struct {
 	ListSources      []ListSourceMeta      `json:"listSources,omitempty"`
 	RankingSteps     []RankingStepMeta     `json:"rankingSteps,omitempty"`
 	RuleConditions   []RuleConditionMeta   `json:"ruleConditions,omitempty"`
+	PosterBadges     []PosterBadgeSetMeta  `json:"posterBadges,omitempty"`
 	Tools            []ToolMeta            `json:"tools,omitempty"`
 	Pages            []PageMeta            `json:"pages,omitempty"`
 	Slots            []SlotMeta            `json:"slots,omitempty"`
@@ -36951,6 +37062,95 @@ type Contributes struct {
 	MediaKinds       []MediaKindMeta       `json:"mediaKinds,omitempty"`
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
 	Setup            *SetupMeta            `json:"setup,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#MaxPosterBadgeSets
+
+``````
+// Poster badge bounds (#594).
+const (
+	MaxPosterBadgeSets     = 4
+	MaxBadgeEntriesPerCall = 500
+	MaxBadgeLabelsPerTitle = 3
+	MaxBadgeLabelLen       = 16
+	PosterBadgeQuotaTitles = 200_000
+)
+``````
+
+## Source: sdk/go/types.go#PosterBadgeSetMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#PosterBadgeSetMeta
+
+``````
+// PosterBadgeSetMeta declares one poster overlay badge set contributed by a plugin (#594).
+type PosterBadgeSetMeta struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#BadgeTitleRef.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `type` | `string` | emitted (validation may require a value) |  |
+| `tmdb` | `int64` | may be omitted (see validation for conditions) |  |
+| `imdb` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#BadgeTitleRef
+
+``````
+// BadgeTitleRef identifies a canonical movie or show by TMDB and/or IMDb id.
+type BadgeTitleRef struct {
+	Type string `json:"type"`
+	TMDB int64  `json:"tmdb,omitempty"`
+	IMDB string `json:"imdb,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#BadgeEntry.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `title` | `BadgeTitleRef` | emitted (validation may require a value) |  |
+| `labels` | `[]string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/types.go#BadgeEntry
+
+``````
+// BadgeEntry pushes or clears (empty Labels) poster badges for one title.
+type BadgeEntry struct {
+	Title  BadgeTitleRef `json:"title"`
+	Labels []string      `json:"labels"`
+}
+``````
+
+## Source: sdk/go/types.go#BadgeUsage.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `titles` | `int64` | emitted (validation may require a value) |  |
+| `quotaTitles` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/types.go#BadgeUsage
+
+``````
+// BadgeUsage reports a plugin's badged title count and per-plugin title quota.
+type BadgeUsage struct {
+	Titles      int64 `json:"titles"`
+	QuotaTitles int64 `json:"quotaTitles"`
 }
 ``````
 
@@ -39234,6 +39434,127 @@ class _KVClient:
         return dict(res) if isinstance(res, dict) else {}
 
 
+MAX_POSTER_BADGE_SETS = 4
+MAX_BADGE_ENTRIES_PER_CALL = 500
+MAX_BADGE_LABELS_PER_TITLE = 3
+MAX_BADGE_LABEL_LEN = 16
+POSTER_BADGE_QUOTA_TITLES = 200_000
+
+_BADGE_SET_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_BADGE_LABEL_RE = re.compile(r"^[A-Z0-9 +&'./-]+$")
+_IMDB_BADGE_RE = re.compile(r"^tt[0-9]{1,12}$")
+
+
+class PosterBadgeSetMeta(TypedDict, total=False):
+    key: str
+    label: str
+    description: str
+
+
+class BadgeTitleRef(TypedDict, total=False):
+    type: str
+    tmdb: int
+    imdb: str
+
+
+class BadgeEntry(TypedDict):
+    title: BadgeTitleRef
+    labels: List[str]
+
+
+class BadgeUsage(TypedDict):
+    titles: int
+    quotaTitles: int
+
+
+def _check_badge_set_key(set_key: str) -> str:
+    if not isinstance(set_key, str) or not _BADGE_SET_KEY_RE.match(set_key):
+        raise ValueError("badge set key must match ^[a-z][a-z0-9_]{0,31}$")
+    return set_key
+
+
+def _normalize_badge_label(raw: str) -> str:
+    if not isinstance(raw, str):
+        raise ValueError("badge label must be a string")
+    upper = "".join(chr(ord(ch) - 32) if "a" <= ch <= "z" else ch for ch in raw)
+    if (
+        len(upper) < 1
+        or len(upper) > MAX_BADGE_LABEL_LEN
+        or not upper.strip()
+        or not _BADGE_LABEL_RE.match(upper)
+    ):
+        raise ValueError(
+            f"badge label must be 1..{MAX_BADGE_LABEL_LEN} characters from [A-Z0-9 +&'./-]"
+        )
+    return upper
+
+
+def _resolve_badge_title_key(
+    title: Dict[str, Any],
+    catalog_store: Dict[str, Dict[str, Any]],
+) -> str:
+    if not isinstance(title, dict):
+        raise ValueError("badge title must be an object")
+    t_type = title.get("type")
+    if t_type not in ("movie", "show"):
+        raise ValueError('badge title.type must be "movie" or "show"')
+    tmdb_raw = title.get("tmdb")
+    tmdb = 0
+    if tmdb_raw is not None:
+        if isinstance(tmdb_raw, bool) or not isinstance(tmdb_raw, int) or tmdb_raw <= 0:
+            raise ValueError("badge title.tmdb must be a positive integer")
+        tmdb = tmdb_raw
+    imdb_raw = title.get("imdb")
+    imdb = ""
+    if imdb_raw is not None and imdb_raw != "":
+        if not isinstance(imdb_raw, str):
+            raise ValueError("badge title.imdb must be a string")
+        norm = imdb_raw.strip().lower()
+        if not _IMDB_BADGE_RE.match(norm):
+            raise ValueError("badge title.imdb must match tt<digits>")
+        imdb = norm
+    if tmdb == 0 and not imdb:
+        raise ValueError("badge title requires tmdb or imdb")
+    if tmdb > 0:
+        for item in catalog_store.values():
+            if item.get("type") == t_type and item.get("tmdbId") == tmdb:
+                return str(item.get("id"))
+    if imdb:
+        for item in catalog_store.values():
+            if item.get("type") == t_type and str(item.get("imdbId") or "").lower() == imdb:
+                return str(item.get("id"))
+    return f"tmdb:{t_type}:{tmdb}" if tmdb > 0 else f"imdb:{t_type}:{imdb}"
+
+
+def _count_distinct_badge_titles(store: Dict[str, Dict[str, List[str]]]) -> int:
+    seen = set()
+    for set_map in store.values():
+        seen.update(set_map.keys())
+    return len(seen)
+
+
+class _BadgesClient:
+    def __init__(self, call_fn: Callable[..., Any]) -> None:
+        self._call = call_fn
+
+    def set(self, set_key: str, entries: List[BadgeEntry]) -> None:
+        encoded = urllib.parse.quote(str(set_key), safe="")
+        self._call("PUT", f"/ether/plugin-host/badges/{encoded}", {"entries": list(entries)})
+
+    def clear(self, set_key: str) -> None:
+        encoded = urllib.parse.quote(str(set_key), safe="")
+        self._call("DELETE", f"/ether/plugin-host/badges/{encoded}")
+
+    def usage(self) -> BadgeUsage:
+        res = self._call("GET", "/ether/plugin-host/badges-usage")
+        if not isinstance(res, dict):
+            return {"titles": 0, "quotaTitles": 0}
+        return {
+            "titles": int(res.get("titles", 0)),
+            "quotaTitles": int(res.get("quotaTitles", 0)),
+        }
+
+
 MIN_DATA_READ_BYTES = 8 * 1024 * 1024
 MAX_DATA_READ_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_READ_ITEMS = 4096
@@ -39497,6 +39818,7 @@ class RemoteHostClient:
             credential if credential is not None else os.environ.get("ETHER_PLUGIN_CREDENTIAL", "")
         )
         self.kv = _KVClient(self._call_json)
+        self.badges = _BadgesClient(self._call_json)
         self.http = _HttpClient(self._call_json)
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
@@ -40961,6 +41283,8 @@ class MockHostClient:
 
     def __init__(self) -> None:
         self.kv_store: Dict[str, str] = {}
+        self.badges_store: Dict[str, Dict[str, List[str]]] = {}
+        self.badge_quota_titles: int = POSTER_BADGE_QUOTA_TITLES
         self.secrets_store: Dict[str, str] = {}
         self.catalog_store: Dict[str, Dict[str, Any]] = {}
         self.history_store: Dict[int, List[Dict[str, Any]]] = {}
@@ -40977,6 +41301,7 @@ class MockHostClient:
         }
 
         self.kv = self._KV(self)
+        self.badges = self._Badges(self)
         self.secret = self._Secret(self)
         self.http = self._Http(self)
         self.catalog = self._Catalog(self)
@@ -41205,6 +41530,62 @@ class MockHostClient:
                 "keys": keys,
                 "quotaBytes": 50 * 1024 * 1024,
                 "quotaKeys": 10000,
+            }
+
+    class _Badges:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def set(self, set_key: str, entries: List[BadgeEntry]) -> None:
+            _check_badge_set_key(set_key)
+            if not isinstance(entries, list):
+                raise ValueError("badges.set entries must be a list")
+            if len(entries) > MAX_BADGE_ENTRIES_PER_CALL:
+                raise ValueError(
+                    f"badges.set accepts at most {MAX_BADGE_ENTRIES_PER_CALL} entries per call"
+                )
+            next_set = dict(self._p.badges_store.get(set_key, {}))
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("labels"), list):
+                    raise ValueError("badge entry labels must be a list")
+                raw_labels = entry["labels"]
+                if len(raw_labels) > MAX_BADGE_LABELS_PER_TITLE:
+                    raise ValueError(
+                        f"badge entry may have at most {MAX_BADGE_LABELS_PER_TITLE} labels per title"
+                    )
+                title_key = _resolve_badge_title_key(entry.get("title"), self._p.catalog_store)
+                if len(raw_labels) == 0:
+                    next_set.pop(title_key, None)
+                    continue
+                deduped: List[str] = []
+                for lbl in raw_labels:
+                    norm = _normalize_badge_label(lbl)
+                    if norm not in deduped:
+                        deduped.append(norm)
+                next_set[title_key] = deduped
+            preview = dict(self._p.badges_store)
+            if next_set:
+                preview[set_key] = next_set
+            else:
+                preview.pop(set_key, None)
+            total_titles = _count_distinct_badge_titles(preview)
+            if total_titles > self._p.badge_quota_titles:
+                raise RuntimeError(
+                    f"poster badge quota exceeded ({total_titles} > {self._p.badge_quota_titles} titles)"
+                )
+            if next_set:
+                self._p.badges_store[set_key] = next_set
+            else:
+                self._p.badges_store.pop(set_key, None)
+
+        def clear(self, set_key: str) -> None:
+            _check_badge_set_key(set_key)
+            self._p.badges_store.pop(set_key, None)
+
+        def usage(self) -> BadgeUsage:
+            return {
+                "titles": _count_distinct_badge_titles(self._p.badges_store),
+                "quotaTitles": self._p.badge_quota_titles,
             }
 
     class _Secret:
@@ -42129,6 +42510,32 @@ export default hello;
 - `tool` (`POST /ether/tool/{name}`) and `job` (`POST /ether/job/{name}`)
 - `file` (`GET /ether/file/{path...}`)
 - `rankKey` and `condMatch` hot-path exports (`rank_key`, `cond_match`)
+- `poster_badges` (`ether.contributes.posterBadges` plus `ctx.ether.badges.set`, `clear`, and `usage`)
+
+### Poster badges
+
+Plugins that declare `poster_badges` in `ether.capabilities` and up to 4 sets in
+`ether.contributes.posterBadges: [{ key, label, description? }]` (`key` matching
+`^[a-z][a-z0-9_]{0,31}$`) can push short text badges onto movie and show posters,
+such as a `"dub languages"` set (`key: "dub_languages"`, `label: "Dub languages"`)
+for an anime plugin or an `"editions"` set (`key: "editions"`, `label: "Editions"`):
+
+```ts
+await ctx.ether.badges.set("dub_languages", [
+  { title: { type: "show", tmdb: 37854 }, labels: ["EN DUB", "JA"] },
+]);
+await ctx.ether.badges.set("editions", [
+  { title: { type: "movie", imdb: "tt0083658" }, labels: ["FINAL CUT"] },
+]);
+const usage = await ctx.ether.badges.usage(); // { titles, quotaTitles }
+```
+
+Each `badges.set` call accepts up to 500 entries; empty `labels` deletes that
+title's badges in the set; each title accepts at most 3 labels per set, 1 to 16
+characters from `[A-Z0-9 +&'./-]` (lowercase input is uppercased, anything else
+is rejected), up to 200,000 titles per plugin. Ether draws the badges from its
+local badge store, the owner can switch each set off in poster overlay settings,
+and no plugin call happens while rendering.
 
 Tunnel mode currently makes one connection. Use a process supervisor to
 restart the sidecar after a disconnection.
@@ -42281,8 +42688,10 @@ bound; traversal, encryption, special files and 1000:1 expansion checks remain.
  * `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`.
  */
 
-import type { MaybePromise, RuntimeLimits } from "./types.ts";
+import type { BadgeEntry, BadgeTitleRef, BadgeUsage, MaybePromise, RuntimeLimits } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
+
+export type { BadgeEntry, BadgeTitleRef, BadgeUsage };
 
 export interface HostFetchRequest {
   /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
@@ -42307,6 +42716,12 @@ export interface HashResult { pending?: boolean; retryInMs?: number; size?: numb
 export const MinDataReadBytes = 8 * 1024 * 1024;
 export const MaxDataReadBytes = 512 * 1024 * 1024;
 export const MaxArchiveReadItems = 4096;
+
+export const MaxPosterBadgeSets = 4;
+export const MaxBadgeEntriesPerCall = 500;
+export const MaxBadgeLabelsPerTitle = 3;
+export const MaxBadgeLabelLen = 16;
+export const PosterBadgeQuotaTitles = 200_000;
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -42597,6 +43012,11 @@ export interface EtherHost {
     list(prefix?: string): MaybePromise<string[]>;
     usage(): MaybePromise<KVUsage>;
   };
+  badges: {
+    set(setKey: string, entries: BadgeEntry[]): MaybePromise<void>;
+    clear(setKey: string): MaybePromise<void>;
+    usage(): MaybePromise<BadgeUsage>;
+  };
   secret: {
     get(name: string): MaybePromise<string>;
   };
@@ -42689,6 +43109,11 @@ interface GlobalEtherBindings {
       delete: (k: string) => void;
       list: (prefix?: string) => string[];
       usage?: () => KVUsage;
+    };
+    badges?: {
+      set: (setKey: string, entries: BadgeEntry[]) => void;
+      clear: (setKey: string) => void;
+      usage: () => BadgeUsage;
     };
     secret: {
       get: (name: string) => string;
@@ -42814,6 +43239,26 @@ export function createHostedClient(): EtherHost {
       usage(): KVUsage {
         if (g.ether?.kv?.usage) return g.ether.kv.usage();
         return callHost<KVUsage>("kv.usage", []);
+      },
+    },
+    badges: {
+      set(setKey: string, entries: BadgeEntry[]): void {
+        if (g.ether?.badges) {
+          g.ether.badges.set(setKey, entries);
+          return;
+        }
+        callHost("badges.set", [setKey, entries]);
+      },
+      clear(setKey: string): void {
+        if (g.ether?.badges) {
+          g.ether.badges.clear(setKey);
+          return;
+        }
+        callHost("badges.clear", [setKey]);
+      },
+      usage(): BadgeUsage {
+        if (g.ether?.badges) return g.ether.badges.usage();
+        return callHost<BadgeUsage>("badges.usage", []);
       },
     },
     secret: {
@@ -43060,6 +43505,19 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
       async usage(): Promise<KVUsage> {
         return (await callJson<KVUsage>("GET", "/ether/plugin-host/kv-usage"))!;
+      },
+    },
+    badges: {
+      async set(setKey: string, entries: BadgeEntry[]): Promise<void> {
+        await callJson("PUT", `/ether/plugin-host/badges/${encodeURIComponent(setKey)}`, {
+          entries,
+        });
+      },
+      async clear(setKey: string): Promise<void> {
+        await callJson("DELETE", `/ether/plugin-host/badges/${encodeURIComponent(setKey)}`);
+      },
+      async usage(): Promise<BadgeUsage> {
+        return (await callJson<BadgeUsage>("GET", "/ether/plugin-host/badges-usage"))!;
       },
     },
     secret: {
@@ -43368,6 +43826,14 @@ export {
   MinDataReadBytes,
   MaxDataReadBytes,
   MaxArchiveReadItems,
+  MaxPosterBadgeSets,
+  MaxBadgeEntriesPerCall,
+  MaxBadgeLabelsPerTitle,
+  MaxBadgeLabelLen,
+  PosterBadgeQuotaTitles,
+  type BadgeEntry,
+  type BadgeTitleRef,
+  type BadgeUsage,
   type CatalogTitleSummary,
   type EtherHost,
   type FolderEntry,
@@ -45946,7 +46412,8 @@ export type Capability =
   | "catalog_provider"
   | "kind_resolver"
   | "frontend_adapter"
-  | "matcher";
+  | "matcher"
+  | "poster_badges";
 
 export type EtherEventName =
   | "playback.started"
@@ -46151,6 +46618,28 @@ export interface RuleConditionMeta {
   editor?: unknown;
 }
 
+export interface PosterBadgeSetMeta {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+export interface BadgeTitleRef {
+  type: "movie" | "show";
+  tmdb?: number;
+  imdb?: string;
+}
+
+export interface BadgeEntry {
+  title: BadgeTitleRef;
+  labels: string[];
+}
+
+export interface BadgeUsage {
+  titles: number;
+  quotaTitles: number;
+}
+
 export interface ToolMeta {
   name: string;
   title: string;
@@ -46207,6 +46696,7 @@ export interface Contributes {
   listSources?: ListSourceMeta[];
   rankingSteps?: RankingStepMeta[];
   ruleConditions?: RuleConditionMeta[];
+  posterBadges?: PosterBadgeSetMeta[];
   tools?: ToolMeta[];
   pages?: PageMeta[];
   slots?: SlotMeta[];

@@ -217,6 +217,11 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	// Indexer and IndexerID name the indexer an indexer_search result came
+	// from, so a plugin that hands the candidate back can be fetched
+	// through that indexer (an NZB needs its originating indexer).
+	Indexer   string `json:"indexer,omitempty"`
+	IndexerID string `json:"indexerId,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns

@@ -295,13 +295,15 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		out := make([]core.SourceCandidate, 0, len(rels))
 		for _, rel := range rels {
 			out = append(out, core.SourceCandidate{
-				InfoHash: strings.ToLower(strings.TrimSpace(rel.InfoHash)),
-				Magnet:   rel.MagnetURL,
-				NZBURL:   rel.NZBURL,
-				Title:    rel.Name,
-				Size:     rel.Size,
-				Seeders:  rel.Seeders,
-				Cached:   len(rel.DebridCached) > 0,
+				InfoHash:  strings.ToLower(strings.TrimSpace(rel.InfoHash)),
+				Magnet:    rel.MagnetURL,
+				NZBURL:    rel.NZBURL,
+				Title:     rel.Name,
+				Size:      rel.Size,
+				Seeders:   rel.Seeders,
+				Cached:    len(rel.DebridCached) > 0,
+				Indexer:   rel.Indexer,
+				IndexerID: rel.IndexerID,
 			})
 		}
 		return out, nil
@@ -730,6 +732,8 @@ func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (
 		rel.NZBURL = strings.TrimSpace(hint.Candidate.NZBURL)
 		rel.Name = hint.Candidate.Title
 		rel.Size = hint.Candidate.Size
+		rel.Indexer = hint.Candidate.Indexer
+		rel.IndexerID = hint.Candidate.IndexerID
 	}
 	if h := strings.ToLower(strings.TrimSpace(hint.InfoHash)); h != "" {
 		rel.InfoHash = h

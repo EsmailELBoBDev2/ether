@@ -202,7 +202,7 @@ describe("Playback devices", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/clients")).toHaveLength(1));
     expect(calls(fake, "PUT", "/config/clients")[0]!.body).toMatchObject({
-      overrides: [{ id: "apple-tv", dolbyVisionProfiles: [5, 7, 8] }],
+      overrides: [{ id: "apple-tv", dolbyVisionProfiles: [5, 8, 7] }],
     });
   });
 

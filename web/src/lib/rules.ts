@@ -469,22 +469,36 @@ export function withField(rule: Rule, field: RuleField): Rule {
   return newRule(field);
 }
 
+const isNonEmptyScalar = (x: unknown): boolean =>
+  x !== "" &&
+  x !== null &&
+  x !== undefined &&
+  !(typeof x === "string" && x.trim() === "") &&
+  !(typeof x === "number" && Number.isNaN(x));
+
 /** Incomplete rules (no values picked yet) are left out of previews. */
 export function isRuleComplete(rule: Rule): boolean {
   if (rule.field === "group")
-    return Array.isArray(rule.value) && rule.value.every((child: Rule) => isRuleComplete(child));
+    return (
+      Array.isArray(rule.value) &&
+      rule.value.length > 0 &&
+      rule.value.every((child: Rule) => isRuleComplete(child))
+    );
   if (rule.op === "unknown" || rule.op === "known") return true;
   const meta = fieldMeta(rule.field);
-  if (!meta) return true;
-  if (meta.kind === "title") return pickedTitlesOf(rule).length > 0;
   const v = rule.value;
+  if (!meta) {
+    if (Array.isArray(v)) return v.length > 0 && v.every(isNonEmptyScalar);
+    if (typeof v === "object" && v !== null) return Object.keys(v).length > 0;
+    return isNonEmptyScalar(v);
+  }
+  if (meta.kind === "title") return pickedTitlesOf(rule).length > 0;
   if (meta.kind === "bool") return typeof v === "boolean";
   if (Array.isArray(v)) {
-    if (rule.op === "between")
-      return v.length === 2 && v.every((x) => x !== "" && x !== null && x !== undefined);
-    return v.length > 0;
+    if (rule.op === "between") return v.length === 2 && v.every(isNonEmptyScalar);
+    return v.length > 0 && v.every(isNonEmptyScalar);
   }
-  return v !== "" && v !== null && v !== undefined && !(typeof v === "number" && Number.isNaN(v));
+  return isNonEmptyScalar(v);
 }
 
 function listText(rule: Rule, values: unknown[]): string {
@@ -649,12 +663,16 @@ export function newSourceFromDescriptor(
 export function isSourceComplete(s: Source): boolean {
   const v = s as unknown as Record<string, unknown>;
   if (s.kind === "tmdbUserList" && typeof v.url === "string")
-    return /^(?:[1-9][0-9]*|https:\/\/(?:www\.)?themoviedb\.org\/list\/[0-9]+(?:-[^/?#]+)?(?:\/[^/?#]+)?\/?(?:[?#].*)?)$/.test(
-      v.url.trim(),
+    return (
+      v.url === "••••" ||
+      /^(?:[1-9][0-9]*|https:\/\/(?:www\.)?themoviedb\.org\/list\/[0-9]+(?:-[^/?#]+)?(?:\/[^/?#]+)?\/?(?:[?#].*)?)$/.test(
+        v.url.trim(),
+      )
     );
-  if (typeof v.url === "string") return /^https?:\/\/\S+$/.test(v.url.trim());
+  if (typeof v.url === "string") return v.url === "••••" || /^https?:\/\/\S+$/.test(v.url.trim());
   if (Array.isArray(v.keys)) return v.keys.length > 0;
-  if (v.params && typeof v.params === "object") return Object.keys(v.params).length > 0;
+  if (v.params && typeof v.params === "object")
+    return s.kind.startsWith("plugin:") || Object.keys(v.params).length > 0;
   if (typeof v.id === "number") return v.id > 0;
   return true;
 }

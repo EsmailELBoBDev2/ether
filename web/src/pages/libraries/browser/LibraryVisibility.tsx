@@ -59,6 +59,40 @@ type Preview = {
   rules?: { movies: number; shows: number }[] | null;
 };
 
+type OpenRuleState = {
+  index: number;
+  isNew: boolean;
+  initial: VisibilityRule;
+  before: VisibilityRule[];
+};
+
+function pruneIncompleteCondition(rule: Rule): Rule | null {
+  if (rule.field === "group") {
+    if (!Array.isArray(rule.value)) return null;
+    const children = (rule.value as Rule[])
+      .map(pruneIncompleteCondition)
+      .filter((c): c is Rule => c !== null);
+    return children.length > 0 ? { ...rule, value: children } : null;
+  }
+  return isRuleComplete(rule) ? rule : null;
+}
+
+function previewableVisibilityRules(rules: VisibilityRule[]): {
+  rules: VisibilityRule[];
+  indexMap: Map<number, number>;
+} {
+  const out: VisibilityRule[] = [];
+  const indexMap = new Map<number, number>();
+  rules.forEach((g, i) => {
+    const kept = g.rules.map(pruneIncompleteCondition).filter((c): c is Rule => c !== null);
+    if (kept.length > 0) {
+      indexMap.set(i, out.length);
+      out.push({ ...g, rules: kept });
+    }
+  });
+  return { rules: out, indexMap };
+}
+
 const FIELDS: RuleField[] = [
   "title",
   "genre",
@@ -211,27 +245,32 @@ export function RulesPanel({
     pluginLibrary ? newBrowseCondition("year", pluginLibrary.kind) : blank();
   const [browse, setBrowse] = useState<"hidden" | "shown" | null>(null);
   const [browseParams, setBrowseParams] = useState(new URLSearchParams());
+  // i18n: memo holds no copy
+  const { rules: previewRules, indexMap: previewRuleIndex } = useMemo(
+    () => previewableVisibilityRules(rules),
+    [rules],
+  );
   const ruleFilter = useMemo(
     () => ({
       ruleVisibility: browse ?? "shown",
-      rules: JSON.stringify(rules),
+      rules: JSON.stringify(previewRules),
       ruleFallback: fallback,
     }),
-    [browse, rules, fallback],
+    [browse, previewRules, fallback],
   );
-  const [open, setOpen] = useState<number | null>(null);
+  const [openState, setOpenState] = useState<OpenRuleState | null>(null);
+  const open = openState?.index ?? null;
   const [drag, setDrag] = useState<number | null>(null);
   const [fresh, setFresh] = useState<number | null>(null);
   const complete = rules.every((g) => g.rules.length > 0 && g.rules.every(isRuleComplete));
   const spec = useMemo(
-    () => ({ rules, fallback, libraryId, sources, mediaType }),
-    [rules, fallback, libraryId, sources, mediaType],
+    () => ({ rules: previewRules, fallback, libraryId, sources, mediaType }),
+    [previewRules, fallback, libraryId, sources, mediaType],
   );
   const draft = useDebouncedValue(spec, 400);
   const preview = useAsync(
-    async (signal) => {
-      if (!complete) return null;
-      return apiFetch<Preview>(
+    async (signal) =>
+      apiFetch<Preview>(
         sources && !libraryId ? "/libraries/preview" : "/catalog/visibility/preview",
         {
           method: "POST",
@@ -244,10 +283,15 @@ export function RulesPanel({
           }),
           signal,
         },
-      );
-    },
-    [draft, complete],
+      ),
+    [draft],
   );
+  const openExistingRule = (i: number) => {
+    const target = rules[i];
+    if (!target) return;
+    setFresh(null);
+    setOpenState({ index: i, isNew: false, initial: target, before: rules });
+  };
   const move = (i: number, dir: number) => {
     const j = i + dir;
     if (j < 0 || j >= rules.length) return;
@@ -255,11 +299,29 @@ export function RulesPanel({
     const [row] = next.splice(i, 1);
     next.splice(j, 0, row!);
     onRules(next);
-    setOpen((cur) => (cur === i ? j : cur === j ? i : cur));
+    setOpenState((cur) =>
+      cur ? { ...cur, index: cur.index === i ? j : cur.index === j ? i : cur.index } : null,
+    );
   };
   const update = (i: number, patch: Partial<VisibilityRule>) =>
     onRules(rules.map((g, n) => (n === i ? { ...g, ...patch } : g)));
   const editing = open != null ? rules[open] : undefined;
+  const closeRuleDrawer = () => {
+    if (
+      openState?.isNew &&
+      editing &&
+      JSON.stringify(editing) === JSON.stringify(openState.initial)
+    ) {
+      onRules(openState.before);
+    }
+    setFresh(null);
+    setOpenState(null);
+  };
+  const cancelRuleDrawer = () => {
+    if (openState) onRules(openState.before);
+    setFresh(null);
+    setOpenState(null);
+  };
   const hiddenItems = preview.data?.items ?? [];
   const shownItems = preview.data?.shown ?? [];
   const visible =
@@ -324,7 +386,7 @@ export function RulesPanel({
           ) : null}
           <div className="flex items-center gap-3 rounded-xl border border-border bg-surface p-5 text-lg font-semibold">
             <Library className="shrink-0 text-primary" size={24} aria-hidden />
-            {preview.loading
+            {preview.loading && !preview.data
               ? t("Loading titles…")
               : libraryId
                 ? tn(
@@ -354,7 +416,9 @@ export function RulesPanel({
             ) : null}
             <ol className="space-y-2">
               {rules.map((rule, i) => {
-                const counts = preview.data?.rules?.[i];
+                const previewIdx = previewRuleIndex.get(i);
+                const counts =
+                  previewIdx !== undefined ? preview.data?.rules?.[previewIdx] : undefined;
                 return (
                   <li
                     key={i}
@@ -381,7 +445,7 @@ export function RulesPanel({
                     <button
                       type="button"
                       className="col-span-5 min-w-0 flex-1 text-left"
-                      onClick={() => setOpen(i)}
+                      onClick={() => openExistingRule(i)}
                     >
                       <span className="block text-sm font-medium sm:truncate">
                         {ruleLabel(rule, mediaType, pluginLibrary?.kind)}
@@ -426,7 +490,7 @@ export function RulesPanel({
                       variant="ghost"
                       size="icon"
                       aria-label={t("Edit rule {n}", { n: i + 1 })}
-                      onClick={() => setOpen(i)}
+                      onClick={() => openExistingRule(i)}
                     >
                       <Pencil size={16} />
                     </Button>
@@ -436,7 +500,8 @@ export function RulesPanel({
                       aria-label={t("Delete rule {n}", { n: i + 1 })}
                       onClick={() => {
                         onRules(rules.filter((_, n) => n !== i));
-                        setOpen(null);
+                        setFresh(null);
+                        setOpenState(null);
                       }}
                     >
                       <Trash2 size={16} />
@@ -463,18 +528,17 @@ export function RulesPanel({
               size="sm"
               disabled={rules.length >= 32}
               onClick={() => {
-                onRules([
-                  ...rules,
-                  {
-                    name: "",
-                    action: "hide",
-                    mediaType: mediaType ?? "mixed",
-                    match: "all",
-                    rules: [newCondition()],
-                  },
-                ]);
+                const initial: VisibilityRule = {
+                  name: "",
+                  action: "hide",
+                  mediaType: mediaType ?? "mixed",
+                  match: "all",
+                  rules: [newCondition()],
+                };
+                const before = rules;
+                onRules([...rules, initial]);
                 setFresh(0);
-                setOpen(rules.length);
+                setOpenState({ index: rules.length, isNew: true, initial, before });
               }}
             >
               <Plus size={14} />
@@ -499,14 +563,12 @@ export function RulesPanel({
         >
           <section className="min-h-fit rounded-xl border border-border bg-surface p-5 pb-6">
             <CheckCircle2 className="mb-4 text-success" size={32} aria-hidden />
-            {!complete ? (
-              <p className="text-sm text-fg-muted">{t("Finish each condition to preview.")}</p>
-            ) : preview.error ? (
+            {preview.error ? (
               <p className="text-sm text-fg-muted">{t("Preview isn't available.")}</p>
             ) : (
               <>
                 <p className="text-3xl font-semibold">
-                  {preview.loading ? "…" : formatNumber(visible)}
+                  {preview.loading && !preview.data ? "…" : formatNumber(visible)}
                 </p>
                 <p className="text-sm text-fg-muted">
                   {(preview.data?.hidden ?? 0) > 0
@@ -533,6 +595,11 @@ export function RulesPanel({
                               ),
                               shows: tn(preview.data?.shows ?? 0, "{count} show", "{count} shows"),
                             })}
+                  </p>
+                ) : null}
+                {!complete ? (
+                  <p className="mt-2 text-xs text-fg-muted">
+                    {t("Unfinished rules aren't included in the preview yet.")}
                   </p>
                 ) : null}
               </>
@@ -590,9 +657,19 @@ export function RulesPanel({
         </Drawer>
         <Drawer
           open={editing != null}
-          onClose={() => setOpen(null)}
+          onClose={closeRuleDrawer}
           title={editing ? editing.name.trim() || ruleLabel(editing, mediaType) : t("Rule")}
           size="lg"
+          footer={
+            <div className="flex w-full justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={cancelRuleDrawer}>
+                {t("Cancel")}
+              </Button>
+              <Button type="button" size="sm" onClick={closeRuleDrawer}>
+                {t("Done")}
+              </Button>
+            </div>
+          }
         >
           {editing && open != null ? (
             <div className="space-y-4">
@@ -652,9 +729,13 @@ export function RulesPanel({
                     <option value="discovery">{t("Hide from browsing only")}</option>
                   </Select>
                   <p className="text-xs text-fg-muted">
-                    {t(
-                      "Browsing only keeps these titles out of Home, rows, recommendations, New Releases and Trending. Anyone can still search for them and play them.",
-                    )}
+                    {browsingOnly(editing)
+                      ? t(
+                          "Browsing only keeps these titles out of Home, rows, recommendations, New Releases and Trending. Anyone can still search for them and play them.",
+                        )
+                      : t(
+                          "Hides matching titles everywhere, including Home, library browsing, recommendations and search.",
+                        )}
                   </p>
                 </div>
               ) : null}

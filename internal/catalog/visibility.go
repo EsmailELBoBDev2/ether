@@ -194,7 +194,8 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 			return nil, err
 		}
 	}
-	f, err := c.compileLibraryRules(specs, fallback)
+	keptSpecs, keptIndices := libraryfilter.PreviewableRules(specs)
+	f, err := c.compileLibraryRules(keptSpecs, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -242,10 +243,13 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 	if p.Shown == nil {
 		p.Shown = []core.Title{}
 	}
+	if len(specs) > 0 {
+		p.Rules = make([]VisibilityRulePreview, len(specs))
+	}
 	sel, catchArgs := f.CatchCountsSQL()
 	if sel != "" {
 		row := c.db.QueryRowContext(ctx, `SELECT `+sel+` FROM catalog_titles t WHERE `+scope, append(append([]any(nil), catchArgs...), scopeArgs...)...)
-		nums := make([]int, len(specs)*2)
+		nums := make([]int, len(keptSpecs)*2)
 		dest := make([]any, len(nums))
 		for i := range nums {
 			dest[i] = &nums[i]
@@ -253,9 +257,8 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 		if err = row.Scan(dest...); err != nil {
 			return nil, err
 		}
-		p.Rules = make([]VisibilityRulePreview, len(specs))
-		for i := range specs {
-			p.Rules[i] = VisibilityRulePreview{Movies: nums[i*2], Shows: nums[i*2+1]}
+		for i, orig := range keptIndices {
+			p.Rules[orig] = VisibilityRulePreview{Movies: nums[i*2], Shows: nums[i*2+1]}
 		}
 	}
 	return p, nil
@@ -268,9 +271,13 @@ func (c *Catalog) compileLibraryRules(rules []core.LibraryExclusion, fallback st
 func (c *Catalog) compileLibraryRulesMode(rules []core.LibraryExclusion, fallback string, membershipOnly bool) (*libraryfilter.Filter, error) {
 	f, err := libraryfilter.CompilePolicy(rules, fallback)
 	if err != nil {
-		return nil, err
+		return nil, libraryfilter.MarkInvalidFilter(err)
 	}
-	return c.bindLibraryRulesMode(f, membershipOnly)
+	bound, err := c.bindLibraryRulesMode(f, membershipOnly)
+	if err != nil {
+		return nil, libraryfilter.MarkInvalidFilter(err)
+	}
+	return bound, nil
 }
 
 func (c *Catalog) bindLibraryRules(f *libraryfilter.Filter) (*libraryfilter.Filter, error) {

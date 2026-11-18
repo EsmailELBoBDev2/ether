@@ -1,4 +1,6 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { ActionMenu } from "../../components/ActionMenu";
+import { AddonCatalogDrawer } from "../collections/AddonCatalogDrawer";
 import { newCollectionHref } from "../collections/links";
 import { BulkBar } from "../../components/BulkBar";
 import { Drawer } from "../../components/Drawer";
@@ -6,7 +8,9 @@ import { Badge, Button, Checkbox, Input, cn } from "@braedonsaunders/appkit-ui";
 import {
   ChevronDown,
   ChevronRight,
+  Layers,
   Plus,
+  Puzzle,
   RotateCcw,
   Search,
   SlidersHorizontal,
@@ -22,6 +26,7 @@ import type {
   RowInsight,
   RowPolicy,
   RowStatus,
+  Source,
   TargetSchedule,
   Viewer,
   ViewerHome,
@@ -55,7 +60,6 @@ import { PolicyEditor, type ScheduleSource } from "./PolicyEditor";
 
 import { isPluginDescriptor, textOf, useRegistry, type Descriptor } from "../../lib/extend";
 import { useLocale } from "../../i18n/react";
-import { useNavigate } from "react-router-dom";
 import { blankSpec, newSourceFromDescriptor, type CollectionSourceMeta } from "../../lib/rules";
 
 interface PoolEntry {
@@ -163,6 +167,7 @@ export function RowPool({
   const [q, setQ] = useState("");
   const [custom, setCustom] = useState("");
   const [patternOpen, setPatternOpen] = useState(false);
+  const [addonPickerOpen, setAddonPickerOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [folded, setFolded] = useState<Partial<Record<PoolGroup, boolean>>>({});
@@ -293,9 +298,50 @@ export function RowPool({
       aria-label={t("Row catalogue")}
     >
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-          {t("Row catalogue")}
-        </h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+            {t("Row catalogue")}
+          </h2>
+          <ActionMenu
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 px-2 text-xs"
+            label={t("Add row")}
+            items={[
+              {
+                key: "collection",
+                label: t("New collection row…"),
+                icon: Layers,
+                onSelect: () => {
+                  const media = section === "shows" ? "show" : "movie";
+                  const spec = blankSpec(media);
+                  spec.targets = {
+                    ...spec.targets,
+                    collectionsTab: false,
+                    homeRow: section === "home",
+                    sectionRow: section !== "home",
+                  };
+                  navigate(newCollectionHref(), { state: { spec } });
+                },
+              },
+              {
+                key: "addon-catalog",
+                label: t("From a Stremio catalog…"),
+                icon: Puzzle,
+                onSelect: () => setAddonPickerOpen(true),
+              },
+              { key: "sep", separator: true },
+              {
+                key: "pattern",
+                label: t("Custom row pattern…"),
+                icon: SlidersHorizontal,
+                onSelect: () => setPatternOpen(true),
+              },
+            ]}
+          >
+            <Plus size={13} /> {t("Add row")}
+          </ActionMenu>
+        </div>
         <p className="mt-0.5 text-xs text-fg-muted">
           {layer === "global"
             ? t(
@@ -330,12 +376,6 @@ export function RowPool({
           { value: "changed", label: layer === "global" ? t("Changed") : t("Overridden") },
         ]}
       />
-      <Link
-        to={newCollectionHref({ source: "addonCatalog" })}
-        className="block rounded-lg border border-border bg-surface p-3 text-sm text-primary"
-      >
-        {t("Create a Home row from a Stremio catalog")}
-      </Link>
       {GROUPS.map((g) => {
         const rows = shown.filter((e) => e.group === g.key);
         if (!rows.length) return null;
@@ -482,6 +522,31 @@ export function RowPool({
           </Button>
         </BulkBar>
       ) : null}
+      {addonPickerOpen ? (
+        <AddonCatalogDrawer
+          open
+          onClose={() => setAddonPickerOpen(false)}
+          onPick={(choice) => {
+            const media = choice.mediaType ?? (section === "shows" ? "show" : "movie");
+            const descriptor = collectionKinds.descriptors.find((d) => d.id === choice.kind);
+            const spec = blankSpec(media);
+            spec.name = choice.label;
+            spec.sources = [
+              descriptor
+                ? newSourceFromDescriptor(descriptor, media)
+                : ({ kind: choice.kind } as Source),
+            ];
+            spec.localOnly = false;
+            spec.targets = {
+              ...spec.targets,
+              collectionsTab: false,
+              homeRow: section === "home",
+              sectionRow: section !== "home",
+            };
+            navigate(newCollectionHref(), { state: { spec } });
+          }}
+        />
+      ) : null}
       <Drawer
         open={patternOpen}
         onClose={() => {
@@ -597,6 +662,12 @@ function PoolItem({
 }) {
   const { locale } = useLocale();
   const ref = useRef<HTMLLIElement>(null);
+  const openedDraftRef = useRef<HomeLayout>(draft);
+  const wasOpenRef = useRef(false);
+  if (open && !wasOpenRef.current) {
+    openedDraftRef.current = draft;
+  }
+  wasOpenRef.current = open;
   useEffect(() => {
     if (open) ref.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }, [open]);
@@ -804,8 +875,25 @@ function PoolItem({
           "Adjust this row in the current Home draft. Save the Home layout to apply it.",
         )}
         size="lg"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                onChange(openedDraftRef.current);
+                onToggle();
+              }}
+            >
+              {t("Cancel")}
+            </Button>
+            <Button type="button" size="sm" onClick={onToggle}>
+              {t("Done")}
+            </Button>
+          </div>
+        }
       >
-        {" "}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Segmented
             ariaLabel={t("Status of {title}", { title: entry.title })}

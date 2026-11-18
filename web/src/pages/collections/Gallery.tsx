@@ -42,11 +42,22 @@ import { useAsync } from "../../lib/hooks";
 import { normalizeSpec } from "../../lib/rules";
 import { CollectionDetail } from "./CollectionDetail";
 import { DescribeDialog } from "./DescribeDialog";
-import { newCollectionHref } from "./links";
+import { isBlankCollectionSpec, newCollectionHref } from "./links";
 import { bundleDescription, bundleTitle } from "../setup/StarterBundlesCard";
 
 type Tab = "mine" | "rows" | "templates" | "builtin";
 type Filter = "all" | "live" | "draft";
+
+function loadUnsavedNewDrafts() {
+  return listDrafts<CollectionSpec>("collection").filter((d) => {
+    if (!d.id.startsWith("new-")) return false;
+    if (isBlankCollectionSpec(d.draft.value)) {
+      clearDraft(draftKey("collection", d.id));
+      return false;
+    }
+    return true;
+  });
+}
 
 export default function CollectionsGallery({
   browseSearch,
@@ -71,14 +82,12 @@ export default function CollectionsGallery({
   const collections = useAsync(() => api.collections(), []);
   const templates = useAsync(() => api.templates(), []);
   const bundles = useAsync(() => api.templateBundles(), []);
-  const [drafts, setDrafts] = useState(() =>
-    listDrafts<CollectionSpec>("collection").filter((d) => d.id.startsWith("new-")),
-  );
+  const [drafts, setDrafts] = useState(loadUnsavedNewDrafts);
   const wasActive = useRef(active);
   useEffect(() => {
     if (active && !wasActive.current) {
       void collections.reload();
-      setDrafts(listDrafts<CollectionSpec>("collection").filter((d) => d.id.startsWith("new-")));
+      setDrafts(loadUnsavedNewDrafts());
     }
     wasActive.current = active;
   }, [active, collections.reload]);

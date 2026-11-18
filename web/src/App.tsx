@@ -432,6 +432,13 @@ function Shell() {
   const { boot } = useApp();
   const ownerPath = useOwnerViewerPath();
   const location = useLocation();
+  const firstRunSetupRef = useRef(false);
+  if (location.pathname !== "/setup") {
+    firstRunSetupRef.current = false;
+  } else if (!boot.setupComplete) {
+    firstRunSetupRef.current = true;
+  }
+  const hideSetupNav = location.pathname === "/setup" && firstRunSetupRef.current;
   const {
     descriptors: navDescriptors,
     loading: registryLoading,
@@ -442,13 +449,9 @@ function Shell() {
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether";
   return (
-    <div
-      className={
-        location.pathname === "/setup" ? "ether-shell ether-setup contents" : "ether-shell contents"
-      }
-    >
+    <div className={hideSetupNav ? "ether-shell ether-setup contents" : "ether-shell contents"}>
       <AppShell
-        groups={location.pathname === "/setup" ? [] : buildNavigation(navDescriptors)}
+        groups={hideSetupNav ? [] : buildNavigation(navDescriptors)}
         pathname={location.pathname}
         navigationMode="sidebar"
         linkRender={linkRender}

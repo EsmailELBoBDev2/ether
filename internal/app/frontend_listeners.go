@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -410,7 +411,7 @@ func reachableScore(raw string) int {
 	if v4 := ip.To4(); v4 != nil && v4[0] == 192 && v4[1] == 168 {
 		return 80
 	}
-	if ip.IsPrivate() {
+	if ip.IsPrivate() && ip.To4() != nil {
 		return 40
 	}
 	if ip.To4() == nil {
@@ -420,7 +421,7 @@ func reachableScore(raw string) int {
 }
 
 // connectionURLs converts actual bound addresses into LAN URLs, avoiding
-// loopback and unspecified addresses that another device cannot reach.
+// loopback, unspecified, and family-mismatched addresses that another device cannot reach.
 func connectionURLs(address, prefix string, interfaces []net.Addr) []string {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -428,12 +429,17 @@ func connectionURLs(address, prefix string, interfaces []net.Addr) []string {
 	}
 	var hosts []string
 	ip := net.ParseIP(host)
+	v4Only := strings.TrimSpace(host) == "0.0.0.0"
 	if ip != nil && ip.IsUnspecified() {
 		for _, item := range interfaces {
-			ip, _, err := net.ParseCIDR(item.String())
-			if err == nil && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast() {
-				hosts = append(hosts, ip.String())
+			ifaceIP, _, err := net.ParseCIDR(item.String())
+			if err != nil || ifaceIP.IsLoopback() || ifaceIP.IsUnspecified() || ifaceIP.IsLinkLocalUnicast() {
+				continue
 			}
+			if v4Only && ifaceIP.To4() == nil {
+				continue
+			}
+			hosts = append(hosts, ifaceIP.String())
 		}
 	} else if host != "" && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
 		hosts = append(hosts, host)
@@ -448,6 +454,9 @@ func connectionURLs(address, prefix string, interfaces []net.Addr) []string {
 			out = append(out, value)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return reachableScore(out[i]) > reachableScore(out[j])
+	})
 	return out
 }
 

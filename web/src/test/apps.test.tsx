@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Apps from "../pages/apps/Apps";
@@ -29,6 +29,7 @@ type AppRow = {
   };
   enabled: boolean;
   status: {
+    webPlayerReady?: boolean;
     addresses: string[];
     connectUrls?: string[];
     lan: string;
@@ -188,7 +189,7 @@ describe("Apps", () => {
     expect(screen.queryByRole("textbox", { name: "Server name" })).not.toBeInTheDocument();
   });
 
-  it("shows the chosen Jellyfin address and hides the rest", async () => {
+  it("shows the chosen Jellyfin address with a styled picker and a single Other addresses disclosure", async () => {
     const urls = [
       "http://192.168.68.65:32400/jellyfin",
       "http://192.168.68.65:8098",
@@ -218,7 +219,7 @@ describe("Apps", () => {
       if (path === "/frontends/jellyfin/settings") return { serverName: "House", port: 8096 };
       throw new Error(`Unexpected request: ${path}`);
     });
-    renderApps("/apps/jellyfin");
+    const { container } = renderApps("/apps/jellyfin");
     const line = await screen.findByRole("link", { name: urls[0] });
     expect(line.textContent).toContain("http://192.168.68.65:32400/jellyfin");
     expect(line.textContent).not.toMatch(/fd79|100\.65|10\.255|:8098/);
@@ -228,11 +229,109 @@ describe("Apps", () => {
     expect(line.textContent).not.toMatch(/fd79/);
     fireEvent.click(screen.getByRole("button", { name: "Connect a device" }));
     expect(screen.queryByRole("button", { name: "Connect a device" })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Server address" }), {
-      target: { value: "http://192.168.68.65:8098" },
-    });
-    expect(screen.getByRole("link", { name: "http://192.168.68.65:8098" })).toBeInTheDocument();
+    expect(container.querySelector("select")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Other addresses" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Server address" }));
+    fireEvent.click(await screen.findByRole("option", { name: "http://192.168.68.65:8098" }));
+    expect(
+      screen.getAllByRole("link", { name: "http://192.168.68.65:8098" })[0],
+    ).toBeInTheDocument();
     expect(line).not.toHaveTextContent("32400/jellyfin");
+  });
+
+  it("places Watch inside Vela Status as a bordered button and shows Vela-specific setup copy", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ documents: [] }), { status: 200 }),
+    );
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/frontends") {
+        return [
+          row("vela", "Vela", true, {
+            status: {
+              webPlayerReady: true,
+              addresses: ["http://192.168.68.65:32550/vela"],
+              connectUrls: ["http://192.168.68.65:32550/vela", "http://100.65.221.123:32550/vela"],
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+        ];
+      }
+      if (path === "/frontends/vela/settings") return { defaultSkinId: "cinematic" };
+      if (path === "/frontends/vela/distribution")
+        return { installed: true, version: "0.4.0", channel: "bundled" };
+      if (path === "/web-player")
+        return {
+          available: true,
+          players: [{ id: "vela", url: "http://192.168.68.65:32550/vela/" }],
+        };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderApps("/apps/vela");
+    const statusHeading = await screen.findByRole("heading", { name: "Status" });
+    const statusCard = statusHeading.closest("section")!;
+    const watchBtn = await within(statusCard).findByRole("button", {
+      name: "Open the web player",
+    });
+    expect(watchBtn).toHaveClass("border");
+    expect(screen.getAllByRole("button", { name: "Open the web player" })).toHaveLength(1);
+    fireEvent.click(within(statusCard).getByRole("button", { name: "Connect a device" }));
+    expect(
+      within(statusCard).getByText(
+        "Open Watch to play in your browser, or install the Vela app on web, Windows, macOS, or Apple TV and connect with the server address above.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Swiftfin/)).not.toBeInTheDocument();
+    vi.restoreAllMocks();
+  });
+
+  it("sorts Overview cards with enabled apps first in tab-bar order, then disabled apps", async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/frontends") {
+        return [
+          row("stremio", "Stremio", false),
+          row("plex", "Plex", true),
+          row("dlna", "DLNA", false),
+          row("emby", "Emby", true),
+          row("silo", "Silo", false),
+          row("vela", "Vela", true, {
+            status: {
+              webPlayerReady: true,
+              addresses: ["http://192.168.1.2:32550/vela"],
+              connectUrls: ["http://192.168.1.2:32550/vela"],
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+          row("jellyfin", "Jellyfin", true),
+        ];
+      }
+      if (path === "/plex/remote") return { addresses: [] };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderApps("/apps");
+    const switches = await screen.findAllByRole("switch");
+    expect(switches.map((el) => el.getAttribute("aria-label"))).toEqual([
+      "Vela enabled",
+      "Plex enabled",
+      "Jellyfin enabled",
+      "Emby enabled",
+      "Stremio enabled",
+      "Silo enabled",
+      "DLNA enabled",
+    ]);
   });
 
   it("hides Connect a device when the panel is already open", async () => {

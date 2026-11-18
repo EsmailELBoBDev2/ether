@@ -12,6 +12,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
+import { Field } from "../../components/fields";
 import { IntegrationAppCard } from "../../components/IntegrationAppCard";
 import {
   EmbyMark,
@@ -184,23 +185,21 @@ function ConnectDevice({
   startOpen = false,
   selectedURL: selectedURLProp,
   onSelectedURL,
+  leadingAction,
 }: {
   info: FrontendInfo;
   startOpen?: boolean;
   selectedURL?: string;
   onSelectedURL?: (url: string) => void;
+  leadingAction?: ReactNode;
 }) {
   const [open, setOpen] = useState(startOpen);
-  const [showOther, setShowOther] = useState(false);
   const [qr, setQR] = useState<string>();
   const [selectedURLState, setSelectedURLState] = useState("");
   const selectedURL = selectedURLProp ?? selectedURLState;
   const setSelectedURL = onSelectedURL ?? setSelectedURLState;
-  const urls = info.status.connectUrls ?? [];
-  const likely = urls.slice(0, Math.min(2, urls.length));
-  const other = urls.slice(likely.length);
-  const shown = showOther ? urls : likely;
-  const url = urls.includes(selectedURL) ? selectedURL : likely[0];
+  const urls = usableAddresses(info.status);
+  const url = urls.includes(selectedURL) ? selectedURL : urls[0];
   useEffect(() => {
     if (!open || !url) return;
     const controller = new AbortController();
@@ -219,56 +218,71 @@ function ConnectDevice({
       setQR(undefined);
     };
   }, [open, url]);
-  if (!info.enabled) return null;
+  if (!info.enabled) {
+    return leadingAction ? (
+      <div className="flex flex-wrap items-center gap-2 px-5 py-3">{leadingAction}</div>
+    ) : null;
+  }
   if (["stremio", "webdav", "m3u", "xtream"].includes(info.descriptor.id)) {
     return (
-      <Button asChild variant="outline">
-        <Link to="/me">{t("Connect a device")}</Link>
-      </Button>
+      <div className="flex flex-wrap items-center gap-2 px-5 py-3">
+        {leadingAction}
+        <Button asChild variant="outline">
+          <Link to="/me">{t("Connect a device")}</Link>
+        </Button>
+      </div>
     );
   }
-  if (!url) return null;
+  if (!url) {
+    return leadingAction ? (
+      <div className="flex flex-wrap items-center gap-2 px-5 py-3">{leadingAction}</div>
+    ) : null;
+  }
   return (
-    <div>
-      {open ? null : (
-        <Button variant="outline" onClick={() => setOpen(true)}>
-          {t("Connect a device")}
-        </Button>
-      )}
-      {open ? (
-        <div className="space-y-2 pt-3">
-          <p>{t("Enter this server address in a supported app:")}</p>
-          {shown.length > 1 ? (
-            <label>
-              {t("Server address")}
-              <select value={url} onChange={(event) => setSelectedURL(event.currentTarget.value)}>
-                {shown.map((address) => (
-                  <option key={address} value={address}>
-                    {address}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <code>{url}</code>
-          )}
-          {other.length > 0 ? (
-            <div>
-              <Button variant="ghost" size="sm" onClick={() => setShowOther((value) => !value)}>
-                {showOther ? t("Likely addresses") : t("Other addresses")}
-              </Button>
-            </div>
+    <div className="space-y-3 px-5 py-3">
+      {leadingAction || !open ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {leadingAction}
+          {!open ? (
+            <Button variant="outline" onClick={() => setOpen(true)}>
+              {t("Connect a device")}
+            </Button>
           ) : null}
+        </div>
+      ) : null}
+      {open ? (
+        <div className="space-y-3">
+          <p className="text-sm text-fg">{t("Enter this server address in a supported app:")}</p>
+          {urls.length > 1 ? (
+            <Field label={t("Server address")} className="max-w-md">
+              <SearchSelect
+                ariaLabel={t("Server address")}
+                value={url}
+                onChange={setSelectedURL}
+                options={urls.map((address) => ({ value: address, label: address }))}
+              />
+            </Field>
+          ) : (
+            <p className="font-mono text-sm text-fg">
+              <code>{url}</code>
+            </p>
+          )}
           {qr && (
-            <img src={qr} alt={t("QR code for the server address")} width={192} height={192} />
+            <img
+              src={qr}
+              alt={t("QR code for the server address")}
+              width={192}
+              height={192}
+              className="rounded-lg"
+            />
           )}
           {info.descriptor.certifiedApps?.length ? (
             <>
-              <p>{t("Certified native apps:")}</p>
+              <p className="text-sm font-medium text-fg">{t("Certified native apps:")}</p>
               {info.descriptor.certifiedApps.map((app) => (
-                <div key={app.name}>
-                  <p>{app.name}</p>
-                  <ol>
+                <div key={app.name} className="space-y-1 text-sm">
+                  <p className="font-medium text-fg">{app.name}</p>
+                  <ol className="list-decimal space-y-0.5 pl-5 text-fg-muted">
                     {app.steps.map((step, index) => {
                       const label = connectionStep(step);
                       return label ? <li key={index}>{label}</li> : null;
@@ -277,8 +291,14 @@ function ConnectDevice({
                 </div>
               ))}
             </>
+          ) : info.descriptor.id === "vela" ? (
+            <p className="text-sm text-fg-muted">
+              {t(
+                "Open Watch to play in your browser, or install the Vela app on web, Windows, macOS, or Apple TV and connect with the server address above.",
+              )}
+            </p>
           ) : (
-            <p>
+            <p className="text-sm text-fg-muted">
               {t(
                 "Open the app, add the server address above, and sign in. Infuse, Swiftfin, Findroid, and Streamyfin are the usual places to start.",
               )}
@@ -397,7 +417,6 @@ function ProtocolSettings({
         {id === "vela" && !hidden ? (
           <>
             <VelaDistribution />
-            {info?.status.webPlayerReady ? <WatchButton app="vela" /> : null}
             {info?.status.webPlayerReady ? (
               <VelaAppearance
                 value={draft.defaultSkinId ?? "cinematic"}
@@ -737,6 +756,10 @@ function AppDetail({ info, startOpen = false }: { info: FrontendInfo; startOpen?
   const [selectedURL, setSelectedURL] = useState("");
   const chosen = addresses.includes(selectedURL) ? selectedURL : addresses[0];
   const away = awaySummary(info.status, { homeNetwork: true });
+  const watchAction =
+    info.descriptor.id === "vela" && info.status.webPlayerReady ? (
+      <WatchButton app="vela" variant="outline" />
+    ) : null;
   return (
     <div className="space-y-6 pb-6">
       <SettingsSection title={t("Status")}>
@@ -752,19 +775,18 @@ function AppDetail({ info, startOpen = false }: { info: FrontendInfo; startOpen?
         {info.status.warnings?.map((warning) => (
           <StatusRow
             key={warning}
-            state="unknown"
+            state="warning"
             title={t("Needs attention")}
             description={frontendWarning(warning)}
           />
         ))}
-        <div className="px-5 py-3">
-          <ConnectDevice
-            info={info}
-            startOpen={startOpen}
-            selectedURL={chosen}
-            onSelectedURL={setSelectedURL}
-          />
-        </div>
+        <ConnectDevice
+          info={info}
+          startOpen={startOpen}
+          selectedURL={chosen}
+          onSelectedURL={setSelectedURL}
+          leadingAction={watchAction}
+        />
       </SettingsSection>
     </div>
   );
@@ -779,6 +801,10 @@ export default function Apps() {
   const navigate = useNavigate();
   const apps = [...(state.data ?? [])].sort(
     (a, b) => appRank(a.descriptor.id) - appRank(b.descriptor.id),
+  );
+  const overviewApps = [...apps].sort(
+    (a, b) =>
+      Number(b.enabled) - Number(a.enabled) || appRank(a.descriptor.id) - appRank(b.descriptor.id),
   );
   const plexInfo = apps.find((info) => info.descriptor.id === "plex");
   const plexOn = plexInfo?.enabled === true;
@@ -846,7 +872,7 @@ export default function Apps() {
               </p>
             ) : null}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {state.data.map((info) => (
+              {overviewApps.map((info) => (
                 <IntegrationAppCard
                   key={info.descriptor.id}
                   identity={{ id: info.descriptor.id, name: nameFor(info) }}

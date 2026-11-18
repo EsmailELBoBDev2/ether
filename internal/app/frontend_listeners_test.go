@@ -124,10 +124,21 @@ func TestFrontendDefaultFallback(t *testing.T) {
 }
 
 func TestFrontendConnectionURLs(t *testing.T) {
-	addresses := []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.2"), Mask: net.CIDRMask(24, 32)}, &net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)}}
+	addresses := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("fd79:f184::1"), Mask: net.CIDRMask(64, 128)},
+		&net.IPNet{IP: net.ParseIP("10.255.0.2"), Mask: net.CIDRMask(32, 32)},
+		&net.IPNet{IP: net.ParseIP("192.168.1.2"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("127.0.0.1"), Mask: net.CIDRMask(8, 32)},
+	}
+	// An IPv4-only unspecified bind (0.0.0.0) omits IPv6 interface addresses and ranks 192.168/16 first.
 	got := connectionURLs("0.0.0.0:8090", "/silo", addresses)
-	if len(got) != 1 || got[0] != "http://192.168.1.2:8090/silo" {
+	if len(got) != 2 || got[0] != "http://192.168.1.2:8090/silo" || got[1] != "http://10.255.0.2:8090/silo" {
 		t.Fatal(got)
+	}
+	// A dual-stack unspecified bind ([::]) includes IPv6 interface addresses after IPv4.
+	dual := connectionURLs("[::]:8090", "/silo", addresses)
+	if len(dual) != 3 || dual[0] != "http://192.168.1.2:8090/silo" || dual[2] != "http://[fd79:f184::1]:8090/silo" {
+		t.Fatal(dual)
 	}
 	if got := connectionURLs("127.0.0.1:8090", "", addresses); len(got) != 0 {
 		t.Fatal(got)

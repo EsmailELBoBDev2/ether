@@ -63,6 +63,68 @@ describe("Settings", () => {
       WAIT,
     );
   });
+
+  it("collapses secondary interface URLs behind Other addresses with meaningful labels and renders Vela's icon", async () => {
+    renderAppWith("/server", (method, path) => {
+      if (method === "GET" && path === "/frontends") {
+        return [
+          {
+            descriptor: { id: "vela", name: "Vela" },
+            enabled: true,
+            status: {
+              webPlayerReady: true,
+              connectUrls: [
+                "http://192.168.68.65:32550/vela",
+                "http://100.65.221.123:32550/vela",
+                "http://[fd79:f184::1]:32550/vela",
+              ],
+              addresses: ["http://192.168.68.65:32550/vela"],
+            },
+          },
+          {
+            descriptor: { id: "jellyfin", name: "Jellyfin", defaultPort: 8096 },
+            enabled: true,
+            status: {
+              connectUrls: [
+                "http://192.168.68.65:32550/jellyfin",
+                "http://192.168.68.65:8096",
+                "http://100.65.221.123:8096",
+                "http://[fd79:f184::1]:8096",
+                "http://10.255.0.2:8096",
+              ],
+              addresses: ["http://192.168.68.65:8096"],
+            },
+          },
+        ];
+      }
+      if (method === "GET" && path === "/frontends/vela/settings") {
+        return { defaultSkinId: "cinematic" };
+      }
+      if (method === "GET" && path === "/frontends/jellyfin/settings") {
+        return { port: 8096 };
+      }
+      return undefined;
+    });
+
+    const velaHeading = await screen.findByRole("heading", { name: "Vela" }, WAIT);
+    const velaCard = velaHeading.closest("div.rounded-xl") as HTMLElement;
+    expect(velaCard.querySelector("svg")).not.toBeNull();
+    expect(within(velaCard).getByText("http://192.168.68.65:32550/vela")).toBeVisible();
+    expect(within(velaCard).queryByText("http://100.65.221.123:32550/vela")).toBeNull();
+
+    const jellyfinHeading = screen.getByRole("heading", { name: "Jellyfin" });
+    const jellyfinCard = jellyfinHeading.closest("div.rounded-xl") as HTMLElement;
+    expect(within(jellyfinCard).getByText("http://192.168.68.65:8096")).toBeVisible();
+    expect(within(jellyfinCard).queryByText("http://192.168.68.65:32550/jellyfin")).toBeNull();
+    expect(within(jellyfinCard).queryByText("http://100.65.221.123:8096")).toBeNull();
+
+    fireEvent.click(within(jellyfinCard).getByRole("button", { name: /Other addresses/ }));
+    expect(within(jellyfinCard).getByText("Shared Ether port")).toBeVisible();
+    expect(within(jellyfinCard).getByText("Tailscale")).toBeVisible();
+    expect(within(jellyfinCard).getByText("Local network (IPv6)")).toBeVisible();
+    expect(within(jellyfinCard).getByText("Other network interface")).toBeVisible();
+  });
+
   it("shows and filters client families reported by other protocols", async () => {
     renderApp("/playback/devices");
     expect(await screen.findByText("Stremio TV", {}, WAIT)).toBeInTheDocument();
@@ -947,7 +1009,7 @@ describe("Settings", () => {
     expect(seen).toHaveLength(2);
   });
 
-  it("runs the setup wizard from General without clearing a completed server", async () => {
+  it("runs the setup wizard from General with normal navigation and an Exit setup control", async () => {
     const { fake } = renderApp("/server");
     fireEvent.click(await screen.findByRole("button", { name: "Run setup wizard" }, WAIT));
     expect(await screen.findByRole("heading", { name: "Set up Ether" }, WAIT)).toBeInTheDocument();
@@ -956,6 +1018,9 @@ describe("Settings", () => {
     expect(fake.state.config.setupComplete).toBe(true);
     expect(fake.state.config.server.friendlyName).toBe("Living Room Ether");
     expect(calls(fake, "PUT", "/config")).toHaveLength(0);
+    expect(screen.getAllByRole("link", { name: "Overview" }).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Exit setup" }));
+    expect(await screen.findByLabelText("Server name", {}, WAIT)).toBeInTheDocument();
   });
 
   it("links unfinished setup to the wizard without calling reopen", async () => {

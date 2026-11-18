@@ -825,6 +825,12 @@ export default function Setup() {
   const hasDebrid = debrid.some((d) => d.enabled);
   const hasUsenet = providers.some((p) => p.enabled);
   const newIndexerType: IndexerType = hasDebrid && !hasUsenet ? "stremio" : "newznab";
+  const alreadySetUp = Boolean(app?.boot.setupComplete || cfg.setupComplete);
+  const exitSetup = () => {
+    sessionStorage.removeItem(SETUP_STEP_KEY);
+    sessionStorage.removeItem("ether.setup.skipped");
+    navigate("/server");
+  };
 
   const next = async (opts?: { force?: boolean }) => {
     setSaving(true);
@@ -933,22 +939,29 @@ export default function Setup() {
         <h1 className="text-xl font-semibold">{t("Everything is set up")}</h1>
         <p>{t("Finish setup to leave setup mode. Your settings are saved.")}</p>
         <MutationError error={error} />
-        <Button
-          disabled={saving}
-          onClick={async () => {
-            setSaving(true);
-            setError(null);
-            try {
-              await finish(false);
-            } catch (e) {
-              setError(e);
-            } finally {
-              setSaving(false);
-            }
-          }}
-        >
-          {t("Finish setup")}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              setError(null);
+              try {
+                await finish(false);
+              } catch (e) {
+                setError(e);
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {t("Finish setup")}
+          </Button>
+          {alreadySetUp ? (
+            <Button variant="outline" disabled={saving} onClick={exitSetup}>
+              {t("Exit setup")}
+            </Button>
+          ) : null}
+        </div>
       </div>
     );
 
@@ -956,14 +969,21 @@ export default function Setup() {
     <WizardLayout
       header={
         <div>
-          <div className="flex items-center gap-3">
-            <EtherMark size={32} />
-            <div>
-              <h1 className="text-lg font-semibold text-fg">{t("Set up Ether")}</h1>
-              <p className="text-sm text-fg-muted">
-                {t("Complete the steps below to set up your household.")}
-              </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <EtherMark size={32} />
+              <div>
+                <h1 className="text-lg font-semibold text-fg">{t("Set up Ether")}</h1>
+                <p className="text-sm text-fg-muted">
+                  {t("Complete the steps below to set up your household.")}
+                </p>
+              </div>
             </div>
+            {alreadySetUp ? (
+              <Button variant="outline" size="sm" disabled={saving} onClick={exitSetup}>
+                {t("Exit setup")}
+              </Button>
+            ) : null}
           </div>
           <ol className="mt-4 flex gap-1.5" aria-label={t("Setup progress")}>
             {steps.map((s, i) => {

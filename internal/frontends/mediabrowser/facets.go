@@ -24,7 +24,7 @@ func facetView(r *http.Request) string {
 }
 func (i *instance) facets(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		v, _, err := i.viewer(r)
+		v, token, err := i.viewer(r)
 		if err != nil || v == nil {
 			http.Error(w, "Unauthorized", 401)
 			return
@@ -41,7 +41,7 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 				term = strings.TrimSpace(terms[0])
 			}
 			if _, ok := i.host.Experience.(frontend.PeopleReader); ok {
-				i.searchPersons(w, r, v, term)
+				i.searchPersons(w, r, v, token, term)
 				return
 			}
 		}
@@ -74,7 +74,7 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 // searchPersons answers /Persons?searchTerm= from the people-name index:
 // the people whose names match, visible to the viewer through at least one
 // credited title, at most 100.
-func (i *instance) searchPersons(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, term string) {
+func (i *instance) searchPersons(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, token, term string) {
 	reader, ok := i.host.Experience.(frontend.PeopleReader)
 	if !ok || utf8.RuneCountInString(term) > 200 {
 		http.Error(w, "Unavailable", 503)
@@ -93,7 +93,7 @@ func (i *instance) searchPersons(w http.ResponseWriter, r *http.Request, v *fron
 	}
 	items := make([]any, 0, len(people))
 	for _, person := range paging.Slice(people, offset, limit) {
-		items = append(items, map[string]any{"Id": person.ID, "Name": person.Name, "Type": "Person", "ServerId": i.info.ID})
+		items = append(items, i.personSearchDTO(r, token, person))
 	}
 	jsonReply(w, i.queryResult(items, len(people), offset))
 }

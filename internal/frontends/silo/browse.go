@@ -674,7 +674,9 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 			credit["person_id"] = id
 		}
 		if p.TMDB > 0 {
-			credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+			if !frontend.IsPluginPersonID(p.TMDB) {
+				credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+			}
 			if portrait := portraits[p.TMDB]; portrait.url != "" {
 				credit["photo_url"] = portrait.url
 				if portrait.thumbHash != "" {
@@ -695,7 +697,9 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 				credit["person_id"] = id
 			}
 			if p.TMDB > 0 {
-				credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+				if !frontend.IsPluginPersonID(p.TMDB) {
+					credit["tmdb_id"] = strconv.FormatInt(p.TMDB, 10)
+				}
 				if portrait := portraits[p.TMDB]; portrait.url != "" {
 					credit["photo_url"] = portrait.url
 					if portrait.thumbHash != "" {

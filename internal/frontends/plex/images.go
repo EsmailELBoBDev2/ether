@@ -168,6 +168,10 @@ func (s *Server) serveItemImage(w http.ResponseWriter, r *http.Request, key fron
 	if element == "composite" || element == "squareArt" {
 		element = "thumb"
 	}
+	height, _ := strconv.Atoi(r.URL.Query().Get("height"))
+	if key.IsPluginKey() && s.servePluginItemImage(w, r, key, element, width, height) {
+		return
+	}
 	raw := r.URL.Query().Get("collection")
 	if raw == "" && s.serveCollectionArtwork(w, r, key, element, width) {
 		return
@@ -276,11 +280,24 @@ func (s *Server) writeRemoteImage(w http.ResponseWriter, r *http.Request, u stri
 
 // Person artwork is scoped to one title so authorization requires one catalog lookup.
 func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, kind, identity string) {
+	s.servePersonImageSized(w, r, key, kind, identity, 0, 0)
+}
+
+func (s *Server) servePersonImageSized(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, kind, identity string, width, height int) {
 	if r.Context().Err() != nil {
 		return
 	}
 	t, err := s.artworkTitle(r.Context(), key)
-	if r.Context().Err() != nil || err != nil || t == nil || !t.IsReleased(s.now()) || !s.visibleTitle(r.Context(), FromContext(r.Context()).User, t) {
+	if r.Context().Err() != nil || err != nil || t == nil {
+		writeHTTPError(w, http.StatusNotFound)
+		return
+	}
+	if key.IsPluginKey() {
+		if !s.canSeePluginTitle(FromContext(r.Context()).User, t) {
+			writeHTTPError(w, http.StatusNotFound)
+			return
+		}
+	} else if !t.IsReleased(s.now()) || !s.visibleTitle(r.Context(), FromContext(r.Context()).User, t) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
@@ -301,10 +318,14 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	var imagePath string
+	var (
+		imagePath     string
+		matchedPerson frontend.Person
+	)
 	for _, person := range people {
 		if person.ThumbPath == string(raw) {
 			imagePath = person.ThumbPath
+			matchedPerson = person
 			break
 		}
 	}
@@ -322,6 +343,10 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
+	if key.IsPluginKey() && (strings.HasPrefix(imagePath, "https://") || strings.HasPrefix(imagePath, "http://")) {
+		s.servePluginPersonImage(w, r, key, matchedPerson.TMDB, imagePath, width, height)
+		return
+	}
 	if plexImageURL(imagePath) {
 		s.serveRemoteImage(w, r, imagePath)
 		return
@@ -329,13 +354,16 @@ func (s *Server) servePersonImage(w http.ResponseWriter, r *http.Request, key fr
 	// Keep the same w185 profile URL emitted by metadata before proxying; poster widths are not profile configuration. Width and height are intentionally ignored.
 	s.serveRemoteImage(w, r, s.svc().imageURL(imagePath, "w185"))
 }
+
 func (s *Server) handlePersonImage(w http.ResponseWriter, r *http.Request) {
 	key, err := frontend.ParseRatingKey(chi.URLParam(r, "key"))
 	if err != nil {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	s.servePersonImage(w, r, key, chi.URLParam(r, "kind"), chi.URLParam(r, "identity"))
+	width, _ := strconv.Atoi(r.URL.Query().Get("width"))
+	height, _ := strconv.Atoi(r.URL.Query().Get("height"))
+	s.servePersonImageSized(w, r, key, chi.URLParam(r, "kind"), chi.URLParam(r, "identity"), width, height)
 }
 
 var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|director|writer)/([A-Za-z0-9_-]+)$`)
@@ -382,8 +410,9 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
-	width, _ := strconv.Atoi(photoQueryValue(q, "width"))
+	rawWidth, _ := strconv.Atoi(photoQueryValue(q, "width"))
 	height, _ := strconv.Atoi(photoQueryValue(q, "height"))
+	width := rawWidth
 	if width <= 0 && height > 0 {
 		width = height * 2 / 3 // poster aspect
 	} else if strings.HasSuffix(photoQueryValue(q, "minSize"), "1") && height > 0 && height*2/3 > width {
@@ -440,7 +469,7 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				writeHTTPError(w, http.StatusNotFound)
 				return
 			}
-			s.servePersonImage(w, r, key, m[2], m[3])
+			s.servePersonImageSized(w, r, key, m[2], m[3], rawWidth, height)
 			return
 		}
 		if m := metadataImageRe.FindStringSubmatch(path); m != nil {

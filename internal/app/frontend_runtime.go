@@ -261,6 +261,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 				}
 			}
 		}
+		if scoped, ok := experience.(*surfaceExperience); ok && scoped.artwork != nil {
+			artwork = scoped.artwork
+		}
 		tickets, _ := identity.NewTicketService(a.db, id, grants, nil)
 		var lanViewer func(context.Context, *http.Request) (*core.Viewer, error)
 		if descriptor, ok := r.control.descriptor(id); ok && descriptor.Auth == "none_lan" {

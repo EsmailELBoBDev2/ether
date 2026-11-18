@@ -17,6 +17,8 @@ type SearchQuery struct {
 	LibraryID core.LibraryID
 	Query     string
 	Level     string
+	Levels    []string
+	PersonID  int64
 	Facets    map[string][]string
 	Limit     int
 }
@@ -65,4 +67,28 @@ func tokenizeSearchQuery(raw string) []string {
 		tokens = tokens[:16]
 	}
 	return tokens
+}
+
+func escapeLike(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		switch r {
+		case '\\', '%', '_':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func searchTitleTierArgs(rawQuery string) (exactTitle, exactSort, prefixTitle, prefixSort string) {
+	exactTitle = strings.ToLower(strings.TrimSpace(rawQuery))
+	exactSort = SortTitle(rawQuery)
+	if exactSort == "" {
+		exactSort = exactTitle
+	}
+	prefixTitle = escapeLike(exactTitle) + "%"
+	prefixSort = escapeLike(exactSort) + "%"
+	return exactTitle, exactSort, prefixTitle, prefixSort
 }

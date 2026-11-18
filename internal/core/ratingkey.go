@@ -1,8 +1,11 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // RatingKey is the Plex ratingKey of an Ether item. It is derived from TMDB
@@ -59,6 +62,32 @@ const (
 	PluginKeyBase   int64 = 5_000_000_000_000
 	PluginKeyMaxSeq int64 = 2_000_000_000_000
 )
+
+// PluginPersonIDBase and PluginPersonIDSpan carve out deterministic positive
+// person IDs in (PluginPersonIDBase, PluginPersonIDBase+PluginPersonIDSpan)
+// for performers credited on plugin items. Values stay far above TMDB person
+// IDs (< 10^9) and safely below 2^53 for JavaScript clients.
+const (
+	PluginPersonIDBase int64 = 4_000_000_000_000
+	PluginPersonIDSpan int64 = 1_000_000_000_000
+)
+
+// PluginPersonID derives a deterministic positive synthetic person ID from a
+// person's display name (case- and whitespace-folded). Returns 0 when blank.
+func PluginPersonID(name string) int64 {
+	norm := strings.Join(strings.Fields(strings.ToLower(name)), " ")
+	if norm == "" {
+		return 0
+	}
+	sum := sha256.Sum256([]byte("plugin-person:" + norm))
+	offset := binary.BigEndian.Uint64(sum[:8])%uint64(PluginPersonIDSpan-1) + 1
+	return PluginPersonIDBase + int64(offset)
+}
+
+// IsPluginPersonID reports whether id is in the synthetic plugin-person ID range.
+func IsPluginPersonID(id int64) bool {
+	return id > PluginPersonIDBase && id < PluginPersonIDBase+PluginPersonIDSpan
+}
 
 func MovieKey(tmdb int64) RatingKey    { return RatingKey(int64(KindMovie)*keyBase + tmdb) }
 func ShowKey(tmdb int64) RatingKey     { return RatingKey(int64(KindShow)*keyBase + tmdb) }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
@@ -25,10 +26,10 @@ func (s *Server) sectionKindList(w http.ResponseWriter, r *http.Request, sec Sec
 	mc.ViewMode = viewModeList
 
 	switch sub {
-	case "all", "allLeaves", "unwatched", "newest", "recentlyAdded", "recentlyViewedShows":
+	case "all", "allLeaves", "unwatched", "newest", "recentlyAdded", "recentlyViewedShows", "search", "autocomplete":
 	default:
-		// Facets, collections, prefs and search stay with their existing
-		// handlers; only the browse listings dispatch here.
+		// Facets, collections and prefs stay with their existing handlers; only
+		// browse and section-scoped search listings dispatch here.
 		mc.SetPage(0, 0)
 		s.write(w, r, mc)
 		return
@@ -36,6 +37,22 @@ func (s *Server) sectionKindList(w http.ResponseWriter, r *http.Request, sec Sec
 
 	offset, size := pr.pageOf(0)
 	query := frontend.ItemQuery{Offset: offset, Limit: size}
+	if sub == "allLeaves" {
+		query.Recursive = true
+	}
+	if v := strings.TrimSpace(q.Get("query")); v != "" {
+		query.Filter.Query = v
+	} else if sub == "search" || sub == "autocomplete" {
+		query.Filter.Query = strings.TrimSpace(q.Get("title"))
+	}
+	for _, param := range []string{"actor", "director", "writer"} {
+		if raw := strings.TrimSpace(q.Get(param)); raw != "" {
+			if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+				query.Filter.Person = id
+				break
+			}
+		}
+	}
 	page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), query)
 	if err != nil {
 		s.writeErr(w, r, err)
@@ -86,7 +103,11 @@ func plexDevice(pr *Request) frontend.Device {
 // preferred so metadata and children lookups do not depend on user-data
 // enrichment; test doubles without StoredItem fall back to Item.
 func (s *Server) kindItem(ctx context.Context, pr *Request, k frontend.RatingKey) (*frontend.Title, error) {
-	req := frontend.ItemRequest{Viewer: pr.User, Device: plexDevice(pr), Key: k}
+	var viewer *frontend.Viewer
+	if pr != nil {
+		viewer = pr.User
+	}
+	req := frontend.ItemRequest{Viewer: viewer, Device: plexDevice(pr), Key: k}
 	type storedItemReader interface {
 		StoredItem(context.Context, frontend.ItemRequest) (frontend.ItemDetail, error)
 	}
@@ -104,7 +125,7 @@ func (s *Server) kindItem(ctx context.Context, pr *Request, k frontend.RatingKey
 	}
 	if detail.Title.LibraryID != 0 {
 		sec, ok := s.sectionForLibrary(detail.Title.LibraryID)
-		if !ok || !s.canSeeSection(pr.User, sec.ID) {
+		if !ok || !s.canSeeSection(viewer, sec.ID) {
 			return nil, frontend.ErrNotFound
 		}
 	}

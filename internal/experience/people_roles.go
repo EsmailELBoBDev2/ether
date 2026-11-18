@@ -40,7 +40,13 @@ func (s *Service) enrichPersonDetail(ctx context.Context, viewer *core.Viewer, d
 		return frontend.PersonDetail{}, err
 	}
 	counts := map[string]int{}
-	if s.d.PersonCreditsMany != nil && s.d.peopleVisibleTitles != nil {
+	if core.IsPluginPersonID(detail.TMDB) {
+		pCounts, err := s.pluginPersonRoles(ctx, v, detail.TMDB)
+		if err != nil {
+			return frontend.PersonDetail{}, err
+		}
+		counts = pCounts
+	} else if s.d.PersonCreditsMany != nil && s.d.peopleVisibleTitles != nil {
 		credits, err := s.d.PersonCreditsMany(ctx, []int64{detail.TMDB}, []core.MediaType{core.TypeMovie, core.TypeShow, core.TypeEpisode}, personRoleSummaryLimit)
 		if err != nil {
 			return frontend.PersonDetail{}, err
@@ -126,7 +132,7 @@ func (s *Service) enrichPersonDetail(ctx context.Context, viewer *core.Viewer, d
 		return counts[roles[a]] > counts[roles[b]]
 	})
 	detail.Roles = roles
-	if s.d.PersonMetadata != nil {
+	if !core.IsPluginPersonID(detail.TMDB) && s.d.PersonMetadata != nil {
 		meta := s.d.PersonMetadata(ctx, detail.TMDB, prefetch)
 		detail.Biography = meta.Biography
 		detail.Birthday = meta.Birthday

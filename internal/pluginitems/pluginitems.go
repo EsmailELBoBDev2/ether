@@ -22,7 +22,14 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
+const currentFTSVersion int64 = 1
+
 func init() {
+	store.Register("pluginitems", 3, `ALTER TABLE plugin_kinds ADD COLUMN fts_version INTEGER NOT NULL DEFAULT 0;`)
+	store.RegisterDialect("pluginitems", 3, store.Postgres, `ALTER TABLE plugin_kinds ADD COLUMN fts_version BIGINT NOT NULL DEFAULT 0;`)
+	store.RegisterSQLiteApply("pluginitems", 3, applyMigration3SQLite)
+	store.RegisterPostgresApply("pluginitems", 3, applyMigration3Postgres)
+
 	store.Register("pluginitems", 2, `ALTER TABLE plugin_items ADD COLUMN unavailable TEXT NOT NULL DEFAULT '';`)
 	store.Register("pluginitems", 1, `
 CREATE TABLE plugin_kinds (
@@ -339,6 +346,9 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	// load the highest stored sync generation so PageFreshness never rewinds.
 	if _, err := db.ExecContext(ctx, `INSERT INTO plugin_items_seq(id, next) VALUES(1, 1) ON CONFLICT(id) DO NOTHING`); err != nil {
 		return nil, fmt.Errorf("pluginitems: seed seq: %w", err)
+	}
+	if err := s.reindexPendingKinds(ctx); err != nil {
+		return nil, fmt.Errorf("pluginitems: reindex pending kinds: %w", err)
 	}
 	var maxGen int64
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation), 0) FROM plugin_sync_state`).Scan(&maxGen); err != nil {

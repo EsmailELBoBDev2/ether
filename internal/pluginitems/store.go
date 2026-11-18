@@ -182,6 +182,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		return KindRecord{}, err
 	}
 	declHash := decl.DeclHash()
+	isPG := store.DialectOf(s.db) == store.Postgres
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -201,9 +202,20 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	case errors.Is(err, sql.ErrNoRows):
 		schemaVer = 1
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO plugin_kinds(plugin_id, kind_key, library_id, decl, decl_hash, schema_version) VALUES(?, ?, ?, ?, ?, ?)`,
-			pluginID, decl.Key, int64(libraryID), string(declJSON), declHash, schemaVer); err != nil {
+			`INSERT INTO plugin_kinds(plugin_id, kind_key, library_id, decl, decl_hash, schema_version, fts_version) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			pluginID, decl.Key, int64(libraryID), string(declJSON), declHash, schemaVer, currentFTSVersion); err != nil {
 			return KindRecord{}, err
+		}
+		var preExisting int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ? AND kind_key = ?`,
+			pluginID, decl.Key).Scan(&preExisting); err != nil {
+			return KindRecord{}, err
+		}
+		if preExisting > 0 {
+			if err := reindexKindTx(ctx, tx, isPG, pluginID, decl.Key, libraryID, decl); err != nil {
+				return KindRecord{}, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO plugin_sync_state(plugin_id, kind_key) VALUES(?, ?) ON CONFLICT(plugin_id, kind_key) DO NOTHING`,
@@ -213,6 +225,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 	case err != nil:
 		return KindRecord{}, err
 	default:
+		needReindex := false
 		if oldHash != declHash {
 			var oldDecl plugins.MediaKindMeta
 			if err := json.Unmarshal([]byte(oldDeclJSON), &oldDecl); err != nil {
@@ -225,13 +238,20 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 				if err := s.purgeKindTx(ctx, tx, pluginID, decl.Key, libraryID, false); err != nil {
 					return KindRecord{}, err
 				}
+			} else {
+				needReindex = true
 			}
 			schemaVer++
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE plugin_kinds SET library_id = ?, decl = ?, decl_hash = ?, schema_version = ? WHERE plugin_id = ? AND kind_key = ?`,
-			int64(libraryID), string(declJSON), declHash, schemaVer, pluginID, decl.Key); err != nil {
+			`UPDATE plugin_kinds SET library_id = ?, decl = ?, decl_hash = ?, schema_version = ?, fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
+			int64(libraryID), string(declJSON), declHash, schemaVer, currentFTSVersion, pluginID, decl.Key); err != nil {
 			return KindRecord{}, err
+		}
+		if needReindex {
+			if err := reindexKindTx(ctx, tx, isPG, pluginID, decl.Key, libraryID, decl); err != nil {
+				return KindRecord{}, err
+			}
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO plugin_sync_state(plugin_id, kind_key) VALUES(?, ?) ON CONFLICT(plugin_id, kind_key) DO NOTHING`,
@@ -487,12 +507,6 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 		}
 
 		if isPG {
-			searchTitle := ""
-			searchFields := ""
-			if kind.Decl.Browse.Search {
-				searchTitle = it.Title
-				searchFields = v.SearchFields
-			}
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO plugin_items(
 	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
@@ -502,7 +516,7 @@ INSERT INTO plugin_items(
 	?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, 0,
-	setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B')
+	setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
 ) ON CONFLICT(item_ref) DO UPDATE SET
 	parent_ref   = excluded.parent_ref,
 	level        = excluded.level,
@@ -516,7 +530,7 @@ INSERT INTO plugin_items(
 	playable     = excluded.playable,
 	child_count  = excluded.child_count,
 	leaf_count   = excluded.leaf_count,
-	unavailable = excluded.unavailable,
+	unavailable  = excluded.unavailable,
 	hints        = excluded.hints,
 	fields       = excluded.fields,
 	etag         = excluded.etag,
@@ -527,7 +541,7 @@ INSERT INTO plugin_items(
 				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, parentRef, it.Level, it.Index,
 				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, playableInt, it.ChildCount, it.LeafCount,
 				unavailableStr, hintsStr, fieldsStr, it.ETag, addedAt, nowUnix, seenAt,
-				searchTitle, searchFields,
+				it.Title, v.SearchFields, v.SearchPeople,
 			); err != nil {
 				return 0, err
 			}
@@ -554,7 +568,7 @@ INSERT INTO plugin_items(
 	playable     = excluded.playable,
 	child_count  = excluded.child_count,
 	leaf_count   = excluded.leaf_count,
-	unavailable = excluded.unavailable,
+	unavailable  = excluded.unavailable,
 	hints        = excluded.hints,
 	fields       = excluded.fields,
 	etag         = excluded.etag,
@@ -567,14 +581,8 @@ INSERT INTO plugin_items(
 			); err != nil {
 				return 0, err
 			}
-			if kind.Decl.Browse.Search {
-				if err := sqliteIndexFTS(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields); err != nil {
-					return 0, err
-				}
-			} else {
-				if err := sqliteDeleteFTS(ctx, tx, seq); err != nil {
-					return 0, err
-				}
+			if err := sqliteIndexFTS(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields, v.SearchPeople); err != nil {
+				return 0, err
 			}
 		}
 
@@ -618,6 +626,275 @@ INSERT INTO plugin_items(
 		return 0, err
 	}
 	return len(items), nil
+}
+
+func applyMigration3SQLite(ctx context.Context, tx *sql.Tx) error {
+	for _, stmt := range []string{
+		`ALTER TABLE plugin_kinds ADD COLUMN fts_version INTEGER NOT NULL DEFAULT 0`,
+		`DROP TABLE IF EXISTS plugin_item_fts`,
+		`CREATE VIRTUAL TABLE plugin_item_fts USING fts5(item_ref UNINDEXED, library_id UNINDEXED, title, fields, people)`,
+		`INSERT OR REPLACE INTO plugin_item_fts_config(k, v) VALUES ('rank', 'bm25(10.0, 2.0, 1.0)')`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return reindexAllTx(ctx, tx, false)
+}
+
+func applyMigration3Postgres(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_kinds ADD COLUMN fts_version BIGINT NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	return reindexAllTx(ctx, tx, true)
+}
+
+type pendingKindRow struct {
+	pluginID  string
+	kindKey   string
+	libraryID core.LibraryID
+	declJSON  string
+}
+
+func reindexAllTx(ctx context.Context, tx *sql.Tx, isPG bool) error {
+	rows, err := tx.QueryContext(ctx, `SELECT plugin_id, kind_key, library_id, decl FROM plugin_kinds ORDER BY plugin_id, kind_key`)
+	if err != nil {
+		return err
+	}
+	var kinds []pendingKindRow
+	for rows.Next() {
+		var r pendingKindRow
+		var libID int64
+		if err := rows.Scan(&r.pluginID, &r.kindKey, &libID, &r.declJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		r.libraryID = core.LibraryID(libID)
+		kinds = append(kinds, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, k := range kinds {
+		var decl plugins.MediaKindMeta
+		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
+			continue
+		}
+		if err := reindexKindTx(ctx, tx, isPG, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
+			currentFTSVersion, k.pluginID, k.kindKey); err != nil {
+			return err
+		}
+	}
+
+	if isPG {
+		_, err = tx.ExecContext(ctx, `
+UPDATE plugin_items
+SET search_tsv = setweight(to_tsvector('simple', title), 'A')
+WHERE NOT EXISTS (
+	SELECT 1 FROM plugin_kinds k WHERE k.plugin_id = plugin_items.plugin_id AND k.kind_key = plugin_items.kind_key
+)`)
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO plugin_item_fts(rowid, item_ref, library_id, title, fields, people)
+SELECT p.seq, p.item_ref, p.library_id, p.title, '', ''
+FROM plugin_items p
+WHERE NOT EXISTS (
+	SELECT 1 FROM plugin_kinds k WHERE k.plugin_id = p.plugin_id AND k.kind_key = p.kind_key
+) AND p.title <> ''`)
+	return err
+}
+
+func (s *Service) reindexPendingKinds(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT plugin_id, kind_key, library_id, decl FROM plugin_kinds WHERE fts_version < ? ORDER BY plugin_id, kind_key`,
+		currentFTSVersion)
+	if err != nil {
+		return err
+	}
+	var pending []pendingKindRow
+	for rows.Next() {
+		var r pendingKindRow
+		var libID int64
+		if err := rows.Scan(&r.pluginID, &r.kindKey, &libID, &r.declJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		r.libraryID = core.LibraryID(libID)
+		pending = append(pending, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(pending) == 0 {
+		return nil
+	}
+
+	isPG := store.DialectOf(s.db) == store.Postgres
+	for _, k := range pending {
+		var decl plugins.MediaKindMeta
+		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
+			continue
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if err := reindexKindTx(ctx, tx, isPG, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE plugin_kinds SET fts_version = ? WHERE plugin_id = ? AND kind_key = ?`,
+			currentFTSVersion, k.pluginID, k.kindKey); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type reindexItemRow struct {
+	itemRef    string
+	seq        int64
+	libraryID  core.LibraryID
+	title      string
+	fieldsJSON string
+}
+
+func reindexKindTx(ctx context.Context, tx *sql.Tx, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
+	const batchSize = 500
+	cursor := ""
+	for {
+		rows, err := tx.QueryContext(ctx, `
+SELECT item_ref, seq, library_id, title, fields
+FROM plugin_items
+WHERE plugin_id = ? AND kind_key = ? AND item_ref > ?
+ORDER BY item_ref ASC
+LIMIT ?`, pluginID, kindKey, cursor, batchSize)
+		if err != nil {
+			return err
+		}
+		var batch []reindexItemRow
+		for rows.Next() {
+			var r reindexItemRow
+			var libID int64
+			if err := rows.Scan(&r.itemRef, &r.seq, &libID, &r.title, &r.fieldsJSON); err != nil {
+				rows.Close()
+				return err
+			}
+			if libID > 0 {
+				r.libraryID = core.LibraryID(libID)
+			} else {
+				r.libraryID = fallbackLibID
+			}
+			batch = append(batch, r)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			break
+		}
+		for _, r := range batch {
+			indexed, searchFields, searchPeople := extractIndexData(decl, r.fieldsJSON)
+			if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, r.itemRef); err != nil {
+				return err
+			}
+			for _, fv := range indexed {
+				if _, err := tx.ExecContext(ctx,
+					`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real) VALUES(?, ?, ?, ?, ?)
+					 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real`,
+					r.itemRef, fv.Field, fv.Text, fv.Int, fv.Real); err != nil {
+					return err
+				}
+			}
+			if isPG {
+				if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_items
+SET search_tsv = setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
+WHERE item_ref = ?`,
+					r.title, searchFields, searchPeople, r.itemRef); err != nil {
+					return err
+				}
+			} else {
+				if err := sqliteIndexFTS(ctx, tx, r.seq, core.ItemRef(r.itemRef), r.libraryID, r.title, searchFields, searchPeople); err != nil {
+					return err
+				}
+			}
+		}
+		cursor = batch[len(batch)-1].itemRef
+		if len(batch) < batchSize {
+			break
+		}
+	}
+	return nil
+}
+
+func extractIndexData(decl plugins.MediaKindMeta, fieldsJSON string) ([]IndexedFieldValue, string, string) {
+	if fieldsJSON == "" || fieldsJSON == "{}" {
+		return nil, "", ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil || len(fields) == 0 {
+		return nil, "", ""
+	}
+	declaredFields := make(map[string]plugins.KindField, len(decl.Fields))
+	for _, f := range decl.Fields {
+		declaredFields[f.Key] = f
+	}
+	searchFieldSet := make(map[string]bool, len(decl.Browse.SearchFields))
+	for _, sf := range decl.Browse.SearchFields {
+		searchFieldSet[sf] = true
+	}
+	var (
+		indexed     []IndexedFieldValue
+		searchParts []string
+		peopleParts []string
+	)
+	for k, raw := range fields {
+		fdecl, exists := declaredFields[k]
+		if !exists {
+			continue
+		}
+		vals, texts, err := validateFieldValue(fdecl, raw)
+		if err != nil {
+			continue
+		}
+		if fdecl.Indexed || fdecl.Type == "people" {
+			indexed = append(indexed, vals...)
+		}
+		if fdecl.Type == "people" {
+			if len(texts) > 0 {
+				peopleParts = append(peopleParts, strings.Join(texts, " "))
+			}
+		} else if searchFieldSet[k] && len(texts) > 0 {
+			searchParts = append(searchParts, strings.Join(texts, " "))
+		}
+	}
+	searchText := strings.Join(searchParts, " ")
+	if len(searchText) > MaxFTSTextBytes {
+		searchText = clipUTF8(searchText, MaxFTSTextBytes)
+	}
+	peopleText := strings.Join(peopleParts, " ")
+	if len(peopleText) > MaxFTSTextBytes {
+		peopleText = clipUTF8(peopleText, MaxFTSTextBytes)
+	}
+	return indexed, searchText, peopleText
 }
 
 type existingItemMeta struct {
@@ -745,8 +1022,8 @@ func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID,
 	}
 	gen := int64(s.syncGen.Add(1))
 	_, err := tx.ExecContext(ctx, `
-INSERT INTO plugin_sync_state(plugin_id, kind_key, generation, last_ok, last_error, items)
-VALUES(?, ?, ?, ?, '', ?)
+INSERT INTO plugin_sync_state(plugin_id, kind_key, generation, last_started, last_ok, last_error, items)
+VALUES(?, ?, ?, 0, ?, '', ?)
 ON CONFLICT(plugin_id, kind_key) DO UPDATE SET
 	generation = excluded.generation,
 	last_ok    = excluded.last_ok,

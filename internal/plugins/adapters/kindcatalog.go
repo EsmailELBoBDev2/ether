@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -74,7 +75,10 @@ type KindCatalog struct {
 	liveSems  map[string]chan struct{}
 }
 
-var _ experience.PluginLibraries = (*KindCatalog)(nil)
+var (
+	_ experience.PluginLibraries       = (*KindCatalog)(nil)
+	_ experience.PluginPeopleLibraries = (*KindCatalog)(nil)
+)
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
 // OnRemove lifecycle hooks on deps.Manager. Call before Manager.Start so
@@ -432,12 +436,15 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 	if c == nil || c.items == nil {
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
+	if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
+		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0}, nil
+	}
 	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
 	if err != nil {
 		return experience.PluginBrowsePage{}, err
 	}
-	level := browseLevelForQuery(rec.Decl, lib.Present, q)
-	if level == "-" {
+	level, levels, anyLevel, matched := browseLevelsForQuery(rec.Decl, lib.Present, q)
+	if !matched {
 		return experience.PluginBrowsePage{Items: []core.Title{}, Total: 0}, nil
 	}
 	policy, err := c.items.LibraryPolicy(ctx, lib)
@@ -449,6 +456,9 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 		Policy:    policy,
 		LibraryID: lib.ID,
 		Level:     level,
+		Levels:    levels,
+		AnyLevel:  anyLevel,
+		PersonID:  q.Filter.Person,
 		Sort:      mapBrowseSort(q.Sort, q.Desc),
 		Facets:    mapFilterToFacets(rec.Decl, q.Filter),
 		Cursor:    cursor,
@@ -675,6 +685,44 @@ func (c *KindCatalog) Facets(ctx context.Context, lib core.Library, facet string
 	if c == nil || c.items == nil {
 		return nil, nil
 	}
+	if facet == "person" {
+		policy, err := c.items.LibraryPolicy(ctx, lib)
+		if err != nil {
+			return nil, err
+		}
+		type personEntry struct {
+			id   int64
+			name string
+		}
+		var entries []personEntry
+		_, _, err = c.items.FindPersonID(ctx, lib.ID, policy, func(pid int64, name string) bool {
+			if core.IsPluginPersonID(pid) && strings.TrimSpace(name) != "" {
+				entries = append(entries, personEntry{id: pid, name: strings.TrimSpace(name)})
+			}
+			return false
+		})
+		if err != nil {
+			return nil, err
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			li, lj := strings.ToLower(entries[i].name), strings.ToLower(entries[j].name)
+			if li != lj {
+				return li < lj
+			}
+			return entries[i].id < entries[j].id
+		})
+		out := make([]core.FacetValue, 0, len(entries))
+		for _, e := range entries {
+			keyStr := strconv.FormatInt(e.id, 10)
+			out = append(out, core.FacetValue{
+				ID:    core.FacetID("person", keyStr),
+				Key:   keyStr,
+				Title: e.name,
+				Count: 1,
+			})
+		}
+		return out, nil
+	}
 	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
 	if err != nil {
 		return nil, err
@@ -726,9 +774,16 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	if query == "" {
 		return nil, nil
 	}
+	if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
+		return nil, nil
+	}
 	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
 	if err != nil {
 		return nil, err
+	}
+	searchLevels, ok := searchLevelsForQuery(rec.Decl, lib.Present, q.Types)
+	if !ok {
+		return nil, nil
 	}
 	if limit <= 0 {
 		limit = 50
@@ -741,6 +796,8 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		Policy:    policy,
 		LibraryID: lib.ID,
 		Query:     query,
+		Levels:    searchLevels,
+		PersonID:  q.Filter.Person,
 		Facets:    mapFilterToFacets(rec.Decl, q.Filter),
 		Limit:     limit,
 	})
@@ -778,7 +835,106 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 			allowed = append(allowed, it)
 		}
 	}
-	return c.projectItems(ctx, rec, lib, allowed), nil
+	projected := c.projectItems(ctx, rec, lib, allowed)
+	for i := range projected {
+		projected[i].SearchScore = scorePluginSearchHit(projected[i], query)
+	}
+	return projected, nil
+}
+
+// SearchPeople implements experience.PluginPeopleLibraries.
+func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query string, q frontend.ItemQuery, personLimit, itemLimit int) ([]experience.PluginPersonMatch, error) {
+	if c == nil || c.items == nil {
+		return nil, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return nil, nil
+	}
+	if _, ok := searchLevelsForQuery(rec.Decl, lib.Present, q.Types); !ok {
+		return nil, nil
+	}
+	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
+	if err != nil {
+		return nil, err
+	}
+	if itemLimit <= 0 {
+		itemLimit = 25
+	}
+	matches, err := c.items.SearchPeople(ctx, lib.ID, policy, query, personLimit, itemLimit)
+	if err != nil || len(matches) == 0 {
+		return nil, err
+	}
+	out := make([]experience.PluginPersonMatch, 0, len(matches))
+	for _, m := range matches {
+		titles := c.projectItems(ctx, rec, lib, m.Items)
+		if len(q.Types) > 0 {
+			filtered := titles[:0]
+			for _, t := range titles {
+				if slices.Contains(q.Types, t.Type) {
+					filtered = append(filtered, t)
+				}
+			}
+			titles = filtered
+		}
+		if len(titles) == 0 {
+			continue
+		}
+		out = append(out, experience.PluginPersonMatch{
+			PersonID:    m.ID,
+			Name:        m.Name,
+			CreditCount: m.CreditCount,
+			ArtworkItem: m.SampleItem.Key,
+			HasThumb:    m.Thumb != "",
+			Roles:       m.Roles,
+			Titles:      titles,
+		})
+	}
+	return out, nil
+}
+
+// PersonByID implements experience.PluginPeopleLibraries.
+func (c *KindCatalog) PersonByID(ctx context.Context, lib core.Library, personID int64, itemLimit int) (experience.PluginPersonMatch, bool, error) {
+	if c == nil || c.items == nil || !core.IsPluginPersonID(personID) {
+		return experience.PluginPersonMatch{}, false, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return experience.PluginPersonMatch{}, false, nil
+	}
+	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
+	if err != nil {
+		return experience.PluginPersonMatch{}, false, err
+	}
+	if itemLimit <= 0 {
+		itemLimit = 50
+	}
+	m, ok, err := c.items.PersonByID(ctx, lib.ID, policy, personID, itemLimit)
+	if err != nil || !ok {
+		return experience.PluginPersonMatch{}, false, err
+	}
+	titles := c.projectItems(ctx, rec, lib, m.Items)
+	return experience.PluginPersonMatch{
+		PersonID:    m.ID,
+		Name:        m.Name,
+		CreditCount: m.CreditCount,
+		ArtworkItem: m.SampleItem.Key,
+		HasThumb:    m.Thumb != "",
+		Roles:       m.Roles,
+		Titles:      titles,
+	}, true, nil
+}
+
+// FindPersonID implements experience.PluginPeopleLibraries.
+func (c *KindCatalog) FindPersonID(ctx context.Context, lib core.Library, match func(personID int64, name string) bool) (int64, bool, error) {
+	if c == nil || c.items == nil || match == nil {
+		return 0, false, nil
+	}
+	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
+	if err != nil {
+		return 0, false, err
+	}
+	return c.items.FindPersonID(ctx, lib.ID, policy, match)
 }
 
 // MemberOf implements experience.PluginLibraries for a collection
@@ -985,17 +1141,16 @@ func levelIsPlayable(decl plugins.MediaKindMeta, levelKey string) bool {
 	return ok && lv.Playable
 }
 
-func browseLevelForQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) string {
+func browseLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) (level string, levels []string, anyLevel bool, ok bool) {
 	if len(decl.Levels) == 0 {
-		return ""
-	}
-	if !q.Recursive && len(q.Types) == 0 {
-		return decl.Levels[0].Key
+		return "", nil, true, true
 	}
 	if len(q.Types) == 0 {
-		return decl.Levels[0].Key
+		if q.Filter.Person > 0 {
+			return "", nil, true, true
+		}
+		return decl.Levels[0].Key, nil, false, true
 	}
-	// Match requested core.MediaType against projected level types.
 	var matched []string
 	for _, lv := range decl.Levels {
 		if !q.Recursive && lv.Key != decl.Levels[0].Key {
@@ -1007,9 +1162,88 @@ func browseLevelForQuery(decl plugins.MediaKindMeta, present core.Presentations,
 		}
 	}
 	if len(matched) == 0 {
-		return "-"
+		return "", nil, false, false
 	}
-	return matched[0]
+	if len(matched) == 1 {
+		return matched[0], nil, false, true
+	}
+	return "", matched, false, true
+}
+
+func searchLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, types []core.MediaType) ([]string, bool) {
+	if len(types) == 0 || len(decl.Levels) == 0 {
+		return nil, true
+	}
+	var matched []string
+	for _, lv := range decl.Levels {
+		pt := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present).Type
+		if slices.Contains(types, pt) {
+			matched = append(matched, lv.Key)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, false
+	}
+	if len(matched) == len(decl.Levels) {
+		return nil, true
+	}
+	return matched, true
+}
+
+func searchWords(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+}
+
+func normalizeArticleSort(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	for _, prefix := range []string{"the ", "an ", "a "} {
+		if rest, ok := strings.CutPrefix(s, prefix); ok {
+			if rest = strings.TrimSpace(rest); rest != "" {
+				return rest
+			}
+		}
+	}
+	return s
+}
+
+func scorePluginSearchHit(t core.Title, query string) float64 {
+	qNorm := strings.ToLower(strings.TrimSpace(query))
+	qSort := normalizeArticleSort(query)
+	tNorm := strings.ToLower(strings.TrimSpace(t.Title))
+	tSort := strings.ToLower(strings.TrimSpace(t.SortTitle))
+	if tSort == "" {
+		tSort = normalizeArticleSort(t.Title)
+	}
+	if qNorm != "" && (tNorm == qNorm || (qSort != "" && tSort == qSort)) {
+		return 1.0
+	}
+	if qNorm != "" && (strings.HasPrefix(tNorm, qNorm) || (qSort != "" && strings.HasPrefix(tSort, qSort))) {
+		return 0.97
+	}
+	qTokens := searchWords(query)
+	if len(qTokens) > 0 {
+		tWords := searchWords(t.Title)
+		allInTitle := len(tWords) > 0
+		for _, qt := range qTokens {
+			found := false
+			for _, tw := range tWords {
+				if strings.HasPrefix(tw, qt) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				allInTitle = false
+				break
+			}
+		}
+		if allInTitle {
+			return 0.93
+		}
+	}
+	return 0.60
 }
 
 func mapBrowseSort(sortBy core.SortOrder, desc bool) string {
@@ -1083,10 +1317,10 @@ func mapFilterToFacets(decl plugins.MediaKindMeta, f core.Filter) map[string][]s
 			}
 		}
 	}
-	if len(out) == 0 {
-		return nil
+	if len(out) > 0 {
+		return out
 	}
-	return out
+	return nil
 }
 
 func parseKindDuration(raw string, fallback time.Duration) time.Duration {

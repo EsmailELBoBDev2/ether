@@ -22,6 +22,9 @@ type BrowseQuery struct {
 	LibraryID core.LibraryID
 	ParentRef core.ItemRef
 	Level     string
+	Levels    []string
+	AnyLevel  bool
+	PersonID  int64
 	Sort      string              // title (default), added, released, year, rating, index
 	Desc      bool                // false = default direction for Sort; true = reverse
 	Facets    map[string][]string // field key -> required values (OR within key, AND across keys)
@@ -128,7 +131,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 
 	level := strings.TrimSpace(q.Level)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
-	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || q.Hidden
+	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
 
 	// Base filter predicate.
 	var baseWhere strings.Builder
@@ -137,12 +140,28 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	if parentRef != "" {
 		baseWhere.WriteString(` AND i.parent_ref = ?`)
 		baseArgs = append(baseArgs, parentRef)
+	} else if len(q.Levels) > 0 {
+		placeholders := make([]string, len(q.Levels))
+		for idx, lv := range q.Levels {
+			placeholders[idx] = "?"
+			baseArgs = append(baseArgs, strings.TrimSpace(lv))
+		}
+		baseWhere.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
 	} else if level != "" {
 		baseWhere.WriteString(` AND i.level = ?`)
 		baseArgs = append(baseArgs, level)
-	} else {
+	} else if !q.AnyLevel && q.PersonID <= 0 {
 		// Default to root items when neither Level nor ParentRef is specified.
 		baseWhere.WriteString(` AND i.parent_ref = ''`)
+	}
+	if q.PersonID > 0 {
+		ok, err := s.appendPersonFilter(ctx, q.LibraryID, &baseWhere, &baseArgs, q.PersonID)
+		if err != nil {
+			return BrowsePage{}, err
+		}
+		if !ok {
+			return BrowsePage{Items: []core.KindItem{}, Total: 0}, nil
+		}
 	}
 	if err := s.appendFacets(ctx, q.LibraryID, &baseWhere, &baseArgs, q.Facets); err != nil {
 		return BrowsePage{}, err
@@ -344,8 +363,6 @@ func scanItemRowWithAdded(sc rowScanner) (core.KindItem, int64, error) {
 	return it, addedAt, nil
 }
 
-// Facets returns the distinct values and counts for a declared facetable field
-// within a library (optionally scoped to a level).
 // FacetPage is one field's filter values in display order. Truncated means
 // the field has more distinct values than the limit returned.
 type FacetPage struct {
@@ -501,10 +518,37 @@ func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *s
 	}
 	types := map[string]string{}
 	for _, field := range rec.Decl.Fields {
-		if field.Indexed {
+		if field.Indexed || field.Type == "people" {
 			types[field.Key] = field.Type
 		}
 	}
 	libraryfilter.AppendPluginFacetClauses(where, args, facets, types)
 	return nil
+}
+
+func (s *Service) appendPersonFilter(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, personID int64) (bool, error) {
+	if !core.IsPluginPersonID(personID) {
+		return false, nil
+	}
+	rec, err := s.GetKindByLibrary(ctx, lib)
+	if err != nil {
+		return false, err
+	}
+	var pFields []string
+	for _, field := range rec.Decl.Fields {
+		if field.Type == "people" {
+			pFields = append(pFields, field.Key)
+		}
+	}
+	if len(pFields) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(pFields))
+	for i, fk := range pFields {
+		placeholders[i] = "?"
+		*args = append(*args, fk)
+	}
+	*args = append(*args, personID)
+	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields pf WHERE pf.item_ref = i.item_ref AND pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int = ?)`)
+	return true, nil
 }

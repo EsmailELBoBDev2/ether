@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -328,7 +329,7 @@ func simplePluginBrowse(v *core.User, q frontend.ItemQuery, policy AccessPolicy)
 		f.YearFrom == 0 && f.YearTo == 0 && len(f.ExcludeYears) == 0 &&
 		len(f.ReleasedFilters) == 0 && f.MinRating == 0 &&
 		f.MinRuntime == 0 && f.MaxRuntime == 0 &&
-		len(f.Languages) == 0 && len(f.Countries) == 0 &&
+		len(f.Languages) == 0 && f.Countries == nil &&
 		len(f.ContentRatings) == 0 && f.MaxContentRating == "" &&
 		f.Collection == 0 && f.Person == 0 && f.FirstCharacter == "" &&
 		f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" &&
@@ -343,26 +344,51 @@ func pluginCursorPrefix(scope string, q frontend.ItemQuery) string {
 const maxPluginBrowseWalkPages = 40
 
 func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
-	if strings.TrimSpace(q.Filter.Query) != "" {
+	if query := strings.TrimSpace(q.Filter.Query); query != "" {
 		limit := q.Limit
 		if limit <= 0 {
 			limit = 200
 		}
 		want := max(q.Offset, 0) + limit
-		hits, err := s.d.PluginLibraries.Search(ctx, lib, q.Filter.Query, q, min(max(want*2, 50), 500))
+		window := min(max(want*2, 50), 500)
+		subQ := q
+		subQ.Filter.Query = ""
+		hits, err := s.d.PluginLibraries.Search(ctx, lib, query, subQ, window)
 		if err != nil {
 			return core.Page{}, err
 		}
-		filtered, err := s.filterPluginTitles(ctx, v, hits, q)
+		filtered, err := s.filterPluginTitles(ctx, v, hits, subQ)
 		if err != nil {
 			return core.Page{}, err
+		}
+		if ppl, ok := s.d.PluginLibraries.(PluginPeopleLibraries); ok {
+			_, peopleTitles, pErr := s.searchPluginPeopleInLibraries(ctx, v, []core.Library{lib}, ppl, query, subQ, 20)
+			if pErr != nil && errors.Is(pErr, context.Canceled) {
+				return core.Page{}, pErr
+			}
+			if len(peopleTitles) > 0 {
+				seen := make(map[core.RatingKey]bool, len(filtered)+len(peopleTitles))
+				for _, item := range filtered {
+					seen[item.Key] = true
+				}
+				for _, item := range peopleTitles {
+					if !seen[item.Key] {
+						seen[item.Key] = true
+						filtered = append(filtered, item)
+					}
+				}
+			}
 		}
 		if q.Sort != "" {
 			if err := s.sortTitles(ctx, filtered, q); err != nil {
 				return core.Page{}, err
 			}
+		} else {
+			sort.SliceStable(filtered, func(i, j int) bool {
+				return filtered[i].SearchScore > filtered[j].SearchScore
+			})
 		}
-		return slicePluginTitles(filtered, q)
+		return slicePluginTitles(filtered, subQ)
 	}
 
 	offset := max(q.Offset, 0)
@@ -675,6 +701,8 @@ func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query str
 	if err != nil {
 		return nil, err
 	}
+	subQ := q
+	subQ.Filter.Query = ""
 	var out []core.Title
 	seen := make(map[core.RatingKey]bool)
 	for _, lib := range libs {
@@ -684,14 +712,14 @@ func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query str
 		if _, _, ok := s.publishedLibrary(ctx, lib); !ok {
 			continue
 		}
-		hits, err := s.d.PluginLibraries.Search(ctx, lib, query, q, window)
+		hits, err := s.d.PluginLibraries.Search(ctx, lib, query, subQ, window)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil, err
 			}
 			continue
 		}
-		filtered, err := s.filterPluginTitles(ctx, v, hits, q)
+		filtered, err := s.filterPluginTitles(ctx, v, hits, subQ)
 		if err != nil {
 			return nil, err
 		}
@@ -701,6 +729,21 @@ func (s *Service) pluginSearchItems(ctx context.Context, v *core.User, query str
 				out = append(out, item)
 			}
 		}
+	}
+	_, peopleTitles, err := s.searchPluginPeopleForUser(ctx, v, query, subQ, 20)
+	if err != nil && errors.Is(err, context.Canceled) {
+		return nil, err
+	}
+	for _, item := range peopleTitles {
+		if !seen[item.Key] {
+			seen[item.Key] = true
+			out = append(out, item)
+		}
+	}
+	if len(out) > 1 {
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].SearchScore > out[j].SearchScore
+		})
 	}
 	return out, nil
 }

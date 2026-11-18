@@ -21,7 +21,7 @@ func (c *Catalog) LoadRowFacts(ctx context.Context, titles []core.Title) []core.
 	seen := map[core.RatingKey]bool{}
 	gen, minute := c.writeGen.Load(), c.minuteBucket()
 	for _, t := range titles {
-		if t.Type != core.TypeMovie && t.Type != core.TypeShow || seen[t.Key] {
+		if t.Key.IsPluginKey() || t.Type != core.TypeMovie && t.Type != core.TypeShow || seen[t.Key] {
 			continue
 		}
 		seen[t.Key] = true
@@ -79,7 +79,7 @@ func (c *Catalog) LoadRowFacts(ctx context.Context, titles []core.Title) []core.
 			t.HomeReleased = f.HomeReleased
 			t.HomeReleaseChecked = f.HomeReleaseChecked
 			t.HomeReleaseFallbackAdmitted = f.HomeReleaseFallbackAdmitted
-		} else if t.Type == core.TypeMovie || t.Type == core.TypeShow {
+		} else if !t.Key.IsPluginKey() && (t.Type == core.TypeMovie || t.Type == core.TypeShow) {
 			if _, ok := c.listSummary(t.Key); !ok {
 				continue
 			}

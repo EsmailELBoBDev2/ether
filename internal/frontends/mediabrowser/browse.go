@@ -493,17 +493,22 @@ func (i *instance) browseRoutes() error {
 		versionID := ""
 		releaseID := ""
 		if err != nil {
-			scope, e := i.versionScope(r, v)
-			if e != nil || i.host.VersionHandles == nil {
+			resolved := false
+			if i.host.VersionHandles != nil {
+				if scope, e := i.versionScope(r, v); e == nil {
+					if target, e := i.host.VersionHandles.Resolve(i.identityContext(r), scope, wireID); e == nil && target.Item != 0 {
+						key, versionID, releaseID = target.Item, wireID, target.Release
+						resolved = true
+					}
+				}
+			}
+			if !resolved {
+				if i.writePersonItem(w, r, v, token, wireID) {
+					return
+				}
 				http.NotFound(w, r)
 				return
 			}
-			target, e := i.host.VersionHandles.Resolve(i.identityContext(r), scope, wireID)
-			if e != nil || target.Item == 0 {
-				http.NotFound(w, r)
-				return
-			}
-			key, versionID, releaseID = target.Item, wireID, target.Release
 		}
 		if i.host.Experience == nil {
 			http.Error(w, "Unavailable", 503)
@@ -969,6 +974,10 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 		hints = append(hints, hint)
 	}
+	personHints := i.personSearchHints(r, v, token, terms[0], q)
+	if len(personHints) > 0 {
+		hints = mergePersonSearchHints(result.Page.Items, hints, personHints, room)
+	}
 
 	for _, raw := range extra {
 		if dto, ok := raw.(map[string]any); ok {
@@ -976,7 +985,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	hints = append(extra, hints...)
-	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": result.Page.Total + len(live)})
+	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": result.Page.Total + len(live) + len(personHints)})
 }
 
 func (i *instance) items(w http.ResponseWriter, r *http.Request) {

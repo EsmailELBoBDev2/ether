@@ -63,6 +63,7 @@ import {
 } from "react-router-dom";
 import { AppProvider, useApp } from "./app-context";
 import { hasExemptDiagnostic } from "./lib/health";
+import { useMediaQuery } from "./lib/hooks";
 import { t, tn } from "./i18n";
 import { I18nProvider, LanguagePicker } from "./i18n/react";
 import { Brand, BrandSplash, EtherMark } from "./components/brand";
@@ -240,9 +241,15 @@ export function buildNavigation(descriptors: Descriptor[]): SidebarNavGroup[] {
   return groups.filter((g) => g.items.length > 0);
 }
 
-function HealthIndicator() {
+/** AppShell owns the mobile menu state internally; its header close button dismisses it. */
+function closeMobileDrawer(el: HTMLElement | null) {
+  el?.closest('[role="dialog"]')?.querySelector<HTMLButtonElement>("header button")?.click();
+}
+
+function HealthIndicator({ mobile = false }: { mobile?: boolean } = {}) {
   const { health, overall, dashboard, dashboardError, boot } = useApp();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   // Before setup finishes, unconfigured sources and an unclaimed server are
   // expected, not problems: show progress instead of a red verdict.
   const settingUp = !boot.setupComplete;
@@ -267,22 +274,29 @@ function HealthIndicator() {
     <Popover
       open={open}
       onOpenChange={setOpen}
+      side={mobile ? "top" : "bottom"}
+      align={mobile ? "start" : "end"}
       trigger={
         <button
+          ref={triggerRef}
           type="button"
           onClick={() => setOpen((o) => !o)}
           aria-label={t("Server health: {status}", { status: label })}
-          className="inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className={
+            mobile
+              ? "inline-flex h-9 min-w-0 items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              : "inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          }
         >
           <StatusDot
             level={settingUp || gettingStarted ? "unknown" : overall === "off" ? "ok" : overall}
             pulse
           />
-          <span className="hidden md:inline">{label}</span>
+          <span className={mobile ? "truncate" : "hidden md:inline"}>{label}</span>
         </button>
       }
     >
-      <div className="w-80 p-1">
+      <div className="w-80 max-w-[calc(100vw-2rem)] p-1">
         <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-fg-subtle">
           {t("Server health")}
         </p>
@@ -303,7 +317,10 @@ function HealthIndicator() {
             <li key={h.id}>
               <Link
                 to={h.href}
-                onClick={() => setOpen(false)}
+                onClick={() => {
+                  setOpen(false);
+                  if (mobile) closeMobileDrawer(triggerRef.current);
+                }}
                 className="flex items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-hover"
               >
                 <StatusDot level={h.level} className="mt-1.5" />
@@ -432,6 +449,8 @@ function Shell() {
   const { boot } = useApp();
   const ownerPath = useOwnerViewerPath();
   const location = useLocation();
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const wideSearch = useMediaQuery("(min-width: 640px)");
   const {
     descriptors: navDescriptors,
     loading: registryLoading,
@@ -441,14 +460,36 @@ function Shell() {
   const remoteSession = boot.authRequired && Boolean(getToken());
   const version = versionLabel(boot.version);
   const serverName = boot.serverName?.trim() || "Ether";
+  const isSetup = location.pathname === "/setup";
+  const signOut = () => {
+    // End the session on the server too, so a copy cannot outlive
+    // sign-out; leave the browser either way.
+    void api
+      .signOut()
+      .catch(() => undefined)
+      .finally(() => {
+        setToken("");
+        window.location.reload();
+      });
+  };
+  const themeLabels = {
+    label: t("Theme"),
+    light: t("Light"),
+    dark: t("Dark"),
+    system: t("System"),
+    current: (mode: string) =>
+      t("Theme: {mode}", {
+        // AppKit passes the already-translated option label.
+        mode:
+          ({ light: t("Light"), dark: t("Dark"), system: t("System") } as Record<string, string>)[
+            mode
+          ] ?? mode,
+      }),
+  };
   return (
-    <div
-      className={
-        location.pathname === "/setup" ? "ether-shell ether-setup contents" : "ether-shell contents"
-      }
-    >
+    <div className={isSetup ? "ether-shell ether-setup contents" : "ether-shell contents"}>
       <AppShell
-        groups={location.pathname === "/setup" ? [] : buildNavigation(navDescriptors)}
+        groups={isSetup ? [] : buildNavigation(navDescriptors)}
         pathname={location.pathname}
         navigationMode="sidebar"
         linkRender={linkRender}
@@ -461,67 +502,107 @@ function Shell() {
             <Brand />
           </Link>
         }
-        headerMiddle={<CommandSearch />}
-        header={
-          <>
+        headerMiddle={
+          wideSearch ? (
+            <CommandSearch />
+          ) : isSetup ? (
             <span
-              className="inline-flex h-9 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted sm:max-w-[14rem]"
+              className="inline-flex min-w-0 max-w-full items-center gap-2 py-1 text-sm font-medium text-fg"
               title={serverName}
             >
-              <Server size={15} className="shrink-0" aria-hidden />
-              <span className="hidden truncate sm:inline">{serverName}</span>
+              <EtherMark size={22} />
+              <span className="truncate">{serverName}</span>
             </span>
-            <HealthIndicator />
-            <WatchButton />
-            <AskEther />
-            <ThemeToggle
-              collapsed
-              labels={{
-                label: t("Theme"),
-                light: t("Light"),
-                dark: t("Dark"),
-                system: t("System"),
-                current: (mode) =>
-                  t("Theme: {mode}", {
-                    // AppKit passes the already-translated option label.
-                    mode:
-                      (
-                        { light: t("Light"), dark: t("Dark"), system: t("System") } as Record<
-                          string,
-                          string
-                        >
-                      )[mode] ?? mode,
-                  }),
-              }}
-            />
+          ) : (
             <Link
-              to={ownerPath}
-              aria-label={t("Your account")}
-              className="inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              to="/"
+              className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-md py-1 text-sm font-medium text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              title={serverName}
             >
-              <UserRound size={15} />
-              <span className="hidden sm:inline">{t("Your account")}</span>
+              <EtherMark size={22} />
+              <span className="truncate">{serverName}</span>
             </Link>
-            {remoteSession ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  // End the session on the server too, so a copy cannot outlive
-                  // sign-out; leave the browser either way.
-                  void api
-                    .signOut()
-                    .catch(() => undefined)
-                    .finally(() => {
-                      setToken("");
-                      window.location.reload();
-                    });
-                }}
+          )
+        }
+        header={
+          isDesktop ? (
+            <>
+              <span
+                className="inline-flex h-9 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted sm:max-w-[14rem]"
+                title={serverName}
               >
-                <LogOut size={15} /> <span className="hidden sm:inline">{t("Sign out")}</span>
-              </Button>
-            ) : null}
-          </>
+                <Server size={15} className="shrink-0" aria-hidden />
+                <span className="hidden truncate sm:inline">{serverName}</span>
+              </span>
+              <HealthIndicator />
+              <WatchButton />
+              <AskEther />
+              <ThemeToggle collapsed labels={themeLabels} />
+              <Link
+                to={ownerPath}
+                aria-label={t("Your account")}
+                className="inline-flex h-9 items-center gap-2 rounded-md px-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <UserRound size={15} />
+                <span className="hidden sm:inline">{t("Your account")}</span>
+              </Link>
+              {remoteSession ? (
+                <Button variant="ghost" size="sm" onClick={signOut}>
+                  <LogOut size={15} /> <span className="hidden sm:inline">{t("Sign out")}</span>
+                </Button>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {wideSearch ? (
+                <span
+                  className="inline-flex h-9 min-w-0 max-w-[14rem] items-center gap-1.5 rounded-md px-2.5 text-sm text-fg-muted"
+                  title={serverName}
+                >
+                  <Server size={15} className="shrink-0" aria-hidden />
+                  <span className="truncate">{serverName}</span>
+                </span>
+              ) : (
+                <CommandSearch compact />
+              )}
+              <AskEther />
+            </>
+          )
+        }
+        mobileFooter={
+          isDesktop ? undefined : (
+            <div className="flex w-full flex-col gap-2 pb-[env(safe-area-inset-bottom)]">
+              <div className="-mx-2 flex flex-wrap items-center justify-between gap-1">
+                <HealthIndicator mobile />
+                <WatchButton popoverSide="top" />
+              </div>
+              <div className="-mx-2 flex flex-wrap items-center justify-between gap-1 border-t border-border-subtle pt-2">
+                <Link
+                  to={ownerPath}
+                  aria-label={t("Your account")}
+                  onClick={(e) => closeMobileDrawer(e.currentTarget)}
+                  className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  <UserRound size={15} />
+                  <span>{t("Your account")}</span>
+                </Link>
+                {remoteSession ? (
+                  <Button variant="ghost" size="sm" onClick={signOut}>
+                    <LogOut size={15} /> <span>{t("Sign out")}</span>
+                  </Button>
+                ) : null}
+              </div>
+              <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2">
+                <p className="min-w-0 truncate text-xs text-fg-subtle" title={version}>
+                  {version}
+                </p>
+                <div className="-mr-1 flex shrink-0 items-center gap-1">
+                  <LanguagePicker className="h-8 shrink-0 px-2 text-xs" />
+                  <ThemeToggle collapsed labels={themeLabels} />
+                </div>
+              </div>
+            </div>
+          )
         }
         sidebarFooter={
           <div className="flex min-w-0 items-center justify-between gap-2">

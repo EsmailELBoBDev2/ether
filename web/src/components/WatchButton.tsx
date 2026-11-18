@@ -10,7 +10,10 @@ type Players = { available: boolean; players: Player[]; url?: string };
 const preferenceKey = "ether.web-player";
 const playerName = (id: PlayerID) => (id === "vela" ? t("Vela") : t("Jellyfin web"));
 
-export function WatchButton({ app }: { app?: "vela" } = {}) {
+export function WatchButton({
+  app,
+  popoverSide = "bottom",
+}: { app?: "vela"; popoverSide?: "top" | "bottom" } = {}) {
   const [players, setPlayers] = useState<Player[]>([]);
   const [preferred, setPreferred] = useState<PlayerID>(() => {
     try {
@@ -101,6 +104,7 @@ export function WatchButton({ app }: { app?: "vela" } = {}) {
           open={open}
           onOpenChange={setOpen}
           align="end"
+          side={popoverSide}
           trigger={
             <button
               type="button"

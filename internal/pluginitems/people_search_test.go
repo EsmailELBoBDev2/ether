@@ -23,7 +23,7 @@ func sampleStudioClipDecl() plugins.MediaKindMeta {
 		Fields: []plugins.KindField{
 			// Intentionally omit Indexed and omit SearchFields to prove people
 			// fields are always indexed and searchable for any content plugin.
-			{Key: "performers", Type: "people", Label: "Performers"},
+			{Key: "cast", Type: "people", Label: "Cast"},
 			{Key: "directors", Type: "people", Label: "Directors"},
 			{Key: "writers", Type: "people", Label: "Writers"},
 			{Key: "notes", Type: "string", Label: "Notes"},
@@ -92,7 +92,7 @@ func TestPeopleMigrationAndReindex(t *testing.T) {
 			level:    "channel",
 			playable: 0,
 			title:    "Archive Sessions",
-			fields:   `{"performers":[{"name":"Elena Vance","role":"Host","thumb":"https://cdn.example.test/people/elena.png"}]}`,
+			fields:   `{"cast":[{"name":"Elena Vance","role":"Host","thumb":"https://cdn.example.test/people/elena.png"}]}`,
 		},
 		{
 			seq:       2,
@@ -101,7 +101,7 @@ func TestPeopleMigrationAndReindex(t *testing.T) {
 			parentRef: string(core.NewItemRef("generic.clips", "clip", "ch-1")),
 			playable:  1,
 			title:     "Morning Light",
-			fields:    `{"performers":[{"name":"Elena Vance","role":"Featured","thumb":"https://cdn.example.test/people/elena.png"},{"name":"Marcus Hale"}],"directors":[{"name":"Nora Sterling","thumb":"https://cdn.example.test/people/nora.jpg"}]}`,
+			fields:    `{"cast":[{"name":"Elena Vance","role":"Featured","thumb":"https://cdn.example.test/people/elena.png"},{"name":"Marcus Hale"}],"directors":[{"name":"Nora Sterling","thumb":"https://cdn.example.test/people/nora.jpg"}]}`,
 		},
 		{
 			seq:       3,
@@ -110,7 +110,7 @@ func TestPeopleMigrationAndReindex(t *testing.T) {
 			parentRef: string(core.NewItemRef("generic.clips", "clip", "ch-1")),
 			playable:  1,
 			title:     "Evening Echo",
-			fields:    `{"performers":[{"name":"Elena Vance","role":"Featured"}]}`,
+			fields:    `{"cast":[{"name":"Elena Vance","role":"Featured"}]}`,
 		},
 	}
 	for _, it := range items {
@@ -143,17 +143,17 @@ func TestPeopleMigrationAndReindex(t *testing.T) {
 	}
 	defer svc.Close()
 
-	// Searching the performer's name via FTS returns all 3 items listing Elena Vance.
+	// Searching the cast member's name via FTS returns all 3 items listing Elena Vance.
 	res, err := svc.Search(ctx, SearchQuery{
 		LibraryID: 42,
 		Query:     "Elena Vance",
 		Limit:     10,
 	})
 	if err != nil {
-		t.Fatalf("Search performer name: %v", err)
+		t.Fatalf("Search cast member name: %v", err)
 	}
 	if len(res.Items) != 3 {
-		t.Fatalf("expected 3 items for performer Elena Vance after migration, got %d (%+v)", len(res.Items), res.Items)
+		t.Fatalf("expected 3 items for cast member Elena Vance after migration, got %d (%+v)", len(res.Items), res.Items)
 	}
 
 	// SearchPeople returns the deterministic plugin person ID, credit count, thumb, and sample items.
@@ -208,14 +208,14 @@ func TestPeopleSearchTitleFirstRanking(t *testing.T) {
 			ParentID: "ch-root",
 			Level:    "clip",
 			Title:    "Midnight Signal",
-			Fields:   map[string]json.RawMessage{"performers": rawJSON(t, []map[string]any{{"name": "Atlas Mercer"}})},
+			Fields:   map[string]json.RawMessage{"cast": rawJSON(t, []map[string]any{{"name": "Atlas Mercer"}})},
 		},
 		{
 			ID:       "clip-people-2",
 			ParentID: "ch-root",
 			Level:    "clip",
 			Title:    "Silent Harbor",
-			Fields:   map[string]json.RawMessage{"performers": rawJSON(t, []map[string]any{{"name": "Atlas Mercer"}})},
+			Fields:   map[string]json.RawMessage{"cast": rawJSON(t, []map[string]any{{"name": "Atlas Mercer"}})},
 		},
 		{
 			ID:       "clip-prefix",
@@ -255,7 +255,7 @@ func TestPeopleSearchTitleFirstRanking(t *testing.T) {
 	}
 	tail := []string{res.Items[2].Title, res.Items[3].Title}
 	if !(tail[0] == "Midnight Signal" || tail[1] == "Midnight Signal") || !(tail[0] == "Silent Harbor" || tail[1] == "Silent Harbor") {
-		t.Fatalf("expected performer matches after title matches, got %v", tail)
+		t.Fatalf("expected cast member matches after title matches, got %v", tail)
 	}
 }
 
@@ -281,7 +281,7 @@ func TestPersonThumbValidationAndProjection(t *testing.T) {
 			Level:    "clip",
 			Title:    "Studio Portrait Test",
 			Fields: map[string]json.RawMessage{
-				"performers": rawJSON(t, []map[string]any{
+				"cast": rawJSON(t, []map[string]any{
 					{"name": "Clara Park", "role": "Presenter", "thumb": "https://img.example.test/clara.png"},
 				}),
 				"directors": rawJSON(t, []map[string]any{
@@ -329,7 +329,7 @@ func TestPersonThumbValidationAndProjection(t *testing.T) {
 				Level:    "clip",
 				Title:    "Rejected Thumb",
 				Fields: map[string]json.RawMessage{
-					"performers": rawJSON(t, []map[string]any{{"name": "Clara Park", "thumb": bad}}),
+					"cast": rawJSON(t, []map[string]any{{"name": "Clara Park", "thumb": bad}}),
 				},
 			},
 		})

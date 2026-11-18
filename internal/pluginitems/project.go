@@ -193,7 +193,7 @@ func extractProjectedPeople(fields map[string]json.RawMessage, decl plugins.Medi
 		return cast, directors, writers
 	}
 
-	appendUnique(&cast, seenCast, extractPeopleFromFields(fields, "cast", "actors", "narrator", "performers"))
+	appendUnique(&cast, seenCast, extractPeopleFromFields(fields, "cast", "actors", "narrator", "cast"))
 	appendUnique(&directors, seenDir, extractPeopleFromFields(fields, "director", "directors", "creator", "creators"))
 	appendUnique(&writers, seenWri, extractPeopleFromFields(fields, "writer", "writers"))
 	return cast, directors, writers

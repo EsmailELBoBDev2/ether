@@ -78,7 +78,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 	}
 
 	const (
-		portraitURL = "https://portraits.example.test/performers/elena.png"
+		portraitURL = "https://portraits.example.test/cast/elena.png"
 		posterURL   = "https://portraits.example.test/posters/item.png"
 	)
 	remoteImages := staticUntrustedImages{
@@ -150,7 +150,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 					"library": {"name": "Studio Archive"},
 					"levels": [{"key": "feature", "label": "Feature", "playable": true}],
 					"fields": [
-						{"key": "performers", "type": "people", "label": "Performers"},
+						{"key": "cast", "type": "people", "label": "Cast"},
 						{"key": "directors", "type": "people", "label": "Directors"}
 					],
 					"present": {
@@ -198,7 +198,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 			Released: 1704067200,
 			Art:      []core.KindArtRef{{Role: "poster", URL: posterURL}},
 			Fields: map[string]json.RawMessage{
-				"performers": marshalField([]map[string]any{{"name": "Marcus Reed"}}),
+				"cast": marshalField([]map[string]any{{"name": "Marcus Reed"}}),
 			},
 		},
 		{
@@ -209,7 +209,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 			Released: 1706745600,
 			Art:      []core.KindArtRef{{Role: "poster", URL: posterURL}},
 			Fields: map[string]json.RawMessage{
-				"performers": marshalField([]map[string]any{
+				"cast": marshalField([]map[string]any{
 					{"name": "Elena Vance", "role": "Lead", "thumb": portraitURL},
 				}),
 			},
@@ -222,7 +222,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 			Released: 1698796800,
 			Art:      []core.KindArtRef{{Role: "poster", URL: posterURL}},
 			Fields: map[string]json.RawMessage{
-				"performers": marshalField([]map[string]any{
+				"cast": marshalField([]map[string]any{
 					{"name": "Elena Vance", "role": "Lead", "thumb": portraitURL},
 					{"name": "Beacon Mercer", "role": "Guest"},
 				}),
@@ -294,7 +294,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 			"Authorization":    "Bearer " + tokens["vela"],
 			"X-Vela-Device-Id": "dev-vela",
 		}
-		// 1. Searching performer name brings up all of Elena Vance's plugin titles.
+		// 1. Searching cast member name brings up all of Elena Vance's plugin titles.
 		code, data := doReq(http.MethodPost, "/vela/v0/search", `{"idempotencyKey":"idem-vela-1","query":"Elena Vance","mode":"fast"}`, hdr)
 		if code != 200 {
 			t.Fatalf("Vela search Elena Vance: %d %s", code, data)
@@ -312,7 +312,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 			t.Fatalf("Vela expected 2 titles for Elena Vance, got %+v", searchRes.Items)
 		}
 
-		// 2. Title-first ranking: "Beacon" ranks ahead of performer match "Southern Tide".
+		// 2. Title-first ranking: "Beacon" ranks ahead of cast member match "Southern Tide".
 		code, data = doReq(http.MethodPost, "/vela/v0/search", `{"idempotencyKey":"idem-vela-2","query":"Beacon","mode":"fast"}`, hdr)
 		if code != 200 {
 			t.Fatalf("Vela search Beacon: %d %s", code, data)
@@ -421,7 +421,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 		// 2. /Items?Recursive=true&SearchTerm=Elena+Vance returns all of Elena Vance's titles.
 		code, data = doReq(http.MethodGet, "/jellyfin/Items?Recursive=true&SearchTerm=Elena+Vance", "", jfHdr)
 		if code != 200 {
-			t.Fatalf("Jellyfin /Items search performer: %d %s", code, data)
+			t.Fatalf("Jellyfin /Items search cast member: %d %s", code, data)
 		}
 		var itemsRes struct {
 			Items []struct {
@@ -536,7 +536,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 		// 2. /silo/api/v2/catalog?q=Elena+Vance returns all of Elena Vance's plugin titles.
 		code, data = doReq(http.MethodGet, "/silo/api/v2/catalog?q=Elena+Vance", "", siloHdr)
 		if code != 200 {
-			t.Fatalf("Silo catalog search performer: %d %s", code, data)
+			t.Fatalf("Silo catalog search cast member: %d %s", code, data)
 		}
 		var catRes struct {
 			Items []struct {
@@ -574,7 +574,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 			t.Fatalf("Silo Beacon ranking = %+v", catRes.Items)
 		}
 
-		// 5. Performer photo loads full (240x240) and resizes with ?photo_width=60 (60x60).
+		// 5. Cast member photo loads full (240x240) and resizes with ?photo_width=60 (60x60).
 		code, imgBytes := doReq(http.MethodGet, photoURL, "", nil)
 		if code != 200 {
 			t.Fatalf("Silo full portrait: %d", code)
@@ -711,7 +711,7 @@ func TestPluginPeopleSearchAndThumbsAcrossApps(t *testing.T) {
 		}
 		_ = northStored
 
-		// 5. Performer thumb loads full (240x240) and resizes via /photo/:/transcode?width=60&height=60 (60x60).
+		// 5. Cast member thumb loads full (240x240) and resizes via /photo/:/transcode?width=60&height=60 (60x60).
 		code, imgBytes := doReq(http.MethodGet, actorThumb, "", plexHdr)
 		if code != 200 {
 			t.Fatalf("Plex full actor thumb (%s): %d", actorThumb, code)

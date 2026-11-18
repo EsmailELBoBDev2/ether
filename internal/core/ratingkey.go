@@ -65,7 +65,7 @@ const (
 
 // PluginPersonIDBase and PluginPersonIDSpan carve out deterministic positive
 // person IDs in (PluginPersonIDBase, PluginPersonIDBase+PluginPersonIDSpan)
-// for performers credited on plugin items. Values stay far above TMDB person
+// for cast credited on plugin items. Values stay far above TMDB person
 // IDs (< 10^9) and safely below 2^53 for JavaScript clients.
 const (
 	PluginPersonIDBase int64 = 4_000_000_000_000

@@ -48,7 +48,7 @@ func (s *Server) pluginKindSections(u *frontend.User, sectionID int) []Section {
 }
 
 // searchPluginTitles queries visible plugin libraries through Experience,
-// returning both direct title/field hits and all titles of matched performers
+// returning both direct title/field hits and all titles of matched cast
 // with title-first SearchScore values.
 func (s *Server) searchPluginTitles(ctx context.Context, pr *Request, query string, sectionID, limit int) []frontend.Title {
 	query = strings.TrimSpace(query)
@@ -618,7 +618,7 @@ func pluginTitleElementPath(t *frontend.Title, element string) string {
 	}
 }
 
-// servePluginPersonImage serves an http(s) performer portrait for a plugin
+// servePluginPersonImage serves an http(s) cast member portrait for a plugin
 // item, resizing when /photo/:/transcode supplies width or height.
 func (s *Server) servePluginPersonImage(w http.ResponseWriter, r *http.Request, key frontend.RatingKey, personID int64, imagePath string, width, height int) {
 	pr := FromContext(r.Context())

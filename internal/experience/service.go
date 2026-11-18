@@ -1794,7 +1794,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 	}
 	if len(pluginHits) > 0 {
-		// Interleave by relevance: a plugin title or performer match must
+		// Interleave by relevance: a plugin title or cast member match must
 		// not land behind every loose catalogue match.
 		items = append(items, pluginHits...)
 		if !aiMerged {

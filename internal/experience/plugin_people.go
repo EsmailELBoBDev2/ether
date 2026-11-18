@@ -12,8 +12,8 @@ import (
 )
 
 // pluginPeopleTitleSearchScore is the relevance score assigned to plugin titles
-// matched via performer/people search so exact, prefix, and token title matches
-// always rank ahead of performer-only matches.
+// matched via cast member/people search so exact, prefix, and token title matches
+// always rank ahead of cast member-only matches.
 const pluginPeopleTitleSearchScore = 0.60
 
 // PluginPersonMatch is one person matched in a plugin library along with their

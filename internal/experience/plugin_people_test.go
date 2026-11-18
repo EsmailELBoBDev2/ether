@@ -66,7 +66,7 @@ func (f *fakePluginPeopleLibraries) FindPersonID(_ context.Context, _ core.Libra
 
 func TestSearchPluginPeopleAndTitleRanking(t *testing.T) {
 	ctx := context.Background()
-	performerID := core.PluginPersonID("Elena Vance")
+	personID := core.PluginPersonID("Elena Vance")
 	beaconPersonID := core.PluginPersonID("Beacon Mercer")
 
 	titleMatch := core.Title{
@@ -81,7 +81,7 @@ func TestSearchPluginPeopleAndTitleRanking(t *testing.T) {
 		LibraryID: 5,
 		Type:      core.TypeMovie,
 		Title:     "Northern Drift",
-		Cast:      []core.Person{{TMDB: performerID, Name: "Elena Vance", ThumbPath: "https://portraits.example.test/elena.png"}},
+		Cast:      []core.Person{{TMDB: personID, Name: "Elena Vance", ThumbPath: "https://portraits.example.test/elena.png"}},
 	}
 	peopleTitle2 := core.Title{
 		Key:       core.PluginKey(12),
@@ -89,7 +89,7 @@ func TestSearchPluginPeopleAndTitleRanking(t *testing.T) {
 		Type:      core.TypeMovie,
 		Title:     "Southern Tide",
 		Cast: []core.Person{
-			{TMDB: performerID, Name: "Elena Vance", ThumbPath: "https://portraits.example.test/elena.png"},
+			{TMDB: personID, Name: "Elena Vance", ThumbPath: "https://portraits.example.test/elena.png"},
 			{TMDB: beaconPersonID, Name: "Beacon Mercer"},
 		},
 	}
@@ -116,7 +116,7 @@ func TestSearchPluginPeopleAndTitleRanking(t *testing.T) {
 		},
 		people: []PluginPersonMatch{
 			{
-				PersonID:    performerID,
+				PersonID:    personID,
 				Name:        "Elena Vance",
 				CreditCount: 2,
 				ArtworkItem: peopleTitle1.Key,
@@ -154,41 +154,41 @@ func TestSearchPluginPeopleAndTitleRanking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchPluginPeople: %v", err)
 	}
-	if len(peopleMatches) != 1 || peopleMatches[0].Name != "Elena Vance" || peopleMatches[0].TMDB != performerID {
+	if len(peopleMatches) != 1 || peopleMatches[0].Name != "Elena Vance" || peopleMatches[0].TMDB != personID {
 		t.Fatalf("unexpected SearchPluginPeople people: %+v", peopleMatches)
 	}
 	if len(matchedTitles) != 2 {
 		t.Fatalf("expected both of Elena Vance's titles from SearchPluginPeople, got %+v", matchedTitles)
 	}
 
-	// 2. Experience.Search for performer name brings up all of that performer's titles.
-	searchPerformer, err := svc.Search(ctx, viewer, device, "Elena Vance", frontend.ItemQuery{Limit: 10})
+	// 2. Experience.Search for cast member name brings up all of that cast member's titles.
+	searchPerson, err := svc.Search(ctx, viewer, device, "Elena Vance", frontend.ItemQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("Search Elena Vance: %v", err)
 	}
-	if len(searchPerformer.Page.Items) != 2 {
-		t.Fatalf("expected 2 titles for Elena Vance, got %+v", searchPerformer.Page.Items)
+	if len(searchPerson.Page.Items) != 2 {
+		t.Fatalf("expected 2 titles for Elena Vance, got %+v", searchPerson.Page.Items)
 	}
 
-	// 3. Experience.Search for "Beacon" ranks title match ("Beacon") ahead of performer match ("Southern Tide").
+	// 3. Experience.Search for "Beacon" ranks title match ("Beacon") ahead of cast member match ("Southern Tide").
 	searchBeacon, err := svc.Search(ctx, viewer, device, "Beacon", frontend.ItemQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("Search Beacon: %v", err)
 	}
 	if len(searchBeacon.Page.Items) != 2 {
-		t.Fatalf("expected 2 titles for Beacon (title + performer match), got %+v", searchBeacon.Page.Items)
+		t.Fatalf("expected 2 titles for Beacon (title + cast member match), got %+v", searchBeacon.Page.Items)
 	}
 	if searchBeacon.Page.Items[0].Title != "Beacon" || searchBeacon.Page.Items[1].Title != "Southern Tide" {
 		t.Fatalf("expected title match first, got [%q, %q]", searchBeacon.Page.Items[0].Title, searchBeacon.Page.Items[1].Title)
 	}
 
-	// 4. People and Person resolve plugin performers cleanly.
+	// 4. People and Person resolve plugin cast cleanly.
 	peopleList, err := svc.People(ctx, viewer, device, frontend.PeopleQuery{Query: "Elena", Limit: 10})
 	if err != nil || len(peopleList) != 1 || peopleList[0].Name != "Elena Vance" {
 		t.Fatalf("People(Elena) = (%+v, %v)", peopleList, err)
 	}
 	detail, err := svc.Person(ctx, viewer, device, peopleList[0].ID, frontend.PersonReadOptions{})
-	if err != nil || detail.Name != "Elena Vance" || detail.TMDB != performerID {
+	if err != nil || detail.Name != "Elena Vance" || detail.TMDB != personID {
 		t.Fatalf("Person(%s) = (%+v, %v)", peopleList[0].ID, detail, err)
 	}
 }

@@ -241,26 +241,29 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 // Older Roku clients cannot consume provider pivots. PMS compares only the
 // numeric components supplied by the client, so 6.4 satisfies 6.4.2.
 func legacyRoku(pr *Request) bool {
-	if pr.Platform != "Roku" {
+	if !strings.EqualFold(pr.Platform, "Roku") {
 		return false
 	}
+	// Only major.minor.patch matters. Current apps send a fourth part and a
+	// build suffix ("9.21.12.12191-2cb8e41a8-Plex"), and a part may carry a
+	// tag ("9.22.1-beta"), so each part is read up to its first non-digit.
 	parts := strings.Split(pr.Version, ".")
-	if len(parts) < 2 || len(parts) > 3 {
+	if len(parts) < 2 {
 		return true
 	}
-	values := make([]int, len(parts))
+	if len(parts) > 3 {
+		parts = parts[:3]
+	}
+	minimum := []int{6, 4, 2}
 	for i, part := range parts {
-		if part == "" || strings.IndexFunc(part, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-			return true
+		end := strings.IndexFunc(part, func(r rune) bool { return r < '0' || r > '9' })
+		if end < 0 {
+			end = len(part)
 		}
-		n, err := strconv.Atoi(part)
+		n, err := strconv.Atoi(part[:end])
 		if err != nil {
 			return true
 		}
-		values[i] = n
-	}
-	minimum := []int{6, 4, 2}
-	for i, n := range values {
 		if n != minimum[i] {
 			return n < minimum[i]
 		}

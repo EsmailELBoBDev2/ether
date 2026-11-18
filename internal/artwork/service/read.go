@@ -158,6 +158,15 @@ func (a Source) readFreshPortrait(ctx context.Context, req frontend.ArtworkReque
 }
 
 func (a Source) remote(ctx context.Context, path string, width int) ([]byte, string, error) {
+	// Plugin items (and any other source) can carry absolute artwork URLs;
+	// fetch those through the untrusted-URL client, like programme and
+	// channel art, instead of treating them as a TMDB path.
+	if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
+		if a.URLImages == nil {
+			return nil, "", core.ErrNotAvailable
+		}
+		return a.URLImages.GetUntrustedURL(ctx, path)
+	}
 	if a.Images == nil || a.ImageURL == nil {
 		return nil, "", core.ErrNotAvailable
 	}

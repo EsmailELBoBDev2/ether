@@ -59,6 +59,8 @@ type Backends struct {
 	// items for one viewer and returns the Ether stream URL (spec §6.5).
 	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
 	StreamPartURL func(ctx context.Context, pluginID string, viewerID int64, itemRef string, partIndex *int) (string, error)
+	// ResolveBadgeTitles maps (type, tmdb, imdb) refs to local canonical rating keys (#594).
+	ResolveBadgeTitles func(ctx context.Context, refs []BadgeTitleRef) ([]string, error)
 }
 
 // Deps are the plugin host's explicit dependencies.
@@ -149,6 +151,10 @@ type Manager struct {
 	// blockedOperator records up to maxBlockedOperatorHosts distinct hosts
 	// blocked for plugins declaring "operator" in permissions.network.
 	blockedOperator map[string][]string
+	// posterBadgeSets caches active poster badge sets per plugin (guarded by mu).
+	posterBadgesLoaded bool
+	posterBadgeSets    map[string][]ActivePosterBadgeSet
+	badgeQuotaTitles   int64
 }
 
 func (m *Manager) notificationLock(id string) *sync.Mutex {
@@ -198,6 +204,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	for _, r := range recs {
 		m.syncDescriptors(ctx, r)
 	}
+	m.mu.Lock()
+	m.posterBadgesLoaded = true
+	m.mu.Unlock()
 	return nil
 }
 
@@ -290,6 +299,12 @@ func (m *Manager) SubscribeInvalidations() func() {
 				}
 			}
 		}
+		for id := range m.posterBadgeSets {
+			if !seen[id] {
+				delete(m.posterBadgeSets, id)
+			}
+		}
+		m.posterBadgesLoaded = true
 		m.mu.Unlock()
 		if m.deps.Notifications != nil {
 			for _, kind := range m.deps.Notifications.Kinds().List() {
@@ -328,7 +343,8 @@ func (m *Manager) GrantsOf(ctx context.Context, id string) (Grants, error) {
 // SetGrants replaces one plugin's grants. Host calls re-check grants on
 // every call, so a revoke applies mid-call.
 func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
-	if _, err := m.store.record(ctx, id); err != nil {
+	r, err := m.store.record(ctx, id)
+	if err != nil {
 		return err
 	}
 	if g.LocalHosts != nil {
@@ -350,6 +366,7 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 	}
 	m.pruneBlockedLocalHosts(id, g.LocalHosts)
 	m.pruneBlockedOperatorHosts(id, g.OperatorHosts)
+	m.syncPosterBadgeSets(ctx, r)
 	m.closeRuntime(id)
 	m.broadcast(ctx)
 	return nil
@@ -1050,6 +1067,7 @@ func (m *Manager) SetShadow(ctx context.Context, id string, shadow bool) error {
 	m.mu.Lock()
 	m.shadow[id] = shadow
 	m.mu.Unlock()
+	m.syncPosterBadgeSets(ctx, r)
 	m.broadcast(ctx)
 	return nil
 }

@@ -61,6 +61,7 @@ const (
 	CapUI              Capability = "ui"
 	CapOnAirContent    Capability = "onair_content"
 	CapLiveTVPack      Capability = "livetv_pack"
+	CapPosterBadges    Capability = "poster_badges"
 	// Content-kind capabilities (spec §2.1). Catalog provider, kind
 	// resolver and matcher need kind content; a frontend adapter may
 	// also be an extension over the built-in libraries.
@@ -260,25 +261,26 @@ type PackStyle struct {
 }
 
 type Contributes struct {
-	Looks          []PackStyle         `json:"looks,omitempty"`
-	OnAirFeeds     []OnAirFeed         `json:"onairFeeds,omitempty"`
-	OnAirSegments  []OnAirSegment      `json:"onairSegments,omitempty"`
-	Directories    []DirectoryMeta     `json:"directories,omitempty"`
-	Metadata       *MetadataMeta       `json:"metadata,omitempty"`
-	Source         *SourceMeta         `json:"source,omitempty"`
-	Channels       *ChannelsMeta       `json:"channels,omitempty"`
-	Subtitles      *SubtitlesMeta      `json:"subtitles,omitempty"`
-	Markers        *MarkersMeta        `json:"markers,omitempty"`
-	Notification   *NotificationMeta   `json:"notification,omitempty"`
-	Events         *EventsMeta         `json:"events,omitempty"`
-	Integration    *IntegrationMeta    `json:"integration,omitempty"`
-	ListSources    []ListSourceMeta    `json:"listSources,omitempty"`
-	RankingSteps   []RankingStepMeta   `json:"rankingSteps,omitempty"`
-	RuleConditions []RuleConditionMeta `json:"ruleConditions,omitempty"`
-	Tools          []ToolMeta          `json:"tools,omitempty"`
-	Pages          []PageMeta          `json:"pages,omitempty"`
-	Slots          []SlotMeta          `json:"slots,omitempty"`
-	Commands       []CommandMeta       `json:"commands,omitempty"`
+	Looks          []PackStyle          `json:"looks,omitempty"`
+	OnAirFeeds     []OnAirFeed          `json:"onairFeeds,omitempty"`
+	OnAirSegments  []OnAirSegment       `json:"onairSegments,omitempty"`
+	Directories    []DirectoryMeta      `json:"directories,omitempty"`
+	Metadata       *MetadataMeta        `json:"metadata,omitempty"`
+	Source         *SourceMeta          `json:"source,omitempty"`
+	Channels       *ChannelsMeta        `json:"channels,omitempty"`
+	Subtitles      *SubtitlesMeta       `json:"subtitles,omitempty"`
+	Markers        *MarkersMeta         `json:"markers,omitempty"`
+	Notification   *NotificationMeta    `json:"notification,omitempty"`
+	Events         *EventsMeta          `json:"events,omitempty"`
+	Integration    *IntegrationMeta     `json:"integration,omitempty"`
+	ListSources    []ListSourceMeta     `json:"listSources,omitempty"`
+	RankingSteps   []RankingStepMeta    `json:"rankingSteps,omitempty"`
+	RuleConditions []RuleConditionMeta  `json:"ruleConditions,omitempty"`
+	PosterBadges   []PosterBadgeSetMeta `json:"posterBadges,omitempty"`
+	Tools          []ToolMeta           `json:"tools,omitempty"`
+	Pages          []PageMeta           `json:"pages,omitempty"`
+	Slots          []SlotMeta           `json:"slots,omitempty"`
+	Commands       []CommandMeta        `json:"commands,omitempty"`
 	// MediaKinds declares the content kinds this plugin serves; each entry
 	// that declares a library block becomes its own library (spec §2.1).
 	MediaKinds []MediaKindMeta `json:"mediaKinds,omitempty"`
@@ -287,6 +289,13 @@ type Contributes struct {
 	FrontendAdapters []FrontendAdapterMeta `json:"frontendAdapters,omitempty"`
 	// Setup declares guided setup steps for any plugin kind (§8).
 	Setup *SetupMeta `json:"setup,omitempty"`
+}
+
+// PosterBadgeSetMeta declares one poster overlay badge set contributed by a plugin (#594).
+type PosterBadgeSetMeta struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // SourceMeta is mandatory for stream_source.
@@ -635,6 +644,34 @@ type Installed struct {
 // chosen by manifest ether.runtime.kind ("hosted" or "remote").
 type RuntimeFactory func(inst Installed) (Runtime, error)
 
+// Poster badge bounds (#594).
+const (
+	MaxPosterBadgeSets     = 4
+	MaxBadgeEntriesPerCall = 500
+	MaxBadgeLabelsPerTitle = 3
+	MaxBadgeLabelLen       = 16
+	PosterBadgeQuotaTitles = 200_000
+)
+
+// BadgeTitleRef identifies a canonical movie or show by TMDB and/or IMDb id.
+type BadgeTitleRef struct {
+	Type string `json:"type"`
+	TMDB int64  `json:"tmdb,omitempty"`
+	IMDB string `json:"imdb,omitempty"`
+}
+
+// BadgeEntry pushes or clears (empty Labels) poster badges for one title.
+type BadgeEntry struct {
+	Title  BadgeTitleRef `json:"title"`
+	Labels []string      `json:"labels"`
+}
+
+// BadgeUsage reports a plugin's badged title count and per-plugin title quota.
+type BadgeUsage struct {
+	Titles      int64 `json:"titles"`
+	QuotaTitles int64 `json:"quotaTitles"`
+}
+
 // Host is the set of Ether services a plugin may call (SPEC §5.1.5).
 // Every method re-checks the plugin's live grants, so a revoke takes
 // effect mid-call. Writes are journalled; in shadow mode they are
@@ -645,6 +682,11 @@ type Host interface {
 	KVPut(ctx context.Context, key string, value []byte) error
 	KVDelete(ctx context.Context, key string) error
 	KVList(ctx context.Context, prefix string) ([]string, error)
+
+	// BadgesSet, BadgesClear and BadgesUsage need poster_badges (#594).
+	BadgesSet(ctx context.Context, setKey string, entries []BadgeEntry) error
+	BadgesClear(ctx context.Context, setKey string) error
+	BadgesUsage(ctx context.Context) (BadgeUsage, error)
 
 	// SecretGet returns a sealed setting the manifest declared in
 	// permissions.secrets. Hosted plugins only.

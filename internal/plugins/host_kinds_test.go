@@ -379,6 +379,9 @@ func (h *memHost) StreamURL(context.Context, string) (string, error) { return ""
 func (h *memHost) StreamPartURL(context.Context, string, *int) (string, error) {
 	return "", ErrUnavailable
 }
+func (h *memHost) BadgesSet(context.Context, string, []BadgeEntry) error { return ErrUnavailable }
+func (h *memHost) BadgesClear(context.Context, string) error             { return ErrUnavailable }
+func (h *memHost) BadgesUsage(context.Context) (BadgeUsage, error)       { return BadgeUsage{}, ErrUnavailable }
 
 func errFrom(b []byte, err error) error {
 	if err != nil {

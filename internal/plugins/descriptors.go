@@ -63,6 +63,25 @@ func DescriptorsFor(man Manifest) []extend.Descriptor {
 		add(extend.KindRuleField, rc.Key, textOf(id, rc.Label), map[string]any{
 			"operators": rc.Operators, "editor": rc.Editor})
 	}
+	if man.HasCapability(CapPosterBadges) {
+		for _, pb := range c.PosterBadges {
+			d := extend.Descriptor{
+				Kind:  extend.KindPosterBadge,
+				ID:    extend.PluginID(id, pb.Key),
+				Owner: id,
+				Label: textOf(id, pb.Label),
+				Group: man.Name,
+			}
+			if pb.Description != "" {
+				d.Hint = textOf(id, pb.Description)
+			}
+			out = append(out, d.WithMeta(map[string]any{
+				"key":        pb.Key,
+				"layerKey":   "plugin:" + id + ":" + pb.Key,
+				"pluginName": man.Name,
+			}))
+		}
+	}
 	for _, ls := range c.ListSources {
 		if !man.HasCapability(CapListSource) {
 			continue
@@ -157,6 +176,7 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.mu.Lock()
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
+	m.syncPosterBadgeSets(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor
 		if r.Enabled {
@@ -337,6 +357,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	if man.HasCapability(CapEvents) {
 		lines = append(lines, "Gets play and new-release events")
 	}
+	if man.HasCapability(CapPosterBadges) {
+		lines = append(lines, "Adds badges to library posters")
+	}
 	if len(lines) == 0 {
 		lines = []string{"Needs no access to your server or the network"}
 	}
@@ -429,6 +452,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if !cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
 		added = append(added, "Gets play and new-release events")
+	}
+	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
+		added = append(added, "Adds badges to library posters")
 	}
 	return added
 }

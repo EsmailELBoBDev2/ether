@@ -21,6 +21,12 @@ import (
 )
 
 func init() {
+	// v9: pushed poster overlay badges owned by plugins (#594).
+	store.Register("plugins", 9, `
+CREATE TABLE IF NOT EXISTS plugin_poster_badges(plugin_id TEXT NOT NULL,set_key TEXT NOT NULL,title_key TEXT NOT NULL,labels_json TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(plugin_id,set_key,title_key));
+CREATE INDEX IF NOT EXISTS plugin_poster_badges_title_key ON plugin_poster_badges(title_key);
+`)
+
 	// Keep cadence across restarts; retained calls also seed existing installs.
 	store.Register("plugins", 7, `
 CREATE TABLE plugins_schedule_runs(plugin TEXT NOT NULL,call TEXT NOT NULL,last_run INTEGER NOT NULL,PRIMARY KEY(plugin,call));
@@ -874,6 +880,7 @@ func (s *storage) purge(ctx context.Context, plugin string) error {
 		`DELETE FROM plugins_settings WHERE plugin=?`,
 		`DELETE FROM plugins_setup WHERE plugin=?`,
 		`DELETE FROM plugins_kv WHERE plugin=?`,
+		`DELETE FROM plugin_poster_badges WHERE plugin_id=?`,
 		`DELETE FROM plugins_hash_cache WHERE plugin=?`,
 		`DELETE FROM plugins_remote_hashes WHERE plugin=?`,
 		`DELETE FROM plugins_remote_hash_budget WHERE plugin=?`,

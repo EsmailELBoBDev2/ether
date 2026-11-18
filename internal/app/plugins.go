@@ -14,6 +14,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/blobcache"
+	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/contentrating"
@@ -122,6 +123,30 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Backends: plugins.Backends{
 			CollectionsUpsert: a.pluginCollectionUpsert,
 			CollectionsDelete: a.pluginCollectionDelete,
+			ResolveBadgeTitles: func(ctx context.Context, refs []plugins.BadgeTitleRef) ([]string, error) {
+				if a.catalog == nil || len(refs) == 0 {
+					return make([]string, len(refs)), nil
+				}
+				crefs := make([]catalog.ExternalTitleRef, len(refs))
+				for i, r := range refs {
+					crefs[i] = catalog.ExternalTitleRef{
+						Type: core.MediaType(r.Type),
+						TMDB: r.TMDB,
+						IMDB: r.IMDB,
+					}
+				}
+				keys, err := a.catalog.ResolveExternalTitles(ctx, crefs)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]string, len(keys))
+				for i, k := range keys {
+					if k != 0 {
+						out[i] = k.String()
+					}
+				}
+				return out, nil
+			},
 			ViewerNames: func(ctx context.Context, ids []int64) (json.RawMessage, error) {
 				out := make([]map[string]any, 0, len(ids))
 				for _, id := range ids {

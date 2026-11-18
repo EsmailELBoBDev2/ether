@@ -410,6 +410,19 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "kv.list":
 		keys, err := b.h.KVList(ctx, str(0))
 		return result(keys, err)
+	case "badges.set":
+		var entries []BadgeEntry
+		if len(args) > 1 && len(args[1]) > 0 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &entries); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "badges.set takes (setKey, entries[])"}
+			}
+		}
+		return result(nil, b.h.BadgesSet(ctx, str(0), entries))
+	case "badges.clear":
+		return result(nil, b.h.BadgesClear(ctx, str(0)))
+	case "badges.usage":
+		usage, err := b.h.BadgesUsage(ctx)
+		return result(usage, err)
 	case "settings.get":
 		v, err := b.h.Settings(ctx)
 		return result(v, err)
@@ -642,6 +655,8 @@ func mapHostError(err error) error {
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
 	case errors.Is(err, ErrPermissionDenied):
 		return wasm.Forbidden(err.Error())
+	case errors.Is(err, ErrQuotaExceeded):
+		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
 	default:

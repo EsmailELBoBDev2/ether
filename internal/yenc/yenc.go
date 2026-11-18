@@ -190,7 +190,10 @@ func ParsePart(line []byte, h *Header) error {
 		return fmt.Errorf("%w: =ypart begin=%d end=%d", ErrMalformed, begin, end)
 	}
 	if h.Size > 0 && end > h.Size {
-		return fmt.Errorf("%w: =ypart end %d beyond size %d", ErrMalformed, end, h.Size)
+		// Obfuscated posts randomise =ybegin metadata per article while
+		// keeping =ypart begin/end truthful. Distrust the contradicted
+		// file metadata rather than rejecting the article.
+		h.Size, h.Total, h.Name = 0, 0, ""
 	}
 	h.Begin, h.End, h.Multipart = begin, end, true
 	return nil

@@ -438,13 +438,23 @@ func (e *Engine) normalize(pf *postedFile, i int, data []byte, part core.Article
 		if int64(len(data)) != want {
 			return nil, fmt.Errorf("stream: %s part %d decoded length %d differs from yEnc range %d: %w", pf.Name(), i+1, len(data), want, ErrCorrupt)
 		}
-		seg.rangeExact = part.Part == i+1 && part.Total >= part.Part && part.FileSize >= part.End
+		if !pf.validFileMeta(i, seg.begin, part.End, part.FileSize, part.Part, part.Total) {
+			seg.fileSize, seg.total, seg.name = 0, 0, ""
+			pf.markUntrustedMeta()
+		} else if part.FileSize == 0 {
+			pf.markUntrustedMeta()
+		} else {
+			seg.rangeExact = part.Part == i+1 && part.Total >= part.Part && part.FileSize >= part.End
+		}
 	} else {
 		// No multipart range header: trust the index estimate.
 		if perSegSingle {
 			seg.fileSize, seg.total = 0, 0
 		}
 		seg.begin, _, _ = pf.rangeOf(i)
+		if !perSegSingle && !pf.validFileMeta(i, seg.begin, seg.begin+int64(len(data)), seg.fileSize, part.Part, seg.total) {
+			seg.fileSize, seg.total, seg.name = 0, 0, ""
+		}
 		if seg.fileSize == 0 && pf.numSlots() == 1 {
 			seg.fileSize = int64(len(data))
 		}

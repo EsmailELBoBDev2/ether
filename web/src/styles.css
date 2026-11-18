@@ -414,6 +414,12 @@
 .ether-setup aside {
   display: none;
 }
+/* Mobile and tablet screens already expose Menu in the bottom tab bar; hide
+   AppShell's top-left hamburger whenever that tab bar is present so there is
+   only one menu trigger. */
+.ether-shell > div > div > header:has(~ nav) > button:first-child {
+  display: none;
+}
 .ether-settle {
   animation: ether-settle-in 0.55s ease both;
 }

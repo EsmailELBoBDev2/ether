@@ -24,6 +24,7 @@ func (i *instance) liveETag(r *http.Request, payload any) string {
 	return `"` + hashJSON([]any{
 		payload,
 		i.liveArtGrantBucket(),
+		liveCursorBucketStart(time.Now()).Unix(),
 		requestDevice(r),
 		r.Header.Get("Authorization"),
 		r.Header.Get("X-Vela-Device-Id"),

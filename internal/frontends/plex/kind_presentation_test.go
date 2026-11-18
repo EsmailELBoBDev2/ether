@@ -4,22 +4,28 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/braedonsaunders/ether/internal/catalog"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/favorites"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/braedonsaunders/ether/internal/sessions"
+	"github.com/braedonsaunders/ether/internal/state"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // kindExperience is a frontend.Experience that publishes two plugin
@@ -355,18 +361,22 @@ func TestKindPartStreamsBytes(t *testing.T) {
 }
 
 type kindMusicPluginStore struct {
-	lib     core.Library
-	artists []core.Title
-	albums  []core.Title
-	tracks  []core.Title
+	lib                   core.Library
+	extra                 []core.Library
+	artists               []core.Title
+	albums                []core.Title
+	tracks                []core.Title
+	rejectUndeclaredQuery bool
 }
 
 func (s *kindMusicPluginStore) Libraries(context.Context) ([]core.Library, error) {
-	return []core.Library{
+	out := []core.Library{
 		{ID: core.LibraryMovies, Name: "Movies", Source: core.LibraryBuiltin, MediaType: core.TypeMovie},
 		{ID: core.LibraryShows, Name: "TV Shows", Source: core.LibraryBuiltin, MediaType: core.TypeShow},
 		s.lib,
-	}, nil
+	}
+	out = append(out, s.extra...)
+	return out, nil
 }
 
 func (s *kindMusicPluginStore) Library(_ context.Context, id core.LibraryID) (core.Library, error) {
@@ -378,6 +388,11 @@ func (s *kindMusicPluginStore) Library(_ context.Context, id core.LibraryID) (co
 	case s.lib.ID:
 		return s.lib, nil
 	}
+	for _, lib := range s.extra {
+		if lib.ID == id {
+			return lib, nil
+		}
+	}
 	return core.Library{}, core.ErrNotFound
 }
 
@@ -388,9 +403,12 @@ func (s *kindMusicPluginStore) RootMediaType(context.Context, core.Library) core
 func (s *kindMusicPluginStore) Count(context.Context, core.Library) (int, error) {
 	return len(s.artists), nil
 }
-func (s *kindMusicPluginStore) Browse(_ context.Context, lib core.Library, _ frontend.ItemQuery, _ string, limit int) (experience.PluginBrowsePage, error) {
+func (s *kindMusicPluginStore) Browse(_ context.Context, lib core.Library, q frontend.ItemQuery, _ string, limit int) (experience.PluginBrowsePage, error) {
 	if lib.ID != s.lib.ID {
 		return experience.PluginBrowsePage{}, nil
+	}
+	if s.rejectUndeclaredQuery && (q.Sort != "" || len(q.Filter.Genres) > 0 || q.Watched != nil) {
+		return experience.PluginBrowsePage{}, errors.New("undeclared sort or filter reached plugin store")
 	}
 	items := s.artists
 	next := ""
@@ -682,5 +700,128 @@ func TestIssue558PluginMusicSectionHubsAndArtistBrowse(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "favorites") {
 		t.Fatalf("expected omitted favorites enrichment to be logged, got %q", logBuf.String())
+	}
+}
+
+func TestCustomLibrarySectionBrowseSortAndFilter(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	cat, err := catalog.New(db, nil, config.Catalog{}, nil, catalog.WithNow(func() time.Time { return fixedNow }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := state.New(db, state.Options{Now: func() time.Time { return fixedNow }})
+
+	alpha := core.Title{Key: core.MovieKey(201), Type: core.TypeMovie, IDs: core.IDs{TMDB: 201}, Title: "Alpha", Year: 2020, Released: time.Date(2020, 3, 1, 0, 0, 0, 0, time.UTC), Genres: []string{"Drama"}}
+	bravo := core.Title{Key: core.MovieKey(202), Type: core.TypeMovie, IDs: core.IDs{TMDB: 202}, Title: "Bravo", Year: 2021, Released: time.Date(2021, 3, 1, 0, 0, 0, 0, time.UTC), Genres: []string{"Drama", "Sci-Fi"}}
+	delta := core.Title{Key: core.MovieKey(203), Type: core.TypeMovie, IDs: core.IDs{TMDB: 203}, Title: "Delta", Year: 2022, Released: time.Date(2022, 3, 1, 0, 0, 0, 0, time.UTC), Genres: []string{"Sci-Fi"}}
+	zulu := core.Title{Key: core.MovieKey(204), Type: core.TypeMovie, IDs: core.IDs{TMDB: 204}, Title: "Zulu", Year: 1990, Released: time.Date(1990, 3, 1, 0, 0, 0, 0, time.UTC), Genres: []string{"Drama", "Sci-Fi"}}
+	for _, m := range []core.Title{alpha, bravo, delta, zulu} {
+		if err := cat.UpsertTitle(ctx, m, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Scrobble(ctx, ownerUser.ID, bravo.Key); err != nil {
+		t.Fatal(err)
+	}
+
+	artist1 := kindMusicArtist()
+	artist1.LibraryID = 5
+	artist2 := core.Title{Key: core.PluginKey(104), Type: core.TypeShow, Title: "Artist Two", ChildCount: 1, KindLevel: "artist", LibraryID: 5}
+	libStore := &kindMusicPluginStore{
+		lib: core.Library{
+			ID:        5,
+			Name:      "Field Music",
+			Source:    core.LibraryPlugin,
+			PluginID:  "subsonic",
+			KindKey:   "artists",
+			MediaType: core.TypeShow,
+			Present: core.Presentations{Plex: &struct {
+				Base string `json:"base"`
+			}{Base: plexBaseArtist}},
+		},
+		extra: []core.Library{{
+			ID:                4,
+			Key:               "modern-cinema",
+			Name:              "Modern Cinema",
+			Source:            core.LibraryCatalog,
+			MediaType:         core.TypeMovie,
+			VisibilityDefault: "hide",
+			Rules: []core.LibraryExclusion{{
+				Action:    "show",
+				MediaType: "movie",
+				Match:     "all",
+				Rules:     core.LibraryPredicateConditions(core.Filter{YearFrom: 2000}),
+			}},
+			Present: core.Presentations{Plex: &struct {
+				Base string `json:"base"`
+			}{Base: plexBaseMovie}},
+		}},
+		artists:               []core.Title{artist1, artist2},
+		rejectUndeclaredQuery: true,
+	}
+
+	f := newFixture(func(d *testServerDeps) {
+		d.Catalog = cat
+		d.State = st
+	})
+	defer f.srv.Close()
+
+	expSvc := experience.NewDirectService(experience.ServiceDeps{
+		Active: func(_ context.Context, id int64) (*core.User, error) {
+			if id == ownerUser.ID {
+				u := ownerUser
+				return &u, nil
+			}
+			return nil, core.ErrUnauthorized
+		},
+		Catalog:         cat,
+		State:           st,
+		Playlists:       f.pls,
+		PluginLibraries: libStore,
+		Protocol:        "plex",
+		PageExclusions: func(context.Context, *core.User, core.MediaType) experience.LibraryPageExclusions {
+			return experience.LibraryPageExclusions{}
+		},
+		LibraryPresentation: func(p core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+			if p.Plex != nil && p.Plex.Base != "" {
+				return mt, p.Plex.Base, true
+			}
+			if mt == core.TypeShow {
+				return mt, plexBaseShow, true
+			}
+			return mt, plexBaseMovie, true
+		},
+		BuiltinNative: func(mt core.MediaType) string {
+			if mt == core.TypeShow {
+				return plexBaseShow
+			}
+			return plexBaseMovie
+		},
+		Visibility: experience.Visibility{
+			SectionFor: func(mt core.MediaType) (int, bool) {
+				if mt == core.TypeShow || mt == core.TypeSeason || mt == core.TypeEpisode {
+					return 2, true
+				}
+				return 1, true
+			},
+		},
+	})
+	f.srv.bindHost(frontend.Host{Experience: expSvc})
+
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{path: "/library/sections/4/all?sort=titleSort:asc", want: []string{"Alpha", "Bravo", "Delta"}},
+		{path: "/library/sections/4/all?sort=titleSort:desc", want: []string{"Delta", "Bravo", "Alpha"}},
+		{path: "/library/sections/4/all?sort=titleSort:desc&genre=Sci-Fi", want: []string{"Delta", "Bravo"}},
+		{path: "/library/sections/4/all?sort=titleSort:desc&genre=Sci-Fi&unwatched=1", want: []string{"Delta"}},
+		{path: "/library/sections/5/all?sort=titleSort:desc&genre=Rock&unwatched=1", want: []string{"Artist One", "Artist Two"}},
+	} {
+		got := browseTitles(t, f, tc.path)
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("%s = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }

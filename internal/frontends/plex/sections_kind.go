@@ -54,12 +54,14 @@ func (s *Server) publishedKindSections(ctx context.Context) []Section {
 			continue
 		}
 		out = append(out, Section{
-			ID:        id,
-			Type:      frontend.MediaType(base),
-			Title:     v.Name,
-			LibraryID: frontend.LibraryID(id),
-			PluginID:  v.PluginID,
-			KindKey:   v.KindKey,
+			ID:           id,
+			Type:         frontend.MediaType(base),
+			Title:        v.Name,
+			LibraryID:    frontend.LibraryID(id),
+			PluginID:     v.PluginID,
+			KindKey:      v.KindKey,
+			PluginSorts:  append([]string(nil), v.Sorts...),
+			PluginFacets: append([]frontend.ViewFacet(nil), v.Facets...),
 		})
 	}
 	return out
@@ -114,9 +116,9 @@ func (s *Server) sectionForLibrary(id frontend.LibraryID) (Section, bool) {
 	return Section{}, false
 }
 
-// isKindSection reports whether sec is a plugin or filter library section,
-// i.e. one whose items come from the Experience's plugin store rather than
-// the TMDB catalogue.
+// isKindSection reports whether sec is a non-builtin library section (either a
+// catalogue-backed custom library or a plugin library) served via
+// Experience.LibraryItems.
 func isKindSection(sec Section) bool {
 	return sec.LibraryID != frontend.LibraryMovies && sec.LibraryID != frontend.LibraryShows && sec.LibraryID != 0
 }

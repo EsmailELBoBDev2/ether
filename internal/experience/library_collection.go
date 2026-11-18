@@ -41,9 +41,9 @@ func (s *Service) libraryBrowseFilter(ctx context.Context, v *core.User, lib cor
 // titles. Each batch is bounded; the walk is the scan path every filter
 // library already uses when its rules cannot be pushed into SQL.
 func (s *Service) collectionLibraryScan(ctx context.Context, v *core.User, library *Library, q frontend.ItemQuery, collectionID int64) (core.Page, error) {
-	var base core.Filter
-	base.CollectionMembers = collectionID
-	filter := base
+	filter := q.Filter
+	filter.CollectionMembers = collectionID
+	filter.CatalogueSources = nil
 	filter.Type = library.Type
 	if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.LevelOf(v.MaxContentRating)) < int(contentrating.LevelOf(filter.MaxContentRating))) {
 		filter.MaxContentRating = v.MaxContentRating
@@ -51,7 +51,13 @@ func (s *Service) collectionLibraryScan(ctx context.Context, v *core.User, libra
 	var kept []core.Title
 	total := 0
 	for offset := 0; ; {
-		page, err := s.d.Browse(ctx, core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500})
+		bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500}
+		if q.Sort == core.SortPlayed {
+			bq.Sort = core.SortTitle
+			bq.SortLastViewed = true
+			bq.SortViewerID = v.ID
+		}
+		page, err := s.d.Browse(ctx, bq)
 		if err != nil {
 			return core.Page{}, err
 		}

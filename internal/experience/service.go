@@ -563,7 +563,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			return core.Page{}, core.ErrNotFound
 		}
 		if lib.Source == core.LibraryPlugin {
-			return s.pluginLibraryItems(ctx, v, lib, q)
+			return s.pluginLibraryItems(ctx, v, lib, s.sanitizePluginLibraryQuery(ctx, lib, q))
 		}
 		if s.d.Browse == nil {
 			return core.Page{}, core.ErrNotFound
@@ -706,7 +706,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		return core.Page{}, err
 	} else if ok {
 		return page, nil
-	} else if stored != nil && stored.Source == core.LibraryCollection && !indexedBrowseQuery(library, q) {
+	} else if stored != nil && stored.Source == core.LibraryCollection && !expand && !indexedBrowseQuery(library, q) {
 		// A sort or request shape SQL cannot page uses the bounded
 		// in-process walk; an indexed page already returned above.
 		return s.collectionLibraryScan(ctx, v, library, q, stored.CollectionID)
@@ -720,13 +720,24 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	for offset := 0; ; {
 		filter := q.Filter
 		if expand {
-			filter = core.Filter{}
+			filter = core.Filter{
+				CatalogueSources:  q.Filter.CatalogueSources,
+				CollectionMembers: q.Filter.CollectionMembers,
+				ExtraRules:        q.Filter.ExtraRules,
+				ExtraFallback:     q.Filter.ExtraFallback,
+			}
 		}
 		filter.Type = library.Type
 		if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.LevelOf(v.MaxContentRating)) < int(contentrating.LevelOf(filter.MaxContentRating))) {
 			filter.MaxContentRating = v.MaxContentRating
 		}
-		page, err := s.d.Browse(ctx, core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500})
+		bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500}
+		if q.Sort == core.SortPlayed {
+			bq.Sort = core.SortTitle
+			bq.SortLastViewed = true
+			bq.SortViewerID = v.ID
+		}
+		page, err := s.d.Browse(ctx, bq)
 		if err != nil {
 			return core.Page{}, err
 		}
@@ -740,6 +751,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 				return nil
 			}
 			staticQuery := q
+			staticQuery.Filter.Type = ""
 			staticQuery.Watched, staticQuery.Favorite = nil, nil
 			ok, e := s.matchesUserQuery(ctx, v, title, staticQuery)
 			if e != nil {
@@ -1858,7 +1870,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 // date added (a full title derives it from its release dates), or the
 // catalogue or availability cannot say.
 func (s *Service) searchCandidates(ctx context.Context, v *core.User, q frontend.ItemQuery) *core.SearchCandidates {
-	if s.d.Search.Details == nil || q.Filter.Person != 0 || q.Sort == core.SortAdded {
+	if s.d.Search.Details == nil || q.Filter.Person != 0 || len(q.Filter.Credits) > 0 || q.Sort == core.SortAdded {
 		return nil
 	}
 	detail, ok := s.d.Visibility.FactJudge(ctx)
@@ -1866,13 +1878,13 @@ func (s *Service) searchCandidates(ctx context.Context, v *core.User, q frontend
 		return nil
 	}
 	facts := s.d.Visibility.TitleFacts(v)
-	if len(q.Filter.Genres) > 0 {
+	if len(q.Filter.Genres) > 0 || len(q.Filter.ExcludeGenres) > 0 {
 		facts |= core.FactGenres
 	}
-	if len(q.Filter.Countries) > 0 {
+	if len(q.Filter.Countries) > 0 || len(q.Filter.ExcludeCountries) > 0 {
 		facts |= core.FactCountries
 	}
-	if q.Filter.Studio != "" {
+	if q.Filter.Studio != "" || len(q.Filter.StudioFilters) > 0 {
 		facts |= core.FactStudios
 	}
 	return &core.SearchCandidates{Facts: facts, Detail: detail}
@@ -2393,10 +2405,10 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		}
 	}
 	switch q.Sort {
-	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortYear, core.SortRating, core.SortPopularity, core.SortIndex:
-	case core.SortPlayed:
-		// A played order comes from the viewer's watch rows, which the
-		// catalogue rows do not carry; the listing already produced it.
+	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortYear, core.SortRating, core.SortPopularity, core.SortDuration, core.SortIndex:
+	case core.SortPlayed, core.SortUpdated:
+		// Played and updated orders come from catalogue/watch rows that
+		// projected titles do not carry; preserve the listing's order.
 		return nil
 	default:
 		return errors.New("experience: unsupported sort")
@@ -2422,6 +2434,8 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 			return t.Rating == 0
 		case core.SortPopularity:
 			return t.Popularity == 0
+		case core.SortDuration:
+			return t.Runtime <= 0
 		}
 		return false
 	}
@@ -2470,6 +2484,12 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 			if a.Popularity < b.Popularity {
 				cmp = -1
 			} else if a.Popularity > b.Popularity {
+				cmp = 1
+			}
+		case core.SortDuration:
+			if a.Runtime < b.Runtime {
+				cmp = -1
+			} else if a.Runtime > b.Runtime {
 				cmp = 1
 			}
 		case core.SortIndex:
@@ -2920,10 +2940,19 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 	if f.MinRating > 0 && t.Rating < f.MinRating {
 		return false
 	}
+	if f.MaxRating > 0 && t.Rating > f.MaxRating {
+		return false
+	}
+	if len(f.ExcludeRatings) > 0 && slices.Contains(f.ExcludeRatings, t.Rating) {
+		return false
+	}
 	if f.MinRuntime > 0 && t.Runtime < f.MinRuntime {
 		return false
 	}
 	if f.MaxRuntime > 0 && t.Runtime > f.MaxRuntime {
+		return false
+	}
+	if len(f.ExcludeRuntimes) > 0 && slices.Contains(f.ExcludeRuntimes, t.Runtime) {
 		return false
 	}
 	intersects := func(a, b []string) bool {
@@ -2939,19 +2968,37 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 		}
 		return false
 	}
+	hasExcluded := func(a, b []string) bool {
+		return len(b) > 0 && intersects(a, b)
+	}
 	if !intersects(t.Genres, f.Genres) || !intersects([]string{t.Language}, f.Languages) || !intersects(t.Countries, f.Countries) || !intersects([]string{t.ContentRating}, f.ContentRatings) {
 		return false
 	}
-	if f.Collection != 0 && t.CollectionID != f.Collection {
+	if hasExcluded(t.Genres, f.ExcludeGenres) || hasExcluded(t.Countries, f.ExcludeCountries) || hasExcluded([]string{t.ContentRating}, f.ExcludeContentRatings) {
 		return false
 	}
-	if f.Studio != "" && !intersects(t.Studios, []string{f.Studio}) {
+	if f.Collection != 0 && len(f.Collections) == 0 && t.CollectionID != f.Collection {
 		return false
 	}
-	if f.Query != "" && !strings.Contains(strings.ToLower(t.Title), strings.ToLower(f.Query)) && !strings.Contains(strings.ToLower(t.OriginalTitle), strings.ToLower(f.Query)) {
+	if len(f.Collections) > 0 && !slices.Contains(f.Collections, t.CollectionID) {
 		return false
 	}
-	if f.Person != 0 {
+	if len(f.ExcludeCollections) > 0 && slices.Contains(f.ExcludeCollections, t.CollectionID) {
+		return false
+	}
+	if f.Studio != "" && len(f.StudioFilters) == 0 && !intersects(t.Studios, []string{f.Studio}) {
+		return false
+	}
+	if !studioFiltersMatch(t.Studios, f.StudioFilters) {
+		return false
+	}
+	if f.Query != "" && !titleContainsQuery(t, f.Query) {
+		return false
+	}
+	if !titleFiltersMatch(t, f.TitleFilters) {
+		return false
+	}
+	if f.Person != 0 && len(f.Credits) == 0 {
 		found := false
 		for _, group := range [][]core.Person{t.Cast, t.Directors, t.Writers, t.Crew} {
 			for _, p := range group {
@@ -2962,6 +3009,160 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 		}
 		if !found {
 			return false
+		}
+	}
+	for _, cf := range f.Credits {
+		if len(cf.People) == 0 && len(cf.Names) == 0 {
+			continue
+		}
+		var groups [][]core.Person
+		switch cf.Kind {
+		case "cast":
+			groups = [][]core.Person{t.Cast}
+		case "director":
+			groups = [][]core.Person{t.Directors}
+		case "writer":
+			groups = [][]core.Person{t.Writers}
+		case "crew":
+			groups = [][]core.Person{t.Crew}
+		default:
+			groups = [][]core.Person{t.Cast, t.Directors, t.Writers, t.Crew}
+		}
+		matched := false
+		for _, group := range groups {
+			for _, p := range group {
+				if slices.Contains(cf.People, p.TMDB) {
+					matched = true
+					break
+				}
+				for _, name := range cf.Names {
+					if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(name)) {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if matched == cf.Exclude {
+			return false
+		}
+	}
+	return true
+}
+
+func titleContainsQuery(t core.Title, q string) bool {
+	needle := strings.ToLower(q)
+	if strings.Contains(strings.ToLower(t.Title), needle) || strings.Contains(strings.ToLower(t.OriginalTitle), needle) {
+		return true
+	}
+	for _, alt := range t.AlternativeTitles {
+		if strings.Contains(strings.ToLower(alt), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func studioFiltersMatch(studios []string, filters []core.StringFilter) bool {
+	for _, sf := range filters {
+		val := strings.ToLower(sf.Value)
+		switch sf.Op {
+		case "==":
+			ok := false
+			for _, s := range studios {
+				if strings.EqualFold(s, sf.Value) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		case "!==":
+			for _, s := range studios {
+				if strings.EqualFold(s, sf.Value) {
+					return false
+				}
+			}
+		case "!=":
+			for _, s := range studios {
+				if strings.Contains(strings.ToLower(s), val) {
+					return false
+				}
+			}
+		case "<=":
+			ok := false
+			for _, s := range studios {
+				if strings.HasPrefix(strings.ToLower(s), val) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		case ">=":
+			ok := false
+			for _, s := range studios {
+				if strings.HasSuffix(strings.ToLower(s), val) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		default:
+			ok := false
+			for _, s := range studios {
+				if strings.Contains(strings.ToLower(s), val) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func titleFiltersMatch(t core.Title, filters []core.StringFilter) bool {
+	titleLower := strings.ToLower(t.Title)
+	for _, tf := range filters {
+		val := strings.ToLower(tf.Value)
+		switch tf.Op {
+		case "==":
+			if !strings.EqualFold(t.Title, tf.Value) {
+				return false
+			}
+		case "!==":
+			if strings.EqualFold(t.Title, tf.Value) {
+				return false
+			}
+		case "!=":
+			if strings.Contains(titleLower, val) {
+				return false
+			}
+		case "<=":
+			if !strings.HasPrefix(titleLower, val) {
+				return false
+			}
+		case ">=":
+			if !strings.HasSuffix(titleLower, val) {
+				return false
+			}
+		default:
+			if !titleContainsQuery(t, tf.Value) {
+				return false
+			}
 		}
 	}
 	return true

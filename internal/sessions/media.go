@@ -231,7 +231,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			dec.Kind, dec.VideoCopy, dec.AudioCopy = core.DecisionRemux, true, true
 		}
 	} else {
-		if len(progressiveTextTracks(string(s.public.Protocol), s.caps, ps.Info)) > 0 && dec.Kind == core.DecisionDirectPlay {
+		if len(textSubtitleStreams(string(s.public.Protocol), s.caps, ps.Info)) > 0 && dec.Kind == core.DecisionDirectPlay {
 			// Negotiate the real segmented container/codecs, rather than
 			// assuming a direct-file codec can be copied into MPEG-TS.
 			options := s.opts
@@ -276,7 +276,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 			request.LadderVideoCodecs = append(request.LadderVideoCodecs, s.caps.VideoCodecs...)
 		}
 	}
-	request.TextSubtitleStreams = progressiveTextTracks(string(s.public.Protocol), s.caps, ps.Info)
+	request.TextSubtitleStreams = textSubtitleStreams(string(s.public.Protocol), s.caps, ps.Info)
 	if len(request.TextSubtitleStreams) > 0 {
 		request.TextSubtitleSource = sourceRevision(ps)
 	}
@@ -652,6 +652,9 @@ func (b *Broker) serveMediaAt(protocol frontend.Protocol, access *frontend.Sessi
 			b.serveMaster(w, r, s, hs)
 			return
 		}
+		if serveTextRendition(w, r, hs, tail) {
+			return
+		}
 		// Keep the initial single-variant URLs working for already-open clients.
 		if len(tail) == 1 {
 			if tail[0] == "index.m3u8" {
@@ -783,6 +786,15 @@ func (b *Broker) serveMaster(w http.ResponseWriter, r *http.Request, s *brokerSe
 		return
 	}
 	master := body.String()
+	if tags, group := textRenditionTags(s, hs, ps.Info); tags != "" {
+		lines := strings.Split(strings.TrimPrefix(master, "#EXTM3U\n"), "\n")
+		for n, line := range lines {
+			if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+				lines[n] = line + group
+			}
+		}
+		master = "#EXTM3U\n" + tags + strings.Join(lines, "\n")
+	}
 	if b.policy(s.public.Protocol).MasterMetadata {
 		independent, ok := hs.(core.HLSIndependentSegments)
 		version := 7 // conservative if the selected media format is unavailable

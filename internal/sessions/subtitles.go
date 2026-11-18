@@ -31,12 +31,19 @@ func (b *Broker) SubtitleURL(ctx context.Context, a frontend.SessionAccess, id s
 		return "", core.ErrUnauthorized
 	}
 	format = strings.ToLower(format)
-	if index < 0 || !subtitleFormat(format) {
+	if index < 0 || (!subtitleFormat(format) && format != "hls") {
 		return "", core.ErrNotAvailable
 	}
 	ps, ok := b.deps.Playback.Session(s.playID)
 	if !ok || ps == nil {
 		return "", core.ErrNotFound
+	}
+	if format == "hls" {
+		// "hls" asks for the track's rendition in the session's HLS stream.
+		if url, ok := b.hlsTextRenditionURL(s, ps.Info, index); ok {
+			return url, nil
+		}
+		return "", core.ErrNotAvailable
 	}
 	st, ok := subtitleStream(ps.Info, index)
 	if !ok || transcode.IsImageSubtitle(st.Codec) {

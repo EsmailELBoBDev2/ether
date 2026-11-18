@@ -1686,3 +1686,200 @@ it("merges matching channel feeds with live preview, health, and provider priori
   );
   expect(within(lineup).getByRole("button", { name: "501 BBC News" })).toBeInTheDocument();
 });
+
+describe("Live TV channel drawers and responsive workspace polish", () => {
+  it("hides virtual timeline chrome on IPTV drawers and distinguishes mapped channels without listings", async () => {
+    const mappedNoListings = iptv("c-mapped", {
+      number: "101",
+      name: "ESPN 1",
+      group: "Sports",
+      guideId: "strong-1",
+      sourceId: "src1",
+    });
+    const unmapped = iptv("c-unmapped", {
+      number: "102",
+      name: "ESPN 2",
+      group: "Sports",
+      guideId: "",
+      sourceId: "src1",
+    });
+    const calls = backend([mappedNoListings, unmapped], (url) => {
+      if (url.endsWith("/livetv/sources")) {
+        return [
+          { id: "src1", name: "Strong IPTV", hasPlaylist: true, updatedAt: "2026-10-19T00:00:00Z" },
+        ];
+      }
+      if (url.endsWith("/livetv/guide/coverage")) {
+        return [
+          { channelId: "c-mapped", programmes: 0 },
+          { channelId: "c-unmapped", programmes: 0 },
+        ];
+      }
+      return undefined;
+    });
+
+    const view = renderLiveTV("/livetv?channel=c-mapped");
+    const dialog = await screen.findByRole("dialog", { name: "Edit channel" }, WAIT);
+    expect(
+      await within(dialog).findByText(
+        "Mapped to a guide channel, but its guide has no upcoming listings.",
+        undefined,
+        WAIT,
+      ),
+    ).toBeVisible();
+    expect(
+      within(dialog).queryByText(
+        "No listings for this channel yet. Map a guide channel on the Guide tab.",
+      ),
+    ).toBeNull();
+    expect(within(dialog).queryByRole("region", { name: "Schedule timeline" })).toBeNull();
+    expect(within(dialog).queryByText("Break pod")).toBeNull();
+    expect(calls.filter((c) => c.url.includes("/timeline?"))).toHaveLength(0);
+
+    view.unmount();
+    renderLiveTV("/livetv?channel=c-unmapped");
+    const dialog2 = await screen.findByRole("dialog", { name: "Edit channel" }, WAIT);
+    expect(
+      await within(dialog2).findByText(
+        "No listings for this channel yet. Map a guide channel on the Guide tab.",
+        undefined,
+        WAIT,
+      ),
+    ).toBeVisible();
+  });
+
+  it("opens a new personal channel cleanly without draft 404s, dirty warning, duplicate subcaptions or raw {viewer} tokens", async () => {
+    const calls = backend([iptv("seed")], (url) => {
+      if (url.includes("/rundown") || url.includes("/timeline")) {
+        return new Response(
+          JSON.stringify({ error: { code: "not_found", message: "not found" } }),
+          {
+            status: 404,
+          },
+        );
+      }
+      return undefined;
+    });
+
+    renderLiveTV("/livetv");
+    fireEvent.click(await screen.findByRole("button", { name: "Add" }, WAIT));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Personal channel/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New virtual channel" }, WAIT);
+    expect(await within(dialog).findByText("Not saved yet", undefined, WAIT)).toBeVisible();
+    expect(
+      within(dialog).getByText("Create this channel to build each viewer's schedule."),
+    ).toBeVisible();
+    expect(within(dialog).queryByText("Unsaved changes")).toBeNull();
+    expect(within(dialog).queryByText("not found")).toBeNull();
+    expect(within(dialog).queryByText("Unable to load schedule")).toBeNull();
+    expect(within(dialog).queryByRole("region", { name: "Schedule timeline" })).toBeNull();
+    expect(
+      calls.filter((c) => c.url.includes("/rundown") || c.url.includes("/timeline")),
+    ).toHaveLength(0);
+
+    // Ingredient labels appear once per row (never duplicated inside Artwork placeholders).
+    expect(within(dialog).getAllByText("Picked for them")).toHaveLength(1);
+    expect(within(dialog).getAllByText("Your picks (collections)")).toHaveLength(1);
+
+    // Channel name picker uses AppKit SearchSelect with plain-English copy rather than raw {viewer} tokens or native <select>.
+    expect(within(dialog).queryByText("{viewer} TV")).toBeNull();
+    expect(within(dialog).getByText("Viewer's name + TV")).toBeVisible();
+    expect(dialog.querySelector("select")).toBeNull();
+
+    // Editing marks the draft as having unsaved changes.
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "For Everyone" } });
+    expect(within(dialog).getByText("Unsaved changes")).toBeVisible();
+  });
+
+  it("renders a single selectable provider row per IPTV source under Providers", async () => {
+    backend(
+      [iptv("c1", { number: "101", name: "Sports 1", group: "Sports", sourceId: "src1" })],
+      (url) => {
+        if (url.endsWith("/livetv/sources")) {
+          return [
+            {
+              id: "src1",
+              name: "Strong IPTV",
+              hasPlaylist: true,
+              updatedAt: "2026-10-19T00:00:00Z",
+            },
+          ];
+        }
+        return undefined;
+      },
+    );
+
+    renderLiveTV("/livetv");
+    const nav = await screen.findByRole("navigation", { name: "Channel groups" }, WAIT);
+    expect(await within(nav).findByText("Providers", undefined, WAIT)).toBeVisible();
+    expect(within(nav).getAllByText("Strong IPTV")).toHaveLength(1);
+    fireEvent.click(within(nav).getByRole("button", { name: "Strong IPTV" }));
+    expect(screen.getByRole("heading", { name: "Strong IPTV" })).toBeVisible();
+  });
+
+  it("collapses Channel groups into a sheet on compact viewports so channel rows start above the fold", async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 1023px)" || query === "(max-width: 639px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    try {
+      backend(
+        [
+          iptv("c1", { number: "101", name: "Sports 1", group: "Sports", sourceId: "src1" }),
+          {
+            id: "v1",
+            number: "1",
+            name: "80s Movies",
+            kind: "virtual",
+            enabled: true,
+            favorite: false,
+            epoch: "2026-01-01T00:00:00Z",
+            seed: 1,
+            shuffle: false,
+            items: [],
+          },
+        ],
+        (url) => {
+          if (url.endsWith("/livetv/sources")) {
+            return [
+              {
+                id: "src1",
+                name: "Strong IPTV",
+                hasPlaylist: true,
+                updatedAt: "2026-10-19T00:00:00Z",
+              },
+            ];
+          }
+          return undefined;
+        },
+      );
+
+      renderLiveTV("/livetv");
+      const list = await screen.findByRole("region", { name: "Channels" }, WAIT);
+      expect(await within(list).findByRole("button", { name: "101 Sports 1" }, WAIT)).toBeVisible();
+      // Inline groups rail is collapsed until requested.
+      expect(screen.queryByRole("navigation", { name: "Channel groups" })).toBeNull();
+
+      fireEvent.click(within(list).getByRole("button", { name: "Channel groups" }));
+      const sheet = await screen.findByRole("dialog", { name: "Channel groups" }, WAIT);
+      fireEvent.click(within(sheet).getByRole("button", { name: "Strong IPTV" }));
+
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: "Channel groups" })).toBeNull(),
+        WAIT,
+      );
+      expect(within(list).getByRole("button", { name: "101 Sports 1" })).toBeVisible();
+      expect(within(list).queryByRole("button", { name: "1 80s Movies" })).toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+});

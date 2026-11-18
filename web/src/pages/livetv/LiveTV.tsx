@@ -407,7 +407,7 @@ export default function LiveTV() {
     base.timezone = browserTimeZone();
     const d = studioDraft(templateKey === "describe" ? base : template.apply(base));
     setDraft(d);
-    setBaseline("");
+    setBaseline(JSON.stringify(d));
     setDescribing(templateKey === "describe");
   };
 
@@ -1061,7 +1061,10 @@ export default function LiveTV() {
               guide={drawerProgrammes}
               coverage={
                 draft.channel.id
-                  ? { channelId: draft.channel.id, programmes: covered(draft.channel) ? 1 : 0 }
+                  ? (coverage?.get(draft.channel.id) ?? {
+                      channelId: draft.channel.id,
+                      programmes: covered(draft.channel) ? 1 : 0,
+                    })
                   : undefined
               }
               sources={sources}

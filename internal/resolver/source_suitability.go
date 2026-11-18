@@ -7,6 +7,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
+	"github.com/braedonsaunders/ether/internal/releasepolicy"
 )
 
 // DiscoveryCandidate is local, name-based negative evidence only. It does not
@@ -43,11 +44,12 @@ func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, exp
 		return ""
 	}
 	want := append([]string(nil), p.PreferredLanguages...)
-	// A dub into the profile's own language is what that language asks
-	// for, not a mismatch.
+	// A dub into the profile's own language or required/preferred release
+	// rules is what the profile asks for, not a mismatch.
 	if lang, _ := profileLanguageMode(p); lang != "" {
 		want = append(want, lang)
 	}
+	want = append(want, releasepolicy.PositiveLanguageTargets(p.ReleaseRules)...)
 	if t != nil && t.Language != "" {
 		want = append(want, assumedLanguage(t))
 	}

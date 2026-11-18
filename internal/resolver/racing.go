@@ -13,8 +13,10 @@ import (
 )
 
 type candidate struct {
-	sourcePreferred  bool // source routing deliberately selected this candidate as the leader
-	identityWeak     bool // shared title without evidence identifying this show
+	sourcePreferred  bool     // source routing deliberately selected this candidate as the leader
+	identityWeak     bool     // shared title without evidence identifying this show
+	audioUnverified  bool     // required audio language is unverified in the release name (probe required)
+	unverifiedLangs  []string // required audio languages awaiting probe verification
 	belowScore       bool
 	counted          int
 	fallback         bool

@@ -21,6 +21,13 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 	if len(names) > 8 {
 		names = names[:8]
 	}
+	type namesakeRef struct {
+		name  string
+		index int
+	}
+	byKey := map[int64][]namesakeRef{}
+	keys := []any{int64(show)}
+	keySeen := map[int64]bool{int64(show): true}
 	for _, name := range names {
 		variants := namesakeTitleVariants(name)
 		if len(variants) == 0 {
@@ -41,7 +48,7 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 			// remote metadata. Keeping it in SQL avoids per-match round trips.
 			queryArgs := []any{season, episode}
 			queryArgs = append(queryArgs, args...)
-			rows, err := c.db.QueryContext(ctx, `SELECT s.key, s.`+column+`, s.year,
+			rows, err := c.db.QueryContext(ctx, `SELECT s.key, s.`+column+`, s.year, s.language,
                 COALESCE((SELECT e.title FROM catalog_titles e`+c.indexedBy("catalog_titles_show")+` WHERE e.show_key=s.key AND e.season=? AND e.episode=? AND e.type='episode' LIMIT 1), '')
                 FROM catalog_titles s`+c.indexedBy(index)+` WHERE s.type=? AND LOWER(s.`+column+`) IN (`+strings.TrimSuffix(strings.Repeat("?,", len(variants)), ",")+`) AND s.key<>? LIMIT 16`, queryArgs...)
 			if err != nil {
@@ -51,12 +58,18 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 				var key int64
 				var title string
 				var other core.EpisodeNamesake
-				if err = rows.Scan(&key, &title, &other.Year, &other.EpisodeTitle); err != nil {
+				if err = rows.Scan(&key, &title, &other.Year, &other.Language, &other.EpisodeTitle); err != nil {
 					break
 				}
 				if !seen[key] && releaseparse.NormalizeTitle(title) == releaseparse.NormalizeTitle(name) {
 					seen[key] = true
+					idx := len(out.OtherShows[name])
 					out.OtherShows[name] = append(out.OtherShows[name], other)
+					byKey[key] = append(byKey[key], namesakeRef{name: name, index: idx})
+					if !keySeen[key] {
+						keySeen[key] = true
+						keys = append(keys, key)
+					}
 				}
 			}
 			scanErr := rows.Err()
@@ -67,6 +80,59 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 			if scanErr != nil {
 				return out, scanErr
 			}
+		}
+	}
+	if len(byKey) > 0 || show > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+		grows, err := c.db.QueryContext(ctx, `SELECT key, genre FROM catalog_genres WHERE key IN (`+placeholders+`) ORDER BY key, genre`, keys...)
+		if err != nil {
+			return out, err
+		}
+		for grows.Next() {
+			var key int64
+			var genre string
+			if err = grows.Scan(&key, &genre); err != nil {
+				break
+			}
+			if key == int64(show) {
+				out.Genres = append(out.Genres, genre)
+			}
+			for _, ref := range byKey[key] {
+				out.OtherShows[ref.name][ref.index].Genres = append(out.OtherShows[ref.name][ref.index].Genres, genre)
+			}
+		}
+		gscanErr := grows.Err()
+		grows.Close()
+		if err != nil {
+			return out, err
+		}
+		if gscanErr != nil {
+			return out, gscanErr
+		}
+		krows, err := c.db.QueryContext(ctx, `SELECT key, keyword FROM catalog_keywords WHERE key IN (`+placeholders+`) AND LOWER(keyword) IN ('anime', 'animation') ORDER BY key, keyword`, keys...)
+		if err != nil {
+			return out, err
+		}
+		for krows.Next() {
+			var key int64
+			var kw string
+			if err = krows.Scan(&key, &kw); err != nil {
+				break
+			}
+			if key == int64(show) {
+				out.Keywords = append(out.Keywords, kw)
+			}
+			for _, ref := range byKey[key] {
+				out.OtherShows[ref.name][ref.index].Keywords = append(out.OtherShows[ref.name][ref.index].Keywords, kw)
+			}
+		}
+		kscanErr := krows.Err()
+		krows.Close()
+		if err != nil {
+			return out, err
+		}
+		if kscanErr != nil {
+			return out, kscanErr
 		}
 	}
 	rows, err := c.db.QueryContext(ctx, `SELECT season, title FROM catalog_titles`+c.indexedBy("catalog_titles_show")+` WHERE show_key=? AND type='season' ORDER BY season LIMIT 128`, show)

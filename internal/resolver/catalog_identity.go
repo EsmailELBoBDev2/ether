@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"regexp"
 	"slices"
@@ -12,6 +13,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
+
+// AnimeReleaseStyleIdentityReason is recorded when anime-specific release
+// packaging disambiguates an animated series from non-animated namesakes.
+const AnimeReleaseStyleIdentityReason = "anime release style identifies the animated series"
 
 type localIdentity struct{ core.EpisodeIdentity }
 
@@ -55,6 +60,135 @@ func (f localIdentity) shared(req core.SearchRequest) bool {
 	return len(f.OtherShows[req.Title]) > 0 || (req.OriginalTitle != "" && len(f.OtherShows[req.OriginalTitle]) > 0)
 }
 
+func isAnimationTag(tag string) bool {
+	return strings.EqualFold(strings.TrimSpace(tag), "animation") || strings.EqualFold(strings.TrimSpace(tag), "anime")
+}
+
+func hasAnimationTag(genres, keywords []string) bool {
+	return slices.ContainsFunc(genres, isAnimationTag) || slices.ContainsFunc(keywords, isAnimationTag)
+}
+
+func (f localIdentity) targetIsAnimation(t *core.Title) bool {
+	if hasAnimationTag(f.Genres, f.Keywords) {
+		return true
+	}
+	if t == nil {
+		return false
+	}
+	return hasAnimationTag(t.Genres, t.Keywords)
+}
+
+func (f localIdentity) targetKnownNonAnimation(t *core.Title) bool {
+	if f.targetIsAnimation(t) {
+		return false
+	}
+	return len(f.Genres) > 0 || (t != nil && len(t.Genres) > 0)
+}
+
+func namesakeAnimationState(other core.EpisodeNamesake) (animated, known bool) {
+	if hasAnimationTag(other.Genres, other.Keywords) {
+		return true, true
+	}
+	if len(other.Genres) > 0 {
+		return false, true
+	}
+	return false, false
+}
+
+func (f localIdentity) matchingNamesakes(req core.SearchRequest) []core.EpisodeNamesake {
+	var out []core.EpisodeNamesake
+	for name, others := range f.OtherShows {
+		if releaseparse.TitlesMatch(name, req.Title) || (req.OriginalTitle != "" && releaseparse.TitlesMatch(name, req.OriginalTitle)) {
+			out = append(out, others...)
+		}
+	}
+	return out
+}
+
+// animeIdentifiesTarget reports whether the requested series is animation and
+// every locally known namesake for this title is positively known not to be
+// animation. Missing genre metadata is treated as unknown, never evidence.
+func (f localIdentity) animeIdentifiesTarget(t *core.Title, req core.SearchRequest) bool {
+	if !f.targetIsAnimation(t) {
+		return false
+	}
+	others := f.matchingNamesakes(req)
+	if len(others) == 0 {
+		return false
+	}
+	for _, other := range others {
+		animated, known := namesakeAnimationState(other)
+		if !known || animated {
+			return false
+		}
+	}
+	return true
+}
+
+// animeIdentifiesNamesake is the reverse medium check: the requested series is
+// known not to be animation while at least one namesake is animation.
+func (f localIdentity) animeIdentifiesNamesake(t *core.Title, req core.SearchRequest) bool {
+	if !f.targetKnownNonAnimation(t) {
+		return false
+	}
+	for _, other := range f.matchingNamesakes(req) {
+		if animated, known := namesakeAnimationState(other); known && animated {
+			return true
+		}
+	}
+	return false
+}
+
+// evidence returns a non-empty reason when rel positively identifies the
+// requested episode's series without contradicting its IDs, year, or episode.
+func (f localIdentity) evidence(rel core.Release, t *core.Title, req core.SearchRequest) string {
+	if req.Type != core.TypeEpisode {
+		return ""
+	}
+	if f.reject(rel, t, req) != "" {
+		return ""
+	}
+	matched, conflict := releaseparse.CompareTitleIDs(rel.ReportedTitleIDs(), req.IDs)
+	if conflict {
+		return ""
+	}
+	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
+	if year > 0 && req.Year > 0 && !releaseparse.SeriesYearMatches(year, req.Year) {
+		return ""
+	}
+	if matched || (year > 0 && req.Year > 0 && releaseparse.SeriesYearMatches(year, req.Year)) || releaseparse.EpisodeTitleEvidence(rel.Name, req.EpisodeTitle) {
+		return "corroborated series identity"
+	}
+	if f.animeIdentifiesTarget(t, req) && releaseparse.AnimeReleaseStyle(rel.Name, rel.Info) {
+		return AnimeReleaseStyleIdentityReason
+	}
+	return ""
+}
+
+func neededIdentityEvidence(req core.SearchRequest, allowAnimeStyle, allowEpisodeTitle bool) string {
+	var parts []string
+	if req.Year > 0 {
+		parts = append(parts, fmt.Sprintf("series year %d", req.Year))
+	} else {
+		parts = append(parts, "series year")
+	}
+	parts = append(parts, "matching title ID")
+	if allowEpisodeTitle && strings.TrimSpace(req.EpisodeTitle) != "" {
+		parts = append(parts, "episode title")
+	}
+	if allowAnimeStyle {
+		parts = append(parts, "anime release style")
+	}
+	if len(parts) == 2 {
+		return parts[0] + " or " + parts[1]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + ", or " + parts[len(parts)-1]
+}
+
+func identityAmbiguousReason(detail string, req core.SearchRequest, allowAnimeStyle, allowEpisodeTitle bool) string {
+	return "identity ambiguous: " + detail + "; needs " + neededIdentityEvidence(req, allowAnimeStyle, allowEpisodeTitle)
+}
+
 // Phrase matching keeps word boundaries and ignores release punctuation. Short
 // or generic episode names cannot establish a competing show's identity.
 func identityWords(s string) string {
@@ -88,13 +222,13 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 	}
 	idMatch, _ := releaseparse.CompareTitleIDs(rel.ReportedTitleIDs(), req.IDs)
 	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
-	primary := releaseparse.TitleMatches(rel.Info, req.Title) || (t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle))
+	primary := releaseparse.TitleMatches(rel.Info, req.Title) || (t != nil && t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle))
 	for name, others := range f.OtherShows {
 		if !releaseparse.TitleMatches(rel.Info, name) {
 			continue
 		}
 		if !primary && year == 0 && !idMatch && len(others) > 0 {
-			return "alternative title names another show"
+			return identityAmbiguousReason("alternative title names another show", req, false, false)
 		}
 		for _, other := range others {
 			if other.Year > 0 && !releaseparse.SeriesYearMatches(other.Year, req.Year) {
@@ -106,10 +240,15 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 					}
 				}
 			}
-			if distinctiveEpisode(rel.Name, other.EpisodeTitle) && releaseparse.EpisodeTitleEvidence(rel.Name, other.EpisodeTitle) && !distinctiveEpisode(rel.Name, req.EpisodeTitle) && identityWords(other.EpisodeTitle) != identityWords(req.EpisodeTitle) {
+			otherEpEvidence := releaseparse.EpisodeTitleEvidence(rel.Name, other.EpisodeTitle) ||
+				(len(rel.Info.AbsoluteEpisodes) > 0 && !identityPhrase(name, other.EpisodeTitle))
+			if distinctiveEpisode(rel.Name, other.EpisodeTitle) && otherEpEvidence && !distinctiveEpisode(rel.Name, req.EpisodeTitle) && identityWords(other.EpisodeTitle) != identityWords(req.EpisodeTitle) {
 				return "release names another show's episode"
 			}
 		}
+	}
+	if primary && f.animeIdentifiesNamesake(t, req) && releaseparse.AnimeReleaseStyle(rel.Name, rel.Info) && !episodeIdentityEvidence(rel, req) {
+		return identityAmbiguousReason("anime release style identifies the animated namesake", req, false, true)
 	}
 	return ""
 }
@@ -123,7 +262,11 @@ func (f localIdentity) otherEpisode(rel core.Release, t *core.Title, req core.Se
 		return ""
 	}
 	own := identityWords(req.EpisodeTitle)
-	shows := []string{req.Title, t.ShowOriginalTitle, rel.Info.Title}
+	var showOrig string
+	if t != nil {
+		showOrig = t.ShowOriginalTitle
+	}
+	shows := []string{req.Title, showOrig, rel.Info.Title}
 	for _, n := range slices.Sorted(maps.Keys(f.Episodes)) {
 		title := f.Episodes[n]
 		words := identityWords(title)
@@ -148,12 +291,18 @@ func (f localIdentity) otherSeason(rel core.Release, t *core.Title, req core.Sea
 	if req.Season <= 0 {
 		return ""
 	}
+	var showOrig string
+	var showAlts []string
+	if t != nil {
+		showOrig = t.ShowOriginalTitle
+		showAlts = t.ShowAlternativeTitles
+	}
 	meaningful := func(name string) bool {
 		norm := identityWords(name)
 		if len(strings.Fields(norm)) < 2 || genericSeasonName.MatchString(norm) {
 			return false
 		}
-		for _, show := range append([]string{req.Title, t.ShowOriginalTitle}, t.ShowAlternativeTitles...) {
+		for _, show := range append([]string{req.Title, showOrig}, showAlts...) {
 			if releaseparse.NormalizeTitle(name) == releaseparse.NormalizeTitle(show) {
 				return false
 			}
@@ -176,13 +325,11 @@ func (f localIdentity) otherSeason(rel core.Release, t *core.Title, req core.Sea
 	return ""
 }
 
-func (f localIdentity) ambiguous(rel core.Release, req core.SearchRequest) bool {
+func (f localIdentity) ambiguous(rel core.Release, t *core.Title, req core.SearchRequest) bool {
 	if !f.shared(req) || !(releaseparse.TitleMatches(rel.Info, req.Title) || (req.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, req.OriginalTitle))) {
 		return false
 	}
-	// IDs, a matching series year, or the actual episode title identify the
-	// show. A fansub tag or bare absolute number alone does not prove identity.
-	return !episodeIdentityEvidence(rel, req)
+	return f.evidence(rel, t, req) == ""
 }
 
 func clearIdentityVariants(cands []candidate) []candidate {

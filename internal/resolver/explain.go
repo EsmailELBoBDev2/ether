@@ -44,7 +44,11 @@ func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req cor
 		case c.Rejected && c.Attempted:
 			reasons["failed its check"]++
 		case c.Rejected:
-			reason := strings.TrimPrefix(c.Reason, "release preference: ")
+			reason := strings.TrimPrefix(c.Reason, "audio language absent: ")
+			reason = strings.TrimPrefix(reason, "release preference: ")
+			if idx := strings.Index(reason, "; needs "); idx > 0 {
+				reason = reason[:idx]
+			}
 			if strings.HasPrefix(reason, "title mismatch") {
 				reason = "title mismatch"
 			}
@@ -53,8 +57,8 @@ func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req cor
 			reasons["presumed upscale"]++
 		case strings.Contains(c.CompatibilityReason, "too little bitrate"):
 			reasons["too little bitrate for 4K"]++
-		case strings.Contains(c.CompatibilityReason, "accepted audio language"):
-			reasons["audio in another language"]++
+		case strings.Contains(c.CompatibilityReason, "accepted audio language") || strings.Contains(c.CompatibilityReason, "audio language unverified"):
+			reasons["audio in another or unverified language"]++
 		case strings.Contains(c.CompatibilityReason, "connection carries"):
 			reasons["too large for the client's connection"]++
 		case strings.Contains(c.CompatibilityReason, "Usenet provider"):

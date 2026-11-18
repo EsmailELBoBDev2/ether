@@ -486,6 +486,13 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 			return
 		}
 		defer m.dropGeneration(generation)
+		if reqReason := probedRequiredAudioRejection(m.selectProfile(caps, &u, title.Key), title, res.Release, generation.infoSnapshot(), false); reqReason != "" {
+			m.log.Debug("prewarm skipped: required audio absent", "key", key, "release", res.Release.Name, "reason", reqReason)
+			if reason == core.PrewarmNextEpisode {
+				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, errors.New(reqReason))
+			}
+			return
+		}
 		if caps.BroadcastBitrateKbps > 0 {
 			file := res.Release
 			file.Size, file.Info.FullSeason = src.Size(), false

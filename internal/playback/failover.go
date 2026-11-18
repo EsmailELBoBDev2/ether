@@ -131,12 +131,13 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		}
 	}
 	var (
-		tried             []string
-		alternates        []core.Release
-		lastErr           error
-		fallbackGen       *generation
-		fallbackBurned    bool
-		wrongContentSkips int
+		tried              []string
+		alternates         []core.Release
+		lastErr            error
+		fallbackGen        *generation
+		fallbackBurned     bool
+		wrongContentSkips  int
+		unknownAudioProbes int
 		// allUncached: every release that failed to open was a torrent
 		// no debrid account could serve (uncached, blocked, add refused).
 		allUncached = true
@@ -236,6 +237,23 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		if cached == nil {
 			cached = m.persistedProbe(ctx, s.ident.userID, s.ident.key, res.Release.ID, res.NZB)
 		}
+		needsAudioProbe := false
+		if !s.exact && m.ownerPinAllows(s, "") {
+			if langs, unverified := candidateNeedsAudioVerification(profile, s.title, res.Release); unverified {
+				if unknownAudioProbes >= maxUnknownAudioProbes {
+					lastErr = fmt.Errorf("audio is not in the profile's language (%s)", langs[0])
+					allUncached = false
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res, cached, fromResume = nil, nil, false
+					continue
+				}
+				unknownAudioProbes++
+				needsAudioProbe = true
+			}
+		}
 		g, err := m.openGeneration(ctx, s, res, fallback, cached)
 		if err == nil && fromResume && !s.exact && !rememberedInfoCodecCurrent(g.infoSnapshot(), s.caps) {
 			m.dropGeneration(g)
@@ -253,6 +271,23 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			alternates = res.Alternates
 			res, cached, fromResume = nil, nil, false
 			continue
+		}
+		if err == nil && !s.exact && s.prefer == "" {
+			if reqReason := probedRequiredAudioRejection(profile, s.title, res.Release, g.infoSnapshot(), fromResume); reqReason != "" {
+				m.log.Info("trying next candidate", "release", res.Release.Name, "reason", reqReason)
+				m.dropGeneration(g)
+				lastErr = errors.New(reqReason)
+				allUncached = false
+				if needsAudioProbe && unknownAudioProbes < maxUnknownAudioProbes {
+					attempt--
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res, cached, fromResume = nil, nil, false
+				continue
+			}
 		}
 		if err == nil && !s.exact && s.prefer == "" && (burned || !m.probedAudioAcceptable(s, profile, g.infoSnapshot())) {
 			reason := "probed release lacks viewer audio language"

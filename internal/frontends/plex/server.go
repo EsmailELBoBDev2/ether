@@ -52,8 +52,10 @@ type Section struct {
 	LibraryID frontend.LibraryID
 	// PluginID and KindKey are set for plugin-provided libraries (empty for
 	// built-in and filter libraries).
-	PluginID string
-	KindKey  string
+	PluginID     string
+	KindKey      string
+	PluginSorts  []string
+	PluginFacets []frontend.ViewFacet
 }
 
 // SessionToucher is optionally implemented by frontend.Playback to keep a play

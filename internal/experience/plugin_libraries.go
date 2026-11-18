@@ -351,6 +351,65 @@ func (s *Service) pluginItemAllowed(ctx context.Context, v *core.User, piv Plugi
 	return TitleAllowed(s.d.Visibility.Policy, v, &piv.Title)
 }
 
+// sanitizePluginLibraryQuery removes sorts and filters a plugin library has
+// not declared so undeclared caller parameters are ignored gracefully instead
+// of returning empty pages or errors.
+func (s *Service) sanitizePluginLibraryQuery(ctx context.Context, lib core.Library, q frontend.ItemQuery) frontend.ItemQuery {
+	if q.Filter.Person != 0 && !core.IsPluginPersonID(q.Filter.Person) {
+		q.Filter.Person = 0
+	}
+	pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
+	if !ok {
+		return q
+	}
+	p, ok := pres.Presentation(ctx, lib)
+	if !ok {
+		return q
+	}
+	if q.Sort != "" && !slices.Contains(p.Sorts, string(q.Sort)) {
+		q.Sort, q.Desc = "", false
+	}
+	declared := make(map[string]bool, len(p.Facets))
+	for _, vf := range p.Facets {
+		declared[vf.ID] = true
+	}
+	f := core.Filter{
+		Query:  q.Filter.Query,
+		Person: q.Filter.Person,
+	}
+	if len(q.Filter.Genres) > 0 && (declared["genre"] || declared["genres"] || declared["tags"]) {
+		f.Genres = q.Filter.Genres
+	}
+	if q.Filter.Studio != "" && (declared["studio"] || declared["studios"] || declared["publisher"] || declared["author"] || declared["channel"]) {
+		f.Studio = q.Filter.Studio
+	}
+	for k, vals := range q.Filter.Facets {
+		if declared[k] && len(vals) > 0 {
+			if f.Facets == nil {
+				f.Facets = make(map[string][]string)
+			}
+			f.Facets[k] = vals
+		}
+	}
+	if declared["year"] && (f.Facets == nil || len(f.Facets["year"]) == 0) {
+		if q.Filter.YearFrom > 0 && q.Filter.YearFrom == q.Filter.YearTo {
+			if f.Facets == nil {
+				f.Facets = make(map[string][]string)
+			}
+			f.Facets["year"] = []string{strconv.Itoa(q.Filter.YearFrom)}
+		} else if len(q.Filter.Years) > 0 {
+			if f.Facets == nil {
+				f.Facets = make(map[string][]string)
+			}
+			for _, y := range q.Filter.Years {
+				f.Facets["year"] = append(f.Facets["year"], strconv.Itoa(y))
+			}
+		}
+	}
+	q.Filter = f
+	return q
+}
+
 func simplePluginBrowse(v *core.User, q frontend.ItemQuery, policy AccessPolicy) bool {
 	if v == nil || q.AdjacentTo != 0 || q.StartAt != 0 || q.Watched != nil || q.Favorite != nil || q.Season != nil {
 		return false

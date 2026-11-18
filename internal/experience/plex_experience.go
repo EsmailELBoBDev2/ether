@@ -14,6 +14,9 @@ func NewDirectService(d ServiceDeps) *Service {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Catalog != nil && d.Browse == nil {
+		d.Browse = d.Catalog.Browse
+	}
 	if d.Visibility.FilterAvailable != nil && d.FilterAvailable == nil {
 		d.FilterAvailable = d.Visibility.FilterAvailable
 	}
@@ -25,7 +28,7 @@ func NewDirectService(d ServiceDeps) *Service {
 	if d.Search.gate == nil {
 		d.Search.gate = gate
 	}
-	return &Service{d: d, cursors: &episodeCursors{}, searchGate: gate}
+	return &Service{d: d, cursors: &episodeCursors{}, pluginCursors: newPluginCursorCache(), searchGate: gate}
 }
 
 func (*Service) NewRecent(o frontend.RecentOptions) frontend.Recent {

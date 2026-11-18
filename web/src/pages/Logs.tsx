@@ -297,6 +297,7 @@ export default function Logs() {
             {(e) => (
               <div
                 key={e.id}
+                data-log-entry=""
                 className={cn(
                   "flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-border-subtle px-3 py-2 sm:gap-y-0.5 sm:py-1.5",
                   e.level.toLowerCase().startsWith("err") && "bg-danger-subtle/40",

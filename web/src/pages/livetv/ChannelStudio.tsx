@@ -195,6 +195,8 @@ export function ChannelStudio({
   const [horizon, setHorizon] = useState<1 | 7>(1);
   const [seedText, setSeedText] = useState(String(c.seed));
   useEffect(() => setSeedText(String(c.seed)), [c.seed]);
+  const [preview, setPreview] = useState<Programme[] | null>(null);
+  const [previewError, setPreviewError] = useState("");
   // Another channel (or a new one becoming saved) starts on its first tab with
   // the player stopped. Adjusted during render, not in an effect: an effect
   // also runs after mount and could undo a tab picked before it flushed.
@@ -202,7 +204,11 @@ export function ChannelStudio({
   if (shown.id !== c.id || shown.isNew !== isNew) {
     setShown({ id: c.id, isNew });
     setTab(virtual ? "programming" : "stream");
-    if (shown.id !== c.id) setWatching(false);
+    setPreviewError("");
+    if (shown.id !== c.id) {
+      setWatching(false);
+      setPreview(null);
+    }
   }
 
   const { locale } = useLocale();
@@ -216,11 +222,11 @@ export function ChannelStudio({
     }
   }, [draft, locale]);
   const previewKey = useDebouncedValue(
-    virtual && composed.channel ? JSON.stringify(composed.channel) : "",
+    virtual && !c.personal && (!isNew || Boolean(dirty)) && composed.channel
+      ? JSON.stringify(composed.channel)
+      : "",
     500,
   );
-  const [preview, setPreview] = useState<Programme[] | null>(null);
-  const [previewError, setPreviewError] = useState("");
   useEffect(() => {
     if (!previewKey) {
       setPreview(null);
@@ -243,19 +249,24 @@ export function ChannelStudio({
   const [viewer, setViewer] = useState(String(users[0]?.id ?? "1"));
   const [rundown, setRundown] = useState<Programme[]>([]);
   useEffect(() => {
-    if (!c.personal) return;
+    if (!c.personal || !c.id) {
+      setRundown([]);
+      return;
+    }
     const ctl = new AbortController();
     setRundown([]);
-    apiFetch<Programme[]>(
-      `/livetv/channels/${encodeURIComponent(c.id || "draft")}/rundown?viewer=${viewer}`,
-      { signal: ctl.signal },
-    )
-      .then(setRundown)
+    apiFetch<Programme[]>(`/livetv/channels/${encodeURIComponent(c.id)}/rundown?viewer=${viewer}`, {
+      signal: ctl.signal,
+    })
+      .then((items) => {
+        setRundown(items);
+        setPreviewError("");
+      })
       .catch((e) => {
         if (!isAbort(e)) setPreviewError(errorMessage(e));
       });
     return () => ctl.abort();
-  }, [c.id, Boolean(c.personal), viewer, previewKey]);
+  }, [c.id, Boolean(c.personal), viewer]);
   const schedule = c.personal
     ? rundownPreview(rundown, c.look)
     : virtual
@@ -376,9 +387,15 @@ export function ChannelStudio({
             ) : (
               <p className="text-sm text-fg-muted">
                 {virtual
-                  ? composed.error || previewError || t("Building the schedule…")
+                  ? isNew && c.personal
+                    ? t("Create this channel to build each viewer's schedule.")
+                    : isNew && !dirty
+                      ? composed.error || t("Create this channel to build its schedule.")
+                      : composed.error || previewError || t("Building the schedule…")
                   : coverage && coverage.programmes === 0
-                    ? t("No listings for this channel yet. Map a guide channel on the Guide tab.")
+                    ? c.guideId
+                      ? t("Mapped to a guide channel, but its guide has no upcoming listings.")
+                      : t("No listings for this channel yet. Map a guide channel on the Guide tab.")
                     : t("Live stream")}
               </p>
             )}
@@ -436,8 +453,8 @@ export function ChannelStudio({
             </label>
           </div>
         </div>
-        <div className="relative space-y-2 px-4 pb-4 sm:px-6">
-          {virtual && tab !== "schedule" ? (
+        {virtual && Boolean(c.id) && tab !== "schedule" ? (
+          <div className="relative space-y-2 px-4 pb-4 sm:px-6">
             <div
               className="flex flex-wrap items-center justify-end gap-2"
               role="group"
@@ -482,10 +499,8 @@ export function ChannelStudio({
                 </button>
               ))}
             </div>
-          ) : null}
-          {tab !== "schedule" && (
             <ScheduleTimeline
-              channelId={c.id || "draft"}
+              channelId={c.id}
               range={{ from: windowFrom, to: windowUntil }}
               selectedId={selectedElement?.id}
               onSelect={setSelectedElement}
@@ -494,8 +509,8 @@ export function ChannelStudio({
                 setTab("programming");
               }}
             />
-          )}
-        </div>
+          </div>
+        ) : null}
       </section>
 
       {selectedElement && (
@@ -563,11 +578,17 @@ export function ChannelStudio({
           </>
         ) : null}
         {tab === "schedule" && virtual ? (
-          <ScheduleTimeline
-            channelId={c.id || "draft"}
-            range={{ from: windowFrom, to: now + 7 * 24 * 60 * MINUTE }}
-            loadMore
-          />
+          c.id ? (
+            <ScheduleTimeline
+              channelId={c.id}
+              range={{ from: windowFrom, to: now + 7 * 24 * 60 * MINUTE }}
+              loadMore
+            />
+          ) : (
+            <p className="rounded-xl border border-border bg-surface p-4 text-sm text-fg-muted">
+              {t("Create this channel first to view its full schedule.")}
+            </p>
+          )
         ) : null}
         {tab === "stream" && !virtual ? (
           <section className="max-w-2xl space-y-4">

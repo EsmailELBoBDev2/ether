@@ -1,12 +1,14 @@
 import { Badge, Button, Checkbox, Switch, cn, confirmDialog } from "@braedonsaunders/appkit-ui";
-import { GripVertical, Pencil, Plus, Trash2, Tv } from "lucide-react";
+import { ChevronDown, GripVertical, Pencil, Plus, Trash2, Tv } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { localized, t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { uuid } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
+import { useMediaQuery } from "../../lib/hooks";
 import { LIVE_APPS, type LiveApp, liveAppChipLabel, liveAppNote } from "./ChannelApps";
 import { ChannelBulkBar, type ChannelPatch, appStates } from "./ChannelBulkBar";
 import { ChannelLogo } from "./ChannelLogo";
@@ -103,6 +105,8 @@ export function ChannelsWorkspace({
   onReorderSources?: (ids: string[]) => Promise<void>;
 }) {
   const { locale } = useLocale();
+  const compactGroups = useMediaQuery("(max-width: 1023px)");
+  const [groupsOpen, setGroupsOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<"all" | LiveApp>("all");
   const [statusFilter, setStatusFilter] = useState<ChannelStatusFilter>("all");
   const [scope, setScope] = useState<TreeScope>({ kind: "every" });
@@ -122,6 +126,10 @@ export function ChannelsWorkspace({
   const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
 
   const all = channels ?? [];
+
+  useEffect(() => {
+    if (!compactGroups) setGroupsOpen(false);
+  }, [compactGroups]);
 
   useEffect(() => {
     if (scope.kind === "ownerGroup" && !ownerGroups.some((g) => g.id === scope.id)) {
@@ -710,6 +718,318 @@ export function ChannelsWorkspace({
     return base;
   }, [selectedApp, statusCounts, locale]);
 
+  const activeSourceEntries = useMemo(
+    () =>
+      [...index.sourceMap.entries()]
+        .filter(([, entry]) => entry.counts.total > 0)
+        .sort(([a], [b]) => {
+          const ia = sources.findIndex((s) => s.id === a);
+          const ib = sources.findIndex((s) => s.id === b);
+          return (ia < 0 ? 9999 : ia) - (ib < 0 ? 9999 : ib);
+        }),
+    [index.sourceMap, sources],
+  );
+
+  const renderGroupsTree = (onPickScope?: () => void) => (
+    <>
+      {/* Every channel */}
+      <button
+        type="button"
+        onClick={() => {
+          setScope({ kind: "every" });
+          clearSelection();
+          onPickScope?.();
+        }}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
+          scope.kind === "every"
+            ? "bg-primary-subtle font-medium text-primary"
+            : "text-fg hover:bg-surface-hover",
+        )}
+      >
+        <span className="truncate">{t("Every channel")}</span>
+        <span className="ml-auto shrink-0 text-xs tabular-nums text-fg-muted">
+          {selectedApp === "all"
+            ? formatNumber(totalChannels)
+            : `${formatNumber(index.appTotals[selectedApp])} / ${formatNumber(totalChannels)}`}
+        </span>
+      </button>
+
+      {/* Your groups */}
+      <div className="mt-3 mb-1 flex items-center justify-between px-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+          {t("Your groups")}
+        </span>
+        <button
+          type="button"
+          disabled={groupBusy}
+          onClick={() => {
+            setGroupsOpen(false);
+            setGroupDrawer({ open: true, group: null });
+          }}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary-subtle disabled:opacity-50"
+        >
+          <Plus size={12} />
+          {t("New")}
+        </button>
+      </div>
+
+      {ownerGroups.length === 0 ? (
+        <p className="px-2 py-1 text-xs text-fg-subtle">
+          {t("Create groups for Sports, News or Kids across sources.")}
+        </p>
+      ) : null}
+
+      <div className="space-y-0.5">
+        {ownerGroups.map((g, idx) => {
+          const stat = index.ownerGroupCounts.get(g.id) ?? { total: 0, shown: 0 };
+          const active = sameScope(scope, { kind: "ownerGroup", id: g.id });
+          return (
+            <div
+              key={g.id}
+              draggable={!groupBusy}
+              onDragStart={() => {
+                dragIndex.current = idx;
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragIndex.current !== null) moveOwnerGroup(dragIndex.current, idx);
+                dragIndex.current = null;
+              }}
+              className={cn(
+                "group flex items-center gap-1.5 rounded-lg px-1.5 py-1.5 transition-colors",
+                active ? "bg-primary-subtle text-primary" : "text-fg hover:bg-surface-hover",
+              )}
+            >
+              <GripVertical size={13} className="shrink-0 cursor-grab text-fg-subtle" aria-hidden />
+              {renderScopeCheckbox(g.name, stat, (show) => {
+                if (selectedApp !== "all") {
+                  void onSetChannelsApp({ app: selectedApp, show, ownerGroup: g.id });
+                }
+              })}
+              <button
+                type="button"
+                onClick={() => {
+                  setScope({ kind: "ownerGroup", id: g.id });
+                  clearSelection();
+                  onPickScope?.();
+                }}
+                className={cn("min-w-0 flex-1 truncate text-left", active && "font-medium")}
+              >
+                {g.name}
+              </button>
+              <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">
+                <button
+                  type="button"
+                  aria-label={t("Edit {name}", { name: g.name })}
+                  onClick={() => {
+                    setGroupsOpen(false);
+                    setGroupDrawer({ open: true, group: g });
+                  }}
+                  className="rounded p-0.5 text-fg-subtle hover:bg-surface hover:text-fg"
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t("Delete {name}", { name: g.name })}
+                  onClick={() => void handleDeleteGroup(g)}
+                  className="rounded p-0.5 text-fg-subtle hover:bg-surface hover:text-danger"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </span>
+              <span className="shrink-0 text-xs tabular-nums text-fg-muted">
+                {renderCount(stat)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Virtual channels */}
+      {index.virtualCounts.total > 0 ? (
+        <>
+          <div className="mt-3 mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+            {t("Your channels")}
+          </div>
+          <div
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors",
+              scope.kind === "virtual"
+                ? "bg-primary-subtle text-primary"
+                : "text-fg hover:bg-surface-hover",
+            )}
+          >
+            {renderScopeCheckbox(t("Virtual channels"), index.virtualCounts, (show) => {
+              if (selectedApp !== "all") {
+                void onSetChannelsApp({ app: selectedApp, show, source: "virtual" });
+              }
+            })}
+            <button
+              type="button"
+              onClick={() => {
+                setScope({ kind: "virtual" });
+                clearSelection();
+                onPickScope?.();
+              }}
+              className={cn(
+                "min-w-0 flex-1 truncate text-left",
+                scope.kind === "virtual" && "font-medium",
+              )}
+            >
+              {t("Virtual channels")}
+            </button>
+            <span className="shrink-0 text-xs tabular-nums text-fg-muted">
+              {renderCount(index.virtualCounts)}
+            </span>
+          </div>
+        </>
+      ) : null}
+
+      {/* Channel sources & provider groups */}
+      {activeSourceEntries.length > 0 ? (
+        <>
+          <div className="mt-3 mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+            {t("Providers")}
+          </div>
+          <div className="space-y-1.5">
+            {activeSourceEntries.map(([sid, entry]) => {
+              const sname = sourceNameById.get(sid) || sid || "IPTV";
+              const sourceActive = sameScope(scope, { kind: "source", sourceId: sid });
+              const canDragSource = Boolean(
+                onReorderSources && sid && activeSourceEntries.length > 1,
+              );
+              return (
+                <div key={sid || "__default__"} className="space-y-0.5">
+                  <div
+                    draggable={canDragSource || undefined}
+                    aria-label={canDragSource ? t("Provider {name}", { name: sname }) : undefined}
+                    onDragStart={
+                      canDragSource
+                        ? () => {
+                            sourceDragId.current = sid;
+                          }
+                        : undefined
+                    }
+                    onDragOver={canDragSource ? (e) => e.preventDefault() : undefined}
+                    onDrop={
+                      canDragSource
+                        ? (e) => {
+                            e.preventDefault();
+                            const fromId = sourceDragId.current;
+                            sourceDragId.current = null;
+                            if (!fromId || fromId === sid || !onReorderSources) return;
+                            const orderedIds = sources.map((s) => s.id);
+                            const fromIdx = orderedIds.indexOf(fromId);
+                            const toIdx = orderedIds.indexOf(sid);
+                            if (fromIdx < 0 || toIdx < 0) return;
+                            const [picked] = orderedIds.splice(fromIdx, 1);
+                            if (!picked) return;
+                            orderedIds.splice(toIdx, 0, picked);
+                            void onReorderSources(orderedIds);
+                          }
+                        : undefined
+                    }
+                    className={cn(
+                      "flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors",
+                      sourceActive
+                        ? "bg-primary-subtle text-primary"
+                        : "text-fg hover:bg-surface-hover",
+                    )}
+                  >
+                    {canDragSource ? (
+                      <GripVertical
+                        size={13}
+                        className="shrink-0 cursor-grab text-fg-subtle"
+                        aria-hidden
+                      />
+                    ) : null}
+                    {renderScopeCheckbox(sname, entry.counts, (show) => {
+                      if (selectedApp !== "all") {
+                        void onSetChannelsApp({ app: selectedApp, show, source: sid });
+                      }
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScope({ kind: "source", sourceId: sid });
+                        clearSelection();
+                        onPickScope?.();
+                      }}
+                      className="min-w-0 flex-1 truncate text-left font-semibold"
+                    >
+                      {sname}
+                    </button>
+                    <span className="shrink-0 text-xs tabular-nums text-fg-muted">
+                      {renderCount(entry.counts)}
+                    </span>
+                  </div>
+                  {[...entry.groups.entries()].map(([gname, gstat]) => {
+                    const label = gname || t("Ungrouped");
+                    const groupActive = sameScope(scope, {
+                      kind: "providerGroup",
+                      sourceId: sid,
+                      group: gname,
+                    });
+                    return (
+                      <div
+                        key={`${sid}\u0000${gname}`}
+                        className={cn(
+                          "flex items-center gap-2 rounded-lg py-1.5 pr-2 pl-6 transition-colors",
+                          groupActive
+                            ? "bg-primary-subtle text-primary"
+                            : "text-fg hover:bg-surface-hover",
+                        )}
+                      >
+                        {renderScopeCheckbox(label, gstat, (show) => {
+                          if (selectedApp !== "all") {
+                            void onSetChannelsApp({
+                              app: selectedApp,
+                              show,
+                              source: sid,
+                              group: gname,
+                            });
+                          }
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setScope({ kind: "providerGroup", sourceId: sid, group: gname });
+                            clearSelection();
+                            onPickScope?.();
+                          }}
+                          className={cn(
+                            "min-w-0 flex-1 truncate text-left",
+                            groupActive && "font-medium",
+                          )}
+                        >
+                          {label}
+                        </button>
+                        <span className="shrink-0 text-xs tabular-nums text-fg-muted">
+                          {renderCount(gstat)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+
+      <p className="mt-4 px-2 pt-2 text-[11px] leading-relaxed text-fg-subtle">
+        {selectedApp === "all"
+          ? t("Pick an app above to add or remove whole groups.")
+          : t("Tick a group to add or remove all of it in {app}. – means some.", {
+              app: liveAppChipLabel(selectedApp),
+            })}
+      </p>
+    </>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg">
       {/* Showing-for app chips + contextual note */}
@@ -792,312 +1112,21 @@ export function ChannelsWorkspace({
       </div>
 
       {/* Main workspace split: Left group tree + Right virtualised channel list */}
-      <div className="app-scroll flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:grid-cols-[272px_minmax(0,1fr)] lg:overflow-hidden">
-        {/* Left group tree */}
-        <nav
-          aria-label={t("Channel groups")}
-          className="app-scroll flex shrink-0 flex-col border-b border-border bg-surface p-2.5 text-sm lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r"
-        >
-          {/* Every channel */}
-          <button
-            type="button"
-            onClick={() => {
-              setScope({ kind: "every" });
-              clearSelection();
-            }}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
-              scope.kind === "every"
-                ? "bg-primary-subtle font-medium text-primary"
-                : "text-fg hover:bg-surface-hover",
-            )}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[272px_minmax(0,1fr)]">
+        {/* Left group tree (desktop) */}
+        {compactGroups ? null : (
+          <nav
+            aria-label={t("Channel groups")}
+            className="app-scroll flex min-h-0 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface p-2.5 text-sm"
           >
-            <span className="truncate">{t("Every channel")}</span>
-            <span className="ml-auto shrink-0 text-xs tabular-nums text-fg-muted">
-              {selectedApp === "all"
-                ? formatNumber(totalChannels)
-                : `${formatNumber(index.appTotals[selectedApp])} / ${formatNumber(totalChannels)}`}
-            </span>
-          </button>
-
-          {/* Your groups */}
-          <div className="mt-3 mb-1 flex items-center justify-between px-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
-              {t("Your groups")}
-            </span>
-            <button
-              type="button"
-              disabled={groupBusy}
-              onClick={() => setGroupDrawer({ open: true, group: null })}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary-subtle disabled:opacity-50"
-            >
-              <Plus size={12} />
-              {t("New")}
-            </button>
-          </div>
-
-          {ownerGroups.length === 0 ? (
-            <p className="px-2 py-1 text-xs text-fg-subtle">
-              {t("Create groups for Sports, News or Kids across sources.")}
-            </p>
-          ) : null}
-
-          <div className="space-y-0.5">
-            {ownerGroups.map((g, idx) => {
-              const stat = index.ownerGroupCounts.get(g.id) ?? { total: 0, shown: 0 };
-              const active = sameScope(scope, { kind: "ownerGroup", id: g.id });
-              return (
-                <div
-                  key={g.id}
-                  draggable={!groupBusy}
-                  onDragStart={() => {
-                    dragIndex.current = idx;
-                  }}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    if (dragIndex.current !== null) moveOwnerGroup(dragIndex.current, idx);
-                    dragIndex.current = null;
-                  }}
-                  className={cn(
-                    "group flex items-center gap-1.5 rounded-lg px-1.5 py-1.5 transition-colors",
-                    active ? "bg-primary-subtle text-primary" : "text-fg hover:bg-surface-hover",
-                  )}
-                >
-                  <GripVertical
-                    size={13}
-                    className="shrink-0 cursor-grab text-fg-subtle"
-                    aria-hidden
-                  />
-                  {renderScopeCheckbox(g.name, stat, (show) => {
-                    if (selectedApp !== "all") {
-                      void onSetChannelsApp({ app: selectedApp, show, ownerGroup: g.id });
-                    }
-                  })}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setScope({ kind: "ownerGroup", id: g.id });
-                      clearSelection();
-                    }}
-                    className={cn("min-w-0 flex-1 truncate text-left", active && "font-medium")}
-                  >
-                    {g.name}
-                  </button>
-                  <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">
-                    <button
-                      type="button"
-                      aria-label={t("Edit {name}", { name: g.name })}
-                      onClick={() => setGroupDrawer({ open: true, group: g })}
-                      className="rounded p-0.5 text-fg-subtle hover:bg-surface hover:text-fg"
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t("Delete {name}", { name: g.name })}
-                      onClick={() => void handleDeleteGroup(g)}
-                      className="rounded p-0.5 text-fg-subtle hover:bg-surface hover:text-danger"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </span>
-                  <span className="shrink-0 text-xs tabular-nums text-fg-muted">
-                    {renderCount(stat)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Virtual channels */}
-          {index.virtualCounts.total > 0 ? (
-            <>
-              <div className="mt-3 mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
-                {t("Your channels")}
-              </div>
-              <div
-                className={cn(
-                  "flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors",
-                  scope.kind === "virtual"
-                    ? "bg-primary-subtle text-primary"
-                    : "text-fg hover:bg-surface-hover",
-                )}
-              >
-                {renderScopeCheckbox(t("Virtual channels"), index.virtualCounts, (show) => {
-                  if (selectedApp !== "all") {
-                    void onSetChannelsApp({ app: selectedApp, show, source: "virtual" });
-                  }
-                })}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setScope({ kind: "virtual" });
-                    clearSelection();
-                  }}
-                  className={cn(
-                    "min-w-0 flex-1 truncate text-left",
-                    scope.kind === "virtual" && "font-medium",
-                  )}
-                >
-                  {t("Virtual channels")}
-                </button>
-                <span className="shrink-0 text-xs tabular-nums text-fg-muted">
-                  {renderCount(index.virtualCounts)}
-                </span>
-              </div>
-            </>
-          ) : null}
-
-          {/* Channel sources & provider groups */}
-          {[...index.sourceMap.entries()]
-            .filter(([, entry]) => entry.counts.total > 0)
-            .sort(([a], [b]) => {
-              const ia = sources.findIndex((s) => s.id === a);
-              const ib = sources.findIndex((s) => s.id === b);
-              return (ia < 0 ? 9999 : ia) - (ib < 0 ? 9999 : ib);
-            })
-            .map(([sid, entry], _, activeSourceEntries) => {
-              const sname = sourceNameById.get(sid) || sid || "IPTV";
-              const sourceActive = sameScope(scope, { kind: "source", sourceId: sid });
-              const canDragSource = Boolean(
-                onReorderSources && sid && activeSourceEntries.length > 1,
-              );
-              return (
-                <div key={sid || "__default__"} className="mt-3 space-y-0.5">
-                  <div
-                    draggable={canDragSource || undefined}
-                    aria-label={canDragSource ? t("Provider {name}", { name: sname }) : undefined}
-                    onDragStart={
-                      canDragSource
-                        ? () => {
-                            sourceDragId.current = sid;
-                          }
-                        : undefined
-                    }
-                    onDragOver={canDragSource ? (e) => e.preventDefault() : undefined}
-                    onDrop={
-                      canDragSource
-                        ? (e) => {
-                            e.preventDefault();
-                            const fromId = sourceDragId.current;
-                            sourceDragId.current = null;
-                            if (!fromId || fromId === sid || !onReorderSources) return;
-                            const orderedIds = sources.map((s) => s.id);
-                            const fromIdx = orderedIds.indexOf(fromId);
-                            const toIdx = orderedIds.indexOf(sid);
-                            if (fromIdx < 0 || toIdx < 0) return;
-                            const [picked] = orderedIds.splice(fromIdx, 1);
-                            if (!picked) return;
-                            orderedIds.splice(toIdx, 0, picked);
-                            void onReorderSources(orderedIds);
-                          }
-                        : undefined
-                    }
-                    className="mb-1 flex items-center justify-between gap-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle"
-                  >
-                    {canDragSource ? (
-                      <GripVertical
-                        size={12}
-                        className="shrink-0 cursor-grab text-fg-subtle"
-                        aria-hidden
-                      />
-                    ) : null}
-                    <span className="min-w-0 flex-1 truncate">{sname}</span>
-                    <span className="ml-2 shrink-0 tabular-nums">
-                      {formatNumber(entry.counts.total)}
-                    </span>
-                  </div>
-                  <div
-                    className={cn(
-                      "flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors",
-                      sourceActive
-                        ? "bg-primary-subtle text-primary"
-                        : "text-fg hover:bg-surface-hover",
-                    )}
-                  >
-                    {renderScopeCheckbox(sname, entry.counts, (show) => {
-                      if (selectedApp !== "all") {
-                        void onSetChannelsApp({ app: selectedApp, show, source: sid });
-                      }
-                    })}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setScope({ kind: "source", sourceId: sid });
-                        clearSelection();
-                      }}
-                      className="min-w-0 flex-1 truncate text-left font-semibold"
-                    >
-                      {sname}
-                    </button>
-                    <span className="shrink-0 text-xs tabular-nums text-fg-muted">
-                      {renderCount(entry.counts)}
-                    </span>
-                  </div>
-                  {[...entry.groups.entries()].map(([gname, gstat]) => {
-                    const label = gname || t("Ungrouped");
-                    const groupActive = sameScope(scope, {
-                      kind: "providerGroup",
-                      sourceId: sid,
-                      group: gname,
-                    });
-                    return (
-                      <div
-                        key={`${sid}\u0000${gname}`}
-                        className={cn(
-                          "flex items-center gap-2 rounded-lg py-1.5 pr-2 pl-6 transition-colors",
-                          groupActive
-                            ? "bg-primary-subtle text-primary"
-                            : "text-fg hover:bg-surface-hover",
-                        )}
-                      >
-                        {renderScopeCheckbox(label, gstat, (show) => {
-                          if (selectedApp !== "all") {
-                            void onSetChannelsApp({
-                              app: selectedApp,
-                              show,
-                              source: sid,
-                              group: gname,
-                            });
-                          }
-                        })}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setScope({ kind: "providerGroup", sourceId: sid, group: gname });
-                            clearSelection();
-                          }}
-                          className={cn(
-                            "min-w-0 flex-1 truncate text-left",
-                            groupActive && "font-medium",
-                          )}
-                        >
-                          {label}
-                        </button>
-                        <span className="shrink-0 text-xs tabular-nums text-fg-muted">
-                          {renderCount(gstat)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-
-          <p className="mt-4 px-2 pt-2 text-[11px] leading-relaxed text-fg-subtle">
-            {selectedApp === "all"
-              ? t("Pick an app above to add or remove whole groups.")
-              : t("Tick a group to add or remove all of it in {app}. – means some.", {
-                  app: liveAppChipLabel(selectedApp),
-                })}
-          </p>
-        </nav>
+            {renderGroupsTree()}
+          </nav>
+        )}
 
         {/* Right virtualised channel list */}
         <section
           aria-label={t("Channels")}
-          className="flex min-h-[24rem] min-w-0 flex-1 flex-col overflow-hidden bg-surface lg:min-h-0"
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface"
         >
           {/* List header */}
           <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border px-3 py-2.5">
@@ -1113,7 +1142,20 @@ export function ChannelsWorkspace({
                 else selectAllMatches();
               }}
             />
-            <h2 className="min-w-0 truncate text-sm font-semibold text-fg">{scopeTitle}</h2>
+            {compactGroups ? (
+              <button
+                type="button"
+                aria-label={t("Channel groups")}
+                aria-expanded={groupsOpen}
+                onClick={() => setGroupsOpen(true)}
+                className="inline-flex h-8 max-w-[13rem] items-center gap-1.5 rounded-lg border border-border bg-bg px-2.5 text-sm font-semibold text-fg transition-colors hover:bg-surface-hover"
+              >
+                <span className="min-w-0 truncate">{scopeTitle}</span>
+                <ChevronDown size={14} className="shrink-0 text-fg-subtle" aria-hidden />
+              </button>
+            ) : (
+              <h2 className="min-w-0 truncate text-sm font-semibold text-fg">{scopeTitle}</h2>
+            )}
             <span className="text-xs tabular-nums text-fg-muted">
               {tn(rows.length, "{count} channel", "{count} channels")}
               {statusCounts.disabled > 0 ? (
@@ -1221,6 +1263,19 @@ export function ChannelsWorkspace({
           </div>
         </section>
       </div>
+
+      {compactGroups ? (
+        <Drawer
+          open={groupsOpen}
+          onClose={() => setGroupsOpen(false)}
+          title={t("Channel groups")}
+          size="sm"
+        >
+          <nav aria-label={t("Channel groups")} className="text-sm">
+            {renderGroupsTree(() => setGroupsOpen(false))}
+          </nav>
+        </Drawer>
+      ) : null}
 
       {checked.size > 0 ? (
         <ChannelBulkBar

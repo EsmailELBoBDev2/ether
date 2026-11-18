@@ -25,6 +25,7 @@ import { ToolbarPicker, type ToolbarOption } from "../../components/ToolbarPicke
 import { Artwork } from "../../components/Artwork";
 import { getLocale, t, tn } from "../../i18n";
 import { unit } from "../../lib/format";
+import { useMediaQuery } from "../../lib/hooks";
 import type { ChannelSelection } from "./ChannelBulkBar";
 import { ChannelLogo } from "./ChannelLogo";
 import {
@@ -41,6 +42,7 @@ import {
 const ROW = 60;
 const HEADER = 36;
 const CH_COL = 208;
+const CH_COL_PHONE = 100;
 /** The Live TV page's lineup column: a third of the guide, never cramped. */
 const LINEUP_MIN = 260;
 const ZOOM = { wide: 5, normal: 3.5, tight: 2.2 } as const;
@@ -66,6 +68,28 @@ const HOUR = 60 * MINUTE;
 const MAX_DAYS = 7;
 /** How much of the past a jump leaves visible before its target. */
 const LEAD = 30 * MINUTE;
+const STEP = 30 * MINUTE;
+
+/**
+ * Snap the initial/Now scroll target to a 30-minute ruler boundary so the
+ * left-most time label and slot start sit cleanly beside the sticky channel
+ * column, advancing one half-hour on narrow viewports so the live marker stays
+ * on screen.
+ */
+export function guideNowScrollLeft(
+  now: number,
+  start: number,
+  ppm: number,
+  timelineWidth: number,
+): number {
+  const toX = (ms: number) => ((ms - start) / MINUTE) * ppm;
+  let slot = Math.max(start, Math.floor((now - LEAD) / STEP) * STEP);
+  const currentSlot = Math.max(start, Math.floor(now / STEP) * STEP);
+  if (timelineWidth > 0 && toX(now) - toX(slot) > timelineWidth - 56 && slot < currentSlot) {
+    slot = currentSlot;
+  }
+  return Math.max(0, toX(slot));
+}
 
 /** Local midnight `days` after the day containing `ms` (DST-safe). */
 function midnight(ms: number, days = 0): number {
@@ -176,6 +200,7 @@ export function GuideGrid({
   toolbarFilters?: ReactNode;
 }) {
   const lineup = head !== undefined;
+  const compactMedia = useMediaQuery("(max-width: 639px)");
   const loadedChannels = useMemo(
     () => channels.filter((c): c is Channel => c !== undefined),
     [channels],
@@ -195,30 +220,42 @@ export function GuideGrid({
   const width = minutes * ppm;
   const scroller = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ top: 0, height: 800, left: 0, width: 1200 });
-  const chCol = lineup ? Math.max(LINEUP_MIN, Math.round(view.width / 3)) : CH_COL;
+  const compactChannelCol = !lineup && (compactMedia || (view.width > 0 && view.width < 640));
+  const chCol = lineup
+    ? Math.max(LINEUP_MIN, Math.round(view.width / 3))
+    : compactChannelCol
+      ? CH_COL_PHONE
+      : CH_COL;
+  const timelineWidth = Math.max(0, view.width - chCol);
   const x = (ms: number) => ((ms - start) / MINUTE) * ppm;
   const nowX = x(now);
   const nowVisible = now >= start && now <= until.getTime();
 
   const scrollTo = useCallback((left: number, smooth = false) => {
     const el = scroller.current;
+    const target = Math.max(0, left);
     if (!el) return;
     if (typeof el.scrollTo === "function")
-      el.scrollTo({ left: Math.max(0, left), behavior: smooth ? "smooth" : "auto" });
-    else el.scrollLeft = Math.max(0, left);
+      el.scrollTo({ left: target, behavior: smooth ? "smooth" : "auto" });
+    else el.scrollLeft = target;
+    if (!smooth) {
+      setView((prev) => (prev.left === target ? prev : { ...prev, left: target }));
+    }
   }, []);
   const scrollToNow = useCallback(
-    (smooth = false) => scrollTo(nowX - 45 * ppm, smooth),
-    [nowX, ppm, scrollTo],
+    (smooth = false) => scrollTo(guideNowScrollLeft(now, start, ppm, timelineWidth), smooth),
+    [now, start, ppm, timelineWidth, scrollTo],
   );
   // A day or time jump that needs a new window lands once that window renders.
   const pendingFocus = useRef<number | null>(null);
   // The time at the listings' left edge, so zooming keeps the viewer's place.
   const leftEdge = useRef<number | null>(null);
   const lastZoom = useRef(zoom);
+  const hasChannels = channels.length > 0;
   // Land on "now" when the window moves, keep the place when zooming, and
   // land on a jump's target once its window renders.
   useLayoutEffect(() => {
+    if (!hasChannels) return;
     const focus = pendingFocus.current;
     const zoomed = lastZoom.current !== zoom;
     pendingFocus.current = null;
@@ -227,18 +264,20 @@ export function GuideGrid({
     else if (zoomed && leftEdge.current !== null) scrollTo(x(leftEdge.current));
     else scrollToNow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [start, zoom]);
+  }, [start, zoom, hasChannels]);
 
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
     const measure = () =>
-      setView({
+      setView((prev) => ({
         top: el.scrollTop,
-        height: el.clientHeight,
+        height: el.clientHeight || prev.height,
         left: el.scrollLeft,
-        width: el.clientWidth,
-      });
+        width:
+          el.clientWidth ||
+          (typeof window !== "undefined" && window.innerWidth ? window.innerWidth : prev.width),
+      }));
     measure();
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     ro?.observe(el);
@@ -253,8 +292,7 @@ export function GuideGrid({
 
   const ticks = useMemo(() => {
     const out: number[] = [];
-    const step = 30 * MINUTE;
-    for (let tick = Math.ceil(start / step) * step; tick <= until.getTime(); tick += step)
+    for (let tick = Math.ceil(start / STEP) * STEP; tick <= until.getTime(); tick += STEP)
       out.push(tick);
     return out;
   }, [start, until]);
@@ -268,7 +306,7 @@ export function GuideGrid({
   // The day being looked at follows the scroll position, not the window.
   const focusedDay = guideDayOffset(start + (view.left / ppm) * MINUTE + LEAD, now);
   // Whether the live now-line is on screen: "Now" only shows once away from it.
-  const nowInView = x(now) >= view.left && x(now) <= view.left + view.width;
+  const nowInView = x(now) >= view.left && x(now) <= view.left + timelineWidth;
   const days = guideDayCount(now, guideUntil);
   const today = midnight(now);
   // Show `focus`: scroll there when the window holds it, otherwise move the
@@ -610,13 +648,14 @@ export function GuideGrid({
         aria-label={t("Programme guide")}
         aria-rowcount={channels.length}
         onScroll={(e) => {
-          leftEdge.current = start + (e.currentTarget.scrollLeft / ppm) * MINUTE;
-          setView({
-            top: e.currentTarget.scrollTop,
-            height: e.currentTarget.clientHeight,
-            left: e.currentTarget.scrollLeft,
-            width: e.currentTarget.clientWidth,
-          });
+          const { scrollTop, clientHeight, scrollLeft, clientWidth } = e.currentTarget;
+          leftEdge.current = start + (scrollLeft / ppm) * MINUTE;
+          setView((prev) => ({
+            top: scrollTop,
+            height: clientHeight || prev.height,
+            left: scrollLeft,
+            width: clientWidth || prev.width,
+          }));
         }}
         className="app-scroll relative min-h-0 flex-1 overflow-auto bg-bg"
       >
@@ -634,12 +673,15 @@ export function GuideGrid({
               style={{ height: HEADER }}
             >
               <div
-                className="sticky left-0 z-40 flex shrink-0 items-center border-r border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle"
+                className={cn(
+                  "sticky left-0 z-40 flex shrink-0 items-center border-r border-border bg-surface text-[11px] font-semibold uppercase tracking-wider text-fg-subtle",
+                  compactChannelCol ? "px-2" : "px-3",
+                )}
                 style={{ width: chCol }}
               >
                 {selection ? (
                   <Checkbox
-                    className="mr-3"
+                    className={compactChannelCol ? "mr-2" : "mr-3"}
                     checked={selection.all}
                     ref={(el) => {
                       if (el) el.indeterminate = !selection.all && selection.ids.size > 0;
@@ -649,29 +691,33 @@ export function GuideGrid({
                     onChange={selection.toggleAll}
                   />
                 ) : null}
-                {t("Channel")}
+                <span className="truncate">{t("Channel")}</span>
               </div>
-              <div className="relative" style={{ width }}>
+              <div className="relative overflow-hidden" style={{ width }}>
                 {ticks.map((tick) => {
                   const hour = new Date(tick).getMinutes() === 0;
+                  const tickX = x(tick);
+                  const clipped = tickX < view.left - 2;
                   return (
                     <div
                       key={tick}
                       className="absolute inset-y-0 flex items-center border-l border-border/70 pl-2"
-                      style={{ left: x(tick) }}
+                      style={{ left: tickX }}
                     >
-                      <span
-                        className={cn(
-                          "whitespace-nowrap text-xs tabular-nums",
-                          hour ? "font-semibold text-fg" : "text-fg-subtle",
-                        )}
-                      >
-                        {clock(new Date(tick))}
-                      </span>
+                      {clipped ? null : (
+                        <span
+                          className={cn(
+                            "whitespace-nowrap text-xs tabular-nums",
+                            hour ? "font-semibold text-fg" : "text-fg-subtle",
+                          )}
+                        >
+                          {clock(new Date(tick))}
+                        </span>
+                      )}
                     </div>
                   );
                 })}
-                {nowVisible ? (
+                {nowVisible && nowX >= view.left ? (
                   <div
                     className="absolute bottom-0 z-10 -translate-x-1/2 rounded-t-md bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white"
                     style={{ left: nowX }}
@@ -710,7 +756,10 @@ export function GuideGrid({
                     style={{ top: HEADER + i * ROW, height: ROW, width: chCol + width }}
                   >
                     <div
-                      className="sticky left-0 z-20 flex shrink-0 items-center border-r border-border bg-surface px-4"
+                      className={cn(
+                        "sticky left-0 z-20 flex shrink-0 items-center border-r border-border bg-surface",
+                        compactChannelCol ? "px-2" : "px-4",
+                      )}
                       style={{ width: chCol }}
                       aria-hidden
                     >
@@ -752,43 +801,76 @@ export function GuideGrid({
                       role="rowheader"
                       onClick={() => onSelect(c.id)}
                       className={cn(
-                        "sticky left-0 z-20 flex shrink-0 items-center gap-2.5 border-r border-border px-3 text-left transition-colors hover:bg-surface-hover",
+                        "sticky left-0 z-20 flex shrink-0 items-center border-r border-border text-left transition-colors hover:bg-surface-hover",
+                        compactChannelCol ? "gap-1.5 px-2" : "gap-2.5 px-3",
                         on ? "bg-primary-subtle" : "bg-surface",
                       )}
                       style={{ width: chCol }}
                       aria-label={t("Channel {number} {name}", { number: c.number, name: c.name })}
                     >
-                      <span className="w-7 shrink-0 text-right font-mono text-[11px] tabular-nums text-fg-subtle">
-                        {c.number}
-                      </span>
-                      <ChannelLogo
-                        name={c.name}
-                        logo={c.logo}
-                        seed={c.id}
-                        channelId={c.id}
-                        size={32}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1">
-                          <span className="truncate text-[13px] font-medium text-fg">{c.name}</span>
-                          {c.favorite ? (
-                            <Star size={10} className="shrink-0 fill-warning text-warning" />
-                          ) : null}
-                        </span>
-                        <span className="block truncate text-[11px] text-fg-subtle">
-                          {live
-                            ? t("{time} left", {
-                                time: unit(
-                                  Math.max(1, Math.round((Date.parse(live.end) - now) / MINUTE)),
-                                  "minute",
-                                ),
-                              })
-                            : c.group || (c.kind === "virtual" ? t("Virtual") : t("Live"))}
-                        </span>
-                      </span>
+                      {compactChannelCol ? (
+                        <>
+                          <ChannelLogo
+                            name={c.name}
+                            logo={c.logo}
+                            seed={c.id}
+                            channelId={c.id}
+                            size={24}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-1">
+                              <span className="font-mono text-[10px] tabular-nums text-fg-subtle">
+                                {c.number}
+                              </span>
+                              {c.favorite ? (
+                                <Star size={9} className="shrink-0 fill-warning text-warning" />
+                              ) : null}
+                            </span>
+                            <span className="block truncate text-xs font-medium text-fg">
+                              {c.name}
+                            </span>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-7 shrink-0 text-right font-mono text-[11px] tabular-nums text-fg-subtle">
+                            {c.number}
+                          </span>
+                          <ChannelLogo
+                            name={c.name}
+                            logo={c.logo}
+                            seed={c.id}
+                            channelId={c.id}
+                            size={32}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-1">
+                              <span className="truncate text-[13px] font-medium text-fg">
+                                {c.name}
+                              </span>
+                              {c.favorite ? (
+                                <Star size={10} className="shrink-0 fill-warning text-warning" />
+                              ) : null}
+                            </span>
+                            <span className="block truncate text-[11px] text-fg-subtle">
+                              {live
+                                ? t("{time} left", {
+                                    time: unit(
+                                      Math.max(
+                                        1,
+                                        Math.round((Date.parse(live.end) - now) / MINUTE),
+                                      ),
+                                      "minute",
+                                    ),
+                                  })
+                                : c.group || (c.kind === "virtual" ? t("Virtual") : t("Live"))}
+                            </span>
+                          </span>
+                        </>
+                      )}
                     </button>
                   )}
-                  <div className="relative" style={{ width }}>
+                  <div className="relative overflow-hidden" style={{ width }}>
                     {ps.length === 0 ? (
                       <div
                         className="absolute inset-1 flex items-center rounded-md border border-dashed border-border px-3 text-xs text-fg-subtle"
@@ -822,7 +904,7 @@ export function GuideGrid({
                       if (
                         e <= s ||
                         x(e) < view.left - overscan ||
-                        x(s) > view.left + view.width - chCol + overscan
+                        x(s) > view.left + timelineWidth + overscan
                       )
                         return null;
                       const left = x(s);
@@ -831,7 +913,9 @@ export function GuideGrid({
                       const past = Date.parse(p.end) <= now;
                       // Slide the label right so it stays readable beside the
                       // sticky channel column when the programme began earlier.
-                      const inset = Math.max(0, Math.min(view.left - left, w - 90));
+                      const hiddenLeft = Math.max(0, view.left - left);
+                      const visibleW = w - hiddenLeft;
+                      const inset = hiddenLeft;
                       return (
                         <button
                           key={p.id}
@@ -853,7 +937,7 @@ export function GuideGrid({
                                 ? "border-transparent bg-surface/50 opacity-60"
                                 : "border-border/70 bg-surface hover:border-border-strong",
                           )}
-                          style={{ left: left + 1, width: w - 2 }}
+                          style={{ left: left + 1, width: Math.max(2, w - 2) }}
                         >
                           {airing ? (
                             <span
@@ -867,43 +951,45 @@ export function GuideGrid({
                             style={{ background: `hsl(${hueOf(c.id)} 65% 55%)` }}
                             aria-hidden
                           />
-                          <span
-                            className="relative flex h-full items-center gap-2"
-                            style={inset ? { paddingLeft: inset } : undefined}
-                          >
-                            {p.item.thumb && w > 220 ? (
-                              <Artwork
-                                src={programmeArtwork(p.item.thumb)}
-                                alt=""
-                                title=""
-                                className="h-10 w-7 shrink-0 rounded"
-                              />
-                            ) : null}
-                            <span className="min-w-0">
-                              <span
-                                className={cn(
-                                  "block truncate text-[13px] font-medium",
-                                  airing ? "text-fg" : "text-fg",
-                                )}
-                              >
-                                {p.item.title || t("Untitled")}
-                                {p.item.season && p.item.episode ? (
-                                  <span className="ml-1.5 text-[11px] font-normal text-fg-subtle">
-                                    {t("S{season} E{episode}", {
-                                      season: p.item.season,
-                                      episode: p.item.episode,
-                                    })}
+                          {visibleW >= 28 ? (
+                            <span
+                              className="relative flex h-full items-center gap-2"
+                              style={inset ? { paddingLeft: inset } : undefined}
+                            >
+                              {p.item.thumb && visibleW > 220 ? (
+                                <Artwork
+                                  src={programmeArtwork(p.item.thumb)}
+                                  alt=""
+                                  title=""
+                                  className="h-10 w-7 shrink-0 rounded"
+                                />
+                              ) : null}
+                              <span className="min-w-0">
+                                <span
+                                  className={cn(
+                                    "block truncate text-[13px] font-medium",
+                                    airing ? "text-fg" : "text-fg",
+                                  )}
+                                >
+                                  {p.item.title || t("Untitled")}
+                                  {p.item.season && p.item.episode ? (
+                                    <span className="ml-1.5 text-[11px] font-normal text-fg-subtle">
+                                      {t("S{season} E{episode}", {
+                                        season: p.item.season,
+                                        episode: p.item.episode,
+                                      })}
+                                    </span>
+                                  ) : null}
+                                </span>
+                                {visibleW > 70 ? (
+                                  <span className="block truncate text-[11px] tabular-nums text-fg-muted">
+                                    {clock(p.start)} – {clock(p.end)}
+                                    {p.item.rating ? ` · ${p.item.rating}` : ""}
                                   </span>
                                 ) : null}
                               </span>
-                              {w > 70 ? (
-                                <span className="block truncate text-[11px] tabular-nums text-fg-muted">
-                                  {clock(p.start)} – {clock(p.end)}
-                                  {p.item.rating ? ` · ${p.item.rating}` : ""}
-                                </span>
-                              ) : null}
                             </span>
-                          </span>
+                          ) : null}
                         </button>
                       );
                     })}
@@ -912,7 +998,7 @@ export function GuideGrid({
               );
             })}
 
-            {nowVisible ? (
+            {nowVisible && nowX >= view.left ? (
               // Above programme cards (z-10 on hover) but below the sticky
               // channel column (z-20), so scrolling never draws it over names.
               <div

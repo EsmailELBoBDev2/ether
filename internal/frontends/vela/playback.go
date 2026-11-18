@@ -698,7 +698,9 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			}
 			if e == nil {
 				kind := "remux"
-				if d.Kind == frontend.DecisionTranscode {
+				// A quality rung is always re-encoded, whatever the
+				// session's main decision is.
+				if d.Kind == frontend.DecisionTranscode || s.rungFor(path) != "" {
 					kind = "transcode"
 				}
 				path["kind"] = kind

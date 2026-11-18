@@ -95,10 +95,12 @@ func (i *instance) refreshTrackDelivery(ctx context.Context, access frontend.Ses
 	if selectedAudio != "" {
 		s.plan["selectedAudioTrackId"] = selectedAudio
 	}
+	path := selectedPlaybackPath(s.plan, s.plan["paths"].([]object))
 	kind := "remux"
-	if d.Kind == frontend.DecisionTranscode {
+	// A quality rung is always re-encoded, whatever the session's main
+	// decision is.
+	if d.Kind == frontend.DecisionTranscode || s.rungFor(path) != "" {
 		kind = "transcode"
 	}
-	path := selectedPlaybackPath(s.plan, s.plan["paths"].([]object))
 	path["kind"], path["decisionReason"] = kind, d.Reason
 }

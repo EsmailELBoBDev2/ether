@@ -3,6 +3,7 @@ import { Film, Pin, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
+import { CopyButton } from "../../components/CopyButton";
 import { Drawer } from "../../components/Drawer";
 import { Kpi } from "../../components/Kpi";
 import { t, tn } from "../../i18n";
@@ -20,6 +21,7 @@ import { qualityLabel, rangeLabel, type ReleaseInfo } from "../../lib/releases";
 import { useTitle } from "../../lib/titles";
 import { searchLink } from "../releases/Pinned";
 import type { CacheSnapshot, ReleaseDetail } from "./Cache";
+import { isOpaqueId } from "./CacheExplorer";
 import {
   causeDescription,
   causeLabel,
@@ -27,6 +29,7 @@ import {
   retentionLabel,
   selectionReason,
   shelfStateLabel,
+  statusPills,
 } from "./reasons";
 
 type CachedRelease = CacheSnapshot["releases"][number];
@@ -42,8 +45,10 @@ const SOURCE_NAMES: Record<string, string> = {
   cam: "CAM",
 };
 
-function isOpaqueId(value: string): boolean {
-  return /^[0-9a-f]{24,}$/i.test(value.trim().replace(/\.[a-z0-9]{2,5}$/i, ""));
+function compactKey(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 20) return trimmed;
+  return `${trimmed.slice(0, 8)}…${trimmed.slice(-6)}`;
 }
 
 /** Fallback media-tag parser when the server has only a raw release or file name. */
@@ -314,6 +319,7 @@ export function CacheReleaseDrawer({
   releaseId,
   release,
   friendlyTitle,
+  friendlySubtitle,
   snapshot,
   policyName,
   busy,
@@ -324,6 +330,7 @@ export function CacheReleaseDrawer({
   releaseId: string | null;
   release?: CachedRelease;
   friendlyTitle?: string;
+  friendlySubtitle?: string;
   snapshot?: CacheSnapshot;
   policyName: string;
   busy: boolean;
@@ -374,6 +381,7 @@ export function CacheReleaseDrawer({
   const lastPlayed = release ? parseTime(release.LastPlayed) : null;
   const retention = release?.reason?.retention;
   const expiryUntil = parseTime(retention?.until);
+  const pills = release ? statusPills(primaryCode, release.Pins) : [];
 
   const storageKind = snapshot?.shared
     ? snapshot.clustered
@@ -387,7 +395,7 @@ export function CacheReleaseDrawer({
       onClose={onClose}
       size="md"
       title={title}
-      description={release ? release.reason?.file || release.ReleaseID : undefined}
+      description={release ? friendlySubtitle : undefined}
       footer={
         release ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -448,20 +456,11 @@ export function CacheReleaseDrawer({
             <ReleasePoster ratingKey={ratingKey} title={title} />
             <div className="min-w-0 flex-1 space-y-2">
               <div className="flex flex-wrap gap-1.5">
-                <Badge
-                  variant={
-                    primaryCode === "playing" || primaryCode === "paused" ? "default" : "secondary"
-                  }
-                >
-                  {causeLabel(primaryCode)}
-                </Badge>
-                {(release.Pins ?? [])
-                  .filter((pin) => pinLabel(pin) !== causeLabel(primaryCode))
-                  .map((pin) => (
-                    <Badge key={pin} variant="secondary">
-                      {pinLabel(pin)}
-                    </Badge>
-                  ))}
+                {pills.map((pill) => (
+                  <Badge key={pill.label} variant={pill.active ? "default" : "secondary"}>
+                    {pill.label}
+                  </Badge>
+                ))}
                 {resBadge ? <Badge variant="secondary">{resBadge}</Badge> : null}
                 {range ? <Badge variant="secondary">{range}</Badge> : null}
                 {sourceBadge ? <Badge variant="secondary">{sourceBadge}</Badge> : null}
@@ -513,14 +512,14 @@ export function CacheReleaseDrawer({
             <SegmentMap release={release} detail={detail} />
             <dl className="divide-y divide-border">
               <DetailRow label={t("Release")}>
-                {release.reason?.source ? (
+                {release.reason?.source && !isOpaqueId(release.reason.source) ? (
                   <span className="font-mono text-xs">{release.reason.source}</span>
                 ) : (
                   "—"
                 )}
               </DetailRow>
               <DetailRow label={t("File")}>
-                {release.reason?.file ? (
+                {release.reason?.file && !isOpaqueId(release.reason.file) ? (
                   <span className="font-mono text-xs">{release.reason.file}</span>
                 ) : (
                   "—"
@@ -545,8 +544,16 @@ export function CacheReleaseDrawer({
                 {formatBytes(release.Bytes)}
                 {release.Size > 0 ? ` / ${formatBytes(release.Size)}` : ""}
               </DetailRow>
-              <DetailRow label={t("Release ID")}>
-                <span className="font-mono text-xs text-fg-muted">{release.ReleaseID}</span>
+              <DetailRow label={t("Cache key")}>
+                <span className="flex min-w-0 items-center gap-2">
+                  <code
+                    className="min-w-0 truncate rounded bg-bg-subtle px-2 py-1 font-mono text-xs text-fg-muted"
+                    title={release.ReleaseID}
+                  >
+                    {compactKey(release.ReleaseID)}
+                  </code>
+                  <CopyButton value={release.ReleaseID} label={t("Copy cache key")} />
+                </span>
               </DetailRow>
             </dl>
           </section>
@@ -558,7 +565,10 @@ export function CacheReleaseDrawer({
             <dl className="divide-y divide-border">
               <DetailRow label={t("Origin")}>{originLabel(release.reason?.origin)}</DetailRow>
               <DetailRow label={t("Source")}>
-                {release.reason?.indexer || release.reason?.source || "—"}
+                {release.reason?.indexer ||
+                  (release.reason?.source && !isOpaqueId(release.reason.source)
+                    ? release.reason.source
+                    : "—")}
               </DetailRow>
               <DetailRow label={t("Storage")}>
                 {storageKind}
@@ -678,8 +688,9 @@ export function CacheReleaseDrawer({
                 {retention?.kind === "pinned" ? (
                   t("Protected while pinned ({pins})", {
                     pins:
-                      (retention.pins ?? release.Pins ?? []).map(pinLabel).join(" · ") ||
-                      t("Kept by you"),
+                      Array.from(
+                        new Set((retention.pins ?? release.Pins ?? []).map(pinLabel)),
+                      ).join(" · ") || t("Kept by you"),
                   })
                 ) : retention?.kind === "expiry" && expiryUntil ? (
                   <>

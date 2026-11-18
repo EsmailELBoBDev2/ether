@@ -42,7 +42,7 @@ export function CacheOverview({
     let cause = "";
     if (codes.has("playing")) cause = "playing";
     else if (codes.has("paused")) cause = "paused";
-    else if (pins.includes("playback:live")) cause = "playback:live";
+    else if (pins.includes("playback:live")) cause = "playing";
     else if (pins.includes("playback:inprogress")) cause = "playback:inprogress";
     else if (pins.includes("owner")) cause = "owner";
     else if (pins.includes("preloaded")) cause = "preloaded";

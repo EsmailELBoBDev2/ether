@@ -20,7 +20,8 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { ErrorPanel } from "../../components/feedback";
 import { Field, NumberInput } from "../../components/fields";
-import { SubtabNav, useRouteTab } from "../../components/layout";
+import { OverflowTabs } from "../../components/OverflowTabs";
+import { useRouteTab } from "../../components/layout";
 import { Workspace } from "../../components/workspace";
 import { localized, t, tn } from "../../i18n";
 import { api, apiFetch } from "../../lib/api";
@@ -379,7 +380,12 @@ export default function Cache() {
                 : t("NAS storage")
               : t("This node")}
           </Badge>
-          <Button size="sm" disabled={busy !== null} onClick={() => void clearAll()}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy !== null}
+            onClick={() => void clearAll()}
+          >
             {t("Clear cache")}
           </Button>
           <Button size="sm" onClick={() => setEditor("policy")}>
@@ -427,8 +433,8 @@ export default function Cache() {
             })}
           </div>
         )}
-        <div className="shrink-0 border-b border-border bg-surface px-4 sm:px-6 [&>div]:!mb-0">
-          <SubtabNav
+        <div className="shrink-0 border-b border-border bg-surface px-4 sm:px-6">
+          <OverflowTabs
             ariaLabel={t("Cache sections")}
             active={tab}
             onSelect={(key) => navigate(`/cache/${key}`)}
@@ -1436,7 +1442,7 @@ export default function Cache() {
                 description={
                   <>
                     {t(
-                      "Zero means unlimited, not disabled. Choose No persistent media below to turn disk caching off.",
+                      "Zero means unlimited, not disabled. Use Back to presets and choose Pass-through to turn disk caching off.",
                     )}
                     {disk.data && draft.dir === activeDirectory && (
                       <span className="mt-1.5 flex items-center gap-1.5 text-xs text-fg-muted">

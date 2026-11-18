@@ -350,13 +350,7 @@ func (s *Server) liveDiscoveryToMetadata(r *http.Request, ps []frontend.LiveTVPr
 			continue
 		}
 		md := s.liveProgrammeMetadata(c, p)
-		if cloudGuideLogoClient(FromContext(r.Context())) {
-			for i, a := range md.Media[0].Extra {
-				if a.Name == "channelThumb" {
-					md.Media[0].Extra[i].Value = s.liveGuideLogo(r, c)
-				}
-			}
-		}
+		s.applyGuideChannelThumb(r, &md, c)
 		out = append(out, md)
 	}
 	return out

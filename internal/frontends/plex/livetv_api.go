@@ -340,13 +340,7 @@ func liveLogo(c frontend.LiveTVChannel) string {
 }
 
 func isStandaloneGuideLogoClient(pr *Request) bool {
-	if pr == nil {
-		return false
-	}
-	return cloudGuideLogoClient(pr) ||
-		strings.EqualFold(pr.Product, "Plex Web") ||
-		strings.EqualFold(pr.Platform, "Android") ||
-		plexAndroidClient(pr)
+	return pr != nil && (cloudGuideLogoClient(pr) || strings.EqualFold(pr.Product, "Plex Web"))
 }
 
 func (s *Server) liveGuideLogo(r *http.Request, c frontend.LiveTVChannel) string {
@@ -625,14 +619,8 @@ func (s *Server) liveGuideMetadataCapture(r *http.Request, captured *[]frontend.
 			continue
 		}
 		md := s.liveProgrammeMetadata(byID[p.ChannelID], p)
-		if c, ok := byID[p.ChannelID]; ok && cloudGuideLogoClient(FromContext(r.Context())) {
-			// The Apple TV guide draws airings' channelThumb too: give it the
-			// same fetchable logo as the lineup.
-			for i, a := range md.Media[0].Extra {
-				if a.Name == "channelThumb" {
-					md.Media[0].Extra[i].Value = s.liveGuideLogo(r, c)
-				}
-			}
+		if c, ok := byID[p.ChannelID]; ok {
+			s.applyGuideChannelThumb(r, &md, c)
 		}
 		out = append(out, md)
 		if captured != nil {

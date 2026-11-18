@@ -892,6 +892,7 @@ export default function LiveTV() {
                 initialSub={tab === "guide-data" ? "mapping" : "grid"}
                 channels={sorted}
                 sources={sources}
+                ownerGroups={ownerGroups}
                 coverage={coverage}
                 query={search}
                 guideUntil={guideUntil}

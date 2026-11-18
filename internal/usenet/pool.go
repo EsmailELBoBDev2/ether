@@ -590,7 +590,6 @@ func (p *pool) warmLoop() {
 		p.warmActive = false
 		p.mu.Unlock()
 	}()
-	limitTries := 0
 	for {
 		floor := p.idleFloor()
 		if floor == 0 {
@@ -614,22 +613,21 @@ func (p *pool) warmLoop() {
 			if p.ctx.Err() != nil {
 				return
 			}
-			if errors.Is(err, errAtLimit) && limitTries < 3 {
-				limitTries++
-				continue
-			}
-			if errors.Is(err, errAtLimit) {
-				p.limitUnusable(err)
-			}
 			p.redialFails.Add(1)
 			p.mu.Lock()
 			p.warmFails++
-			p.warmNext = time.Now().Add(p.warmBackoff(p.warmFails))
+			fails := p.warmFails
+			p.warmNext = time.Now().Add(p.warmBackoff(fails))
 			p.mu.Unlock()
+			// Capacity refusals retry on the warm backoff, never in a tight
+			// loop against the provider; only a run of them with no
+			// established connection marks the provider unusable.
+			if errors.Is(err, errAtLimit) && fails >= 3 {
+				p.limitUnusable(err)
+			}
 			p.log.Debug("usenet: background warm redial failed; backing off", "err", err)
 			return
 		}
-		limitTries = 0
 		p.bgRedials.Add(1)
 		p.brk.connectOK()
 		p.mu.Lock()

@@ -15,6 +15,7 @@ import { filterGuideChannels, groupGuideChannels, type GuideAppFilter } from "./
 import { sourceImportError } from "./sourceErrors";
 import {
   MINUTE,
+  compileOwnerGroupMatcher,
   groupBy,
   isGuideSource,
   tv,
@@ -132,6 +133,28 @@ export function GuidePage({
   const missingLabel = missingCount ?? missing;
 
   const groups = useMemo(() => groupGuideChannels(channels), [channels]);
+  // Your groups (by rule, provider group or picked channels) are owner groups,
+  // not channel renames: filter them with the same matcher Channels uses.
+  const sourceNames = useMemo(() => new Map(sources.map((s) => [s.id, sourceTitle(s)])), [sources]);
+  const ownerGroup = group.startsWith("owner:")
+    ? ownerGroups.find((g) => g.id === group.slice(6))
+    : undefined;
+  const guideChannels = useMemo(
+    () =>
+      ownerGroup ? channels.filter(compileOwnerGroupMatcher(ownerGroup, sourceNames)) : channels,
+    [channels, ownerGroup, sourceNames],
+  );
+  // A remembered group that was since deleted or renamed would leave the
+  // guide empty: fall back to every group once the lineup has loaded.
+  useEffect(() => {
+    if (!group || group === "yours" || group === "provider" || channels.length === 0) return;
+    const gone = group.startsWith("owner:")
+      ? !ownerGroups.some((g) => g.id === group.slice(6))
+      : group.startsWith("name:") &&
+        !groups.yours.includes(group.slice(5)) &&
+        !groups.provider.includes(group.slice(5));
+    if (gone) changeGroup("");
+  }, [group, ownerGroups, groups, channels.length]);
 
   const subTabs = (
     <Segmented
@@ -175,10 +198,15 @@ export function GuidePage({
         className="max-w-[11rem]"
         options={[
           { value: "", label: t("All groups") },
-          ...(groups.yours.length
+          ...ownerGroups.map((g) => ({
+            value: `owner:${g.id}`,
+            label: g.name,
+            group: t("Your groups"),
+          })),
+          ...(groups.yours.length && !ownerGroups.length
             ? [{ value: "yours", label: t("Your groups"), group: t("Your groups") }]
             : []),
-          ...groups.yours.map((g) => ({
+          ...(ownerGroups.length ? [] : groups.yours).map((g) => ({
             value: `name:${g}`,
             label: g,
             group: t("Your groups"),
@@ -212,9 +240,9 @@ export function GuidePage({
 
       {sub === "grid" ? (
         <TVGuide
-          channels={channels}
+          channels={guideChannels}
           app={app}
-          group={group}
+          group={ownerGroup ? "" : group}
           query={query}
           now={now}
           guideUntil={guideUntil}

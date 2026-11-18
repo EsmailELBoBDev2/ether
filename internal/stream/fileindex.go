@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"math/bits"
 	"sort"
 	"sync"
 
@@ -22,14 +23,16 @@ type postedFile struct {
 	segBase int // global segment number of slot 0 (cache key)
 	defPart func() int64
 
-	mu       sync.RWMutex
-	slots    []slot
-	anchors  []int // sorted indices of known slots
-	partSize int64 // learned uniform part size, 0 = unknown
-	size     int64 // exact decoded size, valid if sizeKnown
-	known    bool  // size learned from a yEnc header
-	assumed  int64 // size assumed by a volume layout until known
-	name     string
+	mu           sync.RWMutex
+	slots        []slot
+	anchors      []int // sorted indices of known slots
+	partSize     int64 // learned uniform part size, 0 = unknown
+	maxEnd       int64 // largest exact =ypart end seen
+	size         int64 // exact decoded size, valid if known
+	known        bool  // size learned from a consistent yEnc header
+	distrustSize bool  // per-article =ybegin sizes contradicted extents or each other
+	assumed      int64 // size assumed by a volume layout until known
+	name         string
 }
 
 // maxTailGrowth permits a few missing parts in addition to twice the listed
@@ -64,7 +67,7 @@ func (pf *postedFile) numSlots() int {
 }
 
 // Size returns the decoded size: exact if learned, else the assumed size,
-// else an estimate from the part size.
+// else an estimate from the part size, never less than the largest extent seen.
 func (pf *postedFile) Size() int64 {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
@@ -76,9 +79,9 @@ func (pf *postedFile) sizeLocked() int64 {
 		return pf.size
 	}
 	if pf.assumed > 0 {
-		return pf.assumed
+		return max(pf.assumed, pf.maxEnd)
 	}
-	return int64(len(pf.slots)) * pf.partLocked()
+	return max(int64(len(pf.slots))*pf.partLocked(), pf.maxEnd)
 }
 
 // SizeKnown reports whether the exact size has been learned.
@@ -223,19 +226,100 @@ func (pf *postedFile) slotsFor(off, n int64) []int {
 	return out
 }
 
+// validFileMeta reports whether =ybegin file metadata (fileSize, part, total)
+// is consistent with slot i's [begin, end) extent and the NZB article layout.
+func (pf *postedFile) validFileMeta(i int, begin, end, fileSize int64, part, total int) bool {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	return pf.validFileMetaLocked(i, begin, end, fileSize, part, total)
+}
+
+func (pf *postedFile) validFileMetaLocked(i int, begin, end, fileSize int64, part, total int) bool {
+	if part > 0 && part != i+1 {
+		return false
+	}
+	listed := pf.file.SegmentCount()
+	if total > 0 {
+		if part > 0 && part > total {
+			return false
+		}
+		if total < listed || total > max(len(pf.slots), listed*2+maxTailGrowth) {
+			return false
+		}
+	}
+	if fileSize <= 0 {
+		return true
+	}
+	if end <= 0 || fileSize < max(end, pf.maxEnd) {
+		return false
+	}
+	effectiveTotal := len(pf.slots)
+	if total > effectiveTotal {
+		effectiveTotal = total
+	}
+	if i < 0 || i >= effectiveTotal {
+		return false
+	}
+	rem := int64(effectiveTotal - 1 - i)
+	if rem == 0 {
+		return fileSize == end
+	}
+	remaining := fileSize - end
+	if remaining <= 0 {
+		return false
+	}
+	partLen := end - begin
+	avg := (end + int64(i)) / int64(i+1)
+	maxUnit := max(partLen, pf.partSize, avg)
+	if (remaining-1)/(2*rem) >= maxUnit {
+		return false
+	}
+	if rem >= 2 {
+		minUnit := avg
+		var remBytes, remSegs int64
+		for _, s := range pf.file.Segments {
+			if s.Number > i+1 && s.Bytes > 0 {
+				remBytes += s.Bytes
+				remSegs++
+			}
+		}
+		if remSegs > 0 {
+			minUnit = min(minUnit, remBytes/remSegs)
+		}
+		hi, lo := bits.Mul64(uint64(rem-1), uint64(minUnit))
+		if hi > 0 || uint64(remaining) < lo/2 {
+			return false
+		}
+	}
+	return true
+}
+
 // learn records the exact range of slot i from its yEnc header. begin/end
 // are 0-based [begin,end); fileSize and total may be 0 when unknown. It
 // reports whether the slot's range differed from the estimate.
 func (pf *postedFile) learn(i int, begin, end, fileSize int64, total int) (changed bool) {
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
-	if listed := len(pf.file.Segments); total > len(pf.slots) && total <= listed*2+maxTailGrowth {
+	if end > pf.maxEnd {
+		pf.maxEnd = end
+	}
+	if pf.known && pf.size < pf.maxEnd {
+		pf.size, pf.known, pf.distrustSize = 0, false, true
+		changed = true
+	}
+	if !pf.validFileMetaLocked(i, begin, end, fileSize, 0, total) {
+		fileSize, total = 0, 0
+	}
+	if listed := pf.file.SegmentCount(); total > len(pf.slots) && total <= listed*2+maxTailGrowth {
 		// The post has more parts than the NZB lists: the tail is missing.
 		// The total comes from an untrusted yEnc header; an absurd one must
 		// not allocate an enormous slot table.
 		pf.slots = append(pf.slots, make([]slot, total-len(pf.slots))...)
 	}
-	if fileSize > 0 && fileSize >= end && (i >= len(pf.slots)-1 || fileSize > end) && (!pf.known || pf.size != fileSize) {
+	if fileSize > 0 && pf.known && pf.size != fileSize {
+		pf.size, pf.known, pf.distrustSize = 0, false, true
+		changed = true
+	} else if !pf.distrustSize && fileSize > 0 && fileSize >= end && (i >= len(pf.slots)-1 || fileSize > end) && !pf.known {
 		pf.size, pf.known = fileSize, true
 		changed = true
 	}
@@ -339,4 +423,16 @@ func (pf *postedFile) Name() string {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
 	return pf.name
+}
+
+func (pf *postedFile) markUntrustedMeta() {
+	pf.mu.Lock()
+	pf.size, pf.known, pf.distrustSize = 0, false, true
+	pf.mu.Unlock()
+}
+
+func (pf *postedFile) untrustedMeta() bool {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	return pf.distrustSize
 }

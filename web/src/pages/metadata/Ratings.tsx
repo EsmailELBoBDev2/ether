@@ -339,7 +339,11 @@ export function RatingSources({
               <SettingsRow
                 stacked
                 title={<label htmlFor="ratings-enabled">{t("External ratings")}</label>}
-                description={t("Off: apps show the catalogue rating.")}
+                description={
+                  draft.enabled
+                    ? t("On: apps show the scores chosen below.")
+                    : t("Off: apps show the catalogue rating.")
+                }
                 control={
                   <Switch
                     id="ratings-enabled"
@@ -387,19 +391,17 @@ export function RatingSources({
                   title={<label htmlFor={`ratings-${key}`}>{label}</label>}
                   description={hint}
                   control={
-                    <select
+                    <SearchSelect
                       id={`ratings-${key}`}
-                      className={`${nativeSelect} sm:w-64`}
+                      ariaLabel={label}
                       value={draft[key]}
-                      onChange={(e) => set({ [key]: e.currentTarget.value })}
-                    >
-                      {key === "audience" && <option value="none">{t("None")}</option>}
-                      {SCORE_CHOICES.map((c) => (
-                        <option key={c.value} value={c.value}>
-                          {c.label}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        ...(key === "audience" ? [{ value: "none", label: t("None") }] : []),
+                        ...SCORE_CHOICES,
+                      ]}
+                      onChange={(value) => set({ [key]: value })}
+                      {...searchSelectLabels()}
+                    />
                   }
                 />
               ))}
@@ -407,15 +409,17 @@ export function RatingSources({
                 stacked
                 title={<label htmlFor="ratings-missing">{t("When a rating is missing")}</label>}
                 control={
-                  <select
+                  <SearchSelect
                     id="ratings-missing"
-                    className={`${nativeSelect} sm:w-64`}
+                    ariaLabel={t("When a rating is missing")}
                     value={draft.missing || "tmdb"}
-                    onChange={(e) => set({ missing: e.currentTarget.value })}
-                  >
-                    <option value="tmdb">{t("Use catalogue rating")}</option>
-                    <option value="none">{t("Show no rating")}</option>
-                  </select>
+                    options={[
+                      { value: "tmdb", label: t("Use catalogue rating") },
+                      { value: "none", label: t("Show no rating") },
+                    ]}
+                    onChange={(missing) => set({ missing })}
+                    {...searchSelectLabels()}
+                  />
                 }
               />
               <SettingsRow
@@ -447,37 +451,6 @@ export function RatingSources({
               enabled={Boolean((controlled ? saved : doc.data)?.enabled)}
               dirty={dirty}
             />
-            <Section
-              title={t("Plex rating fields")}
-              description={
-                dirty
-                  ? t("Draft selection. Save to apply to Plex.")
-                  : t("Current score mapping for title pages.")
-              }
-            >
-              <dl className="metadata-detail-list">
-                {[
-                  [t("External ratings"), draft.enabled ? t("Enabled") : t("Disabled")],
-                  [t("Provider"), draft.provider === "mdblist" ? "MDBList" : "OMDb"],
-                  [
-                    t("Plex rating"),
-                    SCORE_CHOICES.find((c) => c.value === draft.critic)?.label ||
-                      t("Catalogue default"),
-                  ],
-                  [
-                    t("Audience rating"),
-                    SCORE_CHOICES.find((c) => c.value === draft.audience)?.label ||
-                      t("Catalogue default"),
-                  ],
-                  [t("Cache lifetime"), tn(draft.cacheHours, "{count} hour", "{count} hours")],
-                ].map(([name, value]) => (
-                  <div key={name}>
-                    <dt>{name}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
-            </Section>
             <Section
               title={t("Available scores")}
               description={t(

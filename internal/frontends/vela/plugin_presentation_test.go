@@ -315,7 +315,7 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	}
 	exp.FacetsFunc = func(_ context.Context, _ *frontend.Viewer, _ core.Device, viewID, facet string) ([]core.FacetValue, error) {
 		if viewID == "23" && facet == "genre" {
-			return []core.FacetValue{{Title: "Sci-Fi"}} , nil
+			return []core.FacetValue{{Title: "Sci-Fi"}}, nil
 		}
 		return nil, nil
 	}

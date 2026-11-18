@@ -246,9 +246,7 @@ func TestGuideWindowSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Mark stored source as URL-backed so nextRefresh = UpdatedAt + 6h.
-	if _, err := s.o.DB.ExecContext(ctx, `UPDATE livetv_sources SET data=json_set(data,'$.guideUrl','https://example.invalid/guide.xml') WHERE id='src-ok'`); err != nil {
-		t.Fatal(err)
-	}
+	patchSourceJSON(t, s, "src-ok", map[string]any{"guideUrl": "https://example.invalid/guide.xml"})
 
 	// Source 2: M3U-only source with tvg-id but NO guide configured.
 	if _, err := s.ImportSource(ctx, Source{
@@ -269,9 +267,7 @@ func TestGuideWindowSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	failedAt := now.Add(time.Minute).UTC().Format(time.RFC3339Nano)
-	if _, err := s.o.DB.ExecContext(ctx, `UPDATE livetv_sources SET data=json_set(data,'$.lastError','upstream 502','$.lastErrorAt',?,'$.refreshFailures',1) WHERE id='src-failed'`, failedAt); err != nil {
-		t.Fatal(err)
-	}
+	patchSourceJSON(t, s, "src-failed", map[string]any{"lastError": "upstream 502", "lastErrorAt": failedAt, "refreshFailures": 1})
 
 	cs, err := s.Channels(ctx)
 	if err != nil {
@@ -415,5 +411,30 @@ func TestGuideWindowTooDense(t *testing.T) {
 	}
 	if dense.MaxChannels < 1 || dense.MaxChannels >= channels || dense.MaxWindowMinutes < 1 || dense.MaxWindowMinutes >= 180 {
 		t.Fatalf("unexpected suggest bounds: %+v", dense)
+	}
+}
+
+// patchSourceJSON sets fields of a stored source in Go, so the test runs on
+// SQLite and PostgreSQL alike.
+func patchSourceJSON(t *testing.T, s *Service, id string, fields map[string]any) {
+	t.Helper()
+	ctx := context.Background()
+	var stored string
+	if err := s.o.DB.QueryRowContext(ctx, `SELECT data FROM livetv_sources WHERE id=?`, id).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(stored), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range fields {
+		doc[k] = v
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.o.DB.ExecContext(ctx, `UPDATE livetv_sources SET data=? WHERE id=?`, string(b), id); err != nil {
+		t.Fatal(err)
 	}
 }

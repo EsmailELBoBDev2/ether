@@ -2402,8 +2402,26 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 		return errors.New("experience: unsupported sort")
 	}
 	now := time.Now()
+	// A title missing the sorted value goes last in either direction; a
+	// sort never drops it or floats it to the top of an ascending list.
+	missing := func(t core.Title) bool {
+		switch q.Sort {
+		case core.SortReleased:
+			return t.Released.IsZero()
+		case core.SortAdded:
+			return t.DateAdded(now).IsZero()
+		case core.SortRating:
+			return t.Rating == 0
+		case core.SortPopularity:
+			return t.Popularity == 0
+		}
+		return false
+	}
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
+		if am, bm := missing(a), missing(b); am != bm {
+			return bm
+		}
 		cmp := 0
 		switch q.Sort {
 		case core.SortTitle:

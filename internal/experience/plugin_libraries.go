@@ -103,7 +103,7 @@ func filterMediaType(lib core.Library) core.MediaType {
 }
 
 func isZeroPresentations(p core.Presentations) bool {
-	return !p.AdapterOnly && p.Plex == nil && p.MediaBrowser == nil && p.Stremio == nil && p.Xtream == nil && p.Silo == nil
+	return !p.AdapterOnly && p.Vela == nil && p.Plex == nil && p.MediaBrowser == nil && p.Stremio == nil && p.Xtream == nil && p.Silo == nil
 }
 
 func (s *Service) publishedLibrary(ctx context.Context, lib core.Library) (core.MediaType, string, bool) {

@@ -13,6 +13,54 @@ import (
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
+var allowedSiloTypes = map[string]bool{
+	"movies": true, "tvshows": true, "music": true, "audiobooks": true, "books": true, "photos": true, "homevideos": true,
+	"movie": true, "series": true, "show": true,
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "MusicAlbum": true, "Audio": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+}
+
+func validatePresentations(p core.Presentations) error {
+	if p.Vela != nil {
+		switch p.Vela.Type {
+		case "movies", "shows":
+		default:
+			return fmt.Errorf("%w: vela type must be movies or shows", ErrInvalid)
+		}
+	}
+	if p.Plex != nil {
+		switch p.Plex.Base {
+		case "movie", "show", "artist", "photo":
+		default:
+			return fmt.Errorf("%w: plex base must be movie, show, artist or photo", ErrInvalid)
+		}
+	}
+	if p.MediaBrowser != nil {
+		switch p.MediaBrowser.CollectionType {
+		case "movies", "tvshows", "music", "audiobooks", "books", "photos", "homevideos":
+		default:
+			return fmt.Errorf("%w: mediaBrowser collectionType must be movies, tvshows, music, audiobooks, books, photos or homevideos", ErrInvalid)
+		}
+	}
+	if p.Stremio != nil {
+		switch p.Stremio.Type {
+		case "movie", "series", "channel", "tv":
+		default:
+			return fmt.Errorf("%w: stremio type must be movie, series, channel or tv", ErrInvalid)
+		}
+	}
+	if p.Xtream != nil {
+		switch p.Xtream.Category {
+		case "movie", "series", "live":
+		default:
+			return fmt.Errorf("%w: xtream category must be movie, series or live", ErrInvalid)
+		}
+	}
+	if p.Silo != nil && !allowedSiloTypes[p.Silo.Type] {
+		return fmt.Errorf("%w: invalid silo type", ErrInvalid)
+	}
+	return nil
+}
+
 // List returns every library in owner order: sort, then id (§1.3).
 func (s *Service) listDB(ctx context.Context) ([]core.Library, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+libraryCols+` FROM libraries WHERE deleted=0 ORDER BY sort, id`)
@@ -141,6 +189,9 @@ func (s *Service) Create(ctx context.Context, name string, mediaType core.MediaT
 	if mediaType != core.TypeMovie && mediaType != core.TypeShow {
 		return core.Library{}, fmt.Errorf("%w: library type must be movie or show", ErrInvalid)
 	}
+	if err := validatePresentations(p); err != nil {
+		return core.Library{}, err
+	}
 	if _, err := s.compileCatalogueRules(rules, fallback); err != nil {
 		return core.Library{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
@@ -190,6 +241,9 @@ func (s *Service) CreateCollection(ctx context.Context, name string, collectionI
 	}
 	if mediaType != core.TypeMovie && mediaType != core.TypeShow {
 		return core.Library{}, fmt.Errorf("%w: collection library type must be movie or show", ErrInvalid)
+	}
+	if err := validatePresentations(p); err != nil {
+		return core.Library{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -245,6 +299,9 @@ func (s *Service) UpsertPluginLibrary(ctx context.Context, pluginID, kindKey str
 	name := strings.TrimSpace(decl.Name)
 	if pluginID == "" || kindKey == "" || name == "" || slugify(pluginID) == "" || slugify(kindKey) == "" {
 		return core.Library{}, fmt.Errorf("%w: plugin library needs plugin, kind and name", ErrInvalid)
+	}
+	if err := validatePresentations(decl.Present); err != nil {
+		return core.Library{}, err
 	}
 	existing, err := s.libraryForPluginKind(ctx, pluginID, kindKey)
 	if err == nil {
@@ -329,6 +386,9 @@ func (s *Service) SetHidden(ctx context.Context, id core.LibraryID, hidden bool)
 
 // SetPresent sets how protocols expose a library (§6.2).
 func (s *Service) SetPresent(ctx context.Context, id core.LibraryID, p core.Presentations) error {
+	if err := validatePresentations(p); err != nil {
+		return err
+	}
 	b, err := json.Marshal(p)
 	if err != nil {
 		return err

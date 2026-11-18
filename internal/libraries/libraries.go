@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 )
 
 func init() {
+	store.Register("libraries", 10, "SELECT 1;")
+	store.RegisterApply("libraries", 10, migrateVelaPresentation)
 	store.Register("libraries", 9, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
 	store.RegisterDialect("libraries", 9, store.Postgres, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
 	store.RegisterAfter("libraries", "catalog_viewer_rules")
@@ -84,6 +87,84 @@ ALTER TABLE libraries ADD COLUMN collection_id INTEGER NOT NULL DEFAULT 0;
 	store.RegisterDialect("libraries", 4, store.Postgres, `
 ALTER TABLE libraries ADD COLUMN collection_id BIGINT NOT NULL DEFAULT 0;
 `)
+}
+
+// migrateVelaPresentation populates present.vela once on existing stored
+// libraries from MediaBrowser (movies/tvshows), else Plex (movie/show), so
+// every library Vela showed before upgrade stays published to Vela.
+func migrateVelaPresentation(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, present FROM libraries`)
+	if err != nil {
+		return err
+	}
+	type edit struct {
+		id      int64
+		present string
+	}
+	var edits []edit
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		var p core.Presentations
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			rows.Close()
+			return err
+		}
+		velaType := inferVelaType(p)
+		if velaType == "" {
+			continue
+		}
+		p.Vela = &struct {
+			Type string `json:"type"`
+		}{Type: velaType}
+		b, err := json.Marshal(p)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		edits = append(edits, edit{id: id, present: string(b)})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, e := range edits {
+		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET present=? WHERE id=?`, e.present, e.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inferVelaType(p core.Presentations) string {
+	if p.AdapterOnly || p.Vela != nil {
+		return ""
+	}
+	if p.MediaBrowser != nil {
+		switch p.MediaBrowser.CollectionType {
+		case "movies":
+			return "movies"
+		case "tvshows":
+			return "shows"
+		}
+	}
+	if p.Plex != nil {
+		switch p.Plex.Base {
+		case "movie":
+			return "movies"
+		case "show":
+			return "shows"
+		}
+	}
+	return ""
 }
 
 var (
@@ -237,7 +318,7 @@ SELECT 1, COALESCE(MAX(id), 2) + 1 FROM libraries WHERE 1=1 ON CONFLICT(id) DO N
 			rows.Close()
 			return err
 		}
-		if !p.AdapterOnly && p.Plex == nil && p.MediaBrowser == nil && p.Stremio == nil && p.Xtream == nil && p.Silo == nil {
+		if !p.AdapterOnly && p.Vela == nil && p.Plex == nil && p.MediaBrowser == nil && p.Stremio == nil && p.Xtream == nil && p.Silo == nil {
 			raw = defaultPresentation(core.MediaType(mt))
 		}
 		upgrades = append(upgrades, upgrade{id, raw})
@@ -280,7 +361,7 @@ func (s *Service) compileCatalogueRules(rules []core.LibraryExclusion, fallback 
 
 func defaultPresentation(mt core.MediaType) string {
 	if mt == core.TypeShow {
-		return `{"plex":{"base":"show"},"mediaBrowser":{"collectionType":"tvshows"},"stremio":{"type":"series"},"xtream":{"category":"series"},"silo":{"type":"tvshows"}}`
+		return `{"vela":{"type":"shows"},"plex":{"base":"show"},"mediaBrowser":{"collectionType":"tvshows"},"stremio":{"type":"series"},"xtream":{"category":"series"},"silo":{"type":"tvshows"}}`
 	}
-	return `{"plex":{"base":"movie"},"mediaBrowser":{"collectionType":"movies"},"stremio":{"type":"movie"},"xtream":{"category":"movie"},"silo":{"type":"movies"}}`
+	return `{"vela":{"type":"movies"},"plex":{"base":"movie"},"mediaBrowser":{"collectionType":"movies"},"stremio":{"type":"movie"},"xtream":{"category":"movie"},"silo":{"type":"movies"}}`
 }

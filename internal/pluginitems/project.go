@@ -145,6 +145,9 @@ func projectMediaType(level string, decl plugins.MediaKindMeta, present core.Pre
 			return core.TypeEpisode
 		}
 	}
+	if present.Vela != nil && present.Vela.Type == "movies" {
+		return core.TypeMovie
+	}
 	if present.Plex != nil && present.Plex.Base == "movie" {
 		return core.TypeMovie
 	}

@@ -58,8 +58,27 @@ func TestContentManifestValidates(t *testing.T) {
 	if err := contentManifest().Validate(); err != nil {
 		t.Fatalf("valid content manifest: %v", err)
 	}
-	// Adapter-only presentation with the adapter declared.
+	// Vela-only presentation (movies on 1 level, shows on >=2 levels) validates.
 	m := contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{
+		Vela: &struct {
+			Type string `json:"type"`
+		}{Type: "shows"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("vela shows kind: %v", err)
+	}
+	m.Ether.Contributes.MediaKinds[0].Levels = []KindLevel{{Key: "film", Label: "Film", Playable: true}}
+	m.Ether.Contributes.MediaKinds[0].Present = core.Presentations{
+		Vela: &struct {
+			Type string `json:"type"`
+		}{Type: "movies"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("vela movies flat kind: %v", err)
+	}
+	// Adapter-only presentation with the adapter declared.
+	m = contentManifest()
 	m.Ether.Capabilities = append(m.Ether.Capabilities, CapFrontendAdapter)
 	m.Ether.Contributes.FrontendAdapters = []FrontendAdapterMeta{
 		{Key: "feed", Label: "Recordings feed", ProtocolHint: "custom", PathPrefix: "/recordings"},
@@ -150,6 +169,19 @@ func TestContentManifestRules(t *testing.T) {
 		{"adapter only without adapter", func(m *Manifest) {
 			kind(m).Present = core.Presentations{AdapterOnly: true}
 		}, ".present.adapterOnly"},
+		{"vela shows one level", func(m *Manifest) {
+			kind(m).Levels = []KindLevel{{Key: "track", Label: "Track", Playable: true}}
+			kind(m).Present = core.Presentations{
+				Vela: &struct {
+					Type string `json:"type"`
+				}{Type: "shows"},
+			}
+		}, "present.vela.type"},
+		{"vela bad type", func(m *Manifest) {
+			kind(m).Present.Vela = &struct {
+				Type string `json:"type"`
+			}{Type: "music"}
+		}, "present.vela.type"},
 		{"plex show one level", func(m *Manifest) {
 			kind(m).Levels = []KindLevel{{Key: "track", Label: "Track", Playable: true}}
 			kind(m).Present.MediaBrowser = nil

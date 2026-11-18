@@ -778,6 +778,8 @@ is the natural unit); containers themselves carry no progress.
 Each library publishes per protocol; the owner can override your
 defaults per library afterwards.
 
+- `vela: {type: "movies"|"shows"}` — Ether's own app (`shows` needs at
+  least two levels).
 - `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
@@ -3732,6 +3734,7 @@ type CatalogueArtifact struct {
 	Version      string
 	URL          string
 	SHA256       string
+	Icon         string
 	Kind         Kind
 	Permissions  Permissions
 	Capabilities []Capability
@@ -13890,6 +13893,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys map[string]bool, add func(string, string)) {
 	p := k.Present
 	protocols := 0
+	if p.Vela != nil {
+		protocols++
+	}
 	if p.Plex != nil {
 		protocols++
 	}
@@ -13921,6 +13927,17 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		return
 	}
 	levels := len(k.Levels)
+	if p.Vela != nil {
+		switch p.Vela.Type {
+		case "movies":
+		case "shows":
+			if levels < 2 {
+				add(base+".vela.type", "shows needs at least two levels")
+			}
+		default:
+			add(base+".vela.type", "must be movies or shows")
+		}
+	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
 		case "movie", "photo":
@@ -21087,6 +21104,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].present.silo.type` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].present.stremio` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.stremio.type` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].present.vela` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].present.vela.type` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].present.xtream` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.xtream.category` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].sync` | `object` | false | {} |
@@ -21622,6 +21641,14 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         "type": "object"
                       },
                       "stremio": {
+                        "properties": {
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "vela": {
                         "properties": {
                           "type": {
                             "type": "string"
@@ -34873,6 +34900,9 @@ type Contributes struct {
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `adapterOnly` | `bool` | may be omitted (see validation for conditions) |  |
+| `vela` | `*struct {
+		Type string `json:"type"` // movies|shows
+	}` | may be omitted (see validation for conditions) |  |
 | `plex` | `*struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	}` | may be omitted (see validation for conditions) |  |
@@ -34897,7 +34927,10 @@ type Contributes struct {
 // Presentations declares how a library is published per protocol.
 type Presentations struct {
 	AdapterOnly bool `json:"adapterOnly,omitempty"`
-	Plex        *struct {
+	Vela        *struct {
+		Type string `json:"type"` // movies|shows
+	} `json:"vela,omitempty"`
+	Plex *struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {
@@ -43995,6 +44028,7 @@ export interface Contributes {
 /** How a library is published per protocol (Ether v0.3.8 content kinds). */
 export interface Presentations {
   adapterOnly?: boolean;
+  vela?: { type: "movies" | "shows" };
   plex?: { base: "movie" | "show" | "artist" | "photo" };
   mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
   stremio?: { type: "movie" | "series" | "channel" | "tv" };

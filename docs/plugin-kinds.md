@@ -165,6 +165,8 @@ is the natural unit); containers themselves carry no progress.
 Each library publishes per protocol; the owner can override your
 defaults per library afterwards.
 
+- `vela: {type: "movies"|"shows"}` — Ether's own app (`shows` needs at
+  least two levels).
 - `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).

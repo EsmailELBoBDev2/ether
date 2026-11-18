@@ -737,9 +737,37 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Query, Mode, Cursor string
 		Generation, Limit   int
+		// Sort orders the results (searchSorts); "relevance" or empty keeps
+		// the search's own order. Kind limits results to movies or shows.
+		Sort, Direction, Kind string
 	}
 	if body(r, &b) != nil || b.Query == "" {
 		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	iq := frontend.ItemQuery{NoTotal: true}
+	switch b.Sort {
+	case "", "relevance":
+	case "title", "released", "added", "rating", "popularity":
+		iq.Sort = frontend.SortOrder(b.Sort)
+	default:
+		problem(w, 400, "request", "invalid_sort")
+		return
+	}
+	switch b.Direction {
+	case "", "asc":
+	case "desc":
+		iq.Desc = true
+	default:
+		problem(w, 400, "request", "invalid_direction")
+		return
+	}
+	switch b.Kind {
+	case "":
+	case "movie", "show":
+		iq.Types = []frontend.MediaType{frontend.MediaType(b.Kind)}
+	default:
+		problem(w, 400, "request", "invalid_kind")
 		return
 	}
 	if b.Cursor != "" {
@@ -751,6 +779,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		n = 50
 	}
 	n = min(n, 100)
+	iq.Limit = n
 	var p frontend.SearchPage
 	switch b.Mode {
 	case "descriptive":
@@ -759,9 +788,9 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusServiceUnavailable, "policy", "feature_unavailable")
 			return
 		}
-		p, e = source.DescriptiveSearch(r.Context(), v, requestDevice(r), b.Query, frontend.ItemQuery{Limit: n, NoTotal: true})
+		p, e = source.DescriptiveSearch(r.Context(), v, requestDevice(r), b.Query, iq)
 	case "fast":
-		p, e = i.host.Experience.Search(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), b.Query, frontend.ItemQuery{Limit: n, NoTotal: true})
+		p, e = i.host.Experience.Search(i.host.Experience.NoProviderWait(r.Context()), v, requestDevice(r), b.Query, iq)
 	default:
 		problem(w, 400, "request", "invalid_search_mode")
 		return

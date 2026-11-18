@@ -277,7 +277,11 @@ type testResult struct {
 }
 
 func (h *Handler) runTest(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context) error) {
-	ctx, cancel := context.WithTimeout(r.Context(), h.deps.TestTimeout)
+	h.runTestWithin(w, r, h.deps.TestTimeout, fn)
+}
+
+func (h *Handler) runTestWithin(w http.ResponseWriter, r *http.Request, timeout time.Duration, fn func(ctx context.Context) error) {
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	start := time.Now()
 	err := func() (err error) {
@@ -499,8 +503,15 @@ func (h *Handler) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestLLM(ctx, cfg) })
+	h.runTestWithin(w, r, llmTestTimeout, func(ctx context.Context) error { return h.deps.TestLLM(ctx, cfg) })
 }
+
+// llmTestTimeout bounds the language-model test. Thinking models (Gemini,
+// o-series, DeepSeek R1) reason before answering even "reply ok", and the
+// OpenAI-compatible endpoint returns nothing until they finish, so the
+// 20-second budget other testers use failed them with "context deadline
+// exceeded". It matches the model client's own request limit.
+const llmTestTimeout = 2 * time.Minute
 
 // LLMModel is one model a language-model provider offers.
 type LLMModel struct {

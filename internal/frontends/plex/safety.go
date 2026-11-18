@@ -44,6 +44,37 @@ func (s *Server) visibleTitles(u *frontend.User, ts []frontend.Title) []frontend
 }
 
 func (s *Server) visibleTitlesWith(vis frontend.Visibility, u *frontend.User, ts []frontend.Title) []frontend.Title {
+	hasPlugin := false
+	for i := range ts {
+		if ts[i].Key.IsPluginKey() {
+			hasPlugin = true
+			break
+		}
+	}
+	if hasPlugin {
+		catalog := make([]frontend.Title, 0, len(ts))
+		for i := range ts {
+			if !ts[i].Key.IsPluginKey() {
+				catalog = append(catalog, ts[i])
+			}
+		}
+		allowedCat := s.visibleTitlesWith(vis, u, catalog)
+		catOK := make(map[frontend.RatingKey]bool, len(allowedCat))
+		for i := range allowedCat {
+			catOK[allowedCat[i].Key] = true
+		}
+		out := make([]frontend.Title, 0, len(ts))
+		for i := range ts {
+			if ts[i].Key.IsPluginKey() {
+				if s.canSeePluginTitle(u, &ts[i]) {
+					out = append(out, ts[i])
+				}
+			} else if catOK[ts[i].Key] {
+				out = append(out, ts[i])
+			}
+		}
+		return out
+	}
 	out := vis.TitlesAllowed(u, ts)
 	metaSrc := s.libraryMetadata()
 	if !s.needPlexRatingFilter(u) || metaSrc == nil {
@@ -163,6 +194,7 @@ func (s *Server) openableTitlesWith(ctx context.Context, vis frontend.Visibility
 	// Plugin items are authorized by the Experience when projected; the
 	// catalogue openability and built-in visibility checks do not know them,
 	// so keep them without those filters (spec §6.4).
+	orig := ts
 	var kind, catalog []frontend.Title
 	for i := range ts {
 		if ts[i].Key.IsPluginKey() {
@@ -171,11 +203,14 @@ func (s *Server) openableTitlesWith(ctx context.Context, vis frontend.Visibility
 			catalog = append(catalog, ts[i])
 		}
 	}
-	out := kind[:0]
-	for i := range kind {
-		if s.plexMetaRatingAllowed(u, &kind[i]) {
-			out = append(out, kind[i])
+	if len(kind) > 0 && len(catalog) == 0 {
+		out := kind[:0]
+		for i := range kind {
+			if s.canSeePluginTitle(u, &kind[i]) {
+				out = append(out, kind[i])
+			}
 		}
+		return out
 	}
 	ts = catalog
 	ts = s.visibleTitlesWith(vis, u, ts)
@@ -183,10 +218,31 @@ func (s *Server) openableTitlesWith(ctx context.Context, vis frontend.Visibility
 	if !pinned {
 		ts = vis.Available(ctx, u, ts)
 	}
+	if len(kind) == 0 {
+		out := make([]frontend.Title, 0, len(ts))
+		for _, t := range ts {
+			_, admitted := shelfMember(ctx, t.Key)
+			if (admitted || s.admittedTitle(&t)) && vis.Playable(ctx, u, &t) && s.plexMetaRatingAllowed(u, &t) {
+				out = append(out, t)
+			}
+		}
+		return out
+	}
+	catOK := make(map[frontend.RatingKey]bool, len(ts))
 	for _, t := range ts {
 		_, admitted := shelfMember(ctx, t.Key)
 		if (admitted || s.admittedTitle(&t)) && vis.Playable(ctx, u, &t) && s.plexMetaRatingAllowed(u, &t) {
-			out = append(out, t)
+			catOK[t.Key] = true
+		}
+	}
+	out := make([]frontend.Title, 0, len(orig))
+	for i := range orig {
+		if orig[i].Key.IsPluginKey() {
+			if s.canSeePluginTitle(u, &orig[i]) {
+				out = append(out, orig[i])
+			}
+		} else if catOK[orig[i].Key] {
+			out = append(out, orig[i])
 		}
 	}
 	return out
@@ -239,7 +295,34 @@ func (s *Server) pluginAwarePlayable(ctx context.Context, u *frontend.User, t *f
 	return s.playableTitle(ctx, u, t)
 }
 func (s *Server) availableForViewer(ctx context.Context, u *frontend.User, ts []frontend.Title) []frontend.Title {
-	return s.visibility().Available(ctx, u, ts)
+	hasPlugin := false
+	for i := range ts {
+		if ts[i].Key.IsPluginKey() {
+			hasPlugin = true
+			break
+		}
+	}
+	if !hasPlugin {
+		return s.visibility().Available(ctx, u, ts)
+	}
+	catalog := make([]frontend.Title, 0, len(ts))
+	for i := range ts {
+		if !ts[i].Key.IsPluginKey() {
+			catalog = append(catalog, ts[i])
+		}
+	}
+	avail := s.visibility().Available(ctx, u, catalog)
+	catOK := make(map[frontend.RatingKey]bool, len(avail))
+	for i := range avail {
+		catOK[avail[i].Key] = true
+	}
+	out := make([]frontend.Title, 0, len(ts))
+	for i := range ts {
+		if ts[i].Key.IsPluginKey() || catOK[ts[i].Key] {
+			out = append(out, ts[i])
+		}
+	}
+	return out
 }
 
 func (s *Server) viewerRestricted(u *frontend.User) bool {

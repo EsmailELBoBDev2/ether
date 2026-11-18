@@ -43,6 +43,15 @@ func titleWire(t frontend.Title) object {
 		kind = "season"
 	case frontend.KindEpisode:
 		kind = "episode"
+	default:
+		switch t.Type {
+		case frontend.TypeShow:
+			kind = "show"
+		case frontend.TypeSeason:
+			kind = "season"
+		case frontend.TypeEpisode:
+			kind = "episode"
+		}
 	}
 	genres := t.Genres
 	if genres == nil {
@@ -131,7 +140,7 @@ func (i *instance) titlesWithUserData(r *http.Request, v *frontend.Viewer, token
 					continue
 				}
 				seen[title.Key] = true
-				selected := titleArtwork(title.Key, byKey[title.Key])
+				selected := titleCardArtwork(title, byKey[title.Key])
 				if show := episodePosterShow(title); show != 0 && !hasPortrait(selected) {
 					for _, image := range byKey[show] {
 						if image.Image.Kind == frontend.ImagePoster && image.Image.Path != "" && image.Secret != "" {
@@ -184,7 +193,7 @@ func episodePosterShow(title frontend.Title) frontend.RatingKey {
 	// Episodes often carry an inherited or unmeasured PosterPath that
 	// titleArtwork does not select as a portrait, so the show is always
 	// fetched; it is only used when the card ends up without a portrait.
-	if title.Key.Kind() != frontend.KindEpisode {
+	if title.Key.Kind() != frontend.KindEpisode && title.Type != frontend.TypeEpisode {
 		return 0
 	}
 	if title.ShowKey != 0 {
@@ -213,6 +222,17 @@ func titleArtwork(key frontend.RatingKey, images []frontend.GrantedImage) []fron
 	if key.Kind() != frontend.KindEpisode {
 		return images
 	}
+	return selectEpisodeArtwork(images)
+}
+
+func titleCardArtwork(title frontend.Title, images []frontend.GrantedImage) []frontend.GrantedImage {
+	if title.Key.Kind() != frontend.KindEpisode && title.Type != frontend.TypeEpisode {
+		return images
+	}
+	return selectEpisodeArtwork(images)
+}
+
+func selectEpisodeArtwork(images []frontend.GrantedImage) []frontend.GrantedImage {
 	for _, kind := range []string{frontend.ImageStill, frontend.ImageBackdrop, frontend.ImagePoster} {
 		for _, image := range images {
 			if image.Image.Kind == kind && image.Image.Path != "" && image.Secret != "" {

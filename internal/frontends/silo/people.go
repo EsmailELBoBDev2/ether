@@ -18,7 +18,7 @@ func (i *instance) personDTO(r *http.Request, credential string, person frontend
 }
 func (i *instance) personDTOGrant(r *http.Request, credential string, person frontend.PersonDetail, issued *string) map[string]any {
 	out := map[string]any{"id": person.ID, "name": person.Name}
-	if person.TMDB > 0 {
+	if person.TMDB > 0 && !frontend.IsPluginPersonID(person.TMDB) {
 		out["tmdb_id"] = strconv.FormatInt(person.TMDB, 10)
 	}
 	if person.IMDB != "" {
@@ -43,7 +43,7 @@ func (i *instance) personDTOGrant(r *http.Request, credential string, person fro
 			if r.Context().Value(sharedPrefix{}) != nil {
 				prefix = "/silo"
 			}
-			out["photo_url"] = prefix + "/api/v2/images/" + token
+			out["photo_url"] = siloImageURL(r, prefix+"/api/v2/images/"+token, frontend.ImagePerson)
 			if image.ThumbHash != "" {
 				out["photo_thumbhash"] = image.ThumbHash
 			}

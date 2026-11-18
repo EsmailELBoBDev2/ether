@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -19,6 +20,7 @@ const (
 	MaxTitleRunes         = 500
 	MaxSummaryRunes       = 20_000
 	MaxFieldRunes         = 4_000
+	MaxPersonThumbBytes   = 2_048
 	MaxArtRoles           = plugins.MaxKindArtRoles
 	MaxHintsBytes         = plugins.MaxKindHintsBytes
 	MaxFTSTextBytes       = 8 << 10
@@ -54,6 +56,7 @@ type ValidatedItem struct {
 	Item          core.KindItem
 	IndexedFields []IndexedFieldValue
 	SearchFields  string
+	SearchPeople  string
 	DroppedFields int
 }
 
@@ -125,6 +128,7 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 		cleanedFields map[string]json.RawMessage
 		indexed       []IndexedFieldValue
 		searchParts   []string
+		peopleParts   []string
 		dropped       int
 	)
 	if len(it.Fields) > 0 {
@@ -140,10 +144,14 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 				return ValidatedItem{}, fmt.Errorf("%w: item %q field %q: %v", ErrInvalidItem, it.ID, k, err)
 			}
 			cleanedFields[k] = raw
-			if fdecl.Indexed {
+			if fdecl.Indexed || fdecl.Type == "people" {
 				indexed = append(indexed, vals...)
 			}
-			if searchFieldSet[k] && len(texts) > 0 {
+			if fdecl.Type == "people" {
+				if len(texts) > 0 {
+					peopleParts = append(peopleParts, strings.Join(texts, " "))
+				}
+			} else if searchFieldSet[k] && len(texts) > 0 {
 				searchParts = append(searchParts, strings.Join(texts, " "))
 			}
 		}
@@ -154,13 +162,45 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 	if len(searchText) > MaxFTSTextBytes {
 		searchText = clipUTF8(searchText, MaxFTSTextBytes)
 	}
+	peopleText := strings.Join(peopleParts, " ")
+	if len(peopleText) > MaxFTSTextBytes {
+		peopleText = clipUTF8(peopleText, MaxFTSTextBytes)
+	}
 
 	return ValidatedItem{
 		Item:          it,
 		IndexedFields: indexed,
 		SearchFields:  searchText,
+		SearchPeople:  peopleText,
 		DroppedFields: dropped,
 	}, nil
+}
+
+func validatePersonThumb(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		return "", nil
+	}
+	if len(u) > MaxPersonThumbBytes {
+		return "", fmt.Errorf("person thumb URL exceeds %d bytes", MaxPersonThumbBytes)
+	}
+	for _, r := range u {
+		if r <= 0x20 || r == 0x7f {
+			return "", errors.New("person thumb URL must not contain whitespace or control characters")
+		}
+	}
+	low := strings.ToLower(u)
+	if strings.HasPrefix(low, "blob:") {
+		return "", errors.New("blob: person thumb URLs are not allowed")
+	}
+	if !strings.HasPrefix(low, "https://") && !strings.HasPrefix(low, "http://") {
+		return "", errors.New("person thumb URL must use http:// or https://")
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return "", errors.New("person thumb URL is malformed")
+	}
+	return u, nil
 }
 
 func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFieldValue, []string, error) {
@@ -258,42 +298,50 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 			if len(strArr) > 256 {
 				return nil, nil, errors.New("people array has more than 256 entries")
 			}
-			seen := make(map[string]bool, len(strArr))
+			seen := make(map[int64]bool, len(strArr))
 			out := make([]IndexedFieldValue, 0, len(strArr))
 			texts := make([]string, 0, len(strArr))
 			for _, name := range strArr {
-				if utf8.RuneCountInString(name) > MaxFieldRunes || strings.TrimSpace(name) == "" {
+				cleanName := strings.TrimSpace(name)
+				if utf8.RuneCountInString(name) > MaxFieldRunes || cleanName == "" {
 					return nil, nil, errors.New("person name must be non-empty and within 4000 runes")
 				}
-				texts = append(texts, name)
-				if !seen[name] {
-					seen[name] = true
-					out = append(out, IndexedFieldValue{Field: f.Key, Text: name})
+				texts = append(texts, cleanName)
+				pid := core.PluginPersonID(cleanName)
+				if pid > 0 && !seen[pid] {
+					seen[pid] = true
+					out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Int: pid})
 				}
 			}
 			return out, texts, nil
 		}
 		var objArr []struct {
-			Name string `json:"name"`
-			Role string `json:"role,omitempty"`
+			Name  string `json:"name"`
+			Role  string `json:"role,omitempty"`
+			Thumb string `json:"thumb,omitempty"`
 		}
 		if err := json.Unmarshal(trimmed, &objArr); err != nil {
-			return nil, nil, errors.New("must be an array of person names or {name, role} objects")
+			return nil, nil, errors.New("must be an array of person names or {name, role, thumb} objects")
 		}
 		if len(objArr) > 256 {
 			return nil, nil, errors.New("people array has more than 256 entries")
 		}
-		seen := make(map[string]bool, len(objArr))
+		seen := make(map[int64]bool, len(objArr))
 		out := make([]IndexedFieldValue, 0, len(objArr))
 		texts := make([]string, 0, len(objArr))
 		for _, p := range objArr {
-			if strings.TrimSpace(p.Name) == "" || utf8.RuneCountInString(p.Name) > MaxFieldRunes || utf8.RuneCountInString(p.Role) > MaxFieldRunes {
+			cleanName := strings.TrimSpace(p.Name)
+			if cleanName == "" || utf8.RuneCountInString(p.Name) > MaxFieldRunes || utf8.RuneCountInString(p.Role) > MaxFieldRunes {
 				return nil, nil, errors.New("person name must be non-empty and within 4000 runes")
 			}
-			texts = append(texts, p.Name)
-			if !seen[p.Name] {
-				seen[p.Name] = true
-				out = append(out, IndexedFieldValue{Field: f.Key, Text: p.Name})
+			if _, err := validatePersonThumb(p.Thumb); err != nil {
+				return nil, nil, err
+			}
+			texts = append(texts, cleanName)
+			pid := core.PluginPersonID(cleanName)
+			if pid > 0 && !seen[pid] {
+				seen[pid] = true
+				out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Int: pid})
 			}
 		}
 		return out, texts, nil

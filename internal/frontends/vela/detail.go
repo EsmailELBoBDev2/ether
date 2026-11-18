@@ -96,7 +96,9 @@ func crewPeople(t frontend.Title) []frontend.Person {
 // Subsequent selections use /titles/:id/children; no episode is inferred.
 func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token string, d frontend.ItemDetail, out object) error {
 	key := d.Title.Key
-	if key.Kind() != frontend.KindShow && key.Kind() != frontend.KindSeason {
+	isShow := key.Kind() == frontend.KindShow || d.Title.Type == frontend.TypeShow
+	isSeason := key.Kind() == frontend.KindSeason || d.Title.Type == frontend.TypeSeason
+	if !isShow && !isSeason {
 		return nil
 	}
 	page, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), key, frontend.ItemQuery{Limit: 50, NoTotal: true})
@@ -107,13 +109,13 @@ func (i *instance) detailChildren(r *http.Request, v *frontend.Viewer, token str
 	if err != nil {
 		return err
 	}
-	if key.Kind() == frontend.KindSeason {
+	if isSeason {
 		out["episodes"] = converted
 		return nil
 	}
 	out["seasons"] = converted
 	for _, season := range page.Items {
-		if season.Key.Kind() != frontend.KindSeason {
+		if season.Key.Kind() != frontend.KindSeason && season.Type != frontend.TypeSeason {
 			continue
 		}
 		episodes, err := i.host.Experience.Children(r.Context(), v, requestDevice(r), season.Key, frontend.ItemQuery{Limit: 50, NoTotal: true})

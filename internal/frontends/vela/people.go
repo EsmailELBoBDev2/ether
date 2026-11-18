@@ -186,13 +186,17 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	libraryID := values.Get("libraryId")
+	wantPlugin := frontend.IsPluginPersonID(person.TMDB)
+	isPluginView := func(candidate frontend.View) bool {
+		return candidate.PluginID != "" || candidate.KindKey != ""
+	}
 	var targetViews []frontend.View
 	if libraryID != "" {
 		found := false
 		for _, candidate := range views {
 			if candidate.ID == libraryID {
 				found = true
-				if candidate.PluginID == "" && candidate.KindKey == "" {
+				if isPluginView(candidate) == wantPlugin {
 					targetViews = append(targetViews, candidate)
 				}
 				break
@@ -204,7 +208,7 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		for _, candidate := range views {
-			if candidate.PluginID == "" && candidate.KindKey == "" {
+			if isPluginView(candidate) == wantPlugin {
 				targetViews = append(targetViews, candidate)
 			}
 		}

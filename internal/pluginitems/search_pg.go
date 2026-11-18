@@ -15,9 +15,25 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 	var where strings.Builder
 	args := []any{int64(q.LibraryID), tsQuery}
 	where.WriteString(`i.library_id = ? AND i.search_tsv @@ to_tsquery('simple', ?)`)
-	if q.Level != "" {
+	if len(q.Levels) > 0 {
+		placeholders := make([]string, len(q.Levels))
+		for idx, lv := range q.Levels {
+			placeholders[idx] = "?"
+			args = append(args, strings.TrimSpace(lv))
+		}
+		where.WriteString(` AND i.level IN (` + strings.Join(placeholders, ",") + `)`)
+	} else if q.Level != "" {
 		where.WriteString(` AND i.level = ?`)
 		args = append(args, q.Level)
+	}
+	if q.PersonID > 0 {
+		ok, err := s.appendPersonFilter(ctx, q.LibraryID, &where, &args, q.PersonID)
+		if err != nil {
+			return BrowsePage{}, err
+		}
+		if !ok {
+			return BrowsePage{Total: 0}, nil
+		}
 	}
 	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets); err != nil {
 		return BrowsePage{}, err
@@ -35,12 +51,21 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 		return BrowsePage{Total: 0}, nil
 	}
 
+	exactTitle, exactSort, prefixTitle, prefixSort := searchTitleTierArgs(q.Query)
 	querySQL := `SELECT ` + prefixedItemCols("i.") + `
 FROM plugin_items i
 WHERE ` + where.String() + `
-ORDER BY ts_rank(i.search_tsv, to_tsquery('simple', ?)) DESC, i.sort_title ASC, i.item_ref ASC
+ORDER BY
+	CASE
+		WHEN LOWER(i.title) = ? OR i.sort_title = ? THEN 0
+		WHEN LOWER(i.title) LIKE ? ESCAPE '\' OR i.sort_title LIKE ? ESCAPE '\' THEN 1
+		ELSE 2
+	END ASC,
+	ts_rank(i.search_tsv, to_tsquery('simple', ?)) DESC,
+	i.sort_title ASC,
+	i.item_ref ASC
 LIMIT ?`
-	qArgs := append(append([]any(nil), args...), tsQuery, limit)
+	qArgs := append(append([]any(nil), args...), exactTitle, exactSort, prefixTitle, prefixSort, tsQuery, limit)
 	items, err := s.queryItems(ctx, querySQL, qArgs, true)
 	if err != nil {
 		return BrowsePage{}, err

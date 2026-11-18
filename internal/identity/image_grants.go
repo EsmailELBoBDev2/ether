@@ -450,7 +450,9 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 	var contentType string
 	var err error
 	if s.artwork != nil {
-		data, contentType, err = s.artwork.Read(core.WithLiveApp(r.Context(), string(s.surface)), grantedArtworkRequest(viewer, device, item, channel, img), img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser || s.surface == "vela"})
+		q := r.URL.Query()
+		siloPluginResize := s.surface == "silo" && item.IsPluginKey() && (q.Get("w") != "" || q.Get("maxWidth") != "" || q.Get("fillWidth") != "" || q.Get("h") != "")
+		data, contentType, err = s.artwork.Read(core.WithLiveApp(r.Context(), string(s.surface)), grantedArtworkRequest(viewer, device, item, channel, img), img, frontend.ArtworkTransform{Width: width, Height: height, Format: format, Blur: blur, Quality: quality, Fit: mediaBrowser || s.surface == "vela" || siloPluginResize})
 	} else {
 		data, contentType, err = s.images.Get(r.Context(), img.Path, width)
 	}

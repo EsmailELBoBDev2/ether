@@ -259,6 +259,9 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.Studio = t.Studios[0]
 	}
 	sec, secOK := s.sectionFor(t.Type)
+	if t.Key.IsPluginKey() && t.LibraryID != 0 {
+		sec, secOK = s.sectionForLibrary(t.LibraryID)
+	}
 	if o.section != nil && o.section.ID != 0 {
 		sec, secOK = *o.section, true
 	}

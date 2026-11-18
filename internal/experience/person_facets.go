@@ -62,6 +62,9 @@ func (s *Service) PersonFacetIDs(ctx context.Context, viewer *core.Viewer, _ cor
 // person's most popular credit and the name on it, however many titles
 // credit them; ok is false when the credit index is unavailable.
 func (s *Service) resolvePersonFacet(ctx context.Context, viewer *core.Viewer, viewID, id string, tmdb int64) (core.FacetValue, bool, error) {
+	if core.IsPluginPersonID(tmdb) {
+		return s.resolvePluginPersonFacet(ctx, viewer, viewID, id, tmdb)
+	}
 	if s.d.PersonCreditsMany == nil {
 		return core.FacetValue{}, false, nil
 	}

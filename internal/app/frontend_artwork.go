@@ -12,6 +12,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/experience"
+	"github.com/braedonsaunders/ether/internal/frontend"
 )
 
 // newSharedArtwork composes domain services without constructing a protocol server.
@@ -61,9 +62,12 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	if a.episodeorder != nil {
 		source.VirtualSeason = a.episodeorder.CachedVirtualSeason
 	}
-	if a.images != nil {
+	if a.opts.urlImages != nil {
+		source.URLImages = a.opts.urlImages
+	} else if a.images != nil {
 		source.URLImages = a.images
 	}
+	source.PluginItem = a.sharedPluginArtworkItem
 	variants := artworkservice.NewVariantsQueue(ctx, a.tmdb.CachedArtworkVariants, a.tmdb.ArtworkVariants)
 	source.Variants = variants.Get
 	source.Generated = a.titlePosters()
@@ -73,12 +77,47 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 	if a.spikeLibrary == nil {
 		// Search and list hits with no row keep their artwork facts in
 		// memory: a search page writes nothing.
-		metadata.PersistFor(a.catalog.PersistsArtwork)
-		palettes.PersistFor(a.catalog.PersistsArtwork)
+		persists := func(ctx context.Context, key core.RatingKey) bool {
+			if key.IsPluginKey() {
+				return false
+			}
+			return a.catalog.PersistsArtwork(ctx, key)
+		}
+		metadata.PersistFor(persists)
+		palettes.PersistFor(persists)
 	}
 	source.Metadata = metadata.Get
 	source.BindMetadata(metadata)
 	return source, func() { variants.Wait(); metadata.Wait(); workers.Wait() }
+}
+
+func (a *App) sharedPluginArtworkItem(ctx context.Context, viewer *core.User, _ core.Device, key core.RatingKey) (*core.Title, []frontend.Image, error) {
+	if a == nil || viewer == nil || !key.IsPluginKey() {
+		return nil, nil, core.ErrUnauthorized
+	}
+	active := viewer
+	if a.users != nil {
+		resolved, err := a.users.PolicyUser(ctx, viewer.ID)
+		if err != nil || resolved == nil || resolved.ID != viewer.ID {
+			return nil, nil, core.ErrUnauthorized
+		}
+		active = resolved
+	}
+	if a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil {
+		return nil, nil, core.ErrNotFound
+	}
+	piv, err := a.pluginsRT.kindCatalog.Item(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if piv.Library.Hidden || !a.pluginsRT.kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
+		return nil, nil, core.ErrNotFound
+	}
+	if !experience.SectionAllowed(active, int(piv.Library.ID)) || !experience.TitleAllowed(a.safety, active, &piv.Title) {
+		return nil, nil, core.ErrNotFound
+	}
+	t := piv.Title
+	return &t, piv.Images, nil
 }
 
 // serverLibraries preserves the canonical section IDs/order without a Plex server.

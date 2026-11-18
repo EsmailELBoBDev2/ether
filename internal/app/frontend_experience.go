@@ -647,7 +647,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	if a.cfg != nil {
 		detail.enabled = func() bool { return a.cfg.Read().Personalize.MicroReasons }
 	}
-	return &surfaceExperience{Service: service, receipts: receipts, protocol: protocol, artwork: artworkSource, pluginLibs: deps.PluginLibraries, active: a.users.ActiveUser, rowViews: rowViews, revealDetail: func(viewer *core.Viewer, device core.Device, key core.RatingKey) {
+	scoped := &surfaceExperience{Service: service, receipts: receipts, protocol: protocol, artwork: artworkSource, pluginLibs: deps.PluginLibraries, active: a.users.ActiveUser, rowViews: rowViews, revealDetail: func(viewer *core.Viewer, device core.Device, key core.RatingKey) {
 		if a.playback == nil || viewer == nil {
 			return
 		}
@@ -714,7 +714,13 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			}
 		}
 		return gen
-	}}, nil
+	}}
+	if withPlugin, ok := scoped.artwork.(interface {
+		WithPluginItem(func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)) frontend.Artwork
+	}); ok {
+		scoped.artwork = withPlugin.WithPluginItem(scoped.pluginArtworkItem)
+	}
+	return scoped, nil
 }
 
 type surfaceExperience struct {
@@ -743,6 +749,34 @@ type surfaceExperience struct {
 	publicEpoch func() uint64
 	publicMu    sync.Mutex
 	publicCache publicArtworkCache
+}
+
+type pluginArtworkBatchKey struct{}
+
+type pluginArtworkBatch struct {
+	viewerID int64
+	items    map[core.RatingKey]experience.PluginItemView
+}
+
+func (s *surfaceExperience) pluginArtworkItem(ctx context.Context, viewer *core.User, device core.Device, key core.RatingKey) (*core.Title, []frontend.Image, error) {
+	if s == nil || viewer == nil || !key.IsPluginKey() || s.pluginLibs == nil {
+		return nil, nil, core.ErrNotFound
+	}
+	if batch, ok := ctx.Value(pluginArtworkBatchKey{}).(pluginArtworkBatch); ok && batch.viewerID == viewer.ID {
+		if piv, found := batch.items[key]; found {
+			t := piv.Title
+			return &t, piv.Images, nil
+		}
+	}
+	if _, err := s.Service.AuthorizeArtwork(ctx, viewer, device, key); err != nil {
+		return nil, nil, err
+	}
+	piv, err := s.pluginLibs.Item(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	t := piv.Title
+	return &t, piv.Images, nil
 }
 
 type collageSlot struct {
@@ -982,44 +1016,51 @@ func (s *surfaceExperience) ItemArtworkPage(ctx context.Context, viewer *core.Vi
 		return nil, err
 	}
 	var pluginKeys []core.RatingKey
-	var tmdbTitles []core.Title
 	for _, t := range titles {
 		if t.Key.IsPluginKey() {
 			pluginKeys = append(pluginKeys, t.Key)
-		} else {
-			tmdbTitles = append(tmdbTitles, t)
 		}
 	}
-	if len(pluginKeys) > 0 && s.pluginLibs != nil {
+	if s.artwork == nil {
+		if len(pluginKeys) > 0 && s.pluginLibs != nil {
+			pivs, err := s.pluginLibs.ItemsMany(ctx, pluginKeys)
+			if err != nil {
+				return nil, err
+			}
+			for _, k := range pluginKeys {
+				if piv, ok := pivs[k]; ok {
+					out[k] = piv.Images
+				}
+			}
+		}
+		return out, nil
+	}
+	if len(pluginKeys) > 0 && s.pluginLibs != nil && viewer != nil {
 		pivs, err := s.pluginLibs.ItemsMany(ctx, pluginKeys)
 		if err != nil {
 			return nil, err
 		}
-		for _, k := range pluginKeys {
-			if piv, ok := pivs[k]; ok {
-				out[k] = piv.Images
-			}
-		}
+		ctx = context.WithValue(ctx, pluginArtworkBatchKey{}, pluginArtworkBatch{viewerID: viewer.ID, items: pivs})
 	}
-	if len(tmdbTitles) == 0 || s.artwork == nil {
+	if len(titles) == 0 {
 		return out, nil
 	}
 	if page, ok := s.artwork.(frontend.PageArtwork); ok {
-		tmdbOut, err := page.ListPage(ctx, viewer, device, tmdbTitles)
+		listed, err := page.ListPage(ctx, viewer, device, titles)
 		if err != nil {
 			return nil, err
 		}
-		for k, imgs := range tmdbOut {
+		for k, imgs := range listed {
 			out[k] = imgs
 		}
 		return out, nil
 	}
-	for i := range tmdbTitles {
-		images, _, err := s.artwork.List(frontend.WithArtworkTitle(ctx, &tmdbTitles[i]), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: tmdbTitles[i].Key})
+	for i := range titles {
+		images, _, err := s.artwork.List(frontend.WithArtworkTitle(ctx, &titles[i]), frontend.ArtworkRequest{Viewer: viewer, Device: device, Item: titles[i].Key})
 		if err != nil {
 			return nil, err
 		}
-		out[tmdbTitles[i].Key] = images
+		out[titles[i].Key] = images
 	}
 	return out, nil
 }
@@ -1029,17 +1070,14 @@ func (s *surfaceExperience) ItemArtwork(ctx context.Context, viewer *core.Viewer
 	if err != nil {
 		return nil, false, err
 	}
-	if key.IsPluginKey() {
-		if s.pluginLibs == nil {
-			return nil, false, core.ErrNotAvailable
-		}
-		piv, err := s.pluginLibs.Item(ctx, key)
-		if err != nil {
-			return nil, false, err
-		}
-		return piv.Images, true, nil
-	}
 	if s.artwork == nil {
+		if key.IsPluginKey() && s.pluginLibs != nil {
+			piv, err := s.pluginLibs.Item(ctx, key)
+			if err != nil {
+				return nil, false, err
+			}
+			return piv.Images, true, nil
+		}
 		return nil, false, core.ErrNotAvailable
 	}
 	return s.artwork.List(ctx, frontend.ArtworkRequest{Viewer: active, Device: device, Item: key})
@@ -1047,17 +1085,14 @@ func (s *surfaceExperience) ItemArtwork(ctx context.Context, viewer *core.Viewer
 
 func (s *surfaceExperience) RelatedArtwork(ctx context.Context, viewer *core.Viewer, device core.Device, key core.RatingKey) (frontend.RelatedArtwork, error) {
 	service, err := experience.NewRelatedArtworkService(experience.RelatedArtworkDeps{Authorize: s.Service.AuthorizeArtwork, List: func(ctx context.Context, active *core.Viewer, device core.Device, key core.RatingKey) ([]frontend.Image, bool, error) {
-		if key.IsPluginKey() {
-			if s.pluginLibs == nil {
-				return nil, false, core.ErrNotAvailable
-			}
-			piv, err := s.pluginLibs.Item(ctx, key)
-			if err != nil {
-				return nil, false, err
-			}
-			return piv.Images, true, nil
-		}
 		if s.artwork == nil {
+			if key.IsPluginKey() && s.pluginLibs != nil {
+				piv, err := s.pluginLibs.Item(ctx, key)
+				if err != nil {
+					return nil, false, err
+				}
+				return piv.Images, true, nil
+			}
 			return nil, false, core.ErrNotAvailable
 		}
 		return s.artwork.List(ctx, frontend.ArtworkRequest{Viewer: active, Device: device, Item: key})
@@ -1070,8 +1105,30 @@ func (s *surfaceExperience) RelatedArtwork(ctx context.Context, viewer *core.Vie
 
 func (s *surfaceExperience) Item(ctx context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
 	detail, err := s.Service.Item(ctx, req)
-	if err != nil || req.Key.IsPluginKey() || detail.Title.Key.IsPluginKey() {
+	if err != nil {
 		return detail, err
+	}
+	if req.Key.IsPluginKey() || detail.Title.Key.IsPluginKey() {
+		if s.pluginLibs != nil {
+			if piv, pErr := s.pluginLibs.Item(ctx, detail.Title.Key); pErr == nil {
+				playable := piv.Playable
+				detail.CanPlay = &playable
+			}
+		}
+		if s.artwork == nil || req.Viewer == nil {
+			return detail, nil
+		}
+		viewer, uErr := s.active(ctx, req.Viewer.ID)
+		if uErr != nil || viewer == nil {
+			detail.Images = nil
+			detail.ImagesAuthoritative = false
+			return detail, nil
+		}
+		images, complete, aErr := s.artwork.List(ctx, frontend.ArtworkRequest{Viewer: viewer, Device: req.Device, Item: detail.Title.Key})
+		if aErr == nil {
+			detail.Images, detail.ImagesAuthoritative = images, complete
+		}
+		return detail, nil
 	}
 	if s.revealDetail != nil && core.ColdDetail(ctx, req.Key) {
 		s.revealDetail(req.Viewer, req.Device, detail.Title.Key)

@@ -40,6 +40,51 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	query := frontend.ItemQuery{Offset: offset, Limit: limit}
+	if personID := q.Get("person_id"); personID != "" {
+		if _, peErr := ids.ParseGUID(ids.Person, personID); peErr == nil {
+			reader, ok := i.host.Experience.(frontend.PeopleReader)
+			if !ok {
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			person, e := reader.Person(r.Context(), v, device(r), personID, frontend.PersonReadOptions{})
+			if e != nil || person.TMDB <= 0 {
+				if errors.Is(e, frontend.ErrNotFound) || e == nil {
+					notFound(w)
+					return
+				}
+				http.Error(w, "Unavailable", 503)
+				return
+			}
+			query.Filter.Person = person.TMDB
+		} else {
+			facetView := q.Get("library_id")
+			if facetView != "" && facetView != nowAvailableLibraryID {
+				facetView, err = i.nativeID(r.Context(), "library", facetView)
+				if err != nil {
+					notFound(w)
+					return
+				}
+			} else {
+				facetView = ""
+			}
+			facet, e := i.host.Experience.ResolveFacet(r.Context(), v, device(r), facetView, "person", personID)
+			if e != nil {
+				if errors.Is(e, frontend.ErrNotFound) {
+					notFound(w)
+					return
+				}
+				http.Error(w, "Bad Request", 400)
+				return
+			}
+			n, e := strconv.ParseInt(facet.Key, 10, 64)
+			if e != nil || n <= 0 {
+				http.Error(w, "Bad Request", 400)
+				return
+			}
+			query.Filter.Person = n
+		}
+	}
 	var page frontend.Page
 	exact := true
 	more := false

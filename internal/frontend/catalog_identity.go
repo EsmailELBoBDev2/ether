@@ -23,3 +23,5 @@ func EpisodeKey(show int64, season, episode int) RatingKey {
 	return core.EpisodeKey(show, season, episode)
 }
 func ParseRatingKey(value string) (RatingKey, error) { return core.ParseRatingKey(value) }
+func PluginPersonID(name string) int64               { return core.PluginPersonID(name) }
+func IsPluginPersonID(id int64) bool                 { return core.IsPluginPersonID(id) }

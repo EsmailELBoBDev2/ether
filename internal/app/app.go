@@ -29,6 +29,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
 	"github.com/braedonsaunders/ether/internal/identity"
@@ -127,6 +128,8 @@ type Options struct {
 	CatalogNow func() time.Time
 	// plextvHTTP, when set, is the HTTP client used by the plex.tv client in tests.
 	plextvHTTP *http.Client
+	// urlImages, when set, replaces the untrusted remote image fetcher in tests.
+	urlImages frontend.UntrustedImageFetcher
 	// diskUsage, when set, replaces the cache volume measurement behind the
 	// segment cache's free-space floor, so tests never depend on the free
 	// space of the machine running them.

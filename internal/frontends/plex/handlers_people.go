@@ -87,6 +87,14 @@ func (s *Server) resolvePerson(w http.ResponseWriter, r *http.Request) (resolved
 		writeHTTPError(w, http.StatusNotFound)
 		return out, false
 	}
+	if frontend.IsPluginPersonID(id) {
+		rp, found := s.resolvePluginPerson(r.Context(), FromContext(r.Context()), id, tagKeyForm)
+		if !found {
+			writeHTTPError(w, http.StatusNotFound)
+			return out, false
+		}
+		return rp, true
+	}
 	cat, ok := s.catalog().(personByIDCatalog)
 	if !ok {
 		writeHTTPError(w, http.StatusNotFound)
@@ -170,23 +178,27 @@ func (s *Server) handleLibraryPersonMedia(w http.ResponseWriter, r *http.Request
 	fetchPr.Size = personMediaCap
 	limit := 0
 	var all []frontend.Title
-	seenTypes := map[frontend.MediaType]bool{}
-	for _, sec := range s.userSections(pr.User) {
-		if seenTypes[sec.Type] {
-			continue
+	if frontend.IsPluginPersonID(rp.id) {
+		all = s.pluginPersonTitles(ctx, pr, rp.id, personMediaCap)
+	} else {
+		seenTypes := map[frontend.MediaType]bool{}
+		for _, sec := range s.userSections(pr.User) {
+			if seenTypes[sec.Type] {
+				continue
+			}
+			seenTypes[sec.Type] = true
+			br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q)
+			if limit == 0 {
+				limit = br.limit
+			}
+			br.q.Filter.Credits = append(br.q.Filter.Credits, credit)
+			items, _, _, err := s.browse(ctx, &fetchPr, br)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			all = append(all, items...)
 		}
-		seenTypes[sec.Type] = true
-		br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q)
-		if limit == 0 {
-			limit = br.limit
-		}
-		br.q.Filter.Credits = append(br.q.Filter.Credits, credit)
-		items, _, _, err := s.browse(ctx, &fetchPr, br)
-		if err != nil {
-			s.writeErr(w, r, err)
-			return
-		}
-		all = append(all, items...)
 	}
 
 	seenKeys := map[frontend.RatingKey]bool{}

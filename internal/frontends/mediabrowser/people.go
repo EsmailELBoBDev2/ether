@@ -167,6 +167,20 @@ func (i *instance) issuePersonGrants(r *http.Request, people []frontend.PersonDe
 				}
 			}
 		}
+		// The batch admits catalogue credits only; people from plugin
+		// library items are granted one at a time, which checks the item.
+		for n, person := range people {
+			if grants[n] != "" || person.ArtworkItem == 0 || !person.ArtworkItem.IsPluginKey() {
+				continue
+			}
+			img, ok := personPortrait(person)
+			if !ok {
+				continue
+			}
+			if grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: token, Device: device(r), Item: person.ArtworkItem, Image: img}); err == nil && grant != "" {
+				grants[n], imgs[n] = grant, img
+			}
+		}
 		return grants, imgs
 	}
 	for n, person := range people {
@@ -205,7 +219,7 @@ func (i *instance) personItemDTO(person frontend.PersonDetail, grant string, img
 		}
 	}
 	pids := map[string]string{}
-	if person.TMDB > 0 {
+	if person.TMDB > 0 && !frontend.IsPluginPersonID(person.TMDB) {
 		pids["Tmdb"] = strconv.FormatInt(person.TMDB, 10)
 	}
 	if person.IMDB != "" {

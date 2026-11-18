@@ -119,17 +119,84 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 	if studios := extractStringsFromFields(item.Fields, "studio", "studios", "channel", "publisher", "author"); len(studios) > 0 {
 		t.Studios = studios
 	}
-	if cast := extractPeopleFromFields(item.Fields, "cast", "actors", "narrator", "performers"); len(cast) > 0 {
+	cast, directors, writers := extractProjectedPeople(item.Fields, decl)
+	if len(cast) > 0 {
 		t.Cast = cast
 	}
-	if directors := extractPeopleFromFields(item.Fields, "director", "directors", "creator"); len(directors) > 0 {
+	if len(directors) > 0 {
 		t.Directors = directors
 	}
-	if writers := extractPeopleFromFields(item.Fields, "writer", "writers"); len(writers) > 0 {
+	if len(writers) > 0 {
 		t.Writers = writers
 	}
 
 	return t
+}
+
+func peopleFieldBucket(fieldKey string) string {
+	switch strings.ToLower(strings.TrimSpace(fieldKey)) {
+	case "director", "directors", "creator", "creators":
+		return "director"
+	case "writer", "writers", "author", "authors":
+		return "writer"
+	default:
+		return "actor"
+	}
+}
+
+func extractProjectedPeople(fields map[string]json.RawMessage, decl plugins.MediaKindMeta) (cast, directors, writers []core.Person) {
+	if len(fields) == 0 {
+		return nil, nil, nil
+	}
+	type personKey struct {
+		id   int64
+		role string
+	}
+	appendUnique := func(dst *[]core.Person, seen map[personKey]int, list []core.Person) {
+		for _, p := range list {
+			if p.TMDB <= 0 || p.Name == "" {
+				continue
+			}
+			k := personKey{id: p.TMDB, role: p.Role}
+			if idx, ok := seen[k]; ok {
+				if (*dst)[idx].ThumbPath == "" && p.ThumbPath != "" {
+					(*dst)[idx].ThumbPath = p.ThumbPath
+				}
+				continue
+			}
+			seen[k] = len(*dst)
+			*dst = append(*dst, p)
+		}
+	}
+	seenCast := map[personKey]int{}
+	seenDir := map[personKey]int{}
+	seenWri := map[personKey]int{}
+
+	if len(decl.Fields) > 0 {
+		for _, fd := range decl.Fields {
+			if fd.Type != "people" {
+				continue
+			}
+			list := extractPeopleFromFields(fields, fd.Key)
+			if len(list) == 0 {
+				continue
+			}
+			switch peopleFieldBucket(fd.Key) {
+			case "director":
+				appendUnique(&directors, seenDir, list)
+			case "writer":
+				appendUnique(&writers, seenWri, list)
+			default:
+				appendUnique(&cast, seenCast, list)
+			}
+		}
+		return cast, directors, writers
+	}
+
+	appendUnique(&cast, seenCast, extractPeopleFromFields(fields, "cast", "actors", "narrator", "performers"))
+	appendUnique(&directors, seenDir, extractPeopleFromFields(fields, "director", "directors", "creator", "creators"))
+	appendUnique(&writers, seenWri, extractPeopleFromFields(fields, "writer", "writers"))
+	return cast, directors, writers
 }
 
 func projectMediaType(level string, decl plugins.MediaKindMeta, present core.Presentations) core.MediaType {
@@ -361,6 +428,14 @@ func extractStringsFromFields(fields map[string]json.RawMessage, keys ...string)
 	return out
 }
 
+func cleanPersonThumb(raw string) string {
+	u, err := validatePersonThumb(raw)
+	if err != nil {
+		return ""
+	}
+	return u
+}
+
 func extractPeopleFromFields(fields map[string]json.RawMessage, keys ...string) []core.Person {
 	if len(fields) == 0 {
 		return nil
@@ -374,7 +449,7 @@ func extractPeopleFromFields(fields map[string]json.RawMessage, keys ...string) 
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
 			if s = strings.TrimSpace(s); s != "" {
-				out = append(out, core.Person{Name: s})
+				out = append(out, core.Person{TMDB: core.PluginPersonID(s), Name: s})
 			}
 			continue
 		}
@@ -382,19 +457,25 @@ func extractPeopleFromFields(fields map[string]json.RawMessage, keys ...string) 
 		if err := json.Unmarshal(raw, &arr); err == nil {
 			for _, name := range arr {
 				if name = strings.TrimSpace(name); name != "" {
-					out = append(out, core.Person{Name: name})
+					out = append(out, core.Person{TMDB: core.PluginPersonID(name), Name: name})
 				}
 			}
 			continue
 		}
 		var objs []struct {
-			Name string `json:"name"`
-			Role string `json:"role,omitempty"`
+			Name  string `json:"name"`
+			Role  string `json:"role,omitempty"`
+			Thumb string `json:"thumb,omitempty"`
 		}
 		if err := json.Unmarshal(raw, &objs); err == nil {
 			for _, o := range objs {
 				if name := strings.TrimSpace(o.Name); name != "" {
-					out = append(out, core.Person{Name: name, Role: strings.TrimSpace(o.Role)})
+					out = append(out, core.Person{
+						TMDB:      core.PluginPersonID(name),
+						Name:      name,
+						Role:      strings.TrimSpace(o.Role),
+						ThumbPath: cleanPersonThumb(o.Thumb),
+					})
 				}
 			}
 		}

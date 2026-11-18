@@ -1441,7 +1441,7 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 	var walked []frontend.Person
 	budgetSpent := false
 	for _, cand := range candidates {
-		if !personMatchesTerms(cand.Name, terms) {
+		if frontend.IsPluginPersonID(cand.TMDB) || !personMatchesTerms(cand.Name, terms) {
 			continue
 		}
 		exactName := personSearchScore(query, cand.Name) == searchPersonExactScore
@@ -1533,7 +1533,7 @@ func (s *Server) searchPeople(ctx context.Context, pr *Request, query string, se
 		idStr := strconv.FormatInt(cand.TMDB, 10)
 		for i := range titles {
 			t := titles[i]
-			if !allowedSet[t.Type] {
+			if t.Key.IsPluginKey() || !allowedSet[t.Type] {
 				continue
 			}
 			if catVis != nil && !catVis.SearchVisible(&t) {
@@ -1682,11 +1682,15 @@ func (s *Server) hubReasoned(ctx context.Context, people peopleSearchResult, typ
 	for next := 0; len(out) < want && next < len(cands); {
 		part := cands[next:min(next+want-len(out), len(cands))]
 		next += len(part)
-		keys := make([]frontend.RatingKey, len(part))
-		for i, rt := range part {
-			keys[i] = rt.title.Key
-		}
+		keys := make([]frontend.RatingKey, 0, len(part))
 		full := map[frontend.RatingKey]frontend.Title{}
+		for _, rt := range part {
+			if rt.title.Key.IsPluginKey() {
+				full[rt.title.Key] = rt.title
+			} else {
+				keys = append(keys, rt.title.Key)
+			}
+		}
 		for _, t := range s.getTitles(withStoredPolicy(ctx), keys) {
 			full[t.Key] = t
 		}
@@ -1789,9 +1793,11 @@ func (s *Server) searchClientID(pr *Request) string {
 }
 
 func (s *Server) runSearch(ctx context.Context, pr *Request, query string, sectionID, limit int) ([]frontend.Title, error) {
+	pluginItems := s.searchPluginTitles(ctx, pr, query, sectionID, limit)
 	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
 	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, sectionID), s.saferFetchCount(pr.User, limit), false)
 	result.Items = s.takeVisible(pr.User, result.Items, limit)
+	result.Items = mergePluginSearchResults(result.Items, pluginItems, 0, limit)
 	return result.Items, err
 }
 
@@ -1843,7 +1849,12 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 	// People are searched beside titles; neither waits for the other.
 	peopleDone := make(chan peopleSearchResult, 1)
 	peopleCtx := ctx // ctx is reassigned below; the goroutine keeps its own copy
-	go func() { peopleDone <- s.searchPeople(peopleCtx, pr, query, sectionID, limit, true) }()
+	go func() {
+		catPeople := s.searchPeople(peopleCtx, pr, query, sectionID, limit, true)
+		plugPeople := s.searchPluginPeople(peopleCtx, pr, query, sectionID, limit, true)
+		peopleDone <- mergePeopleSearchResults(catPeople, plugPeople, limit)
+	}()
+	pluginItems := s.searchPluginTitles(ctx, pr, query, sectionID, fetch)
 	// Hub items render as list items (three cast members, directors,
 	// genres): the catalogue reads those facts for the titles a hub shows,
 	// not every credit, keyword and alternative title, and returns the rest
@@ -1856,20 +1867,28 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	vibe, res, isVibe := result.Collection, result.Items, result.CollectionSearch
+	vibe, res, isVibe := result.Collection, mergePluginSearchResults(result.Items, pluginItems, result.AIItems, fetch), result.CollectionSearch
 	aiRank := map[frontend.RatingKey]int{}
 	for i := 0; i < min(result.AIItems, len(res)); i++ {
 		aiRank[res[i].Key] = i
 	}
 	byType := map[frontend.MediaType][]frontend.Title{}
 	for _, t := range res {
-		byType[t.Type] = append(byType[t.Type], t)
+		typ := frontend.MediaType(s.plexTypeFor(&t))
+		if typ == "" {
+			typ = t.Type
+		}
+		byType[typ] = append(byType[typ], t)
 	}
 	allowed := map[frontend.MediaType]bool{}
 	for _, t := range s.searchTypes(pr.User, sectionID) {
 		allowed[t] = true
 		if t == frontend.TypeShow {
 			allowed[frontend.TypeEpisode] = true
+		}
+		if string(t) == plexBaseArtist {
+			allowed[plexBaseAlbum] = true
+			allowed[plexBaseTrack] = true
 		}
 	}
 	// PMS returns every result hub, empty ones included: those with results
@@ -1878,8 +1897,11 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 	var tops []float64 // each hub's best score
 	for _, hd := range searchHubDefs {
 		top := 0.0
-		switch hd.id {
-		case string(frontend.TypeMovie), string(frontend.TypeShow), string(frontend.TypeEpisode):
+		hubMediaType := frontend.MediaType(hd.typ)
+		isKindMediaHub := (hd.id == plexBaseArtist || hd.id == plexBaseAlbum || hd.id == plexBaseTrack || hd.id == plexBasePhoto) &&
+			(len(byType[hubMediaType]) > 0 || len(people.titles[hubMediaType]) > 0)
+		switch {
+		case hd.id == string(frontend.TypeMovie) || hd.id == string(frontend.TypeShow) || hd.id == string(frontend.TypeEpisode) || isKindMediaHub:
 			mediaType := frontend.MediaType(hd.typ)
 			var items []frontend.Title
 			reasons := map[string]reasonedTitle{}
@@ -1959,7 +1981,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 				top = max(top, 1.9-float64(bestAIRank)*0.001)
 			}
 			mc.Hub = append(mc.Hub, mh)
-		case "collection":
+		case hd.id == "collection":
 			mh := model.Hub{
 				Title:         hd.title,
 				Type:          hd.typ,
@@ -1976,7 +1998,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			mc.Hub = append(mc.Hub, mh)
-		case "playlist":
+		case hd.id == "playlist":
 			mh := model.Hub{Title: hd.title, Type: hd.typ, HubIdentifier: hd.id, Style: "shelf"}
 			mh.Metadata = s.searchPlaylists(ctx, pr, query, q.Get("contentDirectoryID"), limit)
 			mh.Size = len(mh.Metadata)
@@ -1984,7 +2006,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 				top, _ = strconv.ParseFloat(mh.Metadata[0].Score, 64)
 			}
 			mc.Hub = append(mc.Hub, mh)
-		case "actor":
+		case hd.id == "actor":
 			dirs := people.actors
 			scores := rankDirectories(dirs, people.actorScores)
 			stampDirectoryScores(dirs, scores)
@@ -2000,7 +2022,7 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 				Style:         "shelf",
 				Directory:     dirs,
 			})
-		case "director":
+		case hd.id == "director":
 			dirs := people.directors
 			scores := rankDirectories(dirs, people.directorScores)
 			stampDirectoryScores(dirs, scores)
@@ -2109,8 +2131,13 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 	if wantPeople {
 		peopleDone = make(chan peopleSearchResult, 1)
 		peopleCtx := ctx // ctx is reassigned below
-		go func() { peopleDone <- s.searchPeople(peopleCtx, pr, query, 0, limit, false) }()
+		go func() {
+			catPeople := s.searchPeople(peopleCtx, pr, query, 0, limit, false)
+			plugPeople := s.searchPluginPeople(peopleCtx, pr, query, 0, limit, false)
+			peopleDone <- mergePeopleSearchResults(catPeople, plugPeople, limit)
+		}()
 	}
+	pluginItems := s.searchPluginTitles(ctx, pr, query, 0, limit)
 	ctx = frontend.WithSearchClient(ctx, s.searchClientID(pr))
 	result, err := s.searchExperience().Resolve(ctx, pr.User, query, s.searchTypes(pr.User, 0), limit, true)
 	var people peopleSearchResult
@@ -2121,7 +2148,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	vibe, res, isVibe := result.Collection, result.Items, result.CollectionSearch
+	vibe, res, isVibe := result.Collection, mergePluginSearchResults(result.Items, pluginItems, result.AIItems, limit), result.CollectionSearch
 	aiKeys := map[frontend.RatingKey]bool{}
 	for i := 0; i < min(result.AIItems, len(res)); i++ {
 		aiKeys[res[i].Key] = true
@@ -2139,6 +2166,14 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 			case "tv", "shows", "show":
 				allow[frontend.TypeShow] = true
 				allow[frontend.TypeEpisode] = true
+			case "artists", "artist":
+				allow[plexBaseArtist] = true
+			case "albums", "album":
+				allow[plexBaseAlbum] = true
+			case "tracks", "track":
+				allow[plexBaseTrack] = true
+			case "photos", "photo":
+				allow[plexBasePhoto] = true
 			case "people", "person", "actors", "actor", "directors", "director":
 				searchPeopleFlag = true
 			}
@@ -2148,7 +2183,7 @@ func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
 		} else {
 			filtered := res[:0:0]
 			for _, t := range res {
-				if allow[t.Type] {
+				if allow[t.Type] || allow[frontend.MediaType(s.plexTypeFor(&t))] {
 					filtered = append(filtered, t)
 				}
 			}

@@ -79,6 +79,13 @@
     ]
   },
   {
+    "id": "styles",
+    "title": "Styles for On Air",
+    "group": "Build features",
+    "body": "A plugin can be a channel style for On Air: idents, up-next cards, breaks and the rest of a channel's look, plus the artwork and fonts it uses. Style plugins run no code. Styles are shared this way; there is no separate pack format.\n\n## The quickest way\nDesign the style in Live TV → Styles, then open its menu and choose **Export as plugin**. The download is a complete `.etherpkg` style plugin. Install it on another server from Plugins (upload, URL or Marketplace), or submit it to the Marketplace like any other plugin.\n\n## Manifest\nA style plugin uses the data runtime and contributes exactly one style:\n\n```json\n{\n  \"id\": \"community.style.neon-noir\",\n  \"name\": \"Neon Noir\",\n  \"version\": \"1.0.0\",\n  \"ether\": {\n    \"protocol\": 1,\n    \"kind\": \"extension\",\n    \"summary\": \"Adds a channel style and its licensed artwork\",\n    \"runtime\": { \"kind\": \"data\" },\n    \"capabilities\": [\"livetv_pack\"],\n    \"contributes\": { \"looks\": [{ \"id\": \"style\", \"file\": \"looks/style.json\" }] }\n  }\n}\n```\n\nThe rules Ether checks:\n- `runtime.kind` is `data` with no `entry` or `module`.\n- `livetv_pack` is the only capability.\n- `contributes.looks` holds exactly one style.\n\n## Files\n- `looks/style.json`: the style document, the same JSON the Style editor saves (brand, roles, scenes, controls).\n- `assets/<sha256>`: each Library image, video, audio file or font the style references by digest.\n- `assets.json`: one entry per asset, with `digest`, `name`, `kind`, `license`, `mime`, and optional `source` and `attribution`.\n- `digest`: the package digest. Export writes it; the CLI writes it for hand-built packages.\n\n## Limits and licences\n- One file may be at most 64 MB, and the whole package at most 128 MB.\n- Fonts travel only with a licence that permits redistribution. Export swaps any other font for the bundled Inter and lists it in `warnings.json`.\n- Installing the plugin adds the style to the owner's Styles, labelled with the plugin it came from. The style stays if the plugin is removed; delete it from Styles.\n",
+    "patterns": ["internal/onair/pack.go", "internal/plugins/manifest.go#Looks"]
+  },
+  {
     "id": "settings",
     "title": "Settings & setup steps",
     "group": "Build features",

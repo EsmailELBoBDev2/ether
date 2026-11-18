@@ -1,6 +1,7 @@
 import "./create-reveal.css";
 import { AgentPanel } from "@braedonsaunders/appkit-ai/react";
 import { Button } from "@braedonsaunders/appkit-ui";
+import { Check, Pencil, RotateCcw, Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -45,7 +46,6 @@ export function CreateTab({
   const [before, setBefore] = useState<Style | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [narrative, setNarrative] = useState("");
   const [lastPrompt, setLastPrompt] = useState("");
   const thread = useRef<string | undefined>(undefined);
   const turn = useRef<string | undefined>(undefined);
@@ -81,7 +81,6 @@ export function CreateTab({
     setRevealed(0);
     setProposal(null);
     setLastPrompt(prompt);
-    setNarrative("");
     const current = ++revision.current;
     const abort = new AbortController();
     controller.current = abort;
@@ -113,8 +112,6 @@ export function CreateTab({
       let pending = Promise.resolve();
       void readAgentStream(new Response(preview), (chunk) => {
         if (chunk.type === "start") turn.current = chunk.messageId;
-        if (chunk.type === "text-start") setNarrative("");
-        if (chunk.type === "text-delta" && chunk.delta) setNarrative((n) => n + chunk.delta);
         if (chunk.type === "error")
           setError(chunk.errorText ?? t("Ether could not finish that. Try again."));
         if (chunk.type === "tool-output-available" && chunk.output?.look) {
@@ -201,16 +198,10 @@ export function CreateTab({
       ]
     : preview.scenes;
   return (
-    <section className="studio-create">
+    <section className={`studio-create${sceneOnly ? " studio-create-stacked" : ""}`}>
       <div className="studio-create-conversation">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-widest text-primary">
-            {t("Ask Ether")}
-          </p>
-          <h2 className="mt-2 text-2xl font-semibold">{t("Describe your channel")}</h2>
-        </div>
         {enabled === false ? (
-          <div className="rounded-xl border border-border p-6">
+          <div className="m-4 rounded-xl border border-border p-6">
             <p>{t("Connect a language model to use Ask Ether.")}</p>
             <Link className="text-primary underline" to="/services">
               {t("Integrations")} → {t("LLM")}
@@ -226,72 +217,80 @@ export function CreateTab({
               }}
               toolLabels={{ look_draft: t("Draft a style") }}
               send={send}
+              composerContent={
+                error || (!busy && (proposal || lastPrompt || before)) ? (
+                  <div className="flex flex-wrap items-center gap-1 px-1 pb-1">
+                    {error ? (
+                      <p role="alert" className="mr-auto text-xs text-danger">
+                        {error}
+                      </p>
+                    ) : null}
+                    {!busy && proposal ? (
+                      <>
+                        <Button
+                          size="sm"
+                          aria-label={t("Keep this")}
+                          title={t("Keep this")}
+                          onClick={() => {
+                            setBefore(structuredClone(style));
+                            onChange(proposal);
+                            setProposal(null);
+                          }}
+                        >
+                          <Check size={14} />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={t("Refine")}
+                          title={t("Refine")}
+                          onClick={() => fill("")}
+                        >
+                          <Pencil size={14} />
+                        </Button>
+                      </>
+                    ) : null}
+                    {!busy && lastPrompt ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t("Try again")}
+                        title={t("Try again")}
+                        onClick={() => {
+                          fill(lastPrompt);
+                          requestAnimationFrame(() =>
+                            chat.current
+                              ?.querySelector("textarea")
+                              ?.dispatchEvent(
+                                new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+                              ),
+                          );
+                        }}
+                      >
+                        <RotateCcw size={14} />
+                      </Button>
+                    ) : null}
+                    {!busy && (before || proposal) ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label={t("Revert")}
+                        title={t("Revert")}
+                        onClick={() => {
+                          if (before) onChange(before);
+                          setBefore(null);
+                          setProposal(null);
+                        }}
+                      >
+                        <Undo2 size={14} />
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : undefined
+              }
             />
           </div>
         )}
-        <div className="flex flex-wrap gap-2">
-          {[
-            t("80s synthwave movie channel"),
-            t("Cosy Sunday kids"),
-            t("Noir late-night thrillers"),
-          ].map((idea) => (
-            <Button key={idea} variant="outline" disabled={busy} onClick={() => fill(idea)}>
-              {idea}
-            </Button>
-          ))}
-        </div>
-        <p role="status" className="studio-create-narrative text-sm text-fg-muted">
-          {narrative || t("Describe the style below, then watch it come to life.")}
-        </p>
-        {error && (
-          <p role="alert" className="text-danger">
-            {error}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-2">
-          <Button
-            disabled={!proposal || busy}
-            onClick={() => {
-              setBefore(structuredClone(style));
-              onChange(proposal!);
-              setProposal(null);
-            }}
-          >
-            {t("Keep this")}
-          </Button>
-          <Button variant="outline" disabled={!proposal || busy} onClick={() => fill("")}>
-            {t("Refine")}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={!lastPrompt || busy}
-            onClick={() => {
-              fill(lastPrompt);
-              requestAnimationFrame(() =>
-                chat.current
-                  ?.querySelector("textarea")
-                  ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
-              );
-            }}
-          >
-            {t("Try again")}
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy || (!before && !proposal)}
-            onClick={() => {
-              if (before) onChange(before);
-              setBefore(null);
-              setProposal(null);
-              setNarrative("");
-            }}
-          >
-            {t("Revert")}
-          </Button>
-        </div>
-        <p className="text-xs text-fg-muted">
-          {t("Keep this updates your draft. Save the style when you’re ready.")}
-        </p>
       </div>
       <div className="studio-create-build" aria-label={t("Live build")} aria-busy={building}>
         <div className={`studio-create-kit ${!ready ? "studio-create-pending" : ""}`}>

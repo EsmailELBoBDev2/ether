@@ -153,6 +153,49 @@ Use `{secret:name}` header placeholders instead of returning raw credentials. UR
 
 Implement `POST /ether/notify` (the SDK notify handler). It receives the delivery request, including its test flag for a test send; return the documented NotifyResponse. See the generated router and conformance checks below. Validate channel fields and authenticate external delivery through declared network hosts and secrets. A successful connection test must mean the service accepted the request; do not report success after an upstream error. Never log tokens or signed delivery URLs. The Home Assistant example shows remote notification delivery.
 
+## Styles for On Air
+
+A plugin can be a channel style for On Air: idents, up-next cards, breaks and the rest of a channel's look, plus the artwork and fonts it uses. Style plugins run no code. Styles are shared this way; there is no separate pack format.
+
+## The quickest way
+Design the style in Live TV → Styles, then open its menu and choose **Export as plugin**. The download is a complete `.etherpkg` style plugin. Install it on another server from Plugins (upload, URL or Marketplace), or submit it to the Marketplace like any other plugin.
+
+## Manifest
+A style plugin uses the data runtime and contributes exactly one style:
+
+```json
+{
+  "id": "community.style.neon-noir",
+  "name": "Neon Noir",
+  "version": "1.0.0",
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "summary": "Adds a channel style and its licensed artwork",
+    "runtime": { "kind": "data" },
+    "capabilities": ["livetv_pack"],
+    "contributes": { "looks": [{ "id": "style", "file": "looks/style.json" }] }
+  }
+}
+```
+
+The rules Ether checks:
+- `runtime.kind` is `data` with no `entry` or `module`.
+- `livetv_pack` is the only capability.
+- `contributes.looks` holds exactly one style.
+
+## Files
+- `looks/style.json`: the style document, the same JSON the Style editor saves (brand, roles, scenes, controls).
+- `assets/<sha256>`: each Library image, video, audio file or font the style references by digest.
+- `assets.json`: one entry per asset, with `digest`, `name`, `kind`, `license`, `mime`, and optional `source` and `attribution`.
+- `digest`: the package digest. Export writes it; the CLI writes it for hand-built packages.
+
+## Limits and licences
+- One file may be at most 64 MB, and the whole package at most 128 MB.
+- Fonts travel only with a licence that permits redistribution. Export swaps any other font for the bundled Inter and lists it in `warnings.json`.
+- Installing the plugin adds the style to the owner's Styles, labelled with the plugin it came from. The style stays if the plugin is removed; delete it from Styles.
+
+
 ## Settings & setup steps
 
 Declare `ether.settings` inline or as `{"$ref":"settings.schema.json"}`. Referenced files must be in the package. Public values come from `ether.settings.get()` per request; pooled hosted instances restart, so instance memory is not persistent configuration. Read secrets through SecretGet only in hosted code.

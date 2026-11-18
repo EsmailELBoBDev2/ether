@@ -1,5 +1,5 @@
 import { nameTemplateScenes } from "./editor/scene-names";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, Popover } from "@braedonsaunders/appkit-ui";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { SubtabNav } from "../../../components/layout";
@@ -11,7 +11,7 @@ import { studio, type Style, type Template } from "./studio-model";
 import { StyleThumbnail } from "./editor/RemixPanel";
 import { LookDrawer } from "./LookDrawer";
 import { ReelDrawer } from "./ReelDrawer";
-import { MoreHorizontal, Copy, Download, Trash2, Upload, Play, ArrowUpRight } from "lucide-react";
+import { MoreHorizontal, Copy, Download, Trash2, Play, ArrowUpRight } from "lucide-react";
 import { apiBlob, errorMessage, uuid } from "../../../lib/api";
 export function useLooks() {
   const location = useLocation(),
@@ -177,8 +177,7 @@ export function LooksGallery({
     [deleted, setDeleted] = useState<string[]>([]),
     [deleting, setDeleting] = useState<Style | null>(null),
     [channels, setChannels] = useState<ChannelSummary[]>([]),
-    [menu, setMenu] = useState<string | null>(null),
-    file = useRef<HTMLInputElement>(null);
+    [menu, setMenu] = useState<string | null>(null);
   useEffect(() => {
     void tv.channelSummaries().then(setChannels);
   }, []);
@@ -239,10 +238,6 @@ export function LooksGallery({
           ]}
         />
         <div className="flex gap-2">
-          <Button variant="outline" disabled={working} onClick={() => file.current?.click()}>
-            <Upload size={16} />
-            {t("Import pack")}
-          </Button>
           <Button disabled={working} onClick={() => void create(blankStyle())}>
             {t("Start from blank")}
           </Button>
@@ -329,7 +324,7 @@ export function LooksGallery({
                           onClick={() => void exportPack(l)}
                         >
                           <Download size={16} />
-                          {t("Export pack")}
+                          {t("Export as plugin")}
                         </Button>
                         <Button
                           variant="ghost"
@@ -375,26 +370,6 @@ export function LooksGallery({
               {t("Choose an era. Set the mood. Make every frame your own.")}
             </p>
           </div>
-          <input
-            ref={file}
-            hidden
-            type="file"
-            accept=".etherpkg"
-            onChange={async (e) => {
-              const selected = e.target.files?.[0];
-              e.target.value = "";
-              if (!selected) return;
-              setWorking(true);
-              try {
-                const saved = await studio.importPack(selected);
-                onSelect(saved.id);
-              } catch (err) {
-                setError(errorMessage(err));
-              } finally {
-                setWorking(false);
-              }
-            }}
-          />
           <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
             {templates
               .filter((x) => matches(x.name))

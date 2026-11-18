@@ -494,7 +494,7 @@ export function LookDrawer({
                   }
                 }}
               >
-                {t("Export pack")}
+                {t("Export as plugin")}
               </Button>
               <Button
                 variant="ghost"
@@ -542,7 +542,7 @@ export function LookDrawer({
         </div>
       )}
       {tab === "create" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
           <CreateTab style={draft} onChange={change} selectedSceneId={scene?.id} />
         </div>
       ) : tab === "screens" ? (

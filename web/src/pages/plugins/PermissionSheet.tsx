@@ -354,6 +354,7 @@ export function RuntimeLimitsCard({
       value: (l) => (l?.archiveExpandedBytes ? l.archiveExpandedBytes / 1073741824 : t("Default")),
     },
     { label: t("Archive members"), value: (l) => l?.archiveMembers || t("Default") },
+    { label: t("Catalogue items"), value: (l) => l?.maxItems || t("Default") },
   ];
   return (
     <div className="rounded-xl border border-border bg-surface p-4">

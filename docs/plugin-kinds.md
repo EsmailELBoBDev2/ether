@@ -137,15 +137,22 @@ order. Patterns:
   on an NZB release are rejected; use a container source for archive members.
   `fileHint` retains its existing meaning as an archive member hint.
 
-`ResolveSources({kind: "indexer_search", query, category})` accepts a
+`ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
 and the query unchanged, rather than assuming a movie or TV request.
-Invalid categories are rejected. Stremio/addon sources do not support this
-filter and reject scoped searches. Omit `category` for the default media
-search. Results and acquired files are cached separately by category and
-file selection. The wire shapes are documented in
+When `query` is omitted or empty and `category` is set, Ether issues a
+recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
+the newest 100 candidates; an empty `query` with no `category` is refused.
+Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
+release names also receive `score`, `resolution`, `source` and `codec` scored
+against `profile` (or the owner's default quality profile when `profile` is
+empty); non-video candidates leave those four fields empty, and unknown profile
+names are rejected. Invalid categories are rejected. Stremio/addon sources do
+not support category filters and reject scoped searches. Omit `category` for
+the default media search. Results and acquired files are cached separately by
+category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
 URLs may carry `{itemIndex}`, `{pageNumber}` (= itemIndex + 1),
@@ -474,11 +481,14 @@ between calls and host operations during playback, Live TV or high host load.
 They are cancellable with visible progress. Persist checkpoints in KV for
 recovery on a later owner action after restart; Ether does not resume eagerly.
 
-`ether.runtime.limits` requests memory, time, compute, download and archive
-resources within owner-controlled global/per-plugin ceilings. Defaults: 2 GiB
-memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB), 12h, effectively
-unlimited background work units, 8 GiB download/member, 32 GiB total expansion,
-and 65,535 members. The library cache quota further bounds downloads. The owner
+`ether.runtime.limits` requests memory, time, compute, download, archive and
+catalogue-item resources within owner-controlled global/per-plugin ceilings.
+Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
+12h, effectively unlimited background work units, 8 GiB download/member, 32 GiB
+total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
+(`maxItems`, with no upper cap when raised by the owner). Remote plugins can
+also request data and `maxItems` limits. The library cache quota further bounds
+downloads. The owner
 sees requested versus granted values before install and in the drawer, and can
 raise or lower ceilings under Plugins → Settings or for one plugin. Saving
 stops affected jobs so the new ceilings apply immediately.

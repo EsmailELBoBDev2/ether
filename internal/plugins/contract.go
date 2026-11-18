@@ -181,18 +181,25 @@ type RuntimeDecl struct {
 	Limits *RuntimeLimits `json:"limits,omitempty"`
 }
 
-// RuntimeLimits requests per-call hosted resources. Ether grants defaults for
-// omitted fields and clamps requests to owner-controlled ceilings.
+// DefaultMaxPluginItems is the default per-plugin stored item ceiling across
+// its content libraries; owners can raise or lower it globally or per plugin
+// without an upper bound.
+const DefaultMaxPluginItems = 2_000_000
+
+// RuntimeLimits requests per-call hosted resources and data/catalogue ceilings.
+// Ether grants defaults for omitted fields and clamps requests to
+// owner-controlled ceilings.
 type RuntimeLimits struct {
 	FetchBytes           int64  `json:"fetchBytes,omitempty"`
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`    // default 2,000,000 stored items across the plugin's libraries; owner-controlled
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"` // default 32 MiB, ceiling owner-controlled, up to 4 GiB
 	// ReadBytes is the granted per-call byte ceiling for cache.read,
 	// archive.open and archive.read, derived from MemoryBytes:
 	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
-	ReadBytes  int64  `json:"readBytes,omitempty"`
+	ReadBytes int64 `json:"readBytes,omitempty"`
 	// Deadline and UnitBudget are the granted ceilings in manifests/detail
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls

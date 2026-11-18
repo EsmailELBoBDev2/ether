@@ -94,8 +94,12 @@ type KindChangesRequest struct {
 type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
-	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// Category accepts comma-separated Newznab IDs or standard family names;
+	// when set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -112,6 +116,15 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	Indexer   string `json:"indexer,omitempty"`
+	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.

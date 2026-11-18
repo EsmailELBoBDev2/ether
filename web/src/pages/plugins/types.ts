@@ -116,6 +116,7 @@ export interface RuntimeLimits {
   archiveMemberBytes?: number;
   archiveExpandedBytes?: number;
   archiveMembers?: number;
+  maxItems?: number;
   memoryBytes: number;
   deadline: string;
   unitBudget: number;
@@ -145,6 +146,8 @@ export interface PluginDetail extends PluginSummary {
     p95Ms: number;
     egressBytes: number;
     kvBytes: number;
+    items?: number;
+    maxItems?: number;
     slow: number;
     eventDrops: number;
     restarts: number;

@@ -156,7 +156,7 @@ then `LANG`) in the `X-Ether-Locale` header when the caller has not supplied one
 
 `ether.runtime.limits` requests `memoryBytes`, `deadline` (a positive Go duration
 such as `12h`), `unitBudget`, `fetchBytes`, `archiveMemberBytes`,
-`archiveExpandedBytes` and `archiveMembers`. Ether grants each request up to the
+`archiveExpandedBytes`, `archiveMembers` and `maxItems`. Ether grants each request up to the
 owner's global or per-plugin ceiling. Owners can raise or lower ceilings under
 Plugins → Settings and in each plugin's drawer. A per-plugin value overrides the
 global value, including raising it. Zero inherits; global zero uses the default.
@@ -167,7 +167,8 @@ omitted guest heap requests still use **32 MiB**, allocated only as needed.
 The default call/job time ceiling is **12 hours** and background compute is
 effectively unlimited (2^60 units per call); owners and manifests may lower it.
 The default download and expanded-member ceilings are **8 GiB** each, total
-archive expansion **32 GiB**, and archive members **65,535**. Downloads also obey
+archive expansion **32 GiB**, archive members **65,535**, and stored catalogue
+items **2,000,000** (`maxItems`, owner-adjustable with no upper bound). Downloads also obey
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
 `runtimeLimits` in install preview and detail, displayed side by side, and exposes

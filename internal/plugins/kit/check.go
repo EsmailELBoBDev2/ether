@@ -516,6 +516,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			ArchiveMemberBytes:   8 << 30,
 			ArchiveExpandedBytes: 32 << 30,
 			ArchiveMembers:       65535,
+			MaxItems:             plugins.DefaultMaxPluginItems,
 			Deadline:             "12h",
 		}
 		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {

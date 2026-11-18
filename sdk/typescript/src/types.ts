@@ -74,6 +74,7 @@ export interface RuntimeLimits {
   archiveMemberBytes?: number;
   archiveExpandedBytes?: number;
   archiveMembers?: number;
+  maxItems?: number;
   memoryBytes?: number;
   readBytes?: number;
   deadline?: string;
@@ -423,8 +424,10 @@ export interface KindChangePage {
 export interface SourceQuery {
   kind: "indexer_search" | "debrid_check" | "debrid_acquire";
   query?: string;
-  /** Comma-separated Newznab category IDs or standard family names; uses generic search. */
+  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
+  /** Quality profile name to score video release names against on indexer_search; empty uses default. */
+  profile?: string;
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
@@ -440,6 +443,13 @@ export interface SourceCandidate {
   size?: number;
   seeders?: number;
   cached?: boolean;
+  indexer?: string;
+  indexerId?: string;
+  /** Quality-profile score and parsed video facts; omitted on non-video candidates. */
+  score?: number;
+  resolution?: number;
+  source?: string;
+  codec?: string;
 }
 
 export interface KindMatchRequest {

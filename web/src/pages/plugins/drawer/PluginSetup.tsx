@@ -314,6 +314,9 @@ export function PluginSetup({
                     plugin={detail.id}
                     limits={detail.runtimeLimits}
                     requested={detail.manifest.ether?.runtime?.limits}
+                    storedItems={detail.impact.items}
+                    maxItems={detail.impact.maxItems}
+                    hasMediaKinds={Boolean(detail.manifest.ether?.contributes?.mediaKinds?.length)}
                     flush
                     onSaved={() => {
                       void onDetail();

@@ -894,7 +894,11 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id c
 		if err != nil {
 			return nil
 		}
-		return []url.Values{{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}, "t": {"search"}, "cat": {joinCats(cats)}, "q": {strings.TrimSpace(req.Title)}}}
+		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}, "t": {"search"}, "cat": {joinCats(cats)}}
+		if q := strings.TrimSpace(req.Title); q != "" {
+			v.Set("q", q)
+		}
+		return []url.Values{v}
 	}
 	isTV := isTVRequest(req)
 	base := func() url.Values {
@@ -1197,6 +1201,9 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 	}
 	key := cacheKey(c, req)
 	ctx = withCacheAge(ctx, req.Released)
+	if req.Category != "" && strings.TrimSpace(req.Title) == "" {
+		ctx = withRecentSearchCache(ctx)
+	}
 	if cached, ok := c.cacheGet(ctx, key); ok {
 		c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true, Results: len(cached)})
 		return cached, nil

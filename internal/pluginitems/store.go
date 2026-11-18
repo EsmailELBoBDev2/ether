@@ -433,12 +433,13 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 		}
 	}
 	if newCount > 0 {
+		maxItems := s.MaxItemsFor(pluginID)
 		var pluginTotal int64
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ?`, pluginID).Scan(&pluginTotal); err != nil {
 			return 0, err
 		}
-		if pluginTotal+int64(newCount) > int64(s.maxPluginItems) {
-			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", s.maxPluginItems))
+		if pluginTotal+int64(newCount) > int64(maxItems) {
+			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", maxItems))
 			return 0, ErrMaxItemsExceeded
 		}
 	}
@@ -1280,6 +1281,24 @@ func (s *Service) Children(ctx context.Context, parentRef core.ItemRef, cursor s
 
 // LibraryTally returns the maintained per-level item counts for libraryID
 // from plugin_item_tally (spec §2.3, §3.4).
+// PluginItemCount returns the total stored item count across all libraries
+// owned by pluginID, read in O(1) from plugin_item_tally.
+func (s *Service) PluginItemCount(ctx context.Context, pluginID string) (int, error) {
+	if s == nil || strings.TrimSpace(pluginID) == "" {
+		return 0, nil
+	}
+	var total int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(t.n), 0)
+		 FROM plugin_item_tally t
+		 JOIN plugin_kinds pk ON pk.library_id = t.library_id
+		 WHERE pk.plugin_id = ?`, pluginID).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return int(total), nil
+}
+
 func (s *Service) LibraryTally(ctx context.Context, libraryID core.LibraryID) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT level, n FROM plugin_item_tally WHERE library_id = ?`, int64(libraryID))

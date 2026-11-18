@@ -564,10 +564,19 @@ func (i *instance) grantScope(ctx context.Context, token string, device frontend
 }
 
 func (i *instance) requestCapabilities(r *http.Request) object {
+	v, _, err := i.viewer(r)
+	if err != nil {
+		v = nil
+	}
+	return i.requestCapabilitiesFor(r, v)
+}
+
+// requestCapabilitiesFor builds capabilities for an already resolved viewer
+// (nil for none): a signed-in viewer also sees the plugin kinds they can
+// open, and a request without a viewer never learns plugin library names.
+func (i *instance) requestCapabilitiesFor(r *http.Request, v *frontend.Viewer) object {
 	c := i.capabilities()
-	// A signed-in viewer also sees the plugin kinds they can open; a
-	// request without a viewer never learns plugin library names.
-	if v, _, err := i.viewer(r); err == nil && v != nil {
+	if v != nil {
 		c["searchKinds"], _ = i.searchKinds(r, v)
 	}
 	if i.host.SecureOrigins != nil {

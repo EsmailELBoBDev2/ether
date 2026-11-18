@@ -264,6 +264,14 @@ func (a *App) admissionSessionTitle(ctx context.Context, v *core.Viewer, key cor
 }
 
 func (a *App) librarySessionTitle(ctx context.Context, v *core.Viewer, key core.RatingKey, visibility experience.Visibility, cached, retained bool) (*core.Title, error) {
+	// Plugin library items are not catalogue titles: check them against the
+	// plugin library the viewer may open, as their source resolve does.
+	if key.IsPluginKey() {
+		if a.pluginsRT == nil || a.pluginsRT.kindCatalog == nil {
+			return nil, core.ErrNotFound
+		}
+		return a.pluginPlayableTitle(ctx, a.pluginsRT.kindCatalog, v, key)
+	}
 	if a.libraries == nil || (a.spikeLibrary != nil && key.Kind() == core.KindLocal) {
 		return a.sessionTitle(ctx, v, key, visibility, cached)
 	}

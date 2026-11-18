@@ -427,27 +427,8 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Debrid:    deb,
 		Engine:    eng,
 		Authorize: func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error {
-			if viewer == nil || viewer.ID <= 0 || a.users == nil {
-				return core.ErrNotFound
-			}
-			u, err := a.users.PolicyUser(ctx, viewer.ID)
-			if err != nil || u == nil {
-				return core.ErrNotFound
-			}
-			piv, err := kindCatalog.Item(ctx, key)
-			if err != nil {
-				return core.ErrNotFound
-			}
-			if piv.Library.Hidden || !u.AllowsLibrary(piv.Library.ID) || !kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
-				return core.ErrNotFound
-			}
-			if u.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, u.MaxContentRating) {
-				return core.ErrNotFound
-			}
-			if !experience.TitleAllowed(a.safety, u, &piv.Title) {
-				return core.ErrNotFound
-			}
-			return nil
+			_, err := a.pluginPlayableTitle(ctx, kindCatalog, viewer, key)
+			return err
 		},
 		Logger: a.log,
 	})
@@ -702,4 +683,33 @@ func (a *App) startPluginLiveTV(rec plugins.Record) {
 			}
 		}
 	}()
+}
+
+// pluginPlayableTitle is the viewer check for a plugin library item: the
+// library must be visible to the viewer and active, and the item must pass
+// the viewer's rating and safety policy. Resolving a source and re-checking
+// a playing session both use it.
+func (a *App) pluginPlayableTitle(ctx context.Context, kindCatalog *adapters.KindCatalog, viewer *core.Viewer, key core.RatingKey) (*core.Title, error) {
+	if viewer == nil || viewer.ID <= 0 || a.users == nil || kindCatalog == nil {
+		return nil, core.ErrNotFound
+	}
+	u, err := a.users.PolicyUser(ctx, viewer.ID)
+	if err != nil || u == nil {
+		return nil, core.ErrNotFound
+	}
+	piv, err := kindCatalog.Item(ctx, key)
+	if err != nil {
+		return nil, core.ErrNotFound
+	}
+	if piv.Library.Hidden || !u.AllowsLibrary(piv.Library.ID) || !kindCatalog.IsPluginLibraryActive(ctx, piv.Library) {
+		return nil, core.ErrNotFound
+	}
+	if u.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, u.MaxContentRating) {
+		return nil, core.ErrNotFound
+	}
+	if !experience.TitleAllowed(a.safety, u, &piv.Title) {
+		return nil, core.ErrNotFound
+	}
+	t := piv.Title
+	return &t, nil
 }

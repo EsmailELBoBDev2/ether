@@ -13,7 +13,22 @@ import (
 	"github.com/braedonsaunders/ether/internal/streamgrant"
 )
 
-const segmentDuration = 4 * time.Second
+const (
+	segmentDuration = 4 * time.Second
+
+	iptvProbeBudget = 8 * time.Second
+	iptvStartFloor  = 8 * time.Second
+	iptvStartMax    = 12 * time.Second
+)
+
+// iptvSourceStartBudget gives post-probe stream startup its own bounded window
+// once probing proved the input answers. Slower routes (such as an outbound
+// SOCKS5 proxy) take longer per round-trip to open playlists and first
+// segments too, so the window scales from the probe's measured duration rather
+// than a proxy-specific constant.
+func iptvSourceStartBudget(probeElapsed time.Duration) time.Duration {
+	return min(max(iptvStartFloor, probeElapsed+4*time.Second), iptvStartMax)
+}
 
 type channelLimiter interface {
 	BeginChannel(*core.User, core.ClientCaps, string) error
@@ -29,6 +44,7 @@ type session struct {
 	firstMediaDelivered bool
 	firstMediaByte      bool
 	tuneStartedAt       time.Time
+	startDeadline       time.Time // bounded post-probe startup window for Direct playout
 	lastMediaWarning    time.Time
 	consumed            bool
 	mediaStarted        bool
@@ -372,14 +388,10 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 		base = context.Background()
 	}
 	ss.ctx, ss.cancel = context.WithCancel(base)
-	// Upstream retries and probing share one startup budget. A stalled public
-	// source must not occupy a viewer slot for three HTTP timeouts.
-	var cancel context.CancelFunc
-	if c.Kind == "iptv" {
-		ctx, cancel = context.WithTimeout(ctx, 8*time.Second)
-	} else {
-		ctx, cancel = context.WithCancel(ctx)
-	}
+	// Probing and post-probe stream startup enforce their own bounded budgets
+	// so a dead input still fails fast while a slower route that answered its
+	// probe has room to open. startupCancel aborts whichever stage is running.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ss.startupCancel = cancel
 	ss.view = core.PlaySession{ID: ss.info.ID, PlaybackGroup: ss.info.ID, UserID: u.ID, Username: u.Username, ClientID: caps.ClientID, Client: caps, TitleName: c.Name, StartedAt: ss.info.StartedAt, Decision: core.DecisionRemux, DecisionReason: "Live channel playout"}
@@ -671,6 +683,7 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 	ss.inputURL, ss.inputSource, ss.inputHeaders = stage.inputURL, stage.inputSource, stage.inputHeaders
 	ss.info.MediaInfo, ss.info.ActiveSourceID = stage.info.MediaInfo, stage.info.ActiveSourceID
 	ss.relayInfo, ss.owned = stage.relayInfo, stage.owned
+	ss.startDeadline = stage.startDeadline
 	ss.broadcast = stage.broadcast
 	s.transferInput(stage, ss)
 	if ss.owned != nil && ss.owned.relay != nil {
@@ -738,12 +751,23 @@ func (s *Service) Failover(ctx context.Context, id string, u *core.User) error {
 	return nil
 }
 
-// startIPTV recognizes HLS without assuming URL suffixes (many owners use
-// signed extensionless URLs). Other HTTP streams are remuxed through ffmpeg,
-// whose existing input layer reconnects on network errors with bounded delay.
-func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent bool) error {
+// startIPTVSource recognizes HLS without assuming URL suffixes (many owners
+// use signed extensionless URLs). Other HTTP streams are remuxed through
+// ffmpeg, whose existing input layer reconnects on network errors with bounded
+// delay. Probing runs under sniffBudget/probeBudget; once the input proves
+// alive, relay/timeline startup gets its own bounded startDeadline.
+func (s *Service) startIPTVSource(ctx context.Context, ss *session, sniffBudget, probeBudget time.Duration, deferSilent bool) error {
 	if ss.closed {
 		return core.ErrNotFound
+	}
+	probeStarted := time.Now()
+	probeCtx, stopProbe := context.WithTimeout(ctx, probeBudget)
+	defer stopProbe()
+	sniffCtx, stopSniff := context.WithTimeout(probeCtx, sniffBudget)
+	defer stopSniff()
+	armStartBudget := func() (context.Context, context.CancelFunc) {
+		ss.startDeadline = time.Now().Add(iptvSourceStartBudget(time.Since(probeStarted)))
+		return context.WithDeadline(ctx, ss.startDeadline)
 	}
 	c := ss.info.Channel
 	c.StreamURL = ss.inputURL
@@ -751,13 +775,13 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	probe := analyze || c.Transcode || ss.caps.ProbeLiveInput
 	// Codec analysis overlaps the playlist prefix read. The first tune of a
 	// channel still waits on the probe; a retune inside liveProbeTTL does not.
-	probeCh, probeCancel := s.startEarlyProbe(ctx, ss, probe)
+	probeCh, probeCancel := s.startEarlyProbe(probeCtx, ss, probe)
 	if probeCancel != nil {
 		defer probeCancel()
 	}
 	// The sniff joins the input's provider connection, which the probe and
 	// ffmpeg then read from too.
-	prefix, ctype, err := s.sniffInput(ctx, ss, 7)
+	prefix, ctype, err := s.sniffInput(sniffCtx, ss, 7)
 	if err != nil {
 		return Diagnose("input_sniff", err)
 	}
@@ -765,13 +789,13 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	var info *core.MediaInfo
 	if isHLS && !c.Transcode {
 		if s.transcoder() != nil && probe {
-			probeWaitCtx := ctx
+			probeWaitCtx := probeCtx
 			var waitCancel context.CancelFunc
 			if ss.caps.BestEffortLiveStart {
 				// This caller has a < 1s startup budget. Wait briefly for a
 				// cached or fast probe, then proceed with HLS passthrough if
 				// live ffprobe is still sampling segments.
-				probeWaitCtx, waitCancel = context.WithTimeout(ctx, 350*time.Millisecond)
+				probeWaitCtx, waitCancel = context.WithTimeout(probeCtx, 350*time.Millisecond)
 				defer waitCancel()
 			}
 			info, err = s.takeEarlyProbe(probeWaitCtx, ss, probeCh)
@@ -796,11 +820,15 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 					// playable. MPEG-2/MP2 HLS needs conversion on Apple TV too.
 					dec := s.transcoder().Decide(*info, ss.caps, core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1})
 					if !dec.VideoCopy || !dec.AudioCopy || info.Video().Codec == "hevc" {
-						return s.startIPTVRelay(ctx, ss, *info)
+						startCtx, stopStart := armStartBudget()
+						defer stopStart()
+						return s.startIPTVRelay(startCtx, ss, *info)
 					}
 				}
 			}
 		}
+		_, stopStart := armStartBudget()
+		stopStart()
 		ss.owned = s.acquirePassthrough(ss)
 		s.sessionLog(ss).Info("live playback path selected", "path", "hls_passthrough", "analyzed", ss.info.MediaInfo != nil)
 		return nil
@@ -808,7 +836,7 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	if s.transcoder() == nil {
 		return core.ErrNotAvailable
 	}
-	info, err = s.takeEarlyProbe(ctx, ss, probeCh)
+	info, err = s.takeEarlyProbe(probeCtx, ss, probeCh)
 	if err != nil {
 		return Diagnose("probe", err)
 	}
@@ -821,7 +849,9 @@ func (s *Service) startIPTVSource(ctx context.Context, ss *session, deferSilent 
 	if deferSilent && !liveInputHasAudio(info) {
 		return errSilentInput
 	}
-	return s.startIPTVRelay(ctx, ss, copy)
+	startCtx, stopStart := armStartBudget()
+	defer stopStart()
+	return s.startIPTVRelay(startCtx, ss, copy)
 }
 
 type probeResult struct {
@@ -866,9 +896,15 @@ func (s *Service) takeEarlyProbe(ctx context.Context, ss *session, ch <-chan pro
 func (s *Service) awaitOwnedStart(ctx context.Context, ss *session) error {
 	ss.mu.Lock()
 	lease := ss.owned
+	deadline := ss.startDeadline
 	ss.mu.Unlock()
 	if lease == nil {
 		return nil
+	}
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
 	wait := ctx
 	if ss.caps.BestEffortLiveStart {

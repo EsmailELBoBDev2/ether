@@ -89,6 +89,7 @@ type inputGrant struct {
 	histChannel string
 	histSrc     StreamSource
 	admitting   atomic.Bool // cold admission tries another input after one refusal
+	paced       atomic.Bool // initial provider tune-gap slot booked once per grant
 	reported    atomic.Bool // the grant's session has been counted in history
 	service     *Service
 
@@ -289,6 +290,74 @@ func (s *Service) revokeInput(ss *session) {
 		r.dropLocked(ss, g)
 	}
 	r.mu.Unlock()
+}
+
+// markInputPaced records that ss shares a tune open whose provider gap has
+// already been booked (for example, Steady's companion probe grant).
+func (s *Service) markInputPaced(ss *session) {
+	s.inputRelay.mu.Lock()
+	g := s.inputRelay.bySess[ss]
+	s.inputRelay.mu.Unlock()
+	if g != nil {
+		g.paced.Store(true)
+	}
+}
+
+// paceSessionInput waits out the provider's minimum inter-tune gap before a
+// tune starts its probe timer, so provider pacing never consumes the tune's
+// own probe or stream-start budget. Joining an already-open tap does not book
+// a new provider stream.
+func (s *Service) paceSessionInput(ctx context.Context, ss *session) (time.Duration, error) {
+	r := &s.inputRelay
+	r.mu.Lock()
+	g := r.bySess[ss]
+	r.mu.Unlock()
+	if g == nil || g.ctx.Err() != nil {
+		return 0, core.ErrNotAvailable
+	}
+	if g.source == "" || g.paced.Load() {
+		return 0, nil
+	}
+	g.mu.Lock()
+	raw := g.resources["0"].url
+	g.mu.Unlock()
+	source, limit := s.tapSource(g)
+	joined, err := r.taps.canJoinOrOpen(tapKey(raw+"\x00"+tapKey("", g.mediaHeaders), g.headers), source, limit)
+	if err != nil {
+		return 0, err
+	}
+	if joined {
+		g.paced.Store(true)
+		return 0, nil
+	}
+	return s.paceGrant(ctx, g)
+}
+
+// paceGrant books and waits the provider's tune gap at most once for g.
+// Subsequent HLS manifest reloads on the same grant reuse that initial open
+// instead of pacing the stream against itself.
+func (s *Service) paceGrant(ctx context.Context, g *inputGrant) (time.Duration, error) {
+	if g == nil || g.source == "" || !g.paced.CompareAndSwap(false, true) {
+		return 0, nil
+	}
+	e, _ := s.sourceEntry(ctx, g.source)
+	wait, err := s.inputRelay.taps.reserveOpen(g.source, e.gap, e.perHour, time.Now())
+	if err != nil || wait <= 0 {
+		return 0, err
+	}
+	if g.log != nil {
+		g.log.Info("live provider tune gap", "wait", wait)
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return wait, nil
+	case <-ctx.Done():
+		return 0, context.Cause(ctx)
+	case <-g.ctx.Done():
+		return 0, context.Cause(g.ctx)
+	}
 }
 
 func (r *inputRelay) dropLocked(ss *session, g *inputGrant) {

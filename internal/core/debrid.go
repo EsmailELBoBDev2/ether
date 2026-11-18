@@ -38,10 +38,12 @@ type ReleaseTarget struct {
 	// byte size (additive).
 	WantedLanguages  []string `json:"wantedLanguages,omitempty"`
 	OriginalLanguage string   `json:"originalLanguage,omitempty"`
-	// FileIndex is a zero-based index in the complete torrent file list; the selected file must be a video.
+	// FileIndex is a zero-based index in the complete torrent file list; the selected file must be a video unless AllowNonVideo is set.
 	FileIndex *int `json:"fileIndex,omitempty"`
-	// ExactFile selects a plugin-requested video path or unambiguous basename.
+	// ExactFile selects a plugin-requested path or unambiguous basename.
 	ExactFile string `json:"exactFile,omitempty"`
+	// AllowNonVideo permits an explicit FileIndex or ExactFile selector to choose a non-video file.
+	AllowNonVideo bool `json:"allowNonVideo,omitempty"`
 	// FileName is the source-matched file hint, never proof of episode identity.
 	FileName string `json:"fileName,omitempty"`
 	// AbsoluteEpisode is the verified anime episode number across seasons.

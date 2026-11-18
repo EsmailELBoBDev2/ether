@@ -35,9 +35,11 @@ const (
 )
 
 var (
-	// ErrMemberUndecodable is returned when an archive member is compressed or
-	// solid in a format/method that internal/archive cannot decode sequentially.
-	ErrMemberUndecodable = errors.New("kindstream: archive member not sequentially decodable")
+	// ErrMemberUndecodable is returned when an archive member is encrypted
+	// without seekable/sequential support or uses an archive format/compression
+	// method that internal/archive cannot decode sequentially. It wraps
+	// core.ErrArchiveUnstreamable so frontends surface it plainly.
+	ErrMemberUndecodable = fmt.Errorf("kindstream: archive member not sequentially decodable: %w", core.ErrArchiveUnstreamable)
 
 	// ErrHostNotAllowed is returned when a source URL's host is rejected by the
 	// plugin's declared network allowlist.
@@ -136,14 +138,16 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 }
 
 // OpenSources tries each candidate core.PlayableSource in order, returning the first
-// ByteSource that opens and validates cleanly. When all candidates fail (or
-// sources is empty), OpenSources returns an error wrapping
+// ByteSource that opens and validates cleanly. When every candidate fails with
+// core.ErrArchiveUnstreamable, that error is preserved rather than masked as
+// core.ErrSourceUnavailable; otherwise all-failed candidates wrap
 // core.ErrSourceUnavailable (spec §4.5).
 func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) (ByteSource, core.PlayableSource, error) {
 	if len(sources) == 0 {
 		return nil, core.PlayableSource{}, core.ErrSourceUnavailable
 	}
 	var errs []error
+	allUnstreamable := true
 	for _, cand := range sources {
 		if err := ctx.Err(); err != nil {
 			return nil, core.PlayableSource{}, err
@@ -152,7 +156,13 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		if err == nil {
 			return bs, cand, nil
 		}
+		if !errors.Is(err, core.ErrArchiveUnstreamable) {
+			allUnstreamable = false
+		}
 		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, err))
+	}
+	if allUnstreamable && len(errs) > 0 {
+		return nil, core.PlayableSource{}, errors.Join(errs...)
 	}
 	return nil, core.PlayableSource{}, fmt.Errorf("%w: %v", core.ErrSourceUnavailable, errors.Join(errs...))
 }
@@ -270,7 +280,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 	fetchStream := func(ctx context.Context) (*http.Response, error) {
 		client := deps.HTTP
 		if client == nil {
-			client = &http.Client{Timeout: defaultHTTPTimeout}
+			client = defaultStreamingHTTPClient()
 		}
 		backoff := deps.Backoff
 		if backoff == nil {
@@ -504,7 +514,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	}
 
 	archFmt := archive.Detect(headSlice)
-	if src.Container != nil || (archFmt != archive.FormatUnknown && !isDeclaredArchiveMIME(src.MIME)) {
+	if src.Container != nil || (archFmt != archive.FormatUnknown && shouldAutoComposeReleaseArchive(src, wrapped.name, headSlice)) {
 		pwSecret := src.Release.PasswordSecret
 		var member string
 		var memberIdx *int
@@ -519,10 +529,17 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 		} else if src.Release.FileHint != "" {
 			member = src.Release.FileHint
 		}
-		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, fmtHint, member, memberIdx, pwSecret, src.MIME, deps)
+		cacheSeed := ms.ReleaseID() + "|" + wrapped.name
+		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, src.MIME, src.MaxBytes, deps)
 	}
 
-	resolvedMIME, merr := verifyAndResolveMIME(headSlice, src.MIME, wrapped.name)
+	declaredMIME := strings.TrimSpace(src.MIME)
+	if declaredMIME == "" && !hasVideoFileExtension(wrapped.name) {
+		// Non-video release files without an explicit plugin MIME must never
+		// receive a guessed video/* MIME (#574).
+		declaredMIME = "application/octet-stream"
+	}
+	resolvedMIME, merr := verifyAndResolveMIME(headSlice, declaredMIME, wrapped.name)
 	if merr != nil {
 		_ = ms.Close()
 		return nil, merr
@@ -531,15 +548,59 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	return wrapped, nil
 }
 
+func shouldAutoComposeReleaseArchive(src core.PlayableSource, fileName string, head []byte) bool {
+	decl := normalizeMIME(src.MIME)
+	if isDeclaredArchiveMIME(decl) {
+		return false
+	}
+	if strings.EqualFold(path.Ext(fileName), ".epub") {
+		return false
+	}
+	if magic, ok := sniffMagicBytes(head); ok && magic == "application/epub+zip" {
+		return false
+	}
+	if src.Release != nil && strings.TrimSpace(src.Release.FileHint) != "" {
+		return true
+	}
+	if decl == "application/octet-stream" {
+		return false
+	}
+	// When a plugin explicitly selects a file in the release without a
+	// ContainerRef or inner media MIME, serve the selected file itself rather
+	// than unwrapping its first archive entry.
+	if decl == "" && src.Release != nil && hasExplicitReleaseSelector(*src.Release) {
+		return false
+	}
+	return true
+}
+
+func hasExplicitReleaseSelector(h core.ReleaseHint) bool {
+	if strings.TrimSpace(h.File) != "" || h.FileIndex != nil {
+		return true
+	}
+	return h.Candidate != nil && h.Candidate.FileIndex != nil
+}
+
+func hasVideoFileExtension(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".webm", ".ts", ".m2ts", ".mpg", ".mpeg", ".wmv", ".flv":
+		return true
+	default:
+		return false
+	}
+}
+
 func openContainerOverVolumes(
 	ctx context.Context,
 	vols []archive.Volume,
 	closers []io.Closer,
+	cacheSeed string,
 	formatHint string,
 	memberName string,
 	memberIdx *int,
 	passwordSecret string,
 	declaredMIME string,
+	maxBytes int64,
 	deps Deps,
 ) (ByteSource, error) {
 	closeAll := func() {
@@ -560,48 +621,61 @@ func openContainerOverVolumes(
 		}
 		password = pw
 	}
-	format, err := detectContainerFormat(vols[0], formatHint)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
-	members, err := listContainerMembers(ctx, format, vols, password)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
-	selected, _, err := selectArchiveMember(members, memberName, memberIdx)
-	if err != nil {
-		closeAll()
-		return nil, err
-	}
-	mr, err := archive.NewMemberReader(selected, vols)
-	if err != nil {
-		closeAll()
-		if errors.Is(err, archive.ErrCompressed) || errors.Is(err, archive.ErrSolid) {
-			return nil, fmt.Errorf("%w: %v", ErrMemberUndecodable, err)
+	bufVols := make([]archive.Volume, len(vols))
+	for i, v := range vols {
+		bufVols[i] = archive.Volume{
+			R:    newSeqBufferedReaderAt(ctx, v.R, v.Size),
+			Size: v.Size,
 		}
+	}
+	format, err := detectContainerFormat(bufVols[0], formatHint)
+	if err != nil {
+		closeAll()
+		return nil, wrapArchiveUnstreamable(err)
+	}
+	members, err := listContainerMembers(ctx, format, bufVols, password)
+	if err != nil {
+		closeAll()
+		return nil, wrapArchiveUnstreamable(err)
+	}
+	selected, nonDirIdx, err := selectArchiveMember(members, memberName, memberIdx)
+	if err != nil {
+		closeAll()
 		return nil, err
 	}
-	var head [probeHeadBytes]byte
-	headLen := min(selected.Size, int64(probeHeadBytes))
-	var headSlice []byte
-	if headLen > 0 {
-		n, _ := mr.ReadAt(head[:headLen], 0)
-		headSlice = head[:n]
+	streamErr := selected.Streamable()
+	if streamErr == nil {
+		mr, err := archive.NewMemberReader(selected, vols)
+		if err != nil {
+			closeAll()
+			return nil, wrapArchiveUnstreamable(err)
+		}
+		var head [probeHeadBytes]byte
+		headLen := min(selected.Size, int64(probeHeadBytes))
+		var headSlice []byte
+		if headLen > 0 {
+			n, _ := mr.ReadAt(head[:headLen], 0)
+			headSlice = head[:n]
+		}
+		resolvedMIME, merr := verifyAndResolveMIME(headSlice, declaredMIME, selected.Name)
+		if merr != nil {
+			closeAll()
+			return nil, merr
+		}
+		return &containerMemberSource{
+			r:       mr,
+			size:    selected.Size,
+			name:    memberDisplayName(selected.Name),
+			mime:    resolvedMIME,
+			closers: closers,
+		}, nil
 	}
-	resolvedMIME, merr := verifyAndResolveMIME(headSlice, declaredMIME, selected.Name)
-	if merr != nil {
-		closeAll()
-		return nil, merr
+	if errors.Is(streamErr, archive.ErrCompressed) || errors.Is(streamErr, archive.ErrSolid) {
+		defer closeAll()
+		return extractFromOpenVolumes(ctx, vols, cacheSeed, format, memberName, selected, nonDirIdx, declaredMIME, maxBytes, deps)
 	}
-	return &containerMemberSource{
-		r:       mr,
-		size:    selected.Size,
-		name:    memberDisplayName(selected.Name),
-		mime:    resolvedMIME,
-		closers: closers,
-	}, nil
+	closeAll()
+	return nil, wrapArchiveUnstreamable(streamErr)
 }
 
 // ---------------------------------------------------------------------------
@@ -655,16 +729,26 @@ func verifyAndResolveMIME(head []byte, declared string, filename string) (string
 		if magicMIME == "text/html" && declaredBase != "" && declaredBase != "text/html" {
 			return "", fmt.Errorf("%w: declared %q, sniffed %q", ErrMIMEMismatch, declaredBase, magicMIME)
 		}
-		if declaredBase != "" && declaredBase != "application/octet-stream" {
+		if declaredBase == "application/octet-stream" {
+			return "application/octet-stream", nil
+		}
+		if declaredBase != "" {
 			declFam := mimeFamily(declaredBase)
 			sniffFam := mimeFamily(magicMIME)
 			if declFam != "" && sniffFam != "" && declFam != sniffFam && !compatibleArchiveMIME(declaredBase, magicMIME) {
 				return "", fmt.Errorf("%w: declared %q (%s), sniffed %q (%s)", ErrMIMEMismatch, declaredBase, declFam, magicMIME, sniffFam)
 			}
+			if declFam == "" {
+				// Preserve explicit custom application/* or vendor MIME types.
+				return declaredBase, nil
+			}
 		}
 		// Keep comicbook/ebook subtype if magic is the underlying container (e.g. application/vnd.comicbook+zip over zip).
-		if compatibleArchiveMIME(declaredBase, magicMIME) && declaredBase != "application/octet-stream" && declaredBase != "" {
+		if compatibleArchiveMIME(declaredBase, magicMIME) && declaredBase != "" {
 			return declaredBase, nil
+		}
+		if declaredBase == "" && strings.HasPrefix(magicMIME, "video/") && filename != "" && !hasVideoFileExtension(filename) {
+			return "application/octet-stream", nil
 		}
 		return magicMIME, nil
 	}
@@ -674,7 +758,7 @@ func verifyAndResolveMIME(head []byte, declared string, filename string) (string
 	}
 	if len(head) > 0 {
 		detected := normalizeMIME(http.DetectContentType(head))
-		if detected != "" {
+		if detected != "" && !strings.HasPrefix(detected, "video/") {
 			return detected, nil
 		}
 	}
@@ -844,9 +928,11 @@ func (b *byteSourceSeeker) Close() error {
 // Content-Length).
 func Handler(src ByteSource) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if m := src.MIME(); m != "" {
-			w.Header().Set("Content-Type", m)
+		m := strings.TrimSpace(src.MIME())
+		if m == "" {
+			m = "application/octet-stream"
 		}
+		w.Header().Set("Content-Type", m)
 		sr := io.NewSectionReader(src, 0, src.Size())
 		http.ServeContent(w, r, src.Name(), time.Time{}, sr)
 	})

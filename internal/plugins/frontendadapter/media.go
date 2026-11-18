@@ -84,7 +84,7 @@ func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // error text stays in the log: it can name internal hosts or paths.
 func (h *MediaHandler) refuse(w http.ResponseWriter, status int, code, message string, err error, item string) {
 	if h.deps.Log != nil {
-		args := []any{"code", code, "status", status}
+		args := []any{"code", code, "status", status, "message", message}
 		if item != "" {
 			args = append(args, "item", item)
 		}
@@ -107,6 +107,8 @@ func openFailure(err error) (int, string, string) {
 		return http.StatusConflict, "no_source", "The item has no playable source."
 	case errors.Is(err, core.ErrNotFound):
 		return http.StatusNotFound, "item_not_found", "The item is not in a library this viewer can open."
+	case errors.Is(err, core.ErrArchiveUnstreamable):
+		return http.StatusUnprocessableEntity, "archive_unstreamable", "This archive format or compression method cannot be streamed."
 	case errors.Is(err, core.ErrSourceUnavailable):
 		return http.StatusServiceUnavailable, "source_unavailable", "The item's source is temporarily unavailable."
 	default:
@@ -118,11 +120,13 @@ func openFailure(err error) (int, string, string) {
 // io.ReadSeeker, so the ReaderAt is wrapped in a SectionReader over the
 // whole object.
 func (h *MediaHandler) serve(w http.ResponseWriter, r *http.Request, media *frontend.KindMedia) {
+	mimeType := strings.TrimSpace(media.MIME)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
 	if media.Size <= 0 {
 		// Unknown size: stream once, no Range.
-		if media.MIME != "" {
-			w.Header().Set("Content-Type", media.MIME)
-		}
+		w.Header().Set("Content-Type", mimeType)
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.Copy(w, io.NewSectionReader(media.ReaderAt, 0, 1<<62))
 		return
@@ -131,9 +135,7 @@ func (h *MediaHandler) serve(w http.ResponseWriter, r *http.Request, media *fron
 	if name == "" {
 		name = "media"
 	}
-	if media.MIME != "" {
-		w.Header().Set("Content-Type", media.MIME)
-	}
+	w.Header().Set("Content-Type", mimeType)
 	http.ServeContent(w, r, name, time.Time{}, io.NewSectionReader(media.ReaderAt, 0, media.Size))
 }
 

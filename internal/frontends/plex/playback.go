@@ -80,6 +80,8 @@ func playbackMessage(err error) string {
 		return msgDownloadQueued
 	case errors.As(err, new(*frontend.UncachedError)), onlyNotCached(err):
 		return notCachedMessage(err)
+	case errors.Is(err, frontend.ErrArchiveUnstreamable):
+		return "This archive format or compression method cannot be streamed."
 	case errors.Is(err, context.DeadlineExceeded):
 		return "The source timed out. Try again later."
 	case errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, frontend.ErrArticleMissing), errors.Is(err, frontend.ErrArticleCorrupt), errors.Is(err, frontend.ErrReleaseRejected):
@@ -2335,7 +2337,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 // Part acquisition failures distinguish an absent provider file from a failed
 // upstream transport; the conversion start routes retain their own contract.
 func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Request, err error) {
-	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) {
+	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrArchiveUnstreamable) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}

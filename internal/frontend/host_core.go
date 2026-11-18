@@ -75,24 +75,25 @@ const (
 
 // Domain errors, shared by identity for errors.Is checks.
 var (
-	ErrArticleCorrupt    = core.ErrArticleCorrupt
-	ErrArticleMissing    = core.ErrArticleMissing
-	ErrBudgetExhausted   = core.ErrBudgetExhausted
-	ErrDebridAuth        = core.ErrDebridAuth
-	ErrDownloadLimit     = core.ErrDownloadLimit
-	ErrDownloadPaused    = core.ErrDownloadPaused
-	ErrDownloadQueued    = core.ErrDownloadQueued
-	ErrDownloadRefused   = core.ErrDownloadRefused
-	ErrNoSources         = core.ErrNoSources
-	ErrNoTorrentSources  = core.ErrNoTorrentSources
-	ErrNotCached         = core.ErrNotCached
-	ErrPolicyUnconfirmed = core.ErrPolicyUnconfirmed
-	ErrPrepareSlow       = core.ErrPrepareSlow
-	ErrReleaseRejected   = core.ErrReleaseRejected
-	ErrSourceUnavailable = core.ErrSourceUnavailable
-	ErrSourceChanged     = core.ErrSourceChanged
-	ErrSeekUnavailable   = core.ErrSeekUnavailable
-	ErrUnreleased        = core.ErrUnreleased
+	ErrArchiveUnstreamable = core.ErrArchiveUnstreamable
+	ErrArticleCorrupt      = core.ErrArticleCorrupt
+	ErrArticleMissing      = core.ErrArticleMissing
+	ErrBudgetExhausted     = core.ErrBudgetExhausted
+	ErrDebridAuth          = core.ErrDebridAuth
+	ErrDownloadLimit       = core.ErrDownloadLimit
+	ErrDownloadPaused      = core.ErrDownloadPaused
+	ErrDownloadQueued      = core.ErrDownloadQueued
+	ErrDownloadRefused     = core.ErrDownloadRefused
+	ErrNoSources           = core.ErrNoSources
+	ErrNoTorrentSources    = core.ErrNoTorrentSources
+	ErrNotCached           = core.ErrNotCached
+	ErrPolicyUnconfirmed   = core.ErrPolicyUnconfirmed
+	ErrPrepareSlow         = core.ErrPrepareSlow
+	ErrReleaseRejected     = core.ErrReleaseRejected
+	ErrSourceUnavailable   = core.ErrSourceUnavailable
+	ErrSourceChanged       = core.ErrSourceChanged
+	ErrSeekUnavailable     = core.ErrSeekUnavailable
+	ErrUnreleased          = core.ErrUnreleased
 )
 
 // FilterOutSurroundAudio returns codecs without surround audio formats.

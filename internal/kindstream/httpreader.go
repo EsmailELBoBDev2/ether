@@ -18,7 +18,23 @@ const (
 	probeHeadBytes     = 512
 	defaultHTTPTimeout = 30 * time.Second
 	maxRangeRetries    = 2
+
+	seqBufMinWindow = 32 << 10 // 32 KiB initial read-ahead window
+	seqBufMaxWindow = 1 << 20  // 1 MiB max sequential read-ahead window
 )
+
+// defaultStreamingHTTPClient bounds connection setup and response headers to
+// defaultHTTPTimeout without imposing a fixed deadline on response body reads,
+// so streaming range reads and whole-volume downloads honour the request
+// context rather than failing after 30 seconds.
+func defaultStreamingHTTPClient() *http.Client {
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt != nil {
+		tr := dt.Clone()
+		tr.ResponseHeaderTimeout = defaultHTTPTimeout
+		return &http.Client{Transport: tr}
+	}
+	return &http.Client{}
+}
 
 // errNoRangeSupport is returned by probe when an upstream server ignores Range
 // and responds with 200 OK for the whole resource. When body is non-nil, the
@@ -174,7 +190,7 @@ type HTTPReaderAt struct {
 func newHTTPReaderAt(ctx context.Context, cfg httpReaderConfig) (*HTTPReaderAt, error) {
 	client := cfg.Client
 	if client == nil {
-		client = &http.Client{Timeout: defaultHTTPTimeout}
+		client = defaultStreamingHTTPClient()
 	}
 	backoff := cfg.Backoff
 	if backoff == nil {
@@ -334,6 +350,13 @@ func (r *HTTPReaderAt) doRangeRequest(ctx context.Context, start, end int64) (*h
 
 // ReadAt reads len(p) bytes starting at byte offset off.
 func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	return r.readAtCtx(context.Background(), p, off)
+}
+
+func (r *HTTPReaderAt) readAtCtx(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if off < 0 {
 		return 0, fmt.Errorf("kindstream: negative read offset %d", off)
 	}
@@ -365,7 +388,7 @@ func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
 
 	start := off
 	end := off + want - 1
-	resp, _, err := r.doRangeRequest(context.Background(), start, end)
+	resp, _, err := r.doRangeRequest(ctx, start, end)
 	if err != nil {
 		return 0, err
 	}
@@ -407,6 +430,119 @@ func (r *HTTPReaderAt) MIME() string { return r.mime }
 
 // Close is a no-op for stateless HTTP range readers.
 func (r *HTTPReaderAt) Close() error { return nil }
+
+// seqBufferedReaderAt coalesces small sequential ReadAt calls (as issued by
+// archive header walkers and deflate/LZMA/RAR decoders) into adaptive range
+// reads while keeping random seeks cheap.
+type seqBufferedReaderAt struct {
+	ctx    context.Context
+	r      io.ReaderAt
+	hr     *HTTPReaderAt
+	size   int64
+	mu     sync.Mutex
+	buf    []byte
+	bufOff int64
+	window int
+}
+
+func newSeqBufferedReaderAt(ctx context.Context, r io.ReaderAt, size int64) io.ReaderAt {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hr, _ := r.(*HTTPReaderAt)
+	return &seqBufferedReaderAt{
+		ctx:    ctx,
+		r:      r,
+		hr:     hr,
+		size:   size,
+		bufOff: -1,
+		window: seqBufMinWindow,
+	}
+}
+
+func (b *seqBufferedReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if off < 0 {
+		return 0, fmt.Errorf("kindstream: negative read offset %d", off)
+	}
+	if off >= b.size {
+		if len(p) == 0 {
+			return 0, nil
+		}
+		return 0, io.EOF
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if len(p) >= seqBufMaxWindow {
+		return b.rawReadAt(p, off)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	total := 0
+	for total < len(p) && off < b.size {
+		if err := b.ctx.Err(); err != nil {
+			return total, err
+		}
+		if b.bufOff >= 0 && off >= b.bufOff && off < b.bufOff+int64(len(b.buf)) {
+			start := int(off - b.bufOff)
+			n := copy(p[total:], b.buf[start:])
+			total += n
+			off += int64(n)
+			continue
+		}
+
+		sequential := b.bufOff >= 0 && off == b.bufOff+int64(len(b.buf))
+		if sequential {
+			b.window = min(b.window*4, seqBufMaxWindow)
+		} else {
+			b.window = seqBufMinWindow
+		}
+
+		fetchLen := max(b.window, len(p)-total)
+		fetchLen = min(fetchLen, seqBufMaxWindow)
+		if rem := b.size - off; int64(fetchLen) > rem {
+			fetchLen = int(rem)
+		}
+		if cap(b.buf) < fetchLen {
+			b.buf = make([]byte, fetchLen)
+		} else {
+			b.buf = b.buf[:fetchLen]
+		}
+		n, err := b.rawReadAt(b.buf, off)
+		if n > 0 {
+			b.buf = b.buf[:n]
+			b.bufOff = off
+			copied := copy(p[total:], b.buf)
+			total += copied
+			off += int64(copied)
+		} else {
+			b.buf = b.buf[:0]
+			b.bufOff = -1
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) && off < b.size {
+				return total, io.ErrUnexpectedEOF
+			}
+			return total, err
+		}
+	}
+	if off >= b.size && total < len(p) {
+		return total, io.EOF
+	}
+	return total, nil
+}
+
+func (b *seqBufferedReaderAt) rawReadAt(p []byte, off int64) (int, error) {
+	if b.hr != nil {
+		return b.hr.readAtCtx(b.ctx, p, off)
+	}
+	return b.r.ReadAt(p, off)
+}
 
 func parseContentRangeTotal(hdr string) (int64, error) {
 	hdr = strings.TrimSpace(hdr)

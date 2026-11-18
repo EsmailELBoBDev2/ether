@@ -729,7 +729,12 @@ order. Patterns:
 - **container** — one member of a zip/RAR/7z, possibly multi-volume:
   `{volumes:[{url,size}], member}` or `memberIndex`. Passwords come
   from a named settings secret (`passwordSecret`), never from your
-  response. Ether caches the extracted member.
+  response. Store-mode members stream by byte range; compressed ZIP
+  (deflate), non-solid 7z (LZMA/LZMA2) and RAR4/RAR5 members decode
+  from ranged reads into the library cache; solid 7z caches the volume
+  first under the request context and library cache quota. Encrypted
+  non-stored members and unsupported archive formats or compression
+  methods fail with `archive_unstreamable`.
 - **release** — hand Ether a magnet/infohash/NZB and its existing
   debrid/Usenet/torrent pipeline opens it. For torrents, set
   `release.fileIndex` (zero-based index in the provider's complete file list),
@@ -803,6 +808,7 @@ defaults per library afterwards.
   | 403 | `viewer_invalid` | The ticket's viewer can no longer play |
   | 404 | `item_not_found` | The item is not in a library this viewer can open |
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
+  | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
   | 503 | `source_unavailable` | The source is temporarily unavailable |
   | 502 | `open_failed` | The source could not be opened |
 

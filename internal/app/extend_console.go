@@ -84,7 +84,6 @@ func consolePages() []consolePage {
 			Route: "/livetv", NavGroup: extend.NavGroupLibrary, InNav: true,
 			Sections: []extend.PageSection{
 				section("channels", T("Channels"), T("virtual channel")),
-				section("sources", T("IPTV sources"), T("m3u xmltv playlist")),
 				section("guide", T("Guide"), T("epg schedule")),
 				section("looks", T("Looks"), T("on air graphics brand reels")),
 			},
@@ -111,6 +110,7 @@ func consolePages() []consolePage {
 			Sections: []extend.PageSection{
 				section("debrid", T("Debrid"), T("real-debrid realdebrid torbox alldebrid premiumize debrid-link debridlink offcloud torrent cached")),
 				section("usenet", T("Usenet"), T("nntp backfill connections")),
+				section("iptv", T("IPTV"), T("m3u xmltv playlist")),
 				section("indexers", T("Indexers"), T("newznab torznab torrent built-in sites definitions cardigann flaresolverr prowlarr stremio addon budget api")),
 				section("stats", T("Stats"), T("quota price plan cost success speed plays failover")),
 			},

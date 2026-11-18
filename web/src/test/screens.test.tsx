@@ -178,6 +178,42 @@ describe("Updates settings", () => {
     expect(screen.getByLabelText("Update feed")).toHaveValue("");
     expect(screen.getByLabelText("Wait for playback to finish")).toHaveValue(null); // an empty duration amount
   });
+
+  it("disables Check for updates and hides raw Go updater errors when the build lacks a release key", async () => {
+    renderApp("/maintenance/updates", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        if (String(input).endsWith("/updates/")) {
+          return new Response(
+            JSON.stringify({
+              enabled: false,
+              current: "0.3.14",
+              capability: "disabled",
+              disabledReason: "updater: no release public key configured",
+              state: "idle",
+              autoUpdate: true,
+              requested: false,
+              force: false,
+              window: { start: "03:00", end: "06:00", open: false },
+              activeSessions: 0,
+              quietPeriodSeconds: 60,
+              confirming: false,
+            }),
+            { status: 200 },
+          );
+        }
+        return original(input, init);
+      };
+    });
+    expect(
+      await screen.findByText("This build can't check for signed updates.", {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/updater:/i)).toBeNull();
+    const toggle = await screen.findByRole("switch", { name: "Check for updates" }, WAIT);
+    expect(toggle).toBeDisabled();
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeDisabled();
+  });
 });
 
 describe("Getting started", () => {

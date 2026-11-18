@@ -1,4 +1,12 @@
-import { Badge, Button, SettingsSection, Spinner, Switch, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Badge,
+  Button,
+  SearchSelect,
+  SettingsSection,
+  Spinner,
+  Switch,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { RefreshCw, X } from "lucide-react";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -12,6 +20,7 @@ import { titleSubtitle } from "../../components/Poster";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t, tn, tx } from "../../i18n";
+import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { apiFetch, errorMessage } from "../../lib/api";
 import type { TitleCard } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
@@ -190,35 +199,37 @@ export function RatingSources({
   };
   const providerRow = (
     <SettingsRow
-      stacked
       title={<label htmlFor="ratings-provider">{t("Provider")}</label>}
       description={t(
         "OMDb has IMDb, Rotten Tomatoes critics and Metacritic. MDBList adds audience and Letterboxd scores.",
       )}
       control={
-        <select
-          id="ratings-provider"
-          className={`${nativeSelect} sm:w-48`}
-          value={draft.provider}
-          onChange={(e) => {
-            const provider = e.currentTarget.value;
-            if (provider === draft.provider) return;
-            rememberKeys();
-            if (provider === draft.backupProvider) {
-              set({
-                provider,
-                apiKey: draft.backupApiKey,
-                backupProvider: draft.provider,
-                backupApiKey: draft.apiKey,
-              });
-            } else {
-              set({ provider, apiKey: draftKeyFor(provider) });
-            }
-          }}
-        >
-          <option value="omdb">OMDb</option>
-          <option value="mdblist">MDBList</option>
-        </select>
+        <div className="sm:w-72">
+          <SearchSelect
+            {...searchSelectLabels()}
+            id="ratings-provider"
+            ariaLabel={t("Provider")}
+            value={draft.provider}
+            options={[
+              { value: "omdb", label: "OMDb" },
+              { value: "mdblist", label: "MDBList" },
+            ]}
+            onChange={(provider) => {
+              if (provider === draft.provider) return;
+              rememberKeys();
+              if (provider === draft.backupProvider) {
+                set({
+                  provider,
+                  apiKey: draft.backupApiKey,
+                  backupProvider: draft.provider,
+                  backupApiKey: draft.apiKey,
+                });
+              } else {
+                set({ provider, apiKey: draftKeyFor(provider) });
+              }
+            }}
+          />
+        </div>
       }
     />
   );
@@ -260,25 +271,29 @@ export function RatingSources({
           {providerRow}
           {keyRow}
           <SettingsRow
-            stacked
             title={<label htmlFor="ratings-backup">{t("Backup ratings provider")}</label>}
             control={
-              <select
-                id="ratings-backup"
-                className={`${nativeSelect} sm:w-48`}
-                value={draft.backupProvider || ""}
-                onChange={(e) => {
-                  const backupProvider = e.currentTarget.value;
-                  if (backupProvider !== draft.backupProvider) {
-                    rememberKeys();
-                    set({ backupProvider, backupApiKey: draftKeyFor(backupProvider) });
-                  }
-                }}
-              >
-                <option value="">{t("None")}</option>
-                {draft.provider !== "omdb" && <option value="omdb">OMDb</option>}
-                {draft.provider !== "mdblist" && <option value="mdblist">MDBList</option>}
-              </select>
+              <div className="sm:w-72">
+                <SearchSelect
+                  {...searchSelectLabels()}
+                  id="ratings-backup"
+                  ariaLabel={t("Backup ratings provider")}
+                  value={draft.backupProvider || ""}
+                  options={[
+                    { value: "", label: t("None") },
+                    ...(draft.provider !== "omdb" ? [{ value: "omdb", label: "OMDb" }] : []),
+                    ...(draft.provider !== "mdblist"
+                      ? [{ value: "mdblist", label: "MDBList" }]
+                      : []),
+                  ]}
+                  onChange={(backupProvider) => {
+                    if (backupProvider !== draft.backupProvider) {
+                      rememberKeys();
+                      set({ backupProvider, backupApiKey: draftKeyFor(backupProvider) });
+                    }
+                  }}
+                />
+              </div>
             }
           />
           {draft.backupProvider && (

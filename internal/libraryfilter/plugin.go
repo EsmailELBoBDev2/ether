@@ -90,7 +90,7 @@ func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string, declare
 	}
 	f, err := compilePolicy(specs, fallback, browse)
 	if err != nil {
-		return nil, err
+		return nil, MarkInvalidFilter(err)
 	}
 	var validate func(condition) error
 	validate = func(c condition) error {
@@ -107,7 +107,7 @@ func CompilePluginPolicy(specs []core.LibraryExclusion, fallback string, declare
 	for _, g := range f.rules {
 		for _, c := range g.rules {
 			if err := validate(c); err != nil {
-				return nil, err
+				return nil, MarkInvalidFilter(err)
 			}
 		}
 	}

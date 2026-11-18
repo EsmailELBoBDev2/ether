@@ -50,7 +50,6 @@ export function ContextBar({
       />
       <ToolbarPicker
         ariaLabel={t("Device")}
-        iconOnly
         value={ctx.device}
         onChange={(d) => onChange({ ...ctx, device: d })}
         options={DEVICE_OPTIONS}

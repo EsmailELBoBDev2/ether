@@ -376,6 +376,7 @@ function CollectionsLayout() {
 /** Collection Studio opens over the persistent library as a record drawer. */
 function CollectionDrawer({ fresh = false }: { fresh?: boolean }) {
   const { close } = useOutletContext<{ close: () => void }>();
+  const { id } = useParams();
   const [search] = useSearchParams();
   return (
     <Drawer
@@ -385,7 +386,7 @@ function CollectionDrawer({ fresh = false }: { fresh?: boolean }) {
       size="2xl"
       bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
     >
-      {fresh ? <CollectionEditor key={search.get("draft") ?? "new"} /> : <CollectionEditor />}
+      <CollectionEditor key={fresh ? (search.get("draft") ?? "new") : `edit:${id ?? ""}`} />
     </Drawer>
   );
 }

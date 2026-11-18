@@ -68,7 +68,8 @@ func (s *Service) appendVisibility(ctx context.Context, where *strings.Builder, 
 // PreviewVisibility aggregates in the indexed item store and fetches at most
 // twelve examples per side. It never projects or loads the whole library.
 func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, specs []core.LibraryExclusion, fallback string) (any, error) {
-	policy, err := s.CompilePolicy(ctx, lib, specs, fallback)
+	keptSpecs, keptIndices := libraryfilter.PreviewableRules(specs)
+	policy, err := s.CompilePolicy(ctx, lib, keptSpecs, fallback)
 	if err != nil {
 		return nil, err
 	}
@@ -99,10 +100,13 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 	if len(rec.Decl.Levels) > 1 {
 		typ = core.TypeShow
 	}
-	counts := make([]map[string]int, 0, len(specs))
+	counts := make([]map[string]int, len(specs))
+	for i := range counts {
+		counts[i] = map[string]int{"movies": 0, "shows": 0}
+	}
 	if columns, args := policy.PluginCatchCountsSQL(typ, RuleFields(rec.Decl)); columns != "" {
 		args = append(args, int64(lib), level)
-		values := make([]int, len(specs)*2)
+		values := make([]int, len(keptSpecs)*2)
 		dest := make([]any, len(values))
 		for i := range values {
 			dest[i] = &values[i]
@@ -110,8 +114,8 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 		if err := s.db.QueryRowContext(ctx, "SELECT "+columns+" FROM plugin_items i WHERE i.library_id=? AND i.level=?", args...).Scan(dest...); err != nil {
 			return nil, err
 		}
-		for i := range specs {
-			counts = append(counts, map[string]int{"movies": values[i*2], "shows": values[i*2+1]})
+		for i, orig := range keptIndices {
+			counts[orig] = map[string]int{"movies": values[i*2], "shows": values[i*2+1]}
 		}
 	}
 	movies, shows := hidden.Total, 0

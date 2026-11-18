@@ -148,6 +148,125 @@ describe("Library visibility", () => {
     });
   });
 
+  it("keeps existing preview counts while adding an unfinished rule, discards untouched new rules on Close, and supports Cancel/Done", async () => {
+    const fake = createFakeServer();
+    (fake.state.config.catalog as { exclusions?: unknown }).exclusions = [
+      {
+        name: "Country boundary",
+        mediaType: "movie",
+        match: "all",
+        rules: [{ field: "country", op: "in", value: ["IN"] }],
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        const path = url.pathname.replace(/^\/ether\/api/, "");
+        const method = (init?.method ?? "GET").toUpperCase();
+        let body: unknown;
+        if (typeof init?.body === "string" && init.body) body = JSON.parse(init.body);
+        if (method === "POST" && path === "/catalog/visibility/preview") {
+          const rulesSent = (body as { exclusions?: unknown[] }).exclusions ?? [];
+          fake.state.calls.push({ method, path: path + url.search, body });
+          return new Response(
+            JSON.stringify({
+              total: 35000,
+              hidden: rulesSent.length ? 800 : 0,
+              movies: rulesSent.length ? 800 : 0,
+              shows: 0,
+              rules: rulesSent.map(() => ({ movies: 800, shows: 0 })),
+              items: [],
+              shown: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return fake.fetch(input, init);
+      }),
+    );
+    render(
+      <MemoryRouter initialEntries={["/libraries/1/rules"]}>
+        <App />
+      </MemoryRouter>,
+    );
+    await settleUi(() => {
+      expect(screen.getByText("34,200")).toBeInTheDocument();
+      expect(screen.getByText("Hidden: 800 movies")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+
+    const activeDrawer = () =>
+      screen
+        .getAllByRole("dialog")
+        .filter((el) => el.tagName === "ASIDE")
+        .at(-1)!;
+
+    // Adding a blank rule omits it from preview and preserves existing counts.
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    const initialCalls = fake.state.calls.filter(
+      (c) => c.path === "/catalog/visibility/preview",
+    ).length;
+    await settleUi(() => {
+      expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    });
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(
+      screen.getByText("Unfinished rules aren't included in the preview yet."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("34,200")).toBeInTheDocument();
+    expect(screen.getByText("Hidden: 800 movies")).toBeInTheDocument();
+    const previewBodies = fake.state.calls
+      .filter((c) => c.path === "/catalog/visibility/preview")
+      .map((c) => c.body as { exclusions?: unknown[] });
+    expect(previewBodies.length).toBeGreaterThanOrEqual(initialCalls);
+    expect(previewBodies.every((b) => (b.exclusions ?? []).length === 1)).toBe(true);
+
+    // Closing (×) an untouched new rule discards it cleanly and leaves no dirty state.
+    fireEvent.click(within(activeDrawer()).getByRole("button", { name: "Close" }));
+    await settleUi(() => {
+      expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    });
+    expect(document.body.style.overflow).toBe("");
+    expect(screen.queryByRole("button", { name: "Edit rule 2" })).toBeNull();
+    expect(screen.queryByText("Unfinished rules aren't included in the preview yet.")).toBeNull();
+
+    // Editing rule 1 and clicking Cancel reverts changes; Done keeps changes.
+    fireEvent.click(screen.getByRole("button", { name: "Edit rule 1" }));
+    expect(document.body.style.overflow).toBe("hidden");
+    const editDrawer = activeDrawer();
+    fireEvent.change(within(editDrawer).getByLabelText("Rule name"), {
+      target: { value: "Temporary title" },
+    });
+    await settleUi(() => {
+      expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    });
+    fireEvent.click(within(editDrawer).getByRole("button", { name: "Cancel" }));
+    await settleUi(() => {
+      expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+    });
+    expect(document.body.style.overflow).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit rule 1" }));
+    const editAgain = activeDrawer();
+    expect(within(editAgain).getByLabelText("Rule name")).toHaveValue("Country boundary");
+    fireEvent.change(within(editAgain).getByLabelText("Rule name"), {
+      target: { value: "Kept title" },
+    });
+    fireEvent.click(within(editAgain).getByRole("button", { name: "Done" }));
+    await settleUi(() => {
+      expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    });
+    expect(document.body.style.overflow).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      expect(calls(fake, "PATCH", "/libraries/1")).toHaveLength(1);
+    });
+    expect(calls(fake, "PATCH", "/libraries/1")[0]?.body).toMatchObject({
+      rules: [{ name: "Kept title" }],
+    });
+  });
+
   it("never shows stored rules as empty while adopting them", async () => {
     let flashedEmpty = false;
     const observer = new MutationObserver(() => {
@@ -268,7 +387,8 @@ describe("Library visibility", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit rule 1" }));
     const where = screen.getByRole("button", { name: "Where to hide" });
     expect(where).toHaveTextContent("Hide everywhere");
-    expect(screen.getByText(/Anyone can still search for them and play them/)).toBeInTheDocument();
+    expect(screen.getByText(/Hides matching titles everywhere/)).toBeInTheDocument();
+    expect(screen.queryByText(/Anyone can still search for them and play them/)).toBeNull();
     fireEvent.click(where);
     await settleUi(() => {
       expect(screen.getByRole("option", { name: "Hide from browsing only" })).toBeInTheDocument();
@@ -277,6 +397,7 @@ describe("Library visibility", () => {
     expect(screen.getByRole("button", { name: "Where to hide" })).toHaveTextContent(
       "Hide from browsing only",
     );
+    expect(screen.getByText(/Anyone can still search for them and play them/)).toBeInTheDocument();
     await settleUi(() => {
       expect(screen.getAllByText(/· Browsing only/).length).toBeGreaterThan(0);
     });

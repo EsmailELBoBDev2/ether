@@ -50,11 +50,15 @@ func (s *Service) Handler(resources ...func(chi.Router)) http.Handler {
 	r.Get("/system-screens", ServeSystemScreens)
 	r.Get("/templates", func(w http.ResponseWriter, r *http.Request) { v, e := s.Templates(r.Context()); result(w, v, e) })
 	r.Post("/scenes/validate", func(w http.ResponseWriter, r *http.Request) {
-		var sc StyleScene
-		if !body(w, r, &sc) {
+		var raw json.RawMessage
+		if !body(w, r, &raw) {
 			return
 		}
-		e := sc.Document.Validate()
+		sc, e := ParseSceneDraft(raw)
+		if e == nil {
+			cleanOverlayScene(&sc)
+			e = sc.Document.Validate()
+		}
 		if e == nil && len(sc.Sounds) > 4 {
 			e = fmt.Errorf("scene %q: use at most four sounds", sc.Name)
 		}

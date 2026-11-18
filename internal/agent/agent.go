@@ -279,13 +279,28 @@ func withApprovalOutcome(outp any, decided map[string]map[string]any) any {
 	return next
 }
 
-const maxToolOutputBytes = 16 << 10
+const (
+	maxToolOutputBytes      = 16 << 10
+	maxStyleToolOutputBytes = 64 << 10
+)
 
 func truncateOutput(b []byte) string {
 	if len(b) > maxToolOutputBytes {
 		return string(b[:maxToolOutputBytes]) + "…[truncated]"
 	}
 	return string(b)
+}
+
+// truncateToolOutput gives cumulative 9-role On Air style drafts the full 64 KB
+// look budget so later scenes are never clipped out of the model's context.
+func truncateToolOutput(toolName string, b []byte) string {
+	if toolName == "look_draft" || toolName == "livetv_look_draft" {
+		if len(b) > maxStyleToolOutputBytes {
+			return string(b[:maxStyleToolOutputBytes]) + "…[truncated]"
+		}
+		return string(b)
+	}
+	return truncateOutput(b)
 }
 
 // RunTurn runs one turn, emitting stream chunks. It returns the thread id
@@ -321,10 +336,10 @@ func (s *Service) RunTurn(ctx context.Context, p tools.Principal, threadID, prom
 	return threadID, turnID, err
 }
 
-// turnTimeout is how long one turn may run. Studio turns read, write and
-// re-check plugin source, which takes a slower model well past a chat turn.
+// turnTimeout is how long one turn may run. Studio and full 9-role On Air
+// style builds run multi-step drafts well past a quick chat turn.
 func (s *Service) turnTimeout(tc TurnContext) time.Duration {
-	if tc.Route == "/plugins/studio" {
+	if tc.Route == "/plugins/studio" || tc.Route == "/livetv/look" || tc.Route == "/livetv/channel-builder" {
 		return max(s.timeout, 15*time.Minute)
 	}
 	return s.timeout

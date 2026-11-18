@@ -561,9 +561,14 @@ func TestLimitsClamp(t *testing.T) {
 	if lim.RankPerCandidate != 2*time.Millisecond || lim.RankBatch != 50*time.Millisecond {
 		t.Fatalf("hot budgets not clamped: %v %v", lim.RankPerCandidate, lim.RankBatch)
 	}
-	viewer := limitsForRequest(lim, "/ether/v1/kinds/games/browse")
+	viewer := limitsForRequest(lim, "/ether/v1/kinds/games/resolve")
 	if viewer.UnitBudget != 10000 || viewer.Deadline != 30*time.Second {
 		t.Fatalf("viewer budgets: %+v", viewer)
+	}
+	for _, path := range []string{"/ether/v1/kinds/games/browse", "/ether/v1/kinds/games/changes"} {
+		if sync := limitsForRequest(lim, path); sync.UnitBudget != lim.UnitBudget || sync.Deadline != lim.Deadline {
+			t.Fatalf("%s: catalogue sync was given the viewer budget: %+v", path, sync)
+		}
 	}
 	job := limitsForRequest(lim, "/ether/job/build")
 	if job.UnitBudget != lim.UnitBudget || job.Deadline != lim.Deadline {

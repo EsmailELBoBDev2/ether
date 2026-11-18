@@ -14,7 +14,17 @@ func ViewerRequestPath(path string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(path, "/ether/v1/kinds/")
+	return strings.HasPrefix(path, "/ether/v1/kinds/") && !KindSyncPath(path)
+}
+
+// KindSyncPath identifies a media kind's catalogue sync calls (browse and
+// changes). Ether makes them in the background to fill a library, never
+// while a viewer waits, so they run on the plugin's granted limits (the
+// manifest's request, capped only by the owner's ceilings) instead of the
+// viewer budget. A big first sync can then take as long as it needs.
+func KindSyncPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/kinds/") &&
+		(strings.HasSuffix(path, "/browse") || strings.HasSuffix(path, "/changes"))
 }
 
 // WaitBackground yields before starting work and at each host-service boundary.

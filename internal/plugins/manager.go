@@ -590,7 +590,7 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 	}
 	start := m.now()
 	deadline := DeadlineFor(req.Path)
-	if !wasm.ViewerRequestPath(req.Path) && (strings.HasPrefix(req.Path, "/ether/job/") || strings.HasPrefix(req.Path, "/ether/v1/setup/") || strings.HasPrefix(req.Path, "/ether/action/") || strings.HasPrefix(req.Path, "/ether/tool/") || req.Path == "/ether/event") {
+	if !wasm.ViewerRequestPath(req.Path) && (wasm.KindSyncPath(req.Path) || strings.HasPrefix(req.Path, "/ether/job/") || strings.HasPrefix(req.Path, "/ether/v1/setup/") || strings.HasPrefix(req.Path, "/ether/action/") || strings.HasPrefix(req.Path, "/ether/tool/") || req.Path == "/ether/event") {
 		if l := m.grantedRuntimeLimits(r.Manifest); l != nil {
 			deadline, _ = time.ParseDuration(l.Deadline)
 		} else {

@@ -48,7 +48,14 @@ export type FieldDef =
       step?: number;
       unit?: string;
     }
-  | { key: string; label: string; help?: ReactNode; kind: "bool" }
+  | {
+      key: string;
+      label: string;
+      help?: ReactNode;
+      kind: "bool";
+      disabled?: boolean;
+      disabledValue?: boolean;
+    }
   | {
       key: string;
       label: string;
@@ -426,7 +433,10 @@ function SchemaFieldBody({
           control={
             <Switch
               id={id}
-              checked={Boolean(value)}
+              disabled={def.disabled}
+              checked={
+                def.disabled && def.disabledValue !== undefined ? def.disabledValue : Boolean(value)
+              }
               onChange={(e) => onChange(e.currentTarget.checked)}
               aria-label={def.label}
             />

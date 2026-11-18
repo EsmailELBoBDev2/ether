@@ -1119,8 +1119,6 @@ export function ConnectedServices({
             name={t("OMDb and MDBList")}
             enabled={secretConfigured(ratings.data?.apiKey)}
             onToggle={toggleRatings}
-            href="/metadata/ratings"
-            usage={t("Choose the scores shown in apps in Metadata › Ratings.")}
           >
             <RatingSources
               keysOnly

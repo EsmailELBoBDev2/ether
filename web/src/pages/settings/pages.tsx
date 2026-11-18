@@ -9,6 +9,7 @@ import { RestartButton } from "../../components/RestartDrawer";
 import { SettingsRow } from "../../components/SettingsRow";
 import { localized, t } from "../../i18n";
 import { api } from "../../lib/api";
+import type { UpdateStatus } from "../../lib/types";
 import Logs from "../Logs";
 import { BackupsAndImport } from "./Backups";
 import { ClusterOverview, useClustered } from "./Cluster";
@@ -17,7 +18,7 @@ import { OutboundInternet } from "./OutboundInternet";
 import { ServerProtection } from "./ServerProtection";
 import { ConnectedServices, integrationTabs, type ServiceTab } from "./ConnectedServices";
 import * as S from "./schema";
-import { UpdatesStatus } from "./sections";
+import { buildCannotCheckUpdates, UpdatesStatus } from "./sections";
 
 function ServerStatus() {
   const { boot } = useApp();
@@ -130,6 +131,35 @@ const MAINTENANCE_TABS = localized(
     ] as const,
 );
 
+function UpdatesTab() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const cannotCheck = buildCannotCheckUpdates(status);
+  const groups = cannotCheck
+    ? S.UPDATES.map((group) => ({
+        ...group,
+        fields: group.fields.map((field) =>
+          field.key === "enabled" && field.kind === "bool"
+            ? {
+                ...field,
+                disabled: true,
+                disabledValue: false,
+                help: t("Unavailable in this build."),
+              }
+            : field,
+        ),
+      }))
+    : S.UPDATES;
+  return (
+    <ConfigSection
+      configKey="updates"
+      endpoint="updates"
+      groups={groups}
+      label={t("Updates")}
+      before={() => <UpdatesStatus onStatus={setStatus} />}
+    />
+  );
+}
+
 export function MaintenancePage() {
   const tab = useRouteTab(MAINTENANCE_TABS);
   return (
@@ -141,15 +171,7 @@ export function MaintenancePage() {
       active={tab}
     >
       {tab === "backups" ? <BackupsSettings /> : null}
-      {tab === "updates" ? (
-        <ConfigSection
-          configKey="updates"
-          endpoint="updates"
-          groups={S.UPDATES}
-          label={t("Updates")}
-          before={() => <UpdatesStatus />}
-        />
-      ) : null}
+      {tab === "updates" ? <UpdatesTab /> : null}
       {tab === "health" ? (
         <>
           <ServerProtection />

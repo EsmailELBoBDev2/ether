@@ -780,6 +780,7 @@ describe("Settings", () => {
       "href",
       "/metadata/ratings",
     );
+    expect(screen.queryByRole("link", { name: /Metadata › Ratings/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
     await waitFor(
       () => expect(calls(fake, "PUT", "/discovery/ratings/settings")).toHaveLength(1),
@@ -803,7 +804,7 @@ describe("Settings", () => {
     const { fake } = renderAppWith("/services/ratings", (_method, path) =>
       path === "/discovery/ratings/settings" ? ratings : undefined,
     );
-    expect(await screen.findByLabelText("Provider", {}, WAIT)).toHaveValue("omdb");
+    expect(await screen.findByRole("button", { name: "Provider" }, WAIT)).toHaveTextContent("OMDb");
     expect(screen.getByLabelText("API key")).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "External ratings" })).toBeNull();
     expect(screen.queryByLabelText("Keep scores for")).toBeNull();

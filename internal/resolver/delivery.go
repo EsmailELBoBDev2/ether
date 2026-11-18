@@ -11,9 +11,11 @@ import (
 )
 
 type deliverySample struct {
-	rate  float64
-	at    time.Time
-	count int
+	rate      float64
+	at        time.Time
+	count     int
+	stallRate float64
+	stallAt   time.Time
 }
 type deliveryState struct {
 	mu      sync.Mutex
@@ -45,62 +47,112 @@ func (s *Service) ObserveSourceDelivery(r core.Release, bytesPerSecond float64) 
 	if !old.at.IsZero() && now.Sub(old.at) < 2*time.Second {
 		return
 	}
-	if now.Sub(old.at) > 2*time.Minute {
-		old = deliverySample{}
+	if !old.at.IsZero() && now.Sub(old.at) > 2*time.Minute {
+		old.rate, old.at, old.count = 0, time.Time{}, 0
+	}
+	if !old.stallAt.IsZero() && now.Sub(old.stallAt) > 2*time.Minute {
+		old.stallRate, old.stallAt = 0, time.Time{}
 	}
 	rate := bytesPerSecond
 	if old.count > 0 {
-		rate = math.Min(rate, old.rate*.8+rate*.2)
+		rate = old.rate*.8 + rate*.2
 	}
-	if len(s.delivery.samples) >= 256 {
+	if _, exists := s.delivery.samples[key]; !exists && len(s.delivery.samples) >= 256 {
 		clear(s.delivery.samples)
+		old = deliverySample{}
+		rate = bytesPerSecond
 	}
-	s.delivery.samples[key] = deliverySample{rate: rate, at: now, count: old.count + 1}
+	old.rate = rate
+	old.at = now
+	old.count++
+	s.delivery.samples[key] = old
+}
+
+// ObserveSourceStall records source throughput at which playback actually
+// starved or rebuffered. Only stall-backed evidence justifies demoting a
+// preferred release below a lower-scored fallback.
+func (s *Service) ObserveSourceStall(r core.Release, bytesPerSecond float64) {
+	if bytesPerSecond <= 0 || math.IsNaN(bytesPerSecond) || math.IsInf(bytesPerSecond, 0) {
+		return
+	}
+	s.delivery.mu.Lock()
+	defer s.delivery.mu.Unlock()
+	if s.delivery.samples == nil {
+		s.delivery.samples = map[string]deliverySample{}
+	}
+	now := s.now()
+	key := deliveryKey(r)
+	old := s.delivery.samples[key]
+	if !old.at.IsZero() && now.Sub(old.at) > 2*time.Minute {
+		old.rate, old.at, old.count = 0, time.Time{}, 0
+	}
+	rate := bytesPerSecond
+	if old.stallRate > 0 && !old.stallAt.IsZero() && now.Sub(old.stallAt) <= 2*time.Minute {
+		rate = old.stallRate*.8 + rate*.2
+	}
+	if _, exists := s.delivery.samples[key]; !exists && len(s.delivery.samples) >= 256 {
+		clear(s.delivery.samples)
+		old = deliverySample{}
+		rate = bytesPerSecond
+	}
+	old.stallRate = rate
+	old.stallAt = now
+	s.delivery.samples[key] = old
 }
 
 func (s *Service) deliveryFit(r core.Release, caps core.ClientCaps, title *core.Title) int {
-	fit, _ := s.deliveryFitReason(r, caps, title)
+	fit, _, _ := s.deliveryFitReason(r, caps, title)
 	return fit
 }
 
-// deliveryFitReason is deliveryFit with the limit that rejected the release,
-// so source history can say which one did: the client's declared bitrate, the
-// debrid account's measured speed, or measured delivery to this client.
-func (s *Service) deliveryFitReason(r core.Release, caps core.ClientCaps, title *core.Title) (int, string) {
+// deliveryFitReason returns the hard bandwidth gate (bandwidth), the soft
+// tie-break signal for unverified throughput estimates (delivery), and the
+// honest source-history reason when a hard limit demotes the release: the
+// client's declared bitrate, the debrid account's measured speed, or stall-backed
+// source read speed.
+func (s *Service) deliveryFitReason(r core.Release, caps core.ClientCaps, title *core.Title) (int, int, string) {
 	fit := sourceBandwidthFit(r, caps, title)
 	reason := ""
 	if fit < 0 {
-		reason = fmt.Sprintf("needs %s, above the %s the app allows (its quality setting)", mbps(releaseBitsPerSecond(r, title)), mbps(float64(caps.MaxBitrateKbps)*1000))
+		reason = fmt.Sprintf("larger than the client's connection carries: needs %s, above the %s the app allows (its quality setting)", mbps(releaseBitsPerSecond(r, title)), mbps(float64(caps.MaxBitrateKbps)*1000))
 	}
 	if r.Size <= 0 || title == nil || title.Runtime <= 0 {
-		return fit, reason
+		return fit, 0, reason
 	}
 	need := float64(r.Size) / title.Runtime.Seconds()
 	if source, ok := s.indexer.(interface{ RecentSourceThroughput(core.Release) float64 }); ok {
 		if rate := source.RecentSourceThroughput(r); rate > 0 {
 			if need > rate*.75 {
-				return -1, fmt.Sprintf("needs %s, more than the debrid account recently delivered (%s)", mbps(need*8), mbps(rate*8))
+				return -1, 0, fmt.Sprintf("needs %s, more than the debrid account recently delivered (%s)", mbps(need*8), mbps(rate*8))
 			}
 			if fit >= 0 {
-				return 1, ""
+				return 1, 0, ""
 			}
 		}
 	}
+	now := s.now()
 	s.delivery.mu.Lock()
 	e := s.delivery.samples[deliveryKey(r)]
 	s.delivery.mu.Unlock()
-	// Multiple observations prevent one startup header read from governing
-	// source choice. Leave 25% headroom for variable bitrate and uncertainty.
-	if e.count < 3 || s.now().Sub(e.at) > 2*time.Minute {
-		return fit, reason
+	if e.stallRate > 0 && !e.stallAt.IsZero() && now.Sub(e.stallAt) <= 2*time.Minute {
+		if need > e.stallRate*.75 {
+			return -1, -1, sourceDeliveryReason(r, need, e.stallRate)
+		}
+		return fit, 0, reason
 	}
-	if need > e.rate*.75 {
-		return -1, fmt.Sprintf("needs %s, more than recent playback delivered to this app (%s)", mbps(need*8), mbps(e.rate*8))
+	// Without stall evidence, measured source reads are a soft tie-break among
+	// otherwise equal candidates, never a veto over quality, language or score.
+	if e.count >= 3 && !e.at.IsZero() && now.Sub(e.at) <= 2*time.Minute && need > e.rate*.75 {
+		return fit, -1, reason
 	}
-	if fit < 0 {
-		return fit, reason
+	return fit, 0, reason
+}
+
+func sourceDeliveryReason(r core.Release, need, rate float64) string {
+	if deliveryKey(r) == "usenet" {
+		return fmt.Sprintf("needs %s; recent reads from your Usenet provider ran at %s", mbps(need*8), mbps(rate*8))
 	}
-	return 1, ""
+	return fmt.Sprintf("needs %s; recent reads from this source ran at %s", mbps(need*8), mbps(rate*8))
 }
 
 func releaseBitsPerSecond(r core.Release, title *core.Title) float64 {
@@ -133,10 +185,16 @@ func (s *Service) ChannelSourceAllowed(r core.Release, caps core.ClientCaps, tit
 	if source, ok := s.indexer.(interface{ RecentSourceThroughput(core.Release) float64 }); ok {
 		rate = source.RecentSourceThroughput(r)
 	}
+	now := s.now()
 	s.delivery.mu.Lock()
 	e := s.delivery.samples[deliveryKey(r)]
 	s.delivery.mu.Unlock()
-	if e.count >= 3 && s.now().Sub(e.at) <= 2*time.Minute {
+	if e.stallRate > 0 && !e.stallAt.IsZero() && now.Sub(e.stallAt) <= 2*time.Minute {
+		if rate <= 0 || e.stallRate < rate {
+			rate = e.stallRate
+		}
+	}
+	if e.count >= 3 && !e.at.IsZero() && now.Sub(e.at) <= 2*time.Minute {
 		if rate <= 0 || e.rate < rate {
 			rate = e.rate
 		}

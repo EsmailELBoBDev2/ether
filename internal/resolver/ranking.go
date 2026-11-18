@@ -16,8 +16,8 @@ import (
 //
 //	gates       Only-play fallback tier, accepted audio language, fits the connection
 //	standard    quality position, revision, custom format score, preferred
-//	            protocol, indexer priority, seeders and peers (torrents) or age
-//	            (Usenet), size
+//	            protocol, soft source-delivery hint, indexer priority, seeders
+//	            and peers (torrents) or age (Usenet), size
 //	tie-breaks  played fine recently, indexer reliability, a single episode
 //	            over a season pack
 //
@@ -90,6 +90,9 @@ func compareCandidates(a, b candidate) bool {
 	}
 	if x.protocol != y.protocol {
 		return x.protocol
+	}
+	if a.langWanted == b.langWanted && a.delivery != b.delivery {
+		return a.delivery > b.delivery
 	}
 	if x.priority != y.priority {
 		return x.priority < y.priority

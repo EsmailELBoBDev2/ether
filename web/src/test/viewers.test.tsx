@@ -98,6 +98,57 @@ describe("Viewers", () => {
     );
   });
 
+  it("shows plain-language affinity labels, filters sensitive/generic themes, and explains corrections", async () => {
+    renderApp("/viewers/2/taste", {}, (server) => {
+      const base = server.fetch;
+      server.fetch = async (input, init) => {
+        const res = await base(input, init);
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname !== "/ether/api/viewers/2/taste") return res;
+        const body = await res.json();
+        body.genres = [
+          { name: "Science Fiction", weight: 0.82 },
+          { name: "Horror", weight: -0.35 },
+        ];
+        body.keywords = [
+          { name: "time travel", weight: 0.72 },
+          { name: "rape", weight: 0.85 },
+          { name: "suicide", weight: 0.65 },
+          { name: "based on novel or book", weight: 0.9 },
+        ];
+        body.languages = [{ code: "ja", weight: 0.45 }];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      };
+    });
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Genres" }, WAIT));
+    const genres = await screen.findByRole("list", { name: /Genre affinity/ }, WAIT);
+    expect(within(genres).getByText("Loves")).toBeInTheDocument();
+    expect(within(genres).getByText("Dislikes")).toBeInTheDocument();
+    expect(within(genres).queryByText("+0.82")).toBeNull();
+    expect(within(genres).queryByText("-0.35")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Themes & languages" }));
+    expect(await screen.findByText("time travel", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByText("rape")).toBeNull();
+    expect(screen.queryByText("suicide")).toBeNull();
+    expect(screen.queryByText("based on novel or book")).toBeNull();
+    expect(screen.getByText("Likes")).toBeInTheDocument();
+    expect(screen.queryByText("+0.45")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Corrections" }));
+    expect(
+      await screen.findByText(
+        "“Not into it” hides it from recommendations. “Loves it” pushes it higher.",
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("adds a person correction through search", async () => {
     const { fake } = renderApp("/viewers/1/taste");
     fireEvent.click(await screen.findByRole("tab", { name: "Corrections" }));
@@ -142,6 +193,16 @@ describe("Viewers", () => {
     expect(calls(fake, "PUT", "/safety/policies/4")).toHaveLength(0);
   });
 
+  it("hides parental controls on the owner's Limits tab", async () => {
+    renderApp("/viewers/1/limits");
+    expect(await screen.findByLabelText("Streams at once", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByText("Parental controls")).toBeNull();
+    expect(screen.queryByText("Start from a preset")).toBeNull();
+    expect(screen.queryByLabelText("Content rating limit")).toBeNull();
+    expect(screen.queryByLabelText("Blocked genres")).toBeNull();
+    expect(screen.queryByLabelText("Blocked keywords")).toBeNull();
+  });
+
   it("picks the allowed-times timezone from a searchable list", async () => {
     const { fake } = renderApp("/viewers/4/limits");
     fireEvent.click(await screen.findByLabelText("Playback timezone", {}, WAIT));
@@ -155,13 +216,27 @@ describe("Viewers", () => {
     });
   });
 
-  it("keeps the Live TV rating behind More options and links Simkl setup", async () => {
+  it("keeps Live TV rating behind More options on Limits and moves connected accounts to Sign-in & devices without Invite", async () => {
     renderApp("/viewers/4/limits");
     const more = await screen.findByRole("button", { name: "More options: Live TV" }, WAIT);
     expect(screen.queryByLabelText("Different limit for Live TV")).toBeNull();
     fireEvent.click(more);
     expect(await screen.findByLabelText("Different limit for Live TV")).toBeInTheDocument();
-    // Simkl is off in the fake, so the viewer page links to its setup.
+    // Connected-account sync sections no longer live under Limits.
+    expect(screen.queryByRole("heading", { name: "Simkl" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Trakt" })).toBeNull();
+
+    // Sign-in & devices omits the new-viewer Invite card and houses Connected accounts.
+    fireEvent.click(screen.getByRole("tab", { name: "Sign-in & devices" }));
+    const signInTabs = await screen.findByRole(
+      "tablist",
+      { name: "Sign-in and devices sections" },
+      WAIT,
+    );
+    expect(screen.queryByRole("heading", { name: "Invite" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create invite link" })).toBeNull();
+
+    fireEvent.click(within(signInTabs).getByRole("tab", { name: "Connected accounts" }));
     const simklSection = (await screen.findByText("Simkl", { selector: "h2" }, WAIT)).closest(
       "section",
     )!;
@@ -238,7 +313,7 @@ describe("Viewers", () => {
       })(fake);
     });
     expect(await screen.findByText("From Plex", {}, WAIT)).toBeInTheDocument();
-    expect(await screen.findByText("ja", {}, WAIT)).toBeInTheDocument();
+    expect(await screen.findByText("Japanese", {}, WAIT)).toBeInTheDocument();
     // The Playback page also offers "Always on" as a subtitle-mode option;
     // the From Plex row renders it as plain text.
     expect(screen.getAllByText("Always on").some((el) => el.tagName === "SPAN")).toBe(true);
@@ -461,7 +536,7 @@ it("hides server-only sections for a viewer kept for imported history", async ()
   expect(screen.queryByText("New episodes from favourite shows")).toBeNull();
 });
 
-it("shows a bounded dashboard and ordered viewer sections", async () => {
+it("shows an unbounded responsive dashboard and ordered viewer sections", async () => {
   renderApp("/viewers/2/overview");
   const tabs = await screen.findByRole("tablist", { name: "Viewer sections" }, WAIT);
   expect(
@@ -479,7 +554,9 @@ it("shows a bounded dashboard and ordered viewer sections", async () => {
     "Lists & alerts",
     "Fixture viewer.tab",
   ]);
-  expect(screen.getByLabelText("Viewer dashboard")).toHaveClass("overflow-hidden");
+  const dashboard = screen.getByLabelText("Viewer dashboard");
+  expect(dashboard).not.toHaveClass("overflow-hidden");
+  expect(dashboard.firstElementChild).toHaveClass("grid-cols-1", "sm:grid-cols-3");
   expect(screen.getByText("Plays in 30 days")).toBeInTheDocument();
   expect(screen.queryByText("How they sign in")).toBeNull();
   fireEvent.click(within(tabs).getByRole("tab", { name: "Recent activity" }));

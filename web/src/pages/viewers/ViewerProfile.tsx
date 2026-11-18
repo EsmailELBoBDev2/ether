@@ -38,7 +38,7 @@ import { HomeCanvas } from "../designer/HomeCanvas";
 import { ViewerWatchlist } from "./sections/ViewerWatchlist";
 import { TasteView } from "./TasteView";
 import { ViewerDashboard } from "./ViewerDashboard";
-import { ViewerAccess } from "./ViewerAccess";
+import { ViewerAccess, ViewerAccountSync } from "./ViewerAccess";
 import { ViewerActions, TvCodeForm } from "./ViewerActions";
 import { ViewerPlayback } from "./ViewerPlayback";
 import { ViewerStatus, viewerLifecycle, viewerStatus } from "./ViewerStatus";
@@ -69,6 +69,7 @@ export default function ViewerProfile() {
   const listTab = ["alerts", "hidden"].includes(search.get("list") ?? "")
     ? search.get("list")!
     : "watchlist";
+  const signInTab = search.get("signin") === "sync" ? "sync" : "access";
 
   const viewer = useAsync<ViewerDetail | null>(() => api.viewer(id), [id]);
   const taste = useAsync(() => api.taste(id), [id]);
@@ -229,21 +230,43 @@ export default function ViewerProfile() {
         <ViewerPlayback key={id} viewer={v} />
       ) : tab === "sign-in" ? (
         <div className="space-y-6">
-          <SignInMethods
-            base={`/users/${id}`}
-            token={getToken()}
-            owner
-            showInvite={!v.isOwner}
-            quickConnect={
-              <section className="rounded-xl border border-border bg-surface p-5 space-y-4">
-                <h2 className="font-semibold">{t("Approve a TV code")}</h2>
-                <TvCodeForm key={id} viewer={v} />
-              </section>
+          <PageSubtabs
+            ariaLabel={t("Sign-in and devices sections")}
+            active={signInTab}
+            onSelect={(next) =>
+              setSearch(
+                (previous) => {
+                  if (next === "access") previous.delete("signin");
+                  else previous.set("signin", next);
+                  return previous;
+                },
+                { preventScrollReset: true },
+              )
             }
-            beforeDevices={
-              serverAccess ? <ConnectApps base={`/viewers/${id}`} token={getToken()} /> : null
-            }
+            tabs={[
+              { key: "access", label: t("Access & devices") },
+              { key: "sync", label: t("Connected accounts") },
+            ]}
           />
+          {signInTab === "sync" ? (
+            <ViewerAccountSync key={id} viewer={v} />
+          ) : (
+            <SignInMethods
+              base={`/users/${id}`}
+              token={getToken()}
+              owner
+              self={v.isOwner}
+              quickConnect={
+                <section className="rounded-xl border border-border bg-surface p-5 space-y-4">
+                  <h2 className="font-semibold">{t("Approve a TV code")}</h2>
+                  <TvCodeForm key={id} viewer={v} />
+                </section>
+              }
+              beforeDevices={
+                serverAccess ? <ConnectApps base={`/viewers/${id}`} token={getToken()} /> : null
+              }
+            />
+          )}
         </div>
       ) : tab === "home" ? (
         <TheirHome viewer={v} />

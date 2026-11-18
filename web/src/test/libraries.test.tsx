@@ -1,5 +1,6 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { CatalogueResults } from "../pages/libraries/browser/CatalogueResults";
 import { calls, renderApp, settleUi } from "./harness";
 import { renderAppWith } from "./routes";
 
@@ -13,6 +14,109 @@ describe("Libraries workspace", () => {
     expect(screen.getAllByText("Movies").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /Library settings/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /From a plugin/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Titles from:/)).not.toBeInTheDocument();
+  });
+
+  it("explains disabled plugin libraries with a link to Plugins and keeps card actions in the menu", async () => {
+    const { fake } = renderApp("/libraries", {}, (server) => {
+      const base = server.fetch;
+      server.fetch = async (input, init) => {
+        const res = await base(input, init);
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname !== "/ether/api/libraries" || (init?.method && init.method !== "GET")) {
+          return res;
+        }
+        const body = await res.json();
+        body.libraries = body.libraries.map((lib: { id: number; source: string }) =>
+          lib.source === "plugin"
+            ? { ...lib, sync: { lastError: "plugins: plugin is disabled" } }
+            : lib,
+        );
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      };
+    });
+
+    const booksCard = await screen.findByRole("region", { name: "Books" }, { timeout: 15000 });
+    expect(within(booksCard).getByText("Plugin off")).toBeInTheDocument();
+    const alert = within(booksCard).getByRole("alert");
+    expect(alert).toHaveTextContent("Its plugin is turned off. Turn it on in Plugins.");
+    expect(within(alert).getByRole("link", { name: "Plugins" })).toHaveAttribute(
+      "href",
+      "/plugins/installed",
+    );
+
+    const moviesCard = screen.getByRole("region", { name: "Movies" });
+    fireEvent.click(within(moviesCard).getByRole("button", { name: "More actions for Movies" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Move right" }));
+    await settleUi(() => {
+      expect(calls(fake, "PATCH", "/libraries/").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("renders aligned list-view headers and placeholders and reveals grid selection on demand", () => {
+    const sampleItems = [
+      {
+        key: "1",
+        title: "Sparse Entry",
+        type: "movie" as const,
+        year: 2021,
+      },
+      {
+        key: "2",
+        title: "Full Entry",
+        type: "movie" as const,
+        year: 2024,
+        rating: 8.2,
+        runtimeMinutes: 118,
+        genres: ["Drama", "Mystery"],
+      },
+    ];
+
+    const { rerender } = render(
+      <CatalogueResults
+        items={sampleItems}
+        list={true}
+        queryKey="q1"
+        page={1}
+        hasMore={false}
+        loading={false}
+        onLoadMore={() => {}}
+        onInspect={() => {}}
+        onBulkWatchlist={async () => {}}
+      />,
+    );
+
+    expect(screen.getByRole("columnheader", { name: "Title" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Year" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Rating" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Runtime" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Genres" })).toBeInTheDocument();
+    // Missing rating, runtime, and genres on Sparse Entry render fixed "—" placeholders.
+    expect(screen.getAllByText("—")).toHaveLength(3);
+    expect(screen.getByText("118 min")).toBeInTheDocument();
+
+    rerender(
+      <CatalogueResults
+        items={sampleItems}
+        list={false}
+        queryKey="q1"
+        page={1}
+        hasMore={false}
+        loading={false}
+        onLoadMore={() => {}}
+        onInspect={() => {}}
+        onBulkWatchlist={async () => {}}
+      />,
+    );
+
+    const viewport = screen.getByLabelText("Catalog titles");
+    expect(viewport).toHaveClass("is-grid");
+    expect(viewport).not.toHaveClass("has-selection");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Sparse Entry" }));
+    expect(viewport).toHaveClass("has-selection");
   });
 
   it("shows Browse, Rules, and Settings tabs on a TMDB library without Collections", async () => {

@@ -340,10 +340,7 @@ export function GuideWorkbench({
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const groups = useMemo(() => groupGuideChannels(channels), [channels]);
-  const sourceNames = useMemo(
-    () => new Map(sources.map((s) => [s.id, sourceTitle(s)])),
-    [sources],
-  );
+  const sourceNames = useMemo(() => new Map(sources.map((s) => [s.id, sourceTitle(s)])), [sources]);
   const scopedChannels = useMemo(() => {
     if (!group) return channels;
     if (group.startsWith("owner:")) {
@@ -413,7 +410,8 @@ export function GuideWorkbench({
     try {
       const r = await tv.match({ dryRun: true });
       const changes = (r.changes ?? []).filter(
-        (c) => (!sourceId || c.guideSourceId === sourceId) && (!scopedIds || scopedIds.has(c.channelId)),
+        (c) =>
+          (!sourceId || c.guideSourceId === sourceId) && (!scopedIds || scopedIds.has(c.channelId)),
       );
       setProposals(changes);
       setMatchCounts({ ambiguous: r.ambiguous ?? 0, regionRejected: r.regionRejected ?? 0 });

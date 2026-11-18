@@ -91,9 +91,11 @@ func (i *instance) searchPersons(w http.ResponseWriter, r *http.Request, v *fron
 		jsonReply(w, i.queryResult([]any{}, 0, offset))
 		return
 	}
-	items := make([]any, 0, len(people))
-	for _, person := range paging.Slice(people, offset, limit) {
-		items = append(items, map[string]any{"Id": person.ID, "Name": person.Name, "Type": "Person", "ServerId": i.info.ID})
+	page := paging.Slice(people, offset, limit)
+	grants, imgs := i.issuePersonGrants(r, page)
+	items := make([]any, 0, len(page))
+	for n, person := range page {
+		items = append(items, i.personItemDTO(person, grants[n], imgs[n], false))
 	}
 	jsonReply(w, i.queryResult(items, len(people), offset))
 }

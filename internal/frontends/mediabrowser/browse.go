@@ -493,17 +493,20 @@ func (i *instance) browseRoutes() error {
 		versionID := ""
 		releaseID := ""
 		if err != nil {
-			scope, e := i.versionScope(r, v)
-			if e != nil || i.host.VersionHandles == nil {
+			if i.host.VersionHandles != nil {
+				if scope, e := i.versionScope(r, v); e == nil {
+					if target, e := i.host.VersionHandles.Resolve(i.identityContext(r), scope, wireID); e == nil && target.Item != 0 {
+						key, versionID, releaseID, err = target.Item, wireID, target.Release, nil
+					}
+				}
+			}
+			if err != nil {
+				if i.writePersonItem(w, r, v, wireID) {
+					return
+				}
 				http.NotFound(w, r)
 				return
 			}
-			target, e := i.host.VersionHandles.Resolve(i.identityContext(r), scope, wireID)
-			if e != nil || target.Item == 0 {
-				http.NotFound(w, r)
-				return
-			}
-			key, versionID, releaseID = target.Item, wireID, target.Release
 		}
 		if i.host.Experience == nil {
 			http.Error(w, "Unavailable", 503)
@@ -922,6 +925,22 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := itemQuery(r)
+	if only, excluded := personTypesOnly(q); only {
+		if excluded {
+			i.replyItems(w, r, map[string]any{"SearchHints": []any{}, "TotalRecordCount": 0})
+			return
+		}
+		if _, ok := i.host.Experience.(frontend.PeopleReader); ok {
+			hints, total, e := i.personSearchHints(r, v, terms[0], q.Offset, q.Limit)
+			if e != nil {
+				i.logFacetFailure("person", e)
+				i.replyItems(w, r, map[string]any{"SearchHints": []any{}, "TotalRecordCount": 0})
+				return
+			}
+			i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": total})
+			return
+		}
+	}
 	_, token, _ := i.viewer(r)
 	live, e := i.liveSearchItems(r, v, token, terms[0])
 	if e != nil {
@@ -938,14 +957,33 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	room := max(0, q.Limit-len(extra))
+	var personHints []any
+	personTotal := 0
+	if q.Offset == 0 && room > 0 && len(q.Types) == 0 && len(q.UnservedTypes) == 0 && !personExcluded(q) {
+		if _, ok := i.host.Experience.(frontend.PeopleReader); ok {
+			pLimit := min(4, max(1, room/3))
+			if room == 1 && len(result.Page.Items) > 0 && result.Page.Items[0].SearchScore >= 0.96 {
+				pLimit = 0
+			}
+			if pLimit > 0 {
+				if ph, pt, pe := i.personSearchHints(r, v, terms[0], 0, pLimit); pe == nil {
+					personHints, personTotal = ph, pt
+				}
+			}
+		}
+	}
 	if len(result.Page.Items) > room {
 		result.Page.Items = result.Page.Items[:room]
 	}
-	hints := make([]any, 0, len(result.Page.Items))
+	titleHints := make([]any, 0, len(result.Page.Items))
+	exactPrefix := 0
 	// Hints carry the poster grant as PrimaryImageTag, as Jellyfin's do;
 	// without it clients draw every result as a blank card.
 	images := i.gridListImages(r, result.Page.Items)
-	for _, t := range result.Page.Items {
+	for idx, t := range result.Page.Items {
+		if idx == exactPrefix && t.SearchScore >= 0.96 {
+			exactPrefix++
+		}
 		id := ids.RatingKeyGUID(t.Key)
 		kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
 		hint := map[string]any{"Id": id, "ItemId": id, "Name": t.Title, "Type": kind, "ProductionYear": t.Year, "IsFolder": t.Type == "show" || t.Type == "season" || t.Type == "boxset"}
@@ -967,7 +1005,17 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		hints = append(hints, hint)
+		titleHints = append(titleHints, hint)
+	}
+	hints := titleHints
+	if len(personHints) > 0 {
+		hints = make([]any, 0, len(titleHints)+len(personHints))
+		hints = append(hints, titleHints[:exactPrefix]...)
+		hints = append(hints, personHints...)
+		hints = append(hints, titleHints[exactPrefix:]...)
+		if len(hints) > room {
+			hints = hints[:room]
+		}
 	}
 
 	for _, raw := range extra {
@@ -976,7 +1024,7 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	hints = append(extra, hints...)
-	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": result.Page.Total + len(live)})
+	i.replyItems(w, r, map[string]any{"SearchHints": hints, "TotalRecordCount": result.Page.Total + len(live) + personTotal})
 }
 
 func (i *instance) items(w http.ResponseWriter, r *http.Request) {
@@ -1043,6 +1091,18 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 	}
 	var page frontend.Page
 	if search := q.Filter.Query; search != "" && i.searchableParent(parent) {
+		if q.Favorite == nil {
+			if only, excluded := personTypesOnly(q); only {
+				if excluded {
+					jsonReply(w, i.queryResult([]any{}, 0, q.Offset))
+					return
+				}
+				if _, ok := i.host.Experience.(frontend.PeopleReader); ok {
+					i.searchPersons(w, r, v, search)
+					return
+				}
+			}
+		}
 		// /Items?searchTerm= is how Jellyfin and Emby apps search. Answer it
 		// from the title index with a bounded window, not a library walk
 		// filtered by name.

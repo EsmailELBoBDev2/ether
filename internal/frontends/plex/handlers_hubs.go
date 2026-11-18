@@ -1248,9 +1248,36 @@ func titleSearchScore(t *frontend.Title, i, n int) float64 {
 func reportedScore(score float64) float64 { return min(1, score) }
 
 func peopleQueryTerms(query string) []string {
-	return strings.FieldsFunc(strings.ToLower(strings.TrimSpace(query)), func(r rune) bool {
-		return !('a' <= r && r <= 'z' || '0' <= r && r <= '9' || r >= 0x80)
-	})
+	var b strings.Builder
+	for _, r := range norm.NFD.String(strings.TrimSpace(query)) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		r = unicode.ToLower(r)
+		switch r {
+		case 'ß':
+			b.WriteString("ss")
+			continue
+		case 'æ':
+			b.WriteString("ae")
+			continue
+		case 'œ':
+			b.WriteString("oe")
+			continue
+		case 'ø':
+			r = 'o'
+		case 'ł':
+			r = 'l'
+		case 'đ', 'ð':
+			r = 'd'
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return strings.Fields(b.String())
 }
 
 func personMatchesTerms(name string, terms []string) bool {
@@ -1738,6 +1765,9 @@ func (s *Server) searchExperience() frontend.Search {
 			searcher, _ = s.collections().(frontend.VibeSearcher)
 		}
 		src = frontend.SearchSources{Catalog: s.catalog().Search, Familiar: s.exp().FamiliarFrom(s.state())}
+		if pt, ok := s.catalog().(frontend.PeopleTitlesCatalog); ok {
+			src.PeopleTitles = pt.PeopleTitles
+		}
 		if searcher != nil {
 			src.Vibe = searcher
 		}
@@ -1854,10 +1884,21 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 			var items []frontend.Title
 			reasons := map[string]reasonedTitle{}
 			if allowed[mediaType] {
+				peopleByKey := make(map[frontend.RatingKey]reasonedTitle, len(people.titles[mediaType]))
+				for _, rt := range people.titles[mediaType] {
+					if _, exists := peopleByKey[rt.title.Key]; !exists {
+						peopleByKey[rt.title.Key] = rt
+					}
+				}
 				seen := map[frontend.RatingKey]bool{}
 				for _, t := range byType[mediaType] {
 					seen[t.Key] = true
 					items = append(items, t)
+					if t.SearchScore < 0.96 {
+						if rt, ok := peopleByKey[t.Key]; ok {
+							reasons[t.Key.String()] = rt
+						}
+					}
 				}
 				for _, rt := range s.hubReasoned(ctx, people, mediaType, seen, limit-len(items)) {
 					seen[rt.title.Key] = true

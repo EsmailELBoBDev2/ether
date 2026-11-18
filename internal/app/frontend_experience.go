@@ -56,9 +56,15 @@ func (a *App) experienceSearch(vis experience.Visibility, stepAside *experience.
 }
 
 func (a *App) searchSourcesFor(stepAside *experience.StepAside) experience.SearchSources {
-	src := experience.SearchSources{Catalog: a.catalog.Search, Details: a.catalog.SearchDetails}
+	src := experience.SearchSources{
+		Catalog:      a.catalog.Search,
+		PeopleTitles: a.catalog.PeopleTitles,
+		Details:      a.catalog.SearchDetails,
+	}
 	if a.availability != nil && !a.cfg.Read().Spike.Enabled {
-		src.Catalog = (&availabilityCatalog{Catalog: a.catalog, availability: a.availability}).Search
+		availCat := &availabilityCatalog{Catalog: a.catalog, availability: a.availability}
+		src.Catalog = availCat.Search
+		src.PeopleTitles = availCat.PeopleTitles
 	}
 	if stepAside != nil {
 		baseCatalog := src.Catalog
@@ -68,6 +74,16 @@ func (a *App) searchSourcesFor(stepAside *experience.StepAside) experience.Searc
 				return nil, err
 			}
 			return stepAside.FilterAvailable(ctx, ts), nil
+		}
+		basePeopleTitles := src.PeopleTitles
+		if basePeopleTitles != nil {
+			src.PeopleTitles = func(ctx context.Context, viewer *core.User, q string, n int) ([]core.Title, error) {
+				ts, err := basePeopleTitles(ctx, viewer, q, n)
+				if err != nil {
+					return nil, err
+				}
+				return stepAside.FilterAvailable(core.WithCatalogViewer(ctx, viewer), ts), nil
+			}
 		}
 	}
 	if a.state != nil {

@@ -567,10 +567,10 @@ func (c *Catalog) searchTitlesOpts(ctx context.Context, query string, types []co
 	}
 	wait := searchRemoteWait
 	switch {
-	case tailAnswered || slices.ContainsFunc(out, func(t core.Title) bool { return t.SearchScore >= searchConfident }):
-		// The mirror holds the title the viewer typed: answer now. TMDB
-		// still runs, detached, and what it finds answers the next search
-		// (remoteSearches).
+	case tailAnswered || slices.ContainsFunc(out, func(t core.Title) bool { return t.SearchScore >= searchConfident }) || (!noReadWait(ctx) && c.hasExactPersonMatch(ctx, sq)):
+		// The mirror holds the title or credited person the viewer typed:
+		// answer now. TMDB still runs, detached, and what it finds answers the
+		// next search (remoteSearches).
 		wait = 0
 	case len(out) >= limit:
 		// The mirror already answers the search; take TMDB's results only if

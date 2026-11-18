@@ -868,7 +868,7 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 		if r := recover(); r != nil {
 			val = nil
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				callErr = &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 				return
 			}
 			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
@@ -876,20 +876,20 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 	}()
 	v, err := fn()
 	if err != nil {
-		return nil, classifyJSError(ctx, err)
+		return nil, classifyJSError(ctx, cs, err)
 	}
 	if v != nil && v.IsPromise() {
 		v, err = v.Await()
 		if err != nil {
-			return nil, classifyJSError(ctx, err)
+			return nil, classifyJSError(ctx, cs, err)
 		}
 	}
 	return v, nil
 }
 
-func classifyJSError(ctx context.Context, err error) *Error {
+func classifyJSError(ctx context.Context, cs *callState, err error) *Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
 	msg := err.Error()
 	if f := decodeFault(msg); f != nil {
@@ -897,7 +897,7 @@ func classifyJSError(ctx context.Context, err error) *Error {
 		return &Error{Status: st, Message: f.Message, Trap: st == StatusAborted}
 	}
 	if strings.Contains(msg, "module closed") || strings.Contains(msg, "interrupted") {
-		return &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
 	return &Error{Status: StatusError, Message: firstLine(msg)}
 }

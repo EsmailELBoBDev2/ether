@@ -193,8 +193,10 @@ type RuntimeLimits struct {
 	// archive.open and archive.read, derived from MemoryBytes:
 	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
 	ReadBytes  int64  `json:"readBytes,omitempty"`
-	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h, owner-controlled ceiling
-	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited, owner-controlled ceiling
+	// Deadline and UnitBudget are the granted ceilings in manifests/detail
+	// and the active route's effective call limits when read via runtime.limits.
+	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
+	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline
 }
 
 // SidecarDecl says how a remote plugin's program comes to be: a Docker image,

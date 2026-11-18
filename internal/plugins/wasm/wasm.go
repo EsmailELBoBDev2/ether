@@ -168,6 +168,14 @@ func HostResultBytes(memoryBytes uint64) int64 {
 }
 
 type unitChargerKey struct{}
+type callLimitsKey struct{}
+
+// CallLimits returns the effective per-call limits (after route deadline and
+// viewer unit-budget clamps) when called inside an active hosted plugin call.
+func CallLimits(ctx context.Context) (Limits, bool) {
+	lim, ok := ctx.Value(callLimitsKey{}).(Limits)
+	return lim, ok
+}
 
 // ChargeUnits charges additional governance units to the active guest call,
 // returning a StatusGovernance *Fault when the call's UnitBudget is exceeded.
@@ -190,7 +198,8 @@ func ChargeUnits(ctx context.Context, units int64) error {
 type Limits struct {
 	MemoryBytes uint64        // per instance; default 32 MiB, max wasm32 4 GiB
 	Deadline    time.Duration // per handle call; default 30s
-	UnitBudget  int64         // per handle call; default 10000
+	UnitBudget  int64         // per handle call; default UnitsForDeadline(Deadline)
+	Stremio     bool          // plugin answers Stremio add-on routes (uses StremioDeadline)
 	Busy        func() bool   // background work yields while playback or host load is high
 	PoolSize    int           // instances per pool; default 2
 	// Hot-path budgets. A manifest may lower these, never raise them:
@@ -219,7 +228,7 @@ func (l *Limits) normalize() {
 		l.Deadline = 365 * 24 * time.Hour
 	}
 	if l.UnitBudget <= 0 {
-		l.UnitBudget = 10000
+		l.UnitBudget = UnitsForDeadline(l.Deadline)
 	}
 	if l.PoolSize <= 0 {
 		l.PoolSize = 2
@@ -308,6 +317,7 @@ type callState struct {
 	ctx        context.Context
 	host       Host
 	lim        *Limits
+	path       string
 	start      time.Time
 	last       time.Time
 	units      int64
@@ -319,6 +329,47 @@ type callState struct {
 	abortCode  uint32
 	logger     *slog.Logger
 	pluginID   string
+}
+
+func formatBudgetDuration(d time.Duration) string {
+	if d > 0 && d%time.Hour == 0 {
+		return fmt.Sprintf("%d h", d/time.Hour)
+	}
+	if d > 0 && d%time.Minute == 0 {
+		return fmt.Sprintf("%d min", d/time.Minute)
+	}
+	if d > 0 && d%time.Second == 0 {
+		return fmt.Sprintf("%d s", d/time.Second)
+	}
+	if d > 0 && d%time.Millisecond == 0 {
+		return fmt.Sprintf("%d ms", d/time.Millisecond)
+	}
+	return d.String()
+}
+
+func (cs *callState) governanceMessage() string {
+	if cs == nil || cs.lim == nil {
+		return "governance budget exceeded"
+	}
+	if cs.path != "" && ViewerRequestPath(cs.path) && cs.lim.UnitBudget == UnitsForDeadline(cs.lim.Deadline) {
+		return fmt.Sprintf("used the whole %s budget for %s (%d/%d units)",
+			formatBudgetDuration(cs.lim.Deadline), cs.path, cs.units, cs.lim.UnitBudget)
+	}
+	if cs.path != "" {
+		return fmt.Sprintf("used the whole %d-unit budget for %s (%d/%d units)",
+			cs.lim.UnitBudget, cs.path, cs.units, cs.lim.UnitBudget)
+	}
+	return fmt.Sprintf("governance budget exceeded (%d/%d units)", cs.units, cs.lim.UnitBudget)
+}
+
+func (cs *callState) timeoutMessage() string {
+	if cs != nil && cs.lim != nil && cs.lim.Deadline > 0 && time.Since(cs.start)+50*time.Millisecond >= cs.lim.Deadline {
+		if cs.path != "" {
+			return fmt.Sprintf("call exceeded its %s deadline for %s", formatBudgetDuration(cs.lim.Deadline), cs.path)
+		}
+		return fmt.Sprintf("call exceeded its %s deadline", formatBudgetDuration(cs.lim.Deadline))
+	}
+	return "call exceeded its deadline"
 }
 
 func (cs *callState) chargeWall() {
@@ -339,8 +390,7 @@ func (cs *callState) chargeUnits(units int64) *Fault {
 	cs.units += units
 	if cs.units > cs.lim.UnitBudget {
 		cs.exceeded = true
-		return &Fault{Code: string(StatusGovernance),
-			Message: fmt.Sprintf("governance budget exceeded (%d/%d units)", cs.units, cs.lim.UnitBudget)}
+		return &Fault{Code: string(StatusGovernance), Message: cs.governanceMessage()}
 	}
 	return nil
 }
@@ -394,6 +444,9 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 		cs.last = time.Now()
 		return cs.chargeUnits(units)
 	})
+	if cs.lim != nil {
+		hostCtx = context.WithValue(hostCtx, callLimitsKey{}, *cs.lim)
+	}
 	out, err := cs.host.CallHost(hostCtx, name, args)
 	// Time spent waiting on the host (a network fetch, a catalogue query) is
 	// paid by the call's own unit price, not as guest wall time; otherwise
@@ -738,7 +791,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	lim := limitsForRequest(p.lim, req.Path)
 	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
 	defer cancel()
-	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, start: start, last: start,
+	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
 		background: strings.HasPrefix(req.Path, "/ether/job/"),
 		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}
 	in, err := p.svc.get(callCtx)
@@ -766,7 +819,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	}
 	if cs.exceeded {
 		out.Status = StatusGovernance
-		return Response{}, out, &Error{Status: StatusGovernance, Message: "governance budget exceeded"}
+		return Response{}, out, &Error{Status: StatusGovernance, Message: cs.governanceMessage()}
 	}
 	if len(respJSON) > MaxResponseBytes {
 		out.Status = StatusError

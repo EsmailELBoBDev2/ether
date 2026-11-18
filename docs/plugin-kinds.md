@@ -477,12 +477,16 @@ sees requested versus granted values before install and in the drawer, and can
 raise or lower ceilings under Plugins → Settings or for one plugin. Saving
 stops affected jobs so the new ceilings apply immediately.
 
-Viewer browse/search/playback calls retain tight budgets: `/stream/`, `/catalog/`,
-`/meta/`, `/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,
-`/ether/markers`, and `/ether/v1/kinds/` use at most 10,000 units/30s plus tighter
-route/caller deadlines. Ranking budgets stay unchanged. Administrative setup,
-actions, tools, events and jobs use owner grants. Health/configuration/view/options
-keep short protocol deadlines. See the SDK README for exact fields and APIs.
+Viewer search and playback calls derive their unit budget directly from each
+route's deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s
+(30,000 units), `/subtitles/*`, `/ether/subtitles/*` and kind `/resolve` and
+`/match` get 5 s (50,000 units), and `/catalog/*`, `/meta/*`, `/ether/metadata/*`,
+`/ether/markers*` and kind `/search` and `/items/*` get 10 s (100,000 units),
+reported live by `ether.runtime.limits()`. Ranking budgets stay unchanged.
+Background kind catalogue sync (`/browse` and `/changes`), administrative setup,
+actions, tools, events and jobs use owner grants. Health/configuration/view/options/test
+keep short protocol deadlines. See `sdk/AGENTS.md` and the SDK README for exact
+per-route limits and how owners raise ceilings.
 
 ### Pending resolve and match replies
 

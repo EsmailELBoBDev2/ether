@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +24,12 @@ import (
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/resolver"
 )
+
+// maxRecentSourceCandidates bounds category-only recent-release searches
+// (empty query with category set) to the newest 100 candidates.
+const maxRecentSourceCandidates = 100
 
 // DebridSourceBackend is the subset of debrid.Service used by KindResolver for
 // host-mediated debrid cache checks and torrent acquisition.
@@ -40,6 +46,7 @@ type KindResolverDeps struct {
 	Blobs     *blobcache.Cache
 	Catalog   *KindCatalog
 	Indexer   core.Indexer
+	Resolver  *resolver.Service
 	Debrid    DebridSourceBackend
 	Engine    core.Engine
 	HTTP      *http.Client
@@ -68,6 +75,7 @@ type KindResolver struct {
 	blobs     *blobcache.Cache
 	catalog   *KindCatalog
 	indexer   core.Indexer
+	resolver  *resolver.Service
 	debrid    DebridSourceBackend
 	engine    core.Engine
 	http      *http.Client
@@ -110,6 +118,7 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		blobs:     deps.Blobs,
 		catalog:   deps.Catalog,
 		indexer:   deps.Indexer,
+		resolver:  deps.Resolver,
 		debrid:    deps.Debrid,
 		engine:    deps.Engine,
 		http:      hc,
@@ -554,15 +563,35 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 	}
 	switch q.Kind {
 	case "indexer_search":
-		if _, err := core.SearchCategories(q.Category); err != nil {
+		query := strings.TrimSpace(q.Query)
+		category := strings.TrimSpace(q.Category)
+		if query == "" && category == "" {
+			return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{
+				Field:   "query",
+				Message: "indexer_search needs a query or category",
+			}}}
+		}
+		if _, err := core.SearchCategories(category); err != nil {
+			return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{
+				Field:   "category",
+				Message: err.Error(),
+			}}}
+		}
+		if _, err := resolver.ScoreSourceCandidates(ctx, r.resolver, q.Profile, nil); err != nil {
+			if errors.Is(err, resolver.ErrUnknownProfile) {
+				return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{
+					Field:   "profile",
+					Message: err.Error(),
+				}}}
+			}
 			return nil, err
 		}
 		if r.indexer == nil {
 			return []core.SourceCandidate{}, nil
 		}
 		rels, err := r.indexer.Search(ctx, core.SearchRequest{
-			Title:    strings.TrimSpace(q.Query),
-			Category: strings.TrimSpace(q.Category),
+			Title:    query,
+			Category: category,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -575,21 +604,20 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 			r.log.Debug("plugin indexer search found nothing; some indexers failed", "query", q.Query, "err", err)
 			return []core.SourceCandidate{}, nil
 		}
-		out := make([]core.SourceCandidate, 0, len(rels))
-		for _, rel := range rels {
-			out = append(out, core.SourceCandidate{
-				InfoHash:  strings.ToLower(strings.TrimSpace(rel.InfoHash)),
-				Magnet:    rel.MagnetURL,
-				NZBURL:    rel.NZBURL,
-				Title:     rel.Name,
-				Size:      rel.Size,
-				Seeders:   rel.Seeders,
-				Cached:    len(rel.DebridCached) > 0,
-				Indexer:   rel.Indexer,
-				IndexerID: rel.IndexerID,
+		if query == "" {
+			rels = append([]core.Release(nil), rels...)
+			sort.SliceStable(rels, func(i, j int) bool {
+				pi, pj := rels[i].PubDate, rels[j].PubDate
+				if pi.IsZero() != pj.IsZero() {
+					return !pi.IsZero()
+				}
+				return pi.After(pj)
 			})
+			if len(rels) > maxRecentSourceCandidates {
+				rels = rels[:maxRecentSourceCandidates]
+			}
 		}
-		return out, nil
+		return resolver.ScoreSourceCandidates(ctx, r.resolver, q.Profile, rels)
 
 	case "debrid_check":
 		if r.debrid == nil {

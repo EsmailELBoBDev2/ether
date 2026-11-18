@@ -11,16 +11,25 @@ type Policy = {
   runtimeOverrides?: Record<string, Partial<RuntimeLimits>>;
 };
 type Draft = Record<keyof RuntimeLimits, string>;
+function isIntegerLimit(key: keyof RuntimeLimits): boolean {
+  return key === "unitBudget" || key === "archiveMembers" || key === "maxItems";
+}
 export function RuntimeLimitsEditor({
   plugin = "",
   limits,
   requested,
+  storedItems,
+  maxItems,
+  hasMediaKinds = false,
   flush = false,
   onSaved,
 }: {
   plugin?: string;
   limits?: RuntimeLimits;
   requested?: Partial<RuntimeLimits>;
+  storedItems?: number;
+  maxItems?: number;
+  hasMediaKinds?: boolean;
   flush?: boolean;
   onSaved?: () => void;
 }) {
@@ -64,7 +73,7 @@ export function RuntimeLimitsEditor({
         !Number.isFinite(value) ||
         value < 0 ||
         (f.max !== undefined && value > f.max) ||
-        ((f.key === "unitBudget" || f.key === "archiveMembers") && !Number.isSafeInteger(value))
+        (isIntegerLimit(f.key) && !Number.isSafeInteger(value))
       );
     });
   const input = (f: (typeof fields)[number]) => {
@@ -75,7 +84,7 @@ export function RuntimeLimitsEditor({
         type="number"
         min={0}
         max={f.max}
-        step={f.key === "unitBudget" || f.key === "archiveMembers" ? 1 : "any"}
+        step={isIntegerLimit(f.key) ? 1 : "any"}
         disabled={!draft || busy}
         value={draft?.[f.key] ?? ""}
         placeholder={t("{value} (default)", {
@@ -166,7 +175,11 @@ export function RuntimeLimitsEditor({
                 <tbody>
                   {fields.map((f) => {
                     const asked = limitNumber(f.key, requested) / f.scale;
-                    const allowed = limitNumber(f.key, limits) / f.scale;
+                    const allowed =
+                      f.key === "maxItems" && !limits && maxItems
+                        ? maxItems / f.scale
+                        : limitNumber(f.key, limits) / f.scale;
+                    const hasAllowed = Boolean(limits || (f.key === "maxItems" && maxItems));
                     const global =
                       limitNumber(f.key, policy?.runtimeLimits) / f.scale || f.fallback;
                     return (
@@ -178,7 +191,17 @@ export function RuntimeLimitsEditor({
                           {asked > 0 ? formatLimit(f.key, asked) : t("Default")}
                         </td>
                         <td className="py-3 pr-3">
-                          {limits ? formatLimit(f.key, allowed) : t("Not available")}
+                          {hasAllowed ? formatLimit(f.key, allowed) : t("Not available")}
+                          {f.key === "maxItems" &&
+                          allowed > 0 &&
+                          (hasMediaKinds || (storedItems ?? 0) > 0) ? (
+                            <p className="mt-1 max-w-44 text-fg-muted">
+                              {t("{used} of {limit} stored", {
+                                used: formatLimit("maxItems", storedItems ?? 0),
+                                limit: formatLimit("maxItems", allowed),
+                              })}
+                            </p>
+                          ) : null}
                           {limits && !asked && allowed > 0 && allowed < global ? (
                             <p className="mt-1 max-w-44 text-fg-muted">
                               {t("The plugin didn't ask for more.")}
@@ -219,7 +242,23 @@ export function RuntimeLimitsEditor({
                 )}
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                {fields.slice(3).map((f) => (
+                {fields.slice(3, 7).map((f) => (
+                  <label key={f.key} className="space-y-1 text-xs">
+                    {f.label}
+                    {input(f)}
+                  </label>
+                ))}
+              </div>
+            </section>
+            <section className="space-y-3 border-t border-border pt-4">
+              <h3 className="text-sm font-medium">{t("Plugin libraries")}</h3>
+              <p className="text-xs text-fg-muted">
+                {t(
+                  "Total items a plugin can store across its libraries. Clear the field to restore its default.",
+                )}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {fields.slice(7).map((f) => (
                   <label key={f.key} className="space-y-1 text-xs">
                     {f.label}
                     {input(f)}

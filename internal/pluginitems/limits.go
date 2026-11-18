@@ -16,7 +16,7 @@ import (
 
 // Store and item validation caps (spec §2.4, §3.2, §3.3, §3.5, §10).
 const (
-	DefaultMaxPluginItems = 2_000_000
+	DefaultMaxPluginItems = plugins.DefaultMaxPluginItems
 	MaxTitleRunes         = 500
 	MaxSummaryRunes       = 20_000
 	MaxFieldRunes         = 4_000

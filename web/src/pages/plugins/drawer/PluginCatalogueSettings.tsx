@@ -4,7 +4,7 @@ import { useState } from "react";
 import { SettingsRow } from "../../../components/SettingsRow";
 import { t } from "../../../i18n";
 import { errorMessage } from "../../../lib/api";
-import { formatDateTime } from "../../../lib/format";
+import { formatDateTime, formatNumber } from "../../../lib/format";
 import { useAsync } from "../../../lib/hooks";
 import { librariesApi } from "../../libraries/api";
 export function PluginCatalogueSettings({
@@ -39,31 +39,43 @@ export function PluginCatalogueSettings({
   if (!owned.length && !catalogues.length) return null;
   return (
     <SettingsSection title={t("Keeping it up to date")}>
-      {owned.map((lib) => (
-        <SettingsRow
-          key={lib.id}
-          title={lib.kind?.label ?? lib.name}
-          description={
-            lib.sync?.lastError ??
-            (lib.sync?.lastOk ? formatDateTime(lib.sync.lastOk) : t("Not synced yet"))
-          }
-          control={
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() => void sync(lib.id, true)}
-              >
-                {t("Full re-sync")}
-              </Button>
-              <Button size="sm" disabled={busy} onClick={() => void sync(lib.id, false)}>
-                {t("Sync now")}
-              </Button>
-            </div>
-          }
-        />
-      ))}
+      {owned.map((lib) => {
+        const used = lib.storedItems ?? lib.itemCount;
+        const countAgainstCap =
+          typeof used === "number" &&
+          typeof lib.maxPluginItems === "number" &&
+          lib.maxPluginItems > 0
+            ? t("{used} of {limit} items", {
+                used: formatNumber(used, 0),
+                limit: formatNumber(lib.maxPluginItems, 0),
+              })
+            : "";
+        const status =
+          lib.sync?.lastError ??
+          (lib.sync?.lastOk ? formatDateTime(lib.sync.lastOk) : t("Not synced yet"));
+        return (
+          <SettingsRow
+            key={lib.id}
+            title={lib.kind?.label ?? lib.name}
+            description={countAgainstCap ? `${countAgainstCap} · ${status}` : status}
+            control={
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void sync(lib.id, true)}
+                >
+                  {t("Full re-sync")}
+                </Button>
+                <Button size="sm" disabled={busy} onClick={() => void sync(lib.id, false)}>
+                  {t("Sync now")}
+                </Button>
+              </div>
+            }
+          />
+        );
+      })}
       {catalogues.map((source) => (
         <SettingsRow
           key={source.id}

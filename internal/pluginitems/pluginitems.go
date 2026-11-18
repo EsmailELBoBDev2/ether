@@ -289,6 +289,9 @@ type Options struct {
 	Health         HealthReporter
 	IsLeader       func() bool
 	MaxPluginItems int
+	// MaxPluginItemsFor returns the live owner-configured stored-item ceiling
+	// for pluginID when set, overriding MaxPluginItems.
+	MaxPluginItemsFor func(pluginID string) int
 	// OnAttention is an optional hook notified when a sync guard or
 	// contract error flags a plugin for owner attention (e.g. 50%-delete
 	// guard, unknown fields dropped, auth required).
@@ -298,14 +301,15 @@ type Options struct {
 // Service manages plugin kinds, items, browse, search, sync, projections,
 // matches and resolutions.
 type Service struct {
-	db             *sql.DB
-	log            *slog.Logger
-	now            func() time.Time
-	caller         Caller
-	health         HealthReporter
-	isLeader       func() bool
-	onAttention    func(ctx context.Context, pluginID, reason string)
-	maxPluginItems int
+	db                *sql.DB
+	log               *slog.Logger
+	now               func() time.Time
+	caller            Caller
+	health            HealthReporter
+	isLeader          func() bool
+	onAttention       func(ctx context.Context, pluginID, reason string)
+	maxPluginItems    int
+	maxPluginItemsFor func(pluginID string) int
 
 	syncGen atomic.Uint64
 
@@ -331,16 +335,17 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		o.MaxPluginItems = DefaultMaxPluginItems
 	}
 	s := &Service{
-		db:             db,
-		log:            o.Logger.With("component", "pluginitems"),
-		now:            o.Now,
-		caller:         o.Caller,
-		health:         o.Health,
-		isLeader:       o.IsLeader,
-		onAttention:    o.OnAttention,
-		maxPluginItems: o.MaxPluginItems,
-		kindLocks:      map[string]*sync.Mutex{},
-		workers:        map[string]*syncWorker{},
+		db:                db,
+		log:               o.Logger.With("component", "pluginitems"),
+		now:               o.Now,
+		caller:            o.Caller,
+		health:            o.Health,
+		isLeader:          o.IsLeader,
+		onAttention:       o.OnAttention,
+		maxPluginItems:    o.MaxPluginItems,
+		maxPluginItemsFor: o.MaxPluginItemsFor,
+		kindLocks:         map[string]*sync.Mutex{},
+		workers:           map[string]*syncWorker{},
 	}
 	// Seed the sequence row if a test opened the table without data, and
 	// load the highest stored sync generation so PageFreshness never rewinds.
@@ -388,13 +393,31 @@ func (s *Service) SyncGeneration() uint64 {
 	return s.Generation()
 }
 
+// MaxItemsFor returns the effective stored-item cap across all libraries owned
+// by pluginID, consulting MaxPluginItemsFor when wired.
+func (s *Service) MaxItemsFor(pluginID string) int {
+	if s == nil {
+		return DefaultMaxPluginItems
+	}
+	if s.maxPluginItemsFor != nil {
+		if n := s.maxPluginItemsFor(pluginID); n > 0 {
+			return n
+		}
+	}
+	if s.maxPluginItems > 0 {
+		return s.maxPluginItems
+	}
+	return DefaultMaxPluginItems
+}
+
 // KindBackends returns a plugins.KindBackends struct with KindUpsert,
-// KindDelete and KindItems wired to this store (spec §3.6, §12 slice C).
+// KindDelete, KindItems and KindItemCount wired to this store (spec §3.6, §12 slice C).
 func (s *Service) KindBackends() plugins.KindBackends {
 	return plugins.KindBackends{
-		KindUpsert: s.KindUpsert,
-		KindDelete: s.KindDelete,
-		KindItems:  s.KindItems,
+		KindUpsert:    s.KindUpsert,
+		KindDelete:    s.KindDelete,
+		KindItems:     s.KindItems,
+		KindItemCount: s.PluginItemCount,
 	}
 }
 

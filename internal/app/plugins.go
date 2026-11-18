@@ -366,10 +366,11 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	runCtx, cancelRun := context.WithCancel(context.Background())
 
 	itemsSvc, err := pluginitems.New(ctx, a.db, pluginitems.Options{
-		Caller:   mgr,
-		Health:   mgr,
-		Logger:   a.log.With("component", "pluginitems"),
-		IsLeader: func() bool { return a.cluster == nil || a.cluster.IsLeader() },
+		Caller:            mgr,
+		Health:            mgr,
+		MaxPluginItemsFor: mgr.MaxPluginItems,
+		Logger:            a.log.With("component", "pluginitems"),
+		IsLeader:          func() bool { return a.cluster == nil || a.cluster.IsLeader() },
 	})
 	if err != nil {
 		cancelRun()
@@ -424,6 +425,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		Blobs:     blobs,
 		Catalog:   kindCatalog,
 		Indexer:   idx,
+		Resolver:  a.resolver,
 		Debrid:    deb,
 		Engine:    eng,
 		Authorize: func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error {
@@ -438,6 +440,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		KindUpsert:     itemsSvc.KindUpsert,
 		KindDelete:     itemsSvc.KindDelete,
 		KindItems:      itemsSvc.KindItems,
+		KindItemCount:  itemsSvc.PluginItemCount,
 		ResolveSources: kindResolver.ResolveSources,
 		CachePut:       cachePut,
 		CacheOpen:      cacheOpen,

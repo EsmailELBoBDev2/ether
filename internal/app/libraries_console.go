@@ -53,6 +53,7 @@ func (c *librariesConsole) services() (*pluginitems.Service, *blobcache.Cache, e
 		if c.app.pluginsRT != nil && c.app.pluginsRT.mgr != nil {
 			opts.Caller = c.app.pluginsRT.mgr
 			opts.Health = c.app.pluginsRT.mgr
+			opts.MaxPluginItemsFor = c.app.pluginsRT.mgr.MaxPluginItems
 		}
 		if c.items, c.err = pluginitems.New(ctx, c.app.db, opts); c.err != nil {
 			return
@@ -114,10 +115,13 @@ func kindDTOs(items []core.KindItem) []kindItemDTO {
 
 type libraryDTO struct {
 	core.Library
-	ItemCount  *int                   `json:"itemCount,omitempty"`
-	Sync       *pluginitems.SyncState `json:"sync,omitempty"`
-	Kind       *plugins.MediaKindMeta `json:"kind,omitempty"`
-	PluginName string                 `json:"pluginName,omitempty"`
+	ItemCount      *int                   `json:"itemCount,omitempty"`
+	StoredItems    *int                   `json:"storedItems,omitempty"`
+	PluginItems    *int                   `json:"pluginItems,omitempty"`
+	MaxPluginItems *int                   `json:"maxPluginItems,omitempty"`
+	Sync           *pluginitems.SyncState `json:"sync,omitempty"`
+	Kind           *plugins.MediaKindMeta `json:"kind,omitempty"`
+	PluginName     string                 `json:"pluginName,omitempty"`
 }
 
 func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libraryDTO {
@@ -125,19 +129,25 @@ func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libra
 	switch lib.Source {
 	case core.LibraryPlugin:
 		if items, _, err := c.services(); err == nil && items != nil {
+			maxItems := items.MaxItemsFor(lib.PluginID)
+			dto.MaxPluginItems = &maxItems
+			if total, err := items.PluginItemCount(ctx, lib.PluginID); err == nil {
+				dto.PluginItems = &total
+			}
 			if rec, err := items.GetKindByLibrary(ctx, lib.ID); err == nil {
 				decl := rec.Decl
 				decl.Label = c.catalogueLabel(ctx, lib.PluginID, decl.Label, lib.Name)
 				decl.Library.Name = c.catalogueLabel(ctx, lib.PluginID, decl.Library.Name, lib.Name)
 				dto.Kind = &decl
 				if tally, err := items.LibraryTally(ctx, lib.ID); err == nil {
-					n := 0
+					stored := 0
+					for _, v := range tally {
+						stored += v
+					}
+					dto.StoredItems = &stored
+					n := stored
 					if len(decl.Levels) > 0 {
 						n = tally[decl.Levels[0].Key]
-					} else {
-						for _, v := range tally {
-							n += v
-						}
 					}
 					dto.ItemCount = &n
 				}

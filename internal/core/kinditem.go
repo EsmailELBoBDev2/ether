@@ -114,8 +114,8 @@ type ItemUnavailable struct {
 // KindItem is the standardised plugin item envelope (spec §3.2).
 type KindItem struct {
 	Unavailable *ItemUnavailable           `json:"unavailable,omitempty"`
-	Ref         ItemRef                    `json:"-"`  // assigned by Ether, never sent to the plugin
-	Key         RatingKey                  `json:"-"`  // allocated PluginKey(seq), populated on store reads
+	Ref         ItemRef                    `json:"-" ` // assigned by Ether, never sent to the plugin
+	Key         RatingKey                  `json:"-" ` // allocated PluginKey(seq), populated on store reads
 	ID          string                     `json:"id"` // externalID
 	Level       string                     `json:"level"`
 	ParentID    string                     `json:"parentId,omitempty"`
@@ -297,7 +297,11 @@ type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// When set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -320,6 +324,14 @@ type SourceCandidate struct {
 	// through that indexer (an NZB needs its originating indexer).
 	Indexer   string `json:"indexer,omitempty"`
 	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video, scored against the
+	// requested (or owner default) quality profile; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns

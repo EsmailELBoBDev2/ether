@@ -237,6 +237,8 @@ type Detail struct {
 		P95MS       int64 `json:"p95Ms"`
 		EgressBytes int64 `json:"egressBytes"`
 		KVBytes     int64 `json:"kvBytes"`
+		Items       int   `json:"items"`
+		MaxItems    int   `json:"maxItems,omitempty"`
 		Slow        int64 `json:"slow"`
 		EventDrops  int64 `json:"eventDrops"`
 		Restarts    int64 `json:"restarts"`
@@ -351,6 +353,10 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 	d.Impact.Calls, d.Impact.Errors, d.Impact.P50MS, d.Impact.P95MS = count, errs, p50, p95
 	d.Impact.EgressBytes, d.Impact.Slow, d.Impact.EventDrops, d.Impact.Restarts = h.EgressBytes, h.Slow, h.Drops, h.Restarts
 	d.Impact.KVBytes, _ = m.store.kvUsed(r.Context(), id)
+	if fn := m.kindBackends().KindItemCount; fn != nil {
+		d.Impact.Items, _ = fn(r.Context(), id)
+	}
+	d.Impact.MaxItems = m.grantedMaxItems(rec.Manifest, m.runtimeCeilings(id))
 	if rec.UpdateVersion != "" && rec.updateManifest != "" {
 		if next, err := ParseManifest([]byte(rec.updateManifest)); err == nil {
 			d.AddedPermissions = PermissionDiff(rec.Manifest, next)

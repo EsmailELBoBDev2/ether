@@ -32,6 +32,12 @@ export function runtimeLimitFields() {
       fallback: 65535,
       max: 1000000,
     },
+    {
+      key: "maxItems",
+      label: t("Catalogue items"),
+      scale: 1,
+      fallback: 2000000,
+    },
   ] satisfies {
     key: keyof RuntimeLimits;
     label: string;

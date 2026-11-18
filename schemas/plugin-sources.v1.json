@@ -17,11 +17,16 @@
           ]
         },
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search text for indexer_search. May be omitted or empty when category is set to fetch the newest up to 100 recent releases."
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search only."
+          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
         },
         "infoHashes": {
           "type": "array",
@@ -65,6 +70,28 @@
         },
         "cached": {
           "type": "boolean"
+        },
+        "indexer": {
+          "type": "string"
+        },
+        "indexerId": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Owner quality-profile score for video release names on indexer_search; omitted on non-video candidates."
+        },
+        "resolution": {
+          "type": "integer",
+          "description": "Parsed vertical resolution (e.g. 2160, 1080) for video release names; omitted on non-video candidates."
+        },
+        "source": {
+          "type": "string",
+          "description": "Parsed video source (e.g. remux, bluray, webdl, webrip, hdtv) for video release names; omitted on non-video candidates."
+        },
+        "codec": {
+          "type": "string",
+          "description": "Parsed video codec (e.g. av1, hevc, h264) for video release names; omitted on non-video candidates."
         }
       }
     },

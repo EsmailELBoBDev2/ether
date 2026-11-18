@@ -259,15 +259,21 @@ func (m Manifest) Validate() error {
 		add("ether.runtime.kind", "must be hosted, remote or data")
 	}
 	if l := e.Runtime.Limits; l != nil {
-		if e.Runtime.Kind != "hosted" {
-			add("ether.runtime.limits", "only hosted plugins can request runtime limits")
+		switch e.Runtime.Kind {
+		case "hosted":
+		case "remote":
+			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 {
+				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline or unitBudget")
+			}
+		default:
+			add("ether.runtime.limits", "data packages cannot request runtime limits")
 		}
 		if l.Deadline != "" {
 			if d, err := time.ParseDuration(l.Deadline); err != nil || d <= 0 {
 				add("ether.runtime.limits.deadline", "must be a positive duration such as 120s")
 			}
 		}
-		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 {
+		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 || l.MaxItems < 0 {
 			add("ether.runtime.limits", "data ceilings must not be negative")
 		}
 		if l.UnitBudget < 0 {

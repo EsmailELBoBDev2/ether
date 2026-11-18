@@ -40,6 +40,7 @@ type PluginRuntimeLimits struct {
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited

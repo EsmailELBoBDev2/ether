@@ -24,6 +24,7 @@ type KindBackends struct {
 	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -41,6 +42,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
@@ -56,6 +58,7 @@ func (m *Manager) kindBackends() KindBackends {
 		KindUpsert:     m.deps.Backends.KindUpsert,
 		KindDelete:     m.deps.Backends.KindDelete,
 		KindItems:      m.deps.Backends.KindItems,
+		KindItemCount:  m.deps.Backends.KindItemCount,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
@@ -329,20 +332,32 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	need := "search"
 	switch q.Kind {
 	case "indexer_search":
-		if strings.TrimSpace(q.Query) == "" {
-			return nil, fmt.Errorf("plugins: indexer_search needs a query")
+		if strings.TrimSpace(q.Query) == "" && strings.TrimSpace(q.Category) == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "query",
+				Message: "indexer_search needs a query or category",
+			}}}
 		}
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
-			return nil, fmt.Errorf("plugins: debrid_check needs an info hash")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHashes",
+				Message: "debrid_check needs an info hash",
+			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" {
-			return nil, fmt.Errorf("plugins: debrid_acquire needs an info hash or magnet")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "debrid_acquire needs an info hash or magnet",
+			}}}
 		}
 	default:
-		return nil, fmt.Errorf("plugins: unknown source query kind %q", q.Kind)
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "kind",
+			Message: fmt.Sprintf("unknown source query kind %q", q.Kind),
+		}}}
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {

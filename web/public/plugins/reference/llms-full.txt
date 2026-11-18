@@ -750,15 +750,22 @@ order. Patterns:
   on an NZB release are rejected; use a container source for archive members.
   `fileHint` retains its existing meaning as an archive member hint.
 
-`ResolveSources({kind: "indexer_search", query, category})` accepts a
+`ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
 names: `console`, `movies`/`movie`, `audio`/`music`, `pc`, `tv`, `adult`,
 `books`, `comics`, `other`. It sends a generic search with those categories
 and the query unchanged, rather than assuming a movie or TV request.
-Invalid categories are rejected. Stremio/addon sources do not support this
-filter and reject scoped searches. Omit `category` for the default media
-search. Results and acquired files are cached separately by category and
-file selection. The wire shapes are documented in
+When `query` is omitted or empty and `category` is set, Ether issues a
+recent-releases / RSS request (`t=search&cat=…` with no `q`) and returns up to
+the newest 100 candidates; an empty `query` with no `category` is refused.
+Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
+release names also receive `score`, `resolution`, `source` and `codec` scored
+against `profile` (or the owner's default quality profile when `profile` is
+empty); non-video candidates leave those four fields empty, and unknown profile
+names are rejected. Invalid categories are rejected. Stremio/addon sources do
+not support category filters and reject scoped searches. Omit `category` for
+the default media search. Results and acquired files are cached separately by
+category and file selection. The wire shapes are documented in
 [`plugin-sources.v1.json`](../schemas/plugin-sources.v1.json).
 
 URLs may carry `{itemIndex}`, `{pageNumber}` (= itemIndex + 1),
@@ -1134,11 +1141,14 @@ between calls and host operations during playback, Live TV or high host load.
 They are cancellable with visible progress. Persist checkpoints in KV for
 recovery on a later owner action after restart; Ether does not resume eagerly.
 
-`ether.runtime.limits` requests memory, time, compute, download and archive
-resources within owner-controlled global/per-plugin ceilings. Defaults: 2 GiB
-memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB), 12h, effectively
-unlimited background work units, 8 GiB download/member, 32 GiB total expansion,
-and 65,535 members. The library cache quota further bounds downloads. The owner
+`ether.runtime.limits` requests memory, time, compute, download, archive and
+catalogue-item resources within owner-controlled global/per-plugin ceilings.
+Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
+12h, effectively unlimited background work units, 8 GiB download/member, 32 GiB
+total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
+(`maxItems`, with no upper cap when raised by the owner). Remote plugins can
+also request data and `maxItems` limits. The library cache quota further bounds
+downloads. The owner
 sees requested versus granted values before install and in the drawer, and can
 raise or lower ceilings under Plugins → Settings or for one plugin. Saving
 stops affected jobs so the new ceilings apply immediately.
@@ -1240,6 +1250,7 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 | `archiveMemberBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
+| `maxItems` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | zero means effectively unlimited |
@@ -1255,6 +1266,7 @@ type PluginRuntimeLimits struct {
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
@@ -1442,8 +1454,8 @@ type ItemUnavailable struct {
 // KindItem is the standardised plugin item envelope (spec §3.2).
 type KindItem struct {
 	Unavailable *ItemUnavailable           `json:"unavailable,omitempty"`
-	Ref         ItemRef                    `json:"-"`  // assigned by Ether, never sent to the plugin
-	Key         RatingKey                  `json:"-"`  // allocated PluginKey(seq), populated on store reads
+	Ref         ItemRef                    `json:"-" ` // assigned by Ether, never sent to the plugin
+	Key         RatingKey                  `json:"-" ` // allocated PluginKey(seq), populated on store reads
 	ID          string                     `json:"id"` // externalID
 	Level       string                     `json:"level"`
 	ParentID    string                     `json:"parentId,omitempty"`
@@ -1747,7 +1759,8 @@ type KindMatchResponse struct {
 |---|---|---|---|
 | `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
-| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. |
+| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
+| `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
@@ -1762,7 +1775,11 @@ type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// When set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -1783,6 +1800,10 @@ type SourceQuery struct {
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
 | `indexer` | `string` | may be omitted (see validation for conditions) | Indexer and IndexerID name the indexer an indexer_search result came from, so a plugin that hands the candidate back can be fetched through that indexer (an NZB needs its originating indexer). |
 | `indexerId` | `string` | may be omitted (see validation for conditions) |  |
+| `score` | `*int` | may be omitted (see validation for conditions) | Score, Resolution, Source and Codec are populated on indexer_search candidates whose release name identifies video, scored against the requested (or owner default) quality profile; non-video candidates leave them empty. |
+| `resolution` | `int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+| `codec` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/core/kinditem.go#SourceCandidate
@@ -1805,6 +1826,14 @@ type SourceCandidate struct {
 	// through that indexer (an NZB needs its originating indexer).
 	Indexer   string `json:"indexer,omitempty"`
 	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video, scored against the
+	// requested (or owner default) quality profile; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 }
 ``````
 
@@ -2606,6 +2635,15 @@ type RuntimeDecl struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#DefaultMaxPluginItems
+
+``````
+// DefaultMaxPluginItems is the default per-plugin stored item ceiling across
+// its content libraries; owners can raise or lower it globally or per plugin
+// without an upper bound.
+const DefaultMaxPluginItems = 2_000_000
+``````
+
 ## Source: internal/plugins/contract.go#RuntimeLimits.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2614,6 +2652,7 @@ type RuntimeDecl struct {
 | `archiveMemberBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
+| `maxItems` | `int` | may be omitted (see validation for conditions) | default 2,000,000 stored items across the plugin's libraries; owner-controlled |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) | default 32 MiB, ceiling owner-controlled, up to 4 GiB |
 | `readBytes` | `int64` | may be omitted (see validation for conditions) | ReadBytes is the granted per-call byte ceiling for cache.read, archive.open and archive.read, derived from MemoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB). |
 | `deadline` | `string` | may be omitted (see validation for conditions) | Deadline and UnitBudget are the granted ceilings in manifests/detail and the active route's effective call limits when read via runtime.limits. Go duration; default 12h ceiling, clamped per route on active calls |
@@ -2623,18 +2662,20 @@ type RuntimeDecl struct {
 ## Source: internal/plugins/contract.go#RuntimeLimits
 
 ``````
-// RuntimeLimits requests per-call hosted resources. Ether grants defaults for
-// omitted fields and clamps requests to owner-controlled ceilings.
+// RuntimeLimits requests per-call hosted resources and data/catalogue ceilings.
+// Ether grants defaults for omitted fields and clamps requests to
+// owner-controlled ceilings.
 type RuntimeLimits struct {
 	FetchBytes           int64  `json:"fetchBytes,omitempty"`
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`    // default 2,000,000 stored items across the plugin's libraries; owner-controlled
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"` // default 32 MiB, ceiling owner-controlled, up to 4 GiB
 	// ReadBytes is the granted per-call byte ceiling for cache.read,
 	// archive.open and archive.read, derived from MemoryBytes:
 	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
-	ReadBytes  int64  `json:"readBytes,omitempty"`
+	ReadBytes int64 `json:"readBytes,omitempty"`
 	// Deadline and UnitBudget are the granted ceilings in manifests/detail
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
@@ -7607,6 +7648,7 @@ func defaultDataLimits() RuntimeLimits {
 		ArchiveMemberBytes:   maxArchiveMemberBytes,
 		ArchiveExpandedBytes: maxArchiveExpandedBytes,
 		ArchiveMembers:       maxArchiveMembers,
+		MaxItems:             DefaultMaxPluginItems,
 		Deadline:             "12h",
 	}
 }
@@ -7631,6 +7673,7 @@ type KindBackends struct {
 	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -7652,6 +7695,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
@@ -7671,6 +7715,7 @@ func (m *Manager) kindBackends() KindBackends {
 		KindUpsert:     m.deps.Backends.KindUpsert,
 		KindDelete:     m.deps.Backends.KindDelete,
 		KindItems:      m.deps.Backends.KindItems,
+		KindItemCount:  m.deps.Backends.KindItemCount,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
@@ -7998,20 +8043,32 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	need := "search"
 	switch q.Kind {
 	case "indexer_search":
-		if strings.TrimSpace(q.Query) == "" {
-			return nil, fmt.Errorf("plugins: indexer_search needs a query")
+		if strings.TrimSpace(q.Query) == "" && strings.TrimSpace(q.Category) == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "query",
+				Message: "indexer_search needs a query or category",
+			}}}
 		}
 	case "debrid_check":
 		if len(q.InfoHashes) == 0 && q.InfoHash == "" {
-			return nil, fmt.Errorf("plugins: debrid_check needs an info hash")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHashes",
+				Message: "debrid_check needs an info hash",
+			}}}
 		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" {
-			return nil, fmt.Errorf("plugins: debrid_acquire needs an info hash or magnet")
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "debrid_acquire needs an info hash or magnet",
+			}}}
 		}
 	default:
-		return nil, fmt.Errorf("plugins: unknown source query kind %q", q.Kind)
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "kind",
+			Message: fmt.Sprintf("unknown source query kind %q", q.Kind),
+		}}}
 	}
 	level := normLevel(r.Manifest.Ether.Permissions.Sources)
 	if err := h.deny(r, g, "sources", level, func(l string) bool {
@@ -9679,6 +9736,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			ArchiveMemberBytes:   8 << 30,
 			ArchiveExpandedBytes: 32 << 30,
 			ArchiveMembers:       65535,
+			MaxItems:             plugins.DefaultMaxPluginItems,
 			Deadline:             "12h",
 		}
 		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
@@ -13323,15 +13381,21 @@ func (m Manifest) Validate() error {
 		add("ether.runtime.kind", "must be hosted, remote or data")
 	}
 	if l := e.Runtime.Limits; l != nil {
-		if e.Runtime.Kind != "hosted" {
-			add("ether.runtime.limits", "only hosted plugins can request runtime limits")
+		switch e.Runtime.Kind {
+		case "hosted":
+		case "remote":
+			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 {
+				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline or unitBudget")
+			}
+		default:
+			add("ether.runtime.limits", "data packages cannot request runtime limits")
 		}
 		if l.Deadline != "" {
 			if d, err := time.ParseDuration(l.Deadline); err != nil || d <= 0 {
 				add("ether.runtime.limits.deadline", "must be a positive duration such as 120s")
 			}
 		}
-		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 {
+		if l.FetchBytes < 0 || l.ArchiveMemberBytes < 0 || l.ArchiveExpandedBytes < 0 || l.ArchiveMembers < 0 || l.MaxItems < 0 {
 			add("ether.runtime.limits", "data ceilings must not be negative")
 		}
 		if l.UnitBudget < 0 {
@@ -16261,6 +16325,7 @@ type runtimeCeilings struct {
 	units                   int64
 	fetch, member, expanded int64
 	members                 int
+	maxItems                int
 }
 ``````
 
@@ -16268,7 +16333,16 @@ type runtimeCeilings struct {
 
 ``````
 func defaultRuntimeCeilings() runtimeCeilings {
-	return runtimeCeilings{memory: 2 << 30, deadline: 12 * time.Hour, units: 1 << 60, fetch: 8 << 30, member: 8 << 30, expanded: 32 << 30, members: 65535}
+	return runtimeCeilings{
+		memory:   2 << 30,
+		deadline: 12 * time.Hour,
+		units:    1 << 60,
+		fetch:    8 << 30,
+		member:   8 << 30,
+		expanded: 32 << 30,
+		members:  65535,
+		maxItems: DefaultMaxPluginItems,
+	}
 }
 ``````
 
@@ -16297,6 +16371,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	if l.ArchiveMembers > 0 {
 		c.members = min(l.ArchiveMembers, 1000000)
 	}
+	if l.MaxItems > 0 {
+		c.maxItems = l.MaxItems
+	}
 	return c
 }
 ``````
@@ -16305,7 +16382,7 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 
 ``````
 func (m *Manager) runtimeConfig() config.Plugins {
-	if m.deps.ReadRuntimeConfig != nil {
+	if m != nil && m.deps.ReadRuntimeConfig != nil {
 		return m.deps.ReadRuntimeConfig()
 	}
 	return config.Plugins{}
@@ -16319,6 +16396,41 @@ func (m *Manager) runtimeCeilings(id string) runtimeCeilings {
 	cfg := m.runtimeConfig()
 	c := applyRuntimeCeilings(defaultRuntimeCeilings(), cfg.RuntimeLimits)
 	return applyRuntimeCeilings(c, cfg.RuntimeOverrides[id])
+}
+``````
+
+## Source: internal/plugins/runtime_limits.go#*Manager.grantedMaxItems
+
+``````
+func (m *Manager) grantedMaxItems(man Manifest, c runtimeCeilings) int {
+	n := c.maxItems
+	if m != nil && m.runtimeConfig().RuntimeOverrides[man.ID].MaxItems > 0 {
+		return n
+	}
+	if man.Ether != nil && man.Ether.Runtime.Limits != nil && man.Ether.Runtime.Limits.MaxItems > 0 {
+		n = min(n, man.Ether.Runtime.Limits.MaxItems)
+	}
+	return n
+}
+``````
+
+## Source: internal/plugins/runtime_limits.go#*Manager.MaxPluginItems
+
+``````
+// MaxPluginItems returns the effective stored-item ceiling across all content
+// libraries owned by id (default 2,000,000; owner-configurable globally and per
+// plugin with no upper bound).
+func (m *Manager) MaxPluginItems(id string) int {
+	if m == nil {
+		return DefaultMaxPluginItems
+	}
+	c := m.runtimeCeilings(id)
+	if m.store != nil && id != "" {
+		if rec, err := m.store.record(context.Background(), id); err == nil {
+			return m.grantedMaxItems(rec.Manifest, c)
+		}
+	}
+	return c.maxItems
 }
 ``````
 
@@ -16362,6 +16474,7 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 	r.ArchiveMemberBytes = c.member
 	r.ArchiveExpandedBytes = c.expanded
 	r.ArchiveMembers = c.members
+	r.MaxItems = m.grantedMaxItems(man, c)
 	if req := man.Ether.Runtime.Limits; req != nil {
 		if req.FetchBytes > 0 {
 			r.FetchBytes = min(r.FetchBytes, req.FetchBytes)
@@ -16393,13 +16506,13 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 {
-			m.fail(w, fmt.Errorf("memory must be at most 4 GiB and work units must not be negative"))
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
+			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB and resource limits must not be negative.", nil)
 			return
 		}
 		if req.Limits.Deadline != "" {
 			if d, err := time.ParseDuration(req.Limits.Deadline); err != nil || d <= 0 || d > 365*24*time.Hour {
-				m.fail(w, fmt.Errorf("time limit must be positive and at most one year"))
+				writeErr(w, http.StatusBadRequest, "validation", "Time limit must be positive and at most one year.", nil)
 				return
 			}
 		}
@@ -16501,11 +16614,16 @@ func (h *host) DataLimits(ctx context.Context) RuntimeLimits {
 		}
 	}
 	c := h.m.runtimeCeilings(h.plugin)
+	maxItems := c.maxItems
+	if err == nil {
+		maxItems = h.m.grantedMaxItems(rec.Manifest, c)
+	}
 	return RuntimeLimits{
 		FetchBytes:           c.fetch,
 		ArchiveMemberBytes:   c.member,
 		ArchiveExpandedBytes: c.expanded,
 		ArchiveMembers:       c.members,
+		MaxItems:             maxItems,
 		MemoryBytes:          c.memory,
 		ReadBytes:            wasm.DataReadBytes(c.memory),
 		Deadline:             c.deadline.String(),
@@ -22275,6 +22393,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.runtime.limits.archiveMembers` | `integer` | false | {"default":65535,"description":"Clamped to the owner ceiling; omitted or zero uses that ceiling.","minimum":0} |
 | `ether.runtime.limits.deadline` | `string` | false | {"description":"Positive Go duration; omitted uses the owner ceiling (default 12h)."} |
 | `ether.runtime.limits.fetchBytes` | `integer` | false | {"default":8589934592,"description":"Clamped to the owner ceiling; omitted or zero uses that ceiling.","minimum":0} |
+| `ether.runtime.limits.maxItems` | `integer` | false | {"default":2000000,"description":"Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.","minimum":0} |
 | `ether.runtime.limits.memoryBytes` | `integer` | false | {"default":33554432,"minimum":0} |
 | `ether.runtime.limits.unitBudget` | `integer` | false | {"default":1152921504606847000,"minimum":0} |
 | `ether.runtime.module` | `string` | false | {"description":"WASM file. Hosted only."} |
@@ -23222,6 +23341,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                   "minimum": 0,
                   "type": "integer"
                 },
+                "maxItems": {
+                  "default": 2000000,
+                  "description": "Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "memoryBytes": {
                   "default": 33554432,
                   "minimum": 0,
@@ -23358,11 +23483,16 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           ]
         },
         "query": {
-          "type": "string"
+          "type": "string",
+          "description": "Search text for indexer_search. May be omitted or empty when category is set to fetch the newest up to 100 recent releases."
         },
         "category": {
           "type": "string",
-          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search only."
+          "description": "Comma-separated Newznab category IDs (1000\u20138999) or standard family names. Applied to generic indexer_search; when query is empty, requests recent releases."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Quality profile name used to score video release names on indexer_search; omit or leave empty to use the owner's default profile."
         },
         "infoHashes": {
           "type": "array",
@@ -23406,6 +23536,28 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
         },
         "cached": {
           "type": "boolean"
+        },
+        "indexer": {
+          "type": "string"
+        },
+        "indexerId": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Owner quality-profile score for video release names on indexer_search; omitted on non-video candidates."
+        },
+        "resolution": {
+          "type": "integer",
+          "description": "Parsed vertical resolution (e.g. 2160, 1080) for video release names; omitted on non-video candidates."
+        },
+        "source": {
+          "type": "string",
+          "description": "Parsed video source (e.g. remux, bluray, webdl, webrip, hdtv) for video release names; omitted on non-video candidates."
+        },
+        "codec": {
+          "type": "string",
+          "description": "Parsed video codec (e.g. av1, hevc, h264) for video release names; omitted on non-video candidates."
         }
       }
     },
@@ -23620,7 +23772,7 @@ than billed as guest wall time):
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
 SDK) inside a hosted handler returns the **effective** `deadline` and
 `unitBudget` for the current call after route and owner clamps, alongside
-`memoryBytes`, `readBytes`, `fetchBytes` and archive limits. If a viewer-path
+`memoryBytes`, `readBytes`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 
@@ -31416,7 +31568,8 @@ type KindChangesRequest struct {
 |---|---|---|---|
 | `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
-| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. |
+| `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. |
+| `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
@@ -31429,8 +31582,12 @@ type KindChangesRequest struct {
 type SourceQuery struct {
 	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
 	Query string `json:"query,omitempty"`
-	// Category accepts comma-separated Newznab IDs or standard family names.
-	Category   string   `json:"category,omitempty"`
+	// Category accepts comma-separated Newznab IDs or standard family names;
+	// when set with an empty Query, indexer_search requests recent releases.
+	Category string `json:"category,omitempty"`
+	// Profile names the quality profile to score video release names against
+	// on indexer_search; empty uses the owner's default profile.
+	Profile    string   `json:"profile,omitempty"`
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
@@ -31449,6 +31606,12 @@ type SourceQuery struct {
 | `size` | `int64` | may be omitted (see validation for conditions) |  |
 | `seeders` | `int` | may be omitted (see validation for conditions) |  |
 | `cached` | `bool` | may be omitted (see validation for conditions) |  |
+| `indexer` | `string` | may be omitted (see validation for conditions) |  |
+| `indexerId` | `string` | may be omitted (see validation for conditions) |  |
+| `score` | `*int` | may be omitted (see validation for conditions) | Score, Resolution, Source and Codec are populated on indexer_search candidates whose release name identifies video; non-video candidates leave them empty. |
+| `resolution` | `int` | may be omitted (see validation for conditions) |  |
+| `source` | `string` | may be omitted (see validation for conditions) |  |
+| `codec` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#SourceCandidate
@@ -31465,6 +31628,15 @@ type SourceCandidate struct {
 	Size      int64  `json:"size,omitempty"`
 	Seeders   int    `json:"seeders,omitempty"`
 	Cached    bool   `json:"cached,omitempty"`
+	Indexer   string `json:"indexer,omitempty"`
+	IndexerID string `json:"indexerId,omitempty"`
+	// Score, Resolution, Source and Codec are populated on indexer_search
+	// candidates whose release name identifies video; non-video candidates
+	// leave them empty.
+	Score      *int   `json:"score,omitempty"`
+	Resolution int    `json:"resolution,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Codec      string `json:"codec,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -35874,6 +36046,7 @@ type RuntimeDecl struct {
 | `archiveMemberBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveExpandedBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
+| `maxItems` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `readBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
@@ -35890,6 +36063,7 @@ type RuntimeLimits struct {
 	ArchiveMemberBytes   int64  `json:"archiveMemberBytes,omitempty"`
 	ArchiveExpandedBytes int64  `json:"archiveExpandedBytes,omitempty"`
 	ArchiveMembers       int    `json:"archiveMembers,omitempty"`
+	MaxItems             int    `json:"maxItems,omitempty"`
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
@@ -38382,6 +38556,7 @@ class RuntimeLimits(TypedDict, total=False):
     archiveMemberBytes: int
     archiveExpandedBytes: int
     archiveMembers: int
+    maxItems: int
     memoryBytes: int
     readBytes: int
     deadline: str
@@ -40128,6 +40303,7 @@ class MockHostClient:
             "archiveMemberBytes": 8 * 1024 * 1024 * 1024,
             "archiveExpandedBytes": 32 * 1024 * 1024 * 1024,
             "archiveMembers": 65535,
+            "maxItems": 2_000_000,
             "deadline": "12h",
         }
         self.runtime = self._Runtime(self)
@@ -40777,9 +40953,13 @@ class _KindsClient:
 
     def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics). A release source
-        may set release.fileIndex or candidate.fileIndex (zero-based provider
-        torrent list), or release.file (exact path/unique basename), to open any file
+        Newznab IDs or family names, e.g. music/books/comics; with empty query,
+        fetches up to 100 recent releases) and profile (quality profile name for
+        video release scoring; default uses owner default). Video candidates
+        include score, resolution, source and codec alongside indexer/indexerId;
+        non-video candidates omit those video fields. A release source may set
+        release.fileIndex or candidate.fileIndex (zero-based provider torrent
+        list), or release.file (exact path/unique basename), to open any file
         kind. Invalid selections fail; omitted selectors retain video selection.
         Explicit file selection is supported for torrents, not NZB members.
         """
@@ -41323,7 +41503,7 @@ then `LANG`) in the `X-Ether-Locale` header when the caller has not supplied one
 
 `ether.runtime.limits` requests `memoryBytes`, `deadline` (a positive Go duration
 such as `12h`), `unitBudget`, `fetchBytes`, `archiveMemberBytes`,
-`archiveExpandedBytes` and `archiveMembers`. Ether grants each request up to the
+`archiveExpandedBytes`, `archiveMembers` and `maxItems`. Ether grants each request up to the
 owner's global or per-plugin ceiling. Owners can raise or lower ceilings under
 Plugins → Settings and in each plugin's drawer. A per-plugin value overrides the
 global value, including raising it. Zero inherits; global zero uses the default.
@@ -41334,7 +41514,8 @@ omitted guest heap requests still use **32 MiB**, allocated only as needed.
 The default call/job time ceiling is **12 hours** and background compute is
 effectively unlimited (2^60 units per call); owners and manifests may lower it.
 The default download and expanded-member ceilings are **8 GiB** each, total
-archive expansion **32 GiB**, and archive members **65,535**. Downloads also obey
+archive expansion **32 GiB**, archive members **65,535**, and stored catalogue
+items **2,000,000** (`maxItems`, owner-adjustable with no upper bound). Downloads also obey
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
 `runtimeLimits` in install preview and detail, displayed side by side, and exposes
@@ -45095,6 +45276,7 @@ export interface RuntimeLimits {
   archiveMemberBytes?: number;
   archiveExpandedBytes?: number;
   archiveMembers?: number;
+  maxItems?: number;
   memoryBytes?: number;
   readBytes?: number;
   deadline?: string;
@@ -45452,8 +45634,10 @@ export interface KindChangePage {
 export interface SourceQuery {
   kind: "indexer_search" | "debrid_check" | "debrid_acquire";
   query?: string;
-  /** Comma-separated Newznab category IDs or standard family names; uses generic search. */
+  /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
+  /** Quality profile name to score video release names against on indexer_search; empty uses default. */
+  profile?: string;
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
@@ -45469,6 +45653,13 @@ export interface SourceCandidate {
   size?: number;
   seeders?: number;
   cached?: boolean;
+  indexer?: string;
+  indexerId?: string;
+  /** Quality-profile score and parsed video facts; omitted on non-video candidates. */
+  score?: number;
+  resolution?: number;
+  source?: string;
+  codec?: string;
 }
 
 export interface KindMatchRequest {

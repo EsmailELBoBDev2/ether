@@ -169,7 +169,7 @@ than billed as guest wall time):
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
 SDK) inside a hosted handler returns the **effective** `deadline` and
 `unitBudget` for the current call after route and owner clamps, alongside
-`memoryBytes`, `readBytes`, `fetchBytes` and archive limits. If a viewer-path
+`memoryBytes`, `readBytes`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 

@@ -352,6 +352,7 @@ class RuntimeLimits(TypedDict, total=False):
     archiveMemberBytes: int
     archiveExpandedBytes: int
     archiveMembers: int
+    maxItems: int
     memoryBytes: int
     readBytes: int
     deadline: str
@@ -2098,6 +2099,7 @@ class MockHostClient:
             "archiveMemberBytes": 8 * 1024 * 1024 * 1024,
             "archiveExpandedBytes": 32 * 1024 * 1024 * 1024,
             "archiveMembers": 65535,
+            "maxItems": 2_000_000,
             "deadline": "12h",
         }
         self.runtime = self._Runtime(self)
@@ -2747,9 +2749,13 @@ class _KindsClient:
 
     def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics). A release source
-        may set release.fileIndex or candidate.fileIndex (zero-based provider
-        torrent list), or release.file (exact path/unique basename), to open any file
+        Newznab IDs or family names, e.g. music/books/comics; with empty query,
+        fetches up to 100 recent releases) and profile (quality profile name for
+        video release scoring; default uses owner default). Video candidates
+        include score, resolution, source and codec alongside indexer/indexerId;
+        non-video candidates omit those video fields. A release source may set
+        release.fileIndex or candidate.fileIndex (zero-based provider torrent
+        list), or release.file (exact path/unique basename), to open any file
         kind. Invalid selections fail; omitted selectors retain video selection.
         Explicit file selection is supported for torrents, not NZB members.
         """

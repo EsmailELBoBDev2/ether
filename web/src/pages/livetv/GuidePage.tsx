@@ -1,7 +1,6 @@
 import { Badge, Button, cn, toast } from "@braedonsaunders/appkit-ui";
 import { AlertTriangle, CalendarRange, Pencil, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { Segmented } from "../../components/fields";
 import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { t } from "../../i18n";
@@ -83,6 +82,7 @@ export function GuidePage({
   onPlay,
   onMapChannel,
   onToggleFavorite,
+  onAddGuideSource,
   onEditSource,
   onReload,
 }: {
@@ -104,6 +104,7 @@ export function GuidePage({
   onPlay: (c: Channel) => void;
   onMapChannel: (id: string) => void;
   onToggleFavorite?: (c: Channel) => void;
+  onAddGuideSource?: () => void;
   onEditSource: (id: string) => void;
   onReload: () => Promise<void>;
 }) {
@@ -286,6 +287,7 @@ export function GuidePage({
           sources={guideSources}
           channels={channels}
           now={now}
+          onAddGuideSource={onAddGuideSource}
           onEditSource={onEditSource}
           onReload={onReload}
         />
@@ -412,17 +414,19 @@ function TVGuide({
   );
 }
 
-/** Every guide source, with refresh and edit; new ones are added in Sources. */
+/** Every guide source, with refresh, edit and add in place over Live TV. */
 function GuideSources({
   sources,
   channels,
   now,
+  onAddGuideSource,
   onEditSource,
   onReload,
 }: {
   sources: Source[];
   channels: ChannelSummary[];
   now: number;
+  onAddGuideSource?: () => void;
   onEditSource: (id: string) => void;
   onReload: () => Promise<void>;
 }) {
@@ -516,11 +520,11 @@ function GuideSources({
             );
           })
         )}
-        <Button asChild variant="outline" className="w-full">
-          <Link to="/sources/iptv?new=guide">
-            <Plus size={14} /> {t("Add a guide source in Sources")}
-          </Link>
-        </Button>
+        {onAddGuideSource ? (
+          <Button variant="outline" className="w-full" onClick={onAddGuideSource}>
+            <Plus size={14} /> {t("New guide source")}
+          </Button>
+        ) : null}
       </div>
     </div>
   );

@@ -171,19 +171,24 @@ archive expansion **32 GiB**, and archive members **65,535**. Downloads also obe
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
 `runtimeLimits` in install preview and detail, displayed side by side, and exposes
-the live grant at runtime via `ctx.ether.runtime!.limits()` — including
+the effective limits for the active call at runtime via `ctx.ether.runtime!.limits()` —
+including the route-clamped `deadline` and `unitBudget` plus
 `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)` for sizing `cache.read`,
 `archive.open`, and `archive.read` batches without guessing.
 
-Viewer request-path calls remain bounded: `/stream/`, `/catalog/`, `/meta/`,
-`/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,
-`/ether/markers`, and `/ether/v1/kinds/` (browse/search/resolve/match) get at most
-10,000 units and 30 seconds, further shortened by each route/caller's deadline.
-Ranking stays at its existing 2 ms per-candidate and 50 ms per-batch defaults.
-Administrative setup, actions, tools, events and jobs use the owner-granted
-resources; short health/configuration/view/options protocol deadlines still
-protect the host's control plane. Remote plugin processes manage their own CPU
-and memory; owner download/archive ceilings also apply to their host services.
+Viewer request-path calls derive their unit budget directly from each route's
+deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s (30,000 units;
+20 s / 200,000 units for Stremio add-ons), `/subtitles/*`, `/ether/subtitles/*` and
+`/ether/v1/kinds/*/resolve` or `/match` get 5 s (50,000 units), and `/catalog/*`,
+`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search` and
+`/items/*` get 10 s (100,000 units), further shortened only if the owner sets a
+lower ceiling. Ranking stays at its existing 2 ms per-candidate and 50 ms
+per-batch defaults. Background kind sync (`/ether/v1/kinds/*/browse` and
+`/changes`), administrative setup, actions, tools, events and jobs use the
+owner-granted resources; short health/configuration/view/options/test protocol
+deadlines protect the host's control plane. Remote plugin processes manage their
+own CPU and memory; owner download/archive ceilings also apply to their host
+services.
 
 An action returning `{job: "build-catalogue"}` starts an owner-triggered job.
 Return `{continueInMs: 0, continuation: {next: 41}, progress: "Platform 41 of 92"}`

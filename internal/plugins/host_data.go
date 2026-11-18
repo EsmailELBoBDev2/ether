@@ -463,6 +463,11 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 	}); ok {
 		limits = provider.DataLimits(ctx)
 	}
+	if active, ok := wasm.CallLimits(ctx); ok {
+		limits.MemoryBytes = active.MemoryBytes
+		limits.Deadline = active.Deadline.String()
+		limits.UnitBudget = active.UnitBudget
+	}
 	limits.ReadBytes = dataReadLimit(limits)
 	readCap := limits.ReadBytes
 

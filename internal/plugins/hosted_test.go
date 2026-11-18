@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/braedonsaunders/ether/internal/config"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -230,4 +232,138 @@ func (memHost) FoldersHashPoll(context.Context, string) (FolderHashJob, error) {
 
 func (memHost) FoldersHashCancel(context.Context, string) (FolderHashJob, error) {
 	return FolderHashJob{}, nil
+}
+
+
+func TestHostedEffectiveCallLimitsAndGovernance(t *testing.T) {
+	eng := wasm.NewEngine(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { _ = eng.Close() })
+
+	var cfg config.Plugins
+	env := newTestEnv(t)
+	env.m.deps.ReadRuntimeConfig = func() config.Plugins { return cfg }
+	env.m.RegisterRuntime("hosted", HostedRuntimeFactory(eng))
+
+	files := helloFiles()
+	files["dist/plugin.js"] = []byte(`
+globalThis.handle = function(req) {
+  const q = req.query || {};
+  const burn = Number((q.burn && q.burn[0]) || 0);
+  for (let i = 0; i < burn; i++) {
+    ether.kv.put("k", "v");
+  }
+  const lim = ether.runtime.limits();
+  return {
+    status: 200,
+    body: JSON.stringify({
+      deadline: lim.deadline,
+      unitBudget: lim.unitBudget,
+      headerDeadline: (req.headers && req.headers["X-Ether-Deadline"]) || "",
+    }),
+  };
+};
+`)
+	ctx := context.Background()
+	prev, err := env.m.PreviewInstall(ctx, Source{Kind: "studio", Manifest: helloManifest("1.0.0"), Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.m.SetEnabled(ctx, rec.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	type limitReply struct {
+		Deadline       string `json:"deadline"`
+		UnitBudget     int64  `json:"unitBudget"`
+		HeaderDeadline string `json:"headerDeadline"`
+	}
+	callLimits := func(path string, burn int) (limitReply, error) {
+		q := map[string]string{}
+		if burn > 0 {
+			q["burn"] = strconv.Itoa(burn)
+		}
+		resp, err := env.m.Call(ctx, rec.ID, Request{Method: "POST", Path: path, Query: q})
+		if err != nil {
+			return limitReply{}, err
+		}
+		var bodyStr string
+		if err := json.Unmarshal(resp.Body, &bodyStr); err != nil {
+			t.Fatalf("unmarshal outer body %s: %v", resp.Body, err)
+		}
+		var out limitReply
+		if err := json.Unmarshal([]byte(bodyStr), &out); err != nil {
+			t.Fatalf("unmarshal inner body %s: %v", bodyStr, err)
+		}
+		return out, nil
+	}
+
+	for _, tc := range []struct {
+		path     string
+		deadline string
+		units    int64
+		headSec  time.Duration
+	}{
+		{"/stream/movie/tt0133093.json", "3s", 30000, 3 * time.Second},
+		{"/ether/v1/kinds/games/resolve", "5s", 50000, 5 * time.Second},
+		{"/ether/v1/kinds/games/match", "5s", 50000, 5 * time.Second},
+		{"/ether/v1/kinds/games/search", "10s", 100000, 10 * time.Second},
+		{"/ether/v1/kinds/games/browse", "12h0m0s", 1 << 60, 12 * time.Hour},
+		{"/ether/v1/kinds/games/changes", "12h0m0s", 1 << 60, 12 * time.Hour},
+		{"/ether/job/sync", "12h0m0s", 1 << 60, 12 * time.Hour},
+		{"/ether/test", "15s", 1 << 60, 15 * time.Second},
+	} {
+		before := time.Now().UTC().Truncate(time.Second)
+		got, err := callLimits(tc.path, 0)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.path, err)
+		}
+		if got.Deadline != tc.deadline || (tc.units < 1<<53 && got.UnitBudget != tc.units) || (tc.units >= 1<<53 && got.UnitBudget < 1<<59) {
+			t.Fatalf("%s: runtime.limits = %+v, want deadline=%s unitBudget=%d", tc.path, got, tc.deadline, tc.units)
+		}
+		hd, err := time.Parse(time.RFC3339, got.HeaderDeadline)
+		if err != nil {
+			t.Fatalf("%s: parse X-Ether-Deadline %q: %v", tc.path, got.HeaderDeadline, err)
+		}
+		diff := hd.Sub(before)
+		if diff < tc.headSec-2*time.Second || diff > tc.headSec+5*time.Second {
+			t.Fatalf("%s: X-Ether-Deadline delta = %v, want ~%v", tc.path, diff, tc.headSec)
+		}
+	}
+
+	// 1,500 kv.put calls = 15,000 units (> old 10,000 viewer clamp, < 50,000 resolve budget).
+	if _, err := callLimits("/ether/v1/kinds/games/resolve", 1500); err != nil {
+		t.Fatalf("resolve within 5s/50,000-unit budget failed: %v", err)
+	}
+
+	// Exceeding the 50,000-unit budget states the route and 5 s budget clearly.
+	_, err = callLimits("/ether/v1/kinds/games/resolve", 5005)
+	if err == nil || !strings.Contains(err.Error(), "used the whole 5 s budget for /ether/v1/kinds/games/resolve") {
+		t.Fatalf("expected honest governance error, got: %v", err)
+	}
+	health, err := env.m.HealthOf(ctx, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(health.LastError, "used the whole 5 s budget for /ether/v1/kinds/games/resolve") {
+		t.Fatalf("health lastError = %q", health.LastError)
+	}
+
+	// Lowering the owner's per-plugin deadline ceiling clamps both X-Ether-Deadline and runtime.limits.
+	cfg = config.Plugins{
+		RuntimeOverrides: map[string]config.PluginRuntimeLimits{
+			rec.ID: {Deadline: "2s"},
+		},
+	}
+	env.m.closeRuntime(rec.ID)
+	clamped, err := callLimits("/ether/v1/kinds/games/resolve", 0)
+	if err != nil {
+		t.Fatalf("clamped resolve: %v", err)
+	}
+	if clamped.Deadline != "2s" || clamped.UnitBudget != 20000 {
+		t.Fatalf("clamped runtime.limits = %+v, want 2s / 20000", clamped)
+	}
 }

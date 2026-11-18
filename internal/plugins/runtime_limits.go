@@ -56,7 +56,7 @@ func (m *Manager) runtimeCeilings(id string) runtimeCeilings {
 	return applyRuntimeCeilings(c, cfg.RuntimeOverrides[id])
 }
 func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
-	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units}
+	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units, Stremio: m.SpeaksStremio()}
 	if m.Ether != nil && m.Ether.Runtime.Limits != nil {
 		r := m.Ether.Runtime.Limits
 		if r.MemoryBytes > 0 {

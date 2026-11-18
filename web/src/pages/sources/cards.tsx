@@ -96,6 +96,7 @@ export function SourceCard({
   position,
   description,
   meta,
+  notice,
   problem,
   editLabel,
   onEdit,
@@ -108,6 +109,7 @@ export function SourceCard({
   position: number;
   description?: ReactNode;
   meta?: ReactNode;
+  notice?: string | null;
   problem?: string | null;
   editLabel: string;
   onEdit: () => void;
@@ -116,7 +118,7 @@ export function SourceCard({
   /** Vendored brand mark. Omitted brands keep the monogram. */
   logo?: ReactNode;
 }) {
-  const hasDetails = Boolean(description || problem);
+  const hasDetails = Boolean(description || notice || problem);
   return (
     <article className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-2.5 gap-y-2 rounded-xl border border-border bg-surface p-3.5 sm:gap-x-3 sm:gap-y-1 sm:p-4">
       <div className="col-start-1 row-start-1 flex shrink-0 items-center gap-2 sm:row-span-2">
@@ -140,9 +142,17 @@ export function SourceCard({
       {hasDetails ? (
         <div className="col-span-full row-start-2 min-w-0 sm:col-span-1 sm:col-start-2">
           {description ? <div className="text-sm text-fg-muted">{description}</div> : null}
+          {notice ? (
+            <p
+              className={description ? "mt-2 text-sm text-fg-muted" : "text-sm text-fg-muted"}
+              role="status"
+            >
+              {notice}
+            </p>
+          ) : null}
           {problem ? (
             <p
-              className={description ? "mt-2 text-sm text-danger" : "text-sm text-danger"}
+              className={description || notice ? "mt-2 text-sm text-danger" : "text-sm text-danger"}
               role="status"
             >
               {problem}

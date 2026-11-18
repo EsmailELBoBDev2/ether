@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { invalidateRegistry } from "../lib/extend";
 import { createFakeServer } from "../mock/server";
+import { SetupWizard } from "../pages/libraries/SetupWizard";
 import Plugins from "../pages/plugins/Plugins";
 
 let fakeServer = createFakeServer({ latencyMs: 0 });
@@ -138,8 +139,27 @@ describe("Server › Plugins (WS10a)", () => {
     expect(
       screen.getByText("Saved. Leave as is to keep it, or type a new value to replace it."),
     ).toBeTruthy();
+    customIntercept = (url, init) => {
+      if (
+        url.pathname === "/ether/api/plugins/community.plutotv.ether/test" &&
+        init?.method === "POST"
+      ) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            message: "No account configured: anonymous downloads are rate-limited.",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return null;
+    };
     fireEvent.click(screen.getByRole("button", { name: /Test/i }));
     expect(await screen.findByText(/OK · \d+ ms/)).toBeTruthy();
+    expect(
+      screen.getByText("No account configured: anonymous downloads are rate-limited."),
+    ).toBeTruthy();
+    customIntercept = null;
 
     customIntercept = (url, init) => {
       if (
@@ -497,5 +517,78 @@ describe("Server › Plugins (WS10a)", () => {
     renderPlugins("/plugins/marketplace");
     expect(await screen.findByText("Local folders")).toBeTruthy();
     expect(screen.queryByText("LF")).toBeNull();
+  });
+
+  it("preserves passing setup step details per step in SetupWizard", async () => {
+    let stepStatus: "pending" | "ok" = "pending";
+    let stepDetail = "";
+    customIntercept = (url, init) => {
+      if (url.pathname === "/ether/api/plugins-setup/community.archive.ether") {
+        return new Response(
+          JSON.stringify({
+            pluginId: "community.archive.ether",
+            pluginName: "Archive",
+            schema: { fields: [{ key: "email", label: "Email" }] },
+            settings: {},
+            blockers: stepStatus === "ok" ? [] : ["account"],
+            steps: [
+              {
+                key: "account",
+                label: "Account",
+                required: true,
+                fields: ["email"],
+                test: "/ether/v1/setup/account/test",
+                status: stepStatus,
+                detail: stepDetail,
+              },
+              {
+                key: "catalogue",
+                label: "Catalogue",
+                required: false,
+                fields: [],
+                status: "pending",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (
+        url.pathname === "/ether/api/plugins/community.archive.ether/settings" &&
+        init?.method === "PUT"
+      ) {
+        return new Response(JSON.stringify({ settings: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (
+        url.pathname === "/ether/api/plugins-setup/community.archive.ether/account/test" &&
+        init?.method === "POST"
+      ) {
+        stepStatus = "ok";
+        stepDetail = "Anonymous access works and is rate-limited.";
+        return new Response(JSON.stringify({ ok: true, detail: stepDetail }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return null;
+    };
+
+    render(
+      <MemoryRouter>
+        <SetupWizard pluginId="community.archive.ether" onClose={() => {}} />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save and test" }));
+    // Advances to step 2 without leaking step 1's detail onto step 2.
+    expect(await screen.findByRole("heading", { name: "Catalogue" })).toBeTruthy();
+    expect(screen.queryByText("Anonymous access works and is rate-limited.")).toBeNull();
+
+    // Selecting step 1 shows its passing test detail.
+    fireEvent.click(screen.getByRole("button", { name: /Account/ }));
+    expect(await screen.findByText("Anonymous access works and is rate-limited.")).toBeTruthy();
   });
 });

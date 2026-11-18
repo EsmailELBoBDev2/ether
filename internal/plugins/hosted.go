@@ -115,6 +115,7 @@ func HostedRuntimeFactory(eng *wasm.Engine) RuntimeFactory {
 		decl := inst.Manifest.Ether.Runtime
 		host := hostBridge{h: inst.Host}
 		lim := HotLimits(inst.Manifest)
+		lim.Stremio = inst.Manifest.SpeaksStremio()
 		if inst.RuntimeLimits != nil {
 			l := inst.RuntimeLimits
 			lim.MemoryBytes = l.MemoryBytes

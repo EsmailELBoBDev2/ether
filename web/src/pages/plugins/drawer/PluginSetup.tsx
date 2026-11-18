@@ -118,7 +118,7 @@ export function PluginSetup({
       );
       setTest(
         res.ok
-          ? { status: "ok", durationMs: Date.now() - started }
+          ? { status: "ok", durationMs: Date.now() - started, message: res.message }
           : { status: "fail", message: res.message || t("Test failed") },
       );
     } catch (e) {

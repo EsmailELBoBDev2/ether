@@ -561,9 +561,33 @@ func TestLimitsClamp(t *testing.T) {
 	if lim.RankPerCandidate != 2*time.Millisecond || lim.RankBatch != 50*time.Millisecond {
 		t.Fatalf("hot budgets not clamped: %v %v", lim.RankPerCandidate, lim.RankBatch)
 	}
-	viewer := limitsForRequest(lim, "/ether/v1/kinds/games/resolve")
-	if viewer.UnitBudget != 10000 || viewer.Deadline != 30*time.Second {
-		t.Fatalf("viewer budgets: %+v", viewer)
+	for _, tc := range []struct {
+		path     string
+		deadline time.Duration
+		units    int64
+	}{
+		{"/stream/movie/tt0133093.json", 3 * time.Second, 30000},
+		{"/ether/open/abc", 3 * time.Second, 30000},
+		{"/subtitles/movie/tt0133093.json", 5 * time.Second, 50000},
+		{"/ether/v1/kinds/games/resolve", 5 * time.Second, 50000},
+		{"/ether/v1/kinds/games/match", 5 * time.Second, 50000},
+		{"/catalog/movie/top.json", 10 * time.Second, 100000},
+		{"/meta/movie/tt0133093.json", 10 * time.Second, 100000},
+		{"/ether/v1/kinds/games/search", 10 * time.Second, 100000},
+		{"/ether/v1/kinds/games/items/1", 10 * time.Second, 100000},
+	} {
+		got := limitsForRequest(lim, tc.path)
+		if got.Deadline != tc.deadline || got.UnitBudget != tc.units {
+			t.Fatalf("%s: got deadline=%v units=%d, want %v / %d", tc.path, got.Deadline, got.UnitBudget, tc.deadline, tc.units)
+		}
+	}
+	stremioLim := lim
+	stremioLim.Stremio = true
+	if got := limitsForRequest(stremioLim, "/stream/movie/tt0133093.json"); got.Deadline != 20*time.Second || got.UnitBudget != 200000 {
+		t.Fatalf("stremio stream budgets: %+v", got)
+	}
+	if got := limitsForRequest(Limits{Deadline: 2 * time.Second, UnitBudget: 1 << 40}, "/ether/v1/kinds/games/resolve"); got.Deadline != 2*time.Second || got.UnitBudget != 20000 {
+		t.Fatalf("tighter owner ceiling not preserved: %+v", got)
 	}
 	for _, path := range []string{"/ether/v1/kinds/games/browse", "/ether/v1/kinds/games/changes"} {
 		if sync := limitsForRequest(lim, path); sync.UnitBudget != lim.UnitBudget || sync.Deadline != lim.Deadline {

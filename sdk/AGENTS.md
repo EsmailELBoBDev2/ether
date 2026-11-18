@@ -145,6 +145,45 @@ metadata/digests, not bytes. Viewer access requires that viewer's grant.
 Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed.
 Host calls enforce permissions again on every request; revocation is immediate.
 
+## Per-route call limits and owner ceilings
+
+Ether enforces the same deadline it advertises in `X-Ether-Deadline`. On viewer
+paths, a hosted call's governance unit budget scales directly with that route's
+deadline (`1 unit = 100 µs` of guest wall time, or `10,000 units/s`, plus priced
+host calls; time spent inside a host call is bounded by the call deadline rather
+than billed as guest wall time):
+
+| Route group | Effective deadline | Effective unit budget |
+|---|---|---|
+| `/stream/*`, `/ether/open*` | 3 s (20 s for Stremio add-ons) | 30,000 units (200,000 for Stremio) |
+| `/subtitles/*`, `/ether/subtitles/*` | 5 s (10 s for Stremio add-ons) | 50,000 units (100,000 for Stremio) |
+| `/ether/v1/kinds/*/resolve`, `/ether/v1/kinds/*/match` | 5 s | 50,000 units |
+| `/catalog/*`, `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`, `/ether/v1/kinds/*/items/*` | 10 s (20 s for Stremio `/catalog/*`) | 100,000 units (200,000 for Stremio `/catalog/*`) |
+| `/ether/options/*`, `/ether/view/*` | 2 s | Owner-granted ceiling |
+| `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
+| `/ether/test` | 15 s | Owner-granted ceiling |
+| Other protocol routes (`/ether/notify`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
+| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
+| `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
+
+Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
+SDK) inside a hosted handler returns the **effective** `deadline` and
+`unitBudget` for the current call after route and owner clamps, alongside
+`memoryBytes`, `readBytes`, `fetchBytes` and archive limits. If a viewer-path
+call spends its whole budget, the error names the route and limit (for example
+`used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
+
+Plugins request higher memory, time, download or archive limits in
+`ether.runtime.limits` in `manifest.json`. Owners raise or lower the server-wide
+ceilings in **Plugins → Settings**, or override them for a single plugin in that
+plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
+and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).
+A per-plugin override can raise a trusted plugin above the global ceiling (up to
+4 GiB WASM memory and one year for background work). Viewer routes stay capped at
+their route deadlines so browsing and playback remain responsive; offload multi-step
+or long-running work to `/ether/job/*` (including `{pending: true, retryInMs, job}`
+from kind `/resolve` and `/match`).
+
 ## Ten recipes
 
 Commands below run from the repo root. Existing examples are living recipes;

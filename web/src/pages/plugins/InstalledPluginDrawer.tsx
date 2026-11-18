@@ -159,9 +159,17 @@ export function InstalledPluginDrawer({
 
   const retry = () =>
     run("retry", async () => {
-      await apiFetch(`/plugins/${encodeURIComponent(detail!.id)}/test`, { method: "POST" });
+      const res = await apiFetch<{ ok: boolean; message?: string }>(
+        `/plugins/${encodeURIComponent(detail!.id)}/test`,
+        { method: "POST" },
+      );
       await reload();
       await reloadCalls();
+      if (res.ok && res.message) {
+        toast.success(res.message);
+      } else if (!res.ok && res.message) {
+        setMutationError(new Error(res.message));
+      }
     });
 
   const allowLocalHost = (host: string) =>

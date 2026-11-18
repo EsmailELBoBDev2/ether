@@ -246,7 +246,7 @@ func (in *rawInstance) rawCall(ctx context.Context, fn api.Function, args ...uin
 			return nil, &Error{Status: StatusAborted, Message: fmt.Sprintf("plugin aborted with code %d", cs.abortCode), Trap: true}
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+			return nil, &Error{Status: StatusTimeout, Message: callStateOf(ctx).timeoutMessage(), Trap: true}
 		}
 		return nil, &Error{Status: StatusError, Message: err.Error(), Trap: true}
 	}

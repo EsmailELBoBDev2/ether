@@ -513,50 +513,13 @@ func (m *Manager) closeRuntime(id string) {
 	}
 }
 
-// stremioDeadline is the per-route deadline for a third-party Stremio
-// add-on. Their stream searches routinely take seconds (they search
-// trackers and debrid caches live); the caller's own deadline (the
-// resolver's search budget) still bounds every call.
 func stremioDeadline(path string) time.Duration {
-	switch {
-	case strings.HasPrefix(path, "/stream/"), strings.HasPrefix(path, "/catalog/"), strings.HasPrefix(path, "/manifest.json"):
-		return 20 * time.Second
-	case strings.HasPrefix(path, "/meta/"), strings.HasPrefix(path, "/subtitles/"):
-		return 10 * time.Second
-	default:
-		return 30 * time.Second
-	}
+	return wasm.StremioDeadline(path)
 }
 
 // DeadlineFor returns the per-route deadline from SPEC §5.1.2.
 func DeadlineFor(path string) time.Duration {
-	switch {
-	case strings.HasPrefix(path, "/ether/configure"), strings.HasPrefix(path, "/ether/health"):
-		return 5 * time.Second
-	case strings.HasPrefix(path, "/ether/test"):
-		return 15 * time.Second
-	case strings.HasPrefix(path, "/ether/options"), strings.HasPrefix(path, "/ether/view"):
-		return 2 * time.Second
-	case strings.HasPrefix(path, "/ether/open"), strings.HasPrefix(path, "/stream/"):
-		return 3 * time.Second
-	case strings.HasPrefix(path, "/ether/tool"):
-		return 15 * time.Second
-	case strings.HasPrefix(path, "/ether/job"):
-		return 5 * time.Minute
-	case strings.HasPrefix(path, "/meta/"), strings.HasPrefix(path, "/ether/metadata/"), strings.HasPrefix(path, "/catalog/"), strings.HasPrefix(path, "/ether/event"), strings.HasPrefix(path, "/ether/action"), strings.HasPrefix(path, "/ether/markers"):
-		return 10 * time.Second
-	case strings.HasPrefix(path, "/subtitles/"), strings.HasPrefix(path, "/ether/subtitles/"):
-		return 5 * time.Second
-	case strings.HasPrefix(path, "/ether/v1/setup/"):
-		return 20 * time.Second
-	case strings.HasPrefix(path, "/ether/v1/kinds/"):
-		if strings.HasSuffix(path, "/resolve") || strings.HasSuffix(path, "/match") {
-			return 5 * time.Second
-		}
-		return 10 * time.Second
-	default:
-		return 30 * time.Second
-	}
+	return wasm.DeadlineFor(path)
 }
 
 // callOnce makes one call to a plugin through its runtime, records it in the
@@ -589,17 +552,13 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		}
 	}
 	start := m.now()
-	deadline := DeadlineFor(req.Path)
-	if !wasm.ViewerRequestPath(req.Path) && (wasm.KindSyncPath(req.Path) || strings.HasPrefix(req.Path, "/ether/job/") || strings.HasPrefix(req.Path, "/ether/v1/setup/") || strings.HasPrefix(req.Path, "/ether/action/") || strings.HasPrefix(req.Path, "/ether/tool/") || req.Path == "/ether/event") {
-		if l := m.grantedRuntimeLimits(r.Manifest); l != nil {
-			deadline, _ = time.ParseDuration(l.Deadline)
-		} else {
-			deadline = m.runtimeCeilings(pluginID).deadline
+	grantedDeadline := m.runtimeCeilings(pluginID).deadline
+	if l := m.grantedRuntimeLimits(r.Manifest); l != nil {
+		if d, err := time.ParseDuration(l.Deadline); err == nil && d > 0 {
+			grantedDeadline = d
 		}
 	}
-	if r.Manifest.SpeaksStremio() && !strings.HasPrefix(req.Path, "/ether/job/") {
-		deadline = stremioDeadline(req.Path)
-	}
+	deadline := wasm.EffectiveDeadline(req.Path, grantedDeadline, r.Manifest.SpeaksStremio())
 	cctx, cancel := context.WithTimeout(withViewerHeader(ctx, req.Headers), deadline)
 	defer cancel()
 	if req.Headers == nil {

@@ -1090,12 +1090,16 @@ sees requested versus granted values before install and in the drawer, and can
 raise or lower ceilings under Plugins → Settings or for one plugin. Saving
 stops affected jobs so the new ceilings apply immediately.
 
-Viewer browse/search/playback calls retain tight budgets: `/stream/`, `/catalog/`,
-`/meta/`, `/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,
-`/ether/markers`, and `/ether/v1/kinds/` use at most 10,000 units/30s plus tighter
-route/caller deadlines. Ranking budgets stay unchanged. Administrative setup,
-actions, tools, events and jobs use owner grants. Health/configuration/view/options
-keep short protocol deadlines. See the SDK README for exact fields and APIs.
+Viewer search and playback calls derive their unit budget directly from each
+route's deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s
+(30,000 units), `/subtitles/*`, `/ether/subtitles/*` and kind `/resolve` and
+`/match` get 5 s (50,000 units), and `/catalog/*`, `/meta/*`, `/ether/metadata/*`,
+`/ether/markers*` and kind `/search` and `/items/*` get 10 s (100,000 units),
+reported live by `ether.runtime.limits()`. Ranking budgets stay unchanged.
+Background kind catalogue sync (`/browse` and `/changes`), administrative setup,
+actions, tools, events and jobs use owner grants. Health/configuration/view/options/test
+keep short protocol deadlines. See `sdk/AGENTS.md` and the SDK README for exact
+per-route limits and how owners raise ceilings.
 
 ### Pending resolve and match replies
 
@@ -2433,8 +2437,8 @@ type RuntimeDecl struct {
 | `archiveMembers` | `int` | may be omitted (see validation for conditions) |  |
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) | default 32 MiB, ceiling owner-controlled, up to 4 GiB |
 | `readBytes` | `int64` | may be omitted (see validation for conditions) | ReadBytes is the granted per-call byte ceiling for cache.read, archive.open and archive.read, derived from MemoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB). |
-| `deadline` | `string` | may be omitted (see validation for conditions) | Go duration; default 12h, owner-controlled ceiling |
-| `unitBudget` | `int64` | may be omitted (see validation for conditions) | default effectively unlimited, owner-controlled ceiling |
+| `deadline` | `string` | may be omitted (see validation for conditions) | Deadline and UnitBudget are the granted ceilings in manifests/detail and the active route's effective call limits when read via runtime.limits. Go duration; default 12h ceiling, clamped per route on active calls |
+| `unitBudget` | `int64` | may be omitted (see validation for conditions) | default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline |
 
 
 ## Source: internal/plugins/contract.go#RuntimeLimits
@@ -2452,8 +2456,10 @@ type RuntimeLimits struct {
 	// archive.open and archive.read, derived from MemoryBytes:
 	// clamp(memoryBytes/4, 8 MiB, 512 MiB).
 	ReadBytes  int64  `json:"readBytes,omitempty"`
-	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h, owner-controlled ceiling
-	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited, owner-controlled ceiling
+	// Deadline and UnitBudget are the granted ceilings in manifests/detail
+	// and the active route's effective call limits when read via runtime.limits.
+	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
+	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline
 }
 ``````
 
@@ -7086,6 +7092,11 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 	}); ok {
 		limits = provider.DataLimits(ctx)
 	}
+	if active, ok := wasm.CallLimits(ctx); ok {
+		limits.MemoryBytes = active.MemoryBytes
+		limits.Deadline = active.Deadline.String()
+		limits.UnitBudget = active.UnitBudget
+	}
 	limits.ReadBytes = dataReadLimit(limits)
 	readCap := limits.ReadBytes
 
@@ -8176,6 +8187,7 @@ func HostedRuntimeFactory(eng *wasm.Engine) RuntimeFactory {
 		decl := inst.Manifest.Ether.Runtime
 		host := hostBridge{h: inst.Host}
 		lim := HotLimits(inst.Manifest)
+		lim.Stremio = inst.Manifest.SpeaksStremio()
 		if inst.RuntimeLimits != nil {
 			l := inst.RuntimeLimits
 			lim.MemoryBytes = l.MemoryBytes
@@ -9373,11 +9385,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 	case "settings.get":
 		return json.RawMessage(`{}`), nil
 	case "runtime.limits":
-		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
-			b, _ := json.Marshal(l)
-			return b, nil
-		}
-		b, _ := json.Marshal(plugins.RuntimeLimits{
+		limits := plugins.RuntimeLimits{
 			MemoryBytes:          32 << 20,
 			ReadBytes:            plugins.MinDataReadBytes,
 			FetchBytes:           plugins.MaxDataFetchBytes,
@@ -9385,7 +9393,17 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			ArchiveExpandedBytes: 32 << 30,
 			ArchiveMembers:       65535,
 			Deadline:             "12h",
-		})
+		}
+		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
+			limits = *l
+		}
+		if active, ok := wasm.CallLimits(ctx); ok {
+			limits.MemoryBytes = active.MemoryBytes
+			limits.ReadBytes = wasm.DataReadBytes(active.MemoryBytes)
+			limits.Deadline = active.Deadline.String()
+			limits.UnitBudget = active.UnitBudget
+		}
+		b, _ := json.Marshal(limits)
 		return b, nil
 	case "addon.get":
 		// An add-on-backed plugin's checks run offline: the add-on answers
@@ -15449,7 +15467,7 @@ func (m *Manager) runtimeCeilings(id string) runtimeCeilings {
 
 ``````
 func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
-	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units}
+	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units, Stremio: m.SpeaksStremio()}
 	if m.Ether != nil && m.Ether.Runtime.Limits != nil {
 		r := m.Ether.Runtime.Limits
 		if r.MemoryBytes > 0 {
@@ -18607,7 +18625,8 @@ func ensureUICap(etherObj map[string]any) {
 
 ``````
 // ViewerRequestPath identifies calls on a viewer's browse/search/playback path.
-// Administrative actions, setup and background jobs use owner-granted limits.
+// Administrative actions, setup, catalogue sync and background jobs use
+// owner-granted limits.
 func ViewerRequestPath(path string) bool {
 	for _, prefix := range []string{"/stream/", "/catalog/", "/meta/", "/subtitles/", "/ether/open", "/ether/metadata/", "/ether/subtitles/", "/ether/markers"} {
 		if strings.HasPrefix(path, prefix) {
@@ -18629,6 +18648,116 @@ func ViewerRequestPath(path string) bool {
 func KindSyncPath(path string) bool {
 	return strings.HasPrefix(path, "/ether/v1/kinds/") &&
 		(strings.HasSuffix(path, "/browse") || strings.HasSuffix(path, "/changes"))
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#GrantedLimitsPath
+
+``````
+// GrantedLimitsPath reports whether path runs on the plugin's owner-granted
+// deadline and unit budget rather than a fixed protocol or viewer cap:
+// background kind sync (/browse, /changes), jobs, setup, owner actions,
+// agent tools, and event deliveries.
+func GrantedLimitsPath(path string) bool {
+	return KindSyncPath(path) ||
+		strings.HasPrefix(path, "/ether/job/") ||
+		strings.HasPrefix(path, "/ether/v1/setup/") ||
+		strings.HasPrefix(path, "/ether/action/") ||
+		strings.HasPrefix(path, "/ether/tool/") ||
+		path == "/ether/event"
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#UnitsForDeadline
+
+``````
+// UnitsForDeadline converts a call deadline into its matching governance unit
+// budget at one unit per WallUnitInterval (100 µs, or 10,000 units per second),
+// so a viewer route's unit budget matches the deadline it is advertised.
+func UnitsForDeadline(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64(d / WallUnitInterval)
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#StremioDeadline
+
+``````
+// StremioDeadline is the per-route deadline for a third-party Stremio add-on
+// or an add-on-backed plugin (ether.stremio: true). Their stream searches
+// routinely take seconds (they search trackers and debrid caches live); the
+// caller's own deadline still bounds every call.
+func StremioDeadline(path string) time.Duration {
+	switch {
+	case strings.HasPrefix(path, "/stream/"), strings.HasPrefix(path, "/catalog/"), strings.HasPrefix(path, "/manifest.json"):
+		return 20 * time.Second
+	case strings.HasPrefix(path, "/meta/"), strings.HasPrefix(path, "/subtitles/"):
+		return 10 * time.Second
+	default:
+		return 30 * time.Second
+	}
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#DeadlineFor
+
+``````
+// DeadlineFor returns the baseline per-route deadline from SPEC §5.1.2.
+// Routes in GrantedLimitsPath use the plugin's owner-granted deadline instead
+// when dispatched through EffectiveDeadline.
+func DeadlineFor(path string) time.Duration {
+	switch {
+	case strings.HasPrefix(path, "/ether/configure"), strings.HasPrefix(path, "/ether/health"):
+		return 5 * time.Second
+	case strings.HasPrefix(path, "/ether/test"):
+		return 15 * time.Second
+	case strings.HasPrefix(path, "/ether/options"), strings.HasPrefix(path, "/ether/view"):
+		return 2 * time.Second
+	case strings.HasPrefix(path, "/ether/open"), strings.HasPrefix(path, "/stream/"):
+		return 3 * time.Second
+	case strings.HasPrefix(path, "/ether/tool"):
+		return 15 * time.Second
+	case strings.HasPrefix(path, "/ether/job"):
+		return 5 * time.Minute
+	case strings.HasPrefix(path, "/meta/"), strings.HasPrefix(path, "/ether/metadata/"), strings.HasPrefix(path, "/catalog/"), strings.HasPrefix(path, "/ether/event"), strings.HasPrefix(path, "/ether/action"), strings.HasPrefix(path, "/ether/markers"):
+		return 10 * time.Second
+	case strings.HasPrefix(path, "/subtitles/"), strings.HasPrefix(path, "/ether/subtitles/"):
+		return 5 * time.Second
+	case strings.HasPrefix(path, "/ether/v1/setup/"):
+		return 20 * time.Second
+	case strings.HasPrefix(path, "/ether/v1/kinds/"):
+		if strings.HasSuffix(path, "/resolve") || strings.HasSuffix(path, "/match") {
+			return 5 * time.Second
+		}
+		return 10 * time.Second
+	default:
+		return 30 * time.Second
+	}
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#EffectiveDeadline
+
+``````
+// EffectiveDeadline returns the enforced deadline for path given the plugin's
+// granted deadline ceiling and whether it speaks Stremio add-on routes.
+func EffectiveDeadline(path string, granted time.Duration, stremio bool) time.Duration {
+	if GrantedLimitsPath(path) {
+		if granted > 0 {
+			return granted
+		}
+		return DeadlineFor(path)
+	}
+	route := DeadlineFor(path)
+	if stremio {
+		route = StremioDeadline(path)
+	}
+	if granted > 0 && granted < route {
+		return granted
+	}
+	return route
 }
 ``````
 
@@ -18654,9 +18783,9 @@ func WaitBackground(ctx context.Context, busy func() bool) error {
 
 ``````
 func limitsForRequest(l Limits, path string) Limits {
+	l.Deadline = EffectiveDeadline(path, l.Deadline, l.Stremio)
 	if ViewerRequestPath(path) {
-		l.Deadline = min(l.Deadline, 30*time.Second)
-		l.UnitBudget = min(l.UnitBudget, int64(10000))
+		l.UnitBudget = min(l.UnitBudget, UnitsForDeadline(l.Deadline))
 	}
 	return l
 }
@@ -19652,7 +19781,7 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 		if r := recover(); r != nil {
 			val = nil
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				callErr = &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 				return
 			}
 			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
@@ -19660,12 +19789,12 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 	}()
 	v, err := fn()
 	if err != nil {
-		return nil, classifyJSError(ctx, err)
+		return nil, classifyJSError(ctx, cs, err)
 	}
 	if v != nil && v.IsPromise() {
 		v, err = v.Await()
 		if err != nil {
-			return nil, classifyJSError(ctx, err)
+			return nil, classifyJSError(ctx, cs, err)
 		}
 	}
 	return v, nil
@@ -19675,9 +19804,9 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 ## Source: internal/plugins/wasm/js.go#classifyJSError
 
 ``````
-func classifyJSError(ctx context.Context, err error) *Error {
+func classifyJSError(ctx context.Context, cs *callState, err error) *Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
 	msg := err.Error()
 	if f := decodeFault(msg); f != nil {
@@ -19685,7 +19814,7 @@ func classifyJSError(ctx context.Context, err error) *Error {
 		return &Error{Status: st, Message: f.Message, Trap: st == StatusAborted}
 	}
 	if strings.Contains(msg, "module closed") || strings.Contains(msg, "interrupted") {
-		return &Error{Status: StatusTimeout, Message: "call exceeded its deadline", Trap: true}
+		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
 	return &Error{Status: StatusError, Message: firstLine(msg)}
 }
@@ -20197,6 +20326,29 @@ func HostResultBytes(memoryBytes uint64) int64 {
 type unitChargerKey struct{}
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#callLimitsKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/wasm/wasm.go#callLimitsKey
+
+``````
+type callLimitsKey struct{}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#CallLimits
+
+``````
+// CallLimits returns the effective per-call limits (after route deadline and
+// viewer unit-budget clamps) when called inside an active hosted plugin call.
+func CallLimits(ctx context.Context) (Limits, bool) {
+	lim, ok := ctx.Value(callLimitsKey{}).(Limits)
+	return lim, ok
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#ChargeUnits
 
 ``````
@@ -20231,7 +20383,8 @@ func ChargeUnits(ctx context.Context, units int64) error {
 type Limits struct {
 	MemoryBytes uint64        // per instance; default 32 MiB, max wasm32 4 GiB
 	Deadline    time.Duration // per handle call; default 30s
-	UnitBudget  int64         // per handle call; default 10000
+	UnitBudget  int64         // per handle call; default UnitsForDeadline(Deadline)
+	Stremio     bool          // plugin answers Stremio add-on routes (uses StremioDeadline)
 	Busy        func() bool   // background work yields while playback or host load is high
 	PoolSize    int           // instances per pool; default 2
 	// Hot-path budgets. A manifest may lower these, never raise them:
@@ -20264,7 +20417,7 @@ func (l *Limits) normalize() {
 		l.Deadline = 365 * 24 * time.Hour
 	}
 	if l.UnitBudget <= 0 {
-		l.UnitBudget = 10000
+		l.UnitBudget = UnitsForDeadline(l.Deadline)
 	}
 	if l.PoolSize <= 0 {
 		l.PoolSize = 2
@@ -20399,6 +20552,7 @@ type callState struct {
 	ctx        context.Context
 	host       Host
 	lim        *Limits
+	path       string
 	start      time.Time
 	last       time.Time
 	units      int64
@@ -20410,6 +20564,59 @@ type callState struct {
 	abortCode  uint32
 	logger     *slog.Logger
 	pluginID   string
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#formatBudgetDuration
+
+``````
+func formatBudgetDuration(d time.Duration) string {
+	if d > 0 && d%time.Hour == 0 {
+		return fmt.Sprintf("%d h", d/time.Hour)
+	}
+	if d > 0 && d%time.Minute == 0 {
+		return fmt.Sprintf("%d min", d/time.Minute)
+	}
+	if d > 0 && d%time.Second == 0 {
+		return fmt.Sprintf("%d s", d/time.Second)
+	}
+	if d > 0 && d%time.Millisecond == 0 {
+		return fmt.Sprintf("%d ms", d/time.Millisecond)
+	}
+	return d.String()
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*callState.governanceMessage
+
+``````
+func (cs *callState) governanceMessage() string {
+	if cs == nil || cs.lim == nil {
+		return "governance budget exceeded"
+	}
+	if cs.path != "" && ViewerRequestPath(cs.path) && cs.lim.UnitBudget == UnitsForDeadline(cs.lim.Deadline) {
+		return fmt.Sprintf("used the whole %s budget for %s (%d/%d units)",
+			formatBudgetDuration(cs.lim.Deadline), cs.path, cs.units, cs.lim.UnitBudget)
+	}
+	if cs.path != "" {
+		return fmt.Sprintf("used the whole %d-unit budget for %s (%d/%d units)",
+			cs.lim.UnitBudget, cs.path, cs.units, cs.lim.UnitBudget)
+	}
+	return fmt.Sprintf("governance budget exceeded (%d/%d units)", cs.units, cs.lim.UnitBudget)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*callState.timeoutMessage
+
+``````
+func (cs *callState) timeoutMessage() string {
+	if cs != nil && cs.lim != nil && cs.lim.Deadline > 0 && time.Since(cs.start)+50*time.Millisecond >= cs.lim.Deadline {
+		if cs.path != "" {
+			return fmt.Sprintf("call exceeded its %s deadline for %s", formatBudgetDuration(cs.lim.Deadline), cs.path)
+		}
+		return fmt.Sprintf("call exceeded its %s deadline", formatBudgetDuration(cs.lim.Deadline))
+	}
+	return "call exceeded its deadline"
 }
 ``````
 
@@ -20442,8 +20649,7 @@ func (cs *callState) chargeUnits(units int64) *Fault {
 	cs.units += units
 	if cs.units > cs.lim.UnitBudget {
 		cs.exceeded = true
-		return &Fault{Code: string(StatusGovernance),
-			Message: fmt.Sprintf("governance budget exceeded (%d/%d units)", cs.units, cs.lim.UnitBudget)}
+		return &Fault{Code: string(StatusGovernance), Message: cs.governanceMessage()}
 	}
 	return nil
 }
@@ -20505,6 +20711,9 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 		cs.last = time.Now()
 		return cs.chargeUnits(units)
 	})
+	if cs.lim != nil {
+		hostCtx = context.WithValue(hostCtx, callLimitsKey{}, *cs.lim)
+	}
 	out, err := cs.host.CallHost(hostCtx, name, args)
 	// Time spent waiting on the host (a network fetch, a catalogue query) is
 	// paid by the call's own unit price, not as guest wall time; otherwise
@@ -20987,7 +21196,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	lim := limitsForRequest(p.lim, req.Path)
 	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
 	defer cancel()
-	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, start: start, last: start,
+	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
 		background: strings.HasPrefix(req.Path, "/ether/job/"),
 		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}
 	in, err := p.svc.get(callCtx)
@@ -21015,7 +21224,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	}
 	if cs.exceeded {
 		out.Status = StatusGovernance
-		return Response{}, out, &Error{Status: StatusGovernance, Message: "governance budget exceeded"}
+		return Response{}, out, &Error{Status: StatusGovernance, Message: cs.governanceMessage()}
 	}
 	if len(respJSON) > MaxResponseBytes {
 		out.Status = StatusError
@@ -22527,6 +22736,45 @@ FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they retu
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
 Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed.
 Host calls enforce permissions again on every request; revocation is immediate.
+
+## Per-route call limits and owner ceilings
+
+Ether enforces the same deadline it advertises in `X-Ether-Deadline`. On viewer
+paths, a hosted call's governance unit budget scales directly with that route's
+deadline (`1 unit = 100 µs` of guest wall time, or `10,000 units/s`, plus priced
+host calls; time spent inside a host call is bounded by the call deadline rather
+than billed as guest wall time):
+
+| Route group | Effective deadline | Effective unit budget |
+|---|---|---|
+| `/stream/*`, `/ether/open*` | 3 s (20 s for Stremio add-ons) | 30,000 units (200,000 for Stremio) |
+| `/subtitles/*`, `/ether/subtitles/*` | 5 s (10 s for Stremio add-ons) | 50,000 units (100,000 for Stremio) |
+| `/ether/v1/kinds/*/resolve`, `/ether/v1/kinds/*/match` | 5 s | 50,000 units |
+| `/catalog/*`, `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search`, `/ether/v1/kinds/*/items/*` | 10 s (20 s for Stremio `/catalog/*`) | 100,000 units (200,000 for Stremio `/catalog/*`) |
+| `/ether/options/*`, `/ether/view/*` | 2 s | Owner-granted ceiling |
+| `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
+| `/ether/test` | 15 s | Owner-granted ceiling |
+| Other protocol routes (`/ether/notify`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
+| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
+| `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
+
+Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
+SDK) inside a hosted handler returns the **effective** `deadline` and
+`unitBudget` for the current call after route and owner clamps, alongside
+`memoryBytes`, `readBytes`, `fetchBytes` and archive limits. If a viewer-path
+call spends its whole budget, the error names the route and limit (for example
+`used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
+
+Plugins request higher memory, time, download or archive limits in
+`ether.runtime.limits` in `manifest.json`. Owners raise or lower the server-wide
+ceilings in **Plugins → Settings**, or override them for a single plugin in that
+plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
+and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).
+A per-plugin override can raise a trusted plugin above the global ceiling (up to
+4 GiB WASM memory and one year for background work). Viewer routes stay capped at
+their route deadlines so browsing and playback remain responsive; offload multi-step
+or long-running work to `/ether/job/*` (including `{pending: true, retryInMs, job}`
+from kind `/resolve` and `/match`).
 
 ## Ten recipes
 
@@ -40091,19 +40339,24 @@ archive expansion **32 GiB**, and archive members **65,535**. Downloads also obe
 the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
 `runtimeLimits` in install preview and detail, displayed side by side, and exposes
-the live grant at runtime via `ctx.ether.runtime!.limits()` — including
+the effective limits for the active call at runtime via `ctx.ether.runtime!.limits()` —
+including the route-clamped `deadline` and `unitBudget` plus
 `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)` for sizing `cache.read`,
 `archive.open`, and `archive.read` batches without guessing.
 
-Viewer request-path calls remain bounded: `/stream/`, `/catalog/`, `/meta/`,
-`/subtitles/`, `/ether/open`, `/ether/metadata/`, `/ether/subtitles/`,
-`/ether/markers`, and `/ether/v1/kinds/` (browse/search/resolve/match) get at most
-10,000 units and 30 seconds, further shortened by each route/caller's deadline.
-Ranking stays at its existing 2 ms per-candidate and 50 ms per-batch defaults.
-Administrative setup, actions, tools, events and jobs use the owner-granted
-resources; short health/configuration/view/options protocol deadlines still
-protect the host's control plane. Remote plugin processes manage their own CPU
-and memory; owner download/archive ceilings also apply to their host services.
+Viewer request-path calls derive their unit budget directly from each route's
+deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s (30,000 units;
+20 s / 200,000 units for Stremio add-ons), `/subtitles/*`, `/ether/subtitles/*` and
+`/ether/v1/kinds/*/resolve` or `/match` get 5 s (50,000 units), and `/catalog/*`,
+`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search` and
+`/items/*` get 10 s (100,000 units), further shortened only if the owner sets a
+lower ceiling. Ranking stays at its existing 2 ms per-candidate and 50 ms
+per-batch defaults. Background kind sync (`/ether/v1/kinds/*/browse` and
+`/changes`), administrative setup, actions, tools, events and jobs use the
+owner-granted resources; short health/configuration/view/options/test protocol
+deadlines protect the host's control plane. Remote plugin processes manage their
+own CPU and memory; owner download/archive ceilings also apply to their host
+services.
 
 An action returning `{job: "build-catalogue"}` starts an owner-triggered job.
 Return `{continueInMs: 0, continuation: {next: 41}, progress: "Platform 41 of 92"}`

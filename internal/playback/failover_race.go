@@ -17,9 +17,10 @@ import (
 const failoverRaceWidth = 3
 
 type raceResult struct {
-	alt core.Release
-	g   *generation
-	err error
+	alt   core.Release
+	g     *generation
+	err   error
+	fetch bool
 }
 
 // raceAlternates opens untried alternates concurrently, keeping width in
@@ -48,7 +49,7 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 		go func() {
 			nzb, err := m.deps.FetchNZB(rctx, alt)
 			if err != nil {
-				results <- raceResult{alt: alt, err: err}
+				results <- raceResult{alt: alt, err: err, fetch: true}
 				return
 			}
 			res := &core.Resolution{Title: s.ident.key, Release: alt, NZB: nzb, ResolvedAt: m.now()}
@@ -133,6 +134,15 @@ func (m *Manager) raceAlternates(ctx context.Context, s *session, tried []string
 		}
 		failed = append(failed, r.alt.ID)
 		lastErr = r.err
+		if r.fetch {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Candidate failed: " + releaseLabel(r.alt),
+				Detail:  OwnerError(r.err),
+			})
+		}
 		m.log.Warn("failover candidate failed", "session", s.id, "release", r.alt.Name, "err", r.err)
 		if next < len(cands) && (held == nil || next < m.opts.MaxAttempts) {
 			launch()

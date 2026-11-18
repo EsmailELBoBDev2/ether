@@ -60,6 +60,9 @@ func (m *Manager) PrepareKind(ctx context.Context, user *core.User, in core.Kind
 	}
 	f.waiters++
 	f.playRequest = true
+	if f.playAt.IsZero() {
+		f.playAt = m.now()
+	}
 	m.mu.Unlock()
 
 	select {
@@ -110,9 +113,25 @@ func (m *Manager) openKindInitial(ctx context.Context, s *session) (*generation,
 	if s.kindOpen == nil {
 		return nil, fmt.Errorf("playback: session %s is not a kind session", s.id)
 	}
+	m.recordTimeline(s, TimelineEvent{
+		Kind:    "resolve",
+		Level:   "info",
+		Message: "Opening plugin stream",
+		Detail:  s.kindSourceID,
+	})
 	src, err := s.kindOpen(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("playback: open kind source: %w", err)
+		openErr := fmt.Errorf("playback: open kind source: %w", err)
+		if ctx.Err() == nil {
+			m.recordTimeline(s, TimelineEvent{
+				Kind:    "candidate",
+				Level:   "warn",
+				Failing: true,
+				Message: "Plugin stream failed to open",
+				Detail:  OwnerError(openErr),
+			})
+		}
+		return nil, openErr
 	}
 	if src == nil {
 		return nil, errors.New("playback: kind source returned no media")
@@ -137,5 +156,14 @@ func (m *Manager) openKindInitial(ctx context.Context, s *session) (*generation,
 		info.Size = size
 		return info
 	}
-	return m.probeGeneration(ctx, s, res, src, finish, fallback)
+	g, err := m.probeGeneration(ctx, s, res, src, finish, fallback)
+	if err == nil && g != nil {
+		m.recordTimeline(s, TimelineEvent{
+			Kind:    "candidate",
+			Level:   "info",
+			Message: "Opened plugin stream " + displayTitle(s.title),
+			Detail:  timelineOpenedDetail(g.infoSnapshot(), res.Release, src.Size()),
+		})
+	}
+	return g, err
 }

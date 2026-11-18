@@ -252,8 +252,16 @@ const experienceColumns = `id,user_id,username,title,platform,device,decision,st
 // played; older rows predate that distinction and count.
 const realPlay = `(bytes>0 OR watched_ms>0 OR (measured=1 AND played=1))`
 
+// detailPlay also admits recorded failure rows shown in Activity › History
+// even when they failed before any client timeline or media bytes arrived.
+const detailPlay = `(bytes>0 OR watched_ms>0 OR (measured=1 AND played=1) OR error<>'')`
+
 func (s *Service) experienceRows(ctx context.Context, where string, limit int, args ...any) ([]ExperiencePlay, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+experienceColumns+` FROM stats_plays WHERE `+where+` AND `+realPlay+` ORDER BY started DESC LIMIT ?`, append(args, limit)...)
+	return s.experienceRowsFilter(ctx, where, realPlay, limit, args...)
+}
+
+func (s *Service) experienceRowsFilter(ctx context.Context, where, filter string, limit int, args ...any) ([]ExperiencePlay, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+experienceColumns+` FROM stats_plays WHERE `+where+` AND `+filter+` ORDER BY started DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -267,6 +275,7 @@ func (s *Service) experienceRows(ctx context.Context, where string, limit int, a
 			&measured, &pictured, &ttff, &startFailed, &events, &bufferMS, &p.downSwitches, &played, &p.sourceKbps, &uhd, &hdr, &remote, &p.Origin, &p.Release, &p.ReasonKind, &p.ReasonDetail, &p.QualityFallback); err != nil {
 			return nil, err
 		}
+		p.Error = clampTimelineText(p.Error)
 		// Measured: a play request reached a client that reports timelines;
 		// older rows and file/DLNA surfaces carry no start or buffering.
 		p.Measured, p.uhd, p.hdr, p.Remote = measured == 1 && played == 1, uhd == 1, hdr == 1, remote == 1
@@ -622,7 +631,7 @@ func (s *Service) PlayByID(ctx context.Context, id string) (map[string]any, erro
 	if hasViewing && lv.row != "" {
 		rowID = lv.row
 	}
-	exp, err := s.experienceRows(ctx, `id=?`, 1, rowID)
+	exp, err := s.experienceRowsFilter(ctx, `id=?`, detailPlay, 1, rowID)
 	if err != nil {
 		return nil, err
 	}
@@ -638,6 +647,7 @@ func (s *Service) PlayByID(ctx context.Context, id string) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	p.Error = clampTimelineText(p.Error)
 	out := map[string]any{}
 	for _, v := range []any{p, exp[0]} {
 		b, err := json.Marshal(v)

@@ -1,11 +1,22 @@
-import { Badge } from "@braedonsaunders/appkit-ui";
-import { ArrowRight } from "lucide-react";
+import { Badge, Switch } from "@braedonsaunders/appkit-ui";
+import {
+  AlertCircle,
+  AlertTriangle,
+  ArrowRight,
+  Bug,
+  CheckCircle2,
+  Info,
+  XCircle,
+} from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { Meter } from "../../components/charts";
+import { CopyButton } from "../../components/CopyButton";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { Kpi } from "../../components/Kpi";
+import { SubtabNav } from "../../components/layout";
 import { SessionArtwork } from "../../components/SessionArtwork";
 import { getLocale, t, tn } from "../../i18n";
 import { apiFetch } from "../../lib/api";
@@ -34,7 +45,9 @@ import {
   reasonPhrase,
   startTone,
 } from "./experience-format";
-import type { PlayDetail } from "./types";
+import type { PlayDetail, PlayTimeline, TimelineEntry, TimelineLevel } from "./types";
+
+type PlayDrawerTab = "overview" | "timeline";
 
 export const clockOf = (ms: number) => {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -43,6 +56,74 @@ export const clockOf = (ms: number) => {
   const sec = String(total % 60).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 };
+
+/** Offset from session start (`+0.0 s`, `+2.4 s`, `+1m 12.0s`). */
+export function formatTimelineOffset(offsetMs: number): string {
+  const sec = Math.max(0, offsetMs) / 1000;
+  if (sec < 60) {
+    return `+${sec.toFixed(1)} s`;
+  }
+  const mins = Math.floor(sec / 60);
+  const rem = sec - mins * 60;
+  return `+${mins}m ${rem.toFixed(1)}s`;
+}
+
+function levelIcon(entry: TimelineEntry) {
+  switch (entry.level) {
+    case "error":
+      return <XCircle size={15} className="shrink-0 text-danger" aria-label={t("Error")} />;
+    case "warn":
+      return (
+        <AlertTriangle size={15} className="shrink-0 text-warning" aria-label={t("Warning")} />
+      );
+    case "debug":
+      return <Bug size={15} className="shrink-0 text-fg-subtle" aria-label={t("Diagnostic")} />;
+    default:
+      if (entry.kind === "completed") {
+        return (
+          <CheckCircle2 size={15} className="shrink-0 text-success" aria-label={t("Completed")} />
+        );
+      }
+      return <Info size={15} className="shrink-0 text-info" aria-label={t("Info")} />;
+  }
+}
+
+function levelTag(level: TimelineLevel): string {
+  switch (level) {
+    case "error":
+      return "ERROR";
+    case "warn":
+      return "WARN";
+    case "debug":
+      return "DEBUG";
+    default:
+      return "INFO";
+  }
+}
+
+function formatTimelineCopy(
+  title: string,
+  startedAt: Date | null,
+  failureCause: string,
+  timeline: PlayTimeline,
+): string {
+  const lines: string[] = [title];
+  if (startedAt) {
+    lines.push(`${t("Started")}: ${formatDateTime(startedAt)}`);
+  }
+  if (failureCause) {
+    lines.push(`${t("Playback failed")}: ${failureCause}`);
+  }
+  lines.push("");
+  for (const e of timeline.entries) {
+    const kind = e.type === "log" ? " (log)" : "";
+    const detail = e.detail ? ` — ${e.detail}` : "";
+    lines.push(
+      `${formatTimelineOffset(e.offsetMs)} [${levelTag(e.level)}]${kind} ${e.message}${detail}`,
+    );
+  }
+  return lines.join("\n");
+}
 
 /** Watched share, plus the read-ahead buffer when it runs past the playhead. */
 export function progressLabel(progress: number, buffered: number) {
@@ -96,6 +177,159 @@ function Detail({ label, children }: { label: string; children: React.ReactNode 
 const isStreamConverting = (s: Stream) =>
   s.decision === "transcode" || (s.decision === "copy" && !s.audioCopy);
 
+function TimelinePanel({
+  id,
+  live,
+  play,
+  displayTitle,
+  startedAt,
+}: {
+  id: string;
+  live: Stream | null;
+  play: PlayDetail | null;
+  displayTitle: string;
+  startedAt: Date | null;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => {
+    setShowAll(false);
+  }, [id]);
+
+  const timeline = useAsync(
+    (signal) =>
+      apiFetch<PlayTimeline>(`/activity/plays/${encodeURIComponent(id)}/timeline`, { signal }),
+    [id],
+  );
+  useInterval(() => void timeline.reload(), live ? 5_000 : null);
+
+  const tl = timeline.data && timeline.data.playId === id ? timeline.data : null;
+  if (timeline.error && !tl) {
+    return <ErrorPanel error={timeline.error} onRetry={() => void timeline.reload()} />;
+  }
+  if (!tl) {
+    return <LoadingRows rows={4} />;
+  }
+
+  const hasFailure = Boolean(tl.failed || play?.failed || tl.error || play?.error);
+  const failureCause = tl.error || play?.error || (hasFailure ? failedReason("") : "");
+  const entries = tl.entries ?? [];
+  const visibleEntries = entries.filter(
+    (entry) =>
+      showAll || entry.type === "event" || entry.level === "warn" || entry.level === "error",
+  );
+  const hiddenCount = entries.length - visibleEntries.length;
+
+  return (
+    <div className="space-y-4">
+      {hasFailure ? (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm"
+        >
+          <AlertCircle size={16} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />
+          <div className="min-w-0 space-y-0.5">
+            <p className="font-medium text-danger">{t("Playback failed")}</p>
+            <p className="break-words text-fg">{failureCause}</p>
+          </div>
+        </div>
+      ) : null}
+
+      {entries.length === 0 ? (
+        <div className="rounded-xl border border-border bg-surface px-4 py-6 text-center text-sm text-fg-muted">
+          {t("No timeline was recorded for this play.")}
+        </div>
+      ) : (
+        <section
+          aria-label={t("Events and session logs")}
+          className="overflow-hidden rounded-xl border border-border bg-surface"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-fg">{t("Events and session logs")}</h3>
+              {!showAll && hiddenCount > 0 ? (
+                <p className="text-xs text-fg-muted">
+                  {tn(
+                    hiddenCount,
+                    "{count} routine log line hidden",
+                    "{count} routine log lines hidden",
+                  )}
+                </p>
+              ) : tl.capped ? (
+                <p className="text-xs text-fg-muted">{t("Showing opening and final entries")}</p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-fg">
+                <Switch
+                  aria-label={t("Show all")}
+                  checked={showAll}
+                  onChange={(e) => setShowAll(e.currentTarget.checked)}
+                />
+                <span>{t("Show all")}</span>
+              </label>
+              <CopyButton
+                value={formatTimelineCopy(displayTitle, startedAt, failureCause, tl)}
+                label={t("Copy timeline")}
+              />
+            </div>
+          </div>
+
+          <div className="px-4 py-4">
+            {visibleEntries.length === 0 ? (
+              <p className="text-sm text-fg-muted">
+                {t("No warnings or errors were logged. Turn on Show all to inspect session logs.")}
+              </p>
+            ) : (
+              <ol
+                aria-label={t("Playback timeline")}
+                className="relative ml-2 space-y-3 border-l border-border pl-4"
+              >
+                {visibleEntries.map((entry) => {
+                  const isLog = entry.type === "log";
+                  return (
+                    <li key={entry.seq} className="relative text-sm">
+                      <span
+                        aria-hidden="true"
+                        className="absolute -left-[1.35rem] top-1.5 h-2 w-2 rounded-full bg-border"
+                      />
+                      <div className="flex items-start gap-2.5">
+                        <span className="mt-0.5">{levelIcon(entry)}</span>
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                            <span className="font-mono text-xs tabular-nums text-fg-subtle">
+                              {formatTimelineOffset(entry.offsetMs)}
+                            </span>
+                            <span
+                              className={
+                                isLog
+                                  ? "break-words font-mono text-xs text-fg-muted"
+                                  : entry.level === "error"
+                                    ? "break-words font-medium text-danger"
+                                    : "break-words font-medium text-fg"
+                              }
+                            >
+                              {entry.message}
+                            </span>
+                          </div>
+                          {entry.detail ? (
+                            <p className="break-words font-mono text-xs text-fg-muted">
+                              {entry.detail}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 /**
  * One recorded or currently streaming play, opened from Overview, Activity › Now
  * playing, Activity › History, or a `?play=` link.
@@ -109,6 +343,11 @@ export function PlayDrawer({
   session?: Stream | null;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<PlayDrawerTab>("overview");
+  useEffect(() => {
+    setTab("overview");
+  }, [id]);
+
   const play = useAsync(
     (signal) =>
       id
@@ -195,8 +434,31 @@ export function PlayDrawer({
       size="md"
       title={displayTitle}
       description={description}
+      subtabs={
+        id ? (
+          <div className="[&>div]:mb-0">
+            <SubtabNav
+              ariaLabel={t("Play sections")}
+              active={tab}
+              onSelect={(k) => setTab(k as PlayDrawerTab)}
+              tabs={[
+                { key: "overview", label: t("Overview") },
+                { key: "timeline", label: t("Timeline") },
+              ]}
+            />
+          </div>
+        ) : undefined
+      }
     >
-      {!live && play.error && !p ? (
+      {tab === "timeline" && id ? (
+        <TimelinePanel
+          id={id}
+          live={live}
+          play={p}
+          displayTitle={displayTitle}
+          startedAt={startedAt}
+        />
+      ) : !live && play.error && !p ? (
         <ErrorPanel error={play.error} onRetry={() => void play.reload()} />
       ) : !live && !p ? (
         <LoadingRows rows={4} />

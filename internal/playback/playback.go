@@ -65,8 +65,9 @@ type Deps struct {
 	// duration-based AlignTime.
 	Aligner core.TimelineAligner
 	// DB holds the playback_resume table; nil disables resume records.
-	DB     *sql.DB
-	Logger *slog.Logger
+	DB       *sql.DB
+	Logger   *slog.Logger
+	Timeline func(TimelineEvent)
 	// Cluster, when set (clustered nodes only; requires DB), mirrors this
 	// node's sessions into playback_live_sessions and applies stream limits
 	// across the cluster. Nil keeps everything in this process.
@@ -349,9 +350,10 @@ type flight struct {
 	playAt time.Time
 	// abandoned counts the times the last caller left; a grace timer
 	// acts only if no caller joined since it was armed.
-	abandoned int
-	sess      *session
-	err       error
+	abandoned  int
+	sess       *session
+	failedSess *session
+	err        error
 	// kind, when set, makes this flight open a non-catalogue plugin item
 	// instead of resolving a catalogue title (spec §15.1).
 	kind *core.KindInput
@@ -994,7 +996,13 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 			old := s.id
 			m.mu.Unlock()
 			m.stopReplaced(promotedReplaced)
-			m.log.Debug("variant or bitrate cap picked a different release; replacing session", "old", old, "prefer", prefer, "maxBitrateKbps", caps.MaxBitrateKbps)
+			m.log.Debug("variant or bitrate cap picked a different release; replacing session", "session", old, "old", old, "prefer", prefer, "maxBitrateKbps", caps.MaxBitrateKbps)
+			m.recordTimelineByID(old, TimelineEvent{
+				Kind:    "quality",
+				Level:   "info",
+				Message: "Switching playback quality or version",
+				Detail:  timelineStartDetail(caps, prefer),
+			})
 			m.Stop(old)
 			continue
 		}
@@ -1161,7 +1169,20 @@ func (m *Manager) runFlight(ctx context.Context, f *flight, fk flightKey, user *
 	f.sess, f.err = s, err
 	if err != nil {
 		f.sources.seal()
-		m.emitEvent("error", s, err)
+		errSess := s
+		if errSess == nil && f.failedSess != nil && f.playRequest && !core.IsBackgroundAnalysis(ctx) && !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrPrepareSlow) {
+			errSess = f.failedSess
+			errSess.mu.Lock()
+			errSess.preparedOnly = false
+			if !playAt.IsZero() {
+				errSess.exp.noteRequest(playAt)
+			} else {
+				errSess.exp.noteRequest(errSess.startedAt)
+			}
+			errSess.exp.failure = OwnerError(err)
+			errSess.mu.Unlock()
+		}
+		m.emitEvent("error", errSess, err)
 	}
 }
 
@@ -1205,6 +1226,8 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	}
 	profile := m.selectProfile(caps, user, title.Key)
 	s := newSession(randomID(16), id, user, caps, title, profileKey(profile), m.now())
+	s.timelineEnabled = !core.IsBackgroundAnalysis(ctx)
+	log = log.With("session", s.id)
 	if kind != nil {
 		s.kindOpen = kind.Open
 		s.kindSourceID = kind.SourceID
@@ -1222,6 +1245,13 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	m.mu.Lock()
 	s.playbackGroup = m.channelGroups[id]
 	m.mu.Unlock()
+	m.recordTimeline(s, TimelineEvent{
+		At:      s.startedAt,
+		Kind:    "started",
+		Level:   "info",
+		Message: "Playback requested",
+		Detail:  timelineStartDetail(caps, prefer),
+	})
 
 	openStart := time.Now()
 	var g *generation
@@ -1248,6 +1278,10 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 		)
 	}
 	if err != nil {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		f.failedSess = s
 		log.Info("prepare failed", "err", err)
 		return nil, err
 	}
@@ -1311,9 +1345,9 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	}
 	ginfo := g.infoSnapshot()
 	if s.caps.ForcedOverrideApplied {
-		log.Debug("forced device override replaced a runtime declaration", "session", s.id, "device", s.caps.Device, "product", s.caps.Product)
+		log.Debug("forced device override replaced a runtime declaration", "device", s.caps.Device, "product", s.caps.Product)
 	}
-	log.Debug("playback session started", "session", s.id, "release", g.res.Release.Name,
+	log.Debug("playback session started", "release", g.res.Release.Name,
 		"container", ginfo.Container, "size", g.src.Size(), "duration", ginfo.Duration, "estimated", ginfo.Estimated)
 	m.emitEvent("start", s, nil)
 	return s, nil
@@ -1703,6 +1737,9 @@ func (m *Manager) finishSessionStop(s *session, g *generation) {
 	// Announce detach before source/transcoder cleanup so open consoles and
 	// cluster peers drop the ended stream immediately even if Close blocks.
 	m.reg.poke()
+	if stopEv, ok := timelineStopEvent(s, m.now()); ok {
+		m.recordTimeline(s, stopEv)
+	}
 	m.emitEvent("stop", s, nil)
 	if g != nil {
 		g.retire()
@@ -1774,6 +1811,7 @@ func (m *Manager) SetDecision(id string, d core.Decision) {
 	}
 	if s := m.lookup(id); s != nil {
 		s.mu.Lock()
+		changed := s.decision != d.Kind || s.decisionReason != d.Reason
 		s.decision, s.explicit = d.Kind, true
 		s.deliveryDecision = &d
 		s.decisionReason = d.Reason
@@ -1787,6 +1825,10 @@ func (m *Manager) SetDecision(id string, d core.Decision) {
 			s.requiresRemux = false
 		}
 		s.mu.Unlock()
+		if changed {
+			m.log.Info("playback delivery decision", "session", s.id, "decision", d.Kind, "videoCopy", d.VideoCopy, "audioCopy", d.AudioCopy, "reason", d.Reason)
+		}
+		m.noteDecisionTimeline(s, d)
 		m.emitEvent("update", s, nil)
 	}
 }

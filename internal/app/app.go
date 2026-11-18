@@ -149,6 +149,7 @@ type App struct {
 	opts             Options
 	log              *slog.Logger
 	logs             *admin.LogBuffer
+	playLogs         *stats.SessionLogSink
 	support          *diagnostics.Recorder
 	cfg              *config.Store
 	proxyMu          sync.Mutex
@@ -310,7 +311,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	if opts.Version == "" {
 		opts.Version = updater.Version
 	}
-	a := &App{opts: opts, logs: admin.NewLogBuffer(4000)}
+	a := &App{opts: opts, logs: admin.NewLogBuffer(4000), playLogs: stats.NewSessionLogSink()}
 	base := opts.Logger
 	if base == nil {
 		if a.opts.LogLevel == nil {
@@ -318,8 +319,8 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		}
 		base = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: a.opts.LogLevel}))
 	}
-	// The in-memory buffer behind Logs gets the same scrubbing as the file.
-	a.log = slog.New(logredact.Handler(admin.TeeHandler(base.Handler(), a.logs)))
+	// The in-memory buffer behind Logs and the per-play session sink get the same scrubbing as the file.
+	a.log = slog.New(logredact.Handler(a.playLogs.Wrap(admin.TeeHandler(base.Handler(), a.logs))))
 	slog.SetDefault(a.log)
 	// Serve holds the data directory's lock across starts, so a retried
 	// start never lets another instance in; an App run on its own takes it.

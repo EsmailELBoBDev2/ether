@@ -110,6 +110,14 @@ type Service struct {
 	// plays holds play records through a database outage (clustered).
 	plays *store.Outbox[string, playRecord]
 	dash  *Dashboard
+
+	timelineMu       sync.Mutex
+	timelineOnce     sync.Once
+	timelineStopOnce sync.Once
+	timelineCh       chan timelineCmd
+	timelineStop     chan struct{}
+	timelineDone     chan struct{}
+	logSink          *SessionLogSink
 }
 
 func (s *Service) liveSession(id string) (*core.PlaySession, bool) {
@@ -189,7 +197,13 @@ func (s *Service) ObservePlayback(ev playback.Event) {
 	if ev.Session == nil {
 		return
 	}
-	if err := s.Record(ctx, ev.Session, ev.Kind == "stop", ev.Error); err != nil {
+	ended := ev.Kind == "stop"
+	if !ended && ev.Kind == "error" && (s.opts.Session != nil || s.opts.Playback != nil) {
+		if _, live := s.liveSession(ev.Session.ID); !live {
+			ended = true
+		}
+	}
+	if err := s.Record(ctx, ev.Session, ended, ev.Error); err != nil {
 		s.opts.Logger.Warn("record playback stats", "err", err)
 	}
 }
@@ -203,13 +217,17 @@ func (s *Service) Record(ctx context.Context, p *core.PlaySession, ended bool, p
 	if p == nil || p.ID == "" {
 		return nil
 	}
+	problem = clampTimelineText(problem)
 	release := ""
 	if p.Resolution != nil {
 		release = p.Resolution.Release.Name
 	}
 	s.vmu.Lock()
 	defer s.vmu.Unlock()
-	r, ok := s.viewings.observe(*p, s.opts.Now().UTC(), ended, problem)
+	r, rowID, ok := s.viewings.observe(*p, s.opts.Now().UTC(), ended, problem)
+	if rowID != "" && rowID != p.ID {
+		s.aliasTimelineSession(p.ID, rowID)
+	}
 	if !ok {
 		return nil
 	}
@@ -221,7 +239,7 @@ func (s *Service) Record(ctx context.Context, p *core.PlaySession, ended bool, p
 	return s.record(ctx, r)
 }
 
-// Close flushes device metadata and play records held through a database outage.
+// Close flushes device metadata, timeline writes, and play records held through a database outage.
 // The caller controls the shutdown budget with ctx.
 func (s *Service) Close(ctx context.Context) error {
 	var err error
@@ -231,6 +249,7 @@ func (s *Service) Close(ctx context.Context) error {
 	if s.plays != nil {
 		err = errors.Join(err, s.plays.Close(ctx))
 	}
+	err = errors.Join(err, s.closeTimeline(ctx))
 	return err
 }
 
@@ -244,7 +263,7 @@ func (s *Service) OutboxStatus() (st store.OutboxStatus, ok bool) {
 }
 
 func (s *Service) record(ctx context.Context, r playRecord) error {
-	p, now, ended, problem := &r.p, r.at, r.ended, r.problem
+	p, now, ended, problem := &r.p, r.at, r.ended, clampTimelineText(r.problem)
 	start := p.StartedAt
 	if start.IsZero() {
 		start = now
@@ -266,7 +285,7 @@ func (s *Service) record(ctx context.Context, r playRecord) error {
 	}
 	q := measure(p, r.release)
 	if problem == "" {
-		problem = q.startFailure
+		problem = clampTimelineText(q.startFailure)
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO stats_plays(id,user_id,rating_key,username,title,platform,device,decision,started,updated,ended,bytes,duration_ms,failovers,error,node_id,`+
 		`measured,played,pictured,ttff_ms,start_failed,buffer_events,buffer_ms,down_failovers,source_kbps,uhd,hdr,remote,origin,release_name,reason_kind,reason_detail,quality_fallback,client_ip,audio_copy,product,device_match) `+
@@ -314,13 +333,30 @@ func (s *Service) ObserveState(ev state.Event) {
 	}
 	t := now.UnixMilli()
 	completed := 0
+	var newlyCompletedID string
 	if ev.Completed {
 		completed = 1
+		var id string
+		var prevCompleted, count int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT id,completed,(SELECT COUNT(*) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0 LIMIT 1`,
+			ev.UserID, int64(ev.Key), ev.UserID, int64(ev.Key),
+		).Scan(&id, &prevCompleted, &count); err == nil && count == 1 && prevCompleted == 0 {
+			newlyCompletedID = id
+		}
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE stats_plays SET watched_ms=watched_ms+CASE WHEN CAST(? AS TEXT)='progress' AND timeline_state='playing' AND timeline>0 AND CAST(? AS BIGINT)>timeline AND CAST(? AS BIGINT)-timeline<=60000 THEN CAST(? AS BIGINT)-timeline ELSE 0 END,`+
 		`timeline=?,timeline_state=?,duration_ms=CASE WHEN CAST(? AS BIGINT)>duration_ms THEN CAST(? AS BIGINT) ELSE duration_ms END,completed=CASE WHEN CAST(? AS BIGINT)>completed THEN CAST(? AS BIGINT) ELSE completed END WHERE id=(SELECT id FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0) AND (SELECT COUNT(*) FROM stats_plays WHERE user_id=? AND rating_key=? AND ended=0)=1`, string(ev.Kind), t, t, t, t, ev.State, ev.Duration.Milliseconds(), ev.Duration.Milliseconds(), completed, completed, ev.UserID, int64(ev.Key), ev.UserID, int64(ev.Key))
 	if err != nil {
 		s.opts.Logger.Warn("record timeline stats", "err", err)
+	} else if newlyCompletedID != "" {
+		s.ObserveTimeline(playback.TimelineEvent{
+			SessionID: newlyCompletedID,
+			At:        now,
+			Kind:      "completed",
+			Level:     "info",
+			Message:   "Playback completed",
+		})
 	}
 	if ev.Kind == state.EventCompleted && s.dash != nil && s.opts.MetadataType != nil {
 		if typ := s.opts.MetadataType(ev.Key); typ > 0 {
@@ -483,6 +519,7 @@ func (s *Service) History(ctx context.Context, since, until time.Time, user int6
 		if err := rows.Scan(&p.ID, &p.UserID, &p.Key, &p.Username, &p.Title, &p.Platform, &p.Device, &p.Decision, &p.Started, &p.Updated, &p.Ended, &p.Bytes, &p.WatchedMS, &p.DurationMS, &p.Completed, &p.Failovers, &p.Error, &p.IP); err != nil {
 			return nil, err
 		}
+		p.Error = clampTimelineText(p.Error)
 		out = append(out, p)
 	}
 	return out, rows.Err()

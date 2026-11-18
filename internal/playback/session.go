@@ -204,6 +204,13 @@ type session struct {
 	viewerState           string
 	exp                   experienceState // guarded by mu
 	stallObserved         int             // guarded by mu; timeline stalls evaluated against delivery
+	timelineEnabled       bool
+	timelineStalls        int
+	timelineDecided       bool
+	timelineDecision      core.DecisionKind
+	timelineReason        string
+	timelineBitrate       int
+	timelineHeight        int
 	encoderRecoveryReason string
 	encoderRunway         *time.Duration
 	warm                  warmState // the encoder input range being prefetched
@@ -439,13 +446,20 @@ func (s *session) touchTimeline(now time.Time) {
 	s.mu.Unlock()
 }
 
-func (s *session) markDirectPlay() {
+func (s *session) markDirectPlay() bool {
 	s.mu.Lock()
+	first := false
 	if !s.explicit {
 		s.decision = core.DecisionDirectPlay
 		s.decisionVideoCopy, s.decisionAudioCopy = true, true
+		if !s.timelineDecided {
+			s.timelineDecided = true
+			s.timelineDecision = core.DecisionDirectPlay
+			first = true
+		}
 	}
 	s.mu.Unlock()
+	return first
 }
 
 func (s *session) addBytes(n int, now time.Time) {

@@ -199,10 +199,11 @@ func (vs *viewings) lookup(id string, live *core.PlaySession, now time.Time) (li
 }
 
 // observe folds one session observation into its viewing. It returns the
-// row-level record to write, or ok=false when nothing should be written
-// yet (a probe, a prepared source nobody read) or the observation is
-// stale (a sample of a session that already stopped).
-func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, problem string) (playRecord, bool) {
+// row-level record to write, the viewing's canonical row ID, and ok=false
+// when nothing should be written yet (a probe, a prepared source nobody
+// read) or the observation is stale (a sample of a session that already
+// stopped).
+func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, problem string) (playRecord, string, bool) {
 	begin := p.StartedAt
 	if begin.IsZero() {
 		begin = now
@@ -215,7 +216,7 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 		}
 		if cur := vs.byKey[k]; cur != nil {
 			if cur.endedPart(p.ID) {
-				return playRecord{}, false
+				return playRecord{}, cur.row, false
 			}
 			if !begin.Before(cur.started.Add(-viewingWindow)) && !begin.After(cur.last.Add(viewingWindow)) {
 				v = cur
@@ -271,7 +272,7 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 	if !v.written && !v.problem && !v.watched && t.bytes < viewingMinBytes {
 		// A probe or an unread preparation: no history yet. The viewing is
 		// kept for the window so the open that plays continues it.
-		return playRecord{}, false
+		return playRecord{}, v.row, false
 	}
 	v.written = true
 	row := p
@@ -280,7 +281,7 @@ func (vs *viewings) observe(p core.PlaySession, now time.Time, ended bool, probl
 	row.BytesServed, row.Failovers, row.DownFailovers = t.bytes, t.failovers, t.downFailovers
 	row.Experience = v.start.experience(t)
 	row.Source, row.Resolution = nil, nil
-	return playRecord{p: row, at: now, ended: len(v.live) == 0, problem: problem}, true
+	return playRecord{p: row, at: now, ended: len(v.live) == 0, problem: problem}, v.row, true
 }
 
 func (vs *viewings) forget(v *viewing) {

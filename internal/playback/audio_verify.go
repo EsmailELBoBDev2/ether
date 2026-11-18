@@ -94,6 +94,14 @@ func probedRequiredAudioRejection(profile core.QualityProfile, title *core.Title
 		}
 	}
 	unverifiedLangs, needsVerify := candidateNeedsAudioVerification(profile, title, rel)
+	// Only a release admitted because its name left the required language
+	// unknown is checked here. A release whose name already declares the
+	// language keeps the existing open path: checking it too failed many
+	// correctly named releases whose tracks are tagged "und", costing an
+	// extra open, indexer grab and start delay each.
+	if !needsVerify {
+		return ""
+	}
 	// Synthetic video-only test stubs or already-confirmed release names whose
 	// container probe yielded no audio stream metadata are not rejected unless
 	// the release itself required audio verification on a fresh open.

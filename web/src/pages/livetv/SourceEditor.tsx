@@ -1151,6 +1151,7 @@ export function SourceEditor({
         ) : null}
         <div className="border-t border-border pt-4">
           <UnratedChannelRating
+            className="px-0"
             value={draft.unratedRating ?? ""}
             onChange={(unratedRating) => setDraft({ ...draft, unratedRating })}
           />

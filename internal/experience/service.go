@@ -1754,6 +1754,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 	if err != nil {
 		return frontend.SearchPage{}, err
 	}
+	aiMerged := false
 	if ds, ok := s.d.Search.Vibe.Source.(core.DescriptiveSearcher); ok && s.d.Protocol != "vela" {
 		if !IsDescriptiveQuery(query, items, ds.DescriptiveSearchAvailable()) || HasTitleMatch(pluginHits) || len(types) == 0 {
 			if prev, superseded := s.ensureSearchGate().supersede(v, core.SearchClientFrom(ctx), query); superseded {
@@ -1783,6 +1784,7 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 					}
 				}
 				items = mergeAIAndKeyword(aiItems, items)
+				aiMerged = true
 			}
 		}
 	} else if len(items) == 0 && len(pluginHits) == 0 && len(types) > 0 {
@@ -1792,7 +1794,12 @@ func (s *Service) Search(ctx context.Context, viewer *core.Viewer, device core.D
 		}
 	}
 	if len(pluginHits) > 0 {
+		// Interleave by relevance: a plugin title or performer match must
+		// not land behind every loose catalogue match.
 		items = append(items, pluginHits...)
+		if !aiMerged {
+			sort.SliceStable(items, func(i, j int) bool { return items[i].SearchScore > items[j].SearchScore })
+		}
 	}
 	if err = s.sortTitles(ctx, items, q); err != nil {
 		return frontend.SearchPage{}, err

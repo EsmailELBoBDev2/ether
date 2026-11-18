@@ -124,6 +124,7 @@ func (s *Service) searchPluginPeopleInLibraries(ctx context.Context, v *core.Use
 		return nil, nil, nil
 	}
 	exact := strings.Join(peopleWords(query), " ")
+	exactFolded := strings.Join(peopleFoldedWords(query), " ")
 
 	personCap := limit
 	if personCap <= 0 {
@@ -181,8 +182,14 @@ func (s *Service) searchPluginPeopleInLibraries(ctx context.Context, v *core.Use
 				}
 				if !seenTitle[t.Key] {
 					seenTitle[t.Key] = true
-					if t.SearchScore < pluginPeopleTitleSearchScore {
-						t.SearchScore = pluginPeopleTitleSearchScore
+					// A full-name match ranks the person's titles like a
+					// catalogue person match: right after exact titles.
+					floor := pluginPeopleTitleSearchScore
+					if strings.Join(peopleFoldedWords(m.Name), " ") == exactFolded {
+						floor = PersonMatchScore
+					}
+					if t.SearchScore < floor {
+						t.SearchScore = floor
 					}
 					titles = append(titles, t)
 				}

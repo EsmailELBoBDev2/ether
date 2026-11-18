@@ -2282,7 +2282,7 @@ func (e *Engine) send(ctx context.Context, hc *http.Client, u string, start, end
 		return nil, timing{}, fmt.Errorf("debrid: bad media URL: %w", core.ErrSourceUnavailable)
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if p, ok := ctx.Value(directKey{}).(Payload); ok {
 		// Addon links go through the SSRF guard, never the CDN pools.
 		e.svc.direct.init()

@@ -51,6 +51,7 @@ type rawItem struct {
 	size       int64
 	grabs      int
 	password   bool
+	private    bool
 	category   int
 	usenetDate string
 	// Torznab
@@ -105,6 +106,10 @@ func (r rawItem) toRelease(indexer string) core.Release {
 	}
 	if rel.InfoHash != "" || magnet != "" || strings.Contains(strings.ToLower(r.encType), "bittorrent") {
 		rel.Protocol = core.ProtocolTorrent
+		rel.Private = r.private
+		if rel.Private {
+			rel.MagnetURL = BareMagnet(rel.InfoHash)
+		}
 	}
 	return rel
 }
@@ -295,6 +300,8 @@ func applyAttr(r *rawItem, name, val string) {
 		if n, err := strconv.Atoi(val); err == nil {
 			r.peers = n
 		}
+	case "private":
+		r.private = val == "1" || strings.EqualFold(val, "true") || strings.EqualFold(val, "yes")
 	}
 }
 

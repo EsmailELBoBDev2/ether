@@ -122,6 +122,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 		for i := range cands {
 			if r, ok := byID[cands[i].rel.ID]; ok {
 				cands[i].rel.InfoHash, cands[i].rel.MagnetURL = r.InfoHash, r.MagnetURL
+				cands[i].rel.Private = cands[i].rel.Private || r.Private
 			}
 		}
 		s.cachePreparedSources(title, byID)
@@ -236,6 +237,11 @@ func (s *Service) cachePreparedSources(title *core.Title, byID map[string]core.R
 						updated[i].MagnetURL = p.MagnetURL
 						changed = true
 					}
+					if !updated[i].Private && p.Private {
+						updated[i].Private = true
+						updated[i].MagnetURL = p.MagnetURL
+						changed = true
+					}
 				}
 			}
 			if changed {
@@ -253,6 +259,10 @@ func (s *Service) cachePreparedSources(title *core.Title, byID map[string]core.R
 				r.rel.InfoHash = p.InfoHash
 			}
 			if r.rel.MagnetURL == "" && p.MagnetURL != "" {
+				r.rel.MagnetURL = p.MagnetURL
+			}
+			if !r.rel.Private && p.Private {
+				r.rel.Private = true
 				r.rel.MagnetURL = p.MagnetURL
 			}
 			c.recent[id] = r

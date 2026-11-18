@@ -126,7 +126,7 @@ func (s *Service) fetch(id int64) (*mapping, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	resp, err := s.opts.Client.Do(req)
 	if err != nil {
 		return nil, err

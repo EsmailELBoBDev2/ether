@@ -1091,6 +1091,7 @@ func (r *Runner) toFound(d rowData) (found, error) {
 		rel.NZBURL = d.download
 	} else {
 		rel.Protocol = core.ProtocolTorrent
+		rel.Private = r.def.IsPrivate()
 		rel.Seeders, rel.Peers = d.seeders, d.seeders+d.leechers
 		rel.NZBURL = d.download
 		rel.MagnetURL = d.magnet
@@ -1098,7 +1099,9 @@ func (r *Runner) toFound(d rowData) (found, error) {
 		if rel.InfoHash == "" && d.magnet != "" {
 			rel.InfoHash = newznab.InfoHashFromMagnet(d.magnet)
 		}
-		if rel.MagnetURL == "" && rel.InfoHash != "" {
+		if rel.Private {
+			rel.MagnetURL = newznab.BareMagnet(rel.InfoHash)
+		} else if rel.MagnetURL == "" && rel.InfoHash != "" {
 			rel.MagnetURL = newznab.MagnetFor(rel.InfoHash, title, nil)
 		}
 		if rel.NZBURL == "" && rel.MagnetURL == "" {

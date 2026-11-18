@@ -177,7 +177,7 @@ func FetchNZB(ctx context.Context, client *http.Client, origin string, r core.Re
 	if err != nil {
 		return nil, fmt.Errorf("stremio: NZB from %s: invalid request", link.Host)
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

@@ -41,8 +41,8 @@ export interface Indexer {
   settings?: Record<string, string> | null;
   /** A built-in site's password settings; each set value is redacted to "••••". */
   secretSettings?: Record<string, string> | null;
-  /** Client identity preset overriding the global policy for this indexer. */
-  clientIdentity?: string;
+  /** User agent overriding the global client identity for this indexer. */
+  userAgent?: string;
   /**
    * The audio language of the releases this indexer returns, as a BCP 47
    * tag ("pt-BR"). It is evidence for a bare DUAL/MULTI whose name names no
@@ -53,23 +53,12 @@ export interface Indexer {
 }
 
 /**
- * Input.clientIdentity: one preset per purpose and media, plus the owner's
- * own user agent and headers when a preset is "custom".
+ * Input.clientIdentity: the owner's user agent and headers presented to
+ * Newznab and Torznab indexers.
  */
 export interface ClientIdentityConfig {
-  tvSearch?: string;
-  movieSearch?: string;
-  tvGrab?: string;
-  movieGrab?: string;
   userAgent?: string;
   /** Header values are sealed server-side and arrive redacted to "••••". */
-  headers?: Record<string, string> | null;
-}
-
-/** One selectable client identity, as the server reports it. */
-export interface IdentityPreset {
-  key: string;
-  userAgent: string;
   headers?: Record<string, string> | null;
 }
 

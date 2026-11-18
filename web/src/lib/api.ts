@@ -43,7 +43,6 @@ import type {
   EtherUser,
   FieldError,
   CatalogEntry,
-  IdentityPreset,
   Indexer,
   LLMModel,
   LLMProvider,
@@ -348,7 +347,7 @@ export const api = {
   putConfig: async (config: EtherConfig) =>
     (await put<{ config: EtherConfig }>("/config", config)).config,
   getSection: <T>(section: string) =>
-    apiFetch<{ section: string; value: T; presets?: IdentityPreset[] }>(`/config/${section}`),
+    apiFetch<{ section: string; value: T; defaultUserAgent?: string }>(`/config/${section}`),
   putSection: (section: string, value: unknown) =>
     put<{ section: string; value: unknown }>(`/config/${section}`, value),
 

@@ -133,6 +133,8 @@ type AcquireRequest struct {
 	Choose         func([]File) (File, error)
 	CachedOnly     bool
 	RemoveUncached bool
+	Private        bool
+	privateChecked bool
 	// MayRemove, when set, is asked before a torrent this call added is
 	// removed again (RemoveUncached); false keeps it on the account because
 	// a cluster node is streaming from it.
@@ -156,6 +158,7 @@ type Acquired struct {
 type Handle struct {
 	TorrentID, FileID, Path, Link, Magnet, InfoHash string
 	Size                                            int64
+	Private                                         bool
 }
 
 // DirectLink is a time-limited HTTPS URL for a file.
@@ -392,7 +395,7 @@ func call(ctx context.Context, hc *http.Client, base string, r apiRequest, auth 
 		req.Header.Set("Content-Type", ctype)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if auth != nil {
 		auth(req)
 	}

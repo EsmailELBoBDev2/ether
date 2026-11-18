@@ -985,31 +985,6 @@ export const EXTRAS: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** Preset keys as the server names them; proper nouns are not translated. */
-export function identityOptions(includeCustom: boolean, includeEther = true) {
-  const options = [
-    ...(includeEther ? [{ value: "ether", label: "Ether" }] : []),
-    { value: "sonarr", label: "Sonarr" },
-    { value: "radarr", label: "Radarr" },
-    { value: "prowlarr", label: "Prowlarr" },
-    { value: "nzbhydra2", label: "NZBHydra2" },
-    { value: "sabnzbd", label: "SABnzbd" },
-    { value: "nzbget", label: "NZBGet" },
-  ];
-  return includeCustom ? [...options, { value: "custom", label: t("Custom") }] : options;
-}
-
-/**
- * Search-side presets: SABnzbd and NZBGet never send a Newznab query, so a
- * search presented as one is a client that cannot exist. They stay available
- * for grabs only; the per-indexer override excludes them as well.
- */
-export function searchIdentityOptions(includeCustom: boolean, includeEther = true) {
-  return identityOptions(includeCustom, includeEther).filter(
-    (o) => o.value !== "sabnzbd" && o.value !== "nzbget",
-  );
-}
-
 export const LIVE_LATENCY: FieldGroup[] = localized(() => [
   {
     id: "live-latency",

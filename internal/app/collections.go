@@ -7,6 +7,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/collections"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/llm"
 )
 
@@ -37,6 +38,6 @@ func (a *App) collectionOptions(cfg config.Config) []collections.Option {
 		collections.WithTraktConfig(func() config.Trakt { return a.cfg.Read().Trakt }),
 		collections.WithSealer(a.cfg),
 		collections.WithLLM(chat),
-		collections.WithUserAgent("Ether/" + a.opts.Version + " (+https://github.com/braedonsaunders/ether)"),
+		collections.WithUserAgent(httpclient.FormatUserAgent(a.opts.Version)),
 	}, parityCollectionOptions()...)
 }

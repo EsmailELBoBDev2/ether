@@ -492,7 +492,7 @@ func (s *Service) fetch() (*index, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", httpclient.UserAgent)
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	resp, err := s.opts.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("animemap: fetch failed: %w", err)

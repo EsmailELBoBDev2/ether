@@ -337,6 +337,7 @@ func mergeShared(local Config, sharedJSON []byte) (Config, []string, error) {
 		return Config{}, nil, err
 	}
 	stripRetiredLiveTV(shared)
+	upgradeClientIdentity(shared)
 	keepStoredAutoUpdate(shared)
 	resetPreStandardQuality(shared)
 	settled := normalizeSharedDocument(shared)

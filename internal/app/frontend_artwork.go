@@ -27,7 +27,12 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		imageURL = func(path, size string) string { return "https://image.tmdb.org/t/p/" + size + path }
 		paletteDB = nil
 	}
-	images := artworkservice.NewRemoteCache(128<<20, egress.Client(egress.CapMetadata, 20*time.Second))
+	var images *artworkservice.RemoteCache
+	if a.images != nil {
+		images = artworkservice.NewBackedRemoteCache(128<<20, a.images)
+	} else {
+		images = artworkservice.NewRemoteCache(128<<20, egress.Client(egress.CapMetadata, 20*time.Second))
+	}
 	var workers sync.WaitGroup
 	queue := artworkservice.NewQueue(ctx, &workers, 2, 512)
 	collections := a.discoveryPersonal.ReviewCollections(a.collections)

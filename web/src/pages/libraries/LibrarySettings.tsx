@@ -418,7 +418,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
                 control={
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="destructive"
                     disabled={saving}
                     onClick={() => {
                       if (

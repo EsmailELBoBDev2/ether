@@ -412,7 +412,6 @@
   "m_015bee8cceee5b": "Pauser og reklame",
   "m_015c2b07d92862": "Katalogoppslag mislyktes midlertidig. Tidligere elementer ble beholdt.",
   "m_015f6c1164ab16": "Fjernet {name}",
-  "m_016092af66360a": "Alle indekserere",
   "m_01609b7d026e66": "Tilbakestill de valgte radene til Alle",
   "m_01611b2cfb0ba0": "~{minutes} min igjen",
   "m_0163dd4bc62033": "Gjenoppretter forrige versjon…",
@@ -580,6 +579,7 @@
   "m_01fc1a0db354dc": "Verdi for {label}",
   "m_01fd5b63526986": "Dette styrer metadataoppslag, ikke nedlastede mediefiler. Når du legger til en ny kilde, aktiveres oppslagene fra den.",
   "m_01fd896f496dd9": "Forekomst-URL",
+  "m_01fd9f811ec861": "Definisjon mangler · installer definisjonen for dette nettstedet under fanen Indekserere for å søke i det.",
   "m_01fddfd8378627": "Av",
   "m_01fe9ce47eddbe": "Oppvarming av trailere",
   "m_01fecdf6edee82": "Ikke interessert",
@@ -1843,6 +1843,7 @@
   "m_061faebf66749d": "Tilkoblet",
   "m_0620728b070495": "Ingenting er blokkert",
   "m_0621aedf5635a9": "Hvor lenge en node i klyngen venter på at avspillingen som pågår er ferdig før den installerer. La feltet stå tomt for å vente 30 minutter. En server alene venter til ingen ser på.",
+  "m_0621c37a6b5396": "satt på pause etter feil",
   "m_0621d6397c8b58": "Bare seere du gir den til, kan se den, også folk du legger til senere.",
   "m_0622cf421a2c90": {
     "one": "{count} historikkoppføring på denne Plex-serveren for denne kontoen.",
@@ -4721,6 +4722,10 @@
   "m_1000a24c58347f": "Utkastet ditt er klart",
   "m_1000d5da1b1b1b": "Ether installerte en oppdatering selv, og den fungerer fint; ett varsel per versjon.",
   "m_100301b70a8468": "Tester …",
+  "m_10033bfc57a96d": {
+    "one": "{missing} av {count} indekserer mangler definisjonen sin",
+    "other": "{missing} av {count} indekserere mangler definisjonen sin"
+  },
   "m_10037dfcec018d": "Markedsplass",
   "m_100569c139cb38": "Endre rekkefølge for {title}",
   "m_100658d8fdb73d": {
@@ -4861,6 +4866,7 @@
   "m_107bc8b81584dd": "Alle spillefilmer av Hayao Miyazaki.",
   "m_107c55bf7f5fde": "Farger genererte omslag. Automatisk tilpasses hovedplakaten.",
   "m_107e66090c813c": "Den adressen er en annen Plex Media Server. Legg den til som en ny server i stedet.",
+  "m_107f8830a04486": "Satt på pause etter gjentatte feil · prøver på nytt automatisk etter {time}",
   "m_10815a5071e78a": "Fjernstyring er ikke tilgjengelig fra denne serveren.",
   "m_10816f12b17447": "Venners overvåkningslister",
   "m_1082d1a6a743cc": "Simkl-kontoen er koblet til.",
@@ -5223,6 +5229,7 @@
   "m_119cbed8861c8b": "Maks. bredde",
   "m_119ead3a497118": "Gi en enkelt tittel sin egen plakat eller sitt eget bakgrunnsbilde.",
   "m_119f3066c8a3d1": "Vindu for neste episode / fortsettelse",
+  "m_11a1224007065f": "Alle tagger",
   "m_11a184edfb18d8": "Du valgte hvilken fil elementet åpner. Ether bruker den hver gang.",
   "m_11a206c10d1413": "Foreslåtte treff",
   "m_11a2bb4827b16b": "De gjenopprettede dataene beholdes også i en tilbakeføringsmappe, så du kan ombestemme deg igjen.",
@@ -5974,6 +5981,7 @@
   "m_1417e84947b481": "Søk",
   "m_1419120360c0eb": "Cartoon Network",
   "m_141a29a7187586": "Bruk påloggingen til denne kilden",
+  "m_141c2f7f41bb91": "Kontoens tilkoblingsgrense er nådd.",
   "m_141c93412ec4e1": "Komedier",
   "m_14235bc084cc2d": "Bli-med-token",
   "m_1423d1a563ae0b": "Bruk ditt eget sertifikat",
@@ -6164,6 +6172,7 @@
     "other": "{count} avspillinger viste aldri bilde. Vanligste årsak: {reason}"
   },
   "m_14d13f20435259": "Verdi for header {number}",
+  "m_14d13f26abd17e": "Kontoen er i bruk fra en annen IP-adresse.",
   "m_14d2606347a796": "Sett kobling på pause",
   "m_14d2e5c39a1071": "Tømme hurtigbufrede byte for {title} og blokkere denne utgivelsen fra fremtidig avspilling? Aktiv eller pauset avspilling må stoppes først. Beskyttede byte kan bli liggende til bakgrunnsarbeidet er ferdig. Du kan oppheve blokkeringen i utgivelseskontrollene.",
   "m_14d3599fb4d0bd": "Proxyen svarte ikke. Kilder holder seg unna den ruten til den svarer.",
@@ -7189,6 +7198,10 @@
   "m_184e92a994dd30": "Guidekilde",
   "m_184f0295dd28ed": "Eksporter eller importer en dagbok, vurderinger eller se-liste som CSV. Letterboxd-treff krever samme tittel og år.",
   "m_184fa8e85128b7": "Telefoner, TV-er og nettlesere som forblir pålogget.",
+  "m_1850bc9040b107": {
+    "one": "{paused} av {count} indekserer satt på pause etter feil",
+    "other": "{paused} av {count} indekserere satt på pause etter feil"
+  },
   "m_1852dec654cbd9": "Alle utgivelser",
   "m_1853803c77fc10": "Installasjonslenken til tillegget (https:// eller stremio://). Det må tilby torrent-resultater, ikke bare direkte eller proxy-baserte avspillingslenker. Ether sjekker debrid-kontoene dine selv, så lenken trenger ingen debrid-nøkkel.",
   "m_185422dc543135": "Filmer (Radarr)",
@@ -9375,6 +9388,7 @@
   "m_1fab2e6e9c7dbb": "Ether har ikke kommet tilbake ennå. Hvis den kjører uten tjenestebehandler eller omstartspolicy for containeren, må du starte den igjen selv; denne siden fanger det opp så snart den svarer.",
   "m_1faba88e7fc859": "Åpne forhåndsvisning av {name}",
   "m_1fabe56d8a2476": "Velg mål for krasjvarsler",
+  "m_1fad50e989b653": "Satt på pause · prøver på nytt automatisk",
   "m_1faeb11ebc91a6": "Satellitt",
   "m_1fb01ec8cfe42d": "Kanalen er slettet",
   "m_1fb0202809c713": "Definisjonsfil",
@@ -9436,6 +9450,7 @@
   "m_1fdbb599d542fe": "til {date}",
   "m_1fdc064b963229": "Holdes privat. La [configured] stå uendret for å beholde den lagrede URL-en.",
   "m_1fdc62d4ba7181": "Vises ikke i noen app ennå",
+  "m_1fdd3fda018ecf": "definisjon mangler",
   "m_1fdda9559f19b7": "Ether kunne ikke endre hvordan pre-rolls velges.",
   "m_1fddcd7c1dea78": "ingen",
   "m_1fde2db89ccee9": "Serieåpning",

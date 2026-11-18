@@ -104,6 +104,19 @@ export function usenetProblem(state: unknown, lastError?: unknown): string | nul
   const err = str(lastError);
   if (!s || s === "ok") return null;
   const lower = err.toLowerCase();
+  if (s !== "auth_failed" && lower.includes("ip address")) {
+    return t("Account in use from another IP address.");
+  }
+  if (
+    s !== "auth_failed" &&
+    (lower.includes("simultaneous") ||
+      lower.includes("too many") ||
+      lower.includes("connection limit") ||
+      lower.includes("already logged in") ||
+      lower.includes("in use"))
+  ) {
+    return t("Account connection limit reached.");
+  }
   if (
     s === "auth_failed" ||
     lower.includes("authentication failed") ||
@@ -311,7 +324,7 @@ function debridOn(v: unknown): boolean {
  * section it also warns when debrid is on but no enabled indexer returns
  * torrents: every play would then fail with nothing to stream.
  */
-export function indexersHealth(v: unknown, debrid?: unknown): HealthItem {
+export function indexersHealth(v: unknown, debrid?: unknown, now = new Date()): HealthItem {
   const base = {
     id: "indexers" as const,
     label: t("Indexers"),
@@ -332,57 +345,94 @@ export function indexersHealth(v: unknown, debrid?: unknown): HealthItem {
       summary: t("No indexers enabled"),
       details: [t("Ether has nothing to search until an indexer is enabled.")],
     };
-  const noTorrent = debridOn(debrid) && !enabled.some((r) => r.torrent === true);
+  const nowSec = now.getTime() / 1000;
+  const isMissing = (r: Record<string, unknown>) => r.missingDefinition === true;
+  const isPaused = (r: Record<string, unknown>) => !isMissing(r) && num(r.pausedUntil) > nowSec;
+  const missing = enabled.filter(isMissing).length;
+  const paused = enabled.filter(isPaused).length;
+  const noTorrent = debridOn(debrid) && !enabled.some((r) => r.torrent === true && !isMissing(r));
   let exhausted = 0;
   let remaining = 0;
   let limited = 0;
   let used = 0;
   let limit = 0;
   const details = rows.map((r) => {
+    const rowEnabled = r.enabled !== false;
+    const rowMissing = isMissing(r);
+    const rowPaused = isPaused(r);
     const hl = num(r.hitsLimit);
     const hr = num(r.hitsRemaining);
-    if (hl > 0) {
+    if (hl > 0 && rowEnabled && !rowMissing) {
       limited++;
       remaining += hr;
       used += num(r.hitsUsed);
       limit += hl;
-      if (hr <= 0) exhausted++;
+      if (hr <= 0 && !rowPaused) exhausted++;
     }
-    const parts = [
-      hl > 0 ? t("{left}/{limit} searches left", { left: hr, limit: hl }) : t("unlimited searches"),
-    ];
-    if (num(r.grabsLimit) > 0)
+    const parts: string[] = [];
+    if (rowMissing) {
+      parts.push(t("definition missing"));
+    } else {
       parts.push(
-        t("{left}/{limit} grabs left", { left: num(r.grabsRemaining), limit: num(r.grabsLimit) }),
+        hl > 0
+          ? t("{left}/{limit} searches left", { left: hr, limit: hl })
+          : t("unlimited searches"),
       );
+      if (num(r.grabsLimit) > 0)
+        parts.push(
+          t("{left}/{limit} grabs left", { left: num(r.grabsRemaining), limit: num(r.grabsLimit) }),
+        );
+      if (rowPaused) parts.push(t("paused after failures"));
+    }
     return `${str(r.indexer) || str(r.name)}: ${parts.join(" · ")}`;
   });
+  const broken = missing + paused + exhausted;
   let level: HealthLevel = "ok";
-  if (exhausted > 0 && exhausted === rows.length) level = "error";
-  else if (exhausted > 0) level = "warn";
+  if (broken >= enabled.length) level = "error";
+  else if (broken > 0) level = "warn";
   let summary =
-    limited === 0
-      ? tn(rows.length, "{count} indexer · no daily limits", "{count} indexers · no daily limits")
-      : exhausted > 0
-        ? tn(
-            rows.length,
-            "{exhausted} of {count} indexer out of searches today",
-            "{exhausted} of {count} indexers out of searches today",
-            { exhausted },
-          )
+    missing > 0
+      ? enabled.length === 1 && missing === 1
+        ? t("Definition missing")
         : tn(
-            rows.length,
-            "{count} indexer · {remaining} searches left today",
-            "{count} indexers · {remaining} searches left today",
-            { remaining },
-          );
+            enabled.length,
+            "{missing} of {count} indexer missing its definition",
+            "{missing} of {count} indexers missing their definition",
+            { missing },
+          )
+      : paused > 0
+        ? tn(
+            enabled.length,
+            "{paused} of {count} indexer paused after failures",
+            "{paused} of {count} indexers paused after failures",
+            { paused },
+          )
+        : limited === 0
+          ? tn(
+              rows.length,
+              "{count} indexer · no daily limits",
+              "{count} indexers · no daily limits",
+            )
+          : exhausted > 0
+            ? tn(
+                rows.length,
+                "{exhausted} of {count} indexer out of searches today",
+                "{exhausted} of {count} indexers out of searches today",
+                { exhausted },
+              )
+            : tn(
+                rows.length,
+                "{count} indexer · {remaining} searches left today",
+                "{count} indexers · {remaining} searches left today",
+                { remaining },
+              );
   if (noTorrent) {
     details.unshift(
       t(
         "Debrid streams torrents, but no enabled indexer returns them. Add a Stremio addon or Torznab indexer.",
       ),
     );
-    if (level !== "error") {
+    if (level === "ok") {
       level = "warn";
       summary = t("No torrent indexer for debrid");
     }
@@ -955,7 +1005,7 @@ export function computeHealth(
   const plexOn = opts?.plexEnabled !== false;
   const items: HealthItem[] = [
     usenetHealth(s.providers, s.debrid, s.indexers),
-    indexersHealth(s.indexers, s.debrid),
+    indexersHealth(s.indexers, s.debrid, now),
     cacheHealth(s.cache),
     catalogHealth(s.catalog, now),
     databaseHealth(s.database, now),

@@ -99,17 +99,19 @@ type UsageDay struct {
 // IndexerUsage is one configured indexer's request history: what it would
 // show on the indexer's own API-hit counter, by purpose.
 type IndexerUsage struct {
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	Enabled    bool        `json:"enabled"`
-	Torrent    bool        `json:"torrent"`
-	DailyLimit int         `json:"dailyLimit"`
-	DailyGrabs int         `json:"dailyGrabs"`
-	RetryAt    int64       `json:"retryAt,omitempty"`
-	Today      UsageWindow `json:"today"`
-	Week       UsageWindow `json:"week"`
-	Month      UsageWindow `json:"month"`
-	Days       []UsageDay  `json:"days"`
+	ID                string      `json:"id"`
+	Name              string      `json:"name"`
+	Enabled           bool        `json:"enabled"`
+	Torrent           bool        `json:"torrent"`
+	DailyLimit        int         `json:"dailyLimit"`
+	DailyGrabs        int         `json:"dailyGrabs"`
+	RetryAt           int64       `json:"retryAt,omitempty"`
+	PausedUntil       int64       `json:"pausedUntil,omitempty"`
+	MissingDefinition bool        `json:"missingDefinition,omitempty"`
+	Today             UsageWindow `json:"today"`
+	Week              UsageWindow `json:"week"`
+	Month             UsageWindow `json:"month"`
+	Days              []UsageDay  `json:"days"`
 }
 
 // UsageReport is every configured indexer's usage. Days are UTC.
@@ -202,11 +204,15 @@ func (m *Manager) Usage(ctx context.Context) (UsageReport, error) {
 
 	for _, cl := range m.Clients() {
 		cfg := cl.Config()
+		clNow := cl.now()
 		u := IndexerUsage{
 			ID: cl.indexerID(), Name: cl.Name(), Enabled: cfg.Enabled, Torrent: cfg.IsTorrent(),
-			DailyLimit: cfg.DailyLimit, DailyGrabs: cfg.DailyGrabs, Days: []UsageDay{},
+			DailyLimit: cfg.DailyLimit, DailyGrabs: cfg.DailyGrabs,
+			PausedUntil:       cl.br.pausedUntil(clNow),
+			MissingDefinition: cl.missingDefinition(),
+			Days:              []UsageDay{},
 		}
-		if until, err := cl.rateLimitUntil(ctx); err == nil && cl.now().Before(until) {
+		if until, err := cl.rateLimitUntil(ctx); err == nil && clNow.Before(until) {
 			u.RetryAt = until.Unix()
 		}
 		today, week, month := map[string][2]int64{}, map[string][2]int64{}, map[string][2]int64{}

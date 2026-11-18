@@ -412,7 +412,6 @@
   "m_015bee8cceee5b": "Pausen & Werbung",
   "m_015c2b07d92862": "Katalogabfrage vorübergehend fehlgeschlagen. Bisherige Einträge wurden behalten.",
   "m_015f6c1164ab16": "{name} entfernt",
-  "m_016092af66360a": "Jeder Indexer",
   "m_01609b7d026e66": "Ausgewählte Reihen auf „Alle“ zurücksetzen",
   "m_01611b2cfb0ba0": "noch ~{minutes} min",
   "m_0163dd4bc62033": "Vorherige Version wird wiederhergestellt…",
@@ -580,6 +579,7 @@
   "m_01fc1a0db354dc": "Wert für {label}",
   "m_01fd5b63526986": "Dies steuert Metadatenabfragen, nicht heruntergeladene Mediendateien. Wenn du eine weitere Quelle hinzufügst, werden deren Abfragen aktiviert.",
   "m_01fd896f496dd9": "Instanz-URL",
+  "m_01fd9f811ec861": "Definition fehlt · installiere die Definition dieser Seite auf dem Tab „Indexer“, um sie zu durchsuchen.",
   "m_01fddfd8378627": "Ausgeschaltet",
   "m_01fe9ce47eddbe": "Trailer-Vorwärmung",
   "m_01fecdf6edee82": "Kein Interesse",
@@ -1843,6 +1843,7 @@
   "m_061faebf66749d": "Verbunden",
   "m_0620728b070495": "Nichts ist gesperrt",
   "m_0621aedf5635a9": "Wie lange ein Knoten im Cluster wartet, bis die laufende Wiedergabe endet, bevor er installiert. Leer lassen, um 30 Minuten zu warten. Ein einzelner Server wartet, bis niemand mehr schaut.",
+  "m_0621c37a6b5396": "nach Fehlern pausiert",
   "m_0621d6397c8b58": "Nur Zuschauer, denen du ihn gibst, können ihn sehen, auch Personen, die du später hinzufügst.",
   "m_0622cf421a2c90": {
     "one": "{count} Verlaufseintrag auf diesem Plex-Server für dieses Konto.",
@@ -4721,6 +4722,10 @@
   "m_1000a24c58347f": "Dein Entwurf ist fertig",
   "m_1000d5da1b1b1b": "Ether hat ein Update selbst installiert und es läuft einwandfrei; eine Meldung pro Version.",
   "m_100301b70a8468": "Wird getestet…",
+  "m_10033bfc57a96d": {
+    "one": "Bei {missing} von {count} Indexer fehlt die Definition",
+    "other": "Bei {missing} von {count} Indexern fehlt die Definition"
+  },
   "m_10037dfcec018d": "Marktplatz",
   "m_100569c139cb38": "{title} neu anordnen",
   "m_100658d8fdb73d": {
@@ -4861,6 +4866,7 @@
   "m_107bc8b81584dd": "Alle Spielfilme von Hayao Miyazaki.",
   "m_107c55bf7f5fde": "Färbt generiertes Artwork ein. „Automatisch“ passt sich dem ersten Poster an.",
   "m_107e66090c813c": "Diese Adresse gehört zu einem anderen Plex Media Server. Füge ihn stattdessen als neuen Server hinzu.",
+  "m_107f8830a04486": "Nach wiederholten Fehlern pausiert · erneuter Versuch automatisch nach {time}",
   "m_10815a5071e78a": "Fernsteuerung ist von diesem Server aus nicht verfügbar.",
   "m_10816f12b17447": "Watchlists von Freunden",
   "m_1082d1a6a743cc": "Simkl-Konto verbunden.",
@@ -5223,6 +5229,7 @@
   "m_119cbed8861c8b": "Max. Breite",
   "m_119ead3a497118": "Gib einem einzelnen Titel ein eigenes Poster oder Hintergrundbild.",
   "m_119f3066c8a3d1": "Fenster für nächste Episode / Fortsetzung",
+  "m_11a1224007065f": "Alle Tags",
   "m_11a184edfb18d8": "Du hast gewählt, welche Datei dieses Element öffnet. Ether nutzt sie jedes Mal.",
   "m_11a206c10d1413": "Vorgeschlagene Treffer",
   "m_11a2bb4827b16b": "Auch die wiederhergestellten Daten werden in einem Rollback-Ordner aufbewahrt, sodass du es dir wieder anders überlegen kannst.",
@@ -5974,6 +5981,7 @@
   "m_1417e84947b481": "Suchen",
   "m_1419120360c0eb": "Cartoon Network",
   "m_141a29a7187586": "Anmeldung dieser Quelle verwenden",
+  "m_141c2f7f41bb91": "Verbindungslimit des Kontos erreicht.",
   "m_141c93412ec4e1": "Komödien",
   "m_14235bc084cc2d": "Beitritts-Token",
   "m_1423d1a563ae0b": "Eigenes Zertifikat verwenden",
@@ -6164,6 +6172,7 @@
     "other": "{count} Wiedergaben haben nie ein Bild gezeigt. Häufigster Grund: {reason}"
   },
   "m_14d13f20435259": "Wert von Header {number}",
+  "m_14d13f26abd17e": "Konto wird von einer anderen IP-Adresse verwendet.",
   "m_14d2606347a796": "Zuordnung pausieren",
   "m_14d2e5c39a1071": "Zwischengespeicherte Bytes für {title} löschen und dieses Release für künftige Wiedergaben sperren? Aktive oder pausierte Wiedergaben müssen zuerst beendet werden. Geschützte Bytes können bleiben, bis die Hintergrundarbeit endet. Du kannst die Sperre in den Release-Einstellungen aufheben.",
   "m_14d3599fb4d0bd": "Der Proxy hat nicht geantwortet. Quellen bleiben von dieser Route weg, bis er antwortet.",
@@ -7189,6 +7198,10 @@
   "m_184e92a994dd30": "Programmquelle",
   "m_184f0295dd28ed": "Exportiere oder importiere ein Tagebuch, Bewertungen oder eine Merkliste als CSV. Letterboxd-Treffer erfordern denselben Titel und dasselbe Jahr.",
   "m_184fa8e85128b7": "Telefone, Fernseher und Browser, die angemeldet bleiben.",
+  "m_1850bc9040b107": {
+    "one": "{paused} von {count} Indexer nach Fehlern pausiert",
+    "other": "{paused} von {count} Indexern nach Fehlern pausiert"
+  },
   "m_1852dec654cbd9": "Alle Releases",
   "m_1853803c77fc10": "Der Installationslink des Addons (https:// oder stremio://). Er muss Torrent-Ergebnisse liefern, nicht nur direkte oder weitergeleitete Wiedergabelinks. Ether prüft deine Debrid-Konten selbst, der Link braucht also keinen Debrid-Schlüssel.",
   "m_185422dc543135": "Filme (Radar)",
@@ -9375,6 +9388,7 @@
   "m_1fab2e6e9c7dbb": "Ether ist noch nicht wieder da. Wenn es ohne Dienstverwaltung oder Neustartrichtlinie für den Container läuft, starte es selbst wieder; diese Seite erkennt es, sobald es antwortet.",
   "m_1faba88e7fc859": "Vorschau von {name} öffnen",
   "m_1fabe56d8a2476": "Ziele für Absturzbenachrichtigungen auswählen",
+  "m_1fad50e989b653": "Pausiert · wird automatisch wiederholt",
   "m_1faeb11ebc91a6": "Satellit",
   "m_1fb01ec8cfe42d": "Kanal gelöscht",
   "m_1fb0202809c713": "Definitionsdatei",
@@ -9436,6 +9450,7 @@
   "m_1fdbb599d542fe": "bis {date}",
   "m_1fdc064b963229": "Wird privat gehalten. Lass [configured] unverändert, um die gespeicherte URL zu behalten.",
   "m_1fdc62d4ba7181": "Noch in keiner App sichtbar",
+  "m_1fdd3fda018ecf": "Definition fehlt",
   "m_1fdda9559f19b7": "Ether konnte nicht ändern, wie Pre-Rolls ausgewählt werden.",
   "m_1fddcd7c1dea78": "keins",
   "m_1fde2db89ccee9": "Serienauftakt",

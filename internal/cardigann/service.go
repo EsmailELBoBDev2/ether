@@ -310,6 +310,9 @@ func (s *Service) Backend(cfg config.Indexer) (newznab.Backend, error) {
 	defer cancel()
 	r, err := s.runner(ctx, cfg)
 	if err != nil {
+		if errors.Is(err, ErrUnknownDefinition) {
+			return nil, fmt.Errorf("indexer %q: %w: %w", cfg.Name, err, newznab.ErrMissingDefinition)
+		}
 		return nil, fmt.Errorf("indexer %q: %w", cfg.Name, err)
 	}
 	return backend{r: r, movieCats: cfg.MovieCategories, tvCats: cfg.TVCategories}, nil

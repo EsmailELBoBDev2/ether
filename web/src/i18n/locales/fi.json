@@ -412,7 +412,6 @@
   "m_015bee8cceee5b": "Tauot ja mainokset",
   "m_015c2b07d92862": "Luettelohaku epäonnistui tilapäisesti. Aiemmat kohteet säilytettiin.",
   "m_015f6c1164ab16": "Poistettu: {name}",
-  "m_016092af66360a": "Kaikki indeksoijat",
   "m_01609b7d026e66": "Palauta valitut rivit kaikkien asetukseen",
   "m_01611b2cfb0ba0": "~{minutes} min jäljellä",
   "m_0163dd4bc62033": "Palautetaan edellistä versiota…",
@@ -580,6 +579,7 @@
   "m_01fc1a0db354dc": "Arvo: {label}",
   "m_01fd5b63526986": "Tämä ohjaa metatietojen hakuja, ei ladattuja mediatiedostoja. Toisen lähteen lisääminen ottaa sen haut käyttöön.",
   "m_01fd896f496dd9": "Instanssin URL",
+  "m_01fd9f811ec861": "Määritys puuttuu · asenna tämän sivuston määritys Indeksoijat-välilehdellä, jotta siitä voi hakea.",
   "m_01fddfd8378627": "Pois käytöstä",
   "m_01fe9ce47eddbe": "Trailerin esilämmitys",
   "m_01fecdf6edee82": "Ei kiinnosta",
@@ -1843,6 +1843,7 @@
   "m_061faebf66749d": "Yhdistetty",
   "m_0620728b070495": "Mitään ei ole estetty",
   "m_0621aedf5635a9": "Kuinka kauan klusterin solmu odottaa nykyisen toiston päättymistä ennen asennusta. Jätä tyhjäksi, niin odotus on 30 minuuttia. Yksin toimiva palvelin odottaa, kunnes kukaan ei katso.",
+  "m_0621c37a6b5396": "keskeytetty virheiden jälkeen",
   "m_0621d6397c8b58": "Vain katselijat, joille annat sen, voivat katsoa sitä, myös myöhemmin lisäämäsi.",
   "m_0622cf421a2c90": {
     "one": "{count} historiamerkintä tällä Plex-palvelimella tälle tilille.",
@@ -4721,6 +4722,10 @@
   "m_1000a24c58347f": "Luonnoksesi on valmis",
   "m_1000d5da1b1b1b": "Ether asensi päivityksen itse, ja se toimii hyvin; yksi ilmoitus versiota kohden.",
   "m_100301b70a8468": "Testataan…",
+  "m_10033bfc57a96d": {
+    "one": "{missing} / {count} indeksoijasta puuttuu määritys",
+    "other": "{missing} / {count} indeksoijasta puuttuu määritys"
+  },
   "m_10037dfcec018d": "Markkinapaikka",
   "m_100569c139cb38": "Järjestä uudelleen: {title}",
   "m_100658d8fdb73d": {
@@ -4861,6 +4866,7 @@
   "m_107bc8b81584dd": "Kaikki Hayao Miyazakin pitkät elokuvat.",
   "m_107c55bf7f5fde": "Sävyttää luodun kuvituksen. Automaattinen vastaa pääjulistetta.",
   "m_107e66090c813c": "Osoite kuuluu toiselle Plex Media Serverille. Lisää se sen sijaan uutena palvelimena.",
+  "m_107f8830a04486": "Keskeytetty toistuvien virheiden jälkeen · yritetään automaattisesti uudelleen {time} jälkeen",
   "m_10815a5071e78a": "Etähallinta ei ole käytettävissä tältä palvelimelta.",
   "m_10816f12b17447": "Ystävien katselulistat",
   "m_1082d1a6a743cc": "Simkl-tili yhdistetty.",
@@ -5223,6 +5229,7 @@
   "m_119cbed8861c8b": "Enimmäisleveys",
   "m_119ead3a497118": "Anna yksittäiselle nimikkeelle oma juliste tai taustakuva.",
   "m_119f3066c8a3d1": "Seuraavan jakson / jatkamisen ikkuna",
+  "m_11a1224007065f": "Kaikki tunnisteet",
   "m_11a184edfb18d8": "Valitsit minkä tiedoston kohde avaa. Ether käyttää sitä joka kerta.",
   "m_11a206c10d1413": "Ehdotetut vastaavuudet",
   "m_11a2bb4827b16b": "Palautetut tiedot säilytetään myös peruutuskansiossa, joten voit vielä muuttaa mielesi.",
@@ -5974,6 +5981,7 @@
   "m_1417e84947b481": "Haku",
   "m_1419120360c0eb": "Cartoon Network",
   "m_141a29a7187586": "Käytä tämän lähteen kirjautumistietoja",
+  "m_141c2f7f41bb91": "Tilin yhteysraja saavutettu.",
   "m_141c93412ec4e1": "Komediat",
   "m_14235bc084cc2d": "Liittymistoken",
   "m_1423d1a563ae0b": "Käytä omaa varmennetta",
@@ -6164,6 +6172,7 @@
     "other": "{count} toistoa ei koskaan näyttänyt kuvaa. Yleisin syy: {reason}"
   },
   "m_14d13f20435259": "Otsakkeen {number} arvo",
+  "m_14d13f26abd17e": "Tili on käytössä toisesta IP-osoitteesta.",
   "m_14d2606347a796": "Keskeytä yhdistäminen",
   "m_14d2e5c39a1071": "Tyhjennetäänkö kohteen {title} välimuistitavut ja estetäänkö tämä julkaisu tulevasta toistosta? Aktiivinen tai keskeytetty toisto on ensin pysäytettävä. Suojatut tavut voivat säilyä, kunnes taustatyö päättyy. Voit poistaa eston julkaisun hallinnasta.",
   "m_14d3599fb4d0bd": "Välityspalvelin ei vastannut. Lähteet pysyvät poissa tältä reitiltä, kunnes se vastaa.",
@@ -7189,6 +7198,10 @@
   "m_184e92a994dd30": "Oppaan lähde",
   "m_184f0295dd28ed": "Vie tai tuo päiväkirja, arvosanat tai seurantalista CSV-muodossa. Letterboxd-täsmäykset vaativat saman nimen ja vuoden.",
   "m_184fa8e85128b7": "Puhelimet, televisiot ja selaimet, jotka pysyvät kirjautuneina.",
+  "m_1850bc9040b107": {
+    "one": "{paused} / {count} indeksoija keskeytetty virheiden jälkeen",
+    "other": "{paused} / {count} indeksoijaa keskeytetty virheiden jälkeen"
+  },
   "m_1852dec654cbd9": "Kaikki julkaisut",
   "m_1853803c77fc10": "Lisäosan asennuslinkki (https:// tai stremio://). Sen on tarjottava torrent-tuloksia, ei pelkästään suoria tai välityspalvelimen kautta kulkevia toistolinkkejä. Ether tarkistaa debrid-tilisi itse, joten linkki ei tarvitse debrid-avainta.",
   "m_185422dc543135": "Elokuvat (Radarr)",
@@ -9375,6 +9388,7 @@
   "m_1fab2e6e9c7dbb": "Ether ei ole vielä palannut. Jos se toimii ilman palvelunhallintaa tai kontin uudelleenkäynnistyskäytäntöä, käynnistä se itse uudelleen; tämä sivu huomaa sen heti, kun se vastaa.",
   "m_1faba88e7fc859": "Avaa esikatselu: {name}",
   "m_1fabe56d8a2476": "Valitse kaatumishälytysten kohteet",
+  "m_1fad50e989b653": "Keskeytetty · yritetään automaattisesti uudelleen",
   "m_1faeb11ebc91a6": "Satelliitti",
   "m_1fb01ec8cfe42d": "Kanava poistettu",
   "m_1fb0202809c713": "Määritystiedosto",
@@ -9436,6 +9450,7 @@
   "m_1fdbb599d542fe": "{date} asti",
   "m_1fdc064b963229": "Pidetään yksityisenä. Jätä [configured] ennalleen säilyttääksesi tallennetun URL-osoitteen.",
   "m_1fdc62d4ba7181": "Ei vielä näy missään sovelluksessa",
+  "m_1fdd3fda018ecf": "määritys puuttuu",
   "m_1fdda9559f19b7": "Ether ei voinut muuttaa pre-rollien valintatapaa.",
   "m_1fddcd7c1dea78": "ei yhtään",
   "m_1fde2db89ccee9": "Sarjan avaus",

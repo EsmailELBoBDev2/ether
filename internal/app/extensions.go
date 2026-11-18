@@ -81,6 +81,7 @@ func (a *App) extensionHandlers() map[string]http.Handler {
 		m["indexer-sites"] = a.sites.Handler(cardigann.HandlerDeps{
 			Indexers: func() []config.Indexer { return a.cfg.Get().Indexers },
 			Unredact: func(ix config.Indexer) config.Indexer { return admin.UnredactIndexer(ix, a.cfg.Get()) },
+			OnChange: a.publishDashboard,
 		})
 	}
 

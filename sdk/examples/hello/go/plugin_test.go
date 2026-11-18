@@ -40,6 +40,9 @@ func (noopHost) KVGet(context.Context, string) ([]byte, bool, error) { return ni
 func (noopHost) KVPut(context.Context, string, []byte) error         { return nil }
 func (noopHost) KVDelete(context.Context, string) error              { return nil }
 func (noopHost) KVList(context.Context, string) ([]string, error)    { return nil, nil }
+func (noopHost) KVUsage(context.Context) (plugins.KVUsage, error) {
+	return plugins.KVUsage{QuotaBytes: plugins.KVQuotaBytes, QuotaKeys: plugins.KVQuotaKeys}, nil
+}
 func (noopHost) SecretGet(context.Context, string) (string, error) {
 	return "", plugins.ErrPermissionDenied
 }

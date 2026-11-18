@@ -37,6 +37,7 @@ export {
   type FetchCacheResult,
   type HostFetchRequest,
   type HostFetchResponse,
+  type KVUsage,
   type RemoteHostOptions,
   type ViewerWatchEntry,
 } from "./host.ts";

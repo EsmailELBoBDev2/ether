@@ -283,11 +283,13 @@ Generated validators, transport error mapping, and runtime fault definitions bel
 
 ## Key/value storage
 
-Plugin-scoped string values survive instance restarts. Missing get returns null in JS; Go also returns a found flag. Use prefixes for list. Remote values are capped at 5 MiB, with the per-plugin quota also enforced. Never store secrets here.
+Plugin-scoped string values survive instance restarts. Missing get returns null in JS; Go also returns a found flag. Use prefixes for list, and call usage() to inspect `{bytes, keys, quotaBytes, quotaKeys}` (values plus 256 bytes per key, capped at 50 MiB and 10,000 keys) before writing user state such as game saves alongside a catalogue index. Remote values are capped at 5 MiB, with the per-plugin quota also enforced. Never store secrets here.
 
 ```ts
-ether.kv.put("counter", "1");
-const value = ether.kv.get("counter");
+const usage = ether.kv.usage();
+if (usage.bytes + saveJson.length + 256 <= usage.quotaBytes && usage.keys < usage.quotaKeys) {
+  ether.kv.put("save:slot-1", saveJson);
+}
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -879,6 +881,7 @@ defaults per library afterwards.
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
   | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
+  | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
   | 503 | `source_unavailable` | The source is temporarily unavailable |
   | 502 | `open_failed` | The source could not be opened |
 
@@ -1147,7 +1150,7 @@ archive members directly to clients itself (`internal/plugins/frontend_blob.go`)
 
 ### Owner-started multi-call work and resource requests
 
-A page action returning `{job: "build-catalogue"}` starts a background job.
+A page action or scheduled call returning `{job: "build-catalogue"}` starts a background job (up to two owner/scheduled jobs per plugin, separate from playback preparation jobs).
 The job returns `continueInMs`, an opaque JSON `continuation`, and a `progress`
 string to continue; Ether forwards the token in the next POST body. `done: true`
 finishes, `failed: "reason"` fails, and an absent `continueInMs` finishes too.
@@ -1185,12 +1188,15 @@ per-route limits and how owners raise ceilings.
 Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
 `job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
 25 seconds total per Play, and keeps each invocation within five seconds.
-Pending is neutral for health. When the 25-second budget expires while the reply is still `pending` (or when
-background job slots are full), Ether returns `503` with `code: "preparing"` and
-`Retry-After` set from the last `retryInMs` (defaulting to `5` seconds) across
-`kind-media`, Vela, Jellyfin/MediaBrowser, and Plex API routes, and never saves
-a negative resolution — whereas a real empty `sources: []` answer stays `409`
-`no_source`. A job receives the original request body (including `partIndex` when
+Pending is neutral for health. When the 25-second budget expires while the reply is still `pending`,
+Ether returns `503` with `code: "preparing"` and `Retry-After` set from the last
+`retryInMs` (defaulting to `5` seconds) across `kind-media`, Vela,
+Jellyfin/MediaBrowser, and Plex API routes, and never saves a negative resolution.
+Resolver preparation jobs have their own four-slot pool per plugin (separate from
+the two-slot owner/scheduled pool); if all four resolver slots are running, Ether
+returns `503` with `code: "jobs_busy"`, `Retry-After`, and the refusal message,
+and records the refused job on the plugin Jobs view. A real empty `sources: []`
+answer stays `409` `no_source`. A job receives the original request body (including `partIndex` when
 resolving a multi-part item), uses promoted deadlines and continuation replies,
 and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
 the next resolve.
@@ -2066,9 +2072,11 @@ type KindResolveResponse struct {
 
 ``````
 const (
-	ActionJobTotal    = 12 * time.Hour
-	ActionJobAttempts = 1000000
-	actionJobMinDelay = 100 * time.Millisecond
+	ActionJobTotal         = 12 * time.Hour
+	ActionJobAttempts      = 1000000
+	ActionJobConcurrency   = 2
+	ResolverJobConcurrency = 4
+	actionJobMinDelay      = 100 * time.Millisecond
 )
 ``````
 
@@ -2139,8 +2147,9 @@ func (j *actionJob) finish(state, reason string) {
 ## Source: internal/plugins/action_jobs.go#*Manager.startActionJob
 
 ``````
-// startActionJob runs only owner-started work. At most two jobs run per plugin;
-// at most sixteen route snapshots are retained per plugin, including running jobs.
+// startActionJob runs owner-started work. At most ActionJobConcurrency owner or
+// scheduled jobs and ResolverJobConcurrency resolver jobs run concurrently per
+// plugin; at most sixteen route snapshots are retained per plugin.
 func (m *Manager) startActionJob(pluginID string, body json.RawMessage) error {
 	_, err := m.startResolverJob(pluginID, body, nil, "")
 	return err
@@ -2173,26 +2182,60 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 	if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
 		return old.(*actionJob), nil
 	}
-	active, count := 0, 0
+	isResolver := suffix != ""
+	resolverPrefix := pluginID + "|resolver|"
+	activeAction, activeResolver, count := 0, 0, 0
 	oldestKey := ""
 	var oldest time.Time
 	m.jobs.Range(func(k, v any) bool {
-		if !strings.HasPrefix(k.(string), pluginID+"|") {
+		ks := k.(string)
+		if !strings.HasPrefix(ks, pluginID+"|") {
 			return true
 		}
 		s := v.(*actionJob).snapshot()
 		count++
 		if s.State == "running" {
-			active++
+			if strings.HasPrefix(ks, resolverPrefix) {
+				activeResolver++
+			} else {
+				activeAction++
+			}
 		} else if oldestKey == "" || s.Started.Before(oldest) {
-			oldestKey, oldest = k.(string), s.Started
+			oldestKey, oldest = ks, s.Started
 		}
 		return true
 	})
-	if active >= 2 {
+	if !isResolver && activeAction >= ActionJobConcurrency {
 		return nil, fmt.Errorf("two background jobs are already running; wait for one to finish")
 	}
-	if _, exists := m.jobs.Load(key); !exists && count >= 16 {
+	if isResolver && activeResolver >= ResolverJobConcurrency {
+		msg := "Four playback preparation jobs are already running; wait for one to finish."
+		refusedKey := pluginID + "|resolver:refused|" + path
+		if _, exists := m.jobs.Load(refusedKey); !exists && count >= 16 && oldestKey != "" {
+			m.jobs.Delete(oldestKey)
+		}
+		done := make(chan struct{})
+		close(done)
+		started := time.Now().UTC()
+		if m.now != nil {
+			started = m.now()
+		}
+		m.jobs.Store(refusedKey, &actionJob{
+			cancel: func() {},
+			done:   done,
+			status: ActionJobStatus{
+				Path:         path,
+				State:        "error",
+				Error:        msg,
+				Started:      started,
+				TotalLimitMS: m.runtimeCeilings(pluginID).deadline.Milliseconds(),
+				AttemptLimit: ActionJobAttempts,
+			},
+		})
+		m.log.Warn("plugins: resolver job refused", "plugin", pluginID, "job", path, "err", msg)
+		return nil, &core.JobsBusyError{Message: msg}
+	}
+	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {
 		m.jobs.Delete(oldestKey)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.runtimeCeilings(pluginID).deadline)
@@ -2313,6 +2356,23 @@ func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(con
 
 ``````
 func (m *Manager) cancelActionJobs(id string) {
+	var flights []*scheduleFlight
+	m.mu.Lock()
+	for k, f := range m.scheduleInFlight {
+		if id == "" || strings.HasPrefix(k, id+"|") {
+			flights = append(flights, f)
+			delete(m.scheduleInFlight, k)
+		}
+	}
+	for k := range m.scheduleJobs {
+		if id == "" || strings.HasPrefix(k, id+"|") {
+			delete(m.scheduleJobs, k)
+		}
+	}
+	m.mu.Unlock()
+	for _, f := range flights {
+		f.cancel()
+	}
 	m.jobs.Range(func(k, v any) bool {
 		if id == "" || strings.HasPrefix(k.(string), id+"|") {
 			v.(*actionJob).cancel()
@@ -3713,6 +3773,29 @@ type Installed struct {
 type RuntimeFactory func(inst Installed) (Runtime, error)
 ``````
 
+## Source: internal/plugins/contract.go#KVUsage.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `bytes` | `int64` | emitted (validation may require a value) |  |
+| `keys` | `int64` | emitted (validation may require a value) |  |
+| `quotaBytes` | `int64` | emitted (validation may require a value) |  |
+| `quotaKeys` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/contract.go#KVUsage
+
+``````
+// KVUsage reports a plugin's current KV bytes (including the 256-byte charge
+// per key), key count, and configured quotas (#591).
+type KVUsage struct {
+	Bytes      int64 `json:"bytes"`
+	Keys       int64 `json:"keys"`
+	QuotaBytes int64 `json:"quotaBytes"`
+	QuotaKeys  int64 `json:"quotaKeys"`
+}
+``````
+
 ## Source: internal/plugins/contract.go#Host
 
 ``````
@@ -3726,6 +3809,7 @@ type Host interface {
 	KVPut(ctx context.Context, key string, value []byte) error
 	KVDelete(ctx context.Context, key string) error
 	KVList(ctx context.Context, prefix string) ([]string, error)
+	KVUsage(ctx context.Context) (KVUsage, error)
 
 	// SecretGet returns a sealed setting the manifest declared in
 	// permissions.secrets. Hosted plugins only.
@@ -4088,6 +4172,7 @@ var (
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
+	ErrJobsBusy         = core.ErrJobsBusy
 
 	ErrDigestMismatch = errors.New("plugins: artifact digest does not match")
 	ErrRevoked        = errors.New("plugins: plugin was revoked")
@@ -4915,13 +5000,98 @@ func (m *Manager) DeliverOutbox(ctx context.Context, pluginID string) error {
 }
 ``````
 
-## Source: internal/plugins/events.go#*Manager.Run
+## Source: internal/plugins/events.go#scheduleFlight.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/events.go#scheduleFlight
 
 ``````
 // Run drives health checks, scheduled jobs and outbox delivery until ctx
 // ends. Leader plugins run jobs and event delivery only on the leader;
 // every_node plugins run everywhere. Health checks run on every node.
+type scheduleFlight struct {
+	cancel context.CancelFunc
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.waitSchedule
+
+``````
+func (m *Manager) waitSchedule() {
+	m.scheduleWG.Wait()
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.scheduleBusyLocked
+
+``````
+func (m *Manager) scheduleBusyLocked(pluginID, callPath string) bool {
+	key := pluginID + "|" + callPath
+	if m.scheduleInFlight[key] != nil {
+		return true
+	}
+	if j := m.scheduleJobs[key]; j != nil {
+		if j.snapshot().State == "running" {
+			return true
+		}
+		delete(m.scheduleJobs, key)
+	}
+	if strings.HasPrefix(callPath, "/ether/job/") {
+		if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.runScheduledCall
+
+``````
+func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, pluginID, callPath, key string) {
+	defer m.scheduleWG.Done()
+	defer flight.cancel()
+	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
+	var started *actionJob
+	var startErr error
+	if err == nil && ctx.Err() == nil && resp.Status >= 200 && resp.Status < 300 && len(resp.Body) > 0 {
+		started, startErr = m.startResolverJob(pluginID, resp.Body, nil, "")
+		if started != nil && ctx.Err() != nil {
+			started.cancel()
+			started = nil
+		}
+	}
+	var cancelStarted *actionJob
+	m.mu.Lock()
+	if m.scheduleInFlight[key] == flight {
+		delete(m.scheduleInFlight, key)
+		if started != nil {
+			if m.scheduleJobs == nil {
+				m.scheduleJobs = map[string]*actionJob{}
+			}
+			m.scheduleJobs[key] = started
+		}
+	} else if started != nil {
+		cancelStarted = started
+	}
+	m.mu.Unlock()
+	if cancelStarted != nil {
+		cancelStarted.cancel()
+	}
+	if startErr != nil {
+		m.log.Warn("plugin schedule: start job", "plugin", pluginID, "call", callPath, "err", startErr)
+	}
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.Run
+
+``````
 func (m *Manager) Run(ctx context.Context) {
+	defer m.scheduleWG.Wait()
 	defer m.cancelActionJobs("")
 	defer m.cancelRemoteHashes("")
 	defer func() {
@@ -5029,6 +5199,10 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				m.mu.Unlock()
 				return
 			}
+			if m.scheduleBusyLocked(r.ID, job.Call) {
+				m.mu.Unlock()
+				continue
+			}
 			// Record dispatch before calling: failures (or a restart during a
 			// long job) must not produce a first-run storm on the next boot.
 			dispatched := m.now()
@@ -5038,8 +5212,15 @@ func (m *Manager) runOnce(ctx context.Context, lastHealth map[string]time.Time) 
 				continue
 			}
 			m.nextRun[key] = dispatched.Add(every)
+			callCtx, cancel := context.WithCancel(ctx)
+			flight := &scheduleFlight{cancel: cancel}
+			if m.scheduleInFlight == nil {
+				m.scheduleInFlight = map[string]*scheduleFlight{}
+			}
+			m.scheduleInFlight[key] = flight
+			m.scheduleWG.Add(1)
 			m.mu.Unlock()
-			_, _ = m.Call(ctx, r.ID, Request{Method: "POST", Path: job.Call})
+			go m.runScheduledCall(callCtx, flight, r.ID, job.Call, key)
 		}
 		_ = m.DeliverOutbox(ctx, r.ID)
 		// Capability refreshes ride the schedule: list sources and
@@ -5407,6 +5588,17 @@ func (h *host) KVList(ctx context.Context, prefix string) ([]string, error) {
 		return nil, err
 	}
 	return h.m.store.kvList(ctx, h.plugin, prefix)
+}
+``````
+
+## Source: internal/plugins/host.go#*host.KVUsage
+
+``````
+func (h *host) KVUsage(ctx context.Context) (KVUsage, error) {
+	if _, _, err := h.record(ctx); err != nil {
+		return KVUsage{}, err
+	}
+	return h.m.store.kvUsage(ctx, h.plugin)
 }
 ``````
 
@@ -8953,6 +9145,9 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "kv.list":
 		keys, err := b.h.KVList(ctx, str(0))
 		return result(keys, err)
+	case "kv.usage":
+		usage, err := b.h.KVUsage(ctx)
+		return result(usage, err)
 	case "settings.get":
 		v, err := b.h.Settings(ctx)
 		return result(v, err)
@@ -9804,6 +9999,19 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		sort.Strings(keys)
 		b, _ := json.Marshal(keys)
+		return b, nil
+	case "kv.usage":
+		var used int64
+		for _, v := range h.kv {
+			used += int64(len(v))
+		}
+		keys := int64(len(h.kv))
+		b, _ := json.Marshal(plugins.KVUsage{
+			Bytes:      used + keys*plugins.KVKeyChargeBytes,
+			Keys:       keys,
+			QuotaBytes: plugins.KVQuotaBytes,
+			QuotaKeys:  plugins.KVQuotaKeys,
+		})
 		return b, nil
 	case "secret.get":
 		sec := str(0)
@@ -15324,7 +15532,16 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 		if !started && strings.HasPrefix(pending.Job, "/ether/job/") {
 			job, err = m.startResolverJob(pluginID, resp.Body, req.Body, suffix)
 			if err != nil {
-				return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
+				busyErr := core.JobsBusyFromPending(err.Error(), lastRetryMS)
+				sec := core.JobsBusyRetrySeconds(busyErr, 5)
+				return Response{
+					Status: http.StatusServiceUnavailable,
+					Headers: map[string]string{
+						"Retry-After":         strconv.Itoa(sec),
+						"X-Ether-Media-Error": "jobs_busy",
+					},
+					Body: core.JobsBusyErrorBody(busyErr),
+				}, busyErr
 			}
 			started = true
 		}
@@ -15364,6 +15581,7 @@ type Host interface {
 	KVPut(ctx context.Context, pluginID, key string, value []byte) error
 	KVDelete(ctx context.Context, pluginID, key string) error
 	KVList(ctx context.Context, pluginID, prefix string) ([]string, error)
+	KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error)
 
 	CatalogSearch(ctx context.Context, pluginID, query string, limit, offset int) (json.RawMessage, error)
 	CatalogGet(ctx context.Context, pluginID, id string) (json.RawMessage, error)
@@ -15459,6 +15677,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ether/plugin-host/data/{service}", h.dataCall)
 	mux.HandleFunc("GET /ether/plugin-host/kv", h.kvList)
+	mux.HandleFunc("GET /ether/plugin-host/kv-usage", h.kvUsage)
 	mux.HandleFunc("GET /ether/plugin-host/kv/{key...}", h.kvGet)
 	mux.HandleFunc("PUT /ether/plugin-host/kv/{key...}", h.kvPut)
 	mux.HandleFunc("DELETE /ether/plugin-host/kv/{key...}", h.kvDelete)
@@ -15603,6 +15822,18 @@ func (h *HostHandler) kvList(w http.ResponseWriter, r *http.Request) {
 		keys = []string{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.kvUsage
+
+``````
+func (h *HostHandler) kvUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := h.host.KVUsage(r.Context(), pluginIDOf(r))
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
 }
 ``````
 
@@ -20206,7 +20437,8 @@ globalThis.ether = (() => {
     abort: (msg) => { throw new Error("__ETHER_FAULT__" + JSON.stringify({ code: "aborted", message: String(msg == null ? "aborted" : msg) })); },
     runtime: { limits: () => call("runtime.limits", []) },
     kv: { get: (k) => call("kv.get", [k]), put: (k, v) => call("kv.put", [k, v]),
-          delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]) },
+          delete: (k) => call("kv.delete", [k]), list: (p) => call("kv.list", [p == null ? "" : p]),
+          usage: () => call("kv.usage", []) },
     settings: { get: () => call("settings.get", []) },
     secret: { get: (n) => call("secret.get", [n]) },
     http: { hash: (req) => call("http.hash", [req]), fetch: (req) => call("http.fetch", [req]), fetchToCache: (req) => call("http.fetchToCache", [req]) },
@@ -21347,7 +21579,7 @@ type Response struct {
 
 ``````
 // Host is the plugin-to-Ether service surface (SPEC 5.1.5). Name is a dotted
-// service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, secret.get,
+// service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, secret.get,
 // http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, frontend.streamURL,
@@ -21374,7 +21606,7 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 // adds ArchiveReadUnitsPerMember per requested member; archive.extract
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
-	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10,
+	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10, "kv.usage": 5,
 	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
@@ -24081,9 +24313,14 @@ opening a page should read saved data, not repeatedly scan the catalogue.
 The job recipe includes `ether.schedule: [{"every":"1h","call":"/ether/refresh"}]` to the manifest
 and a handler for that path. The first run happens right after install (within one
 scheduler tick once enabled); later runs keep their cadence across server restarts,
-including failed attempts. Store a cursor/etag in KV and process a bounded batch per
-run. Do not create timers in plugin code. Cache external results; keep the job
-unconfigured until the owner needs it. Settings changes must be read each run.
+including failed attempts. Scheduled calls run off the scheduler pass, never overlap
+for the same entry, and may return `{job:"/ether/job/import"}` to hand multi-step
+work (for example importing platform game catalogues) to a lowered-priority
+continuation job with progress and cancel. Store a cursor/etag in KV (`ether.kv.usage()`
+reports `{bytes, keys, quotaBytes, quotaKeys}` including the 256-byte charge per key)
+and process a bounded batch per run. Do not create timers in plugin code. Cache
+external results; keep the job unconfigured until the owner needs it. Settings
+changes must be read each run.
 
 ### 7. Settings and setup steps
 
@@ -24173,7 +24410,9 @@ deduplicates running jobs per plugin, kind, item and `partIndex`, passes the
 original request body, and uses the existing promoted job deadline and
 continuation protocol. A completed
 job wakes the resolver before the retry timer. Persist results in KV; never do
-work ahead of an actual request. At most two jobs run per plugin.
+work ahead of an actual request. Owner/scheduled jobs (up to 2) and playback
+resolver jobs (up to 4) have separate limits per plugin; if all four resolver
+slots are busy, Ether returns `503` with `code: "jobs_busy"` and `Retry-After`.
 
 `ether.http.fetch({url,timeoutMs:1200})` bounds a slow remote request by the
 remaining call deadline. Hosted code can catch `e.code === "timeout"`.
@@ -30915,6 +31154,39 @@ type Host interface {
 }
 ``````
 
+## Source: sdk/go/host.go#KVUsage.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `bytes` | `int64` | emitted (validation may require a value) |  |
+| `keys` | `int64` | emitted (validation may require a value) |  |
+| `quotaBytes` | `int64` | emitted (validation may require a value) |  |
+| `quotaKeys` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/host.go#KVUsage
+
+``````
+// KVUsage reports a plugin's current KV bytes (including the 256-byte charge
+// per key), key count, and configured quotas (#591).
+type KVUsage struct {
+	Bytes      int64 `json:"bytes"`
+	Keys       int64 `json:"keys"`
+	QuotaBytes int64 `json:"quotaBytes"`
+	QuotaKeys  int64 `json:"quotaKeys"`
+}
+``````
+
+## Source: sdk/go/host.go#KVUsageHost
+
+``````
+// KVUsageHost reports current KV usage and quotas (#591).
+// RemoteHostClient and MockHost implement it.
+type KVUsageHost interface {
+	KVUsage(ctx context.Context) (KVUsage, error)
+}
+``````
+
 ## Source: sdk/go/host.go#PartStreamHost
 
 ``````
@@ -31125,6 +31397,19 @@ func (c *RemoteHostClient) KVList(ctx context.Context, prefix string) ([]string,
 		return nil, err
 	}
 	return res.Keys, nil
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.KVUsage
+
+``````
+// KVUsage reads the plugin's current KV byte/key usage and quotas.
+func (c *RemoteHostClient) KVUsage(ctx context.Context) (KVUsage, error) {
+	var res KVUsage
+	if _, err := c.callJSON(ctx, http.MethodGet, "/ether/plugin-host/kv-usage", nil, &res, false); err != nil {
+		return KVUsage{}, err
+	}
+	return res, nil
 }
 ``````
 
@@ -38894,6 +39179,10 @@ class _KVClient:
         res = self._call("GET", f"/ether/plugin-host/kv{q}")
         return list(res.get("keys", [])) if isinstance(res, dict) else []
 
+    def usage(self) -> Dict[str, int]:
+        res = self._call("GET", "/ether/plugin-host/kv-usage")
+        return dict(res) if isinstance(res, dict) else {}
+
 
 MIN_DATA_READ_BYTES = 8 * 1024 * 1024
 MAX_DATA_READ_BYTES = 512 * 1024 * 1024
@@ -40858,6 +41147,16 @@ class MockHostClient:
         def list(self, prefix: str = "") -> List[str]:
             return sorted(k for k in self._p.kv_store if k.startswith(prefix))
 
+        def usage(self) -> Dict[str, int]:
+            used = sum(len(v.encode("utf-8")) for v in self._p.kv_store.values())
+            keys = len(self._p.kv_store)
+            return {
+                "bytes": used + keys * 256,
+                "keys": keys,
+                "quotaBytes": 50 * 1024 * 1024,
+                "quotaKeys": 10000,
+            }
+
     class _Secret:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
@@ -41887,7 +42186,7 @@ deadlines protect the host's control plane. Remote plugin processes manage their
 own CPU and memory; owner download/archive ceilings also apply to their host
 services.
 
-An action returning `{job: "build-catalogue"}` starts an owner-triggered job.
+An action or scheduled call returning `{job: "build-catalogue"}` starts a background continuation job.
 Return `{continueInMs: 0, continuation: {next: 41}, progress: "Platform 41 of 92"}`
 from its handler to continue. The next `JobRequest.continuation` is that opaque
 JSON token. Return `{done: true, progress: "Ready"}` to finish, or
@@ -41896,20 +42195,20 @@ Non-2xx responses, invalid results and call failures stop the job.
 
 Ether allows 0–300,000 ms between calls with a minimum 100 ms pause. Total wall
 time uses the owner time ceiling (12 hours by default), with a 1,000,000-call
-sanity bound. Each call gets fresh per-call grants. At most two jobs run per
-plugin and the same route cannot overlap. Job threads use OS background CPU/IO
+sanity bound. Each call gets fresh per-call grants. At most two owner or scheduled jobs and four playback resolver jobs run per
+plugin, and the same route cannot overlap. Job threads use OS background CPU/IO
 priority on macOS, Linux and Windows. They pause before calls and host-service
 operations during playback, Live TV viewing or high CPU/GPU load; pure compute
 runs at reduced scheduling priority. Cancellation interrupts in-flight hosted
-calls. Work starts only following an owner action; no eager background work.
+calls. Work starts only following an owner action, a declared schedule entry, or a playback resolve.
 
 Tokens are limited to 64 KiB and progress to 1,024 UTF-8 bytes. The drawer shows
 progress and a Cancel button. The owner API provides `GET /api/plugins/{id}/jobs`
 and `POST /api/plugins/{id}/jobs/cancel` with `{"path":"/ether/job/build-catalogue"}`.
 Status includes total-time and attempt caps. Disabling, removing or reloading a
 plugin, or stopping Ether, cancels work. The last sixteen route snapshots per
-plugin are retained in memory. Store durable checkpoints in KV to recover on a
-later owner-started run after restart; Ether does not restart work automatically.
+plugin are retained in memory. Store durable checkpoints in KV (`ctx.ether.kv.usage()` reports `{bytes, keys, quotaBytes, quotaKeys}`, including the 256-byte charge per key) to recover on a
+later owner-started or scheduled run after restart; Ether does not restart interrupted jobs automatically.
 
 Owner policy is persisted in `plugins.runtimeLimits` and
 `plugins.runtimeOverrides[pluginId]`, with the same resource field names as the
@@ -42231,6 +42530,13 @@ export interface ViewerWatchEntry {
   completed?: boolean;
 }
 
+export interface KVUsage {
+  bytes: number;
+  keys: number;
+  quotaBytes: number;
+  quotaKeys: number;
+}
+
 export interface EtherHost {
   runtime?: { limits(): MaybePromise<RuntimeLimits> };
   settings?: { get(): MaybePromise<Record<string, unknown>> };
@@ -42239,6 +42545,7 @@ export interface EtherHost {
     put(key: string, value: string): MaybePromise<void>;
     delete(key: string): MaybePromise<void>;
     list(prefix?: string): MaybePromise<string[]>;
+    usage(): MaybePromise<KVUsage>;
   };
   secret: {
     get(name: string): MaybePromise<string>;
@@ -42331,6 +42638,7 @@ interface GlobalEtherBindings {
       put: (k: string, v: string) => void;
       delete: (k: string) => void;
       list: (prefix?: string) => string[];
+      usage?: () => KVUsage;
     };
     secret: {
       get: (name: string) => string;
@@ -42452,6 +42760,10 @@ export function createHostedClient(): EtherHost {
       list(prefix = ""): string[] {
         if (g.ether?.kv) return g.ether.kv.list(prefix) ?? [];
         return callHost<string[]>("kv.list", [prefix]) ?? [];
+      },
+      usage(): KVUsage {
+        if (g.ether?.kv?.usage) return g.ether.kv.usage();
+        return callHost<KVUsage>("kv.usage", []);
       },
     },
     secret: {
@@ -42695,6 +43007,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         const q = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
         const res = await callJson<{ keys: string[] }>("GET", `/ether/plugin-host/kv${q}`);
         return res?.keys ?? [];
+      },
+      async usage(): Promise<KVUsage> {
+        return (await callJson<KVUsage>("GET", "/ether/plugin-host/kv-usage"))!;
       },
     },
     secret: {
@@ -43019,6 +43334,7 @@ export {
   type FetchCacheResult,
   type HostFetchRequest,
   type HostFetchResponse,
+  type KVUsage,
   type RemoteHostOptions,
   type ViewerWatchEntry,
 } from "./host.ts";

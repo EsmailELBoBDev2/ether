@@ -90,6 +90,7 @@ var (
 	ErrPolicyUnconfirmed   = core.ErrPolicyUnconfirmed
 	ErrPrepareSlow         = core.ErrPrepareSlow
 	ErrPreparing           = core.ErrPreparing
+	ErrJobsBusy            = core.ErrJobsBusy
 	ErrReleaseRejected     = core.ErrReleaseRejected
 	ErrSourceUnavailable   = core.ErrSourceUnavailable
 	ErrSourceChanged       = core.ErrSourceChanged
@@ -104,6 +105,25 @@ type PreparingError = core.PreparingError
 // for an ErrPreparing error.
 func PreparingRetrySeconds(err error, fallback int) int {
 	return core.PreparingRetrySeconds(err, fallback)
+}
+
+// JobsBusyError carries the refusal message and retry delay for ErrJobsBusy.
+type JobsBusyError = core.JobsBusyError
+
+// JobsBusyRetrySeconds returns the HTTP Retry-After value in whole seconds
+// for an ErrJobsBusy error.
+func JobsBusyRetrySeconds(err error, fallback int) int {
+	return core.JobsBusyRetrySeconds(err, fallback)
+}
+
+// JobsBusyMessage returns the viewer-facing message for an ErrJobsBusy error.
+func JobsBusyMessage(err error) string {
+	return core.JobsBusyMessage(err)
+}
+
+// JobsBusyErrorBody returns the JSON media error envelope for jobs_busy.
+func JobsBusyErrorBody(err error) []byte {
+	return core.JobsBusyErrorBody(err)
 }
 
 // FilterOutSurroundAudio returns codecs without surround audio formats.

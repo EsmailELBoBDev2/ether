@@ -130,6 +130,13 @@ func (m *Manager) openKindInitial(ctx context.Context, s *session) (*generation,
 					Message: "Plugin stream is still preparing",
 					Detail:  s.kindSourceID,
 				})
+			} else if errors.Is(err, core.ErrJobsBusy) {
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "info",
+					Message: "Plugin preparation jobs are all busy",
+					Detail:  core.JobsBusyMessage(err),
+				})
 			} else {
 				m.recordTimeline(s, TimelineEvent{
 					Kind:    "candidate",

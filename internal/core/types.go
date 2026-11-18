@@ -5,6 +5,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -171,6 +172,7 @@ var (
 	ErrNotFound            = errors.New("not found")
 	ErrNotAvailable        = errors.New("not available yet") // no acceptable release exists
 	ErrPreparing           = errors.New("item is still being prepared")
+	ErrJobsBusy            = errors.New("playback preparation jobs are all busy")
 	ErrUnreleased          = errors.New("title has not been released")
 	ErrArticleMissing      = errors.New("article missing on all providers")
 	ErrArticleCorrupt      = errors.New("corrupt article or media data")
@@ -230,6 +232,77 @@ func PreparingRetrySeconds(err error, fallback int) int {
 		return sec
 	}
 	return fallback
+}
+
+// JobsBusyError wraps ErrJobsBusy with an honest refusal message and retry delay (#590).
+type JobsBusyError struct {
+	Message    string
+	RetryAfter time.Duration
+}
+
+func (e *JobsBusyError) Error() string {
+	if e != nil && e.Message != "" {
+		return e.Message
+	}
+	return ErrJobsBusy.Error()
+}
+
+func (e *JobsBusyError) Is(target error) bool { return target == ErrJobsBusy }
+
+// JobsBusyFromPending constructs an ErrJobsBusy carrying the refusal message and
+// a retry delay from PendingReply.RetryInMS, defaulting to 5s when unspecified.
+func JobsBusyFromPending(message string, retryInMS int64) error {
+	d := 5 * time.Second
+	if retryInMS > 0 {
+		d = time.Duration(retryInMS) * time.Millisecond
+		if d < time.Second {
+			d = time.Second
+		} else if d > 60*time.Second {
+			d = 60 * time.Second
+		}
+	}
+	return &JobsBusyError{Message: message, RetryAfter: d}
+}
+
+// JobsBusyRetrySeconds returns the HTTP Retry-After value in whole seconds for
+// an ErrJobsBusy error, rounding sub-second durations up and using fallback
+// (default 5) when err carries no explicit RetryAfter.
+func JobsBusyRetrySeconds(err error, fallback int) int {
+	if fallback <= 0 {
+		fallback = 5
+	}
+	var be *JobsBusyError
+	if errors.As(err, &be) && be != nil && be.RetryAfter > 0 {
+		sec := int((be.RetryAfter + time.Second - 1) / time.Second)
+		if sec < 1 {
+			sec = 1
+		}
+		if sec > 300 {
+			sec = 300
+		}
+		return sec
+	}
+	return fallback
+}
+
+// JobsBusyMessage returns the viewer-facing message for an ErrJobsBusy refusal.
+func JobsBusyMessage(err error) string {
+	var be *JobsBusyError
+	if errors.As(err, &be) && be != nil && be.Message != "" {
+		return be.Message
+	}
+	return "Four playback preparation jobs are already running; wait for one to finish."
+}
+
+// JobsBusyErrorBody encodes the standard JSON media error envelope for jobs_busy.
+func JobsBusyErrorBody(err error) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"error": map[string]string{
+			"code":    "jobs_busy",
+			"message": JobsBusyMessage(err),
+		},
+	})
+	return b
 }
 
 // User is a Plex account with access to this server: the owner or a friend

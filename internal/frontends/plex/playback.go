@@ -92,6 +92,8 @@ func playbackMessage(err error) string {
 		return msgStreamLimit
 	case errors.Is(err, frontend.ErrPrepareSlow), errors.Is(err, frontend.ErrPreparing):
 		return msgPrepareSlow
+	case errors.Is(err, frontend.ErrJobsBusy):
+		return frontend.JobsBusyMessage(err)
 	case errors.Is(err, frontend.ErrBudgetExhausted):
 		return "Indexers are temporarily at their limit. Ether will retry automatically; previously cached releases may still play."
 	}
@@ -1488,7 +1490,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	// A slow decision leaves acquisition running. Join that shared flight
 	// below; only a completed source failure should short-circuit start.
-	if err, failed := s.transcodes.takeFailure(p.sessionID, pr.User.ID, p.key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) && !errors.Is(err, frontend.ErrPreparing) {
+	if err, failed := s.transcodes.takeFailure(p.sessionID, pr.User.ID, p.key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) && !errors.Is(err, frontend.ErrPreparing) && !errors.Is(err, frontend.ErrJobsBusy) {
 		s.log.Info("start playback failed", "key", p.key, "reason", playbackMessage(err), "err", err, "decision", "remembered")
 		s.writeStartErr(w, r, pr, err)
 		return
@@ -2211,7 +2213,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			if pr.SessionID != "" && id != sanitizeSessionID(pr.SessionID) {
 				continue // a distinct playback attempt must be allowed to retry
 			}
-			if err, failed := s.transcodes.takeFailure(id, pr.User.ID, key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) && !errors.Is(err, frontend.ErrPreparing) {
+			if err, failed := s.transcodes.takeFailure(id, pr.User.ID, key, s.now()); failed && !errors.Is(err, frontend.ErrPrepareSlow) && !errors.Is(err, frontend.ErrPreparing) && !errors.Is(err, frontend.ErrJobsBusy) {
 				s.writePartErr(w, r, pr, err)
 				return
 			}
@@ -2337,7 +2339,7 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 // Part acquisition failures distinguish an absent provider file from a failed
 // upstream transport; the conversion start routes retain their own contract.
 func (s *Server) writePartErr(w http.ResponseWriter, r *http.Request, pr *Request, err error) {
-	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrArchiveUnstreamable) {
+	if errors.Is(err, frontend.ErrNotFound) || errors.Is(err, frontend.ErrNotAvailable) || errors.Is(err, frontend.ErrUnauthorized) || errors.Is(err, frontend.ErrStreamLimit) || errors.Is(err, frontend.ErrPrepareSlow) || errors.Is(err, frontend.ErrPreparing) || errors.Is(err, frontend.ErrJobsBusy) || errors.Is(err, frontend.ErrArchiveUnstreamable) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}

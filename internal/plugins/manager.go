@@ -116,8 +116,11 @@ type Manager struct {
 	eventSubs    map[string]map[string]Record
 	feedLogs     sync.Map // feed key -> *faillog.Tracker
 	notifyLocks  sync.Map // plugin id -> *sync.Mutex
-	// schedule bookkeeping: "plugin|call" -> next run
-	nextRun map[string]time.Time
+	// schedule bookkeeping: "plugin|call" -> next run, in-flight call, and continuation job
+	nextRun          map[string]time.Time
+	scheduleInFlight map[string]*scheduleFlight
+	scheduleJobs     map[string]*actionJob
+	scheduleWG       sync.WaitGroup
 	// rate-limit bookkeeping for host log and notify
 	notifyTimes map[string][]time.Time
 	logTimes    map[string][]time.Time
@@ -182,8 +185,11 @@ func New(deps Deps) (*Manager, error) {
 		store:      &storage{db: deps.DB, sealer: deps.Sealer, now: now}, deps: deps,
 		log: log, now: now, client: client,
 		fatories: map[string]RuntimeFactory{}, runtimes: map[string]Runtime{}, warming: map[string]bool{}, shadow: map[string]bool{},
-		eventSubs: map[string]map[string]Record{},
-		nextRun:   map[string]time.Time{}, notifyTimes: map[string][]time.Time{}, logTimes: map[string][]time.Time{},
+		eventSubs:        map[string]map[string]Record{},
+		nextRun:          map[string]time.Time{},
+		scheduleInFlight: map[string]*scheduleFlight{},
+		scheduleJobs:     map[string]*actionJob{},
+		notifyTimes:      map[string][]time.Time{}, logTimes: map[string][]time.Time{},
 	}
 	return m, nil
 }
@@ -1100,6 +1106,16 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {
 			delete(m.nextRun, key)
+		}
+	}
+	for key := range m.scheduleInFlight {
+		if strings.HasPrefix(key, id+"|") {
+			delete(m.scheduleInFlight, key)
+		}
+	}
+	for key := range m.scheduleJobs {
+		if strings.HasPrefix(key, id+"|") {
+			delete(m.scheduleJobs, key)
 		}
 	}
 	hooks := append([]func(context.Context, string){}, m.removeHooks...)

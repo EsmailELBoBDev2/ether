@@ -266,6 +266,7 @@ defaults per library afterwards.
   | 409 | `no_source` | The item has no playable source (your resolve returned none) |
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
   | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
+  | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
   | 503 | `source_unavailable` | The source is temporarily unavailable |
   | 502 | `open_failed` | The source could not be opened |
 
@@ -534,7 +535,7 @@ archive members directly to clients itself (`internal/plugins/frontend_blob.go`)
 
 ### Owner-started multi-call work and resource requests
 
-A page action returning `{job: "build-catalogue"}` starts a background job.
+A page action or scheduled call returning `{job: "build-catalogue"}` starts a background job (up to two owner/scheduled jobs per plugin, separate from playback preparation jobs).
 The job returns `continueInMs`, an opaque JSON `continuation`, and a `progress`
 string to continue; Ether forwards the token in the next POST body. `done: true`
 finishes, `failed: "reason"` fails, and an absent `continueInMs` finishes too.
@@ -572,12 +573,15 @@ per-route limits and how owners raise ceilings.
 Both routes can return `{pending:true,retryInMs:1000,job:"/ether/job/prepare"}`.
 `job` is optional. Ether clamps retry delays to 250–5000 ms, retries for up to
 25 seconds total per Play, and keeps each invocation within five seconds.
-Pending is neutral for health. When the 25-second budget expires while the reply is still `pending` (or when
-background job slots are full), Ether returns `503` with `code: "preparing"` and
-`Retry-After` set from the last `retryInMs` (defaulting to `5` seconds) across
-`kind-media`, Vela, Jellyfin/MediaBrowser, and Plex API routes, and never saves
-a negative resolution — whereas a real empty `sources: []` answer stays `409`
-`no_source`. A job receives the original request body (including `partIndex` when
+Pending is neutral for health. When the 25-second budget expires while the reply is still `pending`,
+Ether returns `503` with `code: "preparing"` and `Retry-After` set from the last
+`retryInMs` (defaulting to `5` seconds) across `kind-media`, Vela,
+Jellyfin/MediaBrowser, and Plex API routes, and never saves a negative resolution.
+Resolver preparation jobs have their own four-slot pool per plugin (separate from
+the two-slot owner/scheduled pool); if all four resolver slots are running, Ether
+returns `503` with `code: "jobs_busy"`, `Retry-After`, and the refusal message,
+and records the refused job on the plugin Jobs view. A real empty `sources: []`
+answer stays `409` `no_source`. A job receives the original request body (including `partIndex` when
 resolving a multi-part item), uses promoted deadlines and continuation replies,
 and is deduplicated per plugin/kind/item (and `partIndex`). Job completion wakes
 the next resolve.

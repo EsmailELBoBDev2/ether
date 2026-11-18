@@ -191,7 +191,7 @@ deadlines protect the host's control plane. Remote plugin processes manage their
 own CPU and memory; owner download/archive ceilings also apply to their host
 services.
 
-An action returning `{job: "build-catalogue"}` starts an owner-triggered job.
+An action or scheduled call returning `{job: "build-catalogue"}` starts a background continuation job.
 Return `{continueInMs: 0, continuation: {next: 41}, progress: "Platform 41 of 92"}`
 from its handler to continue. The next `JobRequest.continuation` is that opaque
 JSON token. Return `{done: true, progress: "Ready"}` to finish, or
@@ -200,20 +200,20 @@ Non-2xx responses, invalid results and call failures stop the job.
 
 Ether allows 0–300,000 ms between calls with a minimum 100 ms pause. Total wall
 time uses the owner time ceiling (12 hours by default), with a 1,000,000-call
-sanity bound. Each call gets fresh per-call grants. At most two jobs run per
-plugin and the same route cannot overlap. Job threads use OS background CPU/IO
+sanity bound. Each call gets fresh per-call grants. At most two owner or scheduled jobs and four playback resolver jobs run per
+plugin, and the same route cannot overlap. Job threads use OS background CPU/IO
 priority on macOS, Linux and Windows. They pause before calls and host-service
 operations during playback, Live TV viewing or high CPU/GPU load; pure compute
 runs at reduced scheduling priority. Cancellation interrupts in-flight hosted
-calls. Work starts only following an owner action; no eager background work.
+calls. Work starts only following an owner action, a declared schedule entry, or a playback resolve.
 
 Tokens are limited to 64 KiB and progress to 1,024 UTF-8 bytes. The drawer shows
 progress and a Cancel button. The owner API provides `GET /api/plugins/{id}/jobs`
 and `POST /api/plugins/{id}/jobs/cancel` with `{"path":"/ether/job/build-catalogue"}`.
 Status includes total-time and attempt caps. Disabling, removing or reloading a
 plugin, or stopping Ether, cancels work. The last sixteen route snapshots per
-plugin are retained in memory. Store durable checkpoints in KV to recover on a
-later owner-started run after restart; Ether does not restart work automatically.
+plugin are retained in memory. Store durable checkpoints in KV (`ctx.ether.kv.usage()` reports `{bytes, keys, quotaBytes, quotaKeys}`, including the 256-byte charge per key) to recover on a
+later owner-started or scheduled run after restart; Ether does not restart interrupted jobs automatically.
 
 Owner policy is persisted in `plugins.runtimeLimits` and
 `plugins.runtimeOverrides[pluginId]`, with the same resource field names as the

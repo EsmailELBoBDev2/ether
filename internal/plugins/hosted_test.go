@@ -36,6 +36,14 @@ func (h *memHost) KVDelete(_ context.Context, k string) error { delete(h.kv, k);
 func (h *memHost) KVList(context.Context, string) ([]string, error) {
 	return nil, nil
 }
+func (h *memHost) KVUsage(context.Context) (KVUsage, error) {
+	var used int64
+	for _, v := range h.kv {
+		used += int64(len(v))
+	}
+	keys := int64(len(h.kv))
+	return KVUsage{Bytes: used + keys*KVKeyChargeBytes, Keys: keys, QuotaBytes: KVQuotaBytes, QuotaKeys: KVQuotaKeys}, nil
+}
 func (h *memHost) SecretGet(context.Context, string) (string, error) { return "", ErrPermissionDenied }
 func (h *memHost) HTTPFetch(_ context.Context, req FetchRequest) (FetchResponse, error) {
 	if req.URL == "https://dl.example.test/file.zip" {

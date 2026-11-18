@@ -5,8 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 const ResolverTotal = 25 * time.Second
@@ -82,7 +86,16 @@ func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Respo
 		if !started && strings.HasPrefix(pending.Job, "/ether/job/") {
 			job, err = m.startResolverJob(pluginID, resp.Body, req.Body, suffix)
 			if err != nil {
-				return Response{Status: 202, Body: pendingBudgetBody(lastRetryMS)}, nil
+				busyErr := core.JobsBusyFromPending(err.Error(), lastRetryMS)
+				sec := core.JobsBusyRetrySeconds(busyErr, 5)
+				return Response{
+					Status: http.StatusServiceUnavailable,
+					Headers: map[string]string{
+						"Retry-After":         strconv.Itoa(sec),
+						"X-Ether-Media-Error": "jobs_busy",
+					},
+					Body: core.JobsBusyErrorBody(busyErr),
+				}, busyErr
 			}
 			started = true
 		}

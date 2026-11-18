@@ -954,6 +954,9 @@ func (r *KindResolver) callPluginResolve(ctx context.Context, rec pluginitems.Ki
 		Body:   body,
 	})
 	if err != nil {
+		if errors.Is(err, core.ErrJobsBusy) {
+			return nil, err
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, core.ErrNotAvailable
 		}

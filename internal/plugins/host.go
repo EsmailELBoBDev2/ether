@@ -107,6 +107,13 @@ func (h *host) KVList(ctx context.Context, prefix string) ([]string, error) {
 	return h.m.store.kvList(ctx, h.plugin, prefix)
 }
 
+func (h *host) KVUsage(ctx context.Context) (KVUsage, error) {
+	if _, _, err := h.record(ctx); err != nil {
+		return KVUsage{}, err
+	}
+	return h.m.store.kvUsage(ctx, h.plugin)
+}
+
 // Settings returns the plugin's stored non-secret settings.
 func (h *host) Settings(ctx context.Context) (map[string]any, error) {
 	r, _, err := h.record(ctx)

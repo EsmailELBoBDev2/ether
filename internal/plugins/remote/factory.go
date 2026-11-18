@@ -332,6 +332,15 @@ func (a HostAdapter) KVList(ctx context.Context, pluginID, prefix string) ([]str
 	return keys, mapHostErr(err)
 }
 
+func (a HostAdapter) KVUsage(ctx context.Context, pluginID string) (plugins.KVUsage, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.KVUsage{}, err
+	}
+	usage, err := h.KVUsage(ctx)
+	return usage, mapHostErr(err)
+}
+
 func (a HostAdapter) CatalogSearch(ctx context.Context, pluginID, query string, limit, offset int) (json.RawMessage, error) {
 	h, err := a.host(pluginID)
 	if err != nil {

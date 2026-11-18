@@ -525,6 +525,19 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		sort.Strings(keys)
 		b, _ := json.Marshal(keys)
 		return b, nil
+	case "kv.usage":
+		var used int64
+		for _, v := range h.kv {
+			used += int64(len(v))
+		}
+		keys := int64(len(h.kv))
+		b, _ := json.Marshal(plugins.KVUsage{
+			Bytes:      used + keys*plugins.KVKeyChargeBytes,
+			Keys:       keys,
+			QuotaBytes: plugins.KVQuotaBytes,
+			QuotaKeys:  plugins.KVQuotaKeys,
+		})
+		return b, nil
 	case "secret.get":
 		sec := str(0)
 		for _, allowed := range h.man.Ether.Permissions.Secrets {

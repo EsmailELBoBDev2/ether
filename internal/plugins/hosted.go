@@ -410,6 +410,9 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "kv.list":
 		keys, err := b.h.KVList(ctx, str(0))
 		return result(keys, err)
+	case "kv.usage":
+		usage, err := b.h.KVUsage(ctx)
+		return result(usage, err)
 	case "settings.get":
 		v, err := b.h.Settings(ctx)
 		return result(v, err)

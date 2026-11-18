@@ -635,6 +635,15 @@ type Installed struct {
 // chosen by manifest ether.runtime.kind ("hosted" or "remote").
 type RuntimeFactory func(inst Installed) (Runtime, error)
 
+// KVUsage reports a plugin's current KV bytes (including the 256-byte charge
+// per key), key count, and configured quotas (#591).
+type KVUsage struct {
+	Bytes      int64 `json:"bytes"`
+	Keys       int64 `json:"keys"`
+	QuotaBytes int64 `json:"quotaBytes"`
+	QuotaKeys  int64 `json:"quotaKeys"`
+}
+
 // Host is the set of Ether services a plugin may call (SPEC §5.1.5).
 // Every method re-checks the plugin's live grants, so a revoke takes
 // effect mid-call. Writes are journalled; in shadow mode they are
@@ -645,6 +654,7 @@ type Host interface {
 	KVPut(ctx context.Context, key string, value []byte) error
 	KVDelete(ctx context.Context, key string) error
 	KVList(ctx context.Context, prefix string) ([]string, error)
+	KVUsage(ctx context.Context) (KVUsage, error)
 
 	// SecretGet returns a sealed setting the manifest declared in
 	// permissions.secrets. Hosted plugins only.
@@ -852,6 +862,7 @@ var (
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
+	ErrJobsBusy         = core.ErrJobsBusy
 
 	ErrDigestMismatch = errors.New("plugins: artifact digest does not match")
 	ErrRevoked        = errors.New("plugins: plugin was revoked")

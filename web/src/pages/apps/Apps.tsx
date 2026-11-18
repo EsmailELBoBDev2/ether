@@ -223,7 +223,10 @@ function ConnectDevice({
       <div className="flex flex-wrap items-center gap-2 px-5 py-3">{leadingAction}</div>
     ) : null;
   }
-  if (["stremio", "webdav", "m3u", "xtream"].includes(info.descriptor.id)) {
+  if (
+    ["stremio", "webdav", "m3u", "xtream"].includes(info.descriptor.id) ||
+    (info.descriptor.id.startsWith("plugin:") && info.descriptor.auth !== "none_lan")
+  ) {
     return (
       <div className="flex flex-wrap items-center gap-2 px-5 py-3">
         {leadingAction}

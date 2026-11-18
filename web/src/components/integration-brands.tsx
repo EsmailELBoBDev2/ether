@@ -2,7 +2,7 @@ import postersplus from "../assets/brands/postersplus.png?no-inline";
 import xrdb from "../assets/brands/xrdb.png?no-inline";
 import betterposters from "../assets/brands/betterposters.png?no-inline";
 import rpdb from "../assets/brands/rpdb.jpg?no-inline";
-import { Cast, FolderOpen, ListVideo } from "lucide-react";
+import { Cast, FolderOpen, ListVideo, Plug } from "lucide-react";
 import type { ReactNode } from "react";
 import emby from "../assets/brands/emby.svg?no-inline";
 import jellyfin from "../assets/brands/jellyfin.svg?no-inline";
@@ -57,7 +57,7 @@ export function VelaMark() {
   return <img src={vela} alt="" aria-hidden className="block size-7 rounded-md" />;
 }
 
-/** DLNA, Files, and M3U have no vendored mark. These are icons, not letter tiles. */
+/** DLNA, Files, M3U, and plugin adapters have no vendored mark. These are icons, not letter tiles. */
 export function householdIcon(id: string): ReactNode | undefined {
   switch (id) {
     case "dlna":
@@ -68,7 +68,7 @@ export function householdIcon(id: string): ReactNode | undefined {
     case "m3u":
       return <ListVideo size={22} aria-hidden />;
     default:
-      return undefined;
+      return id.startsWith("plugin:") ? <Plug size={22} aria-hidden /> : undefined;
   }
 }
 export function SimklMark() {

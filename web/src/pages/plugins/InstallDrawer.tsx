@@ -42,6 +42,7 @@ export function InstallDrawer({
   const [preview, setPreview] = useState<InstallPreview | null>(null);
   const [viewers, setViewers] = useState<number[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
+  const [operatorHosts, setOperatorHosts] = useState<string[]>([]);
   const [shadow, setShadow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -53,6 +54,7 @@ export function InstallDrawer({
     setPreview(null);
     setViewers([]);
     setFolders([]);
+    setOperatorHosts([]);
     setShadow(false);
     setBusy(false);
     setError(null);
@@ -85,6 +87,7 @@ export function InstallDrawer({
           }),
         });
       }
+      setOperatorHosts([]);
       setPreview(res);
     } catch (e) {
       setError(e);
@@ -105,7 +108,11 @@ export function InstallDrawer({
         form.append(
           "options",
           JSON.stringify({
-            grants: { viewers, folders },
+            grants: {
+              viewers,
+              folders,
+              operatorHosts: preview.needsOperatorHosts ? operatorHosts : undefined,
+            },
             shadow,
             acceptAddedPermissions: !!preview.addedPermissions?.length,
           }),
@@ -123,6 +130,7 @@ export function InstallDrawer({
             grants: {
               viewers: preview.needsViewers ? viewers : undefined,
               folders: preview.needsFolders ? folders : undefined,
+              operatorHosts: preview.needsOperatorHosts ? operatorHosts : undefined,
               lan: privateAddr && lan ? true : undefined,
             },
             shadow,
@@ -348,10 +356,14 @@ export function InstallDrawer({
               verified={preview.verified}
               needsViewers={preview.needsViewers}
               needsFolders={preview.needsFolders}
+              needsOperatorHosts={preview.needsOperatorHosts}
               viewers={viewers}
               onChangeViewers={setViewers}
               folders={folders}
               onChangeFolders={setFolders}
+              operatorHosts={operatorHosts}
+              pendingOperatorHosts={preview.pendingOperatorHosts}
+              onChangeOperatorHosts={setOperatorHosts}
               addedPermissions={preview.addedPermissions}
             />
 

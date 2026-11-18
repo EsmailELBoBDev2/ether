@@ -3441,8 +3441,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
         "m3u",
         "xtream",
       ].filter((id) => state.config.frontends?.[id]?.enabled);
-      if (method === "GET" && seg.length === appsOffset + 1) return json({ apps: enabled });
-      const surface = seg[appsOffset + 1];
+      const adapters: Record<string, { name: string; logo?: string; auth?: string }> = {};
+      for (const [id, entry] of Object.entries(state.config.frontends ?? {})) {
+        if (!id.startsWith("plugin:") || !entry?.enabled) continue;
+        enabled.push(id);
+        adapters[id] = { name: id.split(":").at(-1) || id, auth: "ether_token" };
+      }
+      if (method === "GET" && seg.length === appsOffset + 1)
+        return json(Object.keys(adapters).length ? { apps: enabled, adapters } : { apps: enabled });
+      const surface = seg[appsOffset + 1] ? decodeURIComponent(seg[appsOffset + 1]!) : undefined;
       if (method === "POST" && surface && enabled.includes(surface)) {
         const qr =
           "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
@@ -3484,6 +3491,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
             password: "mock-app-password",
             qr,
           });
+        }
+        if (surface.startsWith("plugin:")) {
+          const key = surface.split(":").at(-1) || "adapter";
+          return json({ surface, url: `http://ether.local/${key}`, token: "mock-grant", qr });
         }
         const path =
           surface === "m3u" ? "m3u/mock-grant/playlist.m3u" : "stremio/mock-grant/manifest.json";

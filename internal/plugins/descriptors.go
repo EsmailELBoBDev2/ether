@@ -281,9 +281,12 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	p := man.Ether.Permissions
 	var localHosts []string
 	for _, h := range p.Network {
-		if IsLocalNetworkHost(h) {
+		switch {
+		case strings.EqualFold(strings.TrimSpace(h), OperatorNetworkEntry):
+			lines = append(lines, "Connects to addresses you approve")
+		case IsLocalNetworkHost(h):
 			localHosts = append(localHosts, h)
-		} else {
+		default:
 			lines = append(lines, "Connects to "+h)
 		}
 	}
@@ -359,9 +362,12 @@ func PermissionDiff(cur, next Manifest) []string {
 	var addedLocal []string
 	for _, h := range b.Network {
 		if !have[h] {
-			if IsLocalNetworkHost(h) {
+			switch {
+			case strings.EqualFold(strings.TrimSpace(h), OperatorNetworkEntry):
+				added = append(added, "Connects to addresses you approve")
+			case IsLocalNetworkHost(h):
 				addedLocal = append(addedLocal, h)
-			} else {
+			default:
 				added = append(added, "Connects to "+h)
 			}
 		}

@@ -80,6 +80,9 @@ func localListCoversHost(entries []string, hostName string) bool {
 		return false
 	}
 	for _, raw := range entries {
+		if strings.EqualFold(strings.TrimSpace(raw), OperatorNetworkEntry) {
+			continue
+		}
 		norm, ok := safefetch.NormalizeTrustedHost(raw)
 		if !ok {
 			continue
@@ -116,10 +119,10 @@ func localGrantCoversBlockedEntry(granted []string, blocked string) bool {
 
 // IsLocalNetworkHost reports whether raw is an exact non-public LAN host
 // (dotless hostname, .local, .lan, .home.arpa, or a private/CGNAT IP literal).
-// Loopback (localhost, 127.0.0.1, ::1) and wildcards are excluded so a
-// manifest never pre-grants loopback access.
+// Loopback (localhost, 127.0.0.1, ::1), "operator", and wildcards are excluded
+// so a manifest never pre-grants loopback or operator-placeholder access.
 func IsLocalNetworkHost(raw string) bool {
-	if strings.Contains(raw, "*") {
+	if strings.Contains(raw, "*") || strings.EqualFold(strings.TrimSpace(raw), OperatorNetworkEntry) {
 		return false
 	}
 	norm, ok := safefetch.NormalizeTrustedHost(raw)
@@ -166,7 +169,10 @@ func DeclaredLocalHosts(man Manifest) []string {
 }
 
 func isValidManifestNetworkEntry(raw string) bool {
-	if strings.Contains(raw, "://") {
+	if raw == OperatorNetworkEntry {
+		return true
+	}
+	if strings.EqualFold(raw, OperatorNetworkEntry) || strings.Contains(raw, "://") {
 		return false
 	}
 	lower := strings.ToLower(raw)
@@ -181,7 +187,7 @@ func isValidManifestNetworkEntry(raw string) bool {
 }
 
 func networkAllowedURL(patterns []string, u *url.URL) bool {
-	if u == nil {
+	if u == nil || strings.EqualFold(u.Hostname(), OperatorNetworkEntry) {
 		return false
 	}
 	if hostAllowed(patterns, u.Hostname()) {
@@ -193,6 +199,9 @@ func networkAllowedURL(patterns []string, u *url.URL) bool {
 func networkHostDeclaredOrGranted(man Manifest, g Grants, host string) bool {
 	if man.Ether != nil {
 		if hostAllowed(man.Ether.Permissions.Network, host) || localListCoversHost(man.Ether.Permissions.Network, host) {
+			return true
+		}
+		if DeclaresOperatorHosts(man) && g.allowsOperatorHostName(host) {
 			return true
 		}
 	}
@@ -236,8 +245,15 @@ func (h *host) allowNetworkURL(ctx context.Context, u *url.URL) error {
 		h.noteDenied("network")
 		return fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
-	if networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) || g.allowsLocalURL(u) {
+	if networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) ||
+		g.allowsLocalURL(u) ||
+		(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorURL(u)) {
 		return nil
+	}
+	if DeclaresOperatorHosts(r.Manifest) {
+		blocked := urlHostPortDisplay(u)
+		h.m.noteBlockedOperatorHost(ctx, h.plugin, blocked)
+		return &BlockedOperatorHostError{Host: blocked}
 	}
 	if IsLocalNetworkHost(u.Hostname()) {
 		blocked := urlHostPortDisplay(u)

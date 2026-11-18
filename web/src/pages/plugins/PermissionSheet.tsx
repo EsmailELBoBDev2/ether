@@ -9,6 +9,7 @@ import {
 import {
   AlertTriangle,
   FolderOpen,
+  Globe,
   Network,
   Plus,
   Shield,
@@ -134,6 +135,131 @@ function cleanLocalHostInput(raw: string): string {
   return m ? m[1]! : trimmed;
 }
 
+function cleanOperatorHostInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "*" || trimmed.toLowerCase() === "operator") return "";
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const u = new URL(trimmed);
+      return u.host.toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+  const host = trimmed.split(/[/?#]/)[0]?.trim().toLowerCase() ?? "";
+  if (!host || host === "operator" || host.includes("*")) {
+    return "";
+  }
+  return host;
+}
+
+function operatorGrantCovers(approved: string[], candidate: string): boolean {
+  const target = candidate.toLowerCase();
+  const targetName = target.split(":")[0]!;
+  return approved.some((entry) => {
+    const clean = entry.toLowerCase();
+    return clean === target || clean === targetName;
+  });
+}
+
+export function OperatorHostGrantsPicker({
+  value,
+  pending = [],
+  onChange,
+}: {
+  value: string[];
+  pending?: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const addHost = () => {
+    const clean = cleanOperatorHostInput(draft);
+    if (!clean) return;
+    if (!value.some((h) => h.toLowerCase() === clean)) {
+      onChange([...value, clean]);
+    }
+    setDraft("");
+  };
+
+  const approveHost = (host: string) => {
+    const clean = cleanOperatorHostInput(host);
+    if (!clean) return;
+    if (!value.some((h) => h.toLowerCase() === clean)) {
+      onChange([...value, clean]);
+    }
+  };
+
+  const waiting = pending.filter((host) => !operatorGrantCovers(value, host));
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-border bg-bg-subtle p-3.5">
+      <div className="flex items-center gap-2 text-xs font-medium text-fg">
+        <Globe size={14} className="text-fg-muted" aria-hidden />
+        <span>{t("Approved addresses")}</span>
+      </div>
+      <p className="text-xs text-fg-muted">
+        {t("Lets this plugin connect to the server addresses you set and approve.")}
+      </p>
+      {waiting.length > 0 ? (
+        <ul className="space-y-1.5" aria-label={t("Addresses waiting for approval")}>
+          {waiting.map((host) => (
+            <li
+              key={host}
+              className="flex items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-xs"
+            >
+              <span className="min-w-0 flex-1 truncate text-fg">
+                {t("Needs approval to connect to {host}", { host })}
+              </span>
+              <Button type="button" variant="outline" size="sm" onClick={() => approveHost(host)}>
+                {t("Approve")}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {value.length > 0 ? (
+        <ul className="space-y-1.5" aria-label={t("Approved addresses")}>
+          {value.map((host) => (
+            <li
+              key={host}
+              className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs"
+            >
+              <code className="min-w-0 flex-1 truncate font-mono text-fg">{host}</code>
+              <button
+                type="button"
+                aria-label={t("Revoke {host}", { host })}
+                onClick={() => onChange(value.filter((h) => h !== host))}
+                className="rounded p-0.5 text-fg-subtle hover:bg-surface-hover hover:text-fg"
+              >
+                <X size={13} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Input
+          value={draft}
+          onChange={(e) => setDraft(e.currentTarget.value)}
+          placeholder={t("api.example.com")}
+          aria-label={t("Server address")}
+          className="flex-1 font-mono text-xs"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addHost();
+            }
+          }}
+        />
+        <Button type="button" variant="outline" size="sm" onClick={addHost}>
+          <Plus size={14} /> {t("Approve address")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function LocalHostGrantsPicker({
   value,
   blocked = [],
@@ -235,10 +361,14 @@ export function PermissionSheet({
   verified,
   needsViewers,
   needsFolders,
+  needsOperatorHosts,
   viewers,
   onChangeViewers,
   folders,
   onChangeFolders,
+  operatorHosts,
+  pendingOperatorHosts,
+  onChangeOperatorHosts,
   addedPermissions,
   ownDraft = false,
 }: {
@@ -248,10 +378,14 @@ export function PermissionSheet({
   ownDraft?: boolean;
   needsViewers?: boolean;
   needsFolders?: boolean;
+  needsOperatorHosts?: boolean;
   viewers: number[];
   onChangeViewers: (next: number[]) => void;
   folders: string[];
   onChangeFolders: (next: string[]) => void;
+  operatorHosts?: string[];
+  pendingOperatorHosts?: string[];
+  onChangeOperatorHosts?: (next: string[]) => void;
   addedPermissions?: string[];
 }) {
   const lines =
@@ -318,6 +452,14 @@ export function PermissionSheet({
       {needsViewers ? <ViewerGrantsPicker value={viewers} onChange={onChangeViewers} /> : null}
 
       {needsFolders ? <FolderGrantsPicker value={folders} onChange={onChangeFolders} /> : null}
+
+      {needsOperatorHosts && onChangeOperatorHosts ? (
+        <OperatorHostGrantsPicker
+          value={operatorHosts ?? []}
+          pending={pendingOperatorHosts}
+          onChange={onChangeOperatorHosts}
+        />
+      ) : null}
     </div>
   );
 }

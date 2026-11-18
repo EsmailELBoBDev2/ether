@@ -360,7 +360,7 @@ func isHTTPSURL(s string) bool {
 func validatePermissions(p Permissions, add func(string, string)) {
 	for i, h := range p.Network {
 		if !isValidManifestNetworkEntry(h) {
-			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, with a wildcard only as *.example.com")
+			add(fmt.Sprintf("ether.permissions.network[%d]", i), "must be a host name, \"operator\", or a wildcard only as *.example.com")
 		}
 	}
 	level := func(field, v string, allowed ...string) {

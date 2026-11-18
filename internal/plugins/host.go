@@ -153,19 +153,35 @@ func (m *Manager) AllowNetworkHost(ctx context.Context, pluginID, hostName strin
 	if err != nil || r.Manifest.Ether == nil {
 		return false
 	}
-	if err := h.deny(r, g, "network", "", func(string) bool {
-		return hostAllowed(r.Manifest.Ether.Permissions.Network, hostName) || g.allowsLocalHostName(hostName)
-	}); err != nil {
+	if g.revoked("network") {
+		h.noteDenied("network")
 		return false
 	}
-	return true
+	if hostAllowed(r.Manifest.Ether.Permissions.Network, hostName) ||
+		g.allowsLocalHostName(hostName) ||
+		(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorHostName(hostName)) {
+		return true
+	}
+	if DeclaresOperatorHosts(r.Manifest) {
+		m.noteBlockedOperatorHost(ctx, pluginID, hostName)
+		return false
+	}
+	if IsLocalNetworkHost(hostName) {
+		m.noteBlockedLocalHost(ctx, pluginID, hostName)
+		return false
+	}
+	h.noteDenied("network")
+	return false
 }
 
 // hostAllowed matches a host against the manifest network list.
 func hostAllowed(patterns []string, host string) bool {
 	host = strings.ToLower(host)
 	for _, p := range patterns {
-		p = strings.ToLower(p)
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == OperatorNetworkEntry {
+			continue
+		}
 		if strings.HasPrefix(p, "*.") {
 			if strings.HasSuffix(host, p[1:]) && host != p[2:] {
 				return true
@@ -189,6 +205,10 @@ func fetchError(host string, err error) error {
 	var blocked *BlockedLocalHostError
 	if errors.As(err, &blocked) {
 		return blocked
+	}
+	var blockedOp *BlockedOperatorHostError
+	if errors.As(err, &blockedOp) {
+		return blockedOp
 	}
 	reason := "network error"
 	switch {
@@ -224,7 +244,14 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
-	if !networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) && !g.allowsLocalURL(u) {
+	if !networkAllowedURL(r.Manifest.Ether.Permissions.Network, u) &&
+		!g.allowsLocalURL(u) &&
+		!(DeclaresOperatorHosts(r.Manifest) && g.allowsOperatorURL(u)) {
+		if DeclaresOperatorHosts(r.Manifest) {
+			blocked := urlHostPortDisplay(u)
+			h.m.noteBlockedOperatorHost(ctx, h.plugin, blocked)
+			return nil, &BlockedOperatorHostError{Host: blocked}
+		}
 		if IsLocalNetworkHost(u.Hostname()) {
 			blocked := urlHostPortDisplay(u)
 			h.m.noteBlockedLocalHost(ctx, h.plugin, blocked)
@@ -233,8 +260,8 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
-	if len(g.LocalHosts) > 0 {
-		ctx = safefetch.WithTrustedHosts(ctx, g.LocalHosts)
+	if trusted := trustedFetchHosts(r.Manifest, g); len(trusted) > 0 {
+		ctx = safefetch.WithTrustedHosts(ctx, trusted)
 	}
 	method := req.Method
 	if method == "" {
@@ -265,7 +292,14 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 			h.noteDenied("network")
 			return fmt.Errorf("%w: network", ErrPermissionDenied)
 		}
-		if !networkAllowedURL(current.Manifest.Ether.Permissions.Network, next.URL) && !grants.allowsLocalURL(next.URL) {
+		if !networkAllowedURL(current.Manifest.Ether.Permissions.Network, next.URL) &&
+			!grants.allowsLocalURL(next.URL) &&
+			!(DeclaresOperatorHosts(current.Manifest) && grants.allowsOperatorURL(next.URL)) {
+			if DeclaresOperatorHosts(current.Manifest) {
+				blocked := urlHostPortDisplay(next.URL)
+				h.m.noteBlockedOperatorHost(next.Context(), h.plugin, blocked)
+				return &BlockedOperatorHostError{Host: blocked}
+			}
 			if IsLocalNetworkHost(next.URL.Hostname()) {
 				blocked := urlHostPortDisplay(next.URL)
 				h.m.noteBlockedLocalHost(next.Context(), h.plugin, blocked)
@@ -274,7 +308,7 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 			h.noteDenied("network")
 			return fmt.Errorf("%w: network", ErrPermissionDenied)
 		}
-		*next = *next.WithContext(safefetch.WithTrustedHosts(next.Context(), grants.LocalHosts))
+		*next = *next.WithContext(safefetch.WithTrustedHosts(next.Context(), trustedFetchHosts(current.Manifest, grants)))
 		if previousRedirect != nil {
 			return previousRedirect(next, via)
 		}

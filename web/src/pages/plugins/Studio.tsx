@@ -504,6 +504,7 @@ function LiveWorkspace({
   const [installing, setInstalling] = useState<InstallPreview | null>(null);
   const [grantViewers, setGrantViewers] = useState<number[]>([]);
   const [grantFolders, setGrantFolders] = useState<string[]>([]);
+  const [grantOperatorHosts, setGrantOperatorHosts] = useState<string[]>([]);
   const [installBusy, setInstallBusy] = useState(false);
   const [installError, setInstallError] = useState("");
   const openInstall = async () => {
@@ -511,6 +512,7 @@ function LiveWorkspace({
     setInstallError("");
     setGrantViewers([]);
     setGrantFolders([]);
+    setGrantOperatorHosts([]);
     try {
       const r = await apiFetch<{ preview: InstallPreview }>(
         `/plugins/studio/projects/${encodeURIComponent(project.id)}/install/preview`,
@@ -531,7 +533,11 @@ function LiveWorkspace({
         {
           method: "POST",
           body: JSON.stringify({
-            grants: { viewers: grantViewers, folders: grantFolders },
+            grants: {
+              viewers: grantViewers,
+              folders: grantFolders,
+              operatorHosts: installing.needsOperatorHosts ? grantOperatorHosts : undefined,
+            },
             acceptAddedPermissions: true,
             asCopy,
           }),
@@ -769,10 +775,14 @@ function LiveWorkspace({
               verified={installing.verified}
               needsViewers={installing.needsViewers}
               needsFolders={installing.needsFolders}
+              needsOperatorHosts={installing.needsOperatorHosts}
               viewers={grantViewers}
               onChangeViewers={setGrantViewers}
               folders={grantFolders}
               onChangeFolders={setGrantFolders}
+              operatorHosts={grantOperatorHosts}
+              pendingOperatorHosts={installing.pendingOperatorHosts}
+              onChangeOperatorHosts={setGrantOperatorHosts}
               addedPermissions={installing.addedPermissions}
               ownDraft
             />

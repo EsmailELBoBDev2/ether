@@ -494,6 +494,11 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 		writeHostError(w, http.StatusForbidden, "permission_denied", blockedLocal.PluginMessage())
 		return false
 	}
+	var blockedOp *plugins.BlockedOperatorHostError
+	if errors.As(err, &blockedOp) {
+		writeHostError(w, http.StatusForbidden, "permission_denied", blockedOp.PluginMessage())
+		return false
+	}
 	switch {
 	case errors.Is(err, ErrPermissionDenied):
 		writeHostError(w, http.StatusForbidden, "permission_denied", "This plugin does not have the grant this call needs")

@@ -50,9 +50,11 @@ type Preview struct {
 	// Icon is a browser-loadable URL or rasterized PNG data URI for preview.
 	Icon             string   `json:"icon,omitempty"`
 	PermissionLines  []string `json:"permissions"`
-	NeedsViewers     bool     `json:"needsViewers"`
-	NeedsFolders     bool     `json:"needsFolders"`
-	LocalHosts       []string `json:"localHosts,omitempty"`
+	NeedsViewers         bool     `json:"needsViewers"`
+	NeedsFolders         bool     `json:"needsFolders"`
+	NeedsOperatorHosts   bool     `json:"needsOperatorHosts,omitempty"`
+	LocalHosts           []string `json:"localHosts,omitempty"`
+	PendingOperatorHosts []string `json:"pendingOperatorHosts,omitempty"`
 	Verified         bool     `json:"verified"`
 	StremioOnly      bool     `json:"stremioOnly"`
 	AlreadyInstalled bool     `json:"alreadyInstalled,omitempty"`
@@ -476,6 +478,18 @@ func (m *Manager) PreviewInstall(ctx context.Context, src Source) (*Preview, err
 	if err := p.resolve(); err != nil {
 		return nil, err
 	}
+	p.NeedsOperatorHosts = DeclaresOperatorHosts(man)
+	if p.NeedsOperatorHosts {
+		var existingGrants Grants
+		var existingSettings map[string]any
+		if cur, err := m.store.record(ctx, man.ID); err == nil {
+			existingGrants, _ = m.store.grants(ctx, cur.ID)
+			if row, sErr := m.store.settings(ctx, cur.ID); sErr == nil {
+				existingSettings = row.Settings
+			}
+		}
+		p.PendingOperatorHosts = PendingOperatorHosts(man, existingGrants, existingSettings, p.resolvedSettings, m.BlockedOperatorHosts(man.ID), true)
+	}
 	p.Icon = m.previewIcon(ctx, man, files, src)
 	// The conformance kit checks packages Ether runs; a plain Stremio add-on
 	// is a remote service whose manifest was validated above.
@@ -621,7 +635,7 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 	// Grants: keep existing picks on update unless new ones were given;
 	// on fresh install, pre-grant any local-network hosts declared in the manifest.
 	g := opts.Grants
-	if existing && g.Viewers == nil && g.Folders == nil && g.LocalHosts == nil && g.Revoked == nil {
+	if existing && g.Viewers == nil && g.Folders == nil && g.LocalHosts == nil && g.OperatorHosts == nil && g.Revoked == nil {
 		if old, err := m.store.grants(ctx, man.ID); err == nil {
 			g = old
 		}
@@ -635,12 +649,20 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 		}
 		g.LocalHosts = normalized
 	}
+	if g.OperatorHosts != nil {
+		normalized, err := normalizeOperatorHosts(g.OperatorHosts)
+		if err != nil {
+			return Record{}, &ValidationError{Fields: []FieldError{{Field: "operatorHosts", Message: err.Error()}}}
+		}
+		g.OperatorHosts = normalized
+	}
 	if p.source.LAN {
 		g.LAN = true
 	}
 	if err := m.store.putGrants(ctx, man.ID, g); err != nil {
 		return Record{}, err
 	}
+	m.pruneBlockedOperatorHosts(man.ID, g.OperatorHosts)
 	row, _ := m.store.settings(ctx, man.ID)
 	if opts.Settings != nil {
 		row.Settings = opts.Settings

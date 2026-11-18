@@ -217,11 +217,12 @@ type Detail struct {
 	Manifest      Manifest       `json:"manifest"`
 	RuntimeLimits *RuntimeLimits `json:"runtimeLimits,omitempty"`
 	Permissions   struct {
-		Lines        []string    `json:"lines"`
-		Declared     Permissions `json:"declared"`
-		Grants       Grants      `json:"grants"`
-		NeedsViewers bool        `json:"needsViewers"`
-		NeedsFolders bool        `json:"needsFolders"`
+		Lines              []string    `json:"lines"`
+		Declared           Permissions `json:"declared"`
+		Grants             Grants      `json:"grants"`
+		NeedsViewers       bool        `json:"needsViewers"`
+		NeedsFolders       bool        `json:"needsFolders"`
+		NeedsOperatorHosts bool        `json:"needsOperatorHosts,omitempty"`
 	} `json:"permissions"`
 	HealthDetail Health `json:"healthDetail"`
 	Privacy      struct {
@@ -244,6 +245,9 @@ type Detail struct {
 	AddedPermissions []string `json:"addedPermissions,omitempty"`
 	// BlockedLocalHosts lists private-network hosts recently blocked for this plugin.
 	BlockedLocalHosts []string `json:"blockedLocalHosts,omitempty"`
+	// PendingOperatorHosts lists unapproved addresses from settings or recent requests
+	// when the plugin declares "operator" in permissions.network.
+	PendingOperatorHosts []string `json:"pendingOperatorHosts,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -330,7 +334,12 @@ func (m *Manager) handleGet(w http.ResponseWriter, r *http.Request) {
 		d.Privacy.DeclaredHosts = rec.Manifest.Ether.Permissions.Network
 	}
 	d.Permissions.Grants = g
+	d.Permissions.NeedsOperatorHosts = DeclaresOperatorHosts(rec.Manifest)
 	d.BlockedLocalHosts = m.BlockedLocalHosts(id)
+	if d.Permissions.NeedsOperatorHosts {
+		row, _ := m.store.settings(r.Context(), id)
+		d.PendingOperatorHosts = PendingOperatorHosts(rec.Manifest, g, row.Settings, row.Schema, m.BlockedOperatorHosts(id), false)
+	}
 	d.Privacy.ObservedHosts = h.Observed
 	for host := range h.Observed {
 		if !networkHostDeclaredOrGranted(rec.Manifest, g, host) {

@@ -314,6 +314,26 @@ func (r *tapRegistry) acquire(key, source string, limit int, g *inputGrant) (t *
 	return t, true, nil
 }
 
+// canJoinOrOpen reports whether key already has an open tap that a new grant
+// will join without starting a provider stream, or ErrProviderBusy when a
+// capped source has no free connection for a new tap.
+func (r *tapRegistry) canJoinOrOpen(key, source string, limit int) (joined bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t := r.byKey[key]; t != nil {
+		t.mu.Lock()
+		closed := t.closed
+		t.mu.Unlock()
+		if !closed {
+			return true, nil
+		}
+	}
+	if source != "" && limit > 0 && len(r.bySource[source])+r.external[source] >= limit {
+		return false, ErrProviderBusy
+	}
+	return false, nil
+}
+
 // release drops grant g from every tap; a tap without grants closes now.
 func (r *tapRegistry) release(g *inputGrant) {
 	r.mu.Lock()
@@ -897,28 +917,14 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	t.mu.Lock()
 	t.ctx, t.cancel = ctx, cancel
 	t.mu.Unlock()
-	reqCtx := ctx
-	if dl, ok := opener.Deadline(); ok {
-		reqCtx = openContext{Context: ctx, deadline: dl}
-	}
 	stop := context.AfterFunc(opener, cancel)
 	defer stop() // initial body inspection is part of opening the stream
-	var res *http.Response
-	var err error
-	if g.source != "" {
-		e, _ := s.sourceEntry(ctx, g.source)
-		var wait time.Duration
-		if wait, err = t.reg.reserveOpen(g.source, e.gap, e.perHour, time.Now()); err == nil && wait > 0 {
-			if g.log != nil {
-				g.log.Info("live provider tune gap", "wait", wait)
-			}
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				err = context.Cause(ctx)
-			}
-		}
+	wait, err := s.paceGrant(ctx, g)
+	reqCtx := ctx
+	if dl, ok := opener.Deadline(); ok {
+		reqCtx = openContext{Context: ctx, deadline: dl.Add(wait)}
 	}
+	var res *http.Response
 	if err == nil {
 		res, err = s.relayFetch(reqCtx, cancel, g, raw, &http.Request{Header: hdr})
 	}

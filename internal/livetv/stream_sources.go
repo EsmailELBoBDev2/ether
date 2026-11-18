@@ -367,9 +367,11 @@ func liveInputHasAudio(info *core.MediaInfo) bool {
 	return false
 }
 
-// startIPTV selects one input per viewing session, under the caller's existing
-// shared startup deadline. It never substitutes another provider's bytes,
-// keys or media sequence into the active HLS resource map.
+// startIPTV selects one input per viewing session. Probing stays bounded so a
+// dead primary fails fast enough to leave budget for backups; once an input
+// answers its probe, post-probe stream startup receives its own bounded
+// budget. It never substitutes another provider's bytes, keys or media
+// sequence into the active HLS resource map.
 func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 	c := ss.info.Channel
 	if err := normalizeStreamSources(&c); err != nil {
@@ -396,6 +398,10 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 	if len(candidates) == 0 && !earliestRetry.IsZero() {
 		return &TuneError{Code: "source_cooldown", Stage: "source_selection", RetryAfter: earliestRetry.Sub(s.o.Now()), cause: core.ErrNotAvailable}
 	}
+	remaining := iptvProbeBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining = min(remaining, max(time.Until(deadline), 0))
+	}
 	primaryCount := len(candidates)
 	for index := 0; index < len(candidates); index++ {
 		src := candidates[index]
@@ -405,20 +411,16 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		attemptCtx := ctx
-		cancel := func() {}
-		if len(candidates) > 1 {
-			// Share the remaining budget among untried inputs. Fast failures
-			// leave their unused time for the next candidate.
-			budget := 8 * time.Second
-			if deadline, ok := ctx.Deadline(); ok {
-				budget = time.Until(deadline)
-			}
-			attemptCtx, cancel = context.WithTimeout(ctx, budget/time.Duration(len(candidates)-index))
-		}
-		resolvedURL, headers, err := s.ResolveStreamSource(attemptCtx, c, src)
+		// Share the remaining connect/sniff budget among untried inputs. Fast
+		// failures leave their unused time for the next candidate.
+		connectBudget := remaining / time.Duration(len(candidates)-index)
+		resolveCtx, stopResolve := context.WithTimeout(ctx, connectBudget)
+		resolveStarted := time.Now()
+		resolvedURL, headers, err := s.ResolveStreamSource(resolveCtx, c, src)
+		resolveElapsed := time.Since(resolveStarted)
+		stopResolve()
 		if err != nil {
-			cancel()
+			remaining = max(remaining-min(resolveElapsed, connectBudget), 0)
 			last = Diagnose("source_resolve", err)
 			failures = append(failures, inputFailure(src.ID, last))
 			log.Warn("live source resolve failed", append(Diagnose("source_resolve", err).LogAttrs(), "elapsed", time.Since(started))...)
@@ -427,23 +429,41 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 			}
 			continue
 		}
+		sniffBudget := max(connectBudget-resolveElapsed, 0)
+		probeBudget := max(remaining-resolveElapsed, 0)
+		if len(candidates) > 1 {
+			probeBudget = min(max(sniffBudget, steadyProbeBudget-resolveElapsed), max(iptvProbeBudget-resolveElapsed, 0))
+			if deadline, ok := ctx.Deadline(); ok {
+				probeBudget = min(probeBudget, max(time.Until(deadline), 0))
+			}
+		}
 		grantSrc := src
 		grantSrc.URL = resolvedURL
 		ss.inputURL, ss.inputSource = resolvedURL, src
 		ss.inputHeaders = headers.Clone()
 		ss.info.MediaInfo, ss.relayInfo = nil, nil
+		ss.startDeadline = time.Time{}
 		// ffmpeg and ffprobe read this input through a loopback grant, never
 		// with the provider URL or headers on their command line.
-		err = s.withProviderCapacity(attemptCtx, c, src, func() error {
+		var spent time.Duration
+		err = s.withProviderCapacity(ctx, c, src, func() error {
 			ss.owned.close()
 			ss.owned = nil
 			s.revokeInput(ss)
 			if err := s.grantDirectInput(ss, grantSrc, headers); err != nil {
 				return err
 			}
-			return s.startIPTVSource(attemptCtx, ss, primaryCount > 1 && index < primaryCount)
+			// Wait out any inter-tune gap on this provider before starting the
+			// candidate's probe deadline.
+			if _, err := s.paceSessionInput(ctx, ss); err != nil {
+				return err
+			}
+			probeStarted := time.Now()
+			err := s.startIPTVSource(ctx, ss, sniffBudget, probeBudget, primaryCount > 1 && index < primaryCount)
+			spent = time.Since(probeStarted)
+			return err
 		})
-		cancel()
+		remaining = max(remaining-min(resolveElapsed+spent, connectBudget), 0)
 		if err == nil {
 			ss.info.ActiveSourceID = src.ID
 			s.recordSourceHealth(c.ID, src, nil, false)

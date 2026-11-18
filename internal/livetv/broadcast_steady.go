@@ -264,10 +264,11 @@ func (r *broadcastRegistry) steadyStrained() bool {
 
 // steadyAdmission is a probed first input for a new Steady output.
 type steadyAdmission struct {
-	shape steadyShape
-	link  *steadyLink
-	info  *core.MediaInfo
-	class string // allocation class of its source
+	shape       steadyShape
+	link        *steadyLink
+	info        *core.MediaInfo
+	class       string        // allocation class of its source
+	startBudget time.Duration // post-probe output startup window
 }
 
 // admitSteady probes the best input of channel c through a relay grant that
@@ -288,10 +289,8 @@ func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission,
 	if ok, load, budget := s.steadyCapacity(smallest); !ok && !rockSolid {
 		return nil, steadyRefusedCapacity, "encode capacity in use (" + formatCores(load) + " of " + formatCores(budget) + " cores)", nil
 	}
-	probeCtx, stopProbes := context.WithTimeout(ctx, 7*time.Second)
-	defer stopProbes()
 	candidates := s.orderedSourceCandidates(c)
-	probed, failures, silent, radio, last := s.raceSteadyInputs(probeCtx, c, candidates)
+	probed, failures, silent, radio, last := s.raceSteadyInputs(ctx, c, candidates)
 	if radio && probed == nil {
 		return nil, steadyRefusedAudioOnly, "audio-only source plays direct", nil
 	}
@@ -304,8 +303,8 @@ func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission,
 		probed = &steadyAdmission{shape: steadyShapeFor(nil)}
 	}
 	if probed == nil {
-		if probeCtx.Err() != nil && len(failures) == 0 {
-			last = probeCtx.Err()
+		if ctx.Err() != nil && len(failures) == 0 {
+			last = ctx.Err()
 		}
 		detail := *Diagnose("source_start", last)
 		detail.Inputs = failures
@@ -340,7 +339,7 @@ func formatCores(v float64) string {
 // probing through the link would start the decoder at the probe's position,
 // near the live edge, instead of at the stability reserve. A transport
 // stream's probe still shares the link's one provider connection (the tap).
-func (s *Service) probeSteadyLink(ctx context.Context, c Channel, link *steadyLink) (*core.MediaInfo, error) {
+func (s *Service) probeSteadyLink(ctx context.Context, sniffBudget time.Duration, c Channel, link *steadyLink) (*core.MediaInfo, error) {
 	probe := &session{ctx: link.ss.ctx, cancel: func() {}, info: SessionInfo{ID: "probe-" + c.ID, Channel: c}, inputSource: link.ss.inputSource, inputURL: link.ss.inputURL, inputHeaders: link.ss.inputHeaders}
 	grant := link.src
 	grant.URL = link.ss.inputURL
@@ -349,9 +348,18 @@ func (s *Service) probeSteadyLink(ctx context.Context, c Channel, link *steadyLi
 	}
 	defer s.revokeInput(probe)
 	s.setInputAdmission(probe, true)
+	// The link's own grant already booked and waited any provider tune gap for
+	// this tune; probing the same input must not pace against itself.
+	s.markInputPaced(probe)
 	// Read through the shared tap first: ffprobe sees only the loopback HTTP
 	// status and would otherwise hide the provider’s actual refusal.
-	if _, _, err := s.sniffInput(ctx, probe, 1); err != nil {
+	sniffCtx := ctx
+	if sniffBudget > 0 {
+		var stopSniff context.CancelFunc
+		sniffCtx, stopSniff = context.WithTimeout(ctx, sniffBudget)
+		defer stopSniff()
+	}
+	if _, _, err := s.sniffInput(sniffCtx, probe, 1); err != nil {
 		return nil, err
 	}
 	return s.probeSessionInput(ctx, probe)

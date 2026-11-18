@@ -447,7 +447,17 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 	if admitted != nil {
 		attrs = []any{"allocation", admitted.class}
 	}
-	lease, info, err := s.launchBroadcast(ctx, ss, broadcastLaunch{channel: c, user: user, caps: caps, key: key, runner: runner, format: format, outputHeight: outputHeight, bitrate: bitrate, admitted: admitted, logAttrs: attrs})
+	startCtx := ctx
+	if c.Kind == "iptv" {
+		budget := iptvStartFloor
+		if admitted != nil && admitted.startBudget > 0 {
+			budget = admitted.startBudget
+		}
+		var cancel context.CancelFunc
+		startCtx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
+	lease, info, err := s.launchBroadcast(startCtx, ss, broadcastLaunch{channel: c, user: user, caps: caps, key: key, runner: runner, format: format, outputHeight: outputHeight, bitrate: bitrate, admitted: admitted, logAttrs: attrs})
 	if err != nil {
 		return err
 	}
@@ -461,13 +471,13 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 	ss.info.MediaInfo = &info
 	ss.mu.Unlock()
 	if provider, ok := lease.broadcast.planner.(*providerBroadcastPlanner); ok && !s.coldFallbackAllowed(c) {
-		if err := provider.awaitFirstPicture(ctx); err != nil {
+		if err := provider.awaitFirstPicture(startCtx); err != nil {
 			lease.close()
 			s.broadcasts.discardCold(lease.broadcast)
 			return err
 		}
 	}
-	awaitBroadcastCushion(ctx, lease, c.Kind == "iptv")
+	awaitBroadcastCushion(startCtx, lease, c.Kind == "iptv")
 	return nil
 }
 

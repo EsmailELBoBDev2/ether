@@ -197,6 +197,9 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 	)
 	for pageIdx := 0; pageIdx < 1000; pageIdx++ {
 		page, notSupp, retryAfter, err := s.callKindChanges(ctx, caller, rec.PluginID, rec.KindKey, cursor, DefaultChangesLimit)
+		for attempt := 0; err != nil && waitRetryAfter(ctx, retryAfter, attempt); attempt++ {
+			page, notSupp, retryAfter, err = s.callKindChanges(ctx, caller, rec.PluginID, rec.KindKey, cursor, DefaultChangesLimit)
+		}
 		if retryAfter > res.RetryAfter {
 			res.RetryAfter = retryAfter
 		}
@@ -515,6 +518,9 @@ func (s *Service) fetchAllBrowsePages(ctx context.Context, caller Caller, plugin
 			Limit:    DefaultWalkPageLimit,
 		}
 		page, ra, err := s.callKindBrowse(ctx, caller, pluginID, kindKey, req)
+		for attempt := 0; err != nil && waitRetryAfter(ctx, ra, attempt); attempt++ {
+			page, ra, err = s.callKindBrowse(ctx, caller, pluginID, kindKey, req)
+		}
 		if ra > maxRetry {
 			maxRetry = ra
 		}
@@ -619,6 +625,30 @@ type pluginErrorEnvelope struct {
 	Message           string `json:"message"`
 	RetryAfterSeconds int    `json:"retryAfterSeconds"`
 	RetryAfterSnake   int    `json:"retry_after_seconds"`
+}
+
+// maxSyncRetryWait and maxSyncRetries bound how long one sync waits out a
+// plugin's rate limit (a 429 or 503 with Retry-After) before giving up.
+const (
+	maxSyncRetryWait = 2 * time.Minute
+	maxSyncRetries   = 8
+)
+
+// waitRetryAfter waits out a short Retry-After so a rate-limited page is
+// retried in place instead of failing the whole sync. It reports whether
+// the caller should try the same request again.
+func waitRetryAfter(ctx context.Context, ra time.Duration, attempt int) bool {
+	if ra <= 0 || ra > maxSyncRetryWait || attempt >= maxSyncRetries {
+		return false
+	}
+	t := time.NewTimer(ra)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 func checkPluginResponseError(resp plugins.Response) error {

@@ -49,6 +49,22 @@
   }
 }
 
+/* Prevent horizontal overflow of the document, app shell, and slide-in drawer
+ * portals so focusing an input while a drawer slides in on phone cannot shift
+ * or clip the console sideways. */
+html,
+body {
+  overflow-x: clip;
+  max-width: 100%;
+}
+.ether-shell > div {
+  overflow-x: clip;
+  max-width: 100vw;
+}
+[data-drawer-layer] {
+  overflow: clip;
+}
+
 /* The page scroller is the containing block for absolutely positioned content
  * (sr-only file inputs, visually hidden labels). Without it they resolve
  * against the document and stretch it past the shell into blank scroll. */

@@ -9,7 +9,7 @@ import {
   confirmDialog,
   toast,
 } from "@braedonsaunders/appkit-ui";
-import { Drawer } from "../../../components/Drawer";
+import { Drawer, resetShellHorizontalScroll } from "../../../components/Drawer";
 import { SubtabNav } from "../../../components/layout";
 import { useUnsavedGuard } from "../../../components/SaveBar";
 import { t } from "../../../i18n";
@@ -270,6 +270,15 @@ export function LookDrawer({
     change({ ...draft, scenes: draft.scenes.map((s) => (s.id === next.id ? next : s)) });
   const dirty = !draft.id || JSON.stringify(draft) !== JSON.stringify(saved);
   useUnsavedGuard(dirty);
+  useEffect(
+    () => () => {
+      resetShellHorizontalScroll();
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(resetShellHorizontalScroll);
+      }
+    },
+    [],
+  );
   useEffect(() => {
     void tv.channelSummaries().then((rows) => {
       setChannels(rows);

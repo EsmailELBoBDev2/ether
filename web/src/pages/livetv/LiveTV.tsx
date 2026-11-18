@@ -30,8 +30,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel } from "../../components/feedback";
-import { ToolbarPicker } from "../../components/ToolbarPicker";
-import { PanelHead, Workspace } from "../../components/workspace";
+import { Workspace } from "../../components/workspace";
 import { api, errorMessage } from "../../lib/api";
 import { t, tn } from "../../i18n";
 import { useDebouncedValue, useInterval, useMediaQuery } from "../../lib/hooks";
@@ -276,7 +275,7 @@ export default function LiveTV() {
       setBaseline("");
     }
     // Only re-seed when the selected record (or its saved copy) changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks-exhaustive-deps
   }, [selection.kind, selection.kind === "channel" ? selection.id : "", savedChannel]);
 
   // Fetch programmes only for an open channel drawer; GuidePage loads its own visible window.
@@ -662,7 +661,6 @@ export default function LiveTV() {
   });
 
   const libraryQuery = params.get("q");
-  const librarySort = params.get("sort");
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
@@ -745,33 +743,9 @@ export default function LiveTV() {
 
   const aside =
     activeTab === "library" ? (
-      <>
-        <PanelHead className="pb-3">
-          <div className="flex items-center gap-1.5">
-            <ToolbarPicker
-              ariaLabel={t("Sort assets")}
-              value={librarySort ?? "newest"}
-              onChange={(value) =>
-                updateParams((p) => {
-                  if (value === "newest") p.delete("sort");
-                  else p.set("sort", value);
-                  return p;
-                })
-              }
-              options={[
-                { value: "newest", label: t("Newest") },
-                { value: "name", label: t("Name") },
-                { value: "size", label: t("Size") },
-                { value: "used", label: t("Most used") },
-              ]}
-              menuClassName="w-48"
-            />
-          </div>
-        </PanelHead>
-        <div className="app-scroll min-h-0 flex-1 lg:overflow-y-auto">
-          <LibraryAside />
-        </div>
-      </>
+      <div className="app-scroll min-h-0 flex-1 lg:overflow-y-auto">
+        <LibraryAside />
+      </div>
     ) : activeTab === "looks" ? (
       <div className="app-scroll min-h-0 flex-1 lg:overflow-y-auto">
         <LooksAside

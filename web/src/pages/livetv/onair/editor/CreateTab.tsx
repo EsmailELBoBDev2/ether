@@ -1,7 +1,7 @@
 import "./create-reveal.css";
 import { AgentPanel } from "@braedonsaunders/appkit-ai/react";
 import { Button } from "@braedonsaunders/appkit-ui";
-import { Check, Pencil, RotateCcw, Undo2 } from "lucide-react";
+import { Check, Palette, Pencil, RotateCcw, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -255,10 +255,65 @@ export function CreateTab({
               enabled={enabled === true}
               labels={{
                 ...agentPanelLabels(),
+                welcomeTitle: selectedSceneId
+                  ? t("Shape this scene")
+                  : t("Design your channel’s on-air look"),
+                welcomeDescription: selectedSceneId
+                  ? t(
+                      "Describe the motion, typography, or layout you want for this moment. Your preview updates live.",
+                    )
+                  : t(
+                      "Describe the era, palette, typography, and mood. Ether drafts your brand kit and scenes live on the right.",
+                    ),
                 placeholder: selectedSceneId ? t("Describe a change") : t("Describe your channel"),
               }}
               toolLabels={{ look_draft: t("Draft a style") }}
               send={send}
+              emptyContent={
+                <div className="m-auto flex max-w-md flex-col items-center px-5 py-8 text-center">
+                  <span className="mb-3 grid size-10 place-items-center rounded-xl bg-primary-subtle text-primary">
+                    <Palette size={20} aria-hidden />
+                  </span>
+                  <h3 className="text-base font-semibold text-fg">
+                    {selectedSceneId
+                      ? t("Shape this scene")
+                      : t("Design your channel’s on-air look")}
+                  </h3>
+                  <p className="mt-1.5 text-sm leading-relaxed text-fg-muted">
+                    {selectedSceneId
+                      ? t(
+                          "Describe the motion, typography, or layout you want for this moment. Your preview updates live.",
+                        )
+                      : t(
+                          "Describe the era, palette, typography, and mood. Ether drafts your brand kit and scenes live on the right.",
+                        )}
+                  </p>
+                  <div className="mt-5 grid w-full gap-2 text-left">
+                    {(selectedSceneId
+                      ? [
+                          t("Slow the drift and make the title larger"),
+                          t("Add a subtle timestamp in the accent colour"),
+                          t("Give it a warm film-grain fade-in"),
+                        ]
+                      : [
+                          t("Late-night 1980s cinema station with warm gold type and film grain"),
+                          t("Crisp minimalist daytime channel with bright geometry"),
+                          t("Cosy rainy-evening mystery channel with classic serif titles"),
+                        ]
+                    ).map((idea) => (
+                      <button
+                        key={idea}
+                        type="button"
+                        disabled={enabled !== true || busy}
+                        onClick={() => fill(idea)}
+                        className="rounded-xl border border-border bg-surface px-3.5 py-2.5 text-left text-xs leading-snug text-fg-muted transition-colors hover:border-primary/40 hover:bg-primary-subtle hover:text-fg disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        {idea}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              }
               composerContent={
                 error || (!busy && (proposal || lastPrompt || before)) ? (
                   <div className="flex flex-wrap items-center gap-1 px-1 pb-1">

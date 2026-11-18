@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -522,6 +523,119 @@ type Summary struct {
 	Until          time.Time       `json:"until"`
 }
 
+// friendlyPlatform normalises raw client platform slugs case-insensitively to
+// owner-facing names before Delivery aggregates play counts and transfer bytes.
+// mapped reports whether raw matched a known canonical platform table entry.
+func friendlyPlatform(raw string) (label string, mapped bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", true
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	switch b.String() {
+	case "", "unknown", "generic":
+		return "", true
+	case "web", "plexweb", "browser", "html5":
+		return "Web", true
+	case "tvos", "appletv", "appletvos":
+		return "Apple TV", true
+	case "ios", "iphone", "ipod":
+		return "iOS", true
+	case "ipados", "ipad":
+		return "iPadOS", true
+	case "visionos", "applevision":
+		return "visionOS", true
+	case "macos", "macosx", "osx", "darwin", "mac":
+		return "macOS", true
+	case "androidtv":
+		return "Android TV", true
+	case "googletv":
+		return "Google TV", true
+	case "firetv", "fireos", "amazonfiretv":
+		return "Fire TV", true
+	case "android":
+		return "Android", true
+	case "linux":
+		return "Linux", true
+	case "windows", "win32", "win64", "uwp":
+		return "Windows", true
+	case "tizen", "samsung", "samsungtizen":
+		return "Tizen", true
+	case "webos", "lgwebos", "netcast":
+		return "webOS", true
+	case "roku":
+		return "Roku", true
+	case "chromecast":
+		return "Chromecast", true
+	case "xbox":
+		return "Xbox", true
+	case "playstation", "ps4", "ps5":
+		return "PlayStation", true
+	case "vidaa", "hisense":
+		return "VIDAA", true
+	case "vizio", "smartcast":
+		return "Vizio", true
+	case "kodi":
+		return "Kodi", true
+	case "chrome":
+		return "Chrome", true
+	case "safari":
+		return "Safari", true
+	case "firefox":
+		return "Firefox", true
+	case "edge":
+		return "Edge", true
+	}
+	if s == strings.ToLower(s) && s[0] >= 'a' && s[0] <= 'z' {
+		return strings.ToUpper(s[:1]) + s[1:], false
+	}
+	return s, false
+}
+
+func mergePlatformBuckets(raw []Bucket) []Bucket {
+	if len(raw) == 0 {
+		return []Bucket{}
+	}
+	byKey := make(map[string]int, len(raw))
+	out := make([]Bucket, 0, len(raw))
+	for _, b := range raw {
+		trimmed := strings.TrimSpace(b.Label)
+		label, mapped := friendlyPlatform(trimmed)
+		key := strings.ToLower(label)
+		if idx, ok := byKey[key]; ok {
+			out[idx].Plays += b.Plays
+			out[idx].WatchedMS += b.WatchedMS
+			out[idx].Bytes += b.Bytes
+			if !mapped && trimmed != strings.ToLower(trimmed) {
+				out[idx].Label = trimmed
+			}
+			continue
+		}
+		byKey[key] = len(out)
+		out = append(out, Bucket{
+			Label:     label,
+			Plays:     b.Plays,
+			WatchedMS: b.WatchedMS,
+			Bytes:     b.Bytes,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Plays != out[j].Plays {
+			return out[i].Plays > out[j].Plays
+		}
+		if out[i].Bytes != out[j].Bytes {
+			return out[i].Bytes > out[j].Bytes
+		}
+		return out[i].Label < out[j].Label
+	})
+	return out
+}
+
 func (s *Service) Summary(ctx context.Context, since, until time.Time, user int64, tzMinutes ...int) (Summary, error) {
 	out := Summary{Since: since, Until: until}
 	// A play delivered media. A failed attempt stays in History, marked
@@ -586,6 +700,7 @@ func (s *Service) Summary(ctx context.Context, since, until time.Time, user int6
 			return out, err
 		}
 	}
+	out.Platforms = mergePlatformBuckets(out.Platforms)
 	if err := s.keyBuckets(ctx, &out, where, args); err != nil {
 		return out, err
 	}

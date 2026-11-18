@@ -443,6 +443,69 @@ func TestInsightsAndActivity(t *testing.T) {
 	}
 }
 
+func TestRowInsightsDynamicTitlesAndRateClamping(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	u := core.User{ID: 1}
+	f1 := h.cat.titles[movieKey(6, 2)]
+	f2 := h.cat.titles[movieKey(6, 3)]
+	f3 := h.cat.titles[movieKey(6, 4)]
+
+	// Single dynamic showcase row fills in the concrete genre; two plays on
+	// one impression day clamp PlayRate at 1.0 instead of 200%.
+	h.e.RecordImpressions(&u, hubContext(testNow.Add(-2*time.Hour), core.DeviceTV), []core.Hub{
+		{ID: "home.showcase.thriller", Title: "Acclaimed Thrillers", Items: []core.Title{f1}},
+		{ID: "home.continue", Title: "Continue Watching", Items: []core.Title{f2, f3}},
+	})
+	h.e.Flush(ctx)
+	h.finish(1, f2.Key, testNow.Add(-90*time.Minute))
+	h.finish(1, f3.Key, testNow.Add(-80*time.Minute))
+	// Play attributed to a row whose impression fell outside the 7d window:
+	// Impressions7d == 0 must leave PlayRate == 0.
+	if err := h.e.store.insertPlay(ctx, &playRecord{
+		userID: 1, key: movieKey(2, 2), tasteKey: movieKey(2, 2),
+		hubID: "home.popular.server", kind: KindPopularServer,
+		started: testNow.Add(-time.Hour), updated: testNow.Add(-time.Hour),
+		duration: time.Hour, maxFraction: 1, completed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.e.syncEvents(ctx)
+
+	ins, err := h.e.RowInsights(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKind := map[string]core.RowInsight{}
+	for _, r := range ins {
+		byKind[r.HubID] = r
+	}
+	if sc := byKind[KindShowcase]; sc.Title != "Acclaimed Thrillers" || sc.Impressions7d != 1 {
+		t.Fatalf("single showcase insight = %+v", sc)
+	}
+	if cw := byKind[KindContinue]; cw.Plays7d != 2 || cw.Impressions7d != 1 || cw.PlayRate != 1 {
+		t.Fatalf("continue watching rate must clamp at 1.0, got %+v", cw)
+	}
+	if pop := byKind[KindPopularServer]; pop.Plays7d != 1 || pop.Impressions7d != 0 || pop.PlayRate != 0 {
+		t.Fatalf("zero-impression insight = %+v", pop)
+	}
+
+	// Serving a second distinct genre showcase groups under "Acclaimed by Genre".
+	h.e.RecordImpressions(&u, hubContext(testNow.Add(-30*time.Minute), core.DeviceTV), []core.Hub{
+		{ID: "home.showcase.comedy", Title: "Acclaimed Comedies", Items: []core.Title{h.cat.titles[movieKey(1, 1)]}},
+	})
+	ins, err = h.e.RowInsights(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range ins {
+		byKind[r.HubID] = r
+	}
+	if sc := byKind[KindShowcase]; sc.Title != "Acclaimed by Genre" || sc.Impressions7d != 2 {
+		t.Fatalf("grouped showcase insight = %+v", sc)
+	}
+}
+
 func TestScoreTitles(t *testing.T) {
 	h := newHarness(t, nil)
 	sciFiFan(h, 1)

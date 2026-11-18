@@ -700,6 +700,36 @@ func collectionSections(mediaType string) []string {
 	return append([]string(nil), allSurfaces...)
 }
 
+// insightTitle returns an owner-friendly label for a row insight without
+// unresolved `<Placeholder>` tokens: a single served dynamic row keeps its
+// concrete title (e.g. "Acclaimed Thrillers"), while multi-variant dynamic
+// kinds fall back to a clean family title (e.g. "Acclaimed by Genre").
+func insightTitle(kind string, info kindInfo, st *rowStat) string {
+	if strings.HasPrefix(kind, KindCollectionPrefix) && st != nil && st.title != "" {
+		return st.title
+	}
+	if info.dynamic && st != nil && len(st.titles) == 1 && st.title != "" {
+		return st.title
+	}
+	switch kind {
+	case KindShowcase:
+		return "Acclaimed by Genre"
+	case KindEra:
+		return "Best by Decade"
+	case KindWorld:
+		return "World Cinema for You"
+	case KindTopGenre:
+		return "Top-Rated by Genre"
+	case KindBridge:
+		return "Where Favourites Meet"
+	case KindStudio:
+		return "More by Studio"
+	case KindNetwork:
+		return "More by Network"
+	}
+	return info.title
+}
+
 // RowInsights reports, per row kind, how often it was shown and played
 // over the last `days` days (row-days shown; plays attributed).
 func (e *Engine) RowInsights(ctx context.Context, days int) ([]core.RowInsight, error) {
@@ -732,15 +762,14 @@ func (e *Engine) RowInsights(ctx context.Context, days int) ([]core.RowInsight, 
 	out := make([]core.RowInsight, 0, len(kinds))
 	for k := range kinds {
 		info := infoFor(k)
-		ri := core.RowInsight{HubID: k, Title: info.title, Plays7d: played[k]}
-		if st := shows[k]; st != nil {
+		st := shows[k]
+		ri := core.RowInsight{HubID: k, Title: insightTitle(k, info, st), Plays7d: played[k]}
+		if st != nil {
 			ri.Impressions7d = int(st.shows)
-			if strings.HasPrefix(k, KindCollectionPrefix) && st.title != "" {
-				ri.Title = st.title
-			}
 		}
 		if ri.Impressions7d > 0 {
-			ri.PlayRate = round3(float64(ri.Plays7d) / float64(ri.Impressions7d))
+			rate := min(1.0, float64(ri.Plays7d)/float64(ri.Impressions7d))
+			ri.PlayRate = round3(rate)
 		}
 		out = append(out, ri)
 	}

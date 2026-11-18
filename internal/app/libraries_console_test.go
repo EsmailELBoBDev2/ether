@@ -61,7 +61,7 @@ func TestLibrariesConsoleCRUDAndFilterBrowse(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &lib); err != nil {
 		t.Fatal(err)
 	}
-	if lib.Source != core.LibraryCatalog || lib.Present.Plex != nil || lib.Present.MediaBrowser != nil {
+	if lib.Source != core.LibraryCatalog || lib.Present.Vela != nil || lib.Present.Plex != nil || lib.Present.MediaBrowser != nil {
 		t.Fatalf("new filter library must be console-only: %+v", lib.Present)
 	}
 	id := strconv.FormatInt(int64(lib.ID), 10)
@@ -72,9 +72,12 @@ func TestLibrariesConsoleCRUDAndFilterBrowse(t *testing.T) {
 		t.Fatalf("filter browse %d %s", w.Code, w.Body)
 	}
 
-	// Rename + hide + show-in-apps (Plex) through PATCH.
-	w = call("PATCH", "/"+id, `{"name":"Serious films","hidden":true,"present":{"plex":{"base":"movie"}}}`)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "Serious films") || !strings.Contains(w.Body.String(), `"hidden":true`) {
+	// Rename + hide + show-in-apps (Vela + Plex) through PATCH; reject invalid Vela type.
+	if bad := call("PATCH", "/"+id, `{"present":{"vela":{"type":"bad"}}}`); bad.Code != 400 {
+		t.Fatalf("invalid vela type = %d %s, want 400", bad.Code, bad.Body)
+	}
+	w = call("PATCH", "/"+id, `{"name":"Serious films","hidden":true,"present":{"vela":{"type":"movies"},"plex":{"base":"movie"}}}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "Serious films") || !strings.Contains(w.Body.String(), `"hidden":true`) || !strings.Contains(w.Body.String(), `"vela":{"type":"movies"}`) {
 		t.Fatalf("patch %d %s", w.Code, w.Body)
 	}
 
@@ -152,7 +155,7 @@ func TestLibrariesConsoleCollectionSource(t *testing.T) {
 	if lib.Source != core.LibraryCollection || lib.CollectionID != 31 || lib.MediaType != core.TypeMovie {
 		t.Fatalf("created library = %+v", lib)
 	}
-	if lib.Present.Plex != nil || lib.Present.MediaBrowser != nil {
+	if lib.Present.Vela != nil || lib.Present.Plex != nil || lib.Present.MediaBrowser != nil {
 		t.Fatalf("new collection library must be console-only: %+v", lib.Present)
 	}
 	id := strconv.FormatInt(int64(lib.ID), 10)
@@ -347,6 +350,9 @@ func TestLibraryDeletionProtocolLifecycle(t *testing.T) {
 	page, err := experiences["plex"].LibraryItems(ctx, owner, core.Device{}, strconv.Itoa(int(lib.ID)), frontend.ItemQuery{Limit: 10})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("recreated library inherits deleted policy: %+v %v", page, err)
+	}
+	if velaViews, err := experiences["vela"].Views(ctx, owner); err != nil || len(velaViews) != 0 {
+		t.Fatalf("plex-only library leaked into Vela: %+v %v", velaViews, err)
 	}
 	if sections := srv.LibrarySections(); len(sections) != 1 || sections[0].ID != int(lib.ID) {
 		t.Fatalf("recreated sections: %+v", sections)

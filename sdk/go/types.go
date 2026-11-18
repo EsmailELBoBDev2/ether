@@ -218,7 +218,10 @@ type Contributes struct {
 // Presentations declares how a library is published per protocol.
 type Presentations struct {
 	AdapterOnly bool `json:"adapterOnly,omitempty"`
-	Plex        *struct {
+	Vela        *struct {
+		Type string `json:"type"` // movies|shows
+	} `json:"vela,omitempty"`
+	Plex *struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {

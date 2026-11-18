@@ -30,6 +30,7 @@ function presentationLabel(value: string): string {
   const labels: Record<string, string> = {
     movie: t("Movies"),
     show: t("TV shows"),
+    shows: t("TV shows"),
     series: t("TV shows"),
     movies: t("Movies"),
     tvshows: t("TV shows"),
@@ -46,6 +47,7 @@ function presentationLabel(value: string): string {
   };
   return labels[value] ?? value;
 }
+const VELA_TYPES = ["movies", "shows"];
 const PLEX_BASES = ["movie", "show", "artist", "photo"];
 const MB_TYPES = ["movies", "tvshows", "music", "audiobooks", "books", "photos", "homevideos"];
 const STREMIO_TYPES = ["movie", "series", "channel", "tv"];
@@ -54,6 +56,11 @@ const XTREAM_TYPES = ["movie", "series", "live"];
 function defaultPlexBase(lib: Library): string {
   if (lib.source === "plugin") return (lib.kind?.levels.length ?? 1) >= 3 ? "show" : "movie";
   return lib.mediaType === "show" ? "show" : "movie";
+}
+function defaultVelaType(lib: Library): string {
+  const declared = lib.present?.vela?.type ?? lib.kind?.present?.vela?.type;
+  if (declared) return declared;
+  return defaultPlexBase(lib) === "show" ? "shows" : "movies";
 }
 function defaultMBType(lib: Library): string {
   const declared =
@@ -84,7 +91,7 @@ function PresentationsEditor({
     );
 
   const row = (
-    key: "plex" | "mediaBrowser" | "stremio" | "xtream" | "silo",
+    key: "vela" | "plex" | "mediaBrowser" | "stremio" | "xtream" | "silo",
     title: string,
     value: string,
     options: string[],
@@ -118,6 +125,14 @@ function PresentationsEditor({
       <p className="px-5 pt-4 pb-2 text-sm text-fg-muted">
         {t("Choose where this library appears. Anything off stays just in this console.")}
       </p>
+      {row(
+        "vela",
+        "Vela",
+        present.vela?.type ?? defaultVelaType(library),
+        VELA_TYPES,
+        (v) => ({ type: v }),
+        defaultVelaType(library),
+      )}
       {row(
         "plex",
         "Plex",
@@ -481,6 +496,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
                       .map(
                         (app) =>
                           ({
+                            vela: "Vela",
                             mediaBrowser: t("Jellyfin & Emby"),
                             plex: "Plex",
                             stremio: "Stremio",

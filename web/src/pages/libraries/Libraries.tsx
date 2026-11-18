@@ -63,6 +63,8 @@ function SourceIcon({ lib }: { lib: Library }) {
 
 function protocolLabel(key: string): string {
   switch (key) {
+    case "vela":
+      return "Vela";
     case "plex":
       return "Plex";
     case "mediaBrowser":

@@ -222,6 +222,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys map[string]bool, add func(string, string)) {
 	p := k.Present
 	protocols := 0
+	if p.Vela != nil {
+		protocols++
+	}
 	if p.Plex != nil {
 		protocols++
 	}
@@ -253,6 +256,17 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 		return
 	}
 	levels := len(k.Levels)
+	if p.Vela != nil {
+		switch p.Vela.Type {
+		case "movies":
+		case "shows":
+			if levels < 2 {
+				add(base+".vela.type", "shows needs at least two levels")
+			}
+		default:
+			add(base+".vela.type", "must be movies or shows")
+		}
+	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
 		case "movie", "photo":

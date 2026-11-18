@@ -5,6 +5,7 @@ import type { VisibilityRule } from "./browser/LibraryVisibility";
 
 export interface Presentations {
   adapterOnly?: boolean;
+  vela?: { type: string };
   plex?: { base: string };
   mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
   stremio?: { type: string };
@@ -310,10 +311,12 @@ export const librariesApi = {
 /** Protocols a library is published to, for list-card badges. */
 export function publishedTo(lib: Library): string[] {
   if (lib.hidden) return [];
-  if (lib.source === "builtin") return ["plex", "mediaBrowser", "stremio", "xtream", "silo"];
+  if (lib.source === "builtin")
+    return ["vela", "plex", "mediaBrowser", "stremio", "xtream", "silo"];
   const p = lib.present ?? {};
   const out: string[] = [];
   if (p.adapterOnly) out.push("adapter");
+  if (p.vela) out.push("vela");
   if (p.plex) out.push("plex");
   if (p.mediaBrowser) out.push("mediaBrowser");
   if (p.stremio) out.push("stremio");

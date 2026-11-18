@@ -64,7 +64,10 @@ type Library struct {
 // library afterwards; a zero value publishes nowhere (console-only).
 type Presentations struct {
 	AdapterOnly bool `json:"adapterOnly,omitempty"` // only via FrontendAdapter (§6.5)
-	Plex        *struct {
+	Vela        *struct {
+		Type string `json:"type"` // movies|shows
+	} `json:"vela,omitempty"`
+	Plex *struct {
 		Base string `json:"base"` // movie|show|artist|photo  (Plex section type / agent family)
 		// level mapping for Base=show: root->show, mid->season, leaf->episode; movie: root|leaf->movie
 	} `json:"plex,omitempty"`

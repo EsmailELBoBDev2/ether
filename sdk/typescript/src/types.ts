@@ -301,6 +301,7 @@ export interface Contributes {
 /** How a library is published per protocol (Ether v0.3.8 content kinds). */
 export interface Presentations {
   adapterOnly?: boolean;
+  vela?: { type: "movies" | "shows" };
   plex?: { base: "movie" | "show" | "artist" | "photo" };
   mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
   stremio?: { type: "movie" | "series" | "channel" | "tv" };

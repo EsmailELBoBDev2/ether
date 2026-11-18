@@ -12,6 +12,8 @@ describe("Libraries workspace", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("Books")).toBeInTheDocument();
     expect(screen.getAllByText("Movies").length).toBeGreaterThan(0);
+    const moviesCard = screen.getByRole("region", { name: "Movies" });
+    expect(within(moviesCard).getByText(/In apps: Vela, Plex/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Library settings/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /From a plugin/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Titles from:/)).not.toBeInTheDocument();
@@ -213,6 +215,38 @@ describe("Libraries workspace", () => {
     expect(screen.queryByText("Keeping it up to date")).not.toBeInTheDocument();
     expect(screen.queryByText("New releases")).not.toBeInTheDocument();
     expect(screen.queryByText("Source: TMDB")).not.toBeInTheDocument();
+  });
+
+  it("lists Vela first in Show in apps and saves its type picker", async () => {
+    const { fake } = renderApp("/libraries/7/settings");
+    await screen.findByText("Show in apps", {}, { timeout: 15000 });
+    const switches = screen
+      .getAllByRole("switch")
+      .map((el) => el.getAttribute("aria-label"))
+      .filter((label): label is string => Boolean(label?.startsWith("Show in ")));
+    expect(switches).toEqual([
+      "Show in Vela",
+      "Show in Plex",
+      "Show in Jellyfin & Emby",
+      "Show in Stremio",
+      "Show in Xtream",
+      "Show in Silo",
+    ]);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Show in Vela" }));
+    const picker = await screen.findByRole("button", { name: "How Vela shows it" });
+    expect(picker).toHaveTextContent("TV shows");
+    expect(screen.getByText("In apps: Vela")).toBeInTheDocument();
+
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Movies" }));
+    expect(screen.getByRole("button", { name: "How Vela shows it" })).toHaveTextContent("Movies");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      const patch = calls(fake, "PATCH", "/libraries/7").at(-1);
+      expect(patch?.body).toMatchObject({ present: { vela: { type: "movies" } } });
+    });
   });
 
   it("sets the quality profile on a library from its settings", async () => {

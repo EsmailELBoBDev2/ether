@@ -442,6 +442,14 @@
                         },
                         "type": "object"
                       },
+                      "vela": {
+                        "properties": {
+                          "type": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
                       "xtream": {
                         "properties": {
                           "category": {

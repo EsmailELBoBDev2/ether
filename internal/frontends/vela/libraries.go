@@ -89,6 +89,11 @@ func libraryWire(view frontend.View) object {
 			tab := object{"id": t.ID, "label": t.Label, "kind": t.Kind}
 			if t.Kind == "collections" && t.Facet != "" {
 				tab["facet"] = t.Facet
+				effOrder := t.Order
+				if effOrder == "" {
+					effOrder = "count"
+				}
+				tab["order"] = effOrder
 				effSort := t.Sort
 				if effSort == "" {
 					if slices.Contains(view.Sorts, "released") {
@@ -108,6 +113,13 @@ func libraryWire(view frontend.View) object {
 				}
 				tab["sort"] = effSort
 				tab["direction"] = effDir
+			} else if t.Kind == "people" && t.Facet != "" {
+				tab["facet"] = t.Facet
+				effOrder := t.Order
+				if effOrder == "" {
+					effOrder = "name"
+				}
+				tab["order"] = effOrder
 			}
 			tabs = append(tabs, tab)
 		}
@@ -808,13 +820,13 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if view.PluginID != "" || view.KindKey != "" {
-		facetField := ""
+		var selectedTab frontend.ViewTab
 		if tabKey != "" {
 			matchedTab := false
 			for _, t := range view.Tabs {
-				if t.ID == tabKey && t.Kind == "collections" {
+				if t.ID == tabKey && (t.Kind == "collections" || t.Kind == "people") {
 					matchedTab = true
-					facetField = t.Facet
+					selectedTab = t
 					break
 				}
 			}
@@ -824,18 +836,49 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			for _, t := range view.Tabs {
-				if t.Kind == "collections" && t.Facet != "" {
-					facetField = t.Facet
+				if (t.Kind == "collections" || t.Kind == "people") && t.Facet != "" {
+					selectedTab = t
 					break
 				}
 			}
 		}
+		if selectedTab.Kind == "people" {
+			peopleReader, hasPeople := i.host.Experience.(frontend.LibraryFacetPeople)
+			if selectedTab.Facet == "" || !hasPeople {
+				cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
+				return
+			}
+			fpPage, err := peopleReader.LibraryFacetPeople(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
+				Offset: c.Offset,
+				Limit:  pageLimit,
+			})
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			entries, err := i.facetPeopleWire(r, token, fpPage.Items)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			out := object{"items": entries, "continuation": "exhausted"}
+			if fpPage.More {
+				next, err := i.nextLiveCursor(c, c.Offset+len(fpPage.Items), snapshot)
+				if err != nil {
+					fail(w, err, r)
+					return
+				}
+				out["continuation"], out["nextCursor"] = "more", next
+			}
+			cache(w, r, out)
+			return
+		}
 		colReader, hasCols := i.host.Experience.(frontend.LibraryFacetCollections)
-		if facetField == "" || !hasCols {
+		if selectedTab.Facet == "" || !hasCols {
 			cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
 			return
 		}
-		fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, facetField, frontend.PageQuery{
+		fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
 			Offset: c.Offset,
 			Limit:  pageLimit,
 		})
@@ -843,7 +886,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
-		entries, err := i.facetCollectionsWire(r, v, token, facetField, view, fcPage.Items)
+		entries, err := i.facetCollectionsWire(r, v, token, selectedTab.Facet, view, fcPage.Items)
 		if err != nil {
 			fail(w, err, r)
 			return

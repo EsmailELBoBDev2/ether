@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,10 +15,12 @@ import (
 
 type fakePresentationPluginLibraries struct {
 	fakePluginLibraries
-	pres     PluginPresentation
-	items    []core.Title
-	buckets  map[string][]frontend.FacetBucket
-	colPages map[string]frontend.FacetCollectionPage
+	pres        PluginPresentation
+	items       []core.Title
+	buckets     map[string][]frontend.FacetBucket
+	colPages    map[string]frontend.FacetCollectionPage
+	peoplePages map[string][]PluginFacetPerson
+	people      []PluginPersonMatch
 }
 
 func (f *fakePresentationPluginLibraries) RootMediaType(context.Context, core.Library) core.MediaType {
@@ -31,16 +35,54 @@ func (f *fakePresentationPluginLibraries) FacetBuckets(_ context.Context, _ core
 	return append([]frontend.FacetBucket(nil), f.buckets[field]...), nil
 }
 
-func (f *fakePresentationPluginLibraries) FacetCollections(_ context.Context, _ core.Library, field string, offset, limit int) (frontend.FacetCollectionPage, error) {
-	p := f.colPages[field]
-	end := min(offset+limit, len(p.Items))
-	if offset >= len(p.Items) {
+func (f *fakePresentationPluginLibraries) FacetCollections(_ context.Context, _ core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error) {
+	all := append([]frontend.FacetCollection(nil), f.colPages[field].Items...)
+	if order == "name" {
+		sort.Slice(all, func(i, j int) bool {
+			return strings.ToLower(all[i].Name) < strings.ToLower(all[j].Name)
+		})
+	}
+	end := min(offset+limit, len(all))
+	if offset >= len(all) {
 		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
 	return frontend.FacetCollectionPage{
-		Items: append([]frontend.FacetCollection(nil), p.Items[offset:end]...),
-		More:  end < len(p.Items),
+		Items: all[offset:end],
+		More:  end < len(all),
 	}, nil
+}
+
+func (f *fakePresentationPluginLibraries) FacetPeople(_ context.Context, _ core.Library, field, order string, offset, limit int) (PluginFacetPeoplePage, error) {
+	all := append([]PluginFacetPerson(nil), f.peoplePages[field]...)
+	if order == "count" {
+		sort.Slice(all, func(i, j int) bool {
+			if all[i].Count != all[j].Count {
+				return all[i].Count > all[j].Count
+			}
+			return strings.ToLower(all[i].Name) < strings.ToLower(all[j].Name)
+		})
+	} else {
+		sort.Slice(all, func(i, j int) bool {
+			return strings.ToLower(all[i].Name) < strings.ToLower(all[j].Name)
+		})
+	}
+	if offset >= len(all) {
+		return PluginFacetPeoplePage{Items: []PluginFacetPerson{}}, nil
+	}
+	end := min(offset+limit, len(all))
+	return PluginFacetPeoplePage{
+		Items: all[offset:end],
+		More:  end < len(all),
+	}, nil
+}
+
+func (f *fakePresentationPluginLibraries) Item(_ context.Context, key core.RatingKey) (PluginItemView, error) {
+	for _, it := range f.items {
+		if it.Key == key {
+			return PluginItemView{Library: f.libs[0], Title: it, Playable: true}, nil
+		}
+	}
+	return PluginItemView{}, core.ErrNotFound
 }
 
 func (f *fakePresentationPluginLibraries) ItemsMany(_ context.Context, keys []core.RatingKey) (map[core.RatingKey]PluginItemView, error) {
@@ -53,6 +95,35 @@ func (f *fakePresentationPluginLibraries) ItemsMany(_ context.Context, keys []co
 		}
 	}
 	return out, nil
+}
+
+func (f *fakePresentationPluginLibraries) SearchPeople(_ context.Context, _ core.Library, query string, _ frontend.ItemQuery, _, _ int) ([]PluginPersonMatch, error) {
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []PluginPersonMatch
+	for _, m := range f.people {
+		if q == "" || strings.Contains(strings.ToLower(m.Name), q) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakePresentationPluginLibraries) PersonByID(_ context.Context, _ core.Library, personID int64, _ int) (PluginPersonMatch, bool, error) {
+	for _, m := range f.people {
+		if m.PersonID == personID {
+			return m, true, nil
+		}
+	}
+	return PluginPersonMatch{}, false, nil
+}
+
+func (f *fakePresentationPluginLibraries) FindPersonID(_ context.Context, _ core.Library, match func(personID int64, name string) bool) (int64, bool, error) {
+	for _, m := range f.people {
+		if match(m.PersonID, m.Name) {
+			return m.PersonID, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 func (f *fakePresentationPluginLibraries) Browse(_ context.Context, _ core.Library, q frontend.ItemQuery, _ string, limit int) (PluginBrowsePage, error) {
@@ -137,7 +208,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			Tabs: []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
 				{ID: "library", Label: "Library", Kind: "library"},
-				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Sort: "released", Direction: "desc"},
+				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "name", Sort: "released", Direction: "desc"},
 			},
 			Sorts: []string{"released", "added", "title", "year", "rating", "index"},
 			Facets: []frontend.ViewFacet{
@@ -188,7 +259,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			pView = v
 		}
 	}
-	if pView.Card != "landscape" || len(pView.Tabs) != 3 || pView.Tabs[2].Facet != "developers" || len(pView.Sorts) != 6 || len(pView.Facets) != 3 {
+	if pView.Card != "landscape" || len(pView.Tabs) != 3 || pView.Tabs[2].Facet != "developers" || pView.Tabs[2].Order != "name" || len(pView.Sorts) != 6 || len(pView.Facets) != 3 {
 		t.Fatalf("unexpected plugin View metadata: %+v", pView)
 	}
 
@@ -201,7 +272,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 		t.Fatalf("undeclared facet err = %v, want ErrNotFound", err)
 	}
 
-	// FacetCollections clears NewestItem if viewer content rating forbids it.
+	// FacetCollections supports order="name" and clears NewestItem if viewer content rating forbids it.
 	pg13Viewer := &core.User{ID: 2, MaxContentRating: "PG-13", AllowedLibraries: []core.LibraryID{9}}
 	svc.d.Active = func(_ context.Context, id int64) (*core.User, error) {
 		if id == 2 {
@@ -209,9 +280,9 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 		}
 		return owner, nil
 	}
-	cols, err := svc.LibraryFacetCollections(ctx, pg13Viewer, core.Device{}, "9", "developers", frontend.PageQuery{Limit: 10})
-	if err != nil || len(cols.Items) != 2 || cols.Items[0].NewestItem != nil {
-		t.Fatalf("expected R-rated NewestItem cleared for PG-13 viewer, got %+v err=%v", cols, err)
+	cols, err := svc.LibraryFacetCollections(ctx, pg13Viewer, core.Device{}, "9", "developers", "name", frontend.PageQuery{Limit: 10})
+	if err != nil || len(cols.Items) != 2 || cols.Items[0].ID != "capcom" || cols.Items[1].ID != "nintendo" || cols.Items[0].NewestItem != nil {
+		t.Fatalf("expected alphabetical collections with R-rated NewestItem cleared for PG-13 viewer, got %+v err=%v", cols, err)
 	}
 
 	// PluginLibraryRows: Continue Watching, Recently Added, Newest, Top Rated, and "From <Developer>" rows.
@@ -257,5 +328,123 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 	}
 	if arr[0].Key != t2.Key {
 		t.Fatalf("SortYear desc first = %v, want t2(2025)", arr[0].Key)
+	}
+}
+
+func TestPluginLibraryPeopleTabResolvesThroughPerson(t *testing.T) {
+	ctx := context.Background()
+	ashleyID := core.PluginPersonID("Ashley Johnson")
+	lauraID := core.PluginPersonID("Laura Bailey")
+	troyID := core.PluginPersonID("Troy Baker")
+
+	g1 := core.Title{
+		Key:       core.PluginKey(301),
+		LibraryID: 9,
+		Type:      core.TypeMovie,
+		Title:     "Chrono Quest",
+		Cast: []core.Person{
+			{TMDB: lauraID, Name: "Laura Bailey", Role: "Heroine", ThumbPath: "https://cdn.example/cast/laura.jpg"},
+			{TMDB: ashleyID, Name: "Ashley Johnson", Role: "Scout", ThumbPath: "https://cdn.example/cast/ashley.jpg"},
+		},
+	}
+	g2 := core.Title{
+		Key:       core.PluginKey(302),
+		LibraryID: 9,
+		Type:      core.TypeMovie,
+		Title:     "Galaxy Racers",
+		Cast: []core.Person{
+			{TMDB: lauraID, Name: "Laura Bailey", Role: "Captain"},
+			{TMDB: troyID, Name: "Troy Baker", Role: "Pilot", ThumbPath: "https://cdn.example/cast/troy.jpg"},
+		},
+	}
+	g3 := core.Title{
+		Key:       core.PluginKey(303),
+		LibraryID: 9,
+		Type:      core.TypeMovie,
+		Title:     "Star Puzzle",
+		Cast: []core.Person{
+			{TMDB: lauraID, Name: "Laura Bailey", Role: "Narrator"},
+			{TMDB: ashleyID, Name: "Ashley Johnson", Role: "Engineer"},
+		},
+	}
+
+	plug := &fakePresentationPluginLibraries{
+		fakePluginLibraries: fakePluginLibraries{
+			libs: []core.Library{{
+				ID:        9,
+				Key:       "plugin:community.games:game",
+				Name:      "Video Games",
+				Source:    core.LibraryPlugin,
+				PluginID:  "community.games",
+				KindKey:   "game",
+				MediaType: core.TypeMovie,
+			}},
+		},
+		pres: PluginPresentation{
+			Card: "landscape",
+			Tabs: []frontend.ViewTab{
+				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
+				{ID: "library", Label: "Library", Kind: "library"},
+				{ID: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name"},
+			},
+			Sorts: []string{"released", "title"},
+			Facets: []frontend.ViewFacet{
+				{ID: "voiceCast", Label: "Voice cast", Type: "people", Multi: true},
+			},
+		},
+		items: []core.Title{g1, g2, g3},
+		peoplePages: map[string][]PluginFacetPerson{
+			"voiceCast": {
+				{PersonID: troyID, Name: "Troy Baker", Count: 1, SampleTitle: &g2, HasThumb: true},
+				{PersonID: lauraID, Name: "Laura Bailey", Count: 3, SampleTitle: &g1, HasThumb: true},
+				{PersonID: ashleyID, Name: "Ashley Johnson", Count: 2, SampleTitle: &g1, HasThumb: true},
+			},
+		},
+		people: []PluginPersonMatch{
+			{PersonID: ashleyID, Name: "Ashley Johnson", CreditCount: 2, ArtworkItem: g1.Key, HasThumb: true, Roles: map[string]int{"Acting": 2}, Titles: []core.Title{g1, g3}},
+			{PersonID: lauraID, Name: "Laura Bailey", CreditCount: 3, ArtworkItem: g1.Key, HasThumb: true, Roles: map[string]int{"Acting": 3}, Titles: []core.Title{g1, g2, g3}},
+			{PersonID: troyID, Name: "Troy Baker", CreditCount: 1, ArtworkItem: g2.Key, HasThumb: true, Roles: map[string]int{"Acting": 1}, Titles: []core.Title{g2}},
+		},
+	}
+
+	svc, _ := peopleFixture()
+	svc.d.PluginLibraries = plug
+	svc.d.LibraryPresentation = func(_ core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+		return mt, "movies", true
+	}
+	owner := &core.User{ID: 1, IsOwner: true}
+
+	page, err := svc.LibraryFacetPeople(ctx, owner, core.Device{}, "9", "voiceCast", "name", frontend.PageQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("LibraryFacetPeople: %v", err)
+	}
+	if len(page.Items) != 3 || page.More {
+		t.Fatalf("expected 3 people, got %+v", page)
+	}
+
+	want := []struct {
+		name   string
+		count  int
+		person int64
+	}{
+		{"Ashley Johnson", 2, ashleyID},
+		{"Laura Bailey", 3, lauraID},
+		{"Troy Baker", 1, troyID},
+	}
+	for i, w := range want {
+		fp := page.Items[i]
+		if fp.Person.Name != w.name || fp.ItemCount != w.count {
+			t.Fatalf("people[%d] = (%q, count=%d), want (%q, count=%d)", i, fp.Person.Name, fp.ItemCount, w.name, w.count)
+		}
+		if fp.Person.ArtworkItem == 0 || !core.IsPluginPersonID(fp.Person.TMDB) {
+			t.Fatalf("people[%d] missing ArtworkItem or plugin TMDB id: %+v", i, fp.Person)
+		}
+		detail, err := svc.Person(ctx, owner, core.Device{}, fp.Person.ID, frontend.PersonReadOptions{})
+		if err != nil {
+			t.Fatalf("Person(%q) for %q failed: %v", fp.Person.ID, fp.Person.Name, err)
+		}
+		if detail.ID != fp.Person.ID || detail.Name != w.name || detail.TMDB != w.person {
+			t.Fatalf("Person(%q) = %+v, want Name=%q TMDB=%d", fp.Person.ID, detail, w.name, w.person)
+		}
 	}
 }

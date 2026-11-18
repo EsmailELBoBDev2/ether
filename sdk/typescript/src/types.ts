@@ -333,8 +333,11 @@ export interface KindArt {
 export interface KindLibraryTab {
   key: string;
   label: string;
-  kind: "recommended" | "library" | "collections";
+  kind: "recommended" | "library" | "collections" | "people";
+  /** Declared browse.facets entry (optional on collections; required people-type facet on people). */
   facet?: string;
+  /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
+  order?: "count" | "name";
   sort?: "title" | "added" | "released" | "year" | "rating" | "index";
   direction?: "asc" | "desc";
 }

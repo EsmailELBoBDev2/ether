@@ -88,3 +88,21 @@ type PersonImageGrantBatch interface {
 type FacetPager interface {
 	FacetPage(ctx context.Context, viewer *Viewer, device Device, viewID, kind string, offset, limit int) ([]FacetValue, int, error)
 }
+
+// FacetPerson is one person entry in a plugin library's people tab.
+type FacetPerson struct {
+	Person    PersonDetail
+	ItemCount int
+}
+
+// FacetPersonPage is one page of people in a plugin library's people tab.
+type FacetPersonPage struct {
+	Items []FacetPerson
+	More  bool
+}
+
+// LibraryFacetPeople is an optional Experience capability returning a single
+// page of people for a plugin library's declared people-type facet field.
+type LibraryFacetPeople interface {
+	LibraryFacetPeople(ctx context.Context, viewer *Viewer, device Device, viewID, field, order string, page PageQuery) (FacetPersonPage, error)
+}

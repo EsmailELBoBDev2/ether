@@ -508,52 +508,73 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	}, nil
 }
 
-// ItemsMany implements experience.PluginLibraries.
+// ItemsMany implements experience.PluginLibraries using batched item, artwork,
+// and visibility queries per library rather than one query per key.
 func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map[core.RatingKey]experience.PluginItemView, error) {
 	out := make(map[core.RatingKey]experience.PluginItemView, len(keys))
 	if c == nil || c.items == nil || c.libs == nil || len(keys) == 0 {
 		return out, nil
 	}
-	libsByID := make(map[core.LibraryID]core.Library)
-	recsByID := make(map[core.LibraryID]pluginitems.KindRecord)
+	keyed, err := c.items.GetByKeys(ctx, keys)
+	if err != nil || len(keyed) == 0 {
+		return out, err
+	}
+	byLib := make(map[core.LibraryID][]core.KindItem)
+	var libOrder []core.LibraryID
+	seenKey := make(map[core.RatingKey]bool, len(keyed))
 	for _, key := range keys {
-		if !key.IsPluginKey() {
+		if !key.IsPluginKey() || seenKey[key] {
 			continue
 		}
-		if _, seen := out[key]; seen {
+		ki, ok := keyed[key]
+		if !ok {
 			continue
 		}
-		item, libID, err := c.items.GetByKey(ctx, key)
+		seenKey[key] = true
+		if _, exists := byLib[ki.LibraryID]; !exists {
+			libOrder = append(libOrder, ki.LibraryID)
+		}
+		byLib[ki.LibraryID] = append(byLib[ki.LibraryID], ki.Item)
+	}
+
+	visCtx := core.WithExplicitSearch(ctx)
+	for _, libID := range libOrder {
+		lib, err := c.libs.Get(ctx, libID)
 		if err != nil {
 			continue
 		}
-		lib, ok := libsByID[libID]
-		if !ok {
-			lib, err = c.libs.Get(ctx, libID)
-			if err != nil {
-				continue
-			}
-			libsByID[libID] = lib
-		}
-		rec, ok := recsByID[libID]
-		if !ok {
-			rec, err = c.items.GetKindByLibrary(ctx, libID)
-			if err != nil {
-				continue
-			}
-			recsByID[libID] = rec
-		}
-		hidden, e := c.items.ItemHidden(core.WithExplicitSearch(ctx), lib, item.Ref)
-		if e != nil || hidden {
+		rec, err := c.items.GetKindByLibrary(ctx, libID)
+		if err != nil {
 			continue
 		}
-		titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
-		out[key] = experience.PluginItemView{
-			Library:     lib,
-			Title:       titles[0],
-			Images:      projectImages(item.Art, rec.Decl.Library.EffectiveCard() == "landscape"),
-			Unavailable: item.Unavailable,
-			Playable:    item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
+		candidates := byLib[libID]
+		refs := make([]core.ItemRef, len(candidates))
+		for i, it := range candidates {
+			refs[i] = it.Ref
+		}
+		visibleRefs, err := c.items.FilterVisibleRefs(visCtx, lib, refs)
+		if err != nil {
+			continue
+		}
+		visibleItems := make([]core.KindItem, 0, len(candidates))
+		for _, it := range candidates {
+			if visibleRefs[it.Ref] {
+				visibleItems = append(visibleItems, it)
+			}
+		}
+		if len(visibleItems) == 0 {
+			continue
+		}
+		titles := c.projectItems(ctx, rec, lib, visibleItems)
+		landscape := rec.Decl.Library.EffectiveCard() == "landscape"
+		for i, it := range visibleItems {
+			out[it.Key] = experience.PluginItemView{
+				Library:     lib,
+				Title:       titles[i],
+				Images:      projectImages(it.Art, landscape),
+				Unavailable: it.Unavailable,
+				Playable:    it.Unavailable == nil && it.Playable && levelIsPlayable(rec.Decl, it.Level),
+			}
 		}
 	}
 	return out, nil
@@ -789,7 +810,8 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	if limit <= 0 {
 		limit = 50
 	}
-	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
+	visCtx := core.WithExplicitSearch(ctx)
+	policy, err := c.items.LibraryPolicy(visCtx, lib)
 	if err != nil {
 		return nil, err
 	}
@@ -841,13 +863,17 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 			}
 		}
 	}
+	refs := make([]core.ItemRef, len(combined))
+	for i, it := range combined {
+		refs[i] = it.Ref
+	}
+	visibleRefs, err := c.items.FilterVisibleRefs(visCtx, lib, refs)
+	if err != nil {
+		return nil, err
+	}
 	allowed := combined[:0]
 	for _, it := range combined {
-		hidden, e := c.items.ItemHidden(core.WithExplicitSearch(ctx), lib, it.Ref)
-		if e != nil {
-			return nil, e
-		}
-		if !hidden {
+		if visibleRefs[it.Ref] {
 			allowed = append(allowed, it)
 		}
 	}
@@ -865,7 +891,7 @@ func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query 
 	}
 	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	if _, ok := searchLevelsForQuery(rec.Decl, lib.Present, q.Types); !ok {
 		return nil, nil
@@ -879,7 +905,7 @@ func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query 
 	}
 	matches, err := c.items.SearchPeople(ctx, lib.ID, policy, query, personLimit, itemLimit)
 	if err != nil || len(matches) == 0 {
-		return nil, err
+		return nil, nil
 	}
 	out := make([]experience.PluginPersonMatch, 0, len(matches))
 	for _, m := range matches {
@@ -1409,6 +1435,11 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		}
 		if tab.Kind == "collections" && tab.Facet != "" {
 			vt.Facet = tab.Facet
+			effOrder := tab.Order
+			if effOrder == "" {
+				effOrder = "count"
+			}
+			vt.Order = effOrder
 			effSort := tab.Sort
 			if effSort == "" {
 				if slices.Contains(sorts, "released") {
@@ -1430,6 +1461,13 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 			}
 			vt.Sort = effSort
 			vt.Direction = effDir
+		} else if tab.Kind == "people" && tab.Facet != "" {
+			vt.Facet = tab.Facet
+			effOrder := tab.Order
+			if effOrder == "" {
+				effOrder = "name"
+			}
+			vt.Order = effOrder
 		}
 		tabs = append(tabs, vt)
 	}
@@ -1519,7 +1557,7 @@ func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field 
 }
 
 // FacetCollections implements experience.PluginPresentationLibraries.
-func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field string, offset, limit int) (frontend.FacetCollectionPage, error) {
+func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error) {
 	if c == nil || c.items == nil {
 		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
@@ -1540,6 +1578,7 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 		Level:     rootLevel,
 		Policy:    policy,
 		FieldKey:  field,
+		Order:     order,
 		Offset:    offset,
 		Limit:     limit,
 	})
@@ -1573,4 +1612,63 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 		}
 	}
 	return frontend.FacetCollectionPage{Items: out, More: page.More}, nil
+}
+
+// FacetPeople implements experience.PluginPresentationLibraries.
+func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, order string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
+	if c == nil || c.items == nil {
+		return experience.PluginFacetPeoplePage{Items: []experience.PluginFacetPerson{}}, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return experience.PluginFacetPeoplePage{}, err
+	}
+	rootLevel := ""
+	if len(rec.Decl.Levels) > 0 {
+		rootLevel = rec.Decl.Levels[0].Key
+	}
+	policy, err := c.items.LibraryPolicy(ctx, lib)
+	if err != nil {
+		return experience.PluginFacetPeoplePage{}, err
+	}
+	page, err := c.items.FacetPeople(ctx, pluginitems.FacetPeopleQuery{
+		LibraryID: lib.ID,
+		Level:     rootLevel,
+		Policy:    policy,
+		FieldKey:  field,
+		Order:     order,
+		Offset:    offset,
+		Limit:     limit,
+	})
+	if err != nil {
+		return experience.PluginFacetPeoplePage{}, err
+	}
+	var sampleRaw []core.KindItem
+	sampleIdx := make([]int, 0, len(page.Items))
+	for i, p := range page.Items {
+		if p.SampleItem != nil {
+			sampleRaw = append(sampleRaw, *p.SampleItem)
+			sampleIdx = append(sampleIdx, i)
+		}
+	}
+	var projected []core.Title
+	if len(sampleRaw) > 0 {
+		projected = c.projectItems(ctx, rec, lib, sampleRaw)
+	}
+	out := make([]experience.PluginFacetPerson, len(page.Items))
+	for i, p := range page.Items {
+		out[i] = experience.PluginFacetPerson{
+			PersonID: p.PersonID,
+			Name:     p.Name,
+			Count:    p.Count,
+			HasThumb: p.Thumb != "",
+		}
+	}
+	for j, personIdx := range sampleIdx {
+		if j < len(projected) {
+			t := projected[j]
+			out[personIdx].SampleTitle = &t
+		}
+	}
+	return experience.PluginFacetPeoplePage{Items: out, More: page.More}, nil
 }

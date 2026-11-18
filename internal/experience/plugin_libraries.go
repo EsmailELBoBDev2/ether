@@ -64,17 +64,35 @@ type PluginPresentation struct {
 	Facets []frontend.ViewFacet
 }
 
+// PluginFacetPerson is one distinct person entry for a plugin library's people tab.
+type PluginFacetPerson struct {
+	PersonID    int64
+	Name        string
+	Count       int
+	HasThumb    bool
+	SampleTitle *core.Title
+}
+
+// PluginFacetPeoplePage is one page of people for a plugin library's people tab.
+type PluginFacetPeoplePage struct {
+	Items []PluginFacetPerson
+	More  bool
+}
+
 // PluginPresentationLibraries is implemented by plugin library adapters that
-// expose card/tabs/sorts/facets presentation metadata and discrete facet buckets.
+// expose card/tabs/sorts/facets presentation metadata, facet collections, and
+// facet people tabs.
 type PluginPresentationLibraries interface {
 	Presentation(ctx context.Context, lib core.Library) (PluginPresentation, bool)
 	FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error)
-	FacetCollections(ctx context.Context, lib core.Library, field string, offset, limit int) (frontend.FacetCollectionPage, error)
+	FacetCollections(ctx context.Context, lib core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error)
+	FacetPeople(ctx context.Context, lib core.Library, field, order string, offset, limit int) (PluginFacetPeoplePage, error)
 }
 
 var (
 	_ frontend.LibraryFacetBuckets     = (*Service)(nil)
 	_ frontend.LibraryFacetCollections = (*Service)(nil)
+	_ frontend.LibraryFacetPeople      = (*Service)(nil)
 	_ frontend.PluginLibraryRowsReader = (*Service)(nil)
 )
 
@@ -844,7 +862,7 @@ func (s *Service) LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, 
 }
 
 // LibraryFacetCollections implements frontend.LibraryFacetCollections.
-func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
+func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
@@ -864,7 +882,7 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 	if !declared {
 		return frontend.FacetCollectionPage{}, core.ErrNotFound
 	}
-	out, err := pres.FacetCollections(ctx, lib, field, page.Offset, page.Limit)
+	out, err := pres.FacetCollections(ctx, lib, field, order, page.Offset, page.Limit)
 	if err != nil {
 		return frontend.FacetCollectionPage{}, err
 	}
@@ -877,6 +895,56 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 		}
 	}
 	return out, nil
+}
+
+// LibraryFacetPeople implements frontend.LibraryFacetPeople.
+func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetPersonPage, error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return frontend.FacetPersonPage{}, err
+	}
+	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
+	if err != nil || pres == nil {
+		return frontend.FacetPersonPage{}, core.ErrNotFound
+	}
+	declaredPeople := false
+	for _, f := range p.Facets {
+		if f.ID == field && f.Type == "people" {
+			declaredPeople = true
+			break
+		}
+	}
+	if !declaredPeople {
+		return frontend.FacetPersonPage{}, core.ErrNotFound
+	}
+	raw, err := pres.FacetPeople(ctx, lib, field, order, page.Offset, page.Limit)
+	if err != nil {
+		return frontend.FacetPersonPage{}, err
+	}
+	items := make([]frontend.FacetPerson, 0, len(raw.Items))
+	for _, entry := range raw.Items {
+		if !core.IsPluginPersonID(entry.PersonID) || strings.TrimSpace(entry.Name) == "" || entry.Count <= 0 {
+			continue
+		}
+		var artKey core.RatingKey
+		if entry.SampleTitle != nil {
+			piv := PluginItemView{Library: lib, Title: *entry.SampleTitle}
+			if s.pluginItemAllowed(ctx, v, piv) {
+				artKey = entry.SampleTitle.Key
+			}
+		}
+		items = append(items, frontend.FacetPerson{
+			Person: frontend.PersonDetail{
+				ID:          personFacetID(entry.PersonID),
+				Name:        entry.Name,
+				TMDB:        entry.PersonID,
+				ArtworkItem: artKey,
+			},
+			ItemCount: entry.Count,
+		})
+	}
+	return frontend.FacetPersonPage{Items: items, More: raw.More}, nil
 }
 
 // PluginLibraryRows implements frontend.PluginLibraryRowsReader: up to 8 shelves
@@ -980,7 +1048,8 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 		}
 	}
 
-	// 5. Top values of the first declared facet (most items first).
+	// 5. Top values of the first declared facet (most items first), probing at
+	// most 12 buckets so viewer restrictions never walk hundreds of buckets.
 	if pres != nil && len(p.Facets) > 0 && len(rows) < maxRows {
 		firstFacet := p.Facets[0]
 		if buckets, bErr := pres.FacetBuckets(ctx, lib, firstFacet.ID); bErr == nil && len(buckets) > 0 {
@@ -990,8 +1059,8 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 				}
 				return strings.ToLower(buckets[i].Label) < strings.ToLower(buckets[j].Label)
 			})
-			for _, b := range buckets {
-				if len(rows) >= maxRows {
+			for tried, b := range buckets {
+				if len(rows) >= maxRows || tried >= 12 {
 					break
 				}
 				page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{

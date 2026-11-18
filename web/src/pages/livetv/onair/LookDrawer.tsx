@@ -541,11 +541,21 @@ export function LookDrawer({
             ))}
         </div>
       )}
-      {tab === "create" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
-          <CreateTab style={draft} onChange={change} selectedSceneId={scene?.id} />
-        </div>
-      ) : tab === "screens" ? (
+      <div
+        hidden={tab !== "create"}
+        className={
+          tab === "create" ? "min-h-0 flex-1 overflow-y-auto lg:overflow-hidden" : "hidden"
+        }
+      >
+        <CreateTab
+          style={draft}
+          onChange={change}
+          selectedSceneId={scene?.id}
+          bindings={bound}
+          active={tab === "create"}
+        />
+      </div>
+      {tab === "screens" ? (
         <div className="min-h-0 flex-1 overflow-y-auto bg-surface p-4 sm:p-8">
           <div className="mx-auto max-w-4xl space-y-8">
             <section className="space-y-4 rounded-xl border border-border p-4 sm:p-6">
@@ -561,7 +571,7 @@ export function LookDrawer({
             <StyleScreensEditor look={draft} onChange={change} />
           </div>
         </div>
-      ) : (
+      ) : tab !== "create" ? (
         <div
           inert={saving}
           className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:grid lg:overflow-hidden"
@@ -916,7 +926,7 @@ export function LookDrawer({
             </aside>
           )}
         </div>
-      )}
+      ) : null}
       {sequence && (
         <SequencePreview
           style={draft}

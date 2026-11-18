@@ -63,8 +63,9 @@ func cleanOverlayScene(sc *StyleScene) {
 }
 
 // StyleDraftGuide is the renderer contract shared by generation and live agent
-// drafts. Its supported layer, easing, post-effect, behaviour, font and role
-// lists come straight from the validator tables so the guide cannot drift.
+// drafts. Its supported layer, easing, post-effect, behaviour, font, role, slot,
+// and word-token lists come straight from the binder and validator tables so
+// the guide cannot drift.
 var StyleDraftGuide = buildStyleDraftGuide()
 
 func buildStyleDraftGuide() string {
@@ -73,15 +74,19 @@ Top-level shape: {id,name,template,brand:{palette:{background,accent,text,glow},
 
 Required roles (%d): %s.
 Every complete style MUST include all %d roles in both roles and scenes, with at least one enabled (enabled:true), non-empty designed scene per role. Role durations are multiples of 4 between 4 and 28 seconds; each scene.document.duration must equal roles[scene.role].duration and scene.document.moment must equal scene.role.
+Supported slots: %s.
+Word tokens: %s.
+Brand tokens: %s.
+Slot grammar: Use ONLY exact {<slot>} placeholders from Supported slots, Word tokens, Brand tokens, {textures.<kind>}, or declared {control.<id>}. Schedule rows use 0-based bracket indexing 0..3 ONLY ({list[0].time}, {list[0].title}, {list[0].meta} through {list[3].time}, {list[3].title}, {list[3].meta}); never invent other slot names, dot indices like list.0.title, or indices >= 4.
 Role intent, durations, layout mode and live slots:
 - ident (4-12s, usually 8s, full-screen): Flagship station ID establishing channel personality. Use {channel.name}, {words.tagline}, optional {brand.logo} (only when brand.logo is non-empty).
 - upnext (8-12s, usually 8s, full-screen): Next programme promo card. Use {words.upNext}, {next.title}, {next.time}, {next.meta}, {next.logline}, optional art layer with src "{next.backdrop}" or "{next.poster}".
 - tonight (8-16s, usually 8s or 12s, full-screen): Evening schedule board. Use {words.tonight}, {channel.name}, and 3-4 stacked rows using {list[0].time}, {list[0].title}, {list[0].meta} through {list[3].time}, {list[3].title}, {list[3].meta}.
 - break (4-8s, usually 8s, full-screen): Outgoing intermission bumper before commercials. Use {words.break} and {channel.name}.
-- back (4-8s, usually 8s, full-screen): Return-from-break bumper resuming the programme. Use {words.back}, {channel.name}, {now.title}.
+- back (4-8s, usually 8s, full-screen): Return-from-break bumper resuming the programme. Use {words.back}, {channel.name}, {now.title}, optional {now.meta}.
 - offair (8-16s, usually 8s or 12s, full-screen): Sign-off / closedown slate. Use {words.offair}, {offair.message}, {channel.name}.
 - welcome (8-12s, usually 8s, full-screen): Personal tune-in greeting card. Use {viewer.greeting} or {viewer.name}, {next.title}, {next.reason}, {channel.name}.
-- lowerthird (8-12s, usually 8s, TRANSPARENT OVERLAY over live video): NO full-screen background rect and post MUST be []. Anchor a compact banner in lower safe area (x:120..1400, y:760..972) with a translucent dark/brand plate (#080b12@0.82) + accent rule, showing {words.now}, {now.title}, and "{words.upNext} {next.time} · {next.title}", fading/sliding in (0..0.6s) and out (dur-0.6..dur).
+- lowerthird (8-12s, usually 8s, TRANSPARENT OVERLAY over live video): NO full-screen background rect and post MUST be []. Anchor a compact banner in lower safe area (x:120..1400, y:760..972) with a translucent dark/brand plate (#080b12@0.82) + accent rule, showing {words.now}, {now.title}, optional {now.meta} or {now.logline}, and "{words.upNext} {next.time} · {next.title}", fading/sliding in (0..0.6s) and out (dur-0.6..dur).
 - bug (8s, TRANSPARENT OVERLAY over live video): NO full-screen background rect and post MUST be []. Subtle corner watermark group (opacity 0.28..0.45) in safe corner (e.g. x:1440, y:872, maxWidth:288) with {channel.name} and a soft dark shadow copy behind it for legibility on bright video.
 
 Layer types: %s.
@@ -89,7 +94,7 @@ IMPORTANT: There is NO "line" layer type. Draw rules, dividers and hairlines as 
 Supported layer fields (every layer requires unique id and human name):
 - Transform & timing: x, y, w, h, scale, scaleX, scaleY, rotate, opacity, start, end, repeat (1..200), hidden, locked, blend (normal|multiply|screen|overlay), blur (0..64), glow (0..64), clip (SVG path), reveal ({wipe:ltr|rtl,from,to,out?,ease?}), behave.
 - Paint: fill, stroke, strokeWidth, join (miter|round|bevel), cap (butt|round|square), fillRule (nonzero|evenodd). Colours are #RRGGBB, #RRGGBB@alpha (0..1), tokens ({bg},{accent},{text},{glow},{accent}@0.35), or gradients {linear:[x1,y1,x2,y2],stops:[[0,color],[1,color]]} / {radial:[cx,cy,r0,r1],stops:[...]}.
-- Type-specific: group (layers:[...]); path (path:"M ..."); blob (x,y,w,h,seed,fill); text (text,font,size,weight,track,align:left|center|right,maxWidth,fit:shrink|wrap|clip,maxLines); image/art/logo (src,w,h,fit:cover|contain,tint,tintBlend:normal|multiply|screen|overlay|silhouette — use art for {next.poster}/{next.backdrop}, image/logo only for supplied 64-hex Library digests or {brand.logo}); gradient (w,h,fill); grid (x,y,w,h,stroke,strokeWidth); particles (x,y,w,h,count:1..500,seed,fill); noise (x,y,w,h,seed,opacity).
+- Type-specific: group (layers:[...]); path (path:"M ..."); blob (x,y,w,h,seed,fill); text (text,font,size,weight,track,align:left|center|right,maxWidth,fit:shrink|wrap|clip,maxLines — align defaults to "left" and x is the anchor point, so centred text MUST set align:"center" with x at the centre such as x:960); image/art/logo (src,w,h,fit:cover|contain,tint,tintBlend:normal|multiply|screen|overlay|silhouette — use art for {next.poster}/{next.backdrop}, image/logo only for supplied 64-hex Library digests or {brand.logo}); gradient (w,h,fill); grid (x,y,w,h,stroke,strokeWidth); particles (x,y,w,h,count:1..500,seed,fill); noise (x,y,w,h,seed,opacity).
 - Animation: scalars or {keys:[[seconds,value,easing?],...]} with times ascending in 0..duration.
 Easings: %s.
 Behaviours: %s (as behave:[{<kind>:{amplitude?,speed?,start?,step?,seed?}}]).
@@ -97,10 +102,10 @@ Post effects: %s (as post:[{type,amount:0.04..0.25,seed?}] on full-screen roles 
 Bundled fonts: %s (set brand.type.display and brand.type.body to bundled font ids, and bind text font to "{type.display}" or "{type.body}").
 
 1920x1080 broadcast composition rules:
-1. Grid & safe areas: Bleed backgrounds, gradients, grids and particles across 0..1920 x 0..1080, but keep all text, cards, logos, bugs and lower thirds strictly inside title-safe margins x:160..1760, y:108..972. Align copy cleanly on a shared left axis (e.g. x:160 or x:220) or centered axis (x:960, align:"center").
+1. Grid, safe areas & centring: Bleed backgrounds, gradients, grids and particles across 0..1920 x 0..1080, but keep all text, cards, logos, bugs and lower thirds strictly inside title-safe margins x:160..1760, y:108..972. text.align defaults to "left": for left-aligned copy span the safe area from x:160..220 with maxWidth:1480..1600; for horizontally centred hero/bumper copy you MUST set align:"center" with x at the centre (x:960 for full canvas, or card x+w/2) and maxWidth:1200..1600 — NEVER set x:960 without align:"center".
 2. Typography & baseline coordinates: text.y is the ALPHABETIC BASELINE (a size:96 headline at y:420 extends upward to ~330). Space consecutive text baselines by at least 1.25 * size. Always set maxWidth and fit:"shrink" (or fit:"wrap" with maxLines:2 for loglines) so long live titles never clip. Type scale: ident/hero display 88-128, card title ({next.title}) 60-84, schedule/section title 38-48, uppercase kicker/time/meta 24-32 with track:2..6.
 3. Contrast & scrims: brand.palette.text vs brand.palette.background MUST have >= 4.5:1 contrast. Whenever text sits over {next.backdrop}, {next.poster}, bright gradients or grids, insert a dark scrim rect or gradient ({bg}@0.88 to {bg}@0.35) directly behind the textplane.
-4. Three-plane depth & live-slot ordering: Build full-screen scenes in three clear layers from back to front: (a) Background: full-bleed {bg} rect + atmospheric radial/linear glow ({glow}@0.4, {accent}@0.25, blend:"screen"); (b) Midground: era/mood geometry (perspective/architectural grid, drifting ellipses/blobs/particles, framed card panel, crisp thin-rect accent rules); (c) Foreground: live-slot art/text layers ({next.title}, {now.title}, {list[i].*}) last in normal blend so playout can pre-bake procedural backdrops.
+4. Three-plane depth & live-slot ordering: Build full-screen scenes in three clear layers from back to front: (a) Background: full-bleed {bg} rect + atmospheric radial/linear glow ({glow}@0.4, {accent}@0.25, blend:"screen"); (b) Midground: era/mood geometry (perspective/architectural grid, drifting ellipses/blobs/particles, framed card panel, crisp thin-rect accent rules); (c) Foreground: live-slot art/text layers ({next.title}, {now.title}, {list[0].title}..{list[3].title}) last in normal blend so playout can pre-bake procedural backdrops.
 5. Motion & poster frame: Choreograph staggered entrances over 0..0.9s (opacity + 24-40px slide with "out" or "back", or reveal wipe), keep a living hold across document.poster (set poster to duration*0.5, NEVER 0 when layers fade in from 0), and fade/slide out over the last 0.6s on bumpers and overlays.
 6. Brand tokens, controls & textures: Use {bg}, {accent}, {text}, {glow}, {type.display}, {type.body}, {energy}, {words.tagline}, and define 2-4 grouped controls (referenced as {control.<id>} with matching kind). Match brand.textures and post effects to the era/mood (e.g. scanlines+vignette for 80s/CRT, warm grain+vignette for cinema/noir, clean subtle vignette for modern/kids). Never invent programme titles or 64-hex asset digests.
 
@@ -112,6 +117,9 @@ Worked example 2 (transparent lowerthird overlay document):
 		len(Roles),
 		strings.Join(Roles, ", "),
 		len(Roles),
+		strings.Join(scene.SupportedSlots, ", "),
+		strings.Join(scene.SupportedWordTokens, ", "),
+		strings.Join(scene.SupportedBrandTokens, ", "),
 		strings.Join(scene.LayerTypes, ", "),
 		strings.Join(scene.Easings, ", "),
 		strings.Join(scene.BehaviorKinds, ", "),

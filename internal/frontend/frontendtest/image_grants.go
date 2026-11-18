@@ -10,10 +10,11 @@ import (
 
 // ImageGrants provides optional hooks for scoped individual and batch grants.
 type ImageGrants struct {
-	IssueFunc      func(context.Context, frontend.ImageGrantRequest) (string, error)
-	IssueBatchFunc func(context.Context, frontend.ImageBatchRequest) ([]frontend.ImageBatchItem, error)
-	RevokeFunc     func(context.Context, string, string) error
-	ServeFunc      func(http.ResponseWriter, *http.Request, string)
+	IssueFunc       func(context.Context, frontend.ImageGrantRequest) (string, error)
+	IssueBatchFunc  func(context.Context, frontend.ImageBatchRequest) ([]frontend.ImageBatchItem, error)
+	RevokeFunc      func(context.Context, string, string) error
+	ServeFunc       func(http.ResponseWriter, *http.Request, string)
+	GrantBucketFunc func() string
 }
 
 func (f ImageGrants) Issue(ctx context.Context, req frontend.ImageGrantRequest) (string, error) {
@@ -41,6 +42,13 @@ func (f ImageGrants) Serve(w http.ResponseWriter, r *http.Request, secret string
 	}
 	http.NotFound(w, r)
 }
+func (f ImageGrants) GrantBucket() string {
+	if f.GrantBucketFunc != nil {
+		return f.GrantBucketFunc()
+	}
+	return ""
+}
 
 var _ frontend.ImageGrants = ImageGrants{}
 var _ frontend.ImageGrantBatch = ImageGrants{}
+var _ frontend.ImageGrantBucket = ImageGrants{}

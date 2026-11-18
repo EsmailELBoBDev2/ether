@@ -18,6 +18,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -204,15 +205,24 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 	return core.ErrUnauthorized
 }
 func (s *ImageGrantService) Issue(ctx context.Context, req frontend.ImageGrantRequest) (string, error) {
-	viewer, err := s.grants.Resolve(ctx, string(s.surface), req.Credential)
-	if err != nil {
-		return "", err
-	}
 	source, ok := grantHash(req.Credential)
 	if !ok {
 		return "", core.ErrUnauthorized
 	}
-	if (req.Item == 0) == (req.Channel == "") || len(req.Channel) > 512 || req.Image.Path == "" || req.Image.Kind == "" || len(req.Image.Path) > 1024 || len(req.Image.Kind) > 128 || len(req.Image.Tag) > 256 || len(req.Image.Subject) > 256 {
+	var viewer *core.Viewer
+	var err error
+	if req.Channel != "" {
+		memoKey := "image-page-grant:" + string(s.surface) + ":" + source + ":" + strconv.FormatUint(s.grants.Generation(), 10)
+		viewer, err = reqmemo.Do(ctx, memoKey, func() (*core.Viewer, error) {
+			return s.grants.Resolve(ctx, string(s.surface), req.Credential)
+		})
+	} else {
+		viewer, err = s.grants.Resolve(ctx, string(s.surface), req.Credential)
+	}
+	if err != nil {
+		return "", err
+	}
+	if (req.Item == 0) == (req.Channel == "") || len(req.Channel) > 512 || (req.Channel != "" && req.Image.Kind == frontend.ImagePerson) || req.Image.Path == "" || req.Image.Kind == "" || len(req.Image.Path) > 1024 || len(req.Image.Kind) > 128 || len(req.Image.Tag) > 256 || len(req.Image.Subject) > 256 {
 		return "", core.ErrUnauthorized
 	}
 	if req.Image.Kind != frontend.ImagePerson {
@@ -224,6 +234,9 @@ func (s *ImageGrantService) Issue(ctx context.Context, req frontend.ImageGrantRe
 	device, err := json.Marshal(req.Device)
 	if err != nil || len(device) > 4096 {
 		return "", core.ErrUnauthorized
+	}
+	if req.Channel != "" {
+		return s.issueChannelGrant(viewer.ID, source, device, req.Channel, req.Image)
 	}
 	var random [32]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -485,6 +498,7 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 }
 
 var _ frontend.ImageGrants = (*ImageGrantService)(nil)
+var _ frontend.ImageGrantBucket = (*ImageGrantService)(nil)
 var _ frontend.PublicImageServer = (*ImageGrantService)(nil)
 
 func grantedImageWidth(r *http.Request, surface frontend.Protocol) int {

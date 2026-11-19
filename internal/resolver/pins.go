@@ -17,11 +17,13 @@ import (
 // Owner pins
 //
 // A pin selects the source for playback. Resolve validates only that release;
-// rejection, failed health, blocklisting and failover exclusion are errors,
+// rejection, proven failed health, blocklisting and failover exclusion are errors,
 // never permission to substitute another release. Pins override owner quality
 // and identity heuristics, but retain source safety gates below. Client codec
 // and HDR support are delivery decisions: playback can remux, transcode or
 // tone-map the pinned source, or explain why no delivery path exists.
+// Sampling timeouts alone allow an unverified start; real source reads remain
+// authoritative and the pin never permits automatic substitution.
 //
 // An explicit viewer version choice overrides a pin. The logical Auto slot
 // still honours it. Offline downloads retain their own profile and ignore pins.
@@ -30,7 +32,7 @@ import (
 type PinStatus string
 
 const (
-	PinHealthy     PinStatus = "healthy"     // passed a health check and played
+	PinHealthy     PinStatus = "healthy"     // selected for playback; LastReason notes unverified starts
 	PinUnhealthy   PinStatus = "unhealthy"   // failed a health check or the NZB is gone
 	PinRejected    PinStatus = "rejected"    // a hard gate excluded it for a client
 	PinUnavailable PinStatus = "unavailable" // a transient failure (provider outage)

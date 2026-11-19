@@ -75,7 +75,21 @@ func (s *Service) resolvePreferred(ctx context.Context, req core.ResolveRequest,
 		return out, nil
 	}
 	out.attempted = true
+	var inconclusive *unverifiedPool
+	if pin != nil {
+		// The owner has already selected this source. Keep an NZB whose
+		// sampling merely timed out, without relaxing confirmed failures or
+		// the health behaviour of explicit viewer choices and automatic picks.
+		ctx, inconclusive = withUnverifiedPool(ctx)
+	}
 	winner, nzb, err := s.validateCandidates(ctx, []candidate{candidates[index]}, trace, race)
+	if pin != nil && winner < 0 {
+		if res := s.lastResort(ctx, inconclusive, req.Title.Key, []candidate{candidates[index]}, trace); res != nil {
+			note(PinHealthy, unverifiedReason, "used unverified")
+			out.resolution = res
+			return out, nil
+		}
+	}
 	switch {
 	case err != nil:
 		note(PinUnavailable, err.Error(), "unavailable: "+err.Error())

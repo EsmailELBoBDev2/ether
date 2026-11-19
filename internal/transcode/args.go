@@ -657,6 +657,15 @@ func buildCodecArgs(s runSpec) []string {
 				filters = append(filters, fmt.Sprintf("aresample=%d,atrim=start=%.9f,asettb=1/%d,asetpts=N+%d", rate, start, rate, int64(math.Round(start*float64(rate)))))
 				cut := hlsAudioRestartCut(s)
 				args = append(args, "-bsf:a", fmt.Sprintf("noise=amount=0:drop='lt(pts*tb,%.9f)'", cut))
+			} else if codec == "aac" && container == ContainerFMP4 && (s.Protocol == "" || s.Protocol == core.ProtocolHLS || s.Protocol == core.ProtocolDASH) {
+				// Coarse source clocks (e.g. Matroska milliseconds) can put
+				// the next AAC DTS before the previous fragment's sample end.
+				// movenc then rejects the duration and clears PTS. async=1
+				// stamps from decoded samples while retaining the first PTS
+				// and filling/trimming real gaps, without rebasing the title
+				// clock or changing encoder priming. Warmed preroll above
+				// already establishes its own exact sample grid.
+				filters = append(filters, fmt.Sprintf("aresample=%d:async=1", decisionAudioRate(d)))
 			}
 			if s.AudioGainDB != 0 {
 				filters = append(filters, fmt.Sprintf("volume=%.1fdB", s.AudioGainDB))

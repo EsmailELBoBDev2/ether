@@ -265,6 +265,9 @@ type broadcast struct {
 	holdMode       string
 	holdSince      time.Time
 	pacer          *reservePacer
+	// healthAt is when the frame clock last logged a live health line.
+	healthAt   time.Time
+	stallSince time.Time
 }
 
 func newBroadcast(ctx context.Context, runner transcode.ContinuousRunner, planner broadcastPlanner, format transcode.RawFormat) (*broadcast, error) {
@@ -760,6 +763,9 @@ func (b *broadcast) run() {
 			timer.Reset(wait)
 			continue
 		}
+		if b.burstNoWait && !b.bursting && now.Sub(b.healthAt) >= liveHealthEvery {
+			b.logHealth("periodic", now, scheduled)
+		}
 		if late := time.Since(scheduled.Add(-b.lead)); !b.bursting && late >= broadcastStallReport && time.Since(b.clockWarned) > 10*time.Second {
 			b.clockWarned = time.Now()
 			b.logger.Warn("broadcast frame clock late", "late", late, "schedLate", transcode.SchedulerLate(late+time.Second), "tick", b.tick, "gc", gcSummary())
@@ -1159,6 +1165,8 @@ func (b *broadcast) step(now time.Time) bool {
 			}
 		}
 		if fresh && b.current != nil && b.current.stalledNoted {
+			b.logHealth("resume", now, time.Time{})
+			b.stallSince = time.Time{}
 			b.current.stalledNoted = false
 			delete(b.retry, current.id)
 			if b.replacing != nil {
@@ -1250,6 +1258,8 @@ func (b *broadcast) step(now time.Time) bool {
 		if stalled && !startupExpired && b.burstNoWait && current.programme && current.mediaKey == 0 {
 			if !b.current.stalledNoted {
 				b.current.stalledNoted = true
+				b.stallSince = b.current.lastFrameAt
+				b.logHealth("stall", now, time.Time{})
 				b.noteFailure(current, fmt.Errorf("decoder stalled"), now)
 			}
 		} else {

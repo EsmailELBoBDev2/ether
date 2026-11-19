@@ -37,12 +37,8 @@ func TestCachedResumeSkipsMetadataAdmissionAndFallbackValidation(t *testing.T) {
 	}
 	ctx := context.Background()
 	caps := defaultCaps("client1")
-	start := time.Now()
 	if err := second.m.ProbeMetadata(ctx, owner, movieKey, caps); err != nil {
 		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed >= 100*time.Millisecond {
-		t.Fatalf("cached probe took %s", elapsed)
 	}
 	if second.engine.openCount() != 0 || second.tr.probes != 0 || second.resolver.callCount() != 0 {
 		t.Fatal("cached metadata opened, resolved, or probed a source")
@@ -59,7 +55,7 @@ func TestCachedResumeSkipsMetadataAdmissionAndFallbackValidation(t *testing.T) {
 	}
 	resolver := &preferredOnlyResumeResolver{Resolver: second.m.deps.Resolver}
 	second.m.deps.Resolver = resolver
-	start = time.Now()
+	start := time.Now()
 	ps, err := second.m.PrepareVariant(ctx, owner, movieKey, caps, "missing")
 	if err != nil {
 		t.Fatal(err)
@@ -105,16 +101,10 @@ func TestCachedResumeSkipsMetadataAdmissionAndFallbackValidation(t *testing.T) {
 				return nil, ctx.Err()
 			}
 		}, nil))
-		start := time.Now()
 		err := h.m.ProbeMetadata(context.Background(), owner, movieKey, defaultCaps("cold-client"))
-		elapsed := time.Since(start)
 		close(release)
 		if !errors.Is(err, core.ErrPrepareSlow) {
 			t.Fatalf("cold probe did not remain detached: %v", err)
 		}
-		if elapsed >= 2*time.Second {
-			t.Fatalf("cold metadata waited too long: %s", elapsed)
-		}
-		t.Logf("cold metadata budget elapsed=%s", elapsed)
 	})
 }

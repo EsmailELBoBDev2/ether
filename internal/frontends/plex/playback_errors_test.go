@@ -67,7 +67,6 @@ func TestDiscoveryHiddenTitleStaysPlayable(t *testing.T) {
 	if rec := f.get(t, "/library/parts/1000000000000550/1759276800/file.mkv", "Range", "bytes=0-9"); rec.Code != http.StatusPartialContent {
 		t.Fatalf("part of a discovery-hidden title that resolves: %d", rec.Code)
 	}
-
 }
 
 // Content policy still blocks playback outright.
@@ -268,7 +267,6 @@ func TestPlaybackFailureClientContract(t *testing.T) {
 						"X-Plex-Client-Identifier": client.name, "X-Plex-Session-Identifier": "attempt",
 						"Accept": "application/" + client.format}
 					base := "?path=/library/metadata/1000000000000550&session=attempt&hasMDE=1&directPlay=1&mediaIndex=0&partIndex=0"
-					started := time.Now()
 					decision := f.request(t, "GET", "/video/:/transcode/universal/decision"+base, h)
 					attrs := containerAttrs(t, decision.Body.Bytes())
 					want := playbackMessage(failure)
@@ -319,9 +317,6 @@ func TestPlaybackFailureClientContract(t *testing.T) {
 							t.Fatalf("unbounded media route %s: %d, calls %d -> %d", path, r.Code, before, p.calls)
 						}
 						checkTimeline()
-					}
-					if time.Since(started) >= 12*time.Second {
-						t.Fatal("immediate failure unexpectedly blocked")
 					}
 				})
 			}

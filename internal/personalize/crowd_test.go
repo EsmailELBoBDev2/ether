@@ -348,18 +348,22 @@ func TestBuzzWithAndWithoutTrakt(t *testing.T) {
 	}
 
 	// With Trakt: people are watching the target right now.
-	tt := &fakeTrendTrakt{lists: map[string][]core.Title{}}
+	tt := &fakeTrendTrakt{lists: map[string][]core.Title{
+		"trending:movie":       {{Key: target, Type: core.TypeMovie}, {Key: movieKey(5, 5), Type: core.TypeMovie}},
+		"watched_weekly:movie": {{Key: target, Type: core.TypeMovie}},
+	}}
 	h := newHarness(t, func(o *Options) { o.Trakt = tt })
 	plantCrowd(h, true)
-	tt.lists["trending:movie"] = []core.Title{{Key: target, Type: core.TypeMovie}, {Key: movieKey(5, 5), Type: core.TypeMovie}}
-	tt.lists["watched_weekly:movie"] = []core.Title{{Key: target, Type: core.TypeMovie}}
 	h.cat.prependList("trending_week:movie", movieKey(1, 31))
 	crowdFan(h, u.ID)
 	m := h.rebuild(u)
 	if m.buzz[target] < 0.3 {
 		t.Fatalf("Trakt buzz for target = %.2f", m.buzz[target])
 	}
-	if tt.calls == 0 {
+	tt.mu.Lock()
+	traktCalls := tt.calls
+	tt.mu.Unlock()
+	if traktCalls == 0 {
 		t.Fatal("Trakt public lists were not read")
 	}
 	var row *candRow
@@ -406,6 +410,11 @@ func TestBuzzWithAndWithoutTrakt(t *testing.T) {
 
 func TestCrowdFetchBudget(t *testing.T) {
 	h := newHarness(t, nil)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
+	}
 	u := core.User{ID: 1}
 	// 24 favourites: more seeds than the graph reads and more pages than
 	// one build may fetch.

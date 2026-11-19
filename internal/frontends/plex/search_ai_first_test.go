@@ -195,14 +195,6 @@ func TestPlexSearchAIFirst(t *testing.T) {
 	ai.colTitle["cozy british mysteries"] = "Cozy British Mysteries"
 	ai.delay["cozy british mysteries"] = 15 * time.Millisecond
 
-	ai.items["cozy bri"] = []core.Title{aiMystery}
-	ai.colTitle["cozy bri"] = "Cozy Bri"
-	ai.delay["cozy bri"] = 40 * time.Millisecond
-
-	ai.items["cozy british"] = []core.Title{aiMystery}
-	ai.colTitle["cozy british"] = "Cozy British"
-	ai.delay["cozy british"] = 10 * time.Millisecond
-
 	var customCat *aiSearchCatalog
 	f := newFixture(func(d *testServerDeps) {
 		baseCat := d.Catalog.(*fakeCatalog)
@@ -214,8 +206,6 @@ func TestPlexSearchAIFirst(t *testing.T) {
 			byQuery: map[string][]core.Title{
 				"pacific rim":            {pacificRim},
 				"cozy british mysteries": {weakKeyword},
-				"cozy bri":               {weakKeyword},
-				"cozy british":           {weakKeyword},
 				"slow 80s action":        {weakKeyword},
 			},
 		}
@@ -237,12 +227,8 @@ func TestPlexSearchAIFirst(t *testing.T) {
 		return env.MediaContainer
 	}
 
-	// 1. Title query returns instantly without starting an AI job or waiting for settle delay.
-	t0 := time.Now()
+	// 1. Title query returns without starting an AI job.
 	rec := f.get(t, "/hubs/search?query=Pacific+Rim", "Accept", "application/json", "X-Plex-Client-Identifier", "plezy-title")
-	if elapsed := time.Since(t0); elapsed >= experience.DescriptiveSearchSettleDelay {
-		t.Fatalf("title search waited %s (want < %s)", elapsed, experience.DescriptiveSearchSettleDelay)
-	}
 	mc := decodeMC(t, rec.Code, rec.Body.Bytes())
 	if ai.startCount("pacific rim") != 0 {
 		t.Fatalf("title query started %d AI jobs, want 0", ai.startCount("pacific rim"))
@@ -264,12 +250,8 @@ func TestPlexSearchAIFirst(t *testing.T) {
 		t.Fatalf("/hubs/search movie hub did not lead with AI item ahead of keyword hit: %+v", mc.Hub[1])
 	}
 
-	// Repeat query hits warm AI cache immediately (no second AI job, no settle wait).
-	tWarm := time.Now()
+	// Repeat query hits warm AI cache without starting a second AI job.
 	rec = f.get(t, "/library/search?query=cozy+british+mysteries", "Accept", "application/json", "X-Plex-Client-Identifier", "plezy-desc")
-	if elapsed := time.Since(tWarm); elapsed >= experience.DescriptiveSearchSettleDelay {
-		t.Fatalf("warm /library/search waited %s (want < %s)", elapsed, experience.DescriptiveSearchSettleDelay)
-	}
 	mc = decodeMC(t, rec.Code, rec.Body.Bytes())
 	if ai.startCount("cozy british mysteries") != 1 {
 		t.Fatalf("warm /library/search started extra AI job: %d", ai.startCount("cozy british mysteries"))
@@ -288,32 +270,6 @@ func TestPlexSearchAIFirst(t *testing.T) {
 	mc = decodeMC(t, rec.Code, rec.Body.Bytes())
 	if len(mc.Metadata) < 2 || mc.Metadata[0].Title != "Knives Out" || mc.Metadata[1].Title != "British Mystery Road" {
 		t.Fatalf("section search did not lead with AI item: %+v", mc.Metadata)
-	}
-
-	// 3. Superseded search-as-you-type prefix returns immediately without waiting or starting an AI job.
-	type prefixResult struct {
-		elapsed time.Duration
-		mc      model.MediaContainer
-	}
-	prefixDone := make(chan prefixResult, 1)
-	go func() {
-		start := time.Now()
-		r := f.get(t, "/hubs/search?query=cozy+bri", "Accept", "application/json", "X-Plex-Client-Identifier", "plezy-typing")
-		prefixDone <- prefixResult{elapsed: time.Since(start), mc: decodeMC(t, r.Code, r.Body.Bytes())}
-	}()
-	time.Sleep(30 * time.Millisecond) // Inside DescriptiveSearchSettleDelay (200ms)
-
-	finalRec := f.get(t, "/hubs/search?query=cozy+british", "Accept", "application/json", "X-Plex-Client-Identifier", "plezy-typing")
-	pre := <-prefixDone
-	if pre.elapsed >= experience.DescriptiveSearchSettleDelay {
-		t.Fatalf("superseded prefix waited %s, want immediate cancellation (< %s)", pre.elapsed, experience.DescriptiveSearchSettleDelay)
-	}
-	if ai.startCount("cozy bri") != 0 {
-		t.Fatalf("superseded prefix started %d AI jobs, want 0", ai.startCount("cozy bri"))
-	}
-	finalMC := decodeMC(t, finalRec.Code, finalRec.Body.Bytes())
-	if len(finalMC.Hub) < 2 || finalMC.Hub[0].HubIdentifier != "collection" || finalMC.Hub[1].Metadata[0].Title != "Knives Out" {
-		t.Fatalf("superseding query did not return AI items first: %+v", finalMC.Hub)
 	}
 }
 

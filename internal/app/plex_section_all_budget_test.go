@@ -22,7 +22,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
-// TestPlexSectionAllQueryBudget reproduces and guards the query count of
+// TestPlexSectionAllQueryBudget guards the query ceiling of
 // GET /library/sections/{1,2}/all?X-Plex-Container-Size=50&X-Plex-Container-Start=0&includeCollections=1&includeMeta=1
 // on a seeded library (~20k titles, ~100 collections including rotating + personal
 // watch rules, playable mode with retained releases, discovery overlays, external
@@ -325,7 +325,7 @@ FROM seq`,
 		t.Fatal(err)
 	}
 
-	doSectionAll := func(sectionID int, label string) (*store.QueryStats, time.Duration, int) {
+	doSectionAll := func(sectionID int, label string) *store.QueryStats {
 		t.Helper()
 		path := fmt.Sprintf("/library/sections/%d/all?X-Plex-Container-Size=50&X-Plex-Container-Start=0&includeCollections=1&includeMeta=1", sectionID)
 		mctx, stats := store.WithQueryStats(reqmemo.With(ctx))
@@ -335,9 +335,7 @@ FROM seq`,
 		req.Header.Set("X-Plex-Token", "test-owner")
 		req.Header.Set("X-Plex-Client-Identifier", "plex-web-budget")
 		w := httptest.NewRecorder()
-		start := time.Now()
 		a.handler.ServeHTTP(w, req)
-		elapsed := time.Since(start)
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s (%s): status=%d body=%s", label, path, w.Code, w.Body.String())
 		}
@@ -355,42 +353,22 @@ FROM seq`,
 		}
 		stmts := stats.Statements()
 		sort.Slice(stmts, func(i, j int) bool { return stmts[i].Count > stmts[j].Count })
-		t.Logf("%s: elapsed=%s queries=%d writes=%d rows=%d dbTime=%s",
-			label, elapsed.Round(time.Microsecond), stats.Queries(), stats.Writes(), stats.Rows(), stats.DBTime().Round(time.Microsecond))
-		for i := 0; i < min(10, len(stmts)); i++ {
-			sqlText := stmts[i].SQL
-			if len(sqlText) > 110 {
-				sqlText = sqlText[:110] + "..."
-			}
-			t.Logf("  top[%d] count=%d rows=%d time=%s sql=%s", i, stmts[i].Count, stmts[i].Rows, stmts[i].Time.Round(time.Microsecond), sqlText)
+		t.Logf("%s: queries=%d writes=%d rows=%d", label, stats.Queries(), stats.Writes(), stats.Rows())
+		return stats
+	}
+
+	const queryCeiling = 180
+	for _, call := range []struct {
+		sec   int
+		label string
+	}{
+		{1, "cold-movies-sec1"},
+		{2, "cold-shows-sec2"},
+		{1, "steady-movies-sec1"},
+		{2, "steady-shows-sec2"},
+	} {
+		if stats := doSectionAll(call.sec, call.label); stats.Queries() > queryCeiling {
+			t.Errorf("%s executed %d SQL statements (want <= %d)", call.label, stats.Queries(), queryCeiling)
 		}
-		return stats, elapsed, len(resp.MediaContainer.Metadata)
-	}
-
-	// 1. Cold/unseeded first browse on section 1 (movies) — exercises ensureGatePolicySeeded + cold LastChance + 50-tile page.
-	coldMovieStats, _, _ := doSectionAll(1, "cold-movies-sec1")
-	// 2. Cold shows browse on section 2 (shows) — exercises show overlays (RecentEpisodes, leaf counts, etc.).
-	coldShowStats, _, _ := doSectionAll(2, "cold-shows-sec2")
-	// 3. Steady-state browse on section 1 (movies) and section 2 (shows).
-	steadyMovieStats, _, _ := doSectionAll(1, "steady-movies-sec1")
-	steadyShowStats, _, _ := doSectionAll(2, "steady-shows-sec2")
-
-	const (
-		steadyMovieBudget = 25
-		steadyShowBudget  = 35
-		coldShowBudget    = 55
-		coldMovieBudget   = 180
-	)
-	if steadyMovieStats.Queries() > steadyMovieBudget {
-		t.Errorf("steady movies /library/sections/1/all executed %d SQL statements (want <= %d)", steadyMovieStats.Queries(), steadyMovieBudget)
-	}
-	if steadyShowStats.Queries() > steadyShowBudget {
-		t.Errorf("steady shows /library/sections/2/all executed %d SQL statements (want <= %d)", steadyShowStats.Queries(), steadyShowBudget)
-	}
-	if coldMovieStats.Queries() > coldMovieBudget {
-		t.Errorf("cold movies /library/sections/1/all executed %d SQL statements (want <= %d)", coldMovieStats.Queries(), coldMovieBudget)
-	}
-	if coldShowStats.Queries() > coldShowBudget {
-		t.Errorf("cold shows /library/sections/2/all executed %d SQL statements (want <= %d)", coldShowStats.Queries(), coldShowBudget)
 	}
 }

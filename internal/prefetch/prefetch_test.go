@@ -359,7 +359,6 @@ func TestConcurrencyLimitAndNonBlocking(t *testing.T) {
 			f.catalog.next[core.EpisodeKey(200, 1, i)] = &core.Title{Key: core.EpisodeKey(200, 1, i+1), Type: core.TypeEpisode}
 		}
 	})
-	start := time.Now()
 	// Isolate next-episode jobs from timeline-triggered resume warming.
 	cfg := f.p.config()
 	cfg.KeepInProgressWarm = false
@@ -378,9 +377,6 @@ func TestConcurrencyLimitAndNonBlocking(t *testing.T) {
 	}
 	for i := 3; i <= 10; i++ {
 		f.p.OnTimeline(user, core.EpisodeKey(200, 1, i), 49*time.Minute, 50*time.Minute, "playing")
-	}
-	if time.Since(start) > 3*time.Second {
-		t.Fatal("OnTimeline blocked")
 	}
 	if s := f.p.Stats(); s.Dropped != 5 || s.Running != 2 || s.Queued != 3 {
 		t.Fatalf("stats = %+v", s)

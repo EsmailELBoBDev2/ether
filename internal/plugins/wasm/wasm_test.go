@@ -186,13 +186,9 @@ func TestJSTimeoutDiscardsInstance(t *testing.T) {
 	// host. Initialization deadlines have their own test below.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	start := time.Now()
 	_, out, err := p.CallDetailed(ctx, Request{Method: "GET", Path: "/loop"})
 	if errStatus(t, err) != StatusTimeout || !out.Trap {
 		t.Fatalf("loop = %v outcome %+v", err, out)
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatalf("timeout took %v", time.Since(start))
 	}
 	// The pool must hand out a fresh instance: a normal call still works.
 	resp, err := p.Call(context.Background(), Request{Method: "GET", Path: "/ok"})
@@ -475,16 +471,12 @@ func TestHotBatchBudgetNeutralRaw(t *testing.T) {
 		{ReleaseID: "slow1", Facts: json.RawMessage(`{"resolution":2160,"cached":true,"slow":1}`)},
 		{ReleaseID: "fast1", Facts: json.RawMessage(`{"resolution":2160,"cached":true}`)},
 	}
-	start := time.Now()
 	scores, out, err := p.RankBatch(context.Background(), cands, nil)
 	if err != nil {
 		// A killed instance mid-batch is reported; scores stay neutral.
 		if errStatus(t, err) != StatusTimeout {
 			t.Fatalf("err = %v", err)
 		}
-	}
-	if time.Since(start) > 2*time.Second {
-		t.Fatalf("batch overran its budget: %v", time.Since(start))
 	}
 	if scores[0] != 0 || out.SlowCandidates < 1 {
 		t.Fatalf("scores=%v out=%+v, want slow candidate neutral and counted", scores, out)

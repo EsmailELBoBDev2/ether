@@ -396,7 +396,7 @@ func (c *KindCatalog) RootMediaType(ctx context.Context, lib core.Library) core.
 	if err != nil || len(rec.Decl.Levels) == 0 {
 		return core.TypeMovie
 	}
-	proj := pluginitems.Project(core.KindItem{Level: rec.Decl.Levels[0].Key}, rec.Decl, lib.Present)
+	proj := pluginitems.Project(core.KindItem{Level: rec.Decl.Levels[0].Key}, rec.Decl, lib.Present, lib.CardShape)
 	if proj.Type == "" {
 		return core.TypeMovie
 	}
@@ -509,7 +509,7 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	return experience.PluginItemView{
 		Library:     lib,
 		Title:       titles[0],
-		Images:      projectImages(item.Art, rec.Decl.Library.EffectiveCard() == "landscape"),
+		Images:      projectImages(item.Art, lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape),
 		Unavailable: item.Unavailable,
 		Playable:    item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
 	}, nil
@@ -573,7 +573,7 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 			continue
 		}
 		titles := c.projectItems(ctx, rec, lib, visibleItems)
-		landscape := rec.Decl.Library.EffectiveCard() == "landscape"
+		landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
 		for i, it := range visibleItems {
 			out[it.Key] = experience.PluginItemView{
 				Library:     lib,
@@ -1117,7 +1117,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 			rootCache[parentID] = core.Title{}
 			return core.Title{}, false
 		}
-		rt := pluginitems.Project(root, rec.Decl, lib.Present)
+		rt := pluginitems.Project(root, rec.Decl, lib.Present, lib.CardShape)
 		rt.LibraryID = lib.ID
 		if rt.ContentRating == "" {
 			rt.ContentRating = extractContentRating(root.Fields)
@@ -1128,7 +1128,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 
 	out := make([]core.Title, len(items))
 	for i, it := range items {
-		t := pluginitems.Project(it, rec.Decl, lib.Present)
+		t := pluginitems.Project(it, rec.Decl, lib.Present, lib.CardShape)
 		t.LibraryID = lib.ID
 		if t.ContentRating == "" {
 			t.ContentRating = extractContentRating(it.Fields)
@@ -1544,7 +1544,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	}
 
 	return experience.PluginPresentation{
-		Card:   decl.Library.EffectiveCard(),
+		Card:   lib.EffectiveCardShape(decl.Library.EffectiveCard()),
 		Tabs:   tabs,
 		Sorts:  sorts,
 		Facets: facets,

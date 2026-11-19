@@ -63,7 +63,7 @@ func libraryWire(view frontend.View) object {
 	}
 	isPlugin := view.PluginID != "" || view.KindKey != ""
 	card := "poster"
-	if isPlugin && (view.Card == "landscape" || view.Card == "square") {
+	if view.Card == "landscape" || view.Card == "square" {
 		card = view.Card
 	}
 	sorts := []object{{"id": "server", "directions": []string{"asc"}}}
@@ -483,23 +483,25 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 }
 
 func markLandscapeTitles(ts []frontend.Title, view frontend.View) {
-	if view.Card != "landscape" {
+	if view.Card == "" {
 		return
 	}
+	landscape := view.Card == "landscape"
 	for i := range ts {
-		ts[i].LandscapeCard = true
+		ts[i].LandscapeCard = landscape
 	}
 }
 
 func markLandscapeRows(rows []frontend.Row, view frontend.View) {
-	if view.Card != "landscape" {
+	if view.Card == "" {
 		return
 	}
+	landscape := view.Card == "landscape"
 	for i := range rows {
 		markLandscapeTitles(rows[i].Items, view)
 		for j := range rows[i].Entries {
 			if rows[i].Entries[j].Title != nil {
-				rows[i].Entries[j].Title.LandscapeCard = true
+				rows[i].Entries[j].Title.LandscapeCard = landscape
 			}
 		}
 	}
@@ -900,8 +902,8 @@ func (i *instance) facetCollectionsWire(r *http.Request, v *frontend.Viewer, tok
 		if fc.NewestItem != nil && !seen[fc.NewestItem.Key] {
 			seen[fc.NewestItem.Key] = true
 			t := *fc.NewestItem
-			if view.Card == "landscape" {
-				t.LandscapeCard = true
+			if view.Card != "" {
+				t.LandscapeCard = view.Card == "landscape"
 			}
 			newest = append(newest, t)
 		}

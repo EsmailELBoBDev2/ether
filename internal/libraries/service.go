@@ -411,6 +411,16 @@ func (s *Service) SetPresent(ctx context.Context, id core.LibraryID, p core.Pres
 	return s.setColumn(ctx, id, "present", string(b))
 }
 
+// SetCardShape sets the owner-chosen card shape ("", "poster", "landscape", or
+// "square") on library id.
+func (s *Service) SetCardShape(ctx context.Context, id core.LibraryID, shape string) error {
+	shape = strings.ToLower(strings.TrimSpace(shape))
+	if !core.ValidCardShape(shape) {
+		return fmt.Errorf("%w: card shape must be poster, landscape or square", ErrInvalid)
+	}
+	return s.setColumn(ctx, id, "card_shape", shape)
+}
+
 // SetQualityProfile sets the quality profile name titles in this library
 // rank with. An empty name means "Default" (today's Movies/Shows
 // home/away defaults). The name is stored verbatim; whether it names a

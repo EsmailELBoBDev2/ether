@@ -705,7 +705,7 @@ func (r *KindResolver) loadAuthorized(ctx context.Context, viewer *core.Viewer, 
 		}
 	}
 	if r.authorize == nil && viewer.MaxContentRating != "" {
-		proj := pluginitems.Project(item, rec.Decl, lib.Present)
+		proj := pluginitems.Project(item, rec.Decl, lib.Present, lib.CardShape)
 		cr := proj.ContentRating
 		if cr == "" {
 			cr = extractContentRating(item.Fields)

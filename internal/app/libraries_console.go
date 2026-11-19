@@ -324,6 +324,7 @@ func (c *librariesConsole) handler() http.Handler {
 			// is browsed as.
 			CollectionID int64               `json:"collectionId"`
 			MediaType    core.MediaType      `json:"mediaType"`
+			CardShape    *string             `json:"cardShape"`
 			Present      *core.Presentations `json:"present"`
 			Tabs         *[]core.LibraryTab  `json:"tabs"`
 		}
@@ -359,6 +360,14 @@ func (c *librariesConsole) handler() http.Handler {
 			}
 			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
 		}
+		if body.CardShape != nil {
+			if err = c.app.libraries.SetCardShape(r.Context(), lib.ID, *body.CardShape); err != nil {
+				_ = c.app.libraries.Delete(r.Context(), lib.ID)
+				libError(w, libErrStatus(err), "Could not set card shape")
+				return
+			}
+			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
+		}
 		if body.Tabs != nil && len(*body.Tabs) > 0 {
 			if _, err = c.app.libraries.SetTabs(r.Context(), lib.ID, *body.Tabs, nil); err != nil {
 				_ = c.app.libraries.Delete(r.Context(), lib.ID)
@@ -387,6 +396,7 @@ func (c *librariesConsole) handler() http.Handler {
 			Name              *string                  `json:"name"`
 			Hidden            *bool                    `json:"hidden"`
 			Sort              *int                     `json:"sort"`
+			CardShape         *string                  `json:"cardShape"`
 			Present           *core.Presentations      `json:"present"`
 			Rules             *[]core.LibraryExclusion `json:"rules"`
 			VisibilityDefault *string                  `json:"visibilityDefault"`
@@ -429,6 +439,12 @@ func (c *librariesConsole) handler() http.Handler {
 		if body.Sort != nil {
 			if err := svc.SetSort(ctx, lib.ID, *body.Sort); err != nil {
 				libError(w, libErrStatus(err), "Could not reorder the library")
+				return
+			}
+		}
+		if body.CardShape != nil {
+			if err := svc.SetCardShape(ctx, lib.ID, *body.CardShape); err != nil {
+				libError(w, libErrStatus(err), "Could not update card shape")
 				return
 			}
 		}

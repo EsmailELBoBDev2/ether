@@ -19,6 +19,8 @@ import (
 )
 
 func init() {
+	store.Register("libraries", 12, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)
+	store.RegisterDialect("libraries", 12, store.Postgres, `ALTER TABLE libraries ADD COLUMN card_shape TEXT NOT NULL DEFAULT '';`)
 	store.Register("libraries", 10, "SELECT 1;")
 	store.RegisterApply("libraries", 10, migrateVelaPresentation)
 	store.Register("libraries", 9, "ALTER TABLE libraries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")

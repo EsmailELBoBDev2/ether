@@ -1048,7 +1048,7 @@ func (s *Service) translate(ctx context.Context, r *rule, kind string, q url.Val
 		// evaluated locally only.
 		var labels []string
 		for _, t := range r.tags {
-			l := contentrating.LevelOf(t)
+			l := contentrating.EnforceLevelOf(t)
 			if l == contentrating.Unrated {
 				return false
 			}
@@ -1209,7 +1209,7 @@ func (s *Service) filterForUserWithStatuses(ctx context.Context, keys []core.Rat
 		}
 		// A member the index no longer knows has no known rating, and an
 		// unknown rating exceeds every limit.
-		if max != "" && (e == nil || contentrating.Exceeds(e.crating, max)) {
+		if max != "" && (e == nil || contentrating.EnforceExceeds(e.enforcementRating(), max)) {
 			continue
 		}
 		if personal {

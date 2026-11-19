@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -231,7 +230,7 @@ func viewerBrowseFilter(filter core.Filter, v *core.User, ex LibraryPageExclusio
 // deny lists and collection names add; rating bounds tighten. none reports
 // that the two allow lists have no rating in common.
 func MergeShareFilter(filter, share core.Filter) (out core.Filter, none bool) {
-	filter.ContentRatings, none = intersectFold(filter.ContentRatings, share.ContentRatings)
+	filter.ContentRatings, none = intersectRatingAllow(filter.ContentRatings, share.ContentRatings)
 	filter.ExcludeContentRatings = append(append([]string{}, share.ExcludeContentRatings...), filter.ExcludeContentRatings...)
 	filter.MinContentRating = cmp.Or(filter.MinContentRating, share.MinContentRating)
 	filter.MaxContentRating = tightenRating(filter.MaxContentRating, share.MaxContentRating)
@@ -240,10 +239,10 @@ func MergeShareFilter(filter, share core.Filter) (out core.Filter, none bool) {
 	return filter, none
 }
 
-// intersectFold is the case-insensitive intersection of two allow lists,
-// where an empty list allows everything. none reports an empty intersection
-// of two non-empty lists.
-func intersectFold(a, b []string) ([]string, bool) {
+// intersectRatingAllow is the intersection of a client rating allow list with
+// a plex.tv share allow list, where an empty list allows everything. Foreign
+// labels in the client filter match the US band that governs them in the share.
+func intersectRatingAllow(a, b []string) ([]string, bool) {
 	switch {
 	case len(b) == 0:
 		return a, false
@@ -252,18 +251,16 @@ func intersectFold(a, b []string) ([]string, bool) {
 	}
 	var out []string
 	for _, x := range a {
-		for _, y := range b {
-			if strings.EqualFold(strings.TrimSpace(x), strings.TrimSpace(y)) {
-				out = append(out, x)
-				break
-			}
+		enf := contentrating.EnforceRating(x)
+		if matchesFilterRatings(x, enf, b) {
+			out = append(out, x)
 		}
 	}
 	return out, len(out) == 0
 }
 
 func tightenRating(current, extra string) string {
-	if extra != "" && (current == "" || int(contentrating.LevelOf(extra)) < int(contentrating.LevelOf(current))) {
+	if extra != "" && (current == "" || int(contentrating.EnforceLevelOf(extra)) < int(contentrating.EnforceLevelOf(current))) {
 		return extra
 	}
 	return current

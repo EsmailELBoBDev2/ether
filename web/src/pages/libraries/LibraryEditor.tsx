@@ -385,7 +385,10 @@ export function LibraryEditor({
               sources={sources ?? [type === "show" ? "tmdb-tv" : "tmdb-movies"]}
               rules={rules}
               fallback={fallback}
-              onRules={setRules}
+              onRules={(next, nextFallback) => {
+                setRules(next);
+                if (nextFallback !== undefined) setFallback(nextFallback);
+              }}
               onFallback={setFallback}
               region=""
               mediaType={type as "movie" | "show"}

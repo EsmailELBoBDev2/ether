@@ -454,7 +454,7 @@ func (s *Service) pluginItemAllowed(ctx context.Context, v *core.User, piv Plugi
 	if _, _, ok := s.publishedLibrary(ctx, piv.Library); !ok {
 		return false
 	}
-	if v.MaxContentRating != "" && piv.Title.ContentRating != "" && contentrating.Exceeds(piv.Title.ContentRating, v.MaxContentRating) {
+	if v.MaxContentRating != "" && contentrating.EnforceExceeds(contentrating.EffectiveEnforcement(piv.Title.EnforcementRating, piv.Title.ContentRating, piv.Title.Adult, piv.Title.Keywords), v.MaxContentRating) {
 		return false
 	}
 	return TitleAllowed(s.d.Visibility.Policy, v, &piv.Title)
@@ -801,7 +801,7 @@ func (s *Service) filterPluginTitles(ctx context.Context, v *core.User, items []
 	sub.Favorite = nil
 	out := make([]core.Title, 0, len(items))
 	for _, t := range items {
-		if v.MaxContentRating != "" && t.ContentRating != "" && contentrating.Exceeds(t.ContentRating, v.MaxContentRating) {
+		if v.MaxContentRating != "" && contentrating.EnforceExceeds(contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords), v.MaxContentRating) {
 			continue
 		}
 		if !TitleAllowed(s.d.Visibility.Policy, v, &t) {

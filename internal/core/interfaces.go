@@ -109,7 +109,11 @@ type Filter struct {
 	HiddenShowSeq    int64 `json:"-"`
 	HiddenEpisodeSeq int64 `json:"-"`
 	// ChildVisibility is the viewer policy evaluated on hydrated episodes.
-	ChildVisibility         *Filter            `json:"-"`
+	ChildVisibility *Filter `json:"-"`
+	// MovieFilter and EpisodeFilter carry per-kind share predicates across
+	// mixed movie+episode shelf queries (RecentPage, OnDeckPageSince).
+	MovieFilter             *Filter            `json:"-"`
+	EpisodeFilter           *Filter            `json:"-"`
 	RuleVisibility          string             `json:"-"` // owner-only rules browser: hidden, shown or all
 	ApplyCanonicalInPreview bool               `json:"-"` // filter-library rules preview keeps canonical rules
 	PreviewRules            []LibraryExclusion `json:"-"`
@@ -133,55 +137,55 @@ type Filter struct {
 	CatalogueSources  []string `json:"catalogueSources,omitempty"`
 	// ExcludeGenres and ExcludeKeywords remove viewer-blocked facts before
 	// counting and pagination. Matching is case-insensitive.
-	ExcludeGenres         []string        `json:"-"`
-	ExcludeKeywords       []string        `json:"-"`
-	AddedAfter            int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
-	AddedBefore           int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
-	UpdatedAfter          int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
-	UpdatedBefore         int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
-	Type                  MediaType       `json:"type,omitempty"` // movie or show
-	Genres                []string        `json:"genres,omitempty"`
-	ReleaseGate           string          `json:"releaseGate,omitempty"`           // admitted, held, unknown in current policy snapshot
-	Playable              string          `json:"playable,omitempty"`              // yes or unknown from fresh local evidence
-	DebridCached          string          `json:"debridCached,omitempty"`          //
-	Qualities             []string        `json:"qualities,omitempty"`             // known 4k, hdr, dv, atmos release facts
-	EvidenceResolutions   []string        `json:"evidenceResolutions,omitempty"`   // 4k, 1080p, 720p, sd from fresh release evidence
-	EvidenceHDR           []string        `json:"evidenceHdr,omitempty"`           // dv, hdr10, sdr from fresh release evidence
-	EvidenceAudioLanguages []string       `json:"evidenceAudioLanguages,omitempty"` // normalized audio language codes from fresh release evidence
-	Anime                 bool            `json:"anime,omitempty"`                 // positive canonical anime keyword
-	Kids                  bool            `json:"kids,omitempty"`                  // positive canonical Kids genre
-	Tags                  []string        `json:"tags,omitempty"`                  // owner annotations, distinct from provider keywords
-	Keywords              []string        `json:"keywords,omitempty"`              // every keyword must match (case-insensitive)
-	YearFrom              int             `json:"yearFrom,omitempty"`
-	YearTo                int             `json:"yearTo,omitempty"`
-	Years                 []int           `json:"years,omitempty"`
-	ExcludeYears          []int           `json:"excludeYears,omitempty"`
-	MinVotes              int             `json:"minVotes,omitempty"`
-	MaxVotes              int             `json:"maxVotes,omitempty"`
-	MinPopularity         float64         `json:"minPopularity,omitempty"`
-	MaxPopularity         float64         `json:"maxPopularity,omitempty"`
-	DateAddedFrom         int64           `json:"dateAddedFrom,omitempty"` // release/air date, never insertion
-	DateAddedTo           int64           `json:"dateAddedTo,omitempty"`
-	EtherAddedFrom        int64           `json:"etherAddedFrom,omitempty"`
-	EtherAddedTo          int64           `json:"etherAddedTo,omitempty"`
-	Statuses              []string        `json:"statuses,omitempty"`
-	MinSeasons            int             `json:"minSeasons,omitempty"`
-	MaxSeasons            int             `json:"maxSeasons,omitempty"`
-	MinEpisodes           int             `json:"minEpisodes,omitempty"`
-	MaxEpisodes           int             `json:"maxEpisodes,omitempty"`
-	MinRating             float64         `json:"minRating,omitempty"`
-	MaxRating             float64         `json:"maxRating,omitempty"`
-	MaxRatingExclusive    bool            `json:"maxRatingExclusive,omitempty"`
-	ExcludeRatings        []float64       `json:"excludeRatings,omitempty"`
-	MaxRuntime            time.Duration   `json:"maxRuntime,omitempty"`
-	MinRuntime            time.Duration   `json:"minRuntime,omitempty"`
-	ExcludeRuntimes       []time.Duration `json:"excludeRuntimes,omitempty"`
-	Languages             []string        `json:"languages,omitempty"`
-	Countries             []string        `json:"countries,omitempty"`
-	ExcludeCountries      []string        `json:"excludeCountries,omitempty"`
-	ContentRatings        []string        `json:"contentRatings,omitempty"`
-	ExcludeContentRatings []string        `json:"excludeContentRatings,omitempty"`
-	MaxContentRating      string          `json:"maxContentRating,omitempty"` // per-user limit
+	ExcludeGenres          []string        `json:"-"`
+	ExcludeKeywords        []string        `json:"-"`
+	AddedAfter             int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
+	AddedBefore            int64           `json:"-"`              // inclusive Unix timestamp bound on added/release time
+	UpdatedAfter           int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
+	UpdatedBefore          int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
+	Type                   MediaType       `json:"type,omitempty"` // movie or show
+	Genres                 []string        `json:"genres,omitempty"`
+	ReleaseGate            string          `json:"releaseGate,omitempty"`            // admitted, held, unknown in current policy snapshot
+	Playable               string          `json:"playable,omitempty"`               // yes or unknown from fresh local evidence
+	DebridCached           string          `json:"debridCached,omitempty"`           //
+	Qualities              []string        `json:"qualities,omitempty"`              // known 4k, hdr, dv, atmos release facts
+	EvidenceResolutions    []string        `json:"evidenceResolutions,omitempty"`    // 4k, 1080p, 720p, sd from fresh release evidence
+	EvidenceHDR            []string        `json:"evidenceHdr,omitempty"`            // dv, hdr10, sdr from fresh release evidence
+	EvidenceAudioLanguages []string        `json:"evidenceAudioLanguages,omitempty"` // normalized audio language codes from fresh release evidence
+	Anime                  bool            `json:"anime,omitempty"`                  // positive canonical anime keyword
+	Kids                   bool            `json:"kids,omitempty"`                   // positive canonical Kids genre
+	Tags                   []string        `json:"tags,omitempty"`                   // owner annotations, distinct from provider keywords
+	Keywords               []string        `json:"keywords,omitempty"`               // every keyword must match (case-insensitive)
+	YearFrom               int             `json:"yearFrom,omitempty"`
+	YearTo                 int             `json:"yearTo,omitempty"`
+	Years                  []int           `json:"years,omitempty"`
+	ExcludeYears           []int           `json:"excludeYears,omitempty"`
+	MinVotes               int             `json:"minVotes,omitempty"`
+	MaxVotes               int             `json:"maxVotes,omitempty"`
+	MinPopularity          float64         `json:"minPopularity,omitempty"`
+	MaxPopularity          float64         `json:"maxPopularity,omitempty"`
+	DateAddedFrom          int64           `json:"dateAddedFrom,omitempty"` // release/air date, never insertion
+	DateAddedTo            int64           `json:"dateAddedTo,omitempty"`
+	EtherAddedFrom         int64           `json:"etherAddedFrom,omitempty"`
+	EtherAddedTo           int64           `json:"etherAddedTo,omitempty"`
+	Statuses               []string        `json:"statuses,omitempty"`
+	MinSeasons             int             `json:"minSeasons,omitempty"`
+	MaxSeasons             int             `json:"maxSeasons,omitempty"`
+	MinEpisodes            int             `json:"minEpisodes,omitempty"`
+	MaxEpisodes            int             `json:"maxEpisodes,omitempty"`
+	MinRating              float64         `json:"minRating,omitempty"`
+	MaxRating              float64         `json:"maxRating,omitempty"`
+	MaxRatingExclusive     bool            `json:"maxRatingExclusive,omitempty"`
+	ExcludeRatings         []float64       `json:"excludeRatings,omitempty"`
+	MaxRuntime             time.Duration   `json:"maxRuntime,omitempty"`
+	MinRuntime             time.Duration   `json:"minRuntime,omitempty"`
+	ExcludeRuntimes        []time.Duration `json:"excludeRuntimes,omitempty"`
+	Languages              []string        `json:"languages,omitempty"`
+	Countries              []string        `json:"countries,omitempty"`
+	ExcludeCountries       []string        `json:"excludeCountries,omitempty"`
+	ContentRatings         []string        `json:"contentRatings,omitempty"`
+	ExcludeContentRatings  []string        `json:"excludeContentRatings,omitempty"`
+	MaxContentRating       string          `json:"maxContentRating,omitempty"` // per-user limit
 	// SaferPlexRating applies cached Plex content-rating levels in SQL
 	// together with MaxContentRating so paging and counts stay correct.
 	SaferPlexRating bool `json:"-"`

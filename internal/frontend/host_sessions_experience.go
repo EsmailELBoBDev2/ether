@@ -39,8 +39,11 @@ func TitleAllowed(policy AccessPolicy, viewer *core.User, title *core.Title) boo
 	if title == nil || title.Adult {
 		return false
 	}
-	if viewer != nil && contentrating.Exceeds(title.ContentRating, viewer.MaxContentRating) {
-		return false
+	if viewer != nil {
+		enf := contentrating.EffectiveEnforcement(title.EnforcementRating, title.ContentRating, title.Adult, title.Keywords)
+		if contentrating.EnforceExceeds(enf, viewer.MaxContentRating) {
+			return false
+		}
 	}
 	return policy == nil || policy.Allowed(viewer, title)
 }
@@ -306,7 +309,17 @@ func MetadataOverlayRatingAllowed(viewer *core.User, catalogue, overlay string) 
 	if viewer == nil || viewer.MaxContentRating == "" || overlay == "" {
 		return true
 	}
-	return !contentrating.Exceeds(SaferMetadataRating(catalogue, overlay), viewer.MaxContentRating)
+	return !contentrating.EnforceExceeds(SaferMetadataRating(catalogue, overlay), viewer.MaxContentRating)
+}
+
+// MetadataOverlayTitleAllowed combines title's mapped enforcement rating with
+// a cached metadata overlay's rating under viewer's content-rating cap.
+func MetadataOverlayTitleAllowed(viewer *core.User, title *core.Title, overlay string) bool {
+	if title == nil {
+		return false
+	}
+	enf := contentrating.EffectiveEnforcement(title.EnforcementRating, title.ContentRating, title.Adult, title.Keywords)
+	return MetadataOverlayRatingAllowed(viewer, enf, overlay)
 }
 
 // DownloadsAllowed is shared capability admission; handlers still enforce it.

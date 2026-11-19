@@ -225,7 +225,8 @@ func (s *Service) DescribeSearch(ctx context.Context, user *core.User, query str
 	}
 	result.Items = slices.Clone(result.Items)
 	result.Items = slices.DeleteFunc(result.Items, func(t core.Title) bool {
-		return t.Adult || (user != nil && contentrating.Exceeds(t.ContentRating, user.MaxContentRating))
+		enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+		return t.Adult || (user != nil && contentrating.EnforceExceeds(enf, user.MaxContentRating))
 	})
 	if result.Spec != nil {
 		sp := cloneSpec(*result.Spec)

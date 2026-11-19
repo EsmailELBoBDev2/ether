@@ -102,7 +102,7 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 		}
 		ph := placeholders(len(part))
 		rows, err := m.db.QueryContext(ctx, `SELECT key,type,tmdb_id,imdb,tvdb,title,original_title,english_title,sort_title,tagline,summary,year,
-			released_ts,runtime_sec,status,language,content_rating,rating,vote_count,popularity,poster,backdrop,logo,
+			released_ts,runtime_sec,status,language,content_rating,enforcement_rating,rating,vote_count,popularity,poster,backdrop,logo,
 			collection_id,collection_name,child_count,leaf_count,fetched_at,adult,last_air_ts,
    COALESCE((SELECT h.checked FROM catalog_home_release h WHERE h.key=catalog_titles.key),0),
    COALESCE((SELECT h.earliest_ts FROM catalog_home_release h WHERE h.key=catalog_titles.key),0),
@@ -118,7 +118,7 @@ func (m *Mirror) titles(ctx context.Context, keys []core.RatingKey, includeFutur
 			var home int64
 			var typ string
 			if err := rows.Scan(&key, &typ, &t.IDs.TMDB, &t.IDs.IMDB, &t.IDs.TVDB, &t.Title, &t.OriginalTitle, &t.EnglishTitle, &t.SortTitle,
-				&t.Tagline, &t.Summary, &t.Year, &released, &runtime, &t.Status, &t.Language, &t.ContentRating,
+				&t.Tagline, &t.Summary, &t.Year, &released, &runtime, &t.Status, &t.Language, &t.ContentRating, &t.EnforcementRating,
 				&t.Rating, &t.VoteCount, &t.Popularity, &t.PosterPath, &t.BackdropPath, &t.LogoPath,
 				&t.CollectionID, &t.CollectionName, &t.ChildCount, &t.LeafCount, &fetched, &adult, &lastAir, &checked, &home, &fallback); err != nil {
 				rows.Close()

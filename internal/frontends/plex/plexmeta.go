@@ -94,7 +94,7 @@ func (s *Server) plexMetaRatingOK(u *frontend.Viewer, t *frontend.Title, row fro
 	if !ok {
 		return true
 	}
-	return frontend.MetadataOverlayRatingAllowed(u, t.ContentRating, row.ContentRating)
+	return frontend.MetadataOverlayTitleAllowed(u, t, row.ContentRating)
 }
 
 func (s *Server) plexMetaRatingAllowedCached(u *frontend.Viewer, t *frontend.Title, rows map[frontend.RatingKey]frontend.CachedMetadataOverlay, guids map[frontend.RatingKey]string) bool {

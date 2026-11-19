@@ -1613,6 +1613,22 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 			movieAllowed = movieAllowed || section.Type == frontend.TypeMovie
 			episodeAllowed = episodeAllowed || section.Type == frontend.TypeShow
 		}
+		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
+			filter.ExcludeGenres, filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+		}
+		movieFilter := filter
+		epFilter := filter
+		if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok {
+			var none bool
+			movieFilter, none = s.exp().MergeShareFilter(movieFilter, share.BrowseShareFilter(pr.User, frontend.TypeMovie))
+			if none {
+				movieAllowed = false
+			}
+			epFilter, none = s.exp().MergeShareFilter(epFilter, share.BrowseShareFilter(pr.User, frontend.TypeEpisode))
+			if none {
+				episodeAllowed = false
+			}
+		}
 		if !movieAllowed && !episodeAllowed {
 			mc := libraryContainer()
 			mc.SetPage(pr.Start, 0)
@@ -1625,11 +1641,11 @@ func (s *Server) handleOnDeck(w http.ResponseWriter, r *http.Request) {
 		if !episodeAllowed {
 			filter.Type = frontend.TypeMovie
 		}
-		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
-			filter.ExcludeGenres, filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
-		}
-		child := filter
-		filter.ChildVisibility = &child
+		epChild := epFilter
+		epFilter.ChildVisibility = &epChild
+		filter.ChildVisibility = &epChild
+		filter.MovieFilter = &movieFilter
+		filter.EpisodeFilter = &epFilter
 		// The deck is bounded by PMS's OnDeckLimit; a page past it is
 		// empty and still carries the bounded total.
 		start := max(pr.Start, 0)
@@ -1797,17 +1813,6 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 	wantType := typeFromParam(rq.Get("type"))
 	wantSection, _ := strconv.Atoi(rq.Get("sectionID"))
 	if paged, ok := s.catalog().(frontend.RecentPageCatalog); ok && r.URL.Path == "/library/recentlyAdded" {
-		var kinds []frontend.MediaType
-		for _, sec := range s.userSections(pr.User) {
-			if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
-				continue
-			}
-			kind := sec.Type
-			if kind == frontend.TypeShow {
-				kind = frontend.TypeEpisode
-			}
-			kinds = append(kinds, kind)
-		}
 		_, pageSize := pr.pageOf(0)
 		q := frontend.BrowseQuery{Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Offset: max(pr.Start, 0), Limit: pageSize}
 		if pr.User != nil {
@@ -1819,8 +1824,32 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
 			q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
 		}
-		child := q.Filter
-		q.Filter.ChildVisibility = &child
+		movieFilter := q.Filter
+		epFilter := q.Filter
+		movieNone, epNone := false, false
+		if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok && pr.User != nil {
+			movieFilter, movieNone = s.exp().MergeShareFilter(movieFilter, share.BrowseShareFilter(pr.User, frontend.TypeMovie))
+			epFilter, epNone = s.exp().MergeShareFilter(epFilter, share.BrowseShareFilter(pr.User, frontend.TypeEpisode))
+		}
+		var kinds []frontend.MediaType
+		for _, sec := range s.userSections(pr.User) {
+			if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
+				continue
+			}
+			kind := sec.Type
+			if kind == frontend.TypeShow {
+				kind = frontend.TypeEpisode
+			}
+			if kind == frontend.TypeMovie && movieNone || kind == frontend.TypeEpisode && epNone {
+				continue
+			}
+			kinds = append(kinds, kind)
+		}
+		epChild := epFilter
+		epFilter.ChildVisibility = &epChild
+		q.Filter.ChildVisibility = &epChild
+		q.Filter.MovieFilter = &movieFilter
+		q.Filter.EpisodeFilter = &epFilter
 		page, err := paged.RecentPage(ctx, q, kinds)
 		if err != nil {
 			s.writeErr(w, r, err)
@@ -1848,6 +1877,20 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 		}
 		if pr.User != nil {
 			q.Filter.MaxContentRating = pr.User.MaxContentRating
+		}
+		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
+			q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+		}
+		if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok && pr.User != nil {
+			var none bool
+			q.Filter, none = s.exp().MergeShareFilter(q.Filter, share.BrowseShareFilter(pr.User, q.Filter.Type))
+			if none {
+				continue
+			}
+		}
+		if q.Filter.Type == frontend.TypeEpisode {
+			child := q.Filter
+			q.Filter.ChildVisibility = &child
 		}
 		page, err := s.catalogBrowse(ctx, q)
 		if err != nil {

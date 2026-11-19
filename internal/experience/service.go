@@ -728,7 +728,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			}
 		}
 		filter.Type = library.Type
-		if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.LevelOf(v.MaxContentRating)) < int(contentrating.LevelOf(filter.MaxContentRating))) {
+		if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.EnforceLevelOf(v.MaxContentRating)) < int(contentrating.EnforceLevelOf(filter.MaxContentRating))) {
 			filter.MaxContentRating = v.MaxContentRating
 		}
 		bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500}
@@ -2914,8 +2914,22 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 }
 
 func matchesFilter(t core.Title, f core.Filter) bool {
-	if f.MaxContentRating != "" && contentrating.Exceeds(t.ContentRating, f.MaxContentRating) {
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	if f.MaxContentRating != "" && contentrating.EnforceExceeds(enf, f.MaxContentRating) {
 		return false
+	}
+	if enf == contentrating.UncertifiedAdult && (len(f.ContentRatings) > 0 || len(f.ExcludeContentRatings) > 0 || f.MinContentRating != "") {
+		return false
+	}
+	if f.MinContentRating != "" {
+		minLvl := contentrating.EnforceLevelOf(f.MinContentRating)
+		haveLvl := contentrating.EnforceLevelOf(enf)
+		if haveLvl == contentrating.Unrated {
+			haveLvl = contentrating.EnforceLevelOf(t.ContentRating)
+		}
+		if minLvl == contentrating.Unrated || haveLvl == contentrating.Unrated || haveLvl < minLvl {
+			return false
+		}
 	}
 	for _, key := range f.ExcludeKeys {
 		if t.Key == key {
@@ -2971,10 +2985,10 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 	hasExcluded := func(a, b []string) bool {
 		return len(b) > 0 && intersects(a, b)
 	}
-	if !intersects(t.Genres, f.Genres) || !intersects([]string{t.Language}, f.Languages) || !intersects(t.Countries, f.Countries) || !intersects([]string{t.ContentRating}, f.ContentRatings) {
+	if !intersects(t.Genres, f.Genres) || !intersects([]string{t.Language}, f.Languages) || !intersects(t.Countries, f.Countries) || (len(f.ContentRatings) > 0 && !matchesFilterRatings(t.ContentRating, enf, f.ContentRatings)) {
 		return false
 	}
-	if hasExcluded(t.Genres, f.ExcludeGenres) || hasExcluded(t.Countries, f.ExcludeCountries) || hasExcluded([]string{t.ContentRating}, f.ExcludeContentRatings) {
+	if hasExcluded(t.Genres, f.ExcludeGenres) || hasExcluded(t.Countries, f.ExcludeCountries) || (len(f.ExcludeContentRatings) > 0 && matchesFilterRatings(t.ContentRating, enf, f.ExcludeContentRatings)) {
 		return false
 	}
 	if f.Collection != 0 && len(f.Collections) == 0 && t.CollectionID != f.Collection {
@@ -3054,6 +3068,40 @@ func matchesFilter(t core.Title, f core.Filter) bool {
 		}
 	}
 	return true
+}
+
+func matchesFilterRatings(rating, enf string, values []string) bool {
+	have := strings.TrimSpace(rating)
+	haveLevel := contentrating.EnforceLevelOf(enf)
+	if haveLevel == contentrating.Unrated {
+		haveLevel = contentrating.EnforceLevelOf(have)
+	}
+	nonUSOrUnratedDisplay := have == "" || contentrating.IsNotRated(have) || contentrating.Parse(have).Country != "US"
+	for _, want := range values {
+		w := strings.TrimSpace(want)
+		if w == "" || strings.EqualFold(w, "None") || strings.EqualFold(w, "NR") {
+			if enf == "" && haveLevel == contentrating.Unrated && (have == "" || contentrating.IsNotRated(have)) {
+				return true
+			}
+			continue
+		}
+		if strings.EqualFold(have, w) {
+			return true
+		}
+		if nonUSOrUnratedDisplay && contentrating.Parse(w).Country == "US" {
+			wantLevel := contentrating.EnforceLevelOf(w)
+			if wantLevel == contentrating.Unrated {
+				continue
+			}
+			if haveLevel == wantLevel {
+				return true
+			}
+			if strings.EqualFold(w, "TV-MA") && haveLevel == contentrating.Adult {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func titleContainsQuery(t core.Title, q string) bool {

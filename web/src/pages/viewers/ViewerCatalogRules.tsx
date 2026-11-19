@@ -7,7 +7,12 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t } from "../../i18n";
 import { apiFetch } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
-import { RulesPanel, ruleLabel, type VisibilityRule } from "../libraries/browser/LibraryVisibility";
+import {
+  isShowOnlyRules,
+  RulesPanel,
+  ruleLabel,
+  type VisibilityRule,
+} from "../libraries/browser/LibraryVisibility";
 
 type Policy = {
   broken?: boolean;
@@ -114,17 +119,20 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
               value={p.mode}
               onChange={(e) => {
                 const mode = e.target.value;
-                patch(
-                  mode === "custom"
-                    ? {
-                        mode,
-                        exclusions: structuredClone(data.globalRules).filter(
-                          (_, i) => !p.exemptions.includes(data.globalIDs[i]!),
-                        ),
-                        visibilityDefault: data.globalDefault || "show",
-                      }
-                    : { mode },
-                );
+                if (mode === "custom") {
+                  const exclusions = structuredClone(data.globalRules).filter(
+                    (_, i) => !p.exemptions.includes(data.globalIDs[i]!),
+                  );
+                  const becameShowOnly =
+                    !isShowOnlyRules(data.globalRules) && isShowOnlyRules(exclusions);
+                  patch({
+                    mode,
+                    exclusions,
+                    visibilityDefault: becameShowOnly ? "hide" : data.globalDefault || "show",
+                  });
+                } else {
+                  patch({ mode });
+                }
               }}
             >
               {[
@@ -163,7 +171,13 @@ export function ViewerCatalogRules({ id, region }: { id: number; region: string 
           <RulesPanel
             rules={p.exclusions}
             fallback={p.visibilityDefault}
-            onRules={(exclusions) => patch({ exclusions })}
+            onRules={(exclusions, nextFallback) =>
+              patch(
+                nextFallback !== undefined
+                  ? { exclusions, visibilityDefault: nextFallback }
+                  : { exclusions },
+              )
+            }
             onFallback={(visibilityDefault) => patch({ visibilityDefault })}
             region={region}
           />

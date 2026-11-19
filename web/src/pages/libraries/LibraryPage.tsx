@@ -88,7 +88,9 @@ function LibraryRulesTab({
           rules={rules}
           fallback={fallback}
           region={region}
-          onRules={(next) => setDraft({ rules: next, visibilityDefault: fallback })}
+          onRules={(next, nextFallback) =>
+            setDraft({ rules: next, visibilityDefault: nextFallback ?? fallback })
+          }
           onFallback={(value) => setDraft({ rules, visibilityDefault: value })}
         />
         <SaveBar

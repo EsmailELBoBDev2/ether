@@ -291,3 +291,10 @@ type ReplicaStore interface {
 type Chooser interface {
 	MarkChosen(ctx context.Context, key Key, profileFP string) error
 }
+
+// Membership answers, in one batched query, which releases the vault holds,
+// keyed by core.Release.ID. A vault release matches by key, others by the
+// (IndexerID, ID) alias, and rows without an indexer id by the legacy alias.
+type Membership interface {
+	Kept(ctx context.Context, releases []core.Release) (map[string]bool, error)
+}

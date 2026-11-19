@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -30,6 +31,9 @@ func (s *Service) localEpisodeIdentity(ctx context.Context, t *core.Title, req c
 	if t.ShowOriginalTitle != "" && t.ShowOriginalTitle != req.Title {
 		names = append(names, t.ShowOriginalTitle)
 	}
+	if eng := cmp.Or(req.EnglishTitle, t.ShowEnglishTitle); eng != "" && eng != req.Title && eng != t.ShowOriginalTitle {
+		names = append(names, eng)
+	}
 	for _, rel := range results {
 		if len(names) >= 8 {
 			break
@@ -57,7 +61,9 @@ func (s *Service) localEpisodeIdentity(ctx context.Context, t *core.Title, req c
 }
 
 func (f localIdentity) shared(req core.SearchRequest) bool {
-	return len(f.OtherShows[req.Title]) > 0 || (req.OriginalTitle != "" && len(f.OtherShows[req.OriginalTitle]) > 0)
+	return len(f.OtherShows[req.Title]) > 0 ||
+		(req.OriginalTitle != "" && len(f.OtherShows[req.OriginalTitle]) > 0) ||
+		(req.EnglishTitle != "" && len(f.OtherShows[req.EnglishTitle]) > 0)
 }
 
 func isAnimationTag(tag string) bool {
@@ -98,7 +104,9 @@ func namesakeAnimationState(other core.EpisodeNamesake) (animated, known bool) {
 func (f localIdentity) matchingNamesakes(req core.SearchRequest) []core.EpisodeNamesake {
 	var out []core.EpisodeNamesake
 	for name, others := range f.OtherShows {
-		if releaseparse.TitlesMatch(name, req.Title) || (req.OriginalTitle != "" && releaseparse.TitlesMatch(name, req.OriginalTitle)) {
+		if releaseparse.TitlesMatch(name, req.Title) ||
+			(req.OriginalTitle != "" && releaseparse.TitlesMatch(name, req.OriginalTitle)) ||
+			(req.EnglishTitle != "" && releaseparse.TitlesMatch(name, req.EnglishTitle)) {
 			out = append(out, others...)
 		}
 	}
@@ -222,7 +230,10 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 	}
 	idMatch, _ := releaseparse.CompareTitleIDs(rel.ReportedTitleIDs(), req.IDs)
 	year := releaseparse.EpisodeSeriesYear(rel.Name, rel.Info.Year)
-	primary := releaseparse.TitleMatches(rel.Info, req.Title) || (t != nil && t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle))
+	primary := releaseparse.TitleMatches(rel.Info, req.Title) ||
+		(t != nil && t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle)) ||
+		(req.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, req.EnglishTitle)) ||
+		(t != nil && t.ShowEnglishTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowEnglishTitle))
 	for name, others := range f.OtherShows {
 		if !releaseparse.TitleMatches(rel.Info, name) {
 			continue
@@ -262,11 +273,12 @@ func (f localIdentity) otherEpisode(rel core.Release, t *core.Title, req core.Se
 		return ""
 	}
 	own := identityWords(req.EpisodeTitle)
-	var showOrig string
+	var showOrig, showEng string
 	if t != nil {
 		showOrig = t.ShowOriginalTitle
+		showEng = t.ShowEnglishTitle
 	}
-	shows := []string{req.Title, showOrig, rel.Info.Title}
+	shows := []string{req.Title, showOrig, cmp.Or(req.EnglishTitle, showEng), rel.Info.Title}
 	for _, n := range slices.Sorted(maps.Keys(f.Episodes)) {
 		title := f.Episodes[n]
 		words := identityWords(title)
@@ -291,10 +303,11 @@ func (f localIdentity) otherSeason(rel core.Release, t *core.Title, req core.Sea
 	if req.Season <= 0 {
 		return ""
 	}
-	var showOrig string
+	var showOrig, showEng string
 	var showAlts []string
 	if t != nil {
 		showOrig = t.ShowOriginalTitle
+		showEng = t.ShowEnglishTitle
 		showAlts = t.ShowAlternativeTitles
 	}
 	meaningful := func(name string) bool {
@@ -302,8 +315,8 @@ func (f localIdentity) otherSeason(rel core.Release, t *core.Title, req core.Sea
 		if len(strings.Fields(norm)) < 2 || genericSeasonName.MatchString(norm) {
 			return false
 		}
-		for _, show := range append([]string{req.Title, showOrig}, showAlts...) {
-			if releaseparse.NormalizeTitle(name) == releaseparse.NormalizeTitle(show) {
+		for _, show := range append([]string{req.Title, showOrig, cmp.Or(req.EnglishTitle, showEng)}, showAlts...) {
+			if show != "" && releaseparse.NormalizeTitle(name) == releaseparse.NormalizeTitle(show) {
 				return false
 			}
 		}
@@ -326,7 +339,9 @@ func (f localIdentity) otherSeason(rel core.Release, t *core.Title, req core.Sea
 }
 
 func (f localIdentity) ambiguous(rel core.Release, t *core.Title, req core.SearchRequest) bool {
-	if !f.shared(req) || !(releaseparse.TitleMatches(rel.Info, req.Title) || (req.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, req.OriginalTitle))) {
+	if !f.shared(req) || !(releaseparse.TitleMatches(rel.Info, req.Title) ||
+		(req.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, req.OriginalTitle)) ||
+		(req.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, req.EnglishTitle))) {
 		return false
 	}
 	return f.evidence(rel, t, req) == ""

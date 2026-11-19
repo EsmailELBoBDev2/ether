@@ -564,9 +564,12 @@ type SearchRequest struct {
 	IDs           IDs       // movie ids, or the show's ids for episodes
 	Title         string
 	OriginalTitle string // optional original-language or canonical title (additive)
-	Year          int
-	Season        int
-	Episode       int
+	// EnglishTitle is TMDB's primary en-US title when the catalogue language
+	// is non-English; matching only, never part of a query or cache key (additive).
+	EnglishTitle string `json:"-"`
+	Year         int
+	Season       int
+	Episode      int
 	// AltSeason/AltEpisode are additional release numbers from independent release numbering (zero when unset).
 	AltSeason             int
 	AltEpisode            int

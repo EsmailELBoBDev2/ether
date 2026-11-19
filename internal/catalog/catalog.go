@@ -177,6 +177,10 @@ CREATE INDEX catalog_titles_type_browse_lang ON catalog_titles(type, browsable, 
 CREATE INDEX catalog_titles_type_browse_runtime ON catalog_titles(type, browsable, adult, runtime_sec, popularity DESC);
 CREATE INDEX catalog_credits_person_kind ON catalog_credits(person_tmdb, kind, key);
 `)
+	// english_title holds TMDB's primary en-US title when the catalogue
+	// language is non-English, so release matching keeps accepting English
+	// releases of foreign titles across catalogue refreshes (#609).
+	store.Register("catalog", 63, `ALTER TABLE catalog_titles ADD COLUMN english_title TEXT NOT NULL DEFAULT '';`)
 }
 
 // dropUnkeyableEpisodes removes mirrored seasons and episodes whose numbers

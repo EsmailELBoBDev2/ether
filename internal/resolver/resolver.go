@@ -574,10 +574,10 @@ func searchRequestFor(t *core.Title) core.SearchRequest {
 		if title == "" {
 			title = t.Title
 		}
-		return core.SearchRequest{Type: core.TypeEpisode, IDs: ids, Title: title, OriginalTitle: t.ShowOriginalTitle, Year: t.ShowYear, Season: season, Episode: episode, EpisodeTitle: t.Title,
+		return core.SearchRequest{Type: core.TypeEpisode, IDs: ids, Title: title, OriginalTitle: t.ShowOriginalTitle, EnglishTitle: t.ShowEnglishTitle, Year: t.ShowYear, Season: season, Episode: episode, EpisodeTitle: t.Title,
 			AbsoluteEpisode: t.AbsoluteEpisode, Anime: isAnime(t), AlternativeTitles: t.ShowAlternativeTitles, Released: t.Released}
 	}
-	return core.SearchRequest{Type: core.TypeMovie, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, Year: t.Year, Anime: isAnime(t), AlternativeTitles: t.AlternativeTitles, Released: t.Released}
+	return core.SearchRequest{Type: core.TypeMovie, IDs: t.IDs, Title: t.Title, OriginalTitle: t.OriginalTitle, EnglishTitle: t.EnglishTitle, Year: t.Year, Anime: isAnime(t), AlternativeTitles: t.AlternativeTitles, Released: t.Released}
 }
 
 func (s *Service) searchRequest(ctx context.Context, t *core.Title) core.SearchRequest {
@@ -2133,15 +2133,22 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 	if isEpisode && sreq.Season == 1 && len(rel.Info.Episodes) == 0 && !rel.Info.FullSeason {
 		if partTitle, partNum, ok := releaseparse.MiniseriesPart(rel.Name); ok {
 			if releaseparse.TitlesMatch(partTitle, wantTitle) ||
-				(t.ShowOriginalTitle != "" && releaseparse.TitlesMatch(partTitle, t.ShowOriginalTitle)) {
+				(sreq.OriginalTitle != "" && releaseparse.TitlesMatch(partTitle, sreq.OriginalTitle)) ||
+				(t.ShowOriginalTitle != "" && releaseparse.TitlesMatch(partTitle, t.ShowOriginalTitle)) ||
+				(sreq.EnglishTitle != "" && releaseparse.TitlesMatch(partTitle, sreq.EnglishTitle)) ||
+				(t.ShowEnglishTitle != "" && releaseparse.TitlesMatch(partTitle, t.ShowEnglishTitle)) {
 				miniseriesPart = partNum
 			}
 		}
 	}
 	titleOK := miniseriesPart > 0 ||
 		releaseparse.TitleMatches(rel.Info, wantTitle) ||
+		(sreq.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, sreq.OriginalTitle)) ||
 		(!isEpisode && t.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.OriginalTitle)) ||
 		(isEpisode && t.ShowOriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowOriginalTitle)) ||
+		(sreq.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, sreq.EnglishTitle)) ||
+		(!isEpisode && t.EnglishTitle != "" && releaseparse.TitleMatches(rel.Info, t.EnglishTitle)) ||
+		(isEpisode && t.ShowEnglishTitle != "" && releaseparse.TitleMatches(rel.Info, t.ShowEnglishTitle)) ||
 		matchesAlternativeTitle(rel.Info, sreq.AlternativeTitles) ||
 		(!isEpisode && matchesAlternativeTitle(rel.Info, t.AlternativeTitles)) ||
 		(isEpisode && matchesAlternativeTitle(rel.Info, t.ShowAlternativeTitles))
@@ -2158,7 +2165,12 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 	if isEpisode && sreq.Season == 0 {
 		prefix := core.ReleaseInfo{Title: releaseparse.SpecialSeriesTitle(rel.Name)}
 		titleOK = titleOK || releaseparse.TitleMatches(prefix, wantTitle) ||
-			(t.ShowOriginalTitle != "" && releaseparse.TitleMatches(prefix, t.ShowOriginalTitle)) || matchesAlternativeTitle(prefix, sreq.AlternativeTitles)
+			(sreq.OriginalTitle != "" && releaseparse.TitleMatches(prefix, sreq.OriginalTitle)) ||
+			(t.ShowOriginalTitle != "" && releaseparse.TitleMatches(prefix, t.ShowOriginalTitle)) ||
+			(sreq.EnglishTitle != "" && releaseparse.TitleMatches(prefix, sreq.EnglishTitle)) ||
+			(t.ShowEnglishTitle != "" && releaseparse.TitleMatches(prefix, t.ShowEnglishTitle)) ||
+			matchesAlternativeTitle(prefix, sreq.AlternativeTitles) ||
+			matchesAlternativeTitle(prefix, t.ShowAlternativeTitles)
 	}
 	if titleOK && !idMatch && regionTagConflicts(rel.Info.Title, wantTitle, t.Countries) {
 		titleOK = false
@@ -2229,11 +2241,20 @@ func expectedTitlesFor(t *core.Title, sreq core.SearchRequest) []string {
 		out = append(out, v)
 	}
 	add(sreq.Title)
+	add(sreq.OriginalTitle)
 	if t != nil {
 		if sreq.Type == core.TypeEpisode {
 			add(t.ShowOriginalTitle)
 		} else {
 			add(t.OriginalTitle)
+		}
+	}
+	add(sreq.EnglishTitle)
+	if t != nil {
+		if sreq.Type == core.TypeEpisode {
+			add(t.ShowEnglishTitle)
+		} else {
+			add(t.EnglishTitle)
 		}
 	}
 	for _, alt := range sreq.AlternativeTitles {
@@ -2579,7 +2600,11 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		if rel.Target != nil {
 			target = *rel.Target
 		}
-		target.MovieTitles = append([]string{sreq.Title, sreq.OriginalTitle}, sreq.AlternativeTitles...)
+		titles := []string{sreq.Title, sreq.OriginalTitle}
+		if sreq.EnglishTitle != "" {
+			titles = append(titles, sreq.EnglishTitle)
+		}
+		target.MovieTitles = append(titles, sreq.AlternativeTitles...)
 		target.MovieYear = sreq.Year
 		rel.Target = &target
 		return rel

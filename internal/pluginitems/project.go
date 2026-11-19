@@ -13,6 +13,17 @@ import (
 	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
+// EffectiveCard resolves a plugin library's card shape: the owner's CardShape
+// choice first, then the plugin's declared library.card ("poster" by default).
+func EffectiveCard(cardShape string, decl plugins.KindLibraryDecl) string {
+	switch cardShape {
+	case core.CardPoster, core.CardLandscape, core.CardSquare:
+		return cardShape
+	default:
+		return decl.EffectiveCard()
+	}
+}
+
 // Project maps a plugin KindItem into a core.Title for legacy Plex/Jellyfin/Emby
 // frontends per §6.3.
 //
@@ -33,7 +44,11 @@ import (
 //   - Title.BackdropPath = art["backdrop"]
 //   - Title.StillPath = art["thumb"] (for episode-like items)
 //   - Title.LogoPath = art["logo"]
-func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presentations) core.Title {
+func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presentations, cardShape ...string) core.Title {
+	var ownerCard string
+	if len(cardShape) > 0 {
+		ownerCard = cardShape[0]
+	}
 	mediaType := projectMediaType(item.Level, decl, present)
 
 	sortTitle := FoldSortTitle(item.SortTitle)
@@ -47,7 +62,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		KindLevel:     item.Level,
 		ItemIndex:     item.Index,
 		PluginAddedAt: item.AddedAt,
-		LandscapeCard: decl.Library.EffectiveCard() == "landscape",
+		LandscapeCard: EffectiveCard(ownerCard, decl.Library) == core.CardLandscape,
 		Title:         item.Title,
 		SortTitle:     sortTitle,
 		Summary:       projectSummary(item, decl),

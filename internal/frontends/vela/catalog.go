@@ -118,7 +118,7 @@ func (i *instance) titleArtworkBatch(r *http.Request, v *frontend.Viewer, token 
 	kinds := []string{frontend.ImagePoster, frontend.ImageBackdrop, frontend.ImageStill}
 	hasLandscape := false
 	for _, title := range ts {
-		if title.LandscapeCard {
+		if title.LandscapeCard && title.Key.IsPluginKey() {
 			hasLandscape = true
 			break
 		}
@@ -301,13 +301,15 @@ func selectLandscapeCardArtwork(images []frontend.GrantedImage) []frontend.Grant
 		return nil
 	}
 	out := make([]frontend.GrantedImage, 0, len(images))
-	for _, image := range images {
-		if image.Image.Kind == frontend.ImageThumb && image.Image.Path != "" && image.Secret != "" {
-			out = append(out, image)
+	for _, kind := range []string{frontend.ImageThumb, frontend.ImageStill, frontend.ImageBackdrop} {
+		for _, image := range images {
+			if image.Image.Kind == kind && image.Image.Path != "" && image.Secret != "" {
+				out = append(out, image)
+			}
 		}
 	}
 	for _, image := range images {
-		if image.Image.Kind != frontend.ImageThumb && image.Image.Path != "" && image.Secret != "" {
+		if image.Image.Kind != frontend.ImageThumb && image.Image.Kind != frontend.ImageStill && image.Image.Kind != frontend.ImageBackdrop && image.Image.Path != "" && image.Secret != "" {
 			out = append(out, image)
 		}
 	}
@@ -358,23 +360,25 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		}
 	}
 	libraryID := r.URL.Query().Get("libraryId")
-	if placement == frontend.PlacementLibrary && libraryID != "" && r.PathValue("id") == "" {
+	var matched *frontend.View
+	if placement == frontend.PlacementLibrary && libraryID != "" {
 		visibleViews, err := i.host.Experience.Views(r.Context(), v)
 		if err != nil {
 			return nil, false, err
 		}
-		var matched *frontend.View
 		for idx := range visibleViews {
 			if visibleViews[idx].ID == libraryID {
 				matched = &visibleViews[idx]
 				break
 			}
 		}
-		if matched == nil {
-			return nil, false, frontend.ErrNotFound
-		}
-		if matched.PluginID != "" || matched.KindKey != "" {
-			return []object{}, false, nil
+		if r.PathValue("id") == "" {
+			if matched == nil {
+				return nil, false, frontend.ErrNotFound
+			}
+			if matched.PluginID != "" || matched.KindKey != "" {
+				return []object{}, false, nil
+			}
 		}
 	}
 	var item frontend.RatingKey
@@ -479,6 +483,9 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	if r.PathValue("id") == "" && len(rows) > limit(r) {
 		outerMore = true
 		rows = rows[:limit(r)]
+	}
+	if matched != nil {
+		markLandscapeRows(rows, *matched)
 	}
 	out, err := i.rowsToWire(r, v, token, rows, excludedHeroes, hasViews, rowItemLimit(r), sources...)
 	if err != nil {

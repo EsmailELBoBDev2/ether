@@ -292,16 +292,20 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 		if lib.Source == core.LibraryPlugin {
 			if pres, hasPres := s.d.PluginLibraries.(PluginPresentationLibraries); hasPres {
 				if p, ok := pres.Presentation(ctx, lib); ok {
-					view.Card = p.Card
+					view.Card = lib.EffectiveCardShape(p.Card)
 					view.Tabs = p.Tabs
 					view.Sorts = p.Sorts
 					view.Facets = p.Facets
 				}
 			}
+			if view.Card == "" && lib.CardShape != "" {
+				view.Card = lib.EffectiveCardShape("")
+			}
 			if lib.TabsCustomized && len(view.Tabs) == 0 && len(lib.Tabs) > 0 {
 				view.Tabs = libraryTabsToViewTabs(lib.Tabs, view.Sorts, false)
 			}
 		} else {
+			view.Card = lib.EffectiveCardShape("")
 			srcTabs := lib.Tabs
 			if !lib.TabsCustomized {
 				srcTabs = core.DefaultCatalogueTabs()

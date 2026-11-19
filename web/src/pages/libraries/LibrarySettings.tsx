@@ -22,7 +22,13 @@ import { errorMessage } from "../../lib/api";
 import { formatNumber } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { useQuality } from "../releases/useQuality";
-import { librariesApi, publishedTo, type Library, type Presentations } from "./api";
+import {
+  librariesApi,
+  publishedTo,
+  type Library,
+  type LibraryCardShape,
+  type Presentations,
+} from "./api";
 import { LibraryCacheCard } from "./LibraryCache";
 import { TitlesComeFrom } from "./TitlesComeFrom";
 import { NarrowingEditor } from "./NarrowingEditor";
@@ -133,6 +139,67 @@ function libraryKindValue(lib: Library): string {
     return plugin ? t("{kind} from {plugin}", { kind, plugin }) : kind;
   }
   return lib.mediaType === "show" ? t("TV shows") : t("Movies");
+}
+
+function cardShapeLabel(shape?: string): string {
+  switch (shape) {
+    case "landscape":
+      return t("Wide");
+    case "square":
+      return t("Square");
+    default:
+      return t("Poster");
+  }
+}
+
+function CardShapeRow({
+  library,
+  value,
+  onChange,
+}: {
+  library: Library;
+  value: "" | LibraryCardShape;
+  onChange: (value: "" | LibraryCardShape) => void;
+}) {
+  const isPlugin = library.source === "plugin";
+  const pluginDefault = library.kind?.library?.card ?? "poster";
+  const choices: { value: "" | LibraryCardShape; label: string }[] = [
+    ...(isPlugin
+      ? [
+          {
+            value: "" as const,
+            label: t("Plugin default ({shape})", { shape: cardShapeLabel(pluginDefault) }),
+          },
+        ]
+      : []),
+    { value: "poster", label: t("Poster") },
+    { value: "landscape", label: t("Wide") },
+    { value: "square", label: t("Square") },
+  ];
+  const current: "" | LibraryCardShape =
+    value === "poster" || value === "landscape" || value === "square"
+      ? value
+      : isPlugin
+        ? ""
+        : "poster";
+
+  return (
+    <SettingsRow
+      title={t("Card shape")}
+      description={t("How thumbnails are shaped when viewers browse this library.")}
+      control={
+        <div className="w-56">
+          <SearchSelect
+            value={current}
+            onChange={(next) => onChange(next as "" | LibraryCardShape)}
+            options={choices}
+            ariaLabel={t("Card shape")}
+            searchable={false}
+          />
+        </div>
+      }
+    />
+  );
 }
 
 /** "Show in apps", per protocol (spec §6.2, §15.3). Builtins are synthesised. */
@@ -278,10 +345,17 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       library.source === "plugin" ? librariesApi.cache(library.id, signal) : Promise.resolve(null),
     [library.id, library.source],
   );
+  const storedCardShape: "" | LibraryCardShape =
+    library.source === "plugin"
+      ? library.cardShape || ""
+      : library.cardShape === "landscape" || library.cardShape === "square"
+        ? library.cardShape
+        : "poster";
   const stored = useMemo(
     () => ({
       name: library.name,
       hidden: library.hidden,
+      cardShape: storedCardShape,
       present: library.present ?? {},
       qualityProfile: library.qualityProfile ?? "",
       sources: library.sources ?? [],
@@ -289,7 +363,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       cacheMaxBytes: cache.data?.maxBytes ?? 0,
       cacheTTL: cache.data?.ttlSeconds ?? 0,
     }),
-    [library, cache.data],
+    [library, storedCardShape, cache.data],
   );
   const { draft, setDraft, dirty, reset } = useDraft(stored);
   const [saving, setSaving] = useState(false);
@@ -307,6 +381,10 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
         name: draft.name.trim(),
         hidden: draft.hidden,
       };
+      if (draft.cardShape !== stored.cardShape) {
+        body.cardShape =
+          library.source !== "plugin" && draft.cardShape === "poster" ? "" : draft.cardShape;
+      }
       if (library.source !== "plugin" && draft.qualityProfile !== stored.qualityProfile)
         body.qualityProfile = draft.qualityProfile;
       if (library.source !== "builtin") body.present = materializePresent(library, draft.present);
@@ -364,6 +442,11 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
                   onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 />
               }
+            />
+            <CardShapeRow
+              library={library}
+              value={draft.cardShape}
+              onChange={(cardShape) => setDraft({ ...draft, cardShape })}
             />
             <SettingsRow
               title={t("Hide from apps")}

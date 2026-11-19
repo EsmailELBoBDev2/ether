@@ -1261,7 +1261,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const { fallbackSection, effectiveMedia, mediaFilter: media } = resolveSectionMedia(section);
     const short = device === "mobile" || (!weekend && hour >= 21);
     const seed = `${userId ?? "typical"}-${section}`;
-    const prefix = effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
+    const prefix =
+      effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const mk = (
       stem: string,
       title: string,
@@ -1660,7 +1661,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const day = at.getDay();
     const hour = at.getHours();
     const { fallbackSection, effectiveMedia } = resolveSectionMedia(sec);
-    const prefix = effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
+    const prefix =
+      effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const availList = availableRows();
     const active: { pol: LayoutPage["rows"][number]; layer: "global" | "override" }[] = [];
     if (userId !== null) {
@@ -1676,7 +1678,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
     }
     const globalPage =
       pageOf(layout, "global", sec) ??
-      (isLibrarySection(sec) && fallbackSection ? pageOf(layout, "global", fallbackSection) : undefined);
+      (isLibrarySection(sec) && fallbackSection
+        ? pageOf(layout, "global", fallbackSection)
+        : undefined);
     for (const pol of globalPage?.rows ?? []) {
       if ((pol.status !== "always" && !pol.slot) || /[*?[]/.test(pol.row)) continue;
       const colId = collectionIdOf(pol.row);
@@ -2727,7 +2731,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
           { key: "publisher", type: "string", label: "Publisher", indexed: true },
         ],
         present: {},
-        browse: { sorts: ["title", "added", "year", "rating"], facets: ["author", "subject", "series"], search: true },
+        browse: {
+          sorts: ["title", "added", "year", "rating"],
+          facets: ["author", "subject", "series"],
+          search: true,
+        },
         sync: { mode: "push" },
       },
       sync: { pluginId: "demo", kindKey: "book", generation: 1, items: 2 },
@@ -2799,6 +2807,31 @@ export function createFakeServer(opts: FakeOptions = {}) {
     sort: 7,
     hidden: false,
     itemCount: 4500,
+  });
+  mockLibs.push({
+    id: 8,
+    key: "pk-demo-clips",
+    name: "Studio Clips",
+    source: "plugin",
+    pluginId: "demo-clips",
+    kindKey: "clip",
+    present: { vela: { type: "movies" } },
+    sort: 8,
+    hidden: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    itemCount: 24,
+    pluginName: "Studio Clips",
+    kind: {
+      key: "clip",
+      label: "Clips",
+      library: { name: "Studio Clips", card: "landscape" },
+      levels: [{ key: "clip", label: "Clip", playable: true }],
+      present: { vela: { type: "movies" } },
+      browse: { sorts: ["added", "title"], search: true },
+      sync: { mode: "push" },
+    },
+    sync: { pluginId: "demo-clips", kindKey: "clip", generation: 1, items: 24 },
   });
   lookupMockLib = (id) => mockLibs.find((l) => Number(l.id) === id);
   listMockLibs = () => mockLibs;
@@ -2914,6 +2947,17 @@ export function createFakeServer(opts: FakeOptions = {}) {
             libraries: [],
           },
           {
+            id: "plugin:demo-clips:clip",
+            name: "Clips",
+            owner: "Studio Clips",
+            group: "plugin",
+            mediaTypes: ["movie"],
+            health: "ok",
+            pluginId: "demo-clips",
+            kindKey: "clip",
+            libraries: [],
+          },
+          {
             id: "stremio:cinemeta:popular",
             name: "Popular",
             owner: "Cinemeta",
@@ -3009,6 +3053,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     if (!seg[2]) {
       if (method === "PATCH") {
         Object.assign(lib, b);
+        if (b.cardShape === "") delete lib.cardShape;
         return json(lib);
       }
       if (method === "DELETE") {

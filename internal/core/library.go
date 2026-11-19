@@ -26,6 +26,24 @@ const (
 	LibraryCollection LibrarySource = "collection" // exactly the titles of one owner collection
 )
 
+// Library card shapes.
+const (
+	CardPoster    = "poster"
+	CardLandscape = "landscape"
+	CardSquare    = "square"
+)
+
+// ValidCardShape reports whether s is a valid stored Library.CardShape value
+// ("" for the library's default, or "poster" | "landscape" | "square").
+func ValidCardShape(s string) bool {
+	switch s {
+	case "", CardPoster, CardLandscape, CardSquare:
+		return true
+	default:
+		return false
+	}
+}
+
 // Library tab kinds.
 const (
 	TabRecommended = "recommended"
@@ -299,6 +317,11 @@ type Library struct {
 	// case effective tabs come from the plugin declaration or DefaultCatalogueTabs.
 	Tabs           []LibraryTab `json:"tabs,omitempty"`
 	TabsCustomized bool         `json:"tabsCustomized,omitempty"`
+	// CardShape overrides how item thumbnails in this library are shaped
+	// ("poster", "landscape", or "square"). Empty means default: the plugin's
+	// declared library.card for plugin libraries, or "poster" for catalogue
+	// libraries.
+	CardShape string `json:"cardShape,omitempty"`
 	// Presentation: how protocols expose this library (§6.2). For builtins
 	// this is synthesised, not stored.
 	Present Presentations `json:"present,omitempty"`
@@ -311,6 +334,23 @@ type Library struct {
 	Hidden         bool      `json:"hidden"` // owner hid it from all clients (still in console)
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// EffectiveCardShape resolves the library's card shape: the owner's CardShape
+// choice first, then pluginDefault (for plugin libraries), falling back to
+// "poster".
+func (l Library) EffectiveCardShape(pluginDefault string) string {
+	switch l.CardShape {
+	case CardPoster, CardLandscape, CardSquare:
+		return l.CardShape
+	}
+	if l.Source == LibraryPlugin {
+		switch pluginDefault {
+		case CardPoster, CardLandscape, CardSquare:
+			return pluginDefault
+		}
+	}
+	return CardPoster
 }
 
 // Presentations declares how a library is published per protocol (§6.2).

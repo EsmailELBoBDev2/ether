@@ -4,6 +4,8 @@ import type { VisibilityRule } from "./browser/LibraryVisibility";
 
 /** Owner API shapes for /libraries and /plugins-setup (spec §11). */
 
+export type LibraryCardShape = "poster" | "landscape" | "square";
+
 export interface Presentations {
   adapterOnly?: boolean;
   vela?: { type: string };
@@ -123,7 +125,7 @@ export interface KindField {
 export interface MediaKind {
   key: string;
   label: string;
-  library: { name: string; icon?: string };
+  library: { name: string; icon?: string; card?: LibraryCardShape };
   levels: KindLevel[];
   fields?: KindField[];
   art?: { role: string; label: string }[];
@@ -173,6 +175,8 @@ export interface Library {
   collectionId?: number;
   rules?: VisibilityRule[];
   visibilityDefault?: string;
+  /** Owner card-shape choice ("poster" | "landscape" | "square"); omitted/"" = default. */
+  cardShape?: "" | LibraryCardShape;
   present?: Presentations;
   /** Quality profile titles in this library rank with; "" = Default. */
   qualityProfile?: string;

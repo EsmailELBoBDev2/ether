@@ -221,6 +221,16 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 					r.Layout = old.Layout
 					write = true
 				}
+				// The same post from another indexer can carry the archive
+				// password the stored copy lacks; without it the release is
+				// unplayable, so merge it into the stored record.
+				if r.NZB != nil {
+					if merged, ok := mergePasswords(b[12:], r.NZB.Meta); ok {
+						r = *merged
+						r.Key = k
+						write = true
+					}
+				}
 			}
 		} else if !errors.Is(e, ErrNotFound) && !errors.Is(e, ErrPayloadMissing) {
 			return e
@@ -350,4 +360,40 @@ func (v *library) SetLayout(ctx context.Context, k Key, l Layout) error {
 		}
 		return v.evict(ctx, tx)
 	})
+}
+
+var passwordFields = []string{"password", "pass", "pwd"}
+
+// mergePasswords returns the stored record (payload) with the sealed
+// password fields of incoming that it lacks, or false when nothing is
+// missing. Both sides are sealed with the same labels.
+func mergePasswords(payload []byte, incoming map[string][]string) (*Record, bool) {
+	var add map[string][]string
+	for _, f := range passwordFields {
+		if len(incoming[f]) > 0 && incoming[f][0] != "" {
+			if add == nil {
+				add = map[string][]string{}
+			}
+			add[f] = incoming[f]
+		}
+	}
+	if add == nil {
+		return nil, false
+	}
+	old, e := Decode(payload)
+	if e != nil || old.NZB == nil {
+		return nil, false
+	}
+	for _, f := range passwordFields {
+		if len(old.NZB.Meta[f]) > 0 && old.NZB.Meta[f][0] != "" {
+			return nil, false // the stored copy already has a password
+		}
+	}
+	if old.NZB.Meta == nil {
+		old.NZB.Meta = map[string][]string{}
+	}
+	for f, v := range add {
+		old.NZB.Meta[f] = v
+	}
+	return old, true
 }

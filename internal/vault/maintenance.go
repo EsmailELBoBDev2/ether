@@ -1,11 +1,11 @@
 package vault
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +14,34 @@ import (
 	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
+// MigrationError reports a migration pass that left NZBs behind.
+type MigrationError struct {
+	Remaining int    // .nzb files still in the old directory
+	Failed    int    // files that failed this pass (kept, retried next pass)
+	File      string // the first failing file
+	Err       error  // its error
+}
+
+func (e *MigrationError) Error() string {
+	return fmt.Sprintf("vault: NZB migration left %d file(s); %d failed this pass, first %s: %v", e.Remaining, e.Failed, e.File, e.Err)
+}
+
+func (e *MigrationError) Unwrap() error { return e.Err }
+
+// errUnreadableNZB marks a legacy file that is not a usable NZB.
+var errUnreadableNZB = errors.New("vault: not a usable NZB")
+
+// UnreadableDir is where MigrateDir sets aside legacy files that are not
+// usable NZBs. They are never deleted.
+const UnreadableDir = ".unreadable"
+
+// MigrateDir moves a directory of NZBs into the vault one file at a time.
+// Each file is imported, read back and compared, and only then removed,
+// under a short lock that re-checks its row. A file that cannot be
+// imported or removed (a Windows sharing violation, say) stays where it
+// is and is retried on the next pass; a file that is not an NZB at all is
+// set aside in UnreadableDir. Already-imported files are verified without
+// re-encoding, so passes resume cheaply.
 func (v *library) MigrateDir(ctx context.Context, dir string) error {
 	entries, e := os.ReadDir(dir)
 	if errors.Is(e, os.ErrNotExist) {
@@ -22,88 +50,124 @@ func (v *library) MigrateDir(ctx context.Context, dir string) error {
 	if e != nil {
 		return e
 	}
-	type imported struct {
-		path, id string
-		digest   [32]byte
-		k        Key
+	log := v.Logger
+	if log == nil {
+		log = slog.Default()
 	}
-	var imports []imported
+	var moved, setAside, remaining int
+	var fail *MigrationError
+	total := 0
+	for _, f := range entries {
+		if f.Type().IsRegular() && strings.EqualFold(filepath.Ext(f.Name()), ".nzb") {
+			total++
+		}
+	}
+	seen := 0
 	for _, f := range entries {
 		if !f.Type().IsRegular() || !strings.EqualFold(filepath.Ext(f.Name()), ".nzb") {
 			continue
 		}
-		path := filepath.Join(dir, f.Name())
-		b, e := os.ReadFile(path)
-		if e != nil {
-			return e
-		}
-		id := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
-		k, e := v.Put(ctx, PutRequest{NZB: b, Source: "legacy:nzb", Release: core.Release{IndexerID: LegacyAliasIndexer, ID: id}})
-		if e != nil {
-			return e
-		}
-		imports = append(imports, imported{path, id, sha256.Sum256(b), k})
-	}
-	// Validate all files in one serialized transaction. Cap eviction or a
-	// concurrent purge cannot invalidate the verified rows during deletion.
-	return v.write(ctx, func(tx *sql.Tx) error {
-		for _, f := range imports {
-			b, e := os.ReadFile(f.path)
-			if e != nil {
-				return e
-			}
-			if sha256.Sum256(b) != f.digest {
-				return errors.New("vault: migration input changed")
-			}
-			doc, e := nzb.Parse(b)
-			if e != nil {
-				return e
-			}
-			want, _ := doc.Subset(func(*nzb.File) bool { return true })
-			var alias Key
-			if e := tx.QueryRowContext(ctx, "SELECT key FROM vault_aliases WHERE indexer_id=? AND release_id=?", LegacyAliasIndexer, f.id).Scan(&alias); e != nil {
-				return e
-			}
-			if alias != f.k {
-				return invalid
-			}
-			l, e := v.loc(ctx, tx, f.k)
-			if e != nil {
-				return e
-			}
-			b, e = v.read(l)
-			if e != nil {
-				return e
-			}
-			r, e := Decode(b[12:])
-			if e != nil {
-				return e
-			}
-			if e = v.passwords(r, false); e != nil {
-				return e
-			}
-			if r.NZB == nil {
-				return invalid
-			}
-			got, _ := r.NZB.Subset(func(*nzb.File) bool { return true })
-			if !bytes.Equal(want, got) {
-				return errors.New("vault: migration verification failed")
-			}
-		}
 		if e := ctx.Err(); e != nil {
 			return e
 		}
-		for _, f := range imports {
-			if e := os.Remove(f.path); e != nil {
-				return e
+		seen++
+		path := filepath.Join(dir, f.Name())
+		id := strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
+		err := v.migrateOne(ctx, path, id)
+		switch {
+		case err == nil:
+			moved++
+		case errors.Is(err, errUnreadableNZB):
+			q := filepath.Join(dir, UnreadableDir)
+			if e := os.MkdirAll(q, 0o700); e == nil && os.Rename(path, filepath.Join(q, f.Name())) == nil {
+				setAside++
+				log.Warn("vault migration set aside an unreadable NZB", "file", f.Name(), "err", err)
+				continue
 			}
+			fallthrough
+		default:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			remaining++
+			if fail == nil {
+				fail = &MigrationError{File: f.Name(), Err: err}
+			}
+			fail.Failed++
+			log.Debug("vault migration kept a file for the next pass", "file", f.Name(), "err", err)
 		}
-		left, e := os.ReadDir(dir)
-		if e == nil && len(left) == 0 {
-			return os.Remove(dir)
+		if seen%100 == 0 {
+			log.Info("vault migration progress", "done", seen, "total", total, "moved", moved, "setAside", setAside, "failed", remaining)
 		}
+	}
+	log.Info("vault migration pass finished", "total", total, "moved", moved, "setAside", setAside, "failed", remaining)
+	if fail != nil {
+		fail.Remaining = remaining
+		return fail
+	}
+	left, e := os.ReadDir(dir)
+	if e == nil && len(left) == 0 {
+		_ = os.Remove(dir)
+	}
+	return nil
+}
+
+// migrateOne imports, verifies and removes one legacy NZB.
+func (v *library) migrateOne(ctx context.Context, path, id string) error {
+	b, e := os.ReadFile(path)
+	if e != nil {
 		return e
+	}
+	doc, e := nzb.Parse(b)
+	if e != nil {
+		return fmt.Errorf("%w: %v", errUnreadableNZB, e)
+	}
+	want := doc.ContentID()
+	if want == "" {
+		return fmt.Errorf("%w: no segments", errUnreadableNZB)
+	}
+	k, ok, e := v.ByAlias(ctx, LegacyAliasIndexer, id)
+	if e != nil {
+		return e
+	}
+	if !ok || !v.sameNZB(ctx, k, want) {
+		if k, e = v.Put(ctx, PutRequest{NZB: b, Source: "legacy:nzb", Release: core.Release{IndexerID: LegacyAliasIndexer, ID: id}}); e != nil {
+			if errors.Is(e, invalid) {
+				return fmt.Errorf("%w: %v", errUnreadableNZB, e)
+			}
+			return e
+		}
+		if !v.sameNZB(ctx, k, want) {
+			return errors.New("vault: migration verification failed")
+		}
+	}
+	// Remove under a short lock that re-checks the row, so a purge or cap
+	// eviction cannot drop the record between verification and removal.
+	return v.write(ctx, func(tx *sql.Tx) error {
+		var alias Key
+		if e := tx.QueryRowContext(ctx, "SELECT key FROM vault_aliases WHERE indexer_id=? AND release_id=?", LegacyAliasIndexer, id).Scan(&alias); e != nil {
+			return e
+		}
+		if alias != k {
+			return invalid
+		}
+		if _, e := v.loc(ctx, tx, k); e != nil {
+			return e
+		}
+		return os.Remove(path)
 	})
+}
+
+// sameNZB reports whether the stored record of k decodes to the same
+// post (content identity: the same articles). Another indexer's NZB of
+// the same post is deduplicated into one record whose subjects and head
+// may differ from this file's, which is correct.
+func (v *library) sameNZB(ctx context.Context, k Key, want string) bool {
+	r, e := v.Get(ctx, k)
+	if e != nil || r.NZB == nil {
+		return false
+	}
+	return r.NZB.ContentID() == want
 }
 
 type liveFrame struct {

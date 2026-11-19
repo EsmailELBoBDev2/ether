@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -1318,17 +1319,7 @@ func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.V
 		}
 	}
 
-	// 2. Recently added.
-	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
-		Sort:    core.SortAdded,
-		Desc:    true,
-		Limit:   rowLimit,
-		NoTotal: true,
-	}); pErr == nil {
-		appendRow("plugin:"+viewID+":added", "Recently Added", frontend.RowRecentlyAdded, "recentlyAdded", page.Items)
-	}
-
-	// 3. Newest.
+	// 2. Newest.
 	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
 		Sort:    core.SortReleased,
 		Desc:    true,
@@ -1336,6 +1327,16 @@ func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.V
 		NoTotal: true,
 	}); pErr == nil {
 		appendRow("plugin:"+viewID+":released", "Newest", frontend.RowRecentlyReleased, "recentlyReleased", page.Items)
+	}
+
+	// 3. Recently added.
+	if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
+		Sort:    core.SortAdded,
+		Desc:    true,
+		Limit:   rowLimit,
+		NoTotal: true,
+	}); pErr == nil {
+		appendRow("plugin:"+viewID+":added", "Recently Added", frontend.RowRecentlyAdded, "recentlyAdded", page.Items)
 	}
 
 	// 4. Top rated (when rating is a declared sort).
@@ -1350,19 +1351,36 @@ func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.V
 		}
 	}
 
-	// 5. Top values of the first declared facet (most items first), probing at
-	// most 12 buckets so viewer restrictions never walk hundreds of buckets.
+	// 5. Facet shelves: a few from the first declared facet, then a few from
+	// the next non-people string facet (such as genres or tags). Buckets come
+	// from the precomputed facet tallies behind FacetBuckets; each facet's
+	// largest buckets form a small pool and the day's shelves are picked from
+	// that pool by a per-library daily seed (see dailyFacetPool), so the
+	// shelves rotate daily and equal-size buckets never fall back to A-Z.
+	// Probing stays bounded per facet so viewer restrictions never walk
+	// hundreds of buckets.
 	if pres != nil && len(p.Facets) > 0 && len(rows) < maxCandidates {
-		firstFacet := p.Facets[0]
-		if buckets, bErr := pres.FacetBuckets(ctx, lib, firstFacet.ID); bErr == nil && len(buckets) > 0 {
-			sort.SliceStable(buckets, func(i, j int) bool {
-				if buckets[i].Count != buckets[j].Count {
-					return buckets[i].Count > buckets[j].Count
-				}
-				return strings.ToLower(buckets[i].Label) < strings.ToLower(buckets[j].Label)
-			})
-			for tried, b := range buckets {
-				if len(rows) >= maxCandidates || tried >= 12 {
+		now := time.Now()
+		if s.d.Now != nil {
+			now = s.d.Now()
+		}
+		day := now.Local().Format("2006-01-02")
+		shelfFacets := []frontend.ViewFacet{p.Facets[0]}
+		if facet, ok := nextNonPeopleStringFacet(p.Facets); ok {
+			shelfFacets = append(shelfFacets, facet)
+		}
+		for _, facet := range shelfFacets {
+			if len(rows) >= maxCandidates {
+				break
+			}
+			buckets, bErr := pres.FacetBuckets(ctx, lib, facet.ID)
+			if bErr != nil || len(buckets) == 0 {
+				continue
+			}
+			pool := dailyFacetPool(buckets, lib.ID, facet.ID, day, pluginFacetPoolSize)
+			added := 0
+			for tried, b := range pool {
+				if len(rows) >= maxCandidates || added >= pluginFacetShelves || tried >= pluginFacetProbes {
 					break
 				}
 				page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
@@ -1372,17 +1390,21 @@ func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.V
 					NoTotal:        true,
 					SuppressExpand: true,
 					Filter: core.Filter{
-						Facets: map[string][]string{firstFacet.ID: {b.ID}},
+						Facets: map[string][]string{facet.ID: {b.ID}},
 					},
 				})
 				if pErr != nil || len(page.Items) == 0 {
 					continue
 				}
 				title := b.Label
-				if isOriginFacetKey(firstFacet.ID) {
+				if isOriginFacetKey(facet.ID) {
 					title = "From " + b.Label
 				}
-				appendRow("plugin:"+viewID+":facet:"+firstFacet.ID+":"+b.ID, title, frontend.RowRecommendation, "facet", page.Items)
+				before := len(rows)
+				appendRow("plugin:"+viewID+":facet:"+facet.ID+":"+b.ID, title, frontend.RowRecommendation, "facet", page.Items)
+				if len(rows) > before {
+					added++
+				}
 			}
 		}
 	}
@@ -1479,6 +1501,76 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, de
 		arranged = kept
 	}
 	return arranged, nil
+}
+
+const (
+	// pluginFacetPoolSize caps how many of a facet's largest buckets are
+	// eligible for a day's Recommended shelves.
+	pluginFacetPoolSize = 24
+	// pluginFacetShelves caps the shelves taken from one facet.
+	pluginFacetShelves = 4
+	// pluginFacetProbes caps bucket probes per facet, so buckets emptied by
+	// viewer restrictions are skipped without walking the whole pool.
+	pluginFacetProbes = 12
+)
+
+// dailyFacetPool returns up to poolSize of the largest buckets in the order
+// they should be probed for shelves on day (a "2006-01-02" date). The pool is
+// formed by bucket count, with a hash of (library, day, facet, bucket)
+// breaking count ties, and the pool itself is ordered by that same hash. The
+// result is stable within a day, differs between libraries, rotates daily,
+// and never depends on bucket labels, so many equal-size buckets (such as
+// developers with similar catalogue sizes) are not always won by the labels
+// that sort first.
+func dailyFacetPool(buckets []frontend.FacetBucket, libID core.LibraryID, facetID, day string, poolSize int) []frontend.FacetBucket {
+	if len(buckets) == 0 || poolSize <= 0 {
+		return nil
+	}
+	type keyed struct {
+		bucket frontend.FacetBucket
+		key    string
+	}
+	keyedBuckets := make([]keyed, len(buckets))
+	for i, b := range buckets {
+		id := b.ID
+		if id == "" {
+			id = b.Label
+		}
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s", int64(libID), day, facetID, id)))
+		keyedBuckets[i] = keyed{bucket: b, key: hex.EncodeToString(sum[:])}
+	}
+	sort.SliceStable(keyedBuckets, func(i, j int) bool {
+		if keyedBuckets[i].bucket.Count != keyedBuckets[j].bucket.Count {
+			return keyedBuckets[i].bucket.Count > keyedBuckets[j].bucket.Count
+		}
+		return keyedBuckets[i].key < keyedBuckets[j].key
+	})
+	if len(keyedBuckets) > poolSize {
+		keyedBuckets = keyedBuckets[:poolSize]
+	}
+	sort.SliceStable(keyedBuckets, func(i, j int) bool {
+		return keyedBuckets[i].key < keyedBuckets[j].key
+	})
+	out := make([]frontend.FacetBucket, len(keyedBuckets))
+	for i, k := range keyedBuckets {
+		out[i] = k.bucket
+	}
+	return out
+}
+
+// nextNonPeopleStringFacet returns the first facet after facets[0] whose type
+// is a string list (genres, tags and similar), skipping people and
+// numeric/date facets whose buckets would not read as shelves.
+func nextNonPeopleStringFacet(facets []frontend.ViewFacet) (frontend.ViewFacet, bool) {
+	if len(facets) < 2 {
+		return frontend.ViewFacet{}, false
+	}
+	for _, facet := range facets[1:] {
+		if facet.Type == "strings" || facet.Type == "string" {
+			return facet, true
+		}
+	}
+	return frontend.ViewFacet{}, false
 }
 
 func isOriginFacetKey(key string) bool {

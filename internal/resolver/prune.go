@@ -99,6 +99,21 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 			delete(s.bad, k)
 		}
 	}
+	for k, m := range s.badContent {
+		if !m.live(now) {
+			delete(s.badContent, k)
+		}
+	}
+	for k, l := range s.contentByRelease {
+		if now.Sub(l.at) >= badRetention {
+			delete(s.contentByRelease, k)
+		}
+	}
+	for k, m := range s.failedGrabs {
+		if !m.live(now) {
+			delete(s.failedGrabs, k)
+		}
+	}
 	s.mu.Unlock()
 	if s.db == nil {
 		return 0, nil
@@ -115,6 +130,8 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 		{`DELETE FROM resolver_availability WHERE expires_at<? AND (available=1 OR checked_at<?)`, []any{now.Unix(), now.Add(-s.unavailableRetention()).Unix()}},
 		{`DELETE FROM resolver_verified WHERE checked_at<?`, []any{verifiedCutoff}},
 		{`DELETE FROM resolver_bad WHERE manual=0 AND updated_at<?`, []any{now.Add(-badRetention).Unix()}},
+		{`DELETE FROM resolver_failed_grabs WHERE updated_at<?`, []any{now.Add(-failedGrabRetention).Unix()}},
+		{`DELETE FROM resolver_content_links WHERE updated_at<?`, []any{now.Add(-badRetention).Unix()}},
 	} {
 		res, err := s.db.ExecContext(ctx, q.sql, q.args...)
 		if err != nil {

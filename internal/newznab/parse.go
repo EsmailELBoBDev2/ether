@@ -53,6 +53,7 @@ type rawItem struct {
 	password   bool
 	private    bool
 	category   int
+	poster     string
 	usenetDate string
 	// Torznab
 	infoHash, magnet, encType string
@@ -69,13 +70,15 @@ func (r rawItem) toRelease(indexer string) core.Release {
 	if r.enclosure != "" && !strings.HasPrefix(strings.ToLower(r.enclosure), "magnet:") && (nzbURL == "" || !looksLikeNZBDownload(nzbURL)) {
 		nzbURL = r.enclosure
 	}
+	usenetDate := parseDate(r.usenetDate)
 	pub := parseDate(r.pubDate)
 	if pub.IsZero() {
-		pub = parseDate(r.usenetDate)
+		pub = usenetDate
 	}
 	rel := core.Release{
 		GUID: r.guid, Indexer: indexer, Name: name, NZBURL: nzbURL,
-		Size: r.size, PubDate: pub, Grabs: r.grabs, Password: r.password, Category: r.category,
+		Size: r.size, PubDate: pub, UsenetDate: usenetDate, Poster: strings.TrimSpace(r.poster),
+		Grabs: r.grabs, Password: r.password, Category: r.category,
 		TitleIDs: r.ids,
 	}
 	// The id keeps its original link-first input so stored releases, pins and
@@ -218,6 +221,10 @@ func parseXMLStream(reader io.Reader, indexer string, arrived func([]core.Releas
 					cur.link += text
 				case "pubDate":
 					cur.pubDate += text
+				case "poster":
+					cur.poster += text
+				case "usenetDate", "usenetdate":
+					cur.usenetDate += text
 				case "size":
 					if n, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64); err == nil {
 						cur.size = n
@@ -281,6 +288,8 @@ func applyAttr(r *rawItem, name, val string) {
 				break
 			}
 		}
+	case "poster":
+		r.poster = val
 	case "usenetdate", "usenet_date":
 		r.usenetDate = val
 	case "guid":
@@ -329,10 +338,15 @@ func parseJSONFeed(body []byte, indexer string) ([]core.Release, error) {
 	out := make([]core.Release, 0, len(items))
 	for _, it := range items {
 		r := rawItem{
-			title:   asString(it["title"]),
-			guid:    asString(it["guid"]),
-			link:    asString(it["link"]),
-			pubDate: asString(it["pubDate"]),
+			title:      asString(it["title"]),
+			guid:       asString(it["guid"]),
+			link:       asString(it["link"]),
+			pubDate:    asString(it["pubDate"]),
+			poster:     asString(it["poster"]),
+			usenetDate: asString(it["usenetDate"]),
+		}
+		if r.usenetDate == "" {
+			r.usenetDate = asString(it["usenetdate"])
 		}
 		if g, ok := it["guid"].(map[string]any); ok {
 			r.guid = asString(g["#text"])

@@ -1012,7 +1012,11 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		args = append(args, f.MinRating)
 	}
 	if f.MaxRating > 0 {
-		conds = append(conds, "t.rating>0 AND t.rating<=?")
+		if f.MaxRatingExclusive {
+			conds = append(conds, "t.rating>0 AND t.rating<?")
+		} else {
+			conds = append(conds, "t.rating>0 AND t.rating<=?")
+		}
 		args = append(args, f.MaxRating)
 	}
 	if len(f.ExcludeRatings) > 0 {

@@ -25,6 +25,11 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	store.Register("pluginitems", 5, `
+CREATE INDEX IF NOT EXISTS plugin_item_fields_lookup_real ON plugin_item_fields(field, v_real, item_ref);
+`)
+	store.RegisterApply("pluginitems", 5, applyMigration5)
+
 	store.Register("pluginitems", 4, `
 ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT '';
 CREATE INDEX plugin_item_fields_fold ON plugin_item_fields(field, v_fold, v_text, v_int, item_ref);

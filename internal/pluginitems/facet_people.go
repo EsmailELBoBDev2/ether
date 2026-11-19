@@ -3,6 +3,8 @@ package pluginitems
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -333,6 +335,163 @@ WHERE r.rn = 1`
 	}
 	for i, bID := range bucketIDs {
 		for _, targetIdx := range idxByID[bID] {
+			cp := items[i]
+			out[targetIdx] = &cp
+		}
+	}
+	return out, nil
+}
+
+// resolveNewestByIntBuckets resolves the newest visible item (plus artwork)
+// for exact integer buckets on a FacetCollections page in a single SQL query
+// driven from plugin_item_fields_lookup_int + 1 batched art hydration query.
+func (s *Service) resolveNewestByIntBuckets(ctx context.Context, fieldKey string, buckets []FacetBucket, fieldDrivenWhere string, itemArgs []any) ([]*core.KindItem, error) {
+	if len(buckets) == 0 {
+		return nil, nil
+	}
+	idxByVal := make(map[int64][]int, len(buckets))
+	placeholders := make([]string, 0, len(buckets))
+	args := make([]any, 0, 1+len(buckets)+len(itemArgs))
+	args = append(args, fieldKey)
+	for i, b := range buckets {
+		v, err := strconv.ParseInt(b.ID, 10, 64)
+		if err != nil {
+			continue
+		}
+		if _, seen := idxByVal[v]; !seen {
+			placeholders = append(placeholders, "?")
+			args = append(args, v)
+		}
+		idxByVal[v] = append(idxByVal[v], i)
+	}
+	if len(placeholders) == 0 {
+		return make([]*core.KindItem, len(buckets)), nil
+	}
+	args = append(args, itemArgs...)
+
+	querySQL := `WITH ranked AS (
+	SELECT f.v_int AS bucket_val,
+		i.item_ref,
+		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
+	FROM plugin_item_fields f
+	JOIN plugin_items i ON i.item_ref = f.item_ref
+	WHERE f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+)
+SELECT r.bucket_val, ` + prefixedItemCols("i.") + `
+FROM ranked r
+JOIN plugin_items i ON i.item_ref = r.item_ref
+WHERE r.rn = 1`
+
+	rows, err := s.db.QueryContext(ctx, querySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	var items []core.KindItem
+	var vals []int64
+	for rows.Next() {
+		var v int64
+		it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&v}})
+		if scanErr != nil {
+			rows.Close()
+			return nil, scanErr
+		}
+		items = append(items, it)
+		vals = append(vals, v)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	out := make([]*core.KindItem, len(buckets))
+	if len(items) == 0 {
+		return out, nil
+	}
+	if err := s.hydrateArtSlice(ctx, items); err != nil {
+		return nil, err
+	}
+	for i, v := range vals {
+		for _, targetIdx := range idxByVal[v] {
+			cp := items[i]
+			out[targetIdx] = &cp
+		}
+	}
+	return out, nil
+}
+
+// resolveNewestByFloatBuckets resolves the newest visible item (plus artwork)
+// for exact float buckets on a FacetCollections page in a single SQL query
+// driven from plugin_item_fields_lookup_real + 1 batched art hydration query.
+func (s *Service) resolveNewestByFloatBuckets(ctx context.Context, fieldKey string, buckets []FacetBucket, fieldDrivenWhere string, itemArgs []any) ([]*core.KindItem, error) {
+	if len(buckets) == 0 {
+		return nil, nil
+	}
+	idxByKey := make(map[string][]int, len(buckets))
+	placeholders := make([]string, 0, len(buckets))
+	args := make([]any, 0, 1+len(buckets)+len(itemArgs))
+	args = append(args, fieldKey)
+	for i, b := range buckets {
+		v, err := strconv.ParseFloat(b.ID, 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+			continue
+		}
+		key := strconv.FormatFloat(v, 'f', -1, 64)
+		if _, seen := idxByKey[key]; !seen {
+			placeholders = append(placeholders, "?")
+			args = append(args, v)
+		}
+		idxByKey[key] = append(idxByKey[key], i)
+	}
+	if len(placeholders) == 0 {
+		return make([]*core.KindItem, len(buckets)), nil
+	}
+	args = append(args, itemArgs...)
+
+	querySQL := `WITH ranked AS (
+	SELECT f.v_real AS bucket_val,
+		i.item_ref,
+		ROW_NUMBER() OVER (PARTITION BY f.v_real ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
+	FROM plugin_item_fields f
+	JOIN plugin_items i ON i.item_ref = f.item_ref
+	WHERE f.field = ? AND f.v_real IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+)
+SELECT r.bucket_val, ` + prefixedItemCols("i.") + `
+FROM ranked r
+JOIN plugin_items i ON i.item_ref = r.item_ref
+WHERE r.rn = 1`
+
+	rows, err := s.db.QueryContext(ctx, querySQL, args...)
+	if err != nil {
+		return nil, err
+	}
+	var items []core.KindItem
+	var keys []string
+	for rows.Next() {
+		var v float64
+		it, _, _, scanErr := scanItemRow(prefixScanner{sc: rows, prefix: []any{&v}})
+		if scanErr != nil {
+			rows.Close()
+			return nil, scanErr
+		}
+		items = append(items, it)
+		keys = append(keys, strconv.FormatFloat(v, 'f', -1, 64))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	out := make([]*core.KindItem, len(buckets))
+	if len(items) == 0 {
+		return out, nil
+	}
+	if err := s.hydrateArtSlice(ctx, items); err != nil {
+		return nil, err
+	}
+	for i, key := range keys {
+		for _, targetIdx := range idxByKey[key] {
 			cp := items[i]
 			out[targetIdx] = &cp
 		}

@@ -21,6 +21,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
@@ -1347,9 +1348,14 @@ func resolveFacetFields(decl plugins.MediaKindMeta, facet string) []string {
 			return []string{f}
 		}
 	}
+	for _, fd := range decl.Fields {
+		if fd.Key == facet {
+			return []string{fd.Key}
+		}
+	}
 	if facet == "genre" {
 		for _, fd := range decl.Fields {
-			if fd.Indexed && (fd.Key == "genre" || fd.Key == "genres" || fd.Key == "tags") {
+			if fd.Key == "genre" || fd.Key == "genres" || fd.Key == "tags" {
 				return []string{fd.Key}
 			}
 		}
@@ -1364,17 +1370,17 @@ func mapFilterToFacets(decl plugins.MediaKindMeta, f core.Filter) map[string][]s
 	if len(f.Genres) == 0 && f.Studio == "" && len(f.Facets) == 0 {
 		return nil
 	}
-	indexed := make(map[string]bool, len(decl.Fields))
-	filterable := make(map[string]bool, len(decl.Fields)+3)
+	declared := make(map[string]bool, len(decl.Fields))
+	filterable := make(map[string]bool, len(decl.Fields)*2+4)
 	filterable["year"] = true
+	filterable["decade"] = true
 	filterable["released"] = true
 	filterable["rating"] = true
 	for _, fd := range decl.Fields {
-		if fd.Indexed {
-			indexed[fd.Key] = true
-		}
-		if fd.Indexed || fd.Type == "people" {
-			filterable[fd.Key] = true
+		declared[fd.Key] = true
+		filterable[fd.Key] = true
+		if fd.Type == "date" {
+			filterable[fd.Key+"-decade"] = true
 		}
 	}
 	out := make(map[string][]string)
@@ -1386,13 +1392,13 @@ func mapFilterToFacets(decl plugins.MediaKindMeta, f core.Filter) map[string][]s
 	}
 	if len(f.Genres) > 0 {
 		fields := resolveFacetFields(decl, "genre")
-		if len(fields) > 0 && indexed[fields[0]] {
+		if len(fields) > 0 && declared[fields[0]] {
 			out[fields[0]] = append(out[fields[0]], f.Genres...)
 		}
 	}
 	if f.Studio != "" {
 		for _, cand := range []string{"studio", "studios", "publisher", "author", "channel"} {
-			if indexed[cand] {
+			if declared[cand] {
 				out[cand] = append(out[cand], f.Studio)
 				break
 			}
@@ -1520,26 +1526,65 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	for _, fd := range decl.Fields {
 		fieldsByKey[fd.Key] = fd
 	}
-	facets := make([]frontend.ViewFacet, 0, len(decl.Browse.Facets))
-	for _, fk := range decl.Browse.Facets {
-		switch fk {
-		case "year":
-			facets = append(facets, frontend.ViewFacet{ID: "year", Label: "Year", Type: "int", Multi: true})
-		case "released":
-			facets = append(facets, frontend.ViewFacet{ID: "released", Label: "Released", Type: "date", Multi: true})
-		case "rating":
-			facets = append(facets, frontend.ViewFacet{ID: "rating", Label: "Rating", Type: "int", Multi: true})
-		default:
-			fd, ok := fieldsByKey[fk]
-			if !ok {
-				continue
+	resolveViewFacet := func(fk string) (frontend.ViewFacet, bool) {
+		if fd, ok := fieldsByKey[fk]; ok {
+			lbl := c.resolvePluginText(ctx, rec.PluginID, fd.Label)
+			if strings.TrimSpace(lbl) == "" {
+				lbl = fk
 			}
-			facets = append(facets, frontend.ViewFacet{
+			return frontend.ViewFacet{
 				ID:    fk,
-				Label: c.resolvePluginText(ctx, rec.PluginID, fd.Label),
+				Label: lbl,
 				Type:  mapVelaFacetType(fd.Type),
 				Multi: true,
-			})
+			}, true
+		}
+		if base, ok := libraryfilter.SplitDateDecadeFacet(fk); ok {
+			if fd, exists := fieldsByKey[base]; exists && fd.Type == "date" {
+				lbl := c.resolvePluginText(ctx, rec.PluginID, fd.Label)
+				if strings.TrimSpace(lbl) == "" {
+					lbl = base
+				}
+				return frontend.ViewFacet{
+					ID:    fk,
+					Label: lbl + " (decade)",
+					Type:  "date",
+					Multi: true,
+				}, true
+			}
+		}
+		switch fk {
+		case "year":
+			return frontend.ViewFacet{ID: "year", Label: "Year", Type: "int", Multi: true}, true
+		case "decade":
+			return frontend.ViewFacet{ID: "decade", Label: "Decade", Type: "int", Multi: true}, true
+		case "released":
+			return frontend.ViewFacet{ID: "released", Label: "Released", Type: "date", Multi: true}, true
+		case "rating":
+			return frontend.ViewFacet{ID: "rating", Label: "Rating", Type: "int", Multi: true}, true
+		default:
+			return frontend.ViewFacet{}, false
+		}
+	}
+
+	facets := make([]frontend.ViewFacet, 0, len(decl.Browse.Facets)+len(tabs))
+	seenFacet := make(map[string]bool, len(decl.Browse.Facets)+len(tabs))
+	for _, fk := range decl.Browse.Facets {
+		if seenFacet[fk] {
+			continue
+		}
+		if vf, ok := resolveViewFacet(fk); ok {
+			seenFacet[fk] = true
+			facets = append(facets, vf)
+		}
+	}
+	for _, vt := range tabs {
+		if vt.Facet == "" || seenFacet[vt.Facet] {
+			continue
+		}
+		if vf, ok := resolveViewFacet(vt.Facet); ok {
+			seenFacet[vt.Facet] = true
+			facets = append(facets, vf)
 		}
 	}
 

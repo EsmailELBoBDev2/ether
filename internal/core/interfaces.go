@@ -141,14 +141,17 @@ type Filter struct {
 	UpdatedBefore         int64           `json:"-"`              // inclusive Unix timestamp bound on metadata update time
 	Type                  MediaType       `json:"type,omitempty"` // movie or show
 	Genres                []string        `json:"genres,omitempty"`
-	ReleaseGate           string          `json:"releaseGate,omitempty"` // admitted, held, unknown in current policy snapshot
-	Playable              string          `json:"playable,omitempty"`    // yes or unknown from fresh local evidence
-	DebridCached          string          `json:"debridCached,omitempty"`
-	Qualities             []string        `json:"qualities,omitempty"` // known 4k, hdr, dv, atmos release facts
-	Anime                 bool            `json:"anime,omitempty"`     // positive canonical anime keyword
-	Kids                  bool            `json:"kids,omitempty"`      // positive canonical Kids genre
-	Tags                  []string        `json:"tags,omitempty"`      // owner annotations, distinct from provider keywords
-	Keywords              []string        `json:"keywords,omitempty"`  // every keyword must match (case-insensitive)
+	ReleaseGate           string          `json:"releaseGate,omitempty"`           // admitted, held, unknown in current policy snapshot
+	Playable              string          `json:"playable,omitempty"`              // yes or unknown from fresh local evidence
+	DebridCached          string          `json:"debridCached,omitempty"`          //
+	Qualities             []string        `json:"qualities,omitempty"`             // known 4k, hdr, dv, atmos release facts
+	EvidenceResolutions   []string        `json:"evidenceResolutions,omitempty"`   // 4k, 1080p, 720p, sd from fresh release evidence
+	EvidenceHDR           []string        `json:"evidenceHdr,omitempty"`           // dv, hdr10, sdr from fresh release evidence
+	EvidenceAudioLanguages []string       `json:"evidenceAudioLanguages,omitempty"` // normalized audio language codes from fresh release evidence
+	Anime                 bool            `json:"anime,omitempty"`                 // positive canonical anime keyword
+	Kids                  bool            `json:"kids,omitempty"`                  // positive canonical Kids genre
+	Tags                  []string        `json:"tags,omitempty"`                  // owner annotations, distinct from provider keywords
+	Keywords              []string        `json:"keywords,omitempty"`              // every keyword must match (case-insensitive)
 	YearFrom              int             `json:"yearFrom,omitempty"`
 	YearTo                int             `json:"yearTo,omitempty"`
 	Years                 []int           `json:"years,omitempty"`
@@ -168,6 +171,7 @@ type Filter struct {
 	MaxEpisodes           int             `json:"maxEpisodes,omitempty"`
 	MinRating             float64         `json:"minRating,omitempty"`
 	MaxRating             float64         `json:"maxRating,omitempty"`
+	MaxRatingExclusive    bool            `json:"maxRatingExclusive,omitempty"`
 	ExcludeRatings        []float64       `json:"excludeRatings,omitempty"`
 	MaxRuntime            time.Duration   `json:"maxRuntime,omitempty"`
 	MinRuntime            time.Duration   `json:"minRuntime,omitempty"`

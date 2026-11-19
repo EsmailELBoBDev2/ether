@@ -12,6 +12,50 @@ import (
 
 func envelopeFacet(key string) bool { return key == "year" || key == "rating" || key == "released" }
 
+// SplitDateDecadeFacet splits a "<dateField>-decade" synthetic facet key into
+// its underlying declared date field key.
+func SplitDateDecadeFacet(key string) (string, bool) {
+	base, ok := strings.CutSuffix(key, "-decade")
+	if !ok || strings.TrimSpace(base) == "" {
+		return "", false
+	}
+	return base, true
+}
+
+// ParseDecadeBucket resolves a decade bucket ("1990" or "1990s") into inclusive
+// [startYear, endYear] bounds (e.g. [1990, 1999]).
+func ParseDecadeBucket(id string) (int, int, bool) {
+	s := strings.TrimSpace(id)
+	s = strings.TrimSuffix(s, "s")
+	s = strings.TrimSuffix(s, "S")
+	if len(s) != 4 {
+		return 0, 0, false
+	}
+	for i := 0; i < 4; i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, 0, false
+		}
+	}
+	y, err := strconv.Atoi(s)
+	if err != nil || y < 1000 || y > 9990 {
+		return 0, 0, false
+	}
+	d := (y / 10) * 10
+	return d, d + 9, true
+}
+
+// ParseDateDecadeBucket resolves a decade bucket ("1990" or "1990s") into
+// inclusive UTC Unix second bounds covering all 10 years of the decade.
+func ParseDateDecadeBucket(id string) (int64, int64, bool) {
+	loY, hiY, ok := ParseDecadeBucket(id)
+	if !ok {
+		return 0, 0, false
+	}
+	start := time.Date(loY, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	end := time.Date(hiY+1, 1, 1, 0, 0, 0, 0, time.UTC).Unix() - 1
+	return start, end, true
+}
+
 // DurationBucketDef describes a discrete duration facet bucket (seconds).
 type DurationBucketDef struct {
 	ID    string
@@ -111,6 +155,51 @@ func AppendPluginFacetClauses(where *strings.Builder, args *[]any, facets map[st
 			}
 		}
 		if len(cleanVals) == 0 {
+			continue
+		}
+
+		if key == "decade" && types["decade"] == "" {
+			var disjuncts []string
+			var dargs []any
+			for _, value := range cleanVals {
+				if lo, hi, ok := ParseDecadeBucket(value); ok {
+					disjuncts = append(disjuncts, `i.year BETWEEN ? AND ?`)
+					dargs = append(dargs, lo, hi)
+				}
+			}
+			if len(disjuncts) == 0 {
+				where.WriteString(` AND 0=1`)
+				continue
+			}
+			if len(disjuncts) == 1 {
+				where.WriteString(` AND ` + disjuncts[0])
+			} else {
+				where.WriteString(` AND (` + strings.Join(disjuncts, ` OR `) + `)`)
+			}
+			*args = append(*args, dargs...)
+			continue
+		}
+
+		if base, ok := SplitDateDecadeFacet(key); ok && types[base] == "date" {
+			var disjuncts []string
+			var dargs []any
+			for _, value := range cleanVals {
+				if lo, hi, ok := ParseDateDecadeBucket(value); ok {
+					disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
+					dargs = append(dargs, lo, hi)
+				}
+			}
+			if len(disjuncts) == 0 {
+				where.WriteString(` AND 0=1`)
+				continue
+			}
+			*args = append(*args, base)
+			*args = append(*args, dargs...)
+			pred := disjuncts[0]
+			if len(disjuncts) > 1 {
+				pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
+			}
+			where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + pred + `)`)
 			continue
 		}
 

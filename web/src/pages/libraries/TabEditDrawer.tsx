@@ -14,6 +14,7 @@ import {
   Library as LibraryIcon,
   Plus,
   RotateCcw,
+  Search,
   Sparkles,
   Users,
 } from "lucide-react";
@@ -53,6 +54,7 @@ import {
   librariesApi,
   type Library,
   type LibraryAvailableFacets,
+  type LibraryFacetCategory,
   type LibraryFacetOption,
   type LibraryTab,
   type LibraryTabKind,
@@ -152,6 +154,59 @@ export function sortFieldLabel(sort: string): string {
   }
 }
 
+const FACET_CATEGORY_ORDER: LibraryFacetCategory[] = [
+  "essentials",
+  "people",
+  "technical",
+  "plugin",
+];
+
+function inferFacetCategory(facet: LibraryFacetOption, isPlugin: boolean): LibraryFacetCategory {
+  if (
+    facet.category === "essentials" ||
+    facet.category === "people" ||
+    facet.category === "technical" ||
+    facet.category === "plugin"
+  ) {
+    return facet.category;
+  }
+  switch (facet.id) {
+    case "cast":
+    case "director":
+    case "writer":
+    case "author":
+    case "narrator":
+      return "people";
+    case "resolution":
+    case "hdr":
+    case "audioLanguage":
+      return "technical";
+    default:
+      if (isPlugin) {
+        return facet.id === "year" ||
+          facet.id === "decade" ||
+          facet.id === "released" ||
+          facet.id === "rating"
+          ? "essentials"
+          : "plugin";
+      }
+      return "essentials";
+  }
+}
+
+function facetCategoryTitle(category: LibraryFacetCategory): string {
+  switch (category) {
+    case "essentials":
+      return t("Essentials");
+    case "people":
+      return t("People");
+    case "technical":
+      return t("Technical");
+    case "plugin":
+      return t("Plugin fields");
+  }
+}
+
 export function facetOptionLabel(facet: LibraryFacetOption): string {
   switch (facet.id) {
     case "":
@@ -164,12 +219,34 @@ export function facetOptionLabel(facet: LibraryFacetOption): string {
       return t("Networks");
     case "country":
       return t("Countries");
+    case "language":
+      return facet.category === "plugin" ? facet.label : t("Languages");
+    case "contentRating":
+      return t("Content ratings");
     case "decade":
-      return t("Decades");
+      return facet.label === "Decade" ? t("Decade") : t("Decades");
     case "year":
-      return t("Years");
+      return facet.label === "Year" ? t("Year") : t("Years");
+    case "released":
+      return t("Released");
     case "franchise":
       return t("Franchises");
+    case "tag":
+      return t("Tags");
+    case "keyword":
+      return t("Keywords");
+    case "rating":
+      return facet.label === "Rating" ? t("Rating") : t("Rating bands");
+    case "runtime":
+      return t("Runtime bands");
+    case "addedMonth":
+      return t("Added month");
+    case "resolution":
+      return t("Resolutions");
+    case "hdr":
+      return t("HDR");
+    case "audioLanguage":
+      return t("Audio languages");
     case "subject":
       return t("Subjects");
     case "series":
@@ -180,6 +257,8 @@ export function facetOptionLabel(facet: LibraryFacetOption): string {
       return t("Actors");
     case "director":
       return t("Directors");
+    case "writer":
+      return t("Writers");
     case "author":
       return t("Authors");
     case "narrator":
@@ -295,10 +374,34 @@ export function defaultLabelForFacet(
       return t("Series");
     case "publisher":
       return t("Publishers");
+    case "language":
+      return facet.category === "plugin" ? facet.label : t("Languages");
+    case "contentRating":
+      return t("Content ratings");
+    case "tag":
+      return t("Tags");
+    case "keyword":
+      return t("Keywords");
+    case "rating":
+      return facet.label === "Rating" ? t("Rating") : t("Ratings");
+    case "runtime":
+      return t("Runtime");
+    case "addedMonth":
+      return t("Added month");
+    case "released":
+      return t("Released");
+    case "resolution":
+      return t("Resolutions");
+    case "hdr":
+      return t("HDR");
+    case "audioLanguage":
+      return t("Audio languages");
     case "cast":
       return t("Cast");
     case "director":
       return t("Directors");
+    case "writer":
+      return t("Writers");
     case "author":
       return t("Authors");
     case "narrator":
@@ -646,8 +749,30 @@ function TabEditDrawerInner({
         : ["server"]
       : [...FALLBACK_CATALOG_SORTS];
 
+  const [facetQuery, setFacetQuery] = useState("");
   const matchingFacets =
     draft.kind === "people" ? availableFacets.people : availableFacets.collections;
+  const showFacetSearch = matchingFacets.length > 8;
+  const normalizedFacetQuery = facetQuery.trim().toLowerCase();
+  const visibleFacets = normalizedFacetQuery
+    ? matchingFacets.filter((facet) => {
+        const label = facetOptionLabel(facet).toLowerCase();
+        const catTitle = facetCategoryTitle(inferFacetCategory(facet, isPlugin)).toLowerCase();
+        return (
+          label.includes(normalizedFacetQuery) ||
+          facet.label.toLowerCase().includes(normalizedFacetQuery) ||
+          facet.id.toLowerCase().includes(normalizedFacetQuery) ||
+          catTitle.includes(normalizedFacetQuery)
+        );
+      })
+    : matchingFacets;
+  const facetSections = FACET_CATEGORY_ORDER.map((category) => ({
+    category,
+    items: visibleFacets.filter((f) => inferFacetCategory(f, isPlugin) === category),
+  })).filter((sec) => sec.items.length > 0);
+  const showFacetCategoryHeaders =
+    draft.kind === "collections" &&
+    (matchingFacets.some((f) => Boolean(f.category)) || facetSections.length > 1);
 
   const supportsFacet = draft.kind === "collections" || draft.kind === "people";
   const supportsOrder =
@@ -1054,42 +1179,103 @@ function TabEditDrawerInner({
         {/* Facet picker + bucket order + live bucket preview for collections & people */}
         {supportsFacet ? (
           <section className="space-y-4 rounded-xl border border-border bg-surface p-4">
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-fg">
-                {draft.kind === "people" ? t("Group people by") : t("Group collections by")}
-              </p>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium text-fg">
+                  {draft.kind === "people" ? t("Group people by") : t("Group collections by")}
+                </p>
+                {showFacetSearch ? (
+                  <div className="relative w-full sm:w-56">
+                    <Search
+                      size={14}
+                      aria-hidden
+                      className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-muted"
+                    />
+                    <Input
+                      aria-label={t("Filter fields")}
+                      value={facetQuery}
+                      onChange={(e) => setFacetQuery(e.target.value)}
+                      placeholder={t("Filter fields…")}
+                      className="h-8 pl-8 text-xs"
+                    />
+                  </div>
+                ) : null}
+              </div>
               <div
-                className="grid grid-cols-2 gap-2 sm:grid-cols-3"
+                className="space-y-3"
                 role="radiogroup"
                 aria-label={
                   draft.kind === "people" ? t("Group people by") : t("Group collections by")
                 }
               >
-                {matchingFacets.map((facet) => {
-                  const active = (draft.facet ?? "") === facet.id;
-                  return (
-                    <button
-                      key={facet.id || "__owner_collections"}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      onClick={() => {
-                        const nextLabel = labelTouched
-                          ? draft.label
-                          : defaultLabelForFacet(facet, draft.kind);
-                        setDraft({ ...draft, facet: facet.id, label: nextLabel });
-                      }}
-                      className={cn(
-                        "rounded-lg border px-3 py-2 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                        active
-                          ? "border-primary bg-primary-subtle text-primary"
-                          : "border-border bg-bg-subtle/50 text-fg hover:bg-surface-hover",
-                      )}
-                    >
-                      {facetOptionLabel(facet)}
-                    </button>
-                  );
-                })}
+                {facetSections.length === 0 ? (
+                  <p className="rounded-lg border border-dashed border-border px-3 py-3 text-xs text-fg-muted">
+                    {t("No matching fields.")}
+                  </p>
+                ) : showFacetCategoryHeaders ? (
+                  facetSections.map((sec) => (
+                    <div key={sec.category} className="space-y-1.5">
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">
+                        {facetCategoryTitle(sec.category)}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {sec.items.map((facet) => {
+                          const active = (draft.facet ?? "") === facet.id;
+                          return (
+                            <button
+                              key={facet.id || "__owner_collections"}
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              onClick={() => {
+                                const nextLabel = labelTouched
+                                  ? draft.label
+                                  : defaultLabelForFacet(facet, draft.kind);
+                                setDraft({ ...draft, facet: facet.id, label: nextLabel });
+                              }}
+                              className={cn(
+                                "rounded-lg border px-3 py-2 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                                active
+                                  ? "border-primary bg-primary-subtle text-primary"
+                                  : "border-border bg-bg-subtle/50 text-fg hover:bg-surface-hover",
+                              )}
+                            >
+                              {facetOptionLabel(facet)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {visibleFacets.map((facet) => {
+                      const active = (draft.facet ?? "") === facet.id;
+                      return (
+                        <button
+                          key={facet.id || "__owner_collections"}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => {
+                            const nextLabel = labelTouched
+                              ? draft.label
+                              : defaultLabelForFacet(facet, draft.kind);
+                            setDraft({ ...draft, facet: facet.id, label: nextLabel });
+                          }}
+                          className={cn(
+                            "rounded-lg border px-3 py-2 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                            active
+                              ? "border-primary bg-primary-subtle text-primary"
+                              : "border-border bg-bg-subtle/50 text-fg hover:bg-surface-hover",
+                          )}
+                        >
+                          {facetOptionLabel(facet)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 

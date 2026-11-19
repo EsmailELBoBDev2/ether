@@ -779,7 +779,7 @@ func (b *Broker) serveMaster(w http.ResponseWriter, r *http.Request, s *brokerSe
 		if bw <= 0 {
 			bw = 8000
 		}
-		fmt.Fprintf(&body, "#EXT-X-STREAM-INF:BANDWIDTH=%d%s\nbase/index.m3u8\n", bw*1000, transcode.HLSVariantAttributes(ps.Info, dec))
+		fmt.Fprintf(&body, "#EXT-X-STREAM-INF:BANDWIDTH=%d%s%s\nbase/index.m3u8\n", bw*1000, transcode.HLSVariantGeometry(ps.Info, dec), transcode.HLSVariantAttributes(ps.Info, dec))
 	}
 	if body.String() == "#EXTM3U\n" {
 		http.Error(w, "no playable rendition", http.StatusServiceUnavailable)

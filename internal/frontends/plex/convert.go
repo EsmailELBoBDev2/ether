@@ -20,7 +20,7 @@ import (
 type renderOpts struct {
 	detail      bool // full tags, Guid children, streams
 	batchDetail bool // multi-key metadata batch: keep list season counts for ungrouped shows
-	media  bool // Media/Part for playable items
+	media       bool // Media/Part for playable items
 	// inSection: the container already carries the section attributes
 	// (section listings, children), so items omit librarySection*.
 	inSection bool

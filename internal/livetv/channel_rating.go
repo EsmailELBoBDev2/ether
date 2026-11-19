@@ -1,6 +1,10 @@
 package livetv
 
-import "context"
+import (
+	"context"
+
+	"github.com/braedonsaunders/ether/internal/contentrating"
+)
 
 type groupRatingRule struct {
 	rating string
@@ -60,10 +64,19 @@ func (s *Service) inheritedGroupRating(ctx context.Context, c Channel) (string, 
 }
 
 // resolveChannelRating is the single precedence rule used by all client policy
-// checks. Provider-classified adult channels never inherit either default.
+// checks. Provider-classified adult channels never inherit either default, and
+// uncertified adult items never fall back to a channel or group unrated rating.
 func resolveChannelRating(c Channel, p *Programme, group, source string, adult bool) string {
-	if p != nil && p.Item.Rating != "" {
-		return p.Item.Rating
+	if p != nil {
+		if p.Item.EnforcementRating == contentrating.UncertifiedAdult {
+			return contentrating.UncertifiedAdult
+		}
+		if p.Item.Rating != "" {
+			return p.Item.Rating
+		}
+		if p.Item.EnforcementRating != "" {
+			return p.Item.EnforcementRating
+		}
 	}
 	if c.Rating != "" {
 		return c.Rating
@@ -78,7 +91,7 @@ func resolveChannelRating(c Channel, p *Programme, group, source string, adult b
 }
 
 func (s *Service) channelContentRating(ctx context.Context, c Channel, p *Programme) string {
-	if c.Kind != "iptv" || c.Rating != "" || (p != nil && p.Item.Rating != "") {
+	if c.Kind != "iptv" || c.Rating != "" || (p != nil && (p.Item.Rating != "" || p.Item.EnforcementRating != "")) {
 		return resolveChannelRating(c, p, "", "", false)
 	}
 	e, err := s.sourceEntry(ctx, c.SourceID)

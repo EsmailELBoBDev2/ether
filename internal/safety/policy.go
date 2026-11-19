@@ -328,7 +328,8 @@ func AllowedWithPolicy(u *core.User, t *core.Title, p Policy) bool {
 	if u == nil {
 		return true
 	}
-	if contentrating.Exceeds(t.ContentRating, u.MaxContentRating) {
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	if contentrating.EnforceExceeds(enf, u.MaxContentRating) {
 		return false
 	}
 	blocked := func(values, bans []string) bool {

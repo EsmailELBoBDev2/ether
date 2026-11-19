@@ -293,6 +293,9 @@ func (c *Catalog) movieToTitle(ctx context.Context, m tmdb.Movie) core.Title {
 		PosterPath: m.PosterPath, BackdropPath: m.BackdropPath,
 		Genres: c.genreNames(ctx, "movie", m.GenreIDs, m.Genres), Adult: m.Adult,
 	}
+	if m.Adult {
+		t.EnforcementRating = contentrating.UncertifiedAdult
+	}
 	if !rel.IsZero() {
 		t.Year = rel.Year()
 	}
@@ -391,8 +394,11 @@ func (c *Catalog) movieDetailsToTitle(ctx context.Context, d *tmdb.MovieDetails)
 		t.CollectionID = d.BelongsTo.ID
 		t.CollectionName = d.BelongsTo.Name
 	}
-	sel := contentrating.Select(movieCertifications(d.ReleaseDates), c.config().Region)
+	certs := movieCertifications(d.ReleaseDates)
+	region := c.config().Region
+	sel := contentrating.Select(certs, region)
 	t.ContentRating, t.ContentRatingSource = sel.Value, sel.Source
+	t.EnforcementRating = contentrating.EffectiveEnforcement(contentrating.EnforceCertifications(certs, region), sel.Value, t.Adult, t.Keywords)
 	return t
 }
 
@@ -405,6 +411,9 @@ func (c *Catalog) tvToTitle(ctx context.Context, s tmdb.TVShow) core.Title {
 		Rating: s.VoteAverage, VoteCount: s.VoteCount, Popularity: s.Popularity,
 		PosterPath: s.PosterPath, BackdropPath: s.BackdropPath,
 		Genres: c.genreNames(ctx, "tv", s.GenreIDs, s.Genres), Countries: s.OriginCountry, Adult: s.Adult,
+	}
+	if s.Adult {
+		t.EnforcementRating = contentrating.UncertifiedAdult
 	}
 	if !rel.IsZero() {
 		t.Year = rel.Year()
@@ -473,8 +482,11 @@ func (c *Catalog) tvDetailsToTitle(ctx context.Context, d *tmdb.TVDetails) core.
 	t.LogoPath = logoPath(d.Images)
 	t.ChildCount = d.NumberOfSeasons
 	t.LeafCount = d.NumberOfEpisodes
-	sel := contentrating.Select(tvCertifications(d.ContentRatings), c.config().Region)
+	certs := tvCertifications(d.ContentRatings)
+	region := c.config().Region
+	sel := contentrating.Select(certs, region)
 	t.ContentRating, t.ContentRatingSource = sel.Value, sel.Source
+	t.EnforcementRating = contentrating.EffectiveEnforcement(contentrating.EnforceCertifications(certs, region), sel.Value, t.Adult, t.Keywords)
 	return t
 }
 
@@ -494,7 +506,7 @@ func seasonToTitle(show core.Title, s tmdb.SeasonSummary) core.Title {
 		SeasonTitle: name, Season: s.SeasonNumber, Title: name, SortTitle: sortTitle(name),
 		Summary: s.Overview, Released: rel, PosterPath: s.PosterPath, BackdropPath: show.BackdropPath,
 		ChildCount: s.EpisodeCount, Rating: s.VoteAverage,
-		Genres: show.Genres, ContentRating: show.ContentRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
+		Genres: show.Genres, ContentRating: show.ContentRating, EnforcementRating: show.EnforcementRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
 	}
 	if t.PosterPath == "" {
 		t.PosterPath = show.PosterPath
@@ -518,7 +530,7 @@ func episodeToTitle(show core.Title, seasonName string, e tmdb.Episode) core.Tit
 		Title: title, SortTitle: sortTitle(title), Summary: e.Overview, Released: rel,
 		StillPath: e.StillPath, PosterPath: e.StillPath, BackdropPath: show.BackdropPath,
 		Rating: e.VoteAverage, VoteCount: e.VoteCount,
-		Genres: show.Genres, ContentRating: show.ContentRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
+		Genres: show.Genres, ContentRating: show.ContentRating, EnforcementRating: show.EnforcementRating, ContentRatingSource: show.ContentRatingSource, Language: show.Language, Adult: show.Adult,
 	}
 	if e.Runtime != nil && *e.Runtime > 0 {
 		t.Runtime = time.Duration(*e.Runtime) * time.Minute

@@ -1079,7 +1079,7 @@ func (s *Service) listFranchises(ctx context.Context, user *core.User) ([]core.C
 		// one grouped read (each franchise's titles were read one franchise
 		// at a time, thousands on a full mirror, and from TMDB when it is
 		// configured).
-		level := contentrating.LevelOf(user.MaxContentRating)
+		level := contentrating.EnforceLevelOf(user.MaxContentRating)
 		counts := map[int64]int{}
 		if level != contentrating.Unrated {
 			if counts, err = s.mirror.FranchiseRatedCounts(ctx, int(level)); err != nil {
@@ -1157,7 +1157,8 @@ func filterTitlesByRating(items []core.Title, user *core.User) []core.Title {
 	}
 	out := make([]core.Title, 0, len(items))
 	for _, t := range items {
-		if !ratingExceeds(t.ContentRating, user.MaxContentRating) {
+		enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+		if !t.Adult && !ratingExceeds(enf, user.MaxContentRating) {
 			out = append(out, t)
 		}
 	}

@@ -17,6 +17,8 @@ func init() {
 // RecentPage merges independently indexed movie and episode streams in SQL.
 // Only the requested page is hydrated; totals use the catalogue's count cache.
 func (c *Catalog) RecentPage(ctx context.Context, q core.BrowseQuery, kinds []core.MediaType) (core.Page, error) {
+	movieOpt, episodeOpt := q.Filter.MovieFilter, q.Filter.EpisodeFilter
+	q.Filter.MovieFilter, q.Filter.EpisodeFilter = nil, nil
 	limit := min(max(q.Limit, 1), 10000)
 	if q.Limit == 0 {
 		limit = 0
@@ -31,6 +33,13 @@ func (c *Catalog) RecentPage(ctx context.Context, q core.BrowseQuery, kinds []co
 	total := 0
 	for _, kind := range kinds {
 		f := q.Filter
+		if kind == core.TypeMovie && movieOpt != nil {
+			f = *movieOpt
+			f.MovieFilter, f.EpisodeFilter = nil, nil
+		} else if kind == core.TypeEpisode && episodeOpt != nil {
+			f = *episodeOpt
+			f.MovieFilter, f.EpisodeFilter = nil, nil
+		}
 		f.Type = kind
 		f = c.viewerPaging(ctx, f)
 		counted, err := c.Browse(ctx, core.BrowseQuery{Filter: f, Sort: core.SortAdded, Desc: true, Limit: 1})
@@ -76,7 +85,13 @@ func (c *Catalog) OnDeckPageSince(ctx context.Context, uid int64, offset, limit 
 	if episodesOnly && f.Type == core.TypeMovie {
 		return core.WatchPage{}, nil
 	}
+	movieOpt, episodeOpt := f.MovieFilter, f.EpisodeFilter
+	f.MovieFilter, f.EpisodeFilter = nil, nil
 	movie := f
+	if movieOpt != nil {
+		movie = *movieOpt
+		movie.MovieFilter, movie.EpisodeFilter = nil, nil
+	}
 	movie.Type = core.TypeMovie
 	movie = c.viewerPaging(ctx, movie)
 	mw, ma, err := c.browseWhere(movie)
@@ -84,6 +99,10 @@ func (c *Catalog) OnDeckPageSince(ctx context.Context, uid int64, offset, limit 
 		return core.WatchPage{}, err
 	}
 	episode := f
+	if episodeOpt != nil {
+		episode = *episodeOpt
+		episode.MovieFilter, episode.EpisodeFilter = nil, nil
+	}
 	episode.Type = core.TypeEpisode
 	episode = c.viewerPaging(ctx, episode)
 	ew, ea, err := c.storedEpisodesWhere(episode)

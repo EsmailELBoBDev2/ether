@@ -64,6 +64,7 @@ type OpenRuleState = {
   isNew: boolean;
   initial: VisibilityRule;
   before: VisibilityRule[];
+  beforeFallback: string;
 };
 
 function pruneIncompleteCondition(rule: Rule): Rule | null {
@@ -135,6 +136,10 @@ function actionOf(rule: VisibilityRule) {
   return rule.action === "show" ? "show" : "hide";
 }
 
+export function isShowOnlyRules(rules: VisibilityRule[]): boolean {
+  return rules.length > 0 && rules.every((rule) => actionOf(rule) === "show");
+}
+
 function browsingOnly(rule: VisibilityRule) {
   return actionOf(rule) === "hide" && rule.scope === "discovery";
 }
@@ -199,7 +204,7 @@ export function RulesPanel({
   pluginLibrary?: PluginLibrary;
   rules: VisibilityRule[];
   fallback: string;
-  onRules: (rules: VisibilityRule[]) => void;
+  onRules: (rules: VisibilityRule[], nextFallback?: string) => void;
   onFallback: (value: string) => void;
   region: string;
   libraryId?: number;
@@ -250,22 +255,27 @@ export function RulesPanel({
     () => previewableVisibilityRules(rules),
     [rules],
   );
-  const ruleFilter = useMemo(
-    () => ({
-      ruleVisibility: browse ?? "shown",
-      rules: JSON.stringify(previewRules),
-      ruleFallback: fallback,
-    }),
-    [browse, previewRules, fallback],
-  );
   const [openState, setOpenState] = useState<OpenRuleState | null>(null);
   const open = openState?.index ?? null;
   const [drag, setDrag] = useState<number | null>(null);
   const [fresh, setFresh] = useState<number | null>(null);
+  const showOnly = isShowOnlyRules(rules);
+  const previewFallback =
+    previewRules.length === 0 && rules.length > 0 && openState
+      ? openState.beforeFallback
+      : fallback;
+  const ruleFilter = useMemo(
+    () => ({
+      ruleVisibility: browse ?? "shown",
+      rules: JSON.stringify(previewRules),
+      ruleFallback: previewFallback,
+    }),
+    [browse, previewRules, previewFallback],
+  );
   const complete = rules.every((g) => g.rules.length > 0 && g.rules.every(isRuleComplete));
   const spec = useMemo(
-    () => ({ rules: previewRules, fallback, libraryId, sources, mediaType }),
-    [previewRules, fallback, libraryId, sources, mediaType],
+    () => ({ rules: previewRules, fallback: previewFallback, libraryId, sources, mediaType }),
+    [previewRules, previewFallback, libraryId, sources, mediaType],
   );
   const draft = useDebouncedValue(spec, 400);
   const preview = useAsync(
@@ -286,11 +296,24 @@ export function RulesPanel({
       ),
     [draft],
   );
+  const commitRules = (next: VisibilityRule[]) => {
+    if (!showOnly && isShowOnlyRules(next) && fallback !== "hide") {
+      onRules(next, "hide");
+      return;
+    }
+    onRules(next);
+  };
   const openExistingRule = (i: number) => {
     const target = rules[i];
     if (!target) return;
     setFresh(null);
-    setOpenState({ index: i, isNew: false, initial: target, before: rules });
+    setOpenState({
+      index: i,
+      isNew: false,
+      initial: target,
+      before: rules,
+      beforeFallback: fallback,
+    });
   };
   const move = (i: number, dir: number) => {
     const j = i + dir;
@@ -304,7 +327,7 @@ export function RulesPanel({
     );
   };
   const update = (i: number, patch: Partial<VisibilityRule>) =>
-    onRules(rules.map((g, n) => (n === i ? { ...g, ...patch } : g)));
+    commitRules(rules.map((g, n) => (n === i ? { ...g, ...patch } : g)));
   const editing = open != null ? rules[open] : undefined;
   const closeRuleDrawer = () => {
     if (
@@ -312,13 +335,13 @@ export function RulesPanel({
       editing &&
       JSON.stringify(editing) === JSON.stringify(openState.initial)
     ) {
-      onRules(openState.before);
+      onRules(openState.before, openState.beforeFallback);
     }
     setFresh(null);
     setOpenState(null);
   };
   const cancelRuleDrawer = () => {
-    if (openState) onRules(openState.before);
+    if (openState) onRules(openState.before, openState.beforeFallback);
     setFresh(null);
     setOpenState(null);
   };
@@ -379,7 +402,7 @@ export function RulesPanel({
                 ))}
               </ul>
               <p className="text-sm text-fg-muted">
-                {t("Everything else")} ·{" "}
+                {t("Titles not matched above")} ·{" "}
                 {inheritedPolicy.visibilityDefault === "hide" ? t("Hide") : t("Show")}
               </p>
             </section>
@@ -499,7 +522,7 @@ export function RulesPanel({
                       size="icon"
                       aria-label={t("Delete rule {n}", { n: i + 1 })}
                       onClick={() => {
-                        onRules(rules.filter((_, n) => n !== i));
+                        commitRules(rules.filter((_, n) => n !== i));
                         setFresh(null);
                         setOpenState(null);
                       }}
@@ -510,19 +533,6 @@ export function RulesPanel({
                 );
               })}
             </ol>
-            <div className="flex items-center gap-3 rounded-lg border border-border bg-surface-alt px-3 py-2">
-              <span className="flex-1 text-sm font-medium">{t("Everything else")}</span>
-              <Segmented
-                ariaLabel={t("Everything else")}
-                size="sm"
-                value={fallback === "hide" ? "hide" : "show"}
-                onChange={onFallback}
-                options={[
-                  { value: "show", label: t("Show") },
-                  { value: "hide", label: t("Hide") },
-                ]}
-              />
-            </div>
             <Button
               variant="outline"
               size="sm"
@@ -536,14 +546,39 @@ export function RulesPanel({
                   rules: [newCondition()],
                 };
                 const before = rules;
-                onRules([...rules, initial]);
+                const beforeFallback = fallback;
+                commitRules([...rules, initial]);
                 setFresh(0);
-                setOpenState({ index: rules.length, isNew: true, initial, before });
+                setOpenState({ index: rules.length, isNew: true, initial, before, beforeFallback });
               }}
             >
               <Plus size={14} />
               {t("Add rule")}
             </Button>
+            <div className="space-y-1.5 rounded-xl border border-border bg-surface-alt px-3.5 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-sm font-medium">{t("Titles not matched above")}</span>
+                <Segmented
+                  ariaLabel={t("Titles not matched above")}
+                  size="sm"
+                  value={fallback === "hide" ? "hide" : "show"}
+                  onChange={onFallback}
+                  options={[
+                    { value: "show", label: t("Show") },
+                    { value: "hide", label: t("Hide") },
+                  ]}
+                />
+              </div>
+              {showOnly ? (
+                <p className="text-xs text-fg-muted">
+                  {fallback === "hide"
+                    ? t("Only Show rules are set above, so unmatched titles default to Hide.")
+                    : t(
+                        "Only Show rules are set above. Switch to Hide so only matching titles appear.",
+                      )}
+                </p>
+              ) : null}
+            </div>
             <ArrowDown className="text-fg-muted" size={20} aria-hidden />
           </div>
           <div

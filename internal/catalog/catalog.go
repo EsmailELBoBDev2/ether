@@ -181,6 +181,11 @@ CREATE INDEX catalog_credits_person_kind ON catalog_credits(person_tmdb, kind, k
 	// language is non-English, so release matching keeps accepting English
 	// releases of foreign titles across catalogue refreshes (#609).
 	store.Register("catalog", 63, `ALTER TABLE catalog_titles ADD COLUMN english_title TEXT NOT NULL DEFAULT '';`)
+	// enforcement_rating holds the canonical US-scale enforcement rating
+	// ("G", "PG", "PG-13", "R", "NC-17") or UncertifiedAdult ("XXX"),
+	// backfilled lazily on refresh while leaving displayed content_rating
+	// untouched.
+	store.Register("catalog", 64, `ALTER TABLE catalog_titles ADD COLUMN enforcement_rating TEXT NOT NULL DEFAULT '';`)
 }
 
 // dropUnkeyableEpisodes removes mirrored seasons and episodes whose numbers
@@ -502,7 +507,7 @@ func (c *Catalog) now() time.Time {
 
 // WithResumeSchedule makes Run continue the refresh schedule recorded in
 // the database instead of syncing as soon as it starts: the first sync
-// waits until RefreshInterval has passed since the last successful sync
+// waits until RefreshInterval has passed since the recorded last sync
 // (by any node). A cluster uses it because Run restarts on every leader
 // handoff; with no recorded sync Run still syncs at once.
 func WithResumeSchedule() Option { return func(c *Catalog) { c.resumeSchedule = true } }

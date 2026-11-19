@@ -1,8 +1,8 @@
 package plex
 
 import (
-	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"net/http"
 	"strings"
 

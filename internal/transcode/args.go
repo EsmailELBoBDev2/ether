@@ -391,23 +391,30 @@ func buildCodecArgs(s runSpec) []string {
 	}
 	if s.Start > 0 && !pceOutputSeek {
 		seek := secs(s.Start)
+		noAccurateSeek := false
 		if s.CopyOrigin && d.VideoCopy {
 			seek = secs(copyOriginSeek(s.Start))
 			if s.Info.Container == "mpegts" || s.Info.Container == "mpeg" {
 				// Unindexed timestamp seeks must land before the keyframe packet.
 				seek = secs(max(0, s.Start.Truncate(time.Millisecond)-time.Millisecond))
 			}
-			args = append(args, "-noaccurate_seek")
+			noAccurateSeek = true
 		} else if s.HasSeekFrom {
 			seek = secs(s.SeekFrom)
+			noAccurateSeek = fmp4CopyDelayedMoovAudio(s, d, v, a)
 		} else if lead := hlsNVENCPreroll(s); lead > 0 {
 			// Keep the measured NVENC seek and its hardware-frame trim.
 			seek = secs(max(0, s.Start-lead).Truncate(time.Millisecond))
 		} else if start, ok := hlsAudioPreroll(s); ok {
 			seek = strconv.FormatFloat(math.Max(0, math.Floor(start)-1), 'f', 0, 64)
-			args = append(args, "-noaccurate_seek")
+			noAccurateSeek = true
 		} else if start, ok := hlsCopiedAudioPreroll(s); ok {
 			seek = strconv.FormatFloat(start, 'f', 0, 64)
+			noAccurateSeek = true
+		} else if fmp4CopyDelayedMoovAudio(s, d, v, a) {
+			noAccurateSeek = true
+		}
+		if noAccurateSeek {
 			args = append(args, "-noaccurate_seek")
 		}
 		args = append(args, "-ss", seek)
@@ -784,6 +791,24 @@ func hlsCopiedAudioPreroll(s runSpec) (float64, bool) {
 		return 0, false
 	}
 	return math.Max(0, math.Floor(cut)-1), true
+}
+
+// fmp4CopyDelayedMoovAudio reports whether an HLS fMP4 copy-video restart
+// encodes audio to AC-3 or E-AC-3. FFmpeg's movenc delays dec3/dac3 until it
+// parses an encoded audio packet, while default accurate_seek discards decoded
+// audio up to -ss even though copied video begins at the preceding keyframe; a
+// video keyframe whose DTS precedes -ss then cuts the first chunk before any
+// audio packet arrives ("Cannot write moov atom before EAC3 packets parsed").
+// Starting decoded audio at the demuxer seek point with copied video gives the
+// muxer audio before the first cut, and collectChunks drops preroll chunks.
+func fmp4CopyDelayedMoovAudio(s runSpec, d core.Decision, v, a *core.StreamInfo) bool {
+	if v == nil || !d.VideoCopy || a == nil || d.AudioCopy || s.SilenceAudio || s.LiveInput || s.LoopInput {
+		return false
+	}
+	if d.Container != ContainerFMP4 || (s.Protocol != "" && s.Protocol != core.ProtocolHLS) {
+		return false
+	}
+	return d.AudioCodec == "eac3" || d.AudioCodec == "ac3"
 }
 
 func hlsAudioRestartCut(s runSpec) float64 {

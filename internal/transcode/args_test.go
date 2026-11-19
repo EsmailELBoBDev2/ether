@@ -720,3 +720,55 @@ func TestFMP4EncodedAudioSampleClockArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestFMP4CopyDelayedMoovAudioSeekArgs(t *testing.T) {
+	info := core.MediaInfo{Container: "mkv", Duration: time.Hour, Streams: []core.StreamInfo{
+		{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160, FrameRate: 24000.0 / 1001.0},
+		{Index: 1, Type: "audio", Codec: "dts", Channels: 6, SampleRate: 48000},
+	}}
+	d := core.Decision{
+		Kind:            core.DecisionTranscode,
+		Container:       ContainerFMP4,
+		VideoCopy:       true,
+		AudioCodec:      "eac3",
+		AudioStream:     1,
+		AudioChannels:   6,
+		AudioSampleRate: 48000,
+		SubtitleStream:  -1,
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*runSpec)
+		want   string
+	}{
+		{"eac3-restart", func(*runSpec) {}, "-start_at_zero -copyts -noaccurate_seek -ss 200.000 -i"},
+		{"ac3-restart", func(s *runSpec) { s.Decision.AudioCodec = "ac3" }, "-start_at_zero -copyts -noaccurate_seek -ss 200.000 -i"},
+		{"seek-from", func(s *runSpec) { s.HasSeekFrom, s.SeekFrom = true, 196*time.Second }, "-start_at_zero -copyts -noaccurate_seek -ss 196.000 -i"},
+		{"initial", func(s *runSpec) { s.Start, s.StartSeg = 0, 0 }, ""},
+		{"aac", func(s *runSpec) { s.Decision.AudioCodec = "aac" }, ""},
+		{"copy-audio", func(s *runSpec) { s.Decision.AudioCopy = true }, ""},
+		{"encode-video", func(s *runSpec) {
+			s.Decision.VideoCopy = false
+			s.Decision.VideoCodec = "hevc"
+			s.Accel = core.HWAccel{Name: AccelVideoToolbox, Encoders: []string{"hevc_videotoolbox"}}
+		}, ""},
+		{"mpegts", func(s *runSpec) { s.Decision.Container = ContainerMPEGTS }, ""},
+		{"dash", func(s *runSpec) { s.Protocol = core.ProtocolDASH }, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := baseSpec(info, d)
+			spec.Protocol = core.ProtocolHLS
+			tc.change(&spec)
+			args := buildArgs(spec)
+			inIdx := inputIndex(args)
+			if inIdx < 0 {
+				t.Fatalf("no -i in args: %v", args)
+			}
+			if tc.want != "" {
+				mustContain(t, args[:inIdx+1], tc.want)
+			} else {
+				mustNotContain(t, args[:inIdx+1], "-noaccurate_seek")
+			}
+		})
+	}
+}

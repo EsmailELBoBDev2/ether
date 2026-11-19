@@ -2,10 +2,12 @@ package plex
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 )
 
 func (s *Server) metadataTitle(ctx context.Context, pr *Request, k frontend.RatingKey) (*frontend.Title, error) {
@@ -24,10 +26,26 @@ func (s *Server) metadataChildren(ctx context.Context, pr *Request, k frontend.R
 	if k.IsPluginKey() {
 		return s.kindChildren(ctx, pr, k)
 	}
-	if s.episodeOrder() != nil {
-		return s.episodeOrder().Children(ctx, pr.User, k)
+	load := func() ([]frontend.Title, error) {
+		if s.episodeOrder() != nil {
+			return s.episodeOrder().Children(ctx, pr.User, k)
+		}
+		return s.catalog().Children(ctx, k)
 	}
-	return s.catalog().Children(ctx, k)
+	if !reqmemo.Active(ctx) {
+		return load()
+	}
+	var uid int64
+	if pr != nil && pr.User != nil {
+		uid = pr.User.ID
+	}
+	items, err := reqmemo.Do(ctx, fmt.Sprintf("plex:children:%p:%d:%d", s, uid, k), load)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]frontend.Title, len(items))
+	copy(out, items)
+	return out, nil
 }
 func (s *Server) metadataGrandchildren(ctx context.Context, pr *Request, k frontend.RatingKey) ([]frontend.Title, error) {
 	if s.episodeOrder() != nil {

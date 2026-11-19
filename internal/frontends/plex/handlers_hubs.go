@@ -150,9 +150,9 @@ func (s *Server) renderHubWithVisibility(ctx context.Context, pr *Request, hs hu
 		if loader, ok := s.catalog().(frontend.RowFactsLoader); ok {
 			h.Items = loader.LoadRowFacts(ctx, h.Items)
 		}
-
+		unavailable := s.sameDayUnavailableFunc(ctx, pr, h.Items)
 		return (s.exp().NewRowSelection(frontend.RowSelectionOptions{Visibility: vis, PrioritizeAvailable: s.prioritizeAvailable(),
-			SameDayUnavailable: func(ctx context.Context, t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) },
+			SameDayUnavailable: func(_ context.Context, t *frontend.Title) bool { return unavailable(t) },
 		})).Items(ctx, pr.User, h)
 	}
 	// Filter the section and availability before rendering or paging. The
@@ -282,6 +282,46 @@ func stampIncluded(md []model.Metadata) {
 }
 
 func (s *Server) renderHubs(ctx context.Context, pr *Request, hubs []frontend.Hub, hc hubCtx) []model.Hub {
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	if len(hubs) > 1 {
+		var all []frontend.Title
+		var preload []frontend.RatingKey
+		seen := map[frontend.RatingKey]bool{}
+		for i := range hubs {
+			for j := range hubs[i].Items {
+				t := hubs[i].Items[j]
+				if t.Key == 0 || t.Key.IsPluginKey() || seen[t.Key] {
+					continue
+				}
+				seen[t.Key] = true
+				all = append(all, t)
+				preload = append(preload, t.Key)
+			}
+		}
+		if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(preload) > 1 {
+			pre.PreloadStored(ctx, preload)
+		}
+		if len(all) > 0 {
+			var viewer *frontend.User
+			if pr != nil {
+				viewer = pr.User
+			}
+			ctx = s.withSeriesRows(ctx, viewer, all)
+			if d := s.discovery(); d != nil {
+				if d.Ratings != nil {
+					ctx = d.Ratings.WithPage(ctx, all)
+				}
+				if d.Overlays != nil {
+					if next, err := d.Overlays.WithTitlePage(ctx, viewer, all); err == nil {
+						ctx = next
+					}
+				}
+			}
+			s.preloadUltraBlur(ctx, all)
+		}
+	}
 	out := make([]model.Hub, 0, len(hubs))
 	for _, h := range hubs {
 		out = append(out, s.renderHub(ctx, pr, hubSpec{Hub: h}, hc))

@@ -17,6 +17,15 @@ func init() {
 // RecentPage merges independently indexed movie and episode streams in SQL.
 // Only the requested page is hydrated; totals use the catalogue's count cache.
 func (c *Catalog) RecentPage(ctx context.Context, q core.BrowseQuery, kinds []core.MediaType) (core.Page, error) {
+	limit := min(max(q.Limit, 1), 10000)
+	if q.Limit == 0 {
+		limit = 0
+	}
+	offset := max(q.Offset, 0)
+	branchLimit := min(limit+offset, 10000)
+	if limit == 0 {
+		branchLimit = 0
+	}
 	var branches []string
 	var args []any
 	total := 0
@@ -32,25 +41,22 @@ func (c *Catalog) RecentPage(ctx context.Context, q core.BrowseQuery, kinds []co
 		var where string
 		var a []any
 		if kind == core.TypeEpisode {
-			where, a, err = c.storedEpisodesWhere(f)
-			branches = append(branches, `SELECT e.key AS key,e.released_ts AS stamp FROM catalog_titles e CROSS JOIN catalog_titles t WHERE t.key=e.show_key AND e.type='episode' AND `+where)
+			where, a, err = c.storedEpisodesProbeWhere(f)
+			branches = append(branches, `SELECT key,stamp FROM (SELECT e.key AS key,e.released_ts AS stamp FROM catalog_titles e WHERE `+where+` ORDER BY e.released_ts DESC,e.key ASC LIMIT ?) recent_ep`)
 		} else {
 			where, a, err = c.browseWhere(f)
-			branches = append(branches, `SELECT t.key AS key,t.released_ts AS stamp FROM catalog_titles t WHERE `+where)
+			branches = append(branches, `SELECT key,stamp FROM (SELECT t.key AS key,t.released_ts AS stamp FROM catalog_titles t WHERE `+where+` ORDER BY t.released_ts DESC,t.key ASC LIMIT ?) recent_title`)
 		}
 		if err != nil {
 			return core.Page{}, err
 		}
 		args = append(args, a...)
+		args = append(args, branchLimit)
 	}
 	if len(branches) == 0 {
 		return core.Page{}, nil
 	}
-	limit := min(max(q.Limit, 1), 10000)
-	if q.Limit == 0 {
-		limit = 0
-	}
-	args = append(args, limit, max(q.Offset, 0))
+	args = append(args, limit, offset)
 	keys := `SELECT key,stamp FROM (` + strings.Join(branches, ` UNION ALL `) + `) recent ORDER BY stamp DESC,key ASC LIMIT ? OFFSET ?`
 	rows, err := c.queryTitles(ctx, `SELECT `+prefixedCols("t")+` FROM (`+keys+`) page JOIN catalog_titles t ON t.key=page.key ORDER BY page.stamp DESC,t.key ASC`, args...)
 	return core.Page{Items: rows, Total: total}, err

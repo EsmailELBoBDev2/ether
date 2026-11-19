@@ -18,7 +18,8 @@ import (
 
 // renderOpts controls how much of an item is rendered.
 type renderOpts struct {
-	detail bool // full tags, Guid children, streams
+	detail      bool // full tags, Guid children, streams
+	batchDetail bool // multi-key metadata batch: keep list season counts for ungrouped shows
 	media  bool // Media/Part for playable items
 	// inSection: the container already carries the section attributes
 	// (section listings, children), so items omit librarySection*.
@@ -1477,7 +1478,7 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	ctx = s.withPlexMeta(ctx, lookup, guids)
 	var order episodeOrderView
 	if !o.storedOnly {
-		order = s.episodeOrderList(ctx, pr, ts, o.detail)
+		order = s.episodeOrderList(ctx, pr, ts, o.detail && !o.batchDetail)
 	}
 	out := make([]model.Metadata, 0, len(ts))
 	for i := range ts {
@@ -1692,7 +1693,14 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 	if memo == nil {
 		memo = showEpisodes{}
 	}
-	if states == nil {
+	coveredShows := map[frontend.RatingKey]bool{}
+	if states != nil {
+		for show, l := range memo {
+			if l.err == nil {
+				coveredShows[show] = true
+			}
+		}
+	} else {
 		seen := map[frontend.RatingKey]bool{}
 		var all []frontend.Title
 		complete := true
@@ -1712,8 +1720,17 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 			}
 			all = append(all, episodes...)
 		}
-		if complete && len(all) > 0 {
-			states = s.stateFor(ctx, pr, all)
+		if complete {
+			if len(all) > 0 {
+				states = s.stateFor(ctx, pr, all)
+			} else {
+				states = map[frontend.RatingKey]frontend.WatchStatus{}
+			}
+			if states != nil {
+				for show := range seen {
+					coveredShows[show] = true
+				}
+			}
 		}
 	}
 	byKey := map[string]int{}
@@ -1777,8 +1794,13 @@ func (s *Server) applyLeafCountsWith(ctx context.Context, pr *Request, items []m
 				continue
 			}
 		}
+		showKey := frontend.ShowKey(title.Key.TMDB())
+		showCovered := coveredShows[showKey]
+		if title.Type == frontend.TypeSeason && bySeason[showKey] == nil {
+			showCovered = false
+		}
 		var st map[frontend.RatingKey]frontend.WatchStatus
-		if _, covered := states[eps[0].Key]; states != nil && covered {
+		if states != nil && (showCovered || func() bool { _, ok := states[eps[0].Key]; return ok }()) {
 			st = states
 		} else {
 			st = s.stateFor(ctx, pr, eps)

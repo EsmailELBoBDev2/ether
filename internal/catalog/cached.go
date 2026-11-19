@@ -479,6 +479,9 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 			}
 		}
 	}
+	localShow := func(key core.RatingKey, st *storedTitle) bool {
+		return key.Kind() == core.KindShow && st != nil && (c.fresh(st) || c.tmdb() == nil || (noReadWait(ctx) && !core.ColdDetail(ctx, key)))
+	}
 	for start := 0; start < len(keys); start += 200 {
 		part := keys[start:min(start+200, len(keys))]
 		args := make([]any, len(part))
@@ -514,7 +517,11 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		var warm []core.Title
 		for _, key := range part {
 			st := stored[key]
-			if key.Kind() == core.KindShow && st != nil && (c.fresh(st) || c.tmdb() == nil) {
+			if localShow(key, st) {
+				if !c.fresh(st) && c.tmdb() != nil {
+					c.loadSeasonsLater(ctx, key.TMDB(), nil)
+					c.reportDetailPending(ctx, key)
+				}
 				warm = append(warm, st.t)
 			}
 		}
@@ -529,7 +536,7 @@ func (c *Catalog) ResolveShowParents(ctx context.Context, keys []core.RatingKey)
 		}
 		for _, key := range part {
 			st := stored[key]
-			if key.Kind() == core.KindShow && st != nil && (c.fresh(st) || c.tmdb() == nil) {
+			if localShow(key, st) {
 				continue
 			}
 			title, e := c.Get(ctx, key)

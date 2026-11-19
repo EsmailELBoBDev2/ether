@@ -261,6 +261,47 @@ func (c *Catalog) storedEpisodesWhere(f core.Filter) (string, []any, error) {
 	return strings.Join(conds, " AND "), outArgs, nil
 }
 
+// storedEpisodesProbeWhere selects stored, aired, non-adult episodes (e) and
+// probes each episode's series (t) by primary key in a correlated EXISTS with
+// OFFSET 0 so PostgreSQL and SQLite walk an episode index in order without
+// hashing or scanning catalog_titles t.
+func (c *Catalog) storedEpisodesProbeWhere(f core.Filter) (string, []any, error) {
+	show, childExclude := splitStoredFilter(f, core.KindEpisode)
+	where, args, err := c.browseWhere(show)
+	if err != nil {
+		return "", nil, err
+	}
+	conds := []string{
+		"e.type='episode'",
+		"e.adult=0",
+		"e.release_known=1",
+		"e.released_ts<=?",
+		"e.show_key<>0",
+	}
+	outArgs := []any{c.now().Unix()}
+	cConds, cArgs := c.childFilterConds("e", f, childExclude)
+	conds = append(conds, cConds...)
+	outArgs = append(outArgs, cArgs...)
+	visibility, visibilityArgs := c.childVisibilityConds(f.ChildVisibility)
+	showCond := "t.key=e.show_key AND " + where
+	probeArgs := append([]any{}, args...)
+	if len(visibility) > 0 {
+		showCond += " AND " + strings.Join(visibility, " AND ")
+		probeArgs = append(probeArgs, visibilityArgs...)
+	}
+	if f.Group != nil {
+		clause, a, err := c.compileBrowseGroup(f.Group, "e", core.KindEpisode)
+		if err != nil {
+			return "", nil, err
+		}
+		showCond += " AND (" + clause + ")"
+		probeArgs = append(probeArgs, a...)
+	}
+	conds = append(conds, "EXISTS(SELECT 1 FROM catalog_titles t WHERE "+showCond+" LIMIT 1 OFFSET 0)")
+	outArgs = append(outArgs, probeArgs...)
+	return strings.Join(conds, " AND "), outArgs, nil
+}
+
 // StoredEpisodesByKey returns up to limit stored, aired, non-adult episodes
 // after the key after, in key order (series, season, episode), of the
 // series the browse filter show admits. It reads the key range and probes
@@ -268,12 +309,12 @@ func (c *Catalog) storedEpisodesWhere(f core.Filter) (string, []any, error) {
 // library; it refreshes nothing.
 func (c *Catalog) StoredEpisodesByKey(ctx context.Context, show core.Filter, after core.RatingKey, limit int) ([]core.Title, error) {
 	show = c.viewerPaging(ctx, show)
-	where, args, err := c.storedEpisodesWhere(show)
+	where, args, err := c.storedEpisodesProbeWhere(show)
 	if err != nil {
 		return nil, err
 	}
 	lo := max(int64(after), episodeKeyStart)
-	q := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e JOIN catalog_titles t ON t.key=e.show_key WHERE e.key>? AND e.key<? AND ` + where + ` ORDER BY e.key LIMIT ?`
+	q := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e WHERE e.key>? AND e.key<? AND ` + where + ` ORDER BY e.key LIMIT ?`
 	return c.queryPagedTitles(ctx, q, append(append([]any{lo, episodeKeyEnd}, args...), limit)...)
 }
 
@@ -281,7 +322,7 @@ func (c *Catalog) StoredEpisodesByKey(ctx context.Context, show core.Filter, aft
 // total, a large count is served from the last one while it recounts.
 func (c *Catalog) CountStoredEpisodes(ctx context.Context, show core.Filter) (int, error) {
 	show = c.viewerPaging(ctx, show)
-	where, args, err := c.storedEpisodesWhere(show)
+	where, args, err := c.storedEpisodesProbeWhere(show)
 	if err != nil {
 		return 0, err
 	}
@@ -302,7 +343,7 @@ func (c *Catalog) CountStoredEpisodes(ctx context.Context, show core.Filter) (in
 			return 0, err
 		}
 		if !bySeries {
-			if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles e JOIN catalog_titles t ON t.key=e.show_key WHERE e.key>? AND e.key<? AND `+where,
+			if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM catalog_titles e WHERE e.key>? AND e.key<? AND `+where,
 				append([]any{episodeKeyStart, episodeKeyEnd}, args...)...).Scan(&total); err != nil {
 				return 0, err
 			}
@@ -414,12 +455,24 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 	case keyOrder && (offset == 0 || afterKey > 0):
 		items, err = c.StoredEpisodesByKey(ctx, q.Filter, afterKey, limit)
 	case keyOrder:
-		where, args, werr := c.storedEpisodesWhere(q.Filter)
+		where, args, werr := c.storedEpisodesProbeWhere(q.Filter)
 		if werr != nil {
 			return core.Page{}, werr
 		}
-		sqlQ := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e JOIN catalog_titles t ON t.key=e.show_key WHERE e.key>? AND e.key<? AND ` + where + ` ORDER BY e.key ASC LIMIT ? OFFSET ?`
+		sqlQ := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e WHERE e.key>? AND e.key<? AND ` + where + ` ORDER BY e.key ASC LIMIT ? OFFSET ?`
 		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{episodeKeyStart, episodeKeyEnd}, args...), limit, offset)...)
+	case len(q.SecondarySorts) == 0 && q.Desc && (q.Sort == core.SortReleased || q.Sort == core.SortAdded || q.Sort == core.SortUpdated):
+		where, args, werr := c.storedEpisodesProbeWhere(q.Filter)
+		if werr != nil {
+			return core.Page{}, werr
+		}
+		if q.Sort == core.SortUpdated && q.Filter.UpdatedAfter == 0 {
+			where = "e.fetched_at>=? AND " + where
+			args = append([]any{int64(0)}, args...)
+		}
+		order := storedChildOrder("e", q)
+		sqlQ := `SELECT ` + prefixedCols("e") + ` FROM catalog_titles e WHERE ` + where + ` ORDER BY ` + order + `, e.key ASC LIMIT ? OFFSET ?`
+		items, err = c.queryPagedTitles(ctx, sqlQ, append(append([]any{}, args...), limit, offset)...)
 	default:
 		where, args, werr := c.storedEpisodesWhere(q.Filter)
 		if werr != nil {

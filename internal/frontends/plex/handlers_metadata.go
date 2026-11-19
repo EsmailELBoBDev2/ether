@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
@@ -127,8 +128,11 @@ func (s *Server) handleMetadataGUIDPath(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	// Serve stored catalogue details while bounded enrichment fills the mirror.
-	r = r.WithContext(s.exp().NoProviderWait(r.Context()))
-	ctx := r.Context()
+	ctx := s.exp().NoProviderWait(r.Context())
+	if !reqmemo.Active(ctx) {
+		ctx = reqmemo.With(ctx)
+	}
+	r = r.WithContext(ctx)
 	pr := FromContext(ctx)
 	startDetailPageWait(pr)
 	q := r.URL.Query()
@@ -148,6 +152,19 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound)
 		return
 	}
+	if len(keys) > 1 {
+		mc, ok := s.handleMetadataBatch(ctx, r, pr, q, keys)
+		if !ok {
+			return
+		}
+		if mc == nil {
+			mc = libraryContainer()
+		}
+		s.projectFileAvailability(r, mc)
+		mc.Size = len(mc.Metadata)
+		s.write(w, r, mc)
+		return
+	}
 	var mc *model.MediaContainer
 	for _, k := range keys {
 		var md model.Metadata
@@ -155,11 +172,8 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		case frontend.KindCollection, frontend.KindSmart:
 			c, err := s.collection(ctx, pr.User, k)
 			if err != nil {
-				if len(keys) == 1 {
-					s.writeErr(w, r, err)
-					return
-				}
-				continue
+				s.writeErr(w, r, err)
+				return
 			}
 			md = s.collectionMetadata(c, ctx)
 			if mc == nil {
@@ -168,11 +182,8 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		case frontend.KindPlaylist:
 			pl, err := s.playlist(ctx, pr.User, k)
 			if err != nil {
-				if len(keys) == 1 {
-					s.writeErr(w, r, err)
-					return
-				}
-				continue
+				s.writeErr(w, r, err)
+				return
 			}
 			md = s.playlistListingMetadata(ctx, pl)
 			if pl.SmartURI != "" {
@@ -184,20 +195,15 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		case frontend.KindExtra:
 			emd, ok := s.extraMetadataByKey(ctx, pr, k)
 			if !ok {
-				if len(keys) == 1 {
-					writeHTTPError(w, http.StatusNotFound)
-					return
-				}
-				continue
+				writeHTTPError(w, http.StatusNotFound)
+				return
 			}
 			md = emd
 			if mc == nil {
 				mc = libraryContainer()
 			}
 		default:
-			if len(keys) == 1 {
-				ctx = frontend.WithColdDetail(ctx, k)
-			}
+			ctx = frontend.WithColdDetail(ctx, k)
 			t, err := s.metadataTitle(ctx, pr, k)
 			// A plugin item is authorized by the Experience lookup itself; the
 			// built-in visibility policy maps a projected type onto a built-in
@@ -210,7 +216,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 			if ctx.Err() != nil {
 				return
 			}
-			if err != nil && len(keys) == 1 && q.Get("collection") == "" {
+			if err != nil && q.Get("collection") == "" {
 				if future, e := s.scheduledEpisode(ctx, pr, k); e == nil {
 					md = s.scheduledMetadata(ctx, pr, future)
 					mc = s.itemContainer(future.Type)
@@ -218,7 +224,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			if err != nil && len(keys) == 1 {
+			if err != nil {
 				if t, ck, e := s.lookupPlaceholder(ctx, pr, k, q.Get("collection")); e == nil {
 					md = s.placeholderMetadata(ctx, pr, t, ck)
 					mc = s.itemContainer(t.Type)
@@ -227,13 +233,10 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err != nil {
-				if len(keys) == 1 {
-					s.writeErr(w, r, err)
-					return
-				}
-				continue
+				s.writeErr(w, r, err)
+				return
 			}
-			if len(keys) == 1 && isPlayable(t.Type) {
+			if isPlayable(t.Type) {
 				// Android TV builds its subtitle picker from this refresh after
 				// a manual pick. Join only an already pending download for this
 				// exact Part and client session; browsing never starts one.
@@ -260,50 +263,30 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				}
 				s.scheduleDetailWarm(ctx, pr, t)
 			}
-			if len(keys) == 1 {
-				// Live session intent (#32): a single-item detail open.
-				s.recordDetailIntent(ctx, pr, t)
-				s.revealDetail(pr, t)
-			}
+			// Live session intent (#32): a single-item detail open.
+			s.recordDetailIntent(ctx, pr, t)
+			s.revealDetail(pr, t)
 			// renderTitles uses verified cached GUIDs and queues missing identities.
 			// Remote identity enrichment must not hold detail or Play requests.
-
-			if len(keys) == 1 {
-				pr.versionItemKey = t.Key
-			}
-			if len(keys) == 1 && (metadataOptionOn(q.Get("checkFiles")) || metadataOptionOn(q.Get("asyncCheckFiles")) || metadataOptionOn(q.Get("checkFileAvailability"))) {
+			pr.versionItemKey = t.Key
+			if metadataOptionOn(q.Get("checkFiles")) || metadataOptionOn(q.Get("asyncCheckFiles")) || metadataOptionOn(q.Get("checkFileAvailability")) {
 				pr.versionFlowKey = t.Key
 			}
 			md = s.detail(ctx, pr, t, metadataOptionOn(q.Get("includeChildren")), metadataOptionOn(q.Get("includeOnDeck")), metadataOptionOn(q.Get("includeRelated")), metadataOptionOn(q.Get("includeExtras")), q.Get("extraTypes"))
-			if len(keys) == 1 {
-				if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
-					md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
-					if t.Type == frontend.TypeEpisode {
-						md.GrandparentTheme = md.Theme
-						md.ParentTheme = md.Theme
-					}
-					if t.Type == frontend.TypeSeason {
-						md.ParentTheme = md.Theme
-					}
+			if s.host.Themes != nil && s.host.Themes.Theme(*t, true) {
+				md.Theme = "/library/metadata/" + t.Key.String() + "/theme/1"
+				if t.Type == frontend.TypeEpisode {
+					md.GrandparentTheme = md.Theme
+					md.ParentTheme = md.Theme
+				}
+				if t.Type == frontend.TypeSeason {
+					md.ParentTheme = md.Theme
 				}
 			}
 			if q.Get("includePreferences") == "1" {
 				md.Preferences = s.itemTrackPreferences(ctx, pr, t)
 			}
-			if raw, present := q["includeRelatedCount"]; present && md.Related != nil {
-				if count, err := strconv.Atoi(raw[0]); err == nil && count >= 0 {
-					for i := range md.Related.Hub {
-						h := &md.Related.Hub[i]
-						if len(h.Metadata) > count {
-							h.Metadata, h.More = h.Metadata[:count], true
-						}
-						if len(h.Directory) > count {
-							h.Directory, h.More = h.Directory[:count], true
-						}
-						h.Size = len(h.Metadata) + len(h.Directory)
-					}
-				}
-			}
+			applyRelatedCountCap(&md, q)
 			if mc == nil {
 				mc = s.itemContainer(t.Type)
 			}
@@ -323,17 +306,224 @@ func metadataOptionOn(raw string) bool {
 	return err == nil && n == 1
 }
 
+func applyRelatedCountCap(md *model.Metadata, q url.Values) {
+	raw, present := q["includeRelatedCount"]
+	if !present || md.Related == nil {
+		return
+	}
+	count, err := strconv.Atoi(raw[0])
+	if err != nil || count < 0 {
+		return
+	}
+	for i := range md.Related.Hub {
+		h := &md.Related.Hub[i]
+		if len(h.Metadata) > count {
+			h.Metadata, h.More = h.Metadata[:count], true
+		}
+		if len(h.Directory) > count {
+			h.Directory, h.More = h.Directory[:count], true
+		}
+		h.Size = len(h.Metadata) + len(h.Directory)
+	}
+}
+
+// handleMetadataBatch serves multi-key /library/metadata/k1,k2,... requests
+// (such as HubKey expansions) with batched catalogue hydration, watch-state,
+// series visibility, GUID, artwork, and episode leaf-count queries instead of
+// N single-item detail round-trips. It returns ok=false only if ctx cancelled.
+func (s *Server) handleMetadataBatch(ctx context.Context, _ *http.Request, pr *Request, q url.Values, keys []frontend.RatingKey) (*model.MediaContainer, bool) {
+	var preload []frontend.RatingKey
+	seenPreload := make(map[frontend.RatingKey]bool, len(keys)*2)
+	addPreload := func(k frontend.RatingKey) {
+		if k != 0 && !k.IsPluginKey() && !seenPreload[k] {
+			seenPreload[k] = true
+			preload = append(preload, k)
+		}
+	}
+	for _, k := range keys {
+		switch k.Kind() {
+		case frontend.KindCollection, frontend.KindSmart, frontend.KindPlaylist, frontend.KindExtra:
+		default:
+			addPreload(k)
+			if (k.Kind() == frontend.KindSeason || k.Kind() == frontend.KindEpisode) && k.TMDB() > 0 {
+				addPreload(frontend.ShowKey(k.TMDB()))
+			}
+		}
+	}
+	if pre, ok := s.catalog().(frontend.StoredTitlePreloader); ok && len(preload) > 1 {
+		pre.PreloadStored(ctx, preload)
+	}
+
+	type batchSlot struct {
+		isTitle bool
+		title   *frontend.Title
+		plugin  bool
+		md      model.Metadata
+	}
+	slots := make([]batchSlot, 0, len(keys))
+	var checkSeries []frontend.Title
+	var mc *model.MediaContainer
+	ensureContainer := func(kind frontend.MediaType, plain bool) {
+		if mc != nil {
+			return
+		}
+		if plain {
+			mc = libraryContainer()
+		} else {
+			mc = s.itemContainer(kind)
+		}
+	}
+
+	for _, k := range keys {
+		switch k.Kind() {
+		case frontend.KindCollection, frontend.KindSmart:
+			c, err := s.collection(ctx, pr.User, k)
+			if err != nil {
+				continue
+			}
+			ensureContainer(c.Type, false)
+			slots = append(slots, batchSlot{md: s.collectionMetadata(c, ctx)})
+		case frontend.KindPlaylist:
+			pl, err := s.playlist(ctx, pr.User, k)
+			if err != nil {
+				continue
+			}
+			md := s.playlistListingMetadata(ctx, pl)
+			if pl.SmartURI != "" {
+				md.Content = "library://x/directory/" + url.QueryEscape(pl.SmartURI)
+			}
+			ensureContainer("", true)
+			slots = append(slots, batchSlot{md: md})
+		case frontend.KindExtra:
+			emd, ok := s.extraMetadataByKey(ctx, pr, k)
+			if !ok {
+				continue
+			}
+			ensureContainer("", true)
+			slots = append(slots, batchSlot{md: emd})
+		default:
+			t, err := s.metadataTitle(ctx, pr, k)
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			if err != nil || t == nil {
+				continue
+			}
+			if !k.IsPluginKey() {
+				checkSeries = append(checkSeries, *t)
+			}
+			slots = append(slots, batchSlot{isTitle: true, title: t, plugin: k.IsPluginKey()})
+		}
+	}
+
+	if len(checkSeries) > 0 {
+		ctx = s.withSeriesRows(ctx, pr.User, checkSeries)
+	}
+
+	var uniqueTitles []frontend.Title
+	seenUnique := make(map[frontend.RatingKey]bool, len(slots))
+	hasShowOrSeason := false
+	kept := slots[:0]
+	for _, slot := range slots {
+		if !slot.isTitle {
+			kept = append(kept, slot)
+			continue
+		}
+		if !slot.plugin && !s.visibleTitle(ctx, pr.User, slot.title) {
+			if ctx.Err() != nil {
+				return nil, false
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		s.rememberTitle(slot.title)
+		ensureContainer(slot.title.Type, false)
+		if slot.title.Type == frontend.TypeShow || slot.title.Type == frontend.TypeSeason {
+			hasShowOrSeason = true
+		}
+		if !seenUnique[slot.title.Key] {
+			seenUnique[slot.title.Key] = true
+			uniqueTitles = append(uniqueTitles, *slot.title)
+		}
+		kept = append(kept, slot)
+	}
+	slots = kept
+
+	includeChildren := metadataOptionOn(q.Get("includeChildren"))
+	includeOnDeck := metadataOptionOn(q.Get("includeOnDeck"))
+	includeRelated := metadataOptionOn(q.Get("includeRelated"))
+	includeExtras := metadataOptionOn(q.Get("includeExtras"))
+	includePrefs := q.Get("includePreferences") == "1"
+	extraTypes := q.Get("extraTypes")
+
+	renderedByKey := make(map[string]model.Metadata, len(uniqueTitles))
+	var memo showEpisodes
+	if len(uniqueTitles) > 0 {
+		rendered := s.renderTitles(ctx, pr, uniqueTitles, renderOpts{
+			detail:         true,
+			batchDetail:    !includeChildren,
+			skipLeafCounts: true,
+			media:          true,
+		})
+		if hasShowOrSeason {
+			var states map[frontend.RatingKey]frontend.WatchStatus
+			memo, states = s.prefetchListEpisodes(ctx, pr, uniqueTitles)
+			s.applyLeafCountsWith(ctx, pr, rendered, uniqueTitles, memo, states)
+		}
+		for i := range rendered {
+			renderedByKey[rendered[i].RatingKey] = rendered[i]
+		}
+	}
+	if memo == nil {
+		memo = showEpisodes{}
+	}
+
+	if mc == nil {
+		mc = libraryContainer()
+	}
+	for _, slot := range slots {
+		if !slot.isTitle {
+			mc.Metadata = append(mc.Metadata, slot.md)
+			continue
+		}
+		md, ok := renderedByKey[slot.title.Key.String()]
+		if !ok {
+			continue
+		}
+		s.projectDetailBlocks(ctx, pr, slot.title, &md, memo, includeChildren, includeOnDeck, includeRelated, includeExtras, extraTypes)
+		if includePrefs {
+			md.Preferences = s.itemTrackPreferences(ctx, pr, slot.title)
+		}
+		applyRelatedCountCap(&md, q)
+		mc.Metadata = append(mc.Metadata, md)
+	}
+	return mc, true
+}
+
 // detail renders a full item page.
 func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, children, onDeck, related, extras bool, extraTypes string) model.Metadata {
 	s.rememberTitle(t)
 	memo := showEpisodes{}
 	ts := []frontend.Title{*t}
 	items := s.renderTitles(ctx, pr, ts, renderOpts{detail: true, media: true})
+	if len(items) == 0 {
+		return model.Metadata{}
+	}
 	s.applyLeafCounts(ctx, pr, items, ts, memo)
 	md := items[0]
 
 	// Per-viewer decision header (#31); detail pages only, never lists.
 	s.decorateDetail(ctx, pr, t, &md)
+	s.projectDetailBlocks(ctx, pr, t, &md, memo, children, onDeck, related, extras, extraTypes)
+	return md
+}
+
+func (s *Server) projectDetailBlocks(ctx context.Context, pr *Request, t *frontend.Title, md *model.Metadata, memo showEpisodes, children, onDeck, related, extras bool, extraTypes string) {
+	if memo == nil {
+		memo = showEpisodes{}
+	}
 	if children && t.Type == frontend.TypeShow {
 		if kids, err := s.metadataChildren(ctx, pr, t.Key); err == nil {
 			rendered := s.renderTitles(ctx, pr, kids, renderOpts{media: true, inSection: true, skipLeafCounts: t.Type == frontend.TypeShow})
@@ -384,13 +574,46 @@ func (s *Server) detail(ctx context.Context, pr *Request, t *frontend.Title, chi
 			md.PrimaryExtraKey = "/library/metadata/" + list[0].Key.String()
 		}
 	}
-	return md
 }
 
 // sameDayUnavailable is a local visibility lookup. Merely browsing must never
 // spend search quota trying to discover an upload.
 func (s *Server) sameDayUnavailable(ctx context.Context, pr *Request, t *frontend.Title) bool {
 	return s.exp().SameDayUnavailable(ctx, t, s.now(), s.filterAvailable(), s.svc().variants)
+}
+
+// sameDayUnavailableFunc precomputes SameDayUnavailable across items in one
+// batched availability filter call instead of issuing a per-episode DB check.
+func (s *Server) sameDayUnavailableFunc(ctx context.Context, pr *Request, items []frontend.Title) func(*frontend.Title) bool {
+	filter := s.filterAvailable()
+	if filter == nil || len(items) == 0 {
+		return func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }
+	}
+	var candidates []frontend.Title
+	seen := make(map[frontend.RatingKey]bool, len(items))
+	for i := range items {
+		t := &items[i]
+		if t.Type == frontend.TypeEpisode && !t.Released.IsZero() && !seen[t.Key] {
+			seen[t.Key] = true
+			candidates = append(candidates, *t)
+		}
+	}
+	if len(candidates) == 0 {
+		return func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }
+	}
+	admitted := make(map[frontend.RatingKey]bool, len(candidates))
+	for _, t := range filter(ctx, candidates) {
+		admitted[t.Key] = true
+	}
+	return func(t *frontend.Title) bool {
+		if t == nil || t.Type != frontend.TypeEpisode || t.Released.IsZero() {
+			return false
+		}
+		if seen[t.Key] {
+			return !admitted[t.Key]
+		}
+		return s.sameDayUnavailable(ctx, pr, t)
+	}
 }
 
 // showOnDeck picks the episode to resume or start next.
@@ -400,7 +623,7 @@ func (s *Server) showOnDeck(ctx context.Context, pr *Request, show frontend.Rati
 		return nil, nil
 	}
 	st := s.stateFor(ctx, pr, eps)
-	return s.exp().ShowOnDeck(eps, st, func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) }), st
+	return s.exp().ShowOnDeck(eps, st, s.sameDayUnavailableFunc(ctx, pr, eps)), st
 }
 
 const detailWarmWaitBudget = 1500 * time.Millisecond
@@ -490,7 +713,7 @@ func (s *Server) seasonNextEpisode(ctx context.Context, pr *Request, eps []front
 		return nil
 	}
 	now := s.now()
-	return s.exp().SeasonNextEpisode(eps, s.stateFor(ctx, pr, eps), now, func(t *frontend.Title) bool { return s.sameDayUnavailable(ctx, pr, t) })
+	return s.exp().SeasonNextEpisode(eps, s.stateFor(ctx, pr, eps), now, s.sameDayUnavailableFunc(ctx, pr, eps))
 }
 
 func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {

@@ -69,6 +69,9 @@ function discoveryRoutes(
       };
       return settings;
     }
+    if (method === "POST" && path === "/discovery/friends/sync") {
+      return settings;
+    }
     const m = /^\/discovery\/users\/\d+\/(.*)$/.exec(path);
     if (!m) return undefined;
     const rest = m[1]!;
@@ -203,6 +206,54 @@ describe("Watchlists (Viewers)", () => {
     expect(
       screen.getByText("Plex asked Ether to slow down. Ether will try again."),
     ).toBeInTheDocument();
+  });
+
+  it("summarizes Plex friends' watchlists in a collapsible panel and filters rate-limited friends", async () => {
+    const { fake } = renderAppWith(
+      "/viewers",
+      discoveryRoutes({
+        enabled: true,
+        extra: {
+          plexFriendsStatus: [
+            {
+              id: "1",
+              username: "deharryson1",
+              configured: true,
+              lastRead: 1_700_000_000,
+              imported: 47,
+              unmatchedTitles: 0,
+            },
+            {
+              id: "2",
+              username: "ehr.jm",
+              configured: true,
+              lastRead: 1_700_000_000,
+              imported: 38,
+              unmatchedTitles: 0,
+              problem: "upstream",
+              error: "Plex community: HTTP 429",
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(
+      await screen.findByText(/2 friends · 1 synced · 85 titles/, {}, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/1 rate-limited \(HTTP 429\)/)).toBeInTheDocument();
+    expect(screen.queryByText("deharryson1")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Sync friends now/ }));
+    await waitFor(() => expect(calls(fake, "POST", "/discovery/friends/sync")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /Show friends \(2\)/ }));
+    expect(screen.getByText("deharryson1")).toBeInTheDocument();
+    expect(screen.getByText("ehr.jm")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Issues \(1\)/ }));
+    expect(screen.queryByText("deharryson1")).toBeNull();
+    expect(screen.getByText("ehr.jm")).toBeInTheDocument();
   });
 });
 

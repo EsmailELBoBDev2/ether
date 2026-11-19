@@ -77,6 +77,10 @@ type Options struct {
 	// optional dependency, injected by the app so this package never imports
 	// the catalogue. Nil disables the check.
 	Namesakes func(context.Context, core.RatingKey) (bool, error)
+	// EnsureTitle warms the local catalogue row for a rating key discovered
+	// via reverse GUID lookup so identity verification has the local title and
+	// release year even when the title has never been opened before.
+	EnsureTitle func(context.Context, core.RatingKey) error
 }
 
 type Service struct {

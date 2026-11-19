@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Friend is an account with access to this server and the server access
@@ -324,6 +325,149 @@ func (c *Client) findV2Share(ctx context.Context, ownerToken, usernameOrEmail st
 	return nil, nil
 }
 
+func (c *Client) resolveFriendByName(ctx context.Context, ownerToken, name string) (int64, string) {
+	type candidate struct {
+		id       int64
+		username string
+		titles   []string
+		email    string
+	}
+	byID := map[int64]int{}
+	byUser := map[string]int{}
+	var cands []candidate
+
+	compact := func(s string) string {
+		return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
+	}
+	pickHandle := func(cand candidate) string {
+		if em := strings.TrimSpace(cand.email); em != "" && !strings.Contains(em, " ") {
+			return em
+		}
+		if un := strings.TrimSpace(cand.username); un != "" && !strings.Contains(un, " ") {
+			return un
+		}
+		return ""
+	}
+	mergeInto := func(idx int, id int64, username, title, email string) {
+		if cands[idx].id <= 0 && id > 0 {
+			cands[idx].id = id
+			byID[id] = idx
+		}
+		if cands[idx].username == "" && username != "" {
+			cands[idx].username = username
+			byUser[strings.ToLower(username)] = idx
+		}
+		if cands[idx].email == "" && email != "" {
+			cands[idx].email = email
+		}
+		if title != "" {
+			cands[idx].titles = append(cands[idx].titles, title)
+		}
+	}
+	add := func(id int64, username, title, email string) {
+		username = strings.TrimSpace(username)
+		title = strings.TrimSpace(title)
+		email = strings.TrimSpace(email)
+		if id > 0 {
+			if idx, ok := byID[id]; ok {
+				mergeInto(idx, id, username, title, email)
+				return
+			}
+		}
+		if username != "" {
+			if idx, ok := byUser[strings.ToLower(username)]; ok {
+				mergeInto(idx, id, username, title, email)
+				return
+			}
+		}
+		if id <= 0 && username == "" {
+			return
+		}
+		idx := len(cands)
+		var titles []string
+		if title != "" {
+			titles = []string{title}
+		}
+		cands = append(cands, candidate{id: id, username: username, titles: titles, email: email})
+		if id > 0 {
+			byID[id] = idx
+		}
+		if username != "" {
+			byUser[strings.ToLower(username)] = idx
+		}
+	}
+
+	wantCompact := compact(name)
+	match := func() (int64, string, bool) {
+		var compactMatch candidate
+		compactCount := 0
+		for _, cand := range cands {
+			if strings.EqualFold(cand.username, name) || strings.EqualFold(cand.email, name) {
+				if cand.id > 0 || pickHandle(cand) != "" {
+					return cand.id, pickHandle(cand), true
+				}
+			}
+			for _, t := range cand.titles {
+				if strings.EqualFold(t, name) {
+					if cand.id > 0 || pickHandle(cand) != "" {
+						return cand.id, pickHandle(cand), true
+					}
+				}
+			}
+			matchedCompact := compact(cand.username) == wantCompact
+			if !matchedCompact {
+				for _, t := range cand.titles {
+					if compact(t) == wantCompact {
+						matchedCompact = true
+						break
+					}
+				}
+			}
+			if matchedCompact && (cand.id > 0 || pickHandle(cand) != "") {
+				compactMatch = cand
+				compactCount++
+			}
+		}
+		if compactCount == 1 {
+			return compactMatch.id, pickHandle(compactMatch), true
+		}
+		return 0, "", false
+	}
+
+	if users, err := c.Users(ctx, ownerToken); err == nil {
+		for _, u := range users {
+			if u.PlexID > 0 {
+				add(u.PlexID, u.Username, u.Title, u.Email)
+			}
+		}
+		if id, handle, ok := match(); ok {
+			return id, handle
+		}
+	}
+	if friends, err := c.AccessTokens(ctx, ownerToken); err == nil {
+		for _, f := range friends {
+			if !f.Owned && f.PlexID > 0 {
+				add(f.PlexID, f.Username, f.Title, f.Email)
+			}
+		}
+		if id, handle, ok := match(); ok {
+			return id, handle
+		}
+	}
+	if c.base != nil && c.base.String() == DefaultBaseURL {
+		if cFriends, err := (&CommunityClient{Client: c.hc, MinInterval: time.Millisecond, MaxRetries: -1}).Friends(ctx, ownerToken); err == nil {
+			for _, f := range cFriends {
+				id, _ := strconv.ParseInt(f.ID, 10, 64)
+				add(id, f.Username, f.DisplayName, "")
+			}
+			if id, handle, ok := match(); ok {
+				return id, handle
+			}
+		}
+	}
+	return 0, ""
+}
+
 // ShareServer grants usernameOrEmail access to the server's libraries on plex.tv.
 // If sectionIDs is empty, it sets allLibraries: true so all libraries are checked.
 // If userID > 0, it passes invitedId to Plex's modern v2 sharing API with
@@ -343,6 +487,18 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 	}
 	if c.id.ClientIdentifier == "" {
 		return errors.New("plextv: client identifier required")
+	}
+	if userID <= 0 && strings.Contains(usernameOrEmail, " ") {
+		resolvedID, resolvedHandle := c.resolveFriendByName(ctx, ownerToken, usernameOrEmail)
+		if resolvedID > 0 {
+			userID = resolvedID
+		}
+		if resolvedHandle != "" {
+			usernameOrEmail = resolvedHandle
+		}
+		if userID <= 0 && strings.Contains(usernameOrEmail, " ") {
+			return fmt.Errorf("plextv: %q contains spaces and could not be matched to a Plex friend; enter their Plex username or email instead", usernameOrEmail)
+		}
 	}
 
 	allLibraries := len(sectionIDs) == 0
@@ -367,7 +523,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 	}
 	if userID > 0 {
 		payloadV2["invitedId"] = userID
-	} else if usernameOrEmail != "" && !strings.Contains(usernameOrEmail, " ") {
+	} else {
 		payloadV2["invitedEmail"] = usernameOrEmail
 	}
 
@@ -439,7 +595,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 	}
 
 	v1Target := usernameOrEmail
-	if v1Target == "" && userID > 0 {
+	if (v1Target == "" || strings.Contains(v1Target, " ")) && userID > 0 {
 		v1Target = strconv.FormatInt(userID, 10)
 	}
 

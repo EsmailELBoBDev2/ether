@@ -219,3 +219,70 @@ func TestShareServerV2ExistingUserUpdate(t *testing.T) {
 		t.Fatal("expected POST /api/v2/shared_servers/55555 to be called")
 	}
 }
+
+func TestShareServerResolvesNameWithSpacesOrRejects(t *testing.T) {
+	var postV2Calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/access_tokens":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer><token id="999" username="ChrisnordDenaud" title="Chrisnord Denaud" token="t"/></MediaContainer>`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers":
+			postV2Calls.Add(1)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["invitedId"] != float64(999) {
+				t.Fatalf("expected invitedId=999, got %v", payload["invitedId"])
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{
+		BaseURL:      srv.URL,
+		Identity:     Identity{ClientIdentifier: "test-mid"},
+		RetryBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ShareServer(context.Background(), "owner-token", "Chrisnord Denaud", 0, nil); err != nil {
+		t.Fatalf("ShareServer with matched spaced name failed: %v", err)
+	}
+	if err := c.ShareServer(context.Background(), "owner-token", "Unknown Person", 0, nil); err == nil {
+		t.Fatal("expected error for unmatched spaced name")
+	}
+	if postV2Calls.Load() != 1 {
+		t.Fatalf("expected 1 POST /api/v2/shared_servers call, got %d", postV2Calls.Load())
+	}
+}
+
+func TestCommunityClientRetries429AndRecovers(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n <= 2 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"allFriendsV2":[{"user":{"id":"1","username":"friend1"}}]}}`))
+	}))
+	defer srv.Close()
+
+	cc := &CommunityClient{URL: srv.URL, MinInterval: time.Millisecond}
+	friends, err := cc.Friends(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("expected recovery after 429 retries, got %v", err)
+	}
+	if len(friends) != 1 || friends[0].Username != "friend1" || calls.Load() != 3 {
+		t.Fatalf("unexpected result: friends=%+v calls=%d", friends, calls.Load())
+	}
+}

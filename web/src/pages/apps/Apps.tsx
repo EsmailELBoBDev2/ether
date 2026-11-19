@@ -641,10 +641,40 @@ function ProtocolSettings({
     });
   }
 
+  const awayFromHome =
+    id !== "plex" &&
+    id !== "dlna" &&
+    !lanViewer &&
+    (id !== "vela" || info?.status.webPlayerReady) ? (
+      <SettingsSection title={t("Away from home")}>
+        <SettingsRow
+          title={<label htmlFor={`${id}-public-url`}>{t("Public address")}</label>}
+          description={t(
+            "The address viewers use to reach this app from outside your network, e.g. https://jelly.example.com",
+          )}
+          control={
+            <Input
+              id={`${id}-public-url`}
+              aria-label={t("Public address")}
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              className="w-72"
+              placeholder={`https://${id === "jellyfin" ? "jelly" : id}.example.com`}
+              value={draft.publicUrl ?? ""}
+              onChange={(e) => setDraft({ ...draft, publicUrl: e.currentTarget.value })}
+            />
+          }
+        />
+      </SettingsSection>
+    ) : null;
+
   return (
     <>
       <div hidden={hidden} className="space-y-6">
         {connectionCards}
+        {id === "vela" ? awayFromHome : null}
         {id === "vela" && !hidden ? (
           <>
             <VelaDistribution />
@@ -686,33 +716,7 @@ function ProtocolSettings({
           />
         ) : null}
         {id === "xtream" && info?.enabled ? <XtreamLogins /> : null}
-        {id !== "plex" &&
-        id !== "dlna" &&
-        !lanViewer &&
-        (id !== "vela" || info?.status.webPlayerReady) ? (
-          <SettingsSection title={t("Away from home")}>
-            <SettingsRow
-              title={<label htmlFor={`${id}-public-url`}>{t("Public address")}</label>}
-              description={t(
-                "The address viewers use to reach this app from outside your network, e.g. https://jelly.example.com",
-              )}
-              control={
-                <Input
-                  id={`${id}-public-url`}
-                  aria-label={t("Public address")}
-                  type="url"
-                  inputMode="url"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="w-72"
-                  placeholder={`https://${id === "jellyfin" ? "jelly" : id}.example.com`}
-                  value={draft.publicUrl ?? ""}
-                  onChange={(e) => setDraft({ ...draft, publicUrl: e.currentTarget.value })}
-                />
-              }
-            />
-          </SettingsSection>
-        ) : null}
+        {id !== "vela" ? awayFromHome : null}
         {id === "jellyfin" || id === "emby" ? (
           <SettingsSection
             title={t("Home")}

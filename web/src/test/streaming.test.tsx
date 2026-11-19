@@ -248,6 +248,65 @@ describe("Playback devices", () => {
       overrides: [{ product: "Infuse", productExact: true, videoCodecs: ["hevc"] }],
     });
   });
+
+  it("keeps seen devices distinct, renders empty lastSeen cleanly, and uses compact override buttons", async () => {
+    renderApp("/playback/devices/seen", {}, (fake) => {
+      const original = fake.fetch;
+      fake.fetch = async (input, init) => {
+        const res = await original(input, init);
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes("/playback/policy") && (!init?.method || init.method === "GET")) {
+          const data = await res.json();
+          data.overrides = [{ device: "Bedroom Apple TV", platform: "tvOS", maxHeight: 1080 }];
+          data.seenDevices = [
+            {
+              clientIdentifier: "atv-living",
+              name: "Living room Apple TV",
+              platform: "tvOS",
+              device: "Apple TV",
+              app: "Swiftfin",
+              viewer: "You",
+              lastSeen: "",
+            },
+            {
+              clientIdentifier: "atv-bedroom",
+              name: "Bedroom Apple TV",
+              platform: "tvOS",
+              device: "Apple TV",
+              app: "Swiftfin",
+              viewer: "You",
+              lastSeen: new Date(Date.now() - 600_000).toISOString(),
+              overrideIndex: 0,
+            },
+          ];
+          return new Response(JSON.stringify(data), {
+            status: res.status,
+            headers: res.headers,
+          });
+        }
+        return res;
+      };
+    });
+
+    const living = await screen.findByText("Living room Apple TV", {}, WAIT);
+    const bedroom = screen.getByText("Bedroom Apple TV");
+    const livingRow = living.closest("tr")!;
+    const bedroomRow = bedroom.closest("tr")!;
+    expect(livingRow).not.toBe(bedroomRow);
+
+    // Empty lastSeen renders an em-dash rather than "never", and hover styling paints every td.
+    expect(within(livingRow).getByText("—")).toBeInTheDocument();
+    expect(within(livingRow).queryByText("never")).not.toBeInTheDocument();
+    const tableWrapper = livingRow.closest("table")!.parentElement!.parentElement!.parentElement!;
+    expect(tableWrapper.className).toContain("[&_tbody_tr:hover>td]:bg-surface-hover");
+
+    // Compact action buttons show short text while keeping descriptive accessible labels.
+    const createBtn = within(livingRow).getByRole("button", { name: "Create override" });
+    expect(createBtn).toHaveTextContent("Override");
+    const editBtn = within(bedroomRow).getByRole("button", { name: "Edit override" });
+    expect(editBtn).toHaveTextContent("Edit");
+  });
 });
 
 describe("Releases", () => {

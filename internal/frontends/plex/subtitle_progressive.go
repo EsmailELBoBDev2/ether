@@ -46,7 +46,7 @@ func (s *Server) plexTextTracks(pr *Request, info frontend.MediaInfo, dec fronte
 
 func (s *Server) textRenditionTags(r *http.Request, id string, hs frontend.HLSSession, entry *transcodeEntry, info frontend.MediaInfo, dec frontend.Decision) (string, string) {
 	source, ok := hs.(playbackTextSubtitles)
-	if !ok || entry == nil || !plexTextRenditions(FromContext(r.Context()), dec) {
+	if !ok || entry == nil || !plexTextRenditions(mergeSessionProfile(FromContext(r.Context()), entry), dec) {
 		return "", ""
 	}
 	var tags strings.Builder

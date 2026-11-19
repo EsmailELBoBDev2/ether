@@ -80,6 +80,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.protocol = frontend.ProtocolDASH
+	p.opts.Protocol = frontend.ProtocolDASH
 	if !s.transcodes.claim(p.sessionID, pr.User.ID, pr.ClientID, s.now()) {
 		writePlaybackStatus(w, http.StatusForbidden)
 		return
@@ -91,13 +92,18 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
+	priorEntry, _ := s.sessionEntryForStart(pr, p.sessionID, p.key)
+	startPR := mergeSessionProfile(pr, priorEntry)
 	entry, ok := s.transcodes.get(p.sessionID)
 	var ps *frontend.PlaySession
 	if ok && entry.key == p.key && entry.userID == pr.User.ID {
 		ps, ok = s.playback().Session(entry.playID)
+		if ok && ps != nil {
+			ps = sessionWithInfo(ps, entry.info)
+		}
 	}
-	if !ok || ps == nil || !p.sameSettings(entry.requested) {
-		if _, ps, _, err = s.prepare(ctx, pr, &p); err != nil {
+	if !ok || ps == nil || !p.sameSettings(entryExpectedStart(entry)) {
+		if _, ps, _, err = s.prepare(ctx, startPR, &p); err != nil {
 			if ctx.Err() != nil {
 				return // the player dropped this request; its preparation carries on
 			}
@@ -106,11 +112,13 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		entry, _ = s.transcodes.get(p.sessionID)
-	} else if dec, err := s.publishBrokerPlayback(ctx, pr, replayPlay(p, entry), ps); err != nil {
+		startPR = mergeSessionProfile(pr, entry)
+	} else if dec, err := s.publishBrokerPlayback(ctx, startPR, replayPlay(p, entry), ps); err != nil {
 		s.writeStartErr(w, r, pr, err)
 		return
 	} else {
 		entry.decision = dec
+		startPR = mergeSessionProfile(pr, entry)
 	}
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
 	entry.playbackID = pr.SessionID
@@ -142,8 +150,8 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		s.stopPlexHLS(p.sessionID)
 	}
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
-		SoftSubtitleStream:  sessionSoftSubtitle(entry, pr, dec),
-		TextSubtitleStreams: s.plexTextTracks(pr, ps.Info, dec),
+		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
+		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,
 		ReleaseID:           ps.SourceReleaseID(),
 		InputURL:            s.playback().InputURL(ps.ID),
@@ -151,7 +159,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		Decision:            dec,
 		StartOffset:         p.offset,
 		Protocol:            frontend.ProtocolDASH,
-		PMSDASH:             !strings.EqualFold(strings.TrimSpace(pr.Product), "Plex Web"),
+		PMSDASH:             !strings.EqualFold(strings.TrimSpace(startPR.Product), "Plex Web"),
 	})
 	if err != nil {
 		s.writeStartErr(w, r, pr, err)

@@ -198,8 +198,41 @@ func onlyNotCached(err error) bool {
 	return false
 }
 
+// requestClient retains the client profile sent on /decision so a native media
+// loader's subsequent start.* request (which often omits X-Plex-* profile
+// headers) keeps the negotiated container and player identity.
+type requestClient struct {
+	product            string
+	version            string
+	platform           string
+	platformVersion    string
+	device             string
+	model              string
+	profileName        string
+	profileExtra       string
+	clientCapabilities string
+}
+
+func requestClientFrom(pr *Request) requestClient {
+	if pr == nil {
+		return requestClient{}
+	}
+	return requestClient{
+		product:            pr.Product,
+		version:            pr.Version,
+		platform:           pr.Platform,
+		platformVersion:    pr.PlatformVersion,
+		device:             pr.Device,
+		model:              pr.Model,
+		profileName:        pr.ProfileName,
+		profileExtra:       pr.ProfileExtra,
+		clientCapabilities: pr.ClientCapabilities,
+	}
+}
+
 // playRequest is a parsed decision/start request.
 type playRequest struct {
+	client         requestClient
 	manualSubtitle bool
 	key            frontend.RatingKey
 	collection     string
@@ -346,6 +379,7 @@ func browserClient(pr *Request) bool {
 // subsequent starts). Quality limits from the query are also in opts. Keep the
 // original options since prepare adds owner limits and track preferences.
 func (p playRequest) sameSettings(other playRequest) bool {
+	p.client, other.client = requestClient{}, requestClient{}
 	p.profileResult, other.profileResult = nil, nil
 	p.offset, other.offset = 0, 0
 	p.caps, other.caps = frontend.ClientCaps{}, frontend.ClientCaps{}
@@ -361,6 +395,91 @@ func (p playRequest) sameSettings(other playRequest) bool {
 		p.subtitles, other.subtitles = "", ""
 	}
 	return reflect.DeepEqual(p, other)
+}
+
+// sessionEntryForStart finds the decision binding a start or subtitle request
+// continues. Native media loaders (ExoPlayer, AVPlayer) often omit X-Plex-*
+// profile headers or generate a fresh transcode session id under the same
+// armed viewer/client playback attempt.
+func (s *Server) sessionEntryForStart(pr *Request, sessionID string, key frontend.RatingKey) (*transcodeEntry, bool) {
+	if pr == nil || pr.User == nil || key == 0 {
+		return nil, false
+	}
+	if sessionID != "" {
+		if e, ok := s.transcodes.get(sessionID); ok && e.failErr == nil && e.userID == pr.User.ID && e.key == key && (pr.ClientID == "" || e.clientID == "" || e.clientID == pr.ClientID) {
+			return e, true
+		}
+	}
+	if pr.ClientID == "" {
+		return nil, false
+	}
+	now := s.now()
+	var best *transcodeEntry
+	for _, id := range s.transcodes.forClient(pr.User.ID, pr.ClientID, key) {
+		e, ok := s.transcodes.get(id)
+		if !ok || e.failErr != nil || e.playID == "" || e.userID != pr.User.ID || e.clientID != pr.ClientID || e.key != key {
+			continue
+		}
+		if !e.updatedAt.IsZero() && now.Sub(e.updatedAt) >= playIdentityTTL {
+			continue
+		}
+		if pr.SessionID != "" && e.playbackID != "" && e.playbackID != pr.SessionID {
+			continue
+		}
+		if best == nil || e.updatedAt.After(best.updatedAt) {
+			best = e
+		}
+	}
+	return best, best != nil
+}
+
+// mergeSessionProfile fills client profile fields omitted by native media
+// loaders from the session's decision binding, without altering authentication
+// or ownership identifiers (ClientID, SessionID, diag).
+func mergeSessionProfile(pr *Request, entry *transcodeEntry) *Request {
+	if pr == nil || entry == nil {
+		return pr
+	}
+	rc := entry.requested.client
+	cp := *pr
+	cp.Product = cmp.Or(cp.Product, rc.product, entry.caps.Product)
+	cp.Version = cmp.Or(cp.Version, rc.version, entry.caps.Version)
+	cp.Platform = cmp.Or(cp.Platform, rc.platform, entry.caps.Platform)
+	cp.PlatformVersion = cmp.Or(cp.PlatformVersion, rc.platformVersion)
+	cp.Device = cmp.Or(cp.Device, rc.device, entry.caps.Device)
+	cp.Model = cmp.Or(cp.Model, rc.model)
+	cp.ProfileName = cmp.Or(cp.ProfileName, rc.profileName)
+	cp.ProfileExtra = cmp.Or(cp.ProfileExtra, rc.profileExtra)
+	cp.ClientCapabilities = cmp.Or(cp.ClientCapabilities, rc.clientCapabilities)
+	return &cp
+}
+
+// entryExpectedStart normalizes a decision's requested controls to the stream
+// identity resolved onto entry.info, so a start request that omits or defaults
+// subtitleStreamID matches the decision's selected subtitle.
+func entryExpectedStart(entry *transcodeEntry) playRequest {
+	if entry == nil {
+		return playRequest{}
+	}
+	req := entry.requested
+	if entry.subtitle >= 0 && entry.subtitle < len(entry.info.Streams) && entry.info.Streams[entry.subtitle].Type == "subtitle" {
+		st := entry.info.Streams[entry.subtitle]
+		req.subSel, req.subSet, req.subStream = entry.subtitle, true, &st
+	} else if entry.subtitle < 0 && req.subSet {
+		req.subSel, req.subStream = -1, nil
+	}
+	return req
+}
+
+// sessionWithInfo retains sidecar streams attached during decision preparation
+// when reusing an underlying playback source session.
+func sessionWithInfo(ps *frontend.PlaySession, info frontend.MediaInfo) *frontend.PlaySession {
+	if ps == nil || len(info.Streams) == 0 {
+		return ps
+	}
+	cp := *ps
+	cp.Info = info
+	return &cp
 }
 
 func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
@@ -394,11 +513,27 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	if key == 0 || !isPlayableKey(key) {
 		return playRequest{}, fmt.Errorf("no playable item in request")
 	}
-	caps := s.clientCapsForKey(pr, key)
-	if s.dvBaseOnly(pr, key) {
+	sessionID := cmp.Or(q.Get("session"), q.Get("transcodeSessionId"), pr.SessionID)
+	if sessionID == "" {
+		sessionID = sanitizeSessionID(pr.ClientID + "-" + key.String())
+	}
+	sessionID = sanitizeSessionID(sessionID)
+	if sessionID == "" {
+		sessionID = newSessionID()
+	}
+	var entry *transcodeEntry
+	var hasEntry bool
+	capsPR := pr
+	if !strings.HasSuffix(r.URL.Path, "/decision") {
+		if entry, hasEntry = s.sessionEntryForStart(pr, sessionID, key); hasEntry {
+			capsPR = mergeSessionProfile(pr, entry)
+		}
+	}
+	caps := s.clientCapsForKey(capsPR, key)
+	if s.dvBaseOnly(capsPR, key) {
 		caps.DolbyVisionBaseOnly = true // this start stalled in Dolby Vision
 	}
-	if s.segmentedSurroundOff(pr) {
+	if s.segmentedSurroundOff(capsPR) {
 		caps.SegmentedSurroundOff = true // a stream stalled on copied surround audio
 	}
 	// Save device/source limits before the quality slider sets output limits.
@@ -414,7 +549,7 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		}
 		caps.MaxBitrateKbps = limit
 	}
-	p := playRequest{copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, sourceLimits: &sourceLimits, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
+	p := playRequest{client: requestClientFrom(capsPR), copyTimestamps: q.Get("copyts") == "1", key: key, caps: caps, sourceLimits: &sourceLimits, sessionID: sessionID, audioSel: -1, subSel: -1, protocol: q.Get("protocol"), mde: q.Get("hasMDE") == "1", partReleaseID: partReleaseID}
 	for _, raw := range []string{q.Get("path"), q.Get("key")} {
 		if partID, ok := partIDFromPath(raw); ok {
 			p.requestedPart = partID
@@ -435,9 +570,12 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		p.mediaIndex = n
 	}
 	if p.protocol == "" {
-		if strings.HasSuffix(r.URL.Path, "/start") && !strings.HasSuffix(r.URL.Path, "/start.m3u8") && !strings.HasSuffix(r.URL.Path, "/start.mpd") {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/start.mpd"):
+			p.protocol = frontend.ProtocolDASH
+		case strings.HasSuffix(r.URL.Path, "/start") && !strings.HasSuffix(r.URL.Path, "/start.m3u8"):
 			p.protocol = frontend.ProtocolHTTP
-		} else {
+		default:
 			p.protocol = "hls"
 		}
 	}
@@ -458,6 +596,7 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 		p.opts.BurnSubtitles = true
 	}
 	// Explicit stream ids in the request win over stored selections.
+	// PMS treats -1 as the default selector (keep the part's selected stream).
 	var userID int64
 	if pr.User != nil {
 		userID = pr.User.ID
@@ -469,7 +608,9 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	if sel.subtitleSet {
 		p.subSel, p.subSet, p.subStream = sel.subtitle, true, sel.subtitleStream
 	}
-	if id, err := strconv.ParseInt(q.Get("audioStreamID"), 10, 64); err == nil {
+	rawAudio := q.Get("audioStreamID")
+	audioDefaultOrOmitted := rawAudio == "" || rawAudio == "-1"
+	if id, err := strconv.ParseInt(rawAudio, 10, 64); err == nil && id > 0 {
 		binding, rerr := s.resolveIssuedStream(frontend.WithStreamServe(r.Context(), pr.Remote, ""), pr.User, pr.ClientID, id)
 		if rerr != nil && !streamMiss(rerr) {
 			return playRequest{}, rerr
@@ -479,11 +620,14 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 			p.audioSel, p.audioStream = binding.Index, &info
 		}
 	}
-	if v := q.Get("subtitleStreamID"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			if id == 0 {
+	rawSub := q.Get("subtitleStreamID")
+	subDefaultOrOmitted := rawSub == "" || rawSub == "-1"
+	if rawSub != "" {
+		if id, err := strconv.ParseInt(rawSub, 10, 64); err == nil {
+			switch {
+			case id == 0:
 				p.subSel, p.subSet, p.subStream, p.subNamed = -1, true, nil, true
-			} else {
+			case id > 0:
 				binding, rerr := s.resolveIssuedStream(frontend.WithStreamServe(r.Context(), pr.Remote, ""), pr.User, pr.ClientID, id)
 				if rerr != nil && !streamMiss(rerr) {
 					return playRequest{}, rerr
@@ -495,17 +639,44 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 			}
 		}
 	}
+	rawSubStream := p.subStream
+	inheritedSub := false
+	if hasEntry {
+		if audioDefaultOrOmitted && !sel.audioSet && (entry.requested.audioSel >= 0 || entry.requested.audioStream != nil) {
+			p.audioSel, p.audioStream = entry.requested.audioSel, entry.requested.audioStream
+		}
+		if subDefaultOrOmitted && !p.subNamed && !sel.subtitleSet {
+			if entry.subtitle >= 0 && entry.subtitle < len(entry.info.Streams) && entry.info.Streams[entry.subtitle].Type == "subtitle" {
+				st := entry.info.Streams[entry.subtitle]
+				p.subSel, p.subSet, p.subStream = entry.subtitle, true, &st
+				inheritedSub = true
+			} else if entry.subtitle < 0 && entry.requested.subSet && entry.requested.subStream == nil {
+				p.subSel, p.subSet, p.subStream = -1, true, nil
+				inheritedSub = true
+			}
+		} else if p.subSet && p.subStream != nil && (!p.subStream.External || slices.ContainsFunc(entry.info.Streams, func(s frontend.StreamInfo) bool {
+			return s.External && s.ExternalURL == p.subStream.ExternalURL
+		})) {
+			if pos := resolveSubtitle(p.subStream, p.subSel, entry.info); pos >= 0 && pos < len(entry.info.Streams) {
+				st := entry.info.Streams[pos]
+				p.subSel, p.subStream = pos, &st
+			}
+		}
+	}
+	echoPR := pr
+	if hasEntry && pr != nil && pr.ClientID == "" && entry.clientID != "" {
+		cp := *pr
+		cp.ClientID = entry.clientID
+		echoPR = &cp
+	}
 	// A client commonly echoes the track Ether marked selected. That is
 	// not a manual veto of the viewer's automatic-download rule. Off is
 	// always explicit; PUT choices also carry a durable manual intent.
-	p.manualSubtitle = p.subSet && !s.subtitleSelectionEcho(pr, key, p.subStream)
-	p.sessionID = cmp.Or(q.Get("session"), q.Get("transcodeSessionId"), pr.SessionID)
-	if p.sessionID == "" {
-		p.sessionID = sanitizeSessionID(pr.ClientID + "-" + key.String())
-	}
-	p.sessionID = sanitizeSessionID(p.sessionID)
-	if p.sessionID == "" {
-		p.sessionID = newSessionID()
+	if inheritedSub {
+		p.manualSubtitle = entry.requested.manualSubtitle
+	} else {
+		echo := s.subtitleSelectionEcho(echoPR, key, rawSubStream) || (p.subStream != rawSubStream && s.subtitleSelectionEcho(echoPR, key, p.subStream))
+		p.manualSubtitle = p.subSet && !echo
 	}
 	p.offset = durationParam(q.Get("offset"), time.Second)
 	return p, nil
@@ -1495,16 +1666,21 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
+	priorEntry, _ := s.sessionEntryForStart(pr, p.sessionID, p.key)
+	startPR := mergeSessionProfile(pr, priorEntry)
 	entry, ok := s.transcodes.get(p.sessionID)
 	var ps *frontend.PlaySession
 	if ok && entry.key == p.key && entry.userID == pr.User.ID {
 		ps, ok = s.playback().Session(entry.playID)
+		if ok && ps != nil {
+			ps = sessionWithInfo(ps, entry.info)
+		}
 	}
-	if !ok || ps == nil || !p.sameSettings(entry.requested) {
+	if !ok || ps == nil || !p.sameSettings(entryExpectedStart(entry)) {
 		// A client can change quality or tracks in start itself, without a
 		// preceding decision request. Reapply the normal policy and decision
 		// path before deciding whether a running encoder can be reused.
-		if _, ps, _, err = s.prepare(ctx, pr, &p); err != nil {
+		if _, ps, _, err = s.prepare(ctx, startPR, &p); err != nil {
 			if ctx.Err() != nil {
 				return // the player dropped this request; its preparation carries on
 			}
@@ -1513,28 +1689,33 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		entry, _ = s.transcodes.get(p.sessionID)
-	} else if dec, err := s.publishBrokerPlayback(ctx, pr, replayPlay(p, entry), ps); err != nil {
+		startPR = mergeSessionProfile(pr, entry)
+	} else if dec, err := s.publishBrokerPlayback(ctx, startPR, replayPlay(p, entry), ps); err != nil {
 		s.writeStartErr(w, r, pr, err)
 		return
 	} else {
 		entry.decision = dec
+		startPR = mergeSessionProfile(pr, entry)
 	}
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
 	entry.playbackID = pr.SessionID
 	s.transcodes.put(entry)
 
 	dec := frontend.HLSDecision(entry.decision, p.opts.DirectPlay, func() frontend.Decision {
-		resolvePlaySelection(&p, ps.Info)
-		applySelections(&p, ps.Info, s.audioLanguages(pr.User))
-		return s.transcoder().Decide(ps.Info, p.caps, p.opts)
+		opts := entry.opts
+		opts.DirectPlay = false
+		if androidImageSubtitle(startPR, ps.Info, opts) {
+			opts.BurnSubtitles = true
+		}
+		return s.transcoder().Decide(ps.Info, entry.caps, opts)
 	}, func(dec frontend.Decision) frontend.Decision {
 		// A client may request HLS after accepting an MDE direct-play
 		// decision (notably stable HTTP/debrid files). HLSDecision's legacy
 		// fallback is MPEG-TS, which cannot carry the selected text track.
-		// Use the Android player's negotiated target even on this late handoff.
-		if plexAndroidClient(pr) {
+		// Use the negotiated Matroska/Android target even on this late handoff.
+		if plexAndroidClient(startPR) || slices.Contains(entry.caps.HLSContainers, frontend.ContainerMatroska) {
 			dec.Container = frontend.HLSContainer(entry.caps, dec.VideoCodec, dec.AudioCodec)
-			if androidImageSubtitle(pr, ps.Info, entry.opts) {
+			if androidImageSubtitle(startPR, ps.Info, entry.opts) {
 				opts := entry.opts
 				opts.DirectPlay, opts.BurnSubtitles = false, true
 				return s.transcoder().Decide(ps.Info, entry.caps, opts)
@@ -1567,8 +1748,8 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	hs, err := s.startPlexHLS(context.WithoutCancel(ctx), pr.User, ps.ID, p.sessionID, frontend.HLSRequest{
-		SoftSubtitleStream:  sessionSoftSubtitle(entry, pr, dec),
-		TextSubtitleStreams: s.plexTextTracks(pr, ps.Info, dec),
+		SoftSubtitleStream:  sessionSoftSubtitle(entry, startPR, dec),
+		TextSubtitleStreams: s.plexTextTracks(startPR, ps.Info, dec),
 		SessionID:           p.sessionID,
 		ReleaseID:           ps.SourceReleaseID(),
 		InputURL:            s.playback().InputURL(ps.ID),

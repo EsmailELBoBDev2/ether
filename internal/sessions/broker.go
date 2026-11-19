@@ -749,6 +749,10 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
 		}
 	}
+	ps, pinned, pinErr = b.pinOriginalRuntime(ctx, &req, ps, dec, pinned)
+	if pinErr != nil {
+		return frontend.PlayPlan{}, pinErr
+	}
 	id := rand.Text()
 	etag := sourceRevision(ps)
 	if req.Intent.SubtitleSet || (req.Intent.Hints != nil && req.Intent.Hints.ManualSubtitle) {

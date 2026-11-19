@@ -14,8 +14,12 @@ type KindInput struct {
 	// Open returns the item's byte stream. It is called once per open, inside
 	// the prepare flight, so stream-limit accounting and cancellation apply.
 	Open func(ctx context.Context) (MediaSource, error)
+	// OpenCandidate, when set, opens the next non-excluded candidate from the
+	// item's kind resolution and returns its concrete Release metadata so
+	// mid-stream failover can switch to alternative plugin candidates.
+	OpenCandidate func(ctx context.Context, exclude []string) (MediaSource, Release, error)
 	// SourceID is a stable identity for the underlying source, used as the
-	// synthetic release id so session accounting and snapshots have a name.
+	// synthetic release id when OpenCandidate is not provided.
 	SourceID string
 }
 

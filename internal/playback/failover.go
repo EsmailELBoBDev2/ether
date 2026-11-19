@@ -1052,6 +1052,9 @@ func (m *Manager) dropGeneration(g *generation) {
 }
 
 func (m *Manager) markBad(releaseID, reason string) {
+	if m.deps.Resolver == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
 	defer cancel()
 	if err := m.deps.Resolver.MarkBad(ctx, releaseID, reason); err != nil {
@@ -1194,7 +1197,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		Detail:  fo.reason,
 	})
 	// A provider outage is not evidence that the release itself is invalid.
-	if failure := cur.sourceFailure(); !fo.encoder && permanentSourceFailure(failure) {
+	if failure := cur.sourceFailure(); !fo.encoder && !s.isKind() && permanentSourceFailure(failure) {
 		m.markBad(cur.releaseID(), fo.reason)
 	}
 
@@ -1258,7 +1261,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			}
 		}
 	}
-	if g == nil && !direct && prepared == nil {
+	if g == nil && !direct && prepared == nil && !s.isKind() {
 		// Any healthy alternate continues an encoder session, so open
 		// several at once instead of stalling through each broken one.
 		var failed []string
@@ -1305,17 +1308,28 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			}
 			return nil, ctx.Err()
 		}
-		res := prepared
-		prepared = nil
-		var err error
-		if res == nil {
-			res, err = m.nextResolution(attemptCtx, s, tried, alternates)
+		var (
+			res *core.Resolution
+			err error
+		)
+		if s.isKind() {
+			g, res, err = m.openKindCandidate(attemptCtx, s, tried, fallback)
+			if err != nil && res == nil {
+				lastErr = err
+				break
+			}
+		} else {
+			res = prepared
+			prepared = nil
+			if res == nil {
+				res, err = m.nextResolution(attemptCtx, s, tried, alternates)
+			}
+			if err != nil {
+				lastErr = err
+				break
+			}
+			g, err = m.openGeneration(attemptCtx, s, res, fallback)
 		}
-		if err != nil {
-			lastErr = err
-			break
-		}
-		g, err = m.openGeneration(attemptCtx, s, res, fallback)
 		if err == nil {
 			if perr := m.preflightSwap(attemptCtx, s, g); perr != nil {
 				m.dropGeneration(g)
@@ -1352,6 +1366,10 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			}
 			g = nil
 			err = fmt.Errorf("incompatible direct-play replacement: %w", core.ErrNotAvailable)
+			if s.isKind() && fallbackGen != nil && !fo.down {
+				lastErr = err
+				break
+			}
 		}
 		if err == nil && fo.down {
 			if bps := replacementBps(g, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {

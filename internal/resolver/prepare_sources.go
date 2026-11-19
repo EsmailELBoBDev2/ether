@@ -39,7 +39,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 		default:
 		}
 	}
-	if cands[0].verified && (s.resolverCfg().SourcePreference != PreferDebrid || protocolOf(cands[0].rel) == core.ProtocolTorrent) {
+	if cands[0].verified && (s.resolverCfg().SourcePreference != PreferDebrid || protocolOf(cands[0].rel) == core.ProtocolTorrent) && !(s.usenetBackingOff() && protocolOf(cands[0].rel) == core.ProtocolUsenet) {
 		return cands
 	}
 	if s.knownCached(cands[0].rel) || s.readyPeer(cands) >= 0 {
@@ -62,7 +62,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 	var releases []core.Release
 	var torrents []int // indexes preparation could promote
 	for i, c := range cands {
-		if c.rel.Protocol == core.ProtocolTorrent && eligible(c) {
+		if c.rel.Protocol == core.ProtocolTorrent && (eligible(c) || (s.usenetBackingOff() && protocolOf(lead.rel) == core.ProtocolUsenet)) {
 			releases = append(releases, c.rel)
 			torrents = append(torrents, i)
 			if len(releases) == 12 {
@@ -92,7 +92,7 @@ func (s *Service) prepareSources(ctx context.Context, cands []candidate, title *
 	hedgeIdx := -1
 	startHedge := func(from int) {
 		hedge, hedgeIdx = nil, -1
-		if !scoped || s.resolverCfg().OptimisticStart {
+		if !scoped || s.resolverCfg().OptimisticStart || s.usenetBackingOff() {
 			return
 		}
 		// Speculative checks share ranked validation's attempt budget.

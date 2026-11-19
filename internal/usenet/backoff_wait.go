@@ -13,9 +13,10 @@ func (f *Fetcher) IsProviderBackoff(err error) bool {
 	return errors.Is(err, ErrProviderBackoff)
 }
 
-// HasServingProvider reports whether at least one enabled Usenet provider can
-// currently serve requests (neither disabled by credentials nor blocked in
-// backoff without any established socket).
+// HasServingProvider reports whether at least one enabled primary Usenet
+// provider can currently serve requests (neither disabled by credentials nor
+// blocked in backoff without any established socket). When only backfill
+// accounts are configured, they are considered instead.
 func (f *Fetcher) HasServingProvider() bool {
 	if f == nil {
 		return false
@@ -23,7 +24,17 @@ func (f *Fetcher) HasServingProvider() bool {
 	f.mu.RLock()
 	pools := f.pools
 	f.mu.RUnlock()
+	hasPrimary := false
 	for _, p := range pools {
+		if !p.cfg.Backfill {
+			hasPrimary = true
+			break
+		}
+	}
+	for _, p := range pools {
+		if hasPrimary && p.cfg.Backfill {
+			continue
+		}
 		if p.brk.idleAllowed() != nil {
 			continue
 		}

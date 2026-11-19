@@ -21,7 +21,10 @@ import (
 // original ps unchanged (never nil) so the caller's deferred release stays
 // valid.
 func (b *Broker) pinRequestedTracks(ctx context.Context, req *frontend.PlanRequest, ps *core.PlaySession) (*core.PlaySession, bool, error) {
-	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil || req.Protocol == "vela" {
+	if req.Protocol == "vela" && ps.Info.Estimated {
+		return ps, false, frontend.ErrTrackSourceUnavailable
+	}
+	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil {
 		if ps.Info.Estimated {
 			return ps, false, frontend.ErrTrackSourceUnavailable
 		}
@@ -56,4 +59,24 @@ func (b *Broker) pinRequestedTracks(ctx context.Context, req *frontend.PlanReque
 		return ps, true, frontend.ErrSourceGone
 	}
 	return current, true, nil
+}
+
+// pinOriginalRuntime pins the opened source revision only when the admitted
+// decision actually uses Vela's custom original-file runtime (and its optional
+// sidecar audio rendition), leaving ordinary browser <video> direct play and
+// HLS/MSE sessions free to fail over across releases.
+func (b *Broker) pinOriginalRuntime(ctx context.Context, req *frontend.PlanRequest, ps *core.PlaySession, dec core.Decision, pinned bool) (*core.PlaySession, bool, error) {
+	if pinned || dec.Reason != "original_runtime" {
+		return ps, pinned, nil
+	}
+	if ps.Info.Estimated {
+		return ps, false, frontend.ErrTrackSourceUnavailable
+	}
+	if req.ExpectedSourceETag == "" {
+		req.ExpectedSourceETag = sourceRevision(ps)
+		if req.ExpectedSourceETag == "" {
+			return ps, false, frontend.ErrTrackSourceUnavailable
+		}
+	}
+	return b.pinRequestedTracks(ctx, req, ps)
 }

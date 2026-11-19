@@ -87,6 +87,10 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	if (dec.Kind == core.DecisionDirectPlay && !req.Intent.Options.DirectPlay) || (dec.Kind == core.DecisionRemux && !req.Intent.Options.DirectStream) {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
+	ps, pinned, err = b.pinOriginalRuntime(ctx, &req, ps, dec, pinned)
+	if err != nil {
+		return frontend.PlayPlan{}, err
+	}
 	id := rand.Text()
 	etag := sourceRevision(ps)
 	b.mu.Lock()

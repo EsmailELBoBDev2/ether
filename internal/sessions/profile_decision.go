@@ -887,7 +887,11 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 	if ps == nil {
 		return core.Decision{}, core.ErrNotFound
 	}
-	if req.Protocol == "vela" && req.Channel == "" && req.Intent.Options.DirectPlay && !selectedImageSubtitle(ps.Info, req.Intent.Options.SubtitleStream) && (req.Intent.OriginalPlayback.Supports(ps.Info, req.Intent.Options.AudioStream) || (b.AudioFallbackAvailable() && req.Intent.OriginalPlayback.SupportsAudio("aac") && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) && req.Intent.OriginalPlayback.SupportsVideo(ps.Info))) {
+	requiresRemux := ps.RequiresRemux
+	if rr, ok := b.deps.Playback.(core.RemuxRequirer); ok && rr.RequiresRemux(ps.ID) {
+		requiresRemux = true
+	}
+	if !requiresRemux && req.Protocol == "vela" && req.Channel == "" && req.Intent.Options.DirectPlay && !selectedImageSubtitle(ps.Info, req.Intent.Options.SubtitleStream) && (req.Intent.OriginalPlayback.Supports(ps.Info, req.Intent.Options.AudioStream) || (b.AudioFallbackAvailable() && req.Intent.OriginalPlayback.SupportsAudio("aac") && (req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding) && req.Intent.OriginalPlayback.SupportsVideo(ps.Info))) {
 		d := core.Decision{Kind: core.DecisionDirectPlay, Reason: "original_runtime", Container: ps.Info.Container, VideoCopy: true, AudioCopy: true, AudioStream: req.Intent.Options.AudioStream, SubtitleStream: req.Intent.Options.SubtitleStream}
 		if audio := profileStream(ps.Info, "audio", d.AudioStream); audio != nil {
 			d.AudioStream = audio.Index

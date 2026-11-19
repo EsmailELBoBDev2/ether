@@ -77,7 +77,14 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 		if s.health != nil {
 			v.healthChecked = true
 			at = time.Now()
-			v.healthy, v.healthCached, v.err = s.checkHealthCached(ctx, rel.ID, v.nzb)
+			if s.usenetBackingOff() && protocolOf(rel) == core.ProtocolUsenet {
+				v.healthy, v.err = core.CheckReleaseHealth(ctx, s.health, rel.ID, v.nzb)
+				if v.healthy && v.err == nil && ctx.Value(speculativeHealthKey{}) == nil {
+					s.markVerified(ctx, rel.ID)
+				}
+			} else {
+				v.healthy, v.healthCached, v.err = s.checkHealthCached(ctx, rel.ID, v.nzb)
+			}
 			if v.healthy && v.err == nil && !v.healthCached && s.observed != nil {
 				if title, ok := ctx.Value(observationTitleKey{}).(*core.Title); ok {
 					s.persistBookkeeping(ctx, func(ctx context.Context) { s.observed(ctx, title, rel) })

@@ -74,6 +74,22 @@ func NewHostBackoff() *HostBackoff {
 
 var defaultBackoff = NewHostBackoff()
 
+// IsBackingOff reports whether rawURL's host currently has an active rate-limit
+// or service-unavailable backoff window.
+func (b *HostBackoff) IsBackingOff(rawURL string) bool {
+	if b == nil {
+		return false
+	}
+	host := extractHost(rawURL)
+	if host == "" {
+		return false
+	}
+	b.mu.Lock()
+	entry, ok := b.hosts[host]
+	b.mu.Unlock()
+	return ok && time.Until(entry.until) > 0
+}
+
 func (b *HostBackoff) wait(ctx context.Context, rawURL string) error {
 	if b == nil {
 		return nil
@@ -351,6 +367,11 @@ func (r *HTTPReaderAt) doRangeRequest(ctx context.Context, start, end int64) (*h
 // ReadAt reads len(p) bytes starting at byte offset off.
 func (r *HTTPReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return r.readAtCtx(context.Background(), p, off)
+}
+
+// ReadAtContext reads len(p) bytes starting at byte offset off using ctx.
+func (r *HTTPReaderAt) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	return r.readAtCtx(ctx, p, off)
 }
 
 func (r *HTTPReaderAt) readAtCtx(ctx context.Context, p []byte, off int64) (int, error) {

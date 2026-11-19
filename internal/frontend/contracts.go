@@ -414,10 +414,12 @@ type ExtraStreams interface {
 type KindMedia struct {
 	io.ReaderAt
 	io.Closer
-	Size     int64
-	MIME     string
-	Duration time.Duration
-	Name     string
+	Size        int64
+	MIME        string
+	Duration    time.Duration
+	Name        string
+	Release     core.Release
+	MediaSource core.MediaSource
 }
 
 // KindLeaf is one playable leaf entry within a plugin kind container item.

@@ -98,6 +98,73 @@ func (s *Service) SourceStartups() []SourceStartup {
 	return out
 }
 
+// UsenetBackingOff reports whether every primary Usenet provider is currently
+// in circuit-breaker backoff (for example NNTP 481 simultaneous IP refusals).
+func (s *Service) UsenetBackingOff() bool {
+	return s.usenetBackingOff()
+}
+
+func (s *Service) usenetBackingOff() bool {
+	return s != nil && s.usenetServing != nil && !s.usenetServing()
+}
+
+// demoteBackingOffUsenet places non-Usenet releases ahead of Usenet releases
+// within each identity-safety tier while all Usenet providers are backing off,
+// keeping Usenet as a last-resort fallback when no other source exists.
+func (s *Service) demoteBackingOffUsenet(cands []candidate, trace *Trace) []candidate {
+	if !s.usenetBackingOff() || len(cands) < 2 {
+		return cands
+	}
+	hasUsenet, hasOther := false, false
+	for _, c := range cands {
+		if protocolOf(c.rel) == core.ProtocolUsenet {
+			hasUsenet = true
+		} else {
+			hasOther = true
+		}
+	}
+	if !hasUsenet || !hasOther {
+		return cands
+	}
+	partition := func(in []candidate) []candidate {
+		if len(in) < 2 {
+			return in
+		}
+		other := make([]candidate, 0, len(in))
+		usenet := make([]candidate, 0, len(in))
+		for _, c := range in {
+			if protocolOf(c.rel) == core.ProtocolUsenet {
+				usenet = append(usenet, c)
+			} else {
+				other = append(other, c)
+			}
+		}
+		return append(other, usenet...)
+	}
+	var strongConfirmed, strongUnverified, weak []candidate
+	for _, c := range cands {
+		switch {
+		case c.identityWeak:
+			weak = append(weak, c)
+		case c.audioUnverified:
+			strongUnverified = append(strongUnverified, c)
+		default:
+			strongConfirmed = append(strongConfirmed, c)
+		}
+	}
+	out := make([]candidate, 0, len(cands))
+	out = append(out, partition(strongConfirmed)...)
+	out = append(out, partition(strongUnverified)...)
+	out = append(out, partition(weak)...)
+	if trace != nil && len(out) > 0 && out[0].rel.ID != cands[0].rel.ID && protocolOf(out[0].rel) != core.ProtocolUsenet {
+		if i := out[0].trace; i >= 0 && i < len(trace.Candidates) {
+			trace.Candidates[i].Route = "usenet provider backing off"
+		}
+		trace.Routing = "debrid first: usenet provider backing off"
+	}
+	return out
+}
+
 // protocolOf is a release's routing source. An addon's HTTP stream is
 // read like a debrid file (HTTPS ranges from a CDN), so it routes with
 // debrid; it is never known to be cached, so only an explicit debrid
@@ -163,8 +230,15 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	if len(cands) < 2 {
 		return cands
 	}
+	usenetBackoff := s.usenetBackingOff()
+	if usenetBackoff {
+		cands = s.demoteBackingOffUsenet(cands, trace)
+	}
 	rcfg := s.resolverCfg()
 	mode := strings.ToLower(strings.TrimSpace(rcfg.SourcePreference))
+	if usenetBackoff && mode == PreferUsenet {
+		mode = PreferAuto
+	}
 	explicit := mode == PreferDebrid || mode == PreferUsenet
 	preferredProtocol := core.ProtocolUsenet
 	if mode == PreferDebrid {
@@ -309,6 +383,9 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 			trace.Candidates[out[1].trace].Route = "hedge: checked alongside on " + sourceName(protocolOf(out[1].rel))
 		}
 		trace.Routing = sourceName(want) + " first: " + why
+	}
+	if usenetBackoff {
+		return s.demoteBackingOffUsenet(out, nil)
 	}
 	return out
 }

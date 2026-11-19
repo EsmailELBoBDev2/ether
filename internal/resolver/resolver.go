@@ -98,7 +98,10 @@ type Options struct {
 	// LibraryProfiles resolves a title's per-library quality profile; nil
 	// leaves selection to the existing home/away defaults.
 	LibraryProfiles LibraryProfiles
-	Logger          *slog.Logger
+	// UsenetServing reports whether at least one primary Usenet provider is
+	// able to serve new picks right now (false when all are in backoff).
+	UsenetServing func() bool
+	Logger        *slog.Logger
 	Now             func() time.Time
 	MaxTraces       int
 	RetentionDays   int // posts older than this are penalised; 0 = no extra penalty
@@ -240,6 +243,7 @@ type Service struct {
 	discovered     func(context.Context, *core.Title) []core.Release
 	observed       func(context.Context, *core.Title, core.Release)
 	invalidated    func(context.Context, string)
+	usenetServing  func() bool
 	indexer        core.Indexer
 	health         core.HealthChecker
 	db             *sql.DB
@@ -308,7 +312,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated,
+	s := &Service{episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, reps: map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
@@ -1049,6 +1053,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		sort.SliceStable(cands, func(i, j int) bool {
 			return strings.EqualFold(cands[i].rel.Info.VideoCodec, req.PreferVideoCodec) && !strings.EqualFold(cands[j].rel.Info.VideoCodec, req.PreferVideoCodec)
 		})
+	}
+	if req.Prefer == "" && pin == nil {
+		cands = s.demoteBackingOffUsenet(cands, &trace)
 	}
 	// resolvePreferred drops the preferred release from cands in place.
 	var preferredCand *candidate
@@ -1904,7 +1911,8 @@ func (s *Service) orderCandidates(cands []candidate, title *core.Title, trace *T
 		soft = s.orderPreferenceCandidates(soft, title, trace)
 		return append(strict, soft...)
 	}
-	return append(orderGroup(confirmed), orderGroup(unverified)...)
+	ordered := append(orderGroup(confirmed), orderGroup(unverified)...)
+	return s.demoteBackingOffUsenet(ordered, trace)
 }
 
 func (s *Service) orderPreferenceCandidates(cands []candidate, title *core.Title, trace *Trace) []candidate {

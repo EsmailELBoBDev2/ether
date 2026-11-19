@@ -33,6 +33,7 @@ import { LibraryCaches } from "../libraries/LibraryCache";
 import { librariesApi } from "../libraries/api";
 import { formatDuration, parseDuration, type DurationUnit } from "../settings/duration";
 import { useDiscoverySettings } from "../viewers/sections/WatchlistDefaults";
+import { CacheLibrary } from "./CacheLibrary";
 import { CacheExplorer } from "./CacheExplorer";
 import { CacheOverview } from "./CacheOverview";
 import { WarmingPolicy } from "./WarmingControls";
@@ -44,6 +45,7 @@ const CACHE_TABS = localized(
     [
       { key: "overview", label: t("Overview") },
       { key: "explorer", label: t("Explorer") },
+      { key: "library", label: t("Library") },
       { key: "preloading", label: t("Preloading") },
       { key: "libraries", label: t("Libraries") },
     ] as const,
@@ -451,13 +453,15 @@ export default function Cache() {
               ? t("Cache overview")
               : tab === "explorer"
                 ? t("Cache explorer")
-                : tab === "libraries"
-                  ? t("Library file caches")
-                  : t("Cache preloading")
+                : tab === "library"
+                  ? t("Release library")
+                  : tab === "libraries"
+                    ? t("Library file caches")
+                    : t("Cache preloading")
           }
           className={cn(
             "app-scroll flex min-h-0 flex-1 flex-col bg-bg",
-            tab === "explorer"
+            tab === "explorer" || tab === "library"
               ? "overflow-hidden"
               : tab === "overview"
                 ? "overflow-y-auto cockpit:overflow-hidden"
@@ -500,6 +504,10 @@ export default function Cache() {
                 onPin={(releaseId, pinned) => void action("pin", { releaseId, pinned })}
                 onClear={(id, title, block) => clearRelease(id, title, block)}
               />
+            </div>
+          ) : tab === "library" ? (
+            <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col p-4 sm:p-5">
+              <CacheLibrary />
             </div>
           ) : tab === "libraries" ? (
             <div className="mx-auto w-full max-w-[1600px] p-4 sm:p-5">

@@ -38,6 +38,7 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	if episode <= 0 {
 		return true
 	}
+	origSeason, origEpisode := season, episode
 	absolute := playbackAbsoluteEpisode(title, season, episode)
 	var valid bool
 	season, episode, valid = targetEpisodeNumbers(p.Target, season, episode)
@@ -64,11 +65,27 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 	if len(baseInfo.Seasons) == 0 && len(fullInfo.Seasons) > 0 {
 		baseInfo.Seasons = fullInfo.Seasons
 	}
+	matchesEpisode := func(info core.ReleaseInfo) bool {
+		if releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute) {
+			return true
+		}
+		if p.Target != nil && p.Target.CanonicalSeason == origSeason && p.Target.CanonicalEpisode == origEpisode {
+			if releaseparse.EpisodeMatches(info, origSeason, origEpisode) {
+				return true
+			}
+			for _, n := range p.Target.Aliases {
+				if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	if len(baseInfo.Episodes) > 0 || len(baseInfo.AbsoluteEpisodes) > 0 {
-		return releaseparse.EpisodeMatchesNumbering(baseInfo, season, episode, absolute)
+		return matchesEpisode(baseInfo)
 	}
 	if len(fullInfo.Episodes) > 0 || len(fullInfo.AbsoluteEpisodes) > 0 {
-		return releaseparse.EpisodeMatchesNumbering(fullInfo, season, episode, absolute)
+		return matchesEpisode(fullInfo)
 	}
 	return true
 }
@@ -103,6 +120,7 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 			episode = title.Key.Episode()
 		}
 	}
+	origSeason, origEpisode := season, episode
 	absolute := playbackAbsoluteEpisode(title, season, episode)
 	var valid bool
 	season, episode, valid = targetEpisodeNumbers(rel.Target, season, episode)
@@ -132,12 +150,30 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 				for _, n := range info.Seasons {
 					found = found || n == season
 				}
+				if !found && rel.Target != nil && rel.Target.CanonicalSeason == origSeason && rel.Target.CanonicalEpisode == origEpisode {
+					for _, alias := range rel.Target.Aliases {
+						for _, n := range info.Seasons {
+							found = found || n == alias.Season
+						}
+					}
+				}
 				if !found {
 					return false
 				}
 			}
-		} else if !releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute) {
-			return false
+		} else {
+			matched := releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute)
+			if !matched && rel.Target != nil && rel.Target.CanonicalSeason == origSeason && rel.Target.CanonicalEpisode == origEpisode {
+				for _, alias := range rel.Target.Aliases {
+					if releaseparse.EpisodeMatches(info, alias.Season, alias.Episode) {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
+				return false
+			}
 		}
 	}
 	if rel.Target != nil && episode > 0 &&

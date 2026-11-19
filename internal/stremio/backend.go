@@ -149,10 +149,11 @@ func (s *Service) Test(ctx context.Context, cfg config.Indexer) error {
 }
 
 // Search implements newznab.Backend. Movies are looked up by id and
-// episodes by id, season and episode (lookupID: IMDb, else TMDB, else a
-// mapped anime database id); a season-level request (Episode 0) asks for
-// the season's first episode and keeps whole-season packs. Titles the
-// addon cannot be asked about, and show-level requests, have no answer.
+// episodes by id, season and episode (lookupIDs: IMDb, else TMDB, else a
+// mapped anime database id, plus bounded release aliases); a season-level
+// request (Episode 0) asks for the season's first episode and keeps
+// whole-season packs. Titles the addon cannot be asked about, and
+// show-level requests, have no answer.
 func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve func(context.Context, string) error) ([]core.Release, error) {
 	switch req.Type {
 	case core.TypeMovie:
@@ -163,29 +164,66 @@ func (b *Backend) Search(ctx context.Context, req core.SearchRequest, reserve fu
 	default:
 		return nil, nil
 	}
-	look, ok := b.lookupID(ctx, req)
-	if !ok {
+	looks := b.lookupIDs(ctx, req)
+	if len(looks) == 0 {
 		return nil, nil
 	}
-	kind, id, packs := look.kind, look.id, look.packs
-	if err := reserve(ctx, "hit"); err != nil {
-		return nil, err
-	}
-	var answer struct {
-		Streams []stream `json:"streams"`
-	}
-	if err := getJSON(ctx, b.client, b.base, "/stream/"+kind+"/"+url.PathEscape(id)+".json", maxStreams, &answer); err != nil {
-		var he *httpError
-		if errors.As(err, &he) && (he.status == http.StatusTooManyRequests || he.status == http.StatusServiceUnavailable && he.retry != "") {
-			return nil, &newznab.RateLimitError{RetryAfter: he.retry, Err: err}
+	var merged []core.Release
+	seen := map[string]bool{}
+	var totalNoHash, totalAmbiguous int
+	var firstErr error
+	succeeded := 0
+	for _, look := range looks {
+		if len(merged) >= maxResults {
+			break
 		}
-		return nil, err
+		if err := reserve(ctx, "hit"); err != nil {
+			if succeeded > 0 {
+				break
+			}
+			return nil, err
+		}
+		var answer struct {
+			Streams []stream `json:"streams"`
+		}
+		if err := getJSON(ctx, b.client, b.base, "/stream/"+look.kind+"/"+url.PathEscape(look.id)+".json", maxStreams, &answer); err != nil {
+			var he *httpError
+			if errors.As(err, &he) && (he.status == http.StatusTooManyRequests || he.status == http.StatusServiceUnavailable && he.retry != "") {
+				if succeeded > 0 {
+					break
+				}
+				return nil, &newznab.RateLimitError{RetryAfter: he.retry, Err: err}
+			}
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		succeeded++
+		rels, skippedNoHash, skippedAmbiguous := convertWith(answer.Streams, req, look.packs, convertOptions{
+			origin: b.origin(), instance: b.instance, season: look.season, entryEpisode: look.entryEpisode, specialEpisode: look.specialEpisode,
+		})
+		totalNoHash += skippedNoHash
+		totalAmbiguous += skippedAmbiguous
+		for _, rel := range rels {
+			if seen[rel.GUID] {
+				continue
+			}
+			seen[rel.GUID] = true
+			merged = append(merged, rel)
+			if len(merged) >= maxResults {
+				break
+			}
+		}
 	}
-	rels, skippedNoHash, skippedAmbiguous := convertWith(answer.Streams, req, packs, convertOptions{
-		origin: b.origin(), instance: b.instance, entryEpisode: look.entryEpisode, specialEpisode: look.specialEpisode,
-	})
-	b.logSkipped(skippedNoHash, skippedAmbiguous)
-	return rels, nil
+	if succeeded == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	b.logSkipped(totalNoHash, totalAmbiguous)
+	return merged, nil
 }
 
 // logSkipped warns about skipped streams (no usable torrent, NZB or HTTP
@@ -289,6 +327,7 @@ type convertOptions struct {
 	origin string
 	// instance identifies the configured addon in HTTP and NZB GUIDs.
 	instance string
+	season   int
 	// entryEpisode is the episode number inside the anime database entry
 	// the addon was asked for (0 for IMDb and TMDB lookups).
 	entryEpisode   int
@@ -337,7 +376,7 @@ func convertWith(streams []stream, req core.SearchRequest, packs bool, opts conv
 		torrent, file := names(text, s.BehaviorHints.Filename)
 		var name string
 		if packs {
-			if !isSeasonPack(torrent, req.Season) {
+			if !isSeasonPack(torrent, cmp.Or(opts.season, req.Season)) {
 				continue
 			}
 			name = torrent
@@ -741,7 +780,7 @@ func pickName(req core.SearchRequest, file, torrent string) string {
 				}
 			}
 		}
-		if req.Type != core.TypeMovie && req.Episode > 0 && releaseparse.EpisodeMatches(info, req.Season, req.Episode) {
+		if req.Type != core.TypeMovie && req.Episode > 0 && releaseparse.EpisodeMatchesRequest(info, req) {
 			n += 2
 		}
 		if info.Height > 0 {

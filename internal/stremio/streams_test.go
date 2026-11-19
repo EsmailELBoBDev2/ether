@@ -256,3 +256,74 @@ func TestFetchNZBFromAddonOriginOnly(t *testing.T) {
 		t.Fatalf("grab budget ignored: %v", err)
 	}
 }
+
+func TestAddonFixtureQueriesCanonicalAndAliasNumbering(t *testing.T) {
+	const manifest = `{"id":"addon","resources":[{"name":"stream","types":["series","movie"],"idPrefixes":["tt"]}],"types":["series","movie"]}`
+	canonicalBody := `{"streams":[
+	 {"name":"Torrentio","title":"One.Piece.-.750.-.ENG.UNCUT.1080p.WEB.H.264.-NanDesuKa.(FUNi)\n👤 42 💾 1.2 GB","infoHash":"` + hashA + `"},
+	 {"name":"Torrentio","title":"One Piece Season 18 Complete 1080p WEB-DL\nOne.Piece.S18E04.A.Desperate.Situation.1080p.WEB-DL.mkv\n👤 20 💾 900 MB","infoHash":"` + hashC + `","fileIdx":3}
+	]}`
+	aliasBody := `{"streams":[
+	 {"name":"Torrentio","title":"[Judas] One Piece - S18E04 [1080p]\n👤 35 💾 550 MB","infoHash":"` + hashB + `"},
+	 {"name":"Torrentio","title":"One Piece Season 18 Complete 1080p WEB-DL\nOne.Piece.S18E04.A.Desperate.Situation.1080p.WEB-DL.mkv\n👤 20 💾 900 MB","infoHash":"` + hashC + `","fileIdx":3}
+	]}`
+	f := &fakeAddon{
+		manifest: manifest,
+		streams: map[string]string{
+			"/stream/series/tt0388629:1:750.json": canonicalBody,
+			"/stream/series/tt0388629:18:4.json":  aliasBody,
+		},
+	}
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+
+	b := backendWith(t, srv.URL, Options{Client: srv.Client()}, "ix1")
+	req := core.SearchRequest{
+		Type:            core.TypeEpisode,
+		IDs:             core.IDs{IMDB: "tt0388629", TMDB: 37854, TVDB: 81797},
+		Title:           "One Piece",
+		Season:          1,
+		Episode:         750,
+		AbsoluteEpisode: 750,
+		Anime:           true,
+		ReleaseAliases:  []core.EpisodeNumber{{Season: 18, Episode: 4}},
+	}
+	rels, err := b.Search(t.Context(), req, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotReqs := f.streamRequests()
+	if len(gotReqs) != 2 || gotReqs[0] != "/stream/series/tt0388629:1:750.json" || gotReqs[1] != "/stream/series/tt0388629:18:4.json" {
+		t.Fatalf("stream requests = %v, want canonical then alias", gotReqs)
+	}
+	if len(rels) != 3 {
+		t.Fatalf("got %d releases (%+v), want 3 deduplicated releases", len(rels), rels)
+	}
+	if rels[0].InfoHash != hashA || len(rels[0].Info.AbsoluteEpisodes) != 1 || rels[0].Info.AbsoluteEpisodes[0] != 750 {
+		t.Fatalf("rels[0] = %+v", rels[0])
+	}
+	if rels[1].InfoHash != hashC || rels[1].FileName != "One.Piece.S18E04.A.Desperate.Situation.1080p.WEB-DL" || len(rels[1].Info.Seasons) != 1 || rels[1].Info.Seasons[0] != 18 || len(rels[1].Info.Episodes) != 1 || rels[1].Info.Episodes[0] != 4 {
+		t.Fatalf("pack alias line was not chosen by shared matcher: %+v", rels[1])
+	}
+	if rels[2].InfoHash != hashB || len(rels[2].Info.Seasons) != 1 || rels[2].Info.Seasons[0] != 18 || rels[2].Info.Episodes[0] != 4 {
+		t.Fatalf("rels[2] = %+v", rels[2])
+	}
+
+	// ReleaseAliasesOnly queries only the alias route without repeating canonical.
+	fOnly := &fakeAddon{
+		manifest: manifest,
+		streams:  map[string]string{"/stream/series/tt0388629:18:4.json": aliasBody},
+	}
+	srvOnly := httptest.NewServer(fOnly.handler(t))
+	defer srvOnly.Close()
+	bOnly := backendWith(t, srvOnly.URL, Options{Client: srvOnly.Client()}, "ix2")
+	aliasOnly := req
+	aliasOnly.ReleaseAliasesOnly = true
+	relsOnly, err := bOnly.Search(t.Context(), aliasOnly, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fOnly.streamRequests(); len(got) != 1 || got[0] != "/stream/series/tt0388629:18:4.json" || len(relsOnly) != 2 {
+		t.Fatalf("alias-only requests=%v rels=%+v", got, relsOnly)
+	}
+}

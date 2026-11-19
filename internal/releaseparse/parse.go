@@ -1053,8 +1053,12 @@ func seasonAbsoluteAnnotation(name string) (number, start, end int) {
 
 // releaseTagFollows reports whether rest (the text after an episode
 // number) is empty or starts with a release tag: a resolution, source,
-// codec, an anime CRC or END.
+// codec, an anime CRC, END, or language/edition tags immediately followed
+// by an unconditional technical block ("- ENG UNCUT 1080p WEB").
 func releaseTagFollows(rest string) bool {
+	if rest != "" && rest[0] != ' ' {
+		return false
+	}
 	trimmed := strings.TrimSpace(rest)
 	tok, _, _ := strings.Cut(trimmed, " ")
 	if tok == "" {
@@ -1070,6 +1074,20 @@ func releaseTagFollows(rest string) bool {
 	switch u {
 	case "END", "FINAL", "BD", "BLURAY", "WEB", "WEB-DL", "WEBRIP", "HDTV", "DVD", "X264", "X265", "HEVC", "H264", "H265", "AV1", "AAC", "FLAC", "UNCENSORED", "VOSTFR", "MULTI", "DUAL", "MULTISUB", "MULTISUBS", "SUBS", "SUBBED", "DUBBED", "CR":
 		return true
+	}
+	probe := "x " + trimmed
+	cut := -1
+	for _, kw := range boundaryKeywords {
+		if !titleWordKeywords[kw] {
+			if idx := tokenIndex(probe, kw); idx > 0 && (cut < 0 || idx < cut) {
+				cut = idx
+			}
+		}
+	}
+	if cut > 0 {
+		if meta := contextualMetadataAt(probe, cut); meta > 0 && strings.Trim(probe[1:meta], " -") == "" {
+			return true
+		}
 	}
 	return false
 }

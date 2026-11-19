@@ -141,7 +141,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			return core.ReleaseNumbering{}, nil
 		case "group":
 			season, episode, err := a.episodeorder.SearchNumbering(ctx, show, req.Season, req.Episode, cachedOnly)
-			out := core.ReleaseNumbering{}
+			out := core.ReleaseNumbering{Explicit: true}
 			if season > 0 && episode > 0 {
 				out.Aliases = []core.EpisodeNumber{{Season: season, Episode: episode}}
 				out.PackTargets = out.Aliases

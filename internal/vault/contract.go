@@ -315,3 +315,9 @@ type Chooser interface {
 type Membership interface {
 	Kept(ctx context.Context, releases []core.Release) (map[string]bool, error)
 }
+
+// SearchCounter counts indexer searches the library made unnecessary (the
+// resolver's fast path), separately from grabs avoided (Touch).
+type SearchCounter interface {
+	SearchAvoided(ctx context.Context, key Key) error
+}

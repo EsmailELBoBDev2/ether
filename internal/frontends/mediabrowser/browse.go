@@ -637,23 +637,21 @@ func (i *instance) browseRoutes() error {
 	if err := add("GET", "/UserViews/GroupingOptions", i.groupingOptions); err != nil {
 		return err
 	}
-	root := func(w http.ResponseWriter, r *http.Request) {
-		if i.protocol != "jellyfin" {
-			http.NotFound(w, r)
-			return
+	if i.protocol == "jellyfin" {
+		root := func(w http.ResponseWriter, r *http.Request) {
+			v, _, err := i.viewer(r)
+			if err != nil || v == nil {
+				http.Error(w, "Unauthorized", 401)
+				return
+			}
+			i.writeUserRoot(w, r, v)
 		}
-		v, _, err := i.viewer(r)
-		if err != nil || v == nil {
-			http.Error(w, "Unauthorized", 401)
-			return
+		if err := add("GET", "/Items/Root", root); err != nil {
+			return err
 		}
-		i.writeUserRoot(w, r, v)
-	}
-	if err := add("GET", "/Items/Root", root); err != nil {
-		return err
-	}
-	if err := add("GET", "/Users/{userId}/Items/Root", root); err != nil {
-		return err
+		if err := add("GET", "/Users/{userId}/Items/Root", root); err != nil {
+			return err
+		}
 	}
 	if err := add("GET", "/Movies/Recommendations", func(w http.ResponseWriter, r *http.Request) { i.recommendations(w, r, "movie") }); err != nil {
 		return err

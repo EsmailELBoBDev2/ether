@@ -386,11 +386,18 @@ func bodyProbeSlots(n int) map[int]bool {
 // mid-file samples run concurrently with pipelined STATs of the rest, and
 // the first article confirmed missing on every provider tier ends the
 // check immediately — outstanding STAT and BODY work is cancelled rather
-// than awaited.
+// than awaited. When STAT has been failing real downloads, BODY probes widen
+// across the spread sample and include a full decoded segment fetch.
 func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs ...func(slotRef) bool) (out sampleOutcome) {
 	refs := healthSample(files, e.opts.HealthSamples)
 	// BODY probes stay on the spread sample; the head is STAT-only.
-	probes := bodyProbeSlots(len(refs))
+	var probes map[int]bool
+	fullSlot := -1
+	if e.statUntrusted() {
+		probes, fullSlot = untrustedBodyProbeSlots(len(refs))
+	} else {
+		probes = bodyProbeSlots(len(refs))
+	}
 	refs = withVolumeSamples(refs, files)
 	refs = withHead(refs, files, healthHeadSlots)
 	out.total = len(refs)
@@ -417,18 +424,24 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 	for i, ref := range refs {
 		id := ref.pf.msgID(ref.slot)
 		body := probes[i]
+		full := i == fullSlot
 		switch {
 		case id == "":
 			events <- event{body: body, missing: true, ref: ref}
 		case body:
 			out.bodyProbes++
 			wg.Add(1)
-			go func(ref slotRef, id string) {
+			go func(ref slotRef, id string, full bool) {
 				defer wg.Done()
 				started := time.Now()
-				err := e.probeSampleBody(ctx, ref, id)
+				var err error
+				if full {
+					err = e.probeFullSampleBody(ctx, ref, id)
+				} else {
+					err = e.probeSampleBody(ctx, ref, id)
+				}
 				events <- event{body: true, missing: isMissing(err), id: id, err: err, dur: time.Since(started)}
-			}(ref, id)
+			}(ref, id, full)
 		default:
 			statIDs = append(statIDs, id)
 		}
@@ -438,6 +451,9 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 		go func() {
 			defer wg.Done()
 			err := streamer.StatStream(ctx, statIDs, func(id string, present bool) bool {
+				if present {
+					e.noteStatPresent(id)
+				}
 				events <- event{missing: !present, id: id}
 				return ctx.Err() == nil
 			})
@@ -462,6 +478,9 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 							return
 						}
 						present, err := e.fetcher.Stat(ctx, id)
+						if err == nil && present {
+							e.noteStatPresent(id)
+						}
 						events <- event{missing: (!present && err == nil) || isMissing(err), id: id, err: err}
 					}
 				}
@@ -559,14 +578,16 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 
 // alternatePresent reports whether a repost of ref's part is available,
 // checked the same way the primary was: a BODY probe (whose yEnc header
-// must match the slot) or a STAT.
+// must match the slot) or a STAT (upgraded to BODY when STAT is untrusted).
 func (e *Engine) alternatePresent(ctx context.Context, ref slotRef, body bool) bool {
+	verifyBody := body || e.statUntrusted()
 	for _, alt := range ref.pf.alternates(ref.slot) {
-		if body {
+		if verifyBody {
 			if e.probeBody(ctx, ref, alt) == nil {
 				return true
 			}
 		} else if present, err := e.fetcher.Stat(ctx, alt); err == nil && present {
+			e.noteStatPresent(alt)
 			return true
 		}
 		if ctx.Err() != nil {
@@ -592,7 +613,9 @@ func (e *Engine) probeSampleBody(ctx context.Context, ref slotRef, id string) er
 	checker, ok := e.fetcher.(bodyPartChecker)
 	if ok && ref.pf.numSlots() > 1 && ref.pf.untrustedMeta() {
 		want := ref.pf.expectedPart(ref.slot)
-		return checker.CheckBodyPart(ctx, id, ref.pf.groups, healthPriority(ctx), core.ArticlePart{Begin: want.Begin, End: want.End})
+		err := checker.CheckBodyPart(ctx, id, ref.pf.groups, healthPriority(ctx), core.ArticlePart{Begin: want.Begin, End: want.End})
+		e.noteBodyOutcome(id, err, ctx)
+		return err
 	}
 	err := e.probeBody(ctx, ref, id)
 	if !ok || !errors.Is(err, core.ErrArticleCorrupt) || ref.pf.numSlots() <= 1 {
@@ -600,6 +623,7 @@ func (e *Engine) probeSampleBody(ctx context.Context, ref slotRef, id string) er
 	}
 	want := ref.pf.expectedPart(ref.slot)
 	err = checker.CheckBodyPart(ctx, id, ref.pf.groups, healthPriority(ctx), core.ArticlePart{Begin: want.Begin, End: want.End})
+	e.noteBodyOutcome(id, err, ctx)
 	if err == nil {
 		ref.pf.markUntrustedMeta()
 	}
@@ -610,12 +634,15 @@ func (e *Engine) probeSampleBody(ctx context.Context, ref slotRef, id string) er
 // validates the part against the NZB.
 func (e *Engine) probeBody(ctx context.Context, ref slotRef, id string) error {
 	prio := healthPriority(ctx)
-	if checker, ok := e.fetcher.(bodyPartChecker); ok {
-		return checker.CheckBodyPart(ctx, id, ref.pf.groups, prio, ref.pf.expectedPart(ref.slot))
+	var err error
+	switch checker := e.fetcher.(type) {
+	case bodyPartChecker:
+		err = checker.CheckBodyPart(ctx, id, ref.pf.groups, prio, ref.pf.expectedPart(ref.slot))
+	case bodyChecker:
+		err = checker.CheckBody(ctx, id, ref.pf.groups, prio)
+	default:
+		_, err = e.fetcher.Body(ctx, id, ref.pf.groups, prio)
 	}
-	if checker, ok := e.fetcher.(bodyChecker); ok {
-		return checker.CheckBody(ctx, id, ref.pf.groups, prio)
-	}
-	_, err := e.fetcher.Body(ctx, id, ref.pf.groups, prio)
+	e.noteBodyOutcome(id, err, ctx)
 	return err
 }

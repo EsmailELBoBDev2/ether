@@ -191,6 +191,7 @@ type Engine struct {
 	repairSummaryBytes atomic.Int64
 
 	fetcher    core.ArticleFetcher
+	statTrust  *engineStatTrust
 	cache      core.SegmentCache
 	opts       Options
 	log        *slog.Logger
@@ -261,6 +262,7 @@ func New(fetcher core.ArticleFetcher, cache core.SegmentCache, opts Options, log
 		repairGate:    make(chan struct{}, 1),
 		repairPersist: make(chan struct{}, 1),
 		fetcher:       fetcher,
+		statTrust:     newEngineStatTrust(time.Now),
 		cache:         cache,
 		opts:          opts,
 		log:           logger.With("component", "stream"),

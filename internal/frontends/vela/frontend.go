@@ -447,9 +447,11 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(i.identityContext(r))
 	// Authentication/idempotency can fail before ServeMux dispatches. Record
-	// only its registered route template for those warnings too.
+	// only its registered route template for those warnings too. Unknown routes
+	// and unsupported methods dispatch straight to ServeMux so they answer 404
+	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
-	if r.Method != "POST" && r.Method != "DELETE" {
+	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "DELETE") {
 		i.mux.ServeHTTP(w, r)
 		return
 	}

@@ -569,6 +569,7 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, id string, prio c
 		data, part, err = e.fetcher.BodyPart(ctx, id, pf.groups, prio)
 	}
 	fo.meter.end(started, len(data), err == nil, prio)
+	e.noteBodyOutcome(id, err, ctx)
 	if err == nil {
 		e.repairRate.add(int64(len(data)))
 		e.fetches.Add(1)

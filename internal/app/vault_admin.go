@@ -120,6 +120,9 @@ func (a *App) registerVaultAdmin(mux *http.ServeMux) {
 	route("POST /vault/{key}/check", a.checkVaultRecord)
 	var mu sync.Mutex
 	var jobs []vaultProgress
+	importCtx, stopImports := context.WithCancel(context.Background())
+	var active sync.WaitGroup
+	a.closers = append(a.closers, func() { mu.Lock(); stopImports(); mu.Unlock(); active.Wait() })
 	route("GET /vault/import/{id}", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -152,6 +155,12 @@ func (a *App) registerVaultAdmin(mux *http.ServeMux) {
 			return
 		}
 		mu.Lock()
+		if importCtx.Err() != nil {
+			mu.Unlock()
+			cleanup()
+			http.Error(w, "Server stopping", 503)
+			return
+		}
 		if len(jobs) > 0 && jobs[len(jobs)-1].State == "running" {
 			mu.Unlock()
 			cleanup()
@@ -163,10 +172,12 @@ func (a *App) registerVaultAdmin(mux *http.ServeMux) {
 			jobs = jobs[1:]
 		}
 		jobs = append(jobs, vaultProgress{ID: id, State: "running"})
+		active.Add(1)
 		mu.Unlock()
 		go func() {
+			defer active.Done()
 			defer cleanup()
-			err := importer.Run(context.Background(), a.vault, path, guard, func(success, completed bool) {
+			err := importer.Run(importCtx, a.vault, path, guard, func(success, completed bool) {
 				mu.Lock()
 				defer mu.Unlock()
 				j := &jobs[len(jobs)-1]

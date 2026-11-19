@@ -441,6 +441,10 @@ Ether is backed by 5,700+ offline unit, fault-injection, and fuzz tests, a 540k-
 
 ---
 
+## Supporting Ether
+
+Ether is free and always will be: no paid tier, no locked features. If it's made your setup better and you'd like to say thanks, you can leave a one-time tip through [GitHub Sponsors](https://github.com/sponsors/braedonsaunders). It helps pay for the test hardware, code signing and services that keep releases coming.
+
 ## Credits
 
 Thank you to the community contributors and reporters who shaped 0.3.0:

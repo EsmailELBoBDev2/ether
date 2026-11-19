@@ -107,7 +107,8 @@ func (a *assembly) run() []core.HomeRow {
 		}
 		rr := &rankedRow{c: c, items: items, hubID: hubID}
 		if a.layout != nil {
-			p, _ := effectiveHomePolicy(*a.layout, a.user.ID, sectionName(a.section), core.HomeRow{HubID: rr.hubID, Kind: c.kind})
+			target, fallback := a.layoutTarget()
+			p, _ := effectiveHomePolicyFor(*a.layout, a.user.ID, target, fallback, core.HomeRow{HubID: rr.hubID, Kind: c.kind})
 			if p != nil {
 				rr.d.hidden = p.Status == "off" || !whenMatches(p.When, a.hc) || !weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
 				rr.d.pinned = !rr.d.hidden && p.Status == "always"
@@ -531,7 +532,8 @@ func (a *assembly) survivors(sel []*rankedRow) map[*rankedRow]bool {
 		d = *a.layout
 	}
 	out := make(map[*rankedRow]bool, len(sel))
-	for _, hr := range arrangeLayout(rows, d, a.user.ID, a.hc, a.surface(), a.pageLen) {
+	target, fallback := a.layoutTarget()
+	for _, hr := range arrangeLayoutFor(rows, d, a.user.ID, a.hc, target, fallback, a.pageLen) {
 		if r := byID[hr.HubID]; r != nil && !hr.Hidden {
 			out[r] = true
 		}

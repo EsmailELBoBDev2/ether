@@ -150,7 +150,23 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 		// A custom library's Recommended rows are scoped to that library's
 		// membership — the same filter its All browse runs (#549).
 		LibraryMembers: a.libraryRecommendationMembers,
-		UserPolicy:     a.safety.UserPolicy, Allowed: a.safety.Allowed,
+		LibrarySections: func(ctx context.Context) map[int]core.MediaType {
+			if a.libraries == nil {
+				return nil
+			}
+			listed, err := a.libraries.List(ctx)
+			if err != nil {
+				return nil
+			}
+			out := make(map[int]core.MediaType, len(listed))
+			for _, l := range listed {
+				if l.Source != core.LibraryPlugin && (l.MediaType == core.TypeMovie || l.MediaType == core.TypeShow) {
+					out[int(l.ID)] = l.MediaType
+				}
+			}
+			return out
+		},
+		UserPolicy: a.safety.UserPolicy, Allowed: a.safety.Allowed,
 		LLM: a.llm, Trakt: a.trakt, Playlists: a.playlists, Favorites: a.favoriteSignals, NotInterested: a.notInterestedSignals, NotInterestedSnapshot: a.notInterestedSnapshot,
 		ExtraHomeRows: a.extraHomeRows,
 		Dependencies: func(scorer core.PersonalScorer) (core.Recommender, core.CollectionRows, error) {

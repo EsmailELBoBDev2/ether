@@ -68,6 +68,12 @@ func surfaceKey(surface, kind string) string { return surface + "|" + kind }
 // surface is the assembly's surface name.
 func (a *assembly) surface() string { return sectionName(a.section) }
 
+// layoutTarget is the assembly's layout page ("home", "movies", "shows", or
+// "library:<id>") and its media-type fallback ("movies" or "shows").
+func (a *assembly) layoutTarget() (string, string) {
+	return layoutTargetForMedia(a.section, a.hc.SectionID)
+}
+
 // surfaceWeight is the row's prior weight on this surface; 0 = not a
 // default member. Owner collection rows carry their own targeting
 // (ownerCandidate) and weigh 1 wherever they arrive.
@@ -102,7 +108,8 @@ func (a *assembly) ownerPlaced(c *candRow, hubID string) bool {
 	if a.layout == nil {
 		return false
 	}
-	p, _ := effectiveHomePolicy(*a.layout, a.user.ID, a.surface(), core.HomeRow{HubID: hubID, Kind: c.kind})
+	target, fallback := a.layoutTarget()
+	p, _ := effectiveHomePolicyFor(*a.layout, a.user.ID, target, fallback, core.HomeRow{HubID: hubID, Kind: c.kind})
 	return p != nil && p.Status != "off" && !strings.ContainsAny(p.Row, "*?[")
 }
 
@@ -112,7 +119,8 @@ func (a *assembly) ownerAlways(c *candRow, hubID string) bool {
 	if a.layout == nil {
 		return false
 	}
-	p, _ := effectiveHomePolicy(*a.layout, a.user.ID, a.surface(), core.HomeRow{HubID: hubID, Kind: c.kind})
+	target, fallback := a.layoutTarget()
+	p, _ := effectiveHomePolicyFor(*a.layout, a.user.ID, target, fallback, core.HomeRow{HubID: hubID, Kind: c.kind})
 	return p != nil && p.Status == "always" && whenMatches(p.When, a.hc) && weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
 }
 

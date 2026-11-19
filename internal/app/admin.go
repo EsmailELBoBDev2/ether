@@ -75,14 +75,16 @@ func (a *App) buildAdmin() http.Handler {
 		Version:          a.opts.Version,
 		PlexAuth:         &plexAuth{app: a, pins: map[string]*plextv.PIN{}},
 		SignIn:           &plexSignIn{app: a, pins: map[string]*plextv.PIN{}},
-		IsOwnerToken: func(ctx context.Context, token string) bool {
-			if auth.IsOwnerSession(token) {
-				u, err := a.users.OwnerSession(ctx, token)
+		IsOwnerToken: func(ctx context.Context) func(context.Context, string) bool {
+			return func(ctx context.Context, token string) bool {
+				if auth.IsOwnerSession(token) {
+					u, err := a.users.OwnerSession(ctx, token)
+					return err == nil && u.IsOwner
+				}
+				u, err := a.users.Authenticate(ctx, token)
 				return err == nil && u.IsOwner
 			}
-			u, err := a.users.Authenticate(ctx, token)
-			return err == nil && u.IsOwner
-		},
+		}(context.Background()),
 		Sessions: a.users,
 		TestUsenet: func(ctx context.Context, p config.UsenetProvider) error {
 			if a.fetcher != nil {
@@ -198,10 +200,38 @@ func (a *App) buildAdmin() http.Handler {
 			"updates":  a.updateStatus,
 			"storage":  a.storageStatus,
 		},
-		ResolverTraces:     func(context.Context) (any, error) { return a.resolver.Traces(), nil },
-		Users:              a.users,
-		ViewerDirectory:    a.viewerDirectory,
-		Personalization:    a.personalize,
+		ResolverTraces:  func(context.Context) (any, error) { return a.resolver.Traces(), nil },
+		Users:           a.users,
+		ViewerDirectory: a.viewerDirectory,
+		Personalization: a.personalize,
+		LayoutLibraries: func(ctx context.Context) ([]admin.LayoutLibrary, error) {
+			if a.libraries == nil {
+				return []admin.LayoutLibrary{}, nil
+			}
+			libs, err := a.libraries.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]admin.LayoutLibrary, 0, len(libs))
+			for _, l := range libs {
+				if l.Source == core.LibraryPlugin || (l.MediaType != core.TypeMovie && l.MediaType != core.TypeShow) {
+					continue
+				}
+				base := "movies"
+				if l.MediaType == core.TypeShow {
+					base = "shows"
+				}
+				out = append(out, admin.LayoutLibrary{
+					ID:       int(l.ID),
+					Name:     l.Name,
+					Slug:     l.Key,
+					Type:     string(l.MediaType),
+					Section:  "library:" + strconv.Itoa(int(l.ID)),
+					BasePage: base,
+				})
+			}
+			return out, nil
+		},
 		Collections:        a.collections,
 		CatalogHelper:      a.collections,
 		ViewerCatalogRules: a.catalog,

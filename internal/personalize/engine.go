@@ -114,6 +114,9 @@ type Options struct {
 	// Sections maps library section ids to their type, for per-user
 	// allowed sections (default 1 = movies, 2 = shows).
 	Sections map[int]core.MediaType
+	// LibrarySections returns dynamic library section ids -> media types
+	// (custom movie/show libraries created at runtime). Optional.
+	LibrarySections func(context.Context) map[int]core.MediaType
 	// ServerName is the friendly name shown in "Popular on <name>".
 	ServerName func() string
 	// ImageURL builds browser-loadable artwork URLs for the owner UI
@@ -391,6 +394,40 @@ func (e *Engine) serverName() string {
 	return "This Server"
 }
 
+func (e *Engine) allSections(ctx context.Context) map[int]core.MediaType {
+	if ctx == nil {
+		ctx = e.ctx
+	}
+	out := make(map[int]core.MediaType, len(e.opts.Sections))
+	for id, mt := range e.opts.Sections {
+		out[id] = mt
+	}
+	if e.opts.LibrarySections != nil {
+		for id, mt := range e.opts.LibrarySections(ctx) {
+			if id > 0 && (mt == core.TypeMovie || mt == core.TypeShow) {
+				out[id] = mt
+			}
+		}
+	}
+	return out
+}
+
+func (e *Engine) sectionMediaType(ctx context.Context, id int) (core.MediaType, bool) {
+	if id <= 0 {
+		return "", false
+	}
+	if ctx == nil {
+		ctx = e.ctx
+	}
+	if e.opts.LibrarySections != nil {
+		if mt, ok := e.opts.LibrarySections(ctx)[id]; ok && (mt == core.TypeMovie || mt == core.TypeShow) {
+			return mt, true
+		}
+	}
+	mt, ok := e.opts.Sections[id]
+	return mt, ok
+}
+
 // ---- core.Recommender / core.ContextualRecommender ----------------------------
 
 // HomeHubs implements core.Recommender with a context derived from the
@@ -659,11 +696,12 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	layoutVer := e.layoutVersion()
 	day := dayOf(hc.Now, e.loc)
 	intent, intentVer := e.intentFor(u.ID, hc.Now)
-	tune := resolveTuning(layoutDoc, u.ID, sectionName(section))
-	// Movies / TV Shows pages keep what the Home leads with off the page
-	// (the draft layout's switch and Home in a preview).
+	target, fallback := layoutTargetForMedia(section, hc.SectionID)
+	tune := resolveTuningFor(layoutDoc, u.ID, target, fallback)
+	// Movies / TV Shows / library pages keep what the Home leads with off the
+	// page (the draft layout's switch and Home in a preview).
 	var lead *homeLead
-	if section != "" && resolveDedupeHome(layoutDoc, u.ID, sectionName(section)) {
+	if section != "" && resolveDedupeHomeFor(layoutDoc, u.ID, target, fallback) {
 		lead = e.homeLeadFor(ctx, &u, hc, layoutDoc, limit, wait, allow)
 	}
 	key := memoKey{user: u.ID, section: section, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
@@ -935,9 +973,10 @@ func (e *Engine) allowedFor(u *core.User) func(core.MediaType) bool {
 	if u == nil || u.IsOwner || len(u.AllowedLibraries) == 0 {
 		return nil
 	}
+	secs := e.allSections(e.ctx)
 	ok := map[core.MediaType]bool{}
 	for _, id := range u.AllowedLibraries {
-		if t, found := e.opts.Sections[int(id)]; found {
+		if t, found := secs[int(id)]; found {
 			ok[t] = true
 		}
 	}

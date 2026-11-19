@@ -13,6 +13,7 @@ import (
 // SearchQuery scopes a full-text search to a single library (spec §2.3, §3.4).
 type SearchQuery struct {
 	Policy    *libraryfilter.Filter
+	TabPolicy *libraryfilter.Filter
 	Hidden    bool
 	LibraryID core.LibraryID
 	Query     string

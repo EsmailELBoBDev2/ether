@@ -28,7 +28,7 @@ const previewWait = 45 * time.Second
 // marked source "plex". Rows hidden by a layout policy or absent despite an
 // "always" policy are included last with Hidden set; Plex never receives them.
 //
-// section is "" or "home", "movies", "shows", or a library section id.
+// section is "" or "home", "movies", "shows", "library:<id>", or a library section id.
 // The daypart and weekend flag are derived from hc.Now in server local
 // time (hc.Device is kept as given).
 func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubContext, sectionArg string, limit int) (*core.HomePreview, error) {
@@ -39,7 +39,7 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 	if e.opts.UserPolicy != nil {
 		user = e.opts.UserPolicy(user)
 	}
-	sid, section, err := e.resolveSection(sectionArg)
+	sid, section, err := e.resolveSection(ctx, sectionArg)
 	if err != nil {
 		return nil, err
 	}
@@ -76,20 +76,21 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 		}
 	} else {
 		prefix := sectionPrefix(section)
-		sid := fmt.Sprint(hc.SectionID)
+		sidStr := fmt.Sprint(hc.SectionID)
 		var cw []candItem
 		for _, it := range e.continueItems(ctx, user, 50) {
 			if (section == core.TypeMovie) == (it.t.Type == core.TypeMovie) {
 				cw = append(cw, it)
 			}
 		}
+		cw = e.filterLibraryCandItems(ctx, hc.SectionID, cw)
 		if len(cw) > limit {
 			cw = cw[:limit]
 		}
-		head := []core.HomeRow{legacyRow(prefix+".inprogress."+sid, "Continue Watching", KindContinue,
+		head := []core.HomeRow{legacyRow(prefix+".inprogress."+sidStr, "Continue Watching", KindContinue,
 			"Titles you're part-way through in this library (Plex's own row).", cw)}
-		ra := e.recentlyAdded(ctx, user, section, limit)
-		head = append(head, legacyRow(prefix+".recentlyadded."+sid, "Recently Added", KindRecentlyAdded,
+		ra := e.recentlyAddedForSection(ctx, user, section, hc.SectionID, limit)
+		head = append(head, legacyRow(prefix+".recentlyadded."+sidStr, "Recently Added", KindRecentlyAdded,
 			"The newest additions to this library (Plex's own row).", ra))
 		p.Rows = append(head, p.Rows...)
 	}
@@ -135,8 +136,16 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 		def = e.opts.MaxSectionRows
 	}
 	layoutDoc := e.layoutForContext(ctx)
-	p.Rows = arrangeLayout(p.Rows, layoutDoc, user.ID, hc, sectionName(section), def)
-	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, emptiedByRestrictions)
+	// Previewing "movies" or "shows" directly inspects the shared media-type
+	// layout; previewing "library:<id>" or "<id>" inspects that library's
+	// effective layout (customised or inherited from its media type).
+	target, fallback := sectionName(section), sectionName(section)
+	trimmedArg := strings.ToLower(strings.TrimSpace(sectionArg))
+	if section != "" && trimmedArg != "movies" && trimmedArg != "movie" && trimmedArg != "shows" && trimmedArg != "show" && trimmedArg != "tv" {
+		target, fallback = layoutTargetForMedia(section, hc.SectionID)
+	}
+	p.Rows = arrangeLayoutFor(p.Rows, layoutDoc, user.ID, hc, target, fallback, def)
+	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, target, fallback, emptiedByRestrictions)
 	return &p, nil
 }
 
@@ -214,22 +223,16 @@ func (e *Engine) collectionSpecs(ctx context.Context) []core.CollectionSpec {
 	return specs
 }
 
-func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow, d core.HomeLayout, user *core.User, hc core.HubContext, section core.MediaType, emptied map[string]bool) []core.HomeRow {
+func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow, d core.HomeLayout, user *core.User, hc core.HubContext, section core.MediaType, target, fallback string, emptied map[string]bool) []core.HomeRow {
 	if user == nil {
 		return rows
 	}
-	surf := sectionName(section)
 	type activePol struct {
 		pol   core.RowPolicy
 		layer string
 	}
 	var policies []activePol
-	var vPage *core.LayoutPage
-	for _, vl := range d.Viewers {
-		if vl.UserID == user.ID {
-			vPage = pageFor(vl.Pages, surf)
-		}
-	}
+	gPage, vPage := pagesForTarget(d, user.ID, target, fallback)
 	if vPage != nil {
 		for _, pol := range vPage.Rows {
 			if pol.Status == "always" && !strings.ContainsAny(pol.Row, "*?[") {
@@ -237,13 +240,13 @@ func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow
 			}
 		}
 	}
-	if gPage := pageFor(d.Global, surf); gPage != nil {
+	if gPage != nil {
 		for _, pol := range gPage.Rows {
 			if pol.Status != "always" || strings.ContainsAny(pol.Row, "*?[") {
 				continue
 			}
 			hubID, kind, _, _ := e.resolvePolicyIdentity(ctx, pol.Row, user, hc, section, d)
-			eff, effLayer := effectiveHomePolicy(d, user.ID, surf, core.HomeRow{HubID: hubID, Kind: kind})
+			eff, effLayer := effectiveHomePolicyFor(d, user.ID, target, fallback, core.HomeRow{HubID: hubID, Kind: kind})
 			if eff == nil || eff.Status != "always" || effLayer != "global" || eff.Row != pol.Row {
 				continue
 			}
@@ -431,9 +434,11 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 }
 
 // resolveSection maps a preview section name to a library section.
-func (e *Engine) resolveSection(name string) (int, core.MediaType, error) {
+func (e *Engine) resolveSection(ctx context.Context, name string) (int, core.MediaType, error) {
+	secs := e.allSections(ctx)
 	var want core.MediaType
-	switch strings.ToLower(strings.TrimSpace(name)) {
+	trimmed := strings.ToLower(strings.TrimSpace(name))
+	switch trimmed {
 	case "", "home", "foryou", "for-you":
 		return 0, "", nil
 	case "movies", "movie":
@@ -441,23 +446,50 @@ func (e *Engine) resolveSection(name string) (int, core.MediaType, error) {
 	case "shows", "show", "tv":
 		want = core.TypeShow
 	default:
-		id, err := strconv.Atoi(name)
-		if t, ok := e.opts.Sections[id]; err == nil && ok {
+		if id, ok := parseLibrarySection(trimmed); ok {
+			if t, found := secs[id]; found {
+				return id, t, nil
+			}
+			return 0, "", &ValidationError{Problems: []Problem{{"section", "must be home, movies, shows or a library section id"}}}
+		}
+		id, err := strconv.Atoi(trimmed)
+		if t, ok := secs[id]; err == nil && ok {
 			return id, t, nil
 		}
 		return 0, "", &ValidationError{Problems: []Problem{{"section", "must be home, movies, shows or a library section id"}}}
 	}
-	ids := make([]int, 0, len(e.opts.Sections))
-	for id := range e.opts.Sections {
+	ids := make([]int, 0, len(secs))
+	for id := range secs {
 		ids = append(ids, id)
 	}
 	sort.Ints(ids)
 	for _, id := range ids {
-		if e.opts.Sections[id] == want {
+		if secs[id] == want {
 			return id, want, nil
 		}
 	}
 	return 0, "", &ValidationError{Problems: []Problem{{"section", "no " + string(want) + " library"}}}
+}
+
+func (e *Engine) filterLibraryCandItems(ctx context.Context, sectionID int, items []candItem) []candItem {
+	if sectionID <= 0 || len(items) == 0 || e.opts.LibraryMembers == nil {
+		return items
+	}
+	keys := make([]core.RatingKey, len(items))
+	for i, it := range items {
+		keys[i] = it.t.Key
+	}
+	members, _, scoped, err := e.opts.LibraryMembers(ctx, core.LibraryID(sectionID), keys)
+	if err != nil || !scoped {
+		return items
+	}
+	out := make([]candItem, 0, len(items))
+	for _, it := range items {
+		if members[it.t.Key] {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func legacyRow(hubID, title, kind, reason string, items []candItem) core.HomeRow {
@@ -503,9 +535,13 @@ func (e *Engine) playlistsRow(ctx context.Context, user *core.User) (core.HomeRo
 	return r, true
 }
 
-func (e *Engine) recentlyAdded(ctx context.Context, user *core.User, t core.MediaType, limit int) []candItem {
+func (e *Engine) recentlyAddedForSection(ctx context.Context, user *core.User, t core.MediaType, sectionID int, limit int) []candItem {
 	ctx = core.WithCatalogViewer(ctx, user)
-	q := core.BrowseQuery{Filter: core.Filter{Type: t, KnownAddedDate: true, MaxContentRating: user.MaxContentRating}, Sort: core.SortAdded, Desc: true, Limit: limit}
+	fetchLimit := limit
+	if sectionID > 0 && e.opts.LibraryMembers != nil {
+		fetchLimit = max(limit*4, 50)
+	}
+	q := core.BrowseQuery{Filter: core.Filter{Type: t, KnownAddedDate: true, MaxContentRating: user.MaxContentRating}, Sort: core.SortAdded, Desc: true, Limit: fetchLimit}
 	page, err := e.catalog.Browse(ctx, q)
 	if err != nil {
 		return nil
@@ -513,6 +549,10 @@ func (e *Engine) recentlyAdded(ctx context.Context, user *core.User, t core.Medi
 	out := make([]candItem, 0, len(page.Items))
 	for _, it := range page.Items {
 		out = append(out, candItem{t: it})
+	}
+	out = e.filterLibraryCandItems(ctx, sectionID, out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out
 }

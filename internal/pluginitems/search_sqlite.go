@@ -64,6 +64,9 @@ func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []stri
 	if err := s.appendVisibility(ctx, &where, &args, q.LibraryID, q.Policy, q.Hidden); err != nil {
 		return BrowsePage{}, err
 	}
+	if err := s.appendVisibility(ctx, &where, &args, q.LibraryID, q.TabPolicy, false); err != nil {
+		return BrowsePage{}, err
+	}
 
 	var total int
 	countSQL := `SELECT COUNT(*) FROM plugin_item_fts f JOIN plugin_items i ON i.seq = f.rowid WHERE ` + where.String()

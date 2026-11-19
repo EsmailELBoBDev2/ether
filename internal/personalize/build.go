@@ -836,7 +836,7 @@ func (e *Engine) clearOwnerRows() {
 	e.memoMu.Unlock()
 }
 
-func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, d core.HomeLayout) (prefix, scope string) {
+func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, sectionID int, d core.HomeLayout) (prefix, scope string) {
 	raw, _ := json.Marshal(d)
 	hash := fnv.New64a()
 	_, _ = hash.Write(raw)
@@ -844,7 +844,8 @@ func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, d core.H
 	if e.opts.CatalogRulesRevision != nil {
 		ruleRevision = e.opts.CatalogRulesRevision(user)
 	}
-	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + string(section) + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
+	target, _ := layoutTargetForMedia(section, sectionID)
+	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + target + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
 	prefix = strconv.FormatInt(user.ID, 10) + "|"
 	return prefix, scope
 }
@@ -853,7 +854,7 @@ func (e *Engine) cachedOwnerCollection(user *core.User, hc core.HubContext, sect
 	if user == nil || collID == "" || e.opts.Collections == nil {
 		return core.CollectionRow{}, false
 	}
-	prefix, scope := e.ownerScopeKey(user, section, d)
+	prefix, scope := e.ownerScopeKey(user, section, hc.SectionID, d)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -888,7 +889,8 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	if e.opts.Collections == nil {
 		return nil, 0
 	}
-	prefix, scope := e.ownerScopeKey(user, section, d)
+	target, fallback := layoutTargetForMedia(section, hc.SectionID)
+	prefix, scope := e.ownerScopeKey(user, section, hc.SectionID, d)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
 	ent := e.owner[key]
@@ -902,7 +904,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 		ent.loading = true
 		ent.done = make(chan struct{})
 		u := *user
-		go e.fetchOwnerRows(key, &u, hc, ent, placedCollections(d, user.ID, sectionName(section)))
+		go e.fetchOwnerRows(key, &u, hc, ent, placedCollectionsFor(d, user.ID, target, fallback))
 	}
 	done, have := ent.done, !ent.at.IsZero()
 	if !have {
@@ -931,7 +933,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	var selected map[string]bool
 	if len(layoutOnly) > 0 {
 		selected = map[string]bool{}
-		for _, id := range selectedCollections(d, user.ID, sectionName(section), hc) {
+		for _, id := range selectedCollectionsFor(d, user.ID, target, fallback, hc) {
 			selected[id] = true
 		}
 	}
@@ -1015,7 +1017,8 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 // layout pass applies that When.
 func collectionScheduleAllows(d core.HomeLayout, user int64, section core.MediaType, hc core.HubContext, cr core.CollectionRow) bool {
 	row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
-	if p, layer := effectiveHomePolicy(d, user, sectionName(section), row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
+	target, fallback := layoutTargetForMedia(section, hc.SectionID)
+	if p, layer := effectiveHomePolicyFor(d, user, target, fallback, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
 		return true
 	}
 	sc := cr.Schedule

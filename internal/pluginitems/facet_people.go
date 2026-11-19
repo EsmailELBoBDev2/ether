@@ -18,6 +18,7 @@ type FacetPeopleQuery struct {
 	Policy    *libraryfilter.Filter
 	FieldKey  string
 	Order     string // "name" (default) | "count"
+	Query     string
 	Offset    int
 	Limit     int
 }
@@ -124,12 +125,18 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 
 	minPersonID := core.PluginPersonIDBase
 	maxPersonID := core.PluginPersonIDBase + core.PluginPersonIDSpan
-	qArgs := append(append([]any(nil), itemArgs...), fieldKey, minPersonID, maxPersonID, limit+1, offset)
+	qArgs := append(append([]any(nil), itemArgs...), fieldKey, minPersonID, maxPersonID)
+	queryCond := ""
+	if rawQuery := strings.ToLower(strings.TrimSpace(q.Query)); rawQuery != "" {
+		queryCond = ` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`
+		qArgs = append(qArgs, "%"+escapeLike(rawQuery)+"%")
+	}
+	qArgs = append(qArgs, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
 		 FROM plugin_item_fields f
 		 JOIN plugin_items i ON i.item_ref = f.item_ref
-		 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''
+		 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`+queryCond+`
 		 GROUP BY f.v_int
 		 ORDER BY `+orderBy+`
 		 LIMIT ? OFFSET ?`, qArgs...)

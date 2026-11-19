@@ -21,6 +21,7 @@ type BrowseQuery struct {
 	// NoTotal avoids count queries for clients using cursor continuation.
 	NoTotal   bool
 	Policy    *libraryfilter.Filter
+	TabPolicy *libraryfilter.Filter
 	Hidden    bool
 	LibraryID core.LibraryID
 	ParentRef core.ItemRef
@@ -141,7 +142,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 
 	level := strings.TrimSpace(q.Level)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
-	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
+	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
 
 	// Build person + facet predicates first so we know whether to drive the
 	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
@@ -197,6 +198,9 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		baseArgs = append(baseArgs, filterArgs...)
 	}
 	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden); err != nil {
+		return BrowsePage{}, err
+	}
+	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.TabPolicy, false); err != nil {
 		return BrowsePage{}, err
 	}
 
@@ -1107,6 +1111,7 @@ type FacetCollectionsQuery struct {
 	Policy    *libraryfilter.Filter
 	FieldKey  string
 	Order     string // "count" (default) | "name"
+	Query     string
 	Offset    int
 	Limit     int
 }
@@ -1149,6 +1154,8 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 	}
 	offset := max(q.Offset, 0)
 	orderByName := strings.EqualFold(strings.TrimSpace(q.Order), "name")
+	rawQuery := strings.ToLower(strings.TrimSpace(q.Query))
+	likeQuery := "%" + escapeLike(rawQuery) + "%" 
 
 	itemWhere, fieldDrivenWhere, itemArgs, err := s.buildRootItemPredicates(ctx, rec, q.Level, q.Policy)
 	if err != nil {
@@ -1181,12 +1188,18 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if orderByName {
 			orderClause = `LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
 		}
-		qArgs := append(append([]any(nil), itemArgs...), fieldKey, limit+1, offset)
+		qArgs := append(append([]any(nil), itemArgs...), fieldKey)
+		queryCond := ""
+		if rawQuery != "" {
+			queryCond = ` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`
+			qArgs = append(qArgs, likeQuery)
+		}
+		qArgs = append(qArgs, limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
 			 FROM plugin_item_fields f
 			 JOIN plugin_items i ON i.item_ref = f.item_ref
-			 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''
+			 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''`+queryCond+`
 			 GROUP BY f.v_int
 			 ORDER BY `+orderClause+`
 			 LIMIT ? OFFSET ?`, qArgs...)
@@ -1223,12 +1236,18 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if orderByName {
 			orderClause = `LOWER(f.v_text) ASC, f.v_text ASC`
 		}
-		qArgs := append(append([]any(nil), itemArgs...), fieldKey, limit+1, offset)
+		qArgs := append(append([]any(nil), itemArgs...), fieldKey)
+		queryCond := ""
+		if rawQuery != "" {
+			queryCond = ` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`
+			qArgs = append(qArgs, likeQuery)
+		}
+		qArgs = append(qArgs, limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT f.v_text, COUNT(*) AS cnt
 			 FROM plugin_item_fields f
 			 JOIN plugin_items i ON i.item_ref = f.item_ref
-			 WHERE `+itemWhere+` AND f.field = ? AND f.v_text <> ''
+			 WHERE `+itemWhere+` AND f.field = ? AND f.v_text <> ''`+queryCond+`
 			 GROUP BY f.v_text
 			 ORDER BY `+orderClause+`
 			 LIMIT ? OFFSET ?`, qArgs...)
@@ -1260,6 +1279,15 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		all, err := s.FacetBuckets(ctx, q.LibraryID, q.Level, q.Policy, fieldKey)
 		if err != nil {
 			return FacetCollectionsPage{}, err
+		}
+		if rawQuery != "" {
+			filtered := all[:0]
+			for _, b := range all {
+				if strings.Contains(strings.ToLower(b.Label), rawQuery) || strings.Contains(strings.ToLower(b.ID), rawQuery) {
+					filtered = append(filtered, b)
+				}
+			}
+			all = filtered
 		}
 		if orderByName {
 			sort.SliceStable(all, func(i, j int) bool {

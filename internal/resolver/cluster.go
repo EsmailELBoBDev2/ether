@@ -42,7 +42,9 @@ func (s *Service) notify(hint string) {
 }
 
 // notifyPin tells the other nodes a title's pin changed.
-func (s *Service) notifyPin(key core.RatingKey) { s.notify("pin:" + strconv.FormatInt(int64(key), 10)) }
+func (s *Service) notifyPin(key core.RatingKey) {
+	s.notify("pin:" + strconv.FormatInt(int64(key), 10))
+}
 
 func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 	if all {
@@ -55,6 +57,10 @@ func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 		s.clearAvailabilityEpochLocked()
 		s.verified = map[string]time.Time{}
 		s.verifiedMiss = nil
+		clear(s.seaDexMem)
+		clear(s.seaDexDBMiss)
+		clear(s.seaDexKeys)
+		clear(s.seaDexKeyMiss)
 		s.mu.Unlock()
 		s.loadPersisted(ctx)
 		return
@@ -84,6 +90,13 @@ func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 		case "pin":
 			if k, err := strconv.ParseInt(arg, 10, 64); err == nil {
 				s.reloadPin(ctx, core.RatingKey(k))
+			}
+		case "seadex":
+			if k, err := strconv.ParseInt(arg, 10, 64); err == nil {
+				s.mu.Lock()
+				delete(s.seaDexMem, k)
+				delete(s.seaDexDBMiss, k)
+				s.mu.Unlock()
 			}
 		}
 	}

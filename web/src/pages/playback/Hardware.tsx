@@ -23,6 +23,7 @@ export type Hardware = {
   notice?: string;
   playbackError?: string;
   filtersProbed?: boolean;
+  hardwareToneMap?: boolean;
   toneMap?: string[];
   colour?: string[];
   enhancement?: {
@@ -167,6 +168,7 @@ function vendorCopy(name: string | undefined, vendor?: string): { title: string;
 function toneMapName(path: string): string {
   switch (path) {
     case "zscale":
+    case "tonemapx":
       return t("Software");
     case "libplacebo":
       return "libplacebo";
@@ -178,6 +180,8 @@ function toneMapName(path: string): string {
       return "VideoToolbox";
     case "cuda":
       return "NVIDIA";
+    case "qsv":
+      return "Quick Sync";
     default:
       return path;
   }
@@ -194,6 +198,7 @@ export function HardwareStatus({ state }: { state?: AsyncState<Hardware | null> 
   const ffmpeg = typeof data?.ffmpeg === "string" ? data.ffmpeg : "";
   const codecs = encodeCodecs(encoders);
   const toneMap = data?.toneMap ?? [];
+  const toneMapLabels = Array.from(new Set(toneMap.map(toneMapName)));
   const colour = data?.colour ?? [];
   const vendor = typeof data?.vendor === "string" ? data.vendor : undefined;
   const copy = vendorCopy(none ? "none" : accel?.name, vendor);
@@ -253,18 +258,28 @@ export function HardwareStatus({ state }: { state?: AsyncState<Hardware | null> 
               <p className="text-xs font-medium text-fg-muted">{t("HDR")}</p>
               <div className="mt-2 flex flex-wrap gap-1.5" aria-label={t("HDR")}>
                 {toneMap.length ? (
-                  <Badge variant="secondary">{t("HDR10")}</Badge>
+                  <>
+                    <Badge variant="secondary">{t("HDR10")}</Badge>
+                    {data.hardwareToneMap === true ? (
+                      <Badge variant="secondary">{t("Hardware tone mapping")}</Badge>
+                    ) : null}
+                  </>
                 ) : (
                   <span className="text-sm text-fg-muted">
                     {t("No HDR conversion on this computer.")}
                   </span>
                 )}
               </div>
-              {toneMap.length ? (
+              {toneMapLabels.length ? (
                 <p className="mt-2 text-xs text-fg-muted">
                   {t("HDR to SDR uses {paths}.", {
-                    paths: toneMap.map(toneMapName).join(", "),
+                    paths: toneMapLabels.join(", "),
                   })}
+                </p>
+              ) : null}
+              {data.hardwareToneMap === false && !none ? (
+                <p className="mt-1 text-xs text-fg-muted">
+                  {t("Hardware HDR tone mapping is unavailable on this device.")}
                 </p>
               ) : null}
               {colour.length ? (

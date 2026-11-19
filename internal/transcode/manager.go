@@ -267,6 +267,9 @@ func New(cfg config.Transcode, logger *slog.Logger, opts ...Option) (*Manager, e
 	decode := newDecodeProbeCache(m.runner, m.ffmpeg, m.ffprobe, m.tempDir, m.feat.encoders)
 	decode.db, decode.log = o.decodeDB, m.log
 	m.feat.decode = decode
+	qsvTM := newQSVToneMapCache(m.runner, m.ffmpeg, m.ffprobe, m.tempDir, m.feat.encoders)
+	qsvTM.db, qsvTM.log, qsvTM.onChange = o.decodeDB, m.log, o.onChange
+	m.feat.qsvToneMap = qsvTM
 	m.cleanStale()
 	m.log.Info("ffmpeg features", "ffmpeg", m.ffmpeg, "version", m.version,
 		"filters", featureLine(m.feat), "encoders", encoderLine(m.feat),
@@ -389,11 +392,12 @@ func (m *Manager) FFprobePath() string { return m.ffprobe }
 // Capability is the owner-visible transcoder health card: which colour and
 // tone-map paths were probed, plus the latest graph failure.
 type Capability struct {
-	Notice        string   `json:"notice,omitempty"`
-	PlaybackError string   `json:"playbackError,omitempty"`
-	FiltersProbed bool     `json:"filtersProbed"`
-	ToneMap       []string `json:"toneMap,omitempty"`
-	Colour        []string `json:"colour,omitempty"`
+	Notice          string   `json:"notice,omitempty"`
+	PlaybackError   string   `json:"playbackError,omitempty"`
+	FiltersProbed   bool     `json:"filtersProbed"`
+	HardwareToneMap *bool    `json:"hardwareToneMap,omitempty"`
+	ToneMap         []string `json:"toneMap,omitempty"`
+	Colour          []string `json:"colour,omitempty"`
 }
 
 // Capability reports probed filters and any owner-visible limitation.
@@ -404,12 +408,30 @@ func (m *Manager) Capability() Capability {
 	m.mu.Lock()
 	playback := m.graphErr
 	m.mu.Unlock()
+	var hwToneMap *bool
+	if m.hw.Name != "" && m.hw.Name != AccelNone {
+		avail := false
+		switch m.hw.Name {
+		case AccelVAAPI:
+			avail = !m.hw.NoGPUTonemap && m.feat.hasFilter("tonemap_vaapi")
+		case AccelVideoToolbox:
+			avail = m.feat.hasFilter("tonemap_videotoolbox") || m.feat.hasFilter("scale_vt")
+		case AccelNVENC:
+			avail = m.feat.hasFilter("tonemap_cuda")
+		case AccelQSV:
+			if !m.hw.NoGPUTonemap && m.feat.qsvToneMap != nil {
+				avail = m.feat.qsvToneMap.method(m.hw, m.feat, true) != qsvToneMapNone
+			}
+		}
+		hwToneMap = &avail
+	}
 	return Capability{
-		Notice:        m.limitation(),
-		PlaybackError: playback,
-		FiltersProbed: m.feat.filtersProbed,
-		ToneMap:       toneMapPaths(m.feat, m.hw),
-		Colour:        colourPaths(m.feat),
+		Notice:          m.limitation(),
+		PlaybackError:   playback,
+		FiltersProbed:   m.feat.filtersProbed,
+		HardwareToneMap: hwToneMap,
+		ToneMap:         toneMapPaths(m.feat, m.hw),
+		Colour:          colourPaths(m.feat),
 	}
 }
 
@@ -439,7 +461,7 @@ func (m *Manager) limitation() string {
 		}
 		parts = append(parts, detail)
 	}
-	if len(toneMapPaths(m.feat, m.hw)) == 0 {
+	if len(toneMapPaths(m.feat, m.hw)) == 0 && !qsvToneMapPendingCandidate(m.feat, m.hw) {
 		parts = append(parts, toneMapUnavailableMessage())
 	}
 	if !m.feat.hasFilter("zscale") && !m.feat.hasFilter("colorspace") {
@@ -1301,6 +1323,9 @@ func (m *Manager) Close() error {
 	}
 	m.mu.Unlock()
 	if cache, ok := m.feat.decode.(*decodeProbeCache); ok {
+		cache.close()
+	}
+	if cache, ok := m.feat.qsvToneMap.(*qsvToneMapCache); ok {
 		cache.close()
 	}
 	for _, h := range https {

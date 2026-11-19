@@ -176,6 +176,9 @@ func (a *App) buildAdmin() http.Handler {
 			if cap.PlaybackError != "" {
 				hw["playbackError"] = cap.PlaybackError
 			}
+			if cap.HardwareToneMap != nil {
+				hw["hardwareToneMap"] = *cap.HardwareToneMap
+			}
 			if len(cap.ToneMap) > 0 {
 				hw["toneMap"] = cap.ToneMap
 			}

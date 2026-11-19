@@ -22,10 +22,13 @@ func (c *Catalog) writeLocalPage(ctx context.Context, items []upsertItem) error 
 	ctx, cancel := context.WithTimeout(ctx, detailWriteBudget)
 	defer cancel()
 	now := c.now().Unix()
-	const columns = 44
 	template := titleUpsertSQL()
 	begin := strings.Index(template, "\nVALUES ")
 	end := strings.Index(template, "\nON CONFLICT")
+	if begin < 0 || end <= begin {
+		return fmt.Errorf("catalog: malformed titleUpsertSQL")
+	}
+	columns := strings.Count(template[begin:end], "?")
 	type group struct {
 		rows []preparedTitleUpsert
 		tail []any
@@ -51,7 +54,7 @@ func (c *Catalog) writeLocalPage(ctx context.Context, items []upsertItem) error 
 		}
 	}
 	for _, g := range groups {
-		// 44 parameters per row: 500 stays below both engines' bind limits.
+		// ~45 parameters per row: 500 stays below both engines' bind limits.
 		for start := 0; start < len(g.rows); start += 500 {
 			part := g.rows[start:min(start+500, len(g.rows))]
 			args := make([]any, 0, len(part)*columns+len(g.tail))

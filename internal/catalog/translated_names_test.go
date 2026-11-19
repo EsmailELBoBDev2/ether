@@ -151,6 +151,7 @@ func TestEnglishTitleForNonEnglishCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c.WaitRefreshes()
 
 	// Pre-seed a pre-migration row with empty english_title and a hand-inserted
 	// catalog_alt_titles row that refresh will overwrite.
@@ -200,7 +201,15 @@ func TestEnglishTitleForNonEnglishCatalog(t *testing.T) {
 		t.Fatalf("Totoro identity = %+v", totoro)
 	}
 
-	// Episode hydration inherits the parent show's EnglishTitle.
+	// Cold show fill (writeLocalPage) stores EnglishTitle, and episode hydration inherits it.
+	coldCtx := core.WithColdDetail(core.WithLocalResponse(WithReadWaitBudget(ctx, 0)), core.ShowKey(9001))
+	show, err := c.Get(coldCtx, core.ShowKey(9001))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.Title != "Drømmenes rike" || show.OriginalTitle != "夢の国" || show.EnglishTitle != "Dream Kingdom" {
+		t.Fatalf("cold show identity = %+v", show)
+	}
 	ep, err := c.Get(ctx, core.EpisodeKey(9001, 1, 1))
 	if err != nil {
 		t.Fatal(err)

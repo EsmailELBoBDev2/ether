@@ -67,9 +67,24 @@ func (p *providerBroadcastPlanner) healthAttrs() []any {
 	}
 	h, ok := p.s.inputHealth(a.link.ss)
 	if !ok {
-		return []any{"source", a.src.ID, "transport", "unknown"}
+		return []any{"source", a.src.ID, "transport", "unknown", "grant", p.s.healthGrant(a.link.ss) != nil}
 	}
-	return []any{"source", a.src.ID, "transport", h.Kind,
+	behind := any("unknown")
+	p.mu.Lock()
+	aired, seen := p.lastAired[a.src.ID]
+	p.mu.Unlock()
+	if seen && h.EdgePTS >= 0 {
+		// Media between the newest picture the provider delivered and the
+		// picture on air: the real cushion, wherever it is buffered.
+		edge := time.Duration(h.EdgePTS) * time.Second / tsClockHz
+		wrap := time.Duration(tsWrap) * time.Second / tsClockHz
+		d := (edge - aired%wrap + wrap) % wrap
+		if d > wrap/2 {
+			d -= wrap
+		}
+		behind = d.Round(time.Millisecond)
+	}
+	return []any{"source", a.src.ID, "transport", h.Kind, "behindLive", behind,
 		"reserve", h.ReserveDepth.Round(time.Millisecond), "reserveTarget", h.Target,
 		"dataAge", h.DataAge.Round(time.Millisecond), "stallAfter", h.StallAfter.Round(time.Millisecond),
 		"liveSocket", h.LiveSocket, "providerStalled", h.Stalled, "failed", h.Failed,

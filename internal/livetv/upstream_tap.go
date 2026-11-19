@@ -2090,9 +2090,11 @@ func (t *upstreamTap) healthForLocked(g *inputGrant) UpstreamHealth {
 	if t.ts != nil && t.ts.pmtSig != "" {
 		h.FormatGeneration = uint64(t.ts.format) + 1
 	}
+	h.EdgePTS = -1
 	if t.ts != nil {
 		h.Kind = "ts"
 		h.StallAfter = t.stallThresholdLocked(now)
+		h.EdgePTS = t.ts.maxPTS
 	}
 	h.Connected = liveSocket && !t.stalled
 	if !t.lastData.IsZero() {

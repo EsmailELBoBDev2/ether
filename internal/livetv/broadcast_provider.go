@@ -112,8 +112,11 @@ const (
 	steadyStarvedAfter     = 400 * time.Millisecond
 	steadyHoldPicture      = 10 * time.Second
 	steadyHoldStalled      = 20 * time.Second
-	steadyStandbyLinger    = 30 * time.Second
-	steadyClockReset       = 2 * time.Minute
+	// steadyDecoderHung is how long a decoder may sit on a buffered reserve
+	// without producing a picture before it is replaced.
+	steadyDecoderHung   = 3 * time.Second
+	steadyStandbyLinger = 30 * time.Second
+	steadyClockReset    = 2 * time.Minute
 	// Skip at most this much already-aired media on a reopen: a longest
 	// reserve plus one provider segment. Longer means the clock moved.
 	steadyReplayLimit        = 40 * time.Second
@@ -251,6 +254,9 @@ func sourceIDs(sources []StreamSource) []string {
 func (p *providerBroadcastPlanner) keepStalled(stalledFor time.Duration) bool {
 	p.mu.Lock()
 	a := p.attempt
+	if a == nil {
+		a = p.stalledAttempt
+	}
 	p.mu.Unlock()
 	if a == nil || a.link == nil {
 		return false
@@ -259,10 +265,14 @@ func (p *providerBroadcastPlanner) keepStalled(stalledFor time.Duration) bool {
 	if !ok {
 		return stalledFor < steadyHoldStalled && p.s.healthGrant(a.link.ss) != nil
 	}
-	if h.LiveSocket && stalledFor < h.StallAfter {
-		return true
-	}
 	if h.Failed {
+		return false
+	}
+	// The provider delivered after the pictures stopped and the reserve holds
+	// media the decoder is not taking: the decoder itself is stuck, and only
+	// a new one helps. A quiet provider is never that: a second decoder on
+	// the same connection would wait for the same bytes.
+	if stalledFor >= steadyDecoderHung && h.DataAge < stalledFor-steadyDecoderHung/2 && h.ReserveDepth >= steadyDecoderHung {
 		return false
 	}
 	return stalledFor < max(steadyHoldStalled, h.StallAfter)
@@ -434,7 +444,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 				retired = append(retired, primed)
 			}
 		}
-		if link != nil && (link.src.ID != id || link.src.URL != src.URL || link.uses >= steadyMaxLinkUses) {
+		if link != nil && (link.src.ID != id || link.src.URL != src.URL || link.uses >= steadyMaxLinkUses && !p.s.linkTransportAlive(link)) {
 			retired = append(retired, link)
 			if heldDisplaced == nil {
 				heldDisplaced = link
@@ -553,6 +563,19 @@ func (p *providerBroadcastPlanner) wrap(ctx context.Context, src StreamSource, l
 		p.ladder.delivered(src.ID)
 		p.mu.Unlock()
 	}}
+}
+
+// linkTransportAlive reports that a link's provider connection is open or
+// reconnecting by itself. Such a link is reused for every new decoder: a new
+// link would open a second provider connection beside it, which a capped
+// account (and many providers that do not say so) refuses or answers by
+// cutting the first.
+func (s *Service) linkTransportAlive(l *steadyLink) bool {
+	if l == nil || l.closed.Load() {
+		return false
+	}
+	h, ok := s.inputHealth(l.ss)
+	return ok && !h.Failed
 }
 
 // linkSteadySource reserves the provider account's connection, resolves the

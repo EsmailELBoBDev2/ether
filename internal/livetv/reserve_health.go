@@ -49,6 +49,9 @@ type UpstreamHealth struct {
 	// reserve, so a consumer can start a producer for the new format
 	// (relayInputFormat) before the old one reaches the change.
 	FormatGeneration uint64
+	// EdgePTS is the newest committed video PTS at the live edge (90 kHz,
+	// the stream's own timeline after splices); -1 when unknown.
+	EdgePTS int64
 }
 
 // UpstreamEventKind names a change in an input's health.

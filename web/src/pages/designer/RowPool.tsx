@@ -169,6 +169,7 @@ export function RowPool({
   previewWho?: string;
 }) {
   const navigate = useNavigate();
+  const onLibraryTab = isLibrarySection(section);
   const collectionKinds = useRegistry<CollectionSourceMeta>("collectionSource");
   const [q, setQ] = useState("");
   const [custom, setCustom] = useState("");
@@ -306,13 +307,13 @@ export function RowPool({
   const effectiveMedia = (mediaSection ?? section) === "shows" ? "show" : "movie";
   return (
     <section
-      className={cn("space-y-2", pickedRows.length > 0 && "pb-16")}
-      aria-label={t("Row catalogue")}
+      className={cn("space-y-2", !onLibraryTab && pickedRows.length > 0 && "pb-16")}
+      aria-label={onLibraryTab ? t("Available rows") : t("Row catalogue")}
     >
       <div>
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-            {t("Row catalogue")}
+            {onLibraryTab ? t("Available rows") : t("Row catalogue")}
           </h2>
           <ActionMenu
             variant="outline"
@@ -354,13 +355,17 @@ export function RowPool({
           </ActionMenu>
         </div>
         <p className="mt-0.5 text-xs text-fg-muted">
-          {layer === "global"
+          {onLibraryTab
             ? t(
-                "Always: on the page whenever it has titles. Eligible: personalization decides. Off: never.",
+                "Always: shown whenever it has titles. Eligible: personalization decides. Off: hidden.",
               )
-            : t(
-                "Changes here override Everyone for this viewer only; reset to follow Everyone again.",
-              )}
+            : layer === "global"
+              ? t(
+                  "Always: on the page whenever it has titles. Eligible: personalization decides. Off: never.",
+                )
+              : t(
+                  "Changes here override Everyone for this viewer only; reset to follow Everyone again.",
+                )}
         </p>
       </div>
       <div className="relative">
@@ -505,6 +510,8 @@ export function RowPool({
         <BulkBar
           count={pickedRows.length}
           label={t("Selected rows")}
+          floating={!onLibraryTab}
+          className={onLibraryTab ? "sticky bottom-2 z-10" : undefined}
           onClear={() => setPicked(new Set())}
         >
           {statuses.map((s) => (
@@ -672,6 +679,7 @@ function PoolItem({
   onToggle: () => void;
 }) {
   const { locale } = useLocale();
+  const onLibraryTab = isLibrarySection(section);
   const ref = useRef<HTMLLIElement>(null);
   const openedDraftRef = useRef<HomeLayout>(draft);
   const wasOpenRef = useRef(false);
@@ -866,7 +874,7 @@ function PoolItem({
           <Engagement insight={insight} />
         </div>
       )}
-      {layer === "global" && own ? (
+      {layer === "global" && own && viewers.length > 0 ? (
         <p className="mt-1.5 text-[11px] text-fg-muted">
           {tn(
             viewers.length - overriding.length,
@@ -882,9 +890,11 @@ function PoolItem({
         open={open}
         onClose={onToggle}
         title={entry.title}
-        description={t(
-          "Adjust this row in the current Home draft. Save the Home layout to apply it.",
-        )}
+        description={
+          onLibraryTab
+            ? t("Adjust this row on this tab. Save the tab to apply it.")
+            : t("Adjust this row in the current Home draft. Save the Home layout to apply it.")
+        }
         size="lg"
         footer={
           <div className="flex justify-end gap-2">

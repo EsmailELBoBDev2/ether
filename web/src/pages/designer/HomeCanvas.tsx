@@ -29,12 +29,12 @@ import { useDebouncedValue } from "../../lib/hooks";
 import {
   CONTINUE,
   DAYPARTS,
+  SECTIONS,
   atFor,
   describeHiddenRow,
   policyChipItems,
   policyIn,
   removePolicy,
-  sectionLabelOf,
   setPolicy,
   type LayerKey,
 } from "../../lib/layout";
@@ -54,7 +54,6 @@ export function HomeCanvas({
   layer,
   layerName,
   ctx,
-  sectionLabel: sectionLabelProp,
   viewers,
   viewerId,
   onSpotCheck,
@@ -72,7 +71,6 @@ export function HomeCanvas({
   layer: LayerKey;
   layerName: string;
   ctx: ViewContext;
-  sectionLabel?: string;
   viewers: Viewer[];
   viewerId: number | null;
   onSpotCheck: (id: number | null) => void;
@@ -88,7 +86,6 @@ export function HomeCanvas({
   const [home, setHome] = useState<ViewerHome | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
-  // i18n: memo holds no copy
   const at = useMemo(() => atFor(ctx.day, ctx.hour).toISOString(), [ctx.day, ctx.hour]);
 
   useEffect(() => {
@@ -140,7 +137,6 @@ export function HomeCanvas({
   const fixed = visible.filter((r) => !r.slot);
   const stale = key !== request || loading || !ready;
   const editingLayer = <strong className="font-medium text-fg">{layerName}</strong>;
-  const sectionLabel = sectionLabelProp ?? sectionLabelOf(ctx.section);
 
   // The policy key an action edits: the row's own policy when it lives in
   // this layer, otherwise its kind.
@@ -181,7 +177,7 @@ export function HomeCanvas({
           <div className="min-w-0">
             <p className="text-xs text-fg-muted">
               {t("Preview {section} as", {
-                section: sectionLabel,
+                section: SECTIONS.find((s) => s.value === ctx.section)?.label ?? "",
               })}
             </p>
             {layer === "global" && !readOnly ? (

@@ -1,24 +1,18 @@
 import { Popover, cn } from "@braedonsaunders/appkit-ui";
 import { ChevronDown, Globe, Laptop, Smartphone, Tv } from "lucide-react";
-import { useMemo, useState } from "react";
-import { ToolbarPicker, type ToolbarOption } from "../../components/ToolbarPicker";
+import { useState } from "react";
+import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { localized, t } from "../../i18n";
-import { useLocale } from "../../i18n/react";
-import type { Device, HomeLayout, LayoutSection } from "../../lib/contract";
+import type { BuiltinLayoutSection, Device } from "../../lib/contract";
 import { WEEKDAYS, WEEKDAYS_LONG, formatHour } from "../../lib/format";
-import {
-  SECTIONS,
-  hasLibraryOverride,
-  mediaSectionForLibrary,
-  type LayoutLibrarySummary,
-} from "../../lib/layout";
+import { SECTIONS } from "../../lib/layout";
 
 /** The context a Home is previewed in (the viewer is chosen separately). */
 export interface ViewContext {
   device: Device;
   day: number;
   hour: number;
-  section: LayoutSection;
+  section: BuiltinLayoutSection;
 }
 
 const DEVICE_OPTIONS = localized(() => [
@@ -35,53 +29,12 @@ const DEVICE_OPTIONS = localized(() => [
 export function ContextBar({
   ctx,
   onChange,
-  libraries,
-  draft,
   className,
 }: {
   ctx: ViewContext;
   onChange: (c: ViewContext) => void;
-  libraries?: readonly LayoutLibrarySummary[];
-  draft?: HomeLayout;
   className?: string;
 }) {
-  const { locale } = useLocale();
-  const pageOptions = useMemo<ToolbarOption<LayoutSection>[]>(() => {
-    if (!libraries || libraries.length === 0) {
-      return SECTIONS.map((s) => ({ value: s.value, label: s.label }));
-    }
-    const moviesGroup = t("Movies");
-    const showsGroup = t("TV");
-    const movieLibs = libraries.filter((lib) => mediaSectionForLibrary(lib) === "movies");
-    const showLibs = libraries.filter((lib) => mediaSectionForLibrary(lib) === "shows");
-
-    const mapLib = (
-      lib: LayoutLibrarySummary,
-      mediaSection: "movies" | "shows",
-    ): ToolbarOption<LayoutSection> => {
-      const sec: LayoutSection = `library:${lib.id}`;
-      const customised = draft ? hasLibraryOverride(draft, sec) : false;
-      return {
-        value: sec,
-        label: lib.name,
-        group: mediaSection === "shows" ? showsGroup : moviesGroup,
-        hint: customised
-          ? t("Custom layout")
-          : mediaSection === "shows"
-            ? t("Uses TV layout")
-            : t("Uses Movies layout"),
-      };
-    };
-
-    return [
-      { value: "home", label: t("Home") },
-      { value: "movies", label: t("Movies"), group: moviesGroup },
-      ...movieLibs.map((lib) => mapLib(lib, "movies")),
-      { value: "shows", label: t("TV"), group: showsGroup },
-      ...showLibs.map((lib) => mapLib(lib, "shows")),
-    ];
-  }, [draft, libraries, locale]);
-
   return (
     <div
       className={cn("flex min-w-0 items-center gap-1", className)}
@@ -92,8 +45,8 @@ export function ContextBar({
         ariaLabel={t("Page")}
         value={ctx.section}
         onChange={(s) => onChange({ ...ctx, section: s })}
-        options={pageOptions}
-        menuClassName="w-60"
+        options={SECTIONS.map((s) => ({ value: s.value, label: s.label }))}
+        menuClassName="w-40"
       />
       <ToolbarPicker
         ariaLabel={t("Device")}

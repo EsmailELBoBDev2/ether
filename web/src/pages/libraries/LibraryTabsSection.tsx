@@ -14,8 +14,15 @@ import { useSearchParams } from "react-router-dom";
 import { ErrorPanel } from "../../components/feedback";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { t, tn } from "../../i18n";
-import { errorMessage } from "../../lib/api";
+import { api, errorMessage } from "../../lib/api";
+import type { HomeLayout, LibraryLayoutSection } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
+import {
+  EMPTY_LAYOUT,
+  collectionScheduleChanges,
+  hasLibraryOverride,
+  prune,
+} from "../../lib/layout";
 import {
   librariesApi,
   type Library,
@@ -39,9 +46,15 @@ const VALID_NEW_KINDS = new Set<LibraryTabKind>([
   "view",
 ]);
 
-function summarizeTab(tab: LibraryTab, facets: LibraryFacet[]): string {
+function summarizeTab(
+  tab: LibraryTab,
+  facets: LibraryFacet[],
+  recommendedCustomised: boolean,
+): string {
   if (tab.kind === "recommended") {
-    return t("Personalized rows · Home Designer");
+    return recommendedCustomised
+      ? t("Personalized rows · Custom rows")
+      : t("Personalized rows");
   }
   const parts: string[] = [];
   if (tab.kind === "library") {
@@ -84,14 +97,21 @@ type DrawerMode =
 export function LibraryTabsSection({ library }: { library: Library }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = useAsync((signal) => librariesApi.tabs(library.id, signal), [library.id]);
+  const layoutDoc = useAsync(() => api.layout(), [library.id]);
   const [saving, setSaving] = useState(false);
   const [localDrawer, setLocalDrawer] = useState<DrawerMode>({ type: "closed" });
+
+  const librarySection: LibraryLayoutSection = `library:${library.id}`;
+  const recommendedCustomised = layoutDoc.data
+    ? hasLibraryOverride(layoutDoc.data.layout, librarySection)
+    : false;
 
   const clearTabParams = () => {
     if (
       !searchParams.has("addTab") &&
       !searchParams.has("newTab") &&
-      !searchParams.has("editTab")
+      !searchParams.has("editTab") &&
+      !searchParams.has("customiseRows")
     ) {
       return;
     }
@@ -99,6 +119,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
     next.delete("addTab");
     next.delete("newTab");
     next.delete("editTab");
+    next.delete("customiseRows");
     setSearchParams(next, { replace: true });
   };
 
@@ -110,6 +131,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
   const urlEditKey = searchParams.get("editTab");
   const urlNewKind = searchParams.get("newTab") as LibraryTabKind | null;
   const urlAdd = searchParams.get("addTab") === "1";
+  const urlCustomiseRows = searchParams.get("customiseRows") === "1";
 
   const activeDrawer: DrawerMode =
     localDrawer.type !== "closed"
@@ -143,6 +165,51 @@ export function LibraryTabsSection({ library }: { library: Library }) {
       if (previous) state.setData(previous);
       toast.error(errorMessage(e));
       return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveDrawer = async (savedTab: LibraryTab, nextLayout?: HomeLayout) => {
+    const isNew = activeDrawer.type === "new";
+    const tabChanged =
+      isNew || JSON.stringify(savedTab) !== JSON.stringify(editingExisting);
+    const nextTabs = isNew
+      ? [...tabs, savedTab]
+      : tabs.map((item) => (item.key === savedTab.key ? savedTab : item));
+
+    const previousTabs = state.data;
+    setSaving(true);
+    try {
+      if (nextLayout) {
+        const savedLayout = layoutDoc.data ? prune(layoutDoc.data.layout) : EMPTY_LAYOUT;
+        const schedules = collectionScheduleChanges(nextLayout, savedLayout);
+        const updatedLayout = await api.putLayout({
+          ...nextLayout,
+          collectionSchedules: Object.keys(schedules).length ? schedules : undefined,
+        });
+        layoutDoc.setData(updatedLayout);
+      }
+
+      if (tabChanged || !nextLayout) {
+        if (previousTabs) {
+          state.setData({ ...previousTabs, tabs: nextTabs, source: "owner" });
+        }
+        const updatedTabs = await librariesApi.putTabs(library.id, nextTabs);
+        state.setData(updatedTabs);
+      }
+
+      toast.success(
+        isNew
+          ? t("Added {label} tab", { label: savedTab.label })
+          : t("Saved {label} tab", { label: savedTab.label }),
+      );
+      closeDrawers();
+    } catch (e) {
+      if (previousTabs && (tabChanged || !nextLayout)) {
+        state.setData(previousTabs);
+      }
+      toast.error(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -294,7 +361,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
                     {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
                   </span>
                   <span className="block truncate text-xs text-fg-muted">
-                    {summarizeTab(tab, facets)}
+                    {summarizeTab(tab, facets, recommendedCustomised)}
                   </span>
                 </button>
                 <div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -377,6 +444,9 @@ export function LibraryTabsSection({ library }: { library: Library }) {
             ? new Set([...existingKeys].filter((k) => k !== editingExisting.key))
             : existingKeys
         }
+        layoutDoc={layoutDoc.data ?? null}
+        layoutLoading={layoutDoc.loading}
+        initialCustomiseRows={urlCustomiseRows}
         saving={saving}
         onClose={closeDrawers}
         onDelete={
@@ -392,19 +462,8 @@ export function LibraryTabsSection({ library }: { library: Library }) {
               }
             : undefined
         }
-        onSave={(savedTab) => {
-          const next =
-            activeDrawer.type === "new"
-              ? [...tabs, savedTab]
-              : tabs.map((item) => (item.key === savedTab.key ? savedTab : item));
-          void persistTabs(
-            next,
-            activeDrawer.type === "new"
-              ? t("Added {label} tab", { label: savedTab.label })
-              : t("Saved {label} tab", { label: savedTab.label }),
-          ).then((ok) => {
-            if (ok) closeDrawers();
-          });
+        onSave={(savedTab, nextLayout) => {
+          void handleSaveDrawer(savedTab, nextLayout);
         }}
       />
     </SettingsSection>

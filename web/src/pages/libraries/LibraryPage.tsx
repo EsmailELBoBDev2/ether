@@ -18,6 +18,7 @@ import { CatalogBrowser } from "./browser/Catalog";
 import { RulesPanel, type VisibilityRule } from "./browser/LibraryVisibility";
 import { LibraryEditor } from "./LibraryEditor";
 import { LibrarySettings } from "./LibrarySettings";
+import { LibraryTabsSection } from "./LibraryTabsSection";
 import { PluginBrowse } from "./PluginBrowse";
 
 interface RulesDraft {
@@ -106,7 +107,7 @@ function LibraryRulesTab({
   );
 }
 
-/** One library: Browse · Rules · Settings. */
+/** One library: Browse · Rules · Tabs · Settings. */
 export function LibraryPage() {
   const { id: rawId, tab: rawTab } = useParams();
   const navigate = useNavigate();
@@ -140,6 +141,7 @@ export function LibraryPage() {
   const tabs = [
     { key: "browse", label: t("Browse") },
     { key: "rules", label: t("Rules") },
+    { key: "tabs", label: t("Tabs") },
     { key: "settings", label: t("Settings") },
   ];
   const tab = tabs.some((x) => x.key === rawTab) ? rawTab! : "browse";
@@ -172,7 +174,7 @@ export function LibraryPage() {
           </>
         }
       >
-        <div className={tab === "settings" ? "[&>div]:!mb-0" : undefined}>
+        <div className={tab === "settings" || tab === "tabs" ? "[&>div]:!mb-0" : undefined}>
           <SubtabNav
             ariaLabel={t("Library sections")}
             active={tab}
@@ -209,6 +211,12 @@ export function LibraryPage() {
               void refreshDashboard();
             }}
           />
+        ) : tab === "tabs" ? (
+          <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-4xl space-y-5 px-4 pb-5 pt-4 sm:px-5 lg:px-7">
+              <LibraryTabsSection library={lib} />
+            </div>
+          </div>
         ) : (
           <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-5 px-3 py-4">

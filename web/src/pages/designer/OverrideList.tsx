@@ -7,13 +7,13 @@ import { t, tn } from "../../i18n";
 import { WEEKDAYS } from "../../lib/format";
 import {
   DEVICES,
+  SECTIONS,
   STATUS_LABEL,
   overrideCount,
   pageOf,
   policyChips,
   removePolicy,
   resetViewer,
-  sectionLabelOf,
   setPageLength,
   type LayerKey,
 } from "../../lib/layout";
@@ -29,7 +29,6 @@ export function OverrideList({
   section,
   viewers,
   onOpenLayer,
-  sectionLabel: sectionLabelProp,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
@@ -37,10 +36,9 @@ export function OverrideList({
   section: LayoutSection;
   viewers: Viewer[];
   onOpenLayer: (l: LayerKey) => void;
-  sectionLabel?: string;
 }) {
   const [q, setQ] = useState("");
-  const sectionLabel = sectionLabelProp ?? sectionLabelOf(section);
+  const sectionLabel = SECTIONS.find((s) => s.value === section)?.label ?? section;
   if (layer === "global") {
     const all = viewers.filter((v) => overrideCount(draft, v.id) > 0);
     const needle = q.trim().toLowerCase();

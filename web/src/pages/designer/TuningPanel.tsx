@@ -19,7 +19,6 @@ import {
   SECTIONS,
   effectiveDedupe,
   effectiveTuning,
-  sectionLabelOf,
   setDedupe,
   setTuning,
   tuningIn,
@@ -93,25 +92,21 @@ export function TuningPanel({
   layer,
   section,
   viewers,
-  sectionLabel,
-  mediaSection,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
   section: LayoutSection;
   viewers: Viewer[];
-  sectionLabel?: string;
-  mediaSection?: "movies" | "shows";
 }) {
-  const page = sectionLabel ?? sectionLabelOf(section);
+  const page = SECTIONS.find((s) => s.value === section)?.label ?? section;
   const who =
     layer === "global"
       ? t("everyone")
       : (viewers.find((v) => v.id === layer)?.title ??
         viewers.find((v) => v.id === layer)?.username ??
         t("this viewer"));
-  const dedupe = effectiveDedupe(draft, layer, section, mediaSection);
+  const dedupe = effectiveDedupe(draft, layer, section);
   const otherSections = SECTIONS.filter((s) => s.value !== section);
   return (
     <div className="space-y-5">
@@ -149,7 +144,7 @@ export function TuningPanel({
           <Dial
             key={d.dial}
             spec={d}
-            value={effectiveTuning(draft, layer, section, d.dial, mediaSection)}
+            value={effectiveTuning(draft, layer, section, d.dial)}
             layer={layer}
             onChange={(v) => onChange(setTuning(draft, layer, section, d.dial, v))}
           />
@@ -170,7 +165,7 @@ export function TuningPanel({
                       layer,
                       s.value,
                       d.dial,
-                      effectiveTuning(draft, layer, section, d.dial, mediaSection).v,
+                      tuningIn(draft, layer, section, d.dial),
                     );
                   onChange(next);
                 }}

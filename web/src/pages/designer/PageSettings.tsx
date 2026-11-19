@@ -2,23 +2,8 @@ import { Button, Input, cn } from "@braedonsaunders/appkit-ui";
 import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { t } from "../../i18n";
-import type {
-  BuiltinLayoutSection,
-  Device,
-  HomeLayout,
-  LayoutSection,
-  Viewer,
-} from "../../lib/contract";
-import {
-  DEVICES,
-  defaultRowsForSection,
-  isLibrarySection,
-  lengthIn,
-  pageOf,
-  sectionLabelOf,
-  setPageLength,
-  type LayerKey,
-} from "../../lib/layout";
+import type { BuiltinLayoutSection, Device, HomeLayout, Viewer } from "../../lib/contract";
+import { DEVICES, SECTIONS, lengthIn, setPageLength, type LayerKey } from "../../lib/layout";
 
 /**
  * Page length (rows the engine arranges; Plex's own rows not counted), for
@@ -31,62 +16,36 @@ export function PageSettings({
   layer,
   section,
   defaults,
-  sectionLabel: sectionLabelProp,
-  mediaSection,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
-  section: LayoutSection;
+  section: BuiltinLayoutSection;
   viewers: Viewer[];
-  defaults: Record<BuiltinLayoutSection, number> & Partial<Record<LayoutSection, number>>;
-  sectionLabel?: string;
-  mediaSection?: "movies" | "shows";
+  defaults: Record<BuiltinLayoutSection, number>;
 }) {
-  const sectionLabel = sectionLabelProp ?? sectionLabelOf(section);
-  const defaultLen = defaultRowsForSection(defaults, section, mediaSection);
-  const sharedSection =
-    isLibrarySection(section) && !pageOf(draft, "global", section) ? mediaSection : undefined;
+  const sectionLabel = SECTIONS.find((s) => s.value === section)?.label ?? section;
   const anyDevice = DEVICES.some((d) => lengthIn(draft, layer, section, d.value));
   const [perDevice, setPerDevice] = useState(false);
   const showDevices = perDevice || anyDevice;
   // What a setting falls back to when this layer leaves it empty.
   const inherited = (device: Device | null): { n: number; from: string } => {
-    const sharedFrom =
-      sharedSection === "shows" ? t("TV layout") : t("Movies layout");
     if (layer !== "global") {
       if (device) {
         const own = lengthIn(draft, layer, section, null);
         if (own) return { n: own, from: t("this viewer's page length") };
         const gd = lengthIn(draft, "global", section, device);
         if (gd) return { n: gd, from: t("Everyone") };
-        if (sharedSection) {
-          const sgd = lengthIn(draft, "global", sharedSection, device);
-          if (sgd) return { n: sgd, from: sharedFrom };
-        }
       }
       const g = lengthIn(draft, "global", section, null);
       if (g) return { n: g, from: t("Everyone") };
-      if (sharedSection) {
-        const sg = lengthIn(draft, "global", sharedSection, null);
-        if (sg) return { n: sg, from: sharedFrom };
-      }
-      return { n: defaultLen, from: t("engine default") };
+      return { n: defaults[section], from: t("engine default") };
     }
     if (device) {
       const g = lengthIn(draft, "global", section, null);
       if (g) return { n: g, from: t("all devices") };
-      if (sharedSection) {
-        const sgd = lengthIn(draft, "global", sharedSection, device);
-        if (sgd) return { n: sgd, from: sharedFrom };
-        const sg = lengthIn(draft, "global", sharedSection, null);
-        if (sg) return { n: sg, from: sharedFrom };
-      }
-    } else if (sharedSection) {
-      const sg = lengthIn(draft, "global", sharedSection, null);
-      if (sg) return { n: sg, from: sharedFrom };
     }
-    return { n: defaultLen, from: t("engine default") };
+    return { n: defaults[section], from: t("engine default") };
   };
   const row = (device: Device | null, label: string) => {
     const own = lengthIn(draft, layer, section, device);

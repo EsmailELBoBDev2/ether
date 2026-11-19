@@ -3,22 +3,21 @@ import {
   Button,
   Input,
   Select,
+  Spinner,
   Switch,
-  buttonVariants,
   cn,
 } from "@braedonsaunders/appkit-ui";
 import {
   CheckCircle2,
-  ExternalLink,
   Filter,
   Folders,
   Library as LibraryIcon,
   Plus,
+  RotateCcw,
   Sparkles,
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
@@ -26,12 +25,29 @@ import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { api, apiFetch } from "../../lib/api";
 import { asObj } from "../settings/SchemaForm";
-import type { Rule, RuleField } from "../../lib/contract";
+import type {
+  HomeLayout,
+  LayoutDoc,
+  LibraryLayoutSection,
+  Rule,
+  RuleField,
+} from "../../lib/contract";
 import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
+import {
+  EMPTY_LAYOUT,
+  clearLibraryOverride,
+  customiseLibraryPage,
+  hasLibraryOverride,
+  mediaSectionForLibrary,
+  prune,
+  sameLayout,
+} from "../../lib/layout";
 import { fieldMeta, isRuleComplete, type FieldMeta } from "../../lib/rules";
 import { titlePosterURL } from "../../lib/titles";
 import { RuleRow } from "../collections/RuleRow";
+import { AnchoredSlots } from "../designer/AnchoredSlots";
+import { RowPool } from "../designer/RowPool";
 import {
   librariesApi,
   type Library,
@@ -331,9 +347,7 @@ export function AddTabPickerDrawer({
       {
         kind: "recommended" as const,
         title: t("Recommended"),
-        description: t(
-          "Personalized rows and hubs arranged for this library in the Home Designer.",
-        ),
+        description: t("Personalized rows and collections arranged for this library."),
         badge: hasRecommended ? t("Already in tabs") : undefined,
         disabled: false,
       },
@@ -429,6 +443,9 @@ export function TabEditDrawer({
   library,
   facets,
   existingKeys,
+  layoutDoc,
+  layoutLoading,
+  initialCustomiseRows,
   saving,
   onSave,
   onDelete,
@@ -440,8 +457,11 @@ export function TabEditDrawer({
   library: Library;
   facets: LibraryFacet[];
   existingKeys: Set<string>;
+  layoutDoc?: LayoutDoc | null;
+  layoutLoading?: boolean;
+  initialCustomiseRows?: boolean;
   saving: boolean;
-  onSave: (tab: LibraryTab) => void;
+  onSave: (tab: LibraryTab, nextLayout?: HomeLayout) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -454,6 +474,9 @@ export function TabEditDrawer({
       library={library}
       facets={facets}
       existingKeys={existingKeys}
+      layoutDoc={layoutDoc ?? null}
+      layoutLoading={layoutLoading ?? false}
+      initialCustomiseRows={initialCustomiseRows ?? false}
       saving={saving}
       onSave={onSave}
       onDelete={onDelete}
@@ -468,6 +491,9 @@ function TabEditDrawerInner({
   library,
   facets,
   existingKeys,
+  layoutDoc,
+  layoutLoading,
+  initialCustomiseRows,
   saving,
   onSave,
   onDelete,
@@ -478,8 +504,11 @@ function TabEditDrawerInner({
   library: Library;
   facets: LibraryFacet[];
   existingKeys: Set<string>;
+  layoutDoc: LayoutDoc | null;
+  layoutLoading: boolean;
+  initialCustomiseRows: boolean;
   saving: boolean;
-  onSave: (tab: LibraryTab) => void;
+  onSave: (tab: LibraryTab, nextLayout?: HomeLayout) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
@@ -488,6 +517,38 @@ function TabEditDrawerInner({
   const [draft, setDraft] = useState<LibraryTab>(() => structuredClone(initialTab));
   const [labelTouched, setLabelTouched] = useState(!isNew);
   const [freshRuleIndex, setFreshRuleIndex] = useState<number | null>(null);
+
+  const section: LibraryLayoutSection = `library:${library.id}`;
+  const mediaSection = mediaSectionForLibrary(library);
+
+  // i18n: memo holds no copy
+  const savedLayout = useMemo(
+    () => (layoutDoc ? prune(layoutDoc.layout) : EMPTY_LAYOUT),
+    [layoutDoc],
+  );
+  const [adoptedLayout, setAdoptedLayout] = useState<LayoutDoc | null>(null);
+  const [layoutDraft, setLayoutDraft] = useState<HomeLayout>(EMPTY_LAYOUT);
+  const [focusRow, setFocusRow] = useState<string | null>(null);
+  if (layoutDoc && layoutDoc !== adoptedLayout) {
+    setAdoptedLayout(layoutDoc);
+    const base = prune(layoutDoc.layout);
+    setLayoutDraft(
+      initialCustomiseRows && !hasLibraryOverride(base, section)
+        ? customiseLibraryPage(base, section, mediaSection)
+        : base,
+    );
+  }
+  const availableRows = (layoutDoc?.availableRows ?? []).map((row) =>
+    row.kind === "favorites"
+      ? {
+          ...row,
+          title: t("Favorites"),
+          description: t("Titles this viewer marked as favorites."),
+        }
+      : row,
+  );
+  const rowsCustomised = hasLibraryOverride(layoutDraft, section);
+  const layoutDirty = Boolean(layoutDoc) && !sameLayout(layoutDraft, savedLayout);
 
   const isPlugin = library.source === "plugin";
   const mediaType: "movie" | "show" | "mixed" =
@@ -702,7 +763,7 @@ function TabEditDrawerInner({
     if (draft.hidden) {
       cleaned.hidden = true;
     }
-    onSave(cleaned);
+    onSave(cleaned, draft.kind === "recommended" && layoutDirty ? layoutDraft : undefined);
   };
 
   const previewCount = isPlugin
@@ -731,7 +792,7 @@ function TabEditDrawerInner({
           : t("Edit {label}", { label: initialTab.label })
       }
       description={tabKindTitle(draft.kind)}
-      size="lg"
+      size={draft.kind === "recommended" ? "xl" : "lg"}
       footer={
         <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <div>
@@ -779,32 +840,88 @@ function TabEditDrawerInner({
           </p>
         </div>
 
-        {/* Recommended content info + Home Designer link */}
+        {/* Rows on this tab (embedded Recommended rows editor) */}
         {draft.kind === "recommended" ? (
-          <section className="space-y-3 rounded-xl border border-border bg-surface p-4">
-            <div className="flex items-start gap-3">
-              <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
-                <Sparkles size={16} />
-              </span>
-              <div className="min-w-0 flex-1 space-y-1">
-                <p className="text-sm font-medium text-fg">{t("Recommended rows")}</p>
-                <p className="text-xs text-fg-muted">
-                  {t(
-                    "Rows on this tab come from {name}'s Recommended layout in the Home Designer. Customising that layout updates Vela, Plex and Jellyfin/Emby.",
-                    { name: library.name },
-                  )}
-                </p>
+          <section
+            aria-label={t("Rows on this tab")}
+            className="space-y-4 rounded-xl border border-border bg-surface p-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
+                  <Sparkles size={16} />
+                </span>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <h3 className="text-sm font-medium text-fg">{t("Rows on this tab")}</h3>
+                  <p className="text-xs text-fg-muted">
+                    {t(
+                      "These rows also show on this library's Recommended page in Plex, Jellyfin and Emby.",
+                    )}
+                  </p>
+                </div>
               </div>
+              {rowsCustomised ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setLayoutDraft(clearLibraryOverride(layoutDraft, section))}
+                >
+                  <RotateCcw size={13} />
+                  {t("Go back to the standard rows")}
+                </Button>
+              ) : null}
             </div>
-            <div>
-              <Link
-                to={`/home?section=library:${library.id}`}
-                className={buttonVariants({ variant: "outline", size: "sm" })}
-              >
-                {t("Open in Home Designer")}
-                <ExternalLink size={13} />
-              </Link>
-            </div>
+
+            {layoutLoading && !layoutDoc ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-fg-muted">
+                <Spinner size={14} label={t("Loading rows")} />
+                <span>{t("Loading rows…")}</span>
+              </div>
+            ) : !rowsCustomised ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-subtle bg-bg-subtle/50 px-3.5 py-3">
+                <p className="text-sm text-fg">
+                  {mediaSection === "shows"
+                    ? t("Uses the standard rows for TV shows libraries.")
+                    : t("Uses the standard rows for Movies libraries.")}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setLayoutDraft(customiseLibraryPage(layoutDraft, section, mediaSection))
+                  }
+                >
+                  {t("Choose rows for this library")}
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-5 border-t border-border-subtle pt-4">
+                <AnchoredSlots
+                  draft={layoutDraft}
+                  onChange={setLayoutDraft}
+                  layer="global"
+                  section={section}
+                  viewers={[]}
+                  available={availableRows}
+                  mediaSection={mediaSection}
+                />
+                <div className="border-t border-border-subtle pt-4">
+                  <RowPool
+                    draft={layoutDraft}
+                    onChange={setLayoutDraft}
+                    layer="global"
+                    section={section}
+                    viewers={[]}
+                    available={availableRows}
+                    focusRow={focusRow}
+                    onFocusRow={setFocusRow}
+                    mediaSection={mediaSection}
+                  />
+                </div>
+              </div>
+            )}
           </section>
         ) : null}
 

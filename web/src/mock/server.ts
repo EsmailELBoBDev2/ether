@@ -771,6 +771,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
             { row: "something-different", status: "eligible", maxDaysPerWeek: 3 },
           ],
         },
+        {
+          section: "library:7",
+          rows: [
+            { row: "finish-what-you-started", status: "always", slot: 1 },
+            { row: "new-seasons", status: "always", slot: 2 },
+            { row: "popular-on-server", status: "off" },
+          ],
+        },
       ],
       viewers: [
         {
@@ -1953,7 +1961,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   function availableRows() {
     return baseRows()
-      .map((r) => ({ ...r, ...(ROW_META[r.kind] ?? { group: "picks" }) }))
+      .map((r) => ({ ...(ROW_META[r.kind] ?? { group: "picks" }), ...r }))
       .concat(SECTION_ROWS);
   }
 
@@ -2075,6 +2083,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
           title: c.name,
           kind: `collection:${c.id}`,
           description: "Owner collection (Collection Studio).",
+          group: "collections" as const,
+          sections: (c.mediaType === "movie"
+            ? ["home", "movies"]
+            : c.mediaType === "show"
+              ? ["home", "shows"]
+              : ["home", "movies", "shows"]) as LayoutSection[],
         })),
     ];
   }

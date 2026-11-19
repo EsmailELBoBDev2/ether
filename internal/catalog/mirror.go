@@ -98,7 +98,7 @@ func (m *Mirror) Snapshot(ctx context.Context) ([]MirrorItem, error) {
 // snapshotRange reads the titles with lo < key <= hi and their facets.
 func (m *Mirror) snapshotRange(ctx context.Context, lo, hi int64, items *[]*MirrorItem, byKey map[core.RatingKey]*MirrorItem) error {
 	const in = ` AND t.key>? AND t.key<=?`
-	rows, err := m.db.QueryContext(ctx, `SELECT t.key,t.type,t.title,t.sort_title,t.year,t.released_ts,t.added_at,t.runtime_sec,t.rating,t.vote_count,t.popularity,t.language,t.content_rating,t.collection_id,t.poster,t.backdrop,t.detail FROM catalog_titles t WHERE `+mirrorBrowsableWhere+in+` ORDER BY t.key`, lo, hi)
+	rows, err := m.db.QueryContext(ctx, `SELECT t.key,t.type,t.title,t.sort_title,t.year,t.released_ts,t.added_at,t.runtime_sec,t.rating,t.vote_count,t.popularity,t.language,t.content_rating,t.enforcement_rating,t.collection_id,t.poster,t.backdrop,t.detail FROM catalog_titles t WHERE `+mirrorBrowsableWhere+in+` ORDER BY t.key`, lo, hi)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (m *Mirror) snapshotRange(ctx context.Context, lo, hi int64, items *[]*Mirr
 		e := &MirrorItem{}
 		var released, runtime int64
 		t := &e.Title
-		if err := rows.Scan(&t.Key, &t.Type, &t.Title, &t.SortTitle, &t.Year, &released, &e.AddedAt, &runtime, &t.Rating, &t.VoteCount, &t.Popularity, &t.Language, &t.ContentRating, &t.CollectionID, &t.PosterPath, &t.BackdropPath, &e.Detailed); err != nil {
+		if err := rows.Scan(&t.Key, &t.Type, &t.Title, &t.SortTitle, &t.Year, &released, &e.AddedAt, &runtime, &t.Rating, &t.VoteCount, &t.Popularity, &t.Language, &t.ContentRating, &t.EnforcementRating, &t.CollectionID, &t.PosterPath, &t.BackdropPath, &e.Detailed); err != nil {
 			rows.Close()
 			return err
 		}
@@ -244,11 +244,11 @@ func (m *Mirror) NextFranchise(ctx context.Context, after int64) (*core.Collecti
 
 // FranchiseRatedCounts is, per franchise Franchises lists, how many of its
 // browsable movies a viewer capped at level may watch (rated, at or below
-// the cap; contentrating.Exceeds), in one grouped read over the franchises'
-// members.
+// the cap; contentrating.EnforceExceeds), in one grouped read over the
+// franchises' members.
 func (m *Mirror) FranchiseRatedCounts(ctx context.Context, level int) (map[int64]int, error) {
-	rows, err := m.db.QueryContext(ctx, `SELECT collection_id, COUNT(CASE WHEN content_rating_rank>0 AND content_rating_rank<=? THEN 1 END)
-		FROM catalog_titles WHERE type='movie' AND browsable=1 AND collection_id>0
+	rows, err := m.db.QueryContext(ctx, `SELECT collection_id, COUNT(CASE WHEN content_rating_rank>0 AND content_rating_rank<=? AND enforcement_rating<>'XXX' THEN 1 END)
+		FROM catalog_titles WHERE type='movie' AND browsable=1 AND adult=0 AND collection_id>0
 		GROUP BY collection_id HAVING COUNT(*)>=2`, level)
 	if err != nil {
 		return nil, err

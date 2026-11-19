@@ -274,6 +274,10 @@ export function installMockBackend(): void {
           headers: { "Content-Type": "application/json" },
         }),
       );
+    if (url.origin === window.location.origin && url.pathname.startsWith("/vela/v0/branding/"))
+      return Promise.resolve(
+        fake.velaBranding.serveAsset(url.pathname.slice("/vela/v0/branding/".length)),
+      );
     if (url.origin === window.location.origin && url.pathname.startsWith("/ether/api/"))
       return fake.fetch(url.toString(), init);
     return real(input, init);

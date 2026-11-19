@@ -275,7 +275,9 @@ export function routeApiImagesThroughFetch(on: boolean): void {
 
 /** True when an image URL must be fetched with headers rather than put in an <img>. */
 export function imageNeedsFetch(src: string | null | undefined): boolean {
-  return Boolean(src && src.startsWith(API_BASE) && (routeImagesThroughFetch || getToken()));
+  if (!src) return false;
+  if (routeImagesThroughFetch && src.startsWith("/vela/v0/branding/")) return true;
+  return Boolean(src.startsWith(API_BASE) && (routeImagesThroughFetch || getToken()));
 }
 
 /** Fetch an authenticated console image, keeping the response headers. */

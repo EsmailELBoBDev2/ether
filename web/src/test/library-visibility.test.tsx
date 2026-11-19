@@ -440,6 +440,87 @@ describe("Library visibility", () => {
     });
   });
 
+  it("defaults 'Titles not matched above' to Hide when only Show rules exist and restores on Cancel", async () => {
+    const { fake } = renderApp("/libraries/1/rules", {}, (server) => {
+      (server.state.config.catalog as { exclusions?: unknown }).exclusions = [
+        {
+          name: "",
+          action: "show",
+          mediaType: "movie",
+          match: "all",
+          rules: [{ field: "country", op: "in", value: ["US"] }],
+        },
+        {
+          name: "",
+          action: "hide",
+          mediaType: "movie",
+          match: "all",
+          rules: [{ field: "genre", op: "in", value: ["Horror"] }],
+        },
+      ];
+    });
+    await settleUi(() => {
+      expect(
+        screen.getByRole("radiogroup", { name: "Titles not matched above" }),
+      ).toBeInTheDocument();
+    });
+    const fallbackGroup = () =>
+      screen.getByRole("radiogroup", { name: "Titles not matched above" });
+    expect(within(fallbackGroup()).getByRole("radio", { name: "Show" })).toBeChecked();
+    expect(screen.queryByText(/Only Show rules are set above/)).toBeNull();
+
+    // Switching rule 2 from Hide to Show makes all rules Show -> fallback defaults to Hide,
+    // and clicking Cancel in the drawer restores both rule 2 and fallback.
+    fireEvent.click(screen.getByRole("button", { name: "Edit rule 2" }));
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "Rule action" })).getByRole("radio", {
+        name: "Show",
+      }),
+    );
+    await settleUi(() => {
+      expect(within(fallbackGroup()).getByRole("radio", { name: "Hide" })).toBeChecked();
+      expect(
+        screen.getByText("Only Show rules are set above, so unmatched titles default to Hide."),
+      ).toBeInTheDocument();
+    });
+    const editDrawer = screen
+      .getAllByRole("dialog")
+      .filter((el) => el.tagName === "ASIDE")
+      .at(-1)!;
+    fireEvent.click(within(editDrawer).getByRole("button", { name: "Cancel" }));
+    await settleUi(() => {
+      expect(within(fallbackGroup()).getByRole("radio", { name: "Show" })).toBeChecked();
+      expect(screen.queryByText(/Only Show rules are set above/)).toBeNull();
+    });
+
+    // Deleting the Hide rule leaves only the Show rule -> fallback defaults to Hide with hint.
+    fireEvent.click(screen.getByRole("button", { name: "Delete rule 2" }));
+    await settleUi(() => {
+      expect(within(fallbackGroup()).getByRole("radio", { name: "Hide" })).toBeChecked();
+      expect(
+        screen.getByText("Only Show rules are set above, so unmatched titles default to Hide."),
+      ).toBeInTheDocument();
+    });
+
+    // Explicit manual override to Show works and updates the one-line hint; switching back saves Hide.
+    fireEvent.click(within(fallbackGroup()).getByRole("radio", { name: "Show" }));
+    expect(
+      screen.getByText(
+        "Only Show rules are set above. Switch to Hide so only matching titles appear.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(fallbackGroup()).getByRole("radio", { name: "Hide" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await settleUi(() => {
+      expect(calls(fake, "PATCH", "/libraries/1")).toHaveLength(1);
+    });
+    expect(calls(fake, "PATCH", "/libraries/1")[0]?.body).toMatchObject({
+      rules: [{ action: "show" }],
+      visibilityDefault: "hide",
+    });
+  });
+
   it("builds and summarizes Specific titles rules for Show and Hide", async () => {
     const { fake } = renderApp("/libraries/1/rules", {}, (server) => {
       (server.state.config.catalog as { exclusions?: unknown }).exclusions = [
@@ -536,11 +617,13 @@ describe("Library visibility", () => {
       expect(calls(fake, "PATCH", "/libraries/1")).toHaveLength(1);
     });
     const saved = calls(fake, "PATCH", "/libraries/1")[0]?.body as {
+      visibilityDefault: string;
       rules: {
         action: string;
         rules: { field: string; op: string; value: string[]; labels: string[] }[];
       }[];
     };
+    expect(saved.visibilityDefault).toBe("hide");
     expect(saved.rules).toHaveLength(1);
     expect(saved.rules[0]?.action).toBe("show");
     expect(saved.rules[0]?.rules[0]?.field).toBe("title");

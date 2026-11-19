@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
-	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
+	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
 )
 
 func (s *Server) metadataTitle(ctx context.Context, pr *Request, k frontend.RatingKey) (*frontend.Title, error) {

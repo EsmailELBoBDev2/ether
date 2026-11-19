@@ -666,7 +666,8 @@ func itemFromTitle(t core.Title) Item {
 	if !t.Released.IsZero() {
 		released = t.Released.UnixMilli()
 	}
-	return Item{Key: t.Key, Title: t.Title, DurationMS: t.Runtime.Milliseconds(), Summary: t.Summary, Rating: t.ContentRating, Thumb: t.PosterPath, ShowKey: t.ShowKey, Season: t.Season, Episode: t.Episode, ReleasedMS: released}
+	enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	return Item{Key: t.Key, Title: t.Title, DurationMS: t.Runtime.Milliseconds(), Summary: t.Summary, Rating: t.ContentRating, EnforcementRating: enf, Thumb: t.PosterPath, ShowKey: t.ShowKey, Season: t.Season, Episode: t.Episode, ReleasedMS: released}
 }
 func (s *Service) expand(ctx context.Context, c *Channel) error {
 	var prepare func([]ProgramSource, string)
@@ -1373,12 +1374,15 @@ func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel
 	if !u.IsOwner && !pol.Permits(c.ID, c.Private) {
 		return false
 	}
-	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && p.Item.Rating == "" && (u.MaxContentRating != "" || pol.MaxRating != "") {
+	if c.Kind != "iptv" && p != nil && strings.HasPrefix(p.Item.Slate, "plugin:") && contentrating.EnforceLevelOf(p.Item.Rating) == contentrating.Unrated && (u.MaxContentRating != "" || pol.MaxRating != "") {
 		return false
 	}
 	if u.MaxContentRating != "" || pol.MaxRating != "" {
 		rating := s.channelContentRating(ctx, c, p)
-		if contentrating.Exceeds(rating, u.MaxContentRating) || contentrating.Exceeds(rating, pol.MaxRating) {
+		if p != nil && p.Item.EnforcementRating != "" && (p.Item.EnforcementRating == contentrating.UncertifiedAdult || contentrating.EnforceLevelOf(p.Item.EnforcementRating) > contentrating.EnforceLevelOf(rating)) {
+			rating = p.Item.EnforcementRating
+		}
+		if contentrating.EnforceExceeds(rating, u.MaxContentRating) || contentrating.EnforceExceeds(rating, pol.MaxRating) {
 			return false
 		}
 	}
@@ -1387,7 +1391,11 @@ func (s *Service) allowedWithLookup(ctx context.Context, u *core.User, c Channel
 			return false
 		}
 		checkTitle := func(t *core.Title) bool {
-			if t == nil || t.Adult || contentrating.Exceeds(t.ContentRating, u.MaxContentRating) || contentrating.Exceeds(t.ContentRating, pol.MaxRating) {
+			if t == nil || t.Adult {
+				return false
+			}
+			enf := contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+			if contentrating.EnforceExceeds(enf, u.MaxContentRating) || contentrating.EnforceExceeds(enf, pol.MaxRating) {
 				return false
 			}
 			if len(u.AllowedLibraries) > 0 {

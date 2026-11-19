@@ -264,6 +264,7 @@ describe("Apps", () => {
         ];
       }
       if (path === "/frontends/vela/settings") return { defaultSkinId: "cinematic" };
+      if (path === "/vela/skins") return { skins: [] };
       if (path === "/frontends/vela/distribution")
         return { installed: true, version: "0.4.0", channel: "bundled" };
       if (path === "/web-player")
@@ -389,5 +390,140 @@ describe("Apps", () => {
     expect(await screen.findByText("enable failed")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Silo enabled" })).toBeChecked();
     expect(screen.getByRole("tab", { name: "Silo" })).toBeInTheDocument();
+  });
+
+  it("edits Vela app name, uploads light and dark wordmarks, updates live preview, and saves trimmed branding", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ documents: [] }), { status: 200 }),
+    );
+    let savedSettings: Record<string, unknown> = { defaultSkinId: "cinematic" };
+    let uploadCall = 0;
+    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/frontends" && !options?.method) {
+        return [
+          row("vela", "Vela", true, {
+            status: {
+              webPlayerReady: true,
+              addresses: ["http://192.168.68.65:32550/vela"],
+              connectUrls: ["http://192.168.68.65:32550/vela"],
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+        ];
+      }
+      if (path === "/vela/skins" && !options?.method) return { skins: [] };
+      if (path === "/frontends/vela/settings" && !options?.method) return savedSettings;
+      if (path === "/frontends/vela/settings" && options?.method === "PUT") {
+        savedSettings = JSON.parse(String(options.body));
+        return { ok: true };
+      }
+      if (path === "/frontends/vela/wordmark" && options?.method === "POST") {
+        uploadCall += 1;
+        return uploadCall === 1
+          ? { url: "/vela/v0/branding/aaaa.svg", width: 240, height: 48 }
+          : { url: "/vela/v0/branding/bbbb.svg", width: 240, height: 48 };
+      }
+      if (path === "/vela/status") {
+        return {
+          installed: true,
+          installedVersion: "0.4.0",
+          availableVersion: "0.4.0",
+          rollbackAvailable: false,
+          busy: false,
+          phase: "",
+          downloaded: 0,
+          total: 0,
+        };
+      }
+      if (path === "/vela/check") {
+        return {
+          installed: true,
+          installedVersion: "0.4.0",
+          availableVersion: "0.4.0",
+          rollbackAvailable: false,
+          busy: false,
+          phase: "",
+          downloaded: 0,
+          total: 0,
+        };
+      }
+      if (path === "/web-player") {
+        return {
+          available: true,
+          players: [{ id: "vela", url: "http://192.168.68.65:32550/vela/" }],
+        };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderApps("/apps/vela");
+    const nameInput = await screen.findByLabelText("App name");
+    expect(screen.getByRole("heading", { name: "Branding" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Skins" })).toBeInTheDocument();
+    fireEvent.change(nameInput, { target: { value: "  Rialto House  " } });
+
+    const lightPreview = screen.getByTestId("vela-preview-light");
+    const darkPreview = screen.getByTestId("vela-preview-dark");
+    expect(within(lightPreview).getAllByText("Rialto House")).toHaveLength(2);
+    expect(within(darkPreview).getAllByText("Rialto House")).toHaveLength(2);
+
+    const tooLarge = new File([new Uint8Array(513 * 1024)], "huge.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Upload light wordmark"), {
+      target: { files: [tooLarge] },
+    });
+    expect(await screen.findByText("Wordmark must be 512 KB or smaller.")).toBeInTheDocument();
+
+    const lightSvg = new File(["<svg/>"], "light.svg", { type: "image/svg+xml" });
+    fireEvent.change(screen.getByLabelText("Upload light wordmark"), {
+      target: { files: [lightSvg] },
+    });
+    expect(await screen.findByText("240×48 px")).toBeInTheDocument();
+    expect(within(lightPreview).getByRole("img", { name: "Rialto House" })).toHaveAttribute(
+      "src",
+      "/vela/v0/branding/aaaa.svg",
+    );
+    expect(within(darkPreview).getByRole("img", { name: "Rialto House" })).toHaveAttribute(
+      "src",
+      "/vela/v0/branding/aaaa.svg",
+    );
+
+    const darkSvg = new File(["<svg/>"], "dark.svg", { type: "image/svg+xml" });
+    fireEvent.change(screen.getByLabelText("Upload dark wordmark"), {
+      target: { files: [darkSvg] },
+    });
+    await waitFor(() =>
+      expect(within(darkPreview).getByRole("img", { name: "Rialto House" })).toHaveAttribute(
+        "src",
+        "/vela/v0/branding/bbbb.svg",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(savedSettings).toEqual({
+        defaultSkinId: "cinematic",
+        appName: "Rialto House",
+        wordmark: {
+          url: "/vela/v0/branding/aaaa.svg",
+          width: 240,
+          height: 48,
+          dark: "/vela/v0/branding/bbbb.svg",
+        },
+      }),
+    );
+
+    fireEvent.click(screen.getByLabelText("Remove dark wordmark"));
+    expect(within(darkPreview).getByRole("img", { name: "Rialto House" })).toHaveAttribute(
+      "src",
+      "/vela/v0/branding/aaaa.svg",
+    );
+    vi.restoreAllMocks();
   });
 });

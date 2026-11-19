@@ -28,9 +28,12 @@ func skinEngine(id string, installedKind string) string {
 
 type appearanceEntry struct {
 	revision  uint64
+	stateKey  string
 	skinID    string
 	force     bool
 	skinsGen  uint64
+	appName   string
+	branding  object
 	packs     []json.RawMessage
 	documents []SkinDocumentEntry
 	etag      string
@@ -41,23 +44,19 @@ type appearanceEntry struct {
 // constant time; no catalogue, filesystem, provider or viewer work happens here.
 func (i *instance) appearanceDocument() *appearanceEntry {
 	skin, force, revision := "cinematic", false, uint64(0)
+	var settings map[string]any
 	if i.host.HostConfig != nil {
 		cfg := i.host.HostConfig().Frontends["vela"]
 		revision = cfg.AppearanceRevision
-		if id, ok := cfg.Settings["defaultSkinId"].(string); ok && skinIDPattern.MatchString(id) {
-			skin = id
-		}
-		if f, ok := cfg.Settings["force"].(bool); ok {
-			force = f
-		}
+		settings = cfg.Settings
 	} else if i.host.Config != nil {
-		settings := i.host.Config()
-		if id, ok := settings["defaultSkinId"].(string); ok && skinIDPattern.MatchString(id) {
-			skin = id
-		}
-		if f, ok := settings["force"].(bool); ok {
-			force = f
-		}
+		settings = i.host.Config()
+	}
+	if id, ok := settings["defaultSkinId"].(string); ok && skinIDPattern.MatchString(id) {
+		skin = id
+	}
+	if f, ok := settings["force"].(bool); ok {
+		force = f
 	}
 	ctx := i.ctx
 	if ctx == nil {
@@ -67,25 +66,31 @@ func (i *instance) appearanceDocument() *appearanceEntry {
 	if i.skins != nil && !IsBuiltinSkinID(skin) && kinds[skin] == "" {
 		skin = "cinematic"
 	}
+	stateKey := canonicalAppearanceState(settings)
 	i.appearanceMu.Lock()
 	defer i.appearanceMu.Unlock()
-	if c := i.appearanceCache; c != nil && ((c.revision > revision && c.skinsGen >= skinsGen) || (c.revision == revision && c.skinID == skin && c.force == force && c.skinsGen == skinsGen)) {
+	if c := i.appearanceCache; c != nil && ((c.revision > revision && c.skinsGen >= skinsGen) || (c.revision == revision && c.stateKey == stateKey && c.skinID == skin && c.force == force && c.skinsGen == skinsGen)) {
 		return c
 	}
+	branding, appName := brandingFromSettings(settings)
 	// The client merges its built-ins from /vela/skins/catalog.json itself.
 	payload, _ := json.Marshal(object{
 		"revision":        revision,
 		"defaultSkinId":   skin,
 		"defaultEngineId": skinEngine(skin, kinds[skin]),
+		"branding":        branding,
 		"force":           force,
 		"packs":           packs,
 		"documents":       documents,
 	})
 	c := &appearanceEntry{
 		revision:  revision,
+		stateKey:  stateKey,
 		skinID:    skin,
 		force:     force,
 		skinsGen:  skinsGen,
+		appName:   appName,
+		branding:  branding,
 		packs:     packs,
 		documents: documents,
 		payload:   payload,

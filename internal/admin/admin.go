@@ -25,6 +25,7 @@ package admin
 import (
 	"context"
 	"embed"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -115,6 +116,7 @@ type Deps struct {
 	ViewerCatalogRules ViewerCatalogRules
 	Vela               *veladist.Manager
 	VelaSkins          VelaSkinAdmin
+	UploadVelaWordmark func(context.Context, io.Reader) (VelaWordmark, error)
 	Frontends          FrontendAdmin
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal

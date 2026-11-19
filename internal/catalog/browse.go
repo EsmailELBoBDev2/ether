@@ -20,6 +20,7 @@ import (
 // in-memory count and page caching so repeated library/recommendation reads
 // return without hitting disk.
 func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, error) {
+	q.Filter.MovieFilter, q.Filter.EpisodeFilter = nil, nil
 	if err := c.ensureCatalogueSources(ctx, q.Filter); err != nil {
 		return core.Page{}, err
 	}
@@ -503,6 +504,7 @@ func (c *Catalog) policyKeyFilter(f core.Filter) core.Filter {
 // browseFilterKey distinguishes a nil IncludeKeys (no restriction) from an
 // empty list (match nothing). fmt %+v prints both as [].
 func browseFilterKey(f core.Filter) string {
+	f.MovieFilter, f.EpisodeFilter = nil, nil
 	f = normalizeGateCacheFilter(f)
 	group := f.Group
 	f.Group = nil
@@ -673,6 +675,7 @@ func (c *Catalog) browseWhere(f core.Filter) (string, []any, error) {
 
 // Membership evaluates saved predicates independently of presentation/release gates.
 func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, []any, error) {
+	f.MovieFilter, f.EpisodeFilter = nil, nil
 	// Positive metadata flags retain their source meaning; absence is unknown.
 	if f.Anime {
 		f.Keywords = append(append([]string{}, f.Keywords...), "anime")
@@ -1057,20 +1060,25 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			args = append(args, v)
 		}
 	}
+	if len(f.ContentRatings) > 0 || len(f.ExcludeContentRatings) > 0 {
+		conds = append(conds, sqlBlockUncertifiedAdult("t"))
+	}
 	if len(f.ContentRatings) > 0 {
-		conds = append(conds, "t.content_rating IN ("+placeholders(len(f.ContentRatings))+")")
-		for _, v := range f.ContentRatings {
-			args = append(args, v)
-		}
+		sql, vals := sqlMatchRatings("LOWER(TRIM(t.content_rating))", "t.content_rating_rank", f.ContentRatings)
+		conds = append(conds, sql)
+		args = append(args, vals...)
 	}
 	if len(f.ExcludeContentRatings) > 0 {
 		conds = append(conds, "t.content_rating NOT IN ("+placeholders(len(f.ExcludeContentRatings))+")")
 		for _, v := range f.ExcludeContentRatings {
 			args = append(args, v)
 		}
+		sql, vals := sqlMatchRatings("LOWER(TRIM(t.content_rating))", "t.content_rating_rank", f.ExcludeContentRatings)
+		conds = append(conds, "NOT "+sql)
+		args = append(args, vals...)
 	}
 	if f.MaxContentRating != "" {
-		if level := contentrating.LevelOf(f.MaxContentRating); level != contentrating.Unrated {
+		if level := contentrating.EnforceLevelOf(f.MaxContentRating); level != contentrating.Unrated {
 			conds = append(conds, "t.content_rating_rank>0 AND t.content_rating_rank<=?")
 			args = append(args, int(level))
 			if f.SaferPlexRating && c.saferRating != nil {
@@ -1082,7 +1090,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		}
 	}
 	if f.MinContentRating != "" {
-		if level := contentrating.LevelOf(f.MinContentRating); level != contentrating.Unrated {
+		if level := contentrating.EnforceLevelOf(f.MinContentRating); level != contentrating.Unrated {
 			conds = append(conds, "t.content_rating_rank>0 AND t.content_rating_rank>=?")
 			args = append(args, int(level))
 		} else {

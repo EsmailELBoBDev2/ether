@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
@@ -46,6 +47,8 @@ func (Frontend) Describe() frontend.Descriptor {
 					Fields: []frontend.SettingsField{
 						{Key: "defaultSkinId", Kind: "string"},
 						{Key: "force", Kind: "bool"},
+						{Key: "appName", Kind: "string", Max: frontend.Int(MaxAppNameChars)},
+						{Key: "wordmark", Kind: "wordmark"},
 					},
 				},
 				{
@@ -74,6 +77,26 @@ func (f Frontend) ValidateSettings(s frontend.Settings) error {
 		case "force":
 			if _, ok := value.(bool); !ok {
 				return errors.New("invalid Vela setting")
+			}
+		case "appName":
+			name, ok := value.(string)
+			if !ok {
+				return errors.New("invalid Vela setting")
+			}
+			trimmed := strings.TrimSpace(name)
+			if utf8.RuneCountInString(trimmed) > MaxAppNameChars || hasControlRune(trimmed) {
+				return errors.New("invalid Vela setting")
+			}
+		case "wordmark":
+			if value == nil {
+				continue
+			}
+			wm, ok := parseWordmarkSetting(value)
+			if !ok {
+				return errors.New("invalid Vela setting")
+			}
+			if err := validateWordmarkInDB(f.DB, wm); err != nil {
+				return err
 			}
 		default:
 			return errors.New("invalid Vela setting")
@@ -115,6 +138,8 @@ type instance struct {
 	appearanceMu    sync.Mutex
 	appearanceCache *appearanceEntry
 	skins           *SkinStore
+	brandingMu      sync.Mutex
+	brandingBlobs   map[string]brandingBlob
 	bootstrapMu     sync.Mutex
 	bootstraps      map[string]*bootstrapEntry
 	db              *sql.DB
@@ -417,7 +442,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/vela/v0/") {
-		webclient.ServeVela(w, r, i.assets)
+		webclient.ServeVelaBrand(w, r, i.assets, i.appearanceDocument().appName)
 		return
 	}
 	r = r.WithContext(i.identityContext(r))
@@ -578,6 +603,8 @@ func (i *instance) routes() {
 	i.route("HEAD", "/appearance/skins/{id}/{versionJSON}", i.serveSkinDocumentJSON)
 	i.route("GET", "/appearance/skins/{id}/{version}/{file}", i.serveSkinDocumentAsset)
 	i.route("HEAD", "/appearance/skins/{id}/{version}/{file}", i.serveSkinDocumentAsset)
+	i.route("GET", "/branding/{asset}", i.brandingAsset)
+	i.route("HEAD", "/branding/{asset}", i.brandingAsset)
 	i.route("GET", "/events", i.appearanceEvents)
 	i.route("GET", "/libraries", i.libraries)
 	i.route("GET", "/libraries/{id}/items", i.libraryItems)

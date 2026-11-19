@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/remote"
 )
 
@@ -30,6 +33,7 @@ type frontendControl struct {
 	registry     *frontend.Registry
 	listeners    *frontendListeners
 	config       *config.Store
+	db           *sql.DB
 	mu           sync.Mutex
 	applied      map[frontend.Protocol]listenerSettings
 	clientCount  func(context.Context, frontend.Protocol) (int, bool)
@@ -42,6 +46,28 @@ type listenerSettings struct{ Port, Discovery any }
 func newFrontendControl(r *frontend.Registry, c *config.Store) *frontendControl {
 	return &frontendControl{registry: r, listeners: newFrontendListeners(r), config: c, applied: make(map[frontend.Protocol]listenerSettings)}
 }
+
+func (f *frontendControl) UploadVelaWordmark(ctx context.Context, r io.Reader) (admin.VelaWordmark, error) {
+	wm, err := vela.UploadWordmark(ctx, f.db, r)
+	if err != nil {
+		var valErr *vela.WordmarkValidationError
+		switch {
+		case errors.Is(err, vela.ErrWordmarkTooLarge):
+			return admin.VelaWordmark{}, admin.ErrVelaWordmarkTooLarge
+		case errors.As(err, &valErr):
+			return admin.VelaWordmark{}, &admin.VelaWordmarkValidationError{Message: valErr.Message}
+		default:
+			return admin.VelaWordmark{}, err
+		}
+	}
+	return admin.VelaWordmark{
+		URL:    wm.URL,
+		Width:  wm.Width,
+		Height: wm.Height,
+		Digest: wm.Digest,
+	}, nil
+}
+
 func (f *frontendControl) descriptor(id frontend.Protocol) (frontend.Descriptor, bool) {
 	for _, d := range f.registry.Descriptors() {
 		if d.ID == id {
@@ -114,6 +140,9 @@ func (f *frontendControl) Settings(_ context.Context, id frontend.Protocol) (fro
 	for k, v := range cfg.Frontends[string(id)].Settings {
 		settings[k] = v
 	}
+	if id == "vela" {
+		settings = vela.NormalizeSettings(settings)
+	}
 	if publicURL := strings.TrimSpace(cfg.Frontends[string(id)].PublicURL); publicURL != "" {
 		settings["publicUrl"] = publicURL
 	}
@@ -144,7 +173,7 @@ func validateFrontendSettings(s frontend.Settings, protocolValidator bool) error
 	}
 	return nil
 }
-func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s frontend.Settings) error {
+func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol, s frontend.Settings) error {
 	descriptor, ok := f.descriptor(id)
 	if !ok {
 		return frontend.ErrNotRegistered
@@ -184,6 +213,9 @@ func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s
 	if err := validateFrontendSettings(protocolSettings, supported); err != nil {
 		return err
 	}
+	if id == "vela" {
+		s = vela.NormalizeSettings(s)
+	}
 	if frontendHostPolicy(id).MainListener {
 		for key := range s {
 			if key != "port" {
@@ -213,29 +245,17 @@ func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s
 		}
 		return err
 	}
-	return f.config.Update(func(c *config.Config) error {
+	err = f.config.Update(func(c *config.Config) error {
 		if c.Frontends == nil {
 			c.Frontends = map[string]config.Frontend{}
 			c.Frontends["plex"] = config.Frontend{Enabled: true} // Preserve the default main-listener registration.
 		}
 		v := c.Frontends[string(id)]
-		if id == "vela" {
-			oldSkin, _ := v.Settings["defaultSkinId"].(string)
-			newSkin, _ := s["defaultSkinId"].(string)
-			if oldSkin == "" {
-				oldSkin = "cinematic"
+		if id == "vela" && vela.AppearanceChanged(v.Settings, s) {
+			if v.AppearanceRevision >= 9007199254740991 {
+				return errors.New("appearance revision exhausted")
 			}
-			if newSkin == "" {
-				newSkin = "cinematic"
-			}
-			oldForce, _ := v.Settings["force"].(bool)
-			newForce, _ := s["force"].(bool)
-			if oldSkin != newSkin || oldForce != newForce {
-				if v.AppearanceRevision >= 9007199254740991 {
-					return errors.New("appearance revision exhausted")
-				}
-				v.AppearanceRevision++
-			}
+			v.AppearanceRevision++
 		}
 		// Only a present publicUrl changes the stored address; a settings
 		// save that never heard of it must not clear the owner's address.
@@ -260,6 +280,10 @@ func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s
 		c.Frontends[string(id)] = v
 		return nil
 	})
+	if err == nil && id == "vela" && f.db != nil {
+		vela.PruneWordmarks(ctx, f.db, s)
+	}
+	return err
 }
 func (f *frontendControl) Toggle(_ context.Context, id frontend.Protocol, enabled bool) error {
 	if _, ok := f.descriptor(id); !ok {
@@ -347,6 +371,7 @@ func withoutServerName(s frontend.Settings) frontend.Settings {
 }
 
 var _ admin.FrontendAdmin = (*frontendControl)(nil)
+var _ admin.VelaWordmarkUploader = (*frontendControl)(nil)
 
 // frontendDesired reports whether an app should be served. An explicit
 // entry wins. Without one, main-listener apps are on for an install that

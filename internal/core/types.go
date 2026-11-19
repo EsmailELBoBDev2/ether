@@ -120,7 +120,11 @@ type Title struct {
 	// ContentRatingSource records where ContentRating came from: "tmdb:US:6"
 	// (TMDB, country, movie release type), "tmdb:CA" (TV), "omdb", "mdblist".
 	ContentRatingSource string `json:"contentRatingSource,omitempty"`
-	Adult               bool   `json:"adult,omitempty"`
+	// EnforcementRating maps certifications to the US scale ("G", "PG",
+	// "PG-13", "R", "NC-17") or marks uncertified adult/adult-keyword titles
+	// ("XXX") for viewer rating enforcement without altering ContentRating.
+	EnforcementRating string `json:"-"`
+	Adult             bool   `json:"adult,omitempty"`
 
 	Rating     float64 `json:"rating,omitempty"` // TMDB vote average 0-10
 	VoteCount  int     `json:"voteCount,omitempty"`

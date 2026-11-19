@@ -45,7 +45,7 @@ func (s *Service) collectionLibraryScan(ctx context.Context, v *core.User, libra
 	filter.CollectionMembers = collectionID
 	filter.CatalogueSources = nil
 	filter.Type = library.Type
-	if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.LevelOf(v.MaxContentRating)) < int(contentrating.LevelOf(filter.MaxContentRating))) {
+	if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.EnforceLevelOf(v.MaxContentRating)) < int(contentrating.EnforceLevelOf(filter.MaxContentRating))) {
 		filter.MaxContentRating = v.MaxContentRating
 	}
 	var kept []core.Title

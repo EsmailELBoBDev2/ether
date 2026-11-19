@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/store"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -65,6 +66,47 @@ func (c *Catalog) visibleWith(f *libraryfilter.Filter, t *core.Title) bool {
 	return !f.Hidden(t) && (c.upcomingMovie(t) || !(c.config().ReleaseMode == config.ModeDigital) || c.homeVisible(t))
 }
 
+// loadStoredRatings copies already-known content_rating and enforcement_rating
+// facts from catalog_titles onto remote summaries in bounded key chunks so
+// downstream viewer rating policies see stored certifications even when
+// canonical library rules are passive.
+func (c *Catalog) loadStoredRatings(ctx context.Context, out []core.Title, idx map[core.RatingKey][]int) error {
+	if c == nil || c.db == nil || len(out) == 0 {
+		return nil
+	}
+	const batch = 200
+	enfCol := `CASE WHEN enforcement_rating<>'' THEN enforcement_rating WHEN content_rating='' AND (` + adultKeywordsExistsSQL("catalog_titles.key") + `) THEN '` + contentrating.UncertifiedAdult + `' ELSE '' END`
+	for chunk := range store.Chunks(out, batch) {
+		part := chunk
+		rows, err := c.db.QueryContext(ctx, `SELECT key, content_rating, `+enfCol+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, keyArgs(part)...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var k int64
+			var cr, er string
+			if err := rows.Scan(&k, &cr, &er); err != nil {
+				rows.Close()
+				return err
+			}
+			for _, i := range idx[core.RatingKey(k)] {
+				if cr != "" {
+					out[i].ContentRating = cr
+				}
+				if enf := contentrating.EffectiveEnforcement(er, out[i].ContentRating, out[i].Adult, out[i].Keywords); enf != "" {
+					out[i].EnforcementRating = enf
+				}
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FilterVisibility enriches remote summaries with already-known local facets;
 // there are no detail fetches or indexer calls. Unknown metadata stays unknown,
 // and for a restricted viewer an undetailed summary their rules cannot judge
@@ -72,12 +114,21 @@ func (c *Catalog) visibleWith(f *libraryfilter.Filter, t *core.Title) bool {
 // An explicit search context (core.WithExplicitSearch) skips rules the owner
 // limited to browsing.
 func (c *Catalog) FilterVisibility(ctx context.Context, ts []core.Title) []core.Title {
-	f := c.visibilityFor(ctx)
-	if f.Passive() && !(c.config().ReleaseMode == config.ModeDigital) {
-		return ts
-	}
 	if len(ts) == 0 {
 		return ts
+	}
+	f := c.visibilityFor(ctx)
+	if f.Passive() && !(c.config().ReleaseMode == config.ModeDigital) {
+		out := make([]core.Title, len(ts))
+		copy(out, ts)
+		idx := make(map[core.RatingKey][]int, len(out))
+		for i, t := range out {
+			idx[t.Key] = append(idx[t.Key], i)
+		}
+		if err := c.loadStoredRatings(ctx, out, idx); err != nil {
+			return nil
+		}
+		return out
 	}
 	out := make([]core.Title, 0, len(ts))
 	idx := map[core.RatingKey][]int{}
@@ -118,13 +169,8 @@ func (c *Catalog) FilterVisibility(ctx context.Context, ts []core.Title) []core.
 		out[i].Studios = uniqueStrings(out[i].Studios)
 		out[i].Countries = uniqueStrings(out[i].Countries)
 	}
-	for chunk := range store.Chunks(ts, batch) {
-		part := chunk
-		if err := c.scanPairs(ctx, "SELECT key, content_rating FROM catalog_titles WHERE key IN ("+placeholders(len(part))+") AND content_rating<>''", keyArgs(part), func(i int, v string) {
-			out[i].ContentRating = v
-		}, idx); err != nil {
-			return nil
-		}
+	if err := c.loadStoredRatings(ctx, out, idx); err != nil {
+		return nil
 	}
 	// A restricted viewer's rules must not wave through a summary they
 	// cannot judge: a condition on an unknown field answers "no match", so

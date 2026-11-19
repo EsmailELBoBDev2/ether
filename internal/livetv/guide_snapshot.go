@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -821,10 +822,11 @@ func (s *Service) buildVirtualSnapshot(ctx context.Context, c Channel, now time.
 		if !timeline && gated.clipDuration != nil {
 			guide = s.broadcastGuide(gated, from, until)
 		}
-		tags := map[struct {
-			key           core.RatingKey
-			rating, slate string
-		}]*broadcastPolicyTag{}
+		type tagIdentity struct {
+			key                        core.RatingKey
+			rating, enforcement, slate string
+		}
+		tags := map[tagIdentity]*broadcastPolicyTag{}
 		facts := map[core.RatingKey]*core.Title{}
 		loaded := map[core.RatingKey]bool{}
 		for _, ps := range [][]Programme{raw, playback, guide} {
@@ -838,12 +840,14 @@ func (s *Service) buildVirtualSnapshot(ctx context.Context, c Channel, now time.
 					}
 					loaded[p.Item.Key] = true
 				}
-				identity := struct {
-					key           core.RatingKey
-					rating, slate string
-				}{p.Item.Key, p.Item.Rating, p.Item.Slate}
+				if p.Item.EnforcementRating == "" && facts[p.Item.Key] != nil {
+					t := facts[p.Item.Key]
+					p.Item.EnforcementRating = contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+					ps[i].Item.EnforcementRating = p.Item.EnforcementRating
+				}
+				identity := tagIdentity{p.Item.Key, p.Item.Rating, p.Item.EnforcementRating, p.Item.Slate}
 				if tags[identity] == nil {
-					tags[identity] = &broadcastPolicyTag{programme: Programme{Item: Item{Key: p.Item.Key, Rating: p.Item.Rating, Slate: p.Item.Slate}}, title: facts[p.Item.Key], catalog: s.o.Catalog != nil}
+					tags[identity] = &broadcastPolicyTag{programme: Programme{Item: Item{Key: p.Item.Key, Rating: p.Item.Rating, EnforcementRating: p.Item.EnforcementRating, Slate: p.Item.Slate}}, title: facts[p.Item.Key], catalog: s.o.Catalog != nil}
 				}
 				ps[i].policyTag = tags[identity]
 			}

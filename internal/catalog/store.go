@@ -22,7 +22,7 @@ import (
 const titleCols = `key,type,tmdb_id,imdb,tvdb,show_key,show_tmdb,show_title,season_title,season,episode,
 title,original_title,english_title,sort_title,tagline,summary,year,released_ts,runtime_sec,status,language,
 content_rating,rating,vote_count,popularity,poster,backdrop,still,logo,collection_id,collection_name,
-child_count,leaf_count,browsable,added_at,fetched_at,detail,adult,last_air_ts,content_rating_source`
+child_count,leaf_count,browsable,added_at,fetched_at,detail,adult,last_air_ts,content_rating_source,enforcement_rating`
 
 type storedTitle struct {
 	t         core.Title
@@ -195,7 +195,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scanTitle(s scanner) (*storedTitle, error) {
 	var st storedTitle
 	var key, showKey int64
-	var typ, imdb, showTitle, seasonTitle, title, orig, english, sortT, tagline, summary, status, lang, crating, csource string
+	var typ, imdb, showTitle, seasonTitle, title, orig, english, sortT, tagline, summary, status, lang, crating, csource, erating string
 	var tmdbID, tvdb, showTMDB int64
 	var season, episode, year, voteCount, collID, child, leaf, browsable, detail, adult int
 	var releasedTS, runtimeSec, addedAt, fetchedAt, lastAirTS int64
@@ -204,7 +204,7 @@ func scanTitle(s scanner) (*storedTitle, error) {
 	err := s.Scan(&key, &typ, &tmdbID, &imdb, &tvdb, &showKey, &showTMDB, &showTitle, &seasonTitle, &season, &episode,
 		&title, &orig, &english, &sortT, &tagline, &summary, &year, &releasedTS, &runtimeSec, &status, &lang,
 		&crating, &rating, &voteCount, &pop, &poster, &backdrop, &still, &logo, &collID, &collName,
-		&child, &leaf, &browsable, &addedAt, &fetchedAt, &detail, &adult, &lastAirTS, &csource)
+		&child, &leaf, &browsable, &addedAt, &fetchedAt, &detail, &adult, &lastAirTS, &csource, &erating)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +214,7 @@ func scanTitle(s scanner) (*storedTitle, error) {
 		ShowKey: core.RatingKey(showKey), ShowTitle: showTitle, SeasonTitle: seasonTitle,
 		Season: season, Episode: episode, Title: title, OriginalTitle: orig, EnglishTitle: english, SortTitle: sortT,
 		Tagline: tagline, Summary: summary, Year: year, Runtime: time.Duration(runtimeSec) * time.Second,
-		Status: status, Language: lang, ContentRating: crating, ContentRatingSource: csource, Adult: adult != 0, Rating: rating, VoteCount: voteCount,
+		Status: status, Language: lang, ContentRating: crating, EnforcementRating: erating, ContentRatingSource: csource, Adult: adult != 0, Rating: rating, VoteCount: voteCount,
 		Popularity: pop, PosterPath: poster, BackdropPath: backdrop, StillPath: still, LogoPath: logo,
 		CollectionID: int64(collID), CollectionName: collName, ChildCount: child, LeafCount: leaf,
 	}
@@ -375,12 +375,12 @@ func (c *Catalog) hydrateListSlice(ctx context.Context, items []core.Title) erro
 }
 
 type seriesIdentity struct {
-	title, contentRating    string
-	imdb, original, english string
-	tvdb                    int64
-	year                    int
-	keywords                []string
-	altTitles               []string
+	title, contentRating, enforcementRating string
+	imdb, original, english                 string
+	tvdb                                    int64
+	year                                    int
+	keywords                                []string
+	altTitles                               []string
 }
 
 type creditFact struct {
@@ -612,12 +612,12 @@ func (c *Catalog) hydrateShows(ctx context.Context, items []core.Title) error {
 	for chunk := range store.Chunks(showArgs, batch) {
 		part := chunk
 		ph := placeholders(len(part))
-		q := `SELECT tag, key, a, b, c, d, e, f, g FROM (
-SELECT 'id' AS tag, key, imdb AS a, CAST(tvdb AS TEXT) AS b, CAST(year AS TEXT) AS c, original_title AS d, title AS e, content_rating AS f, english_title AS g FROM catalog_titles WHERE key IN (` + ph + `)
+		q := `SELECT tag, key, a, b, c, d, e, f, g, h FROM (
+SELECT 'id' AS tag, key, imdb AS a, CAST(tvdb AS TEXT) AS b, CAST(year AS TEXT) AS c, original_title AS d, title AS e, content_rating AS f, english_title AS g, enforcement_rating AS h FROM catalog_titles WHERE key IN (` + ph + `)
 UNION ALL
-SELECT 'kw', key, keyword, '', '', '', '', '', '' FROM catalog_keywords WHERE key IN (` + ph + `)
+SELECT 'kw', key, keyword, '', '', '', '', '', '', '' FROM catalog_keywords WHERE key IN (` + ph + `)
 UNION ALL
-SELECT 'alt', key, title, '', '', '', '', '', '' FROM catalog_alt_titles WHERE key IN (` + ph + `)`
+SELECT 'alt', key, title, '', '', '', '', '', '', '' FROM catalog_alt_titles WHERE key IN (` + ph + `)`
 		bound := make([]any, 0, len(part)*4)
 		for i := 0; i < 3; i++ {
 			bound = append(bound, part...)
@@ -634,7 +634,7 @@ SELECT 'alt', key, title, '', '', '', '', '', '' FROM catalog_alt_titles WHERE k
 		if len(countArgs) > 0 {
 			q += `
 UNION ALL
-SELECT 'season', show_key, CAST(season AS TEXT), CAST(child_count AS TEXT), '', '', '', '', '' FROM catalog_titles WHERE type='season' AND season>0 AND show_key IN (` + placeholders(len(countArgs)) + `)`
+SELECT 'season', show_key, CAST(season AS TEXT), CAST(child_count AS TEXT), '', '', '', '', '', '' FROM catalog_titles WHERE type='season' AND season>0 AND show_key IN (` + placeholders(len(countArgs)) + `)`
 			bound = append(bound, countArgs...)
 		}
 		q += "\n) AS show_facts"
@@ -644,8 +644,8 @@ SELECT 'season', show_key, CAST(season AS TEXT), CAST(child_count AS TEXT), '', 
 		}
 		for rows.Next() {
 			var key int64
-			var tag, a, b, ccol, d, e, f, g string
-			if err := rows.Scan(&tag, &key, &a, &b, &ccol, &d, &e, &f, &g); err != nil {
+			var tag, a, b, ccol, d, e, f, g, h string
+			if err := rows.Scan(&tag, &key, &a, &b, &ccol, &d, &e, &f, &g, &h); err != nil {
 				rows.Close()
 				return err
 			}
@@ -655,7 +655,7 @@ SELECT 'season', show_key, CAST(season AS TEXT), CAST(child_count AS TEXT), '', 
 				if show := shows[k]; show != nil {
 					tvdb, _ := strconv.ParseInt(b, 10, 64)
 					year, _ := strconv.Atoi(ccol)
-					show.imdb, show.tvdb, show.year, show.original, show.title, show.contentRating, show.english = a, tvdb, year, d, e, f, g
+					show.imdb, show.tvdb, show.year, show.original, show.title, show.contentRating, show.english, show.enforcementRating = a, tvdb, year, d, e, f, g, h
 				}
 			case "kw":
 				if show := shows[k]; show != nil {
@@ -699,6 +699,11 @@ SELECT 'season', show_key, CAST(season AS TEXT), CAST(child_count AS TEXT), '', 
 		// (content_rating_rank) admits them as it admits the series.
 		if items[i].ContentRating == "" && show.contentRating != "" && (items[i].Type == core.TypeEpisode || items[i].Type == core.TypeSeason) {
 			items[i].ContentRating = show.contentRating
+		}
+		if items[i].EnforcementRating == "" && (items[i].Type == core.TypeEpisode || items[i].Type == core.TypeSeason) {
+			if enf := contentrating.EffectiveEnforcement(show.enforcementRating, items[i].ContentRating, items[i].Adult, show.keywords); enf != "" {
+				items[i].EnforcementRating = enf
+			}
 		}
 		if items[i].ShowYear == 0 {
 			items[i].ShowYear = show.year
@@ -1110,6 +1115,9 @@ func prepareTitleUpsert(t core.Title, o upsertOpts, now int64) (preparedTitleUps
 		detailInt = 1
 	}
 
+	t.EnforcementRating = contentrating.EffectiveEnforcement(t.EnforcementRating, t.ContentRating, t.Adult, t.Keywords)
+	rank := titleRatingRank(t.ContentRating, t.EnforcementRating)
+
 	homeInt := 0
 	if homeRating(t.ContentRating, t.ContentRatingSource, o.region) {
 		homeInt = 1
@@ -1132,20 +1140,20 @@ func prepareTitleUpsert(t core.Title, o upsertOpts, now int64) (preparedTitleUps
 	// handled per-field with CASE in ON CONFLICT for a few detail-only fields.
 	return preparedTitleUpsert{t: t, releasedTS: releasedTS, detailInt: detailInt, preserveInt: preserveInt, args: []any{int64(t.Key), string(t.Type), t.IDs.TMDB, t.IDs.IMDB, t.IDs.TVDB, int64(t.ShowKey), showTMDB, t.ShowTitle, t.SeasonTitle, t.Season, t.Episode,
 		t.Title, t.OriginalTitle, t.EnglishTitle, t.SortTitle, t.Tagline, t.Summary, t.Year, releasedTS, int64(t.Runtime.Seconds()), t.Status, t.Language,
-		t.ContentRating, int(contentrating.LevelOf(t.ContentRating)), t.ContentRatingSource, t.Rating, t.VoteCount, t.Popularity, t.PosterPath, t.BackdropPath, t.StillPath, t.LogoPath,
+		t.ContentRating, rank, t.ContentRatingSource, t.EnforcementRating, t.Rating, t.VoteCount, t.Popularity, t.PosterPath, t.BackdropPath, t.StillPath, t.LogoPath,
 		t.CollectionID, t.CollectionName, t.ChildCount, t.LeafCount, browsableInt, addedAtFor(browsableInt, now), now, detailInt, t.Adult, detailAtFor(detailInt, now), lastAirTS,
 		insertYearSource, insertPrimary,
-		homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, preserveInt}}, nil
+		homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, homeInt, preserveInt}}, nil
 }
 
 func titleUpsertSQL() string {
 	return `
 INSERT INTO catalog_titles (key,type,tmdb_id,imdb,tvdb,show_key,show_tmdb,show_title,season_title,season,episode,
  title,original_title,english_title,sort_title,tagline,summary,year,released_ts,runtime_sec,status,language,
- content_rating,content_rating_rank,content_rating_source,rating,vote_count,popularity,poster,backdrop,still,logo,
+ content_rating,content_rating_rank,content_rating_source,enforcement_rating,rating,vote_count,popularity,poster,backdrop,still,logo,
  collection_id,collection_name,child_count,leaf_count,browsable,added_at,fetched_at,detail,adult,detail_at,last_air_ts,
  year_source,primary_released_ts)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(key) DO UPDATE SET
  type=excluded.type, tmdb_id=excluded.tmdb_id, adult=excluded.adult,
  imdb=CASE WHEN excluded.imdb<>'' THEN excluded.imdb ELSE catalog_titles.imdb END,
@@ -1167,6 +1175,7 @@ ON CONFLICT(key) DO UPDATE SET
  content_rating=` + ratingPrecedence("content_rating") + `,
  content_rating_rank=` + ratingPrecedence("content_rating_rank") + `,
  content_rating_source=` + ratingPrecedence("content_rating_source") + `,
+ enforcement_rating=` + enforcementPrecedence() + `,
  rating=excluded.rating, vote_count=excluded.vote_count, popularity=excluded.popularity,
  poster=CASE WHEN excluded.poster<>'' THEN excluded.poster ELSE catalog_titles.poster END,
  backdrop=CASE WHEN excluded.backdrop<>'' THEN excluded.backdrop ELSE catalog_titles.backdrop END,
@@ -1179,14 +1188,15 @@ ON CONFLICT(key) DO UPDATE SET
  browsable=CASE WHEN excluded.browsable>catalog_titles.browsable THEN excluded.browsable ELSE catalog_titles.browsable END,
  added_at=CASE WHEN catalog_titles.added_at<>0 THEN catalog_titles.added_at
                WHEN excluded.browsable=1 THEN excluded.added_at ELSE 0 END,
- fetched_at=CASE WHEN ` + materialTitleChangeSQL + ` OR catalog_titles.content_rating<>(` + ratingPrecedence("content_rating") + `) THEN excluded.fetched_at ELSE catalog_titles.fetched_at END,
+ fetched_at=CASE WHEN ` + materialTitleChangeSQL + ` OR catalog_titles.content_rating<>(` + ratingPrecedence("content_rating") + `) OR catalog_titles.enforcement_rating<>(` + enforcementPrecedence() + `) THEN excluded.fetched_at ELSE catalog_titles.fetched_at END,
  detail=CASE WHEN excluded.detail>catalog_titles.detail THEN excluded.detail ELSE catalog_titles.detail END,
  detail_at=CASE WHEN excluded.detail=1 THEN excluded.detail_at ELSE catalog_titles.detail_at END
  WHERE (` + materialTitleChangeSQL + ` OR
  (catalog_titles.added_at=0 AND excluded.browsable=1) OR
  catalog_titles.content_rating<>(` + ratingPrecedence("content_rating") + `) OR
  catalog_titles.content_rating_rank<>(` + ratingPrecedence("content_rating_rank") + `) OR
- catalog_titles.content_rating_source<>(` + ratingPrecedence("content_rating_source") + `)) AND (catalog_titles.detail=0 OR excluded.detail=1 OR ?=0)`
+ catalog_titles.content_rating_source<>(` + ratingPrecedence("content_rating_source") + `) OR
+ catalog_titles.enforcement_rating<>(` + enforcementPrecedence() + `)) AND (catalog_titles.detail=0 OR excluded.detail=1 OR ?=0)`
 }
 
 func upsertOne(ctx context.Context, tx *sql.Tx, t core.Title, o upsertOpts, now int64) error {

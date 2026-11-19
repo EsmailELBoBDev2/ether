@@ -388,14 +388,14 @@ func (c *Catalog) tallyShape(f core.Filter) (tallyShape, bool) {
 	}
 	s.lo, s.hi = 0, int(^uint(0)>>1)
 	if f.MaxContentRating != "" {
-		level := contentrating.LevelOf(f.MaxContentRating)
+		level := contentrating.EnforceLevelOf(f.MaxContentRating)
 		if level == contentrating.Unrated || (f.SaferPlexRating && c.saferRating != nil) {
 			return s, false
 		}
 		s.ranked, s.lo, s.hi = true, max(s.lo, 1), min(s.hi, int(level))
 	}
 	if f.MinContentRating != "" {
-		level := contentrating.LevelOf(f.MinContentRating)
+		level := contentrating.EnforceLevelOf(f.MinContentRating)
 		if level == contentrating.Unrated {
 			return s, false
 		}

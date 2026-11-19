@@ -265,13 +265,15 @@ type KindLibraryDecl struct {
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"`                // recommended|library|collections|people
-	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (optional on collections; required people-type facet on people)
-	Order     string `json:"order,omitempty"`     // count|name (default count on collections, name on people)
-	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
-	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
+	Key               string `json:"key"`
+	Label             string `json:"label"`
+	Kind              string `json:"kind"`                        // recommended|library|collections|people
+	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
+	Order             string `json:"order,omitempty"`             // count|name (default count on collections, name on people)
+	Search            *bool  `json:"search,omitempty"`            // collections/people only; default true
+	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people when search is enabled)
+	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
+	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
 }
 
 // KindLevel is one hierarchy level of a kind.

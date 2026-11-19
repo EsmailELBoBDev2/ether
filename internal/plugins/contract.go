@@ -424,13 +424,27 @@ type KindLibraryDecl struct {
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"`                // recommended|library|collections|people
-	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections or people)
-	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
-	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
-	Order     string `json:"order,omitempty"`     // count|name (facet collections or people)
+	Key               string `json:"key"`
+	Label             string `json:"label"`
+	Kind              string `json:"kind"`                        // recommended|library|collections|people
+	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
+	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
+	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
+	Order             string `json:"order,omitempty"`             // count|name (facet collections or people)
+	Search            *bool  `json:"search,omitempty"`            // collections or people (default true)
+	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+}
+
+// EffectiveSearch reports whether tab search is enabled. Search defaults to
+// true on collections and people tabs and is never enabled on other tab kinds.
+func (t KindLibraryTab) EffectiveSearch() bool {
+	if t.Kind != "collections" && t.Kind != "people" {
+		return false
+	}
+	if t.Search != nil {
+		return *t.Search
+	}
+	return true
 }
 
 // IsZero reports whether every field of the library declaration is empty.

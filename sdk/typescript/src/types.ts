@@ -338,6 +338,10 @@ export interface KindLibraryTab {
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
+  /** Enables in-tab name filtering on "collections" and "people" tabs (default true). */
+  search?: boolean;
+  /** Optional localizable search input placeholder (at most 60 characters; "$t:" supported) when search is enabled. */
+  searchPlaceholder?: string;
   sort?: "title" | "added" | "released" | "year" | "rating" | "index";
   direction?: "asc" | "desc";
 }

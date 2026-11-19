@@ -32,7 +32,9 @@ type pluginPresExperience struct {
 	lastLibID          string
 	lastQuery          frontend.ItemQuery
 	lastColOrder       string
+	lastColQuery       string
 	lastPeopleOrder    string
+	lastPeopleQuery    string
 	personImageBatches int
 	rowRequests        []frontend.RowRequest
 }
@@ -52,12 +54,51 @@ func (e *pluginPresExperience) LibraryFacetBuckets(_ context.Context, _ *core.Vi
 	return append([]frontend.FacetBucket(nil), e.buckets[field]...), nil
 }
 
+func testFoldWords(s string) []string {
+	repl := strings.NewReplacer("ë", "e", "Ë", "e", "é", "e", "É", "e")
+	s = strings.ToLower(repl.Replace(s))
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+}
+
+func testMatchesQuery(name, query string) bool {
+	qWords := testFoldWords(query)
+	if len(qWords) == 0 {
+		return strings.TrimSpace(query) == ""
+	}
+	nWords := testFoldWords(name)
+	for _, qt := range qWords {
+		ok := false
+		for _, nw := range nWords {
+			if strings.HasPrefix(nw, qt) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *pluginPresExperience) LibraryFacetCollections(_ context.Context, _ *core.Viewer, _ core.Device, viewID, field, order string, page frontend.PageQuery) (frontend.FacetCollectionPage, error) {
 	if viewID != "77" {
 		return frontend.FacetCollectionPage{}, core.ErrNotFound
 	}
 	e.lastColOrder = order
+	e.lastColQuery = page.Query
 	all := append([]frontend.FacetCollection(nil), e.colPages[field].Items...)
+	if page.Query != "" {
+		filtered := all[:0]
+		for _, c := range all {
+			if testMatchesQuery(c.Name, page.Query) {
+				filtered = append(filtered, c)
+			}
+		}
+		all = filtered
+	}
 	if order == "name" {
 		sort.Slice(all, func(i, j int) bool {
 			return strings.ToLower(all[i].Name) < strings.ToLower(all[j].Name)
@@ -78,7 +119,17 @@ func (e *pluginPresExperience) LibraryFacetPeople(_ context.Context, _ *core.Vie
 		return frontend.FacetPersonPage{}, core.ErrNotFound
 	}
 	e.lastPeopleOrder = order
+	e.lastPeopleQuery = page.Query
 	all := append([]frontend.FacetPerson(nil), e.peoplePages[field].Items...)
+	if page.Query != "" {
+		filtered := all[:0]
+		for _, p := range all {
+			if testMatchesQuery(p.Person.Name, page.Query) {
+				filtered = append(filtered, p)
+			}
+		}
+		all = filtered
+	}
 	if order == "count" {
 		sort.Slice(all, func(i, j int) bool {
 			if all[i].ItemCount != all[j].ItemCount {
@@ -234,8 +285,9 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 			Tabs: []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
 				{ID: "library", Label: "Library", Kind: "library"},
-				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "count"},
-				{ID: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name"},
+				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "count", Search: true, SearchPlaceholder: "Search developers"},
+				{ID: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name", Search: true, SearchPlaceholder: "Search voice cast"},
+				{ID: "publishers", Label: "Publishers", Kind: "collections", Facet: "platforms", Order: "name", Search: false},
 			},
 			Sorts: []string{"released", "added", "title", "year", "rating", "index"},
 			Facets: []frontend.ViewFacet{
@@ -272,6 +324,13 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 				Items: []frontend.FacetCollection{
 					{ID: "nintendo", Name: "Nintendo", ItemCount: 15, NewestItem: &game1},
 					{ID: "capcom", Name: "Capcom", ItemCount: 8, NewestItem: &game2},
+					{ID: "zoe-mode", Name: "Zoë Mode", ItemCount: 5, NewestItem: &game1},
+					{ID: "zoe-interactive", Name: "Zoë Interactive", ItemCount: 2, NewestItem: &game2},
+				},
+			},
+			"platforms": {
+				Items: []frontend.FacetCollection{
+					{ID: "snes", Name: "Super Nintendo", ItemCount: 12, NewestItem: &game1},
 				},
 			},
 		},
@@ -433,16 +492,26 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 		t.Fatalf("plugin presentation = %v", plugLib["presentation"])
 	}
 	plugTabs := plugLib["tabs"].([]any)
-	if len(plugTabs) != 4 {
-		t.Fatalf("expected 4 plugin tabs, got %v", plugTabs)
+	if len(plugTabs) != 5 {
+		t.Fatalf("expected 5 plugin tabs, got %v", plugTabs)
+	}
+	for _, idx := range []int{0, 1} {
+		nonSearchTab := plugTabs[idx].(map[string]any)
+		if _, has := nonSearchTab["search"]; has {
+			t.Fatalf("recommended/library tab must not carry search: %v", nonSearchTab)
+		}
 	}
 	devTab := plugTabs[2].(map[string]any)
-	if devTab["id"] != "developers" || devTab["kind"] != "collections" || devTab["facet"] != "developers" || devTab["order"] != "count" || devTab["sort"] != "released" || devTab["direction"] != "desc" {
+	if devTab["id"] != "developers" || devTab["kind"] != "collections" || devTab["facet"] != "developers" || devTab["order"] != "count" || devTab["search"] != true || devTab["searchPlaceholder"] != "Search developers" || devTab["sort"] != "released" || devTab["direction"] != "desc" {
 		t.Fatalf("unexpected developers collections tab: %v", devTab)
 	}
 	castTab := plugTabs[3].(map[string]any)
-	if castTab["id"] != "cast" || castTab["label"] != "Voice cast" || castTab["kind"] != "people" || castTab["facet"] != "voiceCast" || castTab["order"] != "name" {
+	if castTab["id"] != "cast" || castTab["label"] != "Voice cast" || castTab["kind"] != "people" || castTab["facet"] != "voiceCast" || castTab["order"] != "name" || castTab["search"] != true || castTab["searchPlaceholder"] != "Search voice cast" {
 		t.Fatalf("unexpected voiceCast people tab: %v", castTab)
+	}
+	pubTab := plugTabs[4].(map[string]any)
+	if pubTab["id"] != "publishers" || pubTab["search"] != false || pubTab["searchPlaceholder"] != nil {
+		t.Fatalf("unexpected search:false publishers tab: %v", pubTab)
 	}
 	plugBrowse := plugLib["browse"].(map[string]any)
 	if plugBrowse["defaultSort"] != "released" || plugBrowse["defaultDirection"] != "desc" || len(plugBrowse["sorts"].([]any)) != 6 {
@@ -514,8 +583,39 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	}
 	cNext := colP1["nextCursor"].(string)
 	code, colP2 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&limit=1&cursor="+url.QueryEscape(cNext), nil)
-	if code != 200 || colP2["continuation"] != "exhausted" || colP2["items"].([]any)[0].(map[string]any)["id"] != "facet:developers:capcom" {
+	if code != 200 || colP2["continuation"] != "more" || colP2["items"].([]any)[0].(map[string]any)["id"] != "facet:developers:capcom" {
 		t.Fatalf("facet collections page2 = %d %v", code, colP2)
+	}
+	// 5a. Collections tab query filter: diacritic match ("zoe" -> "Zoë Mode", "Zoë Interactive"), order preserved, cursor hash includes query.
+	code, zoeP1 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&query=zoe&limit=1", nil)
+	if code != 200 || zoeP1["continuation"] != "more" || exp.lastColQuery != "zoe" || zoeP1["items"].([]any)[0].(map[string]any)["id"] != "facet:developers:zoe-mode" {
+		t.Fatalf("collections query=zoe page1 = %d %v", code, zoeP1)
+	}
+	zoeCursor := zoeP1["nextCursor"].(string)
+	if badCode, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&query=cap&limit=1&cursor="+url.QueryEscape(zoeCursor), nil); badCode != 409 {
+		t.Fatalf("collections cursor with altered query status=%d, want 409", badCode)
+	}
+	code, zoeP2 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&query=zoe&limit=1&cursor="+url.QueryEscape(zoeCursor), nil)
+	if code != 200 || zoeP2["continuation"] != "exhausted" || zoeP2["items"].([]any)[0].(map[string]any)["id"] != "facet:developers:zoe-interactive" {
+		t.Fatalf("collections query=zoe page2 = %d %v", code, zoeP2)
+	}
+	// Empty/whitespace query acts as no filter; >100 chars or search:false returns 400 unsupported_library_query.
+	code, emptyQ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&query=%20%20", nil)
+	if code != 200 || len(emptyQ["items"].([]any)) != 4 {
+		t.Fatalf("empty trimmed query should not filter, got %d %v", code, emptyQ)
+	}
+	code, searchFalse := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=publishers&query=snes", nil)
+	if code != 400 || searchFalse["error"].(map[string]any)["code"] != "unsupported_library_query" {
+		t.Fatalf("query on search:false tab = %d %v, want 400 unsupported_library_query", code, searchFalse)
+	}
+	if okCode, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=publishers", nil); okCode != 200 {
+		t.Fatalf("search:false tab without query status=%d, want 200", okCode)
+	}
+	if longCode, longBody := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=developers&query="+strings.Repeat("a", 101), nil); longCode != 400 || longBody["error"].(map[string]any)["code"] != "unsupported_library_query" {
+		t.Fatalf("query > 100 chars = %d %v, want 400 unsupported_library_query", longCode, longBody)
+	}
+	if catQCode, catQBody := doReq(http.MethodGet, "/vela/v0/libraries/23/collections?query=star", nil); catQCode != 400 || catQBody["error"].(map[string]any)["code"] != "unsupported_library_query" {
+		t.Fatalf("catalogue collections query = %d %v, want 400 unsupported_library_query", catQCode, catQBody)
 	}
 	if code, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=missing", nil); code != 404 {
 		t.Fatalf("unknown collections tab status=%d, want 404", code)
@@ -574,6 +674,37 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 		} else if pWire["photo"] != nil {
 			t.Fatalf("cast[%d] expected nil photo when person has no portrait, got %v", idx, pWire["photo"])
 		}
+	}
+
+	// 5c. People tab query filter: diacritic match ("zoe" -> "Zoë Example", "Zoë Wanamaker"), order preserved, cursor paging.
+	zoeExTMDB := core.PluginPersonID("Zoë Example")
+	zoeExID := core.FacetID("person", fmt.Sprintf("%d", zoeExTMDB))
+	zoeExDetail := frontend.PersonDetail{ID: zoeExID, TMDB: zoeExTMDB, Name: "Zoë Example", ArtworkItem: game2.Key}
+	zoeWanTMDB := core.PluginPersonID("Zoë Wanamaker")
+	zoeWanID := core.FacetID("person", fmt.Sprintf("%d", zoeWanTMDB))
+	zoeWanDetail := frontend.PersonDetail{ID: zoeWanID, TMDB: zoeWanTMDB, Name: "Zoë Wanamaker", ArtworkItem: game1.Key}
+	exp.peopleByID[zoeExID] = zoeExDetail
+	exp.peopleByID[zoeWanID] = zoeWanDetail
+	exp.peoplePages["voiceCast"] = frontend.FacetPersonPage{
+		Items: append(exp.peoplePages["voiceCast"].Items,
+			frontend.FacetPerson{Person: zoeWanDetail, ItemCount: 4},
+			frontend.FacetPerson{Person: zoeExDetail, ItemCount: 2},
+		),
+	}
+	code, castZoeP1 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=cast&query=zoe&limit=1", nil)
+	if code != 200 || castZoeP1["continuation"] != "more" || exp.lastPeopleQuery != "zoe" || len(castZoeP1["items"].([]any)) != 1 {
+		t.Fatalf("cast query=zoe page1 = %d %v", code, castZoeP1)
+	}
+	if castZoeP1["items"].([]any)[0].(map[string]any)["person"].(map[string]any)["name"] != "Zoë Example" {
+		t.Fatalf("cast query=zoe page1 order = %v, want Zoë Example first", castZoeP1["items"])
+	}
+	castZoeCursor := castZoeP1["nextCursor"].(string)
+	if badCastCode, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=cast&query=laura&limit=1&cursor="+url.QueryEscape(castZoeCursor), nil); badCastCode != 409 {
+		t.Fatalf("cast cursor with altered query status=%d, want 409", badCastCode)
+	}
+	code, castZoeP2 := doReq(http.MethodGet, "/vela/v0/libraries/77/collections?tab=cast&query=zoe&limit=1&cursor="+url.QueryEscape(castZoeCursor), nil)
+	if code != 200 || castZoeP2["continuation"] != "exhausted" || castZoeP2["items"].([]any)[0].(map[string]any)["person"].(map[string]any)["name"] != "Zoë Wanamaker" {
+		t.Fatalf("cast query=zoe page2 = %d %v", code, castZoeP2)
 	}
 
 	// 6. GET /vela/v0/libraries/{id}/rows: plugin recommended rows & catalogue PlacementLibrary rows.

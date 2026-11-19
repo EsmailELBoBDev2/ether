@@ -673,16 +673,16 @@ unless the owner agrees to replace the library's contents.
 `library` and `browse` shape how Vela renders the library without per-plugin client logic:
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
-- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, or `"people"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
-  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>` pages those facet buckets with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=`.
-  - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>` pages the distinct root-level people in that field as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
-  - For example, a games library declaring `"developers"` (`type: "strings"`, `indexed: true`) and `"voiceCast"` (`type: "people"`, `indexed: true`) in `browse.facets` can expose alphabetical developer collections and a cast directory:
+- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, or `"people"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=`.
+  - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
+  - For example, a games library declaring `"developers"` (`type: "strings"`, `indexed: true`) and `"voiceCast"` (`type: "people"`, `indexed: true`) in `browse.facets` can expose searchable alphabetical developer collections and a voice cast directory:
     ```json
     "tabs": [
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
       { "key": "library", "label": "Library", "kind": "library" },
-      { "key": "developers", "label": "Developers", "kind": "collections", "facet": "developers", "order": "name" },
-      { "key": "cast", "label": "Voice cast", "kind": "people", "facet": "voiceCast", "order": "name" }
+      { "key": "developers", "label": "Developers", "kind": "collections", "facet": "developers", "order": "name", "searchPlaceholder": "Search developers" },
+      { "key": "cast", "label": "Voice cast", "kind": "people", "facet": "voiceCast", "order": "name", "searchPlaceholder": "Search voice cast" }
     ]
     ```
 - `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
@@ -3338,6 +3338,8 @@ type KindLibraryDecl struct {
 | `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts (facet collections only) |
 | `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections only) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (facet collections or people) |
+| `search` | `*bool` | may be omitted (see validation for conditions) | collections or people (default true) |
+| `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder, <= 60 chars |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryTab
@@ -3345,13 +3347,31 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"`                // recommended|library|collections|people
-	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (collections or people)
-	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
-	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
-	Order     string `json:"order,omitempty"`     // count|name (facet collections or people)
+	Key               string `json:"key"`
+	Label             string `json:"label"`
+	Kind              string `json:"kind"`                        // recommended|library|collections|people
+	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
+	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
+	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
+	Order             string `json:"order,omitempty"`             // count|name (facet collections or people)
+	Search            *bool  `json:"search,omitempty"`            // collections or people (default true)
+	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+}
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryTab.EffectiveSearch
+
+``````
+// EffectiveSearch reports whether tab search is enabled. Search defaults to
+// true on collections and people tabs and is never enabled on other tab kinds.
+func (t KindLibraryTab) EffectiveSearch() bool {
+	if t.Kind != "collections" && t.Kind != "people" {
+		return false
+	}
+	if t.Search != nil {
+		return *t.Search
+	}
+	return true
 }
 ``````
 
@@ -9621,6 +9641,17 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 			recordRef(fmt.Sprintf("ether.contributes.integration.adds[%d]", i), a, 80, false)
 		}
 	}
+	for i, k := range c.MediaKinds {
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("ether.contributes.mediaKinds[%d].library.tabs[%d]", i, j)
+			if strings.HasPrefix(tab.Label, "$t:") {
+				recordRef(tbase+".label", tab.Label, 40, false)
+			}
+			if strings.HasPrefix(tab.SearchPlaceholder, "$t:") {
+				recordRef(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60, false)
+			}
+		}
+	}
 
 	// Lint every string in every locale.
 	enDoc := out["en"]
@@ -13982,6 +14013,7 @@ func contributesUseT(c Contributes) bool {
 		check(k.Library.Name)
 		for _, t := range k.Library.Tabs {
 			check(t.Label)
+			check(t.SearchPlaceholder)
 		}
 		for _, lv := range k.Levels {
 			check(lv.Label)
@@ -14615,6 +14647,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						add(tbase+".order", "must be count or name")
 					}
 				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
 					add(tbase+".facet", "must name a declared browse facet")
@@ -14630,6 +14668,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Order != "" && tab.Order != "count" && tab.Order != "name" {
 					add(tbase+".order", "must be count or name")
 				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
 			default:
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -14642,6 +14686,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				}
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Search != nil {
+					add(tbase+".search", "only collections or people tabs may set search")
+				}
+				if tab.SearchPlaceholder != "" {
+					add(tbase+".searchPlaceholder", "only collections or people tabs may set searchPlaceholder")
 				}
 			}
 		}
@@ -22743,6 +22793,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.tabs[].kind` | `any` | false | {"enum":["recommended","library","collections","people"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].order` | `any` | false | {"enum":["count","name"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].search` | `boolean` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].searchPlaceholder` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index"]} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
@@ -23286,6 +23338,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                                 "count",
                                 "name"
                               ]
+                            },
+                            "search": {
+                              "type": "boolean"
+                            },
+                            "searchPlaceholder": {
+                              "type": "string"
                             },
                             "sort": {
                               "enum": [
@@ -24193,7 +24251,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors, pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections\|people`, with optional `facet`/`order`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count` on `people` tabs); see generated types |
+| ether.contributes | Capability descriptors, pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections\|people`, with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -24315,7 +24373,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 ```
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`),
-`library.tabs` (`recommended|library|collections|people`, such as `{key:"developers",label:"Developers",kind:"collections",facet:"developers",order:"name"}` or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name"}`),
+`library.tabs` (`recommended|library|collections|people`, such as `{key:"developers",label:"Developers",kind:"collections",facet:"developers",order:"name",searchPlaceholder:"Search developers"}` or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
 and `browse.sorts`/`browse.facets`, then the browse/changes/resolve
 handlers in `src/plugin.ts`. Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.
@@ -37075,6 +37133,8 @@ type KindLibraryDecl struct {
 | `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people |
 | `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (optional on collections; required people-type facet on people) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (default count on collections, name on people) |
+| `search` | `*bool` | may be omitted (see validation for conditions) | collections/people only; default true |
+| `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder (<=60 chars; collections/people when search is enabled) |
 | `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts (facet collections only) |
 | `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections only) |
 
@@ -37084,13 +37144,15 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"`                // recommended|library|collections|people
-	Facet     string `json:"facet,omitempty"`     // declared browse.facets entry (optional on collections; required people-type facet on people)
-	Order     string `json:"order,omitempty"`     // count|name (default count on collections, name on people)
-	Sort      string `json:"sort,omitempty"`      // one of browse.sorts (facet collections only)
-	Direction string `json:"direction,omitempty"` // asc|desc (facet collections only)
+	Key               string `json:"key"`
+	Label             string `json:"label"`
+	Kind              string `json:"kind"`                        // recommended|library|collections|people
+	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
+	Order             string `json:"order,omitempty"`             // count|name (default count on collections, name on people)
+	Search            *bool  `json:"search,omitempty"`            // collections/people only; default true
+	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people when search is enabled)
+	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
+	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
 }
 ``````
 
@@ -46255,6 +46317,10 @@ export interface KindLibraryTab {
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
+  /** Enables in-tab name filtering on "collections" and "people" tabs (default true). */
+  search?: boolean;
+  /** Optional localizable search input placeholder (at most 60 characters; "$t:" supported) when search is enabled. */
+  searchPlaceholder?: string;
   sort?: "title" | "added" | "released" | "year" | "rating" | "index";
   direction?: "asc" | "desc";
 }

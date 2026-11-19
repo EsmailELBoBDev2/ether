@@ -187,6 +187,17 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 			recordRef(fmt.Sprintf("ether.contributes.integration.adds[%d]", i), a, 80, false)
 		}
 	}
+	for i, k := range c.MediaKinds {
+		for j, tab := range k.Library.Tabs {
+			tbase := fmt.Sprintf("ether.contributes.mediaKinds[%d].library.tabs[%d]", i, j)
+			if strings.HasPrefix(tab.Label, "$t:") {
+				recordRef(tbase+".label", tab.Label, 40, false)
+			}
+			if strings.HasPrefix(tab.SearchPlaceholder, "$t:") {
+				recordRef(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60, false)
+			}
+		}
+	}
 
 	// Lint every string in every locale.
 	enDoc := out["en"]

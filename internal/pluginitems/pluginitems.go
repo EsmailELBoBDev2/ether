@@ -25,6 +25,12 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	store.Register("pluginitems", 4, `
+ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT '';
+CREATE INDEX plugin_item_fields_fold ON plugin_item_fields(field, v_fold, v_text, v_int, item_ref);
+`)
+	store.RegisterApply("pluginitems", 4, applyMigration4)
+
 	store.Register("pluginitems", 3, `ALTER TABLE plugin_kinds ADD COLUMN fts_version INTEGER NOT NULL DEFAULT 0;`)
 	store.RegisterDialect("pluginitems", 3, store.Postgres, `ALTER TABLE plugin_kinds ADD COLUMN fts_version BIGINT NOT NULL DEFAULT 0;`)
 	store.RegisterSQLiteApply("pluginitems", 3, applyMigration3SQLite)

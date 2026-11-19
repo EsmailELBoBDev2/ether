@@ -184,6 +184,7 @@ type Fetcher struct {
 	pools   []*pool   // every enabled provider, in config order
 	retired []*pool   // removed pools with article windows still finishing
 	tiers   [][]*pool // try order
+	changed chan struct{}
 	closed  bool
 	// share maps a provider's configured connections to this node's part
 	// of them (clustered); nil uses every configured connection.
@@ -208,10 +209,11 @@ var _ core.ArticleFetcher = (*Fetcher)(nil)
 func New(providers []config.UsenetProvider, opts Options) *Fetcher {
 	opts.withDefaults()
 	f := &Fetcher{
-		o:      opts,
-		log:    opts.Logger,
-		misses: newMissCache(opts.MissTTL, opts.MissCacheSize, time.Now),
-		live:   newLiveHedger(),
+		o:       opts,
+		log:     opts.Logger,
+		changed: make(chan struct{}),
+		misses:  newMissCache(opts.MissTTL, opts.MissCacheSize, time.Now),
+		live:    newLiveHedger(),
 	}
 	f.minIdle.Store(int32(opts.MinIdle))
 	f.Update(providers)
@@ -313,6 +315,10 @@ func (f *Fetcher) Update(providers []config.UsenetProvider) {
 	}
 	f.pools = next
 	f.tiers = buildTiers(next)
+	if f.changed != nil {
+		close(f.changed)
+		f.changed = make(chan struct{})
+	}
 	f.mu.Unlock()
 
 	for _, p := range old {
@@ -1006,6 +1012,10 @@ func (f *Fetcher) Close() error {
 		return nil
 	}
 	f.closed = true
+	if f.changed != nil {
+		close(f.changed)
+		f.changed = nil
+	}
 	pools := append(slices.Clone(f.pools), f.retired...)
 	f.pools, f.tiers, f.retired = nil, nil, nil
 	f.mu.Unlock()

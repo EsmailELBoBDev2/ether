@@ -228,7 +228,9 @@ func (f *frontendControl) PutSettings(_ context.Context, id frontend.Protocol, s
 			if newSkin == "" {
 				newSkin = "cinematic"
 			}
-			if oldSkin != newSkin {
+			oldForce, _ := v.Settings["force"].(bool)
+			newForce, _ := s["force"].(bool)
+			if oldSkin != newSkin || oldForce != newForce {
 				if v.AppearanceRevision >= 9007199254740991 {
 					return errors.New("appearance revision exhausted")
 				}

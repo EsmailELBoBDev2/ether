@@ -65,6 +65,7 @@ func (a *App) buildAdmin() http.Handler {
 		Config:           a.cfg,
 		Frontends:        a.frontends.control,
 		Vela:             a.velaManager(),
+		VelaSkins:        a.velaSkinsAdmin(),
 		Extensions:       a.extensionHandlers(),
 		PublicExtensions: a.publicExtensionHandlers(),
 		ValidateExtra:    a.validateExtra,

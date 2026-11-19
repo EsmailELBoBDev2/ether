@@ -114,6 +114,7 @@ type StatusFuncE func(ctx context.Context) (any, error)
 type Deps struct {
 	ViewerCatalogRules ViewerCatalogRules
 	Vela               *veladist.Manager
+	VelaSkins          VelaSkinAdmin
 	Frontends          FrontendAdmin
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal
@@ -533,6 +534,7 @@ func (h *Handler) routes() *http.ServeMux {
 		mux.Handle(prefix+"/", http.StripPrefix(prefix, handler))
 	}
 	h.velaRoutes(api)
+	h.velaSkinRoutes(api)
 	h.personalizationRoutes(api)
 	h.collectionRoutes(mux, api)
 	h.prerollRoutes(api)

@@ -30,28 +30,64 @@ type Frontend struct {
 	AssetsDir string
 	DB        *sql.DB
 	ReplayKey []byte
+	Skins     *SkinStore
 }
 
 func (Frontend) Describe() frontend.Descriptor {
-	return frontend.Descriptor{ID: "vela", Name: "Vela", Version: "0", SettingsSchema: frontend.SettingsSchema{SignInHelp: true, Sections: []frontend.SettingsSection{{Key: "appearance", Fields: []frontend.SettingsField{{Key: "defaultSkinId", Kind: "string"}}}, {Key: "find", Fields: []frontend.SettingsField{{Key: "serverName", Kind: "serverName"}}}}}}
+	return frontend.Descriptor{
+		ID:      "vela",
+		Name:    "Vela",
+		Version: "0",
+		SettingsSchema: frontend.SettingsSchema{
+			SignInHelp: true,
+			Sections: []frontend.SettingsSection{
+				{
+					Key: "appearance",
+					Fields: []frontend.SettingsField{
+						{Key: "defaultSkinId", Kind: "string"},
+						{Key: "force", Kind: "bool"},
+					},
+				},
+				{
+					Key: "find",
+					Fields: []frontend.SettingsField{
+						{Key: "serverName", Kind: "serverName"},
+					},
+				},
+			},
+		},
+	}
 }
 
 // ValidateSettings keeps the owner setting additive without accepting arbitrary config.
-func (Frontend) ValidateSettings(s frontend.Settings) error {
+func (f Frontend) ValidateSettings(s frontend.Settings) error {
 	for key, value := range s {
-		id, ok := value.(string)
-		if key != "defaultSkinId" || !ok || !skinIDPattern.MatchString(id) {
+		switch key {
+		case "defaultSkinId":
+			id, ok := value.(string)
+			if !ok || !ValidSkinID(id) {
+				return errors.New("invalid Vela setting")
+			}
+			if f.Skins != nil && !IsBuiltinSkinID(id) && !f.Skins.HasInstalled(context.Background(), id) {
+				return errors.New("unknown Vela skin")
+			}
+		case "force":
+			if _, ok := value.(bool); !ok {
+				return errors.New("invalid Vela setting")
+			}
+		default:
 			return errors.New("invalid Vela setting")
 		}
 	}
 	return nil
 }
+
 func (f Frontend) Mount(ctx context.Context, host frontend.Host) (frontend.Instance, error) {
 	if host.Identity == nil || host.Experience == nil || host.Sessions == nil {
 		return nil, errors.New("vela requires identity, experience and sessions")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	i := &instance{host: host, ctx: ctx, cancel: cancel, mux: http.NewServeMux(), sessions: map[string]*playSession{}, replays: map[string]*replay{}, assets: f.AssetsDir}
+	i := &instance{host: host, ctx: ctx, cancel: cancel, mux: http.NewServeMux(), sessions: map[string]*playSession{}, replays: map[string]*replay{}, assets: f.AssetsDir, skins: f.Skins}
 	seal, err := encryption(f.ReplayKey)
 	if err != nil {
 		cancel()
@@ -78,6 +114,7 @@ type replay struct {
 type instance struct {
 	appearanceMu    sync.Mutex
 	appearanceCache *appearanceEntry
+	skins           *SkinStore
 	bootstrapMu     sync.Mutex
 	bootstraps      map[string]*bootstrapEntry
 	db              *sql.DB
@@ -534,6 +571,13 @@ func (i *instance) route(method, path string, h http.HandlerFunc) {
 }
 func (i *instance) routes() {
 	i.route("GET", "/appearance", i.appearance)
+	i.route("HEAD", "/appearance", i.appearance)
+	i.route("GET", "/appearance/packs/{id}/{version}/{file}", i.servePackAsset)
+	i.route("HEAD", "/appearance/packs/{id}/{version}/{file}", i.servePackAsset)
+	i.route("GET", "/appearance/skins/{id}/{versionJSON}", i.serveSkinDocumentJSON)
+	i.route("HEAD", "/appearance/skins/{id}/{versionJSON}", i.serveSkinDocumentJSON)
+	i.route("GET", "/appearance/skins/{id}/{version}/{file}", i.serveSkinDocumentAsset)
+	i.route("HEAD", "/appearance/skins/{id}/{version}/{file}", i.serveSkinDocumentAsset)
 	i.route("GET", "/events", i.appearanceEvents)
 	i.route("GET", "/libraries", i.libraries)
 	i.route("GET", "/libraries/{id}/items", i.libraryItems)

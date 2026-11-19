@@ -30,6 +30,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/favorites"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
 	"github.com/braedonsaunders/ether/internal/httpclient"
@@ -270,6 +271,9 @@ type App struct {
 	frontends         *frontendRuntime
 	velaOnce          sync.Once
 	velaDist          *veladist.Manager
+	velaSkinsOnce     sync.Once
+	velaSkins         *vela.SkinStore
+	velaSkinHTTP      *http.Client
 	frontendClients   *frontendClients
 	artwork           *artworkservice.Source
 	downloadRemuxer   core.DownloadRemuxer

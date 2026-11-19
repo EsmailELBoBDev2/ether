@@ -185,8 +185,8 @@ var tierUntouchedTables = []string{
 	"libraries", "libraries_", "plugin_", "plugins_setup", "plugins_schedule_runs",
 	// Id mappings (see above).
 	"frontend_compact_ids", "frontend_compact_id_counters", "silo_source_offer_ids", "frontend_client_families", "frontend_clients_seen",
-	// Encrypted idempotency responses contain transient authority, not durable title intent.
-	"vela_replays",
+	// Encrypted idempotency responses and installed Vela skins hold no title references.
+	"vela_replays", "vela_skins",
 	// Accounts, identity, sessions and devices.
 	"auth_", "identity_", "invites_", "mcp_oauth_", "capability_", "credentials_format", "safety_policies",
 	"sessions_devices", "sessions_lazy_", "sessions_sample_receipts", "sessions_delivery_tokens",

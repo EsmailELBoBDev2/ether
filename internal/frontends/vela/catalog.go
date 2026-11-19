@@ -673,7 +673,17 @@ func (i *instance) buildBootstrap(r *http.Request, v *frontend.Viewer, t string,
 	if err != nil {
 		return nil, err
 	}
-	out := object{"viewer": viewer, "capabilities": i.requestCapabilitiesFor(r, v), "defaultSkinId": i.appearanceDocument().skinID, "rows": shelves}
+	appDoc := i.appearanceDocument()
+	out := object{
+		"viewer":        viewer,
+		"capabilities":  i.requestCapabilitiesFor(r, v),
+		"defaultSkinId": appDoc.skinID,
+		"force":         appDoc.force,
+		"packs":         appDoc.packs,
+		"documents":     appDoc.documents,
+		"appearance":    json.RawMessage(appDoc.payload),
+		"rows":          shelves,
+	}
 	if len(heroes) > 0 {
 		ids := make([]string, 0, len(heroes))
 		for _, hero := range heroes {

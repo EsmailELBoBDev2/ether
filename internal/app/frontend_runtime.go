@@ -415,7 +415,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 	if err := r.registry.Register(silo.Frontend{MachineID: cfg.Server.MachineIdentifier}); err != nil {
 		return nil, err
 	}
-	if err := r.registry.Register(vela.Frontend{AssetsDir: filepath.Join(a.frontendClientsDir(), "vela"), DB: a.db, ReplayKey: a.cfg.DerivedKey("vela-idempotency-v0")}); err != nil {
+	if err := r.registry.Register(vela.Frontend{AssetsDir: filepath.Join(a.frontendClientsDir(), "vela"), DB: a.db, ReplayKey: a.cfg.DerivedKey("vela-idempotency-v0"), Skins: a.velaSkinsStore()}); err != nil {
 		return nil, err
 	}
 	if err := r.registry.Register(stremio.Frontend{}); err != nil {

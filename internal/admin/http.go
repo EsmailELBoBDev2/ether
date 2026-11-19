@@ -114,6 +114,7 @@ var binaryUploads = map[string]bool{
 	"/api/adoption/backups/restore": true,
 	"/api/plugins/install":          true,
 	"/api/plugins/install/preview":  true,
+	"/api/vela/skins":               true,
 }
 
 // csvUploads are the endpoints that take a CSV file body (text/csv or
@@ -151,9 +152,8 @@ func csrfOK(r *http.Request) bool {
 			if csvUploads[r.URL.Path] && (strings.EqualFold(ct, "text/csv") || strings.EqualFold(ct, "application/octet-stream")) {
 				return true
 			}
-			// Plugin install posts the package and its install options
-			// (grants, shadow) together as multipart from the console.
-			if (prerollVideoUpload(r.URL.Path) || onairUpload(r.URL.Path) || r.URL.Path == "/api/plugins/install") && strings.EqualFold(ct, "multipart/form-data") {
+			// Plugin and Vela skin installs may post the package as multipart from the console.
+			if (prerollVideoUpload(r.URL.Path) || onairUpload(r.URL.Path) || r.URL.Path == "/api/plugins/install" || r.URL.Path == "/api/vela/skins") && strings.EqualFold(ct, "multipart/form-data") {
 				return true
 			}
 		}

@@ -2,10 +2,11 @@ package stream
 
 import (
 	"bytes"
-	"github.com/braedonsaunders/ether/internal/nzb"
-	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"testing"
+
+	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 func TestVaultEpisodeReplayAndStaleExtent(t *testing.T) {

@@ -400,21 +400,28 @@ func (e *Engine) Prefetch(ctx context.Context, releaseID string, nzbData []byte,
 func (e *Engine) acquire(nzbData []byte) (*release, error) {
 	sum := sha256.Sum256(nzbData)
 	digest := hex.EncodeToString(sum[:12])
-	e.mu.Lock()
-	if el, ok := e.releases[digest]; ok {
-		rel := el.Value.(*release)
-		rel.refs++
-		e.relLRU.MoveToFront(el)
-		e.mu.Unlock()
+	if rel := e.cachedRelease(digest); rel != nil {
 		return rel, nil
 	}
-	e.mu.Unlock()
 
 	doc, err := nzb.Parse(nzbData)
 	if err != nil {
 		return nil, err
 	}
 	return e.acquireDoc(digest, doc, nil), nil
+}
+
+func (e *Engine) cachedRelease(digest string) *release {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	el := e.releases[digest]
+	if el == nil {
+		return nil
+	}
+	r := el.Value.(*release)
+	r.refs++
+	e.relLRU.MoveToFront(el)
+	return r
 }
 
 func (e *Engine) acquireDoc(digest string, doc *nzb.NZB, saved *vault.Layout) *release {

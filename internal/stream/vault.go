@@ -35,14 +35,6 @@ func (e *Engine) openRecord(ctx context.Context, releaseID, cacheID string, rec 
 		return nil, ErrNoPlayableFile
 	}
 	doc := *rec.NZB
-	doc.Files = make([]*nzb.File, len(rec.NZB.Files))
-	for i, f := range rec.NZB.Files {
-		if f == nil {
-			return nil, ErrCorrupt
-		}
-		copyFile := *f
-		doc.Files[i] = &copyFile
-	}
 	if rec.Password != "" {
 		doc.Meta = maps.Clone(doc.Meta)
 		if doc.Meta == nil {
@@ -52,10 +44,27 @@ func (e *Engine) openRecord(ctx context.Context, releaseID, cacheID string, rec 
 	}
 	key := rec.Key
 	if key == "" {
+		for _, f := range doc.Files {
+			if f == nil {
+				return nil, ErrCorrupt
+			}
+		}
 		key = vault.ContentKey(&doc)
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", key, doc.MetaValue(nzb.MetaEpisode), doc.MetaValue(nzb.MetaMovie), doc.Password())))
-	rel := e.acquireDoc(fmt.Sprintf("vault-%x", digest[:]), &doc, rec.Layout)
+	id := fmt.Sprintf("vault-%x", digest[:])
+	if rel := e.cachedRelease(id); rel != nil {
+		return e.openRelease(ctx, releaseID, cacheID, rel)
+	}
+	doc.Files = make([]*nzb.File, len(rec.NZB.Files))
+	for i, f := range rec.NZB.Files {
+		if f == nil {
+			return nil, ErrCorrupt
+		}
+		copyFile := *f
+		doc.Files[i] = &copyFile
+	}
+	rel := e.acquireDoc(id, &doc, rec.Layout)
 	return e.openRelease(ctx, releaseID, cacheID, rel)
 }
 
@@ -266,7 +275,7 @@ func (b *builder) restore(ctx context.Context, l *vault.Layout) (*plan, error) {
 		pf := b.rel.files[v.File]
 		pf.setAssumed(v.Size)
 		head := l.FirstArticles[v.File]
-		if v.File != first.File && len(head) > 0 && len(head) == v.HeadSize && int64(len(head)) <= v.Size {
+		if v.Verified && v.File != first.File && len(head) > 0 && len(head) == v.HeadSize && int64(len(head)) <= v.Size {
 			b.e.hot.put(segKey{b.rel.digest, pf.segBase}, &segData{data: head, fileSize: v.Size})
 		}
 	}

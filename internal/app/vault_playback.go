@@ -88,5 +88,11 @@ func (a *App) openVaultResolution(ctx context.Context, res *core.Resolution) (co
 		}
 	}
 	copyRec.NZB = &doc
-	return a.engine.OpenRecordAlias(ctx, r.ID, vaultStreamPrefix+string(key), &copyRec)
+	src, err := a.engine.OpenRecordAlias(ctx, r.ID, vaultStreamPrefix+string(key), &copyRec)
+	// A resolver may have isolated an episode by its outer archive filename.
+	// Its narrowed payload remains authoritative when the inner names are opaque.
+	if errors.Is(err, stream.ErrNoPlayableFile) && r.Target != nil && len(res.NZB) > 0 {
+		return fallback()
+	}
+	return src, err
 }

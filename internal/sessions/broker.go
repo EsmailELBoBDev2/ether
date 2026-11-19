@@ -78,13 +78,14 @@ type BrokerDeps struct {
 	CurrentPlay func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
 	FreshPlay   func(context.Context, *core.Viewer, bool, time.Time) (*core.Viewer, error)
 	// ReceiptCurrent rechecks the acceptance Plex stored for this request.
-	ReceiptCurrent     func(context.Context, auth.Acceptance) error
-	BitrateLimit       func(*core.Viewer) int
-	StreamLimit        func(*core.Viewer) int
-	RemoteBitrateLimit func() int
-	OnTimeline         func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
-	Events             *EventBus
-	OnEventError       func(error)
+	ReceiptCurrent      func(context.Context, auth.Acceptance) error
+	BitrateLimit        func(*core.Viewer) int
+	StreamLimit         func(*core.Viewer) int
+	RemoteBitrateLimit  func() int
+	VideoTranscodingOff func() bool
+	OnTimeline          func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
+	Events              *EventBus
+	OnEventError        func(error)
 	// OnProfileDiagnostic is an optional fixture hook. Values are closed enums
 	// only; the callback receives no media, identity or client-supplied data.
 	OnProfileDiagnostic func(ProfileDiagnostic)
@@ -738,6 +739,12 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
+	if req.Channel == "" && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
+		}
+	}
 	if req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding && decisionEncodes(dec, ps.Info) {
 		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "transcode", Reasons: []string{"transcode not allowed"}}}}
 	}
@@ -746,7 +753,14 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	if req.Protocol == "vela" && dec.Kind != core.DecisionDirectPlay {
 		if allowed, _ := b.hlsPlanOutput(ps, req, dec); !allowed {
-			return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
+			outErr := &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "original", Reasons: originalRejection(ps.Info, req)}, {Path: "hls", Reasons: []string{outputRejection(dec, ps.Info, req.Intent.AllowTranscoding)}}}}
+			if req.Channel == "" && b.videoTranscodingOff() {
+				if hlsDec, ok := b.hlsOutputDecision(ps, req.Caps, req.Intent.Options, req.Intent.AllowTranscoding, dec); !ok && decisionEncodesVideo(hlsDec, ps.Info) {
+					outErr.RejectedPaths[1].Reasons = []string{reasonVideoTranscodingOff}
+					outErr.Cause = core.ErrVideoTranscodingDisabled
+				}
+			}
+			return frontend.PlayPlan{}, outErr
 		}
 	}
 	ps, pinned, pinErr = b.pinOriginalRuntime(ctx, &req, ps, dec, pinned)
@@ -779,7 +793,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)
 	hls, hlsContainer := b.hlsPlanOutput(ps, req, dec)
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
 }
 func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()

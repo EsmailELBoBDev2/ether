@@ -924,12 +924,74 @@ describe("Playback", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(calls(fake, "PUT", "/config/transcode")).toHaveLength(1), WAIT);
     expect(calls(fake, "PUT", "/config/transcode")[0]!.body).toMatchObject({
+      videoTranscoding: "on",
       hwAccel: "auto",
       rtxVideo: {
         mode: "auto",
         targetMaxHeight: 1440,
         sourceMaxHeight: 720,
         quality: 23,
+        maxConcurrent: 1,
+      },
+    });
+  });
+
+  it("greys out hardware and transcoding-quality controls when video transcoding is turned off, preserving their values", async () => {
+    const { fake } = renderApp("/playback/transcoding", {
+      hwaccel: {
+        os: "windows",
+        arch: "amd64",
+        vendor: "nvidia",
+        ffmpeg: "8.0.1",
+        filtersProbed: true,
+        toneMap: ["cuda"],
+        colour: ["zscale"],
+        hwaccel: { name: "nvenc", encoders: ["h264_nvenc", "hevc_nvenc"] },
+        enhancement: {
+          backend: "nvenc-ngx",
+          setupState: "off",
+          available: false,
+          active: 0,
+        },
+      },
+    });
+    const toggle = await screen.findByRole("button", { name: "Video transcoding" }, WAIT);
+    expect(toggle).toHaveTextContent("On");
+    expect(screen.getByText(/Live TV is unaffected/)).toBeInTheDocument();
+
+    const hwBtn = screen.getByRole("button", { name: "Hardware acceleration" });
+    const rtxBtn = screen.getByRole("button", { name: "RTX Video Super Resolution" });
+    expect(hwBtn).toBeEnabled();
+    expect(rtxBtn).toBeEnabled();
+
+    await choose("Video transcoding", "Off");
+    expect(hwBtn).toBeDisabled();
+    expect(rtxBtn).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "More options: Converting for the app" }));
+    const maxTranscodes = screen.getByLabelText("Simultaneous transcodes");
+    expect(maxTranscodes).toBeDisabled();
+    expect(maxTranscodes).toHaveValue(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "More options: Sharper picture" }));
+    expect(screen.getByRole("button", { name: "Enhancement quality" })).toBeDisabled();
+    expect(screen.getByLabelText("Enhanced resolution limit")).toBeDisabled();
+
+    // Converter programs still apply for probing, remuxing, audio conversion, and Live TV.
+    fireEvent.click(screen.getByRole("button", { name: "More options: Converter programs" }));
+    expect(screen.getByLabelText("ffmpeg path")).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/transcode")).toHaveLength(1), WAIT);
+    expect(calls(fake, "PUT", "/config/transcode")[0]!.body).toMatchObject({
+      videoTranscoding: "off",
+      hwAccel: "auto",
+      maxTranscodes: 2,
+      rtxVideo: {
+        mode: "off",
+        sourceMaxHeight: 720,
+        targetMaxHeight: 1080,
+        quality: 2,
         maxConcurrent: 1,
       },
     });

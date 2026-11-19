@@ -115,6 +115,7 @@ func Builtins() []Builtin {
 		// TRANSCODE
 		{ID: "transcode", ConfigKey: "transcode", Label: extend.T("Converting for the app"), Schema: Schema{Groups: []Group{
 			{ID: "convert", Title: extend.T("Converting for the app"), Description: extend.T("Ether plays the file directly when the app can. It converts the video on this computer only when it has to."), Fields: []Field{
+				{Key: "videoTranscoding", Label: extend.T("Video transcoding"), Kind: KindSelect, Help: extend.T("Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected."), Options: []Option{{Value: "on", Label: extend.T("On")}, {Value: "off", Label: extend.T("Off")}}},
 				{Key: "hwAccel", Label: extend.T("Hardware acceleration"), Kind: KindSelect, Help: extend.T("Automatic uses this computer's graphics chip when an app can't play the file as-is. Choose Off only if converted video looks wrong."), Options: []Option{{Value: "auto", Label: extend.T("Automatic")}, {Value: "none", Label: extend.T("Off (software)")}, {Value: "videotoolbox", Label: extend.Text{Source: "VideoToolbox (Apple)"}}, {Value: "nvenc", Label: extend.Text{Source: "NVENC (NVIDIA)"}}, {Value: "qsv", Label: extend.Text{Source: "Quick Sync (Intel)"}}, {Value: "vaapi", Label: extend.Text{Source: "VA-API (Linux)"}}}},
 			}, More: []Field{
 				{Key: "vaapiDevice", Label: extend.T("VA-API device"), Kind: KindText, Help: extend.T("Linux graphics device, for example /dev/dri/renderD128. Leave empty unless converted video fails to start.")},

@@ -440,6 +440,20 @@ export const RELEASE_BLOCKS: FieldGroup[] = localized(() => [
 ]);
 
 export const TRANSCODE: FieldGroup[] = localized(() => {
+  const VIDEO_TRANSCODING = {
+    key: "videoTranscoding",
+    label: t("Video transcoding"),
+    kind: "select" as const,
+    defaultValue: "on",
+    help: t(
+      "Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected.",
+    ),
+    options: [
+      { value: "on", label: t("On") },
+      { value: "off", label: t("Off") },
+    ],
+  };
+
   const HW_ACCEL = {
     key: "hwAccel",
     label: t("Hardware acceleration"),
@@ -533,7 +547,7 @@ export const TRANSCODE: FieldGroup[] = localized(() => {
       description: t(
         "Ether plays the file directly when the app can. It converts the video on this computer only when it has to.",
       ),
-      fields: [HW_ACCEL],
+      fields: [VIDEO_TRANSCODING, HW_ACCEL],
       more: [
         {
           key: "vaapiDevice",

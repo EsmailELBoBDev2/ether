@@ -268,7 +268,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		path["sourceId"] = plan.ETag
 	}
 	_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
-	canBurn := trackChanges && plan.Transcoding && plan.HLS && (b.Client.HLS || b.Client.MSE)
+	canBurn := trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (b.Client.HLS || b.Client.MSE)
 	selectedSubIndex := plan.Decision.SubtitleStream
 	if subtitleSet {
 		selectedSubIndex = options.SubtitleStream

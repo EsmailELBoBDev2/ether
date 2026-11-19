@@ -529,6 +529,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		v.add("quality.sync.interval", "must be positive when sync is enabled")
 	}
 
+	if cfg.Transcode.VideoTranscoding != "" {
+		v.oneOf("transcode.videoTranscoding", cfg.Transcode.VideoTranscoding, "on", "off")
+	}
 	if cfg.Transcode.HWAccel != "" {
 		v.oneOf("transcode.hwAccel", cfg.Transcode.HWAccel, "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi")
 	}

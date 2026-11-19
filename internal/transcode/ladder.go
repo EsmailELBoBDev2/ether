@@ -476,5 +476,5 @@ func (m *Manager) ProactiveFallbackAvailable() bool {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return !m.closed
+	return !m.closed && !m.cfg.VideoTranscodingOff()
 }

@@ -44,6 +44,10 @@ var ErrDownloadBudget = core.ErrDownloadBudget
 // copied to MP4. It shares identity with the domain error for errors.Is.
 var ErrDownloadNeedsTranscode = core.ErrDownloadNeedsTranscode
 
+// ErrVideoTranscodingDisabled identifies a playback or conversion request that
+// requires re-encoding video while transcode.videoTranscoding is set to "off".
+var ErrVideoTranscodingDisabled = core.ErrVideoTranscodingDisabled
+
 // ErrInteractionReceipt is an invalid, stale or out-of-scope interaction handle.
 var ErrInteractionReceipt = errors.New("experience: invalid interaction receipt")
 
@@ -64,6 +68,7 @@ type RejectedPlaybackPath struct {
 // a temporary source failure. It preserves the candidates evaluated by planning.
 type NoCompatiblePathError struct {
 	RejectedPaths []RejectedPlaybackPath `json:"rejectedPaths"`
+	Cause         error                  `json:"-"`
 }
 
 func (e *NoCompatiblePathError) Error() string {
@@ -73,4 +78,9 @@ func (e *NoCompatiblePathError) Error() string {
 	}
 	return "no compatible playback path: " + strings.Join(reasons, "; ")
 }
-func (*NoCompatiblePathError) Unwrap() error { return ErrNotAvailable }
+func (e *NoCompatiblePathError) Unwrap() error {
+	if e != nil && e.Cause != nil {
+		return e.Cause
+	}
+	return ErrNotAvailable
+}

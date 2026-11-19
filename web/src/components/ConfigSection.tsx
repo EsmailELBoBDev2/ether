@@ -84,6 +84,7 @@ export function ConfigSection({
   onSaved,
   hidden = false,
   show,
+  fieldDisabled,
 }: {
   /** Key in config.json, e.g. "cache" or "openSubtitles". */
   configKey: string;
@@ -116,6 +117,8 @@ export function ConfigSection({
   hidden?: boolean;
   /** Which groups to render; all of them when omitted. Hidden groups keep their edits. */
   show?: (group: FieldGroup, index: number) => boolean;
+  /** Disables fields that do not apply for the current draft while preserving their values. */
+  fieldDisabled?: (field: FieldDef, draft: Obj) => boolean;
 }) {
   const { refreshDashboard } = useApp();
   const schemaIds =
@@ -191,6 +194,7 @@ export function ConfigSection({
       path={`${configKey}.${f.key}`}
       error={errors[`${configKey}.${f.key}`]}
       errors={errors}
+      disabled={fieldDisabled?.(f, draft)}
       onChange={(v) => change({ ...draft, [f.key]: v })}
     />
   );

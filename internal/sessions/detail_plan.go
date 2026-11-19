@@ -235,6 +235,7 @@ func (b *Broker) detailDecision(ctx context.Context, req frontend.PlanRequest, v
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	p.DirectPlay, p.DirectStream, p.Transcoding = b.planAlternatives(source, req)
+	p.VideoTranscodingOff = req.Channel == "" && b.videoTranscodingOff()
 	p.HLS, p.HLSContainer = b.hlsPlanOutput(source, req, p.Decision)
 	p.Media = publicMedia(source.Info)
 	p.Decision.AudioFilters = slices.Clone(p.Decision.AudioFilters)

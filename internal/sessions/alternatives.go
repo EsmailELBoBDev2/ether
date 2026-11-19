@@ -41,7 +41,7 @@ func (b *Broker) planAlternatives(source *core.PlaySession, req frontend.PlanReq
 		candidate := req
 		candidate.Intent.OriginalPlayback = nil
 		candidate.Intent.Options.DirectPlay = false
-		candidate.Intent.Options.DirectStream = false
+		candidate.Intent.Options.DirectStream = req.Channel == "" && b.videoTranscodingOff()
 		d, err := b.decideProfile(source, candidate)
 		encode = err == nil && decisionEncodes(d, source.Info)
 	}

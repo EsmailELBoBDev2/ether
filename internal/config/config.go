@@ -503,7 +503,8 @@ type ClientCompatibility struct {
 type Transcode struct {
 	RTXVideo RTXVideo `json:"rtxVideo"`
 
-	FFmpegPath           string `json:"ffmpegPath"` // empty = bundled, then PATH
+	VideoTranscoding     string `json:"videoTranscoding"` // "on" (default) or "off" (movies and shows only; Live TV is unaffected)
+	FFmpegPath           string `json:"ffmpegPath"`       // empty = bundled, then PATH
 	FFprobePath          string `json:"ffprobePath"`
 	HWAccel              string `json:"hwAccel"` // "auto", "none", "videotoolbox", "nvenc", "qsv", "vaapi"
 	VAAPIDevice          string `json:"vaapiDevice"`
@@ -523,6 +524,12 @@ type Transcode struct {
 	VBVBufferSeconds   int      `json:"vbvBufferSeconds"`   // VBV buffer depth in seconds of maxrate (default 8)
 	SpikeGovernor      bool     `json:"spikeGovernor"`      // clamp VBR spikes in copy streams to measured goodput
 	SpikeMarginPercent int      `json:"spikeMarginPercent"` // spike threshold over goodput, percent (default 125)
+}
+
+// VideoTranscodingOff reports whether video re-encoding is disabled for movies
+// and shows. Empty or "on" leaves video transcoding enabled.
+func (t Transcode) VideoTranscodingOff() bool {
+	return t.VideoTranscoding == "off"
 }
 
 // Downloads controls Plex offline downloads (allowSync + the Download

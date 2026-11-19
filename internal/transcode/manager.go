@@ -29,6 +29,10 @@ import (
 // video transcodes are already running. Remuxes are not counted.
 var ErrTooManyTranscodes = errors.New("transcode: too many concurrent transcodes")
 
+// ErrVideoTranscodingDisabled is returned when a non-live movie or show
+// requires video re-encoding while transcode.videoTranscoding is "off".
+var ErrVideoTranscodingDisabled = core.ErrVideoTranscodingDisabled
+
 // ErrImageSubtitle is returned when a bitmap subtitle is asked for as text.
 var ErrImageSubtitle = errors.New("transcode: bitmap subtitles cannot be converted to text")
 
@@ -619,6 +623,17 @@ func (m *Manager) Policy() Policy {
 	}
 }
 
+// VideoTranscodingOff reports whether video re-encoding is disabled for movies
+// and shows in the current configuration.
+func (m *Manager) VideoTranscodingOff() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.VideoTranscodingOff()
+}
+
 // Probe implements core.Transcoder.
 func (m *Manager) Probe(ctx context.Context, inputURL string) (*core.MediaInfo, error) {
 	start := time.Now()
@@ -748,6 +763,9 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	if v == nil {
 		d.VideoCopy = true // audio-only: nothing to encode
 	}
+	if !req.LiveInput && !d.VideoCopy && m.VideoTranscodingOff() {
+		return nil, ErrVideoTranscodingDisabled
+	}
 	if d.VideoCopy && v != nil && d.VideoCodec == "" {
 		d.VideoCodec = v.Codec
 	}
@@ -776,11 +794,17 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		d.Container = segmentContainer(d.VideoCodec, d.AudioCodec)
 	}
 	m.mu.Lock()
+	videoOff := !req.LiveInput && m.cfg.VideoTranscodingOff()
 	rtxConfig, _ := normalizedRTX(m.cfg.RTXVideo)
 	adapt := adaptiveFromConfig(m.cfg)
 	if req.Ramp.Version != 0 {
 		adapt.FastStart = req.Ramp.Segments > 0
 		adapt.RampSegs, adapt.RampDur = req.Ramp.Segments, req.Ramp.Duration
+	}
+	if videoOff {
+		// Video transcoding is off for movies and shows: never start encoded
+		// fast-start ramps, governor clamps or lower-bitrate encode rungs.
+		adapt.FastStart, adapt.Governor, adapt.Ladder, adapt.LadderUnderCopy = false, false, false, false
 	}
 	if enhancementSelected(d) {
 		// Native VSR keeps a steady clock. Lower rungs use ordinary FFmpeg
@@ -803,7 +827,7 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		return nil, err
 	}
 	healTimestamps := false
-	if !(req.LazyStart && req.QualityRungs) && !atCap && proto == core.ProtocolHLS && (d.Container == ContainerMPEGTS || d.Container == ContainerFMP4) {
+	if !videoOff && !(req.LazyStart && req.QualityRungs) && !atCap && proto == core.ProtocolHLS && (d.Container == ContainerMPEGTS || d.Container == ContainerFMP4) {
 		if damaged, heal := m.copyDamage(ctx, req, d, life); damaged {
 			healTimestamps = heal
 			d.Kind, d.VideoCopy, d.VideoCodec = core.DecisionTranscode, false, "h264"
@@ -825,17 +849,17 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	if ValidCopyTimeline(req) {
 		adapt.FastStart, adapt.Governor, adapt.Ladder = false, false, false
 	}
-	if req.QualityRungs {
+	if req.QualityRungs && !videoOff {
 		adapt.Ladder, adapt.LadderUnderCopy = true, true
 	}
 	rungs := buildRungs(req.Info, d, adapt)
-	if req.QualityRungs {
+	if req.QualityRungs && !videoOff {
 		rungs = rungs[:1]
 		for _, variant := range req.QualityVariants {
 			rungs = append(rungs, qualityRung(req.Info, variant))
 		}
 	}
-	if req.QualityRungs {
+	if req.QualityRungs && !videoOff {
 		allowed := rungs[:1]
 		for _, rung := range rungs[1:] {
 			for _, id := range req.QualityRungIDs {
@@ -1075,6 +1099,10 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	if m.closed {
 		m.mu.Unlock()
 		return nil, errors.New("transcode: manager closed")
+	}
+	if !req.LiveInput && !d.VideoCopy && m.cfg.VideoTranscodingOff() {
+		m.mu.Unlock()
+		return nil, ErrVideoTranscodingDisabled
 	}
 	if !d.VideoCopy && m.cfg.MaxTranscodes > 0 {
 		if m.encodingLocked("") >= m.cfg.MaxTranscodes {

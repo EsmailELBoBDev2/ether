@@ -688,6 +688,9 @@ func (a *App) applyConfig(c config.Config) {
 	if a.transcoder != nil {
 		a.transcoder.UpdateConfig(c.Transcode)
 	}
+	if a.deployment != nil && a.deployment.encoder != nil {
+		a.deployment.encoder.UpdateConfig(privateEncoderConfig(c, a.deployment.settings.Capacity))
+	}
 	a.trakt.UpdateConfig(c.Trakt)
 	a.subtitles.UpdateConfig(c.OpenSubtitles)
 	a.subtitles.UpdateSubDL(c.SubDL)

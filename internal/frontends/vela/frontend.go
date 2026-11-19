@@ -243,7 +243,13 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 	var changed *bootstrapChangedError
 	switch {
 	case errors.As(err, &incompatible):
-		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": "no compatible playback path", "rejectedPaths": incompatible.RejectedPaths, "retry": object{"allowed": false}}})
+		message := "no compatible playback path"
+		if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+			message = "This title needs a video transcode to play on this device, and video transcoding is turned off."
+		}
+		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": message, "rejectedPaths": incompatible.RejectedPaths, "retry": object{"allowed": false}}})
+	case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
+		send(w, 422, object{"error": object{"class": "playback", "code": "no_compatible_path", "message": "This title needs a video transcode to play on this device, and video transcoding is turned off.", "rejectedPaths": []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{frontend.ErrVideoTranscodingDisabled.Error()}}}, "retry": object{"allowed": false}}})
 	case errors.As(err, &changed):
 		w.Header().Set("Retry-After", "1")
 		send(w, 409, object{"error": object{"class": "conflict", "code": "bootstrap_changed", "message": "home changed while loading", "retry": object{"allowed": true, "afterSeconds": 1, "maxAttempts": 3}}})

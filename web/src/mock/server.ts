@@ -440,6 +440,7 @@ function defaultConfig(): EtherConfig {
       sync: { enabled: false, interval: "24h0m0s" },
     },
     transcode: {
+      videoTranscoding: "on",
       ffmpegPath: "",
       ffprobePath: "",
       hwAccel: "auto",
@@ -3424,6 +3425,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
                 scope: "fleet" as const,
                 supported: false,
                 reason: "fleet_setting",
+              })),
+              ...["videoTranscoding"].map((key) => ({
+                key,
+                scope: "node" as const,
+                supported: false,
+                reason: "not_allowlisted",
               })),
               ...["maxTranscodes", "hwAccel"].map((key) => ({
                 key,

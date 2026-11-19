@@ -23,6 +23,9 @@ type DecisionRequest struct {
 	// PreserveSourceOnFailure lets a broker avoid stopping a reused source
 	// when an attempted decision cannot be served without a transcoder.
 	PreserveSourceOnFailure bool
+	// NoVideoTranscode keeps a direct-playable source on DirectPlay rather than
+	// letting optional PreferRemux promote it into a video encode.
+	NoVideoTranscode bool
 }
 
 // Decide preserves the playback remux override for on-demand sources and
@@ -111,9 +114,12 @@ func Decide(playback core.Playback, transcoder core.Transcoder, r DecisionReques
 		}
 	}
 	// Optional health safety must never force quality loss or an encoder on a
-	// client that can only play the original representation.
-	if healthSafety && !r.PreferRemux && !requiresRemux && original.Kind == core.DecisionDirectPlay &&
-		(!dec.VideoCopy || !dec.AudioCopy) {
+	// client that can only play the original representation. Likewise, when
+	// video transcoding is off, an optional PreferRemux must never push a
+	// direct-playable file into a video encode.
+	if original.Kind == core.DecisionDirectPlay && !requiresRemux &&
+		((healthSafety && !r.PreferRemux && (!dec.VideoCopy || !dec.AudioCopy)) ||
+			(r.NoVideoTranscode && !dec.VideoCopy)) {
 		dec = original
 	}
 	return dec, nil

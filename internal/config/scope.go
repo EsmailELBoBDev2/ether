@@ -141,6 +141,7 @@ var mixedSections = map[string]map[string]Scope{
 	},
 	"transcode": {
 		"rtxVideo":             Local, // executable, GPU and enhancement resource limits are node-specific
+		"videoTranscoding":     Local, // node-local transcode policy like maxTranscodes
 		"ffmpegPath":           Local,
 		"ffprobePath":          Local,
 		"hwAccel":              Local,

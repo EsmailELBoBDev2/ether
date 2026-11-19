@@ -380,6 +380,7 @@ export interface EtherConfig {
     sync?: QualitySync;
   };
   transcode: {
+    videoTranscoding?: "on" | "off";
     ffmpegPath: string;
     ffprobePath: string;
     hwAccel: string;
@@ -823,6 +824,7 @@ export interface ClusterNode {
     roles?: string[] | null;
     diagnostics?: ClusterDiagnostics;
     transcode: boolean;
+    videoTranscoding?: string;
     hwAccel?: string;
     weight?: number;
     egressIp?: string;

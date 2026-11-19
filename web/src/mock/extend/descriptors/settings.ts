@@ -839,6 +839,31 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
             },
             fields: [
               {
+                key: "videoTranscoding",
+                label: {
+                  source: "Video transcoding",
+                },
+                help: {
+                  source:
+                    "Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected.",
+                },
+                kind: "select",
+                options: [
+                  {
+                    value: "on",
+                    label: {
+                      source: "On",
+                    },
+                  },
+                  {
+                    value: "off",
+                    label: {
+                      source: "Off",
+                    },
+                  },
+                ],
+              },
+              {
                 key: "hwAccel",
                 label: {
                   source: "Hardware acceleration",

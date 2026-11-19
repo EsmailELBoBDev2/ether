@@ -381,7 +381,7 @@ func buildCodecArgs(s runSpec) []string {
 	if !transcodeVideo && !s.LiveInput {
 		args = append(args, "-fflags", "+genpts")
 	}
-	if _, hw := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features); hw && s.Accel.Name == AccelQSV && s.Accel.Device != "" && transcodeVideo {
+	if _, hw := videoEncoder(s.Decision.VideoCodec, s.Accel, s.Features); hw && s.Accel.Name == AccelQSV && s.Accel.Device != "" && transcodeVideo && !contains(vp.inputArgs, "-init_hw_device") {
 		args = append(args, "-qsv_device", s.Accel.Device)
 	}
 	args = append(args, vp.inputArgs...)
@@ -1543,7 +1543,7 @@ func planEncodeArgs(s runSpec, pic picturePlan, enc, codec string, hwFrames bool
 		}
 	case "libx265":
 		params := "log-level=error"
-		if pic.outRange != rangeSDR {
+		if pic.outRange == rangeHDR10 || pic.outRange == rangeHLG {
 			params += hdrX265Params(pic.outRange)
 		}
 		peak := b
@@ -1671,7 +1671,7 @@ func planEncodeArgs(s runSpec, pic picturePlan, enc, codec string, hwFrames bool
 		// Range follows the frames: zscale converts it, else the source's
 		// already matches (convertsColour).
 		e = append(e, "-color_primaries", s.Target.pic.prim, "-color_trc", trc, "-colorspace", s.Target.pic.matrix)
-	case pic.outRange != rangeSDR:
+	case pic.outRange == rangeHDR10 || pic.outRange == rangeHLG:
 		trc := "smpte2084"
 		if pic.outRange == rangeHLG {
 			trc = "arib-std-b67"

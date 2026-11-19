@@ -251,8 +251,8 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	for i, ix := range cfg.Indexers {
 		f := fmt.Sprintf("indexers[%d]", i)
 		v.httpURL(f+".url", ix.URL, true)
-		if ix.ClientIdentity != "" && !config.ValidSearchIdentity(ix.ClientIdentity) {
-			v.add(f+".clientIdentity", "must be a client that searches or empty to inherit")
+		if msg := config.ValidateUserAgent(ix.UserAgent); msg != "" {
+			v.add(f+".userAgent", "%s", msg)
 		}
 		if ix.Kind != "" {
 			v.oneOf(f+".kind", ix.Kind, config.IndexerKindNewznab, config.IndexerKindCardigann, config.IndexerKindStremio, config.IndexerKindZilean)

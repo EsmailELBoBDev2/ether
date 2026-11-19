@@ -767,7 +767,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	}
 
 	ctx, inconclusive := withUnverifiedPool(ctx)
-	sreq := s.searchRequest(ctx, t)
+	sreq := s.explicitNumberedRequest(ctx, s.searchRequest(ctx, t))
 	early := newSearchPreparation(ctx, s, req, sreq, profile, pinID)
 	defer early.close()
 	ctx = context.WithValue(ctx, searchPreparationKey{}, early)
@@ -2303,29 +2303,7 @@ func courTVDBEpisodeMatch(info core.ReleaseInfo, sreq core.SearchRequest) bool {
 }
 
 func episodeMatchesRequest(info core.ReleaseInfo, sreq core.SearchRequest) bool {
-	if info.Cour == 1 && sreq.Cour > 1 {
-		return false
-	}
-	if info.Cour > 1 {
-		if sreq.Cour == info.Cour && sreq.CourEpisode > 0 &&
-			(releaseparse.EpisodeMatches(info, sreq.Season, sreq.CourEpisode) ||
-				(sreq.CourTVDBSeason > 0 && releaseparse.EpisodeMatches(info, sreq.CourTVDBSeason, sreq.CourEpisode))) {
-			return true
-		}
-		return false
-	}
-	if releaseparse.EpisodeMatchesNumbering(info, sreq.Season, sreq.Episode, absoluteEpisode(sreq)) {
-		return true
-	}
-	if courTVDBEpisodeMatch(info, sreq) {
-		return true
-	}
-	for _, n := range core.EpisodeAliases(sreq) {
-		if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
-			return true
-		}
-	}
-	return false
+	return releaseparse.EpisodeMatchesRequest(info, sreq)
 }
 
 func packCoversSeasonCour(info core.ReleaseInfo, sreq core.SearchRequest) bool {
@@ -2613,16 +2591,21 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 	if rel.Info.FullSeason && targetEpisode <= 0 {
 		return rel
 	}
+	aliases := core.EpisodeAliases(sreq)
 	alternate := targetSeason != sreq.Season || targetEpisode != sreq.Episode
 	// A Usenet season pack is narrowed to the episode's files when its NZB
-	// is fetched; other Usenet releases need no target.
-	if !alternate && rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
+	// is fetched; other non-torrent releases need no target unless aliases
+	// apply at open-time file verification.
+	if !alternate && len(aliases) == 0 && rel.Protocol != core.ProtocolTorrent && !(rel.Protocol == core.ProtocolUsenet && rel.Info.FullSeason) {
 		return rel
 	}
 	if rel.Target != nil {
 		target := *rel.Target
-		if alternate {
+		target.Aliases = aliases
+		if alternate || len(aliases) > 0 {
 			target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
+		}
+		if alternate {
 			target.Season, target.Episode = targetSeason, targetEpisode
 			if target.PackID != "" {
 				rel.ID = core.TargetReleaseID(target.PackID, target)
@@ -2642,9 +2625,11 @@ func withTarget(rel core.Release, sreq core.SearchRequest) core.Release {
 		rel.Target = &target
 		return rel // enrich cached identities without deriving their ID again
 	}
-	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
-	if alternate {
+	target := core.ReleaseTarget{AbsoluteEpisode: releaseparse.AnimeSearchEpisode(sreq), Aliases: aliases, Cour: sreq.Cour, CourEpisode: sreq.CourEpisode, Season: targetSeason, Episode: targetEpisode, ShowYear: sreq.Year, EpisodeTitle: sreq.EpisodeTitle, ExpectedIDs: sreq.IDs, ReportedIDs: rel.ReportedTitleIDs(), FileName: rel.FileName}
+	if alternate || len(aliases) > 0 {
 		target.CanonicalSeason, target.CanonicalEpisode = sreq.Season, sreq.Episode
+	}
+	if alternate {
 		target.Cour, target.CourEpisode = 0, 0
 	}
 	if sreq.Season == 0 {

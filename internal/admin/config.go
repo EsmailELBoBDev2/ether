@@ -201,9 +201,7 @@ func (h *Handler) handleGetSection(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &all)
 	out := map[string]any{"section": field, "value": json.RawMessage(all[field])}
 	if field == "clientIdentity" {
-		// The owner's selectors show each preset's literal user agent; serving
-		// the table keeps that display identical to what is sent.
-		out["presets"] = config.IdentityPresets()
+		out["defaultUserAgent"] = config.DefaultUserAgent()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -597,6 +597,8 @@ func (m *Manager) applyInverse(ctx context.Context, e JournalEntry) error {
 			return err
 		}
 		return nil
+	case "badges.set", "badges.clear":
+		return nil
 	default:
 		return fmt.Errorf("plugins: no inverse for journal op %q", e.Op)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -329,7 +330,7 @@ func (s *Service) fetch(ctx context.Context, key core.RatingKey, d time.Duration
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Ether/1")
+	req.Header.Set("User-Agent", httpclient.UserAgent())
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

@@ -35,8 +35,33 @@ func (f *fakePresentationPluginLibraries) FacetBuckets(_ context.Context, _ core
 	return append([]frontend.FacetBucket(nil), f.buckets[field]...), nil
 }
 
-func (f *fakePresentationPluginLibraries) FacetCollections(_ context.Context, _ core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error) {
+func foldedPrefixMatches(words, terms []string) bool {
+	for _, qt := range terms {
+		ok := false
+		for _, w := range words {
+			if strings.HasPrefix(w, qt) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *fakePresentationPluginLibraries) FacetCollections(_ context.Context, _ core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error) {
 	all := append([]frontend.FacetCollection(nil), f.colPages[field].Items...)
+	if terms := peopleFoldedWords(query); len(terms) > 0 {
+		filtered := all[:0]
+		for _, c := range all {
+			if foldedPrefixMatches(peopleFoldedWords(c.Name), terms) {
+				filtered = append(filtered, c)
+			}
+		}
+		all = filtered
+	}
 	if order == "name" {
 		sort.Slice(all, func(i, j int) bool {
 			return strings.ToLower(all[i].Name) < strings.ToLower(all[j].Name)
@@ -52,8 +77,17 @@ func (f *fakePresentationPluginLibraries) FacetCollections(_ context.Context, _ 
 	}, nil
 }
 
-func (f *fakePresentationPluginLibraries) FacetPeople(_ context.Context, _ core.Library, field, order string, offset, limit int) (PluginFacetPeoplePage, error) {
+func (f *fakePresentationPluginLibraries) FacetPeople(_ context.Context, _ core.Library, field, order, query string, offset, limit int) (PluginFacetPeoplePage, error) {
 	all := append([]PluginFacetPerson(nil), f.peoplePages[field]...)
+	if terms := peopleFoldedWords(query); len(terms) > 0 {
+		filtered := all[:0]
+		for _, p := range all {
+			if foldedPrefixMatches(peopleFoldedWords(p.Name), terms) {
+				filtered = append(filtered, p)
+			}
+		}
+		all = filtered
+	}
 	if order == "count" {
 		sort.Slice(all, func(i, j int) bool {
 			if all[i].Count != all[j].Count {
@@ -208,7 +242,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			Tabs: []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
 				{ID: "library", Label: "Library", Kind: "library"},
-				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "name", Sort: "released", Direction: "desc"},
+				{ID: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "name", Search: true, SearchPlaceholder: "Search developers", Sort: "released", Direction: "desc"},
 			},
 			Sorts: []string{"released", "added", "title", "year", "rating", "index"},
 			Facets: []frontend.ViewFacet{
@@ -259,7 +293,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 			pView = v
 		}
 	}
-	if pView.Card != "landscape" || len(pView.Tabs) != 3 || pView.Tabs[2].Facet != "developers" || pView.Tabs[2].Order != "name" || len(pView.Sorts) != 6 || len(pView.Facets) != 3 {
+	if pView.Card != "landscape" || len(pView.Tabs) != 3 || pView.Tabs[2].Facet != "developers" || pView.Tabs[2].Order != "name" || !pView.Tabs[2].Search || pView.Tabs[2].SearchPlaceholder != "Search developers" || len(pView.Sorts) != 6 || len(pView.Facets) != 3 {
 		t.Fatalf("unexpected plugin View metadata: %+v", pView)
 	}
 
@@ -283,6 +317,10 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 	cols, err := svc.LibraryFacetCollections(ctx, pg13Viewer, core.Device{}, "9", "developers", "name", frontend.PageQuery{Limit: 10})
 	if err != nil || len(cols.Items) != 2 || cols.Items[0].ID != "capcom" || cols.Items[1].ID != "nintendo" || cols.Items[0].NewestItem != nil {
 		t.Fatalf("expected alphabetical collections with R-rated NewestItem cleared for PG-13 viewer, got %+v err=%v", cols, err)
+	}
+	fCols, err := svc.LibraryFacetCollections(ctx, owner, core.Device{}, "9", "developers", "name", frontend.PageQuery{Limit: 10, Query: "nin"})
+	if err != nil || len(fCols.Items) != 1 || fCols.Items[0].ID != "nintendo" {
+		t.Fatalf("LibraryFacetCollections(query=nin) = %+v err=%v", fCols, err)
 	}
 
 	// PluginLibraryRows: Continue Watching, Recently Added, Newest, Top Rated, and "From <Developer>" rows.
@@ -385,7 +423,7 @@ func TestPluginLibraryPeopleTabResolvesThroughPerson(t *testing.T) {
 			Tabs: []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
 				{ID: "library", Label: "Library", Kind: "library"},
-				{ID: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name"},
+				{ID: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name", Search: true, SearchPlaceholder: "Search voice cast"},
 			},
 			Sorts: []string{"released", "title"},
 			Facets: []frontend.ViewFacet{
@@ -420,6 +458,10 @@ func TestPluginLibraryPeopleTabResolvesThroughPerson(t *testing.T) {
 	}
 	if len(page.Items) != 3 || page.More {
 		t.Fatalf("expected 3 people, got %+v", page)
+	}
+	fPage, err := svc.LibraryFacetPeople(ctx, owner, core.Device{}, "9", "voiceCast", "name", frontend.PageQuery{Limit: 10, Query: "jo"})
+	if err != nil || len(fPage.Items) != 1 || fPage.Items[0].Person.Name != "Ashley Johnson" {
+		t.Fatalf("LibraryFacetPeople(query=jo) = %+v, err=%v", fPage, err)
 	}
 
 	want := []struct {

@@ -336,3 +336,75 @@ func TestInfuseConvertSurroundAudioRuleCopiesVideoAndTranscodesAudioToAAC(t *tes
 		t.Fatalf("with toggle: decision=%+v, want Kind=copy VideoCopy=true AudioCopy=false AudioCodec=aac", decOn)
 	}
 }
+
+type hevcProfileTranscoder struct{ fakeBrokerTranscoder }
+
+func (hevcProfileTranscoder) Decide(info core.MediaInfo, caps core.ClientCaps, opts core.DecideOptions) core.Decision {
+	return transcode.Decide(info, caps, opts, transcode.Policy{HEVCEncoder: true, HEVCHardware: true})
+}
+
+func TestProfileDecisionPreservesHDROnHEVCDownscale(t *testing.T) {
+	hdrPlus := true
+	info := core.MediaInfo{
+		Container:   "mkv",
+		BitrateKbps: 24000,
+		Streams: []core.StreamInfo{
+			{
+				Index:                      0,
+				Type:                       "video",
+				Codec:                      "hevc",
+				Profile:                    "Main 10",
+				Width:                      3840,
+				Height:                     2160,
+				BitDepth:                   10,
+				PixelFormat:                "yuv420p10le",
+				ColorPrimaries:             "bt2020",
+				ColorTransfer:              "smpte2084",
+				ColorSpace:                 "bt2020nc",
+				DolbyVision:                true,
+				DolbyVisionProfile:         8,
+				DolbyVisionCompatibilityID: 1,
+				HDR10Plus:                  &hdrPlus,
+			},
+			{Index: 1, Type: "audio", Codec: "eac3", Channels: 6},
+		},
+	}
+	profiles := &core.ClientCapabilityProfiles{
+		DirectPlay: []core.ClientDirectPlayProfile{
+			{MediaType: "video", Containers: []string{"mp4", "mkv"}, VideoCodecs: []string{"hevc", "h264"}, AudioCodecs: []string{"aac", "eac3"}},
+		},
+		Transcoding: []core.ClientTranscodeProfile{
+			{MediaType: "video", Delivery: "hls", Containers: []string{"mp4"}, VideoCodecs: []string{"h264", "hevc"}, AudioCodecs: []string{"aac", "eac3"}},
+		},
+		Codecs: []core.ClientCodecProfile{
+			{
+				MediaType: "video",
+				Codecs:    []string{"hevc"},
+				Conditions: []core.ClientProfileCondition{
+					{Property: "VideoProfile", Operator: "EqualsAny", Value: "main|main 10", Required: true},
+					{Property: "VideoBitDepth", Operator: "LessThanEqual", Value: "10", Required: true},
+					{Property: "VideoWidth", Operator: "LessThanEqual", Value: "1280", Required: true},
+					{Property: "VideoRangeType", Operator: "EqualsAny", Value: "SDR|HDR10|HLG", Required: true},
+				},
+			},
+		},
+	}
+	caps := core.ClientCaps{
+		Product:     "iOS HEVC HDR Client",
+		Containers:  []string{"mp4", "mkv"},
+		VideoCodecs: []string{"h264", "hevc"},
+		AudioCodecs: []string{"aac", "eac3"},
+		Profiles:    profiles,
+	}
+	b := &Broker{deps: BrokerDeps{SurfacePolicy: testSessionPolicy, Transcoder: hevcProfileTranscoder{}}}
+	d, err := b.decideProfile(&core.PlaySession{Info: info}, frontend.PlanRequest{
+		Caps:   caps,
+		Intent: frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: 1, SubtitleStream: -1}},
+	})
+	if err != nil {
+		t.Fatalf("decideProfile failed: %v", err)
+	}
+	if d.Kind != core.DecisionTranscode || d.VideoCopy || d.VideoCodec != "hevc" || d.ToneMap || d.MaxHeight != 720 {
+		t.Fatalf("expected 720p HDR-preserving HEVC transcode, got %+v", d)
+	}
+}

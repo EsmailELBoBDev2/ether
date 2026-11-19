@@ -1119,3 +1119,106 @@ func mustListLibs(t *testing.T, svc *libraries.Service) []core.Library {
 func libraryRules(f core.Filter) []core.LibraryExclusion {
 	return []core.LibraryExclusion{{Action: "show", MediaType: string(f.Type), Match: "all", Rules: core.LibraryPredicateConditions(f)}}
 }
+
+func TestKindCatalogPresentationTabSearchAndPlaceholder(t *testing.T) {
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	ctx := context.Background()
+
+	const pluginID = "community.example.games"
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Video Games",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Video games",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes": map[string]any{
+				"mediaKinds": []map[string]any{{
+					"key":   "game",
+					"label": "Game",
+					"library": map[string]any{
+						"name": "Games",
+						"card": "landscape",
+						"tabs": []map[string]any{
+							{"key": "recommended", "label": "Recommended", "kind": "recommended"},
+							{"key": "library", "label": "Library", "kind": "library"},
+							{"key": "developers", "label": "Developers", "kind": "collections", "facet": "developers", "order": "name", "searchPlaceholder": "$t:search_devs"},
+							{"key": "cast", "label": "Voice cast", "kind": "people", "facet": "voiceCast", "order": "name", "searchPlaceholder": "Search voice cast"},
+							{"key": "publishers", "label": "Publishers", "kind": "collections", "facet": "developers", "search": false},
+						},
+					},
+					"levels": []map[string]any{{"key": "game", "label": "Game", "playable": true}},
+					"fields": []map[string]any{
+						{"key": "developers", "type": "strings", "label": "Developers", "indexed": true},
+						{"key": "voiceCast", "type": "people", "label": "Voice cast", "indexed": true},
+					},
+					"present": map[string]any{"vela": map[string]any{"type": "movies"}},
+					"browse": map[string]any{
+						"sorts":  []string{"released", "title"},
+						"facets": []string{"developers", "voiceCast"},
+					},
+					"sync": map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, map[string][]byte{
+		"i18n/en.json": []byte(`{"search_devs":"Search developers"}`),
+	})
+
+	var gameLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			gameLib = lib
+		}
+	}
+	if gameLib.ID == 0 {
+		t.Fatal("expected game plugin library")
+	}
+
+	pres, ok := h.catalog.Presentation(ctx, gameLib)
+	if !ok || len(pres.Tabs) != 5 {
+		t.Fatalf("Presentation = (%+v, %v), want 5 tabs", pres, ok)
+	}
+	if pres.Tabs[0].Search || pres.Tabs[1].Search {
+		t.Fatalf("recommended/library tabs must not set Search: %+v", pres.Tabs[:2])
+	}
+	if !pres.Tabs[2].Search || pres.Tabs[2].SearchPlaceholder != "Search developers" {
+		t.Fatalf("developers tab = %+v, want Search=true and resolved $t: SearchPlaceholder", pres.Tabs[2])
+	}
+	if !pres.Tabs[3].Search || pres.Tabs[3].SearchPlaceholder != "Search voice cast" {
+		t.Fatalf("cast tab = %+v, want Search=true and literal SearchPlaceholder", pres.Tabs[3])
+	}
+	if pres.Tabs[4].Search || pres.Tabs[4].SearchPlaceholder != "" {
+		t.Fatalf("publishers tab = %+v, want Search=false", pres.Tabs[4])
+	}
+
+	_, err := h.items.KindUpsert(ctx, pluginID, "game", []core.KindItem{
+		{
+			ID:       "g1",
+			Level:    "game",
+			Index:    1,
+			Title:    "Echoes of Zoë",
+			Playable: true,
+			Fields: map[string]json.RawMessage{
+				"developers": json.RawMessage(`["Zoë Mode","Nintendo"]`),
+				"voiceCast":  json.RawMessage(`[{"name":"Zoë Wanamaker"},{"name":"Troy Baker"}]`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fc, err := h.catalog.FacetCollections(ctx, gameLib, "developers", "name", "zoe", 0, 10)
+	if err != nil || len(fc.Items) != 1 || fc.Items[0].Name != "Zoë Mode" {
+		t.Fatalf("KindCatalog.FacetCollections(query=zoe) = %+v, err=%v", fc, err)
+	}
+	fp, err := h.catalog.FacetPeople(ctx, gameLib, "voiceCast", "name", "zoe", 0, 10)
+	if err != nil || len(fp.Items) != 1 || fp.Items[0].Name != "Zoë Wanamaker" {
+		t.Fatalf("KindCatalog.FacetPeople(query=zoe) = %+v, err=%v", fp, err)
+	}
+}

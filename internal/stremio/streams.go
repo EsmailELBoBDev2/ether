@@ -33,6 +33,7 @@ const (
 // for an anime database id the episode's number inside that entry.
 type idLookup struct {
 	kind, id       string
+	season         int
 	packs          bool
 	entryEpisode   int
 	specialEpisode int
@@ -42,20 +43,26 @@ type idLookup struct {
 // in the order they are tried.
 var animeDatabases = []string{animemap.Kitsu, animemap.MAL, animemap.AniList, animemap.AniDB}
 
-// lookupID chooses how to ask the addon for req (LookupStreams). Without
-// a readable manifest the addon is asked by IMDb id, as before prefixes
-// were read.
-func (b *Backend) lookupID(ctx context.Context, req core.SearchRequest) (idLookup, bool) {
+func (b *Backend) lookupManifest(ctx context.Context) *Manifest {
 	m := b.currentManifest(ctx)
 	if m == nil {
 		m = &Manifest{Resources: Resources{{Name: ResourceStream, Types: []string{TypeMovie, TypeSeries}, IDPrefixes: []string{"tt"}}}}
 	}
+	return m
+}
+
+func (b *Backend) lookupIDs(ctx context.Context, req core.SearchRequest) []idLookup {
+	m := b.lookupManifest(ctx)
 	var anime AnimeIDs
 	if req.Anime {
 		anime = b.svc.animeIDs()
 	}
-	look, ok := LookupStreams(ctx, *m, req, anime, b.svc.specials)
-	return idLookup{kind: look.Type, id: look.ID, packs: look.Packs, entryEpisode: look.EntryEpisode, specialEpisode: look.SpecialEpisode}, ok
+	looks := LookupStreamList(ctx, *m, req, anime, b.svc.specials)
+	out := make([]idLookup, len(looks))
+	for i, look := range looks {
+		out[i] = idLookup{kind: look.Type, id: look.ID, season: look.Season, packs: look.Packs, entryEpisode: look.EntryEpisode, specialEpisode: look.SpecialEpisode}
+	}
+	return out
 }
 
 // origin is the addon's scheme://host[:port], without credentials.
@@ -177,7 +184,7 @@ func FetchNZB(ctx context.Context, client *http.Client, origin string, r core.Re
 	if err != nil {
 		return nil, fmt.Errorf("stremio: NZB from %s: invalid request", link.Host)
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", userAgent())
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

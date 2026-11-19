@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/coder/websocket"
@@ -803,6 +804,18 @@ func (f *fakeHost) KVDelete(_ context.Context, pluginID, key string) error {
 	defer f.mu.Unlock()
 	delete(f.kv[pluginID], key)
 	return nil
+}
+
+func (f *fakeHost) BadgesSet(_ context.Context, _, _ string, _ []plugins.BadgeEntry) error {
+	return nil
+}
+
+func (f *fakeHost) BadgesClear(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (f *fakeHost) BadgesUsage(_ context.Context, _ string) (plugins.BadgeUsage, error) {
+	return plugins.BadgeUsage{Titles: 0, QuotaTitles: plugins.PosterBadgeQuotaTitles}, nil
 }
 
 func (f *fakeHost) KVList(_ context.Context, pluginID, prefix string) ([]string, error) {
@@ -1599,7 +1612,7 @@ func TestPlainStremioClientSendsHonestUserAgent(t *testing.T) {
 	if _, err := c.Call(context.Background(), Request{Path: "/stream/movie/tt1.json", RequestID: "req-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if ua != "Ether (+https://github.com/braedonsaunders/ether)" || ether != "" {
+	if ua != httpclient.UserAgent() || ether != "" {
 		t.Fatalf("user agent %q, X-Ether-Request-ID %q", ua, ether)
 	}
 }

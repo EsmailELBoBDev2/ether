@@ -233,6 +233,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						add(tbase+".order", "must be count or name")
 					}
 				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
 					add(tbase+".facet", "must name a declared browse facet")
@@ -248,6 +254,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Order != "" && tab.Order != "count" && tab.Order != "name" {
 					add(tbase+".order", "must be count or name")
 				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
 			default:
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -260,6 +272,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				}
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Search != nil {
+					add(tbase+".search", "only collections or people tabs may set search")
+				}
+				if tab.SearchPlaceholder != "" {
+					add(tbase+".searchPlaceholder", "only collections or people tabs may set searchPlaceholder")
 				}
 			}
 		}

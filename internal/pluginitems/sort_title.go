@@ -95,6 +95,99 @@ func FoldSortTitle(s string) string {
 	return b.String()
 }
 
+// foldFieldWords applies the same case, diacritic, ligature, and word-boundary
+// folding used by plugin people search (experience.peopleFoldedWords).
+func foldFieldWords(value string) []string {
+	if value == "" {
+		return nil
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range norm.NFD.String(strings.ToLower(value)) {
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		switch r {
+		case 'ł':
+			b.WriteByte('l')
+		case 'ø':
+			b.WriteByte('o')
+		case 'đ', 'ð':
+			b.WriteByte('d')
+		case 'ß':
+			b.WriteString("ss")
+		case 'æ':
+			b.WriteString("ae")
+		case 'œ':
+			b.WriteString("oe")
+		case 'þ':
+			b.WriteString("th")
+		case 'ı':
+			b.WriteByte('i')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.FieldsFunc(b.String(), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+}
+
+// FoldFieldText returns space-separated folded words for v_fold indexing on
+// plugin_item_fields.
+func FoldFieldText(value string) string {
+	return strings.Join(foldFieldWords(value), " ")
+}
+
+func foldQueryTerms(value string) []string {
+	seen := map[string]bool{}
+	var terms []string
+	for _, word := range foldFieldWords(value) {
+		if !seen[word] {
+			seen[word] = true
+			terms = append(terms, word)
+			if len(terms) == 8 {
+				break
+			}
+		}
+	}
+	return terms
+}
+
+func foldedWordsMatch(label string, terms []string) bool {
+	if len(terms) == 0 {
+		return true
+	}
+	words := foldFieldWords(label)
+	if len(words) == 0 {
+		return false
+	}
+	for _, term := range terms {
+		found := false
+		for _, w := range words {
+			if strings.HasPrefix(w, term) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func appendFoldedWordPrefix(where *strings.Builder, args *[]any, terms []string) {
+	if len(terms) == 0 {
+		return
+	}
+	where.WriteString(` AND f.v_fold > ''`)
+	for _, term := range terms {
+		where.WriteString(` AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)`)
+		*args = append(*args, term+"%", "% "+term+"%")
+	}
+}
+
 func isASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {

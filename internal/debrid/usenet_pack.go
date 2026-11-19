@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"slices"
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -98,7 +97,13 @@ func EpisodeNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 		// says nothing may hold the season. Keep it whole and tell the stream
 		// engine which member to play; it rejects the release if none matches.
 		chosen = opaque
-		extra = map[string]string{nzb.MetaEpisode: nzb.EpisodeHint{Season: t.Season, Episode: t.Episode, Absolute: t.AbsoluteEpisode}.String()}
+		hint := nzb.EpisodeHint{Season: t.Season, Episode: t.Episode, Absolute: t.AbsoluteEpisode}
+		for _, n := range t.Aliases {
+			if n.Season > 0 && n.Episode > 0 {
+				hint.Aliases = append(hint.Aliases, [2]int{n.Season, n.Episode})
+			}
+		}
+		extra = map[string]string{nzb.MetaEpisode: hint.String()}
 	}
 	if len(chosen) == 0 {
 		return nil, fmt.Errorf("usenet season pack has no file for S%02dE%02d: %w", t.Season, t.Episode, core.ErrNotAvailable)
@@ -151,7 +156,7 @@ func opaqueArchives(units []packUnit, t *core.ReleaseTarget) []packUnit {
 		if !u.archive || len(info.Episodes) > 0 || len(info.AbsoluteEpisodes) > 0 {
 			continue
 		}
-		if len(info.Seasons) > 0 && !slices.Contains(info.Seasons, t.Season) || !fileCourMatchesTarget(u.name+".mkv", t) {
+		if len(info.Seasons) > 0 && !targetAllowsSeason(t, info.Seasons) || !fileCourMatchesTarget(u.name+".mkv", t) {
 			continue
 		}
 		out = append(out, u)
@@ -206,6 +211,14 @@ func pickPackUnit(units []packUnit, t *core.ReleaseTarget) *packUnit {
 		ok := releaseparse.EpisodeMatches(info, t.Season, t.Episode) ||
 			(t.AbsoluteEpisode > 0 && releaseparse.EpisodeMatchesAbsolute(info, t.AbsoluteEpisode)) ||
 			(len(info.Episodes) == 0 && classicPackEpisodeMatches(u.name+".mkv", t.Season, t.Episode))
+		if !ok && info.Cour == 0 {
+			for _, n := range t.Aliases {
+				if releaseparse.EpisodeMatches(info, n.Season, n.Episode) {
+					ok = true
+					break
+				}
+			}
+		}
 		if info.Cour > 0 && t.Cour == info.Cour && t.CourEpisode > 0 {
 			ok = releaseparse.EpisodeMatches(info, t.Season, t.CourEpisode) ||
 				releaseparse.EpisodeMatchesAbsolute(info, t.CourEpisode)

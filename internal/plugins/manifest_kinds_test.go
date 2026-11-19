@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -64,15 +65,27 @@ func TestContentManifestValidates(t *testing.T) {
 	m.Ether.Contributes.MediaKinds[0].Browse.Facets = []string{"genre", "recordist"}
 	m.Ether.Contributes.MediaKinds[0].Browse.Sorts = []string{"released", "title", "added"}
 	m.Ether.Contributes.MediaKinds[0].Library.Card = "landscape"
+	searchOff := false
+	searchOn := true
+	m.Ether.Strings = map[string]json.RawMessage{
+		"en": json.RawMessage(`{"search_recordists":"Search recordists"}`),
+	}
 	m.Ether.Contributes.MediaKinds[0].Library.Tabs = []KindLibraryTab{
 		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
-		{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Order: "name", Sort: "released", Direction: "desc"},
-		{Key: "recordists", Label: "Recordists", Kind: "people", Facet: "recordist", Order: "name"},
-		{Key: "top-recordists", Label: "Top recordists", Kind: "people", Facet: "recordist", Order: "count"},
+		{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Order: "name", SearchPlaceholder: "Search genres", Sort: "released", Direction: "desc"},
+		{Key: "recordists", Label: "Recordists", Kind: "people", Facet: "recordist", Order: "name", Search: &searchOn, SearchPlaceholder: "$t:search_recordists"},
+		{Key: "top-recordists", Label: "Top recordists", Kind: "people", Facet: "recordist", Order: "count", Search: &searchOff},
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("landscape + facet collections + people tabs: %v", err)
+	}
+	tabs := m.Ether.Contributes.MediaKinds[0].Library.Tabs
+	if tabs[0].EffectiveSearch() || tabs[1].EffectiveSearch() {
+		t.Fatalf("recommended and library tabs must have EffectiveSearch() == false")
+	}
+	if !tabs[2].EffectiveSearch() || !tabs[3].EffectiveSearch() || tabs[4].EffectiveSearch() {
+		t.Fatalf("unexpected EffectiveSearch() defaults/overrides: [%v, %v, %v]", tabs[2].EffectiveSearch(), tabs[3].EffectiveSearch(), tabs[4].EffectiveSearch())
 	}
 	// Vela-only presentation (movies on 1 level, shows on >=2 levels) validates.
 	m = contentManifest()
@@ -222,6 +235,33 @@ func TestContentManifestRules(t *testing.T) {
 			kind(m).Browse.Facets = []string{"genre", "recordist"}
 			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "recordist", Order: "asc"}}
 		}, "library.tabs[0].order"},
+		{"search on library tab", func(m *Manifest) {
+			on := true
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "library", Label: "Library", Kind: "library", Search: &on}}
+		}, "library.tabs[0].search"},
+		{"search on recommended tab", func(m *Manifest) {
+			off := false
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "recommended", Label: "Recommended", Kind: "recommended", Search: &off}}
+		}, "library.tabs[0].search"},
+		{"searchPlaceholder on library tab", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "library", Label: "Library", Kind: "library", SearchPlaceholder: "Search"}}
+		}, "library.tabs[0].searchPlaceholder"},
+		{"searchPlaceholder with search false on collections tab", func(m *Manifest) {
+			off := false
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", Search: &off, SearchPlaceholder: "Search genres"}}
+		}, "library.tabs[0].searchPlaceholder"},
+		{"searchPlaceholder with search false on people tab", func(m *Manifest) {
+			off := false
+			kind(m).Fields[1].Indexed = true
+			kind(m).Browse.Facets = []string{"genre", "recordist"}
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "cast", Label: "Cast", Kind: "people", Facet: "recordist", Search: &off, SearchPlaceholder: "Search cast"}}
+		}, "library.tabs[0].searchPlaceholder"},
+		{"searchPlaceholder over 60 chars", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", SearchPlaceholder: "Search across every developer studio and publisher in this library now"}}
+		}, "library.tabs[0].searchPlaceholder"},
+		{"searchPlaceholder bad $t key", func(m *Manifest) {
+			kind(m).Library.Tabs = []KindLibraryTab{{Key: "genres", Label: "Genres", Kind: "collections", Facet: "genre", SearchPlaceholder: "$t:"}}
+		}, "library.tabs[0].searchPlaceholder"},
 		{"no levels", func(m *Manifest) { kind(m).Levels = nil }, ".levels"},
 		{"six levels", func(m *Manifest) {
 			for i := 0; i < 4; i++ {

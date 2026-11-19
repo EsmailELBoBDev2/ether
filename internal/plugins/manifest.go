@@ -40,11 +40,12 @@ func (m *Manifest) UnmarshalJSON(b []byte) error {
 }
 
 var (
-	idRe       = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
-	keyRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
-	toolNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
-	hostRe     = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
-	bannedRe   = regexp.MustCompile(`(?i)\b(simply|easily|just)\b`)
+	idRe             = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
+	keyRe            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+	posterBadgeKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	toolNameRe       = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
+	hostRe           = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	bannedRe         = regexp.MustCompile(`(?i)\b(simply|easily|just)\b`)
 	// dockerImageRe accepts registry/name:tag or name@sha256:digest, with no
 	// spaces or shell metacharacters.
 	dockerImageRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$`)
@@ -101,6 +102,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapListSource:      {KindIntegration: true, KindExtension: true},
 	CapPluginDirectory: {KindIntegration: true, KindExtension: true, KindSource: true},
 	CapMetadata:        {KindIntegration: true, KindExtension: true, KindSource: true},
+	CapPosterBadges:    {KindIntegration: true, KindExtension: true, KindSource: true, KindContent: true},
 	CapLiveTV:          {KindLiveTVSource: true},
 	CapSubtitles:       {KindIntegration: true, KindExtension: true},
 	CapMarkers:         {KindIntegration: true, KindExtension: true},
@@ -486,6 +488,10 @@ func contributesUseT(c Contributes) bool {
 	for _, x := range c.RuleConditions {
 		check(x.Label)
 	}
+	for _, x := range c.PosterBadges {
+		check(x.Label)
+		check(x.Description)
+	}
 	for _, x := range c.Tools {
 		check(x.Title)
 	}
@@ -508,6 +514,7 @@ func contributesUseT(c Contributes) bool {
 		check(k.Library.Name)
 		for _, t := range k.Library.Tabs {
 			check(t.Label)
+			check(t.SearchPlaceholder)
 		}
 		for _, lv := range k.Levels {
 			check(lv.Label)
@@ -668,6 +675,33 @@ func validateContributes(m Manifest, add func(string, string)) {
 			add(base+".key", "must be a simple key")
 		}
 		label(base+".label", rc.Label, 40)
+	}
+	if m.HasCapability(CapPosterBadges) && len(c.PosterBadges) == 0 {
+		add("ether.contributes.posterBadges", "is required for poster_badges")
+	}
+	if len(c.PosterBadges) > 0 && !m.HasCapability(CapPosterBadges) {
+		add("ether.capabilities", "poster_badges is required for posterBadges")
+	}
+	if len(c.PosterBadges) > MaxPosterBadgeSets {
+		add("ether.contributes.posterBadges", fmt.Sprintf("must declare at most %d badge sets", MaxPosterBadgeSets))
+	}
+	seenBadgeSets := map[string]bool{}
+	for i, pb := range c.PosterBadges {
+		base := fmt.Sprintf("ether.contributes.posterBadges[%d]", i)
+		if !posterBadgeKeyRe.MatchString(pb.Key) || seenBadgeSets[pb.Key] {
+			add(base+".key", "must be a unique key matching ^[a-z][a-z0-9_]{0,31}$")
+		}
+		seenBadgeSets[pb.Key] = true
+		label(base+".label", pb.Label, 40)
+		if pb.Description != "" {
+			if strings.HasPrefix(pb.Description, "$t:") {
+				if !keyRe.MatchString(strings.TrimPrefix(pb.Description, "$t:")) {
+					add(base+".description", "must name a string key after $t:")
+				}
+			} else if msg := LintCopy(pb.Description, 120); msg != "" && !e.Stremio {
+				add(base+".description", msg)
+			}
+		}
 	}
 	if m.HasCapability(CapTools) && len(c.Tools) == 0 {
 		add("ether.contributes.tools", "is required for tools")

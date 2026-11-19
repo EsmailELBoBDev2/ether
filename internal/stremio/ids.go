@@ -7,6 +7,8 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+const maxAliasLookups = 4
+
 // Lookup is how to ask an add-on's stream route about one search: its
 // content type ("movie" or "series") and id, whether only whole-season
 // packs are wanted, and, for an anime database id, the episode's number
@@ -14,6 +16,8 @@ import (
 type Lookup struct {
 	Type           string
 	ID             string
+	Season         int
+	Episode        int
 	Packs          bool
 	SpecialEpisode int // mapped IMDb special number, zero for other lookups
 	EntryEpisode   int
@@ -22,6 +26,39 @@ type Lookup struct {
 // Route is the stream route path for the lookup.
 func (l Lookup) Route() string {
 	return "/" + ResourceStream + "/" + l.Type + "/" + escapeID(l.ID) + ".json"
+}
+
+// LookupStreamList returns the bounded stream routes to query for req: the
+// canonical lookup (unless req.ReleaseAliasesOnly is set) followed by
+// distinct alias lookups from core.EpisodeAliases(req).
+func LookupStreamList(ctx context.Context, m Manifest, req core.SearchRequest, anime AnimeIDs, specials SpecialEpisodes) []Lookup {
+	var out []Lookup
+	seen := map[string]bool{}
+	add := func(l Lookup) {
+		key := l.Type + "\x00" + l.ID
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, l)
+	}
+	if req.Type != core.TypeEpisode || !req.ReleaseAliasesOnly {
+		if look, ok := LookupStreams(ctx, m, req, anime, specials); ok {
+			add(look)
+		}
+	}
+	if req.Type == core.TypeEpisode {
+		aliases := core.EpisodeAliases(req)
+		if len(aliases) > maxAliasLookups {
+			aliases = aliases[:maxAliasLookups]
+		}
+		for _, n := range aliases {
+			if look, ok := LookupStreams(ctx, m, core.AliasSearchRequest(req, n), anime, specials); ok {
+				add(look)
+			}
+		}
+	}
+	return out
 }
 
 // LookupStreams chooses how to ask the add-on for req's streams: by IMDb id
@@ -56,7 +93,7 @@ func LookupStreams(ctx context.Context, m Manifest, req core.SearchRequest, anim
 		if movie {
 			return Lookup{Type: typ, ID: base}
 		}
-		return Lookup{Type: typ, ID: fmt.Sprintf("%s:%d:%d", base, req.Season, ep), Packs: packs}
+		return Lookup{Type: typ, ID: fmt.Sprintf("%s:%d:%d", base, req.Season, ep), Season: req.Season, Episode: ep, Packs: packs}
 	}
 	if imdb := IMDbID(req.IDs.IMDB); imdb != "" && m.takesPrefix(ResourceStream, "tt") {
 		if req.Season == 0 && !movie {
@@ -67,7 +104,7 @@ func LookupStreams(ctx context.Context, m Manifest, req core.SearchRequest, anim
 			if !ok || mapped <= 0 {
 				return Lookup{}, false
 			}
-			look := Lookup{Type: typ, ID: fmt.Sprintf("%s:0:%d", imdb, mapped), SpecialEpisode: mapped}
+			look := Lookup{Type: typ, ID: fmt.Sprintf("%s:0:%d", imdb, mapped), Episode: mapped, SpecialEpisode: mapped}
 			return look, true
 		}
 		return ask(imdb), true
@@ -97,7 +134,7 @@ func LookupStreams(ctx context.Context, m Manifest, req core.SearchRequest, anim
 		if movie {
 			return Lookup{Type: typ, ID: fmt.Sprintf("%s:%d", db, id)}, true
 		}
-		return Lookup{Type: typ, ID: fmt.Sprintf("%s:%d:%d", db, id, episode), EntryEpisode: episode}, true
+		return Lookup{Type: typ, ID: fmt.Sprintf("%s:%d:%d", db, id, episode), Season: req.Season, Episode: req.Episode, EntryEpisode: episode}, true
 	}
 	return Lookup{}, false
 }

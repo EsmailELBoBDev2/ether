@@ -31,24 +31,27 @@ import (
 )
 
 func init() {
+	store.Register("overlays", 2, `CREATE TABLE IF NOT EXISTS plugin_poster_badges(plugin_id TEXT NOT NULL,set_key TEXT NOT NULL,title_key TEXT NOT NULL,labels_json TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(plugin_id,set_key,title_key));CREATE INDEX IF NOT EXISTS plugin_poster_badges_title_key ON plugin_poster_badges(title_key);`)
 	store.Register("overlays", 1, `CREATE TABLE overlays_settings(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL);CREATE TABLE overlays_artwork(item_key INTEGER PRIMARY KEY,value TEXT NOT NULL);`)
 }
 
 type Settings struct {
-	Enabled         bool   `json:"enabled"`
-	EpisodeBadges   *bool  `json:"episodeBadges"`
-	Status          bool   `json:"status"`
-	Quality         bool   `json:"quality"`
-	Ratings         bool   `json:"ratings"`
-	Details         bool   `json:"details"`
-	Personalize     bool   `json:"personalize"`
-	Localize        bool   `json:"localize"`
-	Style           string `json:"style"`
-	Position        string `json:"position"`
-	Accent          string `json:"accent"`
-	Size            string `json:"size"`
-	HideDenominator bool   `json:"hideDenominator"`
-	HideDot         bool   `json:"hideDot"`
+	Enabled           bool     `json:"enabled"`
+	EpisodeBadges     *bool    `json:"episodeBadges"`
+	Status            bool     `json:"status"`
+	Quality           bool     `json:"quality"`
+	Ratings           bool     `json:"ratings"`
+	RatingStyle       string   `json:"ratingStyle"`
+	Details           bool     `json:"details"`
+	Personalize       bool     `json:"personalize"`
+	Localize          bool     `json:"localize"`
+	Style             string   `json:"style"`
+	Position          string   `json:"position"`
+	Accent            string   `json:"accent"`
+	Size              string   `json:"size"`
+	HideDenominator   bool     `json:"hideDenominator"`
+	HideDot           bool     `json:"hideDot"`
+	DisabledBadgeSets []string `json:"disabledBadgeSets,omitempty"`
 }
 
 func (v Settings) BadgesOnEpisodes() bool { return v.EpisodeBadges == nil || *v.EpisodeBadges }
@@ -108,6 +111,7 @@ type Options struct {
 	Taste             func(context.Context, *core.User) []string
 	Now               func() time.Time
 	Variants          func(context.Context, *core.Title, string) (Artwork, error)
+	PluginBadges      func(context.Context) []PluginBadgeSet
 }
 type Service struct {
 	db         *sql.DB
@@ -173,9 +177,7 @@ func (s *Service) SaveSettings(ctx context.Context, v Settings) error {
 
 type artworkPageKey struct{}
 
-// WithArtworkPage reads saved variants for a grid once and keeps settings on
-// the context so each tile does not query them again.
-func (s *Service) WithArtworkPage(ctx context.Context, keys []core.RatingKey) (context.Context, error) {
+func (s *Service) withArtworkOnly(ctx context.Context, keys []core.RatingKey) (context.Context, error) {
 	if s == nil {
 		return ctx, nil
 	}
@@ -215,9 +217,24 @@ func (s *Service) WithArtworkPage(ctx context.Context, keys []core.RatingKey) (c
 	return context.WithValue(ctx, artworkPageKey{}, batch), nil
 }
 
-// WithTitlePage prepares settings, saved variants, cached ratings, and viewer
-// overlay facts once for a page of titles so per-tile versioning and selection
-// perform no per-item database queries.
+// WithArtworkPage reads saved variants and active plugin badges for a grid once
+// and keeps settings on the context so each tile does not query them again.
+func (s *Service) WithArtworkPage(ctx context.Context, keys []core.RatingKey) (context.Context, error) {
+	if s == nil {
+		return ctx, nil
+	}
+	var err error
+	ctx, err = s.withArtworkOnly(ctx, keys)
+	if err != nil {
+		return ctx, err
+	}
+	ctx = s.withPluginBadgesForKeys(ctx, keys)
+	return ctx, nil
+}
+
+// WithTitlePage prepares settings, saved variants, cached ratings, viewer
+// overlay facts, and active plugin badges once for a page of titles so per-tile
+// versioning and selection perform no per-item database queries.
 func (s *Service) WithTitlePage(ctx context.Context, viewer *core.User, titles []core.Title) (context.Context, error) {
 	if s == nil {
 		return ctx, nil
@@ -227,7 +244,7 @@ func (s *Service) WithTitlePage(ctx context.Context, viewer *core.User, titles [
 		keys[i] = titles[i].Key
 	}
 	var err error
-	ctx, err = s.WithArtworkPage(ctx, keys)
+	ctx, err = s.withArtworkOnly(ctx, keys)
 	if err != nil {
 		return ctx, err
 	}
@@ -235,6 +252,7 @@ func (s *Service) WithTitlePage(ctx context.Context, viewer *core.User, titles [
 	if err != nil || !cfg.Enabled || len(titles) == 0 {
 		return ctx, nil
 	}
+	ctx = s.withPluginBadgesForTitles(ctx, cfg, titles)
 	if cfg.Ratings && s.o.Ratings != nil {
 		ctx = s.o.Ratings.WithPage(ctx, titles)
 	}

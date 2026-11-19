@@ -23,6 +23,9 @@ type EpisodeLayout struct {
 type ReleaseNumbering struct {
 	Aliases     []EpisodeNumber
 	PackTargets []EpisodeNumber
+	// Explicit reports an owner-chosen episode ordering ("group" mode) that
+	// should be queried alongside canonical numbering on the initial pass.
+	Explicit bool
 }
 
 // EpisodeAliases returns distinct additional forms, never the canonical form.

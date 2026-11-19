@@ -37,6 +37,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/flight"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 )
 
 var (
@@ -184,7 +185,7 @@ func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Servi
 	}
 	ua := s.opts.userAgent
 	if ua == "" {
-		ua = "Ether (+https://github.com/braedonsaunders/ether)"
+		ua = httpclient.UserAgent()
 	}
 	s.web = newWebClient(s.opts.httpClient, ua, s.now)
 	s.bases = defaultBases()

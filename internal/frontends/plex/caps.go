@@ -113,29 +113,31 @@ func (s *Server) declaredCaps(pr *Request) frontend.ClientCaps {
 // from X-Plex-Client-Profile-Extra. Omission is not support: listing hevc
 // alone never implies HDR10 (Braedon review of #136).
 type profileExtraEvidence struct {
-	affirmativeHEVC  bool
-	affirmativeHDR10 bool // bitDepth≥10 and/or colorTrc allow-list includes smpte2084
-	hdrDenied        bool
+	affirmativeHEVC        bool
+	affirmativeHDR10       bool // bitDepth>=10 and/or colorTrc allow-list includes smpte2084/arib-std-b67
+	affirmativeBitDepth10  bool
+	affirmativeColorTrcHDR bool
+	hdrDenied              bool
 }
 
-// promoteWebHDRFromProfile enables HDR10 remux for Plex Web when profile-extra
-// affirmatively listed hevc and also claimed 10-bit/PQ, with no HDR denial.
-// Matches the Profile-Extra Plex Web sends once it knows the title is HDR10
-// HEVC (bitDepth upperBound=10 and/or colorTrc allow-list including smpte2084).
-// HEVC alone never implies HDR10 (Braedon #136); browser name alone never
-// promotes. An early thin Profile-Extra may still tone-map; a later start with
-// the full report remuxes.
+// promoteWebHDRFromProfile enables HDR10 when profile-extra affirmatively
+// declares HEVC and HDR capability without an effective HDR denial.
+// Plex Web promotes on HEVC + (bitDepth>=10 or PQ/HLG colorTrc). Non-web
+// clients keep registry defaults unless they explicitly declare HEVC +
+// bitDepth>=10 + PQ/HLG colorTrc (Bedrock Generic profiles).
 func promoteWebHDRFromProfile(c *frontend.ClientCaps, product string, ev profileExtraEvidence) {
-	if !strings.Contains(strings.ToLower(product), "plex web") {
+	if strings.Contains(strings.ToLower(product), "plex web") {
+		if ev.affirmativeHEVC {
+			c.VideoCodecs = addUnique(c.VideoCodecs, "hevc")
+		}
+		if ev.affirmativeHEVC && ev.affirmativeHDR10 && !ev.hdrDenied {
+			c.HDR10 = true
+		}
 		return
 	}
-	if ev.affirmativeHEVC {
-		c.VideoCodecs = addUnique(c.VideoCodecs, "hevc")
+	if ev.affirmativeHEVC && ev.affirmativeBitDepth10 && ev.affirmativeColorTrcHDR && !ev.hdrDenied {
+		c.HDR10 = true
 	}
-	if !ev.affirmativeHEVC || !ev.affirmativeHDR10 || ev.hdrDenied {
-		return
-	}
-	c.HDR10 = true
 }
 
 // limitationDeniesHDR reports profile-extra limits that mean this client
@@ -160,23 +162,42 @@ func limitationDeniesHDR(a map[string]string) bool {
 	return false
 }
 
-// limitationAffirmsHDR10 reports profile-extra limits that affirmatively claim
-// 10-bit and/or PQ (HDR10) support — the signals PMS Firefox sent when it
-// Direct Streamed an HDR10 HEVC remux.
-func limitationAffirmsHDR10(a map[string]string) bool {
-	sn := normalizeCodec(a["scopeName"])
-	if sn != "hevc" && sn != "av1" && sn != "*" && sn != "" {
+// limitationScopesHDRCodec and the helpers below read profile-extra limits
+// that affirmatively claim 10-bit and/or PQ (HDR10) support, the signals PMS
+// Firefox sent when it Direct Streamed an HDR10 HEVC remux.
+func limitationScopesHDRCodec(scopeName string) bool {
+	sn := normalizeCodec(scopeName)
+	if sn == "hevc" || sn == "av1" || sn == "*" || sn == "" {
+		return true
+	}
+	for _, part := range splitList(scopeName) {
+		if part == "hevc" || part == "av1" {
+			return true
+		}
+	}
+	return false
+}
+
+func limitationAffirmsBitDepth10(a map[string]string) bool {
+	if !limitationScopesHDRCodec(a["scopeName"]) {
 		return false
 	}
-	name, typ, scope := a["name"], a["type"], a["scope"]
-	val := limitationValue(a)
-	if name == "video.bitDepth" && typ == "upperBound" && scope == "videoCodec" {
-		n, err := strconv.Atoi(val)
+	scope := a["scope"]
+	if a["name"] == "video.bitDepth" && a["type"] == "upperBound" && (scope == "videoCodec" || scope == "videoTranscodeTarget") {
+		n, err := strconv.Atoi(limitationValue(a))
 		return err == nil && n >= 10
 	}
-	// PMS: scope=videoTranscodeTarget&type=match&name=video.colorTrc&list=...|smpte2084
-	if name == "video.colorTrc" && typ == "match" && (scope == "videoCodec" || scope == "videoTranscodeTarget") {
-		return strings.Contains(val, "smpte2084")
+	return false
+}
+
+func limitationAffirmsColorTrcHDR(a map[string]string) bool {
+	if !limitationScopesHDRCodec(a["scopeName"]) {
+		return false
+	}
+	scope := a["scope"]
+	if a["name"] == "video.colorTrc" && a["type"] == "match" && (scope == "videoCodec" || scope == "videoTranscodeTarget") {
+		val := limitationValue(a)
+		return strings.Contains(val, "smpte2084") || strings.Contains(val, "arib-std-b67")
 	}
 	return false
 }
@@ -310,6 +331,9 @@ func addUnique(xs []string, add ...string) []string {
 
 func applyProfileExtra(c *frontend.ClientCaps, extra string) profileExtraEvidence {
 	var ev profileExtraEvidence
+	wildcardBitDepth := 0
+	codecBitDepth := map[string]int{}
+	colorTrcDenied := false
 	for _, d := range ParseProfileExtra(extra) {
 		a := d.Args
 		switch d.Verb {
@@ -361,13 +385,52 @@ func applyProfileExtra(c *frontend.ClientCaps, extra string) profileExtraEvidenc
 					c.AudioLimits = append(c.AudioLimits, frontend.AudioLimit{Codec: normalizeCodec(a["scopeName"]), Name: a["name"], Type: a["type"], Value: n})
 				}
 			}
-			if limitationDeniesHDR(a) {
-				ev.hdrDenied = true
+			if a["scope"] == "videoCodec" && a["name"] == "video.bitDepth" && a["type"] == "upperBound" {
+				if n, err := strconv.Atoi(limitationValue(a)); err == nil && n > 0 {
+					repl := strings.EqualFold(a["replace"], "true")
+					rawSN := strings.TrimSpace(a["scopeName"])
+					if rawSN == "" || rawSN == "*" {
+						if repl || wildcardBitDepth == 0 || n < wildcardBitDepth {
+							wildcardBitDepth = n
+						}
+					} else {
+						for _, codec := range splitList(rawSN) {
+							if codec == "hevc" || codec == "av1" {
+								if repl || codecBitDepth[codec] == 0 || n < codecBitDepth[codec] {
+									codecBitDepth[codec] = n
+								}
+							}
+						}
+					}
+				}
 			}
-			if limitationAffirmsHDR10(a) {
+			if a["scope"] == "videoCodec" && a["name"] == "video.colorTrc" && a["type"] == "notMatch" && limitationScopesHDRCodec(a["scopeName"]) && strings.Contains(limitationValue(a), "smpte2084") {
+				colorTrcDenied = true
+			}
+			if limitationAffirmsBitDepth10(a) {
+				ev.affirmativeBitDepth10 = true
+				ev.affirmativeHDR10 = true
+			}
+			if limitationAffirmsColorTrcHDR(a) {
+				ev.affirmativeColorTrcHDR = true
 				ev.affirmativeHDR10 = true
 			}
 			applyLimitation(c, a)
+		}
+	}
+	bitDepthDeniesHDR := false
+	switch {
+	case codecBitDepth["hevc"] > 0 || codecBitDepth["av1"] > 0:
+		bitDepthDeniesHDR = codecBitDepth["hevc"] < 10 && codecBitDepth["av1"] < 10
+	case wildcardBitDepth > 0:
+		bitDepthDeniesHDR = wildcardBitDepth < 10
+	}
+	if bitDepthDeniesHDR || colorTrcDenied {
+		ev.hdrDenied = true
+		c.HDR10 = false
+		c.ExplicitNoHDR = true
+		if bitDepthDeniesHDR {
+			c.DolbyVision = false
 		}
 	}
 	return ev
@@ -503,14 +566,8 @@ func applyLimitation(c *frontend.ClientCaps, a map[string]string) {
 			c.MaxBitrateKbps = n
 		}
 	case scope == "videoCodec" && name == "video.bitDepth" && typ == "upperBound" && numErr == nil:
-		// 8-bit only for the scoped codec: no HDR on that codec. HDR is
-		// effectively HEVC/AV1 only, so an 8-bit cap on either kills HDR.
-		sn := normalizeCodec(a["scopeName"])
-		if n < 10 && (sn == "hevc" || sn == "av1" || sn == "*") {
-			c.HDR10 = false
-			c.ExplicitNoHDR = true
-			c.DolbyVision = false
-		}
+		// Effective HDR bit-depth cap (wildcard vs named HEVC/AV1 override)
+		// is resolved after scanning all profile-extra directives.
 	case scope == "videoCodec" && strings.EqualFold(name, "video.DOVIProfile"):
 		if strings.EqualFold(typ, "notMatch") {
 			if val == "*" || val == "" {

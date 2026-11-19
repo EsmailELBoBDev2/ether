@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -121,19 +122,19 @@ func libraryWire(view frontend.View) object {
 		if len(srcTabs) == 0 {
 			srcTabs = []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
-				{ID: "library", Label: "Library", Kind: "library"},
+				{ID: "library", Label: "Library", Kind: "library", Search: true},
 			}
 		}
 		tabs = make([]object, 0, len(srcTabs))
 		appliedLibrarySort := false
 		for _, t := range srcTabs {
 			tab := object{"id": t.ID, "label": t.Label, "kind": t.Kind}
-			search := t.Kind != "recommended"
-			if t.Search != nil {
-				search = *t.Search && t.Kind != "recommended"
-			}
-			tab["search"] = search
-			if search && t.SearchPlaceholder != "" {
+			if t.Kind == "collections" || t.Kind == "people" || t.Kind == "view" {
+				tab["search"] = t.Search
+				if t.Search && t.SearchPlaceholder != "" {
+					tab["searchPlaceholder"] = t.SearchPlaceholder
+				}
+			} else if t.Kind == "library" && t.Search && t.SearchPlaceholder != "" {
 				tab["searchPlaceholder"] = t.SearchPlaceholder
 			}
 			switch {
@@ -339,7 +340,7 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 				}
 			}
 		} else if tabKey == "library" {
-			activeTab = &frontend.ViewTab{ID: "library", Kind: "library"}
+			activeTab = &frontend.ViewTab{ID: "library", Kind: "library", Search: true}
 		}
 		if activeTab == nil {
 			return q, "", "", 404
@@ -424,7 +425,7 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 	}
 
 	if rawQuery := strings.TrimSpace(values.Get("query")); rawQuery != "" {
-		if len(rawQuery) > 256 {
+		if len(rawQuery) > 256 || (activeTab != nil && activeTab.Kind == "view" && !activeTab.Search) {
 			return q, sort, direction, 400
 		}
 		q.Filter.Query = rawQuery
@@ -957,7 +958,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 	}
 	tabKey := values.Get("tab")
 	query := strings.TrimSpace(values.Get("query"))
-	if len(query) > 256 {
+	if utf8.RuneCountInString(query) > 100 {
 		problem(w, 400, "request", "unsupported_library_query")
 		return
 	}
@@ -980,27 +981,11 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
-	pageLimit := limit(r)
-	scope, err := i.livePageScope(r, v, token)
-	if err != nil {
-		fail(w, err, r)
-		return
-	}
-	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-collections", id, tabKey, query, pageLimit}))
-	if err != nil {
-		fail(w, err, r)
-		return
-	}
-	snapshot := hashJSON(views)
-	if c.Offset > 10000 || (c.Snapshot != "" && c.Snapshot != snapshot) {
-		fail(w, frontend.ErrLiveGuideStale)
-		return
-	}
 
 	isPlugin := view.PluginID != "" || view.KindKey != ""
+	var selectedTab frontend.ViewTab
+	hasSelected := false
 	if isPlugin || len(view.Tabs) > 0 {
-		var selectedTab frontend.ViewTab
-		hasSelected := false
 		if tabKey != "" {
 			for _, t := range view.Tabs {
 				if t.ID == tabKey && (t.Kind == "collections" || t.Kind == "people") {
@@ -1028,85 +1013,112 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-
-		if hasSelected && selectedTab.Kind == "people" {
-			peopleReader, hasPeople := i.host.Experience.(frontend.LibraryFacetPeople)
-			if selectedTab.Facet == "" || !hasPeople {
-				cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
-				return
-			}
-			fpPage, err := peopleReader.LibraryFacetPeople(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
-				Offset: c.Offset,
-				Limit:  pageLimit,
-				Query:  query,
-			})
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			entries, err := i.facetPeopleWire(r, token, fpPage.Items)
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			out := object{"items": entries, "continuation": "exhausted"}
-			if fpPage.More {
-				next, err := i.nextLiveCursor(c, c.Offset+len(fpPage.Items), snapshot)
-				if err != nil {
-					fail(w, err, r)
-					return
-				}
-				out["continuation"], out["nextCursor"] = "more", next
-			}
-			cache(w, r, out)
+		if query != "" && (!hasSelected || !selectedTab.Search) {
+			problem(w, 400, "request", "unsupported_library_query")
 			return
 		}
-
-		if hasSelected && selectedTab.Kind == "collections" && selectedTab.Facet != "" {
-			colReader, hasCols := i.host.Experience.(frontend.LibraryFacetCollections)
-			if !hasCols {
-				cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
-				return
-			}
-			facetField := selectedTab.Facet
-			if !isPlugin {
-				if canon, ok := core.NormalizeCatalogueTabFacet(core.TabCollections, facetField); ok && canon != "" {
-					facetField = canon
-				}
-			}
-			fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, facetField, selectedTab.Order, frontend.PageQuery{
-				Offset: c.Offset,
-				Limit:  pageLimit,
-				Query:  query,
-			})
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			entries, err := i.facetCollectionsWire(r, v, token, facetField, view, fcPage.Items)
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			out := object{"items": entries, "continuation": "exhausted"}
-			if fcPage.More {
-				next, err := i.nextLiveCursor(c, c.Offset+len(fcPage.Items), snapshot)
-				if err != nil {
-					fail(w, err, r)
-					return
-				}
-				out["continuation"], out["nextCursor"] = "more", next
-			}
-			cache(w, r, out)
+	} else {
+		if tabKey != "" && tabKey != "collections" {
+			problem(w, 404, "not-found", "not_found")
 			return
 		}
+		if query != "" {
+			problem(w, 400, "request", "unsupported_library_query")
+			return
+		}
+	}
 
-		if isPlugin {
+	pageLimit := limit(r)
+	scope, err := i.livePageScope(r, v, token)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-collections", id, tabKey, query, pageLimit}))
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	snapshot := hashJSON(views)
+	if c.Offset > 10000 || (c.Snapshot != "" && c.Snapshot != snapshot) {
+		fail(w, frontend.ErrLiveGuideStale)
+		return
+	}
+
+	if hasSelected && selectedTab.Kind == "people" {
+		peopleReader, hasPeople := i.host.Experience.(frontend.LibraryFacetPeople)
+		if selectedTab.Facet == "" || !hasPeople {
 			cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
 			return
 		}
-	} else if tabKey != "" && tabKey != "collections" {
-		problem(w, 404, "not-found", "not_found")
+		fpPage, err := peopleReader.LibraryFacetPeople(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
+			Offset: c.Offset,
+			Limit:  pageLimit,
+			Query:  query,
+		})
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		entries, err := i.facetPeopleWire(r, token, fpPage.Items)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		out := object{"items": entries, "continuation": "exhausted"}
+		if fpPage.More {
+			next, err := i.nextLiveCursor(c, c.Offset+len(fpPage.Items), snapshot)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			out["continuation"], out["nextCursor"] = "more", next
+		}
+		cache(w, r, out)
+		return
+	}
+
+	if hasSelected && selectedTab.Kind == "collections" && selectedTab.Facet != "" {
+		colReader, hasCols := i.host.Experience.(frontend.LibraryFacetCollections)
+		if !hasCols {
+			cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
+			return
+		}
+		facetField := selectedTab.Facet
+		if !isPlugin {
+			if canon, ok := core.NormalizeCatalogueTabFacet(core.TabCollections, facetField); ok && canon != "" {
+				facetField = canon
+			}
+		}
+		fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, facetField, selectedTab.Order, frontend.PageQuery{
+			Offset: c.Offset,
+			Limit:  pageLimit,
+			Query:  query,
+		})
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		entries, err := i.facetCollectionsWire(r, v, token, facetField, view, fcPage.Items)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		out := object{"items": entries, "continuation": "exhausted"}
+		if fcPage.More {
+			next, err := i.nextLiveCursor(c, c.Offset+len(fcPage.Items), snapshot)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			out["continuation"], out["nextCursor"] = "more", next
+		}
+		cache(w, r, out)
+		return
+	}
+
+	if isPlugin {
+		cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
 		return
 	}
 

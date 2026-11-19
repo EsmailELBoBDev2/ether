@@ -213,7 +213,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 			return KindRecord{}, err
 		}
 		if preExisting > 0 {
-			if err := reindexKindTx(ctx, tx, isPG, pluginID, decl.Key, libraryID, decl); err != nil {
+			if err := reindexKindTx(ctx, tx, isPG, true, pluginID, decl.Key, libraryID, decl); err != nil {
 				return KindRecord{}, err
 			}
 		}
@@ -249,7 +249,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 			return KindRecord{}, err
 		}
 		if needReindex {
-			if err := reindexKindTx(ctx, tx, isPG, pluginID, decl.Key, libraryID, decl); err != nil {
+			if err := reindexKindTx(ctx, tx, isPG, true, pluginID, decl.Key, libraryID, decl); err != nil {
 				return KindRecord{}, err
 			}
 		}
@@ -593,9 +593,9 @@ INSERT INTO plugin_items(
 		}
 		for _, fv := range v.IndexedFields {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real) VALUES(?, ?, ?, ?, ?)
-				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real`,
-				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real); err != nil {
+				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
 				return 0, err
 			}
 		}
@@ -650,6 +650,73 @@ func applyMigration3Postgres(ctx context.Context, tx *sql.Tx) error {
 	return reindexAllTx(ctx, tx, true)
 }
 
+var migration4FoldBatchSize = 500
+
+func applyMigration4(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := backfillFieldFoldsTx(ctx, tx, migration4FoldBatchSize); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `CREATE INDEX plugin_item_fields_fold ON plugin_item_fields(field, v_fold, v_text, v_int, item_ref)`)
+	return err
+}
+
+func backfillFieldFoldsTx(ctx context.Context, tx *sql.Tx, batchSize int) error {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	curField, curText := "", ""
+	for {
+		rows, err := tx.QueryContext(ctx, `
+SELECT DISTINCT field, v_text
+FROM plugin_item_fields
+WHERE v_text <> '' AND (field > ? OR (field = ? AND v_text > ?))
+ORDER BY field ASC, v_text ASC
+LIMIT ?`, curField, curField, curText, batchSize)
+		if err != nil {
+			return err
+		}
+		type fieldTextPair struct {
+			field string
+			text  string
+		}
+		var batch []fieldTextPair
+		for rows.Next() {
+			var p fieldTextPair
+			if err := rows.Scan(&p.field, &p.text); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, p)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			break
+		}
+		for _, p := range batch {
+			if folded := FoldFieldText(p.text); folded != "" {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE plugin_item_fields SET v_fold = ? WHERE field = ? AND v_text = ?`,
+					folded, p.field, p.text); err != nil {
+					return err
+				}
+			}
+		}
+		last := batch[len(batch)-1]
+		curField, curText = last.field, last.text
+		if len(batch) < batchSize {
+			break
+		}
+	}
+	return nil
+}
+
 type pendingKindRow struct {
 	pluginID  string
 	kindKey   string
@@ -684,7 +751,7 @@ func reindexAllTx(ctx context.Context, tx *sql.Tx, isPG bool) error {
 		if err := json.Unmarshal([]byte(k.declJSON), &decl); err != nil {
 			continue
 		}
-		if err := reindexKindTx(ctx, tx, isPG, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
+		if err := reindexKindTx(ctx, tx, isPG, false, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -750,7 +817,7 @@ func (s *Service) reindexPendingKinds(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := reindexKindTx(ctx, tx, isPG, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
+		if err := reindexKindTx(ctx, tx, isPG, true, k.pluginID, k.kindKey, k.libraryID, decl); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -775,7 +842,7 @@ type reindexItemRow struct {
 	fieldsJSON string
 }
 
-func reindexKindTx(ctx context.Context, tx *sql.Tx, isPG bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
+func reindexKindTx(ctx context.Context, tx *sql.Tx, isPG, hasFold bool, pluginID, kindKey string, fallbackLibID core.LibraryID, decl plugins.MediaKindMeta) error {
 	const batchSize = 500
 	cursor := ""
 	for {
@@ -817,11 +884,20 @@ LIMIT ?`, pluginID, kindKey, cursor, batchSize)
 				return err
 			}
 			for _, fv := range indexed {
-				if _, err := tx.ExecContext(ctx,
-					`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real) VALUES(?, ?, ?, ?, ?)
-					 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real`,
-					r.itemRef, fv.Field, fv.Text, fv.Int, fv.Real); err != nil {
-					return err
+				if hasFold {
+					if _, err := tx.ExecContext(ctx,
+						`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
+						 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
+						r.itemRef, fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
+						return err
+					}
+				} else {
+					if _, err := tx.ExecContext(ctx,
+						`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real) VALUES(?, ?, ?, ?, ?)
+						 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real`,
+						r.itemRef, fv.Field, fv.Text, fv.Int, fv.Real); err != nil {
+						return err
+					}
 				}
 			}
 			if isPG {

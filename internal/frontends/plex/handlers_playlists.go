@@ -201,8 +201,15 @@ func titleKeys(ts []frontend.Title) []frontend.RatingKey {
 	return out
 }
 
-// resolveURI turns a content URI into playable rating keys.
+// resolveURI turns a content URI into playable rating keys, capped to maxExpand.
 func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]frontend.RatingKey, error) {
+	keys, err := s.expandURI(ctx, pr, uri)
+	return capKeys(keys), err
+}
+
+// expandURI turns a content URI into playable rating keys before play-queue
+// windowing or playlist capping.
+func (s *Server) expandURI(ctx context.Context, pr *Request, uri string) ([]frontend.RatingKey, error) {
 	p, err := uriPath(uri)
 	if err != nil {
 		return nil, err
@@ -241,7 +248,7 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 				break
 			}
 		}
-		return capKeys(out), nil
+		return out, nil
 	case reMetadataPath.MatchString(path):
 		m := reMetadataPath.FindStringSubmatch(path)
 		keys, err := parseKeys(m[1])
@@ -265,19 +272,18 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 				return nil, err
 			}
 			out = append(out, sub...)
-			if len(out) >= maxExpand {
+			if len(keys) > 1 && len(out) >= 20*maxExpand {
 				break
 			}
 		}
-		return capKeys(out), nil
+		return out, nil
 	case reCollectionPath.MatchString(path):
 		m := reCollectionPath.FindStringSubmatch(path)
 		k, err := frontend.ParseRatingKey(m[1])
 		if err != nil {
 			return nil, err
 		}
-		keys, err := s.expandKey(ctx, pr, k)
-		return capKeys(keys), err
+		return s.expandKey(ctx, pr, k)
 	case rePlaylistPath.MatchString(path):
 		m := rePlaylistPath.FindStringSubmatch(path)
 		k, err := frontend.ParseRatingKey(m[1])
@@ -309,7 +315,7 @@ func (s *Server) resolveURI(ctx context.Context, pr *Request, uri string) ([]fro
 				break
 			}
 		}
-		return capKeys(out), nil
+		return out, nil
 	}
 	return nil, fmt.Errorf("unsupported uri path %q", path)
 }
@@ -319,6 +325,24 @@ func capKeys(ks []frontend.RatingKey) []frontend.RatingKey {
 		return ks[:maxExpand]
 	}
 	return ks
+}
+
+// windowKeys caps ks to maxExpand items around startIdx (maxExpand/2 before
+// and the rest after, clamped to [0, len(ks)]), returning the windowed slice
+// and the counts of omitted items before and after it.
+func windowKeys(ks []frontend.RatingKey, startIdx int) (window []frontend.RatingKey, before, after int) {
+	if len(ks) <= maxExpand {
+		return ks, 0, 0
+	}
+	lo := startIdx - maxExpand/2
+	if lo+maxExpand > len(ks) {
+		lo = len(ks) - maxExpand
+	}
+	if lo < 0 {
+		lo = 0
+	}
+	hi := lo + maxExpand
+	return ks[lo:hi], lo, len(ks) - hi
 }
 
 // ---------------------------------------------------------------------------

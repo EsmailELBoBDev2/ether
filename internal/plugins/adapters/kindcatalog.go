@@ -76,10 +76,9 @@ type KindCatalog struct {
 }
 
 var (
-	_ experience.PluginLibraries                   = (*KindCatalog)(nil)
-	_ experience.PluginPeopleLibraries             = (*KindCatalog)(nil)
-	_ experience.PluginPresentationLibraries       = (*KindCatalog)(nil)
-	_ experience.PluginPresentationSearchLibraries = (*KindCatalog)(nil)
+	_ experience.PluginLibraries             = (*KindCatalog)(nil)
+	_ experience.PluginPeopleLibraries       = (*KindCatalog)(nil)
+	_ experience.PluginPresentationLibraries = (*KindCatalog)(nil)
 )
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
@@ -1474,6 +1473,10 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				continue
 			}
 			effSearch := tab.EffectiveSearch()
+			var placeholder string
+			if effSearch && strings.TrimSpace(tab.SearchPlaceholder) != "" {
+				placeholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
+			}
 			vt := frontend.ViewTab{
 				ID:                tab.Key,
 				Label:             c.resolvePluginText(ctx, rec.PluginID, tab.Label),
@@ -1482,8 +1485,8 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Order:             tab.Order,
 				Sort:              tab.Sort,
 				Direction:         tab.Direction,
-				Search:            &effSearch,
-				SearchPlaceholder: tab.SearchPlaceholder,
+				Search:            effSearch,
+				SearchPlaceholder: placeholder,
 				Filters:           tab.Filters.Clone(),
 			}
 			fillPluginTabDefaults(&vt, sorts)
@@ -1493,7 +1496,6 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		rawTabs := decl.Library.EffectiveTabs()
 		tabs = make([]frontend.ViewTab, 0, len(rawTabs))
 		for _, tab := range rawTabs {
-			effSearch := tab.Kind != core.TabRecommended
 			vt := frontend.ViewTab{
 				ID:        tab.Key,
 				Label:     c.resolvePluginText(ctx, rec.PluginID, tab.Label),
@@ -1502,7 +1504,12 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Order:     tab.Order,
 				Sort:      tab.Sort,
 				Direction: tab.Direction,
-				Search:    &effSearch,
+			}
+			if tab.Kind == "collections" || tab.Kind == "people" {
+				vt.Search = tab.EffectiveSearch()
+				if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
+					vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
+				}
 			}
 			fillPluginTabDefaults(&vt, sorts)
 			tabs = append(tabs, vt)
@@ -1594,12 +1601,7 @@ func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field 
 }
 
 // FacetCollections implements experience.PluginPresentationLibraries.
-func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error) {
-	return c.FacetCollectionsPage(ctx, lib, field, order, frontend.PageQuery{Offset: offset, Limit: limit})
-}
-
-// FacetCollectionsPage implements experience.PluginPresentationSearchLibraries.
-func (c *KindCatalog) FacetCollectionsPage(ctx context.Context, lib core.Library, field, order string, pq frontend.PageQuery) (frontend.FacetCollectionPage, error) {
+func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error) {
 	if c == nil || c.items == nil {
 		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
@@ -1621,9 +1623,9 @@ func (c *KindCatalog) FacetCollectionsPage(ctx context.Context, lib core.Library
 		Policy:    policy,
 		FieldKey:  field,
 		Order:     order,
-		Query:     pq.Query,
-		Offset:    pq.Offset,
-		Limit:     pq.Limit,
+		Query:     query,
+		Offset:    offset,
+		Limit:     limit,
 	})
 	if err != nil {
 		return frontend.FacetCollectionPage{}, err
@@ -1658,12 +1660,7 @@ func (c *KindCatalog) FacetCollectionsPage(ctx context.Context, lib core.Library
 }
 
 // FacetPeople implements experience.PluginPresentationLibraries.
-func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, order string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
-	return c.FacetPeoplePage(ctx, lib, field, order, frontend.PageQuery{Offset: offset, Limit: limit})
-}
-
-// FacetPeoplePage implements experience.PluginPresentationSearchLibraries.
-func (c *KindCatalog) FacetPeoplePage(ctx context.Context, lib core.Library, field, order string, pq frontend.PageQuery) (experience.PluginFacetPeoplePage, error) {
+func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
 	if c == nil || c.items == nil {
 		return experience.PluginFacetPeoplePage{Items: []experience.PluginFacetPerson{}}, nil
 	}
@@ -1685,9 +1682,9 @@ func (c *KindCatalog) FacetPeoplePage(ctx context.Context, lib core.Library, fie
 		Policy:    policy,
 		FieldKey:  field,
 		Order:     order,
-		Query:     pq.Query,
-		Offset:    pq.Offset,
-		Limit:     pq.Limit,
+		Query:     query,
+		Offset:    offset,
+		Limit:     limit,
 	})
 	if err != nil {
 		return experience.PluginFacetPeoplePage{}, err

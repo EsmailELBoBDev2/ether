@@ -128,16 +128,24 @@ func (c *librariesConsole) defaultTabsForLibrary(ctx context.Context, lib core.L
 			out := make([]core.LibraryTab, 0, len(rawTabs))
 			for _, t := range rawTabs {
 				search := t.Kind != core.TabRecommended
+				if t.Kind == core.TabCollections || t.Kind == core.TabPeople {
+					search = t.EffectiveSearch()
+				}
 				label := c.catalogueLabel(ctx, lib.PluginID, t.Label, t.Key)
+				var placeholder string
+				if search && strings.TrimSpace(t.SearchPlaceholder) != "" {
+					placeholder = c.catalogueLabel(ctx, lib.PluginID, t.SearchPlaceholder, "")
+				}
 				tab := core.LibraryTab{
-					Key:       t.Key,
-					Label:     label,
-					Kind:      t.Kind,
-					Facet:     t.Facet,
-					Order:     t.Order,
-					Sort:      t.Sort,
-					Direction: t.Direction,
-					Search:    &search,
+					Key:               t.Key,
+					Label:             label,
+					Kind:              t.Kind,
+					Facet:             t.Facet,
+					Order:             t.Order,
+					Sort:              t.Sort,
+					Direction:         t.Direction,
+					Search:            &search,
+					SearchPlaceholder: placeholder,
 				}
 				if tab.Kind == core.TabCollections && tab.Facet != "" && tab.Order == "" {
 					tab.Order = "count"
@@ -159,6 +167,9 @@ func (c *librariesConsole) effectiveTabs(ctx context.Context, lib core.Library) 
 			cp := t.Clone()
 			if lib.Source == core.LibraryPlugin {
 				cp.Label = c.catalogueLabel(ctx, lib.PluginID, cp.Label, cp.Key)
+				if strings.TrimSpace(cp.SearchPlaceholder) != "" {
+					cp.SearchPlaceholder = c.catalogueLabel(ctx, lib.PluginID, cp.SearchPlaceholder, "")
+				}
 			}
 			eff := cp.EffectiveSearch()
 			cp.Search = &eff

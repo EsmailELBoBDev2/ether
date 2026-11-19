@@ -215,7 +215,7 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 			ct.Rejected = true
 			ct.err = v.err
 			if v.err != nil {
-				ct.Reason = v.err.Error()
+				ct.Reason = candidateErrorReason(v.err)
 			} else {
 				ct.Reason = "health: unhealthy"
 			}

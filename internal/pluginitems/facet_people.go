@@ -43,8 +43,9 @@ type FacetPeoplePage struct {
 // predicates on plugin_items i:
 //   - indexedWhere uses `i.library_id = ?` for library-driven scans/aggregations;
 //   - fieldDrivenWhere uses `i.library_id + 0 = ?` so SQLite drives joins from
-//     `plugin_item_fields_lookup` / `plugin_item_fields_lookup_int` instead of
-//     scanning all rows in `plugin_items` when matching bounded field values.
+//     `plugin_item_fields_lookup` / `plugin_item_fields_lookup_int` /
+//     `plugin_item_fields_fold` instead of scanning all rows in `plugin_items`
+//     when matching bounded field values.
 func (s *Service) buildRootItemPredicates(ctx context.Context, rec KindRecord, level string, policy *libraryfilter.Filter) (indexedWhere, fieldDrivenWhere string, args []any, err error) {
 	var idxB, fldB strings.Builder
 	args = []any{int64(rec.LibraryID)}
@@ -89,6 +90,11 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 	if q.LibraryID <= 0 || fieldKey == "" {
 		return FacetPeoplePage{}, fmt.Errorf("pluginitems: library_id and field_key are required")
 	}
+	trimmedQuery := strings.TrimSpace(q.Query)
+	terms := foldQueryTerms(trimmedQuery)
+	if trimmedQuery != "" && len(terms) == 0 {
+		return FacetPeoplePage{Items: []FacetPerson{}}, nil
+	}
 	rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
 	if err != nil {
 		return FacetPeoplePage{}, err
@@ -125,18 +131,24 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 
 	minPersonID := core.PluginPersonIDBase
 	maxPersonID := core.PluginPersonIDBase + core.PluginPersonIDSpan
-	qArgs := append(append([]any(nil), itemArgs...), fieldKey, minPersonID, maxPersonID)
-	queryCond := ""
-	if rawQuery := strings.ToLower(strings.TrimSpace(q.Query)); rawQuery != "" {
-		queryCond = ` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`
-		qArgs = append(qArgs, "%"+escapeLike(rawQuery)+"%")
+	var where strings.Builder
+	qArgs := append([]any(nil), itemArgs...)
+	if len(terms) > 0 {
+		where.WriteString(fieldDrivenWhere)
+		where.WriteString(` AND f.field = ? AND f.v_int + 0 > ? AND f.v_int + 0 < ? AND f.v_text <> ''`)
+		qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
+		appendFoldedWordPrefix(&where, &qArgs, terms)
+	} else {
+		where.WriteString(itemWhere)
+		where.WriteString(` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
+		qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
 	}
 	qArgs = append(qArgs, limit+1, offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
 		 FROM plugin_item_fields f
 		 JOIN plugin_items i ON i.item_ref = f.item_ref
-		 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`+queryCond+`
+		 WHERE `+where.String()+`
 		 GROUP BY f.v_int
 		 ORDER BY `+orderBy+`
 		 LIMIT ? OFFSET ?`, qArgs...)

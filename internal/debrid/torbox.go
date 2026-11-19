@@ -254,6 +254,13 @@ func (p *torBox) torrent(ctx context.Context, id string) (*tbTorrent, error) {
 }
 
 func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, error) {
+	if req.Private && !req.privateChecked {
+		var perr error
+		req, perr = prepareAcquire(ctx, p, req, false)
+		if perr != nil {
+			return nil, perr
+		}
+	}
 	id, added := req.TorrentID, false
 	if id == "" {
 		// createtorrent enforces add_only_if_cached atomically. An extra

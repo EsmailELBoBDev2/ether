@@ -9,7 +9,7 @@ import {
   toast,
 } from "@braedonsaunders/appkit-ui";
 import { Check, ImageIcon, Pin, RefreshCw, RotateCcw, SlidersHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { ErrorPanel, MutationError } from "../../components/feedback";
@@ -426,31 +426,52 @@ export function ArtworkSettings() {
                 </p>
               ) : null}
               {OPTIONS.map((o) => (
-                <div className="metadata-toggle" key={o.key}>
-                  <div>
-                    <label htmlFor={`overlay-${o.key}`}>{o.label}</label>
-                    <p>{o.hint}</p>
-                    {explanationData?.layers.find((l) => l.key === o.key && l.state !== "off") &&
-                      (() => {
-                        const layer = explanationData!.layers.find((l) => l.key === o.key)!;
-                        return (
-                          <p
-                            className={`metadata-layer-state is-${layer.state}`}
-                            title={layer.reason}
-                          >
-                            {layer.state === "ready" ? layer.labels.join(" · ") : layer.reason}
-                          </p>
-                        );
-                      })()}
+                <Fragment key={o.key}>
+                  <div className="metadata-toggle">
+                    <div>
+                      <label htmlFor={`overlay-${o.key}`}>{o.label}</label>
+                      <p>{o.hint}</p>
+                      {explanationData?.layers.find((l) => l.key === o.key && l.state !== "off") &&
+                        (() => {
+                          const layer = explanationData!.layers.find((l) => l.key === o.key)!;
+                          return (
+                            <p
+                              className={`metadata-layer-state is-${layer.state}`}
+                              title={layer.reason}
+                            >
+                              {layer.state === "ready" ? layer.labels.join(" · ") : layer.reason}
+                            </p>
+                          );
+                        })()}
+                    </div>
+                    <Switch
+                      id={`overlay-${o.key}`}
+                      aria-label={o.label}
+                      checked={draft[o.key]}
+                      disabled={appearanceDisabled}
+                      onChange={(e) => set({ [o.key]: e.currentTarget.checked })}
+                    />
                   </div>
-                  <Switch
-                    id={`overlay-${o.key}`}
-                    aria-label={o.label}
-                    checked={draft[o.key]}
-                    disabled={appearanceDisabled}
-                    onChange={(e) => set({ [o.key]: e.currentTarget.checked })}
-                  />
-                </div>
+                  {o.key === "ratings" && draft.ratings ? (
+                    <div className="metadata-field mt-1 mb-2">
+                      <label htmlFor="overlay-rating-style">{t("Rating style")}</label>
+                      <SearchSelect
+                        id="overlay-rating-style"
+                        ariaLabel={t("Rating style")}
+                        disabled={appearanceDisabled}
+                        value={draft.ratingStyle}
+                        options={[
+                          { value: "sources", label: t("Each source") },
+                          { value: "combined", label: t("One combined score") },
+                        ]}
+                        onChange={(ratingStyle) =>
+                          set({ ratingStyle: ratingStyle as Overlays["ratingStyle"] })
+                        }
+                        {...searchSelectLabels()}
+                      />
+                    </div>
+                  ) : null}
+                </Fragment>
               ))}
               {pluginBadgeSets.length > 0 ? (
                 <div

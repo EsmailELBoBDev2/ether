@@ -32,6 +32,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/hoststat"
+	"github.com/braedonsaunders/ether/internal/httpclient"
 	"github.com/braedonsaunders/ether/internal/langfeat"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
@@ -622,7 +623,7 @@ func (a *App) build(ctx context.Context, cfg config.Config) error {
 	a.support = diagnostics.New(a.supportDeps())
 	// One guide client serves the import console and the background sync,
 	// so a listing fetched by either is cached for the other.
-	ua := "Ether/" + a.opts.Version + " (+https://github.com/braedonsaunders/ether)"
+	ua := httpclient.FormatUserAgent(a.opts.Version)
 	a.guides = resolver.NewTrashGuides(resolver.TrashOptions{UserAgent: ua})
 	a.dictionarry = resolver.NewDictionarry(resolver.DictionarryOptions{UserAgent: ua})
 	a.qualitySync = resolver.NewQualitySyncer(resolver.QualitySyncDeps{

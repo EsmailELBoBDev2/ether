@@ -257,9 +257,9 @@ type Indexer struct {
 	// SecretSettings are the definition's password-type settings. They are
 	// sealed at rest and redacted in API responses like API keys.
 	SecretSettings map[string]string `json:"secretSettings,omitempty"`
-	// ClientIdentity overrides the global client identity for this indexer's
-	// searches and grabs. Empty inherits the policy.
-	ClientIdentity string `json:"clientIdentity,omitempty"`
+	// UserAgent overrides the global client identity user agent for this
+	// indexer's searches and grabs. Empty inherits the policy.
+	UserAgent string `json:"userAgent,omitempty"`
 	// ProwlarrImport is what the last Prowlarr sync wrote into the fields
 	// the owner may also edit. A later sync updates a field only while it
 	// still holds that value, so owner edits survive syncs. Nil for
@@ -977,6 +977,7 @@ func decodeOverDefaults(defaults Config, b []byte) (Config, bool, error) {
 		delete(plex, "disableVersionTracking")
 	}
 	stripRetiredLiveTV(file)
+	upgradeClientIdentity(file)
 	keepStoredAutoUpdate(file)
 	doc := toDoc(defaults)
 	mergeDoc(doc, file)
@@ -1033,6 +1034,9 @@ func decodeStartupConfig(defaults Config, b []byte) (Config, bool, error) {
 		}
 	}
 	if resetPreStandardQuality(file) {
+		dropped = true
+	}
+	if upgradeClientIdentity(file) {
 		dropped = true
 	}
 	doc := toDoc(defaults)

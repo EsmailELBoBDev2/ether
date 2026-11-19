@@ -1141,6 +1141,11 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 	if q.LibraryID <= 0 || fieldKey == "" {
 		return FacetCollectionsPage{}, fmt.Errorf("pluginitems: library_id and field_key are required")
 	}
+	trimmedQuery := strings.TrimSpace(q.Query)
+	terms := foldQueryTerms(trimmedQuery)
+	if trimmedQuery != "" && len(terms) == 0 {
+		return FacetCollectionsPage{Items: []FacetCollection{}}, nil
+	}
 	rec, err := s.GetKindByLibrary(ctx, q.LibraryID)
 	if err != nil {
 		return FacetCollectionsPage{}, err
@@ -1154,8 +1159,6 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 	}
 	offset := max(q.Offset, 0)
 	orderByName := strings.EqualFold(strings.TrimSpace(q.Order), "name")
-	rawQuery := strings.ToLower(strings.TrimSpace(q.Query))
-	likeQuery := "%" + escapeLike(rawQuery) + "%" 
 
 	itemWhere, fieldDrivenWhere, itemArgs, err := s.buildRootItemPredicates(ctx, rec, q.Level, q.Policy)
 	if err != nil {
@@ -1188,18 +1191,24 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if orderByName {
 			orderClause = `LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC`
 		}
-		qArgs := append(append([]any(nil), itemArgs...), fieldKey)
-		queryCond := ""
-		if rawQuery != "" {
-			queryCond = ` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`
-			qArgs = append(qArgs, likeQuery)
+		var where strings.Builder
+		qArgs := append([]any(nil), itemArgs...)
+		if len(terms) > 0 {
+			where.WriteString(fieldDrivenWhere)
+			where.WriteString(` AND f.field = ? AND f.v_int + 0 > 0 AND f.v_text <> ''`)
+			qArgs = append(qArgs, fieldKey)
+			appendFoldedWordPrefix(&where, &qArgs, terms)
+		} else {
+			where.WriteString(itemWhere)
+			where.WriteString(` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''`)
+			qArgs = append(qArgs, fieldKey)
 		}
 		qArgs = append(qArgs, limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
 			 FROM plugin_item_fields f
 			 JOIN plugin_items i ON i.item_ref = f.item_ref
-			 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''`+queryCond+`
+			 WHERE `+where.String()+`
 			 GROUP BY f.v_int
 			 ORDER BY `+orderClause+`
 			 LIMIT ? OFFSET ?`, qArgs...)
@@ -1236,18 +1245,24 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if orderByName {
 			orderClause = `LOWER(f.v_text) ASC, f.v_text ASC`
 		}
-		qArgs := append(append([]any(nil), itemArgs...), fieldKey)
-		queryCond := ""
-		if rawQuery != "" {
-			queryCond = ` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`
-			qArgs = append(qArgs, likeQuery)
+		var where strings.Builder
+		qArgs := append([]any(nil), itemArgs...)
+		if len(terms) > 0 {
+			where.WriteString(fieldDrivenWhere)
+			where.WriteString(` AND f.field = ? AND f.v_text <> ''`)
+			qArgs = append(qArgs, fieldKey)
+			appendFoldedWordPrefix(&where, &qArgs, terms)
+		} else {
+			where.WriteString(itemWhere)
+			where.WriteString(` AND f.field = ? AND f.v_text <> ''`)
+			qArgs = append(qArgs, fieldKey)
 		}
 		qArgs = append(qArgs, limit+1, offset)
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT f.v_text, COUNT(*) AS cnt
 			 FROM plugin_item_fields f
 			 JOIN plugin_items i ON i.item_ref = f.item_ref
-			 WHERE `+itemWhere+` AND f.field = ? AND f.v_text <> ''`+queryCond+`
+			 WHERE `+where.String()+`
 			 GROUP BY f.v_text
 			 ORDER BY `+orderClause+`
 			 LIMIT ? OFFSET ?`, qArgs...)
@@ -1280,10 +1295,10 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 		if err != nil {
 			return FacetCollectionsPage{}, err
 		}
-		if rawQuery != "" {
+		if len(terms) > 0 {
 			filtered := all[:0]
 			for _, b := range all {
-				if strings.Contains(strings.ToLower(b.Label), rawQuery) || strings.Contains(strings.ToLower(b.ID), rawQuery) {
+				if foldedWordsMatch(b.Label, terms) {
 					filtered = append(filtered, b)
 				}
 			}

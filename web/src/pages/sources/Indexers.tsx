@@ -36,7 +36,6 @@ import { isPlainObject } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import type { Indexer, IndexerProtocol, SiteDefinition, SiteTestResult } from "../../lib/types";
 import { useResolver } from "../releases/resolverDraft";
-import { searchIdentityOptions } from "../settings/schema";
 import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
 import { REGIONAL_TRACK_TAGS } from "../setup/language";
 import { ClientIdentity } from "./ClientIdentity";
@@ -881,27 +880,12 @@ export function IndexerList({
                   title={t("Client identity")}
                   description={t("What this indexer sees Ether as.")}
                 >
-                  <SettingsRow
-                    title={t("Identity")}
-                    description={t("Inherit uses the Client identity card on the Indexers page.")}
-                    control={
-                      <div className="w-56">
-                        <SearchSelect
-                          value={draft.clientIdentity ?? ""}
-                          onChange={(v) => set({ clientIdentity: v })}
-                          options={[
-                            { value: "", label: t("Inherit") },
-                            ...searchIdentityOptions(false),
-                          ]}
-                          ariaLabel={t("Identity")}
-                          placeholder={t("Select…")}
-                          searchPlaceholder={t("Search…")}
-                          noMatchesLabel={t("No matches")}
-                          selectLabel={t("Select")}
-                          closeLabel={t("Close")}
-                        />
-                      </div>
-                    }
+                  <TextRow
+                    label={t("User agent (optional)")}
+                    value={draft.userAgent ?? ""}
+                    onChange={(v) => set({ userAgent: v })}
+                    error={errors.userAgent}
+                    help={t("Leave empty to use the Client identity card on the Indexers page.")}
                   />
                 </SettingsSection>
               </>

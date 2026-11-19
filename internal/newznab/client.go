@@ -142,13 +142,10 @@ type Client struct {
 	eventMu sync.RWMutex
 	onEvent func(Event)
 
-	// Resolved identities the client presents to this indexer, one per
-	// purpose and media, refreshed from the policy on every config reload.
-	idMu        sync.RWMutex
-	idSearchTV  config.Identity
-	idSearchMov config.Identity
-	idGrabTV    config.Identity
-	idGrabMov   config.Identity
+	// Resolved identity the client presents to this indexer, refreshed from
+	// the policy on every config reload.
+	idMu sync.RWMutex
+	id   config.Identity
 }
 
 // nzbFlight is one shared in-flight NZB fetch. done is closed after body
@@ -341,48 +338,20 @@ func (c *Client) SetCacheTTL(d time.Duration) {
 	}
 }
 
-// SetClientIdentity resolves the owner's policy into the four identities this
-// indexer presents, honoring the indexer's own override.
+// SetClientIdentity resolves the owner's policy into the identity this
+// indexer presents, honoring the indexer's own user-agent override.
 func (c *Client) SetClientIdentity(p config.ClientIdentity) {
 	ix := c.Config()
 	c.idMu.Lock()
 	defer c.idMu.Unlock()
-	c.idSearchTV = p.Resolve(ix.ClientIdentity, config.IdentitySearch, true)
-	c.idSearchMov = p.Resolve(ix.ClientIdentity, config.IdentitySearch, false)
-	c.idGrabTV = p.Resolve(ix.ClientIdentity, config.IdentityGrab, true)
-	c.idGrabMov = p.Resolve(ix.ClientIdentity, config.IdentityGrab, false)
+	c.id = p.Resolve(ix.UserAgent)
 }
 
-// clientIdentityFor returns the identity for one purpose and media.
-func (c *Client) clientIdentityFor(tv, grab bool) config.Identity {
+// clientIdentity returns the resolved identity for this indexer.
+func (c *Client) clientIdentity() config.Identity {
 	c.idMu.RLock()
 	defer c.idMu.RUnlock()
-	switch {
-	case grab && tv:
-		return c.idGrabTV
-	case grab:
-		return c.idGrabMov
-	case tv:
-		return c.idSearchTV
-	}
-	return c.idSearchMov
-}
-
-// generalIdentity is the identity for requests that are neither a TV nor a
-// movie search: caps, the connection test and the recent-release feed. It
-// is the TV search choice, or the movie one when only movie searches were
-// moved off Ether, so a site that rejects Ether/1.0 still answers them.
-func (c *Client) generalIdentity() config.Identity {
-	c.idMu.RLock()
-	defer c.idMu.RUnlock()
-	if isEtherIdentity(c.idSearchTV) && !isEtherIdentity(c.idSearchMov) {
-		return c.idSearchMov
-	}
-	return c.idSearchTV
-}
-
-func isEtherIdentity(id config.Identity) bool {
-	return id.Preset == "" || id.Preset == config.IdentityEther
+	return c.id
 }
 
 // Name implements core.Indexer.
@@ -423,7 +392,7 @@ func zileanTorznabBase(base string) string {
 	}
 }
 
-func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
+func (c *Client) apiURL(params url.Values) (string, error) {
 	cfg := c.Config()
 	raw := strings.TrimSpace(cfg.URL)
 	if raw == "" {
@@ -447,7 +416,7 @@ func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
 		if cfg.APIKey != "" && q.Get("apikey") == "" {
 			q.Set("apikey", cfg.APIKey)
 		}
-		return base + "?" + encodeQuery(q, id.Params), nil
+		return base + "?" + q.Encode(), nil
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	if !strings.HasSuffix(u.Path, "/api") {
@@ -461,7 +430,7 @@ func (c *Client) apiURL(params url.Values, id config.Identity) (string, error) {
 	if cfg.APIKey != "" && q.Get("apikey") == "" {
 		q.Set("apikey", cfg.APIKey)
 	}
-	u.RawQuery = encodeQuery(q, id.Params)
+	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
 
@@ -510,43 +479,6 @@ func (c *Client) dropForeignIdentityHeaders(next *http.Request, id config.Identi
 	for k := range id.Headers {
 		next.Header.Del(k)
 	}
-}
-
-// encodeQuery renders q in the identity's parameter order, then the remaining
-// keys alphabetically. No order keeps Go's alphabetical encoding.
-func encodeQuery(q url.Values, order []string) string {
-	if len(order) == 0 {
-		return q.Encode()
-	}
-	var b strings.Builder
-	add := func(k, v string) {
-		if b.Len() > 0 {
-			b.WriteByte('&')
-		}
-		b.WriteString(url.QueryEscape(k))
-		b.WriteByte('=')
-		b.WriteString(url.QueryEscape(v))
-	}
-	listed := make(map[string]bool, len(order))
-	for _, k := range order {
-		listed[k] = true
-		for _, v := range q[k] {
-			add(k, v)
-		}
-	}
-	rest := make([]string, 0, len(q))
-	for k := range q {
-		if !listed[k] {
-			rest = append(rest, k)
-		}
-	}
-	sort.Strings(rest)
-	for _, k := range rest {
-		for _, v := range q[k] {
-			add(k, v)
-		}
-	}
-	return b.String()
 }
 
 // trustedCtx selects the safefetch policy for one fetch explicitly:
@@ -699,8 +631,8 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 }
 
 func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
-	id := c.generalIdentity()
-	u, err := c.apiURL(url.Values{"t": {"caps"}}, id)
+	id := c.clientIdentity()
+	u, err := c.apiURL(url.Values{"t": {"caps"}})
 	if err != nil {
 		return nil, err
 	}
@@ -745,7 +677,8 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// Audio and anime absolute episode numbers; Stremio addons keep HTTP
 	// and Usenet streams and read flag languages.
 	// v5: anime BD/BDMux source tags and three-letter audio languages.
-	fmt.Fprint(h, "release-parse-v5|")
+	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
+	fmt.Fprint(h, "release-parse-v6|")
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
 	}
@@ -767,7 +700,7 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// fetched as another identity must not serve the one switched to. The
 	// whole identity is hashed, so editing a custom user agent or header
 	// counts as a change.
-	fmt.Fprintf(h, "client-id-v1:%v|", c.clientIdentityFor(isTVRequest(req), false))
+	fmt.Fprintf(h, "client-id-v1:%v|", c.clientIdentity())
 	fmt.Fprintf(h, "%s|%s|%d|%s|%d|%s|%d|%d|%d",
 		c.indexerID(), req.Type, req.IDs.TMDB, req.IDs.IMDB, req.IDs.TVDB,
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
@@ -833,24 +766,17 @@ func isTVRequest(req core.SearchRequest) bool {
 	return req.Type == core.TypeEpisode || req.Season > 0 || req.Type == core.TypeShow
 }
 
-// releaseIsTV reports the media type of a release being grabbed. A feed URL
-// carries no media type, and only a movie category is evidence of one, so an
-// unknown category takes the TV identity.
-func releaseIsTV(r core.Release) bool {
-	return !(r.Category >= 2000 && r.Category < 3000)
-}
-
 // searchAttempts builds the ordered fallback queries for a request.
-func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
+func (c *Client) searchAttempts(req core.SearchRequest, caps *Caps) []url.Values {
 	if req.Category != "" || req.Type != core.TypeEpisode {
-		return c.numberedSearchAttempts(req, caps, id)
+		return c.numberedSearchAttempts(req, caps)
 	}
 	var lists [][]url.Values
 	if !req.ReleaseAliasesOnly {
-		lists = append(lists, c.numberedSearchAttempts(req, caps, id))
+		lists = append(lists, c.numberedSearchAttempts(req, caps))
 	}
 	for _, n := range core.EpisodeAliases(req) {
-		lists = append(lists, c.numberedSearchAttempts(core.AliasSearchRequest(req, n), caps, id))
+		lists = append(lists, c.numberedSearchAttempts(core.AliasSearchRequest(req, n), caps))
 	}
 	var out []url.Values
 	seen := map[string]bool{}
@@ -887,7 +813,7 @@ func ordinalSeason(n int) string {
 	return fmt.Sprintf("%d%s Season", n, suffix)
 }
 
-func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
+func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []url.Values {
 	cfg := c.Config()
 	if req.Category != "" {
 		cats, err := core.SearchCategories(req.Category)
@@ -903,9 +829,6 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps, id c
 	isTV := isTVRequest(req)
 	base := func() url.Values {
 		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}}
-		if id.Offset0 {
-			v.Set("offset", "0")
-		}
 		if isTV {
 			cats := cfg.TVCategories
 			if len(cats) == 0 {
@@ -1121,7 +1044,7 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 	if err := c.searchPaused(); err != nil {
 		return nil, err
 	}
-	u, err := c.apiURL(params, id)
+	u, err := c.apiURL(params)
 	if err != nil {
 		return nil, err
 	}
@@ -1233,9 +1156,9 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 		c.cachePut(ctx, key, results)
 		return results, nil
 	}
-	id := c.clientIdentityFor(isTVRequest(req), false)
+	id := c.clientIdentity()
 	caps, _ := c.Caps(ctx) // best effort; failures just mean no param gating
-	attempts := c.searchAttempts(req, caps, id)
+	attempts := c.searchAttempts(req, caps)
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("newznab: search request has no usable identifiers")
 	}
@@ -1376,14 +1299,11 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 // rescueAttempts builds broader keyword, alias, season-pack and miniseries
 // queries for a second-pass rescue when the primary search returned only
 // dead/unhealthy or non-matching releases.
-func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Identity) []url.Values {
+func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps) []url.Values {
 	cfg := c.Config()
 	isTV := isTVRequest(req)
 	base := func() url.Values {
 		v := url.Values{"extended": {"1"}, "limit": {strconv.Itoa(defaultSearchLimit)}}
-		if id.Offset0 {
-			v.Set("offset", "0")
-		}
 		if isTV {
 			cats := cfg.TVCategories
 			if len(cats) == 0 {
@@ -1399,7 +1319,7 @@ func (c *Client) rescueAttempts(req core.SearchRequest, caps *Caps, id config.Id
 		}
 		return v
 	}
-	primary := c.searchAttempts(req, caps, id)
+	primary := c.searchAttempts(req, caps)
 	alreadyFirst := ""
 	if len(primary) > 0 {
 		alreadyFirst = primary[0].Encode()
@@ -1541,9 +1461,9 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 		c.cachePut(ctx, key, merged)
 		return merged, nil
 	}
-	id := c.clientIdentityFor(isTVRequest(req), false)
+	id := c.clientIdentity()
 	caps, _ := c.Caps(ctx)
-	attempts := c.rescueAttempts(req, caps, id)
+	attempts := c.rescueAttempts(req, caps)
 	if len(attempts) == 0 {
 		return nil, nil
 	}
@@ -1830,7 +1750,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		c.saveNZB(r.ID, body)
 		return body, reserved, nil
 	}
-	id := c.clientIdentityFor(releaseIsTV(r), true)
+	id := c.clientIdentity()
 	// r.NZBURL comes from the indexer's feed, so it is untrusted data:
 	// c.get dials it through the safefetch guard. Only a URL that stays
 	// on the owner-configured indexer origin (relative links resolve
@@ -1841,7 +1761,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		if r.GUID == "" {
 			return nil, false, fmt.Errorf("newznab: release %q has no NZB URL or GUID: %w", r.Name, core.ErrReleaseRejected)
 		}
-		u, err := c.apiURL(url.Values{"t": {"get"}, "id": {r.GUID}}, id)
+		u, err := c.apiURL(url.Values{"t": {"get"}, "id": {r.GUID}})
 		if err != nil {
 			return nil, false, err
 		}
@@ -2066,11 +1986,7 @@ func TestWithOptions(ctx context.Context, cfg config.Indexer, opts Options) erro
 		return humanError(name, err)
 	}
 	params := url.Values{"t": {"search"}, "q": {"test"}, "limit": {"1"}, "extended": {"1"}}
-	id := c.generalIdentity()
-	if id.Offset0 {
-		params.Set("offset", "0")
-	}
-	if _, err := c.doSearch(ctx, params, id); err != nil {
+	if _, err := c.doSearch(ctx, params, c.clientIdentity()); err != nil {
 		return humanError(name, err)
 	}
 	return nil

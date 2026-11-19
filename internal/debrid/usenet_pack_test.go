@@ -203,3 +203,41 @@ func TestEpisodeNZBOutputIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestChooseFileAndEpisodeNZBAcceptAliasNumberedFiles(t *testing.T) {
+	tgt := &core.ReleaseTarget{
+		Season:           1,
+		Episode:          750,
+		CanonicalSeason:  1,
+		CanonicalEpisode: 750,
+		AbsoluteEpisode:  750,
+		Aliases:          []core.EpisodeNumber{{Season: 18, Episode: 4}},
+		ShowYear:         1999,
+	}
+	got, err := ChooseFile([]File{
+		{Path: "One Piece Season 18/One.Piece.S18E03.1080p.WEB-DL.mkv", Size: 900 << 20},
+		{Path: "One Piece Season 18/One.Piece.S18E04.1080p.WEB-DL.mkv", Size: 920 << 20},
+	}, tgt)
+	if err != nil || !strings.Contains(got.Path, "S18E04") {
+		t.Fatalf("ChooseFile alias = %+v, err=%v", got, err)
+	}
+	if !chosenFileMatchesTarget("One.Piece.S18E04.1080p.WEB-DL.mkv", tgt) {
+		t.Fatal("chosenFileMatchesTarget rejected valid alias S18E04")
+	}
+	if chosenFileMatchesTarget("One.Piece.S18E05.1080p.WEB-DL.mkv", tgt) {
+		t.Fatal("chosenFileMatchesTarget accepted wrong alias S18E05")
+	}
+
+	data := packNZB(
+		`&quot;One.Piece.S18E03.1080p.WEB-DL.mkv&quot; yEnc (1/1)`,
+		`&quot;One.Piece.S18E04.1080p.WEB-DL.mkv&quot; yEnc (1/1)`,
+	)
+	out, err := EpisodeNZB(data, tgt)
+	if err != nil {
+		t.Fatalf("EpisodeNZB alias failed: %v", err)
+	}
+	doc, err := nzb.Parse(out)
+	if err != nil || len(doc.Files) != 1 || !strings.Contains(doc.Files[0].Name, "S18E04") {
+		t.Fatalf("EpisodeNZB alias doc = %+v, err=%v", doc, err)
+	}
+}

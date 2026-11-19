@@ -30,6 +30,9 @@ type ReleaseTarget struct {
 	// select a file using the owner's alternate release numbering.
 	CanonicalSeason  int `json:"canonicalSeason,omitempty"`
 	CanonicalEpisode int `json:"canonicalEpisode,omitempty"`
+	// Aliases lists verified alternate season/episode numbers for the same
+	// canonical episode so open-time file checks accept alias-numbered files.
+	Aliases []EpisodeNumber `json:"aliases,omitempty"`
 	// MovieTitles and MovieYear constrain file selection inside movie collections.
 	MovieTitles []string `json:"movieTitles,omitempty"`
 	MovieYear   int      `json:"movieYear,omitempty"`
@@ -77,6 +80,19 @@ var ErrWrongContent = fmt.Errorf("release contains different content: %w", ErrNo
 // instantly. It is a per-release skip, never proof the release is broken,
 // so it wraps ErrNotAvailable and is not a permanent failure.
 var ErrNotCached = fmt.Errorf("not cached by any debrid provider: %w", ErrNotAvailable)
+
+// PrivateTorrentReason explains why an uncached private-tracker torrent is
+// skipped rather than added to or downloaded by a debrid service.
+const PrivateTorrentReason = "private tracker torrent: only an existing debrid cache is used"
+
+type privateUncachedError struct{}
+
+func (privateUncachedError) Error() string { return PrivateTorrentReason }
+func (privateUncachedError) Unwrap() error { return ErrNotCached }
+
+// ErrPrivateUncached reports that a private-tracker torrent is not already
+// cached on any debrid provider and therefore was never added or queued.
+var ErrPrivateUncached error = privateUncachedError{}
 
 // ErrDownloadQueued reports that an uncached torrent was handed to a debrid
 // account to download (cached-only off): not playable yet, but it will be.

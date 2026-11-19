@@ -301,12 +301,19 @@ func stampEncodedVideoRange(s *core.StreamInfo, d core.Decision) {
 		}
 		depth := s.BitDepth
 		s.BitsPerRawSample = &depth
+		if strings.EqualFold(d.VideoCodec, "hevc") {
+			s.Profile = "Main 10"
+			s.PixelFormat = "p010le"
+		}
 		return
 	}
 	s.BitDepth = 8
 	depth := 8
 	s.BitsPerRawSample = &depth
 	s.PixelFormat = "yuv420p"
+	if strings.EqualFold(d.VideoCodec, "hevc") {
+		s.Profile = "Main"
+	}
 }
 
 // applyProfileRangeCaps lets a device profile's VideoRangeType list drive the
@@ -970,26 +977,44 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			// Retry only bounded output heights; never raise a client or request
 			// cap. This allows a lower resolution when the required H.264 level
 			// or dimensions cannot support the original size.
-			for _, height := range []int{0, 2160, 1440, 1080, 720, 576, 480, 360, 240, 144} {
-				attempt := opts
-				if height > 0 && (attempt.MaxHeight == 0 || height < attempt.MaxHeight) {
-					attempt.MaxHeight = height
-				}
+			tryAttempt := func(attempt core.DecideOptions) (core.Decision, bool, bool) {
 				decision, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: attempt, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true})
 				if err == nil && !allowed(decision) {
 					reject(candidate.Delivery, "transcode not allowed")
 				}
 				if err != nil || decision.Kind == core.DecisionDirectPlay || !allowed(decision) {
-					continue
+					return decision, false, false
 				}
 				decision, ok := constrainedH264(decision, ps.Info, caps, b.h264EncoderVerified())
 				if ok && profileDeliveryAllowed(req.Caps.Profiles, decision, ps.Info, candidate.Delivery) {
 					if req.Intent.Options.DirectPlay {
 						decision.Reason = strings.ReplaceAll(decision.Reason, "direct play not allowed by client", "direct play rejected by declared output profile")
 					}
+					return decision, true, true
+				}
+				return decision, false, true
+			}
+			for _, height := range []int{0, 2160, 1440, 1080, 720, 576, 480, 360, 240, 144} {
+				attempt := opts
+				if height > 0 && (attempt.MaxHeight == 0 || height < attempt.MaxHeight) {
+					attempt.MaxHeight = height
+				}
+				decision, matched, valid := tryAttempt(attempt)
+				if matched {
 					return decision, true
 				}
-				if decision.VideoCopy || decision.VideoCodec != "h264" {
+				if valid && decision.VideoCopy && attempt.DirectStream {
+					attempt.DirectStream = false
+					opts.DirectStream = false
+					decision, matched, valid = tryAttempt(attempt)
+					if matched {
+						return decision, true
+					}
+				}
+				if !valid {
+					continue
+				}
+				if decision.VideoCopy || (decision.VideoCodec != "h264" && decision.VideoCodec != "hevc") {
 					break
 				}
 			}
@@ -1008,7 +1033,11 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		// declared alternatives, retaining all audio and container constraints.
 		// The transcoder currently emits H.264 or HEVC. Trying these fixed
 		// outputs bounds work independently of untrusted profile list length.
-		for _, codec := range []string{"h264", "hevc"} {
+		fallbackCodecs := []string{"h264", "hevc"}
+		if v := ps.Info.Video(); v != nil && encodedPictureHDR(v) && req.Caps.HDR10 {
+			fallbackCodecs = []string{"hevc", "h264"}
+		}
+		for _, codec := range fallbackCodecs {
 			if !profileContains(candidate.VideoCodecs, codec) {
 				continue
 			}

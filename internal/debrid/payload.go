@@ -39,6 +39,7 @@ type Payload struct {
 	Kind      string    `json:"kind"`                // config.DebridKinds
 	InfoHash  string    `json:"infoHash"`            // lower-case hex v1 info hash
 	Magnet    string    `json:"magnet,omitempty"`    // magnet URI used to (re)add the torrent
+	Private   bool      `json:"private,omitempty"`   // private-tracker torrent: bare hash & existing cache only
 	TorrentID string    `json:"torrentId,omitempty"` // provider torrent / magnet id
 	FileID    string    `json:"fileId,omitempty"`    // provider file id
 	Path      string    `json:"path"`                // file path inside the torrent
@@ -92,7 +93,7 @@ func (p Payload) Name() string { return path.Base(strings.ReplaceAll(p.Path, "\\
 
 // handle is the provider-facing identity of the payload's file.
 func (p Payload) handle() Handle {
-	return Handle{TorrentID: p.TorrentID, FileID: p.FileID, Path: p.Path, Size: p.Size, Link: p.Link, Magnet: p.Magnet, InfoHash: p.InfoHash}
+	return Handle{TorrentID: p.TorrentID, FileID: p.FileID, Path: p.Path, Size: p.Size, Link: p.Link, Magnet: p.Magnet, InfoHash: p.InfoHash, Private: p.Private}
 }
 
 // fileTag identifies the file independently of the provider (base name and

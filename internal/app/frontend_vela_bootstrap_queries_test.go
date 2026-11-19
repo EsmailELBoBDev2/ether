@@ -187,8 +187,9 @@ func TestVelaBootstrapBoundedQueries(t *testing.T) {
 					}
 				}
 				t.Logf("titles=%d serial=%t shelves=%d cards=%d queries=%d writes=%d facets=%d receipt_inserts=%d snapshot_inserts=%d", count, serial, len(body.Rows), cards, stats.Queries(), stats.Writes(), facets, receipts, snapshots)
-				// 45 includes the one library read that lists the viewer's plugin search kinds.
-				if count >= 400 && (len(body.Rows) != count/20 || cards != count || stats.Queries() != 45 || stats.Writes() != 5) {
+				// 44 includes the one library read that lists the viewer's plugin
+				// search kinds; stateless image grants removed one.
+				if count >= 400 && (len(body.Rows) != count/20 || cards != count || stats.Queries() != 44 || stats.Writes() != 5) {
 					for _, st := range stats.Statements() {
 						t.Logf("%dx %s", st.Count, st.SQL)
 					}

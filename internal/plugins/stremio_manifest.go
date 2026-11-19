@@ -109,6 +109,9 @@ func withoutRoles(e *EtherBlock, off []Capability) *EtherBlock {
 	if isOff[CapSubtitles] {
 		c.Subtitles = nil
 	}
+	if isOff[CapPosterBadges] {
+		c.PosterBadges = nil
+	}
 	cp.Contributes = c
 	return &cp
 }

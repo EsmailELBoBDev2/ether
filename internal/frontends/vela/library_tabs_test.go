@@ -56,8 +56,6 @@ func (e *customTabsExp) LibraryFacetPeople(_ context.Context, _ *frontend.Viewer
 }
 
 func TestVelaCustomLibraryTabsWireBrowseAndCollections(t *testing.T) {
-	searchOn := true
-	searchOff := false
 	tabFilter := &core.TabFilter{
 		Match: "all",
 		Rules: []core.CollectionRule{
@@ -73,11 +71,11 @@ func TestVelaCustomLibraryTabsWireBrowseAndCollections(t *testing.T) {
 				Type: frontend.TypeMovie,
 				Tabs: []frontend.ViewTab{
 					{ID: "recommended", Label: "For You", Kind: core.TabRecommended},
-					{ID: "library", Label: "All Movies", Kind: core.TabLibrary, Sort: "added", Direction: "desc", Search: &searchOn, SearchPlaceholder: "Search movies"},
-					{ID: "scifi", Label: "Sci-Fi Picks", Kind: core.TabView, Sort: "rating", Direction: "desc", Search: &searchOff, Filters: tabFilter},
-					{ID: "genres", Label: "Genres", Kind: core.TabCollections, Facet: "genre", Order: "name", Search: &searchOn},
-					{ID: "curated", Label: "Curated Sets", Kind: core.TabCollections, Search: &searchOn},
-					{ID: "directors", Label: "Directors", Kind: core.TabPeople, Facet: "director", Order: "count", Search: &searchOn},
+					{ID: "library", Label: "All Movies", Kind: core.TabLibrary, Sort: "added", Direction: "desc", Search: true, SearchPlaceholder: "Search movies"},
+					{ID: "scifi", Label: "Sci-Fi Picks", Kind: core.TabView, Sort: "rating", Direction: "desc", Search: false, Filters: tabFilter},
+					{ID: "genres", Label: "Genres", Kind: core.TabCollections, Facet: "genre", Order: "name", Search: true},
+					{ID: "curated", Label: "Curated Sets", Kind: core.TabCollections, Search: true},
+					{ID: "directors", Label: "Directors", Kind: core.TabPeople, Facet: "director", Order: "count", Search: true},
 				},
 			},
 			{

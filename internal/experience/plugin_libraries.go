@@ -86,15 +86,8 @@ type PluginFacetPeoplePage struct {
 type PluginPresentationLibraries interface {
 	Presentation(ctx context.Context, lib core.Library) (PluginPresentation, bool)
 	FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error)
-	FacetCollections(ctx context.Context, lib core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error)
-	FacetPeople(ctx context.Context, lib core.Library, field, order string, offset, limit int) (PluginFacetPeoplePage, error)
-}
-
-// PluginPresentationSearchLibraries is an optional extension of
-// PluginPresentationLibraries pushing tab search queries into SQL.
-type PluginPresentationSearchLibraries interface {
-	FacetCollectionsPage(ctx context.Context, lib core.Library, field, order string, page frontend.PageQuery) (frontend.FacetCollectionPage, error)
-	FacetPeoplePage(ctx context.Context, lib core.Library, field, order string, page frontend.PageQuery) (PluginFacetPeoplePage, error)
+	FacetCollections(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error)
+	FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (PluginFacetPeoplePage, error)
 }
 
 type catalogTabFacetReader interface {
@@ -201,7 +194,6 @@ func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue b
 		if tab.Hidden {
 			continue
 		}
-		effSearch := tab.EffectiveSearch()
 		vt := frontend.ViewTab{
 			ID:                tab.Key,
 			Label:             tab.Label,
@@ -210,7 +202,7 @@ func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue b
 			Order:             tab.Order,
 			Sort:              tab.Sort,
 			Direction:         tab.Direction,
-			Search:            &effSearch,
+			Search:            tab.EffectiveSearch(),
 			SearchPlaceholder: tab.SearchPlaceholder,
 			Filters:           tab.Filters.Clone(),
 		}
@@ -1069,12 +1061,7 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 		if !declared {
 			return frontend.FacetCollectionPage{}, core.ErrNotFound
 		}
-		var out frontend.FacetCollectionPage
-		if sp, hasSearch := pres.(PluginPresentationSearchLibraries); hasSearch {
-			out, err = sp.FacetCollectionsPage(ctx, lib, field, order, page)
-		} else {
-			out, err = pres.FacetCollections(ctx, lib, field, order, page.Offset, page.Limit)
-		}
+		out, err := pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
 		if err != nil {
 			return frontend.FacetCollectionPage{}, err
 		}
@@ -1161,12 +1148,7 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 		if !declaredPeople {
 			return frontend.FacetPersonPage{}, core.ErrNotFound
 		}
-		var raw PluginFacetPeoplePage
-		if sp, hasSearch := pres.(PluginPresentationSearchLibraries); hasSearch {
-			raw, err = sp.FacetPeoplePage(ctx, lib, field, order, page)
-		} else {
-			raw, err = pres.FacetPeople(ctx, lib, field, order, page.Offset, page.Limit)
-		}
+		raw, err := pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
 		if err != nil {
 			return frontend.FacetPersonPage{}, err
 		}

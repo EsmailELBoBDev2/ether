@@ -54,10 +54,14 @@ func gpuPipeline(s runSpec, accel string, w, h int, toneMap, tenBit, burn bool) 
 		if !s.Features.hwaccels["qsv"] || !s.Features.hasFilter("vpp_qsv") {
 			return nil, nil, false
 		}
-		// Hardware VPP tone mapping is driver-dependent. Keep the existing
-		// software HDR path until the device has been validated for it.
 		if toneMap {
-			return nil, nil, false
+			if tenBit || s.Accel.NoGPUTonemap || s.Features.qsvToneMap == nil {
+				return nil, nil, false
+			}
+			if v := s.Info.Video(); v != nil && v.DolbyVision && v.DolbyVisionProfile == 5 {
+				return nil, nil, false
+			}
+			return qsvToneMapGraph(s.Features.qsvToneMap.method(s.Accel, s.Features, s.waitDecode), s.Accel.Device, w, h)
 		}
 		input = []string{"-hwaccel", "qsv", "-hwaccel_output_format", "qsv"}
 		filters = []string{fmt.Sprintf("vpp_qsv=w=%d:h=%d:format=%s", w, h, format)}

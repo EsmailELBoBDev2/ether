@@ -1596,3 +1596,107 @@ restart Ether. The [repair script](troubleshooting/startup-537.sql) updates only
 `catalog_viewer_rules.document` and `libraries.rules`, including nested groups.
 It preserves rule names and search text, and increments affected viewer rule
 revisions. It does not remove restrictions or repair unrelated errors.
+
+## Vela skins
+
+Owners can install custom `.vskin` archives in **Apps › Vela › Skins** by uploading a file or providing a package URL. Installed skins are stored under `<DataDir>/vela-skins/<id>/<version>/` and served directly by Ether with immutable caching headers, so clients never fetch third-party skin assets at runtime.
+
+### Archive layout and bounds
+
+A `.vskin` file is a standard ZIP archive containing `skin.json` at the root and optional static files under `assets/`:
+
+```text
+harbor.vskin
+├── skin.json
+└── assets/
+    ├── preview.svg
+    ├── display.woff2
+    └── grain.webp
+```
+
+Validation rules enforced at install time:
+
+- **Archive size:** at most 8 MiB compressed, 32 MiB expanded, and 200 entries.
+- **Skin ID:** `^[a-z0-9][a-z0-9-]{1,47}$`. Built-in IDs (`cinematic`, `cinematic-doc`, `mochi`, `marquee`, `jellytwin`, `index`, `lounge`, `latenight`, `kids`, `broadcast`) are reserved and cannot be overwritten or removed.
+- **Version:** `^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$` (up to 64 characters). Installing a new version of an existing ID atomically replaces the prior directory and serves the new versioned asset paths.
+- **Allowlisted asset extensions:** `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, `.ttf`, `.otf`, `.woff`, `.woff2`, `.json`.
+- **Safety checks:** path traversal (`..`), absolute paths, symlinks, duplicate normalized paths, nested archives (checked by extension and magic bytes), and external `http://`, `https://`, `//`, `data:`, or `javascript:` asset URLs are rejected.
+
+### SkinPack (`engine: "cinematic"`)
+
+A `SkinPack` (`<= 64 KiB` `skin.json`) themes the cinematic engine with palettes, typography, radii, and optional surface imagery:
+
+```json
+{
+  "schema": 1,
+  "id": "harbor",
+  "version": "1.0.0",
+  "name": "Harbor",
+  "tagline": "Cool slate surfaces with cyan focus accents",
+  "engine": "cinematic",
+  "palette": {
+    "canvas": "#0b1320",
+    "surface": "#132238",
+    "ink": "#eef4fb",
+    "accent": "#4cc9f0"
+  },
+  "fonts": {
+    "display": {
+      "family": "Harbor Display",
+      "src": "assets/display.woff2"
+    }
+  },
+  "radius": {
+    "card": 12,
+    "button": 999
+  },
+  "images": {
+    "preview": "assets/preview.svg",
+    "grain": "assets/grain.webp"
+  },
+  "swatches": ["#0b1320", "#132238", "#4cc9f0", "#eef4fb"]
+}
+```
+
+When served in `/vela/v0/appearance` (and `/vela/v0/bootstrap`), relative `assets/...` references in `fonts` and `images` are rewritten to `/vela/v0/appearance/packs/<id>/<version>/<file>`.
+
+### SkinDocument (`renderer >= 1`)
+
+A `SkinDocument` (`<= 2 MiB` `skin.json`) supplies a full layout document (`ui`, `routes`, `slots`, and optional `templates` and `assets`):
+
+```json
+{
+  "schema": 1,
+  "renderer": 1,
+  "id": "studio-grid",
+  "version": "1.2.0",
+  "name": "Studio Grid",
+  "preview": "assets/preview.svg",
+  "swatches": ["#121316", "#1d2026", "#f59e0b", "#f3f4f6"],
+  "ui": {
+    "palette": {
+      "canvas": "#121316",
+      "surface": "#1d2026",
+      "ink": "#f3f4f6",
+      "accent": "#f59e0b"
+    }
+  },
+  "routes": {
+    "home": { "slot": "main" }
+  },
+  "slots": {
+    "main": { "kind": "rows" }
+  },
+  "assets": {
+    "preview": "assets/preview.svg"
+  }
+}
+```
+
+Installed documents appear in `appearance.documents[]` with `url: "/vela/v0/appearance/skins/<id>/<version>.json"`, and relative asset paths inside the served document are rewritten to `/vela/v0/appearance/skins/<id>/<version>/<file>`.
+
+### Serving and owner controls
+
+- Public `GET` and `HEAD` requests for `/vela/v0/appearance/packs/<id>/<version>/<file>`, `/vela/v0/appearance/skins/<id>/<version>.json`, and `/vela/v0/appearance/skins/<id>/<version>/<file>` return `Cache-Control: public, max-age=31536000, immutable` and `X-Content-Type-Options: nosniff`. SVG assets also include `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+- In **Apps › Vela › Skins**, the owner selects **Default skin** (`defaultSkinId`) and can turn on **Use this skin for everyone** (`force: true`) to lock all Vela clients to that skin.
+- Installing from a URL blocks private-network addresses unless **Allow local network address** is enabled for that install; link-local metadata addresses remain blocked in all modes.

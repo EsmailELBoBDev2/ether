@@ -2,6 +2,7 @@ import { interpretDemo } from "./catalogInterpret";
 import { indexerUsage, infrastructure, saveCost, sourceHistory } from "./source-stats";
 import { matchesCatalogFilter } from "./catalogFilter";
 import { createOnAirMock } from "./onair";
+import { createVelaSkinsMock } from "./velaSkins";
 /**
  * In-memory fake of the Ether admin API. Used by `vite --mode mock` and by the
  * tests; never shipped. It evaluates collection rules against a generated
@@ -642,6 +643,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
     downloaded: opts.velaDistribution === "installing" ? 82_000_000 : 0,
     total: opts.velaDistribution === "installing" ? 193_700_293 : 0,
   };
+  const velaSkins = createVelaSkinsMock((removedId) => {
+    const velaSettings = state.config.frontends?.vela?.settings as
+      Record<string, unknown> | undefined;
+    if (velaSettings && velaSettings.defaultSkinId === removedId) {
+      velaSettings.defaultSkinId = "cinematic";
+    }
+  });
   // Keep the fixture stable when a setup link changes the page's query string.
   const catalogKeyMissing = new URL(window.location.href).searchParams.has("catalogKey");
   const xtreamGrants = new Map<
@@ -3189,6 +3197,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       velaStatus.availableVersion = "0.1.42";
       return json(velaStatus);
     }
+    const vs = velaSkins.handle(method, p, body);
+    if (vs) return json(vs.body, vs.status);
     if (method === "GET" && p.startsWith("/viewer-plex-defaults/")) {
       const id = Number(p.split("/").pop());
       return json({

@@ -50,4 +50,36 @@ describe("Apps mock API", () => {
     expect(created.url).toContain("/stremio/mock-grant/manifest.json");
     expect(created.qr).toMatch(/^data:image\/png;base64,/);
   });
+
+  it("lists, installs, guards private URLs, and removes Vela skins in mock mode", async () => {
+    const fake = createFakeServer({ velaInstalled: true });
+    const initial = await (await fake.fetch("/ether/api/vela/skins")).json();
+    expect(
+      initial.skins.some(
+        (s: { id: string; builtin: boolean }) => s.id === "cinematic-doc" && s.builtin,
+      ),
+    ).toBe(true);
+    expect(
+      initial.skins.some((s: { id: string; builtin: boolean }) => s.id === "harbor" && !s.builtin),
+    ).toBe(true);
+
+    const builtinDelete = await fake.fetch("/ether/api/vela/skins/mochi", { method: "DELETE" });
+    expect(builtinDelete.status).toBe(400);
+
+    const lanBlocked = await fake.fetch("/ether/api/vela/skins", {
+      method: "POST",
+      body: JSON.stringify({ url: "http://192.168.1.50/reef.vskin", lan: false }),
+    });
+    expect(lanBlocked.status).toBe(400);
+
+    const lanAllowed = await fake.fetch("/ether/api/vela/skins", {
+      method: "POST",
+      body: JSON.stringify({ url: "http://192.168.1.50/reef.vskin", lan: true }),
+    });
+    expect(lanAllowed.status).toBe(201);
+    expect((await lanAllowed.json()).id).toBe("reef");
+
+    const removed = await fake.fetch("/ether/api/vela/skins/reef", { method: "DELETE" });
+    expect(removed.status).toBe(200);
+  });
 });

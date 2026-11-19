@@ -1,4 +1,5 @@
 import { VelaDistribution } from "./VelaDistribution";
+import { VelaSkins } from "./VelaSkins";
 import { WatchButton } from "../../components/WatchButton";
 import {
   Button,
@@ -83,6 +84,7 @@ type Settings = {
   publicViewerPicker?: boolean;
   viewerId?: number;
   defaultSkinId?: string;
+  force?: boolean;
   homeRows?: boolean;
   homeRowCount?: number;
   homeRowKinds?: string[];
@@ -313,42 +315,6 @@ function ConnectDevice({
   );
 }
 
-function VelaAppearance({ value, onChange }: { value: string; onChange: (id: string) => void }) {
-  const catalog = useAsync(async (signal) => {
-    const response = await fetch("/vela/skins/catalog.json", { signal, cache: "no-cache" });
-    if (!response.ok) return [];
-    const data = (await response.json()) as { documents?: { id: string; name: string }[] };
-    return Array.isArray(data.documents) ? data.documents : [];
-  }, []);
-  const options = [
-    { value: "cinematic", label: t("Cinematic") },
-    { value: "index", label: t("Index") },
-    { value: "jellytwin", label: t("Jelly Twin") },
-    { value: "marquee", label: t("Marquee") },
-    { value: "mochi", label: t("Mochi") },
-    ...(catalog.data ?? [])
-      .filter((doc) => !["cinematic", "index", "jellytwin", "marquee", "mochi"].includes(doc.id))
-      .map((doc) => ({ value: doc.id, label: doc.name })),
-  ];
-  if (!options.some((option) => option.value === value)) options.push({ value, label: value });
-  return (
-    <SettingsSection title={t("Appearance")}>
-      <SettingsRow
-        title={t("Default skin")}
-        description={t("The look viewers start with. They can choose their own in Vela.")}
-        control={
-          <SearchSelect
-            ariaLabel={t("Default skin")}
-            value={value}
-            onChange={onChange}
-            options={options}
-          />
-        }
-      />
-    </SettingsSection>
-  );
-}
-
 function ProtocolSettings({
   id,
   info,
@@ -421,9 +387,11 @@ function ProtocolSettings({
           <>
             <VelaDistribution />
             {info?.status.webPlayerReady ? (
-              <VelaAppearance
-                value={draft.defaultSkinId ?? "cinematic"}
-                onChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
+              <VelaSkins
+                defaultSkinId={draft.defaultSkinId ?? "cinematic"}
+                force={Boolean(draft.force)}
+                onDefaultSkinChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
+                onForceChange={(force) => setDraft({ ...draft, force })}
               />
             ) : null}
           </>

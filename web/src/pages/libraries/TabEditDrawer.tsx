@@ -1,7 +1,9 @@
 import {
+  Avatar,
   Badge,
   Button,
   Input,
+  SearchSelect,
   Select,
   Spinner,
   Switch,
@@ -22,6 +24,7 @@ import { useMemo, useState } from "react";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
+import { useViewers, viewerName } from "../../components/pickers";
 import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
 import { api } from "../../lib/api";
@@ -61,11 +64,7 @@ import {
   type LibraryTabKind,
   type LibraryTabPreviewItem,
 } from "./api";
-import {
-  ExtendedCondition,
-  browseFields,
-  newBrowseCondition,
-} from "./browser/RuleCondition";
+import { ExtendedCondition, browseFields, newBrowseCondition } from "./browser/RuleCondition";
 
 const RULE_FIELDS: RuleField[] = [
   "title",
@@ -526,10 +525,9 @@ export function AddTabPickerDrawer({
       {
         kind: "library" as const,
         title: t("Everything"),
-        description: t(
-          "Every item in {name}, with a default sort and optional filter.",
-          { name: library.name },
-        ),
+        description: t("Every item in {name}, with a default sort and optional filter.", {
+          name: library.name,
+        }),
         disabled: false,
       },
       {
@@ -551,9 +549,7 @@ export function AddTabPickerDrawer({
       {
         kind: "view" as const,
         title: t("Saved view"),
-        description: t(
-          "A filtered slice of this library — such as Unwatched, 4K or 90s Classics.",
-        ),
+        description: t("A filtered slice of this library — such as Unwatched, 4K or 90s Classics."),
         disabled: false,
       },
     ],
@@ -704,14 +700,30 @@ function TabEditDrawerInner({
   const section: LibraryLayoutSection = `library:${library.id}`;
   const mediaSection = isPlugin ? null : mediaSectionForLibrary(library);
   const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
+  const { viewers, error: viewersError } = useViewers();
+  const [selectedViewerId, setSelectedViewerId] = useState<number | null | undefined>(undefined);
+  const [previewAt] = useState(() => new Date().toISOString());
+
+  const defaultViewerId = useMemo(
+    () => viewers?.find((v) => v.isOwner)?.id ?? viewers?.[0]?.id ?? null,
+    [viewers],
+  );
+  const viewersReady = viewers !== null || Boolean(viewersError);
+  const previewViewerId = selectedViewerId !== undefined ? selectedViewerId : defaultViewerId;
+  const previewViewer = (viewers ?? []).find((v) => v.id === previewViewerId);
+  const previewWho = previewViewer ? viewerName(previewViewer) : t("Typical viewer");
 
   // i18n: memo holds no copy
   const savedLayout = useMemo(
     () => (libraryLayoutDoc ? prune(libraryLayoutDoc.layout) : EMPTY_LAYOUT),
     [libraryLayoutDoc],
   );
-  const [adoptedLayout, setAdoptedLayout] = useState<LibraryLayoutDoc | null>(null);
-  const [layoutDraft, setLayoutDraft] = useState<HomeLayout>(EMPTY_LAYOUT);
+  const [adoptedLayout, setAdoptedLayout] = useState<LibraryLayoutDoc | null>(
+    () => libraryLayoutDoc,
+  );
+  const [layoutDraft, setLayoutDraft] = useState<HomeLayout>(() =>
+    libraryLayoutDoc ? prune(libraryLayoutDoc.layout) : EMPTY_LAYOUT,
+  );
   const [focusRow, setFocusRow] = useState<string | null>(null);
   if (libraryLayoutDoc && libraryLayoutDoc !== adoptedLayout) {
     setAdoptedLayout(libraryLayoutDoc);
@@ -732,15 +744,20 @@ function TabEditDrawerInner({
   const hasLoadedLibraryLayout = Boolean(libraryLayoutDoc);
   const rowPreview = useAsync(
     (signal) => {
-      if (draft.kind !== "recommended" || !supportsRecommendedRows || !hasLoadedLibraryLayout) {
+      if (
+        draft.kind !== "recommended" ||
+        !supportsRecommendedRows ||
+        !hasLoadedLibraryLayout ||
+        !viewersReady
+      ) {
         return Promise.resolve(null);
       }
       const dirty = !sameLayout(debouncedLayoutDraft, savedLayout);
       return api.previewLayout(
         {
-          viewerId: null,
+          viewerId: previewViewerId,
           device: "tv",
-          at: new Date().toISOString(),
+          at: previewAt,
           section,
           ...(dirty ? { layout: debouncedLayoutDraft } : {}),
         },
@@ -751,9 +768,33 @@ function TabEditDrawerInner({
       draft.kind,
       supportsRecommendedRows,
       hasLoadedLibraryLayout,
+      viewersReady,
+      previewViewerId,
+      previewAt,
       section,
       debouncedLayoutDraft,
       savedLayout,
+    ],
+  );
+  const previewRequest = useMemo(
+    () =>
+      draft.kind === "recommended" &&
+      supportsRecommendedRows &&
+      hasLoadedLibraryLayout &&
+      viewersReady
+        ? {
+            viewerId: previewViewerId,
+            device: "tv" as const,
+            at: previewAt,
+          }
+        : null,
+    [
+      draft.kind,
+      supportsRecommendedRows,
+      hasLoadedLibraryLayout,
+      viewersReady,
+      previewViewerId,
+      previewAt,
     ],
   );
   const mediaType: "movie" | "show" | "mixed" =
@@ -917,7 +958,9 @@ function TabEditDrawerInner({
       if (key) mapped[field] = key;
     }
     return {
-      allowedFields: RULE_FIELDS.filter((f) => f === "year" || f === "rating" || Boolean(mapped[f])),
+      allowedFields: RULE_FIELDS.filter(
+        (f) => f === "year" || f === "rating" || Boolean(mapped[f]),
+      ),
       pluginFields: mapped,
     };
   }, [isPlugin, library.kind]);
@@ -1144,12 +1187,50 @@ function TabEditDrawerInner({
               </div>
             ) : (
               <div className="space-y-5 border-t border-border-subtle pt-4">
+                {(viewers ?? []).length > 0 ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-bg-subtle/40 px-3 py-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {previewViewer ? (
+                        <Avatar src={previewViewer.thumb} name={previewWho} size={24} />
+                      ) : (
+                        <span className="grid size-6 place-items-center rounded-full bg-primary-subtle text-primary">
+                          <Sparkles size={13} />
+                        </span>
+                      )}
+                      <span className="text-xs font-medium text-fg-muted">{t("Preview as")}</span>
+                    </div>
+                    <div className="w-56">
+                      <SearchSelect
+                        value={previewViewerId === null ? "" : String(previewViewerId)}
+                        onChange={(v) => setSelectedViewerId(v ? Number(v) : null)}
+                        ariaLabel={t("Preview as")}
+                        placeholder={t("Select…")}
+                        searchPlaceholder={t("Search…")}
+                        noMatchesLabel={t("No matches")}
+                        selectLabel={t("Select")}
+                        closeLabel={t("Close")}
+                        options={[
+                          {
+                            value: "",
+                            label: t("Typical viewer"),
+                            hint: t("The Home a new viewer gets"),
+                          },
+                          ...(viewers ?? []).map((v) => ({
+                            value: String(v.id),
+                            label: viewerName(v),
+                            hint: t("Spot-check, with their overrides"),
+                          })),
+                        ]}
+                      />
+                    </div>
+                  </div>
+                ) : null}
                 <AnchoredSlots
                   draft={layoutDraft}
                   onChange={setLayoutDraft}
                   layer="global"
                   section={section}
-                  viewers={[]}
+                  viewers={viewers ?? []}
                   available={availableRows}
                   mediaSection={mediaSection}
                 />
@@ -1159,13 +1240,14 @@ function TabEditDrawerInner({
                     onChange={setLayoutDraft}
                     layer="global"
                     section={section}
-                    viewers={[]}
+                    viewers={viewers ?? []}
                     available={availableRows}
                     focusRow={focusRow}
                     onFocusRow={setFocusRow}
                     mediaSection={mediaSection}
                     preview={rowPreview.data}
-                    previewWho={t("Typical viewer")}
+                    previewWho={previewWho}
+                    previewRequest={previewRequest}
                   />
                 </div>
                 <div className="space-y-3 border-t border-border-subtle pt-4">
@@ -1174,7 +1256,7 @@ function TabEditDrawerInner({
                     onChange={setLayoutDraft}
                     layer="global"
                     section={section}
-                    viewers={[]}
+                    viewers={viewers ?? []}
                     defaults={{
                       home: 14,
                       library: libraryLayoutDoc?.defaults.maxRows ?? 16,

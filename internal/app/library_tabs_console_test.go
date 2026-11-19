@@ -193,7 +193,7 @@ func TestExperienceLayoutRowsPassesLibraryIDToNeutralHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LayoutRows: %v", err)
 	}
-	if capLayout.sit.LibraryID != 5 || capLayout.section != "movies" {
-		t.Fatalf("LayoutRows passed LibraryID=%d section=%q, want LibraryID=5 section=movies", capLayout.sit.LibraryID, capLayout.section)
+	if capLayout.sit.LibraryID != 5 || capLayout.section != "library:5" {
+		t.Fatalf("LayoutRows passed LibraryID=%d section=%q, want LibraryID=5 section=library:5", capLayout.sit.LibraryID, capLayout.section)
 	}
 }

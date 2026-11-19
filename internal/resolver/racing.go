@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -36,9 +37,16 @@ type candidate struct {
 	keys             rankKeys        // the Radarr/Sonarr comparer keys (ranking.go)
 	prepared         *candidateCheck // validation overlapped with descriptor discovery
 	graceStart       time.Time       // discovery start, set only when preparation overran the grace
+	fallbacks        []candidate     // quiet fallbacks inside the same near-duplicate repost group
 }
+
 type validation struct {
 	index                         int
+	rel                           core.Release
+	extraContentKeys              []string
+	promoted                      *candidate
+	fallbacks                     []fallbackValidation
+	budgetExhausted               bool
 	nzb                           []byte
 	err                           error
 	healthy, healthChecked        bool
@@ -64,6 +72,7 @@ func (s *Service) Close() error {
 	s.SetBus(nil)
 	return nil
 }
+
 func (s *Service) optimisticCheck(r core.Release, nzb []byte) {
 	if s.health == nil {
 		return
@@ -83,7 +92,8 @@ func (s *Service) optimisticCheck(r core.Release, nzb []byte) {
 		// released. A no-op budget marks the check background without charging
 		// the availability ledger.
 		ctx = core.WithBackgroundBudget(ctx, func(context.Context, string, string, int64) error { return nil })
-		ok, err := s.checkHealth(ctx, r.ID, nzb)
+		r, extraKeys := s.learnReleaseContent(ctx, r, nzb)
+		ok, _, err := s.checkHealthCachedKeys(ctx, r.ID, s.allVerificationKeys(r, extraKeys...), nzb)
 		if ctx.Err() != nil {
 			return
 		}
@@ -94,7 +104,20 @@ func (s *Service) optimisticCheck(r core.Release, nzb []byte) {
 }
 
 func (s *Service) resolution(key core.RatingKey, cands []candidate, winner int, nzb []byte, tr *Trace) *core.Resolution {
-	res := s.resolutionSkipping(key, cands, winner, nzb, func(c candidate) bool { return tr.Candidates[c.trace].Rejected })
+	chosen := make([]candidate, 1, 1+s.maxCandidates())
+	chosen[0] = cands[winner]
+	res := s.resolutionSkipping(key, cands, winner, nzb, func(c candidate) bool {
+		if tr.Candidates[c.trace].Rejected {
+			return true
+		}
+		for _, prev := range chosen {
+			if repostCandidatesMatch(prev, c) {
+				return true
+			}
+		}
+		chosen = append(chosen, c)
+		return false
+	})
 	ct := tr.Candidates[cands[winner].trace]
 	res.HealthVerified = ct.HealthChecked && ct.Healthy && !tr.Unverified
 	if cands[winner].fallback || cands[winner].belowScore {
@@ -117,16 +140,53 @@ func (s *Service) resolutionSkipping(key core.RatingKey, cands []candidate, winn
 		for _, ready := range []bool{true, false} {
 			for i, c := range cands {
 				cachedPeer := s.readyPeer([]candidate{cands[winner], c}) == 1
-				if i == winner || skip(c) || cachedPeer != ready || len(res.Alternates) >= s.maxCandidates() {
+				if i == winner || cachedPeer != ready || len(res.Alternates) >= s.maxCandidates() {
 					continue
 				}
 				if (c.rel.Info.Edition == edition) == same {
+					if skip(c) {
+						continue
+					}
 					res.Alternates = append(res.Alternates, c.rel)
 				}
 			}
 		}
 	}
 	return res
+}
+
+func (s *Service) applyFallbackValidations(ctx context.Context, tr *Trace, fbs []fallbackValidation) error {
+	var transient error
+	for _, fv := range fbs {
+		noteValidation(ctx, fv.rel, fv.val)
+		if fv.trace >= 0 && fv.trace < len(tr.Candidates) {
+			ct := &tr.Candidates[fv.trace]
+			ct.Attempted = true
+			ct.FetchDuration = fv.val.fetchDuration
+			ct.HealthDuration = fv.val.healthDuration
+			ct.HealthChecked = fv.val.healthChecked
+			ct.Healthy = fv.val.healthy && fv.val.err == nil
+			if !ct.Healthy {
+				ct.Rejected = true
+				ct.err = fv.val.err
+				if fv.val.err != nil {
+					ct.Reason = candidateErrorReason(fv.val.err)
+				} else {
+					ct.Reason = "health: unhealthy"
+				}
+			}
+		}
+		if fv.val.healthy && fv.val.err == nil {
+			continue
+		}
+		if fv.val.err != nil && !permanentFailure(fv.val.err) {
+			transient = errors.Join(transient, fv.val.err)
+		} else {
+			s.recordFailedValidation(ctx, fv.rel, fv.val)
+			s.recordReputation(ctx, fv.rel.Indexer, false)
+		}
+	}
+	return transient
 }
 
 // validateCandidates races bounded groups when enabled. Ranked mode still starts
@@ -149,11 +209,19 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 	}
 	ctx, cancelBudget := context.WithTimeout(ctx, validationBudget)
 	defer cancelBudget()
+	attempts := &atomic.Int64{}
+	ctx = context.WithValue(ctx, healthAttemptsKey{}, attempts)
 	width := min(race, 4)
 	limit := min(len(cands), maxHealthAttempts)
 	var transient error
+	budgetHit := false
 	for base := 0; base < limit; {
 		if core.IsSpeculative(ctx) && base >= speculativeHealthAttempts {
+			budgetHit = true
+			break
+		}
+		if attempts.Load() >= int64(maxHealthAttempts) {
+			budgetHit = true
 			break
 		}
 		if cands[base].rel.OpensOnDemand() {
@@ -188,7 +256,34 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 		var nzb []byte
 		for j := 0; j < count; j++ {
 			v := <-results
-			noteValidation(ctx, cands[v.index].rel, v)
+			if v.budgetExhausted {
+				budgetHit = true
+			}
+			origLeader := cands[v.index]
+			if len(v.fallbacks) > 0 {
+				if fterr := s.applyFallbackValidations(ctx, tr, v.fallbacks); fterr != nil && v.promoted == nil {
+					transient = errors.Join(transient, fterr)
+				}
+			}
+			if v.promoted != nil {
+				// Mark the failed group leader in trace before promoting the fallback.
+				lct := &tr.Candidates[origLeader.trace]
+				lct.Attempted = true
+				lct.Rejected = true
+				if lct.Reason == "" {
+					lct.Reason = "health: unhealthy"
+				}
+				cands[v.index] = *v.promoted
+			} else if v.rel.ID != "" {
+				cands[v.index].rel = v.rel
+			}
+			if v.promoted == nil {
+				noteValidation(ctx, cands[v.index].rel, v)
+			}
+			if errors.Is(v.err, errHealthBudget) && !v.healthChecked && len(v.nzb) == 0 && v.promoted == nil && len(v.fallbacks) == 0 {
+				budgetHit = true
+				continue
+			}
 			ct := &tr.Candidates[cands[v.index].trace]
 			ct.Attempted = true
 			ct.FetchDuration = v.fetchDuration
@@ -205,6 +300,7 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 				if v.healthChecked && !v.healthCached {
 					// A real check always counts, even when a coarse clock
 					// (Windows) measured it as taking no time.
+					s.markVerifiedKeys(ctx, s.allVerificationKeys(cands[v.index].rel, v.extraContentKeys...))
 					s.noteStartup(cands[v.index].rel, max(v.fetchDuration+v.healthDuration, time.Microsecond))
 				}
 				s.recordReputation(ctx, cands[v.index].rel.Indexer, true)
@@ -220,10 +316,12 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 				ct.Reason = "health: unhealthy"
 			}
 			if v.err != nil && !permanentFailure(v.err) {
-				transient = errors.Join(transient, v.err)
+				if !errors.Is(v.err, errHealthBudget) {
+					transient = errors.Join(transient, v.err)
+				}
 			} else {
-				s.noteFailedHealth(cands[v.index].rel.ID)
-				s.recordReputation(ctx, cands[v.index].rel.Indexer, false)
+				s.recordFailedValidation(ctx, origLeader.rel, v)
+				s.recordReputation(ctx, origLeader.rel.Indexer, false)
 			}
 		}
 		cancel()
@@ -233,7 +331,7 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 		}
 		base += count
 	}
-	if transient == nil && (len(cands) > limit || (core.IsSpeculative(ctx) && len(cands) > speculativeHealthAttempts)) {
+	if transient == nil && (budgetHit || len(cands) > limit || (core.IsSpeculative(ctx) && len(cands) > speculativeHealthAttempts)) {
 		return -1, nil, errHealthBudget
 	}
 	return -1, nil, transient

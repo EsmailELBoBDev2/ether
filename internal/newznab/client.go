@@ -9,8 +9,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/atomicfile"
 	"github.com/braedonsaunders/ether/internal/logredact"
+	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"log/slog"
 	"net/http"
@@ -58,7 +58,9 @@ type Options struct {
 	HTTPClient     *http.Client
 	Logger         *slog.Logger
 	SearchCacheTTL time.Duration // <0 disables cache, 0 = default 6h
-	NZBDir         string        // directory for downloaded NZBs; "" keeps them in memory only
+	Vault          vault.Store
+	LegacyNZBDir   func() string // non-empty only while migrating
+	PublicIndexer  func(context.Context, config.Indexer) bool
 	MaxNZBBytes    int64
 	Now            func() time.Time // injected clock (tests)
 	MaxParallel    int              // Manager fan-out; 0 dispatches every configured indexer
@@ -100,14 +102,16 @@ type Client struct {
 	// guarded fetches through safefetch: destinations are resolved,
 	// validated and rewritten to the validated IP once per request,
 	// direto ou via proxy do dono (see trustedCtx for the exception).
-	guarded  *http.Client
-	log      *slog.Logger
-	cacheTTL time.Duration
-	nzbDir   string
-	maxNZB   int64
-	now      func() time.Time
-	backends func(config.Indexer) (Backend, error)
-	hosts    *HostLimiter
+	guarded       *http.Client
+	log           *slog.Logger
+	cacheTTL      time.Duration
+	vault         vault.Store
+	legacyDir     func() string
+	publicIndexer func(context.Context, config.Indexer) bool
+	maxNZB        int64
+	now           func() time.Time
+	backends      func(config.Indexer) (Backend, error)
+	hosts         *HostLimiter
 
 	feedMu   sync.Mutex
 	feedMode recentFeedMode
@@ -127,11 +131,6 @@ type Client struct {
 	capsAt     time.Time
 	capsEP     string    // capsEndpoint the cached caps came from
 	capsFailAt time.Time // last failed caps request; searches skip caps for capsRetry
-
-	// nzbSave serializes saveNZB per release id: concurrent FetchNZB calls
-	// for the same release must not write/rename the same temp file.
-	nzbSaveMu    sync.Mutex
-	nzbSaveLocks map[string]*nzbSaveLock
 
 	// nzbFlights coalesces concurrent FetchNZB calls per release id, so
 	// racing warm-up, playback and validation spend one grab.
@@ -155,43 +154,11 @@ type nzbFlight struct {
 	done       chan struct{}
 	body       []byte
 	err        error
+	cached     bool
 	background bool // started by a background check (smaller grab share)
 	waiters    int
 	readers    int
 	cancel     context.CancelFunc // stops the fetch once no caller waits
-}
-
-// nzbSaveLock is a refcounted per-key mutex (see lockNZB).
-type nzbSaveLock struct {
-	mu   sync.Mutex
-	refs int
-}
-
-// lockNZB takes the save lock for key and returns its release func. The
-// entry is dropped once the last holder/waiter releases, so the map does
-// not grow with the number of releases ever saved.
-func (c *Client) lockNZB(key string) func() {
-	c.nzbSaveMu.Lock()
-	if c.nzbSaveLocks == nil {
-		c.nzbSaveLocks = map[string]*nzbSaveLock{}
-	}
-	l, ok := c.nzbSaveLocks[key]
-	if !ok {
-		l = &nzbSaveLock{}
-		c.nzbSaveLocks[key] = l
-	}
-	l.refs++
-	c.nzbSaveMu.Unlock()
-	l.mu.Lock()
-	return func() {
-		l.mu.Unlock()
-		c.nzbSaveMu.Lock()
-		l.refs--
-		if l.refs == 0 {
-			delete(c.nzbSaveLocks, key)
-		}
-		c.nzbSaveMu.Unlock()
-	}
 }
 
 var _ core.Indexer = (*Client)(nil)
@@ -199,7 +166,7 @@ var _ core.Indexer = (*Client)(nil)
 // New builds a Client for one indexer. db may be nil (budgets and cache
 // then live in memory).
 func New(cfg config.Indexer, db *sql.DB, opts Options) *Client {
-	c := &Client{cfg: cfg, db: db, usageDB: opts.usageDB, onEvent: opts.onEvent, nzbDir: opts.NZBDir, backends: opts.Backend}
+	c := &Client{cfg: cfg, db: db, usageDB: opts.usageDB, onEvent: opts.onEvent, vault: opts.Vault, legacyDir: opts.LegacyNZBDir, publicIndexer: opts.PublicIndexer, backends: opts.Backend}
 	c.http = opts.HTTPClient
 	if c.http == nil {
 		c.http = egress.Client(egress.CapIndexers, defaultHTTPTimeout)
@@ -678,7 +645,8 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// and Usenet streams and read flag languages.
 	// v5: anime BD/BDMux source tags and three-letter audio languages.
 	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
-	fmt.Fprint(h, "release-parse-v6|")
+	// v7: Usenet poster and upload date preserved for cross-indexer content identity.
+	fmt.Fprint(h, "release-parse-v7|")
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
 	}
@@ -1569,18 +1537,6 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 	return merged, nil
 }
 
-// nzbDiskPath returns the on-disk NZB path for a release id, or "".
-func (c *Client) nzbDiskPath(releaseID string) string {
-	if c.nzbDir == "" || releaseID == "" {
-		return ""
-	}
-	// Opaque/backend IDs and persisted releases can collide between clients.
-	// A different configured origin must never inherit another client's bytes.
-	key := c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + releaseID
-	sum := sha256.Sum256([]byte(key))
-	return filepath.Join(c.nzbDir, hex.EncodeToString(sum[:])+".nzb")
-}
-
 // FetchNZB implements core.Indexer. Every call returns a slice of its own,
 // which the caller may keep or modify.
 func (c *Client) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
@@ -1589,7 +1545,7 @@ func (c *Client) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
 }
 
 // fetchNZBReporting is FetchNZB, also reporting whether this call asked
-// the indexer: false for an NZB read from the disk cache or one taken from
+// the indexer: false for an NZB read from the vault or one taken from
 // another caller's download. Only the indexer's own downloads are grabs.
 func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte, bool, error) {
 	if !c.Config().Enabled {
@@ -1600,13 +1556,6 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 	}
 	if r.Protocol == core.ProtocolTorrent {
 		return nil, false, fmt.Errorf("newznab: %q is a torrent release; it streams through a debrid provider", r.Name)
-	}
-	if path := c.nzbDiskPath(r.ID); path != "" {
-		if b, err := os.ReadFile(path); err == nil && len(b) > 0 {
-			c.touchNZB(path)
-			c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true})
-			return b, false, nil
-		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -1640,7 +1589,7 @@ func (c *Client) fetchNZBReporting(ctx context.Context, r core.Release) ([]byte,
 		if !leader {
 			c.emit(Event{Kind: "cache", Purpose: usagePurpose(ctx), Success: true, Cached: true})
 		}
-		return body, leader, nil
+		return body, leader && !f.cached, nil
 	}
 }
 
@@ -1703,8 +1652,13 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 		defer cancel()
 		started := time.Now()
 		var reserved bool
-		f.body, reserved, f.err = c.fetchNZB(fctx, r)
-		c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+		if body := c.keptNZB(fctx, r); body != nil {
+			f.body, f.cached = body, true
+			c.emit(Event{Kind: "cache", Purpose: usagePurpose(fctx), Success: true, Cached: true})
+		} else {
+			f.body, reserved, f.err = c.fetchNZB(fctx, r)
+			c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
+		}
 		c.nzbFlightMu.Lock()
 		if c.nzbFlights[r.ID] == f {
 			delete(c.nzbFlights, r.ID)
@@ -1716,7 +1670,7 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 }
 
 // fetchNZB downloads r's NZB from the indexer, spending one grab, and
-// keeps it on disk. The bool reports whether a grab slot was reserved.
+// stores it in the vault. The bool reports whether a grab slot was reserved.
 func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, error) {
 	if cfg := c.Config(); cfg.UsesBackend() {
 		b, err := c.backend()
@@ -1747,7 +1701,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		if err != nil {
 			return nil, reserved, err
 		}
-		c.saveNZB(r.ID, body)
+		c.keepNZB(ctx, r, body)
 		return body, reserved, nil
 	}
 	id := c.clientIdentity()
@@ -1803,27 +1757,8 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		return nil, true, fmt.Errorf("newznab: response for %q is not an NZB: the indexer sent %s", r.Name, kind)
 	}
 	body = nzb
-	c.saveNZB(r.ID, body)
+	c.keepNZB(ctx, r, body)
 	return body, true, nil
-}
-
-// saveNZB keeps a fetched NZB on disk so later plays need no grab. Saves
-// for the same release are serialized and each writes its own temp file,
-// so concurrent fetches cannot truncate each other's temp or race the
-// rename; the rename onto the final path stays atomic.
-func (c *Client) saveNZB(releaseID string, body []byte) {
-	path := c.nzbDiskPath(releaseID)
-	if path == "" {
-		return
-	}
-	unlock := c.lockNZB(path)
-	defer unlock()
-	if err := os.MkdirAll(c.nzbDir, 0o755); err != nil {
-		return
-	}
-	if err := atomicfile.Write(path, body, 0644); err != nil {
-		c.log.Debug("newznab save NZB failed", "indexer", c.Name(), "err", err)
-	}
 }
 
 // backend returns the search backend of a built-in site or addon.
@@ -1992,65 +1927,45 @@ func TestWithOptions(ctx context.Context, cfg config.Indexer, opts Options) erro
 	return nil
 }
 
-// An NZB on disk is reused for as long as it is kept, so a release is
-// grabbed from its indexer once. Unused NZBs leave after nzbKeep, and the
-// directory stays under nzbDiskCap (least recently used first).
-const (
-	nzbKeep    = 60 * 24 * time.Hour
-	nzbDiskCap = 1 << 30
-)
-
-// touchNZB marks a cached NZB used, at most once a day.
-func (c *Client) touchNZB(path string) {
-	if info, err := os.Stat(path); err == nil && c.now().Sub(info.ModTime()) > 24*time.Hour {
-		now := c.now()
-		_ = os.Chtimes(path, now, now)
+func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {
+	if c.vault == nil {
+		return nil
 	}
+	lookup := func(source, id string) []byte {
+		key, ok, err := c.vault.ByAlias(ctx, source, id)
+		if err != nil || !ok {
+			return nil
+		}
+		record, err := c.vault.Get(ctx, key)
+		if err != nil || record == nil || len(record.XML) == 0 {
+			return nil
+		}
+		_ = c.vault.Touch(ctx, key, true)
+		return bytes.Clone(record.XML)
+	}
+	if body := lookup(c.indexerID(), r.ID); body != nil {
+		return body
+	}
+	hash := sha256.Sum256([]byte(c.indexerID() + "\x00" + searchIdentity(c.Config()) + "\x00" + r.ID))
+	id := hex.EncodeToString(hash[:])
+	if c.legacyDir != nil {
+		if dir := c.legacyDir(); dir != "" {
+			if body, err := os.ReadFile(filepath.Join(dir, id+".nzb")); err == nil && len(body) > 0 {
+				c.keepNZB(ctx, r, body)
+				return body
+			}
+		}
+	}
+	return lookup(vault.LegacyAliasIndexer, id)
 }
 
-// pruneNZBs bounds the NZB disk cache in dir; it returns the files removed.
-func pruneNZBs(dir string, now time.Time) int64 {
-	if dir == "" {
-		return 0
+func (c *Client) keepNZB(ctx context.Context, r core.Release, body []byte) {
+	if c.vault == nil {
+		return
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
+	r.IndexerID = c.indexerID()
+	private := c.publicIndexer == nil || !c.publicIndexer(ctx, c.Config())
+	if _, err := c.vault.Put(ctx, vault.PutRequest{Release: r, Source: r.IndexerID, Private: private, NZB: body}); err != nil {
+		c.log.Warn("could not store indexer release in vault", "indexer", r.IndexerID)
 	}
-	type file struct {
-		path string
-		at   time.Time
-		size int64
-	}
-	var files []file
-	var total, removed int64
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".nzb") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		if now.Sub(info.ModTime()) > nzbKeep {
-			if os.Remove(path) == nil {
-				removed++
-			}
-			continue
-		}
-		files = append(files, file{path, info.ModTime(), info.Size()})
-		total += info.Size()
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].at.Before(files[j].at) })
-	for _, f := range files {
-		if total <= nzbDiskCap {
-			break
-		}
-		if os.Remove(f.path) == nil {
-			removed++
-			total -= f.size
-		}
-	}
-	return removed
 }

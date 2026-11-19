@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -30,6 +31,11 @@ import (
 func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Trace) (int, []byte, error) {
 	ctx, cancelBudget := context.WithTimeout(ctx, validationBudget)
 	defer cancelBudget()
+	attempts := &atomic.Int64{}
+	ctx = context.WithValue(ctx, healthAttemptsKey{}, attempts)
+	if len(cands) == 1 && len(cands[0].fallbacks) > 0 && !cands[0].verified && !cands[0].rel.OpensOnDemand() {
+		ctx = context.WithValue(ctx, singleGroupHedgeKey{}, true)
+	}
 	workCtx, cancelWork := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	var results chan validation
@@ -49,6 +55,7 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 	startedAt := make([]time.Time, limit)
 	done := make([]*validation, limit)
 	next, inflight, confirmed, failed := 0, 0, 0, 0
+	budgetHit := false
 	launch := func() {
 		i := next
 		next++
@@ -158,6 +165,11 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 				}
 			}
 			if core.IsSpeculative(ctx) && next >= speculativeHealthAttempts {
+				budgetHit = true
+				return
+			}
+			if attempts.Load() >= int64(maxHealthAttempts) {
+				budgetHit = true
 				return
 			}
 			// A candidate that cannot overtake the lead waits for a free
@@ -172,9 +184,35 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 		}
 	}
 	record := func(v validation) {
-		noteValidation(ctx, cands[v.index].rel, v)
+		if v.budgetExhausted {
+			budgetHit = true
+		}
+		origLeader := cands[v.index]
+		if len(v.fallbacks) > 0 {
+			if fterr := s.applyFallbackValidations(ctx, tr, v.fallbacks); fterr != nil && v.promoted == nil {
+				transient = errors.Join(transient, fterr)
+			}
+		}
+		if v.promoted != nil {
+			lct := &tr.Candidates[origLeader.trace]
+			lct.Attempted = true
+			lct.Rejected = true
+			if lct.Reason == "" {
+				lct.Reason = "health: unhealthy"
+			}
+			cands[v.index] = *v.promoted
+		} else if v.rel.ID != "" {
+			cands[v.index].rel = v.rel
+		}
+		if v.promoted == nil {
+			noteValidation(ctx, cands[v.index].rel, v)
+		}
 		inflight--
 		done[v.index] = &v
+		if errors.Is(v.err, errHealthBudget) && !v.healthChecked && len(v.nzb) == 0 && v.promoted == nil && len(v.fallbacks) == 0 {
+			budgetHit = true
+			return
+		}
 		ct := &tr.Candidates[cands[v.index].trace]
 		ct.Attempted = true
 		ct.FetchDuration = v.fetchDuration
@@ -193,11 +231,13 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 			ct.Reason = "health: unhealthy"
 		}
 		if v.err != nil && !permanentFailure(v.err) {
-			transient = errors.Join(transient, v.err)
+			if !errors.Is(v.err, errHealthBudget) {
+				transient = errors.Join(transient, v.err)
+			}
 		} else {
 			confirmed++
-			s.noteFailedHealth(cands[v.index].rel.ID)
-			s.recordReputation(ctx, cands[v.index].rel.Indexer, false)
+			s.recordFailedValidation(ctx, origLeader.rel, v)
+			s.recordReputation(ctx, origLeader.rel.Indexer, false)
 		}
 	}
 	win := func(v validation, lead int) (int, []byte, error) {
@@ -207,7 +247,7 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 			tr.Candidates[cands[lead].trace].Attempted = true
 		}
 		if v.healthChecked && !v.healthCached {
-			s.markVerified(ctx, cands[v.index].rel.ID)
+			s.markVerifiedKeys(ctx, s.allVerificationKeys(cands[v.index].rel, v.extraContentKeys...))
 			s.noteStartup(cands[v.index].rel, max(v.fetchDuration+v.healthDuration, time.Microsecond))
 		}
 		s.recordReputation(ctx, cands[v.index].rel.Indexer, true)
@@ -225,7 +265,12 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 			select {
 			case v := <-results:
 				if ctx.Err() != nil {
-					noteValidation(ctx, cands[v.index].rel, v)
+					for _, fv := range v.fallbacks {
+						noteValidation(ctx, fv.rel, fv.val)
+					}
+					if v.promoted == nil {
+						noteValidation(ctx, cands[v.index].rel, v)
+					}
 					return -1, nil, ctx.Err()
 				}
 				record(v)
@@ -291,7 +336,12 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 		select {
 		case v := <-results:
 			if ctx.Err() != nil {
-				noteValidation(ctx, cands[v.index].rel, v)
+				for _, fv := range v.fallbacks {
+					noteValidation(ctx, fv.rel, fv.val)
+				}
+				if v.promoted == nil {
+					noteValidation(ctx, cands[v.index].rel, v)
+				}
 				return -1, nil, ctx.Err()
 			}
 			record(v)
@@ -309,7 +359,7 @@ func (s *Service) validateRanked(ctx context.Context, cands []candidate, tr *Tra
 	if foregroundOnly {
 		return -1, nil, errors.Join(transient, errOnDemandForeground)
 	}
-	if transient == nil && (len(cands) > limit || (core.IsSpeculative(ctx) && len(cands) > speculativeHealthAttempts)) {
+	if transient == nil && (budgetHit || len(cands) > limit || (core.IsSpeculative(ctx) && len(cands) > speculativeHealthAttempts)) {
 		return -1, nil, errHealthBudget
 	}
 	return -1, nil, transient

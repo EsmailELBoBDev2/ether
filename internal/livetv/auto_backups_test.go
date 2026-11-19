@@ -3,7 +3,9 @@ package livetv
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -516,7 +519,7 @@ func TestAutoBackupsFailoverKeepsRenditionAndLogsChannelNumbers(t *testing.T) {
 		guideUntil: now.Add(time.Hour),
 	}
 
-	dec1, _, err := planner.open(ctx)
+	dec1, rel1, err := planner.open(ctx)
 	if err != nil {
 		t.Fatalf("initial steady open (#2113): %v", err)
 	}
@@ -527,11 +530,18 @@ func TestAutoBackupsFailoverKeepsRenditionAndLogsChannelNumbers(t *testing.T) {
 	primaryDown.Store(true)
 	_ = planner.failed(errSteadyFirstFrame)
 
-	dec2, _, err := planner.open(ctx)
+	dec2, rel2, err := planner.open(ctx)
 	if err != nil {
 		t.Fatalf("backup steady open (#1873): %v", err)
 	}
+	planner.commitReplacement()
+	if rel1 != nil {
+		rel1()
+	}
 	_ = dec2.Close()
+	if rel2 != nil {
+		rel2()
+	}
 	planner.mu.Lock()
 	activeSrc := StreamSource{}
 	if planner.attempt != nil {
@@ -652,4 +662,336 @@ func TestAutoBackupsRequestPathCostDoesNotScaleWithChannelCount(t *testing.T) {
 	if largeSave > smallSave+2 {
 		t.Fatalf("SaveChannel scaled with channel count: small=%d large=%d", smallSave, largeSave)
 	}
+}
+
+type autoBackupRaceDecoder struct {
+	format  transcode.RawFormat
+	video   []byte
+	gate    chan struct{} // when non-nil, blocks before first picture until closed
+	stall   atomic.Bool
+	unblock chan struct{} // when closed while stalled, resumes producing frames
+	tick    int64
+	closed  atomic.Bool
+	closeAt atomic.Int64
+	done    chan struct{}
+	once    sync.Once
+}
+
+func (d *autoBackupRaceDecoder) Next(ctx context.Context) (transcode.RawFrame, error) {
+	if d.tick == 0 && d.gate != nil {
+		select {
+		case <-ctx.Done():
+			return transcode.RawFrame{}, ctx.Err()
+		case <-d.done:
+			return transcode.RawFrame{}, io.EOF
+		case <-d.gate:
+		}
+	}
+	for d.stall.Load() {
+		select {
+		case <-ctx.Done():
+			return transcode.RawFrame{}, ctx.Err()
+		case <-d.done:
+			return transcode.RawFrame{}, io.EOF
+		case <-d.unblock:
+			d.stall.Store(false)
+		}
+	}
+	fps := d.format.FPSNum / d.format.FPSDen
+	frameDur := time.Second / time.Duration(fps)
+	if d.tick > 0 {
+		select {
+		case <-ctx.Done():
+			return transcode.RawFrame{}, ctx.Err()
+		case <-d.done:
+			return transcode.RawFrame{}, io.EOF
+		case <-time.After(frameDur):
+		}
+	}
+	samples := tickSamples(d.format, d.tick)
+	pts := time.Duration(d.tick) * frameDur
+	d.tick++
+	return transcode.RawFrame{
+		Video:          d.video,
+		PCM:            make([]byte, samples*d.format.Channels*2),
+		SourcePTS:      pts,
+		SourcePTSValid: true,
+	}, nil
+}
+
+func (d *autoBackupRaceDecoder) Close() error {
+	d.once.Do(func() {
+		d.closed.Store(true)
+		d.closeAt.Store(time.Now().UnixNano())
+		close(d.done)
+	})
+	return nil
+}
+
+func TestAutoBackupsFailoverUsesParallelReplacementRace(t *testing.T) {
+	runCase := func(t *testing.T, maxConns int, recoverPrimary bool) {
+		t.Helper()
+		db, err := store.OpenMemory(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		synctest.Test(t, func(t *testing.T) {
+			var logBuf lockedBuffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			s := testService(t, Options{
+				DB:     db,
+				Logger: logger,
+				Now:    time.Now,
+			})
+			defer func() {
+				s.Close()
+				synctest.Wait()
+			}()
+			s.inputRelay.host = "127.0.0.1:1"
+			s.inputRelay.grants = map[[sha256.Size]byte]*inputGrant{}
+			s.inputRelay.bySess = map[*session]*inputGrant{}
+
+			ctx := context.Background()
+			if _, err := s.ImportSource(ctx, Source{
+				ID:             "src-news",
+				Name:           "News Lineup",
+				MaxConnections: maxConns,
+				Playlist: strings.Join([]string{
+					"#EXTM3U",
+					`#EXTINF:-1 tvg-chno="2113" tvg-id="FOXNews.us" group-title="US | News",FOX News 1080p60`,
+					"https://provider.invalid/2113.ts",
+					`#EXTINF:-1 tvg-chno="1873" tvg-id="FOXNews.us" group-title="CA | News",FOX News 720p60`,
+					"https://provider.invalid/1873.ts",
+				}, "\n") + "\n",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			e, err := s.sourceEntry(ctx, "src-news")
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.limit = maxConns
+			s.setSourceEntry("src-news", e)
+
+			all, err := s.Channels(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ch2113 Channel
+			for _, c := range all {
+				if c.Number == "2113" {
+					ch2113 = c
+					break
+				}
+			}
+			if len(ch2113.StreamSources) != 2 || ch2113.StreamSources[1].AutoNumber != "1873" {
+				t.Fatalf("#2113 automatic backup not wired: %+v", ch2113.StreamSources)
+			}
+
+			format := transcode.RawFormat{
+				Width:       64,
+				Height:      36,
+				FPSNum:      25,
+				FPSDen:      1,
+				SampleRate:  48000,
+				Channels:    2,
+				PixelFormat: "yuv420p",
+			}
+			baseVid := blackFrame(format, 0).Video
+
+			var mu sync.Mutex
+			var primaryDec, backupDec *autoBackupRaceDecoder
+			var backupSessionID string
+			var decoderFormats []transcode.RawFormat
+			backupOpened := make(chan struct{})
+			backupGate := make(chan struct{})
+			primaryResume := make(chan struct{})
+			var backupOnce sync.Once
+
+			runner := &broadcastFakeRunner{
+				decoder: func(_ context.Context, req transcode.DecoderRequest) (transcode.Decoder, error) {
+					if !strings.HasPrefix(req.InputURL, "http://127.0.0.1:1/") {
+						return &autoBackupRaceDecoder{format: req.Format, video: baseVid, done: make(chan struct{})}, nil
+					}
+					sourceURL := ""
+					s.inputRelay.mu.Lock()
+					for ss := range s.inputRelay.bySess {
+						if ss.info.ID == req.SessionID {
+							sourceURL = ss.inputURL
+							break
+						}
+					}
+					s.inputRelay.mu.Unlock()
+					mu.Lock()
+					decoderFormats = append(decoderFormats, req.Format)
+					mu.Unlock()
+					if strings.HasSuffix(sourceURL, "/1873.ts") {
+						d := &autoBackupRaceDecoder{format: req.Format, video: baseVid, gate: backupGate, done: make(chan struct{})}
+						mu.Lock()
+						backupDec = d
+						backupSessionID = req.SessionID
+						mu.Unlock()
+						backupOnce.Do(func() { close(backupOpened) })
+						return d, nil
+					}
+					d := &autoBackupRaceDecoder{format: req.Format, video: baseVid, unblock: primaryResume, done: make(chan struct{})}
+					mu.Lock()
+					if primaryDec == nil {
+						primaryDec = d
+					}
+					mu.Unlock()
+					return d, nil
+				},
+			}
+
+			now := time.Now()
+			planner := &providerBroadcastPlanner{
+				s:          s,
+				channel:    ch2113,
+				format:     format,
+				runner:     runner,
+				ladder:     newSteadyLadder(),
+				guideFrom:  now.Add(-time.Minute),
+				guideUntil: now.Add(time.Hour),
+			}
+			b, err := newBroadcast(ctx, runner, planner, format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				b.close()
+				synctest.Wait()
+			}()
+			if _, err := b.addRendition(ctx, "main", core.Decision{}); err != nil {
+				t.Fatal(err)
+			}
+			b.start()
+
+			// Let primary #2113 start airing.
+			time.Sleep(time.Second)
+			planner.mu.Lock()
+			firstAttempt := planner.attempt
+			planner.mu.Unlock()
+			if firstAttempt == nil || firstAttempt.link == nil || firstAttempt.src.ID != ch2113.StreamSources[0].ID {
+				t.Fatalf("expected primary #2113 airing, got %+v", firstAttempt)
+			}
+
+			// Mark primary's transport failed and stall its decoder so keepStalled
+			// triggers failover to the #1873 auto-backup.
+			primaryGrant := s.healthGrant(firstAttempt.link.ss)
+			if primaryGrant == nil {
+				t.Fatalf("missing primary health grant")
+			}
+			primaryGrant.snap.Store(&healthSnap{h: UpstreamHealth{Kind: "ts", Failed: true}})
+			mu.Lock()
+			pdec := primaryDec
+			mu.Unlock()
+			pdec.stall.Store(true)
+
+			// Wait for the auto-backup replacement to open and enter the parallel race.
+			select {
+			case <-backupOpened:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("timed out waiting for auto-backup #1873 replacement open; logs:\n%s", logBuf.String())
+			}
+			time.Sleep(2 * time.Second)
+
+			mu.Lock()
+			bdec := backupDec
+			bsid := backupSessionID
+			mu.Unlock()
+			if bsid == "broadcast-"+ch2113.ID {
+				t.Fatalf("auto-backup reused static reservation ID %q", bsid)
+			}
+
+			if maxConns != 1 {
+				// Multi-connection / unlimited: primary stays open while backup races.
+				if pdec.closed.Load() {
+					t.Fatalf("primary #2113 decoder closed before auto-backup #1873 delivered a picture")
+				}
+				if firstAttempt.link.closed.Load() {
+					t.Fatalf("primary #2113 link closed before auto-backup #1873 delivered a picture")
+				}
+				if strings.Contains(logBuf.String(), "live input switched source") {
+					t.Fatalf("logged source switch before replacement delivered a picture:\n%s", logBuf.String())
+				}
+			}
+
+			if recoverPrimary {
+				// Primary recovers before backup delivers a picture: backup must be
+				// aborted and primary must remain on air without logging a switch.
+				primaryGrant.snap.Store(&healthSnap{h: UpstreamHealth{Kind: "ts", Connected: true, LiveSocket: true, StallAfter: tapStallAfter}})
+				close(primaryResume)
+				time.Sleep(time.Second)
+
+				if !bdec.closed.Load() {
+					t.Fatalf("aborted auto-backup #1873 decoder was not closed after primary recovered")
+				}
+				if pdec.closed.Load() {
+					t.Fatalf("primary #2113 decoder closed despite recovering before backup delivered")
+				}
+				planner.mu.Lock()
+				curAttempt := planner.attempt
+				stalled := planner.stalledAttempt
+				planner.mu.Unlock()
+				if curAttempt == nil || curAttempt.src.ID != ch2113.StreamSources[0].ID {
+					t.Fatalf("expected primary #2113 to remain active after recovery, got %+v", curAttempt)
+				}
+				if stalled != nil {
+					t.Fatalf("expected stalledAttempt cleared after abortReplacement")
+				}
+				if strings.Contains(logBuf.String(), "live input switched source") {
+					t.Fatalf("unexpected source switch log after primary recovered:\n%s", logBuf.String())
+				}
+				return
+			}
+
+			// Release backup's first picture and verify clean splice + deferred primary close.
+			releaseAt := time.Now()
+			close(backupGate)
+			time.Sleep(time.Second)
+
+			if !pdec.closed.Load() {
+				t.Fatalf("primary #2113 decoder did not close after auto-backup #1873 delivered a picture")
+			}
+			if maxConns != 1 {
+				if closeAt := time.Unix(0, pdec.closeAt.Load()); closeAt.Before(releaseAt) {
+					t.Fatalf("primary #2113 closed at %v before backup picture release at %v", closeAt, releaseAt)
+				}
+			}
+			planner.mu.Lock()
+			curAttempt := planner.attempt
+			stalled := planner.stalledAttempt
+			planner.mu.Unlock()
+			if curAttempt == nil || curAttempt.src.AutoNumber != "1873" {
+				t.Fatalf("expected auto-backup #1873 active after commit, got %+v", curAttempt)
+			}
+			if stalled != nil {
+				t.Fatalf("expected stalledAttempt cleared after commitReplacement")
+			}
+			mu.Lock()
+			for _, f := range decoderFormats {
+				if f != format {
+					t.Fatalf("decoder format changed across auto-backup failover: got %+v, want %+v", f, format)
+				}
+			}
+			mu.Unlock()
+			logs := logBuf.String()
+			if !strings.Contains(logs, "live input switched source") || !strings.Contains(logs, "from_channel=#2113") || !strings.Contains(logs, "to_channel=#1873") {
+				t.Fatalf("expected committed switch log with duplicate channel numbers:\n%s", logs)
+			}
+		})
+	}
+
+	t.Run("backup_wins_after_delivering_picture", func(t *testing.T) {
+		runCase(t, 2, false)
+	})
+	t.Run("primary_recovers_before_backup_picture", func(t *testing.T) {
+		runCase(t, 2, true)
+	})
+	t.Run("single_connection_same_account_releases_stalled_slot", func(t *testing.T) {
+		runCase(t, 1, false)
+	})
 }

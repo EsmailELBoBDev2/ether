@@ -610,6 +610,7 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 	}
 	deps.Markers = a.markers
 	deps.LibraryTitles = a.libraryTitles
+	deps.Layout = a.personalize
 	if a.pluginsRT != nil && a.pluginsRT.kindCatalog != nil {
 		deps.PluginLibraries = a.pluginsRT.kindCatalog
 	} else if a.libraries != nil {

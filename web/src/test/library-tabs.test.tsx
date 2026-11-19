@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { HomeLayout } from "../lib/contract";
+import type { LayoutPage } from "../lib/contract";
 import type { LibraryTab } from "../pages/libraries/api";
 import { calls, renderApp, settleUi } from "./harness";
 
@@ -13,15 +13,18 @@ function lastPutTabs(fake: Parameters<typeof calls>[0], id: number): LibraryTab[
   return body?.tabs ?? [];
 }
 
-function lastPutLayout(fake: Parameters<typeof calls>[0]): HomeLayout | undefined {
-  const body = calls(fake, "PUT", "/layout").at(-1)?.body as
-    | { layout: HomeLayout }
+function lastPutLibraryLayout(
+  fake: Parameters<typeof calls>[0],
+  id: number,
+): LayoutPage | undefined {
+  const body = calls(fake, "PUT", `/layout/libraries/${id}`).at(-1)?.body as
+    | { page?: LayoutPage }
     | undefined;
-  return body?.layout;
+  return body?.page;
 }
 
 describe("Library tabs page", () => {
-  it("lives on its own top-level Tabs tab (/libraries/<id>/tabs) and links bidirectionally with Home Designer", async () => {
+  it("lives on its own top-level Tabs tab (/libraries/<id>/tabs) without shared standard-rows links", async () => {
     const first = renderApp("/libraries/2/settings");
 
     const nav = await screen.findByRole("tablist", { name: "Library sections" }, WAIT);
@@ -43,58 +46,32 @@ describe("Library tabs page", () => {
     expect(screen.getByRole("button", { name: "Reset to default" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Display Library tab" })).toBeChecked();
 
-    // Uncustomised TV library Recommended tab shows standard rows line + link to /home?section=shows
-    expect(screen.getByText(/Uses the standard rows for TV shows libraries/)).toBeInTheDocument();
-    const editStandardLink = screen.getByRole("link", { name: "Edit standard rows" });
-    expect(editStandardLink).toHaveAttribute("href", "/home?section=shows");
-
-    // Clicking "Edit standard rows" opens Home Designer on "TV libraries", which lists Anime Shows (/libraries/7/tabs)
-    fireEvent.click(editStandardLink);
-    const pageBtn = await screen.findByRole("button", { name: "Page" }, WAIT);
-    expect(pageBtn).toHaveTextContent("TV libraries");
-    expect(
-      screen.getByText(
-        "The standard Recommended rows for every TV library. A library can use its own instead under Libraries › name › Tabs.",
-      ),
-    ).toBeInTheDocument();
-    const animeLink = screen.getByRole("link", { name: "Anime Shows" });
-    expect(animeLink).toHaveAttribute("href", "/libraries/7/tabs");
-
-    fireEvent.click(pageBtn);
-    const pageMenu = screen.getByRole("menu", { name: "Page" });
-    expect(within(pageMenu).getAllByRole("menuitemradio").map((el) => el.textContent)).toEqual([
-      "Home",
-      "Movies libraries",
-      "TV libraries",
-    ]);
-
-    // Clicking the customised library link navigates back to /libraries/7/tabs
-    fireEvent.click(animeLink);
-    expect(
-      await screen.findByRole("switch", { name: "Display All Anime tab" }, WAIT),
-    ).toBeChecked();
+    // Uncustomised library Recommended tab shows its own summary with no shared standard-rows copy or /home link.
+    expect(screen.getByText("Personalized rows")).toBeInTheDocument();
+    expect(screen.queryByText(/Uses the standard rows/i)).toBeNull();
+    expect(screen.queryByRole("link", { name: /Edit standard rows/i })).toBeNull();
 
     first.unmount();
-    // Invalid ?section=library:1 still falls back to Home
+    // Stale ?section=library:1 query param still opens the Home-only Designer with no Page dropdown.
     renderApp("/home?section=library:1");
-    expect(await screen.findByRole("button", { name: "Page" }, WAIT)).toHaveTextContent("Home");
+    expect(
+      await screen.findByRole("tablist", { name: "Designer tools" }, WAIT),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
   });
 
-  it("edits Recommended rows inside the tab sheet (before customising → choose rows → save, and go back to standard rows)", async () => {
+  it("edits Recommended rows directly inside the tab drawer (including row Settings/Content subtabs) and saves to /layout/libraries/<id>", async () => {
     const { fake } = renderApp("/libraries/1/tabs");
 
     await screen.findByRole("switch", { name: "Display Recommended tab" }, WAIT);
-    expect(screen.getByText(/Uses the standard rows for Movies libraries/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Edit standard rows" })).toHaveAttribute(
-      "href",
-      "/home?section=movies",
-    );
+    expect(screen.getByText("Personalized rows")).toBeInTheDocument();
+    expect(screen.queryByText(/Uses the standard rows/i)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Edit Recommended tab" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit Recommended" }, WAIT);
 
-    expect(within(dialog).queryByText(/shared .* layout/i)).toBeNull();
-    expect(within(dialog).queryByText(/everyone's Home/i)).toBeNull();
+    expect(within(dialog).queryByText(/standard rows/i)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /Choose rows for this library/i })).toBeNull();
 
     const rowsSection = within(dialog).getByRole("region", { name: "Rows on this tab" });
     expect(
@@ -102,24 +79,12 @@ describe("Library tabs page", () => {
         "These rows also show on this library's Recommended page in Plex, Jellyfin and Emby.",
       ),
     ).toBeInTheDocument();
-    expect(
-      within(rowsSection).getByText(/Uses the standard rows for Movies libraries/),
-    ).toBeInTheDocument();
-    expect(within(rowsSection).getByRole("link", { name: "Edit standard rows" })).toHaveAttribute(
-      "href",
-      "/home?section=movies",
-    );
-
-    // Customise rows for this library.
-    fireEvent.click(
-      within(rowsSection).getByRole("button", { name: "Choose rows for this library" }),
-    );
-
-    expect(
-      within(rowsSection).getByRole("button", { name: "Go back to the standard rows" }),
-    ).toBeInTheDocument();
     expect(within(rowsSection).getByRole("region", { name: "Pinned rows" })).toBeInTheDocument();
     expect(within(rowsSection).getByRole("region", { name: "Available rows" })).toBeInTheDocument();
+    expect(within(rowsSection).getByRole("region", { name: "Page length" })).toBeInTheDocument();
+    expect(
+      within(rowsSection).getByRole("switch", { name: "Don't repeat what Home shows" }),
+    ).toBeChecked();
 
     // Relevant movie collections appear under Collections; TV-only rows do not.
     const collectionsGroup = within(rowsSection).getByRole("group", { name: "Collections" });
@@ -133,27 +98,54 @@ describe("Library tabs page", () => {
       within(rowsSection).queryByRole("listitem", { name: "Row New Seasons of Your Shows" }),
     ).toBeNull();
 
-    // Hide a row and save; persists library:1 on /layout without converting default tabs to owner.
+    // Clicking a row opens its nested row drawer with Settings and Content subtabs.
     const popularRow = within(rowsSection).getByRole("listitem", {
       name: "Row Popular on This Server",
     });
+    fireEvent.click(within(popularRow).getByText("Popular on This Server"));
+    const rowDialog = await screen.findByRole(
+      "dialog",
+      { name: "Popular on This Server" },
+      WAIT,
+    );
+    const rowSubtabs = within(rowDialog).getByRole("tablist", { name: "Row sections" });
+    expect(
+      within(rowSubtabs)
+        .getAllByRole("tab")
+        .map((el) => el.textContent?.replace(/\d+$/, "").trim()),
+    ).toEqual(["Settings", "Content"]);
+    fireEvent.click(within(rowSubtabs).getByRole("tab", { name: /Content/ }));
+    expect(
+      await within(rowDialog).findByText(
+        /titles? in the current preview for Typical viewer/,
+        undefined,
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(rowDialog).getByRole("button", { name: "Done" }));
+    await waitFor(
+      () => expect(screen.queryByRole("dialog", { name: "Popular on This Server" })).toBeNull(),
+      WAIT,
+    );
+
+    // Hide a row and save; persists library:1 on /layout/libraries/1 without converting default tabs to owner.
     fireEvent.click(within(popularRow).getByRole("radio", { name: "Off" }));
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Save tab" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), WAIT);
 
     await settleUi(() => {
-      expect(calls(fake, "PUT", "/layout")).toHaveLength(1);
+      expect(calls(fake, "PUT", "/layout/libraries/1")).toHaveLength(1);
     });
     expect(calls(fake, "PUT", "/libraries/1/tabs")).toHaveLength(0);
-    expect(lastPutLayout(fake)?.global.find((p) => p.section === "library:1")?.rows).toEqual([
+    expect(lastPutLibraryLayout(fake, 1)?.rows).toEqual([
       { row: "popular-on-server", status: "off" },
     ]);
     expect(await screen.findByText("Personalized rows · Custom rows")).toBeInTheDocument();
     expect(screen.getByText("Default")).toBeInTheDocument();
   });
 
-  it("opens a TV library with customised Recommended rows and lets the owner go back to the standard rows", async () => {
+  it("opens a TV library with customised Recommended rows and resets back to default rows via DELETE /layout/libraries/<id>", async () => {
     const { fake } = renderApp("/libraries/7/tabs?editTab=recommended");
 
     const dialog = await screen.findByRole("dialog", { name: "Edit Recommended" }, WAIT);
@@ -171,32 +163,59 @@ describe("Library tabs page", () => {
       within(collectionsGroup).getByRole("listitem", { name: "Row Recently Added" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(
-      within(rowsSection).getByRole("button", { name: "Go back to the standard rows" }),
-    );
+    fireEvent.click(within(rowsSection).getByRole("button", { name: "Reset to default rows" }));
     expect(
-      within(rowsSection).getByText(/Uses the standard rows for TV shows libraries/),
-    ).toBeInTheDocument();
-    expect(
-      within(rowsSection).getByRole("button", { name: "Choose rows for this library" }),
-    ).toBeInTheDocument();
+      within(rowsSection).queryByRole("button", { name: "Reset to default rows" }),
+    ).toBeNull();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Save tab" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), WAIT);
 
     await settleUi(() => {
-      expect(calls(fake, "PUT", "/layout")).toHaveLength(1);
+      expect(calls(fake, "DELETE", "/layout/libraries/7")).toHaveLength(1);
     });
-    expect(lastPutLayout(fake)?.global.find((p) => p.section === "library:7")).toBeUndefined();
+    expect(await screen.findByText("Personalized rows")).toBeInTheDocument();
   });
 
-  it("renders plugin default tabs on a plugin library and resets to plugin tabs after editing", async () => {
+  it("edits a plugin library's own Recommended rows and resets plugin default tabs independently", async () => {
     const { fake } = renderApp("/libraries/3/tabs");
 
     expect(await screen.findByRole("switch", { name: "Display Subjects tab" }, WAIT)).toBeChecked();
     expect(screen.getByText("Plugin default")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset to plugin tabs" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Display Authors tab" })).toBeChecked();
+
+    // Edit Recommended rows on the Books plugin library.
+    fireEvent.click(screen.getByRole("button", { name: "Edit Recommended tab" }));
+    const recDialog = await screen.findByRole("dialog", { name: "Edit Recommended" }, WAIT);
+    const rowsSection = within(recDialog).getByRole("region", { name: "Rows on this tab" });
+    expect(
+      await within(rowsSection).findByRole("listitem", { name: "Row Recently Added Books" }, WAIT),
+    ).toBeInTheDocument();
+    expect(
+      within(rowsSection).getByRole("listitem", { name: "Row Top Rated Books" }),
+    ).toBeInTheDocument();
+    expect(
+      within(rowsSection).getByRole("listitem", { name: "Row Featured Subjects" }),
+    ).toBeInTheDocument();
+    // Movie/show engine rows do not leak into a plugin library's Recommended editor.
+    expect(
+      within(rowsSection).queryByRole("listitem", { name: "Row Popular on This Server" }),
+    ).toBeNull();
+
+    const topRatedBooks = within(rowsSection).getByRole("listitem", {
+      name: "Row Top Rated Books",
+    });
+    fireEvent.click(within(topRatedBooks).getByRole("radio", { name: "Always" }));
+    fireEvent.click(within(recDialog).getByRole("button", { name: "Save tab" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), WAIT);
+
+    await settleUi(() => {
+      expect(calls(fake, "PUT", "/layout/libraries/3")).toHaveLength(1);
+    });
+    expect(lastPutLibraryLayout(fake, 3)?.rows).toEqual([
+      { row: "plugin.3.top-rated", status: "always" },
+    ]);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Authors tab" }));
     await settleUi(() => {

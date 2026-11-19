@@ -135,11 +135,12 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		if a == nil {
 			// Between attempts: when the input's own transport has recovered
 			// (the tap reconnected after the ladder backed off), open now
-			// rather than at the backed-off retry time.
+			// rather than at the backed-off retry time. Never trigger this
+			// while a stalled current input is still open in a parallel race.
 			p.mu.Lock()
-			link, waiting, retry := p.link, p.waiting, p.retry
+			link, waiting, retry, stalled := p.link, p.waiting, p.retry, p.stalledAttempt
 			p.mu.Unlock()
-			if waiting && link != nil && retry != nil {
+			if stalled == nil && waiting && link != nil && retry != nil {
 				if h, ok := p.s.inputHealth(link.ss); ok && h.Connected && !h.Failed {
 					p.mu.Lock()
 					p.waiting = false
@@ -152,13 +153,24 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		}
 		stressed := a.decoder.stressed(now)
 		h, healthy := p.s.inputHealth(a.link.ss)
-		if healthy && (!h.Connected || h.Stalled || h.Failed || (h.DataAge > steadyStress && h.ReserveDepth < 2*time.Second)) {
+		stressAge := steadyStress
+		if healthy && h.StallAfter > tapStallAfter {
+			stressAge = h.StallAfter
+		}
+		if healthy && (!h.Connected || h.Stalled || h.Failed || (h.DataAge > stressAge && h.ReserveDepth < 2*time.Second)) {
 			stressed = true
 		}
-		// Switch on failure: once the primary stops delivering pictures (or
-		// its tap gave up) a ready standby takes over at once, before the
-		// clock's picture hold would expire.
-		if sb.ready() && (a.decoder.starved(now) || healthy && h.Failed) {
+		if healthy && h.LiveSocket && !h.Failed && h.StallAfter > tapStallAfter && h.DataAge < h.StallAfter && a.decoder.sinceDecoded(now) < h.StallAfter {
+			stressed = false
+		}
+		// Switch on failure: once the primary stops delivering pictures past
+		// its adapted threshold (or its tap gave up) a ready standby takes over
+		// at once, before the clock's picture hold would expire.
+		starved := a.decoder.starved(now)
+		if starved && healthy && h.LiveSocket && !h.Failed && a.decoder.sinceDecoded(now) < h.StallAfter {
+			starved = false
+		}
+		if sb.ready() && (starved || healthy && h.Failed) {
 			p.mu.Lock()
 			retry := p.retry
 			if p.attempt == a && p.standby == sb {
@@ -178,8 +190,9 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		if stressed {
 			p.mu.Lock()
 			p.lastStress = now
+			racing := p.stalledAttempt != nil
 			p.mu.Unlock()
-			if sb == nil {
+			if sb == nil && !racing {
 				serial++
 				p.openStandby(ctx, a.src, serial)
 			}

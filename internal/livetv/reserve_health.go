@@ -15,6 +15,12 @@ type UpstreamHealth struct {
 	Kind string
 	// Connected reports a provider connection that is open and delivering.
 	Connected bool
+	// LiveSocket reports that the tap still holds an open upstream socket
+	// (including across normal inter-burst silence or quiet-socket holds).
+	LiveSocket bool
+	// StallAfter is the source's current stall threshold (adapted upward for
+	// bursty providers).
+	StallAfter time.Duration
 	// DataAge is the time since the provider last delivered: bytes on a TS
 	// tap, a new segment on an HLS playlist.
 	DataAge time.Duration
@@ -28,8 +34,9 @@ type UpstreamHealth struct {
 	// Stalled reports that the provider stopped delivering and Ether is
 	// reconnecting the same source while the reserve plays.
 	Stalled bool
-	// Failed reports that reconnecting the same source has failed repeatedly:
-	// fail over now. The reserve still plays out before the reader sees EOF.
+	// Failed reports that the transport is gone and reconnecting the same
+	// source has failed repeatedly: fail over now. The reserve still plays
+	// out before the reader sees EOF.
 	Failed bool
 	// Reconnects counts spliced same-source reconnects on this input.
 	Reconnects int

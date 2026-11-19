@@ -2,25 +2,203 @@ package personalize
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/state"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
-func TestLibraryLayoutInheritanceAndIsolation(t *testing.T) {
+func TestMigrateLibraryLayoutsUpgradesMoviesAndShowsOnce(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Seed pre-0.3.16 libraries and a legacy HomeLayout containing "movies" and
+	// "shows" pages plus an already-customised "library:3" page.
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS libraries (
+			id INTEGER PRIMARY KEY,
+			source TEXT NOT NULL DEFAULT 'builtin',
+			media_type TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO libraries (id, source, media_type) VALUES
+			(1, 'builtin', 'movie'),
+			(2, 'builtin', 'show'),
+			(3, 'catalog', 'movie'),
+			(4, 'catalog', 'movie'),
+			(9, 'plugin',  'movie');
+		CREATE TABLE IF NOT EXISTS personalize_home_layout (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			document TEXT NOT NULL
+		);
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	dedupeOff := false
+	legacyDoc := core.HomeLayout{
+		Global: []core.LayoutPage{
+			{
+				Section: "home",
+				MaxRows: 6,
+				Rows:    []core.RowPolicy{{Row: "home-anchor", Status: "always", Slot: 1}},
+			},
+			{
+				Section:    "movies",
+				MaxRows:    4,
+				DedupeHome: &dedupeOff,
+				Rows:       []core.RowPolicy{{Row: "movies-anchor", Status: "always", Slot: 1}},
+			},
+			{
+				Section: "shows",
+				MaxRows: 5,
+				Rows:    []core.RowPolicy{{Row: "shows-anchor", Status: "always", Slot: 1}},
+			},
+			{
+				Section: "library:3",
+				MaxRows: 2,
+				Rows:    []core.RowPolicy{{Row: "custom-lib3", Status: "always", Slot: 1}},
+			},
+		},
+		Viewers: []core.ViewerLayout{
+			{
+				UserID: 7,
+				Pages: []core.LayoutPage{
+					{Section: "movies", Rows: []core.RowPolicy{{Row: "viewer-movies", Status: "always", Slot: 2}}},
+					{Section: "shows", Rows: []core.RowPolicy{{Row: "viewer-shows", Status: "always", Slot: 2}}},
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(legacyDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO personalize_home_layout(id, document) VALUES(1, ?)`, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+
+	clk := newClock(testNow)
+	cat := newFakeCatalog(testNow)
+	users := &fakeUsers{}
+	st := state.New(db, state.Options{Now: clk.Now, Logger: quietLogger()})
+	makeEngine := func() *Engine {
+		e, nerr := New(Options{
+			DB: db, Catalog: cat, State: st, Events: st, Users: users,
+			Logger: quietLogger(), Now: clk.Now, Location: time.UTC,
+			RefreshEvery: -1, RebuildDebounce: time.Hour, ColdWait: 5 * time.Second,
+			OwnerRowsWait: 2 * time.Second, FlushEvery: time.Hour,
+			ServerName:  func() string { return "Test Server" },
+			MinRowItems: -1,
+			LibrarySections: func(context.Context) map[int]core.MediaType {
+				return map[int]core.MediaType{
+					1: core.TypeMovie,
+					2: core.TypeShow,
+					3: core.TypeMovie,
+					4: core.TypeMovie,
+				}
+			},
+		})
+		if nerr != nil {
+			t.Fatal(nerr)
+		}
+		return e
+	}
+
+	e1 := makeEngine()
+	migrated, err := e1.HomeLayout(ctx)
+	e1.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range migrated.Global {
+		if p.Section == "movies" || p.Section == "shows" || p.Section == "library:9" {
+			t.Fatalf("unexpected section %q in migrated Global: %+v", p.Section, migrated.Global)
+		}
+	}
+	lib1 := pageFor(migrated.Global, "library:1")
+	lib2 := pageFor(migrated.Global, "library:2")
+	lib3 := pageFor(migrated.Global, "library:3")
+	lib4 := pageFor(migrated.Global, "library:4")
+	if lib1 == nil || lib1.MaxRows != 4 || lib1.DedupeHome == nil || *lib1.DedupeHome || len(lib1.Rows) != 1 || lib1.Rows[0].Row != "movies-anchor" {
+		t.Fatalf("library:1 not migrated from movies: %+v", lib1)
+	}
+	if lib4 == nil || lib4.MaxRows != 4 || len(lib4.Rows) != 1 || lib4.Rows[0].Row != "movies-anchor" {
+		t.Fatalf("library:4 not migrated from movies: %+v", lib4)
+	}
+	if lib2 == nil || lib2.MaxRows != 5 || len(lib2.Rows) != 1 || lib2.Rows[0].Row != "shows-anchor" {
+		t.Fatalf("library:2 not migrated from shows: %+v", lib2)
+	}
+	if lib3 == nil || lib3.MaxRows != 2 || len(lib3.Rows) != 1 || lib3.Rows[0].Row != "custom-lib3" {
+		t.Fatalf("existing library:3 customisation overwritten: %+v", lib3)
+	}
+	if len(migrated.Viewers) != 1 {
+		t.Fatalf("expected 1 viewer layout, got %+v", migrated.Viewers)
+	}
+	for _, vp := range migrated.Viewers[0].Pages {
+		if vp.Section == "movies" || vp.Section == "shows" {
+			t.Fatalf("legacy viewer section %q survived migration", vp.Section)
+		}
+	}
+	if pageFor(migrated.Viewers[0].Pages, "library:1") == nil || pageFor(migrated.Viewers[0].Pages, "library:2") == nil {
+		t.Fatalf("viewer overrides not migrated to library:<id>: %+v", migrated.Viewers[0].Pages)
+	}
+
+	// Clearing library:4 stays cleared across engine restarts (migration runs once).
+	e2 := makeEngine()
+	var kept []core.LayoutPage
+	for _, p := range migrated.Global {
+		if p.Section != "library:4" {
+			kept = append(kept, p)
+		}
+	}
+	migrated.Global = kept
+	if _, err := e2.SetHomeLayout(ctx, migrated); err != nil {
+		e2.Close()
+		t.Fatal(err)
+	}
+	e2.Close()
+
+	e3 := makeEngine()
+	afterRestart, err := e3.HomeLayout(ctx)
+	e3.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageFor(afterRestart.Global, "library:4") != nil {
+		t.Fatalf("library:4 reappeared on restart: %+v", afterRestart.Global)
+	}
+}
+
+func TestLibraryLayoutsHaveZeroInheritanceAndRejectSectionSurfaces(t *testing.T) {
 	hc := hubContext(testNow, core.DeviceTV)
 	dedupeOff := false
 
 	doc := core.HomeLayout{
 		Global: []core.LayoutPage{
 			{
-				Section:    "movies",
+				Section: "home",
+				MaxRows: 1,
+				Rows: []core.RowPolicy{
+					{Row: "home-only", Status: "always", Slot: 1},
+					{Row: "plain", Status: "off"},
+				},
+			},
+			{
+				Section:    "library:1",
 				MaxRows:    2,
 				DedupeHome: &dedupeOff,
 				Rows: []core.RowPolicy{
-					{Row: "movies-anchor", Status: "always", Slot: 1},
-					{Row: "hidden-in-movies", Status: "off"},
+					{Row: "lib1-anchor", Status: "always", Slot: 1},
+					{Row: "plain", Status: "off"},
 				},
 			},
 		},
@@ -29,8 +207,8 @@ func TestLibraryLayoutInheritanceAndIsolation(t *testing.T) {
 				UserID: 7,
 				Pages: []core.LayoutPage{
 					{
-						Section: "movies",
-						Rows:    []core.RowPolicy{{Row: "viewer-movies", Status: "always", Slot: 2}},
+						Section: "library:1",
+						Rows:    []core.RowPolicy{{Row: "viewer-lib1", Status: "always", Slot: 2}},
 					},
 				},
 			},
@@ -42,55 +220,31 @@ func TestLibraryLayoutInheritanceAndIsolation(t *testing.T) {
 		t.Fatalf("normalizeHomeLayout: %v", err)
 	}
 
-	// Uncustomised library:3 inherits both Global "movies" and Viewer "movies".
-	inherited := arrangeLayoutFor(
-		sampleRows("plain", "hidden-in-movies", "viewer-movies", "movies-anchor"),
-		normalized, 7, hc, "library:3", "movies", 10,
-	)
-	if got := visibleIDs(inherited); !reflect.DeepEqual(got, []string{"movies-anchor", "viewer-movies"}) {
-		t.Fatalf("inherited library:3 visibleIDs = %v, want [movies-anchor viewer-movies]", got)
-	}
-	if resolveDedupeHomeFor(normalized, 7, "library:3", "movies") {
-		t.Fatal("expected library:3 to inherit DedupeHome=false from movies")
-	}
-
-	// Once library:3 defines its own Global page, it stops inheriting "movies"
-	// while library:1 keeps inheriting "movies".
-	dedupeOn := true
-	doc.Global = append(doc.Global, core.LayoutPage{
-		Section:    "library:3",
-		MaxRows:    3,
-		DedupeHome: &dedupeOn,
-		Rows: []core.RowPolicy{
-			{Row: "hidden-in-movies", Status: "always", Slot: 1},
-			{Row: "movies-anchor", Status: "off"},
-		},
-	})
-	normalized, err = normalizeHomeLayout(doc)
-	if err != nil {
-		t.Fatalf("normalizeHomeLayout with library:3: %v", err)
-	}
-
-	lib3 := arrangeLayoutFor(
-		sampleRows("plain", "hidden-in-movies", "viewer-movies", "movies-anchor"),
-		normalized, 7, hc, "library:3", "movies", 10,
-	)
-	if got := visibleIDs(lib3); !reflect.DeepEqual(got, []string{"hidden-in-movies", "plain", "viewer-movies"}) {
-		t.Fatalf("customised library:3 visibleIDs = %v, want [hidden-in-movies plain viewer-movies]", got)
-	}
-	if !resolveDedupeHomeFor(normalized, 7, "library:3", "movies") {
-		t.Fatal("expected customised library:3 DedupeHome=true")
-	}
-
+	// library:1 gets its own Global + Viewer policies.
 	lib1 := arrangeLayoutFor(
-		sampleRows("plain", "hidden-in-movies", "viewer-movies", "movies-anchor"),
-		normalized, 7, hc, "library:1", "movies", 10,
+		sampleRows("plain", "viewer-lib1", "lib1-anchor", "home-only"),
+		normalized, 7, hc, "library:1", 10,
 	)
-	if got := visibleIDs(lib1); !reflect.DeepEqual(got, []string{"movies-anchor", "viewer-movies"}) {
-		t.Fatalf("uncustomised library:1 visibleIDs = %v, want [movies-anchor viewer-movies]", got)
+	if got := visibleIDs(lib1); !reflect.DeepEqual(got, []string{"lib1-anchor", "viewer-lib1"}) {
+		t.Fatalf("library:1 visibleIDs = %v, want [lib1-anchor viewer-lib1]", got)
+	}
+	if resolveDedupeHome(normalized, 7, "library:1") {
+		t.Fatal("expected library:1 DedupeHome=false")
 	}
 
-	for _, bad := range []string{"library:", "library:0", "library:-2", "library:abc"} {
+	// library:3 has no page in doc: it inherits NOTHING from home or library:1.
+	lib3 := arrangeLayoutFor(
+		sampleRows("plain", "viewer-lib1", "lib1-anchor", "home-only"),
+		normalized, 7, hc, "library:3", 10,
+	)
+	if got := visibleIDs(lib3); !reflect.DeepEqual(got, []string{"plain", "viewer-lib1", "lib1-anchor", "home-only"}) {
+		t.Fatalf("uncustomised library:3 inherited policies from home/library:1: got %v", got)
+	}
+	if !resolveDedupeHome(normalized, 7, "library:3") {
+		t.Fatal("expected uncustomised library:3 DedupeHome default true")
+	}
+
+	for _, bad := range []string{"movies", "shows", "library:", "library:0", "library:-2", "library:abc"} {
 		if _, err := normalizeHomeLayout(core.HomeLayout{
 			Global: []core.LayoutPage{{Section: bad}},
 		}); err == nil {
@@ -128,7 +282,12 @@ func TestSectionHubsAndPreviewHonorPerLibraryLayout(t *testing.T) {
 	_, err = h.e.SetHomeLayout(ctx, core.HomeLayout{
 		Global: []core.LayoutPage{
 			{
-				Section: "movies",
+				Section: "home",
+				MaxRows: 1,
+				Rows:    []core.RowPolicy{{Row: firstID, Status: "off"}},
+			},
+			{
+				Section: "library:1",
 				Rows:    []core.RowPolicy{{Row: firstID, Status: "always", Slot: 1}},
 			},
 			{
@@ -167,39 +326,43 @@ func TestSectionHubsAndPreviewHonorPerLibraryLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreviewHome(library:3): %v", err)
 	}
-	vis3 := visibleIDs(prev3.Rows)
-	if !reflect.DeepEqual(vis3, []string{secondID}) {
+	if vis3 := visibleIDs(prev3.Rows); !reflect.DeepEqual(vis3, []string{secondID}) {
 		t.Fatalf("PreviewHome(library:3) visible = %v, want [%s]", vis3, secondID)
 	}
 
-	_, err = h.e.SetHomeLayout(ctx, core.HomeLayout{
+	for _, legacy := range []string{"movies", "shows"} {
+		if _, err := h.e.PreviewHome(ctx, &u, hubContext(testNow, core.DeviceTV), legacy, 10); err == nil {
+			t.Fatalf("expected PreviewHome(%q) to fail validation", legacy)
+		}
+	}
+}
+
+func TestPreviewCandidateRowsArrangesPluginShelves(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	u := &core.User{ID: 1, IsOwner: true}
+	candidates := []core.HomeRow{
+		{HubID: "plugin:9:added", Title: "Recently Added", Kind: "recentlyAdded", Items: []core.Title{{Key: 901, Title: "Clip A"}}},
+		{HubID: "plugin:9:released", Title: "Newest", Kind: "recentlyReleased", Items: []core.Title{{Key: 902, Title: "Clip B"}}},
+		{HubID: "plugin:9:rating", Title: "Top Rated", Kind: "topRated", Items: []core.Title{{Key: 903, Title: "Clip C"}}},
+	}
+	draft := core.HomeLayout{
 		Global: []core.LayoutPage{
 			{
-				Section: "movies",
-				Rows:    []core.RowPolicy{{Row: firstID, Status: "always", Slot: 1}},
-			},
-			{
-				Section: "library:1",
-				MaxRows: 1,
-				Rows:    []core.RowPolicy{{Row: secondID, Status: "always", Slot: 1}, {Row: firstID, Status: "off"}},
+				Section: "library:9",
+				MaxRows: 2,
+				Rows: []core.RowPolicy{
+					{Row: "plugin:9:rating", Status: "always", Slot: 1},
+					{Row: "plugin:9:added", Status: "off"},
+				},
 			},
 		},
-	})
+	}
+	prev, err := h.e.PreviewCandidateRows(ctx, u, hubContext(testNow, core.DeviceTV), "library:9", 8, draft, candidates)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("PreviewCandidateRows: %v", err)
 	}
-	prevMovies, err := h.e.PreviewHome(ctx, &u, hubContext(testNow, core.DeviceTV), "movies", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if visMovies := visibleIDs(prevMovies.Rows); len(visMovies) == 0 || visMovies[0] != firstID {
-		t.Fatalf("PreviewHome(movies) visible = %v, want %q first", visMovies, firstID)
-	}
-	prevLib1, err := h.e.PreviewHome(ctx, &u, hubContext(testNow, core.DeviceTV), "library:1", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if visLib1 := visibleIDs(prevLib1.Rows); !reflect.DeepEqual(visLib1, []string{secondID}) {
-		t.Fatalf("PreviewHome(library:1) visible = %v, want [%s]", visLib1, secondID)
+	if got := visibleIDs(prev.Rows); !reflect.DeepEqual(got, []string{"plugin:9:rating", "plugin:9:released"}) {
+		t.Fatalf("PreviewCandidateRows visible = %v, want [plugin:9:rating plugin:9:released]", got)
 	}
 }

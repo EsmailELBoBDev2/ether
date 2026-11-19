@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
+	"github.com/braedonsaunders/ether/internal/animemap"
 	"github.com/braedonsaunders/ether/internal/cardigann"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -22,6 +24,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/stremio"
 	"github.com/braedonsaunders/ether/internal/sysload"
 	"github.com/braedonsaunders/ether/internal/usenet"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
@@ -52,8 +55,44 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	}
 	a.cache.SetDiskUsage(diskUsage)
 	a.configureCache(cfg.Cache)
-	a.engine = stream.New(a.fetcher, a.cache, stream.OptionsFromConfig(cfg), log.With("component", "stream"))
+	a.engine = stream.New(a.fetcher, a.cache, a.vaultStreamOptions(cfg), log.With("component", "stream"))
 	a.closers = append(a.closers, func() { a.engine.Close() })
+
+	shared := cfg.Cache.Storage == "shared"
+	local, err := vault.Open(ctx, vault.Options{Dir: filepath.Join(cacheDir, "vault"), DB: a.db, Sealer: a.cfg, NodeID: a.cacheNodeID(), Shared: shared, Logger: log.With("component", "vault")})
+	if err != nil {
+		return fmt.Errorf("open vault: %w", err)
+	}
+	a.vault = a.clusterVault(ctx, local, shared)
+	legacyDir := filepath.Join(dataDir, "nzb")
+	var migrated atomic.Bool
+	if m, ok := local.(vault.Migrator); ok {
+		migrationCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// Pass after pass until the old directory is empty: files that
+			// failed (a Windows sharing violation, a busy database) stay
+			// readable and are retried with a growing pause.
+			for wait := time.Minute; ; wait = min(wait*2, time.Hour) {
+				err := m.MigrateDir(migrationCtx, legacyDir)
+				if err == nil {
+					migrated.Store(true)
+					return
+				}
+				if migrationCtx.Err() != nil {
+					return
+				}
+				log.Warn("NZB migration incomplete; retrying", "err", err, "retryIn", wait)
+				select {
+				case <-migrationCtx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
+		}()
+		a.closers = append(a.closers, func() { cancel(); <-done })
+	}
 
 	// Indexers and resolver.
 	indexerHosts := newznab.NewHostLimiter(0)
@@ -62,12 +101,30 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		siteOpts.LoginLock = a.clusterLoginLock // one login per site across nodes
 	}
 	a.sites = cardigann.New(siteOpts)
+	var animeCacheDir string
+	if dataDir != "" {
+		animeCacheDir = filepath.Join(dataDir, "cache", "animemap")
+	}
+	animeMap := animemap.New(animemap.Options{CacheDir: animeCacheDir, Logger: log.With("component", "animemap")})
 	specials := stremio.NewSpecialMapper(egress.Client(egress.CapStremio, 3*time.Second), "https://v3-cinemeta.strem.io")
-	a.addons = stremio.NewServiceWithOptions(stremio.Options{Specials: specials})
+	a.addons = stremio.NewServiceWithOptions(stremio.Options{Anime: animeMap, Specials: specials})
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
 		Logger:         log.With("component", "newznab"),
 		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
-		NZBDir:         filepath.Join(dataDir, "nzb"),
+		Vault:          a.vault,
+		LegacyNZBDir: func() string {
+			if migrated.Load() {
+				return ""
+			}
+			return legacyDir
+		},
+		PublicIndexer: func(ctx context.Context, ix config.Indexer) bool {
+			if !ix.IsBuiltin() {
+				return false
+			}
+			d, err := a.sites.Definition(ctx, ix.Definition)
+			return err == nil && d.Type == "public"
+		},
 		ClientIdentity: cfg.ClientIdentity,
 		HostLimiter:    indexerHosts,
 		Backend: func(ix config.Indexer) (newznab.Backend, error) {
@@ -96,6 +153,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		}
 		return a.livetv.AcquireProvider(ctx, id)
 	}, DB: a.db, Logger: log.With("component", "debrid"), OnChange: a.publishDashboard})
+	a.debrid.SetVault(a.vault)
 	ss := a.initStreamSources(a.indexers)
 	ss.SetAnimeIDs(a.addons.AnimeIDs())
 	ss.SetSpecialEpisodes(specials)
@@ -122,16 +180,18 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	indexer := core.Indexer(parityIndexer(a.sources, dataDir))
 	health := core.HealthChecker(parityHealth(a.media, dataDir))
 	animeCour := resolver.AnimeCour(a.addons)
+	animeIDs := resolver.AnimeIDs(animeMap)
 	usenetServing := func() bool {
 		return a.fetcher == nil || a.fetcher.HasServingProvider()
 	}
 	if a.opts.FixtureMedia != nil {
 		indexer, health = a.opts.FixtureMedia, a.opts.FixtureMedia
 		animeCour = nil
+		animeIDs = nil
 		usenetServing = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
-	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
+	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{Vault: a.vault, Verifier: a.vaultVerifier(), EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
 		if a.episodeorder == nil {
 			return core.ReleaseNumbering{}, nil
 		}
@@ -157,7 +217,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			}
 			return sceneNumbers.Lookup(ctx, req, func() (core.EpisodeLayout, error) { return a.catalog.ReleaseEpisodeLayout(ctx, show) })
 		}
-	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
+	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, AnimeIDs: animeIDs, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)
 	a.closers = append(a.closers, func() { a.resolver.Close() })
 

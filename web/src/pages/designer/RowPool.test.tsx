@@ -414,3 +414,63 @@ it("does not bulk edit a selected row hidden by an inline status change", () => 
   fireEvent.click(within(status).getByRole("radio", { name: "Off" }));
   expect(screen.queryByRole("region", { name: "Selected rows" })).toBeNull();
 });
+
+
+describe("row drawer Settings and Content subtabs", () => {
+  it("opens the drawer when clicking the row body and switches between Settings and Content", () => {
+    render(
+      <MemoryRouter>
+        <RowPoolWithPreview />
+      </MemoryRouter>,
+    );
+    const card = screen.getByRole("listitem", { name: "Row Top 10" });
+    fireEvent.click(within(card).getByText("Top 10"));
+
+    const dialog = screen.getByRole("dialog", { name: "Top 10" });
+    const settingsTab = within(dialog).getByRole("tab", { name: "Settings" });
+    const contentTab = within(dialog).getByRole("tab", { name: /Content/ });
+    expect(settingsTab.getAttribute("aria-selected")).toBe("true");
+    expect(within(dialog).getByRole("region", { name: "Visibility" })).toBeTruthy();
+    expect(within(dialog).getByRole("region", { name: "Appearance" })).toBeTruthy();
+    expect(within(dialog).getByRole("region", { name: "Position and frequency" })).toBeTruthy();
+
+    fireEvent.click(contentTab);
+    expect(contentTab.getAttribute("aria-selected")).toBe("true");
+    expect(within(dialog).getAllByText("Arrival")[0]).toBeTruthy();
+    expect(within(dialog).getAllByText("Dune")[0]).toBeTruthy();
+  });
+});
+
+function RowPoolWithPreview() {
+  const [focus, setFocus] = useState<string | null>(null);
+  return (
+    <RowPool
+      draft={EMPTY_LAYOUT}
+      onChange={() => {}}
+      layer="global"
+      section="home"
+      viewers={[]}
+      available={picks}
+      focusRow={focus}
+      onFocusRow={setFocus}
+      preview={{
+        generatedAt: "2026-11-19T12:00:00Z",
+        context: { device: "tv", daypart: "evening", weekend: false },
+        rows: [
+          {
+            hubId: "home.top10",
+            title: "Top 10 for You",
+            kind: "top-10",
+            reason: "Ranked for your taste.",
+            score: 0.9,
+            source: "engine",
+            items: [
+              { key: "m1", type: "movie", title: "Arrival", year: 2016 },
+              { key: "m2", type: "movie", title: "Dune", year: 2021 },
+            ],
+          },
+        ],
+      }}
+    />
+  );
+}

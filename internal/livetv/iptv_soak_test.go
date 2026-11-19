@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -44,38 +45,88 @@ type soakScript struct {
 	stability        string
 	serverStability  string
 	channelStability string
+	width            int
+	height           int
+	fps              int
 	maxConnections   int
 	tuneGap          time.Duration
 	startupBurst     time.Duration
 	burstEvery       time.Duration // if >0, deliver media in bursts separated by quiet gaps (Mad Net style)
 	http2SinglePkt   bool          // send first TS packet alone in initial read (HTTP/2 small DATA frame)
+	decoderGapAt     time.Duration // if >0, inject a decoder stall without transport failure
+	decoderGap       time.Duration
 	duration         time.Duration
 	faults           []soakFault
 }
 
 type soakMetrics struct {
-	tunedIn           time.Duration
-	framesTotal       int
-	liveFrames        int
-	heldFrames        int
-	screenFrames      int
-	blackFrames       int
-	segmentsPublished int
-	maxSegmentGap     time.Duration
-	maxPublishLag     time.Duration
-	latePublishes     int // lag > 500ms (the old 1s margin/2 threshold)
-	lateOverMargin    int // lag > continuous client margin/2
-	teardowns         int // decoder opens after initial tune
-	providerOpens     int
-	maxConcurrentOpen int
-	minOpenGap        time.Duration
-	peakReserve       time.Duration
-	minPostPeakRes    time.Duration
-	endReserve        time.Duration
-	postDrainReserve  time.Duration
-	endLiveLag        time.Duration
-	playlistGaps      int
-	avSyncDrift       time.Duration
+	tunedIn            time.Duration
+	framesTotal        int
+	liveFrames         int
+	heldFrames         int
+	holdEpisodes       int
+	trailingHoldFrames int
+	screenFrames       int
+	blackFrames        int
+	droppedFrames      int
+	fastOutputTicks    int
+	inputLostLogs      int
+	adaptedStallAfter  time.Duration
+	segmentsPublished  int
+	maxSegmentGap      time.Duration
+	maxPublishLag      time.Duration
+	latePublishes      int // lag > 500ms (the old 1s margin/2 threshold)
+	lateOverMargin     int // lag > continuous client margin/2
+	teardowns          int // decoder opens after initial tune
+	providerOpens      int
+	maxConcurrentOpen  int
+	minOpenGap         time.Duration
+	peakReserve        time.Duration
+	minPostPeakRes     time.Duration
+	endReserve         time.Duration
+	postDrainReserve   time.Duration
+	endLiveLag         time.Duration
+	playlistGaps       int
+	avSyncDrift        time.Duration
+}
+
+type soakLogState struct {
+	mu                sync.Mutex
+	inputLost         int
+	adaptedStallAfter time.Duration
+	burstFinishedAt   time.Time
+}
+
+type soakLogHandler struct {
+	state *soakLogState
+}
+
+func (h *soakLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *soakLogHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *soakLogHandler) WithGroup(string) slog.Handler            { return h }
+func (h *soakLogHandler) Handle(_ context.Context, r slog.Record) error {
+	switch r.Message {
+	case "live input lost":
+		h.state.mu.Lock()
+		h.state.inputLost++
+		h.state.mu.Unlock()
+	case "live provider stall threshold adapted":
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "stall_after" {
+				h.state.mu.Lock()
+				h.state.adaptedStallAfter = a.Value.Resolve().Duration()
+				h.state.mu.Unlock()
+			}
+			return true
+		})
+	case "broadcast startup burst finished":
+		h.state.mu.Lock()
+		if h.state.burstFinishedAt.IsZero() {
+			h.state.burstFinishedAt = time.Now()
+		}
+		h.state.mu.Unlock()
+	}
+	return nil
 }
 
 // soakProvider simulates an MPEG-TS over HTTP/2 IPTV provider in synctest virtual time.
@@ -98,6 +149,13 @@ func newSoakProvider(origin time.Time, cfg soakScript) *soakProvider {
 		cfg:            cfg,
 		faultTriggered: map[int]bool{},
 	}
+}
+
+func (p *soakProvider) fps() int {
+	if p.cfg.fps > 0 {
+		return p.cfg.fps
+	}
+	return 25
 }
 
 func (p *soakProvider) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -160,8 +218,13 @@ func (p *soakProvider) stream(ctx context.Context, pw *io.PipeWriter, connNo int
 		}
 	}
 
-	const fps = 25
-	const frameDur = time.Second / fps // 40ms
+	fps := p.fps()
+	frameDur := time.Second / time.Duration(fps)
+	dtsStep := int64(tsClockHz / fps)
+	gop := 12
+	if fps >= 50 {
+		gop = 30
+	}
 	const baseMedia = 20 * time.Second
 
 	liveFrameAt := func(now time.Time) int {
@@ -171,19 +234,19 @@ func (p *soakProvider) stream(ctx context.Context, pw *io.PipeWriter, connNo int
 	now := time.Now()
 	burstFrames := int(p.cfg.startupBurst / frameDur)
 	curFrame := max(0, liveFrameAt(now)-burstFrames)
-	curFrame -= curFrame % 12
+	curFrame -= curFrame % gop
 
 	gen := &tsGen{
 		cc:        map[int]byte{},
-		dts:       int64(curFrame)*3600 + 90000,
+		dts:       int64(curFrame)*dtsStep + 90000,
 		frame:     curFrame,
-		gop:       12,
+		gop:       gop,
 		audioLead: 0,
 	}
 
 	emitFrame := func(seq int, singleFirst bool) bool {
 		gen.frame = seq
-		gen.dts = int64(seq)*3600 + 90000
+		gen.dts = int64(seq)*dtsStep + 90000
 		raw := soakTSFrame(gen, uint64(seq))
 		if singleFirst && len(raw) > tsPacket {
 			if _, err := pw.Write(raw[:tsPacket]); err != nil {
@@ -248,7 +311,7 @@ func (p *soakProvider) stream(ctx context.Context, pw *io.PipeWriter, connNo int
 				now = time.Now()
 				if !activeFault.flushStale {
 					live := liveFrameAt(now)
-					live -= live % 12
+					live -= live % gop
 					if live > curFrame {
 						curFrame = live
 					}
@@ -262,7 +325,7 @@ func (p *soakProvider) stream(ctx context.Context, pw *io.PipeWriter, connNo int
 			}
 			now = time.Now()
 			live := liveFrameAt(now)
-			live -= live % 12
+			live -= live % gop
 			if live > curFrame {
 				curFrame = live
 			}
@@ -623,7 +686,11 @@ func (e *soakEncoder) RecentPublishLag() time.Duration {
 
 type soakTranscoder struct {
 	*fakeTranscoder
+	origin       time.Time
+	cfg          soakScript
+	channelID    atomic.Pointer[string]
 	svc          atomic.Pointer[Service]
+	gapTriggered atomic.Bool
 	mu           sync.Mutex
 	encoders     []*soakEncoder
 	liveDecoders int
@@ -649,10 +716,20 @@ func (t *soakTranscoder) Probe(ctx context.Context, input string) (*core.MediaIn
 			return nil, err
 		}
 	}
+	w, h, fps := t.cfg.width, t.cfg.height, t.cfg.fps
+	if w <= 0 {
+		w = 64
+	}
+	if h <= 0 {
+		h = 36
+	}
+	if fps <= 0 {
+		fps = 25
+	}
 	return &core.MediaInfo{
 		Container: "mpegts",
 		Streams: []core.StreamInfo{
-			{Index: 0, Type: "video", Codec: "h264", Width: 64, Height: 36, FrameRate: 25},
+			{Index: 0, Type: "video", Codec: "h264", Width: w, Height: h, FrameRate: float64(fps)},
 			{Index: 1, Type: "audio", Codec: "aac", Channels: 2, SampleRate: 48000},
 		},
 	}, nil
@@ -668,7 +745,11 @@ func (t *soakTranscoder) StartEncoder(_ context.Context, req transcode.EncoderRe
 
 func (t *soakTranscoder) StartDecoder(ctx context.Context, req transcode.DecoderRequest) (transcode.Decoder, error) {
 	if !strings.HasPrefix(req.InputURL, "http://127.0.0.1:1/") {
-		return &soakScreenDecoder{format: req.Format, closed: make(chan struct{})}, nil
+		base := blackFrame(req.Format, 0).Video
+		if len(base) > 0 {
+			base[0] = 32
+		}
+		return &soakScreenDecoder{format: req.Format, video: base, closed: make(chan struct{})}, nil
 	}
 	s := t.svc.Load()
 	rc, _, err := openInMemoryRelay(ctx, s, req.InputURL)
@@ -678,11 +759,12 @@ func (t *soakTranscoder) StartDecoder(ctx context.Context, req transcode.Decoder
 	t.mu.Lock()
 	t.liveDecoders++
 	t.mu.Unlock()
-	return newSoakTSDecoder(ctx, rc, req.Format), nil
+	return newSoakTSDecoder(ctx, rc, req.Format, t), nil
 }
 
 type soakScreenDecoder struct {
 	format transcode.RawFormat
+	video  []byte
 	tick   int64
 	closed chan struct{}
 	once   sync.Once
@@ -696,12 +778,12 @@ func (d *soakScreenDecoder) Next(ctx context.Context) (transcode.RawFrame, error
 		return transcode.RawFrame{}, io.EOF
 	default:
 	}
-	f := blackFrame(d.format, tickSamples(d.format, d.tick))
+	samples := tickSamples(d.format, d.tick)
 	d.tick++
-	if len(f.Video) > 0 {
-		f.Video[0] = 32
-	}
-	return f, nil
+	return transcode.RawFrame{
+		Video: d.video,
+		PCM:   make([]byte, samples*d.format.Channels*2),
+	}, nil
 }
 
 func (d *soakScreenDecoder) Close() error {
@@ -709,22 +791,83 @@ func (d *soakScreenDecoder) Close() error {
 	return nil
 }
 
+const (
+	soakVideoSlots  = 512
+	soakVideoStride = 32
+)
+
 type soakTSDecoder struct {
-	rc     io.ReadCloser
-	br     *bufio.Reader
-	format transcode.RawFormat
-	tick   int64
-	phase  float64
-	once   sync.Once
+	rc         io.ReadCloser
+	br         *bufio.Reader
+	format     transcode.RawFormat
+	tc         *soakTranscoder
+	frameBytes int
+	videoArena []byte
+	tick       int64
+	phase      float64
+	once       sync.Once
 }
 
-func newSoakTSDecoder(ctx context.Context, rc io.ReadCloser, format transcode.RawFormat) *soakTSDecoder {
-	d := &soakTSDecoder{rc: rc, br: bufio.NewReaderSize(rc, 32<<10), format: format}
+func newSoakTSDecoder(ctx context.Context, rc io.ReadCloser, format transcode.RawFormat, tc *soakTranscoder) *soakTSDecoder {
+	base := blackFrame(format, 0).Video
+	frameBytes := len(base)
+	// Share one compact backing slice across 512 disjoint 32-byte header slots
+	// so 1080p60 synctest runs use ~3.1 MB instead of allocating multi-GB buffers.
+	arena := make([]byte, soakVideoSlots*soakVideoStride+frameBytes)
+	for i := range arena {
+		arena[i] = soakVideoBlack
+	}
+	d := &soakTSDecoder{
+		rc:         rc,
+		br:         bufio.NewReaderSize(rc, 32<<10),
+		format:     format,
+		tc:         tc,
+		frameBytes: frameBytes,
+		videoArena: arena,
+	}
 	context.AfterFunc(ctx, func() { _ = d.Close() })
 	return d
 }
 
+func (d *soakTSDecoder) maybeInjectDecoderGap(ctx context.Context) error {
+	if d.tc == nil || d.tc.cfg.decoderGap <= 0 || d.tc.cfg.decoderGapAt <= 0 {
+		return nil
+	}
+	if time.Since(d.tc.origin) < d.tc.cfg.decoderGapAt {
+		return nil
+	}
+	if !d.tc.gapTriggered.CompareAndSwap(false, true) {
+		return nil
+	}
+	// Let already-queued frames in broadcastInput.frames drain first so the
+	// broadcast clock experiences the full scripted decoder gap without any
+	// upstream transport fault.
+	if s := d.tc.svc.Load(); s != nil {
+		if chID := d.tc.channelID.Load(); chID != nil {
+			if b := s.broadcasts.running(broadcastKey{channelID: *chID}); b != nil && b.current != nil {
+				ch := b.current.frames
+				for len(ch) > 0 {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d.tc.cfg.decoderGap):
+		return nil
+	}
+}
+
 func (d *soakTSDecoder) Next(ctx context.Context) (transcode.RawFrame, error) {
+	if err := d.maybeInjectDecoderGap(ctx); err != nil {
+		return transcode.RawFrame{}, err
+	}
 	stop := context.AfterFunc(ctx, func() { _ = d.rc.Close() })
 	defer stop()
 	var pkt [tsPacket]byte
@@ -756,25 +899,30 @@ func (d *soakTSDecoder) Next(ctx context.Context) (transcode.RawFrame, error) {
 			}
 		case id == 0x101 && !pusi && haveVideo:
 			samples := tickSamples(d.format, d.tick)
-			f := blackFrame(d.format, samples)
-			f.Video[0] = soakVideoLive
-			if len(f.Video) >= 17 {
-				binary.BigEndian.PutUint64(f.Video[1:9], soakFrameMagic)
-				binary.BigEndian.PutUint64(f.Video[9:17], seq)
+			slot := int(d.tick%soakVideoSlots) * soakVideoStride
+			vid := d.videoArena[slot : slot+d.frameBytes]
+			vid[0] = soakVideoLive
+			if len(vid) >= 17 {
+				binary.BigEndian.PutUint64(vid[1:9], soakFrameMagic)
+				binary.BigEndian.PutUint64(vid[9:17], seq)
 			}
+			pcm := make([]byte, samples*d.format.Channels*2)
 			step := 2 * math.Pi * 440.0 / float64(d.format.SampleRate)
 			for i := range samples {
 				v := int16(math.Round(12000 * math.Sin(d.phase)))
 				d.phase += step
 				for ch := range d.format.Channels {
 					off := (i*d.format.Channels + ch) * 2
-					binary.LittleEndian.PutUint16(f.PCM[off:], uint16(v))
+					binary.LittleEndian.PutUint16(pcm[off:], uint16(v))
 				}
 			}
-			f.SourcePTS = time.Duration(pts) * time.Second / tsClockHz
-			f.SourcePTSValid = true
 			d.tick++
-			return f, nil
+			return transcode.RawFrame{
+				Video:          vid,
+				PCM:            pcm,
+				SourcePTS:      time.Duration(pts) * time.Second / tsClockHz,
+				SourcePTSValid: true,
+			}, nil
 		}
 	}
 }
@@ -796,7 +944,8 @@ func runSoakScenario(t *testing.T, sc soakScript) soakMetrics {
 	synctest.Test(t, func(t *testing.T) {
 		origin := time.Now()
 		prov := newSoakProvider(origin, sc)
-		tc := &soakTranscoder{fakeTranscoder: &fakeTranscoder{}}
+		tc := &soakTranscoder{fakeTranscoder: &fakeTranscoder{}, origin: origin, cfg: sc}
+		logState := &soakLogState{}
 		srvStab := sc.serverStability
 		if srvStab == "" {
 			srvStab = sc.stability
@@ -806,6 +955,7 @@ func runSoakScenario(t *testing.T, sc soakScript) soakMetrics {
 		}
 		s := testService(t, Options{
 			DB:         db,
+			Logger:     slog.New(&soakLogHandler{state: logState}),
 			HTTPClient: &http.Client{Transport: prov},
 			Transcoder: tc,
 			Stability:  func() string { return srvStab },
@@ -841,6 +991,8 @@ func runSoakScenario(t *testing.T, sc soakScript) soakMetrics {
 			t.Fatalf("channels = %d, err = %v", len(channels), err)
 		}
 		ch := channels[0]
+		chID := ch.ID
+		tc.channelID.Store(&chID)
 		chStab := sc.channelStability
 		if chStab == "" && sc.serverStability == "" {
 			chStab = sc.stability
@@ -950,9 +1102,16 @@ func runSoakScenario(t *testing.T, sc soakScript) soakMetrics {
 			m.minPostPeakRes = 0
 		}
 
+		endTime := time.Now()
 		_ = s.Stop(ctx, info.ID, user)
 		s.Close()
 		synctest.Wait()
+
+		logState.mu.Lock()
+		m.inputLostLogs = logState.inputLost
+		m.adaptedStallAfter = logState.adaptedStallAfter
+		burstDoneAt := logState.burstFinishedAt
+		logState.mu.Unlock()
 
 		tc.mu.Lock()
 		m.teardowns = max(0, tc.liveDecoders-1)
@@ -976,27 +1135,57 @@ func runSoakScenario(t *testing.T, sc soakScript) soakMetrics {
 		prov.mu.Unlock()
 
 		if enc != nil {
+			fps := prov.fps()
+			frameDur := time.Second / time.Duration(fps)
+			minTickSpacing := frameDur - 2*time.Microsecond
+			postBurstAfter := origin.Add(3 * time.Second)
+			if !burstDoneAt.IsZero() {
+				postBurstAfter = burstDoneAt.Add(frameDur)
+			}
+			trailingWindowStart := endTime.Add(-8 * time.Second)
+
 			enc.mu.Lock()
 			m.framesTotal = len(enc.samples)
+			var haveLiveSeq bool
 			var lastLiveSeq uint64
 			var lastLiveAt time.Time
-			for _, smp := range enc.samples {
+			inHold := false
+			for i, smp := range enc.samples {
+				if i > 0 && smp.at.After(postBurstAfter) {
+					if smp.at.Sub(enc.samples[i-1].at) < minTickSpacing {
+						m.fastOutputTicks++
+					}
+				}
 				switch smp.kind {
 				case soakKindLive:
 					m.liveFrames++
+					if haveLiveSeq && smp.seq > lastLiveSeq+1 {
+						m.droppedFrames += int(smp.seq - lastLiveSeq - 1)
+					}
+					haveLiveSeq = true
 					lastLiveSeq = smp.seq
 					lastLiveAt = smp.at
+					inHold = false
 				case soakKindHold:
 					m.heldFrames++
+					if !inHold {
+						m.holdEpisodes++
+						inHold = true
+					}
+					if smp.at.After(trailingWindowStart) {
+						m.trailingHoldFrames++
+					}
 				case soakKindScreen:
 					m.screenFrames++
+					inHold = false
 				case soakKindBlack:
 					m.blackFrames++
+					inHold = false
 				}
 			}
 			if !lastLiveAt.IsZero() {
 				expectedMedia := 20*time.Second + lastLiveAt.Sub(origin)
-				actualMedia := time.Duration(lastLiveSeq) * (time.Second / 25)
+				actualMedia := time.Duration(lastLiveSeq) * frameDur
 				m.endLiveLag = expectedMedia - actualMedia
 			}
 			expectedPCM := int64(m.framesTotal) * int64(enc.req.Source.SampleRate) * int64(enc.req.Source.FPSDen) / int64(enc.req.Source.FPSNum)
@@ -1024,6 +1213,55 @@ func TestIPTVSoakSuite(t *testing.T) {
 		sc    soakScript
 		check func(t *testing.T, m soakMetrics)
 	}{
+		{
+			sc: soakScript{
+				name:           "madnet-1080p60-balanced-3.9s-burst-decoder-gap-and-4s-hold",
+				stability:      stabilityBalanced,
+				width:          1920,
+				height:         1080,
+				fps:            60,
+				maxConnections: 2,
+				tuneGap:        time.Second,
+				startupBurst:   3900 * time.Millisecond,
+				burstEvery:     3900 * time.Millisecond,
+				http2SinglePkt: true,
+				decoderGapAt:   20 * time.Second,
+				decoderGap:     1750 * time.Millisecond,
+				duration:       62 * time.Second,
+				faults: []soakFault{
+					// Drains accrued reserve and holds the last picture for ~4 s,
+					// then flushes every paused frame so zero upstream frames are
+					// skipped and Ether must resume from held+1 without rejoin drops.
+					{at: 34 * time.Second, kind: "pause", duration: 9500 * time.Millisecond, reconnectWait: 10500 * time.Millisecond, flushStale: true},
+				},
+			},
+			check: func(t *testing.T, m soakMetrics) {
+				if m.adaptedStallAfter < 5500*time.Millisecond {
+					t.Fatalf("expected 3.9s Mad Net bursts to adapt stall_after >= 5.5s, got %v", m.adaptedStallAfter)
+				}
+				if m.inputLostLogs != 0 || m.teardowns != 0 {
+					t.Fatalf("expected zero input-lost logs and zero decoder teardowns, got inputLost=%d teardowns=%d", m.inputLostLogs, m.teardowns)
+				}
+				if m.screenFrames != 0 {
+					t.Fatalf("expected zero reconnecting screen frames across 1.75s decoder gap and 4s hold, got %d", m.screenFrames)
+				}
+				if m.holdEpisodes != 2 {
+					t.Fatalf("expected exactly 2 hold episodes (1.75s decoder gap + ~4s hold), got %d (heldFrames=%d)", m.holdEpisodes, m.heldFrames)
+				}
+				if m.heldFrames < 280 || m.heldFrames > 440 {
+					t.Fatalf("expected ~5.75s total held frames (~345 at 60fps) across 1.75s decoder gap + ~4s hold, got %d", m.heldFrames)
+				}
+				if m.trailingHoldFrames != 0 {
+					t.Fatalf("expected zero held frames after recovery, got %d", m.trailingHoldFrames)
+				}
+				if m.droppedFrames != 0 {
+					t.Fatalf("expected zero dropped frames across 4s hold and 1.75s decoder gap, got %d", m.droppedFrames)
+				}
+				if m.fastOutputTicks != 0 {
+					t.Fatalf("expected zero output ticks faster than real time, got %d", m.fastOutputTicks)
+				}
+			},
+		},
 		{
 			sc: soakScript{
 				name:           "madnet-bursty-pause-4s-2conn",
@@ -1068,14 +1306,17 @@ func TestIPTVSoakSuite(t *testing.T) {
 				if m.heldFrames == 0 {
 					t.Fatalf("expected held frames during 5s quiet pause on zero-reserve stream, got 0")
 				}
+				if m.droppedFrames != 0 {
+					t.Fatalf("expected zero dropped frames after 5s quiet pause, got %d", m.droppedFrames)
+				}
+				if m.fastOutputTicks != 0 {
+					t.Fatalf("expected zero output ticks faster than real time, got %d", m.fastOutputTicks)
+				}
 				if m.providerOpens != 1 {
 					t.Fatalf("expected quiet open socket on 1-conn source not to tear down at 2s, got providerOpens=%d", m.providerOpens)
 				}
 				if m.maxConcurrentOpen > 1 {
 					t.Fatalf("expected maxConcurrentOpen <= 1 on 1-conn source, got %d", m.maxConcurrentOpen)
-				}
-				if m.endLiveLag > 2*time.Second {
-					t.Fatalf("expected stale backlog to drain back to live after hold, got endLiveLag=%v", m.endLiveLag)
 				}
 			},
 		},
@@ -1097,8 +1338,8 @@ func TestIPTVSoakSuite(t *testing.T) {
 				if m.teardowns != 0 {
 					t.Fatalf("expected tap splice to recover without decoder teardown, got teardowns=%d", m.teardowns)
 				}
-				if m.endLiveLag > 2*time.Second {
-					t.Fatalf("expected clean live rejoin after reconnect, got endLiveLag=%v", m.endLiveLag)
+				if m.fastOutputTicks != 0 {
+					t.Fatalf("expected zero output ticks faster than real time, got %d", m.fastOutputTicks)
 				}
 			},
 		},
@@ -1125,6 +1366,9 @@ func TestIPTVSoakSuite(t *testing.T) {
 				}
 				if m.heldFrames != 0 || m.screenFrames != 0 {
 					t.Fatalf("expected 12s reserve to absorb 7s origin stall with zero holds/screens, got held=%d screen=%d", m.heldFrames, m.screenFrames)
+				}
+				if m.fastOutputTicks != 0 {
+					t.Fatalf("expected zero output ticks faster than real time, got %d", m.fastOutputTicks)
 				}
 			},
 		},
@@ -1156,10 +1400,10 @@ func TestIPTVSoakSuite(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.sc.name, func(t *testing.T) {
 			m := runSoakScenario(t, tc.sc)
-			t.Logf("METRICS %s: frames=%d (live=%d held=%d screen=%d black=%d) segs=%d maxGap=%v maxLag=%v late500=%d lateMargin=%d teardowns=%d opens=%d maxConc=%d peakRes=%v minPostPeak=%v postDrainRes=%v endRes=%v endLag=%v playlistGaps=%d avDrift=%v",
-				tc.sc.name, m.framesTotal, m.liveFrames, m.heldFrames, m.screenFrames, m.blackFrames,
+			t.Logf("METRICS %s: frames=%d (live=%d held=%d episodes=%d screen=%d black=%d dropped=%d fastTicks=%d) segs=%d maxGap=%v maxLag=%v late500=%d lateMargin=%d teardowns=%d inputLost=%d opens=%d maxConc=%d stallAfter=%v peakRes=%v minPostPeak=%v postDrainRes=%v endRes=%v endLag=%v playlistGaps=%d avDrift=%v",
+				tc.sc.name, m.framesTotal, m.liveFrames, m.heldFrames, m.holdEpisodes, m.screenFrames, m.blackFrames, m.droppedFrames, m.fastOutputTicks,
 				m.segmentsPublished, m.maxSegmentGap, m.maxPublishLag, m.latePublishes, m.lateOverMargin,
-				m.teardowns, m.providerOpens, m.maxConcurrentOpen,
+				m.teardowns, m.inputLostLogs, m.providerOpens, m.maxConcurrentOpen, m.adaptedStallAfter,
 				m.peakReserve, m.minPostPeakRes, m.postDrainReserve, m.endReserve, m.endLiveLag, m.playlistGaps, m.avSyncDrift)
 
 			if m.playlistGaps != 0 {
@@ -1180,6 +1424,203 @@ func TestIPTVSoakSuite(t *testing.T) {
 			tc.check(t, m)
 		})
 	}
+}
+
+type gatedRaceDecoder struct {
+	format      transcode.RawFormat
+	video       []byte
+	id          byte
+	stallAt     time.Duration
+	firstDelay  time.Duration
+	burstFrames int
+	origin      time.Time
+	started     time.Time
+	tick        int64
+	closed      atomic.Bool
+	closeAt     atomic.Int64
+	done        chan struct{}
+	once        sync.Once
+}
+
+func (d *gatedRaceDecoder) Next(ctx context.Context) (transcode.RawFrame, error) {
+	if d.tick == 0 && d.firstDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return transcode.RawFrame{}, ctx.Err()
+		case <-d.done:
+			return transcode.RawFrame{}, io.EOF
+		case <-time.After(d.firstDelay):
+		}
+	}
+	if d.stallAt > 0 && time.Since(d.origin) >= d.stallAt {
+		select {
+		case <-ctx.Done():
+			return transcode.RawFrame{}, ctx.Err()
+		case <-d.done:
+			return transcode.RawFrame{}, io.EOF
+		}
+	}
+	fps := d.format.FPSNum / d.format.FPSDen
+	frameDur := time.Second / time.Duration(fps)
+	if int(d.tick) >= d.burstFrames {
+		due := d.started.Add(d.firstDelay + time.Duration(int(d.tick)-d.burstFrames)*frameDur)
+		if wait := time.Until(due); wait > 0 {
+			select {
+			case <-ctx.Done():
+				return transcode.RawFrame{}, ctx.Err()
+			case <-d.done:
+				return transcode.RawFrame{}, io.EOF
+			case <-time.After(wait):
+			}
+		}
+	}
+	samples := tickSamples(d.format, d.tick)
+	vid := make([]byte, len(d.video))
+	copy(vid, d.video)
+	vid[0] = soakVideoLive
+	binary.BigEndian.PutUint64(vid[1:9], soakFrameMagic)
+	binary.BigEndian.PutUint64(vid[9:17], uint64(d.id)*1_000_000+uint64(d.tick))
+	pts := time.Duration(d.tick) * frameDur
+	d.tick++
+	return transcode.RawFrame{
+		Video:          vid,
+		PCM:            make([]byte, samples*d.format.Channels*2),
+		SourcePTS:      pts,
+		SourcePTSValid: true,
+	}, nil
+}
+
+func (d *gatedRaceDecoder) Close() error {
+	d.once.Do(func() {
+		d.closed.Store(true)
+		d.closeAt.Store(time.Now().UnixNano())
+		close(d.done)
+	})
+	return nil
+}
+
+type parallelReplacePlanner struct {
+	format transcode.RawFormat
+	opens  atomic.Int32
+	first  *gatedRaceDecoder
+	second *gatedRaceDecoder
+}
+
+func (p *parallelReplacePlanner) coldWait() time.Duration        { return 4 * time.Second }
+func (p *parallelReplacePlanner) holdStalled() time.Duration     { return steadyHoldPicture }
+func (p *parallelReplacePlanner) startupLead() time.Duration     { return 2 * time.Second }
+func (p *parallelReplacePlanner) segmentDuration() time.Duration { return 2 * time.Second }
+func (p *parallelReplacePlanner) keepStalled(d time.Duration) bool {
+	return d < 3*time.Second
+}
+
+func (p *parallelReplacePlanner) plans(time.Time) (broadcastPlan, *broadcastPlan) {
+	return broadcastPlan{
+		id:        "provider-race",
+		element:   "programme",
+		programme: true,
+		open: func(context.Context) (transcode.Decoder, func(), error) {
+			n := p.opens.Add(1)
+			if n == 1 {
+				p.first.started = time.Now()
+				return p.first, nil, nil
+			}
+			p.second.started = time.Now()
+			return p.second, nil, nil
+		},
+		failed: func(error) time.Time { return time.Now() },
+	}, nil
+}
+
+func TestSteadyParallelReplacementKeepsOldInputUntilPicture(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		origin := time.Now()
+		format := transcode.RawFormat{
+			Width:       64,
+			Height:      36,
+			FPSNum:      25,
+			FPSDen:      1,
+			SampleRate:  48000,
+			Channels:    2,
+			PixelFormat: "yuv420p",
+		}
+		baseVid := blackFrame(format, 0).Video
+		first := &gatedRaceDecoder{
+			format:      format,
+			video:       baseVid,
+			id:          1,
+			stallAt:     6 * time.Second,
+			burstFrames: 50,
+			origin:      origin,
+			done:        make(chan struct{}),
+		}
+		second := &gatedRaceDecoder{
+			format:      format,
+			video:       baseVid,
+			id:          2,
+			firstDelay:  1800 * time.Millisecond,
+			burstFrames: 75, // 3s startup burst on replacement must NOT publish faster than real time
+			origin:      origin,
+			done:        make(chan struct{}),
+		}
+		planner := &parallelReplacePlanner{format: format, first: first, second: second}
+		tc := &soakTranscoder{fakeTranscoder: &fakeTranscoder{}, origin: origin}
+		b, err := newBroadcast(t.Context(), tc, planner, format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.close()
+		if _, err := b.addRendition(t.Context(), "main", core.Decision{}); err != nil {
+			t.Fatal(err)
+		}
+		b.start()
+
+		// Primary stalls at t=6s; keepStalled holds until +3s (t=9s). Replacement
+		// opens at t=9s and takes 1.8s to deliver its first picture (t=10.8s).
+		// At t=10s, replacement is running in parallel while primary MUST still be open!
+		time.Sleep(10 * time.Second)
+		if planner.opens.Load() < 2 {
+			t.Fatalf("expected replacement open in flight by t=10s, opens=%d", planner.opens.Load())
+		}
+		if first.closed.Load() {
+			t.Fatalf("old input was closed before replacement delivered its first picture")
+		}
+
+		// Advance past t=13.8s so replacement delivers its first picture and splices.
+		time.Sleep(5 * time.Second)
+		if !first.closed.Load() {
+			t.Fatalf("expected old input to close once replacement spliced its first picture")
+		}
+		closeAt := time.Unix(0, first.closeAt.Load())
+		secondPictureAt := second.started.Add(second.firstDelay)
+		if closeAt.Before(secondPictureAt) {
+			t.Fatalf("old input closed at %v before replacement's first picture at %v", closeAt.Sub(origin), secondPictureAt.Sub(origin))
+		}
+
+		b.close()
+		synctest.Wait()
+
+		enc := tc.encoders[0]
+		enc.mu.Lock()
+		defer enc.mu.Unlock()
+		minSpacing := (time.Second / 25) - 2*time.Microsecond
+		var sawSecond bool
+		var fastAfterSplice int
+		for i, smp := range enc.samples {
+			if smp.kind == soakKindLive && smp.seq >= 2_000_000 {
+				if sawSecond && i > 0 && smp.at.Sub(enc.samples[i-1].at) < minSpacing {
+					fastAfterSplice++
+				}
+				sawSecond = true
+			}
+		}
+		if !sawSecond {
+			t.Fatalf("expected spliced frames from replacement decoder")
+		}
+		if fastAfterSplice != 0 {
+			t.Fatalf("expected replacement's 3s burst to stay buffered without fast output ticks, got %d fast ticks", fastAfterSplice)
+		}
+	})
 }
 
 func TestIPTVSoakStabilityPresetsAndChannelOverride(t *testing.T) {

@@ -63,6 +63,7 @@ func (s *Service) loadPersisted(ctx context.Context) {
 		s.mu.Unlock()
 		rows.Close()
 	}
+	s.loadContentIdentityState(ctx)
 	s.loadRejections(ctx)
 	s.loadPins(ctx)
 	rrows, err := s.db.QueryContext(ctx, `SELECT indexer, successes, failures FROM resolver_reputation`)
@@ -96,9 +97,10 @@ func (s *Service) persistBad(ctx context.Context, e BlockEntry) error {
 	}
 	now := s.now().Unix()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO resolver_bad(release_id, reason, created_at, name, indexer, rating_key, title_name, source, manual, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO resolver_bad(release_id, content_id, reason, created_at, name, indexer, rating_key, title_name, source, manual, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(release_id) DO UPDATE SET
+		   content_id=CASE WHEN excluded.content_id<>'' THEN excluded.content_id ELSE resolver_bad.content_id END,
 		   reason=CASE WHEN resolver_bad.manual=1 AND excluded.manual=0 THEN resolver_bad.reason ELSE excluded.reason END,
 		   name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE resolver_bad.name END,
 		   indexer=CASE WHEN excluded.indexer<>'' THEN excluded.indexer ELSE resolver_bad.indexer END,
@@ -107,7 +109,7 @@ func (s *Service) persistBad(ctx context.Context, e BlockEntry) error {
 		   source=CASE WHEN excluded.manual=1 THEN excluded.source ELSE resolver_bad.source END,
 		   manual=CASE WHEN excluded.manual=1 THEN 1 ELSE resolver_bad.manual END,
 		   updated_at=excluded.updated_at`,
-		e.ReleaseID, e.Reason, now, e.Name, e.Indexer, int64(e.TitleKey), e.TitleName, e.Source, store.BoolInt(e.Manual), now)
+		e.ReleaseID, e.ContentID, e.Reason, now, e.Name, e.Indexer, int64(e.TitleKey), e.TitleName, e.Source, store.BoolInt(e.Manual), now)
 	if err == nil {
 		s.notify("bad:" + e.ReleaseID)
 	}

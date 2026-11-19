@@ -34,7 +34,8 @@ import (
 // Deps are the components playback orchestrates. Resolver, Engine,
 // Transcoder, Catalog and SelectProfile are required.
 type Deps struct {
-	AugmentMedia func(context.Context, *core.Title, *core.User, *core.Resolution, core.MediaSource, *core.MediaInfo) // synchronous enrichment before publishing a generation
+	OpenResolution func(context.Context, *core.Resolution) (core.MediaSource, error)
+	AugmentMedia   func(context.Context, *core.Title, *core.User, *core.Resolution, core.MediaSource, *core.MediaInfo) // synchronous enrichment before publishing a generation
 	// NativeProbe, when set, reads stream parameters straight from the
 	// source's container headers before falling back to Transcoder.Probe.
 	// It must return an error unless every decision-relevant field is

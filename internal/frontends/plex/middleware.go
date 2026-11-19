@@ -266,6 +266,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeHTTPError(w, http.StatusNotFound)
 			return
 		}
+		if !s.routeExists(r) {
+			s.handleUnknown(w, r)
+			return
+		}
 		if publicPaths[trimSlash(r.URL.Path)] || strings.HasPrefix(r.URL.Path, signedLogoPrefix) {
 			next.ServeHTTP(w, r)
 			return

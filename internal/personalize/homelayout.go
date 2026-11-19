@@ -18,8 +18,11 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
+const libraryRowsMigrationKey = "library-rows-v1"
+
 func init() {
 	store.Register("personalize", 2, `CREATE TABLE personalize_home_layout (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL);`)
+	store.Register("personalize", 4, `CREATE TABLE personalize_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL DEFAULT '');`)
 }
 
 // parseLibrarySection parses a "library:<id>" layout page section name.
@@ -47,65 +50,218 @@ func librarySectionName(id int) string {
 	return "library:" + strconv.Itoa(id)
 }
 
-// layoutTargetForMedia returns the layout page name ("home", "movies",
-// "shows", or "library:<id>") and its media-type fallback ("movies" or "shows").
-func layoutTargetForMedia(section core.MediaType, sectionID int) (target, fallback string) {
+// layoutTargetForMedia returns the layout page name ("home" or "library:<id>").
+// Library pages never inherit from Home or from any shared media-type page.
+func layoutTargetForMedia(section core.MediaType, sectionID int) string {
 	if section == "" {
-		return surfHome, surfHome
+		return surfHome
 	}
-	base := sectionName(section)
 	if sectionID > 0 {
-		return librarySectionName(sectionID), base
+		return librarySectionName(sectionID)
 	}
-	return base, base
+	if section == core.TypeShow {
+		return "library:2"
+	}
+	return "library:1"
 }
 
-// layoutTarget resolves a string section ("home", "movies", "shows", or
-// "library:<id>") plus HubContext.SectionID into (target, fallback).
-func (e *Engine) layoutTarget(ctx context.Context, section string, sectionID int) (target, fallback string) {
+// layoutTarget resolves a caller section ("home", "library:<id>", or legacy
+// internal media-type markers accompanied by HubContext.SectionID) into the
+// independent layout page ("home" or "library:<id>").
+func (e *Engine) layoutTarget(ctx context.Context, section string, sectionID int) string {
 	if section == "" || section == surfHome {
-		return surfHome, surfHome
+		return surfHome
 	}
-	if id, ok := parseLibrarySection(section); ok {
-		fb := surfMovies
-		if mt, found := e.sectionMediaType(ctx, id); found && mt == core.TypeShow {
-			fb = surfShows
+	if isLibrarySection(section) {
+		return section
+	}
+	if sectionID > 0 {
+		return librarySectionName(sectionID)
+	}
+	if section == surfShows {
+		if id := e.firstSectionID(ctx, core.TypeShow); id > 0 {
+			return librarySectionName(id)
 		}
-		return section, fb
+		return "library:2"
 	}
-	if sectionID > 0 && (section == surfMovies || section == surfShows) {
-		return librarySectionName(sectionID), section
+	if section == surfMovies {
+		if id := e.firstSectionID(ctx, core.TypeMovie); id > 0 {
+			return librarySectionName(id)
+		}
+		return "library:1"
 	}
-	return section, section
+	return section
 }
 
 // pagesForTarget resolves the active Global and Viewer pages for target.
-// When target ("library:<id>") has no Global page of its own, it inherits
-// fallback ("movies" or "shows") so uncustomised libraries share their media
-// type's layout.
-func pagesForTarget(d core.HomeLayout, user int64, target, fallback string) (*core.LayoutPage, *core.LayoutPage) {
+// Each target ("home" or "library:<id>") is completely independent.
+func pagesForTarget(d core.HomeLayout, user int64, target string) (*core.LayoutPage, *core.LayoutPage) {
 	if target == "" {
 		target = surfHome
 	}
-	if fallback == "" {
-		fallback = target
-	}
 	g := pageFor(d.Global, target)
-	customized := g != nil
-	if !customized && fallback != target {
-		g = pageFor(d.Global, fallback)
-	}
-	var v *core.LayoutPage
-	for _, vl := range d.Viewers {
-		if vl.UserID == user {
-			v = pageFor(vl.Pages, target)
-			if v == nil && !customized && fallback != target {
-				v = pageFor(vl.Pages, fallback)
-			}
-			break
+	v := viewerPage(d, user, target)
+	return g, v
+}
+
+// migrateSectionLayouts upgrades pre-0.3.16 section-level "movies" / "shows"
+// layout pages (Global and Viewer overrides) onto each movie/show library that
+// did not already have its own "library:<id>" Global page, then strips all
+// "movies" and "shows" pages so Home and per-library layouts are disjoint.
+func migrateSectionLayouts(d core.HomeLayout, sections map[int]core.MediaType) (core.HomeLayout, bool) {
+	out := cloneLayout(d)
+	changed := false
+
+	ids := make([]int, 0, len(sections))
+	for id, mt := range sections {
+		if id > 0 && (mt == core.TypeMovie || mt == core.TypeShow) {
+			ids = append(ids, id)
 		}
 	}
-	return g, v
+	sort.Ints(ids)
+
+	hadOwnGlobal := map[string]bool{}
+	for _, p := range out.Global {
+		if isLibrarySection(p.Section) {
+			hadOwnGlobal[p.Section] = true
+		}
+	}
+
+	for _, pair := range []struct {
+		base string
+		mt   core.MediaType
+	}{
+		{surfMovies, core.TypeMovie},
+		{surfShows, core.TypeShow},
+	} {
+		gBase := pageFor(out.Global, pair.base)
+		for _, id := range ids {
+			if sections[id] != pair.mt {
+				continue
+			}
+			libSec := librarySectionName(id)
+			if hadOwnGlobal[libSec] {
+				continue
+			}
+			if gBase != nil {
+				cp := cloneLayout(core.HomeLayout{Global: []core.LayoutPage{*gBase}}).Global[0]
+				cp.Section = libSec
+				out.Global = append(out.Global, cp)
+				changed = true
+			}
+			for vi := range out.Viewers {
+				if pageFor(out.Viewers[vi].Pages, libSec) != nil {
+					continue
+				}
+				if vBase := pageFor(out.Viewers[vi].Pages, pair.base); vBase != nil {
+					cp := cloneLayout(core.HomeLayout{Global: []core.LayoutPage{*vBase}}).Global[0]
+					cp.Section = libSec
+					out.Viewers[vi].Pages = append(out.Viewers[vi].Pages, cp)
+					changed = true
+				}
+			}
+		}
+	}
+
+	keptGlobal := make([]core.LayoutPage, 0, len(out.Global))
+	for _, p := range out.Global {
+		if p.Section == surfMovies || p.Section == surfShows {
+			changed = true
+			continue
+		}
+		keptGlobal = append(keptGlobal, p)
+	}
+	out.Global = keptGlobal
+
+	keptViewers := make([]core.ViewerLayout, 0, len(out.Viewers))
+	for _, vl := range out.Viewers {
+		keptPages := make([]core.LayoutPage, 0, len(vl.Pages))
+		for _, p := range vl.Pages {
+			if p.Section == surfMovies || p.Section == surfShows {
+				changed = true
+				continue
+			}
+			keptPages = append(keptPages, p)
+		}
+		if len(keptPages) > 0 {
+			vl.Pages = keptPages
+			keptViewers = append(keptViewers, vl)
+		} else if len(vl.Pages) > 0 {
+			changed = true
+		}
+	}
+	out.Viewers = keptViewers
+
+	return out, changed
+}
+
+func (e *Engine) migrateLibraryLayouts(ctx context.Context) error {
+	unlock, err := store.SessionLock(ctx, e.store.db, "personalize:library-rows")
+	if err != nil {
+		return err
+	}
+	if unlock != nil {
+		defer unlock()
+	}
+
+	var marker string
+	err = e.store.db.QueryRowContext(ctx, `SELECT v FROM personalize_meta WHERE k = ?`, libraryRowsMigrationKey).Scan(&marker)
+	if err == nil && marker == "1" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var raw string
+	err = e.store.db.QueryRowContext(ctx, `SELECT document FROM personalize_home_layout WHERE id = 1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = e.store.db.ExecContext(ctx, `INSERT INTO personalize_meta(k, v) VALUES(?, '1') ON CONFLICT(k) DO UPDATE SET v = excluded.v`, libraryRowsMigrationKey)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+
+	var d core.HomeLayout
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return err
+	}
+
+	secs := e.allSections(ctx)
+	if rows, qErr := e.store.db.QueryContext(ctx, `SELECT id, media_type FROM libraries WHERE source != 'plugin' AND media_type IN ('movie', 'show')`); qErr == nil {
+		for rows.Next() {
+			var id int
+			var mt string
+			if sErr := rows.Scan(&id, &mt); sErr == nil && id > 0 {
+				secs[id] = core.MediaType(mt)
+			}
+		}
+		_ = rows.Close()
+	}
+
+	next, changed := migrateSectionLayouts(d, secs)
+	next.CollectionSchedules = nil
+
+	tx, err := e.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if changed {
+		b, err := json.Marshal(next)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE personalize_home_layout SET document = ? WHERE id = 1`, string(b)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO personalize_meta(k, v) VALUES(?, '1') ON CONFLICT(k) DO UPDATE SET v = excluded.v`, libraryRowsMigrationKey); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func cloneLayout(d core.HomeLayout) core.HomeLayout {
@@ -196,8 +352,8 @@ func normalizeHomeLayout(d core.HomeLayout) (core.HomeLayout, error) {
 			if p.Section == "" {
 				p.Section = "home"
 			}
-			if p.Section != "home" && p.Section != "movies" && p.Section != "shows" && !isLibrarySection(p.Section) {
-				ve.add(f+".section", "must be home, movies, shows or library:<id>")
+			if p.Section != "home" && !isLibrarySection(p.Section) {
+				ve.add(f+".section", "must be home or library:<id>")
 			}
 			if seen[p.Section] {
 				ve.add(f+".section", "duplicate section")
@@ -212,7 +368,7 @@ func normalizeHomeLayout(d core.HomeLayout) (core.HomeLayout, error) {
 				}
 			}
 			if p.DedupeHome != nil && p.Section == "home" {
-				ve.add(f+".dedupeHome", "only applies to the movies, shows and library pages")
+				ve.add(f+".dedupeHome", "only applies to library pages")
 			}
 			if tu := p.Tuning; tu != nil {
 				for _, dial := range []struct {
@@ -402,15 +558,21 @@ func arrangeLayout(rows []core.HomeRow, d core.HomeLayout, user int64, hc core.H
 	if section == "" {
 		section = "home"
 	}
-	target, fallback := section, section
-	if hc.SectionID > 0 && (section == surfMovies || section == surfShows) {
-		target = librarySectionName(hc.SectionID)
+	target := section
+	if !isLibrarySection(section) && section != surfHome {
+		if hc.SectionID > 0 {
+			target = librarySectionName(hc.SectionID)
+		} else if section == surfShows {
+			target = "library:2"
+		} else if section == surfMovies {
+			target = "library:1"
+		}
 	}
-	return arrangeLayoutFor(rows, d, user, hc, target, fallback, def)
+	return arrangeLayoutFor(rows, d, user, hc, target, def)
 }
 
-func arrangeLayoutFor(rows []core.HomeRow, d core.HomeLayout, user int64, hc core.HubContext, target, fallback string, def int) []core.HomeRow {
-	g, v := pagesForTarget(d, user, target, fallback)
+func arrangeLayoutFor(rows []core.HomeRow, d core.HomeLayout, user int64, hc core.HubContext, target string, def int) []core.HomeRow {
+	g, v := pagesForTarget(d, user, target)
 	maxRows := def
 	for _, p := range []*core.LayoutPage{g, v} {
 		if p != nil {
@@ -677,6 +839,42 @@ func (e *Engine) PreviewLayout(ctx context.Context, user *core.User, hc core.Hub
 	}
 	return e.PreviewHome(context.WithValue(ctx, draftLayoutKey{}, d), user, hc, section, limit)
 }
+
+// PreviewCandidateRows arranges pre-built candidate rows (such as a plugin
+// library's Recommended shelves) under a draft or saved HomeLayout without
+// mutating persisted state.
+func (e *Engine) PreviewCandidateRows(ctx context.Context, user *core.User, hc core.HubContext, section string, defaultMaxRows int, d core.HomeLayout, rows []core.HomeRow) (*core.HomePreview, error) {
+	ctx = core.WithCatalogViewer(ctx, user)
+	d, err := normalizeHomeLayout(d)
+	if err != nil {
+		return nil, err
+	}
+	if section != "home" && !isLibrarySection(section) {
+		return nil, &ValidationError{Problems: []Problem{{"section", "must be home or library:<id>"}}}
+	}
+	if hc.Now.IsZero() {
+		hc.Now = e.now()
+	}
+	hc.Now = hc.Now.In(e.loc)
+	hc.Daypart, hc.Weekend = core.DaypartAt(hc.Now), core.IsWeekend(hc.Now)
+	if !validDevices[hc.Device] {
+		return nil, &ValidationError{Problems: []Problem{{"device", "must be tv, mobile, web or desktop"}}}
+	}
+	uid := int64(0)
+	if user != nil {
+		uid = user.ID
+	}
+	if defaultMaxRows <= 0 {
+		defaultMaxRows = e.opts.MaxSectionRows
+	}
+	arranged := arrangeLayoutFor(rows, d, uid, hc, section, defaultMaxRows)
+	return &core.HomePreview{
+		GeneratedAt: e.now(),
+		Context:     hc,
+		Rows:        arranged,
+	}, nil
+}
+
 func (e *Engine) layoutForContext(ctx context.Context) core.HomeLayout {
 	if d, ok := ctx.Value(draftLayoutKey{}).(core.HomeLayout); ok {
 		return d
@@ -736,7 +934,7 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 		hc.Now = e.now()
 	}
 	hc.Now = hc.Now.In(e.loc)
-	target, fallback := e.layoutTarget(ctx, section, hc.SectionID)
+	target := e.layoutTarget(ctx, section, hc.SectionID)
 	def := e.opts.MaxHomeRows
 	if target != "" && target != "home" {
 		def = e.opts.MaxSectionRows
@@ -760,7 +958,7 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 	kept := rows[:0]
 	for _, r := range rows {
 		if r.Kind == KindRecentlyAdded {
-			p, _ := effectiveHomePolicyFor(layoutDoc, user.ID, target, fallback, r)
+			p, _ := effectiveHomePolicy(layoutDoc, user.ID, target, r)
 			always := p != nil && p.Status == "always" && whenMatches(p.When, hc) && weekEligible(user.ID, p.Row, hc, p.MaxDaysPerWeek)
 			curated := curateFeed(r, taste)
 			if curated.Hidden {
@@ -784,7 +982,7 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 	}
 	rows = kept
 	out := []core.HomeRow{}
-	for _, row := range arrangeLayoutFor(rows, layoutDoc, user.ID, hc, target, fallback, def) {
+	for _, row := range arrangeLayoutFor(rows, layoutDoc, user.ID, hc, target, def) {
 		if !row.Hidden {
 			out = append(out, row)
 		}
@@ -849,24 +1047,20 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 		// Fill is a band, so shelf-only default slots (Recently Added at
 		// slot eight) do not apply. Explicit owner rules still do.
 		layout := e.layoutForContext(ctx)
-		target, fallback := e.layoutTarget(ctx, section, hc.SectionID)
-		effSec := fallback
-		if pageFor(layout.Global, target) != nil {
-			effSec = target
-		}
+		target := e.layoutTarget(ctx, section, hc.SectionID)
 		layout.Global = append([]core.LayoutPage(nil), layout.Global...)
-		page := pageFor(layout.Global, effSec)
+		page := pageFor(layout.Global, target)
 		if page == nil {
-			layout.Global = append(layout.Global, core.LayoutPage{Section: effSec})
+			layout.Global = append(layout.Global, core.LayoutPage{Section: target})
 			page = &layout.Global[len(layout.Global)-1]
 		}
 		page.Rows = append([]core.RowPolicy(nil), page.Rows...)
 		for _, row := range rows {
-			if policy, _ := effectiveHomePolicyFor(layout, user.ID, target, fallback, row); policy == nil {
+			if policy, _ := effectiveHomePolicy(layout, user.ID, target, row); policy == nil {
 				page.Rows = append(page.Rows, core.RowPolicy{Row: row.HubID, Status: "eligible"})
 			}
 		}
-		for _, row := range arrangeLayoutFor(rows, layout, user.ID, hc, target, fallback, e.opts.MaxHomeRows) {
+		for _, row := range arrangeLayoutFor(rows, layout, user.ID, hc, target, e.opts.MaxHomeRows) {
 			if !row.Hidden {
 				arranged = append(arranged, row)
 			}
@@ -947,6 +1141,9 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 	case strings.HasPrefix(id, "tv."):
 		section = core.TypeShow
 	}
+	if section != "" && hc.SectionID == 0 {
+		hc.SectionID = e.firstSectionID(ctx, section)
+	}
 	layoutDoc := e.layoutForContext(ctx)
 	owner, _ := e.ownerRows(ctx, &user, hc, section, layoutDoc, false)
 	e.mu.Lock()
@@ -967,8 +1164,8 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 	}
 	day := dayOf(hc.Now, e.loc)
 	intent, _ := e.intentFor(user.ID, hc.Now)
-	target, fallback := layoutTargetForMedia(section, hc.SectionID)
-	tune := resolveTuningFor(layoutDoc, user.ID, target, fallback)
+	target := layoutTargetForMedia(section, hc.SectionID)
+	tune := resolveTuning(layoutDoc, user.ID, target)
 	allowed := e.allowedFor(&user)
 	for _, mod := range models {
 		a := &assembly{
@@ -1048,15 +1245,11 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 	return core.Hub{}, false
 }
 func (e *Engine) LayoutDefaults() map[string]int {
-	return map[string]int{"home": e.opts.MaxHomeRows, "movies": e.opts.MaxSectionRows, "shows": e.opts.MaxSectionRows}
+	return map[string]int{"home": e.opts.MaxHomeRows, "library": e.opts.MaxSectionRows}
 }
 
-func effectiveHomePolicy(d core.HomeLayout, user int64, section string, row core.HomeRow) (*core.RowPolicy, string) {
-	return effectiveHomePolicyFor(d, user, section, section, row)
-}
-
-func effectiveHomePolicyFor(d core.HomeLayout, user int64, target, fallback string, row core.HomeRow) (*core.RowPolicy, string) {
-	g, v := pagesForTarget(d, user, target, fallback)
+func effectiveHomePolicy(d core.HomeLayout, user int64, target string, row core.HomeRow) (*core.RowPolicy, string) {
+	g, v := pagesForTarget(d, user, target)
 	if p := matchingPolicy(v, row); p != nil {
 		return p, "override"
 	}
@@ -1065,29 +1258,21 @@ func effectiveHomePolicyFor(d core.HomeLayout, user int64, target, fallback stri
 
 // selectedCollections lists the collections the layout places on a page for
 // this viewer and moment (When and days-per-week applied).
-func selectedCollections(d core.HomeLayout, user int64, section string, hc core.HubContext) []string {
-	return layoutCollectionsFor(d, user, section, section, &hc)
-}
-
-func selectedCollectionsFor(d core.HomeLayout, user int64, target, fallback string, hc core.HubContext) []string {
-	return layoutCollectionsFor(d, user, target, fallback, &hc)
+func selectedCollections(d core.HomeLayout, user int64, target string, hc core.HubContext) []string {
+	return layoutCollectionsFor(d, user, target, &hc)
 }
 
 // placedCollections lists every collection the layout places on a page for
 // this viewer, whatever the hour, daypart or day. Owner rows are fetched for
 // this set so a new daypart never finds its rows unfetched.
-func placedCollections(d core.HomeLayout, user int64, section string) []string {
-	return layoutCollectionsFor(d, user, section, section, nil)
+func placedCollections(d core.HomeLayout, user int64, target string) []string {
+	return layoutCollectionsFor(d, user, target, nil)
 }
 
-func placedCollectionsFor(d core.HomeLayout, user int64, target, fallback string) []string {
-	return layoutCollectionsFor(d, user, target, fallback, nil)
-}
-
-func layoutCollectionsFor(d core.HomeLayout, user int64, target, fallback string, hc *core.HubContext) []string {
+func layoutCollectionsFor(d core.HomeLayout, user int64, target string, hc *core.HubContext) []string {
 	ids := []string{}
 	seen := map[string]bool{}
-	g, v := pagesForTarget(d, user, target, fallback)
+	g, v := pagesForTarget(d, user, target)
 	for _, page := range []*core.LayoutPage{g, v} {
 		if page == nil {
 			continue
@@ -1108,7 +1293,7 @@ func layoutCollectionsFor(d core.HomeLayout, user int64, target, fallback string
 				}
 				probe = core.HomeRow{HubID: "collection." + key, Kind: "collection:" + key}
 			}
-			p, _ := effectiveHomePolicyFor(d, user, target, fallback, probe)
+			p, _ := effectiveHomePolicy(d, user, target, probe)
 			if p == nil || p.Status == "off" || seen[key] {
 				continue
 			}

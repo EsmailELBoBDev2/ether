@@ -71,6 +71,7 @@ func (fl *flight) notifyStateLocked() {
 
 // fetchOpts says where a fetched segment may be stored.
 type fetchOpts struct {
+	layoutProbe    bool // optional sibling discovery does not establish playback health
 	repairProgress func(*postedFile, int, core.RepairEvent) core.RepairWindow
 	burstUntil     time.Time
 	parallel       int            // independent bulk-reader window concurrency
@@ -128,7 +129,7 @@ func (e *Engine) segmentOnce(ctx context.Context, rel *release, pf *postedFile, 
 			}
 		}
 
-		e.missing.Add(1)
+		e.noteMissing(pf, fo)
 		return nil, false, fmt.Errorf("stream: %s part %d not in nzb: %w", pf.Name(), i+1, core.ErrArticleMissing)
 	}
 	e.mu.Lock()
@@ -423,6 +424,9 @@ func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *releas
 	}()
 	seg, fromCache, err := e.loadFlight(ctx, fl, pf, i, id, key.seg, prio, fo)
 	if err == nil {
+		if !fromCache && prio == core.PriorityLive && rel.feedbackID != "" && !fo.layoutProbe {
+			rel.liveArticles.Add(1)
+		}
 		if !seg.repairedSpan {
 			pf.learn(i, seg.begin, seg.end(), seg.fileSize, seg.total)
 			rel.notePartSize(pf)
@@ -536,7 +540,7 @@ func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i i
 			if seg, aerr := e.loadAlternate(ctx, pf, i, prio, fo); seg != nil || aerr != nil {
 				return seg, false, aerr
 			}
-			e.missing.Add(1)
+			e.noteMissing(pf, fo)
 			return nil, false, fmt.Errorf("stream: %s part %d <%s>: %w", pf.Name(), i+1, id, err)
 		}
 		if ctx.Err() != nil {
@@ -565,6 +569,7 @@ func (e *Engine) bodyPart(ctx context.Context, pf *postedFile, id string, prio c
 		data, part, err = e.fetcher.BodyPart(ctx, id, pf.groups, prio)
 	}
 	fo.meter.end(started, len(data), err == nil, prio)
+	e.noteBodyOutcome(id, err, ctx)
 	if err == nil {
 		e.repairRate.add(int64(len(data)))
 		e.fetches.Add(1)
@@ -842,4 +847,18 @@ func (e *Engine) readFile(ctx context.Context, rel *release, pf *postedFile, p [
 		cur += int64(c)
 	}
 	return n, nil
+}
+
+func (e *Engine) noteMissing(pf *postedFile, fo fetchOpts) {
+	e.missing.Add(1)
+	if cb := e.opts.OnMissing; cb != nil && fo.cacheID != "" && !fo.layoutProbe {
+		id := fo.cacheID
+		if r := pf.record; r != nil {
+			r.missingEpoch.Add(1)
+			r.feedbackMu.Lock()
+			defer r.feedbackMu.Unlock()
+			id = r.feedbackID
+		}
+		cb(id)
+	}
 }

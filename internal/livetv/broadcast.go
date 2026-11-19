@@ -24,8 +24,8 @@ const broadcastStall = 1500 * time.Millisecond
 const broadcastStallReport = 250 * time.Millisecond
 
 // A live output at least liveWaitLead ahead of the wall clock waits up to
-// liveWaitMax for a late picture before holding, without permanently
-// consuming its published lead.
+// liveWaitMax for a late picture before holding, absorbing the wait from
+// b.lead so entering a hold never triggers catch-up ticks faster than 1.0x.
 const (
 	liveWaitLead = time.Second
 	liveWaitMax  = 40 * time.Millisecond
@@ -100,6 +100,7 @@ type broadcastInput struct {
 	overlays                *programmeOverlays
 	started                 time.Time
 	lastFrameAt             time.Time
+	stalledNoted            bool
 	plan                    broadcastPlan
 	decoder                 transcode.Decoder
 	release                 func()
@@ -216,6 +217,7 @@ type broadcast struct {
 	wg                   sync.WaitGroup
 	prepared             chan broadcastPrepared
 	current, next        *broadcastInput
+	replacing            *broadcastInput
 	later                map[string]*broadcastInput
 	future               map[string]broadcastPlan
 	opening              map[string]bool
@@ -263,7 +265,6 @@ type broadcast struct {
 	holdMode       string
 	holdSince      time.Time
 	pacer          *reservePacer
-	rejoinDrop     int
 }
 
 func newBroadcast(ctx context.Context, runner transcode.ContinuousRunner, planner broadcastPlanner, format transcode.RawFormat) (*broadcast, error) {
@@ -493,7 +494,7 @@ func (b *broadcast) idle(now time.Time) bool {
 	return b.viewers == 0 && now.Sub(b.lastViewer) >= broadcastIdle
 }
 func (b *broadcast) open(plan broadcastPlan, now time.Time) {
-	if b.current != nil && !b.current.lastFrameAt.IsZero() && resumesBroadcastInput(b.current.plan, plan) {
+	if b.current != nil && !b.current.stalledNoted && !b.current.lastFrameAt.IsZero() && resumesBroadcastInput(b.current.plan, plan) {
 		return
 	}
 	if plan.id == b.intro.id && (b.introFallback || b.introInput != nil) {
@@ -560,6 +561,9 @@ func (b *broadcast) accept(now time.Time, current broadcastPlan, next *broadcast
 			delete(b.opening, result.plan.id)
 			delete(b.openingAt, result.plan.id)
 			if result.err != nil {
+				if result.plan.id == current.id && b.current != nil && !b.current.stalledNoted && !b.current.lastFrameAt.IsZero() && b.burstNoWait && current.programme && current.mediaKey == 0 {
+					continue
+				}
 				b.noteFailure(result.plan, result.err, now)
 				if result.plan.id == b.intro.id {
 					b.introUntil = now
@@ -592,10 +596,30 @@ func (b *broadcast) accept(now time.Time, current broadcastPlan, next *broadcast
 				input.started = now
 				input.activateNow()
 			} else if result.plan.id == current.id {
-				b.closeInput(b.current)
-				b.current = input
-				input.started = now
-				input.activateNow()
+				if b.current != nil && b.current.stalledNoted {
+					b.closeInput(b.replacing)
+					b.replacing = input
+					input.started = now
+					input.activateNow()
+				} else if b.current != nil && !b.current.lastFrameAt.IsZero() && b.burstNoWait && current.programme && current.mediaKey == 0 {
+					// Primary live input recovered while replacement was opening:
+					// keep the running input and discard the replacement.
+					b.closeInput(input)
+					if pl, ok := b.planner.(interface{ abortReplacement() }); ok {
+						pl.abortReplacement()
+					}
+					continue
+				} else {
+					b.closeInput(b.replacing)
+					b.replacing = nil
+					b.closeInput(b.current)
+					b.current = input
+					input.started = now
+					input.activateNow()
+					if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+						pl.commitReplacement()
+					}
+				}
 			} else if result.plan.id == b.momentCardPlan.id {
 				b.closeInput(b.momentCard)
 				b.momentCard = input
@@ -670,6 +694,7 @@ func (b *broadcast) run() {
 		b.closed = true
 		b.mu.Unlock()
 		b.closeInput(b.current)
+		b.closeInput(b.replacing)
 		b.closeInput(b.next)
 		for _, input := range b.later {
 			b.closeInput(input)
@@ -806,9 +831,12 @@ func (b *broadcast) step(now time.Time) bool {
 			b.lastPodPlan = broadcastPlan{}
 			b.lastPodFrame = transcode.RawFrame{}
 		}
+		if b.replacing != nil {
+			b.closeInput(b.replacing)
+			b.replacing = nil
+		}
 		b.plannedID = current.id
 		b.freshAt = time.Time{}
-		b.rejoinDrop = 0
 	}
 	clear(b.future)
 	if planner, ok := b.planner.(interface {
@@ -831,9 +859,16 @@ func (b *broadcast) step(now time.Time) bool {
 
 	select {
 	case <-b.retryRequests:
+		if b.replacing != nil {
+			b.closeInput(b.replacing)
+			b.replacing = nil
+		}
 		if b.current != nil {
 			b.closeInput(b.current)
 			b.current = nil
+		}
+		if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+			pl.commitReplacement()
 		}
 		delete(b.retry, current.id)
 	default:
@@ -855,6 +890,33 @@ func (b *broadcast) step(now time.Time) bool {
 		b.next.plan = *next
 	}
 	b.accept(now, current, next)
+	if b.replacing != nil && b.replacing.plan.id != current.id {
+		b.closeInput(b.replacing)
+		b.replacing = nil
+	}
+	if b.replacing != nil {
+		if len(b.replacing.frames) > 0 && (b.current == nil || len(b.current.frames) == 0) {
+			b.closeInput(b.current)
+			b.current = b.replacing
+			b.replacing = nil
+			if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+				pl.commitReplacement()
+			}
+		} else {
+			select {
+			case err := <-b.replacing.errs:
+				b.noteFailure(current, err, now)
+				b.closeInput(b.replacing)
+				b.replacing = nil
+			default:
+				if b.replacing.lastFrameAt.IsZero() && now.Sub(b.replacing.started) >= broadcastStartup {
+					b.noteFailure(current, fmt.Errorf("decoder stalled"), now)
+					b.closeInput(b.replacing)
+					b.replacing = nil
+				}
+			}
+		}
+	}
 	// Keep one bounded screen input prewarmed while programmes play. A stall
 	// then cuts to its first frame once the picture hold expires, without
 	// raster/decoder initialization on the frame clock or an intervening black frame.
@@ -865,6 +927,10 @@ func (b *broadcast) step(now time.Time) bool {
 		b.open(b.momentCardPlan, now)
 	}
 	if b.current != nil && b.current.plan.id != current.id {
+		if b.replacing != nil {
+			b.closeInput(b.replacing)
+			b.replacing = nil
+		}
 		retained := false
 		for id, plan := range b.future {
 			if !b.current.lastFrameAt.IsZero() && resumesBroadcastInput(b.current.plan, plan) && (b.current.policy == nil || b.current.policy.programme.Item.Key == plan.mediaKey) {
@@ -904,12 +970,20 @@ func (b *broadcast) step(now time.Time) bool {
 		b.freshAt = time.Time{}
 	}
 	if b.next != nil && b.next.plan.id == current.id {
+		if b.replacing != nil {
+			b.closeInput(b.replacing)
+			b.replacing = nil
+		}
 		b.current = b.next
 		b.next = nil
 		b.current.started = now
 		b.current.activateNow()
 	}
 	if input := b.later[current.id]; input != nil {
+		if b.replacing != nil {
+			b.closeInput(b.replacing)
+			b.replacing = nil
+		}
 		b.closeInput(b.current)
 		b.current = input
 		delete(b.later, current.id)
@@ -932,7 +1006,7 @@ func (b *broadcast) step(now time.Time) bool {
 		b.closeInput(b.next)
 		b.next = nil
 	}
-	if b.current == nil {
+	if b.current == nil || (b.current.stalledNoted && b.replacing == nil) {
 		b.open(current, now)
 	}
 	if next != nil && next.start.Sub(now) <= broadcastLead(*next) && b.next == nil {
@@ -1060,51 +1134,8 @@ func (b *broadcast) step(now time.Time) bool {
 			}
 		} else {
 			depth, target, paceOK := paceSrc.reserveTarget()
-			if b.rejoinDrop > 0 && len(b.current.frames) > 0 {
-				queuedDur := time.Duration(len(b.current.frames)) * frameDuration
-				totalAhead := depth
-				if target == 0 {
-					totalAhead += queuedDur
-				} else {
-					totalAhead = max(depth, queuedDur)
-				}
-				rejoinFloor := max(target, 1250*time.Millisecond)
-				if totalAhead <= rejoinFloor+frameDuration {
-					b.rejoinDrop = 0
-				} else if len(b.current.frames) > 1 {
-					b.pacer.syncRate(paceSrc, 2.0)
-					wantDrop := min(b.rejoinDrop, int((totalAhead-rejoinFloor)/frameDuration))
-					wantDrop = min(wantDrop, len(b.current.frames)-1)
-					droppedAny := false
-					for range wantDrop {
-						select {
-						case df, ok := <-b.current.frames:
-							if !ok {
-								break
-							}
-							if validRawFrame(b.format, df) {
-								if source, ok := b.current.decoder.(interface{ Aired(transcode.RawFrame) }); ok {
-									source.Aired(df)
-								}
-							}
-							b.rejoinDrop--
-							droppedAny = true
-						default:
-						}
-					}
-					if droppedAny {
-						b.pacer.reset(b.current)
-					}
-					depth, target, paceOK = paceSrc.reserveTarget()
-					if b.rejoinDrop <= 0 {
-						b.rejoinDrop = 0
-					}
-				}
-			}
 			tempo := b.pacer.desiredTempo(depth, target, paceOK)
-			if b.rejoinDrop == 0 {
-				b.pacer.syncRate(paceSrc, tempo)
-			}
+			b.pacer.syncRate(paceSrc, tempo)
 			pullOne := func() (transcode.RawFrame, bool) {
 				select {
 				case f, ok := <-b.current.frames:
@@ -1133,26 +1164,46 @@ func (b *broadcast) step(now time.Time) bool {
 				mode = current.id
 			}
 		}
+		if fresh && b.current != nil && b.current.stalledNoted {
+			b.current.stalledNoted = false
+			delete(b.retry, current.id)
+			if b.replacing != nil {
+				b.closeInput(b.replacing)
+				b.replacing = nil
+			}
+			if pl, ok := b.planner.(interface{ abortReplacement() }); ok {
+				pl.abortReplacement()
+			}
+		}
 		if frame.Video == nil {
 			select {
 			case err := <-b.current.errs:
-				if errors.Is(err, io.EOF) && current.interstitial && !current.end.After(now.Add(broadcastStall)) {
-					// A finite clip that runs out within the stall bridge of its
-					// rounded slot ended normally: its last picture holds to the
-					// boundary rather than latching the live fallback.
-					b.retry[current.id] = current.end
-				} else {
-					b.noteFailure(current, err, now)
-					if current.interstitial {
-						if b.momentInputs == nil {
-							b.momentInputs = map[string]broadcastMomentInput{}
+				if !b.current.stalledNoted {
+					if errors.Is(err, io.EOF) && current.interstitial && !current.end.After(now.Add(broadcastStall)) {
+						// A finite clip that runs out within the stall bridge of its
+						// rounded slot ended normally: its last picture holds to the
+						// boundary rather than latching the live fallback.
+						b.retry[current.id] = current.end
+					} else {
+						b.noteFailure(current, err, now)
+						if current.interstitial {
+							if b.momentInputs == nil {
+								b.momentInputs = map[string]broadcastMomentInput{}
+							}
+							b.momentInputs[current.id] = broadcastMomentInput{fallback: true, end: current.end}
+							momentFallback = true
 						}
-						b.momentInputs[current.id] = broadcastMomentInput{fallback: true, end: current.end}
-						momentFallback = true
 					}
 				}
 				b.closeInput(b.current)
 				b.current = nil
+				if b.replacing != nil {
+					b.current = b.replacing
+					b.replacing = nil
+				}
+				if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+					pl.commitReplacement()
+				}
 			default:
 			}
 		}
@@ -1202,9 +1253,19 @@ func (b *broadcast) step(now time.Time) bool {
 		stalled = false
 	}
 	if frame.Video == nil && !introActive && b.current != nil && (startupExpired || stalled) {
-		b.noteFailure(current, fmt.Errorf("decoder stalled"), now)
-		b.closeInput(b.current)
-		b.current = nil
+		if stalled && !startupExpired && b.burstNoWait && current.programme && current.mediaKey == 0 {
+			if !b.current.stalledNoted {
+				b.current.stalledNoted = true
+				b.noteFailure(current, fmt.Errorf("decoder stalled"), now)
+			}
+		} else {
+			b.noteFailure(current, fmt.Errorf("decoder stalled"), now)
+			b.closeInput(b.current)
+			b.current = nil
+			if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+				pl.commitReplacement()
+			}
+		}
 	}
 	// Ahead-of-clock production may wait for its input. A due tick must keep
 	// the live fallback flowing even when resolution has not produced a frame;
@@ -1217,17 +1278,29 @@ func (b *broadcast) step(now time.Time) bool {
 		return false
 	}
 	// A live output well ahead of the wall clock waits briefly for a picture
-	// that is merely late (decode jitter) rather than holding a tick, without
-	// permanently shrinking b.lead.
+	// that is merely late (decode jitter) rather than holding a tick, absorbing
+	// the wait into b.lead so subsequent ticks never fire faster than real time.
 	if fresh || b.current == nil {
-		b.liveWaitSince = time.Time{}
-	} else if frame.Video == nil && b.burstNoWait && !b.bursting && !introActive && !b.current.lastFrameAt.IsZero() && b.lead > liveWaitLead {
+		if !b.liveWaitSince.IsZero() {
+			waited := time.Since(b.liveWaitSince)
+			if absorb := min(waited, max(0, b.lead-liveWaitLead)); absorb > 0 {
+				b.lead -= absorb
+			}
+			b.liveWaitSince = time.Time{}
+		}
+	} else if frame.Video == nil && b.burstNoWait && !b.bursting && !introActive && b.holdSince.IsZero() && !b.current.lastFrameAt.IsZero() && b.lead > liveWaitLead {
+		allow := min(liveWaitMax, b.lead-liveWaitLead)
 		if b.liveWaitSince.IsZero() {
 			b.liveWaitSince = time.Now()
 		}
-		if time.Since(b.liveWaitSince) < liveWaitMax {
+		waited := time.Since(b.liveWaitSince)
+		if waited < allow {
 			return false
 		}
+		if absorb := min(waited, max(0, b.lead-liveWaitLead)); absorb > 0 {
+			b.lead -= absorb
+		}
+		b.liveWaitSince = time.Time{}
 	}
 	if frame.Video == nil && !introActive && !b.freshAt.IsZero() && (now.Sub(b.freshAt) < b.holdStalled() || current.programme && current.mediaKey != 0) {
 		frame = transcode.RawFrame{Video: b.lastFrame.Video, PolicyTags: b.lastFrame.PolicyTags}
@@ -1420,13 +1493,16 @@ func (b *broadcast) step(now time.Time) bool {
 			b.holdSince = now
 			b.holdMode = mode
 		}
-		b.pacer.reset(b.current)
-		if b.airedProgramme && current.programme && current.mediaKey == 0 {
-			maxDrop := 30 * max(1, b.format.FPSNum/b.format.FPSDen)
-			if b.rejoinDrop < maxDrop {
-				b.rejoinDrop++
-			}
+		// Keep WSOLA lookahead intact while holding the same live input so
+		// zero buffered frames are discarded across a hold; reset only when
+		// leaving the held picture (for example, to screen) or when current is nil.
+		if mode != "hold" || b.current == nil {
+			b.pacer.reset(b.current)
 		}
+		// A hold never schedules frames to be dropped afterwards: dropping
+		// several decoded frames per output tick to "rejoin" played as a
+		// visible fast-forward with broken audio. The channel simply resumes
+		// from its next frame, a little further behind the provider.
 	} else if !b.holdSince.IsZero() {
 		if dur := now.Sub(b.holdSince); dur > 0 {
 			if holder, ok := b.planner.(interface{ noteHold(string, time.Duration) }); ok {
@@ -1435,9 +1511,6 @@ func (b *broadcast) step(now time.Time) bool {
 		}
 		b.holdSince = time.Time{}
 		b.holdMode = ""
-	}
-	if !current.programme || current.mediaKey != 0 {
-		b.rejoinDrop = 0
 	}
 	// PCM follows the output tick, including fractional frame rates. Never let a
 	// malformed decoder chunk shift every subsequent audio timestamp.

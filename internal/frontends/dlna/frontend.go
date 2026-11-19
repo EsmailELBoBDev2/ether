@@ -61,6 +61,26 @@ func RegisteredRoutes() ([]route.Route, error) {
 
 func (i *instance) registerRoutes() error {
 	i.router = &route.Router{}
+	if i.host.LANViewer != nil {
+		i.router.SetMiddleware(func(_ route.Route, next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				viewer, err := i.host.LANViewer(r.Context(), r)
+				if err != nil || viewer == nil {
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+				if i.host.ClientSeen != nil && i.host.ClientIP != nil {
+					if peer, ok := i.host.ClientIP(r); ok {
+						if device := frontend.LANDevice(peer); device.ID != "" {
+							i.host.ClientSeen(device.ID)
+						}
+					}
+				}
+				r = r.WithContext(context.WithValue(r.Context(), viewerKey{}, viewer))
+				next.ServeHTTP(w, r)
+			})
+		})
+	}
 	for _, item := range []struct {
 		method, path string
 		handler      http.HandlerFunc
@@ -106,19 +126,6 @@ func (i *instance) Handler() http.Handler {
 			u.Path = strings.TrimPrefix(u.Path, "/dlna")
 			r.URL = &u
 		}
-		viewer, err := i.host.LANViewer(r.Context(), r)
-		if err != nil || viewer == nil {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		if i.host.ClientSeen != nil && i.host.ClientIP != nil {
-			if peer, ok := i.host.ClientIP(r); ok {
-				if device := frontend.LANDevice(peer); device.ID != "" {
-					i.host.ClientSeen(device.ID)
-				}
-			}
-		}
-		r = r.WithContext(context.WithValue(r.Context(), viewerKey{}, viewer))
 		i.router.ServeHTTP(w, r)
 	})
 }

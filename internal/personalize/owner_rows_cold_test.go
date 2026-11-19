@@ -64,7 +64,7 @@ func ownerSectionHarness(t *testing.T) (*harness, *gatedCollections, func(time.T
 		o.Collections = cols
 	})
 	ctx := context.Background()
-	if _, err := h.e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "movies",
+	if _, err := h.e.SetHomeLayout(ctx, core.HomeLayout{Global: []core.LayoutPage{{Section: "library:1",
 		Rows: []core.RowPolicy{{Row: "collection:6", Status: "always", Slot: 1}}}}}); err != nil {
 		t.Fatal(err)
 	}

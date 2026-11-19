@@ -218,24 +218,23 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			out := make([]admin.LayoutLibrary, 0, len(libs))
 			for _, l := range libs {
-				if l.Source == core.LibraryPlugin || (l.MediaType != core.TypeMovie && l.MediaType != core.TypeShow) {
+				lType := string(l.MediaType)
+				if l.Source == core.LibraryPlugin {
+					lType = "plugin"
+				} else if l.MediaType != core.TypeMovie && l.MediaType != core.TypeShow {
 					continue
 				}
-				base := "movies"
-				if l.MediaType == core.TypeShow {
-					base = "shows"
-				}
 				out = append(out, admin.LayoutLibrary{
-					ID:       int(l.ID),
-					Name:     l.Name,
-					Slug:     l.Key,
-					Type:     string(l.MediaType),
-					Section:  "library:" + strconv.Itoa(int(l.ID)),
-					BasePage: base,
+					ID:      int(l.ID),
+					Name:    l.Name,
+					Slug:    l.Key,
+					Type:    lType,
+					Section: "library:" + strconv.Itoa(int(l.ID)),
 				})
 			}
 			return out, nil
 		},
+		PluginLibraryRows: a.pluginLibraryLayoutRows,
 		Collections:        a.collections,
 		CatalogHelper:      a.collections,
 		ViewerCatalogRules: a.catalog,
@@ -559,4 +558,52 @@ func (a *App) viewerDirectory(ctx context.Context) ([]admin.ViewerRecord, error)
 		out = append(out, admin.ViewerRecord{User: u.User, Active: u.Active, Origin: u.Origin, Home: u.Home, OwnerEnabled: u.OwnerEnabled, PlexShared: u.PlexShared, HasPlex: u.HasPlex})
 	}
 	return out, nil
+}
+
+func (a *App) pluginLibraryLayoutRows(ctx context.Context, viewer *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error) {
+	var svc *surfaceExperience
+	if a.frontends != nil && a.frontends.siloExperience != nil {
+		svc = a.frontends.siloExperience
+	} else if a.pluginsRT != nil && a.pluginsRT.kindCatalog != nil {
+		if raw, err := a.newSurfaceExperience("silo"); err == nil {
+			svc, _ = raw.(*surfaceExperience)
+		}
+	}
+	if svc == nil || svc.Service == nil {
+		return []core.RowDescriptor{}, []core.HomeRow{}, nil
+	}
+	v := viewer
+	if v == nil || v.ID <= 0 {
+		if owner, err := a.users.Owner(ctx); err == nil && owner != nil {
+			v = owner
+		} else {
+			v = &core.User{ID: 1, IsOwner: true}
+		}
+	}
+	viewID := strconv.Itoa(libraryID)
+	sec := "library:" + viewID
+	cands, err := svc.Service.PluginLibraryCandidateRows(ctx, v, viewID)
+	if err != nil {
+		return nil, nil, err
+	}
+	descs := make([]core.RowDescriptor, 0, len(cands))
+	rows := make([]core.HomeRow, 0, len(cands))
+	for _, r := range cands {
+		descs = append(descs, core.RowDescriptor{
+			HubID:    r.ID,
+			Title:    r.Title,
+			Kind:     r.Kind,
+			Sections: []string{sec},
+			Group:    "collections",
+		})
+		rows = append(rows, core.HomeRow{
+			HubID:  r.ID,
+			Title:  r.Title,
+			Kind:   r.Kind,
+			Source: core.RowSourcePrecomposed,
+			Items:  r.Items,
+			Hub:    core.Hub{ID: r.ID, Title: r.Title, Items: r.Items, ItemCount: len(r.Items)},
+		})
+	}
+	return descs, rows, nil
 }

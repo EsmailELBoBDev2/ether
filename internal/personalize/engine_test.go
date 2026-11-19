@@ -281,7 +281,7 @@ func TestPreviewMatchesHubs(t *testing.T) {
 	// Watching when populated. Empty utility rows do not displace discovery.
 	sec := hubContext(testNow, core.DeviceTV)
 	sec.SectionID = 2
-	p, _ := h.e.PreviewHome(ctx, &u, sec, "shows", 12)
+	p, _ := h.e.PreviewHome(ctx, &u, sec, "library:2", 12)
 	if len(p.Rows) < 3 || p.Rows[0].Kind != KindTrending || (p.Rows[1].Kind != KindTop10 && p.Rows[1].Kind != KindTop10Today) {
 		t.Fatalf("section preview head = %v", kindsOf(p.Rows))
 	}

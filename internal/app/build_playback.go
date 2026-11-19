@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,7 +35,8 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 	a.buildPlaybackPresentation()
 	// Playback and prefetch.
 	a.playback, err = playback.New(playback.Deps{
-		AugmentMedia: a.enrichSubtitles,
+		OpenResolution: a.openVaultResolution,
+		AugmentMedia:   a.enrichSubtitles,
 		NativeProbe: func(ctx context.Context, src core.MediaSource) (*core.MediaInfo, error) {
 			return transcode.ProbeSource(ctx, src, src.Size())
 		},
@@ -88,7 +90,8 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("playback: %w", err)
 	}
-	a.playback.Subscribe(func(playback.Event) {
+	a.playback.Subscribe(func(ev playback.Event) {
+		a.onPlaybackSubtitleEvent(ev)
 		a.notifySessionsChanged()
 	})
 	a.closers = append(a.closers, func() { a.playback.Close() })
@@ -147,6 +150,13 @@ func (a *App) buildPlaybackPresentation() {
 	a.buildAdoption()
 }
 
+func (a *App) openTranscodeSubtitle(id, format, source string) (io.ReadCloser, string, error) {
+	if a == nil || a.subtitles == nil {
+		return nil, "", core.ErrNotAvailable
+	}
+	return a.subtitles.OpenFormatFrom(id, format, source)
+}
+
 // buildEncoder constructs only local encoding, without catalogue, providers or playback.
 func (a *App) buildEncoder(ctx context.Context, cfg config.Config) error {
 	log := a.log
@@ -158,7 +168,7 @@ func (a *App) buildEncoder(ctx context.Context, cfg config.Config) error {
 	tracePlayback := os.Getenv("ETHER_TRACE_PLAYBACK") == "1"
 	a.tracePlayback = tracePlayback
 	if a.opts.FixtureTranscoder == nil {
-		a.transcoder, err = transcode.New(cfg.Transcode, log, transcode.WithDecodeStore(a.db), transcode.WithRuntimeDir(filepath.Join(dataDir, "tools")), transcode.WithTracePlayback(tracePlayback), transcode.WithOnChange(a.publishDashboard), transcode.WithEncoderObserver(func(sessionID string, started bool, excerpt string) {
+		a.transcoder, err = transcode.New(cfg.Transcode, log, transcode.WithDecodeStore(a.db), transcode.WithRuntimeDir(filepath.Join(dataDir, "tools")), transcode.WithTracePlayback(tracePlayback), transcode.WithOnChange(a.publishDashboard), transcode.WithSubtitleOpener(a.openTranscodeSubtitle), transcode.WithEncoderObserver(func(sessionID string, started bool, excerpt string) {
 			if !started && excerpt != "" {
 				a.observePlayTimeline(playback.TimelineEvent{
 					SessionID: a.resolvePlayLogSession(sessionID),

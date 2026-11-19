@@ -16,6 +16,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/kardianos/service v1.3.0
+	github.com/klauspost/compress v1.20.4
 	github.com/mnightingale/rapidyenc v0.0.0-20261008131718-6657b7ca854e
 	github.com/nwaples/rardecode/v2 v2.4.5
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3

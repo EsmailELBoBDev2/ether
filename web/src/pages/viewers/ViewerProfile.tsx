@@ -419,7 +419,6 @@ function TheirHome({ viewer }: { viewer: Viewer }) {
     device: "tv",
     day: now.getDay(),
     hour: now.getHours(),
-    section: "home",
   });
   return (
     <div className="space-y-4">

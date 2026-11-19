@@ -39,7 +39,7 @@ type assembly struct {
 	// pageLen is the page length the final layout pass will truncate to
 	// (0 = unknown: every selected row drafts titles as equals).
 	pageLen int
-	// lead is what the viewer's Home leads with (Movies/TV pages with
+	// lead is what the viewer's Home leads with (library pages with
 	// DedupeHome); nil = no dedupe.
 	lead    *homeLead
 	weights map[*candRow]float64 // surface prior weight of admitted rows
@@ -107,8 +107,8 @@ func (a *assembly) run() []core.HomeRow {
 		}
 		rr := &rankedRow{c: c, items: items, hubID: hubID}
 		if a.layout != nil {
-			target, fallback := a.layoutTarget()
-			p, _ := effectiveHomePolicyFor(*a.layout, a.user.ID, target, fallback, core.HomeRow{HubID: rr.hubID, Kind: c.kind})
+			target := a.layoutTarget()
+			p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: rr.hubID, Kind: c.kind})
 			if p != nil {
 				rr.d.hidden = p.Status == "off" || !whenMatches(p.When, a.hc) || !weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
 				rr.d.pinned = !rr.d.hidden && p.Status == "always"
@@ -532,8 +532,8 @@ func (a *assembly) survivors(sel []*rankedRow) map[*rankedRow]bool {
 		d = *a.layout
 	}
 	out := make(map[*rankedRow]bool, len(sel))
-	target, fallback := a.layoutTarget()
-	for _, hr := range arrangeLayoutFor(rows, d, a.user.ID, a.hc, target, fallback, a.pageLen) {
+	target := a.layoutTarget()
+	for _, hr := range arrangeLayoutFor(rows, d, a.user.ID, a.hc, target, a.pageLen) {
 		if r := byID[hr.HubID]; r != nil && !hr.Hidden {
 			out[r] = true
 		}

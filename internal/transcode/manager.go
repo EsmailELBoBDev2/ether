@@ -58,6 +58,7 @@ type options struct {
 	onRunStart      func(inputURL string, from, to time.Duration)
 	onEncoder       func(sessionID string, started bool, excerpt string)
 	onChange        func()
+	openSubtitle    func(id, format, source string) (io.ReadCloser, string, error)
 	tracePlayback   bool
 	// rungDwell is how long a run keeps producing its rung before a
 	// request on another rung may replace it (see Session.rungDwellLocked).
@@ -146,6 +147,56 @@ func WithTracePlayback(on bool) Option { return func(o *options) { o.tracePlayba
 
 // WithOnChange is notified when owner-visible transcoder capability state changes.
 func WithOnChange(f func()) Option { return func(o *options) { o.onChange = f } }
+
+// WithSubtitleOpener resolves ether-subtitle:<id> sidecars into session-local
+// files so burn-in and Matroska soft-subtitle muxing use aligned timing.
+func WithSubtitleOpener(f func(id, format, source string) (io.ReadCloser, string, error)) Option {
+	return func(o *options) { o.openSubtitle = f }
+}
+
+func (m *Manager) stageExternalSubtitles(dir string, info core.MediaInfo, source string) core.MediaInfo {
+	if m == nil || m.opts.openSubtitle == nil || dir == "" || len(info.Streams) == 0 {
+		return info
+	}
+	cloned := false
+	const maxStagedSubtitle = 32 << 20
+	for i := range info.Streams {
+		st := info.Streams[i]
+		if st.Type != "subtitle" || !st.External || !strings.HasPrefix(st.ExternalURL, "ether-subtitle:") {
+			continue
+		}
+		rc, actual, err := m.opts.openSubtitle(st.ExternalURL, "srt", source)
+		if err != nil || rc == nil {
+			if rc != nil {
+				_ = rc.Close()
+			}
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(rc, maxStagedSubtitle+1))
+		_ = rc.Close()
+		if readErr != nil || len(data) == 0 || len(data) > maxStagedSubtitle {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			continue
+		}
+		ext := "srt"
+		if actual == "vtt" {
+			ext = "vtt"
+		}
+		target := filepath.Join(dir, fmt.Sprintf("sidecar-%d.%s", st.Index, ext))
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			continue
+		}
+		if !cloned {
+			info = core.CloneMediaInfo(info)
+			cloned = true
+		}
+		info.Streams[i].ExternalURL = target
+		info.Streams[i].Codec = ext
+	}
+	return info
+}
 
 // Manager runs ffmpeg for Ether. It implements core.Transcoder.
 type Manager struct {
@@ -1127,6 +1178,8 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("transcode: session dir: %w", err)
 	}
+	req.Info = m.stageExternalSubtitles(dir, req.Info, req.ReleaseID)
+	s.info = req.Info
 	if len(slateData) > 0 {
 		if err := os.WriteFile(req.InputURL, slateData, 0o600); err != nil {
 			os.RemoveAll(dir)

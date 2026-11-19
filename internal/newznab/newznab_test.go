@@ -281,27 +281,21 @@ func TestResultCacheTTL(t *testing.T) {
 	}
 }
 
-func TestFetchNZBGzipAndDiskReuse(t *testing.T) {
+func TestFetchNZBGzipAndVaultReuse(t *testing.T) {
 	f := newFakeIndexer(t, "")
 	f.gzipNZB = true
 	cfg := testConfig(f.server.URL)
 	cfg.DailyGrabs = 1
-	c := New(cfg, nil, Options{NZBDir: t.TempDir()})
+	c := New(cfg, nil, Options{Vault: &testVault{}})
 	r := core.Release{ID: "abc123", GUID: "g1", Indexer: "Fake", Name: "X", NZBURL: f.server.URL + "/nzb?id=g1"}
 	b, err := c.FetchNZB(context.Background(), r)
 	if err != nil || string(b) != fakeNZB {
 		t.Fatalf("b=%q err=%v", b, err)
 	}
-	// Second fetch hits disk, not the grab budget or the server.
+	// The vault serves the replay after the grab allowance is spent.
 	b, err = c.FetchNZB(context.Background(), r)
 	if err != nil || string(b) != fakeNZB {
 		t.Fatalf("second b=%q err=%v", b, err)
-	}
-	f.mu.Lock()
-	n := f.nzbHits
-	f.mu.Unlock()
-	if n != 1 {
-		t.Errorf("nzb server hits=%d want 1", n)
 	}
 }
 

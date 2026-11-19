@@ -6,6 +6,8 @@ import { t, tn } from "../../i18n";
 import { formatBytes, formatPercent } from "../../lib/format";
 import type { CacheSnapshot } from "./Cache";
 import { causeLabel, pinLabel } from "./reasons";
+import { useAsync } from "../../lib/hooks";
+import { apiFetch } from "../../lib/api";
 import { Kpi } from "../../components/Kpi";
 
 export function CacheOverview({
@@ -29,6 +31,14 @@ export function CacheOverview({
   onExplore: () => void;
   onWarm: () => void;
 }) {
+  const vault = useAsync(
+    (signal) =>
+      apiFetch<{ releases: number; bytes: number; capBytes: number; grabsAvoided: number }>(
+        "/cache/vault",
+        { signal },
+      ),
+    [],
+  ).data;
   const used = s?.used ?? 0,
     budget = s?.budget ?? p.budgetBytes;
   const protectedBytes = Math.min(used, s?.protectedBytes ?? 0);
@@ -53,7 +63,7 @@ export function CacheOverview({
   const shelfWarming = s?.preload.state === "filling";
   return (
     <div className="flex min-h-0 flex-col gap-4 cockpit:h-full">
-      <div className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid shrink-0 grid-cols-2 gap-3 lg:grid-cols-5">
         {[
           [
             t("Retained"),
@@ -88,6 +98,17 @@ export function CacheOverview({
             t("Space reclaimed"),
             s ? formatBytes(s.metrics.evictedBytes) : "—",
             t("Released by cache retention"),
+          ],
+          [
+            t("Release library"),
+            vault ? tn(vault.releases, "{count} release", "{count} releases") : "—",
+            vault
+              ? t("{used} / {cap} · {count} indexer grabs avoided", {
+                  used: formatBytes(vault.bytes),
+                  cap: formatBytes(vault.capBytes),
+                  count: vault.grabsAvoided,
+                })
+              : "—",
           ],
         ].map(([label, value, hint]) => (
           <Kpi key={label} label={label!} value={value} detail={hint} />

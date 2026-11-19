@@ -534,23 +534,24 @@ type Stream struct {
 
 // Hub is a row of items.
 type Hub struct {
-	Channel        []SearchChannel `plex:"Channel"`
-	Meta           *Meta           `plex:"Meta,object"`
-	RankedTop10    bool            `plex:"-"`
-	PreviewOnFocus bool            `plex:"-"`
-	HubKey         string          `plex:"hubKey,omitempty"`
-	UpNext         *bool           `plex:"upNext"`
-	Key            string          `plex:"key,omitempty"`
-	Title          string          `plex:"title"`
-	Type           string          `plex:"type"`
-	HubIdentifier  string          `plex:"hubIdentifier"`
-	Context        string          `plex:"context"`
-	Size           int             `plex:"size"`
-	TotalSize      *int            `plex:"totalSize"`
-	More           bool            `plex:"more"`
-	Style          string          `plex:"style,omitempty"`
-	Promoted       *bool           `plex:"promoted"`
-	Random         *bool           `plex:"random"`
+	Meta           *Meta  `plex:"Meta,object"`
+	RankedTop10    bool   `plex:"-"`
+	PreviewOnFocus bool   `plex:"-"`
+	HubKey         string `plex:"hubKey,omitempty"`
+	UpNext         *bool  `plex:"upNext"`
+	Key            string `plex:"key,omitempty"`
+	Title          string `plex:"title"`
+	Type           string `plex:"type"`
+	HubIdentifier  string `plex:"hubIdentifier"`
+	Context        string `plex:"context"`
+	Size           int    `plex:"size"`
+	TotalSize      *int   `plex:"totalSize"`
+	More           bool   `plex:"more"`
+	Style          string `plex:"style,omitempty"`
+	Promoted       *bool  `plex:"promoted"`
+	Random         *bool  `plex:"random"`
+	Source         string `plex:"source,omitempty"`
+	Identifier     string `plex:"identifier,omitempty"`
 
 	Metadata  []Metadata  `plex:"Metadata"`
 	Directory []Directory `plex:"Directory"`
@@ -940,16 +941,27 @@ type TimelineBandwidth struct {
 	Resolution string `plex:"resolution"`
 }
 
-// SearchChannel is distinct from a programme Metadata hit. Plex Web requires
-// categories even when empty and tunes using the originating source and id.
+// SearchChannel is distinct from a programme Metadata hit. Plex Web and
+// Bedrock clients render coverPoster/thumb and categories and tune using the
+// originating EPG provider source and channel identifier.
 type SearchChannel struct {
-	ID         string     `plex:"id"`
-	GridKey    string     `plex:"gridKey"`
-	VCN        string     `plex:"vcn"`
-	Title      string     `plex:"title"`
-	ShortTitle string     `plex:"shortTitle"`
-	Source     string     `plex:"source"`
-	Categories StringList `plex:"categories"`
+	ID                 string     `plex:"id"`
+	Identifier         string     `plex:"identifier"`
+	ChannelIdentifier  string     `plex:"channelIdentifier"`
+	Slug               string     `plex:"slug"`
+	Key                string     `plex:"key"`
+	Type               string     `plex:"type"`
+	GridKey            string     `plex:"gridKey"`
+	VCN                string     `plex:"vcn"`
+	Title              string     `plex:"title"`
+	ShortTitle         string     `plex:"shortTitle"`
+	CallSign           string     `plex:"callSign"`
+	Thumb              string     `plex:"thumb"`
+	CoverPoster        string     `plex:"coverPoster"`
+	Language           string     `plex:"language"`
+	ProviderIdentifier string     `plex:"providerIdentifier"`
+	Source             string     `plex:"source"`
+	Categories         StringList `plex:"categories"`
 }
 
 // StringList encodes primitive strings as a JSON array (including [] when

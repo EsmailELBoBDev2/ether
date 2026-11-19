@@ -756,7 +756,42 @@ func (s *Server) liveTVHubProjection(r *http.Request) (*model.Hub, frontend.Row)
 	return h, row
 }
 func (s *Server) liveChannelMetadata(r *http.Request, c frontend.LiveTVChannel) model.Metadata {
-	return model.Metadata{RatingKey: "channel-" + c.ID, Key: liveProviderPath + "/channels/" + url.PathEscape(c.ID), Type: "clip", Title: c.Name, Summary: "Live channel. No programme guide supplied.", Thumb: s.liveGuideLogo(r, c), ContentRating: c.Rating, Extra: []model.Attr{model.A("live", true), model.A("dvrChannel", true)}, Media: []model.Media{{Protocol: "livetv", Extra: []model.Attr{model.A("origin", "livetv"), model.A("channelIdentifier", c.ID), model.A("channelTitle", c.Name), model.A("channelVcn", c.Number), model.A("onAir", true)}}}}
+	now := s.now().Unix()
+	logo := s.liveGuideLogo(r, c)
+	return model.Metadata{
+		RatingKey:     "channel-" + c.ID,
+		Key:           liveProviderPath + "/channels/" + url.PathEscape(c.ID),
+		GUID:          "ether://livetv/channel/" + c.ID,
+		Type:          "clip",
+		Title:         c.Name,
+		Summary:       "Live channel. No programme guide supplied.",
+		Thumb:         logo,
+		ContentRating: c.Rating,
+		Extra: []model.Attr{
+			model.A("live", true),
+			model.A("dvrChannel", true),
+			model.A("skipDetails", true),
+			model.A("channelIdentifier", c.ID),
+			model.A("vcn", c.Number),
+		},
+		Media: []model.Media{{
+			ID:       tagID("live-channel", c.ID),
+			Protocol: "livetv",
+			Extra: []model.Attr{
+				model.A("origin", "livetv"),
+				model.A("beginsAt", now-1800),
+				model.A("endsAt", now+5400),
+				model.A("channelIdentifier", c.ID),
+				model.A("channelID", c.ID),
+				model.A("gridKey", c.ID),
+				model.A("channelTitle", c.Name),
+				model.A("channelCallSign", c.Name),
+				model.A("channelVcn", c.Number),
+				model.A("channelThumb", logo),
+				model.A("onAir", true),
+			},
+		}},
+	}
 }
 func (s *Server) handleLiveChannel(w http.ResponseWriter, r *http.Request) {
 	c, err := s.svc().liveTV.AllowedChannel(r.Context(), FromContext(r.Context()).User, chi.URLParam(r, "channel"))

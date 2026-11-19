@@ -93,12 +93,14 @@ type Extent struct {
 
 // Member is one playable file inside the release.
 type Member struct {
-	Name    string   `json:"name"`
-	Size    int64    `json:"size"`
-	Stored  bool     `json:"stored"`
-	Extents []Extent `json:"extents"`
-	Season  int      `json:"season,omitempty"` // 0 when not an episode
-	Episode int      `json:"episode,omitempty"`
+	// PrefixHash identifies the first 256 member bytes (or the whole member if shorter).
+	PrefixHash string   `json:"prefixHash,omitempty"`
+	Name       string   `json:"name"`
+	Size       int64    `json:"size"`
+	Stored     bool     `json:"stored"`
+	Extents    []Extent `json:"extents"`
+	Season     int      `json:"season,omitempty"` // 0 when not an episode
+	Episode    int      `json:"episode,omitempty"`
 }
 
 // Layout is learned by the stream engine on the first successful open so

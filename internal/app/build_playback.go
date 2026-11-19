@@ -34,7 +34,8 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 	a.buildPlaybackPresentation()
 	// Playback and prefetch.
 	a.playback, err = playback.New(playback.Deps{
-		AugmentMedia: a.enrichSubtitles,
+		OpenResolution: a.openVaultResolution,
+		AugmentMedia:   a.enrichSubtitles,
 		NativeProbe: func(ctx context.Context, src core.MediaSource) (*core.MediaInfo, error) {
 			return transcode.ProbeSource(ctx, src, src.Size())
 		},

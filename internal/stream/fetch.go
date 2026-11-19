@@ -71,6 +71,7 @@ func (fl *flight) notifyStateLocked() {
 
 // fetchOpts says where a fetched segment may be stored.
 type fetchOpts struct {
+	layoutProbe    bool // optional sibling discovery does not establish playback health
 	repairProgress func(*postedFile, int, core.RepairEvent) core.RepairWindow
 	burstUntil     time.Time
 	parallel       int            // independent bulk-reader window concurrency
@@ -128,7 +129,7 @@ func (e *Engine) segmentOnce(ctx context.Context, rel *release, pf *postedFile, 
 			}
 		}
 
-		e.missing.Add(1)
+		e.noteMissing(fo)
 		return nil, false, fmt.Errorf("stream: %s part %d not in nzb: %w", pf.Name(), i+1, core.ErrArticleMissing)
 	}
 	e.mu.Lock()
@@ -536,7 +537,7 @@ func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i i
 			if seg, aerr := e.loadAlternate(ctx, pf, i, prio, fo); seg != nil || aerr != nil {
 				return seg, false, aerr
 			}
-			e.missing.Add(1)
+			e.noteMissing(fo)
 			return nil, false, fmt.Errorf("stream: %s part %d <%s>: %w", pf.Name(), i+1, id, err)
 		}
 		if ctx.Err() != nil {
@@ -842,4 +843,11 @@ func (e *Engine) readFile(ctx context.Context, rel *release, pf *postedFile, p [
 		cur += int64(c)
 	}
 	return n, nil
+}
+
+func (e *Engine) noteMissing(fo fetchOpts) {
+	e.missing.Add(1)
+	if cb := e.opts.OnMissing; cb != nil && fo.cacheID != "" && !fo.layoutProbe {
+		cb(fo.cacheID)
+	}
 }

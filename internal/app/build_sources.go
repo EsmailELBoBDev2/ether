@@ -71,13 +71,25 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			if err := m.MigrateDir(migrationCtx, legacyDir); err != nil {
-				if migrationCtx.Err() == nil {
-					log.Warn("NZB migration incomplete")
+			// Pass after pass until the old directory is empty: files that
+			// failed (a Windows sharing violation, a busy database) stay
+			// readable and are retried with a growing pause.
+			for wait := time.Minute; ; wait = min(wait*2, time.Hour) {
+				err := m.MigrateDir(migrationCtx, legacyDir)
+				if err == nil {
+					migrated.Store(true)
+					return
 				}
-				return
+				if migrationCtx.Err() != nil {
+					return
+				}
+				log.Warn("NZB migration incomplete; retrying", "err", err, "retryIn", wait)
+				select {
+				case <-migrationCtx.Done():
+					return
+				case <-time.After(wait):
+				}
 			}
-			migrated.Store(true)
 		}()
 		a.closers = append(a.closers, func() { cancel(); <-done })
 	}

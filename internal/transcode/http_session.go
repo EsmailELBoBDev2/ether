@@ -21,6 +21,7 @@ import (
 type httpSession struct {
 	m    *Manager
 	id   string
+	dir  string
 	req  core.HLSRequest
 	life *encoderLifetime
 	log  *slog.Logger
@@ -70,7 +71,7 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 	}
 	life.encoding.Store(encoding)
 	m.mu.Unlock()
-	// Attach uses dir only as a cleanup key; HTTP output is a pipe.
+	// Attach uses dir for cleanup and any staged external sidecars.
 	dir := filepath.Join(m.tempDir, "http-"+unsafeID.ReplaceAllString(id, "_")+"-"+randomHex(4))
 	stub := &Session{
 		id:              id,
@@ -85,9 +86,11 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 	if !life.attach(stub) {
 		return nil, errors.New("transcode: session closed")
 	}
+	req.Info = m.stageExternalSubtitles(dir, req.Info, req.ReleaseID)
 	h := &httpSession{
 		m:    m,
 		id:   id,
+		dir:  dir,
 		req:  req,
 		life: life,
 
@@ -132,6 +135,7 @@ func (s *httpSession) ServeSegment(w http.ResponseWriter, r *http.Request, n int
 }
 
 func (s *httpSession) SwapInput(ctx context.Context, inputURL string, info core.MediaInfo, at time.Duration) error {
+	info = s.m.stageExternalSubtitles(s.dir, info, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {

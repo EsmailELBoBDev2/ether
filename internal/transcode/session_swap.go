@@ -75,6 +75,7 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	info = s.m.stageExternalSubtitles(s.dir, info, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {

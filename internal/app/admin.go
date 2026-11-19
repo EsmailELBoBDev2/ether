@@ -234,7 +234,7 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return out, nil
 		},
-		PluginLibraryRows: a.pluginLibraryLayoutRows,
+		PluginLibraryRows:  a.pluginLibraryLayoutRows,
 		Collections:        a.collections,
 		CatalogHelper:      a.collections,
 		ViewerCatalogRules: a.catalog,

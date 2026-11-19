@@ -138,7 +138,7 @@ type Manager struct {
 	// rankingSkipping caches whether a plugin's ranking step is currently
 	// being left out (Health.RankingSkipped > 0), so a resolve whose
 	// plugins all ranked in time writes nothing (nil = not loaded).
-	rankingSkipping map[string]bool
+	rankingSkipping     map[string]bool
 	pickMu              sync.Mutex
 	picks               map[string]subtitlePick
 	adapterViewerMu     sync.Mutex

@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -91,7 +92,11 @@ func TestPlexRootBehaviourUnchanged(t *testing.T) {
 		direct.ServeHTTP(want, makeReq())
 		got := httptest.NewRecorder()
 		mounted.ServeHTTP(got, makeReq())
-		if got.Code != want.Code || !bytes.Equal(got.Body.Bytes(), want.Body.Bytes()) {
+		// updatedAt is the wall clock in seconds and can tick between the two calls.
+		stamp := regexp.MustCompile(`updatedAt="\d+"`)
+		gotBody := stamp.ReplaceAll(got.Body.Bytes(), nil)
+		wantBody := stamp.ReplaceAll(want.Body.Bytes(), nil)
+		if got.Code != want.Code || !bytes.Equal(gotBody, wantBody) {
 			t.Fatalf("mounted / diverged from Plex: got=%d %q want=%d %q", got.Code, got.Body.String(), want.Code, want.Body.String())
 		}
 		if got.Header().Get("X-Plex-Protocol") != want.Header().Get("X-Plex-Protocol") {

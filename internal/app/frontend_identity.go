@@ -183,7 +183,7 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 			return "", core.ErrUnauthorized
 		}
 	}
-	plexAuth, ok := s.users.(frontend.PlexAccountAuthenticator)
+	plexAuth, ok := s.users.(plexAccountAuthenticator)
 	if !ok {
 		if err := s.allow(ctx, s.login, ip.String()); err != nil {
 			return "", err
@@ -439,4 +439,10 @@ func (s surfaceIdentity) RedeemOriginWebCode(ctx context.Context, code string, d
 	}
 	token, _, err := s.grants.RedeemOriginWebCode(ctx, code, string(s.surface), device, origin)
 	return token, err
+}
+
+// plexAccountAuthenticator validates a plex.tv account token for native
+// surface sign-in without accepting server, delegation or grant credentials.
+type plexAccountAuthenticator interface {
+	AuthenticatePlexAccount(context.Context, string) (*frontend.User, int64, error)
 }

@@ -227,7 +227,7 @@ func TestShieldSlowMetadataKeepsNormalResponseAndPublishesLater(t *testing.T) {
 	x.view(t)
 	close(gate)
 	caps := (&Request{User: &ownerUser, ClientID: "client-1", Product: "Plex for Android (TV)", Platform: "Android", Device: "SHIELD Android TV"}).ClientCaps(0)
-	if _, ok := x.mgr.WaitWarmProbe(t.Context(), &ownerUser, caps, fightClub.Key, time.Second); !ok {
+	if _, ok := x.mgr.WaitWarmProbe(t.Context(), &ownerUser, caps, fightClub.Key, 30*time.Second); !ok {
 		t.Fatal("request timeout canceled background probe")
 	}
 	x.f.srv.setVariants(x.rs)

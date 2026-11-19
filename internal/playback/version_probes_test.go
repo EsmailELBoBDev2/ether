@@ -138,13 +138,15 @@ func TestVersionProbesUseKnownFactsAndPersistByContentID(t *testing.T) {
 	h := newHarness(t, nil, nil)
 	cfg := config.Defaults(dir)
 	m1, err := New(Deps{
-		Resolver:      h.resolver,
-		Engine:        h.engine,
-		Transcoder:    h.tr,
-		Catalog:       h.catalog,
-		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return config.DefaultQuality().Profiles[1] },
-		DB:            db,
-		Vault:         vs,
+		Resolver:   h.resolver,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB:    db,
+		Vault: vs,
 		DebridFileMeta: func(rel core.Release) (string, int64, bool) {
 			if rel.ID == "rel-debrid-unprobed" {
 				return "Anime.2024.1080p.BluRay.DUAL.ENG.JPN.DDP5.1-GRP.mkv", 4 << 30, true
@@ -166,13 +168,15 @@ func TestVersionProbesUseKnownFactsAndPersistByContentID(t *testing.T) {
 
 	// Re-open manager to prove durable cross-restart preload by ContentID.
 	m2, err := New(Deps{
-		Resolver:      h.resolver,
-		Engine:        h.engine,
-		Transcoder:    h.tr,
-		Catalog:       h.catalog,
-		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return config.DefaultQuality().Profiles[1] },
-		DB:            db,
-		Vault:         vs,
+		Resolver:   h.resolver,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB:    db,
+		Vault: vs,
 		DebridFileMeta: func(rel core.Release) (string, int64, bool) {
 			if rel.ID == "rel-debrid-unprobed" {
 				return "Anime.2024.1080p.BluRay.DUAL.ENG.JPN.DDP5.1-GRP.mkv", 4 << 30, true
@@ -307,12 +311,14 @@ func TestDetailVersionHeaderProbeFreeBoundedAndYieldsToPlayback(t *testing.T) {
 
 	cfg := config.Defaults(dir)
 	m, err := New(Deps{
-		Resolver:      res,
-		Engine:        h.engine,
-		Transcoder:    h.tr,
-		Catalog:       h.catalog,
-		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return config.DefaultQuality().Profiles[1] },
-		DB:            db,
+		Resolver:   res,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB: db,
 		FetchNZB: func(context.Context, core.Release) ([]byte, error) {
 			res.grabHits.Add(1)
 			t.Error("background version probe must never grab an NZB")
@@ -433,12 +439,14 @@ func TestVersionHeaderProbeYieldsImmediatelyToActivePlayback(t *testing.T) {
 	}
 
 	m, err := New(Deps{
-		Resolver:      res,
-		Engine:        h.engine,
-		Transcoder:    h.tr,
-		Catalog:       h.catalog,
-		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile { return config.DefaultQuality().Profiles[1] },
-		DB:            db,
+		Resolver:   res,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB: db,
 		OpenCachedDebrid: func(context.Context, core.Release) (core.MediaSource, error) {
 			return src, nil
 		},

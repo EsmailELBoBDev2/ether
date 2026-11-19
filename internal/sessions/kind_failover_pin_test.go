@@ -70,7 +70,9 @@ func TestVelaPinPolicySeparatesOriginalRuntimeAndExplicitPicksFromAutoPlay(t *te
 	movieKey := core.MovieKey(99)
 
 	newHarness := func() (*Broker, *kindPinRemuxPlayback) {
-		active := func(_ context.Context, id int64) (*core.Viewer, error) { return &core.Viewer{ID: id, IsOwner: true}, nil }
+		active := func(_ context.Context, id int64) (*core.Viewer, error) {
+			return &core.Viewer{ID: id, IsOwner: true}, nil
+		}
 		bus := NewEventBus(nil, active)
 		t.Cleanup(bus.Close)
 		pb := &kindPinRemuxPlayback{

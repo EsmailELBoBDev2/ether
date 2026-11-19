@@ -395,7 +395,11 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 			id = base + ":" + strconv.Itoa(seen[base])
 		}
 		used[id] = true
-		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": row.Promoted, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
+		// The app shows a library tab's featured sections only in its hero,
+		// so a library whose rows were all promoted rendered as "Movies is
+		// empty". Featured is a Home distinction.
+		featured := row.Promoted && placement != frontend.PlacementLibrary
+		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
 		if !row.More {
 			section["total_count"] = len(items)
 		}

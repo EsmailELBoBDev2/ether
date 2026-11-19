@@ -1421,12 +1421,10 @@ func (b *broadcast) step(now time.Time) bool {
 			b.holdMode = mode
 		}
 		b.pacer.reset(b.current)
-		if b.airedProgramme && current.programme && current.mediaKey == 0 {
-			maxDrop := 30 * max(1, b.format.FPSNum/b.format.FPSDen)
-			if b.rejoinDrop < maxDrop {
-				b.rejoinDrop++
-			}
-		}
+		// A hold never schedules frames to be dropped afterwards: dropping
+		// several decoded frames per output tick to "rejoin" played as a
+		// visible fast-forward with broken audio. The channel simply resumes
+		// from its next frame, a little further behind the provider.
 	} else if !b.holdSince.IsZero() {
 		if dur := now.Sub(b.holdSince); dur > 0 {
 			if holder, ok := b.planner.(interface{ noteHold(string, time.Duration) }); ok {

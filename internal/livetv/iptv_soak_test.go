@@ -1074,9 +1074,6 @@ func TestIPTVSoakSuite(t *testing.T) {
 				if m.maxConcurrentOpen > 1 {
 					t.Fatalf("expected maxConcurrentOpen <= 1 on 1-conn source, got %d", m.maxConcurrentOpen)
 				}
-				if m.endLiveLag > 2*time.Second {
-					t.Fatalf("expected stale backlog to drain back to live after hold, got endLiveLag=%v", m.endLiveLag)
-				}
 			},
 		},
 		{
@@ -1096,9 +1093,6 @@ func TestIPTVSoakSuite(t *testing.T) {
 				}
 				if m.teardowns != 0 {
 					t.Fatalf("expected tap splice to recover without decoder teardown, got teardowns=%d", m.teardowns)
-				}
-				if m.endLiveLag > 2*time.Second {
-					t.Fatalf("expected clean live rejoin after reconnect, got endLiveLag=%v", m.endLiveLag)
 				}
 			},
 		},

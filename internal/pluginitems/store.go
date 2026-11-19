@@ -675,6 +675,55 @@ func applyMigration4(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
+// applyMigration6 adds plugin_item_fields_lookup_real and flags only existing
+// plugin_kinds that declared previously-unindexed fields for lazy reindex on
+// startup so all declared fields become index-backed for grouping without
+// reindexing 1M-item kinds whose fields were already indexed.
+func applyMigration6(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS plugin_item_fields_lookup_real ON plugin_item_fields(field, v_real, item_ref)`); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT plugin_id, kind_key, decl FROM plugin_kinds`)
+	if err != nil {
+		return err
+	}
+	type kindPair struct {
+		pluginID string
+		kindKey  string
+	}
+	var toReindex []kindPair
+	for rows.Next() {
+		var pid, kkey, declJSON string
+		if err := rows.Scan(&pid, &kkey, &declJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		var decl plugins.MediaKindMeta
+		if err := json.Unmarshal([]byte(declJSON), &decl); err != nil {
+			continue
+		}
+		for _, f := range decl.Fields {
+			if !f.Indexed && f.Type != "people" {
+				toReindex = append(toReindex, kindPair{pluginID: pid, kindKey: kkey})
+				break
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, k := range toReindex {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE plugin_kinds SET fts_version = 0 WHERE plugin_id = ? AND kind_key = ?`,
+			k.pluginID, k.kindKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func backfillFieldFoldsTx(ctx context.Context, tx *sql.Tx, batchSize int) error {
 	if batchSize <= 0 {
 		batchSize = 500
@@ -964,9 +1013,7 @@ func extractIndexData(decl plugins.MediaKindMeta, fieldsJSON string) ([]IndexedF
 		if err != nil {
 			continue
 		}
-		if fdecl.Indexed || fdecl.Type == "people" {
-			indexed = append(indexed, vals...)
-		}
+		indexed = append(indexed, vals...)
 		if fdecl.Type == "people" {
 			if len(texts) > 0 {
 				peopleParts = append(peopleParts, strings.Join(texts, " "))

@@ -18,9 +18,12 @@ export interface Presentations {
 
 export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view";
 
+export type LibraryFacetCategory = "essentials" | "people" | "technical" | "plugin";
+
 export interface LibraryFacetOption {
   id: string;
   label: string;
+  category?: LibraryFacetCategory;
 }
 
 export interface LibraryAvailableFacets {

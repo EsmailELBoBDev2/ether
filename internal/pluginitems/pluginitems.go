@@ -58,6 +58,11 @@ CREATE TABLE plugin_facet_expansions (
 CREATE INDEX plugin_facet_expansions_library ON plugin_facet_expansions(library_id, state);
 `)
 
+	store.Register("pluginitems", 6, `
+CREATE INDEX IF NOT EXISTS plugin_item_fields_lookup_real ON plugin_item_fields(field, v_real, item_ref);
+`)
+	store.RegisterApply("pluginitems", 6, applyMigration6)
+
 	store.Register("pluginitems", 4, `
 ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT '';
 CREATE INDEX plugin_item_fields_fold ON plugin_item_fields(field, v_fold, v_text, v_int, item_ref);

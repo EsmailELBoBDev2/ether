@@ -266,12 +266,36 @@ func NormalizeCatalogueTabFacet(kind, facet string) (string, bool) {
 			return "network", true
 		case "country", "countries":
 			return "country", true
+		case "language", "languages":
+			return "language", true
+		case "contentrating", "content_rating", "content-rating", "contentratings", "content_ratings", "content-ratings", "certification", "certifications":
+			return "contentRating", true
 		case "year", "years":
 			return "year", true
 		case "decade", "decades":
 			return "decade", true
 		case "franchise", "franchises":
 			return "franchise", true
+		case "tag", "tags":
+			return "tag", true
+		case "keyword", "keywords":
+			return "keyword", true
+		case "director", "directors":
+			return "director", true
+		case "writer", "writers":
+			return "writer", true
+		case "resolution", "resolutions":
+			return "resolution", true
+		case "hdr":
+			return "hdr", true
+		case "audiolanguage", "audio_language", "audio-language", "audiolanguages", "audio_languages", "audio-languages":
+			return "audioLanguage", true
+		case "rating", "ratings", "ratingband", "rating_band", "rating-band", "ratingbands", "rating_bands", "rating-bands":
+			return "rating", true
+		case "runtime", "runtimes", "duration", "runtimeband", "runtime_band", "runtime-band", "runtimebands", "runtime_bands", "runtime-bands":
+			return "runtime", true
+		case "addedmonth", "added_month", "added-month", "addedmonths", "added_months", "added-months":
+			return "addedMonth", true
 		default:
 			return "", false
 		}
@@ -281,12 +305,71 @@ func NormalizeCatalogueTabFacet(kind, facet string) (string, bool) {
 			return "cast", true
 		case "director", "directors":
 			return "director", true
+		case "writer", "writers":
+			return "writer", true
 		default:
 			return "", false
 		}
 	default:
 		return "", f == ""
 	}
+}
+
+// ParseCatalogueRatingBand maps a canonical rating band ID onto (min, max, maxExclusive).
+func ParseCatalogueRatingBand(id string) (minR, maxR float64, maxExclusive, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "9-10":
+		return 9.0, 10.0, false, true
+	case "8-8.9":
+		return 8.0, 9.0, true, true
+	case "7-7.9":
+		return 7.0, 8.0, true, true
+	case "6-6.9":
+		return 6.0, 7.0, true, true
+	case "under-6":
+		return 0, 6.0, true, true
+	default:
+		return 0, 0, false, false
+	}
+}
+
+// ParseCatalogueRuntimeBand maps a canonical runtime band ID onto inclusive seconds (minSec, maxSec).
+func ParseCatalogueRuntimeBand(id string) (minSec, maxSec int64, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "under-30m":
+		return 1, 1799, true
+	case "30-60m":
+		return 1800, 3599, true
+	case "60-90m":
+		return 3600, 5399, true
+	case "90-120m":
+		return 5400, 7199, true
+	case "120-180m":
+		return 7200, 10799, true
+	case "180m-plus":
+		return 10800, 0, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// ParseCatalogueAddedMonth parses a canonical "YYYY-MM" bucket ID into inclusive UTC Unix bounds.
+func ParseCatalogueAddedMonth(id string) (fromTS, toTS int64, ok bool) {
+	id = strings.TrimSpace(id)
+	if len(id) != 7 || id[4] != '-' {
+		return 0, 0, false
+	}
+	t, err := time.Parse("2006-01", id)
+	if err != nil {
+		return 0, 0, false
+	}
+	y, m, _ := t.UTC().Date()
+	if y < 1970 || y > 9999 {
+		return 0, 0, false
+	}
+	start := time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0).Add(-time.Second)
+	return start.Unix(), end.Unix(), true
 }
 
 // Library is the one library model for builtins, plugin kinds and
@@ -412,12 +495,11 @@ func (u *User) AllowsLibrary(id LibraryID) bool {
 	return false
 }
 
-// CatalogFacetCollectionsQuery requests a paged facet listing (genre, studio,
-// network, country, year, decade, or franchise) over catalogue titles matching
-// Filter.
+// CatalogFacetCollectionsQuery requests a paged facet listing over catalogue
+// titles matching Filter.
 type CatalogFacetCollectionsQuery struct {
 	Filter Filter
-	Facet  string // genre|studio|network|country|year|decade|franchise
+	Facet  string // genre|studio|network|country|language|contentRating|year|decade|franchise|tag|keyword|director|writer|resolution|hdr|audioLanguage|rating|runtime|addedMonth
 	Order  string // count (default) | name
 	Query  string // optional folded search string
 	Offset int
@@ -439,11 +521,11 @@ type CatalogFacetCollectionsPage struct {
 	More  bool
 }
 
-// CatalogFacetPeopleQuery requests a paged cast or director listing over
-// catalogue titles matching Filter.
+// CatalogFacetPeopleQuery requests a paged cast, director, or writer listing
+// over catalogue titles matching Filter.
 type CatalogFacetPeopleQuery struct {
 	Filter Filter
-	Facet  string // cast | director
+	Facet  string // cast | director | writer
 	Order  string // name (default) | count
 	Query  string // optional folded search string
 	Offset int

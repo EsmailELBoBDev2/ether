@@ -31,8 +31,9 @@ var catalogueTabSortOptions = []string{
 }
 
 type tabFacetOptionDTO struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Category string `json:"category,omitempty"`
 }
 
 type tabFacetsCatalogDTO struct {
@@ -79,6 +80,15 @@ func (c *librariesConsole) pluginKindDecl(ctx context.Context, lib core.Library)
 	return rec.Decl, true
 }
 
+func isGroupablePluginCollectionField(fd plugins.KindField) bool {
+	switch fd.Type {
+	case "string", "strings", "enum", "int", "float", "date", "bool", "duration":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *librariesConsole) pluginTabSchema(ctx context.Context, lib core.Library) *libraries.PluginTabSchema {
 	if lib.Source != core.LibraryPlugin {
 		return nil
@@ -88,27 +98,22 @@ func (c *librariesConsole) pluginTabSchema(ctx context.Context, lib core.Library
 		return nil
 	}
 	schema := &libraries.PluginTabSchema{
-		CollectionFacets: make(map[string]bool),
-		PeopleFacets:     make(map[string]bool),
-		Sorts:            make(map[string]bool),
+		CollectionFacets: map[string]bool{
+			"year":     true,
+			"decade":   true,
+			"released": true,
+			"rating":   true,
+		},
+		PeopleFacets: make(map[string]bool),
+		Sorts:        make(map[string]bool),
 	}
-	fieldsByKey := make(map[string]plugins.KindField, len(decl.Fields))
 	for _, fd := range decl.Fields {
-		fieldsByKey[fd.Key] = fd
-	}
-	for _, fk := range decl.Browse.Facets {
-		switch fk {
-		case "year", "released", "rating":
-			schema.CollectionFacets[fk] = true
-		default:
-			fd, exists := fieldsByKey[fk]
-			if !exists {
-				continue
-			}
-			if fd.Type == "people" {
-				schema.PeopleFacets[fk] = true
-			} else {
-				schema.CollectionFacets[fk] = true
+		if fd.Type == "people" {
+			schema.PeopleFacets[fd.Key] = true
+		} else if isGroupablePluginCollectionField(fd) {
+			schema.CollectionFacets[fd.Key] = true
+			if fd.Type == "date" {
+				schema.CollectionFacets[fd.Key+"-decade"] = true
 			}
 		}
 	}
@@ -203,59 +208,121 @@ func (c *librariesConsole) buildLibraryTabsDTO(ctx context.Context, lib core.Lib
 			for _, fd := range decl.Fields {
 				fieldsByKey[fd.Key] = fd
 			}
+			seenCol := make(map[string]bool)
+			seenPeople := make(map[string]bool)
+			addCol := func(id, label, category string) {
+				if seenCol[id] {
+					return
+				}
+				seenCol[id] = true
+				facets.Collections = append(facets.Collections, tabFacetOptionDTO{
+					ID:       id,
+					Label:    label,
+					Category: category,
+				})
+			}
+			addPerson := func(id, label string) {
+				if seenPeople[id] {
+					return
+				}
+				seenPeople[id] = true
+				facets.People = append(facets.People, tabFacetOptionDTO{
+					ID:       id,
+					Label:    label,
+					Category: "people",
+				})
+			}
+			addDeclaredField := func(fd plugins.KindField) {
+				label := c.catalogueLabel(ctx, lib.PluginID, fd.Label, fd.Key)
+				if fd.Type == "people" {
+					addPerson(fd.Key, label)
+					return
+				}
+				if !isGroupablePluginCollectionField(fd) {
+					return
+				}
+				addCol(fd.Key, label, "plugin")
+				if fd.Type == "date" {
+					addCol(fd.Key+"-decade", label+" (decade)", "plugin")
+				}
+			}
 			for _, fk := range decl.Browse.Facets {
 				switch fk {
 				case "year":
-					facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "year", Label: "Year"})
+					addCol("year", "Year", "essentials")
+				case "decade":
+					addCol("decade", "Decade", "essentials")
 				case "released":
-					facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "released", Label: "Released"})
+					addCol("released", "Released", "essentials")
 				case "rating":
-					facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "rating", Label: "Rating"})
+					addCol("rating", "Rating", "essentials")
 				default:
-					fd, exists := fieldsByKey[fk]
-					if !exists {
-						continue
-					}
-					label := c.catalogueLabel(ctx, lib.PluginID, fd.Label, fk)
-					if fd.Type == "people" {
-						facets.People = append(facets.People, tabFacetOptionDTO{ID: fk, Label: label})
-					} else {
-						facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: fk, Label: label})
+					if fd, exists := fieldsByKey[fk]; exists {
+						addDeclaredField(fd)
 					}
 				}
 			}
+			for _, fd := range decl.Fields {
+				addDeclaredField(fd)
+			}
+			addCol("year", "Year", "essentials")
+			addCol("decade", "Decade", "essentials")
+			addCol("released", "Released", "essentials")
+			addCol("rating", "Rating", "essentials")
 			sorts = append(sorts, decl.Browse.Sorts...)
 		}
 		if len(sorts) == 0 {
 			sorts = []string{"server"}
 		}
 	} else {
+		hasStudios := c.app != nil && c.app.catalog != nil && c.app.catalog.HasStudioData(ctx, libraryScopeFilter(lib, core.Filter{}))
 		facets.Collections = []tabFacetOptionDTO{
-			{ID: "", Label: "Owner collections"},
-			{ID: "genre", Label: "Genres"},
+			{ID: "", Label: "Owner collections", Category: "essentials"},
+			{ID: "genre", Label: "Genres", Category: "essentials"},
 		}
 		switch lib.MediaType {
 		case core.TypeShow:
-			facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "network", Label: "Networks"})
+			facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "network", Label: "Networks", Category: "essentials"})
+			if hasStudios {
+				facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "studio", Label: "Studios", Category: "essentials"})
+			}
 		case core.TypeMovie:
-			facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "studio", Label: "Studios"})
+			facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "studio", Label: "Studios", Category: "essentials"})
+			if hasStudios {
+				facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "network", Label: "Networks", Category: "essentials"})
+			}
 		default:
 			facets.Collections = append(facets.Collections,
-				tabFacetOptionDTO{ID: "studio", Label: "Studios"},
-				tabFacetOptionDTO{ID: "network", Label: "Networks"},
+				tabFacetOptionDTO{ID: "studio", Label: "Studios", Category: "essentials"},
+				tabFacetOptionDTO{ID: "network", Label: "Networks", Category: "essentials"},
 			)
 		}
 		facets.Collections = append(facets.Collections,
-			tabFacetOptionDTO{ID: "country", Label: "Countries"},
-			tabFacetOptionDTO{ID: "year", Label: "Years"},
-			tabFacetOptionDTO{ID: "decade", Label: "Decades"},
+			tabFacetOptionDTO{ID: "country", Label: "Countries", Category: "essentials"},
+			tabFacetOptionDTO{ID: "language", Label: "Languages", Category: "essentials"},
+			tabFacetOptionDTO{ID: "contentRating", Label: "Content ratings", Category: "essentials"},
+			tabFacetOptionDTO{ID: "year", Label: "Years", Category: "essentials"},
+			tabFacetOptionDTO{ID: "decade", Label: "Decades", Category: "essentials"},
 		)
 		if lib.MediaType != core.TypeShow {
-			facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "franchise", Label: "Franchises"})
+			facets.Collections = append(facets.Collections, tabFacetOptionDTO{ID: "franchise", Label: "Franchises", Category: "essentials"})
 		}
+		facets.Collections = append(facets.Collections,
+			tabFacetOptionDTO{ID: "tag", Label: "Tags", Category: "essentials"},
+			tabFacetOptionDTO{ID: "keyword", Label: "Keywords", Category: "essentials"},
+			tabFacetOptionDTO{ID: "rating", Label: "Rating bands", Category: "essentials"},
+			tabFacetOptionDTO{ID: "runtime", Label: "Runtime bands", Category: "essentials"},
+			tabFacetOptionDTO{ID: "addedMonth", Label: "Added month", Category: "essentials"},
+			tabFacetOptionDTO{ID: "director", Label: "Directors", Category: "people"},
+			tabFacetOptionDTO{ID: "writer", Label: "Writers", Category: "people"},
+			tabFacetOptionDTO{ID: "resolution", Label: "Resolutions", Category: "technical"},
+			tabFacetOptionDTO{ID: "hdr", Label: "HDR", Category: "technical"},
+			tabFacetOptionDTO{ID: "audioLanguage", Label: "Audio languages", Category: "technical"},
+		)
 		facets.People = []tabFacetOptionDTO{
-			{ID: "cast", Label: "Actors"},
-			{ID: "director", Label: "Directors"},
+			{ID: "cast", Label: "Actors", Category: "people"},
+			{ID: "director", Label: "Directors", Category: "people"},
+			{ID: "writer", Label: "Writers", Category: "people"},
 		}
 		sorts = append([]string(nil), catalogueTabSortOptions...)
 	}

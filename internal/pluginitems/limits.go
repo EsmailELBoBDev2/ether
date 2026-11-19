@@ -145,9 +145,7 @@ func ValidateItem(decl plugins.MediaKindMeta, it core.KindItem, parentLevel stri
 				return ValidatedItem{}, fmt.Errorf("%w: item %q field %q: %v", ErrInvalidItem, it.ID, k, err)
 			}
 			cleanedFields[k] = raw
-			if fdecl.Indexed || fdecl.Type == "people" {
-				indexed = append(indexed, vals...)
-			}
+			indexed = append(indexed, vals...)
 			if fdecl.Type == "people" {
 				if len(texts) > 0 {
 					peopleParts = append(peopleParts, strings.Join(texts, " "))

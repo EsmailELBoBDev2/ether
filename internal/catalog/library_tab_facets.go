@@ -48,7 +48,14 @@ func (c *Catalog) LibraryFacetCollections(ctx context.Context, q core.CatalogFac
 	var pageBuckets []core.CatalogFacetCollection
 	more := false
 
-	if storageFacet != "franchise" {
+	if isExtraCatalogTabFacet(storageFacet) {
+		buckets, hasMore, qErr := c.libraryFacetCollectionsExtra(ctx, q.Filter, storageFacet, orderByName, rawQuery, foldedQuery, offset, limit, where, args)
+		if qErr != nil {
+			return core.CatalogFacetCollectionsPage{}, qErr
+		}
+		pageBuckets = buckets
+		more = hasMore
+	} else if storageFacet != "franchise" {
 		if buckets, hasMore, usedTally, tErr := c.libraryFacetCollectionsFromTally(ctx, q.Filter, storageFacet, orderByName, rawQuery, foldedQuery, offset, limit, where, args); tErr != nil {
 			return core.CatalogFacetCollectionsPage{}, tErr
 		} else if usedTally {
@@ -490,6 +497,8 @@ func (c *Catalog) hydrateLibraryFacetNewest(
 					qArgs = append(qArgs, whereArgs...)
 					qArgs = append(qArgs, b.ID)
 				}
+			default:
+				c.appendHydrateExtraNewestBranch(storageFacet, b, broadLibrary, where, whereArgs, &branches, &qArgs)
 			}
 		}
 		if len(branches) > 0 {

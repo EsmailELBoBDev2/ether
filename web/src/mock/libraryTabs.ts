@@ -7,7 +7,7 @@ import type {
   LibraryTabPreviewResponse,
   LibraryTabsResponse,
 } from "../pages/libraries/api";
-import { COLLECTIONS, NETWORKS, PEOPLE, STUDIOS, type FakeTitle } from "./data";
+import { COLLECTIONS, KEYWORDS, NETWORKS, PEOPLE, STUDIOS, type FakeTitle } from "./data";
 
 const SCOPE_NOTE = "Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs.";
 
@@ -36,12 +36,24 @@ const CATALOGUE_COLLECTION_FACETS = new Set([
   "studio",
   "network",
   "country",
+  "language",
+  "contentRating",
   "year",
   "decade",
   "franchise",
+  "tag",
+  "keyword",
+  "director",
+  "writer",
+  "resolution",
+  "hdr",
+  "audioLanguage",
+  "rating",
+  "runtime",
+  "addedMonth",
 ]);
 
-const CATALOGUE_PEOPLE_FACETS = new Set(["cast", "director"]);
+const CATALOGUE_PEOPLE_FACETS = new Set(["cast", "director", "writer"]);
 
 function decadeOf(year: number): string {
   return year ? `${Math.floor(year / 10) * 10}s` : "Unknown";
@@ -154,51 +166,119 @@ export function createLibraryTabsMock({
       const people: LibraryFacetOption[] = [];
       const seenCol = new Set<string>();
       const seenPeople = new Set<string>();
+      const fieldsByKey = new Map((kind?.fields ?? []).map((f) => [f.key, f]));
 
-      for (const f of kind?.fields ?? []) {
-        if (f.indexed === false) continue;
+      const addCol = (
+        id: string,
+        label: string,
+        category: "essentials" | "plugin" = "plugin",
+      ) => {
+        if (!seenCol.has(id)) {
+          seenCol.add(id);
+          collections.push({ id, label, category });
+        }
+      };
+      const addPerson = (id: string, label: string) => {
+        if (!seenPeople.has(id)) {
+          seenPeople.add(id);
+          people.push({ id, label, category: "people" });
+        }
+      };
+      const addField = (f: { key: string; label: string; type: string }) => {
         const isPeople = f.type === "people" || f.key === "author" || f.key === "narrator";
         if (isPeople) {
-          if (!seenPeople.has(f.key)) {
-            seenPeople.add(f.key);
-            people.push({ id: f.key, label: f.label });
+          addPerson(f.key, f.label);
+          return;
+        }
+        if (
+          f.type === "string" ||
+          f.type === "strings" ||
+          f.type === "enum" ||
+          f.type === "int" ||
+          f.type === "float" ||
+          f.type === "date" ||
+          f.type === "bool" ||
+          f.type === "duration"
+        ) {
+          addCol(f.key, f.label, "plugin");
+          if (f.type === "date") {
+            addCol(`${f.key}-decade`, `${f.label} (decade)`, "plugin");
           }
-        } else if (!seenCol.has(f.key)) {
-          seenCol.add(f.key);
-          collections.push({ id: f.key, label: f.label });
+        }
+      };
+
+      for (const fk of kind?.browse?.facets ?? []) {
+        if (fk === "year") addCol("year", "Year", "essentials");
+        else if (fk === "decade") addCol("decade", "Decade", "essentials");
+        else if (fk === "released") addCol("released", "Released", "essentials");
+        else if (fk === "rating") addCol("rating", "Rating", "essentials");
+        else {
+          const fd = fieldsByKey.get(fk);
+          if (fd) addField(fd);
         }
       }
+      for (const f of kind?.fields ?? []) {
+        addField(f);
+      }
+      addCol("year", "Year", "essentials");
+      addCol("decade", "Decade", "essentials");
+      addCol("released", "Released", "essentials");
+      addCol("rating", "Rating", "essentials");
       return { collections, people };
     }
 
     const mediaType = String(lib.mediaType ?? "");
+    const hasStudioData = catalog.some(
+      (x) => (!mediaType || mediaType === "mixed" || x.type === mediaType) && Boolean(x.studio),
+    );
     const collections: LibraryFacetOption[] = [
-      { id: "", label: "Owner collections" },
-      { id: "genre", label: "Genres" },
+      { id: "", label: "Owner collections", category: "essentials" },
+      { id: "genre", label: "Genres", category: "essentials" },
     ];
     if (mediaType === "show") {
-      collections.push({ id: "network", label: "Networks" });
+      collections.push({ id: "network", label: "Networks", category: "essentials" });
+      if (hasStudioData) {
+        collections.push({ id: "studio", label: "Studios", category: "essentials" });
+      }
     } else if (mediaType === "movie") {
-      collections.push({ id: "studio", label: "Studios" });
+      collections.push({ id: "studio", label: "Studios", category: "essentials" });
+      if (hasStudioData) {
+        collections.push({ id: "network", label: "Networks", category: "essentials" });
+      }
     } else {
       collections.push(
-        { id: "studio", label: "Studios" },
-        { id: "network", label: "Networks" },
+        { id: "studio", label: "Studios", category: "essentials" },
+        { id: "network", label: "Networks", category: "essentials" },
       );
     }
     collections.push(
-      { id: "country", label: "Countries" },
-      { id: "year", label: "Years" },
-      { id: "decade", label: "Decades" },
+      { id: "country", label: "Countries", category: "essentials" },
+      { id: "language", label: "Languages", category: "essentials" },
+      { id: "contentRating", label: "Content ratings", category: "essentials" },
+      { id: "year", label: "Years", category: "essentials" },
+      { id: "decade", label: "Decades", category: "essentials" },
     );
     if (mediaType !== "show") {
-      collections.push({ id: "franchise", label: "Franchises" });
+      collections.push({ id: "franchise", label: "Franchises", category: "essentials" });
     }
+    collections.push(
+      { id: "tag", label: "Tags", category: "essentials" },
+      { id: "keyword", label: "Keywords", category: "essentials" },
+      { id: "rating", label: "Rating bands", category: "essentials" },
+      { id: "runtime", label: "Runtime bands", category: "essentials" },
+      { id: "addedMonth", label: "Added month", category: "essentials" },
+      { id: "director", label: "Directors", category: "people" },
+      { id: "writer", label: "Writers", category: "people" },
+      { id: "resolution", label: "Resolutions", category: "technical" },
+      { id: "hdr", label: "HDR", category: "technical" },
+      { id: "audioLanguage", label: "Audio languages", category: "technical" },
+    );
     return {
       collections,
       people: [
-        { id: "cast", label: "Actors" },
-        { id: "director", label: "Directors" },
+        { id: "cast", label: "Actors", category: "people" },
+        { id: "director", label: "Directors", category: "people" },
+        { id: "writer", label: "Writers", category: "people" },
       ],
     };
   }
@@ -457,7 +537,7 @@ export function createLibraryTabsMock({
     field: string,
   ): { field: string; values: { value: string; title?: string; count: number }[] } {
     if (lib.source === "plugin") {
-      const pluginBuckets: Record<string, { value: string; count: number }[]> = {
+      const pluginBuckets: Record<string, { value: string; title?: string; count: number }[]> = {
         author: [
           { value: "Herbert", count: 1 },
           { value: "Ursula K. Le Guin", count: 4 },
@@ -484,6 +564,50 @@ export function createLibraryTabsMock({
           { value: "Ace Books", count: 5 },
           { value: "Chilton Books", count: 2 },
           { value: "Spectra", count: 3 },
+        ],
+        format: [
+          { value: "Hardcover", count: 6 },
+          { value: "EPUB", count: 5 },
+          { value: "Audiobook", count: 3 },
+        ],
+        pages: [
+          { value: "412", count: 3 },
+          { value: "304", count: 4 },
+          { value: "688", count: 2 },
+        ],
+        published: [
+          { value: "1965", count: 2 },
+          { value: "1969", count: 3 },
+          { value: "1984", count: 2 },
+        ],
+        "published-decade": [
+          { value: "1960", title: "1960s", count: 5 },
+          { value: "1980", title: "1980s", count: 3 },
+        ],
+        abridged: [
+          { value: "false", title: "No", count: 10 },
+          { value: "true", title: "Yes", count: 2 },
+        ],
+        language: [
+          { value: "en", title: "English", count: 11 },
+          { value: "fr", title: "French", count: 2 },
+        ],
+        year: [
+          { value: "1965", count: 2 },
+          { value: "1969", count: 3 },
+          { value: "1984", count: 2 },
+        ],
+        decade: [
+          { value: "1960", title: "1960s", count: 5 },
+          { value: "1980", title: "1980s", count: 3 },
+        ],
+        released: [
+          { value: "1965", count: 2 },
+          { value: "1969", count: 3 },
+        ],
+        rating: [
+          { value: "9", title: "9+", count: 4 },
+          { value: "8", title: "8+", count: 6 },
         ],
       };
       return {
@@ -532,6 +656,45 @@ export function createLibraryTabsMock({
         const pid = item.people?.[0];
         const p = PEOPLE.find((person) => person.id === pid);
         if (p) bump(p.name);
+      } else if (field === "writer") {
+        const pid = item.people?.[1] ?? item.people?.[0];
+        const p = PEOPLE.find((person) => person.id === pid);
+        if (p) bump(p.name);
+      } else if (field === "language" || field === "audioLanguage") {
+        const code = (item.language || "en").toLowerCase();
+        const label = new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code.toUpperCase();
+        bump(code, label);
+      } else if (field === "contentRating") {
+        bump(item.contentRating || (item.type === "show" ? "TV-14" : "PG-13"));
+      } else if (field === "tag") {
+        bump(Number(item.key) % 2 === 0 ? "favorites" : "criterion");
+      } else if (field === "keyword") {
+        for (const kwId of item.keywords ?? []) {
+          const kw = KEYWORDS.find((k) => k.id === kwId);
+          if (kw) bump(kw.name);
+        }
+      } else if (field === "rating") {
+        const r = item.rating ?? 7.5;
+        if (r >= 9) bump("9-10", "9+");
+        else if (r >= 8) bump("8-8.9", "8–8.9");
+        else if (r >= 7) bump("7-7.9", "7–7.9");
+        else if (r >= 6) bump("6-6.9", "6–6.9");
+        else if (r > 0) bump("under-6", "Under 6");
+      } else if (field === "runtime") {
+        const m = item.runtimeMinutes ?? 110;
+        if (m < 30) bump("under-30m", "Under 30m");
+        else if (m < 60) bump("30-60m", "30–60m");
+        else if (m < 90) bump("60-90m", "1–1.5h");
+        else if (m < 120) bump("90-120m", "1.5–2h");
+        else if (m < 180) bump("120-180m", "2–3h");
+        else bump("180m-plus", "3h+");
+      } else if (field === "addedMonth") {
+        const ym = (item.addedAt ?? "2026-01-15").slice(0, 7);
+        bump(ym, ym);
+      } else if (field === "resolution") {
+        bump(item.year && item.year >= 2018 ? "4k" : "1080p", item.year && item.year >= 2018 ? "4K" : "1080p");
+      } else if (field === "hdr") {
+        bump(item.year && item.year >= 2020 ? "dv" : "sdr", item.year && item.year >= 2020 ? "Dolby Vision" : "SDR");
       }
     }
 

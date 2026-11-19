@@ -2725,10 +2725,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
         library: { name: "Books" },
         levels: [{ key: "book", label: "Book", playable: true }],
         fields: [
-          { key: "author", type: "string", label: "Author", indexed: true },
+          { key: "author", type: "people", label: "Author", indexed: true },
           { key: "subject", type: "strings", label: "Subject", indexed: true },
           { key: "series", type: "string", label: "Series", indexed: true },
           { key: "publisher", type: "string", label: "Publisher", indexed: true },
+          { key: "format", type: "enum", label: "Format", indexed: false },
+          { key: "pages", type: "int", label: "Page count", indexed: false },
+          { key: "published", type: "date", label: "Published", indexed: false },
+          { key: "abridged", type: "bool", label: "Abridged", indexed: false },
+          { key: "language", type: "string", label: "Book language", indexed: false },
         ],
         present: {},
         browse: {

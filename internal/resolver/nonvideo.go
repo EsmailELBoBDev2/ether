@@ -25,6 +25,7 @@ func nonVideoExpectedTitles(t *core.Title, sreq core.SearchRequest) []string {
 	}
 	add(sreq.Title)
 	add(sreq.OriginalTitle)
+	add(sreq.EnglishTitle)
 	add(sreq.EpisodeTitle)
 	for _, alt := range sreq.AlternativeTitles {
 		add(alt)
@@ -32,8 +33,10 @@ func nonVideoExpectedTitles(t *core.Title, sreq core.SearchRequest) []string {
 	if t != nil {
 		add(t.Title)
 		add(t.OriginalTitle)
+		add(t.EnglishTitle)
 		add(t.ShowTitle)
 		add(t.ShowOriginalTitle)
+		add(t.ShowEnglishTitle)
 		for _, alt := range t.AlternativeTitles {
 			add(alt)
 		}

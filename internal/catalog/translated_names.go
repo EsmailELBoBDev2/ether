@@ -12,7 +12,7 @@ import (
 // use a macrolanguage code where the owner's locale uses its dominant variant.
 func (c *Catalog) applyTranslatedNames(t *core.Title, translations *tmdb.Translations, alts *tmdb.AltTitles) {
 	cfg := c.config()
-	requestedLanguage, wantCountry, _ := strings.Cut(cfg.Language, "-")
+	requestedLanguage, wantCountry, _ := strings.Cut(strings.TrimSpace(cfg.Language), "-")
 	wantLanguage := tmdb.MetadataLanguage(requestedLanguage)
 	var preferred []string
 	best, bestScore := "", -1
@@ -46,6 +46,11 @@ func (c *Catalog) applyTranslatedNames(t *core.Title, translations *tmdb.Transla
 	if best != "" {
 		t.Title, t.SortTitle = best, sortTitle(best)
 	}
+	if requestedLanguage != "" && !strings.EqualFold(wantLanguage, "en") {
+		t.EnglishTitle = englishTitle(t, translations, alts)
+	} else {
+		t.EnglishTitle = ""
+	}
 	if alts != nil && cfg.Region != "" {
 		for _, list := range [][]tmdb.AltTitle{alts.Titles, alts.Results} {
 			for _, alt := range list {
@@ -56,4 +61,51 @@ func (c *Catalog) applyTranslatedNames(t *core.Title, translations *tmdb.Transla
 		}
 	}
 	t.AlternativeTitles = altTitles(alts, t.Title, t.OriginalTitle, preferred...)
+}
+
+// englishTitle extracts TMDB's en-US title from already-fetched metadata:
+// preferring translations[] en-US data.title/name, then an English original,
+// then the first Latin-script alternative_titles US entry, then any other
+// English translation.
+func englishTitle(t *core.Title, translations *tmdb.Translations, alts *tmdb.AltTitles) string {
+	enOther := ""
+	if translations != nil {
+		for _, tr := range translations.Translations {
+			if !strings.EqualFold(tmdb.MetadataLanguage(tr.Language), "en") {
+				continue
+			}
+			name := strings.TrimSpace(tr.Data.Title)
+			if t.Type == core.TypeShow {
+				name = strings.TrimSpace(tr.Data.Name)
+			}
+			if name == "" || len(name) > maxAltTitleLen {
+				continue
+			}
+			if strings.EqualFold(tr.Country, "US") {
+				return name
+			}
+			if enOther == "" {
+				enOther = name
+			}
+		}
+	}
+	if strings.EqualFold(t.Language, "en") {
+		if orig := strings.TrimSpace(t.OriginalTitle); orig != "" && len(orig) <= maxAltTitleLen {
+			return orig
+		}
+	}
+	if alts != nil {
+		for _, list := range [][]tmdb.AltTitle{alts.Titles, alts.Results} {
+			for _, alt := range list {
+				if !strings.EqualFold(alt.Country, "US") {
+					continue
+				}
+				name := strings.TrimSpace(alt.Title)
+				if name != "" && len(name) <= maxAltTitleLen && latinScript(name) {
+					return name
+				}
+			}
+		}
+	}
+	return enOther
 }

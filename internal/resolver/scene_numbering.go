@@ -99,7 +99,9 @@ func numberingTitleMatches(rel core.Release, req core.SearchRequest) bool {
 	if conflict {
 		return false
 	}
-	if !match && !releaseparse.TitleMatchesAny(rel.Info, req.Title, req.AlternativeTitles) && (req.OriginalTitle == "" || !releaseparse.TitleMatches(rel.Info, req.OriginalTitle)) {
+	if !match && !releaseparse.TitleMatchesAny(rel.Info, req.Title, req.AlternativeTitles) &&
+		(req.OriginalTitle == "" || !releaseparse.TitleMatches(rel.Info, req.OriginalTitle)) &&
+		(req.EnglishTitle == "" || !releaseparse.TitleMatches(rel.Info, req.EnglishTitle)) {
 		return false
 	}
 	return true

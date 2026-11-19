@@ -65,6 +65,7 @@ type Title struct {
 	ShowIDs           IDs       `json:"showIds,omitempty"`
 	ShowTitle         string    `json:"showTitle,omitempty"`
 	ShowOriginalTitle string    `json:"showOriginalTitle,omitempty"` // canonical original series name, distinct from episode title
+	ShowEnglishTitle  string    `json:"-"`                           // canonical en-US series name when catalogue language is non-English; release matching only
 	ShowYear          int       `json:"showYear,omitempty"`          // series premiere year, distinct from episode air year
 	SeasonTitle       string    `json:"seasonTitle,omitempty"`
 	Season            int       `json:"season,omitempty"`
@@ -75,10 +76,13 @@ type Title struct {
 
 	Title         string `json:"title"`
 	OriginalTitle string `json:"originalTitle,omitempty"`
-	SortTitle     string `json:"sortTitle,omitempty"`
-	Tagline       string `json:"tagline,omitempty"`
-	Summary       string `json:"summary,omitempty"`
-	Year          int    `json:"year,omitempty"`
+	// EnglishTitle is TMDB's primary en-US title when the catalogue language
+	// is non-English; release matching only, never serialized (additive).
+	EnglishTitle string `json:"-"`
+	SortTitle    string `json:"sortTitle,omitempty"`
+	Tagline      string `json:"tagline,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	Year         int    `json:"year,omitempty"`
 	// PrimaryReleased is TMDB's primary release_date for a movie. The title
 	// year comes from it. Released stays the date added (theatrical, when
 	// one exists). Empty when the year came from a premiere or the release

@@ -39,6 +39,16 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 		}
 		args = append(args, show)
 		seen := map[int64]bool{}
+		record := func(key int64, other core.EpisodeNamesake) {
+			seen[key] = true
+			idx := len(out.OtherShows[name])
+			out.OtherShows[name] = append(out.OtherShows[name], other)
+			byKey[key] = append(byKey[key], namesakeRef{name: name, index: idx})
+			if !keySeen[key] {
+				keySeen[key] = true
+				keys = append(keys, key)
+			}
+		}
 		for _, column := range []string{"title", "original_title"} {
 			index := "catalog_titles_type_lower_title"
 			if column == "original_title" {
@@ -62,14 +72,34 @@ func (c *Catalog) EpisodeIdentity(ctx context.Context, show core.RatingKey, seas
 					break
 				}
 				if !seen[key] && releaseparse.NormalizeTitle(title) == releaseparse.NormalizeTitle(name) {
-					seen[key] = true
-					idx := len(out.OtherShows[name])
-					out.OtherShows[name] = append(out.OtherShows[name], other)
-					byKey[key] = append(byKey[key], namesakeRef{name: name, index: idx})
-					if !keySeen[key] {
-						keySeen[key] = true
-						keys = append(keys, key)
-					}
+					record(key, other)
+				}
+			}
+			scanErr := rows.Err()
+			rows.Close()
+			if err != nil {
+				return out, err
+			}
+			if scanErr != nil {
+				return out, scanErr
+			}
+		}
+		if norm := releaseparse.NormalizeTitle(name); norm != "" {
+			rows, err := c.db.QueryContext(ctx, `SELECT s.key, s.year, s.language,
+                COALESCE((SELECT e.title FROM catalog_titles e`+c.indexedBy("catalog_titles_show")+` WHERE e.show_key=s.key AND e.season=? AND e.episode=? AND e.type='episode' LIMIT 1), '')
+                FROM catalog_release_names rn JOIN catalog_titles s ON s.key=rn.key
+                WHERE rn.name=? AND s.type=? AND s.key<>? LIMIT 16`, season, episode, norm, string(core.TypeShow), show)
+			if err != nil {
+				return out, err
+			}
+			for rows.Next() {
+				var key int64
+				var other core.EpisodeNamesake
+				if err = rows.Scan(&key, &other.Year, &other.Language, &other.EpisodeTitle); err != nil {
+					break
+				}
+				if !seen[key] {
+					record(key, other)
 				}
 			}
 			scanErr := rows.Err()

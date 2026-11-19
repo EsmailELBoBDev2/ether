@@ -41,6 +41,7 @@ type Settings struct {
 	Status            bool     `json:"status"`
 	Quality           bool     `json:"quality"`
 	Ratings           bool     `json:"ratings"`
+	RatingStyle       string   `json:"ratingStyle"`
 	Details           bool     `json:"details"`
 	Personalize       bool     `json:"personalize"`
 	Localize          bool     `json:"localize"`

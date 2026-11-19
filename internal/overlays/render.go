@@ -19,6 +19,9 @@ import (
 )
 
 func normalizeSettings(v Settings) Settings {
+	if v.RatingStyle == "" {
+		v.RatingStyle = "sources"
+	}
 	if v.Style == "" {
 		v.Style = "glass"
 	}
@@ -55,6 +58,11 @@ func normalizeSettings(v Settings) Settings {
 }
 
 func validateSettings(v Settings) error {
+	switch v.RatingStyle {
+	case "sources", "combined":
+	default:
+		return errors.New("rating style must be sources or combined")
+	}
 	switch v.Style {
 	case "glass", "solid", "minimal":
 	default:
@@ -265,7 +273,11 @@ func (s *Service) SampleContext(ctx context.Context, cfg Settings) ([]byte, stri
 			labels = append(labels, "4K HDR")
 		}
 		if cfg.Ratings {
-			labels = append(labels, "IMDb 8.6")
+			if cfg.RatingStyle == "combined" {
+				labels = append(labels, "8.6")
+			} else {
+				labels = append(labels, "IMDb 8.6")
+			}
 		}
 	}
 	return s.compositeContext(ctx, s.sampleData, labels, cfg)

@@ -270,7 +270,7 @@ func TestGuideTabsOwnerGroupCollisionsAndOrdering(t *testing.T) {
 	}
 
 	withGroups := readProviderGuideFilters(t, f)
-	wantGroupTitles := []string{"  spórts  ", "Kids & Family", "Comédie", "Movies", "Kids", "Action", "Drama"}
+	wantGroupTitles := []string{"spórts", "Kids & Family", "Comédie", "Movies", "Kids", "Action", "Drama"}
 	wantGroupIDs := []string{
 		"guide-sports-custom",
 		"guide-kids-family",

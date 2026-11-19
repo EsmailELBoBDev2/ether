@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
@@ -19,6 +20,12 @@ var ErrUnauthorized = core.ErrUnauthorized
 // ErrNotAvailable means the host has no service for this browse feature.
 // It shares identity with the domain error for errors.Is checks.
 var ErrNotAvailable = core.ErrNotAvailable
+
+// ErrPlexNotShared identifies a valid plex.tv account without access to this server.
+var ErrPlexNotShared = auth.ErrPlexNotShared
+
+// ErrPlexUnreachable indicates plex.tv token validation is unavailable.
+var ErrPlexUnreachable = auth.ErrPlexUnreachable
 
 // ErrRowViewStale asks the client to refresh its visit-scoped row views.
 var ErrRowViewStale = errors.New("frontend: row view snapshot expired or changed")

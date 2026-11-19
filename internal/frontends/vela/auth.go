@@ -8,6 +8,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,6 +56,7 @@ func (i *instance) tokens(w http.ResponseWriter, r *http.Request, access, refres
 func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Username, Password, RefreshToken, Code, Browser, ExistingToken, UserCode, DeviceCode, Secret, TargetOrigin string
+		PlexToken                                                                                                  string `json:"plexToken"`
 		Device                                                                                                     device `json:"device"`
 	}
 	if body(r, &b) != nil {
@@ -93,6 +95,13 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		a, e := i.host.Identity.SignIn(ctx, b.Username, b.Password, d)
 		if e != nil {
 			fail(w, e, r)
+			return
+		}
+		i.tokens(w, r, a, "", d)
+	case "plex":
+		a, e := i.host.Identity.SignInWithPlex(ctx, b.PlexToken, d)
+		if e != nil {
+			plexAuthFail(w, e)
 			return
 		}
 		i.tokens(w, r, a, "", d)
@@ -211,6 +220,50 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		send(w, 200, object{"accepted": true})
+	}
+}
+
+func plexAuthFail(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, frontend.ErrUnauthorized):
+		problem(w, http.StatusUnauthorized, "auth", "invalid_credentials")
+	case errors.Is(err, frontend.ErrPlexNotShared):
+		send(w, http.StatusForbidden, object{
+			"error": object{
+				"class":   "policy",
+				"code":    "not_shared",
+				"message": "this server is not shared with this Plex account; ask the server owner to share access",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrRateLimited):
+		seconds := 1
+		var limited *frontend.IdentityRateLimitError
+		if errors.As(err, &limited) && limited.RetryAfter > 0 {
+			seconds = max(1, min(900, int((limited.RetryAfter+time.Second-1)/time.Second)))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		send(w, http.StatusTooManyRequests, object{
+			"error": object{
+				"class":   "capacity",
+				"code":    "rate_limited",
+				"message": "rate limited",
+				"retry":   object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 2},
+			},
+		})
+	case errors.Is(err, frontend.ErrIdentityUnavailable):
+		problem(w, http.StatusForbidden, "policy", "identity_unavailable")
+	case errors.Is(err, context.Canceled):
+		problem(w, http.StatusRequestTimeout, "request", "request_canceled")
+	default:
+		send(w, http.StatusServiceUnavailable, object{
+			"error": object{
+				"class":   "transient",
+				"code":    "plex_unreachable",
+				"message": "plex.tv validation unavailable",
+				"retry":   object{"allowed": false},
+			},
+		})
 	}
 }
 

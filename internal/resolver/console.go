@@ -971,7 +971,12 @@ func (s *Service) Forget(ctx context.Context, t *core.Title) error {
 	}
 	key := searchCacheKey(searchRequestFor(t))
 	s.mu.Lock()
-	delete(s.searchCache, key)
+	if s.vault != nil {
+		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !s.now().Before(e.expires) })
+		s.searchCache[key] = searchCacheEntry{forgotten: true}
+	} else {
+		delete(s.searchCache, key)
+	}
 	delete(s.avail, int64(t.Key))
 	s.mu.Unlock()
 	return s.forgetAvailability(ctx, t.Key)

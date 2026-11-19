@@ -17,6 +17,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 func init() {
@@ -72,6 +73,7 @@ type Options struct {
 // Service holds the configured debrid providers and applies priority,
 // backoff, bounded concurrency and caching to every provider call.
 type Service struct {
+	vault          vault.Store
 	analysisTotals analysisCounters
 	analysisMu     sync.Mutex
 	analysis       map[string]*analysisAccount
@@ -647,6 +649,17 @@ func (s *Service) KnownCached(hash string) bool {
 // definitive=true when every enabled provider could answer (so a false
 // entry means no provider has the torrent).
 func (s *Service) CheckCached(ctx context.Context, hashes []string) (map[string]bool, bool) {
+	return s.checkCached(ctx, hashes, false)
+}
+
+// VerifyCached asks configured providers directly for an owner-requested check.
+func (s *Service) VerifyCached(ctx context.Context, hash string) (bool, bool) {
+	hits, def := s.checkCached(ctx, []string{hash}, true)
+	cached, seen := hits[hash]
+	return cached, seen && (cached || def)
+}
+
+func (s *Service) checkCached(ctx context.Context, hashes []string, refresh bool) (map[string]bool, bool) {
 	out := map[string]bool{}
 	if len(hashes) == 0 {
 		return out, false
@@ -659,11 +672,13 @@ func (s *Service) CheckCached(ctx context.Context, hashes []string) (map[string]
 		}
 		var ask []string
 		for _, h := range hashes {
-			if c, ok, _ := s.knownFor(ctx, e.cfg.ID, h); ok {
-				out[h] = out[h] || c
-			} else {
-				ask = append(ask, h)
+			if !refresh {
+				if c, ok, _ := s.knownFor(ctx, e.cfg.ID, h); ok {
+					out[h] = out[h] || c
+					continue
+				}
 			}
+			ask = append(ask, h)
 		}
 		if len(ask) == 0 {
 			continue
@@ -786,7 +801,10 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 		magnet = bareMagnet(hash)
 	}
 	base := Payload{Key: key, ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Target: rel.Target, Release: rel.Name}
-	choose := func(files []File) (File, error) { return ChooseFile(files, rel.Target) }
+	choose := func(files []File) (File, error) {
+		s.recordTorrentFiles(ctx, rel, files)
+		return ChooseFile(files, rel.Target)
+	}
 	if b, err, ok := s.followQueued(ctx, rel, entries, base, choose); ok {
 		return b, err
 	}
@@ -875,6 +893,7 @@ func (s *Service) CachedPackMatcher(ctx context.Context, rel core.Release) (func
 		}
 		var captured []File
 		choose := func(files []File) (File, error) {
+			s.recordTorrentFiles(ctx, rel, files)
 			captured = slices.Clone(files)
 			return ChooseFile(files, nil)
 		}
@@ -1043,7 +1062,10 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		magnet = "magnet:?xt=urn:btih:" + hash
 	}
 	base := Payload{Key: payloadKey(rel), ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Target: rel.Target, Release: rel.Name}
-	choose := func(files []File) (File, error) { return ChooseFile(files, rel.Target) }
+	choose := func(files []File) (File, error) {
+		s.recordTorrentFiles(ctx, rel, files)
+		return ChooseFile(files, rel.Target)
+	}
 	var errs []error
 	for _, e := range entries {
 		if err := e.blocked(s.now()); err != nil {
@@ -1570,4 +1592,21 @@ func (s *Service) Test(ctx context.Context, cfg config.DebridProvider) error {
 		return fmt.Errorf("%s account %q has no active premium subscription", displayName(cfg), a.User)
 	}
 	return nil
+}
+
+// SetVault is called during service construction.
+func (s *Service) SetVault(v vault.Store) { s.vault = v }
+func (s *Service) recordTorrentFiles(ctx context.Context, r core.Release, files []File) {
+	if s.vault == nil || len(files) == 0 {
+		return
+	}
+	list := make([]vault.TorrentFile, len(files))
+	for i, f := range files {
+		list[i] = vault.TorrentFile{Path: f.Path, Size: f.Size}
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, _ = s.vault.Put(ctx, vault.TorrentRecord(r, list, nil))
+	}()
 }

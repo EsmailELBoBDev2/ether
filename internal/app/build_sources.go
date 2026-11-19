@@ -171,7 +171,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		usenetServing = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
-	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
+	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{Vault: a.vault, Verifier: a.vaultVerifier(), EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
 		if a.episodeorder == nil {
 			return core.ReleaseNumbering{}, nil
 		}

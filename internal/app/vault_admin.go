@@ -280,3 +280,13 @@ func (a *App) checkVaultRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	vaultJSON(w, 200, map[string]string{"health": vaultHealthNames[h]})
 }
+
+// vaultVerifier is the verified article check library-first relies on:
+// the Usenet fetcher once it distrusts lying STAT per provider (W119).
+// Without it, library-first only replays releases verified within the hour.
+func (a *App) vaultVerifier() vault.Verifier {
+	if v, ok := any(a.fetcher).(vault.Verifier); ok {
+		return v
+	}
+	return nil
+}

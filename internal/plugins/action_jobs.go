@@ -57,12 +57,11 @@ type ExpandJobRunner struct {
 	job      *actionJob
 }
 
-// Call invokes a plugin route after yielding to active foreground streams and
-// increments the job's attempt counter.
+// Call invokes a plugin route and increments the job's attempt counter. A fill
+// always starts because a viewer opened that studio or person and is waiting
+// for it, so it does not yield to other streams the way speculative background
+// work does.
 func (r *ExpandJobRunner) Call(ctx context.Context, req Request) (Response, error) {
-	if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
-		return Response{}, err
-	}
 	r.job.mu.Lock()
 	r.job.status.Attempts++
 	r.job.mu.Unlock()
@@ -90,9 +89,6 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 		return fmt.Errorf("invalid job path %q", jobPath)
 	}
 	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
-		if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
-			return Response{}, err
-		}
 		payload := map[string]json.RawMessage{}
 		_ = json.Unmarshal(initial, &payload)
 		if payload == nil {

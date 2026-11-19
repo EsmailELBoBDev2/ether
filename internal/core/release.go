@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -74,6 +76,10 @@ type ReleaseInfo struct {
 // Release is an indexer search result for a title.
 type Release struct {
 	SourceHash string      `json:"sourceHash,omitempty"` // SHA-256 of the fetched source descriptor, when known
+	ContentID  string      `json:"contentId,omitempty"`  // cross-indexer content identity ("nzb:<sha256>" once NZB is known)
+	Poster     string      `json:"poster,omitempty"`     // Usenet poster reported by indexer or NZB
+	UsenetDate time.Time   `json:"usenetDate,omitempty"` // Usenet upload timestamp when reported separately from PubDate
+	Fallbacks  []Release   `json:"-"`                    // alternate indexer copies merged during multi-indexer search
 	ID         string      `json:"id"`                   // stable: sha1(indexer + guid)
 	GUID       string      `json:"guid"`                 // indexer guid
 	Indexer    string      `json:"indexer"`              // indexer name
@@ -138,6 +144,78 @@ type Release struct {
 	// importing it on request), so every open costs the source real work
 	// (additive). See OpensOnDemand.
 	StreamOnDemand bool `json:"streamOnDemand,omitempty"`
+}
+
+// PreFetchContentIDPrefix namespaces Usenet pre-fetch content identities
+// ("pre:<sizeBucket>|<poster>|<uploadDay>").
+const PreFetchContentIDPrefix = "pre:"
+
+// NormalizeReleasePoster normalizes a Usenet poster string for content identity matching.
+func NormalizeReleasePoster(poster string) string {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(poster)))
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Join(fields, " ")
+}
+
+// ReleaseSizeBucket maps a positive byte size to a logarithmic ~10% bucket so
+// small yEnc/NFO accounting differences across indexers land in the same bucket.
+func ReleaseSizeBucket(size int64) int64 {
+	if size <= 0 {
+		return 0
+	}
+	b := int64(math.Round(math.Log(float64(size)) / math.Log(1.10)))
+	if b < 1 {
+		return 1
+	}
+	return b
+}
+
+// PreFetchContentIDFor builds a pre-fetch Usenet content identity from a byte
+// size, poster, and upload date. Missing fields return "".
+func PreFetchContentIDFor(size int64, poster string, uploadDate time.Time) string {
+	bucket := ReleaseSizeBucket(size)
+	normPoster := NormalizeReleasePoster(poster)
+	if bucket <= 0 || normPoster == "" || uploadDate.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%s%d|%s|%s", PreFetchContentIDPrefix, bucket, normPoster, uploadDate.UTC().Format("2006-01-02"))
+}
+
+// ScopedContentID narrows base to the targeted episode when r is a season pack,
+// so episode-level health and blocklist state do not bleed across other episodes
+// of the same pack.
+func (r Release) ScopedContentID(base string) string {
+	if base == "" {
+		return ""
+	}
+	if r.Info.FullSeason && r.Target != nil && r.Target.Episode > 0 {
+		return TargetReleaseID(base, *r.Target)
+	}
+	return base
+}
+
+// PreFetchContentID returns r's pre-fetch Usenet content identity
+// (size bucket + poster + upload day), or "" when those facts are absent.
+func (r Release) PreFetchContentID() string {
+	if r.Protocol != ProtocolUsenet {
+		return ""
+	}
+	ts := r.UsenetDate
+	if ts.IsZero() {
+		ts = r.PubDate
+	}
+	return r.ScopedContentID(PreFetchContentIDFor(r.Size, r.Poster, ts))
+}
+
+// EffectiveContentID returns r's message-ID content identity once known,
+// falling back to PreFetchContentID before fetching.
+func (r Release) EffectiveContentID() string {
+	if r.ContentID != "" {
+		return r.ScopedContentID(r.ContentID)
+	}
+	return r.PreFetchContentID()
 }
 
 // Resolution is the resolver's answer for a title and client: the winning

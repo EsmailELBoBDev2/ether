@@ -150,8 +150,8 @@ func ScoreSourceCandidates(ctx context.Context, s *Service, profileName string, 
 		var policyCtx releasepolicy.Context
 		if hot != nil {
 			verified := false
-			if s != nil && rel.ID != "" {
-				verified = s.verifiedAmong(ctx, []string{rel.ID})[rel.ID]
+			if s != nil {
+				verified = s.recentlyVerifiedKeys(ctx, s.allVerificationKeys(rel))
 			}
 			policyCtx.ExternalMatch = func(r core.Release, c core.ReleaseCondition) (bool, bool) {
 				return hot.Match(r, c, verified)
@@ -196,15 +196,13 @@ func ScoreSourceCandidates(ctx context.Context, s *Service, profileName string, 
 	if hot != nil && len(videos) > 0 {
 		videoRels := make([]core.Release, len(videos))
 		verified := make([]bool, len(videos))
-		ids := make([]string, len(videos))
 		for i, v := range videos {
 			videoRels[i] = v.rel
-			ids[i] = v.rel.ID
 		}
 		if s != nil {
-			vmap := s.verifiedAmong(ctx, ids)
-			for i, id := range ids {
-				verified[i] = vmap[id]
+			vmap := s.verifiedReleases(ctx, videoRels)
+			for i, r := range videoRels {
+				verified[i] = vmap[r.ID]
 			}
 		}
 		steps := make([]string, 0, len(profile.PluginScores))
@@ -285,7 +283,7 @@ func isRejectedSourceRelease(s *Service, rel core.Release, profile core.QualityP
 	if rel.Password && rel.Protocol == core.ProtocolTorrent {
 		return true
 	}
-	if s != nil && rel.ID != "" && (s.isBad(rel.ID) || s.recentlyFailedHealth(rel.ID)) {
+	if s != nil && (s.isBadRelease(rel) || s.recentlyFailedRelease(rel)) {
 		return true
 	}
 	if policyResult.Rejected {

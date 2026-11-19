@@ -310,6 +310,66 @@ func TestInitialRuleSubtitleStartsOnPlexIOS(t *testing.T) {
 	})
 }
 
+// TestInheritedRuleSubtitleStartsOnAppleTV covers #617's playback symptom:
+// the viewer has no saved row and inherits the household Always-on/English
+// rule (user 0). Plex for Apple TV sends subtitles=none on first play; the
+// decision and start must still carry the rule-selected English track.
+func TestInheritedRuleSubtitleStartsOnAppleTV(t *testing.T) {
+	info := core.MediaInfo{
+		Container: "mkv", Duration: 100 * time.Minute, BitrateKbps: 20000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160, BitDepth: 10, Default: true},
+			{Index: 1, Type: "audio", Codec: "eac3", Language: "en", Channels: 6, Default: true},
+			{Index: 2, Type: "subtitle", Codec: "subrip", Language: "en"},
+			{Index: 3, Type: "subtitle", Codec: "subrip", Language: "fr"},
+		},
+	}
+	f, _, prefs := newIssue459Fixture(t, info, "nl")
+	// Replace the fixture's explicit viewer rule with a household rule only.
+	if err := prefs.DeleteRules(context.Background(), ownerUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	shared := trackprefs.Default()
+	shared.SubtitleMode = "always"
+	shared.SubtitleLanguages = []string{"en"}
+	if err := prefs.PutRules(context.Background(), 0, shared); err != nil {
+		t.Fatal(err)
+	}
+	headers := []string{
+		"X-Plex-Product", "Plex for Apple TV",
+		"X-Plex-Version", "2026.20.0",
+		"X-Plex-Platform", "tvOS",
+		"X-Plex-Device", "Apple TV",
+		"X-Plex-Client-Identifier", "atv-617",
+		"X-Plex-Session-Identifier", "play-atv-617",
+		"X-Plex-Client-Profile-Extra", "add-transcode-target(type=videoProfile&context=all&protocol=hls&container=mkv&videoCodec=h264,hevc&audioCodec=aac,eac3)",
+	}
+	key := fightClub.Key.String()
+	if rec := f.get(t, "/library/metadata/"+key, headers...); rec.Code != http.StatusOK {
+		t.Fatalf("detail: %d", rec.Code)
+	}
+	decRec := f.get(t, "/video/:/transcode/universal/decision?path=/library/metadata/"+key+"&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none&session=atv-617", headers...)
+	if decRec.Code != http.StatusOK {
+		t.Fatalf("decision: %d %s", decRec.Code, decRec.Body.String())
+	}
+	if got := selectedTag(subtitleTags(decRec.Body.String())); streamAttr(got, "languageCode") != "eng" {
+		t.Fatalf("decision did not select inherited English subtitle: %q", got)
+	}
+	startReq := httptest.NewRequest(http.MethodGet, "/video/:/transcode/universal/start.m3u8?path=/library/metadata/"+key+
+		"&protocol=hls&directPlay=0&directStream=1&hasMDE=1&subtitles=none&subtitleStreamID=-1&session=atv-617"+
+		"&X-Plex-Token="+ownerToken+"&X-Plex-Client-Identifier=atv-617&X-Plex-Session-Identifier=play-atv-617", nil)
+	startReq.RemoteAddr = "192.168.1.30:51000"
+	startRec := httptest.NewRecorder()
+	f.srv.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start.m3u8: %d %s", startRec.Code, startRec.Body.String())
+	}
+	hs := f.trans.sessions["atv-617"]
+	if hs == nil || hs.req.Decision.SubtitleStream != 2 || hs.req.Decision.BurnSubtitles {
+		t.Fatalf("Apple TV start lost inherited English subtitle: %+v", hs)
+	}
+}
+
 // TestAutomaticExternalSidecarSurvivesInitialStart verifies that an automatic
 // external subtitle choice (SelectAutomaticSubtitle, stored with position -1)
 // survives /decision -> start.m3u8 and /subtitles?subtitleStreamID=-1 without

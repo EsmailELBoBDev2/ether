@@ -465,6 +465,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		KindUpsert:     itemsSvc.KindUpsert,
 		KindDelete:     itemsSvc.KindDelete,
 		KindItems:      itemsSvc.KindItems,
+		KindItemsByID:  itemsSvc.KindItemsByID,
 		KindItemCount:  itemsSvc.PluginItemCount,
 		ResolveSources: kindResolver.ResolveSources,
 		CachePut:       cachePut,

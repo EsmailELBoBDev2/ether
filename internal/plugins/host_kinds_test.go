@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -181,7 +182,18 @@ func TestKindJournalAndUndo(t *testing.T) {
 	rec := installContent(t, env)
 	h := env.m.HostFor(rec.ID)
 
-	store := map[string]core.KindItem{}
+	const baselineCount = 50_005
+	store := make(map[string]core.KindItem, baselineCount+2)
+	for i := 0; i < baselineCount; i++ {
+		id := fmt.Sprintf("trk-%05d", i)
+		store[id] = core.KindItem{
+			ID:       id,
+			Level:    "track",
+			ParentID: "alb-1",
+			Title:    fmt.Sprintf("Track %05d", i),
+			Playable: true,
+		}
+	}
 	env.m.SetKindBackends(KindBackends{
 		KindUpsert: func(_ context.Context, _, _ string, items []core.KindItem) (int, error) {
 			for _, it := range items {
@@ -195,41 +207,58 @@ func TestKindJournalAndUndo(t *testing.T) {
 			}
 			return nil
 		},
-		KindItems: func(_ context.Context, _, _, _ string, _ int) (core.KindPage, error) {
-			var out []core.KindItem
-			for _, it := range store {
-				out = append(out, it)
+		KindItemsByID: func(_ context.Context, _, _ string, ids []string) ([]core.KindItem, error) {
+			out := make([]core.KindItem, 0, len(ids))
+			for _, id := range ids {
+				if it, ok := store[id]; ok {
+					out = append(out, it)
+				}
 			}
-			return core.KindPage{Items: out}, nil
+			return out, nil
 		},
 	})
 
-	item1 := core.KindItem{ID: "trk-1", Level: "track", ParentID: "alb-1", Title: "Dawn chorus", Playable: true}
-	item2 := core.KindItem{ID: "trk-2", Level: "track", ParentID: "alb-1", Title: "Evening rain", Playable: true}
-	if _, err := h.KindUpsert(ctx, "recording", []core.KindItem{item1, item2}); err != nil {
+	// Upsert two new items and update an existing item past the 50k mark (#607).
+	item1 := core.KindItem{ID: "trk-90001", Level: "track", ParentID: "alb-1", Title: "Dawn chorus", Playable: true}
+	item2 := core.KindItem{ID: "trk-90002", Level: "track", ParentID: "alb-1", Title: "Evening rain", Playable: true}
+	tailUpdated := store["trk-50004"]
+	tailUpdated.Title = "Track 50004 (remastered)"
+	if _, err := h.KindUpsert(ctx, "recording", []core.KindItem{item1, item2, tailUpdated}); err != nil {
 		t.Fatalf("initial upsert: %v", err)
 	}
-	// Update item1 and delete item2.
+	// Update item1 and delete both item2 and a pre-existing item past 50k.
 	item1Updated := item1
 	item1Updated.Title = "Dawn chorus (remastered)"
 	if _, err := h.KindUpsert(ctx, "recording", []core.KindItem{item1Updated}); err != nil {
 		t.Fatalf("update upsert: %v", err)
 	}
-	if err := h.KindDelete(ctx, "recording", []string{"trk-2"}); err != nil {
+	if err := h.KindDelete(ctx, "recording", []string{"trk-90002", "trk-50003"}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if len(store) != 1 || store["trk-1"].Title != "Dawn chorus (remastered)" {
-		t.Fatalf("store before undo: %+v", store)
+	if len(store) != baselineCount || store["trk-90001"].Title != "Dawn chorus (remastered)" || store["trk-50004"].Title != "Track 50004 (remastered)" {
+		t.Fatalf("unexpected store before undo: len=%d trk-90001=%+v trk-50004=%+v", len(store), store["trk-90001"], store["trk-50004"])
 	}
 
-	// UndoAll applies inverses in reverse order: first restores trk-2, then
-	// reverts trk-1 to its original title, then deletes both newly created items.
+	// UndoAll applies inverses in reverse order: restores trk-90002 and trk-50003,
+	// reverts trk-90001 and trk-50004, and deletes newly created trk-90001 and trk-90002.
 	undone, err := env.m.UndoAll(ctx, rec.ID)
 	if err != nil || undone != 3 {
 		t.Fatalf("UndoAll = %d, err = %v", undone, err)
 	}
-	if len(store) != 0 {
-		t.Fatalf("store after UndoAll must be empty, got %+v", store)
+	if len(store) != baselineCount {
+		t.Fatalf("store len after UndoAll = %d, want %d", len(store), baselineCount)
+	}
+	if _, ok := store["trk-90001"]; ok {
+		t.Fatalf("trk-90001 remained after UndoAll: %+v", store["trk-90001"])
+	}
+	if _, ok := store["trk-90002"]; ok {
+		t.Fatalf("trk-90002 remained after UndoAll: %+v", store["trk-90002"])
+	}
+	if got := store["trk-50003"].Title; got != "Track 50003" {
+		t.Fatalf("trk-50003 after UndoAll = %q, want Track 50003", got)
+	}
+	if got := store["trk-50004"].Title; got != "Track 50004" {
+		t.Fatalf("trk-50004 after UndoAll = %q, want Track 50004", got)
 	}
 }
 

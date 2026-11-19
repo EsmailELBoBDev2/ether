@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -464,6 +465,25 @@ func (s *Service) upsertItemsWithAddedLocked(ctx context.Context, pluginID, kind
 		}
 	}
 
+	fieldTallyDelta := map[fieldTallyKey]int64{}
+	if len(existing) > 0 {
+		existingRefs := make([]core.ItemRef, 0, len(existing))
+		for _, v := range validated {
+			if _, ok := existing[v.Item.Ref]; ok {
+				existingRefs = append(existingRefs, v.Item.Ref)
+			}
+		}
+		oldFields, err := lookupExistingTextFieldsTx(ctx, tx, existingRefs)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, of := range oldFields {
+			if ex, ok := existing[of.ref]; ok {
+				addFieldTallyDelta(fieldTallyDelta, ex.level, of.field, of.text, -1)
+			}
+		}
+	}
+
 	nowUnix := s.now().Unix()
 	if seenAt <= 0 {
 		seenAt = nowUnix
@@ -610,6 +630,9 @@ INSERT INTO plugin_items(
 				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
 				return 0, 0, err
 			}
+			if fv.Text != "" {
+				addFieldTallyDelta(fieldTallyDelta, it.Level, fv.Field, fv.Text, 1)
+			}
 		}
 
 		// Replace artwork rows for this item.
@@ -626,6 +649,9 @@ INSERT INTO plugin_items(
 	}
 
 	if err := applyTallyDeltaTx(ctx, tx, kind.LibraryID, tallyDelta); err != nil {
+		return 0, 0, err
+	}
+	if err := applyFieldTallyDeltaTx(ctx, tx, kind.LibraryID, fieldTallyDelta); err != nil {
 		return 0, 0, err
 	}
 
@@ -980,6 +1006,70 @@ WHERE item_ref = ?`,
 			break
 		}
 	}
+	dialect := store.SQLite
+	if isPG {
+		dialect = store.Postgres
+	}
+	if hasTableTx(ctx, tx, dialect, "plugin_item_field_tally") {
+		if err := rebuildKindFieldTallyTx(ctx, tx, pluginID, kindKey, fallbackLibID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rebuildKindFieldTallyTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, fallbackLibID core.LibraryID) error {
+	libSet := map[int64]bool{}
+	if fallbackLibID > 0 {
+		libSet[int64(fallbackLibID)] = true
+	}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT library_id FROM plugin_items WHERE plugin_id = ? AND kind_key = ? AND library_id > 0`,
+		pluginID, kindKey)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		libSet[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	libs := make([]int64, 0, len(libSet))
+	for id := range libSet {
+		libs = append(libs, id)
+	}
+	slices.Sort(libs)
+	for _, libID := range libs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_field_tally WHERE library_id = ?`, libID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, cnt)
+SELECT i.library_id, i.level, f.field, f.v_text, COUNT(*)
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE i.library_id = ? AND i.level <> '' AND f.v_text <> ''
+GROUP BY i.library_id, i.level, f.field, f.v_text`, libID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, cnt)
+SELECT library_id, '', field, v_text, CAST(SUM(cnt) AS BIGINT)
+FROM plugin_item_field_tally
+WHERE library_id = ? AND level <> ''
+GROUP BY library_id, field, v_text`, libID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1149,6 +1239,117 @@ END`, int64(libraryID), level, d); err != nil {
 	return nil
 }
 
+type fieldTallyKey struct {
+	level string
+	field string
+	text  string
+}
+
+type existingTextField struct {
+	ref   core.ItemRef
+	field string
+	text  string
+}
+
+func addFieldTallyDelta(delta map[fieldTallyKey]int64, level, field, text string, d int64) {
+	if level == "" || field == "" || text == "" || d == 0 {
+		return
+	}
+	delta[fieldTallyKey{level: level, field: field, text: text}] += d
+	delta[fieldTallyKey{level: "", field: field, text: text}] += d
+}
+
+func lookupExistingTextFieldsTx(ctx context.Context, tx *sql.Tx, refs []core.ItemRef) ([]existingTextField, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	var out []existingTextField
+	const chunkSize = 250
+	for start := 0; start < len(refs); start += chunkSize {
+		end := min(start+chunkSize, len(refs))
+		chunk := refs[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, r := range chunk {
+			placeholders[i] = "?"
+			args[i] = string(r)
+		}
+		rows, err := tx.QueryContext(ctx,
+			`SELECT item_ref, field, v_text FROM plugin_item_fields WHERE item_ref IN (`+strings.Join(placeholders, ",")+`) AND v_text <> ''`,
+			args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var refStr, field, text string
+			if err := rows.Scan(&refStr, &field, &text); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, existingTextField{ref: core.ItemRef(refStr), field: field, text: text})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+func applyFieldTallyDeltaTx(ctx context.Context, tx *sql.Tx, libraryID core.LibraryID, delta map[fieldTallyKey]int64) error {
+	if len(delta) == 0 || libraryID <= 0 {
+		return nil
+	}
+	keys := make([]fieldTallyKey, 0, len(delta))
+	for k, d := range delta {
+		if d != 0 {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	slices.SortFunc(keys, func(a, b fieldTallyKey) int {
+		if c := strings.Compare(a.level, b.level); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.field, b.field); c != 0 {
+			return c
+		}
+		return strings.Compare(a.text, b.text)
+	})
+	libID := int64(libraryID)
+	for _, k := range keys {
+		d := delta[k]
+		if d > 0 {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, cnt)
+VALUES(?, ?, ?, ?, ?)
+ON CONFLICT(library_id, level, field, v_text) DO UPDATE SET
+	cnt = plugin_item_field_tally.cnt + excluded.cnt`,
+				libID, k.level, k.field, k.text, d); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_item_field_tally
+SET cnt = cnt + ?
+WHERE library_id = ? AND level = ? AND field = ? AND v_text = ?`,
+				d, libID, k.level, k.field, k.text); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+DELETE FROM plugin_item_field_tally
+WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
+				libID, k.level, k.field, k.text); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, nowUnix int64) error {
 	var totalItems int64
 	if err := tx.QueryRowContext(ctx,
@@ -1299,9 +1500,27 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 		return nil
 	}
 
+	targetRefs := make([]core.ItemRef, 0, len(allTargets))
+	for r := range allTargets {
+		targetRefs = append(targetRefs, r)
+	}
+	slices.Sort(targetRefs)
+
+	oldFields, err := lookupExistingTextFieldsTx(ctx, tx, targetRefs)
+	if err != nil {
+		return err
+	}
+	fieldTallyDelta := map[fieldTallyKey]int64{}
+	for _, of := range oldFields {
+		if t, ok := allTargets[of.ref]; ok {
+			addFieldTallyDelta(fieldTallyDelta, t.level, of.field, of.text, -1)
+		}
+	}
+
 	isSQLite := store.DialectOf(s.db) == store.SQLite
 	tallyDelta := map[string]int64{}
-	for _, t := range allTargets {
+	for _, r := range targetRefs {
+		t := allTargets[r]
 		tallyDelta[t.level]--
 		if isSQLite {
 			if err := sqliteDeleteFTS(ctx, tx, t.seq); err != nil {
@@ -1326,7 +1545,10 @@ func (s *Service) deleteRefsAndDescendantsTx(ctx context.Context, tx *sql.Tx, li
 			}
 		}
 	}
-	return applyTallyDeltaTx(ctx, tx, libraryID, tallyDelta)
+	if err := applyTallyDeltaTx(ctx, tx, libraryID, tallyDelta); err != nil {
+		return err
+	}
+	return applyFieldTallyDeltaTx(ctx, tx, libraryID, fieldTallyDelta)
 }
 
 // KindItems implements the store side of plugins.KindBackends.KindItems
@@ -1368,6 +1590,56 @@ LIMIT ?`,
 		NextCursor: nextCursor,
 		Total:      &total,
 	}, nil
+}
+
+// KindItemsByID implements the store side of plugins.KindBackends.KindItemsByID:
+// fetches only the matching stored items for (pluginID, kindKey) by external_id
+// via primary-key lookups on item_ref, hydrating art only for matching rows.
+func (s *Service) KindItemsByID(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error) {
+	if _, err := s.GetKind(ctx, pluginID, kindKey); err != nil {
+		return nil, err
+	}
+	if len(externalIDs) == 0 {
+		return nil, nil
+	}
+	refs := make([]string, 0, len(externalIDs))
+	seen := make(map[string]bool, len(externalIDs))
+	for _, id := range externalIDs {
+		if !plugins.ValidExternalID(id) {
+			continue
+		}
+		ref := string(core.NewItemRef(pluginID, kindKey, id))
+		if !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	var out []core.KindItem
+	const chunkSize = 500
+	for start := 0; start < len(refs); start += chunkSize {
+		end := min(start+chunkSize, len(refs))
+		chunk := refs[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, r := range chunk {
+			placeholders[i] = "?"
+			args[i] = r
+		}
+		items, err := s.queryItems(ctx,
+			`SELECT `+itemCols+` FROM plugin_items WHERE item_ref IN (`+strings.Join(placeholders, ",")+`)`,
+			args, true)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	slices.SortFunc(out, func(a, b core.KindItem) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, nil
 }
 
 // GetByRef returns one stored KindItem and its LibraryID by ItemRef.
@@ -1612,9 +1884,17 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_field_tally WHERE library_id = ?`, int64(libraryID)); err != nil {
+			return err
+		}
 	} else {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM plugin_item_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
+			args...); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM plugin_item_field_tally WHERE library_id IN (SELECT DISTINCT library_id FROM plugin_items WHERE `+whereItems+`)`,
 			args...); err != nil {
 			return err
 		}

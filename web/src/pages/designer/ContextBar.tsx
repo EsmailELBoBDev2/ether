@@ -46,7 +46,7 @@ export function ContextBar({
         value={ctx.section}
         onChange={(s) => onChange({ ...ctx, section: s })}
         options={SECTIONS.map((s) => ({ value: s.value, label: s.label }))}
-        menuClassName="w-40"
+        menuClassName="w-48"
       />
       <ToolbarPicker
         ariaLabel={t("Device")}

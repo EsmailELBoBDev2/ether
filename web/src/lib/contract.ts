@@ -515,10 +515,22 @@ export interface RankerInsight {
   features: RankerFeature[] | null;
 }
 
+/** A movie or show library that inherits its media type's Recommended rows or uses its own `library:<id>` page. */
+export interface LayoutLibrary {
+  id: number;
+  name: string;
+  slug: string;
+  type: "movie" | "show";
+  section: LibraryLayoutSection;
+  basePage: "movies" | "shows";
+  customized: boolean;
+}
+
 export interface LayoutDoc {
   layout: HomeLayout;
   availableRows: AvailableRow[];
   defaults: { maxRows: Record<BuiltinLayoutSection, number> & Partial<Record<LayoutSection, number>> };
+  libraries?: LayoutLibrary[];
 }
 
 interface LayoutImpact {

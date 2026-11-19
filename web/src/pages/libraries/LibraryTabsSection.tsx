@@ -10,7 +10,7 @@ import {
 } from "@braedonsaunders/appkit-ui";
 import { LayoutList, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ErrorPanel } from "../../components/feedback";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { t, tn } from "../../i18n";
@@ -21,12 +21,13 @@ import {
   EMPTY_LAYOUT,
   collectionScheduleChanges,
   hasLibraryOverride,
+  mediaSectionForLibrary,
   prune,
 } from "../../lib/layout";
 import {
   librariesApi,
   type Library,
-  type LibraryFacet,
+  type LibraryAvailableFacets,
   type LibraryTab,
   type LibraryTabKind,
 } from "./api";
@@ -34,7 +35,9 @@ import {
   AddTabPickerDrawer,
   TabEditDrawer,
   createSeedTab,
+  facetOptionLabel,
   sortFieldLabel,
+  supportsLibraryRecommendedRows,
   tabKindIcon,
 } from "./TabEditDrawer";
 
@@ -46,9 +49,29 @@ const VALID_NEW_KINDS = new Set<LibraryTabKind>([
   "view",
 ]);
 
+const EMPTY_FACETS: LibraryAvailableFacets = { collections: [], people: [] };
+
+function canonicalTab(tab: LibraryTab): LibraryTab {
+  return {
+    key: tab.key,
+    label: tab.label,
+    kind: tab.kind,
+    ...(tab.facet ? { facet: tab.facet } : {}),
+    ...(tab.order ? { order: tab.order } : {}),
+    ...(tab.sort ? { sort: tab.sort } : {}),
+    ...(tab.direction ? { direction: tab.direction } : {}),
+    ...(tab.kind !== "recommended" ? { search: tab.search !== false } : {}),
+    ...(tab.kind !== "recommended" && tab.search !== false && tab.searchPlaceholder
+      ? { searchPlaceholder: tab.searchPlaceholder }
+      : {}),
+    ...(tab.filters ? { filters: tab.filters } : {}),
+    ...(tab.hidden ? { hidden: true } : {}),
+  };
+}
+
 function summarizeTab(
   tab: LibraryTab,
-  facets: LibraryFacet[],
+  availableFacets: LibraryAvailableFacets,
   recommendedCustomised: boolean,
 ): string {
   if (tab.kind === "recommended") {
@@ -64,13 +87,19 @@ function summarizeTab(
       parts.push(tn(ruleCount, "{count} filter rule", "{count} filter rules"));
     }
   } else if (tab.kind === "collections") {
-    const facetLabel = facets.find((f) => f.id === tab.facet)?.label ?? tab.facet ?? "";
-    parts.push(
-      facetLabel ? t("Collections by {facet}", { facet: facetLabel }) : t("Collections"),
-    );
-    parts.push(tab.order === "name" ? t("Name A–Z") : t("Most items first"));
+    if (!tab.facet) {
+      parts.push(t("Owner collections"));
+    } else {
+      const opt = availableFacets.collections.find((f) => f.id === tab.facet);
+      const facetLabel = opt ? facetOptionLabel(opt) : tab.facet;
+      parts.push(
+        facetLabel ? t("Collections by {facet}", { facet: facetLabel }) : t("Collections"),
+      );
+      parts.push(tab.order === "name" ? t("Name A–Z") : t("Most items first"));
+    }
   } else if (tab.kind === "people") {
-    const facetLabel = facets.find((f) => f.id === tab.facet)?.label ?? tab.facet ?? "";
+    const opt = availableFacets.people.find((f) => f.id === tab.facet);
+    const facetLabel = opt ? facetOptionLabel(opt) : (tab.facet ?? "");
     parts.push(facetLabel ? t("People in {facet}", { facet: facetLabel }) : t("People"));
     parts.push(tab.order === "count" ? t("Most titles") : t("Name A–Z"));
   } else if (tab.kind === "view") {
@@ -79,7 +108,7 @@ function summarizeTab(
     parts.push(tn(ruleCount, "{count} rule", "{count} rules"));
   }
 
-  if (tab.kind !== "people" && tab.sort) {
+  if (tab.kind !== "people" && (tab.kind !== "collections" || Boolean(tab.facet)) && tab.sort) {
     parts.push(sortFieldLabel(tab.sort));
   }
   if (tab.search === false) {
@@ -102,9 +131,12 @@ export function LibraryTabsSection({ library }: { library: Library }) {
   const [localDrawer, setLocalDrawer] = useState<DrawerMode>({ type: "closed" });
 
   const librarySection: LibraryLayoutSection = `library:${library.id}`;
-  const recommendedCustomised = layoutDoc.data
-    ? hasLibraryOverride(layoutDoc.data.layout, librarySection)
-    : false;
+  const mediaSection = mediaSectionForLibrary(library);
+  const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
+  const recommendedCustomised =
+    supportsRecommendedRows && layoutDoc.data
+      ? hasLibraryOverride(layoutDoc.data.layout, librarySection)
+      : false;
 
   const clearTabParams = () => {
     if (
@@ -144,16 +176,23 @@ export function LibraryTabsSection({ library }: { library: Library }) {
             ? { type: "pick" }
             : { type: "closed" };
 
-  const tabs = state.data?.tabs ?? [];
-  const facets = state.data?.facets ?? [];
-  const source = state.data?.source ?? (library.source === "plugin" ? "plugin" : "default");
+  const tabs = state.data?.effectiveTabs ?? state.data?.tabs ?? [];
+  const customized = state.data?.customized ?? false;
+  const availableFacets = state.data?.availableFacets ?? EMPTY_FACETS;
+  const availableSorts = state.data?.availableSorts ?? [];
+  const visibleTabCount = tabs.filter((tab) => !tab.hidden).length;
   const resetLabel =
     library.source === "plugin" ? t("Reset to plugin tabs") : t("Reset to default");
 
   const persistTabs = async (nextTabs: LibraryTab[], message: string) => {
     const previous = state.data;
     if (previous) {
-      state.setData({ ...previous, tabs: nextTabs, source: "owner" });
+      state.setData({
+        ...previous,
+        customized: true,
+        tabs: nextTabs,
+        effectiveTabs: nextTabs,
+      });
     }
     setSaving(true);
     try {
@@ -173,7 +212,9 @@ export function LibraryTabsSection({ library }: { library: Library }) {
   const handleSaveDrawer = async (savedTab: LibraryTab, nextLayout?: HomeLayout) => {
     const isNew = activeDrawer.type === "new";
     const tabChanged =
-      isNew || JSON.stringify(savedTab) !== JSON.stringify(editingExisting);
+      isNew ||
+      !editingExisting ||
+      JSON.stringify(canonicalTab(savedTab)) !== JSON.stringify(canonicalTab(editingExisting));
     const nextTabs = isNew
       ? [...tabs, savedTab]
       : tabs.map((item) => (item.key === savedTab.key ? savedTab : item));
@@ -193,7 +234,12 @@ export function LibraryTabsSection({ library }: { library: Library }) {
 
       if (tabChanged || !nextLayout) {
         if (previousTabs) {
-          state.setData({ ...previousTabs, tabs: nextTabs, source: "owner" });
+          state.setData({
+            ...previousTabs,
+            customized: true,
+            tabs: nextTabs,
+            effectiveTabs: nextTabs,
+          });
         }
         const updatedTabs = await librariesApi.putTabs(library.id, nextTabs);
         state.setData(updatedTabs);
@@ -210,6 +256,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
         state.setData(previousTabs);
       }
       toast.error(errorMessage(e));
+      return;
     } finally {
       setSaving(false);
     }
@@ -238,8 +285,17 @@ export function LibraryTabsSection({ library }: { library: Library }) {
     activeDrawer.type === "edit" ? tabs.find((tab) => tab.key === activeDrawer.key) ?? null : null;
   const seededNew =
     activeDrawer.type === "new" && state.data
-      ? createSeedTab(activeDrawer.kind, library, facets, existingKeys)
+      ? createSeedTab(
+          activeDrawer.kind,
+          library,
+          availableFacets,
+          availableSorts,
+          existingKeys,
+        )
       : null;
+
+  const editingIsOnlyVisible =
+    Boolean(editingExisting && !editingExisting.hidden && visibleTabCount <= 1);
 
   return (
     <SettingsSection title={t("Tabs")}>
@@ -251,10 +307,10 @@ export function LibraryTabsSection({ library }: { library: Library }) {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={source === "owner" ? "info" : "secondary"}>
-              {source === "owner"
+            <Badge variant={customized ? "info" : "secondary"}>
+              {customized
                 ? t("Customized")
-                : source === "plugin"
+                : library.source === "plugin"
                   ? t("Plugin default")
                   : t("Default")}
             </Badge>
@@ -262,7 +318,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
               type="button"
               size="sm"
               variant="ghost"
-              disabled={source !== "owner" || saving || state.loading}
+              disabled={!customized || saving || state.loading}
               onClick={() => void handleReset()}
             >
               <RotateCcw size={13} />
@@ -311,7 +367,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
                   <Plus size={14} />
                   {t("Add tab")}
                 </Button>
-                {source === "owner" ? (
+                {customized ? (
                   <Button
                     type="button"
                     size="sm"
@@ -334,86 +390,108 @@ export function LibraryTabsSection({ library }: { library: Library }) {
               void persistTabs(next, t("Tab order saved"));
             }}
             className="space-y-2"
-            renderItem={(tab, handle) => (
-              <div
-                className={cn(
-                  "flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 transition-colors sm:flex-nowrap sm:gap-3 sm:px-3 sm:py-2.5",
-                  tab.hidden && "bg-bg-subtle/50 opacity-75",
-                )}
-              >
-                <DragHandle
-                  handle={handle}
-                  label={t("Reorder {label} tab", { label: tab.label })}
-                />
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
-                  {tabKindIcon(tab.kind, 16)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    clearTabParams();
-                    setLocalDrawer({ type: "edit", key: tab.key });
-                  }}
-                  className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            renderItem={(tab, handle) => {
+              const isOnlyVisible = !tab.hidden && visibleTabCount <= 1;
+              return (
+                <div
+                  className={cn(
+                    "flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 transition-colors sm:flex-nowrap sm:gap-3 sm:px-3 sm:py-2.5",
+                    tab.hidden && "bg-bg-subtle/50 opacity-75",
+                  )}
                 >
-                  <span className="flex flex-wrap items-center gap-1.5">
-                    <span className="truncate text-sm font-medium text-fg">{tab.label}</span>
-                    {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
-                  </span>
-                  <span className="block truncate text-xs text-fg-muted">
-                    {summarizeTab(tab, facets, recommendedCustomised)}
-                  </span>
-                </button>
-                <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                  <Switch
-                    aria-label={t("Display {label} tab", { label: tab.label })}
-                    checked={!tab.hidden}
-                    disabled={saving}
-                    onChange={(e) => {
-                      const visible = e.target.checked;
-                      const next = tabs.map((item) =>
-                        item.key === tab.key
-                          ? { ...item, hidden: visible ? undefined : true }
-                          : item,
-                      );
-                      void persistTabs(
-                        next,
-                        visible
-                          ? t("{label} tab shown", { label: tab.label })
-                          : t("{label} tab hidden", { label: tab.label }),
-                      );
-                    }}
+                  <DragHandle
+                    handle={handle}
+                    label={t("Reorder {label} tab", { label: tab.label })}
                   />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 text-fg-muted hover:text-fg"
-                    aria-label={t("Edit {label} tab", { label: tab.label })}
-                    onClick={() => {
-                      clearTabParams();
-                      setLocalDrawer({ type: "edit", key: tab.key });
-                    }}
-                  >
-                    <Pencil size={15} />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 text-fg-muted hover:text-danger"
-                    aria-label={t("Delete {label} tab", { label: tab.label })}
-                    disabled={saving}
-                    onClick={() => {
-                      const next = tabs.filter((item) => item.key !== tab.key);
-                      void persistTabs(next, t("Removed {label} tab", { label: tab.label }));
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </Button>
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
+                    {tabKindIcon(tab.kind, 16)}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearTabParams();
+                        setLocalDrawer({ type: "edit", key: tab.key });
+                      }}
+                      className="flex max-w-full flex-wrap items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    >
+                      <span className="truncate text-sm font-medium text-fg hover:underline">
+                        {tab.label}
+                      </span>
+                      {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
+                    </button>
+                    <p className="truncate text-xs text-fg-muted">
+                      {tab.kind === "recommended" &&
+                      supportsRecommendedRows &&
+                      !recommendedCustomised ? (
+                        <>
+                          {mediaSection === "shows"
+                            ? t("Uses the standard rows for TV shows libraries")
+                            : t("Uses the standard rows for Movies libraries")}
+                          {" · "}
+                          <Link
+                            to={`/home?section=${mediaSection}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {t("Edit standard rows")}
+                          </Link>
+                        </>
+                      ) : (
+                        summarizeTab(tab, availableFacets, recommendedCustomised)
+                      )}
+                    </p>
+                  </div>
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <Switch
+                      aria-label={t("Display {label} tab", { label: tab.label })}
+                      checked={!tab.hidden}
+                      disabled={saving || isOnlyVisible}
+                      onChange={(e) => {
+                        const visible = e.target.checked;
+                        const next = tabs.map((item) =>
+                          item.key === tab.key
+                            ? { ...item, hidden: visible ? undefined : true }
+                            : item,
+                        );
+                        void persistTabs(
+                          next,
+                          visible
+                            ? t("{label} tab shown", { label: tab.label })
+                            : t("{label} tab hidden", { label: tab.label }),
+                        );
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-fg-muted hover:text-fg"
+                      aria-label={t("Edit {label} tab", { label: tab.label })}
+                      onClick={() => {
+                        clearTabParams();
+                        setLocalDrawer({ type: "edit", key: tab.key });
+                      }}
+                    >
+                      <Pencil size={15} />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-fg-muted hover:text-danger"
+                      aria-label={t("Delete {label} tab", { label: tab.label })}
+                      disabled={saving || tabs.length <= 1 || isOnlyVisible}
+                      onClick={() => {
+                        const next = tabs.filter((item) => item.key !== tab.key);
+                        void persistTabs(next, t("Removed {label} tab", { label: tab.label }));
+                      }}
+                    >
+                      <Trash2 size={15} />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            }}
           />
         )}
       </div>
@@ -421,7 +499,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
       <AddTabPickerDrawer
         open={activeDrawer.type === "pick"}
         library={library}
-        facets={facets}
+        availableFacets={availableFacets}
         existingTabs={tabs}
         onPick={(kind) => {
           clearTabParams();
@@ -438,11 +516,19 @@ export function LibraryTabsSection({ library }: { library: Library }) {
         isNew={activeDrawer.type === "new"}
         initialTab={activeDrawer.type === "new" ? seededNew : editingExisting}
         library={library}
-        facets={facets}
+        availableFacets={availableFacets}
+        availableSorts={availableSorts}
         existingKeys={
           activeDrawer.type === "edit" && editingExisting
             ? new Set([...existingKeys].filter((k) => k !== editingExisting.key))
             : existingKeys
+        }
+        canHide={activeDrawer.type === "new" ? visibleTabCount >= 1 : !editingIsOnlyVisible}
+        canDelete={
+          activeDrawer.type === "edit" &&
+          Boolean(editingExisting) &&
+          tabs.length > 1 &&
+          !editingIsOnlyVisible
         }
         layoutDoc={layoutDoc.data ?? null}
         layoutLoading={layoutDoc.loading}

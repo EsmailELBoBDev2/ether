@@ -1,10 +1,15 @@
+import type { CollectionSpec, Rule, TitleCard } from "../lib/contract";
 import type {
-  LibraryFacet,
+  LibraryAvailableFacets,
+  LibraryFacetOption,
   LibraryTab,
   LibraryTabKind,
+  LibraryTabPreviewResponse,
   LibraryTabsResponse,
 } from "../pages/libraries/api";
 import { COLLECTIONS, NETWORKS, PEOPLE, STUDIOS, type FakeTitle } from "./data";
+
+const SCOPE_NOTE = "Tabs show in Vela. Plex, Jellyfin and Emby keep their own library tabs.";
 
 const VALID_KINDS = new Set<LibraryTabKind>([
   "recommended",
@@ -14,18 +19,64 @@ const VALID_KINDS = new Set<LibraryTabKind>([
   "view",
 ]);
 
+const CATALOGUE_SORTS = [
+  "popularity",
+  "added",
+  "released",
+  "year",
+  "rating",
+  "duration",
+  "title",
+  "server",
+];
+
+const CATALOGUE_COLLECTION_FACETS = new Set([
+  "",
+  "genre",
+  "studio",
+  "network",
+  "country",
+  "year",
+  "decade",
+  "franchise",
+]);
+
+const CATALOGUE_PEOPLE_FACETS = new Set(["cast", "director"]);
+
 function decadeOf(year: number): string {
   return year ? `${Math.floor(year / 10) * 10}s` : "Unknown";
 }
 
+function validTabKey(key: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(key);
+}
+
 export function createLibraryTabsMock({
   catalog,
+  getCollections = () => [],
+  matchesRule = () => true,
+  toCard,
 }: {
   catalog: FakeTitle[];
+  getCollections?: () => CollectionSpec[];
+  matchesRule?: (title: FakeTitle, rule: Rule) => boolean;
+  toCard?: (title: FakeTitle) => TitleCard;
 }) {
-  // Initial owner overrides so empty and customized libraries can be inspected right away.
+  // Initial owner overrides so customized libraries can be inspected right away.
   const ownerTabs = new Map<number, LibraryTab[]>([
-    [4, []],
+    [
+      4,
+      [
+        {
+          key: "library",
+          label: "Weekend Picks",
+          kind: "library",
+          sort: "rating",
+          direction: "desc",
+          search: true,
+        },
+      ],
+    ],
     [
       7,
       [
@@ -91,166 +142,308 @@ export function createLibraryTabsMock({
     ],
   ]);
 
-  function facetsFor(lib: Record<string, unknown>): LibraryFacet[] {
+  function availableFacetsFor(lib: Record<string, unknown>): LibraryAvailableFacets {
     if (lib.source === "plugin") {
       const kind = lib.kind as
-        | { fields?: { key: string; label: string; type: string; indexed?: boolean }[] }
+        | {
+            fields?: { key: string; label: string; type: string; indexed?: boolean }[];
+            browse?: { facets?: string[] };
+          }
         | undefined;
-      const fromKind: LibraryFacet[] = (kind?.fields ?? [])
-        .filter((f) => f.indexed !== false)
-        .map((f) => ({
-          id: f.key,
-          label: f.label,
-          type: f.type === "people" || f.key === "author" || f.key === "narrator" ? "people" : "strings",
-        }));
-      const extras: LibraryFacet[] = [
-        { id: "subject", label: "Subject", type: "strings" },
-        { id: "series", label: "Series", type: "strings" },
-        { id: "publisher", label: "Publisher", type: "strings" },
-        { id: "author", label: "Author", type: "people" },
-        { id: "narrator", label: "Narrator", type: "people" },
-      ];
-      const seen = new Set(fromKind.map((f) => f.id));
-      for (const ex of extras) {
-        if (!seen.has(ex.id)) {
-          seen.add(ex.id);
-          fromKind.push(ex);
+      const collections: LibraryFacetOption[] = [];
+      const people: LibraryFacetOption[] = [];
+      const seenCol = new Set<string>();
+      const seenPeople = new Set<string>();
+
+      for (const f of kind?.fields ?? []) {
+        if (f.indexed === false) continue;
+        const isPeople = f.type === "people" || f.key === "author" || f.key === "narrator";
+        if (isPeople) {
+          if (!seenPeople.has(f.key)) {
+            seenPeople.add(f.key);
+            people.push({ id: f.key, label: f.label });
+          }
+        } else if (!seenCol.has(f.key)) {
+          seenCol.add(f.key);
+          collections.push({ id: f.key, label: f.label });
         }
       }
-      return fromKind;
+      return { collections, people };
     }
-    const mediaType = String(lib.mediaType ?? "");
-    const facets: LibraryFacet[] = [
-      { id: "genre", label: "Genre", type: "strings" },
-      { id: "studio", label: "Studio", type: "strings" },
-    ];
-    if (mediaType !== "movie") {
-      facets.push({ id: "network", label: "Network", type: "strings" });
-    }
-    if (mediaType !== "show") {
-      facets.push({ id: "franchise", label: "Franchise", type: "strings" });
-    }
-    facets.push(
-      { id: "country", label: "Country", type: "strings" },
-      { id: "decade", label: "Decade", type: "strings" },
-      { id: "year", label: "Year", type: "strings" },
-      { id: "cast", label: "Actors", type: "people" },
-      { id: "director", label: "Directors", type: "people" },
-    );
-    return facets;
-  }
 
-  function defaultTabsFor(lib: Record<string, unknown>): {
-    source: "plugin" | "default";
-    tabs: LibraryTab[];
-  } {
-    if (lib.source === "plugin") {
-      const name = String(lib.name ?? "Items");
-      return {
-        source: "plugin",
-        tabs: [
-          { key: "recommended", label: "Recommended", kind: "recommended" },
-          {
-            key: "library",
-            label: name,
-            kind: "library",
-            sort: "title",
-            direction: "asc",
-            search: true,
-            searchPlaceholder: `Search ${name.toLowerCase()}`,
-          },
-          {
-            key: "subjects",
-            label: "Subjects",
-            kind: "collections",
-            facet: "subject",
-            order: "count",
-            sort: "title",
-            direction: "asc",
-            search: true,
-            searchPlaceholder: "Find a subject",
-          },
-          {
-            key: "authors",
-            label: "Authors",
-            kind: "people",
-            facet: "author",
-            order: "name",
-            search: true,
-            searchPlaceholder: "Find an author",
-          },
-        ],
-      };
+    const mediaType = String(lib.mediaType ?? "");
+    const collections: LibraryFacetOption[] = [
+      { id: "", label: "Owner collections" },
+      { id: "genre", label: "Genres" },
+    ];
+    if (mediaType === "show") {
+      collections.push({ id: "network", label: "Networks" });
+    } else if (mediaType === "movie") {
+      collections.push({ id: "studio", label: "Studios" });
+    } else {
+      collections.push(
+        { id: "studio", label: "Studios" },
+        { id: "network", label: "Networks" },
+      );
+    }
+    collections.push(
+      { id: "country", label: "Countries" },
+      { id: "year", label: "Years" },
+      { id: "decade", label: "Decades" },
+    );
+    if (mediaType !== "show") {
+      collections.push({ id: "franchise", label: "Franchises" });
     }
     return {
-      source: "default",
-      tabs: [
-        { key: "recommended", label: "Recommended", kind: "recommended" },
-        {
-          key: "library",
-          label: "Library",
-          kind: "library",
-          sort: "added",
-          direction: "desc",
-          search: true,
-        },
+      collections,
+      people: [
+        { id: "cast", label: "Actors" },
+        { id: "director", label: "Directors" },
       ],
     };
   }
 
+  function availableSortsFor(lib: Record<string, unknown>): string[] {
+    if (lib.source === "plugin") {
+      const kind = lib.kind as { browse?: { sorts?: string[] } } | undefined;
+      const sorts = kind?.browse?.sorts ?? [];
+      return sorts.length > 0 ? [...sorts] : ["server"];
+    }
+    return [...CATALOGUE_SORTS];
+  }
+
+  function defaultTabsFor(lib: Record<string, unknown>): LibraryTab[] {
+    if (lib.source === "plugin") {
+      const name = String(lib.name ?? "Items");
+      return [
+        { key: "recommended", label: "Recommended", kind: "recommended", search: false },
+        {
+          key: "library",
+          label: name,
+          kind: "library",
+          sort: "title",
+          direction: "asc",
+          search: true,
+          searchPlaceholder: `Search ${name.toLowerCase()}`,
+        },
+        {
+          key: "subjects",
+          label: "Subjects",
+          kind: "collections",
+          facet: "subject",
+          order: "count",
+          sort: "title",
+          direction: "asc",
+          search: true,
+          searchPlaceholder: "Find a subject",
+        },
+        {
+          key: "authors",
+          label: "Authors",
+          kind: "people",
+          facet: "author",
+          order: "name",
+          search: true,
+          searchPlaceholder: "Find an author",
+        },
+      ];
+    }
+    return [
+      { key: "recommended", label: "Recommended", kind: "recommended", search: false },
+      {
+        key: "library",
+        label: "Library",
+        kind: "library",
+        search: true,
+      },
+    ];
+  }
+
+  function withEffectiveSearch(tabs: LibraryTab[]): LibraryTab[] {
+    return tabs.map((t) => ({
+      ...structuredClone(t),
+      search: t.kind === "recommended" ? false : t.search !== false,
+    }));
+  }
+
   function getTabs(lib: Record<string, unknown>): LibraryTabsResponse {
     const id = Number(lib.id);
-    const facets = facetsFor(lib);
-    if (ownerTabs.has(id)) {
-      return {
-        tabs: structuredClone(ownerTabs.get(id) ?? []),
-        source: "owner",
-        facets,
-      };
-    }
-    const def = defaultTabsFor(lib);
+    const defaults = defaultTabsFor(lib);
+    const customized = ownerTabs.has(id);
+    const stored = customized ? structuredClone(ownerTabs.get(id) ?? []) : [];
+    const effectiveTabs = customized ? withEffectiveSearch(stored) : structuredClone(defaults);
     return {
-      tabs: structuredClone(def.tabs),
-      source: def.source,
-      facets,
+      libraryId: id,
+      customized,
+      tabs: stored,
+      effectiveTabs,
+      defaults,
+      scopeNote: SCOPE_NOTE,
+      availableFacets: availableFacetsFor(lib),
+      availableSorts: availableSortsFor(lib),
     };
+  }
+
+  function validateTabList(
+    lib: Record<string, unknown>,
+    rawTabs: unknown,
+  ): { ok: true; tabs: LibraryTab[] } | { ok: false; message: string } {
+    if (!Array.isArray(rawTabs)) {
+      return { ok: false, message: "Invalid tabs payload" };
+    }
+    if (rawTabs.length === 0) {
+      return { ok: false, message: "invalid: library must have at least one tab" };
+    }
+    if (rawTabs.length > 16) {
+      return { ok: false, message: "invalid: library may have at most 16 tabs" };
+    }
+
+    const isPlugin = lib.source === "plugin";
+    const facets = availableFacetsFor(lib);
+    const sorts = new Set(availableSortsFor(lib));
+    const seen = new Set<string>();
+    const normalized: LibraryTab[] = [];
+    let visibleCount = 0;
+
+    for (let i = 0; i < rawTabs.length; i++) {
+      const raw = rawTabs[i] as Partial<LibraryTab> | null;
+      if (!raw || typeof raw !== "object") {
+        return { ok: false, message: `tab ${i + 1}: invalid tab` };
+      }
+      const label = String(raw.label ?? "").trim();
+      if (!label || label.length > 80) {
+        return { ok: false, message: `invalid: tab ${i + 1} needs a label (1-80 characters)` };
+      }
+      const key = String(raw.key ?? "")
+        .trim()
+        .toLowerCase();
+      if (!validTabKey(key)) {
+        return { ok: false, message: `invalid: invalid tab key "${key}"` };
+      }
+      if (seen.has(key)) {
+        return { ok: false, message: `invalid: duplicate tab key "${key}"` };
+      }
+      seen.add(key);
+
+      const kind = String(raw.kind ?? "")
+        .trim()
+        .toLowerCase() as LibraryTabKind;
+      if (!VALID_KINDS.has(kind)) {
+        return { ok: false, message: `invalid: tab "${key}" has unknown kind "${kind}"` };
+      }
+
+      const facet = String(raw.facet ?? "").trim();
+      if (kind === "collections") {
+        if (isPlugin) {
+          if (!facet || !facets.collections.some((f) => f.id === facet)) {
+            return {
+              ok: false,
+              message: `invalid: plugin collections tab "${key}" requires a declared facet`,
+            };
+          }
+        } else if (!CATALOGUE_COLLECTION_FACETS.has(facet)) {
+          return {
+            ok: false,
+            message: `invalid: tab "${key}" has unsupported collections facet "${facet}"`,
+          };
+        }
+      } else if (kind === "people") {
+        if (isPlugin) {
+          if (!facet || !facets.people.some((f) => f.id === facet)) {
+            return {
+              ok: false,
+              message: `invalid: plugin people tab "${key}" requires a declared people facet`,
+            };
+          }
+        } else if (!CATALOGUE_PEOPLE_FACETS.has(facet)) {
+          return {
+            ok: false,
+            message: `invalid: tab "${key}" has unsupported people facet "${facet}"`,
+          };
+        }
+      } else if (facet !== "") {
+        return { ok: false, message: `invalid: tab "${key}" of kind ${kind} cannot set facet` };
+      }
+
+      const order = raw.order ? String(raw.order).trim().toLowerCase() : "";
+      const allowsOrder = kind === "people" || (kind === "collections" && facet !== "");
+      if (order) {
+        if (!allowsOrder) {
+          return { ok: false, message: `invalid: tab "${key}" cannot set order` };
+        }
+        if (order !== "count" && order !== "name") {
+          return { ok: false, message: `invalid: tab "${key}" order must be count or name` };
+        }
+      }
+
+      const sort = raw.sort ? String(raw.sort).trim() : "";
+      const direction = raw.direction ? String(raw.direction).trim().toLowerCase() : "";
+      const allowsSort =
+        kind === "library" || kind === "view" || (kind === "collections" && facet !== "");
+      if (!allowsSort) {
+        if (sort || direction) {
+          return { ok: false, message: `invalid: tab "${key}" cannot set sort or direction` };
+        }
+      } else {
+        if (sort && !sorts.has(sort)) {
+          return { ok: false, message: `invalid: tab "${key}" has unsupported sort "${sort}"` };
+        }
+        if (direction && direction !== "asc" && direction !== "desc") {
+          return { ok: false, message: `invalid: tab "${key}" direction must be asc or desc` };
+        }
+      }
+
+      if (kind === "recommended" && raw.search === true) {
+        return {
+          ok: false,
+          message: `invalid: recommended tab "${key}" cannot enable in-tab search`,
+        };
+      }
+
+      if (raw.filters && raw.filters.rules?.length && kind !== "view" && kind !== "library") {
+        return { ok: false, message: `invalid: tab "${key}" of kind ${kind} cannot set filters` };
+      }
+
+      const tab: LibraryTab = { key, label, kind };
+      if (kind === "collections" && facet) tab.facet = facet;
+      if (kind === "people") tab.facet = facet;
+      if (order === "count" || order === "name") tab.order = order;
+      if (sort) tab.sort = sort;
+      if (direction === "asc" || direction === "desc") tab.direction = direction;
+      if (kind !== "recommended") {
+        if (raw.search !== undefined) tab.search = Boolean(raw.search);
+        const ph = String(raw.searchPlaceholder ?? "").trim();
+        if (ph) tab.searchPlaceholder = ph;
+      }
+      if (raw.filters && raw.filters.rules?.length) {
+        tab.filters = structuredClone(raw.filters);
+      }
+      if (raw.hidden) {
+        tab.hidden = true;
+      } else {
+        visibleCount++;
+      }
+      normalized.push(tab);
+    }
+
+    if (visibleCount === 0) {
+      return { ok: false, message: "invalid: at least one tab must be visible" };
+    }
+    return { ok: true, tabs: normalized };
   }
 
   function putTabs(
     lib: Record<string, unknown>,
-    rawTabs: unknown,
+    body: unknown,
   ): { ok: true; data: LibraryTabsResponse } | { ok: false; message: string } {
-    if (!Array.isArray(rawTabs)) {
-      return { ok: false, message: "tabs: must be an array" };
-    }
-    const seen = new Set<string>();
-    const normalized: LibraryTab[] = [];
-    for (let i = 0; i < rawTabs.length; i++) {
-      const t = rawTabs[i] as Partial<LibraryTab> | null;
-      if (!t || typeof t !== "object") {
-        return { ok: false, message: `tabs[${i}]: invalid tab` };
-      }
-      if (!t.kind || !VALID_KINDS.has(t.kind)) {
-        return { ok: false, message: `tabs[${i}].kind: invalid tab kind` };
-      }
-      const label = String(t.label ?? "").trim();
-      if (!label) {
-        return { ok: false, message: `tabs[${i}].label: is required` };
-      }
-      const key = String(t.key ?? "").trim();
-      if (!/^[a-z][a-z0-9-]{0,31}$/.test(key)) {
-        return { ok: false, message: `tabs[${i}].key: invalid tab key "${key}"` };
-      }
-      if (seen.has(key)) {
-        return { ok: false, message: `tabs[${i}].key: duplicate tab key "${key}"` };
-      }
-      seen.add(key);
-      if ((t.kind === "collections" || t.kind === "people") && !t.facet) {
-        return { ok: false, message: `tabs[${i}].facet: is required` };
-      }
-      normalized.push(structuredClone({ ...t, key, label } as LibraryTab));
-    }
-    ownerTabs.set(Number(lib.id), normalized);
+    const rawList = Array.isArray(body)
+      ? body
+      : body && typeof body === "object"
+        ? (body as { tabs?: unknown }).tabs
+        : undefined;
+    const res = validateTabList(lib, rawList);
+    if (!res.ok) return res;
+    ownerTabs.set(Number(lib.id), res.tabs);
     return { ok: true, data: getTabs(lib) };
   }
 
@@ -355,10 +548,216 @@ export function createLibraryTabsMock({
     return { field, values };
   }
 
+  function previewTab(
+    lib: Record<string, unknown>,
+    body: unknown,
+  ): { ok: true; data: LibraryTabPreviewResponse } | { ok: false; message: string } {
+    const obj = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    const rawTab = ("tab" in obj ? obj.tab : obj) as Partial<LibraryTab> | null;
+    if (!rawTab || typeof rawTab !== "object") {
+      return { ok: false, message: "Invalid tab preview body" };
+    }
+    const query = String(obj.query ?? "")
+      .trim()
+      .toLowerCase();
+    const rawLimit = Number(obj.limit ?? 12);
+    const limit = rawLimit > 0 ? Math.min(48, rawLimit) : 12;
+
+    const candidate: Partial<LibraryTab> = {
+      ...rawTab,
+      key: String(rawTab.key ?? "").trim() || "preview",
+      label: String(rawTab.label ?? "").trim() || "Preview",
+      hidden: false,
+    };
+    const validated = validateTabList(lib, [candidate]);
+    if (!validated.ok) return validated;
+    const tab = validated.tabs[0]!;
+
+    if (tab.kind === "recommended") {
+      return {
+        ok: true,
+        data: { kind: "recommended", scopeNote: SCOPE_NOTE },
+      };
+    }
+
+    if (tab.kind === "collections") {
+      const facet = tab.facet ?? "";
+      if (facet === "") {
+        const mediaType = String(lib.mediaType ?? "");
+        const matched = getCollections().filter((sp) => {
+          if (mediaType && sp.mediaType && sp.mediaType !== "mixed" && sp.mediaType !== mediaType) {
+            return false;
+          }
+          if (query && !sp.name.toLowerCase().includes(query)) return false;
+          return true;
+        });
+        return {
+          ok: true,
+          data: {
+            kind: "collections",
+            facet: "",
+            order: "server",
+            collections: matched.slice(0, limit).map((sp) => ({
+              id: String(sp.id ?? sp.name),
+              name: sp.name,
+              itemCount: sp.itemCount ?? 0,
+            })),
+            more: matched.length > limit,
+          },
+        };
+      }
+
+      const order = tab.order ?? "count";
+      const buckets = [...facetValuesFor(lib, facet).values].filter((b) =>
+        query ? (b.title ?? b.value).toLowerCase().includes(query) : true,
+      );
+      if (order === "name") {
+        buckets.sort((a, b) =>
+          (a.title ?? a.value).localeCompare(b.title ?? b.value, undefined, {
+            sensitivity: "base",
+          }),
+        );
+      } else {
+        buckets.sort((a, b) => b.count - a.count);
+      }
+      return {
+        ok: true,
+        data: {
+          kind: "collections",
+          facet,
+          order,
+          collections: buckets.slice(0, limit).map((b) => ({
+            id: `facet:${facet}:${b.value}`,
+            bucketId: b.value,
+            name: b.title ?? b.value,
+            itemCount: b.count,
+          })),
+          more: buckets.length > limit,
+        },
+      };
+    }
+
+    if (tab.kind === "people") {
+      const facet = tab.facet ?? "";
+      const order = tab.order ?? "name";
+      const buckets = [...facetValuesFor(lib, facet).values].filter((b) =>
+        query ? (b.title ?? b.value).toLowerCase().includes(query) : true,
+      );
+      if (order === "name") {
+        buckets.sort((a, b) =>
+          (a.title ?? a.value).localeCompare(b.title ?? b.value, undefined, {
+            sensitivity: "base",
+          }),
+        );
+      } else {
+        buckets.sort((a, b) => b.count - a.count);
+      }
+      return {
+        ok: true,
+        data: {
+          kind: "people",
+          facet,
+          order,
+          people: buckets.slice(0, limit).map((b, idx) => ({
+            id: idx + 1,
+            name: b.title ?? b.value,
+            itemCount: b.count,
+          })),
+          more: buckets.length > limit,
+        },
+      };
+    }
+
+    // kind === "library" | "view"
+    const defaultSort = lib.source === "plugin" ? "title" : "popularity";
+    const sort = tab.sort || defaultSort;
+    const direction =
+      tab.direction ??
+      (sort === "server" || sort === "title" || sort === "index" ? "asc" : "desc");
+
+    if (lib.source === "plugin") {
+      const items = [
+        { key: 1, title: "Dune", year: 1965 },
+        { key: 2, title: "The Left Hand of Darkness", year: 1969 },
+      ].filter((it) => (query ? it.title.toLowerCase().includes(query) : true));
+      return {
+        ok: true,
+        data: {
+          kind: tab.kind,
+          sort,
+          direction,
+          total: items.length,
+          items: items.slice(0, limit),
+        },
+      };
+    }
+
+    const mediaType = String(lib.mediaType ?? "");
+    let pool = catalog.filter(
+      (x) => !mediaType || mediaType === "mixed" || x.type === mediaType,
+    );
+    if (query) {
+      pool = pool.filter((x) => x.title.toLowerCase().includes(query));
+    }
+    if (tab.filters?.rules?.length) {
+      const matchAny = tab.filters.match === "any";
+      pool = pool.filter((item) =>
+        matchAny
+          ? tab.filters!.rules.some((r) => matchesRule(item, r))
+          : tab.filters!.rules.every((r) => matchesRule(item, r)),
+      );
+    }
+
+    const dirMul = direction === "asc" ? 1 : -1;
+    pool.sort((a, b) => {
+      switch (sort) {
+        case "title":
+        case "server":
+          return a.title.localeCompare(b.title) * dirMul;
+        case "added":
+          return a.addedAt.localeCompare(b.addedAt) * dirMul;
+        case "released":
+          return a.released.localeCompare(b.released) * dirMul;
+        case "year":
+          return ((a.year ?? 0) - (b.year ?? 0)) * dirMul;
+        case "rating":
+          return ((a.rating ?? 0) - (b.rating ?? 0)) * dirMul;
+        case "duration":
+          return ((a.runtimeMinutes ?? 0) - (b.runtimeMinutes ?? 0)) * dirMul;
+        case "popularity":
+        default:
+          return (a.popularity - b.popularity) * dirMul;
+      }
+    });
+
+    const mapped = pool.slice(0, limit).map((item) =>
+      toCard
+        ? toCard(item)
+        : {
+            key: item.key,
+            title: item.title,
+            year: item.year,
+            poster: item.poster,
+          },
+    );
+
+    return {
+      ok: true,
+      data: {
+        kind: tab.kind,
+        sort,
+        direction,
+        total: pool.length,
+        items: mapped,
+      },
+    };
+  }
+
   return {
     getTabs,
     putTabs,
     resetTabs,
+    previewTab,
     facetValuesFor,
   };
 }

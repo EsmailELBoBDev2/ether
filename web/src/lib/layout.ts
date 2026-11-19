@@ -29,8 +29,8 @@ export const EMPTY_LAYOUT: HomeLayout = { global: [], viewers: [] };
 
 export const SECTIONS = localized<{ value: BuiltinLayoutSection; label: string }[]>(() => [
   { value: "home", label: t("Home") },
-  { value: "movies", label: t("Movies") },
-  { value: "shows", label: t("TV") },
+  { value: "movies", label: t("Movies libraries") },
+  { value: "shows", label: t("TV libraries") },
 ]);
 
 /** Whether a layout section targets a specific library (`library:<id>`). */
@@ -274,10 +274,7 @@ export function pageOf(
 /** Whether a `library:<id>` section has its own layout instead of inheriting Movies/TV. */
 export function hasLibraryOverride(doc: HomeLayout, section: LayoutSection): boolean {
   if (!isLibrarySection(section)) return false;
-  return Boolean(
-    pageOf(doc, "global", section) ||
-      (doc.viewers ?? []).some((v) => v.pages.some((p) => p.section === section)),
-  );
+  return Boolean(pageOf(doc, "global", section));
 }
 
 /** Copy the shared media-type page (`movies` or `shows`) into `library:<id>` so it can be edited independently. */
@@ -295,9 +292,19 @@ export function customiseLibraryPage(
         section,
       }
     : { section, rows: [] };
+  const viewers = (doc.viewers ?? []).map((v) => {
+    if (v.pages.some((p) => p.section === section)) return v;
+    const vb = v.pages.find((p) => p.section === mediaSection);
+    if (!vb) return v;
+    return {
+      ...v,
+      pages: [...v.pages, { ...structuredClone(vb), section }],
+    };
+  });
   return prune({
     ...doc,
     global: [...(doc.global ?? []), copied],
+    viewers,
   });
 }
 

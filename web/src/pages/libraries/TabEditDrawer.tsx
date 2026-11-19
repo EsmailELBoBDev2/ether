@@ -18,12 +18,13 @@ import {
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
 import { t, tn } from "../../i18n";
 import { useLocale } from "../../i18n/react";
-import { api, apiFetch } from "../../lib/api";
+import { api } from "../../lib/api";
 import { asObj } from "../settings/SchemaForm";
 import type {
   HomeLayout,
@@ -51,9 +52,11 @@ import { RowPool } from "../designer/RowPool";
 import {
   librariesApi,
   type Library,
-  type LibraryFacet,
+  type LibraryAvailableFacets,
+  type LibraryFacetOption,
   type LibraryTab,
   type LibraryTabKind,
+  type LibraryTabPreviewItem,
 } from "./api";
 import {
   ExtendedCondition,
@@ -76,15 +79,21 @@ const RULE_FIELDS: RuleField[] = [
   "runtime",
 ];
 
-const CATALOG_SORTS = [
+const FALLBACK_CATALOG_SORTS = [
+  "popularity",
   "added",
-  "title",
   "released",
   "year",
   "rating",
-  "popularity",
   "duration",
+  "title",
+  "server",
 ] as const;
+
+export function supportsLibraryRecommendedRows(library: Library): boolean {
+  if (library.source === "plugin") return false;
+  return !library.mediaType || library.mediaType === "movie" || library.mediaType === "show";
+}
 
 function metaForField(field: RuleField): FieldMeta | undefined {
   const base = fieldMeta(field);
@@ -136,9 +145,52 @@ export function sortFieldLabel(sort: string): string {
       return t("Runtime");
     case "index":
       return t("Order");
+    case "server":
+      return t("Default order");
     default:
       return sort;
   }
+}
+
+export function facetOptionLabel(facet: LibraryFacetOption): string {
+  switch (facet.id) {
+    case "":
+      return t("Owner collections");
+    case "genre":
+      return t("Genres");
+    case "studio":
+      return t("Studios");
+    case "network":
+      return t("Networks");
+    case "country":
+      return t("Countries");
+    case "decade":
+      return t("Decades");
+    case "year":
+      return t("Years");
+    case "franchise":
+      return t("Franchises");
+    case "subject":
+      return t("Subjects");
+    case "series":
+      return t("Series");
+    case "publisher":
+      return t("Publishers");
+    case "cast":
+      return t("Actors");
+    case "director":
+      return t("Directors");
+    case "author":
+      return t("Authors");
+    case "narrator":
+      return t("Narrators");
+    default:
+      return facet.label;
+  }
+}
+
+function defaultDirectionForSort(sort: string): "asc" | "desc" {
+  return sort === "title" || sort === "index" || sort === "server" ? "asc" : "desc";
 }
 
 function directionOptions(sort: string): { value: "asc" | "desc"; label: string }[] {
@@ -148,7 +200,7 @@ function directionOptions(sort: string): { value: "asc" | "desc"; label: string 
       { value: "desc", label: t("Z–A") },
     ];
   }
-  if (sort === "index") {
+  if (sort === "index" || sort === "server") {
     return [
       { value: "asc", label: t("First to last") },
       { value: "desc", label: t("Last to first") },
@@ -207,17 +259,22 @@ export function slugTabKey(label: string, kind: LibraryTabKind, existingKeys: Se
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  let base = raw && /^[a-z]/.test(raw) ? raw : raw ? `tab-${raw}` : kind;
-  base = base.slice(0, 26).replace(/-+$/g, "") || kind;
+  let base = raw && /^[a-z0-9]/.test(raw) ? raw : kind;
+  base = base.slice(0, 56).replace(/-+$/g, "") || kind;
   if (!existingKeys.has(base)) return base;
   let n = 2;
   while (existingKeys.has(`${base}-${n}`)) n++;
   return `${base}-${n}`;
 }
 
-export function defaultLabelForFacet(facet: LibraryFacet | undefined, kind: LibraryTabKind): string {
+export function defaultLabelForFacet(
+  facet: LibraryFacetOption | undefined,
+  kind: LibraryTabKind,
+): string {
   if (!facet) return kind === "people" ? t("People") : t("Collections");
   switch (facet.id) {
+    case "":
+      return t("Collections");
     case "genre":
       return t("Genres");
     case "studio":
@@ -254,12 +311,17 @@ export function defaultLabelForFacet(facet: LibraryFacet | undefined, kind: Libr
 export function createSeedTab(
   kind: LibraryTabKind,
   library: Library,
-  facets: LibraryFacet[],
+  availableFacets: LibraryAvailableFacets,
+  availableSorts: string[],
   existingKeys: Set<string>,
 ): LibraryTab {
   const defaultSort =
-    library.source === "plugin" ? (library.kind?.browse.sorts?.[0] ?? "title") : "added";
-  const defaultDir: "asc" | "desc" = defaultSort === "title" || defaultSort === "index" ? "asc" : "desc";
+    library.source === "plugin"
+      ? (availableSorts[0] ?? library.kind?.browse.sorts?.[0] ?? "server")
+      : availableSorts.includes("added")
+        ? "added"
+        : (availableSorts[0] ?? "popularity");
+  const defaultDir = defaultDirectionForSort(defaultSort);
 
   if (kind === "recommended") {
     const label = t("Recommended");
@@ -281,21 +343,27 @@ export function createSeedTab(
     };
   }
   if (kind === "collections") {
-    const facet = facets.find((f) => f.type === "strings");
+    const facet =
+      availableFacets.collections.find((f) => f.id !== "") ?? availableFacets.collections[0];
+    const facetId = facet?.id ?? "";
     const label = defaultLabelForFacet(facet, "collections");
     return {
-      key: slugTabKey(facet?.id ?? "collections", kind, existingKeys),
+      key: slugTabKey(facetId || "collections", kind, existingKeys),
       label,
       kind: "collections",
-      facet: facet?.id ?? "",
-      order: "count",
-      sort: defaultSort,
-      direction: defaultDir,
+      facet: facetId,
+      ...(facetId
+        ? {
+            order: "count" as const,
+            sort: defaultSort,
+            direction: defaultDir,
+          }
+        : {}),
       search: true,
     };
   }
   if (kind === "people") {
-    const facet = facets.find((f) => f.type === "people");
+    const facet = availableFacets.people[0];
     const label = defaultLabelForFacet(facet, "people");
     return {
       key: slugTabKey(facet?.id ?? "people", kind, existingKeys),
@@ -325,21 +393,21 @@ export function createSeedTab(
 export function AddTabPickerDrawer({
   open,
   library,
-  facets,
+  availableFacets,
   existingTabs,
   onPick,
   onClose,
 }: {
   open: boolean;
   library: Library;
-  facets: LibraryFacet[];
+  availableFacets: LibraryAvailableFacets;
   existingTabs: LibraryTab[];
   onPick: (kind: LibraryTabKind) => void;
   onClose: () => void;
 }) {
   const { locale } = useLocale();
-  const hasStringsFacet = facets.some((f) => f.type === "strings");
-  const hasPeopleFacet = facets.some((f) => f.type === "people");
+  const hasCollectionsFacet = availableFacets.collections.length > 0;
+  const hasPeopleFacet = availableFacets.people.length > 0;
   const hasRecommended = existingTabs.some((tab) => tab.kind === "recommended");
 
   const cards = useMemo(
@@ -363,10 +431,10 @@ export function AddTabPickerDrawer({
       {
         kind: "collections" as const,
         title: t("Collections by…"),
-        description: hasStringsFacet
+        description: hasCollectionsFacet
           ? t("Group items into browsable buckets like genre, studio, decade or subject.")
           : t("No collection facets are indexed for this library."),
-        disabled: !hasStringsFacet,
+        disabled: !hasCollectionsFacet,
       },
       {
         kind: "people" as const,
@@ -385,7 +453,7 @@ export function AddTabPickerDrawer({
         disabled: false,
       },
     ],
-    [hasPeopleFacet, hasRecommended, hasStringsFacet, library.name, locale],
+    [hasCollectionsFacet, hasPeopleFacet, hasRecommended, library.name, locale],
   );
 
   return (
@@ -429,20 +497,23 @@ export function AddTabPickerDrawer({
   );
 }
 
-type VisibilityPreviewResponse = {
-  total: number;
-  hidden: number;
-  visible?: number;
-  shown?: { key: string; title: string; year?: number; poster?: string; posterPath?: string }[] | null;
-};
+function previewPosterSrc(item: LibraryTabPreviewItem): string | undefined {
+  if (item.poster) return item.poster;
+  const pluginArt = item.art?.find((a) => a.role === "poster")?.url ?? item.art?.[0]?.url;
+  if (pluginArt) return pluginArt;
+  return titlePosterURL(item, 185);
+}
 
 export function TabEditDrawer({
   open,
   isNew,
   initialTab,
   library,
-  facets,
+  availableFacets,
+  availableSorts,
   existingKeys,
+  canHide = true,
+  canDelete = true,
   layoutDoc,
   layoutLoading,
   initialCustomiseRows,
@@ -455,8 +526,11 @@ export function TabEditDrawer({
   isNew: boolean;
   initialTab: LibraryTab | null;
   library: Library;
-  facets: LibraryFacet[];
+  availableFacets: LibraryAvailableFacets;
+  availableSorts: string[];
   existingKeys: Set<string>;
+  canHide?: boolean;
+  canDelete?: boolean;
   layoutDoc?: LayoutDoc | null;
   layoutLoading?: boolean;
   initialCustomiseRows?: boolean;
@@ -472,8 +546,11 @@ export function TabEditDrawer({
       isNew={isNew}
       initialTab={initialTab}
       library={library}
-      facets={facets}
+      availableFacets={availableFacets}
+      availableSorts={availableSorts}
       existingKeys={existingKeys}
+      canHide={canHide}
+      canDelete={canDelete}
       layoutDoc={layoutDoc ?? null}
       layoutLoading={layoutLoading ?? false}
       initialCustomiseRows={initialCustomiseRows ?? false}
@@ -489,8 +566,11 @@ function TabEditDrawerInner({
   isNew,
   initialTab,
   library,
-  facets,
+  availableFacets,
+  availableSorts: serverSorts,
   existingKeys,
+  canHide,
+  canDelete,
   layoutDoc,
   layoutLoading,
   initialCustomiseRows,
@@ -502,8 +582,11 @@ function TabEditDrawerInner({
   isNew: boolean;
   initialTab: LibraryTab;
   library: Library;
-  facets: LibraryFacet[];
+  availableFacets: LibraryAvailableFacets;
+  availableSorts: string[];
   existingKeys: Set<string>;
+  canHide: boolean;
+  canDelete: boolean;
   layoutDoc: LayoutDoc | null;
   layoutLoading: boolean;
   initialCustomiseRows: boolean;
@@ -520,6 +603,7 @@ function TabEditDrawerInner({
 
   const section: LibraryLayoutSection = `library:${library.id}`;
   const mediaSection = mediaSectionForLibrary(library);
+  const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
 
   // i18n: memo holds no copy
   const savedLayout = useMemo(
@@ -533,7 +617,7 @@ function TabEditDrawerInner({
     setAdoptedLayout(layoutDoc);
     const base = prune(layoutDoc.layout);
     setLayoutDraft(
-      initialCustomiseRows && !hasLibraryOverride(base, section)
+      supportsRecommendedRows && initialCustomiseRows && !hasLibraryOverride(base, section)
         ? customiseLibraryPage(base, section, mediaSection)
         : base,
     );
@@ -547,39 +631,34 @@ function TabEditDrawerInner({
         }
       : row,
   );
-  const rowsCustomised = hasLibraryOverride(layoutDraft, section);
+  const rowsCustomised = supportsRecommendedRows && hasLibraryOverride(layoutDraft, section);
   const layoutDirty = Boolean(layoutDoc) && !sameLayout(layoutDraft, savedLayout);
 
   const isPlugin = library.source === "plugin";
   const mediaType: "movie" | "show" | "mixed" =
     library.mediaType === "movie" || library.mediaType === "show" ? library.mediaType : "mixed";
 
-  const availableSorts: string[] = isPlugin
-    ? library.kind?.browse.sorts?.length
-      ? library.kind.browse.sorts
-      : ["title"]
-    : [...CATALOG_SORTS];
+  const availableSorts: string[] = serverSorts.length
+    ? serverSorts
+    : isPlugin
+      ? library.kind?.browse.sorts?.length
+        ? library.kind.browse.sorts
+        : ["server"]
+      : [...FALLBACK_CATALOG_SORTS];
 
-  const matchingFacets = facets.filter((f) =>
-    draft.kind === "people" ? f.type === "people" : f.type === "strings",
-  );
+  const matchingFacets =
+    draft.kind === "people" ? availableFacets.people : availableFacets.collections;
 
   const supportsFacet = draft.kind === "collections" || draft.kind === "people";
+  const supportsOrder =
+    draft.kind === "people" || (draft.kind === "collections" && Boolean(draft.facet));
   const supportsRules = draft.kind === "view" || draft.kind === "library";
   const supportsSort =
-    draft.kind === "library" || draft.kind === "view" || draft.kind === "collections";
+    draft.kind === "library" ||
+    draft.kind === "view" ||
+    (draft.kind === "collections" && Boolean(draft.facet));
   const supportsSearch = draft.kind !== "recommended";
 
-  // Facet live preview (bucket count + sample buckets)
-  const facetPreview = useAsync(
-    (signal) =>
-      supportsFacet && draft.facet
-        ? librariesApi.facets(library.id, draft.facet, "", signal)
-        : Promise.resolve(null),
-    [library.id, supportsFacet, draft.facet],
-  );
-
-  // Rules live preview (matching title count + sample posters)
   const rules = draft.filters?.rules ?? [];
   const matchMode = draft.filters?.match === "any" ? "any" : "all";
   // i18n: memo holds no copy
@@ -589,50 +668,88 @@ function TabEditDrawerInner({
   );
   const allRulesComplete = rules.every(isRuleComplete);
 
+  const currentSort =
+    draft.sort && availableSorts.includes(draft.sort)
+      ? draft.sort
+      : (availableSorts[0] ?? (isPlugin ? "server" : "added"));
+  const dirOpts = directionOptions(currentSort);
+  const currentDirection: "asc" | "desc" = draft.direction ?? defaultDirectionForSort(currentSort);
+  const searchEnabled = draft.search !== false;
+
+  const facetValid =
+    !supportsFacet ||
+    (draft.kind === "collections" && !isPlugin
+      ? matchingFacets.some((f) => f.id === (draft.facet ?? ""))
+      : Boolean(draft.facet));
+
+  const canSave =
+    Boolean(draft.label.trim()) &&
+    facetValid &&
+    (draft.kind !== "view" || completeRules.length > 0);
+
   // i18n: memo holds no copy
-  const previewSpec = useMemo(
-    () => ({
-      enabled: supportsRules && !isPlugin,
-      libraryId: library.id,
-      mediaType,
-      match: matchMode,
-      rules: completeRules,
-    }),
-    [supportsRules, isPlugin, library.id, mediaType, matchMode, completeRules],
-  );
-  const debouncedSpec = useDebouncedValue(previewSpec, 300);
+  const previewTabPayload = useMemo<LibraryTab | null>(() => {
+    if (draft.kind === "recommended") return null;
+    if (supportsFacet && !facetValid) return null;
+    const cleaned: LibraryTab = {
+      key: draft.key || "preview",
+      label: draft.label.trim() || "Preview",
+      kind: draft.kind,
+    };
+    if (supportsFacet) {
+      cleaned.facet = draft.facet ?? "";
+    }
+    if (supportsOrder) {
+      cleaned.order = draft.order ?? (draft.kind === "people" ? "name" : "count");
+    }
+    if (supportsSort) {
+      cleaned.sort = currentSort;
+      cleaned.direction = currentDirection;
+    }
+    if (supportsRules && completeRules.length > 0) {
+      cleaned.filters = {
+        match: matchMode,
+        rules: completeRules,
+      };
+    }
+    return cleaned;
+  }, [
+    completeRules,
+    currentDirection,
+    currentSort,
+    draft.facet,
+    draft.key,
+    draft.kind,
+    draft.label,
+    draft.order,
+    facetValid,
+    matchMode,
+    supportsFacet,
+    supportsOrder,
+    supportsRules,
+    supportsSort,
+  ]);
 
-  const rulesPreview = useAsync(
-    async (signal) => {
-      if (!debouncedSpec.enabled) return null;
-      const hasRules = debouncedSpec.rules.length > 0;
-      return apiFetch<VisibilityPreviewResponse>("/catalog/visibility/preview", {
-        method: "POST",
-        body: JSON.stringify({
-          libraryId: debouncedSpec.libraryId,
-          exclusions: hasRules
-            ? [
-                {
-                  name: "",
-                  action: "show",
-                  mediaType: debouncedSpec.mediaType,
-                  match: debouncedSpec.match,
-                  rules: debouncedSpec.rules,
-                },
-              ]
-            : [],
-          visibilityDefault: hasRules ? "hide" : "show",
-        }),
-        signal,
-      });
-    },
-    [debouncedSpec],
-  );
+  const debouncedPreviewTab = useDebouncedValue(previewTabPayload, 250);
 
-  const pluginPreview = useAsync(
+  const livePreview = useAsync(
     (signal) =>
-      supportsRules && isPlugin ? librariesApi.items(library.id, { limit: "12" }, signal) : Promise.resolve(null),
-    [supportsRules, isPlugin, library.id],
+      debouncedPreviewTab
+        ? librariesApi.previewTab(library.id, { tab: debouncedPreviewTab, limit: 12 }, signal)
+        : Promise.resolve(null),
+    [library.id, debouncedPreviewTab],
+  );
+
+  const baselineLibraryPreview = useAsync(
+    (signal) =>
+      supportsRules
+        ? librariesApi.previewTab(
+            library.id,
+            { tab: { key: "library", label: "Library", kind: "library" }, limit: 1 },
+            signal,
+          )
+        : Promise.resolve(null),
+    [supportsRules, library.id],
   );
 
   // Plugin field mapping for RuleRow
@@ -704,33 +821,24 @@ function TabEditDrawerInner({
     );
 
   // i18n: memo holds no copy
-  const sortedFacetBuckets = useMemo(() => {
-    const vals = [...(facetPreview.data?.values ?? [])];
-    const order = draft.order ?? (draft.kind === "people" ? "name" : "count");
-    if (order === "name") {
-      vals.sort((a, b) =>
-        String(a.title ?? a.value ?? "").localeCompare(
-          String(b.title ?? b.value ?? ""),
-          undefined,
-          { sensitivity: "base" },
-        ),
-      );
-    } else {
-      vals.sort((a, b) => b.count - a.count);
+  const previewBuckets = useMemo(() => {
+    if (!livePreview.data) return [];
+    if (livePreview.data.kind === "collections") {
+      return livePreview.data.collections.map((c) => ({
+        id: c.id,
+        name: c.name,
+        count: c.itemCount,
+      }));
     }
-    return vals;
-  }, [facetPreview.data, draft.order, draft.kind]);
-
-  const currentSort = draft.sort || availableSorts[0] || "title";
-  const dirOpts = directionOptions(currentSort);
-  const currentDirection: "asc" | "desc" =
-    draft.direction ?? (currentSort === "title" || currentSort === "index" ? "asc" : "desc");
-  const searchEnabled = draft.search !== false;
-
-  const canSave =
-    Boolean(draft.label.trim()) &&
-    (!supportsFacet || Boolean(draft.facet)) &&
-    (draft.kind !== "view" || completeRules.length > 0);
+    if (livePreview.data.kind === "people") {
+      return livePreview.data.people.map((p) => ({
+        id: String(p.id),
+        name: p.name,
+        count: p.itemCount,
+      }));
+    }
+    return [];
+  }, [livePreview.data]);
 
   const commit = () => {
     if (!canSave) return;
@@ -742,6 +850,8 @@ function TabEditDrawerInner({
     };
     if (supportsFacet && draft.facet) {
       cleaned.facet = draft.facet;
+    }
+    if (supportsOrder) {
       cleaned.order = draft.order ?? (draft.kind === "people" ? "name" : "count");
     }
     if (supportsSort) {
@@ -760,20 +870,29 @@ function TabEditDrawerInner({
         rules: completeRules,
       };
     }
-    if (draft.hidden) {
+    if (draft.hidden && canHide) {
       cleaned.hidden = true;
     }
-    onSave(cleaned, draft.kind === "recommended" && layoutDirty ? layoutDraft : undefined);
+    onSave(
+      cleaned,
+      draft.kind === "recommended" && supportsRecommendedRows && layoutDirty
+        ? layoutDraft
+        : undefined,
+    );
   };
 
-  const previewCount = isPlugin
-    ? (pluginPreview.data?.total ?? library.itemCount ?? 0)
-    : (rulesPreview.data?.visible ??
-        Math.max(0, (rulesPreview.data?.total ?? 0) - (rulesPreview.data?.hidden ?? 0)));
-  const previewTotal = isPlugin
-    ? (pluginPreview.data?.total ?? library.itemCount ?? 0)
-    : (rulesPreview.data?.total ?? 0);
-  const previewItems = rulesPreview.data?.shown ?? [];
+  const itemsPreviewData =
+    livePreview.data && (livePreview.data.kind === "library" || livePreview.data.kind === "view")
+      ? livePreview.data
+      : null;
+  const baselineItemsTotal =
+    baselineLibraryPreview.data &&
+    (baselineLibraryPreview.data.kind === "library" || baselineLibraryPreview.data.kind === "view")
+      ? baselineLibraryPreview.data.total
+      : (library.itemCount ?? 0);
+  const previewCount = itemsPreviewData?.total ?? baselineItemsTotal;
+  const previewTotal = Math.max(previewCount, baselineItemsTotal);
+  const previewItems = itemsPreviewData?.items ?? [];
 
   const defaultSearchPlaceholder =
     draft.kind === "people"
@@ -792,7 +911,7 @@ function TabEditDrawerInner({
           : t("Edit {label}", { label: initialTab.label })
       }
       description={tabKindTitle(draft.kind)}
-      size={draft.kind === "recommended" ? "xl" : "lg"}
+      size={draft.kind === "recommended" && supportsRecommendedRows ? "xl" : "lg"}
       footer={
         <div className="flex w-full flex-wrap items-center justify-between gap-2">
           <div>
@@ -801,7 +920,7 @@ function TabEditDrawerInner({
                 type="button"
                 variant="destructive"
                 size="sm"
-                disabled={saving}
+                disabled={saving || !canDelete}
                 onClick={onDelete}
               >
                 {t("Delete tab")}
@@ -841,7 +960,7 @@ function TabEditDrawerInner({
         </div>
 
         {/* Rows on this tab (embedded Recommended rows editor) */}
-        {draft.kind === "recommended" ? (
+        {draft.kind === "recommended" && supportsRecommendedRows ? (
           <section
             aria-label={t("Rows on this tab")}
             className="space-y-4 rounded-xl border border-border bg-surface p-4"
@@ -882,8 +1001,15 @@ function TabEditDrawerInner({
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-subtle bg-bg-subtle/50 px-3.5 py-3">
                 <p className="text-sm text-fg">
                   {mediaSection === "shows"
-                    ? t("Uses the standard rows for TV shows libraries.")
-                    : t("Uses the standard rows for Movies libraries.")}
+                    ? t("Uses the standard rows for TV shows libraries")
+                    : t("Uses the standard rows for Movies libraries")}
+                  {" · "}
+                  <Link
+                    to={`/home?section=${mediaSection}`}
+                    className="font-medium text-primary hover:underline"
+                  >
+                    {t("Edit standard rows")}
+                  </Link>
                 </p>
                 <Button
                   type="button"
@@ -940,10 +1066,10 @@ function TabEditDrawerInner({
                 }
               >
                 {matchingFacets.map((facet) => {
-                  const active = draft.facet === facet.id;
+                  const active = (draft.facet ?? "") === facet.id;
                   return (
                     <button
-                      key={facet.id}
+                      key={facet.id || "__owner_collections"}
                       type="button"
                       role="radio"
                       aria-checked={active}
@@ -960,42 +1086,44 @@ function TabEditDrawerInner({
                           : "border-border bg-bg-subtle/50 text-fg hover:bg-surface-hover",
                       )}
                     >
-                      {facet.label}
+                      {facetOptionLabel(facet)}
                     </button>
                   );
                 })}
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
-              <div>
-                <p className="text-sm font-medium text-fg">
-                  {draft.kind === "people" ? t("People order") : t("Bucket order")}
-                </p>
-                <p className="text-xs text-fg-muted">
-                  {draft.kind === "people"
-                    ? t("How people are ordered in the directory.")
-                    : t("How buckets are ordered on the tab.")}
-                </p>
+            {supportsOrder ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
+                <div>
+                  <p className="text-sm font-medium text-fg">
+                    {draft.kind === "people" ? t("People order") : t("Bucket order")}
+                  </p>
+                  <p className="text-xs text-fg-muted">
+                    {draft.kind === "people"
+                      ? t("How people are ordered in the directory.")
+                      : t("How buckets are ordered on the tab.")}
+                  </p>
+                </div>
+                <Segmented
+                  ariaLabel={draft.kind === "people" ? t("People order") : t("Bucket order")}
+                  size="sm"
+                  value={draft.order ?? (draft.kind === "people" ? "name" : "count")}
+                  onChange={(order) => setDraft({ ...draft, order })}
+                  options={
+                    draft.kind === "people"
+                      ? [
+                          { value: "name", label: t("Name A–Z") },
+                          { value: "count", label: t("Most titles") },
+                        ]
+                      : [
+                          { value: "count", label: t("Most items first") },
+                          { value: "name", label: t("Name A–Z") },
+                        ]
+                  }
+                />
               </div>
-              <Segmented
-                ariaLabel={draft.kind === "people" ? t("People order") : t("Bucket order")}
-                size="sm"
-                value={draft.order ?? (draft.kind === "people" ? "name" : "count")}
-                onChange={(order) => setDraft({ ...draft, order })}
-                options={
-                  draft.kind === "people"
-                    ? [
-                        { value: "name", label: t("Name A–Z") },
-                        { value: "count", label: t("Most titles") },
-                      ]
-                    : [
-                        { value: "count", label: t("Most items first") },
-                        { value: "name", label: t("Name A–Z") },
-                      ]
-                }
-              />
-            </div>
+            ) : null}
 
             {/* Live facet preview */}
             <div
@@ -1006,36 +1134,33 @@ function TabEditDrawerInner({
               <div className="flex items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-fg">
                   <CheckCircle2 size={14} className="text-success" aria-hidden />
-                  {facetPreview.loading && !facetPreview.data
+                  {livePreview.loading && !livePreview.data
                     ? t("Loading preview…")
                     : draft.kind === "people"
                       ? tn(
-                          sortedFacetBuckets.length,
+                          previewBuckets.length,
                           "{count} person in {name}",
                           "{count} people in {name}",
                           { name: library.name },
                         )
                       : tn(
-                          sortedFacetBuckets.length,
+                          previewBuckets.length,
                           "{count} collection in {name}",
                           "{count} collections in {name}",
                           { name: library.name },
                         )}
                 </span>
               </div>
-              {sortedFacetBuckets.length > 0 ? (
+              {previewBuckets.length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {sortedFacetBuckets.slice(0, 8).map((b) => {
-                    const name = String(b.title ?? b.value ?? "");
-                    return (
-                      <Badge key={name} variant="secondary" className="font-normal">
-                        {name}
-                        <span className="ml-1 tabular-nums text-fg-muted">
-                          · {formatNumber(b.count)}
-                        </span>
-                      </Badge>
-                    );
-                  })}
+                  {previewBuckets.slice(0, 8).map((b) => (
+                    <Badge key={b.id} variant="secondary" className="font-normal">
+                      {b.name}
+                      <span className="ml-1 tabular-nums text-fg-muted">
+                        · {formatNumber(b.count)}
+                      </span>
+                    </Badge>
+                  ))}
                 </div>
               ) : null}
             </div>
@@ -1145,9 +1270,9 @@ function TabEditDrawerInner({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-fg">
                   <CheckCircle2 size={14} className="text-success" aria-hidden />
-                  {rulesPreview.loading && !rulesPreview.data && !isPlugin
+                  {livePreview.loading && !itemsPreviewData
                     ? t("Counting matching titles…")
-                    : completeRules.length > 0 && !isPlugin
+                    : completeRules.length > 0
                       ? t("{matched} of {total} titles match", {
                           matched: formatNumber(previewCount),
                           total: formatNumber(previewTotal),
@@ -1164,12 +1289,12 @@ function TabEditDrawerInner({
                   </span>
                 ) : null}
               </div>
-              {!isPlugin && previewItems.length > 0 ? (
+              {previewItems.length > 0 ? (
                 <div className="flex gap-2 overflow-x-auto pb-1">
-                  {previewItems.slice(0, 10).map((item) => (
+                  {previewItems.slice(0, 10).map((item, idx) => (
                     <Artwork
-                      key={item.key}
-                      src={item.poster ?? titlePosterURL(item, 185)}
+                      key={String(item.key ?? idx)}
+                      src={previewPosterSrc(item)}
                       alt={item.title}
                       className="aspect-[2/3] w-12 shrink-0 rounded-md"
                     />
@@ -1200,9 +1325,11 @@ function TabEditDrawerInner({
                   value={currentSort}
                   onChange={(e) => {
                     const nextSort = e.target.value;
-                    const nextDir: "asc" | "desc" =
-                      nextSort === "title" || nextSort === "index" ? "asc" : "desc";
-                    setDraft({ ...draft, sort: nextSort, direction: nextDir });
+                    setDraft({
+                      ...draft,
+                      sort: nextSort,
+                      direction: defaultDirectionForSort(nextSort),
+                    });
                   }}
                 >
                   {availableSorts.map((s) => (
@@ -1267,12 +1394,15 @@ function TabEditDrawerInner({
             <div>
               <p className="text-sm font-medium text-fg">{t("Visible in Vela")}</p>
               <p className="text-xs text-fg-muted">
-                {t("Turn off to keep this tab configured here without showing it to viewers.")}
+                {!canHide
+                  ? t("At least one tab must remain visible in Vela.")
+                  : t("Turn off to keep this tab configured here without showing it to viewers.")}
               </p>
             </div>
             <Switch
               aria-label={t("Visible in Vela")}
               checked={!draft.hidden}
+              disabled={!canHide && !draft.hidden}
               onChange={(e) => setDraft({ ...draft, hidden: !e.target.checked })}
             />
           </div>

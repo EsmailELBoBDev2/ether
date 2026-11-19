@@ -1238,6 +1238,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   const DEFAULT_ROWS: Record<BuiltinLayoutSection, number> = { home: 10, movies: 8, shows: 8 };
   let lookupMockLib: (id: number) => Record<string, unknown> | undefined = () => undefined;
+  let listMockLibs: () => Record<string, unknown>[] = () => [];
 
   function resolveSectionMedia(section: LayoutSection): {
     fallbackSection?: "movies" | "shows";
@@ -2099,12 +2100,29 @@ export function createFakeServer(opts: FakeOptions = {}) {
         c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
       ),
     );
+    const libraries = listMockLibs()
+      .filter((l) => l.source !== "plugin" && (l.mediaType === "movie" || l.mediaType === "show"))
+      .map((l) => {
+        const id = Number(l.id);
+        const section = `library:${id}` as const;
+        const basePage = l.mediaType === "show" ? ("shows" as const) : ("movies" as const);
+        return {
+          id,
+          name: String(l.name),
+          slug: String(l.key),
+          type: l.mediaType as "movie" | "show",
+          section,
+          basePage,
+          customized: state.layout.global.some((p) => p.section === section),
+        };
+      });
     return {
       layout: Object.keys(collectionSchedules).length
         ? { ...state.layout, collectionSchedules }
         : state.layout,
       availableRows: availableRows(),
       defaults: { maxRows: DEFAULT_ROWS },
+      libraries,
     };
   }
 
@@ -2808,7 +2826,13 @@ export function createFakeServer(opts: FakeOptions = {}) {
     itemCount: 4500,
   });
   lookupMockLib = (id) => mockLibs.find((l) => Number(l.id) === id);
-  const libraryTabs = createLibraryTabsMock({ catalog });
+  listMockLibs = () => mockLibs;
+  const libraryTabs = createLibraryTabsMock({
+    catalog,
+    getCollections: () => state.collections,
+    matchesRule: matches,
+    toCard: card,
+  });
   const mockMatches: Record<string, unknown>[] = [];
   function hydrateLib(lib: Record<string, unknown>) {
     if (!lib.sources)
@@ -2824,6 +2848,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
       lib.rules = structuredClone(cat.exclusions ?? []);
       lib.visibilityDefault = cat.visibilityDefault ?? "show";
     }
+    const tabsDto = libraryTabs.getTabs(lib);
+    lib.tabsCustomized = tabsDto.customized;
+    lib.tabs = tabsDto.tabs;
+    lib.effectiveTabs = tabsDto.effectiveTabs;
     return lib;
   }
   function mockLibraries(method: string, seg: string[], url: URL, body: unknown): Response {
@@ -3036,12 +3064,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return json({ items: shown, total: shown.length });
     }
     if (seg[2] === "tabs") {
-      if (method === "GET") return json(libraryTabs.getTabs(lib));
-      if (method === "PUT") {
-        const res = libraryTabs.putTabs(lib, b.tabs);
+      if (seg[3] === "preview" && method === "POST") {
+        const res = libraryTabs.previewTab(lib, body);
         return res.ok ? json(res.data) : err(400, "validation", res.message);
       }
-      if (method === "DELETE") return json(libraryTabs.resetTabs(lib));
+      if (!seg[3] && method === "GET") return json(libraryTabs.getTabs(lib));
+      if (!seg[3] && method === "PUT") {
+        const res = libraryTabs.putTabs(lib, body);
+        return res.ok ? json(res.data) : err(400, "validation", res.message);
+      }
+      if (!seg[3] && method === "DELETE") return json(libraryTabs.resetTabs(lib));
       return err(405, "method_not_allowed", "method not allowed");
     }
     if (seg[2] === "facets")

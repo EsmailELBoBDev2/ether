@@ -1,5 +1,5 @@
 import { apiFetch } from "../../lib/api";
-import type { Rule } from "../../lib/contract";
+import type { Rule, TitleCard } from "../../lib/contract";
 import type { VisibilityRule } from "./browser/LibraryVisibility";
 
 /** Owner API shapes for /libraries and /plugins-setup (spec §11). */
@@ -15,12 +15,15 @@ export interface Presentations {
 }
 
 export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view";
-export type LibraryTabsSource = "plugin" | "default" | "owner";
 
-export interface LibraryFacet {
+export interface LibraryFacetOption {
   id: string;
   label: string;
-  type: "strings" | "people";
+}
+
+export interface LibraryAvailableFacets {
+  collections: LibraryFacetOption[];
+  people: LibraryFacetOption[];
 }
 
 export interface LibraryTabFilter {
@@ -43,10 +46,66 @@ export interface LibraryTab {
 }
 
 export interface LibraryTabsResponse {
+  libraryId: number;
+  customized: boolean;
   tabs: LibraryTab[];
-  source: LibraryTabsSource;
-  facets: LibraryFacet[];
+  effectiveTabs: LibraryTab[];
+  defaults: LibraryTab[];
+  scopeNote: string;
+  availableFacets: LibraryAvailableFacets;
+  availableSorts: string[];
 }
+
+export interface LibraryTabPreviewItem {
+  key?: string | number;
+  title: string;
+  year?: number;
+  poster?: string;
+  posterPath?: string;
+  art?: { role: string; url: string; width?: number; height?: number }[];
+}
+
+export interface LibraryTabPreviewCollection {
+  id: string;
+  bucketId?: string;
+  name: string;
+  itemCount: number;
+  newestItem?: TitleCard | KindItem;
+}
+
+export interface LibraryTabPreviewPerson {
+  id: number | string;
+  name: string;
+  itemCount: number;
+  thumb?: string;
+}
+
+export type LibraryTabPreviewResponse =
+  | {
+      kind: "recommended";
+      scopeNote: string;
+    }
+  | {
+      kind: "library" | "view";
+      sort: string;
+      direction: string;
+      total: number;
+      items: LibraryTabPreviewItem[];
+    }
+  | {
+      kind: "collections";
+      facet: string;
+      order: string;
+      collections: LibraryTabPreviewCollection[];
+      more: boolean;
+    }
+  | {
+      kind: "people";
+      facet: string;
+      order: string;
+      people: LibraryTabPreviewPerson[];
+      more: boolean;
+    };
 
 export interface KindLevel {
   key: string;
@@ -117,6 +176,9 @@ export interface Library {
   present?: Presentations;
   /** Quality profile titles in this library rank with; "" = Default. */
   qualityProfile?: string;
+  tabs?: LibraryTab[];
+  tabsCustomized?: boolean;
+  effectiveTabs?: LibraryTab[];
   sort: number;
   hidden: boolean;
   createdAt: string;
@@ -233,6 +295,16 @@ export const librariesApi = {
     }),
   resetTabs: (id: number) =>
     apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, { method: "DELETE" }),
+  previewTab: (
+    id: number,
+    body: { tab: LibraryTab; query?: string; limit?: number },
+    signal?: AbortSignal,
+  ) =>
+    apiFetch<LibraryTabPreviewResponse>(`/libraries/${id}/tabs/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    }),
   create: (
     name: string,
     mediaType: string,

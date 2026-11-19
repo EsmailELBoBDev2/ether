@@ -21,8 +21,8 @@ function lastPutLayout(fake: Parameters<typeof calls>[0]): HomeLayout | undefine
 }
 
 describe("Library tabs page", () => {
-  it("lives on its own top-level Tabs tab (/libraries/<id>/tabs) and keeps Home Designer on Home, Movies and TV only", async () => {
-    const first = renderApp("/libraries/1/settings");
+  it("lives on its own top-level Tabs tab (/libraries/<id>/tabs) and links bidirectionally with Home Designer", async () => {
+    const first = renderApp("/libraries/2/settings");
 
     const nav = await screen.findByRole("tablist", { name: "Library sections" }, WAIT);
     expect(within(nav).getAllByRole("tab").map((el) => el.textContent)).toEqual([
@@ -43,30 +43,56 @@ describe("Library tabs page", () => {
     expect(screen.getByRole("button", { name: "Reset to default" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Display Library tab" })).toBeChecked();
 
-    first.unmount();
-    renderApp("/home?section=library:1");
+    // Uncustomised TV library Recommended tab shows standard rows line + link to /home?section=shows
+    expect(screen.getByText(/Uses the standard rows for TV shows libraries/)).toBeInTheDocument();
+    const editStandardLink = screen.getByRole("link", { name: "Edit standard rows" });
+    expect(editStandardLink).toHaveAttribute("href", "/home?section=shows");
+
+    // Clicking "Edit standard rows" opens Home Designer on "TV libraries", which lists Anime Shows (/libraries/7/tabs)
+    fireEvent.click(editStandardLink);
     const pageBtn = await screen.findByRole("button", { name: "Page" }, WAIT);
-    expect(pageBtn).toHaveTextContent("Home");
+    expect(pageBtn).toHaveTextContent("TV libraries");
+    expect(
+      screen.getByText(
+        "The standard Recommended rows for every TV library. A library can use its own instead under Libraries › name › Tabs.",
+      ),
+    ).toBeInTheDocument();
+    const animeLink = screen.getByRole("link", { name: "Anime Shows" });
+    expect(animeLink).toHaveAttribute("href", "/libraries/7/tabs");
+
     fireEvent.click(pageBtn);
     const pageMenu = screen.getByRole("menu", { name: "Page" });
     expect(within(pageMenu).getAllByRole("menuitemradio").map((el) => el.textContent)).toEqual([
       "Home",
-      "Movies",
-      "TV",
+      "Movies libraries",
+      "TV libraries",
     ]);
+
+    // Clicking the customised library link navigates back to /libraries/7/tabs
+    fireEvent.click(animeLink);
+    expect(
+      await screen.findByRole("switch", { name: "Display All Anime tab" }, WAIT),
+    ).toBeChecked();
+
+    first.unmount();
+    // Invalid ?section=library:1 still falls back to Home
+    renderApp("/home?section=library:1");
+    expect(await screen.findByRole("button", { name: "Page" }, WAIT)).toHaveTextContent("Home");
   });
 
   it("edits Recommended rows inside the tab sheet (before customising → choose rows → save, and go back to standard rows)", async () => {
     const { fake } = renderApp("/libraries/1/tabs");
 
     await screen.findByRole("switch", { name: "Display Recommended tab" }, WAIT);
-    expect(screen.getByText("Personalized rows")).toBeInTheDocument();
+    expect(screen.getByText(/Uses the standard rows for Movies libraries/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Edit standard rows" })).toHaveAttribute(
+      "href",
+      "/home?section=movies",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Edit Recommended tab" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit Recommended" }, WAIT);
 
-    // No Home Designer link or "shared layout" / "everyone's Home" jargon.
-    expect(within(dialog).queryByRole("link", { name: /Home Designer/i })).toBeNull();
     expect(within(dialog).queryByText(/shared .* layout/i)).toBeNull();
     expect(within(dialog).queryByText(/everyone's Home/i)).toBeNull();
 
@@ -77,11 +103,17 @@ describe("Library tabs page", () => {
       ),
     ).toBeInTheDocument();
     expect(
-      within(rowsSection).getByText("Uses the standard rows for Movies libraries."),
+      within(rowsSection).getByText(/Uses the standard rows for Movies libraries/),
     ).toBeInTheDocument();
+    expect(within(rowsSection).getByRole("link", { name: "Edit standard rows" })).toHaveAttribute(
+      "href",
+      "/home?section=movies",
+    );
 
     // Customise rows for this library.
-    fireEvent.click(within(rowsSection).getByRole("button", { name: "Choose rows for this library" }));
+    fireEvent.click(
+      within(rowsSection).getByRole("button", { name: "Choose rows for this library" }),
+    );
 
     expect(
       within(rowsSection).getByRole("button", { name: "Go back to the standard rows" }),
@@ -143,7 +175,7 @@ describe("Library tabs page", () => {
       within(rowsSection).getByRole("button", { name: "Go back to the standard rows" }),
     );
     expect(
-      within(rowsSection).getByText("Uses the standard rows for TV shows libraries."),
+      within(rowsSection).getByText(/Uses the standard rows for TV shows libraries/),
     ).toBeInTheDocument();
     expect(
       within(rowsSection).getByRole("button", { name: "Choose rows for this library" }),
@@ -186,12 +218,19 @@ describe("Library tabs page", () => {
     expect(screen.getByText("Plugin default")).toBeInTheDocument();
   });
 
-  it("renders the empty state when all tabs are removed and restores standard tabs on reset", async () => {
+  it("prevents hiding or deleting the last visible tab and restores standard tabs on reset", async () => {
     const { fake } = renderApp("/libraries/4/tabs");
 
-    expect(await screen.findByText("No tabs configured", {}, WAIT)).toBeInTheDocument();
-    const resetButtons = screen.getAllByRole("button", { name: "Reset to default" });
-    fireEvent.click(resetButtons[0]!);
+    const lastSwitch = await screen.findByRole(
+      "switch",
+      { name: "Display Weekend Picks tab" },
+      WAIT,
+    );
+    expect(lastSwitch).toBeChecked();
+    expect(lastSwitch).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete Weekend Picks tab" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset to default" }));
     await settleUi(() => {
       expect(calls(fake, "DELETE", "/libraries/4/tabs")).toHaveLength(1);
     });
@@ -199,11 +238,11 @@ describe("Library tabs page", () => {
     expect(screen.getByRole("switch", { name: "Display Library tab" })).toBeChecked();
   });
 
-  it("adds Collections, People, and Saved view tabs with live previews, toggles visibility, and saves", async () => {
+  it("adds Collections (including Owner collections), People, and Saved view tabs via /tabs/preview, toggles visibility, and saves", async () => {
     const { fake } = renderApp("/libraries/1/tabs");
     await screen.findByRole("switch", { name: "Display Library tab" }, WAIT);
 
-    // 1. Add a "Collections by…" tab grouped by Decade, ordered Name A–Z
+    // 1. Add a "Collections by…" tab grouped by Decades, ordered Name A–Z
     fireEvent.click(screen.getByRole("button", { name: "Add tab" }));
     const picker1 = await screen.findByRole("dialog", { name: "Add tab" }, WAIT);
     expect(within(picker1).getByText("Already in tabs")).toBeInTheDocument();
@@ -214,7 +253,12 @@ describe("Library tabs page", () => {
       { name: "New Collections by… tab" },
       WAIT,
     );
-    fireEvent.click(within(colDialog).getByRole("radio", { name: "Decade" }));
+    // Verify Owner collections omits Bucket order & Sort, then switch to Decades
+    fireEvent.click(within(colDialog).getByRole("radio", { name: "Owner collections" }));
+    expect(within(colDialog).getByLabelText("Tab label")).toHaveValue("Collections");
+    expect(within(colDialog).queryByRole("radiogroup", { name: "Bucket order" })).toBeNull();
+
+    fireEvent.click(within(colDialog).getByRole("radio", { name: "Decades" }));
     expect(within(colDialog).getByLabelText("Tab label")).toHaveValue("Decades");
     const bucketPreview = await within(colDialog).findByRole(
       "status",
@@ -224,6 +268,8 @@ describe("Library tabs page", () => {
     await settleUi(() => {
       expect(bucketPreview).toHaveTextContent(/\d+ collections? in Movies/);
     });
+    expect(calls(fake, "POST", "/libraries/1/tabs/preview").length).toBeGreaterThan(0);
+
     fireEvent.click(
       within(within(colDialog).getByRole("radiogroup", { name: "Bucket order" })).getByRole(
         "radio",

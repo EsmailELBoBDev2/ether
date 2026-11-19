@@ -11,6 +11,15 @@ type requestBookkeepingKey struct{}
 // the catalog's SQLite writer. Keep a bounded queue and one lazy worker; idle
 // resolvers have no worker. Memory state is updated before enqueuing persistence.
 func (s *Service) persistBookkeeping(ctx context.Context, write func(context.Context)) {
+	s.enqueueBookkeeping(ctx, write, false)
+}
+
+// A full optional-bookkeeping queue must not discard the selected release.
+func (s *Service) persistChoice(ctx context.Context, write func(context.Context)) {
+	s.enqueueBookkeeping(ctx, write, true)
+}
+
+func (s *Service) enqueueBookkeeping(ctx context.Context, write func(context.Context), required bool) {
 	if foreground, _ := ctx.Value(requestBookkeepingKey{}).(bool); !foreground || s.db == nil {
 		write(ctx)
 		return
@@ -24,22 +33,29 @@ func (s *Service) persistBookkeeping(ctx context.Context, write func(context.Con
 		write(wctx)
 	}
 	s.bgMu.Lock()
-	defer s.bgMu.Unlock()
 	if s.bgClosed {
+		s.bgMu.Unlock()
 		return
 	}
 	const limit = 64
 	if len(s.bookkeeping) >= limit {
+		s.bgMu.Unlock()
+		if required {
+			job(ctx)
+			return
+		}
 		s.log.Debug("resolver bookkeeping queue full; dropping optional write")
 		return
 	}
 	s.bookkeeping = append(s.bookkeeping, job)
 	if s.bookkeepingRunning {
+		s.bgMu.Unlock()
 		return
 	}
 	s.bookkeepingRunning = true
 	s.bookkeepingIdle = make(chan struct{})
 	s.bgWG.Add(1)
+	s.bgMu.Unlock()
 	go func() {
 		defer s.bgWG.Done()
 		for {

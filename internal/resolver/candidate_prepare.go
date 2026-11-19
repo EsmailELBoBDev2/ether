@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 type observationTitleKey struct{}
@@ -55,6 +56,11 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 	if !reserveSpeculativeCheck(ctx) {
 		return validation{err: errHealthBudget}
 	}
+	if key := vault.KeyOf(rel); key != "" && s.vault != nil {
+		if err := s.verifyVault(ctx, key); err != nil {
+			return validation{err: err}
+		}
+	}
 	v := validation{}
 	at := time.Now()
 	v.nzb, v.err = s.indexer.FetchNZB(ctx, rel)
@@ -85,7 +91,7 @@ func (s *Service) validateOne(ctx context.Context, rel core.Release) validation 
 			} else {
 				v.healthy, v.healthCached, v.err = s.checkHealthCached(ctx, rel.ID, v.nzb)
 			}
-			if v.healthy && v.err == nil && !v.healthCached && s.observed != nil {
+			if v.healthy && v.err == nil && !v.healthCached && s.observed != nil && vault.KeyOf(rel) == "" {
 				if title, ok := ctx.Value(observationTitleKey{}).(*core.Title); ok {
 					s.persistBookkeeping(ctx, func(ctx context.Context) { s.observed(ctx, title, rel) })
 				}

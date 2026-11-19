@@ -907,7 +907,7 @@ func (p *relayProducer) recover(ctx context.Context, why string) {
 		}
 		if src.ID != cur.ID {
 			p.s.recordSourceHealth(c.ID, cur, errOriginStalled, false)
-			p.log.Warn("owned relay switched source", "from", cur.ID, "to", src.ID)
+			p.log.Warn("owned relay switched source", append([]any{"from", cur.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, cur, src)...)...)
 		}
 		return
 	}

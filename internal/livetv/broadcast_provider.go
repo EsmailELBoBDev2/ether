@@ -38,10 +38,13 @@ type providerBroadcastPlanner struct {
 	attempt        *steadyAttempt
 	stalledAttempt *steadyAttempt
 	standby        *steadyStandby
+	lastOpened     StreamSource
+	pendingStandby bool
 	retryAt        time.Time
 	lastStress     time.Time
 	retry          func() // asks the clock to replace the current input now
 	waiting        bool   // failed() scheduled a later retry than now
+	openGen        uint64
 	linkSeq        atomic.Uint64
 }
 
@@ -270,25 +273,57 @@ func (p *providerBroadcastPlanner) keepStalled(stalledFor time.Duration) bool {
 
 func (p *providerBroadcastPlanner) commitReplacement() {
 	p.mu.Lock()
+	prev := p.lastOpened
+	if p.stalledAttempt != nil && prev.ID == "" {
+		prev = p.stalledAttempt.src
+	}
+	var cur StreamSource
+	if p.attempt != nil {
+		cur = p.attempt.src
+	}
+	standby := p.pendingStandby
+	p.pendingStandby = false
 	p.stalledAttempt = nil
+	if cur.ID != "" {
+		p.lastOpened = cur
+	}
 	p.mu.Unlock()
+	if prev.ID != "" && cur.ID != "" && prev.ID != cur.ID {
+		if standby {
+			p.logger().Info("live input switched to standby", append([]any{"input", cur.ID}, p.s.duplicateFailoverLogAttrs(p.channel, prev, cur)...)...)
+		} else {
+			p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", cur.ID}, p.s.duplicateFailoverLogAttrs(p.channel, prev, cur)...)...)
+		}
+	}
 }
 
 func (p *providerBroadcastPlanner) abortReplacement() {
 	p.mu.Lock()
+	p.openGen++
+	p.pendingStandby = false
 	prev := p.stalledAttempt
 	var drop *steadyLink
 	if prev != nil {
 		p.stalledAttempt = nil
 		p.attempt = prev
-		if prev.link != nil && !prev.link.closed.Load() && p.link != prev.link {
+		if prev.src.ID != "" {
+			p.lastOpened = prev.src
+		}
+		if p.link != prev.link {
 			drop = p.link
-			prev.link.retain()
-			p.link = prev.link
+			if prev.link != nil && !prev.link.closed.Load() {
+				prev.link.retain()
+				p.link = prev.link
+			} else {
+				p.link = nil
+			}
 		}
 		p.ladder.delivered(prev.src.ID)
 	}
 	p.mu.Unlock()
+	if prev != nil && p.s != nil {
+		p.s.recordSourceHealth(p.channel.ID, prev.src, nil, true)
+	}
 	if drop != nil {
 		drop.releaseRef(p.s)
 	}
@@ -310,7 +345,7 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 		}
 		return p.retryAt
 	}
-	if p.stalledAttempt == nil {
+	if p.stalledAttempt == nil || p.stalledAttempt.link == nil || p.stalledAttempt.link.closed.Load() {
 		p.stalledAttempt = a
 	}
 	aired := a.decoder.delivered()
@@ -344,8 +379,18 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 		p.ladder.next, p.ladder.liveEdge = sb.src.ID, false
 		at = now
 	}
+	var nextSrc StreamSource
+	for _, cand := range candidates {
+		if cand.ID == p.ladder.next {
+			nextSrc = cand
+			break
+		}
+	}
+	if nextSrc.ID == "" && p.standby != nil && p.standby.src.ID == p.ladder.next {
+		nextSrc = p.standby.src
+	}
 	p.waiting = at.Sub(now) > 250*time.Millisecond
-	p.logger().Info("live input lost", "input", a.src.ID, "reason", err, "aired", aired, "failover", failover, "next", p.ladder.next, "retryIn", at.Sub(now))
+	p.logger().Info("live input lost", append([]any{"input", a.src.ID, "reason", err, "aired", aired, "failover", failover, "next", p.ladder.next, "retryIn", at.Sub(now)}, p.s.duplicateFailoverLogAttrs(p.channel, a.src, nextSrc)...)...)
 	return at
 }
 
@@ -358,7 +403,9 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder, func(), error) {
 	c := p.channel
 	p.mu.Lock()
+	gen := p.openGen
 	p.attempt = nil
+	p.pendingStandby = false
 	p.retryAt = time.Time{}
 	p.waiting = false
 	p.mu.Unlock()
@@ -374,6 +421,24 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			}
 		}
 		if len(candidates) == 0 {
+			var dropStandby *steadyStandby
+			p.mu.Lock()
+			if p.openGen != gen {
+				p.mu.Unlock()
+				return nil, nil, context.Canceled
+			}
+			if p.standby != nil && len(busy) > 0 {
+				dropStandby = p.standby
+				p.standby = nil
+			} else if (heldDisplaced == nil || heldDisplaced.closed.Load()) && p.stalledAttempt != nil && p.stalledAttempt.link != nil && !p.stalledAttempt.link.closed.Load() {
+				heldDisplaced = p.stalledAttempt.link
+			}
+			p.mu.Unlock()
+			if dropStandby != nil {
+				dropStandby.close(p.s)
+				clear(busy)
+				continue
+			}
 			if heldDisplaced != nil && !heldDisplaced.closed.Load() && len(busy) > 0 {
 				// Single-connection account cannot race a second connection in
 				// parallel; release the stalled connection's slot and retry.
@@ -383,11 +448,17 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 				continue
 			}
 			p.mu.Lock()
-			p.retryAt = now.Add(steadySpacing)
+			if p.openGen == gen {
+				p.retryAt = now.Add(steadySpacing)
+			}
 			p.mu.Unlock()
 			return nil, nil, fmt.Errorf("broadcast provider: %w", last)
 		}
 		p.mu.Lock()
+		if p.openGen != gen {
+			p.mu.Unlock()
+			return nil, nil, context.Canceled
+		}
 		id, liveEdge, ok, retry := p.ladder.choose(sourceIDs(candidates), now)
 		if !ok {
 			p.retryAt = retry
@@ -403,7 +474,14 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		// Closing a link can close an upstream connection synchronously;
 		// never do that under p.mu, which the frame clock also takes.
 		var retired []*steadyLink
-		if sb := p.standby; sb != nil && sb.src.ID == id && sb.ready() {
+		if sb := p.standby; sb != nil && sb.src.ID == id && !sb.failed.Load() {
+			ready := sb.ready()
+			racing := p.stalledAttempt != nil
+			prev := p.lastOpened
+			if !racing {
+				p.lastOpened = src
+			}
+			p.pendingStandby = racing && ready
 			p.standby = nil
 			sbLink := sb.link
 			if p.link != nil && p.link != sbLink {
@@ -411,14 +489,24 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			}
 			p.link = sbLink
 			sbLink.retain()
+			var firstFrame time.Duration
+			if !ready {
+				firstFrame = p.firstFrameDeadlineLocked(src.ID, len(candidates) > 1)
+			}
 			p.ladder.opened(id, now)
-			decoder := p.wrap(ctx, src, sbLink, sb.adopt(), 0)
+			decoder := p.wrap(ctx, src, sbLink, sb.adopt(), firstFrame)
 			p.attempt = &steadyAttempt{src: src, link: sbLink, decoder: decoder}
 			p.mu.Unlock()
 			for _, l := range retired {
 				l.releaseRef(p.s)
 			}
-			p.logger().Info("live input switched to standby", "input", id)
+			if !racing {
+				if ready {
+					p.logger().Info("live input switched to standby", append([]any{"input", id}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+				} else if prev.ID != "" && prev.ID != src.ID {
+					p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+				}
+			}
 			return decoder, func() { sbLink.releaseRef(p.s) }, nil
 		}
 		link := p.link
@@ -442,6 +530,9 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			link = nil
 		}
 		p.link = link
+		if link != nil {
+			link.retain()
+		}
 		p.mu.Unlock()
 		for _, l := range retired {
 			l.releaseRef(p.s)
@@ -457,32 +548,66 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			}
 			if err != nil {
 				last = err
+				p.mu.Lock()
+				stale := p.openGen != gen
+				p.mu.Unlock()
+				if stale {
+					return nil, nil, context.Canceled
+				}
 				p.syncFailure(src, err, now)
 				continue
 			}
 			p.mu.Lock()
+			if p.openGen != gen {
+				p.mu.Unlock()
+				link.releaseRef(p.s)
+				return nil, nil, context.Canceled
+			}
 			p.link = link
+			link.retain()
 			p.mu.Unlock()
 		}
 		decoder, err := p.startDecoder(ctx, link, liveEdge)
 		if err != nil {
 			last = err
+			var releasePlanner bool
 			p.mu.Lock()
-			if p.link == link {
+			stale := p.openGen != gen
+			if !stale && p.link == link {
 				p.link = nil
+				releasePlanner = true
 			}
 			p.mu.Unlock()
 			link.releaseRef(p.s)
+			if releasePlanner {
+				link.releaseRef(p.s)
+			}
+			if stale {
+				return nil, nil, context.Canceled
+			}
 			p.syncFailure(src, err, now)
 			continue
 		}
-		link.retain()
 		wrapped := p.wrap(ctx, src, link, decoder, p.firstFrameDeadline(src.ID, len(candidates) > 1))
 		p.mu.Lock()
+		if p.openGen != gen {
+			p.mu.Unlock()
+			_ = wrapped.Close()
+			link.releaseRef(p.s)
+			return nil, nil, context.Canceled
+		}
+		racing := p.stalledAttempt != nil
+		prev := p.lastOpened
+		if !racing {
+			p.lastOpened = src
+		}
 		link.uses++
 		p.ladder.opened(id, now)
 		p.attempt = &steadyAttempt{src: src, link: link, decoder: wrapped}
 		p.mu.Unlock()
+		if !racing && prev.ID != "" && prev.ID != src.ID {
+			p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+		}
 		p.logger().Debug("live input opening", "input", id, "liveEdge", liveEdge, "format", link.format, "uses", link.uses)
 		return wrapped, func() { link.releaseRef(p.s) }, nil
 	}
@@ -493,6 +618,9 @@ func (p *providerBroadcastPlanner) syncFailure(src StreamSource, err error, now 
 	p.mu.Lock()
 	if !p.firstAired {
 		p.noteStartupFailure(src.ID, err)
+	}
+	if p.lastOpened.ID == "" {
+		p.lastOpened = src
 	}
 	p.mu.Unlock()
 	p.s.recordSourceHealth(p.channel.ID, src, err, false)
@@ -506,6 +634,10 @@ func (p *providerBroadcastPlanner) syncFailure(src StreamSource, err error, now 
 func (p *providerBroadcastPlanner) firstFrameDeadline(id string, backup bool) time.Duration {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.firstFrameDeadlineLocked(id, backup)
+}
+
+func (p *providerBroadcastPlanner) firstFrameDeadlineLocked(id string, backup bool) time.Duration {
 	switch {
 	case !p.firstAired:
 		if backup {
@@ -816,6 +948,7 @@ func (p *providerBroadcastPlanner) closePlanner() {
 	p.guideCancel()
 	<-p.guideDone
 	p.mu.Lock()
+	p.openGen++
 	a := p.attempt
 	if a == nil {
 		a = p.stalledAttempt

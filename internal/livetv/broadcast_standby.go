@@ -135,11 +135,12 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		if a == nil {
 			// Between attempts: when the input's own transport has recovered
 			// (the tap reconnected after the ladder backed off), open now
-			// rather than at the backed-off retry time.
+			// rather than at the backed-off retry time. Never trigger this
+			// while a stalled current input is still open in a parallel race.
 			p.mu.Lock()
-			link, waiting, retry := p.link, p.waiting, p.retry
+			link, waiting, retry, stalled := p.link, p.waiting, p.retry, p.stalledAttempt
 			p.mu.Unlock()
-			if waiting && link != nil && retry != nil {
+			if stalled == nil && waiting && link != nil && retry != nil {
 				if h, ok := p.s.inputHealth(link.ss); ok && h.Connected && !h.Failed {
 					p.mu.Lock()
 					p.waiting = false
@@ -181,7 +182,7 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 			p.mu.Unlock()
 			if retry != nil {
 				p.s.recordSourceHealth(p.channel.ID, a.src, errSteadyStarved, false)
-				p.logger().Info("live input lost", "input", a.src.ID, "reason", errSteadyStarved, "next", sb.src.ID, "standby", true)
+				p.logger().Info("live input lost", append([]any{"input", a.src.ID, "reason", errSteadyStarved, "next", sb.src.ID, "standby", true}, p.s.duplicateFailoverLogAttrs(p.channel, a.src, sb.src)...)...)
 				retry()
 			}
 			continue
@@ -189,8 +190,9 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		if stressed {
 			p.mu.Lock()
 			p.lastStress = now
+			racing := p.stalledAttempt != nil
 			p.mu.Unlock()
-			if sb == nil {
+			if sb == nil && !racing {
 				serial++
 				p.openStandby(ctx, a.src, serial)
 			}
@@ -245,7 +247,7 @@ func (p *providerBroadcastPlanner) openStandby(ctx context.Context, primary Stre
 		}
 		p.standby = sb
 		p.mu.Unlock()
-		p.logger().Info("live standby opened", "input", src.ID, "primary", primary.ID)
+		p.logger().Info("live standby opened", append([]any{"input", src.ID, "primary", primary.ID}, p.s.duplicateFailoverLogAttrs(c, primary, src)...)...)
 		return
 	}
 }

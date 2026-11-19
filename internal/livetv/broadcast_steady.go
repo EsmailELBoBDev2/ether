@@ -326,6 +326,9 @@ func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission,
 		probed.link.close(s)
 		return nil, code, detail, nil
 	}
+	if probed.link != nil && len(candidates) > 0 && probed.link.src.ID != candidates[0].ID {
+		s.logger().Info("live admission switched source", append([]any{"channel", c.ID, "from", candidates[0].ID, "to", probed.link.src.ID}, s.duplicateFailoverLogAttrs(c, candidates[0], probed.link.src)...)...)
+	}
 	return probed, "", "", nil
 }
 

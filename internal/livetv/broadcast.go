@@ -616,6 +616,9 @@ func (b *broadcast) accept(now time.Time, current broadcastPlan, next *broadcast
 					b.current = input
 					input.started = now
 					input.activateNow()
+					if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+						pl.commitReplacement()
+					}
 				}
 			} else if result.plan.id == b.momentCardPlan.id {
 				b.closeInput(b.momentCard)
@@ -863,6 +866,9 @@ func (b *broadcast) step(now time.Time) bool {
 		if b.current != nil {
 			b.closeInput(b.current)
 			b.current = nil
+		}
+		if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+			pl.commitReplacement()
 		}
 		delete(b.retry, current.id)
 	default:
@@ -1194,9 +1200,9 @@ func (b *broadcast) step(now time.Time) bool {
 				if b.replacing != nil {
 					b.current = b.replacing
 					b.replacing = nil
-					if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
-						pl.commitReplacement()
-					}
+				}
+				if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+					pl.commitReplacement()
 				}
 			default:
 			}
@@ -1256,6 +1262,9 @@ func (b *broadcast) step(now time.Time) bool {
 			b.noteFailure(current, fmt.Errorf("decoder stalled"), now)
 			b.closeInput(b.current)
 			b.current = nil
+			if pl, ok := b.planner.(interface{ commitReplacement() }); ok {
+				pl.commitReplacement()
+			}
 		}
 	}
 	// Ahead-of-clock production may wait for its input. A due tick must keep

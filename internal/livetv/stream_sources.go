@@ -28,6 +28,10 @@ type StreamSource struct {
 	// MergedFrom names the imported channel ID whose stream was attached by
 	// channel input merge rules; empty on the channel's own or manual inputs.
 	MergedFrom string `json:"mergedFrom,omitempty"`
+	// AutoFrom names the duplicate channel ID whose primary stream was
+	// attached automatically as a backup; AutoNumber records its channel number.
+	AutoFrom   string `json:"autoFrom,omitempty"`
+	AutoNumber string `json:"autoNumber,omitempty"`
 	// Headers are request headers this input needs (a Stremio stream's
 	// proxy headers), sent after the source's own.
 	Headers map[string]string `json:"headers,omitempty"`
@@ -188,48 +192,74 @@ func (s *Service) sourceStatus(channelID string, src StreamSource) StreamSourceS
 	return h.StreamSourceStatus
 }
 
+func (s *Service) autoDonorActive(donorID string) bool {
+	if donorID == "" || s == nil {
+		return true
+	}
+	if donor, ok := s.cachedChannelByID(donorID); ok {
+		return donor.Enabled && donor.MergedInto == ""
+	}
+	return true
+}
+
 // orderedSourceCandidates lists a channel's enabled inputs, best first. Health
 // only orders them: a cooling-down source still appears, after every source
 // that is not, so recovery never waits out a cooldown while any input remains.
-// Recently played healthy inputs precede unchecked ones, then failed inputs.
-// Owner priority breaks ties; cooling sources come back
-// soonest-retry first. exclude skips source IDs (typically the one that just
-// failed). Invalid channel sources yield nil.
+// Unless the owner manually ordered streamSources, the channel's own healthy or
+// unchecked primary inputs always precede automatic duplicate backups, and
+// automatic backups rank by measured stall history, resolution closeness and
+// source affinity. exclude skips source IDs (typically the one that just failed).
 func (s *Service) orderedSourceCandidates(c Channel, exclude ...string) []StreamSource {
 	if err := normalizeStreamSources(&c); err != nil {
 		return nil
 	}
 	type ranked struct {
 		src    StreamSource
-		class  int
+		band   int
 		retry  time.Time
 		played time.Time
 	}
 	var out []ranked
 	for _, src := range c.StreamSources {
-		if !src.Enabled || slices.Contains(exclude, src.ID) {
+		if !src.Enabled || slices.Contains(exclude, src.ID) || !s.autoDonorActive(src.AutoFrom) {
 			continue
 		}
 		st := s.sourceStatus(c.ID, src)
-		class := 1
+		band := 1
 		switch st.State {
 		case "available":
-			class = 0
+			band = 0
+			if !c.OwnerStreamSources && src.AutoFrom != "" {
+				band = 2
+			}
+		case "unchecked":
+			band = 1
+			if !c.OwnerStreamSources && src.AutoFrom != "" {
+				band = 2
+			}
 		case "retry_ready":
-			class = 2
+			band = 3
 		case "cooling_down":
-			class = 3
+			band = 4
 		}
-		out = append(out, ranked{src: src, class: class, retry: st.RetryAfter, played: st.LastPlayed})
+		out = append(out, ranked{src: src, band: band, retry: st.RetryAfter, played: st.LastPlayed})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].class != out[j].class {
-			return out[i].class < out[j].class
+		if out[i].band != out[j].band {
+			return out[i].band < out[j].band
 		}
-		if out[i].class == 0 {
+		if !c.OwnerStreamSources && out[i].band == 3 && (out[i].src.AutoFrom == "") != (out[j].src.AutoFrom == "") {
+			return out[i].src.AutoFrom == ""
+		}
+		if !c.OwnerStreamSources && out[i].band < 4 && out[i].src.AutoFrom != "" && out[j].src.AutoFrom != "" {
+			if cmp := s.compareRuntimeAutoBackups(c, out[i].src, out[j].src); cmp != 0 {
+				return cmp < 0
+			}
+		}
+		if out[i].band == 0 && !out[i].played.Equal(out[j].played) {
 			return out[i].played.After(out[j].played)
 		}
-		return out[i].class == 3 && out[i].retry.Before(out[j].retry)
+		return out[i].band == 4 && out[i].retry.Before(out[j].retry)
 	})
 	list := make([]StreamSource, len(out))
 	for i, r := range out {
@@ -380,7 +410,7 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 	var candidates []StreamSource
 	var earliestRetry time.Time
 	for _, src := range c.StreamSources {
-		if !src.Enabled {
+		if !src.Enabled || !s.autoDonorActive(src.AutoFrom) {
 			continue
 		}
 		retry := s.sourceStatus(c.ID, src).RetryAfter
@@ -392,6 +422,22 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 			continue
 		}
 		candidates = append(candidates, src)
+	}
+	if !c.OwnerStreamSources && len(candidates) > 1 {
+		var manuals, autos []StreamSource
+		for _, src := range candidates {
+			if src.AutoFrom == "" {
+				manuals = append(manuals, src)
+			} else {
+				autos = append(autos, src)
+			}
+		}
+		if len(autos) > 1 {
+			sort.SliceStable(autos, func(i, j int) bool {
+				return s.compareRuntimeAutoBackups(c, autos[i], autos[j]) < 0
+			})
+		}
+		candidates = append(manuals, autos...)
 	}
 	var last error = core.ErrNotAvailable
 	var failures []TuneInputFailure
@@ -467,7 +513,12 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		if err == nil {
 			ss.info.ActiveSourceID = src.ID
 			s.recordSourceHealth(c.ID, src, nil, false)
-			log.Info("live source ready", "elapsed", time.Since(started))
+			readyAttrs := []any{"elapsed", time.Since(started)}
+			if index > 0 {
+				readyAttrs = append(readyAttrs, "from", candidates[0].ID, "to", src.ID)
+				readyAttrs = append(readyAttrs, s.duplicateFailoverLogAttrs(c, candidates[0], src)...)
+			}
+			log.Info("live source ready", readyAttrs...)
 			return nil
 		}
 		ss.owned.close()

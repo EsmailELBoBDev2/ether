@@ -352,8 +352,9 @@ type Service struct {
 	users        map[int64]*row  // by local id
 	byPlex       map[int64]int64 // plex id -> local id
 	tokens       map[string]int64
+	serverTokens map[string]bool
 	pos          map[string]cacheEntry
-	neg          map[string]time.Time
+	neg          map[string]negEntry
 	inflight     flight.Group[string, validation]
 	ownerPlexID  int64
 	plexDefaults map[int64]PlexViewerDefaults
@@ -457,7 +458,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		incarnation = 1
 	}
 	s := &Service{db: db, o: o, log: o.Logger.With("component", "auth"),
-		pos: map[string]cacheEntry{}, neg: map[string]time.Time{},
+		pos: map[string]cacheEntry{}, neg: map[string]negEntry{}, serverTokens: map[string]bool{},
 		seen: map[int64]time.Time{}, incarnation: incarnation,
 		receipts: map[uint64]receipt{}, idsByHash: map[string][]uint64{},
 		tokenGen: map[string]uint64{}, refreshFunc: o.RefreshUnknownToken}
@@ -543,7 +544,7 @@ func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.neg = map[string]time.Time{}
+	s.neg = map[string]negEntry{}
 	if all {
 		s.pos = map[string]cacheEntry{}
 		s.retireAllCacheLocked()
@@ -612,6 +613,23 @@ func (s *Service) reload(ctx context.Context) error {
 	if err := trows.Err(); err != nil {
 		return err
 	}
+	srows, err := s.db.QueryContext(ctx, `SELECT token_hash FROM auth_tokens WHERE source=?`, sourceServer)
+	if err != nil {
+		return fmt.Errorf("auth: load server tokens: %w", err)
+	}
+	serverTokens := map[string]bool{}
+	for srows.Next() {
+		var h string
+		if err := srows.Scan(&h); err != nil {
+			srows.Close()
+			return err
+		}
+		serverTokens[h] = true
+	}
+	srows.Close()
+	if err := srows.Err(); err != nil {
+		return err
+	}
 	defaults, err := s.loadPlexDefaults(ctx)
 	if err != nil {
 		return fmt.Errorf("auth: load plex defaults: %w", err)
@@ -636,7 +654,7 @@ func (s *Service) reload(ctx context.Context) error {
 		}
 	}
 	changed := !plexDefaultsEqual(s.plexDefaults, defaults)
-	s.users, s.byPlex, s.tokens, s.ownerPlexID, s.plexDefaults = users, byPlex, tokens, owner, defaults
+	s.users, s.byPlex, s.tokens, s.serverTokens, s.ownerPlexID, s.plexDefaults = users, byPlex, tokens, serverTokens, owner, defaults
 	if changed {
 		s.gen.Add(1)
 	}
@@ -645,6 +663,13 @@ func (s *Service) reload(ctx context.Context) error {
 		if u := users[e.userID]; u == nil || !u.Active {
 			delete(s.pos, h)
 			s.retireCacheLocked(h)
+		}
+	}
+	for h, n := range s.neg {
+		if n.plexID != 0 {
+			if id, ok := byPlex[n.plexID]; ok && users[id] != nil && users[id].Active {
+				delete(s.neg, h)
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -754,7 +779,7 @@ func (s *Service) Accept(ctx context.Context, token string) (*core.User, Accepta
 		s.touch(u.ID, now)
 		return u, acc, nil
 	}
-	if exp, ok := s.neg[h]; ok && now.Before(exp) {
+	if neg, ok := s.neg[h]; ok && now.Before(neg.expires) {
 		s.mu.RUnlock()
 		return nil, Acceptance{}, core.ErrUnauthorized
 	}
@@ -820,21 +845,7 @@ func (s *Service) activePlexUser(id int64) *core.User {
 
 // validate asks plex.tv, collapsing concurrent requests for one token.
 func (s *Service) validate(ctx context.Context, token, h string) (*core.User, Acceptance, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, Acceptance{}, err
-	}
-	// Detached, so one impatient client does not fail the others waiting
-	// on the same token. Waiters share that one acceptance receipt.
-	out, err := s.inflight.DoDetachedLimit(ctx, h, s.o.MaxConcurrentValidations, func(ctx context.Context) (validation, error) {
-		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-		return s.validateOnce(ctx, token, h)
-	})
-	// Only the direct admission refusal takes this path; validation errors may
-	// wrap other causes and retain their existing stale-fallback semantics.
-	if err == flight.ErrCapacity {
-		return s.stale(h, errors.New("auth: token validation capacity reached"))
-	}
+	out, err := s.validateResult(ctx, token, h)
 	return out.user, out.acc, err
 }
 
@@ -842,7 +853,19 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 	if refresh := s.unknownTokenRefresher(); refresh != nil {
 		_ = refresh(ctx)
 		if u, acc, matched, err := s.acceptDurable(h, s.o.Now()); matched {
-			return validation{user: u, acc: acc}, err
+			var plexID int64
+			var notShared bool
+			if u != nil {
+				plexID = u.PlexID
+			} else {
+				s.mu.RLock()
+				if r := s.users[s.tokens[h]]; r != nil && r.Origin != "dlna_guest" && r.PlexID != 0 {
+					plexID = r.PlexID
+					notShared = true
+				}
+				s.mu.RUnlock()
+			}
+			return validation{user: u, acc: acc, plexID: plexID, notShared: notShared}, err
 		}
 	}
 	if s.o.Validator == nil {
@@ -855,7 +878,15 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 			return validation{}, core.ErrUnauthorized
 		}
 		u, acc, staleErr := s.stale(h, err)
-		return validation{user: u, acc: acc}, staleErr
+		var plexID int64
+		if u != nil {
+			plexID = u.PlexID
+		}
+		return validation{user: u, acc: acc, plexID: plexID}, staleErr
+	}
+	if acct == nil || acct.ID <= 0 {
+		s.reject(h)
+		return validation{}, core.ErrUnauthorized
 	}
 	// Membership changes must remain available while plex.tv is slow. Only
 	// local membership decisions and writes hold this lock, never network I/O.
@@ -872,8 +903,8 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 	s.mu.RUnlock()
 
 	if revoked {
-		s.reject(h)
-		return validation{}, core.ErrUnauthorized
+		s.rejectNotShared(h, acct.ID)
+		return validation{plexID: acct.ID, notShared: true}, core.ErrUnauthorized
 	}
 	switch {
 	case owner != 0 && acct.ID == owner:
@@ -890,7 +921,11 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 				return validation{}, core.ErrUnauthorized
 			}
 			u, acc, staleErr := s.stale(h, err)
-			return validation{user: u, acc: acc}, staleErr
+			var plexID int64
+			if u != nil {
+				plexID = u.PlexID
+			}
+			return validation{user: u, acc: acc, plexID: plexID}, staleErr
 		}
 		if !ok {
 			if known {
@@ -904,8 +939,8 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 				s.notify("")
 			}
 			s.log.Info("token without access to this server", "plexId", acct.ID, "username", acct.Username)
-			s.reject(h)
-			return validation{}, core.ErrUnauthorized
+			s.rejectNotShared(h, acct.ID)
+			return validation{plexID: acct.ID, notShared: true}, core.ErrUnauthorized
 		}
 		// A sync may have revoked this account during HasServer. The upsert
 		// preserves active=0 on existing rows; activeUser below then refuses it.
@@ -935,16 +970,24 @@ func (s *Service) validateOnce(ctx context.Context, token, h string) (validation
 	}
 	s.mu.Unlock()
 	if u == nil {
-		return validation{}, core.ErrUnauthorized
+		return validation{plexID: acct.ID, notShared: true}, core.ErrUnauthorized
 	}
 	s.touch(u.ID, s.o.Now())
-	return validation{user: u, acc: acc}, nil
+	return validation{user: u, acc: acc, plexID: u.PlexID}, nil
 }
 
 func (s *Service) reject(h string) {
+	s.rejectEntry(h, negEntry{expires: s.o.Now().Add(s.o.NegativeTTL)})
+}
+
+func (s *Service) rejectNotShared(h string, plexID int64) {
+	s.rejectEntry(h, negEntry{expires: s.o.Now().Add(s.o.NegativeTTL), plexID: plexID, notShared: true})
+}
+
+func (s *Service) rejectEntry(h string, entry negEntry) {
 	s.mu.Lock()
 	s.evictLocked()
-	s.neg[h] = s.o.Now().Add(s.o.NegativeTTL)
+	s.neg[h] = entry
 	delete(s.pos, h)
 	s.retireCacheLocked(h)
 	s.mu.Unlock()
@@ -983,8 +1026,8 @@ func (s *Service) evictLocked() {
 			s.retireCacheLocked(h)
 		}
 	}
-	for h, exp := range s.neg {
-		if now.After(exp) {
+	for h, neg := range s.neg {
+		if now.After(neg.expires) {
 			delete(s.neg, h)
 		}
 	}
@@ -1129,7 +1172,7 @@ func (s *Service) SetOwner(ctx context.Context, a plextv.Account, serverToken st
 	}
 	s.mu.Lock()
 	s.pos = map[string]cacheEntry{}
-	s.neg = map[string]time.Time{}
+	s.neg = map[string]negEntry{}
 	s.mu.Unlock()
 	err = s.reload(ctx)
 	s.notify("caches")

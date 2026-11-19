@@ -71,6 +71,25 @@ func (l *LoginLimiter) Allow(ctx context.Context, identity string, ip netip.Addr
 	return allowed, err
 }
 
+// IPExceeded reports whether ip has already reached the per-IP limit in the
+// active window without recording another attempt.
+func (l *LoginLimiter) IPExceeded(ctx context.Context, ip netip.Addr) (bool, error) {
+	if !ip.IsValid() {
+		return false, errors.New("identity: invalid limiter key")
+	}
+	addr := ip.Unmap().String()
+	cutoff := l.now().UnixMilli() - l.window.Milliseconds()
+	var attempts int
+	err := l.db.QueryRowContext(ctx, `SELECT attempts FROM identity_rate_buckets WHERE bucket_key=? AND namespace=? AND window_start>?`, rateKey(l.namespace, "ip", addr), l.namespace, cutoff).Scan(&attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return attempts >= l.perIP, nil
+}
+
 // AllowWithRetry records the same attempt as Allow and reports the remaining
 // fixed-window delay when either bucket is exhausted. It never resets a bucket.
 func (l *LoginLimiter) AllowWithRetry(ctx context.Context, identity string, ip netip.Addr) (bool, time.Duration, error) {

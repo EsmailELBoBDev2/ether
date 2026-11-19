@@ -468,20 +468,22 @@ var _ frontend.Sessions = Sessions{}
 
 // Identity implements a configurable surface-bound identity for protocol tests.
 type Identity struct {
-	IssueRefreshFunc  func(context.Context, string, core.Device) (string, error)
-	RefreshFunc       func(context.Context, string, core.Device) (string, string, error)
-	ResolveFunc       func(context.Context, string) (*core.Viewer, error)
-	ResolveDeviceFunc func(context.Context, string, core.Device) (*core.Viewer, time.Time, error)
-	ViewerTimesFunc   func(context.Context, string, int64) (frontend.ViewerTimes, error)
-	PublicViewersFunc func(context.Context) ([]frontend.PublicViewer, error)
-	SignInFunc        func(context.Context, string, string, core.Device) (string, error)
-	InitiateFunc      func(context.Context, core.Device) (string, string, error)
-	StatusFunc        func(context.Context, string) (bool, error)
-	DetailsFunc       func(context.Context, string) (frontend.QuickConnectDetails, error)
-	PollFunc          func(context.Context, string) (string, error)
-	ApproveFunc       func(context.Context, *core.Viewer, string) error
-	RevokeFunc        func(context.Context, string) error
-	SetupCompleteFunc func() bool
+	IssueRefreshFunc           func(context.Context, string, core.Device) (string, error)
+	RefreshFunc                func(context.Context, string, core.Device) (string, string, error)
+	ResolveFunc                func(context.Context, string) (*core.Viewer, error)
+	ResolveDeviceFunc          func(context.Context, string, core.Device) (*core.Viewer, time.Time, error)
+	ViewerTimesFunc            func(context.Context, string, int64) (frontend.ViewerTimes, error)
+	PublicViewersFunc          func(context.Context) ([]frontend.PublicViewer, error)
+	SignInFunc                 func(context.Context, string, string, core.Device) (string, error)
+	SignInWithPlexFunc         func(context.Context, string, core.Device) (string, error)
+	AuthenticationFeaturesFunc func() frontend.AuthenticationFeatures
+	InitiateFunc               func(context.Context, core.Device) (string, string, error)
+	StatusFunc                 func(context.Context, string) (bool, error)
+	DetailsFunc                func(context.Context, string) (frontend.QuickConnectDetails, error)
+	PollFunc                   func(context.Context, string) (string, error)
+	ApproveFunc                func(context.Context, *core.Viewer, string) error
+	RevokeFunc                 func(context.Context, string) error
+	SetupCompleteFunc          func() bool
 }
 
 func (f Identity) Resolve(ctx context.Context, credential string) (*core.Viewer, error) {
@@ -526,6 +528,18 @@ func (f Identity) SignIn(ctx context.Context, user, password string, d core.Devi
 		return f.SignInFunc(ctx, user, password, d)
 	}
 	return "", frontend.ErrIdentityUnavailable
+}
+func (f Identity) SignInWithPlex(ctx context.Context, token string, d core.Device) (string, error) {
+	if f.SignInWithPlexFunc != nil {
+		return f.SignInWithPlexFunc(ctx, token, d)
+	}
+	return "", frontend.ErrIdentityUnavailable
+}
+func (f Identity) AuthenticationFeatures() frontend.AuthenticationFeatures {
+	if f.AuthenticationFeaturesFunc != nil {
+		return f.AuthenticationFeaturesFunc()
+	}
+	return frontend.AuthenticationFeatures{}
 }
 func (f Identity) QuickConnectInitiate(ctx context.Context, d core.Device) (string, string, error) {
 	if f.InitiateFunc != nil {

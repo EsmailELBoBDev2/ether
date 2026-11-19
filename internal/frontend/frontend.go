@@ -151,6 +151,7 @@ type SurfaceIdentity interface {
 	ViewerTimes(context.Context, string, int64) (ViewerTimes, error)
 	PublicViewers(context.Context) ([]PublicViewer, error)
 	SignIn(context.Context, string, string, core.Device) (string, error)
+	SignInWithPlex(context.Context, string, core.Device) (string, error)
 	IssueRefresh(context.Context, string, core.Device) (string, error)
 	Refresh(context.Context, string, core.Device) (string, string, error)
 	QuickConnectInitiate(context.Context, core.Device) (code, secret string, err error)
@@ -253,6 +254,9 @@ func (boundIdentity) PublicViewers(context.Context) ([]PublicViewer, error) {
 	return nil, ErrIdentityUnavailable
 }
 func (boundIdentity) SignIn(context.Context, string, string, core.Device) (string, error) {
+	return "", ErrIdentityUnavailable
+}
+func (boundIdentity) SignInWithPlex(context.Context, string, core.Device) (string, error) {
 	return "", ErrIdentityUnavailable
 }
 func (boundIdentity) QuickConnectInitiate(context.Context, core.Device) (string, string, error) {
@@ -368,6 +372,9 @@ func (boundAuth) PublicViewers(context.Context) ([]PublicViewer, error) {
 	return nil, ErrIdentityUnavailable
 }
 func (boundAuth) SignIn(context.Context, string, string, core.Device) (string, error) {
+	return "", ErrIdentityUnavailable
+}
+func (boundAuth) SignInWithPlex(context.Context, string, core.Device) (string, error) {
 	return "", ErrIdentityUnavailable
 }
 func (boundAuth) IssueRefresh(context.Context, string, core.Device) (string, error) {

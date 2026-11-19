@@ -19,3 +19,9 @@ type CredentialAcceptor interface {
 	Accept(context.Context, string) (*Viewer, CredentialAcceptance, error)
 	ReceiptCurrent(context.Context, CredentialAcceptance) error
 }
+
+// PlexAccountAuthenticator validates a plex.tv account token for native
+// surface sign-in without accepting server, delegation or grant credentials.
+type PlexAccountAuthenticator interface {
+	AuthenticatePlexAccount(context.Context, string) (*User, int64, error)
+}

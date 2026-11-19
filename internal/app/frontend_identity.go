@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -15,6 +18,7 @@ import (
 type surfaceIdentity struct {
 	policy      core.FrontendHostPolicy
 	settings    func() frontend.Settings
+	hostConfig  func() frontend.HostConfig
 	surface     frontend.Protocol
 	users       core.Auth
 	resolver    *identity.Resolver
@@ -155,6 +159,67 @@ func (s surfaceIdentity) SignIn(ctx context.Context, username, password string, 
 	// The grant is the sign-in. Login timestamps are recorded after the
 	// response so a large catalogue database cannot hold the client open.
 	return s.grants.Issue(ctx, viewer, &link, string(s.surface), device)
+}
+func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, device core.Device) (string, error) {
+	if s.policy.ExternalIdentity || s.grants == nil || s.login == nil || s.users == nil {
+		return "", core.ErrUnauthorized
+	}
+	ip, ok := frontend.ClientIP(ctx)
+	if !ok || ip.IsUnspecified() || ip.IsMulticast() {
+		return "", core.ErrUnauthorized
+	}
+	exceeded, err := s.login.IPExceeded(ctx, ip)
+	if err != nil {
+		return "", err
+	}
+	if exceeded {
+		return "", s.allow(ctx, s.login, ip.String())
+	}
+	if s.hostConfig != nil {
+		if cfgTok := strings.TrimSpace(s.hostConfig().Plex.Token); cfgTok != "" && subtle.ConstantTimeCompare([]byte(strings.TrimSpace(plexToken)), []byte(cfgTok)) == 1 {
+			if err := s.allow(ctx, s.login, ip.String()); err != nil {
+				return "", err
+			}
+			return "", core.ErrUnauthorized
+		}
+	}
+	plexAuth, ok := s.users.(frontend.PlexAccountAuthenticator)
+	if !ok {
+		if err := s.allow(ctx, s.login, ip.String()); err != nil {
+			return "", err
+		}
+		return "", core.ErrUnauthorized
+	}
+	user, plexID, authErr := plexAuth.AuthenticatePlexAccount(ctx, plexToken)
+	key := ip.String()
+	if plexID != 0 {
+		key = "plex:" + strconv.FormatInt(plexID, 10)
+	}
+	if err := s.allow(ctx, s.login, key); err != nil {
+		return "", err
+	}
+	if authErr != nil {
+		if errors.Is(authErr, frontend.ErrPlexNotShared) {
+			return "", frontend.ErrPlexNotShared
+		}
+		if errors.Is(authErr, frontend.ErrPlexUnreachable) {
+			return "", frontend.ErrPlexUnreachable
+		}
+		if errors.Is(authErr, context.Canceled) {
+			return "", authErr
+		}
+		return "", core.ErrUnauthorized
+	}
+	if user == nil || user.ID <= 0 {
+		return "", core.ErrUnauthorized
+	}
+	var linkID *int64
+	if linker, ok := s.users.(interface {
+		PlexLinkID(context.Context, int64, int64) *int64
+	}); ok {
+		linkID = linker.PlexLinkID(ctx, user.ID, plexID)
+	}
+	return s.grants.Issue(ctx, user.ID, linkID, string(s.surface), device)
 }
 func (s surfaceIdentity) IssueRefresh(ctx context.Context, access string, device core.Device) (string, error) {
 	return s.grants.IssueRefresh(ctx, string(s.surface), access, device)
@@ -326,9 +391,28 @@ func (s surfaceIdentity) GrantScopeCurrent(ctx context.Context, scope string, de
 	}
 	return s.grants.GrantScopeCurrent(ctx, string(s.surface), scope, device)
 }
+func (s surfaceIdentity) plexConfigured() bool {
+	if s.users == nil {
+		return false
+	}
+	if owner, err := s.users.Owner(context.Background()); err == nil && owner != nil && owner.PlexID != 0 {
+		return true
+	}
+	if s.hostConfig != nil {
+		p := s.hostConfig().Plex
+		if p.Claimed || p.OwnerPlexID != 0 {
+			return true
+		}
+	}
+	return false
+}
 func (s surfaceIdentity) AuthenticationFeatures() frontend.AuthenticationFeatures {
 	native := !s.policy.ExternalIdentity && s.grants != nil && s.login != nil
-	return frontend.AuthenticationFeatures{Password: native && s.local != nil, QuickConnect: native && s.quick != nil && s.poll != nil}
+	return frontend.AuthenticationFeatures{
+		Password:          native && s.local != nil,
+		QuickConnect:      native && s.quick != nil && s.poll != nil,
+		PlexAccountSignIn: native && s.plexConfigured(),
+	}
 }
 
 // IssueOriginWebCode is invoked only after the adapter validates a published

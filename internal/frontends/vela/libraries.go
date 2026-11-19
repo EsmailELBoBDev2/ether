@@ -744,7 +744,8 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 			fail(w, e, r)
 			return
 		}
-		expanding = expanding || more.Expanding
+		// The one-item lookahead never reports a fill: the first page already
+		// waited for it, and a flag here would make the client reload the list.
 		if len(more.Items) > 0 {
 			next, e := i.nextLiveCursor(c, nextQuery.Offset, snapshot)
 			if e != nil {

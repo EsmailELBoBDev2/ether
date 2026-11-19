@@ -174,6 +174,9 @@ func (f *fakeRunner) Run(ctx context.Context, cmd Command) error {
 	case argValue(args, "-h") == "filter=scale_vt":
 		w(cmd.Stdout, "  format <pix_fmt> Output pixel format (default none)\n")
 		return nil
+	case argValue(args, "-h") == "filter=vpp_qsv":
+		w(cmd.Stdout, "  tonemap <int> Perform tonemapping (0=disable tonemapping, 1=enable tonemapping)\n")
+		return nil
 	case argValue(args, "-f") == "lavfi":
 		enc := argValue(args, "-c:v")
 		rc := argValue(args, "-rc_mode")
@@ -777,6 +780,10 @@ func newTestManager(t *testing.T, fr *fakeRunner, cfg config.Transcode, opts ...
 		cache.close()
 	}
 	m.feat.decode = testFeatures().decode
+	if cache, ok := m.feat.qsvToneMap.(*qsvToneMapCache); ok {
+		cache.close()
+	}
+	m.feat.qsvToneMap = nil
 	t.Cleanup(func() { _ = m.Close() })
 	return m
 }

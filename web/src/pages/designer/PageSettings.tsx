@@ -2,7 +2,7 @@ import { Button, Input, cn } from "@braedonsaunders/appkit-ui";
 import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { t } from "../../i18n";
-import type { Device, HomeLayout, LayoutSection, Viewer } from "../../lib/contract";
+import type { BuiltinLayoutSection, Device, HomeLayout, Viewer } from "../../lib/contract";
 import { DEVICES, SECTIONS, lengthIn, setPageLength, type LayerKey } from "../../lib/layout";
 
 /**
@@ -20,9 +20,9 @@ export function PageSettings({
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
-  section: LayoutSection;
+  section: BuiltinLayoutSection;
   viewers: Viewer[];
-  defaults: Record<LayoutSection, number>;
+  defaults: Record<BuiltinLayoutSection, number>;
 }) {
   const sectionLabel = SECTIONS.find((s) => s.value === section)?.label ?? section;
   const anyDevice = DEVICES.some((d) => lengthIn(draft, layer, section, d.value));

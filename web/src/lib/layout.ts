@@ -1,4 +1,5 @@
 import type {
+  BuiltinLayoutSection,
   Daypart,
   Device,
   HomeLayout,
@@ -7,6 +8,7 @@ import type {
   LayoutSection,
   LayoutTuning,
   LayoutWhen,
+  LibraryLayoutSection,
   RowPolicy,
   RowStatus,
   TargetSchedule,
@@ -25,11 +27,95 @@ export type LayerKey = "global" | number;
 
 export const EMPTY_LAYOUT: HomeLayout = { global: [], viewers: [] };
 
-export const SECTIONS = localized<{ value: LayoutSection; label: string }[]>(() => [
+export const SECTIONS = localized<{ value: BuiltinLayoutSection; label: string }[]>(() => [
   { value: "home", label: t("Home") },
-  { value: "movies", label: t("Movies") },
-  { value: "shows", label: t("TV") },
+  { value: "movies", label: t("Movies libraries") },
+  { value: "shows", label: t("TV libraries") },
 ]);
+
+/** Whether a layout section targets a specific library (`library:<id>`). */
+export function isLibrarySection(section: string): section is LibraryLayoutSection {
+  return /^library:[1-9]\d*$/.test(section);
+}
+
+/** Parse a `library:<id>` section into its numeric library id, or null. */
+export function libraryIdOfSection(section: string): number | null {
+  if (!isLibrarySection(section)) return null;
+  const n = Number(section.slice("library:".length));
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Parse a query or wire string into a valid LayoutSection, defaulting to `"home"`. */
+export function parseLayoutSection(raw: string | null | undefined): LayoutSection {
+  if (raw === "home" || raw === "movies" || raw === "shows") return raw;
+  if (raw && isLibrarySection(raw)) return raw;
+  return "home";
+}
+
+export interface LayoutLibrarySummary {
+  id: number;
+  name: string;
+  source?: string;
+  mediaType?: string;
+  hidden?: boolean;
+  present?: {
+    vela?: { type?: string };
+    plex?: { base?: string };
+    mediaBrowser?: { collectionType?: string };
+  };
+  kind?: {
+    levels?: unknown[];
+    present?: {
+      vela?: { type?: string };
+      plex?: { base?: string };
+      mediaBrowser?: { collectionType?: string };
+    };
+  };
+}
+
+/** Shared media-type page (`movies` or `shows`) a library inherits when uncustomised. */
+export function mediaSectionForLibrary(
+  lib?: LayoutLibrarySummary | null,
+): "movies" | "shows" {
+  if (!lib) return "movies";
+  if (lib.mediaType === "show") return "shows";
+  const vela = lib.present?.vela?.type ?? lib.kind?.present?.vela?.type;
+  if (vela === "shows") return "shows";
+  const plex = lib.present?.plex?.base ?? lib.kind?.present?.plex?.base;
+  if (plex === "show") return "shows";
+  const mb = lib.present?.mediaBrowser?.collectionType ?? lib.kind?.present?.mediaBrowser?.collectionType;
+  if (mb === "tvshows") return "shows";
+  if (lib.source === "plugin" && (lib.kind?.levels?.length ?? 1) >= 3) return "shows";
+  return "movies";
+}
+
+/** Human-readable page label for built-in sections and `library:<id>` pages. */
+export function sectionLabelOf(
+  section: LayoutSection,
+  libraries?: readonly LayoutLibrarySummary[],
+): string {
+  const builtin = SECTIONS.find((s) => s.value === section);
+  if (builtin) return builtin.label;
+  const id = libraryIdOfSection(section);
+  if (id !== null) {
+    const lib = libraries?.find((l) => l.id === id);
+    if (lib) return lib.name;
+  }
+  return section;
+}
+
+/** Default maxRows for any section, falling back to its media-type default. */
+export function defaultRowsForSection(
+  defaults: Record<BuiltinLayoutSection, number> & Partial<Record<LayoutSection, number>>,
+  section: LayoutSection,
+  mediaSection: "movies" | "shows" = "movies",
+): number {
+  const direct = defaults[section];
+  if (typeof direct === "number" && direct > 0) return direct;
+  if (isLibrarySection(section)) return defaults[mediaSection] ?? 10;
+  return 10;
+}
+
 export const DEVICES = localized<{ value: Device; label: string }[]>(() => [
   { value: "tv", label: t("TV") },
   { value: "mobile", label: t("Phone") },
@@ -185,6 +271,55 @@ export function pageOf(
   return pagesOf(doc, layer).find((p) => (p.section ?? "home") === section);
 }
 
+/** Whether a `library:<id>` section has its own layout instead of inheriting Movies/TV. */
+export function hasLibraryOverride(doc: HomeLayout, section: LayoutSection): boolean {
+  if (!isLibrarySection(section)) return false;
+  return Boolean(pageOf(doc, "global", section));
+}
+
+/** Copy the shared media-type page (`movies` or `shows`) into `library:<id>` so it can be edited independently. */
+export function customiseLibraryPage(
+  doc: HomeLayout,
+  section: LibraryLayoutSection,
+  mediaSection: "movies" | "shows",
+): HomeLayout {
+  const existing = pageOf(doc, "global", section);
+  if (existing) return doc;
+  const base = pageOf(doc, "global", mediaSection);
+  const copied: LayoutPage = base
+    ? {
+        ...structuredClone(base),
+        section,
+      }
+    : { section, rows: [] };
+  const viewers = (doc.viewers ?? []).map((v) => {
+    if (v.pages.some((p) => p.section === section)) return v;
+    const vb = v.pages.find((p) => p.section === mediaSection);
+    if (!vb) return v;
+    return {
+      ...v,
+      pages: [...v.pages, { ...structuredClone(vb), section }],
+    };
+  });
+  return prune({
+    ...doc,
+    global: [...(doc.global ?? []), copied],
+    viewers,
+  });
+}
+
+/** Delete a `library:<id>` override (and any viewer overrides on it) so it returns to the shared media-type layout. */
+export function clearLibraryOverride(doc: HomeLayout, section: LibraryLayoutSection): HomeLayout {
+  return prune({
+    ...doc,
+    global: (doc.global ?? []).filter((p) => p.section !== section),
+    viewers: (doc.viewers ?? []).map((v) => ({
+      ...v,
+      pages: v.pages.filter((p) => p.section !== section),
+    })),
+  });
+}
+
 /** The policy a layer sets for exactly this row key. */
 export function policyIn(
   doc: HomeLayout,
@@ -260,12 +395,20 @@ export function effectivePolicy(
   section: LayoutSection,
   hubId: string,
   kind = hubId,
+  fallbackSection?: "movies" | "shows",
 ): Effective | null {
   if (viewerId !== null) {
     const p = bestIn(pageOf(doc, viewerId, section), hubId, kind);
     if (p) return { policy: p, layer: "override" };
+    if (isLibrarySection(section) && fallbackSection && !pageOf(doc, viewerId, section)) {
+      const fp = bestIn(pageOf(doc, viewerId, fallbackSection), hubId, kind);
+      if (fp && !pageOf(doc, "global", section)) return { policy: fp, layer: "override" };
+    }
   }
-  const g = bestIn(pageOf(doc, "global", section), hubId, kind);
+  const globalPage =
+    pageOf(doc, "global", section) ??
+    (isLibrarySection(section) && fallbackSection ? pageOf(doc, "global", fallbackSection) : undefined);
+  const g = bestIn(globalPage, hubId, kind);
   return g ? { policy: g, layer: "global" } : null;
 }
 
@@ -311,18 +454,33 @@ export function effectiveLength(
   section: LayoutSection,
   device: Device,
   def: number,
+  fallbackSection?: "movies" | "shows",
 ): { n: number; layer: "global" | "override" | "default" } {
-  const layers: [LayerKey, "global" | "override"][] =
+  const globalSection =
+    isLibrarySection(section) && !pageOf(doc, "global", section) && fallbackSection
+      ? fallbackSection
+      : section;
+  const layers: [LayerKey, LayoutSection, "global" | "override"][] =
     viewerId !== null
       ? [
-          [viewerId, "override"],
-          ["global", "global"],
+          [viewerId, section, "override"],
+          ...(isLibrarySection(section) &&
+          !pageOf(doc, viewerId, section) &&
+          !pageOf(doc, "global", section) &&
+          fallbackSection
+            ? ([[viewerId, fallbackSection, "override"]] as [
+                LayerKey,
+                LayoutSection,
+                "override",
+              ][])
+            : []),
+          ["global", globalSection, "global"],
         ]
-      : [["global", "global"]];
-  for (const [layer, name] of layers) {
-    const d = lengthIn(doc, layer, section, device);
+      : [["global", globalSection, "global"]];
+  for (const [layer, sec, name] of layers) {
+    const d = lengthIn(doc, layer, sec, device);
     if (d) return { n: d, layer: name };
-    const p = lengthIn(doc, layer, section, null);
+    const p = lengthIn(doc, layer, sec, null);
     if (p) return { n: p, layer: name };
   }
   return { n: def, layer: "default" };
@@ -330,7 +488,8 @@ export function effectiveLength(
 
 // ---- editing ------------------------------------------------------------------------
 
-function emptyPage(p: LayoutPage): boolean {
+function emptyPage(p: LayoutPage, keepExplicitLibrary = false): boolean {
+  if (keepExplicitLibrary && isLibrarySection(p.section)) return false;
   return (
     p.rows.length === 0 &&
     !p.maxRows &&
@@ -338,6 +497,13 @@ function emptyPage(p: LayoutPage): boolean {
     p.dedupeHome === undefined &&
     !tuningCount(p.tuning)
   );
+}
+
+function sectionSortOrder(section: LayoutSection): number {
+  const idx = SECTIONS.findIndex((s) => s.value === section);
+  if (idx >= 0) return idx;
+  const libId = libraryIdOfSection(section);
+  return libId !== null ? 1000 + libId : 9999;
 }
 
 function tuningCount(t: LayoutTuning | undefined): number {
@@ -363,13 +529,27 @@ export function effectiveTuning(
   layer: LayerKey,
   section: LayoutSection,
   dial: TuningDial,
+  fallbackSection?: "movies" | "shows",
 ): { v: number; from: "override" | "global" | "default" } {
   if (layer !== "global") {
     const own = tuningIn(doc, layer, section, dial);
     if (own !== undefined) return { v: own, from: "override" };
+    if (
+      isLibrarySection(section) &&
+      fallbackSection &&
+      !pageOf(doc, layer, section) &&
+      !pageOf(doc, "global", section)
+    ) {
+      const fb = tuningIn(doc, layer, fallbackSection, dial);
+      if (fb !== undefined) return { v: fb, from: "override" };
+    }
   }
   const g = tuningIn(doc, "global", section, dial);
   if (g !== undefined) return { v: g, from: "global" };
+  if (isLibrarySection(section) && fallbackSection && !pageOf(doc, "global", section)) {
+    const gf = tuningIn(doc, "global", fallbackSection, dial);
+    if (gf !== undefined) return { v: gf, from: "global" };
+  }
   return { v: DIAL_DEFAULT, from: "default" };
 }
 
@@ -394,13 +574,27 @@ export function effectiveDedupe(
   doc: HomeLayout,
   layer: LayerKey,
   section: LayoutSection,
+  fallbackSection?: "movies" | "shows",
 ): { on: boolean; from: "override" | "global" | "default" } {
   if (layer !== "global") {
     const own = pageOf(doc, layer, section)?.dedupeHome;
     if (own !== undefined) return { on: own, from: "override" };
+    if (
+      isLibrarySection(section) &&
+      fallbackSection &&
+      !pageOf(doc, layer, section) &&
+      !pageOf(doc, "global", section)
+    ) {
+      const fb = pageOf(doc, layer, fallbackSection)?.dedupeHome;
+      if (fb !== undefined) return { on: fb, from: "override" };
+    }
   }
   const g = pageOf(doc, "global", section)?.dedupeHome;
   if (g !== undefined) return { on: g, from: "global" };
+  if (isLibrarySection(section) && fallbackSection && !pageOf(doc, "global", section)) {
+    const gf = pageOf(doc, "global", fallbackSection)?.dedupeHome;
+    if (gf !== undefined) return { on: gf, from: "global" };
+  }
   return { on: true, from: "default" };
 }
 
@@ -414,25 +608,30 @@ export function setDedupe(
 }
 
 /** Rows that can appear on a page. */
-export function rowFits(row: { sections?: LayoutSection[] }, section: LayoutSection): boolean {
-  return !row.sections || row.sections.length === 0 || row.sections.includes(section);
+export function rowFits(
+  row: { sections?: LayoutSection[] },
+  section: LayoutSection,
+  mediaSection?: "movies" | "shows",
+): boolean {
+  if (!row.sections || row.sections.length === 0) return true;
+  if (row.sections.includes(section)) return true;
+  if (isLibrarySection(section)) {
+    return row.sections.includes(mediaSection ?? "movies");
+  }
+  return false;
 }
 
 /** Drop empty pages and viewer layers; order pages and viewers canonically. */
 export function prune(doc: HomeLayout): HomeLayout {
-  const order = (ps: LayoutPage[]) =>
+  const order = (ps: LayoutPage[], keepExplicitLibrary: boolean) =>
     ps
-      .filter((p) => !emptyPage(p))
-      .sort(
-        (a, b) =>
-          SECTIONS.findIndex((s) => s.value === a.section) -
-          SECTIONS.findIndex((s) => s.value === b.section),
-      );
+      .filter((p) => !emptyPage(p, keepExplicitLibrary))
+      .sort((a, b) => sectionSortOrder(a.section) - sectionSortOrder(b.section));
   return {
     ...doc,
-    global: order(doc.global ?? []),
+    global: order(doc.global ?? [], true),
     viewers: (doc.viewers ?? [])
-      .map((v) => ({ ...v, pages: order(v.pages) }))
+      .map((v) => ({ ...v, pages: order(v.pages, false) }))
       .filter((v) => v.pages.length > 0)
       .sort((a, b) => a.userId - b.userId),
   };
@@ -700,7 +899,13 @@ export function freeSlot(doc: HomeLayout, layer: LayerKey, section: LayoutSectio
 
 /** What a policy chip describes; stable across languages, for filtering. */
 type PolicyChipKind =
-  "slot" | "minSlot" | "maxSlot" | "priority" | "maxPerPage" | "maxDaysPerWeek" | "when";
+  | "slot"
+  | "minSlot"
+  | "maxSlot"
+  | "priority"
+  | "maxPerPage"
+  | "maxDaysPerWeek"
+  | "when";
 
 interface PolicyChip {
   kind: PolicyChipKind;

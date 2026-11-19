@@ -2,16 +2,18 @@ import { SubtabNav } from "../../components/layout";
 import { Badge, Button, EmptyState, Spinner, toast } from "@braedonsaunders/appkit-ui";
 import { RefreshCw, Save, Undo2, Users } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { ErrorPanel } from "../../components/feedback";
 import { useViewers, viewerName } from "../../components/pickers";
 import { t } from "../../i18n";
 import { api, errorMessage } from "../../lib/api";
-import type { HomeLayout, ViewerHome } from "../../lib/contract";
+import type { BuiltinLayoutSection, HomeLayout, ViewerHome } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
 import { Workspace, PanelHead } from "../../components/workspace";
 import {
   EMPTY_LAYOUT,
   collectionScheduleChanges,
+  hasLibraryOverride,
   overrideCount,
   prune,
   sameLayout,
@@ -26,9 +28,14 @@ import { RowPool } from "./RowPool";
 import { AnchoredSlots } from "./AnchoredSlots";
 import { TuningPanel } from "./TuningPanel";
 
-function initialContext(): ViewContext {
+function parseDesignerSection(raw: string | null): BuiltinLayoutSection {
+  if (raw === "movies" || raw === "shows") return raw;
+  return "home";
+}
+
+function initialContext(section: BuiltinLayoutSection): ViewContext {
   const now = new Date();
-  return { device: "tv", day: now.getDay(), hour: now.getHours(), section: "home" };
+  return { device: "tv", day: now.getDay(), hour: now.getHours(), section };
 }
 
 /**
@@ -37,17 +44,46 @@ function initialContext(): ViewContext {
  * the live Plex Home (rendered server-side from the draft) on the right.
  */
 export default function Designer() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlSectionParam = searchParams.get("section");
   const { viewers, error: viewersError } = useViewers();
   const doc = useAsync(() => api.layout(), []);
   const [draft, setDraft] = useState<HomeLayout>(EMPTY_LAYOUT);
   const [layer, setLayer] = useState<LayerKey>("global");
   const [spotCheck, setSpotCheck] = useState<number | null>(null);
-  const [ctx, setCtx] = useState<ViewContext>(initialContext);
+  const [seenSectionParam, setSeenSectionParam] = useState<string | null>(urlSectionParam);
+  const [ctx, setCtx] = useState<ViewContext>(() =>
+    initialContext(parseDesignerSection(urlSectionParam)),
+  );
   const [saving, setSaving] = useState(false);
   const [nonce, setNonce] = useState(0);
   const [tools, setTools] = useState("layout");
   const [focusRow, setFocusRow] = useState<string | null>(null);
   const [preview, setPreview] = useState<ViewerHome | null>(null);
+
+  if (urlSectionParam !== seenSectionParam) {
+    setSeenSectionParam(urlSectionParam);
+    const nextSection = parseDesignerSection(urlSectionParam);
+    if (nextSection !== ctx.section) {
+      setCtx((cur) => ({ ...cur, section: nextSection }));
+      setFocusRow(null);
+    }
+  }
+
+  const updateCtx = (next: ViewContext) => {
+    setCtx(next);
+    if (next.section !== ctx.section) {
+      setFocusRow(null);
+      const params = new URLSearchParams(searchParams);
+      if (next.section === "home") {
+        params.delete("section");
+      } else {
+        params.set("section", next.section);
+      }
+      setSeenSectionParam(params.get("section"));
+      setSearchParams(params, { replace: true });
+    }
+  };
 
   const saved = doc.data?.layout ?? EMPTY_LAYOUT;
   // Adopt the stored layout in the render that delivers it; an effect could
@@ -65,8 +101,17 @@ export default function Designer() {
   );
   const defaults = doc.data?.defaults.maxRows ?? { home: 14, movies: 10, shows: 10 };
 
+  // i18n: memo holds no copy
+  const customisedLibraries = useMemo(() => {
+    if (ctx.section !== "movies" && ctx.section !== "shows") return [];
+    return (doc.data?.libraries ?? []).filter(
+      (lib) => lib.basePage === ctx.section && hasLibraryOverride(draft, lib.section),
+    );
+  }, [ctx.section, doc.data?.libraries, draft]);
+
   const viewerId = layer === "global" ? spotCheck : layer;
   const overrideTotal = (viewers ?? []).reduce((n, v) => n + overrideCount(draft, v.id), 0);
+  // i18n: memo holds no copy
   const viewerById = useMemo(() => new Map((viewers ?? []).map((v) => [v.id, v])), [viewers]);
   const previewWho =
     viewerId !== null && viewerById.get(viewerId)
@@ -184,7 +229,7 @@ export default function Designer() {
                   viewers={viewers}
                   draft={draft}
                 />
-                <ContextBar ctx={ctx} onChange={setCtx} className="shrink-0" />
+                <ContextBar ctx={ctx} onChange={updateCtx} className="shrink-0" />
               </div>
               <SubtabNav
                 ariaLabel={t("Designer tools")}
@@ -203,6 +248,37 @@ export default function Designer() {
               />
             </PanelHead>
             <div className="space-y-5 p-3 sm:p-4">
+              {(ctx.section === "movies" || ctx.section === "shows") && (
+                <div className="space-y-1.5 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs text-fg-muted">
+                  <p>
+                    {ctx.section === "shows"
+                      ? t(
+                          "The standard Recommended rows for every TV library. A library can use its own instead under Libraries › name › Tabs.",
+                        )
+                      : t(
+                          "The standard Recommended rows for every Movies library. A library can use its own instead under Libraries › name › Tabs.",
+                        )}
+                  </p>
+                  {customisedLibraries.length > 0 ? (
+                    <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-fg">
+                      <span className="text-fg-muted">{t("Libraries with their own rows:")}</span>
+                      {customisedLibraries.map((lib, idx) => (
+                        <span key={lib.id}>
+                          <Link
+                            to={`/libraries/${lib.id}/tabs`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {lib.name}
+                          </Link>
+                          {idx < customisedLibraries.length - 1 ? (
+                            <span className="text-fg-muted">,</span>
+                          ) : null}
+                        </span>
+                      ))}
+                    </p>
+                  ) : null}
+                </div>
+              )}
               {tools === "layout" && (
                 <>
                   <PageSettings {...editing} defaults={defaults} />

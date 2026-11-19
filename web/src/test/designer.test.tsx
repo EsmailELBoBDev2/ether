@@ -288,10 +288,19 @@ describe("Home", () => {
   it("tunes a page with dials, keeps Home's picks off it, and shows what the model learned", async () => {
     const { fake } = renderApp("/home");
     await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
-    // Switch to the TV page: its catalogue has series rows, not Home-only ones.
+    // Switch to the TV libraries page: its catalogue has series rows, not Home-only ones.
     fireEvent.click(screen.getByRole("button", { name: "Page" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "TV" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "TV libraries" }));
     await waitFor(() => expect(screen.queryByRole("menu", { name: "Page" })).toBeNull());
+    expect(
+      screen.getByText(
+        "The standard Recommended rows for every TV library. A library can use its own instead under Libraries › name › Tabs.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Anime Shows" })).toHaveAttribute(
+      "href",
+      "/libraries/7/tabs",
+    );
     fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
     const series = screen.getByRole("group", { name: "Series" });
     expect(

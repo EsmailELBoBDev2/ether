@@ -41,6 +41,8 @@ import {
   describeHiddenRow,
   collectionSchedule,
   effectivePolicy,
+  hasLibraryOverride,
+  isLibrarySection,
   matchRank,
   setCollectionSchedule,
   STATUS_HINT,
@@ -105,6 +107,7 @@ function resolve(
   layer: LayerKey,
   section: LayoutSection,
   e: PoolEntry,
+  mediaSection?: "movies" | "shows",
 ): Resolved {
   const own = policyIn(draft, layer, section, e.row);
   if (own) return { policy: own, origin: "own" };
@@ -114,6 +117,7 @@ function resolve(
     section,
     e.row,
     e.kind ?? e.row,
+    mediaSection,
   );
   if (eff && eff.policy.row !== e.row)
     return {
@@ -144,6 +148,7 @@ export function RowPool({
   onChange,
   layer,
   section,
+  mediaSection,
   viewers,
   available,
   focusRow,
@@ -155,6 +160,7 @@ export function RowPool({
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
   section: LayoutSection;
+  mediaSection?: "movies" | "shows";
   viewers: Viewer[];
   available: AvailableRow[];
   focusRow: string | null;
@@ -163,6 +169,7 @@ export function RowPool({
   previewWho?: string;
 }) {
   const navigate = useNavigate();
+  const onLibraryTab = isLibrarySection(section);
   const collectionKinds = useRegistry<CollectionSourceMeta>("collectionSource");
   const [q, setQ] = useState("");
   const [custom, setCustom] = useState("");
@@ -205,7 +212,7 @@ export function RowPool({
         (a) =>
           !FRONT_END_ROWS.has(a.kind) &&
           !byKind.get(a.kind)?.meta?.collectionSource &&
-          rowFits(a, section),
+          rowFits(a, section, mediaSection),
       )
       .map((a) => {
         const d = byKind.get(a.kind);
@@ -222,7 +229,7 @@ export function RowPool({
       if (!isPluginDescriptor(d)) continue;
       const hubId = d.meta?.hubId ?? d.id;
       if (known.has(hubId)) continue;
-      if (!rowFits({ sections: d.meta?.sections as LayoutSection[] | undefined }, section))
+      if (!rowFits({ sections: d.meta?.sections as LayoutSection[] | undefined }, section, mediaSection))
         continue;
       known.add(hubId);
       out.push({
@@ -236,8 +243,13 @@ export function RowPool({
       });
     }
     // Policies for patterns or hub ids that are not in the catalogue.
+    const globalFallback =
+      isLibrarySection(section) && !hasLibraryOverride(draft, section) && mediaSection
+        ? mediaSection
+        : section;
     for (const layerKey of ["global", layer] as LayerKey[]) {
-      for (const p of pageOf(draft, layerKey, section)?.rows ?? []) {
+      const pageSection = layerKey === "global" ? globalFallback : section;
+      for (const p of pageOf(draft, layerKey, pageSection)?.rows ?? []) {
         if (known.has(p.row)) continue;
         known.add(p.row);
         out.push({
@@ -249,11 +261,11 @@ export function RowPool({
       }
     }
     return out;
-  }, [available, draft, layer, section, locale, registry.descriptors]);
+  }, [available, draft, layer, section, mediaSection, locale, registry.descriptors]);
   const needle = q.trim().toLowerCase();
   const resolved = useMemo(
-    () => new Map(entries.map((e) => [e.row, resolve(draft, layer, section, e)])),
-    [entries, draft, layer, section],
+    () => new Map(entries.map((e) => [e.row, resolve(draft, layer, section, e, mediaSection)])),
+    [entries, draft, layer, section, mediaSection],
   );
   const statusOf = (e: PoolEntry) => resolved.get(e.row)!.policy.status;
   const shown = entries.filter(
@@ -292,15 +304,16 @@ export function RowPool({
     ).length;
   const filtering = Boolean(needle) || filter !== "all";
   const statuses: RowStatus[] = ["always", "eligible", "off"];
+  const effectiveMedia = (mediaSection ?? section) === "shows" ? "show" : "movie";
   return (
     <section
-      className={cn("space-y-2", pickedRows.length > 0 && "pb-16")}
-      aria-label={t("Row catalogue")}
+      className={cn("space-y-2", !onLibraryTab && pickedRows.length > 0 && "pb-16")}
+      aria-label={onLibraryTab ? t("Available rows") : t("Row catalogue")}
     >
       <div>
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
-            {t("Row catalogue")}
+            {onLibraryTab ? t("Available rows") : t("Row catalogue")}
           </h2>
           <ActionMenu
             variant="outline"
@@ -313,8 +326,7 @@ export function RowPool({
                 label: t("New collection row…"),
                 icon: Layers,
                 onSelect: () => {
-                  const media = section === "shows" ? "show" : "movie";
-                  const spec = blankSpec(media);
+                  const spec = blankSpec(effectiveMedia);
                   spec.targets = {
                     ...spec.targets,
                     collectionsTab: false,
@@ -343,13 +355,17 @@ export function RowPool({
           </ActionMenu>
         </div>
         <p className="mt-0.5 text-xs text-fg-muted">
-          {layer === "global"
+          {onLibraryTab
             ? t(
-                "Always: on the page whenever it has titles. Eligible: personalization decides. Off: never.",
+                "Always: shown whenever it has titles. Eligible: personalization decides. Off: hidden.",
               )
-            : t(
-                "Changes here override Everyone for this viewer only; reset to follow Everyone again.",
-              )}
+            : layer === "global"
+              ? t(
+                  "Always: on the page whenever it has titles. Eligible: personalization decides. Off: never.",
+                )
+              : t(
+                  "Changes here override Everyone for this viewer only; reset to follow Everyone again.",
+                )}
         </p>
       </div>
       <div className="relative">
@@ -444,10 +460,9 @@ export function RowPool({
                                 (d) => d.id === e.collectionSource,
                               );
                               if (!descriptor) return;
-                              const media = section === "shows" ? "show" : "movie";
-                              const spec = blankSpec(media);
+                              const spec = blankSpec(effectiveMedia);
                               spec.name = e.title;
-                              spec.sources = [newSourceFromDescriptor(descriptor, media)];
+                              spec.sources = [newSourceFromDescriptor(descriptor, effectiveMedia)];
                               spec.targets.homeRow = true;
                               spec.enabled = true;
                               navigate(newCollectionHref(), { state: { spec } });
@@ -495,6 +510,8 @@ export function RowPool({
         <BulkBar
           count={pickedRows.length}
           label={t("Selected rows")}
+          floating={!onLibraryTab}
+          className={onLibraryTab ? "sticky bottom-2 z-10" : undefined}
           onClear={() => setPicked(new Set())}
         >
           {statuses.map((s) => (
@@ -527,7 +544,7 @@ export function RowPool({
           open
           onClose={() => setAddonPickerOpen(false)}
           onPick={(choice) => {
-            const media = choice.mediaType ?? (section === "shows" ? "show" : "movie");
+            const media = choice.mediaType ?? effectiveMedia;
             const descriptor = collectionKinds.descriptors.find((d) => d.id === choice.kind);
             const spec = blankSpec(media);
             spec.name = choice.label;
@@ -662,6 +679,7 @@ function PoolItem({
   onToggle: () => void;
 }) {
   const { locale } = useLocale();
+  const onLibraryTab = isLibrarySection(section);
   const ref = useRef<HTMLLIElement>(null);
   const openedDraftRef = useRef<HomeLayout>(draft);
   const wasOpenRef = useRef(false);
@@ -856,7 +874,7 @@ function PoolItem({
           <Engagement insight={insight} />
         </div>
       )}
-      {layer === "global" && own ? (
+      {layer === "global" && own && viewers.length > 0 ? (
         <p className="mt-1.5 text-[11px] text-fg-muted">
           {tn(
             viewers.length - overriding.length,
@@ -872,9 +890,11 @@ function PoolItem({
         open={open}
         onClose={onToggle}
         title={entry.title}
-        description={t(
-          "Adjust this row in the current Home draft. Save the Home layout to apply it.",
-        )}
+        description={
+          onLibraryTab
+            ? t("Adjust this row on this tab. Save the tab to apply it.")
+            : t("Adjust this row in the current Home draft. Save the Home layout to apply it.")
+        }
         size="lg"
         footer={
           <div className="flex justify-end gap-2">

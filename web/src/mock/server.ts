@@ -11,6 +11,7 @@ import { createOnAirMock } from "./onair";
 import { createPrerollsMock } from "./prerolls";
 import type {
   ActivityDay,
+  BuiltinLayoutSection,
   CollectionSpec,
   Device,
   HomeLayout,
@@ -27,14 +28,20 @@ import type {
 import {
   collectionIdOf,
   daypartOf,
+  defaultRowsForSection,
   effectivePolicy,
+  isLibrarySection,
+  libraryIdOfSection,
   matchRank,
+  mediaSectionForLibrary,
   overrideCount,
   pageOf,
+  parseLayoutSection,
   rowFits,
   tidySchedule,
   whenMatches,
 } from "../lib/layout";
+import { createLibraryTabsMock } from "./libraryTabs";
 import { assemble } from "./assemble";
 import { normalizeSpec } from "../lib/rules";
 import { resolutionGroups } from "../lib/qualityRanking";
@@ -739,6 +746,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
             { row: "something-different", status: "eligible", maxDaysPerWeek: 3 },
           ],
         },
+        {
+          section: "library:7",
+          rows: [
+            { row: "finish-what-you-started", status: "always", slot: 1 },
+            { row: "new-seasons", status: "always", slot: 2 },
+            { row: "popular-on-server", status: "off" },
+          ],
+        },
       ],
       viewers: [
         {
@@ -988,6 +1003,25 @@ export function createFakeServer(opts: FakeOptions = {}) {
       return r.op === "isNot" ? !hit : hit;
     }
 
+    if (r.field === "viewer" && r.value && typeof r.value === "object") {
+      const v = r.value as Record<string, unknown>;
+      if (v.unwatched) return hash("w" + t.key) % 4 !== 0;
+      if (v.inProgress) return hash("p" + t.key) % 9 === 0;
+      if (v.onWatchlist) return hash("wl" + t.key) % 6 === 0;
+      return hash("rt" + t.key) % 5 === 0;
+    }
+    if (r.field.startsWith("browse:")) {
+      const bk = r.field.slice("browse:".length);
+      if (bk === "playable") return true;
+      if (bk === "debridCached") return hash("dc" + t.key) % 2 === 0;
+      if (bk === "minRating") return (t.rating ?? 0) >= Number(r.value);
+      if (bk === "maxRating") return (t.rating ?? 0) <= Number(r.value);
+      if (bk === "yearFrom") return (t.year ?? 0) >= Number(r.value);
+      if (bk === "yearTo") return (t.year ?? 0) <= Number(r.value);
+      if (bk === "anime") return Boolean(t.genres?.includes("Animation")) === Boolean(r.value);
+      if (bk === "kids") return Boolean(t.genres?.includes("Family")) === Boolean(r.value);
+      return hash(bk + t.key) % 3 === 0;
+    }
     if (r.field === "contentRating") return ratingMatches(t, r);
     const vals = fieldValues(t, r.field);
     const norm = (v: unknown) =>
@@ -1177,7 +1211,39 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   // ---- Homes (layered Home Designer) ---------------------------------------------------
 
-  const DEFAULT_ROWS: Record<LayoutSection, number> = { home: 10, movies: 8, shows: 8 };
+  const DEFAULT_ROWS: Record<BuiltinLayoutSection, number> = { home: 10, movies: 8, shows: 8 };
+  let lookupMockLib: (id: number) => Record<string, unknown> | undefined = () => undefined;
+  let listMockLibs: () => Record<string, unknown>[] = () => [];
+
+  function resolveSectionMedia(section: LayoutSection): {
+    fallbackSection?: "movies" | "shows";
+    effectiveMedia: "home" | "movies" | "shows";
+    mediaFilter: (x: FakeTitle) => boolean;
+  } {
+    if (section === "home") {
+      return { effectiveMedia: "home", mediaFilter: () => true };
+    }
+    if (section === "movies") {
+      return { effectiveMedia: "movies", mediaFilter: (x) => x.type === "movie" };
+    }
+    if (section === "shows") {
+      return { effectiveMedia: "shows", mediaFilter: (x) => x.type === "show" };
+    }
+    const libId = libraryIdOfSection(section);
+    const lib = libId !== null ? lookupMockLib(libId) : undefined;
+    const fallbackSection = mediaSectionForLibrary(lib as never);
+    const baseFilter = (x: FakeTitle) =>
+      fallbackSection === "shows" ? x.type === "show" : x.type === "movie";
+    const rules = Array.isArray(lib?.rules) ? (lib.rules as VisibilityGroup[]) : [];
+    const visDefault = String(lib?.visibilityDefault ?? "show");
+    if (rules.length > 0 || visDefault === "hide") {
+      const scoped = (x: FakeTitle) => baseFilter(x) && !hiddenByRules(x, rules, visDefault);
+      if (catalog.filter(scoped).length >= 4) {
+        return { fallbackSection, effectiveMedia: fallbackSection, mediaFilter: scoped };
+      }
+    }
+    return { fallbackSection, effectiveMedia: fallbackSection, mediaFilter: baseFilter };
+  }
 
   /** Candidate rows the "engine" proposes for a viewer (null = the typical viewer). */
   function candidatesFor(
@@ -1192,15 +1258,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const weekend = day === 0 || day === 6;
     const t = userId === null ? null : taste(userId);
     const top = t?.genres[0]?.name ?? "Drama";
-    const media =
-      section === "movies"
-        ? (x: FakeTitle) => x.type === "movie"
-        : section === "shows"
-          ? (x: FakeTitle) => x.type === "show"
-          : () => true;
+    const { fallbackSection, effectiveMedia, mediaFilter: media } = resolveSectionMedia(section);
     const short = device === "mobile" || (!weekend && hour >= 21);
     const seed = `${userId ?? "typical"}-${section}`;
-    const prefix = section === "movies" ? "movie" : section === "shows" ? "tv" : "home";
+    const prefix = effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const mk = (
       stem: string,
       title: string,
@@ -1382,7 +1443,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
         ),
       );
       const wantsAlways = (stem: string, kind: string) => {
-        const eff = effectivePolicy(layout, userId, section, `${prefix}.${stem}`, kind);
+        const eff = effectivePolicy(
+          layout,
+          userId,
+          section,
+          `${prefix}.${stem}`,
+          kind,
+          fallbackSection,
+        );
         return eff?.policy.status === "always" || Boolean(eff?.policy.slot);
       };
       if (wantsAlways("newreleases", "new-releases"))
@@ -1447,7 +1515,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
       });
     }
     // Owner collections: targeted ones, plus those the layout places on this page.
-    const page = (l: "global" | number) => pageOf(layout, l, section)?.rows ?? [];
+    const page = (l: "global" | number) =>
+      pageOf(layout, l, section)?.rows ??
+      (l === "global" && fallbackSection && !pageOf(layout, "global", section)
+        ? (pageOf(layout, "global", fallbackSection)?.rows ?? [])
+        : []);
     const placed = new Set(
       [...page("global"), ...(userId === null ? [] : page(userId))]
         .filter((r) => r.status !== "off" && r.row.startsWith("collection:"))
@@ -1493,7 +1565,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
     section: string,
     layout: HomeLayout = state.layout,
   ) {
-    const sec = (["home", "movies", "shows"].includes(section) ? section : "home") as LayoutSection;
+    const sec = parseLayoutSection(section);
+    const { fallbackSection, effectiveMedia, mediaFilter: media } = resolveSectionMedia(sec);
     const day = at.getDay();
     const hour = at.getHours();
     const weekend = day === 0 || day === 6 || (day === 5 && hour >= 17);
@@ -1504,8 +1577,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         : { id: userId, title: VIEWERS.find((v) => v.id === userId)?.title ?? `Viewer ${userId}` };
     let rows = candidatesFor(userId, device, at, sec, layout);
     if (sec !== "home") {
-      const prefix = sec === "movies" ? "movie" : "tv";
-      const media = (x: FakeTitle) => (sec === "movies" ? x.type === "movie" : x.type === "show");
+      const prefix = effectiveMedia === "movies" ? "movie" : "tv";
       rows = [
         {
           hubId: `${prefix}.inprogress.1`,
@@ -1533,9 +1605,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
     rows = assemble(rows, layout, {
       viewer,
       section: sec,
+      fallbackSection,
       device: device as Device,
       at,
-      defaultRows: DEFAULT_ROWS[sec],
+      defaultRows: defaultRowsForSection(DEFAULT_ROWS, sec, fallbackSection ?? "movies"),
     });
     rows = appendAbsentAlwaysRows(rows, userId, device, at, sec, layout);
     return {
@@ -1586,22 +1659,31 @@ export function createFakeServer(opts: FakeOptions = {}) {
   ): HomeRow[] {
     const day = at.getDay();
     const hour = at.getHours();
-    const prefix = sec === "movies" ? "movie" : sec === "shows" ? "tv" : "home";
+    const { fallbackSection, effectiveMedia } = resolveSectionMedia(sec);
+    const prefix = effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const availList = availableRows();
     const active: { pol: LayoutPage["rows"][number]; layer: "global" | "override" }[] = [];
     if (userId !== null) {
-      for (const pol of pageOf(layout, userId, sec)?.rows ?? []) {
+      const viewerPage =
+        pageOf(layout, userId, sec) ??
+        (isLibrarySection(sec) && fallbackSection && !pageOf(layout, "global", sec)
+          ? pageOf(layout, userId, fallbackSection)
+          : undefined);
+      for (const pol of viewerPage?.rows ?? []) {
         if ((pol.status === "always" || pol.slot) && !/[*?[]/.test(pol.row))
           active.push({ pol, layer: "override" });
       }
     }
-    for (const pol of pageOf(layout, "global", sec)?.rows ?? []) {
+    const globalPage =
+      pageOf(layout, "global", sec) ??
+      (isLibrarySection(sec) && fallbackSection ? pageOf(layout, "global", fallbackSection) : undefined);
+    for (const pol of globalPage?.rows ?? []) {
       if ((pol.status !== "always" && !pol.slot) || /[*?[]/.test(pol.row)) continue;
       const colId = collectionIdOf(pol.row);
       const avail = availList.find((a) => a.hubId === pol.row || a.kind === pol.row);
       const kind = colId ? `collection:${colId}` : (avail?.kind ?? pol.row);
       const hubId = colId ? `collection.${colId}` : `${prefix}.${avail?.hubId ?? pol.row}`;
-      const eff = effectivePolicy(layout, userId, sec, hubId, kind);
+      const eff = effectivePolicy(layout, userId, sec, hubId, kind, fallbackSection);
       if (
         !eff ||
         (eff.policy.status !== "always" && !eff.policy.slot) ||
@@ -1649,8 +1731,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
           hiddenCode = "collection_not_shared";
           hiddenReason = "Collection is not shared with this viewer";
         } else if (
-          (sec === "movies" && col.mediaType === "show") ||
-          (sec === "shows" && col.mediaType === "movie")
+          (effectiveMedia === "movies" && col.mediaType === "show") ||
+          (effectiveMedia === "shows" && col.mediaType === "movie")
         ) {
           hiddenCode = "wrong_surface";
           hiddenReason = "Not available on this page";
@@ -1670,7 +1752,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             hiddenReason = "Collection has no titles for this viewer";
           }
         }
-      } else if (avail && !rowFits(avail as { sections?: LayoutSection[] }, sec)) {
+      } else if (avail && !rowFits(avail as { sections?: LayoutSection[] }, sec, fallbackSection)) {
         hiddenCode = "wrong_surface";
         hiddenReason = "Not available on this page";
       } else if (userId === null && PERSONAL_KINDS.has(kind)) {
@@ -1855,7 +1937,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   function availableRows() {
     return baseRows()
-      .map((r) => ({ ...r, ...(ROW_META[r.kind] ?? { group: "picks" }) }))
+      .map((r) => ({ ...(ROW_META[r.kind] ?? { group: "picks" }), ...r }))
       .concat(SECTION_ROWS);
   }
 
@@ -1977,6 +2059,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
           title: c.name,
           kind: `collection:${c.id}`,
           description: "Owner collection (Collection Studio).",
+          group: "collections" as const,
+          sections: (c.mediaType === "movie"
+            ? ["home", "movies"]
+            : c.mediaType === "show"
+              ? ["home", "shows"]
+              : ["home", "movies", "shows"]) as LayoutSection[],
         })),
     ];
   }
@@ -1987,12 +2075,29 @@ export function createFakeServer(opts: FakeOptions = {}) {
         c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
       ),
     );
+    const libraries = listMockLibs()
+      .filter((l) => l.source !== "plugin" && (l.mediaType === "movie" || l.mediaType === "show"))
+      .map((l) => {
+        const id = Number(l.id);
+        const section = `library:${id}` as const;
+        const basePage = l.mediaType === "show" ? ("shows" as const) : ("movies" as const);
+        return {
+          id,
+          name: String(l.name),
+          slug: String(l.key),
+          type: l.mediaType as "movie" | "show",
+          section,
+          basePage,
+          customized: state.layout.global.some((p) => p.section === section),
+        };
+      });
     return {
       layout: Object.keys(collectionSchedules).length
         ? { ...state.layout, collectionSchedules }
         : state.layout,
       availableRows: availableRows(),
       defaults: { maxRows: DEFAULT_ROWS },
+      libraries,
     };
   }
 
@@ -2054,7 +2159,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const moved = after.filter(
         (r) => bi.has(r.hubId) && bi.get(r.hubId) !== ai.get(r.hubId),
       ).length;
-      const sec = (section || "home") as LayoutSection;
+      const sec = parseLayoutSection(section);
       return {
         viewerId: v.id,
         title: v.title,
@@ -2615,9 +2720,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
         label: "Books",
         library: { name: "Books" },
         levels: [{ key: "book", label: "Book", playable: true }],
-        fields: [{ key: "author", type: "string", label: "Author", indexed: true }],
+        fields: [
+          { key: "author", type: "string", label: "Author", indexed: true },
+          { key: "subject", type: "strings", label: "Subject", indexed: true },
+          { key: "series", type: "string", label: "Series", indexed: true },
+          { key: "publisher", type: "string", label: "Publisher", indexed: true },
+        ],
         present: {},
-        browse: { sorts: ["title"], facets: ["author"], search: true },
+        browse: { sorts: ["title", "added", "year", "rating"], facets: ["author", "subject", "series"], search: true },
         sync: { mode: "push" },
       },
       sync: { pluginId: "demo", kindKey: "book", generation: 1, items: 2 },
@@ -2690,6 +2800,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
     hidden: false,
     itemCount: 4500,
   });
+  lookupMockLib = (id) => mockLibs.find((l) => Number(l.id) === id);
+  listMockLibs = () => mockLibs;
+  const libraryTabs = createLibraryTabsMock({
+    catalog,
+    getCollections: () => state.collections,
+    matchesRule: matches,
+    toCard: card,
+  });
   const mockMatches: Record<string, unknown>[] = [];
   function hydrateLib(lib: Record<string, unknown>) {
     if (!lib.sources)
@@ -2705,6 +2823,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
       lib.rules = structuredClone(cat.exclusions ?? []);
       lib.visibilityDefault = cat.visibilityDefault ?? "show";
     }
+    const tabsDto = libraryTabs.getTabs(lib);
+    lib.tabsCustomized = tabsDto.customized;
+    lib.tabs = tabsDto.tabs;
+    lib.effectiveTabs = tabsDto.effectiveTabs;
     return lib;
   }
   function mockLibraries(method: string, seg: string[], url: URL, body: unknown): Response {
@@ -2916,8 +3038,21 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const shown = q ? items.filter((i) => i.title.toLowerCase().includes(q)) : items;
       return json({ items: shown, total: shown.length });
     }
+    if (seg[2] === "tabs") {
+      if (seg[3] === "preview" && method === "POST") {
+        const res = libraryTabs.previewTab(lib, body);
+        return res.ok ? json(res.data) : err(400, "validation", res.message);
+      }
+      if (!seg[3] && method === "GET") return json(libraryTabs.getTabs(lib));
+      if (!seg[3] && method === "PUT") {
+        const res = libraryTabs.putTabs(lib, body);
+        return res.ok ? json(res.data) : err(400, "validation", res.message);
+      }
+      if (!seg[3] && method === "DELETE") return json(libraryTabs.resetTabs(lib));
+      return err(405, "method_not_allowed", "method not allowed");
+    }
     if (seg[2] === "facets")
-      return json({ field: seg[3], values: [{ value: "Herbert", count: 1 }] });
+      return json(libraryTabs.facetValuesFor(lib, decodeURIComponent(seg[3] ?? "")));
     if (seg[2] === "sync") return json({ upserted: 1, deleted: 0, skipped: 0 });
     if (seg[2] === "cache") {
       if (seg[3])
@@ -4348,11 +4483,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
               (g.match === "any"
                 ? g.rules.some(
                     (r) =>
-                      (r.field === "group" || fieldValues(t, r.field).length > 0) && matches(t, r),
+                      (r.field === "group" ||
+                        r.field === "viewer" ||
+                        r.field.startsWith("browse:") ||
+                        fieldValues(t, r.field).length > 0) &&
+                      matches(t, r),
                   )
                 : g.rules.every(
                     (r) =>
-                      (r.field === "group" || fieldValues(t, r.field).length > 0) && matches(t, r),
+                      (r.field === "group" ||
+                        r.field === "viewer" ||
+                        r.field.startsWith("browse:") ||
+                        fieldValues(t, r.field).length > 0) &&
+                      matches(t, r),
                   )),
           );
         const items = scopedCatalog.filter((t) =>

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -114,6 +113,10 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	return nil
 }
 
+// browserRootRedirect sends a person who types the server's address into a
+// browser to the console instead of Plex's 401. Only a bare GET or HEAD of
+// "/" that asks for HTML and carries nothing of Plex's (no X-Plex-* header,
+// no query) is redirected; every client request reaches Plex unchanged.
 func browserRootRedirect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isBrowserRootRequest(r) {
@@ -125,10 +128,7 @@ func browserRootRedirect(next http.Handler) http.Handler {
 }
 
 func isBrowserRootRequest(r *http.Request) bool {
-	if r.URL.Path != "/" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
-		return false
-	}
-	if !acceptsHTML(r.Header) {
+	if r.URL.Path != "/" || r.URL.RawQuery != "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 		return false
 	}
 	for k := range r.Header {
@@ -136,38 +136,9 @@ func isBrowserRootRequest(r *http.Request) bool {
 			return false
 		}
 	}
-	return !hasPlexTokenQuery(r.URL.RawQuery)
-}
-
-func acceptsHTML(h http.Header) bool {
-	for k, vs := range h {
-		if !strings.EqualFold(k, "Accept") {
-			continue
-		}
-		for _, v := range vs {
-			for _, part := range strings.Split(v, ",") {
-				mt, _, _ := strings.Cut(part, ";")
-				if strings.EqualFold(strings.TrimSpace(mt), "text/html") {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func hasPlexTokenQuery(raw string) bool {
-	for raw != "" {
-		var pair string
-		pair, raw, _ = strings.Cut(raw, "&")
-		if pair == "" {
-			continue
-		}
-		key, _, _ := strings.Cut(pair, "=")
-		if unescaped, err := url.QueryUnescape(key); err == nil {
-			key = unescaped
-		}
-		if strings.EqualFold(key, "X-Plex-Token") {
+	for _, part := range strings.Split(strings.Join(r.Header.Values("Accept"), ","), ",") {
+		mt, _, _ := strings.Cut(part, ";")
+		if strings.EqualFold(strings.TrimSpace(mt), "text/html") {
 			return true
 		}
 	}

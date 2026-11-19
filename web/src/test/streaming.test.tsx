@@ -134,6 +134,7 @@ describe("Playback devices", () => {
       WAIT,
     );
     const row = phoneButton.closest("tr")!;
+    expect(within(row).getByText("Override")).toBeInTheDocument();
     expect(within(row).getByText("Copied from a shared setting")).toHaveAttribute(
       "title",
       "Plex for Android",
@@ -148,6 +149,7 @@ describe("Playback devices", () => {
       overrides: [shared, tv, { ...phone, maxHeight: 2160 }],
     });
   });
+
   it("saves the exact product of the edited app", async () => {
     const { fake } = renderApp("/playback/devices");
     fireEvent.click(
@@ -162,16 +164,23 @@ describe("Playback devices", () => {
       overrides: [{ product: "Plex for Android (Mobile)", productExact: true, maxHeight: 2160 }],
     });
   });
-  it("filters app compatibility by protocol and device", async () => {
-    renderApp("/playback/devices");
-    expect(await screen.findByText("Plex Web", {}, WAIT)).toBeInTheDocument();
+
+  it("filters app compatibility across Apps, Device profiles, and Seen devices", async () => {
+    const { fake } = renderApp("/playback/devices");
+    expect(await screen.findByText("Plezy", {}, WAIT)).toBeInTheDocument();
+    expect(screen.getByText("Plex Web")).toBeInTheDocument();
     expect(screen.getByText("Jellyfin TV")).toBeInTheDocument();
     expect(screen.getByText("Swiftfin")).toBeInTheDocument();
-    expect(screen.getByText(/Seen on this server/)).toBeInTheDocument();
+    expect(screen.getByText("VLC")).toBeInTheDocument();
+    expect(screen.getAllByText("Built in").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Reports its own").length).toBeGreaterThan(0);
-    expect(screen.getByText("Stream link")).toBeInTheDocument();
-    expect(screen.queryByText(/tells Ether/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/plays that stream/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Seen devices" })).not.toBeInTheDocument();
+
+    const plezyRow = screen.getByRole("button", { name: "Edit Plezy" }).closest("tr")!;
+    expect(within(plezyRow).getByText("4K")).toBeInTheDocument();
+    expect(within(plezyRow).getByText("H.265/HEVC")).toBeInTheDocument();
+    expect(within(plezyRow).getByText("HDR")).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "Protocol" }));
     fireEvent.click(
       within(await screen.findByRole("listbox", { hidden: true })).getByText("Jellyfin"),
@@ -184,15 +193,36 @@ describe("Playback devices", () => {
     );
     expect(screen.queryByText("Jellyfin TV")).not.toBeInTheDocument();
     expect(screen.getByText("Swiftfin")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Devices" }));
-    expect(await screen.findByText("Profile 5", {}, WAIT)).toBeInTheDocument();
-    expect(screen.getByText("H.265/HEVC")).toBeInTheDocument();
-    expect(screen.getByText("Dolby Vision")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Device profiles" }));
+    expect((await screen.findAllByText(/Dolby Vision 5/, {}, WAIT)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("H.265/HEVC").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Living room TV")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Seen devices" }));
+    expect(await screen.findByText("Living room TV", {}, WAIT)).toBeInTheDocument();
+    const seenRow = screen.getByText("Living room TV").closest("tr")!;
+    fireEvent.click(within(seenRow).getByRole("button", { name: "Create override" }));
+    const drawer = await screen.findByRole("dialog", { name: "Edit Living room TV" });
+    expect(within(drawer).getByLabelText("Match")).toHaveValue("Xiaomi TV Box");
+    expect(within(drawer).getByLabelText("Platform")).toHaveValue("Android");
+    expect(
+      within(drawer).getByRole("switch", {
+        name: "Use these settings even when the app reports otherwise",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Highest resolution it can show" }));
+    fireEvent.click(await screen.findByRole("option", { name: "4K" }));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/clients")).toHaveLength(1));
+    expect(calls(fake, "PUT", "/config/clients")[0]!.body).toEqual({
+      overrides: [{ device: "Xiaomi TV Box", platform: "Android", maxHeight: 2160 }],
+    });
   });
 
   it("saves an app compatibility override from a drawer", async () => {
     const { fake } = renderApp("/playback/devices");
-    fireEvent.click(await screen.findByRole("tab", { name: "Devices" }, WAIT));
+    fireEvent.click(await screen.findByRole("tab", { name: "Device profiles" }, WAIT));
     fireEvent.click(await screen.findByRole("button", { name: "Edit Apple TV" }, WAIT));
     const drawer = await screen.findByRole("dialog", { name: "Edit Apple TV" });
     expect(within(drawer).getAllByText("Profile 5").length).toBeGreaterThan(0);

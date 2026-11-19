@@ -66,6 +66,9 @@ func payloadMatchesTitle(nzb []byte, title *core.Title) bool {
 		baseInfo.Seasons = fullInfo.Seasons
 	}
 	matchesEpisode := func(info core.ReleaseInfo) bool {
+		if releaseparse.AbsoluteConflict(info, absolute) {
+			return false
+		}
 		if releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute) {
 			return true
 		}
@@ -163,7 +166,7 @@ func releaseMatchesTitle(rel core.Release, title *core.Title) bool {
 			}
 		} else {
 			matched := releaseparse.EpisodeMatchesNumbering(info, season, episode, absolute)
-			if !matched && rel.Target != nil && rel.Target.CanonicalSeason == origSeason && rel.Target.CanonicalEpisode == origEpisode {
+			if !matched && !releaseparse.AbsoluteConflict(info, absolute) && rel.Target != nil && rel.Target.CanonicalSeason == origSeason && rel.Target.CanonicalEpisode == origEpisode {
 				for _, alias := range rel.Target.Aliases {
 					if releaseparse.EpisodeMatches(info, alias.Season, alias.Episode) {
 						matched = true

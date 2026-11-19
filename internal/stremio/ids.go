@@ -28,9 +28,36 @@ func (l Lookup) Route() string {
 	return "/" + ResourceStream + "/" + l.Type + "/" + escapeID(l.ID) + ".json"
 }
 
+// absoluteAliasNumber returns the season-1 absolute form (":1:<absolute>")
+// add-ons use for absolute-numbered anime, when absolute numbering applies:
+// the title is anime with a known absolute count, or release numbering
+// (XEM / owner group) already produced an alias for it. Straight-through
+// TMDB numbering (the in-season number is the absolute count past season 1,
+// e.g. One Piece S15E583) is reported so the absolute form can go first.
+func absoluteAliasNumber(req core.SearchRequest) (core.EpisodeNumber, bool, bool) {
+	if req.Type != core.TypeEpisode || req.Season <= 0 || req.Episode <= 0 {
+		return core.EpisodeNumber{}, false, false
+	}
+	abs := req.AbsoluteEpisode
+	if abs <= 0 && req.Season == 1 {
+		abs = req.Episode
+	}
+	if abs <= 0 || (req.Season == 1 && req.Episode == abs) {
+		return core.EpisodeNumber{}, false, false
+	}
+	if !req.Anime && len(core.EpisodeAliases(req)) == 0 {
+		return core.EpisodeNumber{}, false, false
+	}
+	straight := req.Season > 1 && req.AbsoluteEpisode > 0 && req.Episode == req.AbsoluteEpisode
+	return core.EpisodeNumber{Season: 1, Episode: abs}, straight, true
+}
+
 // LookupStreamList returns the bounded stream routes to query for req: the
-// canonical lookup (unless req.ReleaseAliasesOnly is set) followed by
-// distinct alias lookups from core.EpisodeAliases(req).
+// canonical lookup (unless req.ReleaseAliasesOnly is set) plus distinct
+// alias lookups from core.EpisodeAliases(req), and, where absolute or XEM
+// numbering applies, always the ":1:<absolute>" form as well. For
+// straight-through numbering the absolute form goes first and the season
+// form second; results from every lookup are merged by the caller.
 func LookupStreamList(ctx context.Context, m Manifest, req core.SearchRequest, anime AnimeIDs, specials SpecialEpisodes) []Lookup {
 	var out []Lookup
 	seen := map[string]bool{}
@@ -42,20 +69,34 @@ func LookupStreamList(ctx context.Context, m Manifest, req core.SearchRequest, a
 		seen[key] = true
 		out = append(out, l)
 	}
+	aliasCount := 0
+	addAlias := func(n core.EpisodeNumber) {
+		if aliasCount >= maxAliasLookups {
+			return
+		}
+		aliasCount++
+		if look, ok := LookupStreams(ctx, m, core.AliasSearchRequest(req, n), anime, specials); ok {
+			add(look)
+		}
+	}
+	absAlias, straight, hasAbs := absoluteAliasNumber(req)
+	if hasAbs && straight {
+		addAlias(absAlias)
+	}
 	if req.Type != core.TypeEpisode || !req.ReleaseAliasesOnly {
 		if look, ok := LookupStreams(ctx, m, req, anime, specials); ok {
 			add(look)
 		}
 	}
 	if req.Type == core.TypeEpisode {
-		aliases := core.EpisodeAliases(req)
-		if len(aliases) > maxAliasLookups {
-			aliases = aliases[:maxAliasLookups]
-		}
-		for _, n := range aliases {
-			if look, ok := LookupStreams(ctx, m, core.AliasSearchRequest(req, n), anime, specials); ok {
-				add(look)
+		for _, n := range core.EpisodeAliases(req) {
+			if hasAbs && n == absAlias {
+				continue // asked explicitly, in its ordered position
 			}
+			addAlias(n)
+		}
+		if hasAbs && !straight {
+			addAlias(absAlias)
 		}
 	}
 	return out

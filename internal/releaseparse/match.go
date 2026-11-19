@@ -491,10 +491,22 @@ func EpisodeMatchesAbsolute(parsed core.ReleaseInfo, absolute int) bool {
 	return false
 }
 
+// AbsoluteConflict reports whether parsed info names absolute episode
+// numbers and none of them is the wanted absolute count: the release
+// names a different episode, whatever season numbering it also carries.
+// A cour-numbered release's number is cour-local, not series-absolute,
+// so cour releases never conflict on it.
+func AbsoluteConflict(parsed core.ReleaseInfo, absolute int) bool {
+	return parsed.Cour == 0 && absolute > 0 && len(parsed.AbsoluteEpisodes) > 0 && !EpisodeMatchesAbsolute(parsed, absolute)
+}
+
 // EpisodeMatchesNumbering accepts canonical season numbering or verified
 // absolute numbering. Some anime releases put the absolute number in Eyyyy;
 // allow that only in season 1 or at 100+, never for specials or cour resets.
 func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute int) bool {
+	if AbsoluteConflict(parsed, absolute) {
+		return false
+	}
 	if EpisodeMatches(parsed, season, episode) {
 		return true
 	}
@@ -520,6 +532,16 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 // episode, verified absolute count, anime cour mapping, or configured release
 // numbering aliases. Shared by the resolver and Stremio stream name selection.
 func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
+	abs := req.AbsoluteEpisode
+	if abs <= 0 && req.Season == 1 {
+		abs = req.Episode
+	}
+	// A release naming a different absolute episode is a different
+	// episode, even when its season numbering matches a configured
+	// alias (e.g. S17E005 = absolute 633 must not satisfy absolute 583).
+	if AbsoluteConflict(info, abs) {
+		return false
+	}
 	if info.Cour == 1 && req.Cour > 1 {
 		return false
 	}
@@ -530,10 +552,6 @@ func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
 			return true
 		}
 		return false
-	}
-	abs := req.AbsoluteEpisode
-	if abs <= 0 && req.Season == 1 {
-		abs = req.Episode
 	}
 	if EpisodeMatchesNumbering(info, req.Season, req.Episode, abs) {
 		return true

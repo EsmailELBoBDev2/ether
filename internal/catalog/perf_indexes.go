@@ -6,7 +6,7 @@ func init() {
 	// Partial artwork lookup indexes for restricted-viewer CDN checks (issue #598),
 	// and a non-adult episode release index covering show_key so upcoming/recent
 	// episode counts and shelves seek episodes first and probe shows by PK.
-	store.Register("catalog", 61, `
+	store.Register("catalog", 62, `
 CREATE INDEX IF NOT EXISTS catalog_titles_artwork_poster ON catalog_titles(poster, key) WHERE adult=0 AND poster<>'';
 CREATE INDEX IF NOT EXISTS catalog_titles_artwork_backdrop ON catalog_titles(backdrop, key) WHERE adult=0 AND backdrop<>'';
 CREATE INDEX IF NOT EXISTS catalog_titles_artwork_still ON catalog_titles(still, key) WHERE adult=0 AND still<>'';

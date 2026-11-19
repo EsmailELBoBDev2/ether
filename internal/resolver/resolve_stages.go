@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // rescueCandidates is the single discovery/ranking path for both empty-search
@@ -24,7 +25,9 @@ func (s *Service) rescueCandidates(ctx context.Context, req core.ResolveRequest,
 }
 
 func (s *Service) acceptResolution(ctx context.Context, key core.RatingKey, candidates []candidate, index int, nzb []byte, trace *Trace) *core.Resolution {
-	s.setAvailability(ctx, int64(key), true, s.searchTTL())
+	if candidates[index].rel.IndexerID != vault.IndexerID {
+		s.setAvailability(ctx, int64(key), true, s.searchTTL())
+	}
 	trace.Winner = candidates[index].rel.ID
 	return s.resolution(key, candidates, index, nzb, trace)
 }

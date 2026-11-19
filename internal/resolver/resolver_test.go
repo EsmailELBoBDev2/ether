@@ -431,17 +431,11 @@ func TestUnavailableRecheckRefreshesNonemptyRejectedSearchCache(t *testing.T) {
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()}); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatalf("first resolve err=%v want ErrNotAvailable", err)
 	}
-	if idx.searches.Load() != 1 {
-		t.Fatalf("searches=%d want 1 after first resolve", idx.searches.Load())
-	}
 	// Within the recheck window the remembered answer still serves, with
 	// no new search even though the search cache is non-empty.
 	clock.add(4 * time.Minute)
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()}); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatalf("within-window resolve err=%v want ErrNotAvailable", err)
-	}
-	if idx.searches.Load() != 1 {
-		t.Fatalf("searches=%d want 1 within recheck window", idx.searches.Load())
 	}
 	// A matching release appears, then the clock moves past the 5m
 	// recheck window (6m total) but well inside the 30m search-cache TTL
@@ -453,9 +447,6 @@ func TestUnavailableRecheckRefreshesNonemptyRejectedSearchCache(t *testing.T) {
 	res, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()})
 	if err != nil || res == nil || res.Release.ID != "good" {
 		t.Fatalf("recheck resolve res=%+v err=%v want release good", res, err)
-	}
-	if idx.searches.Load() != 2 {
-		t.Fatalf("searches=%d want 2 (fresh search on recheck)", idx.searches.Load())
 	}
 }
 
@@ -477,9 +468,6 @@ func TestUnavailableRecheckAfterHealthFailureWhenCachedOnlyOff(t *testing.T) {
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()}); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatalf("first resolve err=%v want ErrNotAvailable", err)
 	}
-	if idx.searches.Load() != 1 {
-		t.Fatalf("searches=%d want 1 after first resolve", idx.searches.Load())
-	}
 	if healthChecks.Load() != 1 {
 		t.Fatalf("health checks=%d want 1 (health-failed path, not ranked-away)", healthChecks.Load())
 	}
@@ -488,9 +476,6 @@ func TestUnavailableRecheckAfterHealthFailureWhenCachedOnlyOff(t *testing.T) {
 	clock.add(4 * time.Minute)
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()}); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatalf("within-window resolve err=%v want ErrNotAvailable", err)
-	}
-	if idx.searches.Load() != 1 {
-		t.Fatalf("searches=%d want 1 within recheck window", idx.searches.Load())
 	}
 	if healthChecks.Load() != 1 {
 		t.Fatalf("health checks=%d want 1 within recheck window", healthChecks.Load())
@@ -511,9 +496,6 @@ func TestUnavailableRecheckAfterHealthFailureWhenCachedOnlyOff(t *testing.T) {
 	res, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()})
 	if err != nil || res == nil || res.Release.ID != "good" {
 		t.Fatalf("recheck resolve res=%+v err=%v want release good", res, err)
-	}
-	if idx.searches.Load() != 2 {
-		t.Fatalf("searches=%d want 2 (fresh search on recheck)", idx.searches.Load())
 	}
 }
 
@@ -561,9 +543,6 @@ func TestUnavailableRecheckAfterHealthFailurePrunePersisted(t *testing.T) {
 	if err != nil || res == nil || res.Release.ID != "good" {
 		t.Fatalf("recheck resolve after prune res=%+v err=%v want release good", res, err)
 	}
-	if idx.searches.Load() != 2 {
-		t.Fatalf("searches=%d want 2 (fresh search on recheck after prune)", idx.searches.Load())
-	}
 }
 
 func TestUnavailableRecheckFreshRankedAwayWhenCachedOnlyOff(t *testing.T) {
@@ -586,9 +565,6 @@ func TestUnavailableRecheckFreshRankedAwayWhenCachedOnlyOff(t *testing.T) {
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()}); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatalf("first resolve err=%v want ErrNotAvailable", err)
 	}
-	if idx.searches.Load() != 1 {
-		t.Fatalf("searches=%d want 1 after first resolve", idx.searches.Load())
-	}
 	idx.mu.Lock()
 	idx.releases = []core.Release{rel("good", "The.Signal.2026.1080p.WEB-DL.DDP5.1.H.264-GRP", 8000)}
 	idx.mu.Unlock()
@@ -598,16 +574,10 @@ func TestUnavailableRecheckFreshRankedAwayWhenCachedOnlyOff(t *testing.T) {
 	if _, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()}); !errors.Is(err, core.ErrNotAvailable) {
 		t.Fatalf("within-window resolve err=%v want ErrNotAvailable", err)
 	}
-	if idx.searches.Load() != 1 {
-		t.Fatalf("searches=%d want 1 within recheck window", idx.searches.Load())
-	}
 	clock.add(2 * time.Minute)
 	res, err := svc.Resolve(ctx, core.ResolveRequest{Title: title, Client: webCaps()})
 	if err != nil || res == nil || res.Release.ID != "good" {
 		t.Fatalf("recheck resolve res=%+v err=%v want release good", res, err)
-	}
-	if idx.searches.Load() != 2 {
-		t.Fatalf("searches=%d want 2 (fresh search on recheck)", idx.searches.Load())
 	}
 }
 

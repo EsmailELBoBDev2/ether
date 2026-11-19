@@ -111,6 +111,7 @@ var mixedSections = map[string]map[string]Scope{
 		"storage":                  Local,
 		"dir":                      Local,
 		"budgetBytes":              Local,
+		"libraryBudgetBytes":       Local, // release library (NZB vault) cap, sized to this node's disk
 		"mode":                     Local,
 		"preloadEnabled":           Local,
 		"preloadBudgetBytes":       Local,

@@ -103,7 +103,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapPluginDirectory: {KindIntegration: true, KindExtension: true, KindSource: true},
 	CapMetadata:        {KindIntegration: true, KindExtension: true, KindSource: true},
 	CapPosterBadges:    {KindIntegration: true, KindExtension: true, KindSource: true, KindContent: true},
-	CapLiveTV:          {KindLiveTVSource: true},
+	CapLiveTV:          {KindLiveTVSource: true, KindContent: true},
 	CapSubtitles:       {KindIntegration: true, KindExtension: true},
 	CapMarkers:         {KindIntegration: true, KindExtension: true},
 	CapNotify:          {KindNotificationChannel: true},

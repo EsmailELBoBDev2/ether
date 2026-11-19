@@ -165,7 +165,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
 | notify / events | notify send/test; event subscription + acknowledgement | HTTPFetch, SecretGet, KV for deduplication |
 | ui / tools | ViewSpec page/action or declared tool | Settings, KV; grant only data the action needs |
-| livetv_channels | channels, guide, stream | HTTPFetch, KV |
+| livetv_channels | channels, guide, stream (kind livetv_source, or a content plugin that also has live channels) | HTTPFetch, KV |
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |

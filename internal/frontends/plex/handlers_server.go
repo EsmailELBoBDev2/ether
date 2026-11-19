@@ -1,7 +1,6 @@
 package plex
 
 import (
-	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -420,15 +419,21 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		if len(u.SubtitleLanguages) > 0 {
 			a.DefaultSubtitleLang = u.SubtitleLanguages[0]
 		}
-		if tp := s.svc().trackPrefs; tp != nil && viewerStoredSubtitlePreference(r.Context(), tp, u.ID) {
+		if tp := s.svc().trackPrefs; tp != nil {
 			if rules, err := tp.GetRules(r.Context(), u.ID); err == nil {
+				// Project the effective (layered) preferences: account,
+				// household (user 0) and viewer rules all count, so a viewer
+				// who inherits Always-on/English reads the same here as one
+				// who saved it themselves (#617). With nothing configured at
+				// any layer GetRules returns the defaults (mode off, no
+				// languages), which leaves this document unchanged.
 				// Plex account subtitleMode: 0 manual, 1 with foreign audio, 2 always.
-				// Unset and off stay 0, which is the value already written for every account.
-				// Shared defaults (user 0) stay off this document so an untouched account
-				// keeps the bytes it had before this viewer chose a preference.
 				a.SubtitleMode = plexSubtitleMode(rules.SubtitleMode)
 				if len(rules.SubtitleLanguages) > 0 {
 					a.DefaultSubtitleLang = rules.SubtitleLanguages[0]
+				}
+				if len(rules.AudioLanguages) > 0 {
+					a.DefaultAudioLanguage = rules.AudioLanguages[0]
 				}
 			}
 		}
@@ -442,14 +447,6 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 // with foreign audio, 2 is always. Forced-only has no Plex value; 1 tells the
 // client to enable subtitles while Ether's selector still picks a forced track.
 // Off stays 0, the same attribute every unchanged account already carries.
-// viewerStoredSubtitlePreference is true when this account has its own
-// trackprefs row. Stores that cannot tell own from inherited still report
-// the GetRules result, which tests and older fakes rely on.
-func viewerStoredSubtitlePreference(ctx context.Context, prefs TrackPreferences, user int64) bool {
-	has, err := prefs.HasViewerRules(ctx, user)
-	return err == nil && has
-}
-
 func plexSubtitleMode(mode string) int {
 	switch mode {
 	case "always":

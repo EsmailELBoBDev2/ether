@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
@@ -33,14 +34,56 @@ type Frontend struct {
 }
 
 func (Frontend) Describe() frontend.Descriptor {
-	return frontend.Descriptor{ID: "vela", Name: "Vela", Version: "0", SettingsSchema: frontend.SettingsSchema{SignInHelp: true, Sections: []frontend.SettingsSection{{Key: "appearance", Fields: []frontend.SettingsField{{Key: "defaultSkinId", Kind: "string"}}}, {Key: "find", Fields: []frontend.SettingsField{{Key: "serverName", Kind: "serverName"}}}}}}
+	return frontend.Descriptor{
+		ID:      "vela",
+		Name:    "Vela",
+		Version: "0",
+		SettingsSchema: frontend.SettingsSchema{
+			SignInHelp: true,
+			Sections: []frontend.SettingsSection{
+				{Key: "appearance", Fields: []frontend.SettingsField{
+					{Key: "defaultSkinId", Kind: "string"},
+					{Key: "appName", Kind: "string", Max: frontend.Int(MaxAppNameChars)},
+					{Key: "wordmark", Kind: "wordmark"},
+				}},
+				{Key: "find", Fields: []frontend.SettingsField{
+					{Key: "serverName", Kind: "serverName"},
+				}},
+			},
+		},
+	}
 }
 
 // ValidateSettings keeps the owner setting additive without accepting arbitrary config.
-func (Frontend) ValidateSettings(s frontend.Settings) error {
+func (f Frontend) ValidateSettings(s frontend.Settings) error {
 	for key, value := range s {
-		id, ok := value.(string)
-		if key != "defaultSkinId" || !ok || !skinIDPattern.MatchString(id) {
+		switch key {
+		case "defaultSkinId":
+			id, ok := value.(string)
+			if !ok || !skinIDPattern.MatchString(id) {
+				return errors.New("invalid Vela setting")
+			}
+		case "appName":
+			name, ok := value.(string)
+			if !ok {
+				return errors.New("invalid Vela setting")
+			}
+			trimmed := strings.TrimSpace(name)
+			if utf8.RuneCountInString(trimmed) > MaxAppNameChars || hasControlRune(trimmed) {
+				return errors.New("invalid Vela setting")
+			}
+		case "wordmark":
+			if value == nil {
+				continue
+			}
+			wm, ok := parseWordmarkSetting(value)
+			if !ok {
+				return errors.New("invalid Vela setting")
+			}
+			if err := validateWordmarkInDB(f.DB, wm); err != nil {
+				return err
+			}
+		default:
 			return errors.New("invalid Vela setting")
 		}
 	}
@@ -78,6 +121,8 @@ type replay struct {
 type instance struct {
 	appearanceMu    sync.Mutex
 	appearanceCache *appearanceEntry
+	brandingMu      sync.Mutex
+	brandingBlobs   map[string]brandingBlob
 	bootstrapMu     sync.Mutex
 	bootstraps      map[string]*bootstrapEntry
 	db              *sql.DB
@@ -380,7 +425,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/vela/v0/") {
-		webclient.ServeVela(w, r, i.assets)
+		webclient.ServeVelaBrand(w, r, i.assets, i.appearanceDocument().appName)
 		return
 	}
 	r = r.WithContext(i.identityContext(r))
@@ -534,6 +579,8 @@ func (i *instance) route(method, path string, h http.HandlerFunc) {
 }
 func (i *instance) routes() {
 	i.route("GET", "/appearance", i.appearance)
+	i.route("GET", "/branding/{asset}", i.brandingAsset)
+	i.route("HEAD", "/branding/{asset}", i.brandingAsset)
 	i.route("GET", "/events", i.appearanceEvents)
 	i.route("GET", "/libraries", i.libraries)
 	i.route("GET", "/libraries/{id}/items", i.libraryItems)

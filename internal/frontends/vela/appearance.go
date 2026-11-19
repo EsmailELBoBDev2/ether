@@ -24,7 +24,10 @@ func skinEngine(id string) string {
 
 type appearanceEntry struct {
 	revision uint64
+	stateKey string
 	skinID   string
+	appName  string
+	branding object
 	etag     string
 	payload  []byte
 }
@@ -33,26 +36,44 @@ type appearanceEntry struct {
 // constant time; no catalogue, filesystem, provider or viewer work happens here.
 func (i *instance) appearanceDocument() *appearanceEntry {
 	skin, revision := "cinematic", uint64(0)
+	var settings map[string]any
 	if i.host.HostConfig != nil {
 		cfg := i.host.HostConfig().Frontends["vela"]
 		revision = cfg.AppearanceRevision
-		if id, ok := cfg.Settings["defaultSkinId"].(string); ok && skinIDPattern.MatchString(id) {
-			skin = id
-		}
+		settings = cfg.Settings
 	} else if i.host.Config != nil {
-		if id, ok := i.host.Config()["defaultSkinId"].(string); ok && skinIDPattern.MatchString(id) {
-			skin = id
-		}
+		settings = i.host.Config()
 	}
+	if id, ok := settings["defaultSkinId"].(string); ok && skinIDPattern.MatchString(id) {
+		skin = id
+	}
+	stateKey := canonicalAppearanceState(settings)
 	i.appearanceMu.Lock()
 	defer i.appearanceMu.Unlock()
-	if c := i.appearanceCache; c != nil && (c.revision > revision || (c.revision == revision && c.skinID == skin)) {
+	if c := i.appearanceCache; c != nil && (c.revision > revision || (c.revision == revision && c.stateKey == stateKey)) {
 		return c
 	}
+	branding, appName := brandingFromSettings(settings)
 	// Owner-installed packs/documents are empty until an installer is supported.
 	// The client merges its built-ins from /vela/skins/catalog.json itself.
-	payload, _ := json.Marshal(object{"revision": revision, "defaultSkinId": skin, "defaultEngineId": skinEngine(skin), "force": false, "packs": []object{}, "documents": []object{}})
-	c := &appearanceEntry{revision: revision, skinID: skin, payload: payload, etag: `"` + hash(string(payload)) + `"`}
+	payload, _ := json.Marshal(object{
+		"revision":        revision,
+		"defaultSkinId":   skin,
+		"defaultEngineId": skinEngine(skin),
+		"branding":        branding,
+		"force":           false,
+		"packs":           []object{},
+		"documents":       []object{},
+	})
+	c := &appearanceEntry{
+		revision: revision,
+		stateKey: stateKey,
+		skinID:   skin,
+		appName:  appName,
+		branding: branding,
+		payload:  payload,
+		etag:     `"` + hash(string(payload)) + `"`,
+	}
 	i.appearanceCache = c
 	return c
 }

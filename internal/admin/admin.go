@@ -25,6 +25,7 @@ package admin
 import (
 	"context"
 	"embed"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -114,6 +115,7 @@ type StatusFuncE func(ctx context.Context) (any, error)
 type Deps struct {
 	ViewerCatalogRules ViewerCatalogRules
 	Vela               *veladist.Manager
+	UploadVelaWordmark func(context.Context, io.Reader) (VelaWordmark, error)
 	Frontends          FrontendAdmin
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal

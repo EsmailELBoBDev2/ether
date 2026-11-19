@@ -553,6 +553,17 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	if pq.Selected >= 0 && pq.Selected < len(pq.Items) {
 		selItem = pq.Items[pq.Selected]
 	}
+	now := s.now()
+	recorded := 0
+	for i := range titles {
+		if isPlayable(titles[i].Type) {
+			s.recentClients.recordTitle(r, pr, titles[i].Key, now)
+			recorded++
+			if recorded >= 50 {
+				break
+			}
+		}
+	}
 	if selTitle, ok := byKey[selItem.Key]; ok {
 		if pr != nil && pr.detailWaitUntil.IsZero() {
 			startDetailPageWait(pr)

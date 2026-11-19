@@ -237,6 +237,7 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if isPlayable(t.Type) {
+				s.recentClients.recordTitle(r, pr, t.Key, s.now())
 				// Android TV builds its subtitle picker from this refresh after
 				// a manual pick. Join only an already pending download for this
 				// exact Part and client session; browsing never starts one.
@@ -331,7 +332,7 @@ func applyRelatedCountCap(md *model.Metadata, q url.Values) {
 // (such as HubKey expansions) with batched catalogue hydration, watch-state,
 // series visibility, GUID, artwork, and episode leaf-count queries instead of
 // N single-item detail round-trips. It returns ok=false only if ctx cancelled.
-func (s *Server) handleMetadataBatch(ctx context.Context, _ *http.Request, pr *Request, q url.Values, keys []frontend.RatingKey) (*model.MediaContainer, bool) {
+func (s *Server) handleMetadataBatch(ctx context.Context, r *http.Request, pr *Request, q url.Values, keys []frontend.RatingKey) (*model.MediaContainer, bool) {
 	var preload []frontend.RatingKey
 	seenPreload := make(map[frontend.RatingKey]bool, len(keys)*2)
 	addPreload := func(k frontend.RatingKey) {
@@ -461,6 +462,17 @@ func (s *Server) handleMetadataBatch(ctx context.Context, _ *http.Request, pr *R
 	renderedByKey := make(map[string]model.Metadata, len(uniqueTitles))
 	var memo showEpisodes
 	if len(uniqueTitles) > 0 {
+		now := s.now()
+		recorded := 0
+		for i := range uniqueTitles {
+			if isPlayable(uniqueTitles[i].Type) {
+				s.recentClients.recordTitle(r, pr, uniqueTitles[i].Key, now)
+				recorded++
+				if recorded >= 50 {
+					break
+				}
+			}
+		}
 		rendered := s.renderTitles(ctx, pr, uniqueTitles, renderOpts{
 			detail:         true,
 			batchDetail:    !includeChildren,
@@ -860,9 +872,15 @@ func (s *Server) handleChildren(w http.ResponseWriter, r *http.Request) {
 		// Batch ordinary rendering without ever passing placeholders to media
 		// generation, then restore the canonical episode order.
 		var aired []frontend.Title
+		now := s.now()
+		recorded := 0
 		for _, child := range page {
-			if !child.Released.After(s.now()) {
+			if !child.Released.After(now) {
 				aired = append(aired, child)
+				if isPlayable(child.Type) && recorded < 50 {
+					s.recentClients.recordTitle(r, pr, child.Key, now)
+					recorded++
+				}
 			}
 		}
 		rendered := s.renderTitles(ctx, pr, aired, renderOpts{media: true, inSection: true, skipLeafCounts: parent.Type == frontend.TypeShow})
@@ -977,6 +995,14 @@ func (s *Server) handleAllLeaves(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lo, hi := pr.window(len(eps))
+	now := s.now()
+	recorded := 0
+	for i := lo; i < hi && recorded < 50; i++ {
+		if isPlayable(eps[i].Type) {
+			s.recentClients.recordTitle(r, pr, eps[i].Key, now)
+			recorded++
+		}
+	}
 	mc.Metadata = s.renderTitles(ctx, pr, eps[lo:hi], renderOpts{media: true, inSection: true})
 	mc.Size = len(mc.Metadata)
 	if pr.HasPage {

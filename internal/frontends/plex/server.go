@@ -194,6 +194,7 @@ type Server struct {
 	progressiveStops  progressiveStopGuard
 	readCaps          *readCapabilityStore
 	deliveryGrants    *deliveryGrantStore
+	recentClients     recentPartClients
 	extraPlay         *extraPlayStore
 	subtitleOffers    subtitleOffers
 	subtitlePicks     subtitlePicks

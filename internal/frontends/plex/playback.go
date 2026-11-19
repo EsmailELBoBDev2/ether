@@ -267,6 +267,10 @@ type playRequest struct {
 	// mde: the client runs its own media decision engine (hasMDE=1, sent
 	// by current Plex Web, iOS and Apple TV apps).
 	mde bool
+	// ownerBitrateCap: the server's per-user bitrate access policy lowered
+	// MaxBitrateKbps; unlike a client transcode quality hint, an owner policy
+	// still governs source selection when directPlay=1.
+	ownerBitrateCap bool
 	// listAllTracks: Android-family clients receive every probed track in
 	// the decision response; recorded PMS decisions for web, iOS and Apple
 	// TV are selected-only. On-demand subtitles are listed independently
@@ -690,11 +694,15 @@ func (p *playRequest) sourceSelectionCaps() frontend.ClientCaps {
 	if p.sourceLimits != nil {
 		caps.MaxHeight = p.sourceLimits.MaxHeight
 		caps.ExplicitMaxHeight = p.sourceLimits.ExplicitMaxHeight
+		caps.MaxHeightSource = p.sourceLimits.MaxHeightSource
 		caps.MaxBitrateKbps = p.sourceLimits.MaxBitrateKbps
 		caps.DefaultRemoteBitrate = p.sourceLimits.DefaultRemoteBitrate
 	}
 	// SD delivery caps always shape the encode, never source selection.
-	if !p.caps.DefaultRemoteBitrate && p.caps.MaxBitrateKbps >= 1500 {
+	// A client transcode quality hint (maxVideoBitrate) also never caps
+	// direct-play source selection when the client requested directPlay=1;
+	// owner bitrate access policies still apply.
+	if (!p.opts.DirectPlay || p.ownerBitrateCap) && !p.caps.DefaultRemoteBitrate && p.caps.MaxBitrateKbps >= 1500 {
 		caps.MaxBitrateKbps = p.caps.MaxBitrateKbps
 		caps.DefaultRemoteBitrate = false
 	}
@@ -779,6 +787,7 @@ func (s *Server) prepare(ctx context.Context, pr *Request, p *playRequest) (*fro
 			p.caps.MaxBitrateKbps = limit
 			p.caps.DefaultRemoteBitrate = false
 			p.opts.MaxBitrateKbps = limit
+			p.ownerBitrateCap = true
 		}
 	}
 	explicitBitrateCap := !p.caps.DefaultRemoteBitrate && p.opts.MaxBitrateKbps > 0
@@ -951,6 +960,9 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		owner := decisionOwner(pr)
 		owner.Generation = arm.sessionID
 		s.decisionArms.Arm(owner, arm.key)
+		if isPlayableKey(arm.key) {
+			s.recentClients.recordTitle(r, pr, arm.key, s.now())
+		}
 	}
 	// A slow source search must not hold the owner gates (timeline and stop
 	// share them) or outlast the client's request timeout.
@@ -1068,6 +1080,7 @@ func (s *Server) awaitSource(ctx context.Context, r *http.Request, pr *Request) 
 		if limit := policy.BitrateLimit(pr.User); limit > 0 && (p.caps.MaxBitrateKbps == 0 || limit < p.caps.MaxBitrateKbps) {
 			p.caps.MaxBitrateKbps = limit
 			p.caps.DefaultRemoteBitrate = false
+			p.ownerBitrateCap = true
 		}
 	}
 	if p.caps.ClientID == "" {
@@ -2412,12 +2425,14 @@ func (s *Server) handlePart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// A clientless part read is a native player (Samsung AVPlay) that drops
-	// Plex headers and carries only a token on the URL. With no live session to
-	// continue it still plays (PMS serves it), so adopt a synthetic device
-	// identity: the read then prepares and publishes an accounted session under
-	// the broker, subject to stream limits and visible in /status/sessions.
-	// Repeated reads from the same player reuse that one session below.
+	// A clientless part read is a native player (Samsung AVPlay, Plezy's libmpv)
+	// that drops Plex headers and carries only a token on the URL. Before
+	// adopting the generic "Native player" fallback, restore omitted capability
+	// headers from this viewer's recent pre-play metadata or control request so
+	// direct-play source selection uses the real device's capabilities.
+	if !ok || ps == nil {
+		s.recentClients.apply(r, pr, key, s.now())
+	}
 	if pr.ClientID == "" && (!ok || ps == nil) {
 		pr.adoptNativeDevice(r)
 	}

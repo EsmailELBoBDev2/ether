@@ -66,10 +66,12 @@ type generation struct {
 	retryEpoch         uint64
 	retryPending       bool
 
-	mu      sync.Mutex
-	refs    int
-	retired bool
-	closed  bool
+	mu          sync.Mutex
+	needIndex   bool
+	needTrailer bool
+	refs        int
+	retired     bool
+	closed      bool
 }
 
 // acquire takes a read reference; false once the generation is retired.

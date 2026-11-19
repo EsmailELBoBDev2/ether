@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
@@ -107,7 +108,39 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	mux.HandleFunc("/ether", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ether/", http.StatusFound)
 	})
-	mux.Handle("/", a.frontends.plexHandler())
+	mux.Handle("/", browserRootRedirect(a.frontends.plexHandler()))
 	a.handler = mux
 	return nil
+}
+
+// browserRootRedirect sends a person who types the server's address into a
+// browser to the console instead of Plex's 401. Only a bare GET or HEAD of
+// "/" that asks for HTML and carries nothing of Plex's (no X-Plex-* header,
+// no query) is redirected; every client request reaches Plex unchanged.
+func browserRootRedirect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isBrowserRootRequest(r) {
+			http.Redirect(w, r, "/ether/", http.StatusFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isBrowserRootRequest(r *http.Request) bool {
+	if r.URL.Path != "/" || r.URL.RawQuery != "" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return false
+	}
+	for k := range r.Header {
+		if len(k) >= len("X-Plex-") && strings.EqualFold(k[:len("X-Plex-")], "X-Plex-") {
+			return false
+		}
+	}
+	for _, part := range strings.Split(strings.Join(r.Header.Values("Accept"), ","), ",") {
+		mt, _, _ := strings.Cut(part, ";")
+		if strings.EqualFold(strings.TrimSpace(mt), "text/html") {
+			return true
+		}
+	}
+	return false
 }

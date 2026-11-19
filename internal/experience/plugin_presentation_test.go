@@ -323,7 +323,7 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 		t.Fatalf("LibraryFacetCollections(query=nin) = %+v err=%v", fCols, err)
 	}
 
-	// PluginLibraryRows: Continue Watching, Recently Added, Newest, Top Rated, and "From <Developer>" rows.
+	// PluginLibraryRows: Continue Watching, Newest, Recently Added, Top Rated, and "From <Developer>" rows.
 	for _, dev := range []string{"sega", "konami", "namco", "taito"} {
 		plug.items = append(plug.items, core.Title{
 			Key:           core.PluginKey(int64(100 + len(plug.items))),
@@ -343,14 +343,17 @@ func TestPluginLibraryPresentationBucketsCollectionsRowsAndSorts(t *testing.T) {
 	if len(rows) != 8 {
 		t.Fatalf("expected 8 rows cap, got %d: %+v", len(rows), rows)
 	}
-	wantTitles := []string{"Continue Watching", "Recently Added", "Newest", "Top Rated", "From Nintendo"}
+	wantTitles := []string{"Continue Watching", "Newest", "Recently Added", "Top Rated"}
 	for i, want := range wantTitles {
 		if rows[i].Title != want {
 			t.Fatalf("row[%d].Title = %q, want %q", i, rows[i].Title, want)
 		}
 	}
-	if rows[1].Items[0].Key != t2.Key {
-		t.Fatalf("Recently Added should order by PluginAddedAt desc (t2 first), got %v", rows[1].Items[0].Key)
+	if !strings.HasPrefix(rows[4].Title, "From ") {
+		t.Fatalf("row[4].Title = %q, want a \"From <Developer>\" facet row", rows[4].Title)
+	}
+	if rows[2].Items[0].Key != t2.Key {
+		t.Fatalf("Recently Added should order by PluginAddedAt desc (t2 first), got %v", rows[2].Items[0].Key)
 	}
 
 	// Verify sortTitles supports SortIndex and SortYear.

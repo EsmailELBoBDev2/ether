@@ -24,7 +24,6 @@ func TestSetChannelsApp(t *testing.T) {
 		{ID: "uk-ent-2", Number: "102", Name: "BBC Two", Kind: "iptv", SourceID: "uk", Group: "Entertainment", StreamURL: "https://example.test/2", Enabled: true},
 		{ID: "uk-sport", Number: "104", Name: "Sky Sports", Kind: "iptv", SourceID: "uk", Group: "Sports", StreamURL: "https://example.test/3", Enabled: true},
 		{ID: "us-news", Number: "201", Name: "CNN", Kind: "iptv", SourceID: "us", Group: "News", StreamURL: "https://example.test/4", Enabled: true},
-		{ID: "virt-1", Number: "1", Name: "Movie Night", Kind: "virtual", Group: "Custom", OffAir: true, Enabled: true},
 	}
 	for _, c := range seed {
 		if _, err := s.SaveChannel(ctx, c); err != nil {
@@ -114,7 +113,12 @@ func TestSetChannelsApp(t *testing.T) {
 		t.Fatalf("us-news shownApps: %+v %v", c, err)
 	}
 
-	// Virtual source selector.
+	// Virtual source selector. The virtual channel joins only now: with one
+	// in the lineup, AllowedChannels waits on the background guide render
+	// after each edit, which the listing checks above must not race.
+	if _, err := s.SaveChannel(ctx, Channel{ID: "virt-1", Number: "1", Name: "Movie Night", Kind: "virtual", Group: "Custom", OffAir: true, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	code, res = post(`{"app":"silo","show":false,"source":"virtual"}`)
 	if code != http.StatusOK || res["updated"] != float64(1) {
 		t.Fatalf("virtual source hide: %d %+v", code, res)

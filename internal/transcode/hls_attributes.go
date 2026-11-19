@@ -15,6 +15,28 @@ import (
 // One transport is deliberately different: for the Plex for Android Matroska
 // HLS session (d.AndroidMatroskaHLS with a Matroska container) CODECS and
 // SUPPLEMENTAL-CODECS are left out on purpose. See the comment at the omission before changing that.
+// HLSVariantGeometry returns the RESOLUTION and FRAME-RATE attributes (each
+// with its leading comma) for the output video the decision selects, or
+// nothing when the size is unknown. Apple's authoring spec requires both on
+// every video variant (9.2, 9.15), and tvOS AVPlayer enforces it for HDR: a
+// PQ or Dolby Vision variant without them is rejected at the master playlist,
+// while SDR is tolerated.
+func HLSVariantGeometry(info core.MediaInfo, d core.Decision) string {
+	v := info.Video()
+	if v == nil || v.Width <= 0 || v.Height <= 0 {
+		return ""
+	}
+	w, h := v.Width, v.Height
+	if !d.VideoCopy {
+		w, h = decisionOutputSize(v, d)
+	}
+	attrs := fmt.Sprintf(",RESOLUTION=%dx%d", w, h)
+	if v.FrameRate > 0 {
+		attrs += fmt.Sprintf(",FRAME-RATE=%.3f", v.FrameRate)
+	}
+	return attrs
+}
+
 func HLSVariantAttributes(info core.MediaInfo, d core.Decision) string {
 	var codecs []string
 	videoRange, supplemental := "", ""

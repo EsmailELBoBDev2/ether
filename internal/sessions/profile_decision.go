@@ -755,6 +755,11 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 			} else if d.StripDolbyVision {
 				stampEncodedVideoRange(s, d)
 			}
+			if d.Container == transcode.ContainerFMP4 {
+				if tag := fmp4VideoTag(info.Video(), d); tag != "" {
+					s.CodecTag = tag
+				}
+			}
 		} else if s.Type == "audio" && s.Index == d.AudioStream {
 			s.Codec = d.AudioCodec
 			if !d.AudioCopy {
@@ -790,6 +795,25 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 		}
 	}
 	return false
+}
+
+// fmp4VideoTag is the sample entry fMP4 segments carry for the output video,
+// as the transcoder's arguments write it: HEVC is tagged hvc1 (dvh1 for a
+// copied Dolby Vision profile 5 source) and H.264 avc1, whatever the source
+// container used. A required VideoCodecTag condition, such as AVPlayer's
+// hvc1/dvh1, is evaluated against this rather than the source's tag, which
+// Matroska does not have.
+func fmp4VideoTag(source *core.StreamInfo, d core.Decision) string {
+	switch d.VideoCodec {
+	case "hevc":
+		if d.VideoCopy && source != nil && source.DolbyVision && source.DolbyVisionProfile == 5 {
+			return "dvh1"
+		}
+		return "hvc1"
+	case "h264":
+		return "avc1"
+	}
+	return ""
 }
 
 // constrainedH264 describes only facts guaranteed by the selected encoder

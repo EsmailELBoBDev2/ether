@@ -162,9 +162,9 @@ func limitationDeniesHDR(a map[string]string) bool {
 	return false
 }
 
-// limitationAffirmsHDR10 reports profile-extra limits that affirmatively claim
-// 10-bit and/or PQ (HDR10) support — the signals PMS Firefox sent when it
-// Direct Streamed an HDR10 HEVC remux.
+// limitationScopesHDRCodec and the helpers below read profile-extra limits
+// that affirmatively claim 10-bit and/or PQ (HDR10) support, the signals PMS
+// Firefox sent when it Direct Streamed an HDR10 HEVC remux.
 func limitationScopesHDRCodec(scopeName string) bool {
 	sn := normalizeCodec(scopeName)
 	if sn == "hevc" || sn == "av1" || sn == "*" || sn == "" {
@@ -200,10 +200,6 @@ func limitationAffirmsColorTrcHDR(a map[string]string) bool {
 		return strings.Contains(val, "smpte2084") || strings.Contains(val, "arib-std-b67")
 	}
 	return false
-}
-
-func limitationAffirmsHDR10(a map[string]string) bool {
-	return limitationAffirmsBitDepth10(a) || limitationAffirmsColorTrcHDR(a)
 }
 
 // limitationValue prefers list= (PMS colorTrc allow-lists) then value=.

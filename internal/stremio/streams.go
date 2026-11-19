@@ -51,19 +51,6 @@ func (b *Backend) lookupManifest(ctx context.Context) *Manifest {
 	return m
 }
 
-// lookupID chooses how to ask the addon for req (LookupStreams). Without
-// a readable manifest the addon is asked by IMDb id, as before prefixes
-// were read.
-func (b *Backend) lookupID(ctx context.Context, req core.SearchRequest) (idLookup, bool) {
-	m := b.lookupManifest(ctx)
-	var anime AnimeIDs
-	if req.Anime {
-		anime = b.svc.animeIDs()
-	}
-	look, ok := LookupStreams(ctx, *m, req, anime, b.svc.specials)
-	return idLookup{kind: look.Type, id: look.ID, season: look.Season, packs: look.Packs, entryEpisode: look.EntryEpisode, specialEpisode: look.SpecialEpisode}, ok
-}
-
 func (b *Backend) lookupIDs(ctx context.Context, req core.SearchRequest) []idLookup {
 	m := b.lookupManifest(ctx)
 	var anime AnimeIDs

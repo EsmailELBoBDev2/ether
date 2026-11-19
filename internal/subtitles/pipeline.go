@@ -86,6 +86,7 @@ func ParseASS(text string) ([]Cue, error) {
 		}
 		body = tagRe.ReplaceAllString(body, "")
 		body = strings.NewReplacer(`\N`, "\n", `\n`, "\n", `\h`, " ").Replace(body)
+		body = CleanCueText(body)
 		if start >= 0 && end > start && strings.TrimSpace(body) != "" {
 			out = append(out, Cue{Start: start, End: end, Text: body})
 		}

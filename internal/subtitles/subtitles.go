@@ -1364,7 +1364,7 @@ func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, stri
 		if p := s.correctionFilePath(id, appliedKey, format); p != "" {
 			if cf, cerr := os.Open(p); cerr == nil {
 				f.Close()
-				return cf, format, nil
+				return serveStoredSubtitle(cf, format)
 			}
 		}
 		raw, err := io.ReadAll(io.LimitReader(f, 32<<20))
@@ -1397,7 +1397,41 @@ func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, stri
 			return serveApplied(corr, appliedKey)
 		}
 	}
-	return f, format, nil
+	return serveStoredSubtitle(f, format)
+}
+
+// serveStoredSubtitle serves a cached normalised file as stored, unless
+// it still carries markup its format must not be served with — WebVTT
+// <c.…>/<v …>/<lang …> spans from files normalised before cue text was
+// cleaned at parse time (#616). Those are parsed and re-rendered on
+// read; the stored file is left untouched, so no migration is needed
+// and a clean file is served byte for byte as written.
+func serveStoredSubtitle(f *os.File, format string) (io.ReadCloser, string, error) {
+	raw, err := io.ReadAll(io.LimitReader(f, 32<<20))
+	if err != nil {
+		f.Close()
+		return nil, "", err
+	}
+	rewound := func() (io.ReadCloser, string, error) {
+		if _, err := f.Seek(0, io.SeekStart); err == nil {
+			return f, format, nil
+		}
+		f.Close()
+		return io.NopCloser(strings.NewReader(string(raw))), format, nil
+	}
+	if len(raw) >= 32<<20 || !storedHasForeignTags(string(raw), format) {
+		return rewound()
+	}
+	cues, err := ParseCues(string(raw))
+	if err != nil {
+		return rewound()
+	}
+	f.Close()
+	text := RenderSRT(cues)
+	if format == "vtt" {
+		text = RenderVTT(cues)
+	}
+	return io.NopCloser(strings.NewReader(text)), format, nil
 }
 
 func truncate(s string, n int) string {

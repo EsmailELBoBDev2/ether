@@ -59,7 +59,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	a.closers = append(a.closers, func() { a.engine.Close() })
 
 	shared := cfg.Cache.Storage == "shared"
-	local, err := vault.Open(ctx, vault.Options{Dir: filepath.Join(cacheDir, "vault"), DB: a.db, Sealer: a.cfg, NodeID: a.cacheNodeID(), Shared: shared, Logger: log.With("component", "vault")})
+	local, err := vault.Open(ctx, vault.Options{Dir: filepath.Join(cacheDir, "vault"), DB: a.db, Sealer: a.cfg, NodeID: a.cacheNodeID(), Shared: shared, CapBytes: cfg.Cache.LibraryBudgetBytes, Logger: log.With("component", "vault")})
 	if err != nil {
 		return fmt.Errorf("open vault: %w", err)
 	}

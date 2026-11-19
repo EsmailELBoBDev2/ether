@@ -332,6 +332,7 @@ export interface EtherConfig {
     inProgressPinMaxAge?: string;
     dir: string;
     budgetBytes: number;
+    libraryBudgetBytes?: number;
     prefetchNextEpisode: boolean;
     prefetchBytes: number;
     keepInProgressWarm: boolean;

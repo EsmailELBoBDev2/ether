@@ -1506,6 +1506,26 @@ export default function Cache() {
                 }
               />
               <SettingsRow
+                title={<label htmlFor="cache-library-budget">{t("Release library limit")}</label>}
+                description={t(
+                  "Kept NZBs and torrent records, so a release is never fetched from an indexer twice. A release takes well under 1 MB. Zero means no limit; when set, releases nobody replayed leave first.",
+                )}
+                control={
+                  <span className="flex items-center gap-2">
+                    <NumberInput
+                      id="cache-library-budget"
+                      aria-label={t("Release library limit")}
+                      className="w-28"
+                      min={0}
+                      step={1}
+                      value={Math.round(((draft.libraryBudgetBytes ?? 0) / GiB) * 100) / 100}
+                      onChange={(n) => patch({ libraryBudgetBytes: Math.round(n * GiB) })}
+                    />
+                    <span className="text-xs text-fg-muted">GiB</span>
+                  </span>
+                }
+              />
+              <SettingsRow
                 title={<label htmlFor="cache-mode">{t("Retention strategy")}</label>}
                 description={
                   !enabled

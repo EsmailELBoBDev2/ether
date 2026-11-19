@@ -86,7 +86,8 @@ const (
 	steadyFirstFrameBackup = 8 * time.Second
 	steadyStress           = time.Second
 	steadyStarvedAfter     = 400 * time.Millisecond
-	steadyHoldStalled      = 12 * time.Second
+	steadyHoldPicture      = 10 * time.Second
+	steadyHoldStalled      = 20 * time.Second
 	steadyStandbyLinger    = 30 * time.Second
 	steadyClockReset       = 2 * time.Minute
 	// Skip at most this much already-aired media on a reopen: a longest
@@ -138,12 +139,53 @@ func (p *providerBroadcastPlanner) plans(now time.Time) (broadcastPlan, *broadca
 // The owner profile sets the segment target and desired published lead.
 // A cold source without backlog builds that lead opportunistically; neither
 // the first playlist nor the frame clock waits for the full cushion.
-func (p *providerBroadcastPlanner) coldWait() time.Duration { return 4 * time.Second }
+func (p *providerBroadcastPlanner) coldWait() time.Duration    { return 4 * time.Second }
+func (p *providerBroadcastPlanner) holdStalled() time.Duration { return steadyHoldPicture }
 func (p *providerBroadcastPlanner) startupLead() time.Duration {
-	return p.s.latencyPolicy().TargetLatency()
+	target := p.s.latencyPolicy().TargetLatency()
+	p.mu.Lock()
+	hls := p.primed != nil && p.primed.format == "hls"
+	if !hls && p.link != nil && p.link.format == "hls" {
+		hls = true
+	}
+	p.mu.Unlock()
+	if hls {
+		return target
+	}
+	// MPEG-TS taps pace readers up to tapPaceLead (4 s) ahead of due playout;
+	// cap startup burst lead below tapPaceLead so the frame clock never outruns
+	// tapPace while keeping the remaining startup burst inside the reserve.
+	return min(target, 2500*time.Millisecond)
 }
 func (p *providerBroadcastPlanner) segmentDuration() time.Duration {
 	return p.s.latencyPolicy().SegmentDuration()
+}
+
+func (p *providerBroadcastPlanner) reserveTarget() (depth, target time.Duration, ok bool) {
+	p.mu.Lock()
+	a := p.attempt
+	p.mu.Unlock()
+	if a == nil || a.link == nil {
+		return 0, 0, false
+	}
+	want := p.s.stabilityReserve(p.channel)
+	h, hok := p.s.inputHealth(a.link.ss)
+	if !hok {
+		return 0, want, false
+	}
+	if h.Target > 0 && h.Target < want {
+		want = h.Target
+	}
+	return h.ReserveDepth, want, !h.Stalled || h.ReserveDepth > 0
+}
+
+func (p *providerBroadcastPlanner) setInputPlayRate(rate float64) {
+	p.mu.Lock()
+	a := p.attempt
+	p.mu.Unlock()
+	if a != nil && a.link != nil {
+		p.s.setSteadyInputRate(a.link.ss, rate)
+	}
 }
 
 const steadySegment = 2 * time.Second

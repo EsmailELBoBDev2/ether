@@ -192,9 +192,11 @@ func (s *Service) serveBroadcastPlaylist(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	// TARGETDURATION is a property of the rendition, including its short
-	// startup segments, and must not change as the window advances.
+	// startup segments, and must not change as the window advances. Adding 1 s
+	// of RFC 8216 ceiling headroom (3 s for 2 s segments) gives Apple HLS
+	// clients 2.5 s of stale-playlist margin instead of 1.0 s.
 	ss.mu.Lock()
-	target := int(math.Ceil(broadcastSegment(ss.broadcast).Seconds()))
+	target := int(math.Ceil(broadcastSegment(ss.broadcast).Seconds())) + 1
 	ss.mu.Unlock()
 	for _, seg := range segments {
 		target = max(target, int(math.Ceil(seg.Duration.Seconds())))

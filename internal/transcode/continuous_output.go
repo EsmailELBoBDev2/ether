@@ -355,7 +355,9 @@ func (s *continuousSegmentIndex) ServeInit(w http.ResponseWriter, r *http.Reques
 // Apple players stop a live item whose playlist gains no segment for 1.5
 // target durations. Publication lag is how much later than its own duration
 // after the previous one a segment became servable: the gap a client sees
-// beyond the cadence. Warn once it uses half the client's margin.
+// beyond the cadence. Steady playlists declare TARGETDURATION = ceil(segment)+1
+// (3 s for 2 s segments), giving >= 1 segment of stale-playlist margin; warn
+// once publication lag uses half that margin.
 func (s *continuousSegmentIndex) noteLagLocked(seg Segment, received time.Time) {
 	lag := time.Duration(0)
 	if !s.lastReceived.IsZero() {
@@ -371,7 +373,7 @@ func (s *continuousSegmentIndex) noteLagLocked(seg Segment, received time.Time) 
 	if segment <= 0 {
 		segment = 4 * time.Second
 	}
-	if margin := segment / 2; lag > margin/2 && time.Since(s.lagWarned) > time.Minute && s.enc.m != nil {
+	if margin := max(segment, time.Second); lag > margin/2 && time.Since(s.lagWarned) > time.Minute && s.enc.m != nil {
 		s.lagWarned = time.Now()
 		s.enc.m.log.Warn("continuous output published late", "session", s.enc.req.SessionID, "segment", seg.Seq, "late", lag, "schedLate", SchedulerLate(lag+time.Second), "clientMargin", margin, "droppedHistoryWrites", s.enc.store.droppedWrites())
 	}

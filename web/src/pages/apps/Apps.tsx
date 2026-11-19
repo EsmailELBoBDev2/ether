@@ -1,6 +1,5 @@
 import { VelaDistribution } from "./VelaDistribution";
 import { VelaSkins } from "./VelaSkins";
-import { WatchButton } from "../../components/WatchButton";
 import {
   Button,
   Input,
@@ -10,72 +9,40 @@ import {
   confirmDialog,
 } from "@braedonsaunders/appkit-ui";
 import { FileUp, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
-import { Field } from "../../components/fields";
-import { IntegrationAppCard } from "../../components/IntegrationAppCard";
-import {
-  EmbyMark,
-  householdIcon,
-  JellyfinMark,
-  PlexMark,
-  SiloMark,
-  VelaMark,
-} from "../../components/integration-brands";
-import { StremioMark } from "../sources/marks";
 import { MoreOptions } from "../../components/ConfigSection";
 import { DomainPage, useRouteTab } from "../../components/layout";
 import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { t } from "../../i18n";
 import { useOwnerViewerPath } from "../../components/pickers";
-import { API_BASE, api, apiBlob, apiFetch, imageNeedsFetch } from "../../lib/api";
+import { api, apiBlob, apiFetch, imageNeedsFetch } from "../../lib/api";
 import { isPlainObject } from "../../lib/format";
 import { useAsync, useInterval } from "../../lib/hooks";
 import { viewerStatus } from "../viewers/ViewerStatus";
 import { XtreamLogins } from "./XtreamLogins";
 import { AwayFromHome } from "./AwayFromHome";
 import { PlexApp } from "./PlexApp";
-import { appLabel, appPath, appPurpose, appRank } from "./catalog";
-import { LevelBadge } from "../../components/status";
+import { appLabel, appPath, appRank } from "./catalog";
+import { AddressChip, StatusHelp } from "../../components/AppStatusList";
 import {
-  StatusRow,
-  AddressChip,
-  ConnectionStatusRow,
-  StatusHelp,
-} from "../../components/AppStatusList";
-import { HomeStatusRow } from "./HomeStatus";
-import { awaySummary, usableAddresses } from "./reachability";
+  AppAddressCard,
+  AppOverviewRow,
+  ConnectDeviceCard,
+  DEDICATED_PORT_APPS,
+  fetchEtherConfig,
+  OverviewPortConflictChip,
+  ServerAddressPanel,
+  type HubFrontendInfo,
+} from "./ConnectionHub";
+import { usableAddresses } from "./reachability";
 import { validateCustomUrls } from "./plex-account";
 
-type FrontendInfo = {
-  descriptor: {
-    id: string;
-    name: string;
-    version?: string;
-    certifiedApps?: { name: string; steps: string[] }[];
-    defaultPort?: number;
-    auth?: string;
-  };
-  enabled: boolean;
-  status: {
-    webPlayerReady?: boolean;
-    addresses: string[] | null;
-    connectUrls?: string[];
-    lan: string;
-    wan: string;
-    clients24h: number;
-    clients24hKnown?: boolean;
-    liveStreams: number;
-    liveStreamsKnown?: boolean;
-    targetVersion: string;
-    conformance: string;
-    error?: string;
-    warnings?: string[];
-  };
-};
+type FrontendInfo = HubFrontendInfo;
+
 export type VelaWordmark = {
   url: string;
   width: number;
@@ -122,62 +89,6 @@ const pathFor = appPath;
 const protocolFor = (tab: string) => (tab === "files" ? "webdav" : tab);
 const nameFor = (info: FrontendInfo) => appLabel(info.descriptor.id, info.descriptor.name);
 
-/** Vendored marks only. Files, DLNA, and M3U have none. */
-function appLogo(id: string): ReactNode | undefined {
-  switch (id) {
-    case "plex":
-      return <PlexMark />;
-    case "jellyfin":
-      return <JellyfinMark />;
-    case "emby":
-      return <EmbyMark />;
-    case "silo":
-      return <SiloMark />;
-    case "vela":
-      return <VelaMark />;
-    case "stremio":
-      return <StremioMark />;
-    default:
-      return householdIcon(id);
-  }
-}
-
-function frontendWarning(warning: string): string {
-  const port =
-    /^Another server on this computer is using port (\d+); Ether still works at (.+)$/.exec(
-      warning,
-    );
-  if (port) {
-    return t(
-      "Another server on this computer is using port {port}; Ether still works at {address}",
-      { port: port[1], address: port[2] },
-    );
-  }
-  const discovery =
-    /^Another server on this computer is using discovery; Ether still works at (.+)$/.exec(warning);
-  if (discovery) {
-    return t("Another server on this computer is using discovery; Ether still works at {address}", {
-      address: discovery[1],
-    });
-  }
-  return warning;
-}
-
-function connectionStep(code: string) {
-  switch (code) {
-    case "openApp":
-      return t("Open the app on your device.");
-    case "addServer":
-      return t("Add the server address shown above.");
-    case "signIn":
-      return t("Sign in with your viewer account.");
-    case "installAddon":
-      return t("Install the addon using the address shown above.");
-    default:
-      return null;
-  }
-}
-
 function viewerPortalAddress(chosen?: string): string {
   if (chosen) {
     try {
@@ -198,139 +109,6 @@ function viewerPortalAddress(chosen?: string): string {
     return `${window.location.origin}/ether/me`;
   }
   return "/ether/me";
-}
-
-function ConnectDevice({
-  info,
-  startOpen = false,
-  selectedURL: selectedURLProp,
-  onSelectedURL,
-  leadingAction,
-}: {
-  info: FrontendInfo;
-  startOpen?: boolean;
-  selectedURL?: string;
-  onSelectedURL?: (url: string) => void;
-  leadingAction?: ReactNode;
-}) {
-  const [open, setOpen] = useState(startOpen);
-  const [qr, setQR] = useState<string>();
-  const [selectedURLState, setSelectedURLState] = useState("");
-  const selectedURL = selectedURLProp ?? selectedURLState;
-  const setSelectedURL = onSelectedURL ?? setSelectedURLState;
-  const urls = usableAddresses(info.status);
-  const url = urls.includes(selectedURL) ? selectedURL : urls[0];
-  useEffect(() => {
-    if (!open || !url) return;
-    const controller = new AbortController();
-    let objectURL: string | undefined;
-    void apiBlob(`${API_BASE}/frontends/qr?url=${encodeURIComponent(url)}`, controller.signal)
-      .then((blob) => {
-        if (!controller.signal.aborted) {
-          objectURL = URL.createObjectURL(blob);
-          setQR(objectURL);
-        }
-      })
-      .catch(() => setQR(undefined));
-    return () => {
-      controller.abort();
-      if (objectURL) URL.revokeObjectURL(objectURL);
-      setQR(undefined);
-    };
-  }, [open, url]);
-  if (!info.enabled) {
-    return leadingAction ? (
-      <div className="flex flex-wrap items-center gap-2 px-5 py-3">{leadingAction}</div>
-    ) : null;
-  }
-  if (
-    ["stremio", "webdav", "m3u", "xtream"].includes(info.descriptor.id) ||
-    (info.descriptor.id.startsWith("plugin:") && info.descriptor.auth !== "none_lan")
-  ) {
-    return (
-      <div className="flex flex-wrap items-center gap-2 px-5 py-3">
-        {leadingAction}
-        <Button asChild variant="outline">
-          <Link to="/me">{t("Connect a device")}</Link>
-        </Button>
-      </div>
-    );
-  }
-  if (!url) {
-    return leadingAction ? (
-      <div className="flex flex-wrap items-center gap-2 px-5 py-3">{leadingAction}</div>
-    ) : null;
-  }
-  return (
-    <div className="space-y-3 px-5 py-3">
-      {leadingAction || !open ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {leadingAction}
-          {!open ? (
-            <Button variant="outline" onClick={() => setOpen(true)}>
-              {t("Connect a device")}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-      {open ? (
-        <div className="space-y-3">
-          <p className="text-sm text-fg">{t("Enter this server address in a supported app:")}</p>
-          {urls.length > 1 ? (
-            <Field label={t("Server address")} className="max-w-md">
-              <SearchSelect
-                ariaLabel={t("Server address")}
-                value={url}
-                onChange={setSelectedURL}
-                options={urls.map((address) => ({ value: address, label: address }))}
-              />
-            </Field>
-          ) : (
-            <p className="font-mono text-sm text-fg">
-              <code>{url}</code>
-            </p>
-          )}
-          {qr && (
-            <img
-              src={qr}
-              alt={t("QR code for the server address")}
-              width={192}
-              height={192}
-              className="rounded-lg"
-            />
-          )}
-          {info.descriptor.certifiedApps?.length ? (
-            <>
-              <p className="text-sm font-medium text-fg">{t("Certified native apps:")}</p>
-              {info.descriptor.certifiedApps.map((app) => (
-                <div key={app.name} className="space-y-1 text-sm">
-                  <p className="font-medium text-fg">{app.name}</p>
-                  <ol className="list-decimal space-y-0.5 pl-5 text-fg-muted">
-                    {app.steps.map((step, index) => {
-                      const label = connectionStep(step);
-                      return label ? <li key={index}>{label}</li> : null;
-                    })}
-                  </ol>
-                </div>
-              ))}
-            </>
-          ) : info.descriptor.id === "vela" ? (
-            <p className="text-sm text-fg-muted">
-              {t(
-                "Open Watch to play in your browser, or install the Vela app on web, Windows, macOS, or Apple TV and connect with the server address above.",
-              )}
-            </p>
-          ) : (
-            <p className="text-sm text-fg-muted">
-              {t(
-                "Open the app, add the server address above, and sign in. Infuse, Swiftfin, Findroid, and Streamyfin are the usual places to start.",
-              )}
-            </p>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function WordmarkImage({
@@ -723,19 +501,32 @@ function VelaBranding({
     </SettingsSection>
   );
 }
+
 function ProtocolSettings({
   id,
   info,
   hidden,
+  serverPort,
+  serverName,
+  toggleBusy,
+  onToggle,
+  onReloadFrontends,
 }: {
   id: string;
   info?: FrontendInfo;
   hidden: boolean;
+  serverPort: number;
+  serverName: string;
+  toggleBusy: boolean;
+  onToggle: (enabled: boolean) => void;
+  onReloadFrontends: () => Promise<unknown>;
 }) {
   const state = useAsync(() => apiFetch<Settings>(`/frontends/${id}/settings`), [id]);
   const { draft, setDraft, dirty, reset } = useDraft(state.data);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>();
+  const editablePort = DEDICATED_PORT_APPS.has(id);
+
   async function save() {
     if (!draft) return;
     const publicUrlError = validateCustomUrls(draft.publicUrl ? [draft.publicUrl] : []);
@@ -743,7 +534,15 @@ function ProtocolSettings({
       setError(new Error(publicUrlError));
       return;
     }
-    const { serverName: _serverName, port: _port, ...body } = draft;
+    const { serverName: _serverName, port: rawPort, ...body } = draft;
+    if (editablePort) {
+      const nextPort = rawPort ?? info?.descriptor.defaultPort;
+      if (nextPort == null || !Number.isInteger(nextPort) || nextPort < 1 || nextPort > 65535) {
+        setError(new Error(t("Enter a port between 1 and 65535.")));
+        return;
+      }
+      (body as Settings).port = nextPort;
+    }
     if (id === "vela") {
       const trimmedName = (body.appName ?? "").trim();
       if ([...trimmedName].length > VELA_MAX_APP_NAME_CHARS) {
@@ -758,18 +557,68 @@ function ProtocolSettings({
     setError(undefined);
     try {
       await apiFetch(`/frontends/${id}/settings`, { method: "PUT", body: JSON.stringify(body) });
-      await state.reload();
+      await Promise.all([state.reload(), onReloadFrontends()]);
     } catch (err) {
       setError(err);
     } finally {
       setSaving(false);
     }
   }
-  if (id === "vela" && !info?.enabled && !info?.status.webPlayerReady)
-    return hidden ? null : <VelaDistribution />;
-  if (state.error)
-    return hidden ? null : <ErrorPanel error={state.error} onRetry={() => void state.reload()} />;
-  if (!draft) return hidden ? null : <LoadingRows />;
+
+  const connectionCards =
+    !hidden && info ? (
+      <>
+        <AppAddressCard
+          info={info}
+          configuredRemote={draft?.publicUrl}
+          port={draft ? draft.port : info.descriptor.defaultPort}
+          onPortChange={
+            draft && editablePort ? (port) => setDraft({ ...draft, port }) : undefined
+          }
+          serverPort={serverPort}
+          busy={toggleBusy}
+          onToggle={onToggle}
+        />
+        <ConnectDeviceCard
+          info={info}
+          configuredRemote={draft?.publicUrl}
+          preferredPort={String(draft?.port ?? info.descriptor.defaultPort ?? serverPort)}
+          serverName={serverName}
+        />
+      </>
+    ) : null;
+
+  if (id === "vela" && !info?.enabled && !info?.status.webPlayerReady) {
+    return (
+      <>
+        <div hidden={hidden} className="space-y-6">
+          {connectionCards}
+          {!hidden ? <VelaDistribution /> : null}
+        </div>
+      </>
+    );
+  }
+  if (state.error) {
+    return (
+      <>
+        <div hidden={hidden} className="space-y-6">
+          {connectionCards}
+          {!hidden ? <ErrorPanel error={state.error} onRetry={() => void state.reload()} /> : null}
+        </div>
+      </>
+    );
+  }
+  if (!draft) {
+    return (
+      <>
+        <div hidden={hidden} className="space-y-6">
+          {connectionCards}
+          {!hidden ? <LoadingRows /> : null}
+        </div>
+      </>
+    );
+  }
+
   const named = ["jellyfin", "emby", "silo", "dlna"].includes(id);
   const lanViewer = info?.descriptor.auth === "none_lan";
   const more: {
@@ -791,17 +640,11 @@ function ProtocolSettings({
       help: t("Leave this off on a network you do not trust."),
     });
   }
-  const shared =
-    id === "stremio"
-      ? t("Stremio uses an addon address from your account page. It does not have its own port.")
-      : id === "webdav"
-        ? t("Other apps open this library as files. The address is on your account page.")
-        : id === "m3u"
-          ? t("Live TV apps use a playlist from your account page.")
-          : "";
+
   return (
     <>
       <div hidden={hidden} className="space-y-6">
+        {connectionCards}
         {id === "vela" && !hidden ? (
           <>
             <VelaDistribution />
@@ -843,15 +686,6 @@ function ProtocolSettings({
           />
         ) : null}
         {id === "xtream" && info?.enabled ? <XtreamLogins /> : null}
-        {shared ? (
-          <SettingsSection title={t("Connect")} description={shared}>
-            <div className="px-5 py-3">
-              <Button asChild variant="outline">
-                <Link to="/me">{t("Open your account")}</Link>
-              </Button>
-            </div>
-          </SettingsSection>
-        ) : null}
         {id !== "plex" &&
         id !== "dlna" &&
         !lanViewer &&
@@ -1085,18 +919,6 @@ function LANViewer({
   );
 }
 
-function AppStatus({ info }: { info: FrontendInfo }) {
-  return (
-    <>
-      <LevelBadge
-        level={info.status.error ? "error" : info.enabled ? "ok" : "off"}
-        label={info.enabled ? t("On") : t("Off")}
-      />
-      {info.status.error ? <span className="text-danger">{info.status.error}</span> : null}
-    </>
-  );
-}
-
 /** How viewers sign in to Jellyfin, Emby and Silo, with Jellyfin's Quick Connect switch. */
 function SignInSection({
   info,
@@ -1158,90 +980,47 @@ function SignInSection({
   );
 }
 
-function AppDetail({ info, startOpen = false }: { info: FrontendInfo; startOpen?: boolean }) {
-  const addresses = usableAddresses(info.status);
-  const [selectedURL, setSelectedURL] = useState("");
-  const chosen = addresses.includes(selectedURL) ? selectedURL : addresses[0];
-  const away = awaySummary(info.status, { homeNetwork: true });
-  const watchAction =
-    info.descriptor.id === "vela" && info.status.webPlayerReady ? (
-      <WatchButton app="vela" variant="outline" />
-    ) : null;
-  return (
-    <div className="space-y-6 pb-6">
-      <SettingsSection title={t("Status")}>
-        <HomeStatusRow status={info.status} address={chosen} />
-        <ConnectionStatusRow state={info.status.wan} title={away.title} detail={away.detail} />
-        {info.status.error ? (
-          <StatusRow
-            state="unreachable"
-            title={t("Connection problem")}
-            description={info.status.error}
-          />
-        ) : null}
-        {info.status.warnings?.map((warning) => (
-          <StatusRow
-            key={warning}
-            state="warning"
-            title={t("Needs attention")}
-            description={frontendWarning(warning)}
-          />
-        ))}
-        <ConnectDevice
-          info={info}
-          startOpen={startOpen}
-          selectedURL={chosen}
-          onSelectedURL={setSelectedURL}
-          leadingAction={watchAction}
-        />
-      </SettingsSection>
-    </div>
-  );
-}
-
 export default function Apps() {
-  const { dashboard } = useApp();
+  const { boot, dashboard } = useApp();
   const state = useAsync((signal) => apiFetch<FrontendInfo[]>("/frontends", { signal }), []);
+  const configState = useAsync(() => fetchEtherConfig(), []);
   const { tab: routeTab, section: routeSection } = useParams();
-  const [searchParams] = useSearchParams();
-  const connectOpen = searchParams.get("connect") === "1";
   const navigate = useNavigate();
   const apps = [...(state.data ?? [])].sort(
     (a, b) => appRank(a.descriptor.id) - appRank(b.descriptor.id),
   );
-  const overviewApps = [...apps].sort(
-    (a, b) =>
-      Number(b.enabled) - Number(a.enabled) || appRank(a.descriptor.id) - appRank(b.descriptor.id),
-  );
   const plexInfo = apps.find((info) => info.descriptor.id === "plex");
   const plexOn = plexInfo?.enabled === true;
-  const showPlex = plexOn && routeTab === "plex";
+  const matchedApp =
+    routeTab && routeTab !== "overview"
+      ? apps.find((info) => pathFor(info.descriptor.id) === routeTab)
+      : undefined;
   const tabs = [
     { key: "overview", label: t("Overview") },
     ...apps
-      .filter((info) => info.enabled || info.descriptor.id === "vela")
+      .filter(
+        (info) =>
+          info.enabled ||
+          info.descriptor.id === "vela" ||
+          pathFor(info.descriptor.id) === routeTab,
+      )
       .map((info) => ({ key: pathFor(info.descriptor.id), label: nameFor(info) })),
   ];
   const routed = useRouteTab(tabs, "overview");
-  const tab = showPlex ? "plex" : routed;
+  const tab = routeTab === "plex" && plexInfo ? "plex" : routed;
   const [visited, setVisited] = useState(() => new Set([tab]));
   useEffect(() => {
     setVisited((old) => (old.has(tab) ? old : new Set([...old, tab])));
   }, [tab]);
   useEffect(() => {
     if (!state.data || !routeTab || routeTab === "overview") return;
-    const plexEnabled = state.data.some((info) => info.descriptor.id === "plex" && info.enabled);
-    if (routeTab === "plex") {
-      if (!plexEnabled) navigate("/apps/overview", { replace: true });
-      return;
-    }
-    const match = state.data.find((info) => pathFor(info.descriptor.id) === routeTab);
-    if (!match?.enabled && match?.descriptor.id !== "vela")
-      navigate("/apps/overview", { replace: true });
+    const known = state.data.some((info) => pathFor(info.descriptor.id) === routeTab);
+    if (!known) navigate("/apps/overview", { replace: true });
   }, [state.data, routeTab, navigate]);
   useInterval(() => void state.reload(), 10_000);
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState<string>();
+
   async function toggle(info: FrontendInfo, enabled: boolean) {
     setBusy(info.descriptor.id);
     setError(undefined);
@@ -1251,24 +1030,37 @@ export default function Apps() {
         body: JSON.stringify({ enabled }),
       });
       await state.reload();
-      if (!enabled && routeTab === pathFor(info.descriptor.id)) {
-        navigate("/apps/overview", { replace: true });
-      }
     } catch (err) {
       setError(err);
     } finally {
       setBusy(undefined);
     }
   }
+
+  const serverPort = configState.data?.server?.port ?? 32400;
+  const serverName = configState.data?.server?.friendlyName || boot?.serverName || "Ether";
+
   return (
-    <DomainPage title={t("Apps")} base="/apps" tabs={tabs} active={tab}>
+    <DomainPage
+      title={t("Apps")}
+      base="/apps"
+      tabs={tabs}
+      active={tab}
+      actions={tab === "overview" && state.data ? <OverviewPortConflictChip apps={apps} /> : undefined}
+    >
       {tab === "overview" &&
         (state.error ? (
           <ErrorPanel error={state.error} onRetry={() => void state.reload()} />
         ) : !state.data ? (
           <LoadingRows />
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-6">
+            <ServerAddressPanel
+              frontends={apps}
+              configData={configState.data}
+              configError={configState.error}
+              onReloadConfig={() => configState.reload()}
+            />
             {plexOn &&
             isPlainObject(dashboard?.sections.remote) &&
             dashboard.sections.remote.claimed === false ? (
@@ -1278,50 +1070,57 @@ export default function Apps() {
                 </Link>
               </p>
             ) : null}
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {overviewApps.map((info) => (
-                <IntegrationAppCard
-                  key={info.descriptor.id}
-                  identity={{ id: info.descriptor.id, name: nameFor(info) }}
-                  logo={appLogo(info.descriptor.id)}
-                  description={appPurpose(info.descriptor.id)}
-                  status={<AppStatus info={info} />}
-                  enabled={info.enabled}
-                  busy={busy === info.descriptor.id}
-                  disabled={busy != null && busy !== info.descriptor.id}
-                  toggleLabel={t("{app} enabled", { app: nameFor(info) })}
-                  onToggle={(enabled) => void toggle(info, enabled)}
-                  configureHref={
-                    info.enabled || info.descriptor.id === "vela"
-                      ? `/apps/${pathFor(info.descriptor.id)}`
-                      : undefined
-                  }
-                  configureLabel={
-                    info.descriptor.id === "vela" && !info.status.webPlayerReady
-                      ? t("Install Vela")
-                      : t("Settings")
-                  }
-                />
-              ))}
-            </div>
+            <SettingsSection
+              title={t("Apps")}
+              description={t(
+                "Turn apps on or off, copy their address, or open an app to set up devices and ports.",
+              )}
+            >
+              <div className="divide-y divide-border">
+                {apps.map((info) => (
+                  <AppOverviewRow
+                    key={info.descriptor.id}
+                    info={info}
+                    busy={busy === info.descriptor.id}
+                    disabled={busy != null && busy !== info.descriptor.id}
+                    onToggle={(enabled) => void toggle(info, enabled)}
+                  />
+                ))}
+              </div>
+            </SettingsSection>
             <AwayFromHome />
           </div>
         ))}
-      {(visited.has("plex") || showPlex) && (
-        <PlexApp hidden={tab !== "plex"} section={routeSection} status={plexInfo?.status} />
+      {(visited.has("plex") || tab === "plex") && (
+        <PlexApp
+          hidden={tab !== "plex"}
+          section={routeSection}
+          info={plexInfo}
+          busy={busy === "plex"}
+          onToggle={plexInfo ? (enabled) => void toggle(plexInfo, enabled) : undefined}
+          onReloadFrontends={() => state.reload()}
+        />
       )}
-      {tabs
-        .filter((item) => !["overview", "plex"].includes(item.key) && visited.has(item.key))
-        .map((item) => {
-          const info = apps.find((app) => pathFor(app.descriptor.id) === item.key);
+      {apps
+        .filter((info) => info.descriptor.id !== "plex")
+        .filter((info) => {
+          const key = pathFor(info.descriptor.id);
+          return visited.has(key) || tab === key || matchedApp?.descriptor.id === info.descriptor.id;
+        })
+        .map((info) => {
+          const key = pathFor(info.descriptor.id);
           return (
-            <div key={item.key}>
-              {tab === item.key &&
-              info &&
-              (info.descriptor.id !== "vela" || info.status.webPlayerReady) ? (
-                <AppDetail info={info} startOpen={connectOpen} />
-              ) : null}
-              <ProtocolSettings id={protocolFor(item.key)} info={info} hidden={tab !== item.key} />
+            <div key={key} hidden={tab !== key}>
+              <ProtocolSettings
+                id={protocolFor(key)}
+                info={info}
+                hidden={tab !== key}
+                serverPort={serverPort}
+                serverName={serverName}
+                toggleBusy={busy === info.descriptor.id}
+                onToggle={(enabled) => void toggle(info, enabled)}
+                onReloadFrontends={() => state.reload()}
+              />
             </div>
           );
         })}

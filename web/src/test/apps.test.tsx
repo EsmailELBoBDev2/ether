@@ -2,14 +2,17 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Apps from "../pages/apps/Apps";
+import { classifyAppAddresses } from "../pages/apps/ConnectionHub";
+import { usableAddresses } from "../pages/apps/reachability";
 
 const apiFetch = vi.fn();
+const apiBlob = vi.fn();
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
     ...actual,
     apiFetch: (...args: unknown[]) => apiFetch(...args),
-    apiBlob: () => Promise.reject(new Error("QR unavailable")),
+    apiBlob: (...args: unknown[]) => apiBlob(...args),
   };
 });
 vi.mock("../app-context", () => ({
@@ -24,6 +27,7 @@ type AppRow = {
   descriptor: {
     id: string;
     name: string;
+    defaultPort?: number;
     certifiedApps?: { name: string; steps: string[] }[];
     settingsSchema?: unknown;
   };
@@ -32,6 +36,10 @@ type AppRow = {
     webPlayerReady?: boolean;
     addresses: string[];
     connectUrls?: string[];
+    busyPort?: number;
+    actualPort?: number;
+    busyPortHolder?: string;
+    warnings?: string[];
     lan: string;
     wan: string;
     clients24h: number;
@@ -44,7 +52,6 @@ type AppRow = {
   };
 };
 
-/** The settings schema the server serves for these rows (WS1d). */
 const servedSchema = {
   signInHelp: true,
   sections: [
@@ -59,13 +66,39 @@ const servedSchema = {
   ],
 };
 
+const defaultConfig = () => ({
+  server: {
+    port: 32400,
+    friendlyName: "Living Room Ether",
+    allowRemoteConsole: false,
+    bindAddress: "0.0.0.0",
+    machineIdentifier: "ether-machine-1",
+    webFrameOrigins: [],
+    trustedProxyCIDRs: [],
+  },
+  plex: {
+    claimed: true,
+    ownerUsername: "Braedon",
+    remoteAccess: true,
+  },
+});
+
 function row(id: string, name: string, enabled: boolean, extra?: Partial<AppRow>): AppRow {
+  const defaultPort =
+    id === "jellyfin" ? 8096 : id === "emby" ? 8097 : id === "silo" ? 8090 : id === "plex" ? 32400 : undefined;
+  const addr = defaultPort ? `http://192.168.1.2:${defaultPort}` : `http://192.168.1.2:32400/${id}`;
   return {
-    descriptor: { id, name, settingsSchema: servedSchema, ...extra?.descriptor },
+    descriptor: {
+      id,
+      name,
+      ...(defaultPort ? { defaultPort } : {}),
+      settingsSchema: servedSchema,
+      ...extra?.descriptor,
+    },
     enabled,
     status: {
-      addresses: enabled ? ["192.168.1.2:8090"] : [],
-      connectUrls: ["http://192.168.1.2:8090"],
+      addresses: enabled ? [addr] : [],
+      connectUrls: enabled ? [addr] : [],
       lan: "reachable",
       wan: "unknown",
       clients24h: 1,
@@ -95,116 +128,208 @@ function renderApps(entry: string) {
   );
 }
 
-describe("Apps", () => {
+describe("Apps connection hub", () => {
   beforeEach(() => {
     apiFetch.mockReset();
+    apiBlob.mockReset();
+    apiBlob.mockRejectedValue(new Error("QR unavailable"));
   });
 
-  it("shows live status and toggles a registered protocol", async () => {
-    let enabled = true;
+  it("always prioritizes dedicated listener ports over shared-port paths", () => {
+    const status = {
+      connectUrls: [
+        "http://192.168.68.65:32400/jellyfin",
+        "http://192.168.68.65:8096",
+        "http://100.65.221.123:8096",
+        "http://[fd79:f184::1]:8096",
+        "https://jelly.example.com",
+      ],
+      addresses: ["http://192.168.68.65:8096"],
+    };
+    expect(usableAddresses(status)[0]).toBe("http://192.168.68.65:8096");
+    const classified = classifyAppAddresses(status, { preferredPort: "8096" });
+    expect(classified.primary).toBe("http://192.168.68.65:8096");
+    expect(classified.others).toEqual([
+      { address: "http://192.168.68.65:32400/jellyfin", label: "Also reachable at" },
+      { address: "http://100.65.221.123:8096", label: "Tailscale" },
+      { address: "https://jelly.example.com", label: "Remote" },
+      { address: "http://[fd79:f184::1]:8096", label: "LAN IPv6" },
+    ]);
+  });
+
+  it("renders the Server address panel and canonical app rows on Overview without inline port editors", async () => {
+    let remoteConsole = false;
     apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config" && !options?.method) {
+        const cfg = defaultConfig();
+        cfg.server.allowRemoteConsole = remoteConsole;
+        return cfg;
+      }
+      if (path === "/config/server" && options?.method === "PUT") {
+        const body = JSON.parse(String(options.body));
+        remoteConsole = Boolean(body.allowRemoteConsole);
+        return { ok: true };
+      }
       if (path === "/frontends" && !options?.method) {
         return [
-          row("silo", "Silo", enabled, {
-            descriptor: {
-              id: "silo",
-              name: "Silo",
-              certifiedApps: [
-                { name: "Certified player", steps: ["openApp", "addServer", "unknown"] },
+          row("xtream", "IPTV apps (Xtream)", false),
+          row("plex", "Plex", true, {
+            status: {
+              addresses: ["127.0.0.1:32400"],
+              connectUrls: [
+                "http://192.168.1.2:32400",
+                "http://100.64.0.2:32400",
+                "https://203-0-113-7.abc.plex.direct:32400",
               ],
+              lan: "reachable",
+              wan: "reachable",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
             },
           }),
+          row("vela", "Vela", true, {
+            status: {
+              webPlayerReady: true,
+              addresses: ["http://192.168.1.2:32400/vela"],
+              connectUrls: ["http://192.168.1.2:32400/vela"],
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+          row("jellyfin", "Jellyfin", true),
+          row("emby", "Emby", false),
+          row("stremio", "Stremio", true),
+          row("silo", "Silo", true),
+          row("dlna", "DLNA", false),
+          row("webdav", "Files (WebDAV)", true),
+          row("m3u", "M3U & XMLTV", false),
         ];
       }
-      if (path === "/frontends/silo/enabled") {
-        enabled = false;
-        return { ok: true };
-      }
-      if (path === "/frontends/silo/settings") return { port: 8090 };
       throw new Error(`Unexpected request: ${path}`);
     });
+
     renderApps("/apps");
-    expect(await screen.findByRole("switch", { name: "Silo enabled" })).toBeChecked();
-    expect(screen.getByText("On")).toBeInTheDocument();
-    expect(screen.queryByText("192.168.1.2:8090")).not.toBeInTheDocument();
-    expect(screen.queryByText(/LAN:/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Connect a device" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Server address" })).toBeInTheDocument();
+    expect(document.querySelector('[data-setting="server-port"]')).toHaveTextContent("32400");
     expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Silo" }));
-    expect(await screen.findByText(/· Reachable/)).toBeInTheDocument();
-    expect(screen.getByText(/192\.168\.1\.2:8090/)).toBeInTheDocument();
-    expect(screen.queryByText(/LAN:/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Outside access is not checked/)).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "How people sign in" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Copy address" })).toHaveLength(2);
-    expect(
-      screen.getByText("Create an app password under Connect apps in your account."),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/The Emby for TV/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Open my account" })).not.toBeInTheDocument();
-    expect(screen.getByText("People sign in with their Ether viewer account.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Viewers" })).toHaveAttribute("href", "/viewers");
-    fireEvent.click(screen.getByRole("button", { name: "Connect a device" }));
-    expect(screen.getByText("Certified player")).toBeInTheDocument();
-    expect(screen.getByText("Open the app on your device.")).toBeInTheDocument();
-    expect(screen.queryByText("unknown")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
-    fireEvent.click(screen.getByRole("switch", { name: "Silo enabled" }));
+    expect(screen.getAllByText("http://192.168.1.2:32400").length).toBeGreaterThan(0);
+    expect(screen.getByText("http://100.64.0.2:32400")).toBeInTheDocument();
+    expect(screen.getByText("https://203-0-113-7.abc.plex.direct:32400")).toBeInTheDocument();
+
+    const remoteSwitch = screen.getByRole("switch", {
+      name: "Open this console from outside your network",
+    });
+    expect(remoteSwitch).not.toBeChecked();
+    fireEvent.click(remoteSwitch);
     await waitFor(() =>
-      expect(screen.getByRole("switch", { name: "Silo enabled" })).not.toBeChecked(),
+      expect(apiFetch).toHaveBeenCalledWith("/config/server", {
+        method: "PUT",
+        body: JSON.stringify({ allowRemoteConsole: true }),
+      }),
     );
-    expect(apiFetch).toHaveBeenCalledWith("/frontends/silo/enabled", {
-      method: "PUT",
-      body: JSON.stringify({ enabled: false }),
-    });
-    expect(screen.queryByRole("tab", { name: "Silo" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
+
+    const rows = Array.from(document.querySelectorAll("[data-app-id]"));
+    expect(rows.map((el) => el.getAttribute("data-app-id"))).toEqual([
+      "vela",
+      "plex",
+      "jellyfin",
+      "emby",
+      "stremio",
+      "silo",
+      "dlna",
+      "webdav",
+      "m3u",
+      "xtream",
+    ]);
+
+    const jellyfinRow = document.querySelector('[data-app-id="jellyfin"]') as HTMLElement;
+    expect(within(jellyfinRow).getByText("Listening")).toBeInTheDocument();
+    expect(within(jellyfinRow).getByText("http://192.168.1.2:8096")).toBeInTheDocument();
+    expect(within(jellyfinRow).getByRole("link", { name: "Jellyfin" })).toHaveAttribute(
+      "href",
+      "/apps/jellyfin",
+    );
+
+    const embyRow = document.querySelector('[data-app-id="emby"]') as HTMLElement;
+    expect(within(embyRow).getByText("Off")).toBeInTheDocument();
+    expect(within(embyRow).getByRole("link", { name: "Emby" })).toHaveAttribute(
+      "href",
+      "/apps/emby",
+    );
   });
 
-  it("reveals a config tab when an app is enabled and keeps forms off the overview", async () => {
-    let enabled = false;
-    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
-      if (path === "/frontends" && !options?.method) return [row("jellyfin", "Jellyfin", enabled)];
-      if (path === "/frontends/jellyfin/enabled") {
-        enabled = true;
-        return { ok: true };
-      }
-      if (path === "/frontends/jellyfin/settings") return { serverName: "House", port: 8096 };
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderApps("/apps");
-    expect(await screen.findByRole("switch", { name: "Jellyfin enabled" })).not.toBeChecked();
-    expect(screen.queryByRole("tab", { name: "Jellyfin" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "Server name" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("switch", { name: "Jellyfin enabled" }));
-    expect(await screen.findByRole("tab", { name: "Jellyfin" })).toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Jellyfin" }));
-    expect(await screen.findByText("Quick Connect")).toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Server name")).not.toBeInTheDocument();
-    expect(screen.queryByText("Server identity")).not.toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "Server name" })).not.toBeInTheDocument();
-  });
-
-  it("shows the chosen Jellyfin address with a styled picker and a single Other addresses disclosure", async () => {
-    const urls = [
-      "http://192.168.68.65:32400/jellyfin",
-      "http://192.168.68.65:8098",
-      "http://[fd79:f184::1]:32400/jellyfin",
-      "http://100.65.221.123:8098",
-      "http://10.255.0.2:32400/jellyfin",
-    ];
+  it("surfaces port conflicts on the Overview header chip, app row, and app page", async () => {
     apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/config") return defaultConfig();
       if (path === "/frontends") {
         return [
           row("jellyfin", "Jellyfin", true, {
             status: {
-              addresses: urls,
-              connectUrls: urls,
-              lan: "unknown",
+              addresses: ["127.0.0.1:8098"],
+              connectUrls: [
+                "http://192.168.1.2:8098",
+                "http://192.168.1.2:32400/jellyfin",
+              ],
+              busyPort: 8096,
+              actualPort: 8098,
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+        ];
+      }
+      if (path === "/frontends/jellyfin/settings") return { port: 8096 };
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderApps("/apps");
+    const chip = await screen.findByTestId("overview-port-conflict-chip");
+    expect(chip).toHaveTextContent("Port conflict · Jellyfin using 8098 (8096 in use)");
+    expect(
+      screen.getByText("Using 8098: port 8096 is taken by another program on this computer"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/jellyfin"));
+    expect(
+      screen.getAllByText("Using 8098: port 8096 is taken by another program on this computer")
+        .length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("link", { name: "http://192.168.1.2:8098" })).toBeInTheDocument();
+  });
+
+  it("edits and saves a dedicated app port on the app page alongside Connect a device", async () => {
+    let savedPort = 8096;
+    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
+      if (path === "/frontends" && !options?.method) {
+        return [
+          row("jellyfin", "Jellyfin", true, {
+            status: {
+              addresses: [`127.0.0.1:${savedPort}`],
+              connectUrls: [
+                `http://192.168.68.65:32400/jellyfin`,
+                `http://192.168.68.65:${savedPort}`,
+                `http://100.65.221.123:${savedPort}`,
+                `http://[fd79:f184::1]:${savedPort}`,
+              ],
+              lan: "reachable",
               wan: "unknown",
               clients24h: 0,
               clients24hKnown: false,
@@ -216,34 +341,50 @@ describe("Apps", () => {
           }),
         ];
       }
-      if (path === "/frontends/jellyfin/settings") return { serverName: "House", port: 8096 };
+      if (path === "/frontends/jellyfin/settings" && !options?.method) {
+        return { serverName: "House", port: savedPort };
+      }
+      if (path === "/frontends/jellyfin/settings" && options?.method === "PUT") {
+        const body = JSON.parse(String(options.body));
+        savedPort = body.port;
+        return { ok: true };
+      }
       throw new Error(`Unexpected request: ${path}`);
     });
-    const { container } = renderApps("/apps/jellyfin");
-    const line = await screen.findByRole("link", { name: urls[0] });
-    expect(line.textContent).toContain("http://192.168.68.65:32400/jellyfin");
-    expect(line.textContent).not.toMatch(/fd79|100\.65|10\.255|:8098/);
-    expect(screen.queryByText("http://[fd79:f184::1]:32400/jellyfin")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Other addresses" }));
-    expect(screen.getByText("http://[fd79:f184::1]:32400/jellyfin")).toBeInTheDocument();
-    expect(line.textContent).not.toMatch(/fd79/);
-    fireEvent.click(screen.getByRole("button", { name: "Connect a device" }));
-    expect(screen.queryByRole("button", { name: "Connect a device" })).not.toBeInTheDocument();
-    expect(container.querySelector("select")).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Other addresses" })).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Server address" }));
-    fireEvent.click(await screen.findByRole("option", { name: "http://192.168.68.65:8098" }));
+
+    renderApps("/apps/jellyfin");
     expect(
-      screen.getAllByRole("link", { name: "http://192.168.68.65:8098" })[0],
+      await screen.findByRole("link", { name: "http://192.168.68.65:8096" }),
     ).toBeInTheDocument();
-    expect(line).not.toHaveTextContent("32400/jellyfin");
+    expect(screen.getByText("Also reachable at")).toBeInTheDocument();
+    expect(screen.getByText("http://192.168.68.65:32400/jellyfin")).toBeInTheDocument();
+    expect(screen.getByText("Tailscale")).toBeInTheDocument();
+    expect(screen.getByText("LAN IPv6")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Connect a device" })).toBeInTheDocument();
+    expect(screen.getByText("Jellyfin, Swiftfin, Streamyfin, Infuse")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Server name" })).not.toBeInTheDocument();
+
+    const portInput = await screen.findByRole("spinbutton", { name: "Port" });
+    expect(portInput).toHaveValue(8096);
+    fireEvent.change(portInput, { target: { value: "8099" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith("/frontends/jellyfin/settings", {
+        method: "PUT",
+        body: JSON.stringify({ port: 8099 }),
+      }),
+    );
+    expect(
+      await screen.findByRole("link", { name: "http://192.168.68.65:8099" }),
+    ).toBeInTheDocument();
   });
 
-  it("places Watch inside Vela Status as a bordered button and shows Vela-specific setup copy", async () => {
+  it("places Watch inside Vela's address card and shows Vela-specific setup steps", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ documents: [] }), { status: 200 }),
     );
     apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/config") return defaultConfig();
       if (path === "/frontends") {
         return [
           row("vela", "Vela", true, {
@@ -265,120 +406,40 @@ describe("Apps", () => {
       }
       if (path === "/frontends/vela/settings") return { defaultSkinId: "cinematic" };
       if (path === "/vela/skins") return { skins: [] };
-      if (path === "/frontends/vela/distribution")
-        return { installed: true, version: "0.4.0", channel: "bundled" };
-      if (path === "/web-player")
+      if (path === "/vela/status" || path === "/vela/check") {
+        return {
+          installed: true,
+          installedVersion: "0.4.0",
+          availableVersion: "0.4.0",
+          rollbackAvailable: false,
+          busy: false,
+          phase: "",
+          downloaded: 0,
+          total: 0,
+        };
+      }
+      if (path === "/web-player") {
         return {
           available: true,
           players: [{ id: "vela", url: "http://192.168.68.65:32550/vela/" }],
         };
+      }
       throw new Error(`Unexpected request: ${path}`);
     });
     renderApps("/apps/vela");
-    const statusHeading = await screen.findByRole("heading", { name: "Status" });
-    const statusCard = statusHeading.closest("section")!;
-    const watchBtn = await within(statusCard).findByRole("button", {
-      name: "Open the web player",
-    });
+    const watchBtn = await screen.findByRole("button", { name: "Open the web player" });
     expect(watchBtn).toHaveClass("border");
     expect(screen.getAllByRole("button", { name: "Open the web player" })).toHaveLength(1);
-    fireEvent.click(within(statusCard).getByRole("button", { name: "Connect a device" }));
     expect(
-      within(statusCard).getByText(
-        "Open Watch to play in your browser, or install the Vela app on web, Windows, macOS, or Apple TV and connect with the server address above.",
-      ),
+      screen.getByText("Web browser, Vela for macOS, Windows, iPhone, iPad and Apple TV"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Swiftfin/)).not.toBeInTheDocument();
     vi.restoreAllMocks();
   });
 
-  it("sorts Overview cards with enabled apps first in tab-bar order, then disabled apps", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/frontends") {
-        return [
-          row("stremio", "Stremio", false),
-          row("plex", "Plex", true),
-          row("dlna", "DLNA", false),
-          row("emby", "Emby", true),
-          row("silo", "Silo", false),
-          row("vela", "Vela", true, {
-            status: {
-              webPlayerReady: true,
-              addresses: ["http://192.168.1.2:32550/vela"],
-              connectUrls: ["http://192.168.1.2:32550/vela"],
-              lan: "reachable",
-              wan: "unknown",
-              clients24h: 0,
-              clients24hKnown: true,
-              liveStreams: 0,
-              liveStreamsKnown: true,
-              targetVersion: "1",
-              conformance: "passing",
-            },
-          }),
-          row("jellyfin", "Jellyfin", true),
-        ];
-      }
-      if (path === "/plex/remote") return { addresses: [] };
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderApps("/apps");
-    const switches = await screen.findAllByRole("switch");
-    expect(switches.map((el) => el.getAttribute("aria-label"))).toEqual([
-      "Vela enabled",
-      "Plex enabled",
-      "Jellyfin enabled",
-      "Emby enabled",
-      "Stremio enabled",
-      "Silo enabled",
-      "DLNA enabled",
-    ]);
-  });
-
-  it("hides Connect a device when the panel is already open", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/frontends") return [row("jellyfin", "Jellyfin", true)];
-      if (path === "/frontends/jellyfin/settings") return { serverName: "House", port: 8096 };
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderApps("/apps/jellyfin?connect=1");
-    expect(await screen.findByText(/Enter this server address/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Connect a device" })).not.toBeInTheDocument();
-  });
-
-  it.each(["jellyfin"])("sends an unavailable %s deep link back to the overview", async (id) => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/frontends")
-        return [row(id, id === "vela" ? "Vela" : "Jellyfin", id === "vela")];
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    renderApps(`/apps/${id}`);
-    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/overview"));
-    expect(
-      screen.queryByRole("tab", { name: id === "vela" ? "Vela" : "Jellyfin" }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
-  });
-
-  it("sends a disabled Plex route back to the overview", async () => {
-    apiFetch.mockImplementation(async (path: string) => {
-      if (path === "/frontends") return [row("plex", "Plex", false)];
-      throw new Error(`Unexpected request: ${path}`);
-    });
-    const { unmount } = renderApps("/apps/plex");
-    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/overview"));
-    expect(screen.queryByRole("tab", { name: "Plex" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
-    expect(screen.getByText("Off")).toBeInTheDocument();
-    unmount();
-    renderApps("/apps/plex/remote");
-    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/overview"));
-    expect(screen.queryByLabelText("Secure connections")).not.toBeInTheDocument();
-  });
-
   it("keeps the previous switch state when enabling fails", async () => {
     apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
       if (path === "/frontends" && !options?.method) return [row("silo", "Silo", true)];
       if (path === "/frontends/silo/enabled") throw new Error("enable failed");
       throw new Error(`Unexpected request: ${path}`);
@@ -392,6 +453,16 @@ describe("Apps", () => {
     expect(screen.getByRole("tab", { name: "Silo" })).toBeInTheDocument();
   });
 
+  it("redirects an unknown app route back to the overview", async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/config") return defaultConfig();
+      if (path === "/frontends") return [row("jellyfin", "Jellyfin", true)];
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    renderApps("/apps/not-an-app");
+    await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/apps/overview"));
+  });
+
   it("edits Vela app name, uploads light and dark wordmarks, updates live preview, and saves trimmed branding", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ documents: [] }), { status: 200 }),
@@ -399,6 +470,7 @@ describe("Apps", () => {
     let savedSettings: Record<string, unknown> = { defaultSkinId: "cinematic" };
     let uploadCall = 0;
     apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
       if (path === "/frontends" && !options?.method) {
         return [
           row("vela", "Vela", true, {
@@ -430,19 +502,7 @@ describe("Apps", () => {
           ? { url: "/vela/v0/branding/aaaa.svg", width: 240, height: 48 }
           : { url: "/vela/v0/branding/bbbb.svg", width: 240, height: 48 };
       }
-      if (path === "/vela/status") {
-        return {
-          installed: true,
-          installedVersion: "0.4.0",
-          availableVersion: "0.4.0",
-          rollbackAvailable: false,
-          busy: false,
-          phase: "",
-          downloaded: 0,
-          total: 0,
-        };
-      }
-      if (path === "/vela/check") {
+      if (path === "/vela/status" || path === "/vela/check") {
         return {
           installed: true,
           installedVersion: "0.4.0",

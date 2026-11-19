@@ -66,6 +66,9 @@ type Status struct {
 	LiveStreamsKnown bool      `json:"liveStreamsKnown"`
 	TargetVersion    string    `json:"targetVersion"`
 	Conformance      string    `json:"conformance"`
+	BusyPort         int       `json:"busyPort,omitempty"`
+	ActualPort       int       `json:"actualPort,omitempty"`
+	BusyPortHolder   string    `json:"busyPortHolder,omitempty"`
 	Error            string    `json:"error,omitempty"`
 	Warnings         []string  `json:"warnings,omitempty"`
 }

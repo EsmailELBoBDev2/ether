@@ -20,8 +20,8 @@ func sharedPrefix(id string) string {
 }
 
 // consoleConnectURLs is what the owner console shows for an app. It prefers
-// the address the owner is already using (or a configured custom URL) and
-// never offers a container bridge address.
+// the protocol's own dedicated listener port over Ether's shared-port path
+// ("also reachable at"), and never offers a container bridge address.
 func consoleConnectURLs(r *http.Request, id string, urls []string, cfg config.Config, trusted []netip.Prefix) []string {
 	scheme, host, ok := requestOrigin(r, trusted)
 	seen := map[string]bool{}
@@ -50,9 +50,6 @@ func consoleConnectURLs(r *http.Request, id string, urls []string, cfg config.Co
 	if consoleFrontendPolicy(id).MainListener && ok && !viaProxy(r) && !publicRouteHost(cfg, hostOnly(host)) {
 		add(originURL(scheme, host, ""))
 	}
-	if ok && prefix != "" {
-		add(originURL(scheme, host, prefix))
-	}
 	for _, raw := range urls {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
@@ -67,7 +64,10 @@ func consoleConnectURLs(r *http.Request, id string, urls []string, cfg config.Co
 		}
 		add(raw)
 	}
-	ranked := rankConnectURLs(out, host)
+	if ok && prefix != "" {
+		add(originURL(scheme, host, prefix))
+	}
+	ranked := rankConnectURLs(out, host, prefix)
 	if hasPublicURL {
 		// The owner set this address for the app; it is the one to hand out.
 		rest := ranked[:0]
@@ -99,10 +99,11 @@ func frontendPublicURL(cfg config.Config, id string) (string, bool) {
 }
 
 // rankConnectURLs puts the address the owner can hand to a device first.
-// A hostname or the LAN the console is already using wins. Home LAN
-// (192.168.0.0/16) beats other private ranges, which are often VPNs.
-// Loopback stays available but is not the default when a better address exists.
-func rankConnectURLs(urls []string, originHost string) []string {
+// For protocols with a dedicated listener port, that listener beats the
+// shared-port fallback path on Ether's main port. Home LAN (192.168.0.0/16)
+// beats other private ranges, which are often VPNs. Loopback stays available
+// but is not the default when a better address exists.
+func rankConnectURLs(urls []string, originHost, prefix string) []string {
 	type scored struct {
 		url   string
 		score int
@@ -110,7 +111,7 @@ func rankConnectURLs(urls []string, originHost string) []string {
 	}
 	rows := make([]scored, len(urls))
 	for i, raw := range urls {
-		rows[i] = scored{url: raw, score: connectScore(raw, originHost), index: i}
+		rows[i] = scored{url: raw, score: connectScore(raw, originHost, prefix), index: i}
 	}
 	for i := 1; i < len(rows); i++ {
 		row := rows[i]
@@ -130,7 +131,7 @@ func rankConnectURLs(urls []string, originHost string) []string {
 
 var tailscaleNet = netip.MustParsePrefix("100.64.0.0/10")
 
-func connectScore(raw, originHost string) int {
+func connectScore(raw, originHost, prefix string) int {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return -1
@@ -162,9 +163,12 @@ func connectScore(raw, originHost string) int {
 	if originHost != "" && sameHost(host, originHost) && score >= 40 {
 		score += 25
 	}
-	// Prefer the port the console is already open on, so the default matches
-	// the address the owner is looking at.
-	if originPort(originHost) != "" && originPort(originHost) == u.Port() && score >= 40 {
+	// A dedicated listener (root path on its own port) always beats the
+	// shared-port fallback path (/jellyfin, /emby, /silo) on the same tier.
+	if prefix != "" && (u.Path == "" || u.Path == "/") && score > 0 {
+		score += 15
+	} else if originPort(originHost) != "" && originPort(originHost) == u.Port() && score >= 40 {
+		// For main-listener and shared-only apps, prefer the port the console is open on.
 		score += 5
 	}
 	return score
@@ -298,16 +302,16 @@ func hostOnly(hostport string) string {
 	return strings.Trim(hostport, "[]")
 }
 
-func sameHost(a, b string) bool {
-	return strings.EqualFold(hostOnly(a), hostOnly(b))
-}
-
 func containerHost(host string) bool {
 	ip, err := netip.ParseAddr(strings.Trim(host, "[]"))
 	if err != nil {
 		return false
 	}
 	return dockerBridge.Contains(ip.Unmap())
+}
+
+func sameHost(a, b string) bool {
+	return strings.EqualFold(hostOnly(a), hostOnly(b))
 }
 
 func originURL(scheme, host, path string) string {

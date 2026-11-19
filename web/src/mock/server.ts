@@ -132,6 +132,8 @@ export interface FakeOptions {
   householdAudio?: boolean;
   /** Seed pre-rolls, their recent plays and a video still converting. */
   prerolls?: boolean;
+  /** Simulate a port conflict on Jellyfin (true / "named" / "unknown"). */
+  portConflict?: boolean | string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -3775,14 +3777,58 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const ex = experience.handle(method, seg, q);
     if (ex) return json(ex.body, ex.status);
 
+    if (seg[0] === "frontends" && seg[1] === "qr" && seg.length === 2 && method === "GET") {
+      const target = q.get("url") ?? "";
+      if (!target || /:\/\/[^/]*@/.test(target)) {
+        return err(400, "invalid_url", "Invalid URL");
+      }
+      const b64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAMAAAADAAQMAAABoEv5EAAAABlBMVEX///8AAABVwtN+AAABJklEQVR42uzWMa6rMBCF4R+5oPQSvBR2BsnOvJRZAiWFlfPkASV5UaorBbvgNAh9zQgP4+HKlR9FNUGSLTJ/uXUABUgwSbfR/OVMSNoSUBhkJar0A0GZdO8PFGzpCYAUVoAvZ94K9m5fp2Dz+OU3+C0AEJQd+EwrKAxbUgVIkt4+YkOAQUaUdPdnMDqAIEkFqF1fmAo9gPTwLpfN3vWyHgDmUVoJNni5b7/B70E2bJS4X2zE/DzBpgBeJn7XhvV1gm3BLxSmYMtGWCdZDyBbtkTMskE6Gr89AHiZteuJ+VQ4VrVcUt2WougCCpD2Lh/3oXnrAY69BBglvT5ieyCqpEedW9P/5TaGLJvBpyk9wHG0viLso/Q8OHa4ZzWfy10buHLlj/k3ACp8cxu0+Cr1AAAAAElFTkSuQmCC";
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Response(bytes, { status: 200, headers: { "Content-Type": "image/png" } });
+    }
+    const mockRuntimePort = (id: string, configuredPort?: number) => {
+      if (
+        opts.portConflict &&
+        id === "jellyfin" &&
+        state.config.frontendPorts?.jellyfin == null &&
+        configuredPort
+      ) {
+        return {
+          actualPort: 8098,
+          busyPort: configuredPort,
+          busyPortHolder: opts.portConflict === "unknown" ? undefined : "Jellyfin Server",
+        };
+      }
+      return { actualPort: configuredPort, busyPort: undefined, busyPortHolder: undefined };
+    };
     const mockConnectUrls = (id: string, port?: number) => {
-      if (port)
+      if (id === "plex" && port) {
         return [
           `http://192.168.1.20:${port}`,
-          id === "plex"
-            ? `https://203-0-113-7.abc.plex.direct:${port}`
-            : `https://${id}.example.com`,
+          `http://100.64.0.20:${port}`,
+          `https://203-0-113-7.abc.plex.direct:${port}`,
         ];
+      }
+      if ((id === "jellyfin" || id === "emby" || id === "silo") && port) {
+        return [
+          `http://192.168.1.20:${port}`,
+          `http://100.64.0.20:${port}`,
+          `http://[fd00::20]:${port}`,
+          `http://192.168.1.20:${state.config.server.port}/${id}`,
+          `https://${id}.example.com`,
+        ];
+      }
+      if (id === "vela") {
+        return opts.velaInstalled === true
+          ? [
+              `http://192.168.1.20:${state.config.server.port}/vela`,
+              `http://100.64.0.20:${state.config.server.port}/vela`,
+            ]
+          : [];
+      }
       if (id === "stremio" || id === "webdav" || id === "dlna" || id === "m3u" || id === "xtream") {
         return [`http://192.168.1.20:${state.config.server.port}/${id}`];
       }
@@ -3891,7 +3937,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
             entry?.enabled ??
             (descriptor.id === "vela" ||
               (state.config.frontends == null && descriptor.id === "plex"));
-          const port = state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort;
+          const configuredPort =
+            descriptor.id === "plex"
+              ? (state.config.frontendPorts?.plex ?? state.config.server.port ?? descriptor.defaultPort)
+              : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
+          const runtime = mockRuntimePort(descriptor.id, configuredPort);
+          const port = runtime.actualPort;
           return {
             descriptor,
             enabled,
@@ -3902,6 +3953,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
                   : descriptor.id === "jellyfin",
               addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
               connectUrls: enabled ? mockConnectUrls(descriptor.id, port) : [],
+              ...(enabled && runtime.busyPort
+                ? {
+                    busyPort: runtime.busyPort,
+                    actualPort: runtime.actualPort,
+                    ...(runtime.busyPortHolder ? { busyPortHolder: runtime.busyPortHolder } : {}),
+                    warnings: [
+                      `Another server on this computer is using port ${runtime.busyPort}; Ether still works at 127.0.0.1:${runtime.actualPort}`,
+                    ],
+                  }
+                : {}),
               lan: "unknown",
               wan: "unknown",
               clients24h: 0,
@@ -3923,11 +3984,26 @@ export function createFakeServer(opts: FakeOptions = {}) {
         const enabled =
           state.config.frontends?.[id!]?.enabled ??
           (id === "vela" || (state.config.frontends == null && id === "plex"));
-        const port = state.config.frontendPorts?.[id!] ?? descriptor.defaultPort;
+        const configuredPort =
+          id === "plex"
+            ? (state.config.frontendPorts?.plex ?? state.config.server.port ?? descriptor.defaultPort)
+            : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
+        const runtime = mockRuntimePort(id ?? "", configuredPort);
+        const port = runtime.actualPort;
         return json({
           webPlayerReady: id === "vela" ? opts.velaInstalled === true : id === "jellyfin",
           addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
           connectUrls: enabled ? mockConnectUrls(id ?? "", port) : [],
+          ...(enabled && runtime.busyPort
+            ? {
+                busyPort: runtime.busyPort,
+                actualPort: runtime.actualPort,
+                ...(runtime.busyPortHolder ? { busyPortHolder: runtime.busyPortHolder } : {}),
+                warnings: [
+                  `Another server on this computer is using port ${runtime.busyPort}; Ether still works at 127.0.0.1:${runtime.actualPort}`,
+                ],
+              }
+            : {}),
           lan: "unknown",
           wan: "unknown",
           clients24h: 0,
@@ -3963,7 +4039,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
           if (settings.wordmark == null) delete settings.wordmark;
         }
         entry.settings = settings;
-        if (typeof port === "number") (state.config.frontendPorts ??= {})[id!] = port;
+        if (typeof port === "number") {
+          (state.config.frontendPorts ??= {})[id!] = port;
+          if (id === "plex") state.config.server.port = port;
+        }
         return json({ ok: true });
       }
       if (

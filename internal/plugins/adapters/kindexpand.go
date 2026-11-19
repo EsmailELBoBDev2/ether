@@ -225,7 +225,14 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 }
 
 func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.ExpandJobRunner, rec pluginitems.KindRecord, libID core.LibraryID, routePath string, target expandTarget) error {
+	var (
+		pages              int
+		callTime, saveTime time.Duration
+		began              = time.Now()
+	)
 	finish := func(state string, added int, errMsg string) {
+		c.log.Info("facet expansion finished", "plugin", rec.PluginID, "kind", rec.KindKey, "facet", target.facet,
+			"state", state, "pages", pages, "added", added, "took", time.Since(began), "plugin_time", callTime, "save_time", saveTime, "err", errMsg)
 		finCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = c.items.FinishFacetExpansion(finCtx, rec.PluginID, rec.KindKey, libID, target.facet, target.valueKey, state, added, errMsg)
@@ -273,6 +280,7 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 			return err
 		}
 
+		callStart := time.Now()
 		resp, err := run.Call(jobCtx, plugins.Request{
 			PluginID: rec.PluginID,
 			Method:   http.MethodPost,
@@ -280,6 +288,8 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 			Headers:  map[string]string{"content-type": "application/json"},
 			Body:     body,
 		})
+		callTime += time.Since(callStart)
+		pages++
 		if err != nil {
 			finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
 			return err
@@ -308,7 +318,9 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 			if len(batch) > remaining {
 				batch = batch[:remaining]
 			}
+			saveStart := time.Now()
 			acc, add, uErr := upsertSlice(batch)
+			saveTime += time.Since(saveStart)
 			if uErr != nil {
 				finish(pluginitems.ExpansionStateError, totalAdded, uErr.Error())
 				return uErr

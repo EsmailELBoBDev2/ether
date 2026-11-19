@@ -295,6 +295,43 @@ describe("Metadata artwork studio", () => {
     expect(calls(fake, "PUT", "/discovery/overlays/settings")).toHaveLength(0);
   });
 
+  it("shows Rating style only when Rating badges is on and saves One combined score", async () => {
+    const { fake } = renderAppWith("/metadata/artwork", (_method, path) =>
+      path === "/collections/preview" ? { items: [ARTWORK_TITLES[0]!], total: 1 } : undefined,
+    );
+    const ratingStyle = await screen.findByRole("button", { name: "Rating style" }, WAIT);
+    expect(ratingStyle).toHaveTextContent("Each source");
+    expect(await screen.findByText("TMDB 8.6/10", {}, WAIT)).toBeInTheDocument();
+
+    await choose("Rating style", "One combined score");
+    expect(ratingStyle).toHaveTextContent("One combined score");
+    expect(await screen.findByText("8.6", {}, WAIT)).toBeInTheDocument();
+    await waitFor(() => {
+      const img = screen.getByRole("img", { name: "Catalogue Movie Your design" });
+      const settings = JSON.parse(
+        new URL(img.getAttribute("src")!, "http://localhost").searchParams.get("settings")!,
+      );
+      expect(settings).toMatchObject({ ratings: true, ratingStyle: "combined" });
+    });
+
+    const ratingsSwitch = screen.getByRole("switch", { name: "Rating badges" });
+    fireEvent.click(ratingsSwitch);
+    expect(screen.queryByRole("button", { name: "Rating style" })).toBeNull();
+
+    fireEvent.click(ratingsSwitch);
+    expect(screen.getByRole("button", { name: "Rating style" })).toHaveTextContent(
+      "One combined score",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(calls(fake, "PUT", "/discovery/overlays/settings").at(-1)?.body).toMatchObject({
+        ratings: true,
+        ratingStyle: "combined",
+      }),
+    );
+  });
+
   it("clears the previous viewer's badge evidence when the next viewer lookup fails", async () => {
     renderAppWith("/metadata/artwork", (_method, path, _body, query) => {
       if (path === "/collections/preview") return { items: [ARTWORK_TITLES[0]], total: 1 };

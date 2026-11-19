@@ -38,10 +38,12 @@ export function createMetadataMock() {
       return json({ posters: [], backdrops: [] });
     if (path.startsWith("/discovery/overlays/explain/")) {
       const s = normalizeOverlays(JSON.parse(query.get("settings") || "{}"));
+      const ratingLabel =
+        s.ratingStyle === "combined" ? "8.6" : s.hideDenominator ? "TMDB 8.6" : "TMDB 8.6/10";
       const facts = {
         status: ["NEW SEASON"],
         quality: [],
-        ratings: ["TMDB 8.6/10"],
+        ratings: [ratingLabel],
         details: ["2025 · 120m"],
       };
       const layers = (Object.keys(facts) as (keyof typeof facts)[]).map((key) => ({
@@ -51,17 +53,21 @@ export function createMetadataMock() {
         reason:
           key === "quality"
             ? "No verified playback yet; release-name guesses are excluded"
-            : "Catalogue fixture data",
+            : key === "ratings" && s.ratingStyle === "combined"
+              ? "Combined 8.6 from TMDB 8.6/10"
+              : "Catalogue fixture data",
       }));
       return json({ labels: layers.flatMap((l) => l.labels), layers });
     }
     if (path === "/discovery/overlays/sample" || path.startsWith("/discovery/overlays/preview/")) {
       const s = normalizeOverlays(JSON.parse(query.get("settings") || "{}"));
+      const ratingLabel =
+        s.ratingStyle === "combined" ? "8.6" : s.hideDenominator ? "TMDB 8.6" : "TMDB 8.6/10";
       const labels = s.enabled
         ? [
             s.status && "NEW SEASON",
             s.quality && path === "/discovery/overlays/sample" && "4K HDR",
-            s.ratings && "TMDB 8.6/10",
+            s.ratings && ratingLabel,
             s.details && "2025 · 120m",
           ].filter(Boolean)
         : [];

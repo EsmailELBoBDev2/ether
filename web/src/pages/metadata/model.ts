@@ -6,6 +6,7 @@ export type Overlays = {
   status: boolean;
   quality: boolean;
   ratings: boolean;
+  ratingStyle: "sources" | "combined";
   details: boolean;
   personalize: boolean;
   localize: boolean;
@@ -29,6 +30,7 @@ export const normalizeOverlays = (s: Partial<Overlays>): Overlays => ({
   hideDot: false,
   ...s,
   episodeBadges: s.episodeBadges ?? true,
+  ratingStyle: s.ratingStyle === "combined" ? "combined" : "sources",
   style: s.style || "glass",
   position: s.position || "bottom",
   accent: s.accent || "#d4a574",

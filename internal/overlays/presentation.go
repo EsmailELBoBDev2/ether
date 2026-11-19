@@ -102,16 +102,11 @@ func (s *Service) presentation(ctx context.Context, u *core.User, t *core.Title,
 	}
 	add("quality", cfg.Quality, quality, "Verified from this viewer's playback within 30 days; the next release may differ", "No verified playback yet; release-name guesses are excluded")
 	var scores []string
+	ratingsReason := "Source-labelled catalogue or cached provider scores"
 	if cfg.Enabled && cfg.Ratings {
-		for _, b := range s.posterRatings(ctx, t) {
-			label := fmt.Sprintf("%s %.1f", strings.ToUpper(b.Source), b.Value)
-			if !cfg.HideDenominator {
-				label += fmt.Sprintf("/%.0f", b.Scale)
-			}
-			scores = append(scores, label)
-		}
+		scores, ratingsReason = formatRatings(s.posterRatings(ctx, t), cfg)
 	}
-	add("ratings", cfg.Ratings, scores, "Source-labelled catalogue or cached provider scores", "No rated votes yet; optional rating providers can add more sources")
+	add("ratings", cfg.Ratings, scores, ratingsReason, "No rated votes yet; optional rating providers can add more sources")
 	var details []string
 	if cfg.Enabled && cfg.Details {
 		var parts []string
@@ -155,6 +150,31 @@ func (s *Service) presentation(ctx context.Context, u *core.User, t *core.Title,
 		}
 	}
 	return out
+}
+
+func formatRatings(selected []ratings.Badge, cfg Settings) ([]string, string) {
+	if cfg.RatingStyle == "combined" {
+		if len(selected) == 0 {
+			return nil, "Combined score from selected rating sources"
+		}
+		var sum float64
+		parts := make([]string, 0, len(selected))
+		for _, b := range selected {
+			sum += (b.Value / b.Scale) * 10
+			parts = append(parts, fmt.Sprintf("%s %.1f/%.0f", strings.ToUpper(b.Source), b.Value, b.Scale))
+		}
+		combined := fmt.Sprintf("%.1f", sum/float64(len(selected)))
+		return []string{combined}, fmt.Sprintf("Combined %s from %s", combined, strings.Join(parts, ", "))
+	}
+	scores := make([]string, 0, len(selected))
+	for _, b := range selected {
+		label := fmt.Sprintf("%s %.1f", strings.ToUpper(b.Source), b.Value)
+		if !cfg.HideDenominator {
+			label += fmt.Sprintf("/%.0f", b.Scale)
+		}
+		scores = append(scores, label)
+	}
+	return scores, "Source-labelled catalogue or cached provider scores"
 }
 
 // posterRatings honors the selected sources in slot order, rather than provider

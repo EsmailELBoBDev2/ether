@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,15 +32,17 @@ type providerBroadcastPlanner struct {
 	firstAired            bool
 	startupFailures       []TuneInputFailure
 
-	ladder     *steadyLadder
-	link       *steadyLink // granted input of the current source, reused by same-source reopens
-	primed     *steadyLink // the tune's probed input; the first open reads the bytes it probed
-	attempt    *steadyAttempt
-	standby    *steadyStandby
-	retryAt    time.Time
-	lastStress time.Time
-	retry      func() // asks the clock to replace the current input now
-	waiting    bool   // failed() scheduled a later retry than now
+	ladder         *steadyLadder
+	link           *steadyLink // granted input of the current source, reused by same-source reopens
+	primed         *steadyLink // the tune's probed input; the first open reads the bytes it probed
+	attempt        *steadyAttempt
+	stalledAttempt *steadyAttempt
+	standby        *steadyStandby
+	retryAt        time.Time
+	lastStress     time.Time
+	retry          func() // asks the clock to replace the current input now
+	waiting        bool   // failed() scheduled a later retry than now
+	linkSeq        atomic.Uint64
 }
 
 // steadyLink is one granted provider input: the relay grant (and with it the
@@ -51,7 +54,27 @@ type steadyLink struct {
 	format        string // probed container: "hls", "mpegts" or empty
 	uses          int
 	primedDecoder transcode.Decoder // admission already obtained its first picture
+	refs          atomic.Int32
+	closed        atomic.Bool
 	once          sync.Once
+}
+
+func newSteadyLink(src StreamSource, ss *session, release func(), format string) *steadyLink {
+	l := &steadyLink{src: src, ss: ss, release: release, format: format}
+	l.refs.Store(1)
+	return l
+}
+
+func (l *steadyLink) retain() {
+	if l != nil {
+		l.refs.Add(1)
+	}
+}
+
+func (l *steadyLink) releaseRef(s *Service) {
+	if l != nil && l.refs.Add(-1) <= 0 {
+		l.close(s)
+	}
 }
 
 func (l *steadyLink) close(s *Service) {
@@ -59,6 +82,7 @@ func (l *steadyLink) close(s *Service) {
 		return
 	}
 	l.once.Do(func() {
+		l.closed.Store(true)
 		if l.primedDecoder != nil {
 			_ = l.primedDecoder.Close()
 			l.primedDecoder = nil
@@ -164,6 +188,9 @@ func (p *providerBroadcastPlanner) segmentDuration() time.Duration {
 func (p *providerBroadcastPlanner) reserveTarget() (depth, target time.Duration, ok bool) {
 	p.mu.Lock()
 	a := p.attempt
+	if a == nil {
+		a = p.stalledAttempt
+	}
 	p.mu.Unlock()
 	if a == nil || a.link == nil {
 		return 0, 0, false
@@ -182,6 +209,9 @@ func (p *providerBroadcastPlanner) reserveTarget() (depth, target time.Duration,
 func (p *providerBroadcastPlanner) setInputPlayRate(rate float64) {
 	p.mu.Lock()
 	a := p.attempt
+	if a == nil {
+		a = p.stalledAttempt
+	}
 	p.mu.Unlock()
 	if a != nil && a.link != nil {
 		p.s.setSteadyInputRate(a.link.ss, rate)
@@ -211,24 +241,57 @@ func sourceIDs(sources []StreamSource) []string {
 	return ids
 }
 
-// keepStalled reports that the current input's transport is recovering by
-// itself: the shared tap reconnects its URL and splices the new connection
-// onto the same timeline, and the HLS reader keeps reloading its playlist.
-// Reopening the decoder then only adds a cold start. A tap that gave up, an
-// input without a health signal, or a stall past steadyHoldStalled goes to
-// the ladder; a ready standby takes over earlier (watchStandby).
+// keepStalled reports that the current input's transport is still alive or
+// recovering by itself: the shared tap holds a live socket across normal
+// inter-burst silences and splices reconnects onto the same timeline, and the
+// HLS reader keeps reloading its playlist. Never close the decoder on a gap
+// shorter than the source's adapted stall threshold while the tap still has a
+// live socket; hold the last picture instead. Failed is true only when the
+// transport is actually gone and same-source reconnects have failed.
 func (p *providerBroadcastPlanner) keepStalled(stalledFor time.Duration) bool {
-	if stalledFor >= steadyHoldStalled {
-		return false
-	}
 	p.mu.Lock()
 	a := p.attempt
 	p.mu.Unlock()
-	if a == nil {
+	if a == nil || a.link == nil {
 		return false
 	}
 	h, ok := p.s.inputHealth(a.link.ss)
-	return ok && !h.Failed
+	if !ok {
+		return stalledFor < steadyHoldStalled && p.s.healthGrant(a.link.ss) != nil
+	}
+	if h.LiveSocket && stalledFor < h.StallAfter {
+		return true
+	}
+	if h.Failed {
+		return false
+	}
+	return stalledFor < max(steadyHoldStalled, h.StallAfter)
+}
+
+func (p *providerBroadcastPlanner) commitReplacement() {
+	p.mu.Lock()
+	p.stalledAttempt = nil
+	p.mu.Unlock()
+}
+
+func (p *providerBroadcastPlanner) abortReplacement() {
+	p.mu.Lock()
+	prev := p.stalledAttempt
+	var drop *steadyLink
+	if prev != nil {
+		p.stalledAttempt = nil
+		p.attempt = prev
+		if prev.link != nil && !prev.link.closed.Load() && p.link != prev.link {
+			drop = p.link
+			prev.link.retain()
+			p.link = prev.link
+		}
+		p.ladder.delivered(prev.src.ID)
+	}
+	p.mu.Unlock()
+	if drop != nil {
+		drop.releaseRef(p.s)
+	}
 }
 
 // failed records why the current input ended and returns when the channel
@@ -246,6 +309,9 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 			return now.Add(steadySpacing)
 		}
 		return p.retryAt
+	}
+	if p.stalledAttempt == nil {
+		p.stalledAttempt = a
 	}
 	aired := a.decoder.delivered()
 	changed := errors.Is(err, transcode.ErrInputChanged)
@@ -285,7 +351,10 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 
 // open starts the decoder of the input the ladder chose. Synchronous failures
 // (resolution, grant, spawn) advance the ladder within this call, so the
-// channel moves to a backup without waiting for another clock tick.
+// channel moves to a backup without waiting for another clock tick. When
+// replacing a stalled live input in parallel, the old input's link keeps its
+// decoder reference open until the replacement delivers a picture (unless a
+// single-connection account's cap leaves no room for a second connection).
 func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder, func(), error) {
 	c := p.channel
 	p.mu.Lock()
@@ -294,8 +363,9 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 	p.waiting = false
 	p.mu.Unlock()
 	var last error = core.ErrNotAvailable
+	var heldDisplaced *steadyLink
 	busy := map[string]bool{}
-	for range 2 * (MaxChannelInputs + 1) {
+	for range 2*(MaxChannelInputs+1) + 2 {
 		now := p.s.o.Now()
 		var candidates []StreamSource
 		for _, src := range p.s.orderedSourceCandidates(c) {
@@ -304,6 +374,14 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			}
 		}
 		if len(candidates) == 0 {
+			if heldDisplaced != nil && !heldDisplaced.closed.Load() && len(busy) > 0 {
+				// Single-connection account cannot race a second connection in
+				// parallel; release the stalled connection's slot and retry.
+				heldDisplaced.close(p.s)
+				heldDisplaced = nil
+				clear(busy)
+				continue
+			}
 			p.mu.Lock()
 			p.retryAt = now.Add(steadySpacing)
 			p.mu.Unlock()
@@ -327,21 +405,27 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		var retired []*steadyLink
 		if sb := p.standby; sb != nil && sb.src.ID == id && sb.ready() {
 			p.standby = nil
-			if p.link != sb.link {
+			sbLink := sb.link
+			if p.link != nil && p.link != sbLink {
 				retired = append(retired, p.link)
 			}
-			p.link = sb.link
+			p.link = sbLink
+			sbLink.retain()
 			p.ladder.opened(id, now)
-			decoder := p.wrap(ctx, src, sb.link, sb.adopt(), 0)
-			p.attempt = &steadyAttempt{src: src, link: sb.link, decoder: decoder}
+			decoder := p.wrap(ctx, src, sbLink, sb.adopt(), 0)
+			p.attempt = &steadyAttempt{src: src, link: sbLink, decoder: decoder}
 			p.mu.Unlock()
 			for _, l := range retired {
-				l.close(p.s)
+				l.releaseRef(p.s)
 			}
 			p.logger().Info("live input switched to standby", "input", id)
-			return decoder, nil, nil
+			return decoder, func() { sbLink.releaseRef(p.s) }, nil
 		}
 		link := p.link
+		if link != nil && link.closed.Load() {
+			link = nil
+			p.link = nil
+		}
 		if primed := p.primed; primed != nil {
 			p.primed = nil
 			if primed.src.ID == id && link == nil {
@@ -351,20 +435,21 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			}
 		}
 		if link != nil && (link.src.ID != id || link.src.URL != src.URL || link.uses >= steadyMaxLinkUses) {
-			// One provider connection per account while one is live: release
-			// the previous input before reserving another. A link used for every
-			// opening rung is re-resolved, refreshing expiring provider URLs.
 			retired = append(retired, link)
+			if heldDisplaced == nil {
+				heldDisplaced = link
+			}
 			link = nil
 		}
 		p.link = link
 		p.mu.Unlock()
 		for _, l := range retired {
-			l.close(p.s)
+			l.releaseRef(p.s)
 		}
 		if link == nil {
 			var err error
-			link, err = p.s.linkSteadySource(ctx, c, src, "broadcast-"+c.ID, 0)
+			resID := "broadcast-" + c.ID + "-" + strconv.FormatUint(p.linkSeq.Add(1), 10)
+			link, err = p.s.linkSteadySource(ctx, c, src, resID, 0)
 			if errors.Is(err, ErrProviderBusy) || errors.Is(err, ErrProviderPaced) {
 				busy[id] = true
 				last = err
@@ -387,10 +472,11 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 				p.link = nil
 			}
 			p.mu.Unlock()
-			link.close(p.s)
+			link.releaseRef(p.s)
 			p.syncFailure(src, err, now)
 			continue
 		}
+		link.retain()
 		wrapped := p.wrap(ctx, src, link, decoder, p.firstFrameDeadline(src.ID, len(candidates) > 1))
 		p.mu.Lock()
 		link.uses++
@@ -398,7 +484,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		p.attempt = &steadyAttempt{src: src, link: link, decoder: wrapped}
 		p.mu.Unlock()
 		p.logger().Debug("live input opening", "input", id, "liveEdge", liveEdge, "format", link.format, "uses", link.uses)
-		return wrapped, nil, nil
+		return wrapped, func() { link.releaseRef(p.s) }, nil
 	}
 	return nil, nil, fmt.Errorf("broadcast provider: %w", last)
 }
@@ -502,7 +588,7 @@ func (s *Service) linkSteadySource(ctx context.Context, c Channel, src StreamSou
 		release()
 		return nil, err
 	}
-	return &steadyLink{src: src, ss: ss, release: release, format: s.cachedInputFormat(ss)}, nil
+	return newSteadyLink(src, ss, release, s.cachedInputFormat(ss)), nil
 }
 
 // reserveBroadcastProvider takes a provider connection under the same
@@ -653,17 +739,23 @@ func (d *providerBroadcastDecoder) delivered() bool {
 	return d != nil && time.Duration(d.aired.Load())*d.frame >= steadyDelivered
 }
 
+func (d *providerBroadcastDecoder) sinceDecoded(now time.Time) time.Duration {
+	at := d.decodedAt.Load()
+	if at == 0 {
+		return 0
+	}
+	return now.Sub(time.Unix(0, at))
+}
+
 // stressed reports a live input that stopped producing pictures.
 func (d *providerBroadcastDecoder) stressed(now time.Time) bool {
-	at := d.decodedAt.Load()
-	return at != 0 && now.Sub(time.Unix(0, at)) > steadyStress
+	return d.sinceDecoded(now) > steadyStress
 }
 
 // starved reports an input that delivered pictures and then none for
 // steadyStarved: a ready standby replaces it rather than holding a picture.
 func (d *providerBroadcastDecoder) starved(now time.Time) bool {
-	at := d.decodedAt.Load()
-	return at != 0 && now.Sub(time.Unix(0, at)) > steadyStarvedAfter
+	return d.sinceDecoded(now) > steadyStarvedAfter
 }
 
 func (d *providerBroadcastDecoder) Diagnostics() string {
@@ -724,7 +816,11 @@ func (p *providerBroadcastPlanner) closePlanner() {
 	p.guideCancel()
 	<-p.guideDone
 	p.mu.Lock()
-	if a := p.attempt; a != nil {
+	a := p.attempt
+	if a == nil {
+		a = p.stalledAttempt
+	}
+	if a != nil {
 		// Report how this output's input ended to the source history.
 		outcome := "ok"
 		if !a.decoder.delivered() {
@@ -732,11 +828,16 @@ func (p *providerBroadcastPlanner) closePlanner() {
 		}
 		defer p.s.noteSourceMode(p.channel.ID, a.src, "steady", outcome)
 	}
+	var stalledLink *steadyLink
+	if p.stalledAttempt != nil && p.stalledAttempt.link != p.link {
+		stalledLink = p.stalledAttempt.link
+	}
 	link, primed, standby := p.link, p.primed, p.standby
-	p.link, p.primed, p.standby = nil, nil, nil
+	p.link, p.primed, p.standby, p.stalledAttempt = nil, nil, nil, nil
 	p.mu.Unlock()
 	standby.close(p.s)
 	primed.close(p.s)
+	stalledLink.close(p.s)
 	link.close(p.s)
 }
 

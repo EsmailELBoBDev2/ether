@@ -152,13 +152,24 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		}
 		stressed := a.decoder.stressed(now)
 		h, healthy := p.s.inputHealth(a.link.ss)
-		if healthy && (!h.Connected || h.Stalled || h.Failed || (h.DataAge > steadyStress && h.ReserveDepth < 2*time.Second)) {
+		stressAge := steadyStress
+		if healthy && h.StallAfter > tapStallAfter {
+			stressAge = h.StallAfter
+		}
+		if healthy && (!h.Connected || h.Stalled || h.Failed || (h.DataAge > stressAge && h.ReserveDepth < 2*time.Second)) {
 			stressed = true
 		}
-		// Switch on failure: once the primary stops delivering pictures (or
-		// its tap gave up) a ready standby takes over at once, before the
-		// clock's picture hold would expire.
-		if sb.ready() && (a.decoder.starved(now) || healthy && h.Failed) {
+		if healthy && h.LiveSocket && !h.Failed && h.StallAfter > tapStallAfter && h.DataAge < h.StallAfter && a.decoder.sinceDecoded(now) < h.StallAfter {
+			stressed = false
+		}
+		// Switch on failure: once the primary stops delivering pictures past
+		// its adapted threshold (or its tap gave up) a ready standby takes over
+		// at once, before the clock's picture hold would expire.
+		starved := a.decoder.starved(now)
+		if starved && healthy && h.LiveSocket && !h.Failed && a.decoder.sinceDecoded(now) < h.StallAfter {
+			starved = false
+		}
+		if sb.ready() && (starved || healthy && h.Failed) {
 			p.mu.Lock()
 			retry := p.retry
 			if p.attempt == a && p.standby == sb {

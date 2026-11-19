@@ -22,9 +22,19 @@ type reservePaceSource interface {
 	setInputPlayRate(rate float64)
 }
 
+type pacedVideo struct {
+	video     []byte
+	tags      []any
+	pts       time.Duration
+	valid     bool
+	endSample int64
+	emitted   bool
+}
+
 // reservePacer stretches decoded RawFrames inside one continuous broadcast
 // output when a channel's stability reserve is below its preset target, and
-// returns smoothly to 1.0x once the target is reached.
+// returns smoothly to 1.0x once the target is reached. It never runs faster
+// than 1.0x.
 type reservePacer struct {
 	format     transcode.RawFormat
 	input      *broadcastInput
@@ -44,11 +54,7 @@ type reservePacer struct {
 	nextIdeal  float64
 	pcmOut     []byte
 
-	curVideo []byte
-	curTags  []any
-	curPTS   time.Duration
-	curValid bool
-	curAired bool
+	vidQueue []pacedVideo
 }
 
 func newReservePacer(f transcode.RawFormat) *reservePacer {
@@ -85,11 +91,7 @@ func (p *reservePacer) reset(in *broadcastInput) {
 	p.baseIdx = 0
 	p.pcmIn = p.pcmIn[:0]
 	p.pcmOut = p.pcmOut[:0]
-	p.curVideo = nil
-	p.curTags = nil
-	p.curPTS = 0
-	p.curValid = false
-	p.curAired = false
+	p.vidQueue = p.vidQueue[:0]
 }
 
 // desiredTempo decides whether to stretch at steadyReserveTempo or play at 1.0x.
@@ -116,6 +118,7 @@ func (p *reservePacer) desiredTempo(depth, target time.Duration, ok bool) float6
 }
 
 func (p *reservePacer) syncRate(src reservePaceSource, rate float64) {
+	rate = min(rate, 1.0)
 	if src == nil || math.Abs(rate-p.lastRate) < 1e-6 {
 		return
 	}
@@ -330,9 +333,10 @@ func (p *reservePacer) synthesizeStep(tempo float64) bool {
 }
 
 // next produces one output tick of (Video, PCM) at tempo. pulledNew reports
-// whether a new source RawFrame was pulled on this tick (as opposed to a
+// whether a fresh source video buffer is airing on this tick (as opposed to a
 // stretched cadence tick reusing the current picture with continuous WSOLA audio).
 func (p *reservePacer) next(in *broadcastInput, wantSamples int, tempo float64, pull func() (transcode.RawFrame, bool)) (frame transcode.RawFrame, pulledNew bool, ok bool) {
+	tempo = min(tempo, 1.0)
 	if p == nil || in == nil {
 		f, got := pull()
 		return f, got, got
@@ -340,7 +344,7 @@ func (p *reservePacer) next(in *broadcastInput, wantSamples int, tempo float64, 
 	if p.input != in {
 		p.reset(in)
 	}
-	if !p.active && tempo >= 0.9999 {
+	if !p.active && len(p.vidQueue) == 0 && tempo >= 0.9999 {
 		f, got := pull()
 		return f, got, got
 	}
@@ -354,7 +358,6 @@ func (p *reservePacer) next(in *broadcastInput, wantSamples int, tempo float64, 
 					return transcode.RawFrame{}, false, false
 				}
 				p.acceptFrame(f)
-				pulledNew = true
 			}
 			if !p.prime() {
 				return transcode.RawFrame{}, false, false
@@ -369,7 +372,14 @@ func (p *reservePacer) next(in *broadcastInput, wantSamples int, tempo float64, 
 			return transcode.RawFrame{}, false, false
 		}
 		p.acceptFrame(f)
-		pulledNew = true
+	}
+
+	queuedOut := len(p.pcmOut) / (p.format.Channels * 2)
+	remOut := queuedOut - wantSamples
+	emittedEnd := p.nextIdeal + float64(p.hop) - float64(remOut)*tempo
+	emittedMid := emittedEnd - 0.5*float64(wantSamples)*tempo
+	if len(p.vidQueue) > 1 && int64(math.Round(emittedMid)) >= p.vidQueue[0].endSample {
+		p.vidQueue = p.vidQueue[1:]
 	}
 
 	pcm := make([]byte, wantBytes)
@@ -377,20 +387,29 @@ func (p *reservePacer) next(in *broadcastInput, wantSamples int, tempo float64, 
 	copy(p.pcmOut, p.pcmOut[wantBytes:])
 	p.pcmOut = p.pcmOut[:len(p.pcmOut)-wantBytes]
 
-	out := transcode.RawFrame{
-		Video:          p.curVideo,
-		PCM:            pcm,
-		SourcePTS:      p.curPTS,
-		SourcePTSValid: p.curValid,
-		PolicyTags:     p.curTags,
+	if len(p.vidQueue) == 0 {
+		return transcode.RawFrame{}, false, false
 	}
-	return out, pulledNew, out.Video != nil
+	cur := &p.vidQueue[0]
+	freshVideo := !cur.emitted
+	cur.emitted = true
+	out := transcode.RawFrame{
+		Video:          cur.video,
+		PCM:            pcm,
+		SourcePTS:      cur.pts,
+		SourcePTSValid: cur.valid,
+		PolicyTags:     cur.tags,
+	}
+	return out, freshVideo, out.Video != nil
 }
 
 func (p *reservePacer) acceptFrame(f transcode.RawFrame) {
 	p.appendPCM(f.PCM)
-	p.curVideo = f.Video
-	p.curTags = f.PolicyTags
-	p.curPTS = f.SourcePTS
-	p.curValid = f.SourcePTSValid
+	p.vidQueue = append(p.vidQueue, pacedVideo{
+		video:     f.Video,
+		tags:      f.PolicyTags,
+		pts:       f.SourcePTS,
+		valid:     f.SourcePTSValid,
+		endSample: p.endIdx(),
+	})
 }

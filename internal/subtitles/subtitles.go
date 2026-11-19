@@ -259,6 +259,7 @@ type Candidate struct {
 	Language      string
 	Releases      []string // provider-declared compatible releases
 	Release       string
+	FPS           float64
 	DownloadCount int
 	Ratings       float64
 	Uploader      string
@@ -291,6 +292,7 @@ type searchResponse struct {
 			Language      string  `json:"language"`
 			DownloadCount int     `json:"download_count"`
 			Ratings       float64 `json:"ratings"`
+			FPS           float64 `json:"fps"`
 			Release       string  `json:"release"`
 			HearingImp    bool    `json:"hearing_impaired"`
 			AITranslated  bool    `json:"ai_translated"`
@@ -443,7 +445,7 @@ func (s *Service) searchWithHashAndSize(ctx context.Context, title *core.Title, 
 		}
 		out = append(out, Candidate{
 			HashMatch: a.HashMatch, FileID: a.Files[0].FileID, FileName: a.Files[0].FileName, Language: a.Language,
-			Release: a.Release, DownloadCount: a.DownloadCount, Ratings: a.Ratings,
+			Release: a.Release, FPS: a.FPS, DownloadCount: a.DownloadCount, Ratings: a.Ratings,
 			Uploader: a.Uploader.Name, UploaderRank: a.Uploader.Rank,
 			HearingImp: a.HearingImp, AITranslated: a.AITranslated, Forced: a.ForeignOnly && !a.HearingImp,
 		})
@@ -1002,6 +1004,24 @@ func (s *Service) cached(id, format string) bool {
 	return err == nil
 }
 
+var rawHeaderFPSRe = regexp.MustCompile(`(?i)^(?:fps\s*[:=]?\s*)?(23[.,]976|23[.,]98|24[.,]0{1,3}|25[.,]0{1,3})$`)
+
+func detectCueHeaderFPS(srt string) float64 {
+	cues, err := ParseCues(srt)
+	if err != nil || len(cues) == 0 || cues[0].Start > 2*time.Second {
+		return 0
+	}
+	m := rawHeaderFPSRe.FindStringSubmatch(strings.TrimSpace(cues[0].Text))
+	if len(m) != 2 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", "."), 64)
+	if err != nil {
+		return 0
+	}
+	return canonicalFPS(v)
+}
+
 // fetchAndCache downloads + normalises a candidate, single-flighted per id.
 // Downloads count against the account's quota, so the work stays with the
 // caller that started it.
@@ -1022,7 +1042,30 @@ func (s *Service) fetchAndCache(ctx context.Context, id string, c Candidate, key
 			if err := os.MkdirAll(s.dir, 0o755); err != nil {
 				return "", err
 			}
-			meta, _ := json.Marshal(map[string]any{"titleKey": key.String(), "fileId": c.FileID, "language": c.Language, "release": c.Release, "fetchedAt": s.now().UTC()})
+			fps := c.FPS
+			if fps == 0 {
+				fps = detectCueHeaderFPS(srt)
+			}
+			metaMap := map[string]any{
+				"titleKey":  key.String(),
+				"fileId":    c.FileID,
+				"language":  c.Language,
+				"release":   c.Release,
+				"fetchedAt": s.now().UTC(),
+			}
+			if c.FileName != "" {
+				metaMap["fileName"] = c.FileName
+			}
+			if len(c.Releases) > 0 {
+				metaMap["releases"] = c.Releases
+			}
+			if fps > 0 {
+				metaMap["fps"] = fps
+			}
+			if c.HashMatch {
+				metaMap["hashMatch"] = true
+			}
+			meta, _ := json.Marshal(metaMap)
 			// .json first and .srt last: cached() checks srt+vtt, so a crash
 			// mid-write never leaves a half-visible entry.
 			for _, w := range []struct{ name, data string }{{id + ".json", string(meta)}, {id + ".vtt", vtt}, {id + ".srt", srt}} {
@@ -1294,8 +1337,9 @@ func (s *Service) OpenFormat(id, format string) (io.ReadCloser, string, error) {
 	return s.OpenFormatFrom(id, format, "")
 }
 
-// OpenFormatFrom is OpenFormat applying a cached fit only for this
-// release/source. An empty source serves the original sidecar.
+// OpenFormatFrom is OpenFormat applying a cached fit for this release/source
+// (or the default cached fit when source is empty). A different explicit
+// release without its own fit serves the original sidecar.
 func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, string, error) {
 	id = strings.TrimPrefix(id, URLPrefix)
 	format = strings.ToLower(strings.TrimPrefix(format, "."))
@@ -1316,10 +1360,13 @@ func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, stri
 		return nil, "", err
 	}
 	source = SourceKey(source)
-	if source == "" {
-		return f, format, nil
-	}
-	apply := func(corr correction) (io.ReadCloser, string, error) {
+	serveApplied := func(corr correction, appliedKey string) (io.ReadCloser, string, error) {
+		if p := s.correctionFilePath(id, appliedKey, format); p != "" {
+			if cf, cerr := os.Open(p); cerr == nil {
+				f.Close()
+				return cf, format, nil
+			}
+		}
 		raw, err := io.ReadAll(io.LimitReader(f, 32<<20))
 		f.Close()
 		if err != nil {
@@ -1336,15 +1383,18 @@ func (s *Service) OpenFormatFrom(id, format, source string) (io.ReadCloser, stri
 		}
 		return io.NopCloser(strings.NewReader(text)), format, nil
 	}
-	// The first fetch after a pick is uncorrected unless a measurement
-	// already finished. If one is in flight and completes within ~2s,
-	// serve the corrected file.
-	if corr, ok := s.loadApplied(id, source); ok {
-		return apply(corr)
+	if corr, appliedKey, ok := s.loadApplied(id, source); ok {
+		return serveApplied(corr, appliedKey)
 	}
-	if s.correctFlights.wait(id+"\x00"+source, correctServeWait) {
-		if corr, ok := s.loadApplied(id, source); ok {
-			return apply(corr)
+	waited := false
+	if source != "" {
+		waited = s.correctFlights.wait(id+"\x00"+source, correctServeWait)
+	} else {
+		waited = s.correctFlights.waitPrefix(id+"\x00", correctServeWait)
+	}
+	if waited {
+		if corr, appliedKey, ok := s.loadApplied(id, source); ok {
+			return serveApplied(corr, appliedKey)
 		}
 	}
 	return f, format, nil

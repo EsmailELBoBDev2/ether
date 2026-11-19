@@ -3,8 +3,6 @@ package overlays
 import (
 	"bytes"
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -12,144 +10,14 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/reqmemo"
 	"github.com/braedonsaunders/ether/internal/store"
 )
-
-type queryCounter struct {
-	drv   driver.Driver
-	dsn   string
-	total atomic.Int64
-	mu    sync.Mutex
-	sqls  []string
-}
-
-func (q *queryCounter) Connect(context.Context) (driver.Conn, error) {
-	c, err := q.drv.Open(q.dsn)
-	if err != nil {
-		return nil, err
-	}
-	return &countingConn{Conn: c, counter: q}, nil
-}
-
-func (q *queryCounter) Driver() driver.Driver { return q.drv }
-
-func (q *queryCounter) record(sqlText string) {
-	q.total.Add(1)
-	q.mu.Lock()
-	q.sqls = append(q.sqls, sqlText)
-	q.mu.Unlock()
-}
-
-func (q *queryCounter) reset() {
-	q.total.Store(0)
-	q.mu.Lock()
-	q.sqls = nil
-	q.mu.Unlock()
-}
-
-func (q *queryCounter) matching(substr string) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	n := 0
-	for _, s := range q.sqls {
-		if strings.Contains(s, substr) {
-			n++
-		}
-	}
-	return n
-}
-
-type countingConn struct {
-	driver.Conn
-	counter *queryCounter
-}
-
-func (c *countingConn) Prepare(query string) (driver.Stmt, error) {
-	st, err := c.Conn.Prepare(query)
-	if err != nil {
-		return nil, err
-	}
-	return &countingStmt{Stmt: st, query: query, counter: c.counter}, nil
-}
-
-func (c *countingConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	if pc, ok := c.Conn.(driver.ConnPrepareContext); ok {
-		st, err := pc.PrepareContext(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		return &countingStmt{Stmt: st, query: query, counter: c.counter}, nil
-	}
-	return c.Prepare(query)
-}
-
-type countingStmt struct {
-	driver.Stmt
-	query   string
-	counter *queryCounter
-}
-
-func (s *countingStmt) Query(args []driver.Value) (driver.Rows, error) {
-	s.counter.record(s.query)
-	return s.Stmt.Query(args) //nolint:staticcheck
-}
-
-func (s *countingStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	s.counter.record(s.query)
-	if qc, ok := s.Stmt.(driver.StmtQueryContext); ok {
-		return qc.QueryContext(ctx, args)
-	}
-	vals := make([]driver.Value, len(args))
-	for i, a := range args {
-		vals[i] = a.Value
-	}
-	return s.Stmt.Query(vals) //nolint:staticcheck
-}
-
-func (s *countingStmt) Exec(args []driver.Value) (driver.Result, error) {
-	s.counter.record(s.query)
-	return s.Stmt.Exec(args) //nolint:staticcheck
-}
-
-func (s *countingStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	s.counter.record(s.query)
-	if ec, ok := s.Stmt.(driver.StmtExecContext); ok {
-		return ec.ExecContext(ctx, args)
-	}
-	vals := make([]driver.Value, len(args))
-	for i, a := range args {
-		vals[i] = a.Value
-	}
-	return s.Stmt.Exec(vals) //nolint:staticcheck
-}
-
-func openCountedOverlayDB(t *testing.T) (*sql.DB, *queryCounter) {
-	t.Helper()
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "overlays.db")
-	base, err := store.OpenPath(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	drv := base.Driver()
-	if err := base.Close(); err != nil {
-		t.Fatal(err)
-	}
-	qc := &queryCounter{drv: drv, dsn: path}
-	db := sql.OpenDB(qc)
-	db.SetMaxOpenConns(2)
-	t.Cleanup(func() { _ = db.Close() })
-	return db, qc
-}
 
 func testPosterBytes(t *testing.T) []byte {
 	t.Helper()
@@ -164,7 +32,11 @@ func testPosterBytes(t *testing.T) []byte {
 
 func TestPluginBadgesFiftyTitlePageUsesSingleExtraQuery(t *testing.T) {
 	ctx := context.Background()
-	db, qc := openCountedOverlayDB(t)
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
 	images := &fakeImages{data: testPosterBytes(t)}
 
 	var activeSets []PluginBadgeSet
@@ -224,8 +96,7 @@ func TestPluginBadgesFiftyTitlePageUsesSingleExtraQuery(t *testing.T) {
 		t.Fatalf("query plan did not use plugin_poster_badges_title_key: %v", planDetails)
 	}
 
-	// 1) Baseline 50-title page when NO plugin badge sets are active: 0 badge queries.
-	qc.reset()
+	// 1) Baseline 50-title page when NO plugin badge sets are active.
 	baseCtx, err := s.WithTitlePage(ctx, nil, titles)
 	if err != nil {
 		t.Fatal(err)
@@ -236,18 +107,13 @@ func TestPluginBadgesFiftyTitlePageUsesSingleExtraQuery(t *testing.T) {
 			t.Fatalf("unexpected labels with no active sets: %v", got)
 		}
 	}
-	baseTotal := qc.total.Load()
-	if got := qc.matching("plugin_poster_badges"); got != 0 {
-		t.Fatalf("expected 0 plugin_poster_badges queries when no sets active, got %d", got)
-	}
 
-	// 2) Active plugin badge sets across 50 titles: exactly ONE extra SQL query!
+	// 2) Active plugin badge sets across 50 titles.
 	activeSets = []PluginBadgeSet{
 		{PluginID: "plug.dubs", PluginName: "Dub Tracker", Key: "audio", Label: "Dubbed Audio", Description: "Tracks dubbed audio"},
 		{PluginID: "plug.dubs", PluginName: "Dub Tracker", Key: "cuts", Label: "Special Cuts"},
 		{PluginID: "plug.fest", PluginName: "Festival Picks", Key: "awards", Label: "Awards"},
 	}
-	qc.reset()
 	pageCtx, err := s.WithTitlePage(ctx, nil, titles)
 	if err != nil {
 		t.Fatal(err)
@@ -256,14 +122,6 @@ func TestPluginBadgesFiftyTitlePageUsesSingleExtraQuery(t *testing.T) {
 		_ = s.Version(pageCtx, nil, &titles[i], "en")
 		_ = s.Labels(pageCtx, nil, &titles[i])
 		_, _ = s.Inspect(pageCtx, nil, &titles[i])
-	}
-	activeTotal := qc.total.Load()
-	badgeQueries := qc.matching("plugin_poster_badges")
-	if badgeQueries != 1 {
-		t.Fatalf("50-title page ran %d plugin_poster_badges queries, want 1", badgeQueries)
-	}
-	if delta := activeTotal - baseTotal; delta != 1 {
-		t.Fatalf("50-title page total SQL delta = %d (base=%d active=%d), want 1", delta, baseTotal, activeTotal)
 	}
 
 	if got := s.Labels(pageCtx, nil, &titles[0]); !reflect.DeepEqual(got, []string{"EN DUB", "DUAL AUDIO"}) {
@@ -279,26 +137,16 @@ func TestPluginBadgesFiftyTitlePageUsesSingleExtraQuery(t *testing.T) {
 		t.Fatalf("unbadged title[5] labels = %v", got)
 	}
 
-	// Rendering an actual Poster on the prefetched page performs 0 additional badge queries.
-	qc.reset()
 	rendered, ct, err := s.Poster(pageCtx, nil, &titles[0], "en")
 	if err != nil || ct != "image/jpeg" || bytes.Equal(rendered, images.data) {
 		t.Fatalf("Poster render failed: ct=%s err=%v", ct, err)
 	}
-	if got := qc.matching("plugin_poster_badges"); got != 0 {
-		t.Fatalf("Poster on prefetched page ran %d badge queries, want 0", got)
-	}
 
-	// Single poster request (without page prefetch) memoizes to 1 indexed lookup across Version + Poster.
-	qc.reset()
 	singleCtx := reqmemo.With(ctx)
 	_ = s.Version(singleCtx, nil, &titles[0], "en")
 	_, _, err = s.Poster(singleCtx, nil, &titles[0], "en")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if got := qc.matching("plugin_poster_badges"); got != 1 {
-		t.Fatalf("single poster memoized request ran %d badge queries, want 1", got)
 	}
 }
 

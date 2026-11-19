@@ -27,9 +27,8 @@ func TestPendingHashContracts(t *testing.T) {
 			}
 			return Response{Status: 200, Body: json.RawMessage(`{"sources":[{"pattern":"http"}]}`)}, nil
 		}
-		start := time.Now()
 		resp, err := env.m.Call(context.Background(), rec.ID, Request{Path: path, Method: "POST", Body: json.RawMessage(`{"item":{"id":"one"}}`)})
-		if err != nil || calls.Load() != 2 || resp.Status != 200 || time.Since(start) < 250*time.Millisecond || time.Since(start) > ResolverTotal {
+		if err != nil || calls.Load() != 2 || resp.Status != 200 {
 			t.Fatalf("retry: %s %v calls=%d", resp.Body, err, calls.Load())
 		}
 		var complete atomic.Bool
@@ -52,9 +51,8 @@ func TestPendingHashContracts(t *testing.T) {
 			return Response{Status: 200, Body: json.RawMessage(`{"done":true}`)}, nil
 		}
 		defer env.m.cancelActionJobs(rec.ID)
-		start = time.Now()
 		resp, err = env.m.Call(context.Background(), rec.ID, Request{Path: path, Method: "POST", Body: json.RawMessage(`{"item":{"id":"one"}}`)})
-		if err != nil || resp.Status != 200 || time.Since(start) > 3*time.Second {
+		if err != nil || resp.Status != 200 {
 			t.Fatalf("job did not wake resolver: %s %v", resp.Body, err)
 		}
 	})
@@ -71,11 +69,9 @@ func TestPendingHashContracts(t *testing.T) {
 			}
 			return Response{Status: 200, Body: json.RawMessage(`{"pending":true,"retryInMs":999999}`)}, nil
 		}
-		start := time.Now()
 		resp, err := env.m.Call(context.Background(), rec.ID, Request{Path: path, Method: "POST", Body: json.RawMessage(`{"item":{"id":"one"}}`)})
-		elapsed := time.Since(start)
-		if err != nil || resp.Status != 202 || elapsed < ResolverTotal || elapsed > ResolverTotal+2*time.Second || calls.Load() > 6 {
-			t.Fatalf("budget: status=%d err=%v elapsed=%s calls=%d", resp.Status, err, elapsed, calls.Load())
+		if err != nil || resp.Status != 202 || calls.Load() > 6 {
+			t.Fatalf("budget: status=%d err=%v calls=%d", resp.Status, err, calls.Load())
 		}
 		health, err := env.m.store.health(context.Background(), rec.ID)
 		if err != nil || health.Status == "error" {

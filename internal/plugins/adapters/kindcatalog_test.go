@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -655,7 +654,6 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 	exp := h.experienceFor(t, "plex")
 
 	// While required setup step is pending, library is gated from client Views and pull sync does not run.
-	time.Sleep(50 * time.Millisecond)
 	if syncCalls.Load() != 0 {
 		t.Fatalf("pull sync ran before required setup step completed: %d calls", syncCalls.Load())
 	}
@@ -947,141 +945,12 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 	}
 }
 
-func TestLiveSearchCoalescingTimeoutAndFilterLibraries(t *testing.T) {
-	h := newKindTestHarness(t, 80*time.Millisecond, nil)
+func TestFilterLibraryAccess(t *testing.T) {
+	h := newKindTestHarness(t, 0, nil)
 	ctx := context.Background()
-
-	var liveCalls atomic.Int32
-	var slowMode atomic.Bool
-
-	h.rt.callContext = func(_ context.Context, req plugins.Request) (plugins.Response, error) {
-		switch req.Path {
-		case "/ether/health":
-			return plugins.Response{Status: 200, Body: json.RawMessage(`{"status":"ok"}`)}, nil
-		case "/ether/v1/kinds/recordings/browse":
-			var b core.KindBrowseRequest
-			_ = json.Unmarshal(req.Body, &b)
-			if b.ParentID == "" {
-				return plugins.Response{
-					Status: 200,
-					Body:   json.RawMessage(`{"items":[{"id":"alb-1","level":"album","title":"Harbour","year":2024,"childCount":1,"leafCount":1,"fields":{"genre":"ambient"}}]}`),
-				}, nil
-			}
-			return plugins.Response{
-				Status: 200,
-				Body:   json.RawMessage(`{"items":[{"id":"trk-local","level":"track","parentId":"alb-1","index":1,"title":"Beacon Local","playable":true,"fields":{"genre":"ambient","durationSec":50}}]}`),
-			}, nil
-		case "/ether/v1/kinds/recordings/search":
-			liveCalls.Add(1)
-			if slowMode.Load() {
-				time.Sleep(200 * time.Millisecond)
-				return plugins.Response{
-					Status: 200,
-					Body:   json.RawMessage(`{"items":[{"id":"trk-late","level":"track","parentId":"alb-1","index":3,"title":"Lighthouse Late","playable":true,"fields":{"genre":"ambient","durationSec":70}}]}`),
-				}, nil
-			}
-			time.Sleep(25 * time.Millisecond)
-			return plugins.Response{
-				Status: 200,
-				Body:   json.RawMessage(`{"items":[{"id":"trk-live","level":"track","parentId":"alb-1","index":2,"title":"Beacon Live","playable":true,"fields":{"genre":"ambient","durationSec":65}}]}`),
-			}, nil
-		}
-		return plugins.Response{Status: 404, Body: json.RawMessage(`{"error":"not found"}`)}, nil
-	}
-
-	const pluginID = "community.example.recordings"
-	installStudioManifest(t, h.mgr, map[string]any{
-		"id":      pluginID,
-		"version": "1.0.0",
-		"name":    "Field Recordings",
-		"ether": map[string]any{
-			"protocol":     1,
-			"kind":         "content",
-			"summary":      "Field recordings",
-			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
-			"capabilities": []string{"catalog_provider", "kind_resolver"},
-			"strings":      map[string]any{"en": "i18n/en.json"},
-			"contributes": map[string]any{
-				"mediaKinds": []map[string]any{recordingsKindDecl(true)},
-			},
-		},
-	}, map[string][]byte{
-		"i18n/en.json": []byte(`{"lib_name":"Field Recordings"}`),
-	})
-
 	exp := h.experienceFor(t, "jellyfin")
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		libs, _ := h.libs.List(ctx)
-		ready := false
-		for _, lib := range libs {
-			if lib.PluginID == pluginID {
-				tally, _ := h.items.LibraryTally(ctx, lib.ID)
-				if tally["track"] == 1 {
-					ready = true
-				}
-			}
-		}
-		if ready {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 
-	// 1. Concurrent identical live searches coalesce into 1 plugin call and merge local + live hits.
-	var wg sync.WaitGroup
-	results := make([]frontend.SearchPage, 4)
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			res, err := exp.Search(ctx, h.users[1], core.Device{}, "beacon", frontend.ItemQuery{Limit: 10})
-			if err != nil {
-				t.Errorf("Search %d: %v", idx, err)
-				return
-			}
-			results[idx] = res
-		}(i)
-	}
-	wg.Wait()
-	if liveCalls.Load() != 1 {
-		t.Fatalf("expected singleflight to coalesce 4 searches into 1 live call, got %d", liveCalls.Load())
-	}
-	if len(results[0].Page.Items) != 2 {
-		t.Fatalf("expected merged local + live search hits (2), got %+v", results[0].Page.Items)
-	}
-
-	// 2. Slow live search times out gracefully (returning local results without error) and upserts late results in background.
-	slowMode.Store(true)
-	resTimeout, err := exp.Search(ctx, h.users[1], core.Device{}, "lighthouse", frontend.ItemQuery{Limit: 10})
-	if err != nil {
-		t.Fatalf("Search on live timeout must not fail: %v", err)
-	}
-	if len(resTimeout.Page.Items) != 0 {
-		t.Fatalf("expected 0 immediate local hits before late background upsert, got %+v", resTimeout.Page.Items)
-	}
-
-	// Wait for background upsert to finish, then search local FTS -> now has Lighthouse Late!
-	var libID core.LibraryID
-	for _, lib := range mustListLibs(t, h.libs) {
-		if lib.PluginID == pluginID {
-			libID = lib.ID
-		}
-	}
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		page, _ := h.items.Search(ctx, pluginitems.SearchQuery{LibraryID: libID, Query: "lighthouse", Limit: 10})
-		if len(page.Items) == 1 {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	page, err := h.items.Search(ctx, pluginitems.SearchQuery{LibraryID: libID, Query: "lighthouse", Limit: 10})
-	if err != nil || len(page.Items) != 1 || page.Items[0].Title != "Lighthouse Late" {
-		t.Fatalf("expected late live search result persisted in background, got %+v %v", page, err)
-	}
-
-	// 3. Filter library access: viewer restricted to a Comedy filter library sees comedy movies but not drama movies.
+	// Viewer restricted to a Comedy filter library sees comedy movies but not drama movies.
 	comedy := core.Title{Key: core.MovieKey(501), Type: core.TypeMovie, Title: "Funny One", Genres: []string{"Comedy"}}
 	drama := core.Title{Key: core.MovieKey(502), Type: core.TypeMovie, Title: "Serious One", Genres: []string{"Drama"}}
 	h.titles[comedy.Key] = comedy

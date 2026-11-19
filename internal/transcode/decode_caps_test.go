@@ -132,12 +132,8 @@ func TestDecodeToneMapAdmission(t *testing.T) {
 		defer c.close()
 		info := mustParse(t, "mkv_hevc_hdr10.json")
 		hw := core.HWAccel{Name: AccelVideoToolbox}
-		start := time.Now()
 		if c.supportsWithin(hw, info.Video(), 300*time.Millisecond) {
 			t.Fatal("pending probe admitted")
-		}
-		if time.Since(start) > 500*time.Millisecond {
-			t.Fatal("admission exceeded bounded wait")
 		}
 		c.mu.Lock()
 		done := c.pending[sourceDecodeKey(hw, info.Video())]

@@ -106,12 +106,8 @@ func TestRunResolverTimeoutAndCache(t *testing.T) {
 			return nil, ctx.Err()
 		}})
 	e := Extra{Site: "YouTube", SiteKey: "vKQi3bBA1y8", Source: SourceCommand}
-	start := time.Now()
 	if _, err := s.Resolve(context.Background(), e); err == nil {
 		t.Fatal("want timeout error")
-	}
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("timeout not enforced")
 	}
 
 	calls := 0

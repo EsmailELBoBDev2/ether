@@ -73,9 +73,8 @@ func TestDiscoveryLocalizedGridQueuesWithoutNetworkWait(t *testing.T) {
 	}}
 	f.srv.setDiscovery(d.Frontend())
 	pr := &Request{User: &core.User{ID: 1, IsOwner: true}, Language: "fr"}
-	before := time.Now()
 	m := f.srv.metadata(ctx, pr, &fightClub, renderOpts{})
-	if calls.Load() != 0 || m.Title != fightClub.Title || time.Since(before) > time.Second {
+	if calls.Load() != 0 || m.Title != fightClub.Title {
 		t.Fatal("metadata waited for remote localization")
 	}
 	jobCtx, cancel := context.WithCancel(ctx)

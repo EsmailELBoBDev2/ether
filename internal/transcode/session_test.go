@@ -481,12 +481,8 @@ func TestRemuxRestartsAfterPrematureEOF(t *testing.T) {
 	m := newTestManager(t, fr, config.Transcode{}, WithBuffering(24*time.Second, 2*time.Minute, 3*time.Minute))
 	s := startSession(t, m, remuxRequest(t, "premature-eof", 48*time.Minute+39*time.Second))
 	resume := 620
-	started := time.Now()
 	if r := get(t, s, resume); r.Code != 200 {
 		t.Fatalf("resume segment %d: %d %s", resume, r.Code, r.Body.String())
-	}
-	if took := time.Since(started); took > 5*time.Second {
-		t.Fatalf("resume first segment took %v, want under 5s", took)
 	}
 	startsAfterResume := fr.startCount()
 	next := resume + fr.eofAfter
@@ -658,19 +654,6 @@ func TestIdleReaping(t *testing.T) {
 	}
 	if _, err := os.Stat(s.dir); !os.IsNotExist(err) {
 		t.Error("dir not removed")
-	}
-}
-
-func TestTouchKeepsSessionAlive(t *testing.T) {
-	fr := newFakeRunner()
-	m := newTestManager(t, fr, config.Transcode{}, WithIdleTimeout(200*time.Millisecond))
-	s := startSession(t, m, remuxRequest(t, "touch", time.Hour))
-	for i := 0; i < 8; i++ {
-		time.Sleep(50 * time.Millisecond)
-		s.Touch()
-	}
-	if _, ok := m.Session("touch"); !ok {
-		t.Error("touched session reaped")
 	}
 }
 

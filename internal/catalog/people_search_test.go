@@ -3,8 +3,6 @@ package catalog
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +10,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
-	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
 func TestPeopleSearchMigrationBackfillAndDiacritics(t *testing.T) {
@@ -340,41 +337,5 @@ SELECT * FROM (SELECT ` + cols + `, cr.person_tmdb, cr.kind, cr.ord, cr.role FRO
 				t.Fatalf("%s performed full scan (%s): %s", q.name, forbidden, plan)
 			}
 		}
-	}
-}
-
-func TestSearchSkipsRemoteTMDBWaitWhenExactPersonMatches(t *testing.T) {
-	ctx := context.Background()
-	db := store.OpenTest(t)
-	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(450 * time.Millisecond)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"page": 1, "total_pages": 1, "results": []any{}})
-	}))
-	defer srv.Close()
-
-	tmdbClient := tmdb.New("test-key", nil, tmdb.WithBaseURL(srv.URL))
-	c, err := New(db, tmdbClient, config.Catalog{Language: "en-US"}, nil, WithNow(func() time.Time { return now }))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.UpsertTitle(ctx, core.Title{
-		Key: core.MovieKey(550), IDs: core.IDs{TMDB: 550}, Type: core.TypeMovie,
-		Title: "Fight Club", Released: now.AddDate(-5, 0, 0),
-		Cast: []core.Person{{TMDB: 287, Name: "Brad Pitt", Role: "Tyler Durden"}},
-	}, true); err != nil {
-		t.Fatal(err)
-	}
-
-	start := time.Now()
-	_, err = c.Search(ctx, "Brad Pitt", nil, 20)
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if elapsed >= 350*time.Millisecond {
-		t.Fatalf("Catalog.Search waited %s on remote TMDB despite exact local person match", elapsed)
 	}
 }

@@ -335,13 +335,9 @@ func TestServeRange(t *testing.T) {
 		}
 		srv := directPlayServer(t, h.m, ps.ID)
 		off := int64(big) * 85 / 100
-		started := time.Now()
 		resp, body, err := get(t, srv.URL, map[string]string{"Range": fmt.Sprintf("bytes=%d-%d", off, off+4095)})
 		if err != nil || resp.StatusCode != 206 || !bytes.Equal(body, expected("A", off, 4096)) {
 			t.Fatalf("far range: %d %v len=%d", resp.StatusCode, err, len(body))
-		}
-		if d := time.Since(started); d > time.Second {
-			t.Fatalf("85%% range took %s (sequential fill?)", d)
 		}
 		for _, src := range h.engine.sources {
 			for _, span := range src.readSpans()[before[src]:] {
@@ -500,7 +496,16 @@ func TestPrepareWaiterCancel(t *testing.T) {
 		}
 		done <- ps
 	}()
-	time.Sleep(20 * time.Millisecond)
+	eventually(t, "second waiter joined flight", func() bool {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		for _, fl := range h.m.flights {
+			if fl.waiters >= 2 {
+				return true
+			}
+		}
+		return false
+	})
 	cancel()
 	if err := <-errc; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled waiter err = %v", err)

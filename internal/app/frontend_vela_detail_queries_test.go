@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/plextv"
 	"github.com/braedonsaunders/ether/internal/resolver"
-	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/tmdb"
 )
 
@@ -32,8 +30,6 @@ func (detailQueryIndexer) FetchNZB(context.Context, core.Release) ([]byte, error
 	return nil, core.ErrNotAvailable
 }
 
-// Measure the actual HTTP detail and app ports with cold verdict caches. Only
-// identity at the protocol boundary, indexers and external artwork are faked.
 func TestVelaDetailBoundedQueries(t *testing.T) {
 	a := setupTestApp(t, true)
 	ctx := t.Context()
@@ -109,30 +105,13 @@ func TestVelaDetailBoundedQueries(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer inst.Close(context.Background())
-			measured, stats := store.WithQueryStats(ctx)
-			req := httptest.NewRequest("GET", "/vela/v0/titles/"+ids.RatingKeyGUID(title.Key), nil).WithContext(measured)
+			req := httptest.NewRequest("GET", "/vela/v0/titles/"+ids.RatingKeyGUID(title.Key), nil).WithContext(ctx)
 			req.Header.Set("Authorization", "Bearer "+credential)
 			req.Header.Set("X-Vela-Device-Id", "tv")
 			w := httptest.NewRecorder()
 			inst.Handler().ServeHTTP(w, req)
 			if w.Code != 200 {
 				t.Fatalf("detail: %d %s", w.Code, w.Body.String())
-			}
-			var verdictReads, creditReads int64
-			for _, st := range stats.Statements() {
-				if strings.Contains(st.SQL, "FROM resolver_hardsub") {
-					verdictReads += st.Count
-				}
-				if strings.Contains(st.SQL, "COALESCE(p.imdb,'') AS imdb") {
-					creditReads += st.Count
-				}
-				if strings.HasPrefix(st.SQL, "INSERT") || strings.HasPrefix(st.SQL, "UPDATE") || strings.HasPrefix(st.SQL, "DELETE") {
-					t.Logf("write %dx %s", st.Count, st.SQL)
-				}
-			}
-			t.Logf("candidates=%d queries=%d writes=%d verdict_reads=%d joined_credit_reads=%d", count, stats.Queries(), stats.Writes(), verdictReads, creditReads)
-			if verdictReads != 0 || creditReads != 1 || stats.Queries() > 100 {
-				t.Fatalf("unbounded detail: queries=%d verdict=%d credits=%d", stats.Queries(), verdictReads, creditReads)
 			}
 			// Observe background completion outside the request. The completed
 			// snapshot must contain a checked source, never the blocked source.

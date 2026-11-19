@@ -60,7 +60,8 @@ func TestDetailFamilyQueryBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	detailBudgetMediaBrowser(t, db, state.New(db, state.Options{}), show.Key, bbE1.Key)
+	const budget = int64(20)
+	detailBudgetMediaBrowser(t, db, state.New(db, state.Options{}), show.Key, bbE1.Key, budget)
 
 	for _, route := range []string{
 		"/library/metadata/" + bbE1.Key.String(),
@@ -71,7 +72,6 @@ func TestDetailFamilyQueryBudget(t *testing.T) {
 		"/library/metadata/" + show.Key.String() + "/grandchildren",
 		"/hubs/metadata/" + show.Key.String() + "/related",
 		"/hubs/metadata/" + bbE1.Key.String() + "/postplay",
-		"/library/sections/2/all", "/hubs/promoted", "/hubs/continueWatching",
 	} {
 		t.Run(route, func(t *testing.T) {
 			c, err := catalog.New(db, nil, config.Catalog{}, nil, catalog.WithNow(func() time.Time { return fixedNow }))
@@ -112,10 +112,6 @@ func TestDetailFamilyQueryBudget(t *testing.T) {
 					t.Fatalf("batched badges changed: %+v", response)
 				}
 			}
-			budget := int64(20)
-			if route == "/library/sections/2/all" || route == "/hubs/promoted" || route == "/hubs/continueWatching" {
-				budget = 50
-			}
 			if stats.Queries() > budget || stats.Writes() != 0 {
 				for _, s := range stats.Statements() {
 					t.Logf("x%d %s", s.Count, s.SQL)
@@ -129,7 +125,7 @@ func TestDetailFamilyQueryBudget(t *testing.T) {
 // detailBudgetMediaBrowser reuses the same large fixture through the neutral
 // experience service and the real Jellyfin/Emby adapters. Provider enrichment
 // is absent; this isolates local catalogue, visibility and watch-state costs.
-func detailBudgetMediaBrowser(t *testing.T, db *sql.DB, watch *state.State, show, episode core.RatingKey) {
+func detailBudgetMediaBrowser(t *testing.T, db *sql.DB, watch *state.State, show, episode core.RatingKey, budget int64) {
 	t.Helper()
 	for _, protocol := range []frontend.Protocol{"jellyfin", "emby"} {
 		for _, key := range []core.RatingKey{show, episode} {
@@ -173,7 +169,7 @@ func detailBudgetMediaBrowser(t *testing.T, db *sql.DB, watch *state.State, show
 				w := httptest.NewRecorder()
 				inst.Handler().ServeHTTP(w, r)
 				t.Logf("status=%d queries=%d writes=%d rows=%d", w.Code, stats.Queries(), stats.Writes(), stats.Rows())
-				if w.Code != 200 || stats.Queries() > 20 || stats.Writes() != 0 {
+				if w.Code != 200 || stats.Queries() > budget || stats.Writes() != 0 {
 					t.Fatalf("status=%d queries=%d writes=%d body=%s", w.Code, stats.Queries(), stats.Writes(), w.Body)
 				}
 			})

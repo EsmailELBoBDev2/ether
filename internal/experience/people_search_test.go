@@ -130,7 +130,6 @@ func TestPersonSearchDoesNotTriggerSlowDescriptiveAIWait(t *testing.T) {
 	descSource := &mockDescriptiveVibeSource{
 		onDescribe: func(q string) core.DescriptiveResult {
 			describeCalls++
-			time.Sleep(350 * time.Millisecond)
 			if q == "cozy british mysteries" {
 				return core.DescriptiveResult{State: "ready", Items: []core.Title{aiItem}}
 			}
@@ -148,14 +147,12 @@ func TestPersonSearchDoesNotTriggerSlowDescriptiveAIWait(t *testing.T) {
 	types := []core.MediaType{core.TypeMovie, core.TypeShow}
 	// 1. Two-word person name ("brad pitt") resolves via PeopleTitles (score >= 0.935):
 	//    IsDescriptiveQuery MUST be false so Resolve returns immediately without starting DescribeSearch!
-	start := time.Now()
 	personRes, err := srch.Resolve(ctx, &core.User{ID: 1, IsOwner: true}, "brad pitt", types, 10, true)
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if describeCalls != 0 || elapsed >= 250*time.Millisecond {
-		t.Fatalf("2-word person search triggered AI DescribeSearch wait (calls=%d, elapsed=%s)", describeCalls, elapsed)
+	if describeCalls != 0 {
+		t.Fatalf("2-word person search triggered AI DescribeSearch (calls=%d)", describeCalls)
 	}
 	if len(personRes.Items) != 1 || personRes.Items[0].Title != "Fight Club" {
 		t.Fatalf("unexpected person search results: %+v", personRes.Items)

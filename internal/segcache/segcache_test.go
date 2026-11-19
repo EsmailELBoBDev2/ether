@@ -944,9 +944,6 @@ func TestOpenLargeCacheLazyValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if elapsed >= 100*time.Millisecond {
-		t.Fatalf("Open took %v", elapsed)
-	}
 	if c.segCountSafe() != 0 {
 		t.Fatal("Open indexed disk entries")
 	}

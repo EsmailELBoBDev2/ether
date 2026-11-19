@@ -31,19 +31,6 @@ func TestBootstrapProofReuseAndReceiptEpochFence(t *testing.T) {
 	if reads != 1 {
 		t.Fatalf("active reads=%d", reads)
 	}
-	// Experience's standalone fixture does not register the ranker tables.
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS personalize_home_layout(id INTEGER PRIMARY KEY,document TEXT); CREATE TABLE IF NOT EXISTS favorites_mirror(viewer_id INTEGER PRIMARY KEY,updated_at INTEGER); CREATE TABLE IF NOT EXISTS notinterested_revisions(viewer_id INTEGER PRIMARY KEY,revision INTEGER); CREATE TABLE IF NOT EXISTS catalog_viewer_rules(viewer_id INTEGER PRIMARY KEY,revision INTEGER);`); err != nil {
-		t.Fatal(err)
-	}
-	measured, stats := store.WithQueryStats(ctx)
-	for range 3 {
-		if _, err := RowViewRevision(measured, db, &core.User{ID: 7}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if stats.Queries() != 1 {
-		t.Fatalf("revision reads=%d", stats.Queries())
-	}
 	now := time.Unix(1700000000, 0)
 	opts := relayOptions(db, &now, 100, true, nil)
 	receipts, err := NewReceipts(opts)

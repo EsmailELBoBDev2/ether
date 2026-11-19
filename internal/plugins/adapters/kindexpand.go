@@ -24,17 +24,18 @@ const (
 )
 
 // firstOpenWait bounds how long the first page of a studio or performer
-// waits for its catalogue fill, so the first open already shows the full
-// catalogue. A fill that runs longer keeps going and the page shows what has
-// arrived.
+// waits for its fill's first page: the plugin returns the newest titles first,
+// so once that page is stored the first screen is already right, and the rest
+// of the catalogue keeps filling in behind the viewer's scroll.
 var firstOpenWait = 20 * time.Second
 
 var (
 	_              experience.PluginSliceExpander = (*KindCatalog)(nil)
 	expandLaunchMu sync.Mutex
-	// expandDone holds one channel per running fill (dedup key), closed when
-	// the fill finishes, so first-page readers can wait for it.
-	expandDone sync.Map
+	// expandReady holds one channel per running fill (dedup key), closed once
+	// the fill has stored its first page (or ended), so first-page readers
+	// can wait for it.
+	expandReady sync.Map
 )
 
 type expandTarget struct {
@@ -46,9 +47,9 @@ type expandTarget struct {
 // MaybeExpand checks whether viewer browse query q opens a single declared
 // expandable facet bucket or a plugin person's credits on lib. When no fresh
 // expansion exists within ttlHours it launches one via Manager.StartExpandJob.
-// The first page of the slice then waits (at most firstOpenWait) for the fill
-// to finish, so the first open shows the full catalogue. It reports whether a
-// fill is still running when it returns; later pages never wait.
+// The first page of the slice then waits (at most firstOpenWait) for the
+// fill's first stored page, so the first open shows the newest titles. It
+// reports whether it gave up before that page arrived; later pages never wait.
 func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q frontend.ItemQuery) bool {
 	if c == nil || c.items == nil || c.mgr == nil || lib.Source != core.LibraryPlugin {
 		return false
@@ -156,7 +157,7 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 		dedupKey := rec.KindKey + "\x00" + t.facet + "\x00" + t.valueKey
 		expandLaunchMu.Lock()
 		if c.mgr.IsExpandJobRunning(rec.PluginID, dedupKey) {
-			if ch, ok := expandDone.Load(dedupKey); ok {
+			if ch, ok := expandReady.Load(dedupKey); ok {
 				waits = append(waits, ch.(chan struct{}))
 			}
 			expandLaunchMu.Unlock()
@@ -169,15 +170,17 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 			continue
 		}
 		ready := make(chan struct{})
-		done := make(chan struct{})
+		firstPage := make(chan struct{})
+		var firstOnce sync.Once
+		signal := func() { firstOnce.Do(func() { close(firstPage) }) }
 		target := t
 		started, startErr := c.mgr.StartExpandJob(rec.PluginID, routePath, dedupKey, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
 			defer func() {
-				expandDone.Delete(dedupKey)
-				close(done)
+				expandReady.Delete(dedupKey)
+				signal()
 			}()
 			<-ready
-			return c.runFacetExpansion(jobCtx, run, rec, lib.ID, routePath, target)
+			return c.runFacetExpansion(jobCtx, run, rec, lib.ID, routePath, target, signal)
 		})
 		if startErr == nil && !started {
 			close(ready)
@@ -194,8 +197,8 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 		markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = c.items.MarkFacetExpansionRunning(markCtx, rec.PluginID, rec.KindKey, lib.ID, t.facet, t.valueKey)
 		cancel()
-		expandDone.Store(dedupKey, done)
-		waits = append(waits, done)
+		expandReady.Store(dedupKey, firstPage)
+		waits = append(waits, firstPage)
 		close(ready)
 		expandLaunchMu.Unlock()
 		anyRunning = true
@@ -204,9 +207,9 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	if !anyRunning {
 		return false
 	}
-	// The first page waits for the fill (its own or another viewer's), so a
-	// viewer opening a studio or performer sees the whole catalogue the first
-	// time. Later pages never wait.
+	// The first page waits for the fill's first stored page (its own fill or
+	// another viewer's), so a viewer opening a studio or performer sees the
+	// right titles the first time. Later pages never wait.
 	if q.Offset != 0 || q.StartAt != 0 || q.AdjacentTo != 0 || len(waits) == 0 || firstOpenWait <= 0 {
 		return true
 	}
@@ -224,7 +227,7 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	return false
 }
 
-func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.ExpandJobRunner, rec pluginitems.KindRecord, libID core.LibraryID, routePath string, target expandTarget) error {
+func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.ExpandJobRunner, rec pluginitems.KindRecord, libID core.LibraryID, routePath string, target expandTarget, firstPage func()) error {
 	var (
 		pages              int
 		callTime, saveTime time.Duration
@@ -327,6 +330,8 @@ func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.Exp
 			}
 			totalAccepted += acc
 			totalAdded += add
+			c.items.BumpGeneration()
+			firstPage()
 			run.SetProgress(fmt.Sprintf("%s: %s (%d items)", target.facet, target.req.Value, totalAccepted))
 		}
 

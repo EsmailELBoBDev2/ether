@@ -2,10 +2,23 @@ package plex
 
 import (
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
+	"github.com/braedonsaunders/ether/internal/frontend/kit/reqmemo"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
+
+func memoizePlexReadPattern(pattern string) bool {
+	if strings.HasPrefix(pattern, "/library/parts/") || strings.HasPrefix(pattern, "/library/streams/") {
+		return false
+	}
+	return strings.HasPrefix(pattern, "/library") ||
+		strings.HasPrefix(pattern, "/hubs") ||
+		strings.HasPrefix(pattern, "/search") ||
+		strings.HasPrefix(pattern, "/playlists") ||
+		strings.HasPrefix(pattern, "/playQueues")
+}
 
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
@@ -15,7 +28,11 @@ func (s *Server) routes() chi.Router {
 
 	// get registers GET and HEAD.
 	get := func(pattern string, h http.HandlerFunc) {
+		memo := memoizePlexReadPattern(pattern)
 		handler := func(w http.ResponseWriter, r *http.Request) {
+			if memo && !reqmemo.Active(r.Context()) {
+				r = r.WithContext(reqmemo.With(r.Context()))
+			}
 			if !s.serveShelfGeneration(w, r) {
 				h(w, r)
 			}

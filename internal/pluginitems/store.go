@@ -345,19 +345,31 @@ func (s *Service) KindUpsert(ctx context.Context, pluginID, kindKey string, item
 // UpsertItems validates and writes a batch of KindItems for (pluginID, kindKey)
 // in one transaction, maintaining tallies, typed EAV fields, art and FTS.
 func (s *Service) UpsertItems(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error) {
+	accepted, _, err := s.UpsertItemsWithAdded(ctx, pluginID, kindKey, items)
+	return accepted, err
+}
+
+// UpsertItemsWithAdded validates and writes a batch of KindItems for
+// (pluginID, kindKey), returning both accepted items and newly inserted items.
+func (s *Service) UpsertItemsWithAdded(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, int, error) {
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
-	return s.upsertItemsLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true)
+	return s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true)
 }
 
 func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, error) {
+	accepted, _, err := s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen)
+	return accepted, err
+}
+
+func (s *Service) upsertItemsWithAddedLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, int, error) {
 	kind, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(items) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	// Track levels in the incoming batch so parent levels within the same
@@ -382,7 +394,7 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 	}
 	dbParentLevels, err := s.lookupLevelsByExternalIDs(ctx, pluginID, kindKey, parentIDs)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	// Validate every item and deduplicate by ID (last occurrence in batch wins).
@@ -400,7 +412,7 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 		}
 		v, err := ValidateItem(kind.Decl, it, parentLevel)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		v.Item.Ref = core.NewItemRef(pluginID, kindKey, v.Item.ID)
 		totalDroppedFields += v.DroppedFields
@@ -417,13 +429,13 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer tx.Rollback()
 
 	existing, err := lookupExistingItemsTx(ctx, tx, validated)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	newCount := 0
@@ -436,11 +448,11 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 		maxItems := s.MaxItemsFor(pluginID)
 		var pluginTotal int64
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ?`, pluginID).Scan(&pluginTotal); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if pluginTotal+int64(newCount) > int64(maxItems) {
 			s.noteAttention(ctx, pluginID, fmt.Sprintf("plugin exceeded max item cap (%d)", maxItems))
-			return 0, ErrMaxItemsExceeded
+			return 0, 0, ErrMaxItemsExceeded
 		}
 	}
 
@@ -448,7 +460,7 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 	if newCount > 0 {
 		nextSeq, err = allocateSeqRangeTx(ctx, tx, int64(newCount))
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 
@@ -498,7 +510,7 @@ func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey strin
 		if it.Unavailable != nil {
 			b, err := json.Marshal(it.Unavailable)
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			unavailableStr = string(b)
 		}
@@ -544,7 +556,7 @@ INSERT INTO plugin_items(
 				unavailableStr, hintsStr, fieldsStr, it.ETag, addedAt, nowUnix, seenAt,
 				it.Title, v.SearchFields, v.SearchPeople,
 			); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx, `
@@ -580,53 +592,53 @@ INSERT INTO plugin_items(
 				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, playableInt, it.ChildCount, it.LeafCount,
 				unavailableStr, hintsStr, fieldsStr, it.ETag, addedAt, nowUnix, seenAt,
 			); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			if err := sqliteIndexFTS(ctx, tx, seq, it.Ref, kind.LibraryID, it.Title, v.SearchFields, v.SearchPeople); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 
 		// Replace indexed fields for this item.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_fields WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		for _, fv := range v.IndexedFields {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real, v_fold) VALUES(?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(item_ref, field, v_text, v_int) DO UPDATE SET v_real = excluded.v_real, v_fold = excluded.v_fold`,
 				string(it.Ref), fv.Field, fv.Text, fv.Int, fv.Real, fv.Fold); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 
 		// Replace artwork rows for this item.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_item_art WHERE item_ref = ?`, string(it.Ref)); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		for _, a := range it.Art {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO plugin_item_art(item_ref, role, url, width, height) VALUES(?, ?, ?, ?, ?)`,
 				string(it.Ref), a.Role, a.URL, a.Width, a.Height); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 	}
 
 	if err := applyTallyDeltaTx(ctx, tx, kind.LibraryID, tallyDelta); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if bumpGen {
 		if err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, nowUnix); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return len(items), nil
+	return len(items), newCount, nil
 }
 
 func applyMigration3SQLite(ctx context.Context, tx *sql.Tx) error {
@@ -1561,6 +1573,9 @@ func (s *Service) purgeKindTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_items WHERE `+whereItems, args...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_facet_expansions WHERE `+whereItems, args...); err != nil {
 		return err
 	}
 	if dropKindRow {

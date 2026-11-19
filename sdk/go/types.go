@@ -336,6 +336,17 @@ type KindArt struct {
 	Label string `json:"label"`
 }
 
+// DefaultKindExpandTTLHours is the default freshness window (7 days) for
+// on-demand facet and person slice expansions when ttlHours is omitted or zero.
+const DefaultKindExpandTTLHours = 168
+
+// KindBrowseExpand configures on-demand background expansion for declared
+// browse facets when a viewer opens a facet collection bucket or plugin person.
+type KindBrowseExpand struct {
+	Facets   []string `json:"facets"`
+	TTLHours int      `json:"ttlHours,omitempty"`
+}
+
 // KindBrowseDecl is how a kind library is browsed.
 type KindBrowseDecl struct {
 	Sorts        []string `json:"sorts,omitempty"`
@@ -344,7 +355,8 @@ type KindBrowseDecl struct {
 	SearchFields []string `json:"searchFields,omitempty"`
 	// LiveSearch: client searches also call the plugin's /search route
 	// with a short budget; results are upserted and merged (§15.4).
-	LiveSearch bool `json:"liveSearch,omitempty"`
+	LiveSearch bool              `json:"liveSearch,omitempty"`
+	Expand     *KindBrowseExpand `json:"expand,omitempty"`
 }
 
 // Kind sync modes: pull (Ether walks browse/changes) or push (KindUpsert).

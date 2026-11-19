@@ -308,6 +308,9 @@ type ItemQuery struct {
 	// which reads every title the filter admits; Page.Total is Offset plus
 	// the items returned. Other pages still report their exact total.
 	NoTotal bool
+	// SuppressExpand disables on-demand background plugin facet/person expansion
+	// for internal shelf probes and search fan-out.
+	SuppressExpand bool
 }
 
 // Continuation distinguishes a known next page from exhaustion and a

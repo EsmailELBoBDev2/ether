@@ -510,12 +510,34 @@ type KindArt struct {
 // Builtin kind art roles; declared roles must not repeat them.
 var BuiltinKindArtRoles = map[string]bool{"poster": true, "backdrop": true, "thumb": true, "logo": true}
 
+// DefaultKindExpandTTLHours is the default freshness window (7 days) for an
+// expanded facet bucket or people credit before opening it again triggers a
+// fresh background expansion.
+const DefaultKindExpandTTLHours = 168
+
+// KindBrowseExpand declares on-demand background expansion for specific browse
+// facets (collection buckets or people fields).
+type KindBrowseExpand struct {
+	Facets   []string `json:"facets"`             // subset of browse.facets
+	TTLHours int      `json:"ttlHours,omitempty"` // default 168 (7 days)
+}
+
+// EffectiveTTLHours returns the configured freshness window in hours,
+// defaulting to DefaultKindExpandTTLHours (168).
+func (e *KindBrowseExpand) EffectiveTTLHours() int {
+	if e == nil || e.TTLHours <= 0 {
+		return DefaultKindExpandTTLHours
+	}
+	return e.TTLHours
+}
+
 // KindBrowseDecl is how a kind library is browsed.
 type KindBrowseDecl struct {
-	Sorts        []string `json:"sorts,omitempty"`        // subset of title|added|released|year|rating|index
-	Facets       []string `json:"facets,omitempty"`       // field keys; each must be indexed
-	Search       bool     `json:"search"`                 // full-text over the title plus SearchFields
-	SearchFields []string `json:"searchFields,omitempty"` // declared text fields included in search
+	Sorts        []string          `json:"sorts,omitempty"`        // subset of title|added|released|year|rating|index
+	Facets       []string          `json:"facets,omitempty"`       // field keys; each must be indexed
+	Search       bool              `json:"search"`                 // full-text over the title plus SearchFields
+	SearchFields []string          `json:"searchFields,omitempty"` // declared text fields included in search
+	Expand       *KindBrowseExpand `json:"expand,omitempty"`       // on-demand background facet/person expansion
 	// LiveSearch: client searches also call the plugin's /search route
 	// with a short budget; results are upserted and merged (§15.4).
 	LiveSearch bool `json:"liveSearch,omitempty"`

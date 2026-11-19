@@ -281,6 +281,20 @@
                   },
                   "browse": {
                     "properties": {
+                      "expand": {
+                        "properties": {
+                          "facets": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "ttlHours": {
+                            "type": "integer"
+                          }
+                        },
+                        "type": "object"
+                      },
                       "facets": {
                         "items": {
                           "type": "string"

@@ -315,6 +315,7 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 
 	var pageItems []frontend.Title
 	hasMore := false
+	expanding := false
 	nextOffset := 0
 
 	if len(targetViews) == 1 {
@@ -331,6 +332,7 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
+		expanding = expanding || page.Expanding
 		if len(page.Items) > pageLimit {
 			page.Items = page.Items[:pageLimit]
 			hasMore = true
@@ -343,6 +345,7 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 				fail(w, err, r)
 				return
 			}
+			expanding = expanding || more.Expanding
 			hasMore = len(more.Items) > 0
 		}
 		pageItems = page.Items
@@ -365,6 +368,7 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 				fail(w, err, r)
 				return
 			}
+			expanding = expanding || page.Expanding
 			for _, item := range page.Items {
 				if !seen[item.Key] {
 					seen[item.Key] = true
@@ -399,6 +403,9 @@ func (i *instance) personTitles(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, entry)
 	}
 	out := object{"items": entries, "continuation": "exhausted"}
+	if expanding {
+		out["expanding"] = true
+	}
 	if hasMore {
 		next, err := i.nextLiveCursor(c, nextOffset, snapshot)
 		if err != nil {

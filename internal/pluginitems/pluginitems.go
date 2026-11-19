@@ -25,6 +25,39 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	store.Register("pluginitems", 5, `
+CREATE TABLE plugin_facet_expansions (
+	plugin_id   TEXT    NOT NULL,
+	kind_key    TEXT    NOT NULL,
+	library_id  INTEGER NOT NULL,
+	facet       TEXT    NOT NULL,
+	value_key   TEXT    NOT NULL,
+	state       TEXT    NOT NULL DEFAULT '',
+	started_at  INTEGER NOT NULL DEFAULT 0,
+	finished_at INTEGER NOT NULL DEFAULT 0,
+	items_added INTEGER NOT NULL DEFAULT 0,
+	error       TEXT    NOT NULL DEFAULT '',
+	PRIMARY KEY (plugin_id, kind_key, facet, value_key)
+);
+CREATE INDEX plugin_facet_expansions_library ON plugin_facet_expansions(library_id, state);
+`)
+	store.RegisterDialect("pluginitems", 5, store.Postgres, `
+CREATE TABLE plugin_facet_expansions (
+	plugin_id   TEXT   NOT NULL,
+	kind_key    TEXT   NOT NULL,
+	library_id  BIGINT NOT NULL,
+	facet       TEXT   NOT NULL,
+	value_key   TEXT   NOT NULL,
+	state       TEXT   NOT NULL DEFAULT '',
+	started_at  BIGINT NOT NULL DEFAULT 0,
+	finished_at BIGINT NOT NULL DEFAULT 0,
+	items_added BIGINT NOT NULL DEFAULT 0,
+	error       TEXT   NOT NULL DEFAULT '',
+	PRIMARY KEY (plugin_id, kind_key, facet, value_key)
+);
+CREATE INDEX plugin_facet_expansions_library ON plugin_facet_expansions(library_id, state);
+`)
+
 	store.Register("pluginitems", 4, `
 ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT '';
 CREATE INDEX plugin_item_fields_fold ON plugin_item_fields(field, v_fold, v_text, v_int, item_ref);
@@ -371,6 +404,14 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	return s, nil
 }
 
+// Now returns the service clock's current UTC time.
+func (s *Service) Now() time.Time {
+	if s == nil || s.now == nil {
+		return time.Now().UTC()
+	}
+	return s.now()
+}
+
 // SetCaller sets or replaces the plugin route caller after construction.
 func (s *Service) SetCaller(c Caller) {
 	s.workersMu.Lock()
@@ -397,6 +438,16 @@ func (s *Service) Generation() uint64 {
 // SyncGeneration is an alias for Generation (feeds PageFreshness.KindSync).
 func (s *Service) SyncGeneration() uint64 {
 	return s.Generation()
+}
+
+// BumpGeneration increments and returns the monotonic sync generation so
+// cached frontend ETag/revision scopes observe completed background expansions
+// even when zero new items were added.
+func (s *Service) BumpGeneration() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.syncGen.Add(1)
 }
 
 // MaxItemsFor returns the effective stored-item cap across all libraries owned

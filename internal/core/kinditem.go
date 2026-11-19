@@ -261,6 +261,32 @@ type KindBrowseRequest struct {
 	Query    string              `json:"query,omitempty"`
 }
 
+// KindExpandRequest is the request body sent to POST /ether/v1/kinds/{kind}/expand
+// to expand a declared browse facet bucket or people credit on demand.
+type KindExpandRequest struct {
+	Facet   string `json:"facet"`
+	Value   string `json:"value"`
+	ValueID int64  `json:"valueId,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+}
+
+// KindExpandResponse is the response from POST /ether/v1/kinds/{kind}/expand.
+// Plugins return either {items, cursor} directly or {job: "/ether/job/..."} for long work.
+type KindExpandResponse struct {
+	Items      []KindItem `json:"items,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Job        string     `json:"job,omitempty"`
+}
+
+// EffectiveCursor returns Cursor when non-empty, falling back to NextCursor.
+func (r KindExpandResponse) EffectiveCursor() string {
+	if r.Cursor != "" {
+		return r.Cursor
+	}
+	return r.NextCursor
+}
+
 // KindChangePage is one delta page returned by POST /ether/v1/kinds/{kind}/changes
 // during pull sync (spec §3.5).
 type KindChangePage struct {

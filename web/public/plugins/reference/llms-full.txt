@@ -675,7 +675,13 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     { "key": "durationSec", "type": "duration", "label": "Duration", "indexed": true }
   ],
   "present": { /* see "Publishing" */ },
-  "browse": { "sorts": ["title", "index"], "facets": ["genre", "durationSec"], "search": true, "liveSearch": true },
+  "browse": {
+    "sorts": ["title", "index"],
+    "facets": ["genre", "durationSec"],
+    "search": true,
+    "liveSearch": true,
+    "expand": { "facets": ["genre"], "ttlHours": 168 } // optional on-demand slice expansion
+  },
   "sync": { "mode": "pull", "refresh": "1h" },
   "cache": { "maxBytes": 2147483648 },        // optional; per-library blob cache
   "match": { "thresholdDefault": 0.8 }        // optional
@@ -694,7 +700,7 @@ unless the owner agrees to replace the library's contents.
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, or `"people"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
-  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=`.
+  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
   - For example, a games library declaring `"developers"` (`type: "strings"`, `indexed: true`) and `"voiceCast"` (`type: "people"`, `indexed: true`) in `browse.facets` can expose searchable alphabetical developer collections and a voice cast directory:
     ```json
@@ -732,6 +738,7 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket or plugin person | Background only, when `browse.expand` lists that facet. Receives `{facet, value, valueId?, cursor?}` and returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. Runs on owner-granted limits; 404/501 is a clean no-op. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
@@ -761,6 +768,48 @@ the next search. Declare it only if your source can answer a search
 quickly; the Studio template has it on with the explanation beside
 the toggle. Pair it with `browse.search: true` so earlier live
 results stay findable locally.
+
+### On-demand facet and person expansion (`browse.expand`)
+
+When a plugin seeds a starter catalogue (for example top games across studios)
+and wants to fetch the full back-catalogue of a developer or voice cast member
+only when someone actually opens that slice, declare `browse.expand`:
+
+```json
+"browse": {
+  "sorts": ["title", "released", "rating"],
+  "facets": ["developers", "voiceCast"],
+  "search": true,
+  "expand": {
+    "facets": ["developers", "voiceCast"],
+    "ttlHours": 168
+  }
+}
+```
+
+- Every entry in `browse.expand.facets` must already appear in `browse.facets`
+  (and the plugin must declare `catalog_provider`). `ttlHours` defaults to
+  `168` (7 days) when omitted or `0`.
+- **Viewer requests never wait on the plugin**: when a viewer opens a bucket's
+  items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo` or
+  `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin equivalents)
+  or a plugin person's titles (`GET /vela/v0/people/{id}/titles`), Ether returns
+  stored items immediately and, if no fresh expansion exists within `ttlHours`,
+  queues one background expansion job per `(plugin, kind, facet, value)` in the
+  two-slot background job pool at lowered OS priority. Listing tabs or
+  collections never triggers expansion.
+- Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
+  (`value` is the bucket label such as `"Nintendo"` or person name; `valueId` is
+  the synthetic plugin person ID when expanding a `people` facet) under
+  owner-granted background limits.
+- Return `{items: [...], cursor?: "next"}` (`nextCursor` is also accepted; Ether
+  pages up to 20 pages or 2,000 items per expansion and upserts them through the
+  standard kind item pipeline so policy, FTS, `v_fold`, tallies, and art apply)
+  or `{job: "/ether/job/..."}` to finish via a continuation job that writes items
+  with `KindUpsert`. Answering `404` or `501` is treated as a clean no-op.
+- While an expansion for that slice is running, Vela adds `"expanding": true` to
+  `GET /vela/v0/libraries/{id}/items` and `GET /vela/v0/people/{id}/titles`, and
+  bumps the response `ETag` and kind sync generation when it finishes.
 
 ## Resolving bytes
 
@@ -952,18 +1001,18 @@ Same contract in all three, pinned by the shared fixtures in
 `sdk/conformance/kinds` (each SDK's tests replay them):
 
 - **Go** (`sdk/go`): `Plugin.OnCatalog / OnResolve / OnMatch /
-  OnFrontend / OnSetupTest`, the `CatalogProvider`, `KindResolver`,
+  OnFrontend / OnSetupTest`, the `CatalogProvider`, `ExpandProvider`, `KindResolver`,
   `KindMatcher`, `FrontendAdapter` interfaces, host kind methods on
   `Host`, and `sdk/go/kit` helpers — `scrape` (polite host-HTTP
   fetching), `archivex` (zip/cbz/epub members), `metaparse` (EPUB
   OPF, ComicInfo, ID3, FLAC), `feedparse` (RSS/Atom/JSON Feed →
   items), `hints` (typed hints/fields).
-- **Python** (`sdk/python`): `CatalogProvider`, `KindResolver`,
+- **Python** (`sdk/python`): `CatalogProvider` (including optional `expand`), `KindResolver`,
   `KindMatcher`, `FrontendAdapter`, `SetupTester` base classes with
   `on_catalog` etc., `ctx.ether.kinds` / `.cache`, `parse_feed` and
   `archive_list` helpers.
 - **TypeScript** (`sdk/typescript`): `onCatalog / onResolve /
-  onMatch / onFrontend / onSetupTest`, `ctx.ether.kinds` / `.cache`,
+  onMatch / onFrontend / onSetupTest` (`CatalogProvider.expand?`), `ctx.ether.kinds` / `.cache`,
   `parseFeed`, `archiveList`, `scrapeText/Links`.
 
 Content plugins are usually best as `remote` (scraping wants a real
@@ -1209,7 +1258,7 @@ route's deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s
 `/match` get 5 s (50,000 units), and `/catalog/*`, `/meta/*`, `/ether/metadata/*`,
 `/ether/markers*` and kind `/search` and `/items/*` get 10 s (100,000 units),
 reported live by `ether.runtime.limits()`. Ranking budgets stay unchanged.
-Background kind catalogue sync (`/browse` and `/changes`), administrative setup,
+Background kind catalogue sync (`/browse`, `/changes`, and `/expand`), administrative setup,
 actions, tools, events and jobs use owner grants. Health/configuration/view/options/test
 keep short protocol deadlines. See `sdk/AGENTS.md` and the SDK README for exact
 per-route limits and how owners raise ceilings.
@@ -1722,6 +1771,64 @@ type KindBrowseRequest struct {
 }
 ``````
 
+## Source: internal/core/kinditem.go#KindExpandRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `facet` | `string` | emitted (validation may require a value) |  |
+| `value` | `string` | emitted (validation may require a value) |  |
+| `valueId` | `int64` | may be omitted (see validation for conditions) |  |
+| `cursor` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/kinditem.go#KindExpandRequest
+
+``````
+// KindExpandRequest is the request body sent to POST /ether/v1/kinds/{kind}/expand
+// to expand a declared browse facet bucket or people credit on demand.
+type KindExpandRequest struct {
+	Facet   string `json:"facet"`
+	Value   string `json:"value"`
+	ValueID int64  `json:"valueId,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#KindExpandResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `items` | `[]KindItem` | may be omitted (see validation for conditions) |  |
+| `cursor` | `string` | may be omitted (see validation for conditions) |  |
+| `nextCursor` | `string` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/core/kinditem.go#KindExpandResponse
+
+``````
+// KindExpandResponse is the response from POST /ether/v1/kinds/{kind}/expand.
+// Plugins return either {items, cursor} directly or {job: "/ether/job/..."} for long work.
+type KindExpandResponse struct {
+	Items      []KindItem `json:"items,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Job        string     `json:"job,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#KindExpandResponse.EffectiveCursor
+
+``````
+// EffectiveCursor returns Cursor when non-empty, falling back to NextCursor.
+func (r KindExpandResponse) EffectiveCursor() string {
+	if r.Cursor != "" {
+		return r.Cursor
+	}
+	return r.NextCursor
+}
+``````
+
 ## Source: internal/core/kinditem.go#KindChangePage.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -2175,6 +2282,189 @@ func (j *actionJob) finish(state, reason string) {
 }
 ``````
 
+## Source: internal/plugins/action_jobs.go#ExpandJobRunner.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/action_jobs.go#ExpandJobRunner
+
+``````
+// ExpandJobRunner executes plugin calls and optional /ether/job/... continuations
+// inside an active lowered-priority background expansion job slot.
+type ExpandJobRunner struct {
+	m        *Manager
+	pluginID string
+	job      *actionJob
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*ExpandJobRunner.Call
+
+``````
+// Call invokes a plugin route after yielding to active foreground streams and
+// increments the job's attempt counter.
+func (r *ExpandJobRunner) Call(ctx context.Context, req Request) (Response, error) {
+	if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
+		return Response{}, err
+	}
+	r.job.mu.Lock()
+	r.job.status.Attempts++
+	r.job.mu.Unlock()
+	return r.m.Call(ctx, r.pluginID, req)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*ExpandJobRunner.SetProgress
+
+``````
+// SetProgress updates the job's human-readable progress string.
+func (r *ExpandJobRunner) SetProgress(progress string) {
+	if len(progress) > 1024 {
+		progress = progress[:1024]
+	}
+	r.job.mu.Lock()
+	r.job.status.Progress = progress
+	r.job.mu.Unlock()
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*ExpandJobRunner.RunContinuation
+
+``````
+// RunContinuation drives a /ether/job/... continuation inside the same background
+// job slot so long-running expansions never consume a second ActionJobConcurrency slot.
+func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, initial json.RawMessage, onStep func(body json.RawMessage) error) error {
+	path := strings.TrimSpace(jobPath)
+	if !strings.HasPrefix(path, "/ether/job/") {
+		path = "/ether/job/" + strings.TrimPrefix(path, "/")
+	}
+	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
+		return fmt.Errorf("invalid job path %q", jobPath)
+	}
+	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
+		if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
+			return Response{}, err
+		}
+		payload := map[string]json.RawMessage{}
+		_ = json.Unmarshal(initial, &payload)
+		if payload == nil {
+			payload = map[string]json.RawMessage{}
+		}
+		if len(token) > 0 {
+			payload["continuation"] = token
+		}
+		encoded, _ := json.Marshal(payload)
+		return r.m.Call(ctx, r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
+	}, onStep)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*Manager.IsExpandJobRunning
+
+``````
+// IsExpandJobRunning reports whether a background expansion job with dedupKey
+// is currently running for pluginID.
+func (m *Manager) IsExpandJobRunning(pluginID, dedupKey string) bool {
+	if m == nil || pluginID == "" || dedupKey == "" {
+		return false
+	}
+	key := pluginID + "|expand|" + dedupKey
+	if v, ok := m.jobs.Load(key); ok {
+		return v.(*actionJob).snapshot().State == "running"
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#*Manager.StartExpandJob
+
+``````
+// StartExpandJob starts a lowered-priority background expansion job for
+// (pluginID, dedupKey) sharing the plugin's ActionJobConcurrency = 2 background
+// pool (never ResolverJobConcurrency). If a job for dedupKey is already running,
+// it returns started=false, err=nil. If two background jobs are already running
+// for pluginID, it returns ErrJobsBusy.
+func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(ctx context.Context, run *ExpandJobRunner) error) (bool, error) {
+	if m == nil {
+		return false, ErrUnavailable
+	}
+	key := pluginID + "|expand|" + dedupKey
+	m.jobsMu.Lock()
+	defer m.jobsMu.Unlock()
+	if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
+		return false, nil
+	}
+	resolverPrefix := pluginID + "|resolver|"
+	activeAction, count := 0, 0
+	oldestKey := ""
+	var oldest time.Time
+	m.jobs.Range(func(k, v any) bool {
+		ks := k.(string)
+		if !strings.HasPrefix(ks, pluginID+"|") {
+			return true
+		}
+		s := v.(*actionJob).snapshot()
+		count++
+		if s.State == "running" {
+			if !strings.HasPrefix(ks, resolverPrefix) {
+				activeAction++
+			}
+		} else if oldestKey == "" || s.Started.Before(oldest) {
+			oldestKey, oldest = ks, s.Started
+		}
+		return true
+	})
+	if activeAction >= ActionJobConcurrency {
+		return false, &core.JobsBusyError{Message: "Two background jobs are already running; wait for one to finish."}
+	}
+	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {
+		m.jobs.Delete(oldestKey)
+	}
+	started := time.Now().UTC()
+	if m.now != nil {
+		started = m.now()
+	}
+	ceilings := m.runtimeCeilings(pluginID)
+	ctx, cancel := context.WithTimeout(context.Background(), ceilings.deadline)
+	j := &actionJob{
+		cancel: cancel,
+		done:   make(chan struct{}),
+		status: ActionJobStatus{
+			Path:         routePath,
+			State:        "running",
+			Started:      started,
+			TotalLimitMS: ceilings.deadline.Milliseconds(),
+			AttemptLimit: ActionJobAttempts,
+		},
+	}
+	m.jobs.Store(key, j)
+	go func() {
+		runtime.LockOSThread() // Do not unlock: this lowered-priority thread is discarded on return.
+		lowerJobPriority()
+		defer cancel()
+		defer close(j.done)
+		err := fn(ctx, &ExpandJobRunner{m: m, pluginID: pluginID, job: j})
+		if err != nil {
+			state := "error"
+			if ctx.Err() == context.Canceled {
+				state = "canceled"
+			}
+			if ctx.Err() == context.DeadlineExceeded {
+				err = fmt.Errorf("job reached its total time limit of %s", ceilings.deadline)
+			}
+			reason := m.store.redactKnown(context.Background(), pluginID, err.Error())
+			j.finish(state, reason)
+			m.log.Warn("plugins: expand job", "plugin", pluginID, "job", routePath, "err", reason)
+		} else {
+			j.finish("done", "")
+		}
+	}()
+	return true, nil
+}
+``````
+
 ## Source: internal/plugins/action_jobs.go#*Manager.startActionJob
 
 ``````
@@ -2317,6 +2607,14 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 // runActionJob treats an absent continuation flag as completion for existing
 // one-call jobs. Explicit failures and non-success HTTP responses always stop.
 func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error)) error {
+	return runActionJobWithHook(ctx, j, attempts, call, nil)
+}
+``````
+
+## Source: internal/plugins/action_jobs.go#runActionJobWithHook
+
+``````
+func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error) error {
 	var token json.RawMessage
 	for n := 0; n < attempts; n++ {
 		if err := ctx.Err(); err != nil {
@@ -2357,6 +2655,11 @@ func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(con
 		j.mu.Unlock()
 		if step.Failed != "" {
 			return fmt.Errorf("job failed: %.1024s", step.Failed)
+		}
+		if onStep != nil && len(resp.Body) > 0 {
+			if err := onStep(resp.Body); err != nil {
+				return err
+			}
 		}
 		if step.Done || step.ContinueInMS == nil {
 			return nil
@@ -3529,6 +3832,47 @@ type KindArt struct {
 var BuiltinKindArtRoles = map[string]bool{"poster": true, "backdrop": true, "thumb": true, "logo": true}
 ``````
 
+## Source: internal/plugins/contract.go#DefaultKindExpandTTLHours
+
+``````
+// DefaultKindExpandTTLHours is the default freshness window (7 days) for an
+// expanded facet bucket or people credit before opening it again triggers a
+// fresh background expansion.
+const DefaultKindExpandTTLHours = 168
+``````
+
+## Source: internal/plugins/contract.go#KindBrowseExpand.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `facets` | `[]string` | emitted (validation may require a value) | subset of browse.facets |
+| `ttlHours` | `int` | may be omitted (see validation for conditions) | default 168 (7 days) |
+
+
+## Source: internal/plugins/contract.go#KindBrowseExpand
+
+``````
+// KindBrowseExpand declares on-demand background expansion for specific browse
+// facets (collection buckets or people fields).
+type KindBrowseExpand struct {
+	Facets   []string `json:"facets"`             // subset of browse.facets
+	TTLHours int      `json:"ttlHours,omitempty"` // default 168 (7 days)
+}
+``````
+
+## Source: internal/plugins/contract.go#*KindBrowseExpand.EffectiveTTLHours
+
+``````
+// EffectiveTTLHours returns the configured freshness window in hours,
+// defaulting to DefaultKindExpandTTLHours (168).
+func (e *KindBrowseExpand) EffectiveTTLHours() int {
+	if e == nil || e.TTLHours <= 0 {
+		return DefaultKindExpandTTLHours
+	}
+	return e.TTLHours
+}
+``````
+
 ## Source: internal/plugins/contract.go#KindBrowseDecl.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -3537,6 +3881,7 @@ var BuiltinKindArtRoles = map[string]bool{"poster": true, "backdrop": true, "thu
 | `facets` | `[]string` | may be omitted (see validation for conditions) | field keys; each must be indexed |
 | `search` | `bool` | emitted (validation may require a value) | full-text over the title plus SearchFields |
 | `searchFields` | `[]string` | may be omitted (see validation for conditions) | declared text fields included in search |
+| `expand` | `*KindBrowseExpand` | may be omitted (see validation for conditions) | on-demand background facet/person expansion |
 | `liveSearch` | `bool` | may be omitted (see validation for conditions) | LiveSearch: client searches also call the plugin's /search route with a short budget; results are upserted and merged (§15.4). |
 
 
@@ -3545,10 +3890,11 @@ var BuiltinKindArtRoles = map[string]bool{"poster": true, "backdrop": true, "thu
 ``````
 // KindBrowseDecl is how a kind library is browsed.
 type KindBrowseDecl struct {
-	Sorts        []string `json:"sorts,omitempty"`        // subset of title|added|released|year|rating|index
-	Facets       []string `json:"facets,omitempty"`       // field keys; each must be indexed
-	Search       bool     `json:"search"`                 // full-text over the title plus SearchFields
-	SearchFields []string `json:"searchFields,omitempty"` // declared text fields included in search
+	Sorts        []string          `json:"sorts,omitempty"`        // subset of title|added|released|year|rating|index
+	Facets       []string          `json:"facets,omitempty"`       // field keys; each must be indexed
+	Search       bool              `json:"search"`                 // full-text over the title plus SearchFields
+	SearchFields []string          `json:"searchFields,omitempty"` // declared text fields included in search
+	Expand       *KindBrowseExpand `json:"expand,omitempty"`       // on-demand background facet/person expansion
 	// LiveSearch: client searches also call the plugin's /search route
 	// with a short budget; results are upserted and merged (§15.4).
 	LiveSearch bool `json:"liveSearch,omitempty"`
@@ -15510,6 +15856,29 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
 		}
 	}
+	if k.Browse.Expand != nil {
+		ebase := base + ".browse.expand"
+		if !hasProvider {
+			add(ebase, "expand needs the catalog_provider capability")
+		}
+		if len(k.Browse.Expand.Facets) == 0 {
+			add(ebase+".facets", "must list at least one browse facet")
+		}
+		seenExpand := map[string]bool{}
+		for j, f := range k.Browse.Expand.Facets {
+			fbase := fmt.Sprintf("%s.facets[%d]", ebase, j)
+			if seenExpand[f] {
+				add(fbase, "is listed twice")
+			}
+			seenExpand[f] = true
+			if !seenFacet[f] {
+				add(fbase, "must name a declared browse facet")
+			}
+		}
+		if k.Browse.Expand.TTLHours < 0 {
+			add(ebase+".ttlHours", "must be positive")
+		}
+	}
 	if !k.Library.IsZero() {
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
@@ -21108,15 +21477,16 @@ func ViewerRequestPath(path string) bool {
 ## Source: internal/plugins/wasm/background.go#KindSyncPath
 
 ``````
-// KindSyncPath identifies a media kind's catalogue sync calls (browse and
-// changes). Ether makes them in the background to fill a library, never
-// while a viewer waits, so they run on the plugin's granted limits (the
+// KindSyncPath identifies a media kind's background catalogue calls (browse,
+// changes, and expand). Ether makes them in the background to fill a library,
+// never while a viewer waits, so they run on the plugin's granted limits (the
 // manifest's request, capped only by the owner's ceilings) instead of the
-// viewer budget. A big first sync can then take as long as it needs.
+// viewer budget. A big first sync or facet expansion can then take as long as
+// it needs.
 func KindSyncPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
 	return strings.HasPrefix(p, "/ether/v1/kinds/") &&
-		(strings.HasSuffix(p, "/browse") || strings.HasSuffix(p, "/changes"))
+		(strings.HasSuffix(p, "/browse") || strings.HasSuffix(p, "/changes") || strings.HasSuffix(p, "/expand"))
 }
 ``````
 
@@ -21138,7 +21508,7 @@ func LiveTVSyncPath(path string) bool {
 ``````
 // GrantedLimitsPath reports whether path runs on the plugin's owner-granted
 // deadline and unit budget rather than a fixed protocol or viewer cap:
-// background kind sync (/browse, /changes), Live TV lineup and guide sync
+// background kind sync (/browse, /changes, /expand), Live TV lineup and guide sync
 // (/ether/channels.json, /ether/guide/*), jobs, setup, owner actions,
 // agent tools, and event deliveries.
 func GrantedLimitsPath(path string) bool {
@@ -23787,6 +24157,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].art[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].art[].role` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].browse` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].browse.expand` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].browse.expand.facets` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].browse.expand.ttlHours` | `integer` | false | {} |
 | `ether.contributes.mediaKinds[].browse.facets` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].browse.liveSearch` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].browse.search` | `boolean` | false | {} |
@@ -24223,6 +24596,20 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                   },
                   "browse": {
                     "properties": {
+                      "expand": {
+                        "properties": {
+                          "facets": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "ttlHours": {
+                            "type": "integer"
+                          }
+                        },
+                        "type": "object"
+                      },
                       "facets": {
                         "items": {
                           "type": "string"
@@ -25307,7 +25694,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections\|people`, with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, up to 6 `library.tabs` of `recommended\|library\|collections\|people` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -25325,7 +25712,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 |---|---|---|
 | list_source | contributes.listSources + `/catalog/{type}/{id}.json` | HTTPFetch, CatalogSearch/Get, KV |
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
-| catalog_provider | mediaKinds; paged browse/changes or push | KindUpsert/Delete/Items, KV |
+| catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
@@ -25413,7 +25800,7 @@ than billed as guest wall time):
 | `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
 | `/ether/test` | 15 s | Owner-granted ceiling |
 | Other protocol routes (`/ether/notify`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
-| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
+| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/kinds/*/expand`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
 | `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
 
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
@@ -25463,7 +25850,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`),
 `library.tabs` (`recommended|library|collections|people`, such as `{key:"developers",label:"Developers",kind:"collections",facet:"developers",order:"name",searchPlaceholder:"Search developers"}` or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
-and `browse.sorts`/`browse.facets`, then the browse/changes/resolve
+and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["developers","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/resolve
 handlers in `src/plugin.ts`. Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.
 
@@ -33375,6 +33762,54 @@ type KindBrowseRequest struct {
 }
 ``````
 
+## Source: sdk/go/kinds.go#KindExpandRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `facet` | `string` | emitted (validation may require a value) |  |
+| `value` | `string` | emitted (validation may require a value) |  |
+| `valueId` | `int64` | may be omitted (see validation for conditions) |  |
+| `cursor` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindExpandRequest
+
+``````
+// KindExpandRequest asks a plugin to expand one declared facet bucket or
+// plugin person slice in the background via POST /ether/v1/kinds/{kind}/expand.
+type KindExpandRequest struct {
+	Kind    string `json:"-"`
+	Facet   string `json:"facet"`
+	Value   string `json:"value"`
+	ValueID int64  `json:"valueId,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#KindExpandResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `items` | `[]KindItem` | may be omitted (see validation for conditions) |  |
+| `cursor` | `string` | may be omitted (see validation for conditions) |  |
+| `nextCursor` | `string` | may be omitted (see validation for conditions) |  |
+| `job` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/kinds.go#KindExpandResponse
+
+``````
+// KindExpandResponse is returned by POST /ether/v1/kinds/{kind}/expand.
+// Either Items (with optional Cursor/NextCursor for further pages) or Job
+// ("/ether/job/...") is populated.
+type KindExpandResponse struct {
+	Items      []KindItem `json:"items,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Job        string     `json:"job,omitempty"`
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindChangePage.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -33830,6 +34265,16 @@ type SearchProvider interface {
 }
 ``````
 
+## Source: sdk/go/kinds.go#ExpandProvider
+
+``````
+// ExpandProvider is the optional on-demand facet/person slice expander for
+// kinds that declare browse.expand.
+type ExpandProvider interface {
+	Expand(ctx *Context, req KindExpandRequest) (KindExpandResponse, error)
+}
+``````
+
 ## Source: sdk/go/kinds.go#KindResolver
 
 ``````
@@ -34077,6 +34522,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		page, err := prov.Browse(pctx, in)
 		return kindPageResponse(page, err, in.Limit)
+	case len(tail) == 1 && tail[0] == "expand":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		ep, isExpand := prov.(ExpandProvider)
+		if prov == nil || !isExpand {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider does not expand facets.")
+		}
+		var in KindExpandRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := ep.Expand(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Job == "" && res.Items == nil {
+			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":
 		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
 		if prov == nil {
@@ -38456,6 +38920,33 @@ type KindArt struct {
 }
 ``````
 
+## Source: sdk/go/types.go#DefaultKindExpandTTLHours
+
+``````
+// DefaultKindExpandTTLHours is the default freshness window (7 days) for
+// on-demand facet and person slice expansions when ttlHours is omitted or zero.
+const DefaultKindExpandTTLHours = 168
+``````
+
+## Source: sdk/go/types.go#KindBrowseExpand.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `facets` | `[]string` | emitted (validation may require a value) |  |
+| `ttlHours` | `int` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#KindBrowseExpand
+
+``````
+// KindBrowseExpand configures on-demand background expansion for declared
+// browse facets when a viewer opens a facet collection bucket or plugin person.
+type KindBrowseExpand struct {
+	Facets   []string `json:"facets"`
+	TTLHours int      `json:"ttlHours,omitempty"`
+}
+``````
+
 ## Source: sdk/go/types.go#KindBrowseDecl.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -38465,6 +38956,7 @@ type KindArt struct {
 | `search` | `bool` | emitted (validation may require a value) |  |
 | `searchFields` | `[]string` | may be omitted (see validation for conditions) |  |
 | `liveSearch` | `bool` | may be omitted (see validation for conditions) | LiveSearch: client searches also call the plugin's /search route with a short budget; results are upserted and merged (§15.4). |
+| `expand` | `*KindBrowseExpand` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#KindBrowseDecl
@@ -38478,7 +38970,8 @@ type KindBrowseDecl struct {
 	SearchFields []string `json:"searchFields,omitempty"`
 	// LiveSearch: client searches also call the plugin's /search route
 	// with a short budget; results are upserted and merged (§15.4).
-	LiveSearch bool `json:"liveSearch,omitempty"`
+	LiveSearch bool              `json:"liveSearch,omitempty"`
+	Expand     *KindBrowseExpand `json:"expand,omitempty"`
 }
 ``````
 
@@ -41765,6 +42258,15 @@ class PluginInstance:
                     return _error_response(501, "not_implemented", "This provider does not search.")
                 return page(search(ctx, body))
             return page(provider.browse(ctx, body))
+        if tail == ["expand"]:
+            provider = self._kind_catalog().get(kind)
+            expand = getattr(provider, "expand", None) if provider else None
+            if not callable(expand):
+                return _error_response(501, "not_implemented", "This provider does not expand facets.")
+            result = dict(expand(ctx, body) or {})
+            if not result.get("job"):
+                result.setdefault("items", [])
+            return _ok_response(result)
         if len(tail) == 2 and tail[0] == "items":
             provider = self._kind_catalog().get(kind)
             if provider is None:
@@ -43052,8 +43554,9 @@ class CatalogProvider:
     def detail(self, ctx: PluginContext, kind: str, item_id: str) -> Dict[str, Any]:
         raise NotImplementedError
 
-    # Optional: define `changes(ctx, req)` for delta pull sync and
-    # `search(ctx, req)` when the kind declares browse.liveSearch.
+    # Optional: define `changes(ctx, req)` for delta pull sync,
+    # `search(ctx, req)` when the kind declares browse.liveSearch, and
+    # `expand(ctx, req)` when the kind declares browse.expand.
 
 
 class KindResolver:
@@ -43734,8 +44237,8 @@ deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s (30,000 unit
 `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search` and
 `/items/*` get 10 s (100,000 units), further shortened only if the owner sets a
 lower ceiling. Ranking stays at its existing 2 ms per-candidate and 50 ms
-per-batch defaults. Background kind sync (`/ether/v1/kinds/*/browse` and
-`/changes`), administrative setup, actions, tools, events and jobs use the
+per-batch defaults. Background kind sync and on-demand facet expansion (`/ether/v1/kinds/*/browse`,
+`/changes` and `/expand`), administrative setup, actions, tools, events and jobs use the
 owner-granted resources; short health/configuration/view/options/test protocol
 deadlines protect the host's control plane. Remote plugin processes manage their
 own CPU and memory; owner download/archive ceilings also apply to their host
@@ -43750,12 +44253,12 @@ Non-2xx responses, invalid results and call failures stop the job.
 
 Ether allows 0–300,000 ms between calls with a minimum 100 ms pause. Total wall
 time uses the owner time ceiling (12 hours by default), with a 1,000,000-call
-sanity bound. Each call gets fresh per-call grants. At most two owner or scheduled jobs and four playback resolver jobs run per
+sanity bound. Each call gets fresh per-call grants. At most two owner, scheduled or facet-expansion jobs and four playback resolver jobs run per
 plugin, and the same route cannot overlap. Job threads use OS background CPU/IO
 priority on macOS, Linux and Windows. They pause before calls and host-service
 operations during playback, Live TV viewing or high CPU/GPU load; pure compute
 runs at reduced scheduling priority. Cancellation interrupts in-flight hosted
-calls. Work starts only following an owner action, a declared schedule entry, or a playback resolve.
+calls. Work starts only following an owner action, a declared schedule entry, an on-demand viewer slice expansion (`browse.expand`), or a playback resolve.
 
 Tokens are limited to 64 KiB and progress to 1,024 UTF-8 bytes. The drawer shows
 progress and a Cancel button. The owner API provides `GET /api/plugins/{id}/jobs`
@@ -45036,6 +45539,8 @@ import type { PluginContext } from "./router.ts";
 import type {
   KindBrowseRequest,
   KindChangePage,
+  KindExpandRequest,
+  KindExpandResponse,
   KindItem,
   PendingReply,
   KindMatchRequest,
@@ -45058,6 +45563,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   changes?(req: { kind: string; cursor?: string; limit?: number }, ctx: PluginContext<S>): MaybePromise<KindChangePage>;
   /** Optional provider search; required when the kind declares browse.liveSearch. */
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
+  /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
+  expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
@@ -45240,6 +45747,13 @@ export async function dispatchKinds<S = Record<string, unknown>>(
       return page(provider.search(browseReq, ctx));
     }
     return page(provider.browse(browseReq, ctx));
+  }
+  if (tail.length === 1 && tail[0] === "expand") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.expand) return err(501, "not_implemented", "This provider does not expand facets.");
+    const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
+    if (!result.job) result.items = result.items ?? [];
+    return ok(result);
   }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);
@@ -47858,6 +48372,13 @@ export interface KindLibraryDecl {
   tabs?: KindLibraryTab[];
 }
 
+/** On-demand background expansion settings for declared browse facets. */
+export interface KindBrowseExpand {
+  facets: string[];
+  /** Freshness TTL in hours before an expanded slice may be refreshed (default 168). */
+  ttlHours?: number;
+}
+
 /** One declared content kind; each kind becomes its own library. */
 export interface MediaKindMeta {
   key: string;
@@ -47874,6 +48395,8 @@ export interface MediaKindMeta {
     searchFields?: string[];
     /** Client searches also call /search live; results are upserted and merged. */
     liveSearch?: boolean;
+    /** On-demand background slice expansion when a viewer opens a bucket or person. */
+    expand?: KindBrowseExpand;
   };
   sync: { mode: "pull" | "push"; refresh?: string };
   cache?: { maxBytes?: number; ttl?: string };
@@ -47948,6 +48471,21 @@ export interface KindBrowseRequest {
   sort?: string;
   facets?: Record<string, string[]>;
   query?: string;
+}
+
+export interface KindExpandRequest {
+  kind: string;
+  facet: string;
+  value: string;
+  valueId?: number;
+  cursor?: string;
+}
+
+export interface KindExpandResponse {
+  items?: KindItem[];
+  cursor?: string;
+  nextCursor?: string;
+  job?: string;
 }
 
 export interface KindChangePage {

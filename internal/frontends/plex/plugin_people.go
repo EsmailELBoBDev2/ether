@@ -235,8 +235,9 @@ func (s *Server) searchPluginPeople(ctx context.Context, pr *Request, query stri
 
 		for _, sec := range secs {
 			page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), frontend.ItemQuery{
-				Filter: frontend.Filter{Person: cand.TMDB},
-				Limit:  creditLimit,
+				Filter:         frontend.Filter{Person: cand.TMDB},
+				Limit:          creditLimit,
+				SuppressExpand: true,
 			})
 			if err != nil || len(page.Items) == 0 {
 				continue

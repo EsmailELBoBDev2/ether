@@ -49,6 +49,159 @@ func (j *actionJob) finish(state, reason string) {
 	j.status.State, j.status.Error = state, reason
 }
 
+// ExpandJobRunner executes plugin calls and optional /ether/job/... continuations
+// inside an active lowered-priority background expansion job slot.
+type ExpandJobRunner struct {
+	m        *Manager
+	pluginID string
+	job      *actionJob
+}
+
+// Call invokes a plugin route after yielding to active foreground streams and
+// increments the job's attempt counter.
+func (r *ExpandJobRunner) Call(ctx context.Context, req Request) (Response, error) {
+	if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
+		return Response{}, err
+	}
+	r.job.mu.Lock()
+	r.job.status.Attempts++
+	r.job.mu.Unlock()
+	return r.m.Call(ctx, r.pluginID, req)
+}
+
+// SetProgress updates the job's human-readable progress string.
+func (r *ExpandJobRunner) SetProgress(progress string) {
+	if len(progress) > 1024 {
+		progress = progress[:1024]
+	}
+	r.job.mu.Lock()
+	r.job.status.Progress = progress
+	r.job.mu.Unlock()
+}
+
+// RunContinuation drives a /ether/job/... continuation inside the same background
+// job slot so long-running expansions never consume a second ActionJobConcurrency slot.
+func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, initial json.RawMessage, onStep func(body json.RawMessage) error) error {
+	path := strings.TrimSpace(jobPath)
+	if !strings.HasPrefix(path, "/ether/job/") {
+		path = "/ether/job/" + strings.TrimPrefix(path, "/")
+	}
+	if len(path) > 256 || strings.Contains(path, "..") || strings.ContainsAny(path, "?#\\") {
+		return fmt.Errorf("invalid job path %q", jobPath)
+	}
+	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
+		if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
+			return Response{}, err
+		}
+		payload := map[string]json.RawMessage{}
+		_ = json.Unmarshal(initial, &payload)
+		if payload == nil {
+			payload = map[string]json.RawMessage{}
+		}
+		if len(token) > 0 {
+			payload["continuation"] = token
+		}
+		encoded, _ := json.Marshal(payload)
+		return r.m.Call(ctx, r.pluginID, Request{Method: "POST", Path: path, Body: encoded})
+	}, onStep)
+}
+
+// IsExpandJobRunning reports whether a background expansion job with dedupKey
+// is currently running for pluginID.
+func (m *Manager) IsExpandJobRunning(pluginID, dedupKey string) bool {
+	if m == nil || pluginID == "" || dedupKey == "" {
+		return false
+	}
+	key := pluginID + "|expand|" + dedupKey
+	if v, ok := m.jobs.Load(key); ok {
+		return v.(*actionJob).snapshot().State == "running"
+	}
+	return false
+}
+
+// StartExpandJob starts a lowered-priority background expansion job for
+// (pluginID, dedupKey) sharing the plugin's ActionJobConcurrency = 2 background
+// pool (never ResolverJobConcurrency). If a job for dedupKey is already running,
+// it returns started=false, err=nil. If two background jobs are already running
+// for pluginID, it returns ErrJobsBusy.
+func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(ctx context.Context, run *ExpandJobRunner) error) (bool, error) {
+	if m == nil {
+		return false, ErrUnavailable
+	}
+	key := pluginID + "|expand|" + dedupKey
+	m.jobsMu.Lock()
+	defer m.jobsMu.Unlock()
+	if old, ok := m.jobs.Load(key); ok && old.(*actionJob).snapshot().State == "running" {
+		return false, nil
+	}
+	resolverPrefix := pluginID + "|resolver|"
+	activeAction, count := 0, 0
+	oldestKey := ""
+	var oldest time.Time
+	m.jobs.Range(func(k, v any) bool {
+		ks := k.(string)
+		if !strings.HasPrefix(ks, pluginID+"|") {
+			return true
+		}
+		s := v.(*actionJob).snapshot()
+		count++
+		if s.State == "running" {
+			if !strings.HasPrefix(ks, resolverPrefix) {
+				activeAction++
+			}
+		} else if oldestKey == "" || s.Started.Before(oldest) {
+			oldestKey, oldest = ks, s.Started
+		}
+		return true
+	})
+	if activeAction >= ActionJobConcurrency {
+		return false, &core.JobsBusyError{Message: "Two background jobs are already running; wait for one to finish."}
+	}
+	if _, exists := m.jobs.Load(key); !exists && count >= 16 && oldestKey != "" {
+		m.jobs.Delete(oldestKey)
+	}
+	started := time.Now().UTC()
+	if m.now != nil {
+		started = m.now()
+	}
+	ceilings := m.runtimeCeilings(pluginID)
+	ctx, cancel := context.WithTimeout(context.Background(), ceilings.deadline)
+	j := &actionJob{
+		cancel: cancel,
+		done:   make(chan struct{}),
+		status: ActionJobStatus{
+			Path:         routePath,
+			State:        "running",
+			Started:      started,
+			TotalLimitMS: ceilings.deadline.Milliseconds(),
+			AttemptLimit: ActionJobAttempts,
+		},
+	}
+	m.jobs.Store(key, j)
+	go func() {
+		runtime.LockOSThread() // Do not unlock: this lowered-priority thread is discarded on return.
+		lowerJobPriority()
+		defer cancel()
+		defer close(j.done)
+		err := fn(ctx, &ExpandJobRunner{m: m, pluginID: pluginID, job: j})
+		if err != nil {
+			state := "error"
+			if ctx.Err() == context.Canceled {
+				state = "canceled"
+			}
+			if ctx.Err() == context.DeadlineExceeded {
+				err = fmt.Errorf("job reached its total time limit of %s", ceilings.deadline)
+			}
+			reason := m.store.redactKnown(context.Background(), pluginID, err.Error())
+			j.finish(state, reason)
+			m.log.Warn("plugins: expand job", "plugin", pluginID, "job", routePath, "err", reason)
+		} else {
+			j.finish("done", "")
+		}
+	}()
+	return true, nil
+}
+
 // startActionJob runs owner-started work. At most ActionJobConcurrency owner or
 // scheduled jobs and ResolverJobConcurrency resolver jobs run concurrently per
 // plugin; at most sixteen route snapshots are retained per plugin.
@@ -180,6 +333,10 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 // runActionJob treats an absent continuation flag as completion for existing
 // one-call jobs. Explicit failures and non-success HTTP responses always stop.
 func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error)) error {
+	return runActionJobWithHook(ctx, j, attempts, call, nil)
+}
+
+func runActionJobWithHook(ctx context.Context, j *actionJob, attempts int, call func(context.Context, json.RawMessage) (Response, error), onStep func(json.RawMessage) error) error {
 	var token json.RawMessage
 	for n := 0; n < attempts; n++ {
 		if err := ctx.Err(); err != nil {
@@ -220,6 +377,11 @@ func runActionJob(ctx context.Context, j *actionJob, attempts int, call func(con
 		j.mu.Unlock()
 		if step.Failed != "" {
 			return fmt.Errorf("job failed: %.1024s", step.Failed)
+		}
+		if onStep != nil && len(resp.Body) > 0 {
+			if err := onStep(resp.Body); err != nil {
+				return err
+			}
 		}
 		if step.Done || step.ContinueInMS == nil {
 			return nil

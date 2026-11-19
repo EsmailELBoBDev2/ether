@@ -9,6 +9,8 @@ import type { PluginContext } from "./router.ts";
 import type {
   KindBrowseRequest,
   KindChangePage,
+  KindExpandRequest,
+  KindExpandResponse,
   KindItem,
   PendingReply,
   KindMatchRequest,
@@ -31,6 +33,8 @@ export interface CatalogProvider<S = Record<string, unknown>> {
   changes?(req: { kind: string; cursor?: string; limit?: number }, ctx: PluginContext<S>): MaybePromise<KindChangePage>;
   /** Optional provider search; required when the kind declares browse.liveSearch. */
   search?(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
+  /** Optional on-demand facet/person slice expansion when the kind declares browse.expand. */
+  expand?(req: KindExpandRequest, ctx: PluginContext<S>): MaybePromise<KindExpandResponse>;
 }
 
 export interface KindResolver<S = Record<string, unknown>> {
@@ -213,6 +217,13 @@ export async function dispatchKinds<S = Record<string, unknown>>(
       return page(provider.search(browseReq, ctx));
     }
     return page(provider.browse(browseReq, ctx));
+  }
+  if (tail.length === 1 && tail[0] === "expand") {
+    const provider = handlers.catalog.get(kind);
+    if (!provider?.expand) return err(501, "not_implemented", "This provider does not expand facets.");
+    const result = { ...(await provider.expand({ ...body, kind } as unknown as KindExpandRequest, ctx)) };
+    if (!result.job) result.items = result.items ?? [];
+    return ok(result);
   }
   if (tail.length === 2 && tail[0] === "items") {
     const provider = handlers.catalog.get(kind);

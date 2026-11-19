@@ -1579,6 +1579,15 @@ class PluginInstance:
                     return _error_response(501, "not_implemented", "This provider does not search.")
                 return page(search(ctx, body))
             return page(provider.browse(ctx, body))
+        if tail == ["expand"]:
+            provider = self._kind_catalog().get(kind)
+            expand = getattr(provider, "expand", None) if provider else None
+            if not callable(expand):
+                return _error_response(501, "not_implemented", "This provider does not expand facets.")
+            result = dict(expand(ctx, body) or {})
+            if not result.get("job"):
+                result.setdefault("items", [])
+            return _ok_response(result)
         if len(tail) == 2 and tail[0] == "items":
             provider = self._kind_catalog().get(kind)
             if provider is None:
@@ -2866,8 +2875,9 @@ class CatalogProvider:
     def detail(self, ctx: PluginContext, kind: str, item_id: str) -> Dict[str, Any]:
         raise NotImplementedError
 
-    # Optional: define `changes(ctx, req)` for delta pull sync and
-    # `search(ctx, req)` when the kind declares browse.liveSearch.
+    # Optional: define `changes(ctx, req)` for delta pull sync,
+    # `search(ctx, req)` when the kind declares browse.liveSearch, and
+    # `expand(ctx, req)` when the kind declares browse.expand.
 
 
 class KindResolver:

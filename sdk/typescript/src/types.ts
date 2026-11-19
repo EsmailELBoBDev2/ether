@@ -377,6 +377,13 @@ export interface KindLibraryDecl {
   tabs?: KindLibraryTab[];
 }
 
+/** On-demand background expansion settings for declared browse facets. */
+export interface KindBrowseExpand {
+  facets: string[];
+  /** Freshness TTL in hours before an expanded slice may be refreshed (default 168). */
+  ttlHours?: number;
+}
+
 /** One declared content kind; each kind becomes its own library. */
 export interface MediaKindMeta {
   key: string;
@@ -393,6 +400,8 @@ export interface MediaKindMeta {
     searchFields?: string[];
     /** Client searches also call /search live; results are upserted and merged. */
     liveSearch?: boolean;
+    /** On-demand background slice expansion when a viewer opens a bucket or person. */
+    expand?: KindBrowseExpand;
   };
   sync: { mode: "pull" | "push"; refresh?: string };
   cache?: { maxBytes?: number; ttl?: string };
@@ -467,6 +476,21 @@ export interface KindBrowseRequest {
   sort?: string;
   facets?: Record<string, string[]>;
   query?: string;
+}
+
+export interface KindExpandRequest {
+  kind: string;
+  facet: string;
+  value: string;
+  valueId?: number;
+  cursor?: string;
+}
+
+export interface KindExpandResponse {
+  items?: KindItem[];
+  cursor?: string;
+  nextCursor?: string;
+  job?: string;
 }
 
 export interface KindChangePage {

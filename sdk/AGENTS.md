@@ -90,7 +90,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square` and up to 6 `library.tabs` of `recommended\|library\|collections\|people`, with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, up to 6 `library.tabs` of `recommended\|library\|collections\|people` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -108,7 +108,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 |---|---|---|
 | list_source | contributes.listSources + `/catalog/{type}/{id}.json` | HTTPFetch, CatalogSearch/Get, KV |
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
-| catalog_provider | mediaKinds; paged browse/changes or push | KindUpsert/Delete/Items, KV |
+| catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
@@ -196,7 +196,7 @@ than billed as guest wall time):
 | `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
 | `/ether/test` | 15 s | Owner-granted ceiling |
 | Other protocol routes (`/ether/notify`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
-| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
+| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/kinds/*/expand`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
 | `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
 
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
@@ -246,7 +246,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`),
 `library.tabs` (`recommended|library|collections|people`, such as `{key:"developers",label:"Developers",kind:"collections",facet:"developers",order:"name",searchPlaceholder:"Search developers"}` or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
-and `browse.sorts`/`browse.facets`, then the browse/changes/resolve
+and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["developers","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/resolve
 handlers in `src/plugin.ts`. Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.
 

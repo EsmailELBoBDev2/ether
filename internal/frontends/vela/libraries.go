@@ -3,6 +3,7 @@ package vela
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -457,14 +458,27 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 		q.Filter.Years = append(q.Filter.Years, n)
 	}
 	if colID := values.Get("collectionId"); colID != "" {
-		if filters["collectionId"] != true {
-			return q, sort, direction, 400
+		if isPlugin && strings.HasPrefix(colID, "facet:") {
+			field, bucketID, ok := strings.Cut(strings.TrimPrefix(colID, "facet:"), ":")
+			if !ok || !offeredFacet(filters, field) || bucketID == "" || len(bucketID) > 256 {
+				return q, sort, direction, 400
+			}
+			if q.Filter.Facets == nil {
+				q.Filter.Facets = make(map[string][]string)
+			}
+			if !slices.Contains(q.Filter.Facets[field], bucketID) {
+				q.Filter.Facets[field] = append(q.Filter.Facets[field], bucketID)
+			}
+		} else {
+			if filters["collectionId"] != true {
+				return q, sort, direction, 400
+			}
+			colKey, e := ids.ParseRatingKeyGUID(colID)
+			if e != nil || (colKey.Kind() != frontend.KindCollection && colKey.Kind() != frontend.KindSmart) {
+				return q, sort, direction, 400
+			}
+			q.CollectionKey = colKey
 		}
-		colKey, e := ids.ParseRatingKeyGUID(colID)
-		if e != nil || (colKey.Kind() != frontend.KindCollection && colKey.Kind() != frontend.KindSmart) {
-			return q, sort, direction, 400
-		}
-		q.CollectionKey = colKey
 	}
 	for _, name := range []string{"played", "favorite"} {
 		if raw, exists := values[name]; exists {
@@ -578,6 +592,7 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, object{"id": title["id"], "kind": "title", "title": title, "receiptToken": ""})
 	}
 	out := object{"library": library, "items": entries, "sort": sort, "direction": direction, "continuation": "exhausted"}
+	expanding := page.Expanding
 	if len(page.Items) == q.Limit {
 		// Ask for one next item only after the page establishes its keyset end.
 		// This preserves neutral paging caches and avoids counts or hydration walks.
@@ -589,6 +604,7 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 			fail(w, e, r)
 			return
 		}
+		expanding = expanding || more.Expanding
 		if len(more.Items) > 0 {
 			next, e := i.nextLiveCursor(c, nextQuery.Offset, snapshot)
 			if e != nil {
@@ -597,6 +613,9 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 			}
 			out["continuation"], out["nextCursor"] = "more", next
 		}
+	}
+	if expanding {
+		out["expanding"] = true
 	}
 	cache(w, r, out)
 }

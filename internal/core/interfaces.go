@@ -250,6 +250,9 @@ type BrowseQuery struct {
 	// NoTotal skips counting the filter's matches, which reads every title
 	// the filter admits. Page.Total is then offset plus the items returned.
 	NoTotal bool
+	// SuppressExpand skips starting background plugin facet or person
+	// expansion when sampling rows or fanning out search queries.
+	SuppressExpand bool
 	// ListRows reads a key-ordered (SortKey) page as list rows instead of
 	// full titles (an export). Other page shapes ignore it.
 	ListRows *ListRows
@@ -270,6 +273,9 @@ type ListRows struct {
 type Page struct {
 	Items []Title
 	Total int
+	// Expanding reports whether a background plugin facet or person expansion
+	// is currently running for this slice.
+	Expanding bool
 }
 
 // AiredEpisodeTally counts one show's stored, aired episodes for a viewer

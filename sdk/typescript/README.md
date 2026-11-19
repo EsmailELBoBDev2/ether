@@ -210,8 +210,8 @@ deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s (30,000 unit
 `/meta/*`, `/ether/metadata/*`, `/ether/markers*`, `/ether/v1/kinds/*/search` and
 `/items/*` get 10 s (100,000 units), further shortened only if the owner sets a
 lower ceiling. Ranking stays at its existing 2 ms per-candidate and 50 ms
-per-batch defaults. Background kind sync (`/ether/v1/kinds/*/browse` and
-`/changes`), administrative setup, actions, tools, events and jobs use the
+per-batch defaults. Background kind sync and on-demand facet expansion (`/ether/v1/kinds/*/browse`,
+`/changes` and `/expand`), administrative setup, actions, tools, events and jobs use the
 owner-granted resources; short health/configuration/view/options/test protocol
 deadlines protect the host's control plane. Remote plugin processes manage their
 own CPU and memory; owner download/archive ceilings also apply to their host
@@ -226,12 +226,12 @@ Non-2xx responses, invalid results and call failures stop the job.
 
 Ether allows 0–300,000 ms between calls with a minimum 100 ms pause. Total wall
 time uses the owner time ceiling (12 hours by default), with a 1,000,000-call
-sanity bound. Each call gets fresh per-call grants. At most two owner or scheduled jobs and four playback resolver jobs run per
+sanity bound. Each call gets fresh per-call grants. At most two owner, scheduled or facet-expansion jobs and four playback resolver jobs run per
 plugin, and the same route cannot overlap. Job threads use OS background CPU/IO
 priority on macOS, Linux and Windows. They pause before calls and host-service
 operations during playback, Live TV viewing or high CPU/GPU load; pure compute
 runs at reduced scheduling priority. Cancellation interrupts in-flight hosted
-calls. Work starts only following an owner action, a declared schedule entry, or a playback resolve.
+calls. Work starts only following an owner action, a declared schedule entry, an on-demand viewer slice expansion (`browse.expand`), or a playback resolve.
 
 Tokens are limited to 64 KiB and progress to 1,024 UTF-8 bytes. The drawer shows
 progress and a Cancel button. The owner API provides `GET /api/plugins/{id}/jobs`

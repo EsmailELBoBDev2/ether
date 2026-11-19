@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/libraries"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -637,9 +638,15 @@ func (c *librariesConsole) handleItems(w http.ResponseWriter, r *http.Request) {
 			libError(w, http.StatusBadRequest, "Could not browse this library")
 			return
 		}
-		libJSON(w, http.StatusOK, map[string]any{
+		out := map[string]any{
 			"items": kindDTOs(page.Items), "total": page.Total, "nextCursor": page.NextCursor,
-		})
+		}
+		if p.Get("ruleVisibility") == "" && p.Get("parent") == "" && len(facets) > 0 && c.app.pluginsRT != nil && c.app.pluginsRT.kindCatalog != nil {
+			if c.app.pluginsRT.kindCatalog.MaybeExpand(r.Context(), lib, frontend.ItemQuery{Filter: core.Filter{Facets: facets}}) {
+				out["expanding"] = true
+			}
+		}
+		libJSON(w, http.StatusOK, out)
 		return
 	}
 	// Builtin/filter: TMDB titles through the catalogue, scoped.

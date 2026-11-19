@@ -80,6 +80,12 @@ type PluginFacetPeoplePage struct {
 	More  bool
 }
 
+// PluginSliceExpander is implemented by plugin library adapters that can
+// trigger non-blocking background facet/person expansions on viewer browse.
+type PluginSliceExpander interface {
+	MaybeExpand(ctx context.Context, lib core.Library, q frontend.ItemQuery) bool
+}
+
 // PluginPresentationLibraries is implemented by plugin library adapters that
 // expose card/tabs/sorts/facets presentation metadata, facet collections, and
 // facet people tabs.
@@ -542,6 +548,19 @@ func pluginCursorPrefix(scope string, q frontend.ItemQuery) string {
 const maxPluginBrowseWalkPages = 40
 
 func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
+	page, err := s.readPluginLibraryItems(ctx, v, lib, q)
+	if err != nil {
+		return core.Page{}, err
+	}
+	if !q.SuppressExpand && strings.TrimSpace(q.Filter.Query) == "" {
+		if exp, ok := s.d.PluginLibraries.(PluginSliceExpander); ok && exp.MaybeExpand(ctx, lib, q) {
+			page.Expanding = true
+		}
+	}
+	return page, nil
+}
+
+func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
 	if query := strings.TrimSpace(q.Filter.Query); query != "" {
 		limit := q.Limit
 		if limit <= 0 {
@@ -1342,10 +1361,11 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 					break
 				}
 				page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
-					Sort:    core.SortReleased,
-					Desc:    true,
-					Limit:   rowLimit,
-					NoTotal: true,
+					Sort:           core.SortReleased,
+					Desc:           true,
+					Limit:          rowLimit,
+					NoTotal:        true,
+					SuppressExpand: true,
 					Filter: core.Filter{
 						Facets: map[string][]string{firstFacet.ID: {b.ID}},
 					},

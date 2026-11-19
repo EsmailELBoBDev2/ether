@@ -40,7 +40,13 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     { "key": "durationSec", "type": "duration", "label": "Duration", "indexed": true }
   ],
   "present": { /* see "Publishing" */ },
-  "browse": { "sorts": ["title", "index"], "facets": ["genre", "durationSec"], "search": true, "liveSearch": true },
+  "browse": {
+    "sorts": ["title", "index"],
+    "facets": ["genre", "durationSec"],
+    "search": true,
+    "liveSearch": true,
+    "expand": { "facets": ["genre"], "ttlHours": 168 } // optional on-demand slice expansion
+  },
   "sync": { "mode": "pull", "refresh": "1h" },
   "cache": { "maxBytes": 2147483648 },        // optional; per-library blob cache
   "match": { "thresholdDefault": 0.8 }        // optional
@@ -59,7 +65,7 @@ unless the owner agrees to replace the library's contents.
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, or `"people"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
-  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=`.
+  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
   - For example, a games library declaring `"developers"` (`type: "strings"`, `indexed: true`) and `"voiceCast"` (`type: "people"`, `indexed: true`) in `browse.facets` can expose searchable alphabetical developer collections and a voice cast directory:
     ```json
@@ -97,6 +103,7 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket or plugin person | Background only, when `browse.expand` lists that facet. Receives `{facet, value, valueId?, cursor?}` and returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. Runs on owner-granted limits; 404/501 is a clean no-op. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
@@ -126,6 +133,48 @@ the next search. Declare it only if your source can answer a search
 quickly; the Studio template has it on with the explanation beside
 the toggle. Pair it with `browse.search: true` so earlier live
 results stay findable locally.
+
+### On-demand facet and person expansion (`browse.expand`)
+
+When a plugin seeds a starter catalogue (for example top games across studios)
+and wants to fetch the full back-catalogue of a developer or voice cast member
+only when someone actually opens that slice, declare `browse.expand`:
+
+```json
+"browse": {
+  "sorts": ["title", "released", "rating"],
+  "facets": ["developers", "voiceCast"],
+  "search": true,
+  "expand": {
+    "facets": ["developers", "voiceCast"],
+    "ttlHours": 168
+  }
+}
+```
+
+- Every entry in `browse.expand.facets` must already appear in `browse.facets`
+  (and the plugin must declare `catalog_provider`). `ttlHours` defaults to
+  `168` (7 days) when omitted or `0`.
+- **Viewer requests never wait on the plugin**: when a viewer opens a bucket's
+  items (`GET /vela/v0/libraries/{id}/items?facet.developers=Nintendo` or
+  `?collectionId=facet:developers:Nintendo`, or the Plex/Jellyfin equivalents)
+  or a plugin person's titles (`GET /vela/v0/people/{id}/titles`), Ether returns
+  stored items immediately and, if no fresh expansion exists within `ttlHours`,
+  queues one background expansion job per `(plugin, kind, facet, value)` in the
+  two-slot background job pool at lowered OS priority. Listing tabs or
+  collections never triggers expansion.
+- Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{facet, value, valueId?, cursor?}`
+  (`value` is the bucket label such as `"Nintendo"` or person name; `valueId` is
+  the synthetic plugin person ID when expanding a `people` facet) under
+  owner-granted background limits.
+- Return `{items: [...], cursor?: "next"}` (`nextCursor` is also accepted; Ether
+  pages up to 20 pages or 2,000 items per expansion and upserts them through the
+  standard kind item pipeline so policy, FTS, `v_fold`, tallies, and art apply)
+  or `{job: "/ether/job/..."}` to finish via a continuation job that writes items
+  with `KindUpsert`. Answering `404` or `501` is treated as a clean no-op.
+- While an expansion for that slice is running, Vela adds `"expanding": true` to
+  `GET /vela/v0/libraries/{id}/items` and `GET /vela/v0/people/{id}/titles`, and
+  bumps the response `ETag` and kind sync generation when it finishes.
 
 ## Resolving bytes
 
@@ -317,18 +366,18 @@ Same contract in all three, pinned by the shared fixtures in
 `sdk/conformance/kinds` (each SDK's tests replay them):
 
 - **Go** (`sdk/go`): `Plugin.OnCatalog / OnResolve / OnMatch /
-  OnFrontend / OnSetupTest`, the `CatalogProvider`, `KindResolver`,
+  OnFrontend / OnSetupTest`, the `CatalogProvider`, `ExpandProvider`, `KindResolver`,
   `KindMatcher`, `FrontendAdapter` interfaces, host kind methods on
   `Host`, and `sdk/go/kit` helpers — `scrape` (polite host-HTTP
   fetching), `archivex` (zip/cbz/epub members), `metaparse` (EPUB
   OPF, ComicInfo, ID3, FLAC), `feedparse` (RSS/Atom/JSON Feed →
   items), `hints` (typed hints/fields).
-- **Python** (`sdk/python`): `CatalogProvider`, `KindResolver`,
+- **Python** (`sdk/python`): `CatalogProvider` (including optional `expand`), `KindResolver`,
   `KindMatcher`, `FrontendAdapter`, `SetupTester` base classes with
   `on_catalog` etc., `ctx.ether.kinds` / `.cache`, `parse_feed` and
   `archive_list` helpers.
 - **TypeScript** (`sdk/typescript`): `onCatalog / onResolve /
-  onMatch / onFrontend / onSetupTest`, `ctx.ether.kinds` / `.cache`,
+  onMatch / onFrontend / onSetupTest` (`CatalogProvider.expand?`), `ctx.ether.kinds` / `.cache`,
   `parseFeed`, `archiveList`, `scrapeText/Links`.
 
 Content plugins are usually best as `remote` (scraping wants a real
@@ -574,7 +623,7 @@ route's deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s
 `/match` get 5 s (50,000 units), and `/catalog/*`, `/meta/*`, `/ether/metadata/*`,
 `/ether/markers*` and kind `/search` and `/items/*` get 10 s (100,000 units),
 reported live by `ether.runtime.limits()`. Ranking budgets stay unchanged.
-Background kind catalogue sync (`/browse` and `/changes`), administrative setup,
+Background kind catalogue sync (`/browse`, `/changes`, and `/expand`), administrative setup,
 actions, tools, events and jobs use owner grants. Health/configuration/view/options/test
 keep short protocol deadlines. See `sdk/AGENTS.md` and the SDK README for exact
 per-route limits and how owners raise ceilings.

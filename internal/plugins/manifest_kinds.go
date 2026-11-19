@@ -204,6 +204,29 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			add(fmt.Sprintf("%s.browse.facets[%d]", base, j), "a facet field must be indexed")
 		}
 	}
+	if k.Browse.Expand != nil {
+		ebase := base + ".browse.expand"
+		if !hasProvider {
+			add(ebase, "expand needs the catalog_provider capability")
+		}
+		if len(k.Browse.Expand.Facets) == 0 {
+			add(ebase+".facets", "must list at least one browse facet")
+		}
+		seenExpand := map[string]bool{}
+		for j, f := range k.Browse.Expand.Facets {
+			fbase := fmt.Sprintf("%s.facets[%d]", ebase, j)
+			if seenExpand[f] {
+				add(fbase, "is listed twice")
+			}
+			seenExpand[f] = true
+			if !seenFacet[f] {
+				add(fbase, "must name a declared browse facet")
+			}
+		}
+		if k.Browse.Expand.TTLHours < 0 {
+			add(ebase+".ttlHours", "must be positive")
+		}
+	}
 	if !k.Library.IsZero() {
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)

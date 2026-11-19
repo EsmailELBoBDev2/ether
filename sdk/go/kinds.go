@@ -86,6 +86,26 @@ type KindBrowseRequest struct {
 	Query    string              `json:"query,omitempty"`
 }
 
+// KindExpandRequest asks a plugin to expand one declared facet bucket or
+// plugin person slice in the background via POST /ether/v1/kinds/{kind}/expand.
+type KindExpandRequest struct {
+	Kind    string `json:"-"`
+	Facet   string `json:"facet"`
+	Value   string `json:"value"`
+	ValueID int64  `json:"valueId,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+}
+
+// KindExpandResponse is returned by POST /ether/v1/kinds/{kind}/expand.
+// Either Items (with optional Cursor/NextCursor for further pages) or Job
+// ("/ether/job/...") is populated.
+type KindExpandResponse struct {
+	Items      []KindItem `json:"items,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
+	NextCursor string     `json:"nextCursor,omitempty"`
+	Job        string     `json:"job,omitempty"`
+}
+
 // KindChangePage is one delta page for pull sync.
 type KindChangePage struct {
 	Upserts    []KindItem `json:"upserts,omitempty"`
@@ -288,6 +308,12 @@ type SearchProvider interface {
 	Search(ctx *Context, req KindBrowseRequest) (KindPage, error)
 }
 
+// ExpandProvider is the optional on-demand facet/person slice expander for
+// kinds that declare browse.expand.
+type ExpandProvider interface {
+	Expand(ctx *Context, req KindExpandRequest) (KindExpandResponse, error)
+}
+
 // KindResolver turns a playable item into ordered playable sources.
 type KindResolver interface {
 	Resolve(ctx *Context, req KindResolveRequest) (KindResolveResponse, error)
@@ -470,6 +496,25 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		page, err := prov.Browse(pctx, in)
 		return kindPageResponse(page, err, in.Limit)
+	case len(tail) == 1 && tail[0] == "expand":
+		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
+		ep, isExpand := prov.(ExpandProvider)
+		if prov == nil || !isExpand {
+			return errorJSON(http.StatusNotImplemented, "not_implemented", "This provider does not expand facets.")
+		}
+		var in KindExpandRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := ep.Expand(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if res.Job == "" && res.Items == nil {
+			res.Items = []KindItem{}
+		}
+		return okJSON(res, http.StatusOK)
 	case len(tail) == 2 && tail[0] == "items":
 		prov := lookup(h, func(k *kindHandlers) CatalogProvider { return k.catalog[kind] })
 		if prov == nil {

@@ -152,7 +152,7 @@ func TestCrowdLiftsConsensusIntoTop10(t *testing.T) {
 	plantCrowd(h, true)
 	crowdFan(h, u.ID)
 	h.rebuild(u)
-	for _, section := range []string{"home", "movies"} {
+	for _, section := range []string{"home", "library:1"} {
 		p := crowdPreview(t, h, u, section)
 		top := rowByKind(p.Rows, KindTop10)
 		if top == nil {
@@ -231,7 +231,7 @@ func TestCrowdRows(t *testing.T) {
 		t.Fatalf("reason = %q", got)
 	}
 	// The TV page names the row for series.
-	p := crowdPreview(t, h, u, "shows")
+	p := crowdPreview(t, h, u, "library:2")
 	if r := rowByKind(p.Rows, KindCrowd); r != nil && r.Title != "Series Loved by Fans of What You Watch" {
 		t.Fatalf("TV crowd row title = %q", r.Title)
 	}

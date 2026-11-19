@@ -14,16 +14,14 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
-// LayoutLibrary describes a movie or show library that can inherit its media
-// type's Recommended layout ("movies" or "shows") or be customised on its own
-// "library:<id>" page.
+// LayoutLibrary describes a library whose Recommended tab has its own
+// "library:<id>" layout page.
 type LayoutLibrary struct {
 	ID         int    `json:"id"`
 	Name       string `json:"name"`
 	Slug       string `json:"slug"`
-	Type       string `json:"type"`       // "movie" | "show"
+	Type       string `json:"type"`       // "movie" | "show" | "plugin"
 	Section    string `json:"section"`    // "library:<id>"
-	BasePage   string `json:"basePage"`   // "movies" | "shows"
 	Customized bool   `json:"customized"` // true when Global contains section == "library:<id>"
 }
 
@@ -32,6 +30,10 @@ type LayoutLibrary struct {
 type ViewerLibraryPage struct {
 	UserID int64           `json:"userId"`
 	Page   core.LayoutPage `json:"page"`
+}
+
+type candidateRowPreviewer interface {
+	PreviewCandidateRows(ctx context.Context, user *core.User, hc core.HubContext, section string, defaultMaxRows int, d core.HomeLayout, rows []core.HomeRow) (*core.HomePreview, error)
 }
 
 // collectionScheduler is the Collection Studio capability the Home
@@ -80,13 +82,6 @@ func (h *Handler) layoutLibraries(ctx context.Context, d core.HomeLayout) ([]Lay
 		if l.Section == "" && l.ID > 0 {
 			l.Section = "library:" + strconv.Itoa(l.ID)
 		}
-		if l.BasePage == "" {
-			if l.Type == string(core.TypeShow) {
-				l.BasePage = "shows"
-			} else {
-				l.BasePage = "movies"
-			}
-		}
 		l.Customized = layoutPageFor(d.Global, l.Section) != nil
 		out = append(out, l)
 	}
@@ -109,14 +104,14 @@ func (h *Handler) resolveLayoutLibrary(w http.ResponseWriter, r *http.Request, d
 			return l, true
 		}
 	}
-	writeError(w, http.StatusNotFound, "not_found", "no such movie or show library")
+	writeError(w, http.StatusNotFound, "not_found", "no such library")
 	return LayoutLibrary{}, false
 }
 
 // writeLayout answers with the saved Home layout document (with every
 // collection's schedule), the engine's per-section row defaults, the rows the
-// document can target, and the catalogue libraries eligible for per-library
-// Recommended layouts.
+// document can target, and the libraries eligible for per-library Recommended
+// layouts.
 func (h *Handler) writeLayout(w http.ResponseWriter, r *http.Request, d core.HomeLayout) {
 	avail, err := h.deps.Personalization.AvailableRows(r.Context())
 	if err != nil {
@@ -146,16 +141,26 @@ func (h *Handler) writeLayout(w http.ResponseWriter, r *http.Request, d core.Hom
 	})
 }
 
-// writeLibraryLayout answers with a single library's effective Recommended
-// layout page, viewer overrides, filtered row candidates, defaults, and
-// collection schedules so the library's Tabs page can edit Recommended rows
-// standalone without loading Home Designer.
-func (h *Handler) writeLibraryLayout(w http.ResponseWriter, r *http.Request, lib LayoutLibrary, d core.HomeLayout) {
-	avail, err := h.deps.Personalization.AvailableRows(r.Context())
-	if err != nil {
-		writeEngineError(w, err)
-		return
+func (h *Handler) defaultOwnerViewer(ctx context.Context) *core.User {
+	if users, err := h.storedViewers(ctx); err == nil {
+		for _, v := range users {
+			if v.IsOwner {
+				copy := v.User
+				return &copy
+			}
+		}
+		if len(users) > 0 {
+			copy := users[0].User
+			return &copy
+		}
 	}
+	return &core.User{ID: 1, IsOwner: true}
+}
+
+// writeLibraryLayout answers with a single library's Recommended layout page,
+// viewer overrides, filtered row candidates, defaults, and collection schedules
+// so the library's Tabs page edits that library's own Recommended rows directly.
+func (h *Handler) writeLibraryLayout(w http.ResponseWriter, r *http.Request, lib LayoutLibrary, d core.HomeLayout) {
 	schedules := map[string]*core.CollectionSchedule{}
 	if s := h.scheduler(); s != nil {
 		if loaded, serr := s.CollectionSchedules(r.Context()); serr != nil {
@@ -170,17 +175,9 @@ func (h *Handler) writeLibraryLayout(w http.ResponseWriter, r *http.Request, lib
 	customPage := layoutPageFor(d.Global, lib.Section)
 	lib.Customized = customPage != nil
 
-	var effective core.LayoutPage
-	inheritedFrom := ""
+	effective := core.LayoutPage{Section: lib.Section, Rows: []core.RowPolicy{}}
 	if customPage != nil {
 		effective = cloneLayoutPage(*customPage)
-	} else if basePage := layoutPageFor(d.Global, lib.BasePage); basePage != nil {
-		effective = cloneLayoutPage(*basePage)
-		effective.Section = lib.Section
-		inheritedFrom = lib.BasePage
-	} else {
-		effective = core.LayoutPage{Section: lib.Section, Rows: []core.RowPolicy{}}
-		inheritedFrom = lib.BasePage
 	}
 
 	viewerPages := []ViewerLibraryPage{}
@@ -189,29 +186,48 @@ func (h *Handler) writeLibraryLayout(w http.ResponseWriter, r *http.Request, lib
 			cp := cloneLayoutPage(*vp)
 			cp.Section = lib.Section
 			viewerPages = append(viewerPages, ViewerLibraryPage{UserID: vl.UserID, Page: cp})
-		} else if !lib.Customized {
-			if bp := layoutPageFor(vl.Pages, lib.BasePage); bp != nil {
-				cp := cloneLayoutPage(*bp)
-				cp.Section = lib.Section
-				viewerPages = append(viewerPages, ViewerLibraryPage{UserID: vl.UserID, Page: cp})
+		}
+	}
+
+	var candidates []core.RowDescriptor
+	var maxRows int
+	if lib.Type == "plugin" {
+		maxRows = 8
+		if h.deps.PluginLibraryRows != nil {
+			descs, _, err := h.deps.PluginLibraryRows(r.Context(), h.defaultOwnerViewer(r.Context()), lib.ID)
+			if err != nil && !errors.Is(err, core.ErrNotFound) {
+				h.writeServiceError(w, err)
+				return
+			}
+			candidates = descs
+		}
+		if candidates == nil {
+			candidates = []core.RowDescriptor{}
+		}
+	} else {
+		avail, err := h.deps.Personalization.AvailableRows(r.Context())
+		if err != nil {
+			writeEngineError(w, err)
+			return
+		}
+		surface := "movies"
+		if lib.Type == string(core.TypeShow) {
+			surface = "shows"
+		}
+		candidates = make([]core.RowDescriptor, 0, len(avail))
+		for _, row := range avail {
+			if slices.Contains(row.Sections, surface) || slices.Contains(row.Sections, lib.Section) {
+				candidates = append(candidates, row)
 			}
 		}
-	}
-
-	candidates := make([]core.RowDescriptor, 0, len(avail))
-	for _, row := range avail {
-		if slices.Contains(row.Sections, lib.BasePage) {
-			candidates = append(candidates, row)
+		defaults := h.deps.Personalization.LayoutDefaults()
+		maxRows = defaults["library"]
+		if maxRows <= 0 {
+			maxRows = 16
 		}
 	}
 
-	defaults := h.deps.Personalization.LayoutDefaults()
-	maxRows := defaults[lib.BasePage]
-	if maxRows <= 0 {
-		maxRows = 16
-	}
-
-	resp := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"library":             lib,
 		"customized":          lib.Customized,
 		"effectivePage":       effective,
@@ -220,11 +236,7 @@ func (h *Handler) writeLibraryLayout(w http.ResponseWriter, r *http.Request, lib
 		"availableRows":       candidates,
 		"collectionSchedules": schedules,
 		"layout":              d,
-	}
-	if inheritedFrom != "" {
-		resp["inheritedFrom"] = inheritedFrom
-	}
-	writeJSON(w, http.StatusOK, resp)
+	})
 }
 
 func (h *Handler) validateAndApplySchedules(w http.ResponseWriter, r *http.Request, schedules map[string]*core.CollectionSchedule, prefix string) (collectionScheduler, bool) {
@@ -323,49 +335,6 @@ func (h *Handler) handleGetLibraryLayout(w http.ResponseWriter, r *http.Request)
 	h.writeLibraryLayout(w, r, lib, d)
 }
 
-func forkLibraryLayout(d *core.HomeLayout, lib LayoutLibrary) {
-	if layoutPageFor(d.Global, lib.Section) == nil {
-		var forked core.LayoutPage
-		if base := layoutPageFor(d.Global, lib.BasePage); base != nil {
-			forked = cloneLayoutPage(*base)
-		} else {
-			forked = core.LayoutPage{Rows: []core.RowPolicy{}}
-		}
-		forked.Section = lib.Section
-		d.Global = append(d.Global, forked)
-	}
-	for i := range d.Viewers {
-		if layoutPageFor(d.Viewers[i].Pages, lib.Section) == nil {
-			if base := layoutPageFor(d.Viewers[i].Pages, lib.BasePage); base != nil {
-				forked := cloneLayoutPage(*base)
-				forked.Section = lib.Section
-				d.Viewers[i].Pages = append(d.Viewers[i].Pages, forked)
-			}
-		}
-	}
-}
-
-func (h *Handler) handleCustomizeLibraryLayout(w http.ResponseWriter, r *http.Request) {
-	d, err := h.deps.Personalization.HomeLayout(r.Context())
-	if err != nil {
-		writeEngineError(w, err)
-		return
-	}
-	lib, ok := h.resolveLayoutLibrary(w, r, d)
-	if !ok {
-		return
-	}
-	if !lib.Customized {
-		forkLibraryLayout(&d, lib)
-		d, err = h.deps.Personalization.SetHomeLayout(r.Context(), d)
-		if err != nil {
-			writeEngineError(w, err)
-			return
-		}
-	}
-	h.writeLibraryLayout(w, r, lib, d)
-}
-
 func (h *Handler) handlePutLibraryLayout(w http.ResponseWriter, r *http.Request) {
 	d, err := h.deps.Personalization.HomeLayout(r.Context())
 	if err != nil {
@@ -400,7 +369,6 @@ func (h *Handler) handlePutLibraryLayout(w http.ResponseWriter, r *http.Request)
 	}
 	page.Section = lib.Section
 
-	wasCustomized := layoutPageFor(d.Global, lib.Section) != nil
 	replaced := false
 	for i := range d.Global {
 		if d.Global[i].Section == lib.Section {
@@ -455,17 +423,6 @@ func (h *Handler) handlePutLibraryLayout(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		d.Viewers = keptViewers
-	} else if !wasCustomized {
-		// Preserve inherited viewer overrides when customising directly via PUT.
-		for i := range d.Viewers {
-			if layoutPageFor(d.Viewers[i].Pages, lib.Section) == nil {
-				if base := layoutPageFor(d.Viewers[i].Pages, lib.BasePage); base != nil {
-					forked := cloneLayoutPage(*base)
-					forked.Section = lib.Section
-					d.Viewers[i].Pages = append(d.Viewers[i].Pages, forked)
-				}
-			}
-		}
 	}
 
 	d, err = h.deps.Personalization.SetHomeLayout(r.Context(), d)
@@ -600,6 +557,41 @@ func applyDraftPageOverlay(d *core.HomeLayout, section string, page *core.Layout
 	}
 }
 
+func (h *Handler) previewSectionLayout(ctx context.Context, e Personalization, u *core.User, hc core.HubContext, section string, count int, d core.HomeLayout) (*core.HomePreview, error) {
+	sec := strings.TrimSpace(section)
+	if id, err := strconv.Atoi(sec); err == nil && id > 0 {
+		sec = "library:" + strconv.Itoa(id)
+	}
+	if strings.HasPrefix(sec, "library:") && h.deps.LayoutLibraries != nil && h.deps.PluginLibraryRows != nil {
+		if cp, ok := e.(candidateRowPreviewer); ok {
+			if libs, err := h.layoutLibraries(ctx, d); err == nil {
+				for _, lib := range libs {
+					if lib.Section == sec && lib.Type == "plugin" {
+						fetchUser := u
+						if fetchUser == nil || fetchUser.ID <= 0 {
+							fetchUser = h.defaultOwnerViewer(ctx)
+						}
+						_, rows, rErr := h.deps.PluginLibraryRows(ctx, fetchUser, lib.ID)
+						if rErr != nil && !errors.Is(rErr, core.ErrNotFound) {
+							return nil, rErr
+						}
+						if count > 0 {
+							for i := range rows {
+								if len(rows[i].Items) > count {
+									rows[i].Items = rows[i].Items[:count]
+									rows[i].Hub.Items = rows[i].Items
+								}
+							}
+						}
+						return cp.PreviewCandidateRows(ctx, u, hc, sec, 8, d, rows)
+					}
+				}
+			}
+		}
+	}
+	return e.PreviewLayout(ctx, u, hc, section, count, d)
+}
+
 func (h *Handler) decodeLayoutPreview(w http.ResponseWriter, r *http.Request) (layoutPreviewBody, core.HubContext, Personalization, bool) {
 	var b layoutPreviewBody
 	var hc core.HubContext
@@ -674,7 +666,7 @@ func (h *Handler) handleLayoutPreview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p, err := e.PreviewLayout(r.Context(), u, hc, b.Section, b.Count, *b.Layout)
+	p, err := h.previewSectionLayout(r.Context(), e, u, hc, b.Section, b.Count, *b.Layout)
 	if err != nil {
 		writeEngineError(w, err)
 		return
@@ -713,12 +705,12 @@ func (h *Handler) handleLayoutImpact(w http.ResponseWriter, r *http.Request) {
 	results := []map[string]any{}
 	overrides, changed := 0, 0
 	for _, u := range users {
-		old, err := e.PreviewLayout(r.Context(), &u.User, hc, b.Section, b.Count, saved)
+		old, err := h.previewSectionLayout(r.Context(), e, &u.User, hc, b.Section, b.Count, saved)
 		if err != nil {
 			writeEngineError(w, err)
 			return
 		}
-		next, err := e.PreviewLayout(r.Context(), &u.User, hc, b.Section, b.Count, *b.Layout)
+		next, err := h.previewSectionLayout(r.Context(), e, &u.User, hc, b.Section, b.Count, *b.Layout)
 		if err != nil {
 			writeEngineError(w, err)
 			return

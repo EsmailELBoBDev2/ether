@@ -688,11 +688,11 @@ func TestPreviewLayoutExplainsAbsentAlwaysRows(t *testing.T) {
 	}
 
 	// 3. Wrong surface on TV page.
-	showsLayout := core.HomeLayout{Global: []core.LayoutPage{{Section: "shows", Rows: []core.RowPolicy{
+	showsLayout := core.HomeLayout{Global: []core.LayoutPage{{Section: "library:2", Rows: []core.RowPolicy{
 		{Row: "collection:movies_only", Status: "always"},
 		{Row: KindAcclaimed, Status: "always"},
 	}}}}
-	showsPrev, err := h.e.PreviewLayout(ctx, &coldViewer, hc, "shows", 12, showsLayout)
+	showsPrev, err := h.e.PreviewLayout(ctx, &coldViewer, hc, "library:2", 12, showsLayout)
 	if err != nil {
 		t.Fatal(err)
 	}

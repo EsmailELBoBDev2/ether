@@ -29,9 +29,8 @@ type Personalization interface {
 	RecentActivity(ctx context.Context, userID int64, limit int) ([]core.ViewerActivity, error)
 	Taste(ctx context.Context, user *core.User) (*core.TasteProfile, error)
 	SetTasteOverrides(ctx context.Context, user *core.User, overrides []core.TasteOverride) (*core.TasteProfile, error)
-	// PreviewHome is exactly what /hubs (or /hubs/sections/{id} when
-	// section is "movies", "shows" or a section id) serves the viewer in
-	// the context.
+	// PreviewHome is what Home (/hubs) or a library's Recommended page
+	// ("library:<id>") serves the viewer in the context.
 	PreviewHome(ctx context.Context, user *core.User, hc core.HubContext, section string, limit int) (*core.HomePreview, error)
 	Refresh(ctx context.Context, user *core.User) error
 	// HomeLayout is the saved Home layout document; SetHomeLayout
@@ -41,8 +40,7 @@ type Personalization interface {
 	// PreviewLayout assembles what the viewer would see under a draft
 	// document without saving it.
 	PreviewLayout(ctx context.Context, user *core.User, hc core.HubContext, section string, limit int, d core.HomeLayout) (*core.HomePreview, error)
-	// LayoutDefaults is the default row count per section (home, movies,
-	// shows).
+	// LayoutDefaults is the default row count per surface (home, library).
 	LayoutDefaults() map[string]int
 	AvailableRows(ctx context.Context) ([]core.RowDescriptor, error)
 	RowInsights(ctx context.Context, days int) ([]core.RowInsight, error)
@@ -74,7 +72,6 @@ func (h *Handler) personalizationRoutes(api func(pattern string, fn http.Handler
 	api("GET /api/layout", h.handleGetLayout)
 	api("PUT /api/layout", h.handlePutLayout)
 	api("GET /api/layout/libraries/{id}", h.handleGetLibraryLayout)
-	api("POST /api/layout/libraries/{id}", h.handleCustomizeLibraryLayout)
 	api("PUT /api/layout/libraries/{id}", h.handlePutLibraryLayout)
 	api("DELETE /api/layout/libraries/{id}", h.handleResetLibraryLayout)
 	api("POST /api/layout/preview", h.handleLayoutPreview)

@@ -1249,9 +1249,9 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 	return frontend.FacetPersonPage{Items: items, More: raw.More}, nil
 }
 
-// PluginLibraryRows implements frontend.PluginLibraryRowsReader: up to 8 shelves
-// (20 items each) built from the plugin library's stored items.
-func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID string) ([]frontend.Row, error) {
+// PluginLibraryCandidateRows builds the candidate shelves (20 items each) for a
+// plugin library's Recommended tab before per-library layout policies run.
+func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.Viewer, viewID string) ([]frontend.Row, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
@@ -1262,12 +1262,12 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 		return nil, err
 	}
 	const (
-		maxRows  = 8
-		rowLimit = 20
+		maxCandidates = 16
+		rowLimit      = 20
 	)
 	var rows []frontend.Row
 	appendRow := func(id, title string, purpose frontend.RowPurpose, kind string, items []core.Title) {
-		if len(items) == 0 || len(rows) >= maxRows {
+		if len(items) == 0 || len(rows) >= maxCandidates {
 			return
 		}
 		if len(items) > rowLimit {
@@ -1339,7 +1339,7 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 	}
 
 	// 4. Top rated (when rating is a declared sort).
-	if slices.Contains(p.Sorts, "rating") && len(rows) < maxRows {
+	if slices.Contains(p.Sorts, "rating") && len(rows) < maxCandidates {
 		if page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
 			Sort:    core.SortRating,
 			Desc:    true,
@@ -1352,7 +1352,7 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 
 	// 5. Top values of the first declared facet (most items first), probing at
 	// most 12 buckets so viewer restrictions never walk hundreds of buckets.
-	if pres != nil && len(p.Facets) > 0 && len(rows) < maxRows {
+	if pres != nil && len(p.Facets) > 0 && len(rows) < maxCandidates {
 		firstFacet := p.Facets[0]
 		if buckets, bErr := pres.FacetBuckets(ctx, lib, firstFacet.ID); bErr == nil && len(buckets) > 0 {
 			sort.SliceStable(buckets, func(i, j int) bool {
@@ -1362,7 +1362,7 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 				return strings.ToLower(buckets[i].Label) < strings.ToLower(buckets[j].Label)
 			})
 			for tried, b := range buckets {
-				if len(rows) >= maxRows || tried >= 12 {
+				if len(rows) >= maxCandidates || tried >= 12 {
 					break
 				}
 				page, pErr := s.pluginLibraryItems(ctx, v, lib, frontend.ItemQuery{
@@ -1390,6 +1390,95 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, _ 
 		return []frontend.Row{}, nil
 	}
 	return rows, nil
+}
+
+func pluginLibraryHasCustomMaxRows(source core.NeutralHomeLayoutSource, ctx context.Context, userID int64, section, device string) bool {
+	reader, ok := source.(interface {
+		HomeLayout(context.Context) (core.HomeLayout, error)
+	})
+	if !ok {
+		return false
+	}
+	d, err := reader.HomeLayout(ctx)
+	if err != nil {
+		return false
+	}
+	check := func(pages []core.LayoutPage) bool {
+		for _, p := range pages {
+			if p.Section != section {
+				continue
+			}
+			if p.MaxRows > 0 || (device != "" && p.DeviceMaxRows[device] > 0) {
+				return true
+			}
+		}
+		return false
+	}
+	if check(d.Global) {
+		return true
+	}
+	for _, vl := range d.Viewers {
+		if vl.UserID == userID && check(vl.Pages) {
+			return true
+		}
+	}
+	return false
+}
+
+// PluginLibraryRows implements frontend.PluginLibraryRowsReader: shelves built
+// from the plugin library's stored items, arranged by that library's own
+// "library:<id>" layout page (defaulting to 8 shelves when uncustomised).
+func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID string) ([]frontend.Row, error) {
+	const defaultMaxRows = 8
+	rows, err := s.PluginLibraryCandidateRows(ctx, viewer, viewID)
+	if err != nil {
+		return nil, err
+	}
+	if s.d.Layout == nil {
+		if len(rows) > defaultMaxRows {
+			rows = rows[:defaultMaxRows]
+		}
+		return rows, nil
+	}
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := strconv.Atoi(viewID)
+	hc := core.NewHubContext(s.d.Now().Local(), dev.Product, dev.Platform, dev.DeviceName)
+	req := frontend.RowRequest{
+		Viewer:    v,
+		Device:    dev,
+		Placement: frontend.PlacementLibrary,
+		ViewID:    viewID,
+	}
+	sit := core.HomeSituation{
+		LibraryID: id,
+		Device:    hc.Device,
+		Daypart:   hc.Daypart,
+		Weekend:   hc.Weekend,
+		Now:       hc.Now,
+		Product:   dev.Product,
+		Platform:  dev.Platform,
+		ClientID:  dev.ID,
+	}
+	arranged, err := LayoutRows(ctx, s.d.Layout, nil, req, sit, rows)
+	if err != nil {
+		return nil, err
+	}
+	section := "library:" + strconv.Itoa(id)
+	if !pluginLibraryHasCustomMaxRows(s.d.Layout, ctx, v.ID, section, hc.Device) && len(arranged) > defaultMaxRows {
+		kept := make([]frontend.Row, 0, defaultMaxRows)
+		for _, r := range arranged {
+			if len(kept) < defaultMaxRows || r.Layout.Always {
+				r.Rank = len(kept)
+				r.Layout.Order = len(kept)
+				kept = append(kept, r)
+			}
+		}
+		arranged = kept
+	}
+	return arranged, nil
 }
 
 func isOriginFacetKey(key string) bool {

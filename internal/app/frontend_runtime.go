@@ -50,6 +50,7 @@ type plexDiscovery interface {
 type frontendRuntime struct {
 	app            *App
 	registry       *frontend.Registry
+	siloExperience *surfaceExperience
 	plex           plex.Frontend
 	control        *frontendControl
 	events         *sessions.EventBus
@@ -143,6 +144,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		if scoped, ok := experience.(*surfaceExperience); ok {
 			scoped.playability = func(ctx context.Context, req frontend.ItemRequest) *bool {
 				return detailCanPlay(ctx, req, protocol, surfaceCapabilities{app: a, surface: protocol, policy: frontendHostPolicy(protocol)}, r.broker)
+			}
+			if protocol == "silo" {
+				r.siloExperience = scoped
 			}
 		}
 		experiences[protocol] = experience

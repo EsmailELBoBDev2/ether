@@ -317,6 +317,9 @@ export function HistoryTab() {
                     return (
                       <span className="flex flex-wrap gap-1">
                         {outcome(h)}
+                        {"kept" in h && h.kept === true && (
+                          <Badge variant="secondary">{t("Kept")}</Badge>
+                        )}
                         {choice ? <Badge variant="secondary">{choice}</Badge> : null}
                         {flags(h)}
                       </span>

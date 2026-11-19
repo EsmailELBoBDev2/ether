@@ -72,6 +72,19 @@ func splitCSV(value string) []string {
 	return out
 }
 
+// guidLike reports whether id parses as a UUID the way the Jellyfin
+// Kotlin SDK does: 32 hex digits, optionally dashed 8-4-4-4-12.
+func guidLike(id string) bool {
+	if len(id) == 36 && id[8] == '-' && id[13] == '-' && id[18] == '-' && id[23] == '-' {
+		id = id[:8] + id[9:13] + id[14:18] + id[19:23] + id[24:]
+	}
+	if len(id) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
+}
+
 func dashedGUID(id string) string {
 	if len(id) != 32 {
 		return id
@@ -1009,17 +1022,10 @@ func (i *instance) jellyfinDetailShell(item map[string]any) {
 // jellyfinStudioFacts records studio names the title already has. Named-facet
 // ids replace this list when the experience issued them.
 func jellyfinStudioFacts(item map[string]any, title frontend.Title) {
-	if _, ok := item["Studios"]; !ok && len(title.Studios) > 0 {
-		pairs := make([]any, 0, len(title.Studios))
-		for _, name := range title.Studios {
-			if name != "" {
-				pairs = append(pairs, map[string]any{"Name": name})
-			}
-		}
-		if len(pairs) > 0 {
-			item["Studios"] = pairs
-		}
-	}
+	// NameGuidPair.Id is a required UUID in the Jellyfin SDK, so a
+	// name-only Studios entry fails decoding of the whole item (#614).
+	// Studios only ever carries the authorized facet pairs addNamedFacets
+	// issued; the plain names stay available as SeriesStudio below.
 	if title.Type == "show" || title.Type == "episode" || title.Type == "season" {
 		for _, name := range title.Studios {
 			if name != "" {
@@ -1054,7 +1060,11 @@ func (i *instance) jellyfinKnownVersionFacts(dto map[string]any, versions []fron
 	if len(version.Media.Chapters) > 0 {
 		chapters := make([]any, 0, len(version.Media.Chapters))
 		for _, chapter := range version.Media.Chapters {
-			entry := map[string]any{"StartPositionTicks": chapter.Start.Nanoseconds() / 100}
+			// ChapterInfo.ImageDateModified is non-null in the Jellyfin
+			// SDK; without it the whole item fails to decode (#614).
+			// Ether has no chapter-image date, so it carries the zero
+			// date Jellyfin itself sends for chapters without images.
+			entry := map[string]any{"StartPositionTicks": chapter.Start.Nanoseconds() / 100, "ImageDateModified": wireTime(time.Time{})}
 			if chapter.Title != "" {
 				entry["Name"] = chapter.Title
 			}

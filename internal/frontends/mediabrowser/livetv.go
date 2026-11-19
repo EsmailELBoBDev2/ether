@@ -81,7 +81,7 @@ func (i *instance) channelDTO(r *http.Request, token string, ch frontend.LiveCha
 		"Id":       id, "Name": ch.Name, "Number": ch.Number, "Type": "TvChannel",
 		"ChannelType": "TV", "MediaType": "Video", "IsFolder": false,
 		"MediaSources": []any{i.liveChannelMediaSourceDTO(id, ch.Name)},
-		"UserData":     map[string]any{"Key": id, "IsFavorite": ch.Favorite},
+		"UserData":     map[string]any{"Key": dashedGUID(id), "ItemId": id, "PlaybackPositionTicks": int64(0), "PlayCount": 0, "IsFavorite": ch.Favorite, "Played": false},
 	}
 	if i.host.ImageGrants != nil {
 		for _, img := range ch.Images {
@@ -354,7 +354,7 @@ func (i *instance) programmeDTO(p frontend.LiveProgramme, channel frontend.LiveC
 		"StartDate": wireTime(p.Start), "EndDate": wireTime(p.End), "OfficialRating": contentrating.Prefixed(p.Rating),
 		"IndexNumber": p.Episode, "ParentIndexNumber": p.Season, "Genres": append([]string{}, p.Genres...), "IsMovie": frontend.LiveCategory(p.Genres, "movie", p.MediaType), "IsSeries": frontend.LiveCategory(p.Genres, "series", p.MediaType) || p.Episode > 0 || p.Season > 0,
 		"IsSports": frontend.LiveCategory(p.Genres, "sports", p.MediaType), "IsNews": frontend.LiveCategory(p.Genres, "news", p.MediaType), "IsKids": frontend.LiveCategory(p.Genres, "kids", p.MediaType),
-		"MediaType": "Video", "IsFolder": false, "UserData": map[string]any{"Key": id, "PlaybackPositionTicks": 0, "PlayCount": 0, "IsFavorite": false, "Played": false},
+		"MediaType": "Video", "IsFolder": false, "UserData": map[string]any{"Key": dashedGUID(id), "ItemId": id, "PlaybackPositionTicks": int64(0), "PlayCount": 0, "IsFavorite": false, "Played": false},
 	}
 	if channel.ID != "" {
 		item["ChannelName"] = channel.Name

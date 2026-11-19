@@ -132,3 +132,50 @@ func (p *providerBroadcastPlanner) refillInput() {
 		p.s.refillSteadyInput(a.link.ss)
 	}
 }
+
+// growLead reports that the frame clock may tick a little early to raise a
+// provider output's published lead toward its goal (the latency target): the
+// lead is the client's cushion against a late segment, a slow download or a
+// stalled encoder, and the startup burst could only spend the backlog the
+// provider sent at connect. It grows only while fresh pictures flow, nothing
+// holds, the encoders keep up and the input reserve exceeds its target by
+// what the growth spends, so it spends surplus reserve, never a picture.
+func (b *broadcast) growLead() bool {
+	if !b.burstNoWait || b.bursting || !b.startupUntil.IsZero() || !b.lastFresh || !b.holdSince.IsZero() || b.current == nil {
+		return false
+	}
+	goal := time.Duration(0)
+	if source, ok := b.planner.(interface{ leadGoal() time.Duration }); ok {
+		goal = source.leadGoal()
+	}
+	if b.lead >= goal {
+		return false
+	}
+	fps := b.format.FPSNum / max(1, b.format.FPSDen)
+	if len(b.current.frames) < fps/2 {
+		return false
+	}
+	source, ok := b.planner.(reservePaceSource)
+	if !ok {
+		return false
+	}
+	// Spend only reserve above the preset's target (plus a second): growing
+	// the lead must never leave the input short of what the preset promises.
+	if depth, target, ok := source.reserveTarget(); !ok || target <= 0 || depth < target+goal-b.lead+time.Second {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, r := range b.renditions {
+		if r.queue.pending() > fps/4 {
+			return false
+		}
+	}
+	return true
+}
+
+// leadGoal is the published lead a provider output grows toward: the owner's
+// latency target, so a viewer starts and stays that far behind the encoder.
+func (p *providerBroadcastPlanner) leadGoal() time.Duration {
+	return p.s.latencyPolicy().TargetLatency()
+}

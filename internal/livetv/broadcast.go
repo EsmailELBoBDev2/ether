@@ -269,6 +269,8 @@ type broadcast struct {
 	healthAt   time.Time
 	stallSince time.Time
 	refillAt   time.Time
+	// lastFresh is whether the last published tick carried a new picture.
+	lastFresh bool
 }
 
 func newBroadcast(ctx context.Context, runner transcode.ContinuousRunner, planner broadcastPlanner, format transcode.RawFormat) (*broadcast, error) {
@@ -775,6 +777,11 @@ func (b *broadcast) run() {
 			b.logger.Warn("broadcast frame clock late", "late", late, "schedLate", transcode.SchedulerLate(late+time.Second), "tick", b.tick, "gc", gcSummary())
 		}
 		b.tick++
+		if b.growLead() {
+			// Five percent faster ticks: the client buffers further ahead,
+			// spending reserve the provider input already holds.
+			b.lead += time.Second * time.Duration(b.format.FPSDen) / time.Duration(b.format.FPSNum) / 20
+		}
 		next := b.origin.Add(time.Duration(b.tick) * time.Second * time.Duration(b.format.FPSDen) / time.Duration(b.format.FPSNum)).Add(-b.lead)
 		delay := time.Until(next)
 		if b.bursting {
@@ -1609,6 +1616,12 @@ func (b *broadcast) step(now time.Time) bool {
 			speed := encoder.RealtimeSpeed()
 			slow = speed > 0 && speed < 0.98
 		}
+		// A provider output well ahead of the wall clock can let a stalled
+		// encoder fall behind for most of that lead before its client runs
+		// dry: degrading pictures for a short hiccup is the visible choice.
+		if b.burstNoWait {
+			r.queue.setTolerance(int(max(0, b.lead-2*time.Second) * time.Duration(b.format.FPSNum) / time.Duration(b.format.FPSDen) / time.Second))
+		}
 		changed, repeating, pending := r.queue.push(frame, cut, slow)
 		if changed {
 			b.logger.Info("broadcast encoder video cadence changed", "rendition", id, "repeating", repeating, "pendingTicks", pending, "tick", b.tick)
@@ -1622,6 +1635,7 @@ func (b *broadcast) step(now time.Time) bool {
 		}
 	}
 	b.mu.Unlock()
+	b.lastFresh = fresh
 	return true
 }
 

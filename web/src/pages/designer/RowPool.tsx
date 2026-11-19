@@ -4,10 +4,13 @@ import { AddonCatalogDrawer } from "../collections/AddonCatalogDrawer";
 import { newCollectionHref } from "../collections/links";
 import { BulkBar } from "../../components/BulkBar";
 import { Drawer } from "../../components/Drawer";
-import { Badge, Button, Checkbox, Input, cn } from "@braedonsaunders/appkit-ui";
+import { SubtabNav } from "../../components/layout";
+import { PosterGrid } from "../../components/Poster";
+import { Badge, Button, Checkbox, EmptyState, Input, cn } from "@braedonsaunders/appkit-ui";
 import {
   ChevronDown,
   ChevronRight,
+  Film,
   Layers,
   Plus,
   Puzzle,
@@ -22,6 +25,8 @@ import type {
   AvailableRow,
   HomeLayout,
   LayoutSection,
+  LibraryMediaSurface,
+  RowSectionTag,
   RowGroup,
   RowInsight,
   RowPolicy,
@@ -41,7 +46,6 @@ import {
   describeHiddenRow,
   collectionSchedule,
   effectivePolicy,
-  hasLibraryOverride,
   isLibrarySection,
   matchRank,
   setCollectionSchedule,
@@ -107,7 +111,6 @@ function resolve(
   layer: LayerKey,
   section: LayoutSection,
   e: PoolEntry,
-  mediaSection?: "movies" | "shows",
 ): Resolved {
   const own = policyIn(draft, layer, section, e.row);
   if (own) return { policy: own, origin: "own" };
@@ -117,7 +120,6 @@ function resolve(
     section,
     e.row,
     e.kind ?? e.row,
-    mediaSection,
   );
   if (eff && eff.policy.row !== e.row)
     return {
@@ -160,7 +162,7 @@ export function RowPool({
   onChange: (d: HomeLayout) => void;
   layer: LayerKey;
   section: LayoutSection;
-  mediaSection?: "movies" | "shows";
+  mediaSection?: LibraryMediaSurface | null;
   viewers: Viewer[];
   available: AvailableRow[];
   focusRow: string | null;
@@ -229,7 +231,7 @@ export function RowPool({
       if (!isPluginDescriptor(d)) continue;
       const hubId = d.meta?.hubId ?? d.id;
       if (known.has(hubId)) continue;
-      if (!rowFits({ sections: d.meta?.sections as LayoutSection[] | undefined }, section, mediaSection))
+      if (!rowFits({ sections: d.meta?.sections as RowSectionTag[] | undefined }, section, mediaSection))
         continue;
       known.add(hubId);
       out.push({
@@ -243,13 +245,8 @@ export function RowPool({
       });
     }
     // Policies for patterns or hub ids that are not in the catalogue.
-    const globalFallback =
-      isLibrarySection(section) && !hasLibraryOverride(draft, section) && mediaSection
-        ? mediaSection
-        : section;
     for (const layerKey of ["global", layer] as LayerKey[]) {
-      const pageSection = layerKey === "global" ? globalFallback : section;
-      for (const p of pageOf(draft, layerKey, pageSection)?.rows ?? []) {
+      for (const p of pageOf(draft, layerKey, section)?.rows ?? []) {
         if (known.has(p.row)) continue;
         known.add(p.row);
         out.push({
@@ -264,8 +261,8 @@ export function RowPool({
   }, [available, draft, layer, section, mediaSection, locale, registry.descriptors]);
   const needle = q.trim().toLowerCase();
   const resolved = useMemo(
-    () => new Map(entries.map((e) => [e.row, resolve(draft, layer, section, e, mediaSection)])),
-    [entries, draft, layer, section, mediaSection],
+    () => new Map(entries.map((e) => [e.row, resolve(draft, layer, section, e)])),
+    [entries, draft, layer, section],
   );
   const statusOf = (e: PoolEntry) => resolved.get(e.row)!.policy.status;
   const shown = entries.filter(
@@ -681,10 +678,12 @@ function PoolItem({
   const { locale } = useLocale();
   const onLibraryTab = isLibrarySection(section);
   const ref = useRef<HTMLLIElement>(null);
+  const [drawerTab, setDrawerTab] = useState<"settings" | "content">("settings");
   const openedDraftRef = useRef<HomeLayout>(draft);
   const wasOpenRef = useRef(false);
   if (open && !wasOpenRef.current) {
     openedDraftRef.current = draft;
+    if (drawerTab !== "settings") setDrawerTab("settings");
   }
   wasOpenRef.current = open;
   useEffect(() => {
@@ -741,13 +740,23 @@ function PoolItem({
       ? t("Default")
       : t("Reset to Everyone");
   const who = previewWho || t("Typical viewer");
+  // i18n: memo holds no copy
+  const matchedRows = useMemo(
+    () => (preview?.rows ?? []).filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0),
+    [preview, entry.row],
+  );
+  // i18n: memo holds no copy
+  const activePreviewRows = useMemo(
+    () => matchedRows.filter((r) => r.items.length > 0),
+    [matchedRows],
+  );
+  const contentCount = activePreviewRows.reduce((n, r) => n + r.items.length, 0);
+  const hiddenMatch = matchedRows.find((r) => r.hidden);
   const absenceNote = useMemo(() => {
     if (!preview || onCreate) return "";
-    const matched = preview.rows.filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0);
-    if (matched.some((r) => !r.hidden && r.items.length > 0)) return "";
-    const hiddenMatch = matched.find((r) => r.hidden);
+    if (matchedRows.some((r) => !r.hidden && r.items.length > 0)) return "";
     if (effective.status === "always") {
-      if (matched.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
+      if (matchedRows.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
         return t("Hidden for {who}: nothing in progress", { who });
       }
       if (hiddenMatch) return describeHiddenRow(hiddenMatch, who);
@@ -767,13 +776,28 @@ function PoolItem({
       return describeHiddenRow(hiddenMatch, who);
     }
     return "";
-  }, [preview, onCreate, entry.row, effective.status, who, locale]);
+  }, [preview, onCreate, matchedRows, hiddenMatch, effective.status, who, locale]);
   return (
     <li
       ref={ref}
       aria-label={t("Row {title}", { title: entry.title })}
+      onClick={
+        !onCreate
+          ? (ev) => {
+              if (
+                (ev.target as HTMLElement).closest(
+                  "button, input, label, a, [role=\"radiogroup\"], [role=\"checkbox\"], [role=\"dialog\"]",
+                )
+              ) {
+                return;
+              }
+              onToggle();
+            }
+          : undefined
+      }
       className={cn(
-        "rounded-lg border bg-surface p-2.5",
+        "rounded-lg border bg-surface p-2.5 transition-colors",
+        !onCreate && "cursor-pointer hover:border-border-strong",
         own && layer !== "global" ? "border-info/40" : "border-border",
         picked && "border-primary/50 bg-primary-subtle/30",
         open && "ring-2 ring-primary/30",
@@ -915,43 +939,122 @@ function PoolItem({
           </div>
         }
       >
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Segmented
-            ariaLabel={t("Status of {title}", { title: entry.title })}
-            size="sm"
-            value={effective.status}
-            onChange={setStatus}
-            options={statuses.map((s) => ({
-              value: s,
-              label: <span title={STATUS_HINT[s]}>{STATUS_LABEL[s]}</span>,
-            }))}
+        <SubtabNav
+          ariaLabel={t("Row sections")}
+          active={drawerTab}
+          onSelect={(key) => setDrawerTab(key as "settings" | "content")}
+          tabs={[
+            { key: "settings", label: t("Settings") },
+            {
+              key: "content",
+              label: t("Content"),
+              count: contentCount || undefined,
+            },
+          ]}
+        />
+        {drawerTab === "settings" ? (
+          <div className="space-y-5">
+            <section className="space-y-2 text-xs" aria-label={t("Visibility")}>
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
+                  {t("Visibility")}
+                </h3>
+                <p className="mt-0.5 text-fg-muted">{STATUS_HINT[effective.status]}</p>
+              </div>
+              <div className="space-y-2.5 rounded-xl border border-border bg-surface p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Segmented
+                    ariaLabel={t("Status of {title}", { title: entry.title })}
+                    size="sm"
+                    value={effective.status}
+                    onChange={setStatus}
+                    options={statuses.map((s) => ({
+                      value: s,
+                      label: <span title={STATUS_HINT[s]}>{STATUS_LABEL[s]}</span>,
+                    }))}
+                  />
+                  {own ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={reset}
+                      aria-label={
+                        pattern
+                          ? t("Remove the rule {title}", { title: entry.title })
+                          : layer === "global"
+                            ? t("Back to default: {title}", { title: entry.title })
+                            : t("Reset to Everyone: {title}", { title: entry.title })
+                      }
+                    >
+                      {pattern ? <Trash2 size={12} /> : <RotateCcw size={12} />} {resetLabel}
+                    </Button>
+                  ) : null}
+                </div>
+                {resolved.origin === "pattern" ? (
+                  <p className="text-xs text-fg-muted">
+                    {t(
+                      "Set by the rule {pattern}. Changing it here gives this row its own setting.",
+                      { pattern: resolved.via ?? "" },
+                    )}
+                  </p>
+                ) : null}
+              </div>
+            </section>
+            <PolicyEditor
+              policy={effective}
+              title={entry.title}
+              onChange={edit}
+              schedule={schedule}
+            />
+          </div>
+        ) : !preview ? (
+          <EmptyState
+            icon={<Film />}
+            title={t("Preview unavailable")}
+            description={t("Waiting for the current preview to finish loading.")}
           />
-          {own ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={reset}
-              aria-label={
-                pattern
-                  ? t("Remove the rule {title}", { title: entry.title })
-                  : layer === "global"
-                    ? t("Back to default: {title}", { title: entry.title })
-                    : t("Reset to Everyone: {title}", { title: entry.title })
-              }
-            >
-              {pattern ? <Trash2 size={12} /> : <RotateCcw size={12} />} {resetLabel}
-            </Button>
-          ) : null}
-        </div>
-        {resolved.origin === "pattern" ? (
-          <p className="mt-2 text-xs text-fg-muted">
-            {t("Set by the rule {pattern}. Changing it here gives this row its own setting.", {
-              pattern: resolved.via ?? "",
-            })}
-          </p>
-        ) : null}
-        <PolicyEditor policy={effective} title={entry.title} onChange={edit} schedule={schedule} />
+        ) : activePreviewRows.length === 0 ? (
+          <EmptyState
+            icon={<Film />}
+            title={t("No titles in this preview")}
+            description={
+              absenceNote ||
+              (hiddenMatch
+                ? describeHiddenRow(hiddenMatch, who)
+                : t("No matching titles for {who} right now.", { who }))
+            }
+          />
+        ) : (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-fg-muted">
+              <span>
+                {tn(
+                  contentCount,
+                  "{count} title in the current preview for {who}",
+                  "{count} titles in the current preview for {who}",
+                  { who },
+                )}
+              </span>
+              {matchedRows.every((r) => r.hidden) && hiddenMatch ? (
+                <Badge variant="warning">{describeHiddenRow(hiddenMatch, who)}</Badge>
+              ) : null}
+            </div>
+            {activePreviewRows.map((r) => (
+              <div key={r.hubId} className="space-y-2.5">
+                {activePreviewRows.length > 1 || r.title !== entry.title || r.reason ? (
+                  <div className="space-y-0.5">
+                    {activePreviewRows.length > 1 || r.title !== entry.title ? (
+                      <h3 className="text-sm font-semibold text-fg">{r.title}</h3>
+                    ) : null}
+                    {r.reason ? <p className="text-xs text-fg-muted">{r.reason}</p> : null}
+                  </div>
+                ) : null}
+                <PosterGrid items={r.items} reasons={r.itemReasons} />
+              </div>
+            ))}
+          </div>
+        )}
       </Drawer>
     </li>
   );

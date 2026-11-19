@@ -29,7 +29,6 @@ import { useDebouncedValue } from "../../lib/hooks";
 import {
   CONTINUE,
   DAYPARTS,
-  SECTIONS,
   atFor,
   describeHiddenRow,
   policyChipItems,
@@ -99,16 +98,11 @@ export function HomeCanvas({
     const when = {
       device: r.ctx.device,
       at: atFor(r.ctx.day, r.ctx.hour).toISOString(),
-      section: r.ctx.section,
     };
     (readOnly && r.viewerId !== null
-      ? api.viewerHome(
-          r.viewerId,
-          { ...when, section: r.ctx.section === "home" ? undefined : r.ctx.section },
-          ctl.signal,
-        )
+      ? api.viewerHome(r.viewerId, when, ctl.signal)
       : api.previewLayout(
-          { viewerId: r.viewerId, ...when, ...(r.layout ? { layout: r.layout } : {}) },
+          { viewerId: r.viewerId, ...when, section: "home", ...(r.layout ? { layout: r.layout } : {}) },
           ctl.signal,
         )
     )
@@ -145,11 +139,11 @@ export function HomeCanvas({
       ? r.policy.row
       : r.kind;
   const baseFor = (r: HomeRow, row: string): RowPolicy =>
-    policyIn(draft, layer, ctx.section, row) ??
+    policyIn(draft, layer, "home", row) ??
     (r.policy?.row === row ? { ...r.policy } : { row, status: "eligible" });
   const act = (r: HomeRow, patch: Partial<RowPolicy>) => {
     const row = keyFor(r);
-    onChange(setPolicy(draft, layer, ctx.section, { ...baseFor(r, row), ...patch, row }));
+    onChange(setPolicy(draft, layer, "home", { ...baseFor(r, row), ...patch, row }));
   };
   const actions = {
     anchor: (r: HomeRow, slot: number) =>
@@ -157,9 +151,9 @@ export function HomeCanvas({
     always: (r: HomeRow) => act(r, { status: "always" }),
     eligible: (r: HomeRow) => act(r, { status: "eligible" }),
     off: (r: HomeRow) => act(r, { status: "off", slot: undefined }),
-    reset: (r: HomeRow) => onChange(removePolicy(draft, layer, ctx.section, keyFor(r))),
+    reset: (r: HomeRow) => onChange(removePolicy(draft, layer, "home", keyFor(r))),
     canReset: (r: HomeRow) =>
-      layer !== "global" && Boolean(policyIn(draft, layer, ctx.section, keyFor(r))),
+      layer !== "global" && Boolean(policyIn(draft, layer, "home", keyFor(r))),
     edit: (r: HomeRow) => onEditRow(keyFor(r)),
   };
 
@@ -177,7 +171,7 @@ export function HomeCanvas({
           <div className="min-w-0">
             <p className="text-xs text-fg-muted">
               {t("Preview {section} as", {
-                section: SECTIONS.find((s) => s.value === ctx.section)?.label ?? "",
+                section: t("Home"),
               })}
             </p>
             {layer === "global" && !readOnly ? (

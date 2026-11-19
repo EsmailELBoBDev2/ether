@@ -55,7 +55,7 @@ export function AnchoredSlots({
     layer === "global"
       ? []
       : anchorsOf(draft, "global", section).filter((g) => {
-          const eff = effectivePolicy(draft, layer, section, g.row, g.row, mediaSection);
+          const eff = effectivePolicy(draft, layer, section, g.row, g.row);
           return eff?.layer === "global";
         });
   const unanchor = (p: RowPolicy) =>
@@ -68,7 +68,6 @@ export function AnchoredSlots({
         section,
         row,
         row,
-        mediaSection,
       )?.policy ?? {
         row,
         status: "always" as const,

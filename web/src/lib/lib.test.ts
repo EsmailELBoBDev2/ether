@@ -297,7 +297,7 @@ describe("layout", () => {
     expect(effectivePolicy(doc, 5, "home", "home.because.42", "because-you-watched")).toMatchObject(
       { layer: "override", policy: { row: "because.*" } },
     );
-    expect(effectivePolicy(doc, 5, "movies", "movie.because.42", "because-you-watched")).toBeNull();
+    expect(effectivePolicy(doc, 5, "library:1", "movie.because.42", "because-you-watched")).toBeNull();
     expect(matchRank("collection:*", "collection.7", "collection:7")).toBe(1);
   });
 
@@ -327,7 +327,7 @@ describe("layout", () => {
     expect(effectiveLength(doc, 3, "home", "tv", 14)).toEqual({ n: 6, layer: "override" });
     expect(effectiveLength(doc, 3, "home", "mobile", 14)).toEqual({ n: 8, layer: "global" });
     expect(effectiveLength(doc, null, "home", "web", 14)).toEqual({ n: 12, layer: "global" });
-    expect(effectiveLength(doc, null, "shows", "web", 10)).toEqual({ n: 10, layer: "default" });
+    expect(effectiveLength(doc, null, "library:2", "web", 10)).toEqual({ n: 10, layer: "default" });
     doc = setPageLength(doc, 3, "home", "tv", undefined);
     expect(doc.viewers).toEqual([]);
   });

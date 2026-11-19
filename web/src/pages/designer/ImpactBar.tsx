@@ -22,7 +22,7 @@ export function ImpactBar({
   at: string;
 }) {
   const key = useDebouncedValue(
-    JSON.stringify({ draft, device: ctx.device, at, section: ctx.section }),
+    JSON.stringify({ draft, device: ctx.device, at }),
     500,
   );
   const [result, setResult] = useState<LayoutImpactResult | null>(null);
@@ -35,12 +35,11 @@ export function ImpactBar({
       draft: HomeLayout;
       device: ViewContext["device"];
       at: string;
-      section: ViewContext["section"];
     };
     const ctl = new AbortController();
     setLoading(true);
     api
-      .layoutImpact({ layout: r.draft, device: r.device, at: r.at, section: r.section }, ctl.signal)
+      .layoutImpact({ layout: r.draft, device: r.device, at: r.at, section: "home" }, ctl.signal)
       .then((res) => {
         setResult(res);
         setError(null);

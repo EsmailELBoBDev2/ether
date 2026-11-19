@@ -218,6 +218,7 @@ type Server struct {
 	starts frontend.StartGuard
 
 	liveDiscovery liveDiscoveryCache
+	liveGuideDay  liveGuideDayCache
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -836,6 +837,7 @@ func (s *Server) Close() error {
 		}
 		s.liveDiscovery.entries = nil
 		s.liveDiscovery.mu.Unlock()
+		s.liveGuideDay.close()
 		s.cancel()
 
 		s.notifier.close()

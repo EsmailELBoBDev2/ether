@@ -409,10 +409,10 @@ func (s *Server) handleLiveChannels(w http.ResponseWriter, r *http.Request) {
 	if category == "" {
 		category = strings.TrimSpace(r.URL.Query().Get("genre"))
 	}
-	snapshot := s.liveDiscoverySnapshot(r.Context(), FromContext(r.Context()).User)
+	day := s.liveGuideDaySnapshot(r.Context(), FromContext(r.Context()).User)
 	genreKeys := map[string]model.StringList{}
-	if snapshot != nil {
-		genreKeys = snapshot.genres
+	if day != nil {
+		genreKeys = day.channelGenres
 	}
 	if category != "" {
 		canonical, ok := normalizeLiveCategory(category)
@@ -420,7 +420,7 @@ func (s *Server) handleLiveChannels(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, r, frontend.ErrNotFound)
 			return
 		}
-		if snapshot == nil {
+		if day == nil {
 			w.Header().Set("Retry-After", "1")
 			writeHTTPError(w, 503)
 			return

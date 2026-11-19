@@ -24,21 +24,34 @@ func ViewerRequestPath(path string) bool {
 // manifest's request, capped only by the owner's ceilings) instead of the
 // viewer budget. A big first sync can then take as long as it needs.
 func KindSyncPath(path string) bool {
-	return strings.HasPrefix(path, "/ether/v1/kinds/") &&
-		(strings.HasSuffix(path, "/browse") || strings.HasSuffix(path, "/changes"))
+	p, _, _ := strings.Cut(path, "?")
+	return strings.HasPrefix(p, "/ether/v1/kinds/") &&
+		(strings.HasSuffix(p, "/browse") || strings.HasSuffix(p, "/changes"))
+}
+
+// LiveTVSyncPath identifies a Live TV source plugin's background lineup and
+// guide refresh calls (/ether/channels.json and /ether/guide/*). Ether makes
+// them in the background to import channels and programmes, never while a
+// viewer waits, so they run on the plugin's granted limits.
+func LiveTVSyncPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	return p == "/ether/channels.json" || strings.HasPrefix(p, "/ether/guide/")
 }
 
 // GrantedLimitsPath reports whether path runs on the plugin's owner-granted
 // deadline and unit budget rather than a fixed protocol or viewer cap:
-// background kind sync (/browse, /changes), jobs, setup, owner actions,
+// background kind sync (/browse, /changes), Live TV lineup and guide sync
+// (/ether/channels.json, /ether/guide/*), jobs, setup, owner actions,
 // agent tools, and event deliveries.
 func GrantedLimitsPath(path string) bool {
-	return KindSyncPath(path) ||
-		strings.HasPrefix(path, "/ether/job/") ||
-		strings.HasPrefix(path, "/ether/v1/setup/") ||
-		strings.HasPrefix(path, "/ether/action/") ||
-		strings.HasPrefix(path, "/ether/tool/") ||
-		path == "/ether/event"
+	p, _, _ := strings.Cut(path, "?")
+	return KindSyncPath(p) ||
+		LiveTVSyncPath(p) ||
+		strings.HasPrefix(p, "/ether/job/") ||
+		strings.HasPrefix(p, "/ether/v1/setup/") ||
+		strings.HasPrefix(p, "/ether/action/") ||
+		strings.HasPrefix(p, "/ether/tool/") ||
+		p == "/ether/event"
 }
 
 // UnitsForDeadline converts a call deadline into its matching governance unit
@@ -70,27 +83,28 @@ func StremioDeadline(path string) time.Duration {
 // Routes in GrantedLimitsPath use the plugin's owner-granted deadline instead
 // when dispatched through EffectiveDeadline.
 func DeadlineFor(path string) time.Duration {
+	p, _, _ := strings.Cut(path, "?")
 	switch {
-	case strings.HasPrefix(path, "/ether/configure"), strings.HasPrefix(path, "/ether/health"):
+	case strings.HasPrefix(p, "/ether/configure"), strings.HasPrefix(p, "/ether/health"):
 		return 5 * time.Second
-	case strings.HasPrefix(path, "/ether/test"):
+	case strings.HasPrefix(p, "/ether/test"):
 		return 15 * time.Second
-	case strings.HasPrefix(path, "/ether/options"), strings.HasPrefix(path, "/ether/view"):
+	case strings.HasPrefix(p, "/ether/options"), strings.HasPrefix(p, "/ether/view"):
 		return 2 * time.Second
-	case strings.HasPrefix(path, "/ether/open"), strings.HasPrefix(path, "/stream/"):
+	case strings.HasPrefix(p, "/ether/open"), strings.HasPrefix(p, "/stream/"):
 		return 3 * time.Second
-	case strings.HasPrefix(path, "/ether/tool"):
+	case strings.HasPrefix(p, "/ether/tool"):
 		return 15 * time.Second
-	case strings.HasPrefix(path, "/ether/job"):
+	case strings.HasPrefix(p, "/ether/job"):
 		return 5 * time.Minute
-	case strings.HasPrefix(path, "/meta/"), strings.HasPrefix(path, "/ether/metadata/"), strings.HasPrefix(path, "/catalog/"), strings.HasPrefix(path, "/ether/event"), strings.HasPrefix(path, "/ether/action"), strings.HasPrefix(path, "/ether/markers"):
+	case strings.HasPrefix(p, "/meta/"), strings.HasPrefix(p, "/ether/metadata/"), strings.HasPrefix(p, "/catalog/"), strings.HasPrefix(p, "/ether/event"), strings.HasPrefix(p, "/ether/action"), strings.HasPrefix(p, "/ether/markers"):
 		return 10 * time.Second
-	case strings.HasPrefix(path, "/subtitles/"), strings.HasPrefix(path, "/ether/subtitles/"):
+	case strings.HasPrefix(p, "/subtitles/"), strings.HasPrefix(p, "/ether/subtitles/"):
 		return 5 * time.Second
-	case strings.HasPrefix(path, "/ether/v1/setup/"):
+	case strings.HasPrefix(p, "/ether/v1/setup/"):
 		return 20 * time.Second
-	case strings.HasPrefix(path, "/ether/v1/kinds/"):
-		if strings.HasSuffix(path, "/resolve") || strings.HasSuffix(path, "/match") {
+	case strings.HasPrefix(p, "/ether/v1/kinds/"):
+		if strings.HasSuffix(p, "/resolve") || strings.HasSuffix(p, "/match") {
 			return 5 * time.Second
 		}
 		return 10 * time.Second

@@ -195,8 +195,8 @@ than billed as guest wall time):
 | `/ether/options/*`, `/ether/view/*` | 2 s | Owner-granted ceiling |
 | `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
 | `/ether/test` | 15 s | Owner-granted ceiling |
-| Other protocol routes (`/ether/notify`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
-| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
+| Other protocol routes (`/ether/notify`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
+| `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
 | `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
 
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript

@@ -607,10 +607,23 @@ func TestLimitsClamp(t *testing.T) {
 	if got := limitsForRequest(Limits{Deadline: 2 * time.Second, UnitBudget: 1 << 40}, "/ether/v1/kinds/games/resolve"); got.Deadline != 2*time.Second || got.UnitBudget != 20000 {
 		t.Fatalf("tighter owner ceiling not preserved: %+v", got)
 	}
-	for _, path := range []string{"/ether/v1/kinds/games/browse", "/ether/v1/kinds/games/changes"} {
+	for _, path := range []string{
+		"/ether/v1/kinds/games/browse",
+		"/ether/v1/kinds/games/changes",
+		"/ether/channels.json",
+		"/ether/guide/scifi-hd.json?from=2026-11-02T06%3A00%3A00Z&to=2026-11-03T12%3A00%3A00Z",
+	} {
 		if sync := limitsForRequest(lim, path); sync.UnitBudget != lim.UnitBudget || sync.Deadline != lim.Deadline {
-			t.Fatalf("%s: catalogue sync was given the viewer budget: %+v", path, sync)
+			t.Fatalf("%s: background sync was not given the granted limits: %+v", path, sync)
 		}
+	}
+	for _, path := range []string{"/stream/tv/scifi.json", "/ether/open/scifi"} {
+		if viewer := limitsForRequest(lim, path); viewer.Deadline != 3*time.Second || viewer.UnitBudget != 30000 {
+			t.Fatalf("%s: viewer stream route lost its 3s/30000 budget: %+v", path, viewer)
+		}
+	}
+	if health := limitsForRequest(lim, "/ether/health"); health.Deadline != 5*time.Second || health.UnitBudget != lim.UnitBudget {
+		t.Fatalf("/ether/health limits: %+v", health)
 	}
 	job := limitsForRequest(lim, "/ether/job/build")
 	if job.UnitBudget != lim.UnitBudget || job.Deadline != lim.Deadline {

@@ -332,10 +332,15 @@ func (m *Manager) Get(ctx context.Context, id string) (Record, error) {
 
 // HealthOf returns one plugin's health record.
 func (m *Manager) HealthOf(ctx context.Context, id string) (Health, error) {
-	if _, err := m.store.record(ctx, id); err != nil {
+	r, err := m.store.record(ctx, id)
+	if err != nil {
 		return Health{}, err
 	}
-	return m.store.health(ctx, id)
+	h, err := m.store.health(ctx, id)
+	if err != nil {
+		return Health{}, err
+	}
+	return m.liveHealth(r, h), nil
 }
 
 // GrantsOf returns one plugin's grants.

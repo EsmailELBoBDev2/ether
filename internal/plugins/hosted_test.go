@@ -315,11 +315,16 @@ globalThis.handle = function(req) {
 		headSec  time.Duration
 	}{
 		{"/stream/movie/tt0133093.json", "3s", 30000, 3 * time.Second},
+		{"/stream/tv/sports-1.json", "3s", 30000, 3 * time.Second},
+		{"/ether/open/sports-1", "3s", 30000, 3 * time.Second},
+		{"/ether/health", "5s", 1 << 60, 5 * time.Second},
 		{"/ether/v1/kinds/games/resolve", "5s", 50000, 5 * time.Second},
 		{"/ether/v1/kinds/games/match", "5s", 50000, 5 * time.Second},
 		{"/ether/v1/kinds/games/search", "10s", 100000, 10 * time.Second},
 		{"/ether/v1/kinds/games/browse", "12h0m0s", 1 << 60, 12 * time.Hour},
 		{"/ether/v1/kinds/games/changes", "12h0m0s", 1 << 60, 12 * time.Hour},
+		{"/ether/channels.json", "12h0m0s", 1 << 60, 12 * time.Hour},
+		{"/ether/guide/ch-1.json?from=2026-11-02T00%3A00%3A00Z&to=2026-11-03T00%3A00%3A00Z", "12h0m0s", 1 << 60, 12 * time.Hour},
 		{"/ether/job/sync", "12h0m0s", 1 << 60, 12 * time.Hour},
 		{"/ether/test", "15s", 1 << 60, 15 * time.Second},
 	} {

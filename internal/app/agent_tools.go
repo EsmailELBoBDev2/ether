@@ -595,12 +595,22 @@ func (p *appPluginService) SetPluginEnabled(ctx context.Context, id string, enab
 
 func toPluginInfo(r plugins.Record, h plugins.Health) builtin.PluginInfo {
 	status := h.Status
-	if status == "" {
-		if r.Enabled {
-			status = "ok"
-		} else {
-			status = "disabled"
+	if !r.Enabled {
+		status = "disabled"
+	} else if status == "" {
+		status = "ok"
+	}
+	var detail string
+	switch status {
+	case "error":
+		detail = firstNonEmptyStr(h.Reason, h.LastError)
+	case "disabled":
+		if h.Status == "disabled" {
+			detail = h.Reason
 		}
+	case "ok":
+	default:
+		detail = h.Reason
 	}
 	return builtin.PluginInfo{
 		ID:      r.ID,
@@ -609,7 +619,7 @@ func toPluginInfo(r plugins.Record, h plugins.Health) builtin.PluginInfo {
 		Kind:    r.Kind,
 		Enabled: r.Enabled,
 		Health:  status,
-		Detail:  firstNonEmptyStr(h.Reason, h.LastError),
+		Detail:  detail,
 	}
 }
 

@@ -67,7 +67,7 @@ func (p *plan) vaultLayout(ctx context.Context, cacheID string) *vault.Layout {
 	if p.kind == kindPlain {
 		l.Container = "raw"
 	}
-	b := builder{e: p.rel.e, rel: p.rel, prio: core.PriorityPrefetch, fo: fetchOpts{cacheID: cacheID}}
+	b := builder{e: p.rel.e, rel: p.rel, prio: core.PriorityPrefetch, fo: fetchOpts{cacheID: cacheID, layoutProbe: true}}
 	plans := append([]*plan{p}, p.siblings...)
 	if p.kind == kindPlain {
 		for _, c := range b.candidates(p.rel.files) {
@@ -109,6 +109,11 @@ func (p *plan) vaultLayout(ctx context.Context, cacheID string) *vault.Layout {
 			name = q.member
 		}
 		m := vault.Member{Name: name, Size: q.size, Stored: true}
+		var prefix [256]byte
+		want := int(min(q.size, int64(len(prefix))))
+		if n, err := readPlan(ctx, b.e, b.rel, q, prefix[:want], 0, b.prio, b.fo); err == nil && n == want {
+			m.PrefixHash = fmt.Sprintf("%x", sha256.Sum256(prefix[:n]))
+		}
 		info := releaseparse.Parse(path.Base(name))
 		if len(info.Seasons) > 0 && len(info.Episodes) > 0 {
 			m.Season, m.Episode = info.Seasons[0], info.Episodes[0]
@@ -247,7 +252,11 @@ func (b *builder) restore(ctx context.Context, l *vault.Layout) (*plan, error) {
 	if err != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	if err != nil || !looksLikeVideo(probe[:n]) {
+	matches := looksLikeVideo(probe[:n])
+	if m.PrefixHash != "" {
+		matches = fmt.Sprintf("%x", sha256.Sum256(probe[:n])) == m.PrefixHash
+	}
+	if err != nil || !matches {
 		return nil, nil
 	}
 	for _, v := range l.Volumes {
@@ -260,6 +269,9 @@ func (b *builder) restore(ctx context.Context, l *vault.Layout) (*plan, error) {
 		if v.File != first.File && len(head) > 0 && len(head) == v.HeadSize && int64(len(head)) <= v.Size {
 			b.e.hot.put(segKey{b.rel.digest, pf.segBase}, &segData{data: head, fileSize: v.Size})
 		}
+	}
+	if err := b.rel.verifyPar2(ctx, p, b.prio, b.fo, false); err != nil {
+		return nil, err
 	}
 	return p, nil
 }

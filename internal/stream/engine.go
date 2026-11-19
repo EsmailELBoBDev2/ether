@@ -25,7 +25,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/braedonsaunders/ether/internal/vault"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -34,6 +33,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/nzb"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // DefaultBackoffHold bounds how long an active client byte-range read waits
@@ -42,9 +42,11 @@ const DefaultBackoffHold = 45 * time.Second
 
 // Options tune the engine. Zero values take the defaults noted.
 type Options struct {
-	OnLayout  func(releaseID string, l vault.Layout)
-	OnMissing func(releaseID string)
-	Repair    config.Repair
+	// WantLayout skips background discovery for releases that cannot save layouts.
+	WantLayout func(releaseID string) bool
+	OnLayout   func(releaseID string, l vault.Layout)
+	OnMissing  func(releaseID string)
+	Repair     config.Repair
 	// HotBufferBytes bounds decoded segments kept in memory across all
 	// sources (default 256 MiB).
 	HotBufferBytes int64
@@ -356,7 +358,7 @@ func (e *Engine) openRelease(ctx context.Context, releaseID, cacheID string, rel
 		}
 		cancel()
 	}
-	if cb := e.opts.OnLayout; cb != nil && !p.restored {
+	if cb := e.opts.OnLayout; cb != nil && !p.restored && (e.opts.WantLayout == nil || e.opts.WantLayout(cacheID)) {
 		p.report.Do(func() {
 			e.mu.Lock()
 			defer e.mu.Unlock()

@@ -9,6 +9,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/debrid"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/stream"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -18,6 +19,7 @@ const vaultStreamPrefix = "vault-record:"
 
 func (a *App) vaultStreamOptions(cfg config.Config) stream.Options {
 	o := stream.OptionsFromConfig(cfg)
+	o.WantLayout = func(id string) bool { return strings.HasPrefix(id, vaultStreamPrefix) }
 	o.OnLayout = func(id string, l vault.Layout) {
 		if k, ok := strings.CutPrefix(id, vaultStreamPrefix); ok && a.vault != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -39,7 +41,7 @@ func (a *App) openVaultResolution(ctx context.Context, res *core.Resolution) (co
 	backend := playbackEngine(a)
 	fallback := func() (core.MediaSource, error) { return backend.Open(ctx, res.Release.ID, res.NZB) }
 	r := res.Release
-	if a.vault == nil || a.engine == nil || backend != a.media || r.Protocol != core.ProtocolUsenet {
+	if debrid.IsPayload(res.NZB) || a.vault == nil || a.engine == nil || backend != a.media || r.Protocol != core.ProtocolUsenet {
 		return fallback()
 	}
 	key := vault.KeyOf(r)

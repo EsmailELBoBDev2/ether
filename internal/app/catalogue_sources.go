@@ -123,6 +123,8 @@ func (c *librariesConsole) handleCatalogueSources(w http.ResponseWriter, r *http
 				if refreshed > 0 {
 					out[i].ItemCount = &count
 					out[i].Health = "ok"
+				} else if count > 0 {
+					out[i].ItemCount = &count
 				}
 				if out[i].LastError != "" {
 					out[i].Health = "error"
@@ -159,11 +161,11 @@ func (c *librariesConsole) handleCatalogueSourceSync(w http.ResponseWriter, r *h
 		libError(w, 503, "Catalogue unavailable")
 		return
 	}
-	if _, err := c.app.db.ExecContext(r.Context(), `DELETE FROM libraries_catalogue_state WHERE source_id=?`, id); err != nil {
+	if _, err := c.app.db.ExecContext(r.Context(), `UPDATE libraries_catalogue_state SET refreshed=0 WHERE source_id=?`, id); err != nil {
 		libError(w, 500, "Could not refresh source")
 		return
 	}
-	if err := c.app.catalog.BrowseSourceLibrary(r.Context(), []string{id}); err != nil {
+	if err := c.app.catalog.BrowseSourceLibrary(withForceCatalogueSync(r.Context()), []string{id}); err != nil {
 		libError(w, 502, err.Error())
 		return
 	}

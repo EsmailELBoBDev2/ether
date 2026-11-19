@@ -7,8 +7,11 @@ export function createMetadataMock() {
     enabled: false,
     provider: "omdb",
     apiKey: "",
+    backupProvider: "",
+    backupApiKey: "",
     critic: "tomatoes",
     audience: "imdb",
+    missing: "tmdb",
     cacheHours: 168,
   };
   const artwork = new Map<string, unknown>();
@@ -18,14 +21,40 @@ export function createMetadataMock() {
     body: unknown,
     query: URLSearchParams,
   ): Response | undefined => {
-    const json = (v: unknown) =>
-      new Response(JSON.stringify(v), { headers: { "Content-Type": "application/json" } });
+    const json = (v: unknown, status = 200) =>
+      new Response(JSON.stringify(v), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
     if (path === "/discovery/overlays/settings") {
       if (method === "PUT") overlays = normalizeOverlays(body as Overlays);
       return json(overlays);
     }
     if (path === "/discovery/ratings/settings") {
-      if (method === "PUT") ratings = { ...(body as typeof ratings), apiKey: "[configured]" };
+      if (method === "PUT") {
+        const next = { ...ratings, ...(body as Partial<typeof ratings>) };
+        const key = String(next.apiKey ?? "").trim();
+        const resolvedKey = key === "[configured]" ? ratings.apiKey : key;
+        if (next.enabled && !resolvedKey) {
+          return json(
+            { error: { code: "validation", message: "an owner API key is required" } },
+            400,
+          );
+        }
+        const backupKey = String(next.backupApiKey ?? "").trim();
+        const resolvedBackup = backupKey === "[configured]" ? ratings.backupApiKey : backupKey;
+        if (next.backupProvider && !resolvedBackup) {
+          return json(
+            { error: { code: "validation", message: "backup provider requires an API key" } },
+            400,
+          );
+        }
+        ratings = {
+          ...next,
+          apiKey: resolvedKey ? "[configured]" : "",
+          backupApiKey: next.backupProvider && resolvedBackup ? "[configured]" : "",
+        };
+      }
       return json(ratings);
     }
     if (path.startsWith("/discovery/ratings/refresh/"))

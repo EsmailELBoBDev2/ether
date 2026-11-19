@@ -33,7 +33,7 @@ import { useOwnerViewerPath } from "../../components/pickers";
 import { SaveBar } from "../../components/SaveBar";
 import { LevelBadge } from "../../components/status";
 import { localized, t, tn, tx } from "../../i18n";
-import { api, apiFetch, ApiError, type TestFn } from "../../lib/api";
+import { api, apiFetch, ApiError, errorMessage, type TestFn } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
 import { TmdbCatalogueSettings } from "./TmdbCatalogueSettings";
@@ -121,7 +121,14 @@ export function integrationTabs(
 interface Service {
   tab: Exclude<ServiceTab, "overview" | "ratings">;
   configKey:
-    "plexServers" | "trakt" | "simkl" | "mdblist" | "llm" | "openSubtitles" | "subdl" | "markers";
+    | "plexServers"
+    | "trakt"
+    | "simkl"
+    | "mdblist"
+    | "llm"
+    | "openSubtitles"
+    | "subdl"
+    | "markers";
   endpoint: string;
   /** Boolean this card's switch writes. Omitted fields stay stored. */
   flag: "enabled" | "theIntroDb";
@@ -550,7 +557,7 @@ export function ConnectedServices({
     navigate("/services/overview", { replace: true });
     if (skipSetupOffer.current) return;
     const service = SERVICES.find((item) => item.tab === key);
-    if (service && service.blockEnable?.(draft[service.configKey] ?? {})) {
+    if (service) {
       openSectionSetup(service, draft[service.configKey] ?? {});
     }
     // Setup openers are stable setState wrappers. Re-running would reset a drawer mid-edit.
@@ -801,14 +808,22 @@ export function ConnectedServices({
       return;
     }
     void enqueue(async () => {
+      setBusyId("ratings");
       try {
+        const current = model.current.ratings ?? ratings.data;
         const res = await apiFetch<RatingSettings>("/discovery/ratings/settings", {
           method: "PUT",
-          body: JSON.stringify({ ...ratings.data, apiKey: "" }),
+          body: JSON.stringify({ ...current, enabled: false, apiKey: "" }),
         });
+        model.current.ratings = res;
         ratings.setData(res);
       } catch (e) {
         setError(e);
+        toast.error(t("Couldn't save the change"), {
+          description: errorMessage(e),
+        });
+      } finally {
+        setBusyId(null);
       }
     });
   };
@@ -920,6 +935,7 @@ export function ConnectedServices({
           saved={ratings.data ?? null}
           persist={enqueue}
           onPersisted={(next) => {
+            model.current.ratings = next;
             ratings.setData(next);
             setRatingsSetup(false);
           }}
@@ -1324,6 +1340,13 @@ function ServiceOverview({
                 <>
                   <div className="w-full space-y-1 text-sm text-fg-muted">
                     <p>{source.entries.map(sourceName).join(" · ")}</p>
+                    {source.entries
+                      .filter((entry) => entry.lastError)
+                      .map((entry) => (
+                        <p key={entry.id} className="text-danger">
+                          {sourceName(entry)}: {entry.lastError}
+                        </p>
+                      ))}
                     <p>
                       {source.libraries.length
                         ? t("Used by: {libraries}", {
@@ -1410,6 +1433,8 @@ function ServiceOverview({
             description={t("IMDb, Rotten Tomatoes and other rating badges.")}
             status={ratingsStatus(ratings)}
             enabled={secretConfigured(ratings?.apiKey)}
+            busy={locked || busyId === "ratings"}
+            disabled={switchesHeld}
             onToggle={onRatingsSetup}
             configureHref="/services/ratings"
             configureLabel={t(secretConfigured(ratings?.apiKey) ? "Manage {app}" : "Set up {app}", {

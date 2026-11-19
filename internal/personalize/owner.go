@@ -163,6 +163,21 @@ func isPersonalKind(kind string) bool {
 }
 
 func (e *Engine) resolvePolicyIdentity(ctx context.Context, raw string, user *core.User, hc core.HubContext, section core.MediaType, d core.HomeLayout) (hubID, kind, title, source string) {
+	if strings.HasPrefix(raw, "plugin:") {
+		kind = raw
+		hubID = raw
+		source = core.RowSourceOwner
+		title = raw
+		if rk, ok := e.RowKindRegistry().Lookup(raw); ok {
+			if lbl := strings.TrimSpace(rk.Descriptor().Title); lbl != "" {
+				title = lbl
+			}
+		}
+		if cr, ok := e.cachedOwnerCollection(user, hc, section, d, raw); ok && cr.Hub.Title != "" {
+			title = cr.Hub.Title
+		}
+		return hubID, kind, title, source
+	}
 	if collID := collectionRowID(raw); collID != "" {
 		kind = KindCollectionPrefix + collID
 		hubID = "collection." + collID

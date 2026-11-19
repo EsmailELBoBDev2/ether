@@ -118,8 +118,19 @@ func (s *Service) evaluate(ctx context.Context, spIn core.CollectionSpec, opt ev
 		return nil, err
 	}
 	res.resolved = cloneSpec(sp)
+	anySourceOK := false
+	for _, r := range results {
+		if r.err == nil {
+			anySourceOK = true
+			break
+		}
+	}
 	for i, r := range results {
 		if r.err != nil {
+			if len(results) > 1 && anySourceOK {
+				res.warnings = append(res.warnings, fmt.Sprintf("%s: %v", sourceName(sp.Sources[i]), r.err))
+				continue
+			}
 			return nil, r.err
 		}
 		res.warnings = append(res.warnings, r.warnings...)

@@ -12,7 +12,7 @@ import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { secretConfigured } from "../../components/IntegrationAccount";
-import { ErrorPanel } from "../../components/feedback";
+import { ErrorPanel, MutationError } from "../../components/feedback";
 import { NumberInput, PasswordInput } from "../../components/fields";
 import { Section } from "../../components/layout";
 import { TitleSearch } from "../../components/pickers";
@@ -143,12 +143,13 @@ export function RatingSources({
     const write = async () => {
       const body = draftRef.current;
       if (!body) return;
+      const payload = setup ? { ...body, enabled: true } : body;
       setSaving(true);
       setError(null);
       try {
         const next = await apiFetch<RatingSettings>("/discovery/ratings/settings", {
           method: "PUT",
-          body: JSON.stringify(body),
+          body: JSON.stringify(payload),
         });
         providerDraftKeys.current = {};
         if (controlled) {
@@ -259,6 +260,7 @@ export function RatingSources({
   if (keysOnly)
     return (
       <>
+        {setup && error ? <MutationError error={error} /> : null}
         <SettingsSection
           title={undefined}
           footer={

@@ -2,7 +2,7 @@ import { sourceName } from "../../libraries/CatalogueSources";
 import { Button, SettingsSection, toast } from "@braedonsaunders/appkit-ui";
 import { useState } from "react";
 import { SettingsRow } from "../../../components/SettingsRow";
-import { t } from "../../../i18n";
+import { t, tn } from "../../../i18n";
 import { errorMessage } from "../../../lib/api";
 import { formatDateTime, formatNumber } from "../../../lib/format";
 import { useAsync } from "../../../lib/hooks";
@@ -24,11 +24,12 @@ export function PluginCatalogueSettings({
     setBusy(true);
     try {
       await librariesApi.sync(id, full);
-      void libraries.reload();
       toast.success(t("Settings saved"));
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
+      void libraries.reload();
+      void sources.reload();
       setBusy(false);
     }
   };
@@ -76,39 +77,46 @@ export function PluginCatalogueSettings({
           />
         );
       })}
-      {catalogues.map((source) => (
-        <SettingsRow
-          key={source.id}
-          title={sourceName(source)}
-          description={
-            source.health === "unknown"
-              ? t("Not loaded yet")
-              : source.health === "ok"
-                ? t("Healthy")
-                : source.lastError || t("Needs attention")
-          }
-          control={
-            <Button
-              size="sm"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await librariesApi.syncCatalogueSource(source.id);
-                  void sources.reload();
-                  toast.success(t("Settings saved"));
-                } catch (e) {
-                  toast.error(errorMessage(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              {t("Sync now")}
-            </Button>
-          }
-        />
-      ))}
+      {catalogues.map((source) => {
+        const countLabel =
+          typeof source.itemCount === "number"
+            ? tn(source.itemCount, "{count} title", "{count} titles")
+            : "";
+        const statusLabel = source.lastError
+          ? source.lastError
+          : source.health === "unknown"
+            ? t("Not loaded yet")
+            : source.health === "ok"
+              ? t("Healthy")
+              : t("Needs attention");
+        return (
+          <SettingsRow
+            key={source.id}
+            title={sourceName(source)}
+            description={countLabel ? `${countLabel} · ${statusLabel}` : statusLabel}
+            control={
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await librariesApi.syncCatalogueSource(source.id);
+                    toast.success(t("Settings saved"));
+                  } catch (e) {
+                    toast.error(errorMessage(e));
+                  } finally {
+                    void sources.reload();
+                    setBusy(false);
+                  }
+                }}
+              >
+                {t("Sync now")}
+              </Button>
+            }
+          />
+        );
+      })}
       {owned.length ? (
         <SettingsRow
           title={t("Setup")}

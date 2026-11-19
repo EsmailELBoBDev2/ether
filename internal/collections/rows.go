@@ -3,6 +3,7 @@ package collections
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -128,13 +129,20 @@ func (s *Service) HomeRowsFor(ctx context.Context, user *core.User, hc core.HubC
 	return out, nil
 }
 
-// LayoutRow serves a collection explicitly selected by the owner's Home
-// template or viewer override, even when its default publication targets do
-// not include Home. Private ownership and viewer content limits still apply.
-// The layout policy supplies the publication scope; the row carries the
-// collection's schedule for the caller to apply.
+// LayoutRow serves a collection or plugin list row explicitly selected by the
+// owner's Home template or viewer override, even when its default publication
+// targets do not include Home. Private ownership and viewer content limits
+// still apply. The layout policy supplies the publication scope; the row
+// carries the collection's schedule for the caller to apply.
 func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubContext, id string) (*core.CollectionRow, error) {
-	row, err := s.rowByID(ctx, id)
+	var row *specRow
+	var err error
+	pluginRow := strings.HasPrefix(strings.TrimSpace(id), "plugin:")
+	if pluginRow {
+		row, err = s.ensurePluginLayoutRow(ctx, strings.TrimSpace(id))
+	} else {
+		row, err = s.rowByID(ctx, id)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +164,17 @@ func (s *Service) LayoutRow(ctx context.Context, user *core.User, hc core.HubCon
 	if err != nil {
 		return nil, err
 	}
-	hub := core.Hub{ID: "collection." + row.publicID(), Title: row.spec.Name, Style: "shelf", PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Promoted: true, Items: items, More: dropped || count > len(items), Key: row.key(), Context: "hub.home.collection"}
+	hubID := "collection." + row.publicID()
+	title := row.spec.Name
+	if pluginRow {
+		hubID = row.slug
+		if kind, ok := s.kindRegistry().Lookup(row.slug); ok {
+			if lbl := strings.TrimSpace(kind.Describe().Label.Resolved); lbl != "" {
+				title = lbl
+			}
+		}
+	}
+	hub := core.Hub{ID: hubID, Title: title, Style: "shelf", PreviewOnFocus: row.spec.PreviewOnFocus, RankedTop10: row.spec.RankedTop10, Promoted: true, Items: items, More: dropped || count > len(items), Key: row.key(), Context: "hub.home.collection"}
 	switch row.spec.MediaType {
 	case MediaMovie:
 		hub.Type = core.TypeMovie

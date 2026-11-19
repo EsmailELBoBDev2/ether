@@ -80,6 +80,7 @@ type Service struct {
 	vibeTTL        time.Duration
 	vibeMax        int
 	scorer         atomic.Pointer[scorerBox]
+	onBuilt        atomic.Pointer[func()]
 	art            *artwork.Renderer
 	images         *artwork.Images
 	catCfg         func() config.Catalog
@@ -208,6 +209,27 @@ func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Servi
 // SetScorer installs (or replaces) the personal scorer after construction,
 // for when the personalization engine is built after the collections.
 func (s *Service) SetScorer(sc core.PersonalScorer) { s.scorer.Store(&scorerBox{sc}) }
+
+// SetOnBuilt registers a callback invoked whenever a collection build changes
+// stored membership, so downstream Home/section row caches invalidate as soon
+// as asynchronous remote-source builds complete.
+func (s *Service) SetOnBuilt(fn func()) {
+	if fn == nil {
+		s.onBuilt.Store(nil)
+		return
+	}
+	s.onBuilt.Store(&fn)
+}
+
+func (s *Service) notifyBuilt() {
+	if fn := s.onBuilt.Load(); fn != nil && *fn != nil {
+		(*fn)()
+		return
+	}
+	if inv, ok := s.personalScorer().(interface{ InvalidateOwnerRows() }); ok {
+		inv.InvalidateOwnerRows()
+	}
+}
 
 // SetState installs watch state for per-user rules (watched, in progress).
 func (s *Service) SetState(st core.State) {
@@ -546,10 +568,14 @@ func (s *Service) buildNow(ctx context.Context, row *specRow) (*memberSet, error
 		"warnings", len(res.warnings), "took", time.Since(started).Round(time.Millisecond))
 	ms := &memberSet{keys: res.keys, personal: res.personal, personalX: res.personalX, unshared: res.unshared, spec: row.spec,
 		builtAt: at, hash: res.hash, loadedAt: s.now()}
-	if row.buildHash != res.hash {
+	changed := row.buildHash != res.hash
+	if changed {
 		row.changedAt = at
 	}
 	row.lastBuilt, row.buildHash, row.itemCount, row.warnings = at, res.hash, res.itemCount(), res.warnings
+	if changed {
+		s.notifyBuilt()
+	}
 	return ms, nil
 }
 

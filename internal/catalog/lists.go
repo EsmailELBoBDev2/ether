@@ -1046,6 +1046,44 @@ func isNotFound(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "not found") || err == core.ErrNotFound)
 }
 
+// LocalExternalKey resolves an IMDb or TVDB ID from the local mirror without
+// calling TMDB, including resolving an episode IMDb ID to its parent show key.
+func (c *Catalog) LocalExternalKey(ctx context.Context, imdbID string, tvdbID int64, typ core.MediaType) core.RatingKey {
+	imdbID = strings.TrimSpace(imdbID)
+	if imdbID != "" {
+		var k int64
+		var err error
+		switch typ {
+		case core.TypeMovie, core.TypeShow:
+			err = c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE imdb=? AND type=? LIMIT 1`, imdbID, string(typ)).Scan(&k)
+		default:
+			err = c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE imdb=? AND type IN ('movie','show') ORDER BY popularity DESC LIMIT 1`, imdbID).Scan(&k)
+		}
+		if err == nil && k != 0 {
+			return core.RatingKey(k)
+		}
+		if typ == core.TypeShow || typ == "" {
+			if err = c.db.QueryRowContext(ctx, `SELECT show_key FROM catalog_titles WHERE imdb=? AND type='episode' AND show_key<>0 LIMIT 1`, imdbID).Scan(&k); err == nil && k != 0 {
+				return core.RatingKey(k)
+			}
+		}
+	}
+	if tvdbID > 0 {
+		var k int64
+		var err error
+		switch typ {
+		case core.TypeMovie, core.TypeShow:
+			err = c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE tvdb=? AND type=? LIMIT 1`, tvdbID, string(typ)).Scan(&k)
+		default:
+			err = c.db.QueryRowContext(ctx, `SELECT key FROM catalog_titles WHERE tvdb=? AND type IN ('movie','show') ORDER BY CASE type WHEN 'show' THEN 0 ELSE 1 END, popularity DESC LIMIT 1`, tvdbID).Scan(&k)
+		}
+		if err == nil && k != 0 {
+			return core.RatingKey(k)
+		}
+	}
+	return 0
+}
+
 // ByExternalID looks up by imdb ("tt123") or tvdb id.
 func (c *Catalog) ByExternalID(ctx context.Context, source, id string) (*core.Title, error) {
 	return c.byExternalID(ctx, source, id, "", false)
@@ -1155,6 +1193,11 @@ func (c *Catalog) byExternalID(ctx context.Context, source, id string, typ core.
 	case core.TypeShow:
 		if res, ok, err := pickTV(); ok {
 			return res, err
+		}
+		for _, e := range found.TVEpisodeResults {
+			if e.ShowID != 0 {
+				return c.getOrStored(ctx, core.ShowKey(e.ShowID), allowUnfiltered)
+			}
 		}
 		return nil, core.ErrNotFound
 	case core.TypeEpisode:

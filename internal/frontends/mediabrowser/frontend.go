@@ -112,8 +112,10 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 	if err := r.Handle("GET", "/LiveTv/GuideInfo", http.HandlerFunc(inst.liveTVGuideInfo)); err != nil {
 		return nil, err
 	}
-	if err := r.Handle("GET", "/LiveTv/ChannelTags", http.HandlerFunc(inst.channelTags)); err != nil {
-		return nil, err
+	if protocol == "emby" {
+		if err := r.Handle("GET", "/LiveTv/ChannelTags", http.HandlerFunc(inst.channelTags)); err != nil {
+			return nil, err
+		}
 	}
 	if err := r.Handle("GET", "/LiveTv/Channels", http.HandlerFunc(inst.channels)); err != nil {
 		return nil, err

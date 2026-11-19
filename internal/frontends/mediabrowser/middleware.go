@@ -67,6 +67,19 @@ var anonymousStreamRoutes = map[route.Route]bool{
 	{Method: "HEAD", Pattern: "/Audio/{id}/{name}"}:  true,
 }
 
+func validStreamAlias(id, name string) bool {
+	name = strings.ToLower(name)
+	if themeParentID(id) != "" {
+		return name == "stream" || name == "stream.m4a"
+	}
+	switch {
+	case name == "stream", strings.HasPrefix(name, "stream."), name == "universal", name == "master.m3u8", name == "main.m3u8":
+		return true
+	default:
+		return false
+	}
+}
+
 // requestLog records only registered templates: concrete paths can contain
 // scoped media grants, and query strings and headers can contain account tokens.
 func (i *instance) requestLog(rt route.Route, next http.Handler) http.Handler {
@@ -126,6 +139,14 @@ func (i *instance) authenticatedRoute(rt route.Route, next http.Handler) http.Ha
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if anonymousStreamRoutes[rt] && !validStreamAlias(r.PathValue("id"), r.PathValue("name")) {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
+		if i.protocol != "jellyfin" && (rt.Pattern == "/Items/{id}" || rt.Pattern == "/Users/{userId}/Items/{id}") && strings.EqualFold(r.PathValue("id"), "Root") {
+			mediaBrowserError(w, r, http.StatusNotFound)
+			return
+		}
 		v, token, err := i.authenticate(r)
 		if err != nil || v == nil {
 			// A stream alias with no credential at all is answered by the

@@ -84,6 +84,9 @@ func (p *pool) quiet(prio core.Priority, until time.Time) bool {
 // routeReq describes one request for route.
 type routeReq struct {
 	prio core.Priority // the slot priority the request will take
+	// health marks STAT/availability routing: providers whose STAT has been
+	// failing real BODY downloads are ordered behind STAT-trusted providers.
+	health bool
 	// joinable, when set, reports that a pool already has this article in
 	// flight; a request joins that work rather than spill away from it.
 	joinable func(*pool) bool
@@ -97,6 +100,9 @@ type routeReq struct {
 func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pools []*pool, spill *pool) {
 	prio := req.prio
 	pools = f.order()
+	if req.health {
+		pools = demoteUntrustedStatPools(pools)
+	}
 	usable := func(p *pool) bool {
 		return !slices.Contains(known, p.key) && p.serves()
 	}
@@ -133,7 +139,10 @@ func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pool
 		if !usable(p) {
 			continue
 		}
-		sameTier := p.cfg.Priority == first.cfg.Priority
+		if req.health && !first.statTrust.isUntrusted() && p.statTrust.isUntrusted() {
+			continue
+		}
+		sameTier := p.cfg.Priority == first.cfg.Priority && (!req.health || p.statTrust.isUntrusted() == first.statTrust.isUntrusted())
 		ok := p.spare(prio, until) > 0
 		if !sameTier && prio != core.PriorityLive {
 			ok = p.quiet(prio, until)

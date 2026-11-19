@@ -40,6 +40,7 @@ type pool struct {
 	log           *slog.Logger
 	sem           *prioSem
 	brk           *breaker
+	statTrust     *statTrust
 
 	mu       sync.Mutex
 	warmMu   sync.Mutex
@@ -149,6 +150,7 @@ func newPool(key string, cfg config.UsenetProvider, o *Options, log *slog.Logger
 		log:           log.With("provider", providerLabel(cfg)),
 		sem:           newPrioSem(size, prefetchSlots(size, o.PrefetchFraction)),
 		brk:           newBreaker(o.BackoffMin, o.BackoffMax, o.FailThreshold, time.Now),
+		statTrust:     newStatTrust(time.Now),
 		idleWake:      make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
@@ -842,6 +844,8 @@ func (p *pool) stat(ctx context.Context, id string) (bool, error) {
 	}
 	if !ok {
 		p.misses.Add(1)
+	} else {
+		p.statTrust.noteStatPresent(id)
 	}
 	p.latMu.Lock()
 	p.latency.add(rtt)
@@ -870,9 +874,11 @@ func (p *pool) statMany(ctx context.Context, ids []string) (map[string]bool, err
 	if err != nil {
 		return nil, err
 	}
-	for _, ok := range result {
+	for id, ok := range result {
 		if !ok {
 			p.misses.Add(1)
+		} else {
+			p.statTrust.noteStatPresent(id)
 		}
 	}
 	p.latMu.Lock()
@@ -1042,12 +1048,16 @@ type ProviderStats struct {
 	LimitRefusals    int64 `json:"limitRefusals"`    // dials refused as over the limit
 	TeardownRefusals int64 `json:"teardownRefusals"` // refusals retried as server teardown
 
-	Bytes         int64 `json:"bytes"` // received off the wire
-	Articles      int64 `json:"articles"`
-	Misses        int64 `json:"misses"`
-	BodyMisses    int64 `json:"bodyMisses"`    // BODY responses unavailable on this provider
-	BodyTakedowns int64 `json:"bodyTakedowns"` // subset of BodyMisses with status 451
-	BackfillSaves int64 `json:"backfillSaves"` // body fetches saved after earlier provider misses
+	Bytes              int64   `json:"bytes"` // received off the wire
+	Articles           int64   `json:"articles"`
+	Misses             int64   `json:"misses"`
+	BodyMisses         int64   `json:"bodyMisses"`              // BODY responses unavailable on this provider
+	BodyTakedowns      int64   `json:"bodyTakedowns"`           // subset of BodyMisses with status 451
+	StatVerified       int64   `json:"statVerified"`            // STAT-223 articles later checked by BODY
+	StatFalsePositives int64   `json:"statFalsePositives"`      // STAT-223 articles whose BODY failed
+	StatUntrusted      bool    `json:"statUntrusted,omitempty"` // STAT-223 is verified with BODY before trusting
+	StatFailureRate    float64 `json:"statFailureRate,omitempty"`
+	BackfillSaves      int64   `json:"backfillSaves"` // body fetches saved after earlier provider misses
 	// Spillovers are requests served by this provider because every
 	// higher-priority provider was saturated (never counted on backfill).
 	Spillovers int64 `json:"spillovers"`
@@ -1128,6 +1138,7 @@ func (p *pool) stats() ProviderStats {
 	st.TeardownRefusals = p.teardownRefusals.Load()
 	st.BodyMisses = p.bodyMisses.Load()
 	st.BodyTakedowns = p.bodyTakedowns.Load()
+	st.StatVerified, st.StatFalsePositives, st.StatUntrusted, st.StatFailureRate = p.statTrust.snapshot()
 	st.Errors = p.errs.Load()
 	st.Dials = p.dials.Load()
 	st.TCPDialTime = time.Duration(p.tcpTime.Load())

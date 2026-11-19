@@ -143,6 +143,46 @@ type PartStreamHost interface {
 	StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error)
 }
 
+const (
+	// MaxKindVisibleIDs is the per-call batch cap for kinds.visible (#615).
+	MaxKindVisibleIDs = 500
+	// HeaderViewerToken carries the host-minted, request-scoped adapter viewer
+	// proof header on frontend adapter calls (#615).
+	HeaderViewerToken = "X-Ether-Viewer-Token"
+)
+
+type viewerTokenContextKey struct{}
+
+// WithViewerToken attaches the host-minted X-Ether-Viewer-Token from an
+// incoming frontend adapter request onto ctx so KindVisible and KindBrowse
+// authenticate as that request's viewer without passing a viewer ID (#615).
+func WithViewerToken(ctx context.Context, token string) context.Context {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, viewerTokenContextKey{}, token)
+}
+
+// ViewerTokenFromContext returns the adapter viewer token attached by
+// WithViewerToken (or automatically during FrontendAdapter dispatch).
+func ViewerTokenFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	tok, ok := ctx.Value(viewerTokenContextKey{}).(string)
+	return tok, ok && tok != ""
+}
+
+// KindPolicyHost evaluates a plugin library's Rules and viewer access policy
+// for the requesting frontend-adapter viewer (#615). RemoteHostClient and
+// MockHost implement it. The viewer identity comes solely from the request's
+// authenticated X-Ether-Viewer-Token on ctx, never from caller-supplied IDs.
+type KindPolicyHost interface {
+	KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error)
+}
+
 // RemoteHostOptions configures a RemoteHostClient for sidecar plugins.
 type RemoteHostOptions struct {
 	BaseURL    string
@@ -201,6 +241,17 @@ func (c *RemoteHostClient) callJSON(
 	out any,
 	allow404 bool,
 ) (bool, error) {
+	return c.callJSONWithHeaders(ctx, method, path, nil, in, out, allow404)
+}
+
+func (c *RemoteHostClient) callJSONWithHeaders(
+	ctx context.Context,
+	method, path string,
+	extraHeaders map[string]string,
+	in any,
+	out any,
+	allow404 bool,
+) (bool, error) {
 	var bodyReader io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -217,6 +268,11 @@ func (c *RemoteHostClient) callJSON(
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range extraHeaders {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -528,6 +584,67 @@ func (c *RemoteHostClient) KindItems(ctx context.Context, kindKey, cursor string
 	var page KindPage
 	_, err := c.callJSON(ctx, http.MethodGet, path, nil, &page, false)
 	return page, err
+}
+
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (at most MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// ctx must carry the incoming frontend adapter's X-Ether-Viewer-Token (via
+// WithViewerToken, attached automatically by FrontendAdapter dispatch).
+func (c *RemoteHostClient) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	tok, ok := ViewerTokenFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("kinds.visible: no authenticated frontend adapter viewer token on context")
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, fmt.Errorf("kinds.visible: batch larger than %d ids", MaxKindVisibleIDs)
+	}
+	var out struct {
+		IDs []string `json:"ids"`
+	}
+	_, err := c.callJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/visible",
+		map[string]string{HeaderViewerToken: tok},
+		map[string]any{"ids": ids},
+		&out,
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if out.IDs == nil {
+		out.IDs = []string{}
+	}
+	return out.IDs, nil
+}
+
+// KindBrowse browses or searches kindKey with the library's Rules and viewer
+// access policy applied for the requesting frontend-adapter viewer (#615).
+// ctx must carry the incoming frontend adapter's X-Ether-Viewer-Token (via
+// WithViewerToken, attached automatically by FrontendAdapter dispatch).
+func (c *RemoteHostClient) KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error) {
+	tok, ok := ViewerTokenFromContext(ctx)
+	if !ok {
+		return KindPage{}, fmt.Errorf("kinds.browse: no authenticated frontend adapter viewer token on context")
+	}
+	var page KindPage
+	_, err := c.callJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/browse",
+		map[string]string{HeaderViewerToken: tok},
+		query,
+		&page,
+		false,
+	)
+	if err != nil {
+		return KindPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []KindItem{}
+	}
+	return page, nil
 }
 
 // ResolveSources asks Ether to find sources through its indexers/debrid.

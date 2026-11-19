@@ -250,13 +250,15 @@ type KindPage struct {
 }
 
 // KindBrowseRequest is the request body sent to a catalog_provider
-// browse or search route (spec §3.1, §3.2).
+// browse or search route (spec §3.1, §3.2) and passed to the
+// viewer-scoped kinds.browse host service (#615).
 type KindBrowseRequest struct {
 	ParentID string              `json:"parentId,omitempty"`
 	Level    string              `json:"level,omitempty"`
 	Cursor   string              `json:"cursor,omitempty"`
 	Limit    int                 `json:"limit,omitempty"`
 	Sort     string              `json:"sort,omitempty"`
+	Desc     bool                `json:"desc,omitempty"`
 	Facets   map[string][]string `json:"facets,omitempty"`
 	Query    string              `json:"query,omitempty"`
 }

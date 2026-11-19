@@ -118,7 +118,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |
-| frontend_adapter | authenticated protocol routes | StreamURL for own items; Ether serves bytes |
+| frontend_adapter | authenticated protocol routes | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
@@ -475,3 +475,89 @@ may require bounded decompression from the start, so do not use this path for
 unbounded repeated seeks. Existing JSON `body` responses are unchanged. Remote
 HTTP plugins should stream bytes through their existing HTTP response instead;
 this descriptor is for the hosted JSON response envelope.
+
+## Recipe: Frontend adapter respecting library Rules
+
+`kinds.items` reads a plugin's raw kind items without evaluating the library's
+Rules or viewer visibility. A `frontend_adapter` serving its own protocol
+(OPDS, Subsonic, WebDAV, custom clients) must filter through Ether's policy so
+items hidden by Rules, hidden libraries, viewer library grants, or viewer
+content-safety restrictions never leak to the adapter's clients.
+
+Ether exposes two viewer-scoped host calls that run the exact same
+`LibraryPolicy` + `libraryfilter` + viewer-safety checks as the console and
+built-in protocol projectors:
+
+- `kinds.browse(kind, query)` — browse or search a kind page with policy already
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, query?}`).
+  Prefer this when your adapter lists or searches pages directly from Ether's library.
+- `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and
+  return only the IDs visible to the requesting viewer, preserving caller order
+  and dropping unknown or hidden IDs. Use this when your adapter builds a custom
+  list or keeps its own index and needs to prune hidden items before returning them.
+
+**Security guard:** Only viewer-authenticated frontend adapter requests
+(`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
+`kinds.visible` or `kinds.browse`. Any other route (catalogue browse, jobs,
+views, actions, unauthenticated requests) receives a permission error. The
+viewer identity always comes from Ether's authenticated request context (and the
+host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin
+callbacks) — never from guest-supplied parameters.
+
+Hosted QuickJS (`plugin.js`):
+
+```js
+// Browse/search with Rules and viewer policy already applied:
+const page = ether.kinds.browse("comic", { level: "series", limit: 50, query: q });
+
+// Or filter your own candidate IDs in chunks of at most 500:
+const allowedIds = ether.kinds.visible("comic", candidateIds.slice(0, 500));
+const allowed = new Set(allowedIds);
+const visible = candidates.filter((it) => allowed.has(it.id));
+```
+
+TypeScript SDK (`@ether/plugin-sdk`, hosted or sidecar):
+
+```ts
+import { kindsBrowse, kindsVisible } from "@ether/plugin-sdk";
+
+app.onFrontend("opds", {
+  async handle(method, path, _headers, _body, ctx) {
+    if (!ctx) return { status: 500, body: "" };
+    const page = await kindsBrowse(ctx, "comic", { limit: 50 });
+    const visibleIds = await kindsVisible(ctx, "comic", page.items.map((it) => it.id));
+    return { status: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(visibleIds) };
+  },
+});
+```
+
+Go SDK (`sdk/go`):
+
+```go
+func (a *adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    pctx, ok := etherplugin.FrontendContext(r.Context())
+    if !ok {
+        http.Error(w, "missing context", http.StatusForbidden)
+        return
+    }
+    page, err := pctx.KindBrowse("comic", etherplugin.KindBrowseQuery{Limit: 50})
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusForbidden)
+        return
+    }
+    visibleIDs, err := pctx.KindVisible("comic", candidateIDs) // <= 500 IDs per call
+    _ = page
+    _ = visibleIDs
+}
+```
+
+Python SDK (`sdk/python`):
+
+```python
+class Adapter:
+    def handle(self, method, path, headers, body, ctx):
+        page = ctx.kinds_browse("comic", {"limit": 50})
+        visible_ids = ctx.kinds_visible("comic", candidate_ids[:500])
+        return 200, {"Content-Type": "application/json"}, json.dumps({"ids": visible_ids, "count": len(page["items"])})
+```
+

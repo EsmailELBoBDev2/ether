@@ -279,6 +279,9 @@ func (p *Plugin) buildContext(ctx context.Context, req RawRequest) *Context {
 	for k, v := range req.Headers {
 		hdrs[k] = v
 	}
+	if tok := headerValue(req.Headers, HeaderViewerToken); tok != "" {
+		ctx = WithViewerToken(ctx, tok)
+	}
 
 	return &Context{
 		Context:   ctx,

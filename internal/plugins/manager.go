@@ -53,6 +53,8 @@ type Backends struct {
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
 	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
 	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
+	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -137,8 +139,10 @@ type Manager struct {
 	// being left out (Health.RankingSkipped > 0), so a resolve whose
 	// plugins all ranked in time writes nothing (nil = not loaded).
 	rankingSkipping map[string]bool
-	pickMu          sync.Mutex
-	picks           map[string]subtitlePick
+	pickMu              sync.Mutex
+	picks               map[string]subtitlePick
+	adapterViewerMu     sync.Mutex
+	adapterViewerTokens map[string]adapterViewerGrant
 	// warming holds plugin ids whose runtime is loading in the background
 	// (guarded by mu), so the hot path never waits for a load.
 	warming map[string]bool
@@ -520,19 +524,26 @@ func (m *Manager) CallStream(ctx context.Context, pluginID string, req Request) 
 	if !ok {
 		return Response{}, nil, ErrStreamUnsupported
 	}
+	req.Headers = cloneHeaders(req.Headers)
 	req.PluginID = pluginID
 
-	ctx, cancel := context.WithTimeout(withViewerHeader(ctx, req.Headers), DeadlineFor(req.Path))
+	deadline := DeadlineFor(req.Path)
+	vctx, releaseViewer := m.bindAdapterViewer(ctx, pluginID, &req, deadline)
+	ctx, cancel := context.WithTimeout(vctx, deadline)
+	cleanup := func() {
+		releaseViewer()
+		cancel()
+	}
 	resp, body, err := s.CallStream(ctx, req)
 	if err != nil {
-		cancel()
+		cleanup()
 		return Response{}, nil, err
 	}
 	if body == nil {
-		cancel()
+		cleanup()
 		return Response{}, nil, errors.New("plugins: streaming runtime returned no body")
 	}
-	return resp, &streamBody{ReadCloser: body, cancel: cancel}, nil
+	return resp, &streamBody{ReadCloser: body, cancel: cleanup}, nil
 }
 
 func (m *Manager) closeRuntime(id string) {
@@ -601,11 +612,11 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		}
 	}
 	deadline := wasm.EffectiveDeadline(req.Path, grantedDeadline, r.Manifest.SpeaksStremio())
-	cctx, cancel := context.WithTimeout(withViewerHeader(ctx, req.Headers), deadline)
+	req.Headers = cloneHeaders(req.Headers)
+	vctx, releaseViewer := m.bindAdapterViewer(ctx, pluginID, &req, deadline)
+	defer releaseViewer()
+	cctx, cancel := context.WithTimeout(vctx, deadline)
 	defer cancel()
-	if req.Headers == nil {
-		req.Headers = map[string]string{}
-	}
 	req.Headers["X-Ether-Deadline"] = start.Add(deadline).UTC().Format(time.RFC3339)
 	if req.Locale != "" {
 		req.Headers["X-Ether-Locale"] = req.Locale

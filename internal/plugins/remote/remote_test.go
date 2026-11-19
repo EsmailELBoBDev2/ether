@@ -938,6 +938,50 @@ func (f *fakeHost) KindItems(_ context.Context, pluginID, kindKey, _ string, _ i
 	return core.KindPage{Items: append([]core.KindItem(nil), f.kindItems[pluginID+":"+kindKey]...)}, nil
 }
 
+func (f *fakeHost) KindVisible(_ context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error) {
+	if f.denyKinds || strings.TrimSpace(viewerToken) == "" {
+		return nil, ErrPermissionDenied
+	}
+	if len(ids) > plugins.MaxKindVisibleIDs {
+		return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "ids", Message: fmt.Sprintf("kinds.visible accepts at most %d ids", plugins.MaxKindVisibleIDs)}}}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	have := map[string]bool{}
+	for _, it := range f.kindItems[pluginID+":"+kindKey] {
+		have[it.ID] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if have[id] && id != "hidden-id" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeHost) KindBrowse(_ context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	if f.denyKinds || strings.TrimSpace(viewerToken) == "" {
+		return core.KindPage{}, ErrPermissionDenied
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []core.KindItem
+	for _, it := range f.kindItems[pluginID+":"+kindKey] {
+		if it.ID == "hidden-id" {
+			continue
+		}
+		if q.Query != "" && !strings.Contains(strings.ToLower(it.Title), strings.ToLower(q.Query)) {
+			continue
+		}
+		out = append(out, it)
+	}
+	if out == nil {
+		out = []core.KindItem{}
+	}
+	return core.KindPage{Items: out}, nil
+}
+
 func (f *fakeHost) ResolveSources(_ context.Context, _ string, q core.SourceQuery) ([]core.SourceCandidate, error) {
 	if f.denySources {
 		return nil, ErrPermissionDenied
@@ -1615,4 +1659,145 @@ func TestPlainStremioClientSendsHonestUserAgent(t *testing.T) {
 	if ua != httpclient.UserAgent() || ether != "" {
 		t.Fatalf("user agent %q, X-Ether-Request-ID %q", ua, ether)
 	}
+}
+
+func TestRemoteHostKindVisibleAndBrowse(t *testing.T) {
+	var seenViewer int64
+	var seenKind string
+	var seenQuery core.KindBrowseRequest
+	const validToken = "tok-live-42"
+
+	adapter := HostAdapter{
+		ResolveAdapterViewerToken: func(pluginID, token string) (int64, bool) {
+			if pluginID == "plug.comics" && token == validToken {
+				return 42, true
+			}
+			return 0, false
+		},
+		HostFor: func(pluginID string) plugins.Host {
+			if pluginID != "plug.comics" {
+				return nil
+			}
+			return &adapterTestHost{
+				onVisible: func(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+					v, ok := plugins.ViewerFromContext(ctx)
+					if !ok {
+						return nil, plugins.ErrPermissionDenied
+					}
+					if len(ids) > plugins.MaxKindVisibleIDs {
+						return nil, &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "ids", Message: "too many ids"}}}
+					}
+					seenViewer = v
+					seenKind = kindKey
+					out := make([]string, 0, len(ids))
+					for _, id := range ids {
+						if id != "secret" {
+							out = append(out, id)
+						}
+					}
+					return out, nil
+				},
+				onBrowse: func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+					v, ok := plugins.ViewerFromContext(ctx)
+					if !ok {
+						return core.KindPage{}, plugins.ErrPermissionDenied
+					}
+					seenViewer = v
+					seenKind = kindKey
+					seenQuery = q
+					return core.KindPage{Items: []core.KindItem{{ID: "public", Level: "series", Title: "Public"}}}, nil
+				},
+			}
+		},
+	}
+
+	srv := httptest.NewServer(NewHostHandler(HostOptions{
+		Host: adapter,
+		Auth: remotetest.Credentials{
+			"cred-comics": "plug.comics",
+		},
+	}))
+	defer srv.Close()
+
+	post := func(path, viewerToken string, body any) *http.Response {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req, err := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(HeaderCredential, "cred-comics")
+		req.Header.Set("Content-Type", "application/json")
+		if viewerToken != "" {
+			req.Header.Set(HeaderViewerToken, viewerToken)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// Missing viewer token is refused with 403 even if guest supplies viewerId in JSON body.
+	resp := post("/ether/plugin-host/kinds/comic/visible", "", map[string]any{"viewerId": 99, "ids": []string{"public"}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing viewer token status = %d, want 403", resp.StatusCode)
+	}
+
+	// Invalid viewer token is refused with 403.
+	resp = post("/ether/plugin-host/kinds/comic/browse", "bad-token", map[string]any{"viewerId": 99, "query": "pub"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("invalid viewer token status = %d, want 403", resp.StatusCode)
+	}
+
+	// Valid viewer token resolves viewer 42 and ignores any guest-supplied viewerId (99).
+	resp = post("/ether/plugin-host/kinds/comic/visible", validToken, map[string]any{"viewerId": 99, "ids": []string{"public", "secret"}})
+	var visOut struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&visOut); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seenViewer != 42 || seenKind != "comic" || len(visOut.IDs) != 1 || visOut.IDs[0] != "public" {
+		t.Fatalf("visible: status=%d viewer=%d kind=%q ids=%v", resp.StatusCode, seenViewer, seenKind, visOut.IDs)
+	}
+
+	// Batch larger than 500 returns 400 invalid_input.
+	tooMany := make([]string, plugins.MaxKindVisibleIDs+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("c-%d", i)
+	}
+	resp = post("/ether/plugin-host/kinds/comic/visible", validToken, map[string]any{"ids": tooMany})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized batch status = %d, want 400", resp.StatusCode)
+	}
+
+	// Browse with valid viewer token passes query and returns policy-filtered page.
+	resp = post("/ether/plugin-host/kinds/comic/browse", validToken, map[string]any{"query": "pub", "limit": 25, "desc": true})
+	var browseOut core.KindPage
+	if err := json.NewDecoder(resp.Body).Decode(&browseOut); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || seenViewer != 42 || seenQuery.Query != "pub" || seenQuery.Limit != 25 || !seenQuery.Desc || len(browseOut.Items) != 1 {
+		t.Fatalf("browse: status=%d viewer=%d q=%+v out=%+v", resp.StatusCode, seenViewer, seenQuery, browseOut)
+	}
+}
+
+type adapterTestHost struct {
+	plugins.Host
+	onVisible func(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	onBrowse  func(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
+}
+
+func (a *adapterTestHost) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	return a.onVisible(ctx, kindKey, ids)
+}
+
+func (a *adapterTestHost) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	return a.onBrowse(ctx, kindKey, q)
 }

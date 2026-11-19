@@ -395,6 +395,12 @@ func (h *memHost) KindDelete(context.Context, string, []string) error { return E
 func (h *memHost) KindItems(context.Context, string, string, int) (core.KindPage, error) {
 	return core.KindPage{}, ErrUnavailable
 }
+func (h *memHost) KindVisible(context.Context, string, []string) ([]string, error) {
+	return nil, ErrUnavailable
+}
+func (h *memHost) KindBrowse(context.Context, string, core.KindBrowseRequest) (core.KindPage, error) {
+	return core.KindPage{}, ErrUnavailable
+}
 func (h *memHost) ResolveSources(context.Context, core.SourceQuery) ([]core.SourceCandidate, error) {
 	return nil, ErrUnavailable
 }
@@ -463,5 +469,187 @@ func TestSetupStepGate(t *testing.T) {
 	state, err := env.m.SetupState(ctx, rec.ID)
 	if err != nil || len(state) != 1 || state[0].Status != SetupOK {
 		t.Fatalf("setup state: %+v %v", state, err)
+	}
+}
+
+func TestKindVisibleAndBrowseGuardsAndHostedBridge(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	eng := wasm.NewEngine(nil)
+	t.Cleanup(func() { _ = eng.Close() })
+	env.m.RegisterRuntime("hosted", HostedRuntimeFactory(eng))
+
+	man := contentManifest()
+	man.Ether.Contributes.Setup = nil
+	man.Ether.Capabilities = append(man.Ether.Capabilities, CapFrontendAdapter)
+	man.Ether.Contributes.FrontendAdapters = []FrontendAdapterMeta{{
+		Key:          "feed",
+		Label:        "Feed",
+		PathPrefix:   "/feed",
+		ProtocolHint: "custom",
+		Auth:         "none_lan",
+		Libraries:    []string{"recording"},
+	}}
+	raw, err := json.Marshal(man)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `function handle(req) {
+  if (req.path === "/ether/health") return { status: 200, body: { status: "ok" } };
+  if (req.path === "/ether/v1/frontend/feed/check") {
+    var visible = ether.kinds.visible("recording", ["a", "b"]);
+    var page = ether.kinds.browse("recording", { query: "song", limit: 10 });
+    return { status: 200, body: { visible: visible, items: page.items, tokenPresent: !!(req.headers && req.headers["X-Ether-Viewer-Token"]) } };
+  }
+  if (req.path === "/ether/v1/frontend/feed/overlimit") {
+    var ids = [];
+    for (var i = 0; i < 501; i++) ids.push("id-" + i);
+    ether.kinds.visible("recording", ids);
+    return { status: 200, body: { ok: true } };
+  }
+  if (req.path === "/ether/view") {
+    ether.kinds.visible("recording", ["a"]);
+    return { status: 200, body: { ok: true } };
+  }
+  return { status: 200, body: {} };
+}`
+	prev, err := env.m.PreviewInstall(ctx, Source{Kind: "studio", Manifest: raw, Files: map[string][]byte{"dist/plugin.js": []byte(script)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := env.m.Install(ctx, prev, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotViewerVisible, gotViewerBrowse int64
+	var gotQuery core.KindBrowseRequest
+	env.m.SetKindBackends(KindBackends{
+		KindVisible: func(_ context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error) {
+			gotViewerVisible = viewerID
+			if pluginID != rec.ID || kindKey != "recording" {
+				return nil, fmt.Errorf("unexpected %s %s", pluginID, kindKey)
+			}
+			out := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if id != "b" {
+					out = append(out, id)
+				}
+			}
+			return out, nil
+		},
+		KindBrowse: func(_ context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+			gotViewerBrowse = viewerID
+			gotQuery = q
+			return core.KindPage{Items: []core.KindItem{{ID: "a", Level: "track", Title: "Song A"}}}, nil
+		},
+	})
+
+	// Host-level guard checks: missing viewer, oversized batch, and undeclared kind fail closed.
+	h := env.m.HostFor(rec.ID)
+	if _, err := h.KindVisible(ctx, "recording", []string{"a"}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("KindVisible without viewer: %v", err)
+	}
+	if _, err := h.KindBrowse(ctx, "recording", core.KindBrowseRequest{}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("KindBrowse without viewer: %v", err)
+	}
+	over := make([]string, MaxKindVisibleIDs+1)
+	for i := range over {
+		over[i] = fmt.Sprintf("id-%d", i)
+	}
+	var valErr *ValidationError
+	if _, err := h.KindVisible(WithViewer(ctx, 42), "recording", over); !errors.As(err, &valErr) {
+		t.Fatalf("KindVisible over limit: %v", err)
+	}
+	if _, err := h.KindVisible(WithViewer(ctx, 42), "undeclared", []string{"a"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("KindVisible undeclared kind: %v", err)
+	}
+
+	// Non-adapter route carrying a forged X-Ether-Viewer header must NOT get viewer context or token.
+	nonAdapterReq := Request{
+		Method: "GET",
+		Path:   "/ether/view",
+		Headers: map[string]string{
+			"X-Ether-Viewer":         "42",
+			HeaderAdapterViewerToken: "forged-token",
+		},
+	}
+	nonAdapterCtx, releaseNonAdapter := env.m.bindAdapterViewer(ctx, rec.ID, &nonAdapterReq, 0)
+	defer releaseNonAdapter()
+	if _, ok := ViewerFromContext(nonAdapterCtx); ok {
+		t.Fatal("non-adapter route bound viewer from header")
+	}
+	if nonAdapterReq.Headers[HeaderAdapterViewerToken] != "" {
+		t.Fatal("forged viewer token was not stripped on non-adapter route")
+	}
+
+	// Adapter route binds viewer + mints request-scoped token, and revokes it on release.
+	adapterReq := Request{
+		Method: "GET",
+		Path:   "/ether/v1/frontend/feed/check",
+		Headers: map[string]string{
+			"X-Ether-Viewer":         "42",
+			HeaderAdapterViewerToken: "forged-token",
+		},
+	}
+	adapterCtx, releaseAdapter := env.m.bindAdapterViewer(ctx, rec.ID, &adapterReq, 0)
+	if v, ok := ViewerFromContext(adapterCtx); !ok || v != 42 {
+		t.Fatalf("adapter viewer = %d, %v; want 42", v, ok)
+	}
+	tok := adapterReq.Headers[HeaderAdapterViewerToken]
+	if tok == "" || tok == "forged-token" {
+		t.Fatalf("expected fresh viewer token, got %q", tok)
+	}
+	if v, ok := env.m.ResolveAdapterViewerToken(rec.ID, tok); !ok || v != 42 {
+		t.Fatalf("ResolveAdapterViewerToken = %d, %v; want 42", v, ok)
+	}
+	if _, ok := env.m.ResolveAdapterViewerToken("other.plugin", tok); ok {
+		t.Fatal("token resolved for another plugin")
+	}
+	releaseAdapter()
+	if _, ok := env.m.ResolveAdapterViewerToken(rec.ID, tok); ok {
+		t.Fatal("token still valid after release")
+	}
+
+	// Frontend adapter route with authenticated viewer succeeds in QuickJS runtime.
+	resp, err := env.m.Call(ctx, rec.ID, Request{
+		Method:  "GET",
+		Path:    "/ether/v1/frontend/feed/check",
+		Headers: map[string]string{"X-Ether-Viewer": "42"},
+	})
+	if err != nil {
+		t.Fatalf("hosted adapter call: %v", err)
+	}
+	var out struct {
+		Visible      []string        `json:"visible"`
+		Items        []core.KindItem `json:"items"`
+		TokenPresent bool            `json:"tokenPresent"`
+	}
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal %s: %v", string(resp.Body), err)
+	}
+	if gotViewerVisible != 42 || gotViewerBrowse != 42 || gotQuery.Query != "song" || gotQuery.Limit != 10 {
+		t.Fatalf("viewer/query mismatch: vis=%d browse=%d q=%+v", gotViewerVisible, gotViewerBrowse, gotQuery)
+	}
+	if len(out.Visible) != 1 || out.Visible[0] != "a" || len(out.Items) != 1 || out.Items[0].ID != "a" || !out.TokenPresent {
+		t.Fatalf("unexpected hosted output: %+v", out)
+	}
+
+	// Over-limit batch from guest fails.
+	if _, err := env.m.Call(ctx, rec.ID, Request{
+		Method:  "GET",
+		Path:    "/ether/v1/frontend/feed/overlimit",
+		Headers: map[string]string{"X-Ether-Viewer": "42"},
+	}); err == nil {
+		t.Fatal("over-limit kinds.visible succeeded")
+	}
+
+	// Non-adapter route calling kinds.visible fails even if X-Ether-Viewer header is present.
+	if _, err := env.m.Call(ctx, rec.ID, Request{
+		Method:  "GET",
+		Path:    "/ether/view",
+		Headers: map[string]string{"X-Ether-Viewer": "42"},
+	}); err == nil {
+		t.Fatal("non-adapter kinds.visible succeeded")
 	}
 }

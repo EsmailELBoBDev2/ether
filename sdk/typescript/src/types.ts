@@ -474,9 +474,13 @@ export interface KindBrowseRequest {
   cursor?: string;
   limit?: number;
   sort?: string;
+  desc?: boolean;
   facets?: Record<string, string[]>;
   query?: string;
 }
+
+/** Query passed to kinds.browse from a frontend adapter (#615). */
+export type KindBrowseQuery = Omit<KindBrowseRequest, "kind">;
 
 export interface KindExpandRequest {
   kind: string;

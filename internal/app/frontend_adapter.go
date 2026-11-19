@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/plugins/frontendadapter"
 )
@@ -190,6 +192,217 @@ func (a *App) adapterStreamPartURL(issuer *frontendadapter.TicketIssuer) func(ct
 			Adapter:   pluginID,
 			PartIndex: partIndex,
 		})
+	}
+}
+
+func (a *App) viewerHasPluginContentFilter(viewer *core.User) bool {
+	if viewer == nil || a.safety == nil {
+		return false
+	}
+	if viewer.MaxContentRating != "" {
+		return true
+	}
+	p := a.safety.ForUser(viewer)
+	return len(p.BlockedGenres) > 0 || len(p.BlockedKeywords) > 0
+}
+
+func (a *App) adapterKindLibrary(ctx context.Context, pluginID string, viewerID int64, kindKey string) (*core.User, core.Library, bool, error) {
+	if a.pluginsRT == nil || a.pluginsRT.pluginitems == nil || a.libraries == nil || a.users == nil {
+		return nil, core.Library{}, false, plugins.ErrUnavailable
+	}
+	if viewerID <= 0 {
+		return nil, core.Library{}, false, plugins.ErrPermissionDenied
+	}
+	viewer, err := a.users.PolicyUser(ctx, viewerID)
+	if err != nil || viewer == nil {
+		return nil, core.Library{}, false, plugins.ErrPermissionDenied
+	}
+	lib, err := a.libraries.ByKey(ctx, core.PluginLibraryKey(pluginID, kindKey))
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return viewer, core.Library{}, false, nil
+		}
+		return nil, core.Library{}, false, err
+	}
+	if lib.Hidden || !viewer.AllowsLibrary(lib.ID) {
+		return viewer, lib, false, nil
+	}
+	return viewer, lib, true, nil
+}
+
+// adapterKindVisible builds the host backend behind Host.KindVisible (#615):
+// it evaluates the plugin library's LibraryPolicy (same libraryfilter rules as
+// the console and protocol projectors) plus viewer library/safety access and
+// returns the allowed subset of external IDs.
+func (a *App) adapterKindVisible() func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error) {
+	return func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error) {
+		viewer, lib, ok, err := a.adapterKindLibrary(ctx, pluginID, viewerID, kindKey)
+		if err != nil || !ok {
+			return []string{}, err
+		}
+		items := a.pluginsRT.pluginitems
+		visible, err := items.FilterVisibleIDs(ctx, pluginID, kindKey, lib, ids)
+		if err != nil || len(visible) == 0 {
+			return visible, err
+		}
+		if !a.viewerHasPluginContentFilter(viewer) {
+			return visible, nil
+		}
+		rec, err := items.GetKindByLibrary(ctx, lib.ID)
+		if err != nil {
+			return nil, err
+		}
+		loaded, err := items.KindItemsByID(ctx, pluginID, kindKey, visible)
+		if err != nil {
+			return nil, err
+		}
+		allowed := make(map[string]bool, len(loaded))
+		for _, it := range loaded {
+			t := pluginitems.Project(it, rec.Decl, lib.Present)
+			if a.safety.PolicyAllowed(viewer, &t) {
+				allowed[it.ID] = true
+			}
+		}
+		out := make([]string, 0, len(allowed))
+		for _, id := range visible {
+			if allowed[id] {
+				out = append(out, id)
+			}
+		}
+		return out, nil
+	}
+}
+
+// adapterKindBrowse builds the host backend behind Host.KindBrowse (#615):
+// it executes the same pluginitems Browse/Search + LibraryPolicy path the
+// console uses, scoped to the requesting frontend-adapter viewer.
+func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	return func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+		viewer, lib, ok, err := a.adapterKindLibrary(ctx, pluginID, viewerID, kindKey)
+		if err != nil {
+			return core.KindPage{}, err
+		}
+		if !ok {
+			zero := 0
+			return core.KindPage{Items: []core.KindItem{}, Total: &zero}, nil
+		}
+		items := a.pluginsRT.pluginitems
+		policy, err := items.LibraryPolicy(ctx, lib)
+		if err != nil {
+			return core.KindPage{}, err
+		}
+		filterSafety := a.viewerHasPluginContentFilter(viewer)
+		var kindRec pluginitems.KindRecord
+		if filterSafety {
+			kindRec, err = items.GetKindByLibrary(ctx, lib.ID)
+			if err != nil {
+				return core.KindPage{}, err
+			}
+		}
+		limit := q.Limit
+		if limit <= 0 {
+			limit = pluginitems.DefaultBrowseLimit
+		}
+		if limit > pluginitems.MaxBrowseLimit {
+			limit = pluginitems.MaxBrowseLimit
+		}
+		if queryStr := strings.TrimSpace(q.Query); queryStr != "" {
+			searchPolicy := policy.ForSearch()
+			page, err := items.Search(ctx, pluginitems.SearchQuery{
+				Policy:    searchPolicy,
+				LibraryID: lib.ID,
+				Query:     queryStr,
+				Level:     q.Level,
+				Facets:    q.Facets,
+				Limit:     limit,
+			})
+			if err != nil {
+				return core.KindPage{}, err
+			}
+			outItems := page.Items
+			total := page.Total
+			if filterSafety {
+				filtered := make([]core.KindItem, 0, len(outItems))
+				for _, it := range outItems {
+					t := pluginitems.Project(it, kindRec.Decl, lib.Present)
+					if a.safety.PolicyAllowed(viewer, &t) {
+						filtered = append(filtered, it)
+					}
+				}
+				outItems = filtered
+				total = len(filtered)
+			}
+			if outItems == nil {
+				outItems = []core.KindItem{}
+			}
+			return core.KindPage{Items: outItems, NextCursor: page.NextCursor, Total: &total}, nil
+		}
+		var parentRef core.ItemRef
+		if q.ParentID != "" {
+			parentRef = core.NewItemRef(pluginID, kindKey, q.ParentID)
+		}
+		mapBrowseErr := func(err error) error {
+			if err != nil && strings.Contains(err.Error(), "invalid cursor") {
+				return &plugins.ValidationError{Fields: []plugins.FieldError{{Field: "cursor", Message: "invalid cursor"}}}
+			}
+			return err
+		}
+		if !filterSafety {
+			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
+				Policy:    policy,
+				LibraryID: lib.ID,
+				ParentRef: parentRef,
+				Level:     q.Level,
+				Sort:      q.Sort,
+				Desc:      q.Desc,
+				Facets:    q.Facets,
+				Cursor:    q.Cursor,
+				Limit:     limit,
+			})
+			if err != nil {
+				return core.KindPage{}, mapBrowseErr(err)
+			}
+			outItems := page.Items
+			if outItems == nil {
+				outItems = []core.KindItem{}
+			}
+			total := page.Total
+			return core.KindPage{Items: outItems, NextCursor: page.NextCursor, Total: &total}, nil
+		}
+		const maxSafetyWalkPages = 20
+		kept := make([]core.KindItem, 0, limit)
+		cursor := q.Cursor
+		nextCursor := ""
+		for walk := 0; walk < maxSafetyWalkPages && len(kept) < limit; walk++ {
+			remaining := limit - len(kept)
+			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
+				NoTotal:   true,
+				Policy:    policy,
+				LibraryID: lib.ID,
+				ParentRef: parentRef,
+				Level:     q.Level,
+				Sort:      q.Sort,
+				Desc:      q.Desc,
+				Facets:    q.Facets,
+				Cursor:    cursor,
+				Limit:     remaining,
+			})
+			if err != nil {
+				return core.KindPage{}, mapBrowseErr(err)
+			}
+			for _, it := range page.Items {
+				t := pluginitems.Project(it, kindRec.Decl, lib.Present)
+				if a.safety.PolicyAllowed(viewer, &t) {
+					kept = append(kept, it)
+				}
+			}
+			nextCursor = page.NextCursor
+			if nextCursor == "" || len(page.Items) == 0 {
+				break
+			}
+			cursor = nextCursor
+		}
+		return core.KindPage{Items: kept, NextCursor: nextCursor}, nil
 	}
 }
 

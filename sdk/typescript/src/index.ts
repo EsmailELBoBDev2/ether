@@ -26,6 +26,8 @@ export {
   MaxBadgeLabelsPerTitle,
   MaxBadgeLabelLen,
   PosterBadgeQuotaTitles,
+  MAX_KIND_VISIBLE_IDS,
+  HEADER_VIEWER_TOKEN,
   type BadgeEntry,
   type BadgeTitleRef,
   type BadgeUsage,
@@ -99,6 +101,8 @@ export {
 export {
   candidateRef,
   streamUrl,
+  kindsVisible,
+  kindsBrowse,
   type CatalogProvider,
   type FrontendAdapter,
   type KindMatcher,

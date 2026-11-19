@@ -763,6 +763,18 @@ type Host interface {
 	KindDelete(ctx context.Context, kindKey string, externalIDs []string) error
 	// KindItems reads the plugin's own library back, keyset-paged.
 	KindItems(ctx context.Context, kindKey, cursor string, limit int) (core.KindPage, error)
+	// KindVisible returns the subset of external IDs (at most MaxKindVisibleIDs)
+	// in kindKey that the library's Rules and viewer access policy allow for the
+	// requesting frontend-adapter viewer (#615). Only viewer-authenticated
+	// frontend adapter requests may call it; the viewer comes from the adapter
+	// request context, never from guest input.
+	KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	// KindBrowse browses or searches kindKey using the same LibraryPolicy path
+	// as Ether's console and protocol projectors for the requesting
+	// frontend-adapter viewer (#615). Only viewer-authenticated frontend adapter
+	// requests may call it; the viewer comes from the adapter request context,
+	// never from guest input.
+	KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	// ResolveSources needs kind_resolver and permissions.sources
 	// (search to look, acquire to open debrid content, §4.5).
 	ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error)

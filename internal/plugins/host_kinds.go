@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -26,6 +28,10 @@ type KindBackends struct {
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
 	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
 	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
+	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
+	// access policy for the requesting frontend-adapter viewer (#615).
+	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -45,6 +51,8 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindItems = b.KindItems
 	m.deps.Backends.KindItemsByID = b.KindItemsByID
 	m.deps.Backends.KindItemCount = b.KindItemCount
+	m.deps.Backends.KindVisible = b.KindVisible
+	m.deps.Backends.KindBrowse = b.KindBrowse
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
@@ -62,6 +70,8 @@ func (m *Manager) kindBackends() KindBackends {
 		KindItems:      m.deps.Backends.KindItems,
 		KindItemsByID:  m.deps.Backends.KindItemsByID,
 		KindItemCount:  m.deps.Backends.KindItemCount,
+		KindVisible:    m.deps.Backends.KindVisible,
+		KindBrowse:     m.deps.Backends.KindBrowse,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
@@ -73,8 +83,13 @@ func (m *Manager) kindBackends() KindBackends {
 // Per-call caps for kind host services (spec §3.3 sizes, host side).
 const (
 	MaxKindUpsertItems = 1000
+	MaxKindVisibleIDs  = 500
 	MaxKindHintsBytes  = 16 << 10
 	MaxKindArtRoles    = 16
+	// HeaderAdapterViewerToken carries a host-minted, request-scoped token on
+	// frontend adapter calls so remote plugins can prove the authenticated
+	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
+	HeaderAdapterViewerToken = "X-Ether-Viewer-Token"
 )
 
 var externalIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
@@ -312,6 +327,80 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 	return backend(ctx, h.plugin, kindKey, cursor, limit)
 }
 
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (max MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// Only frontend adapter requests carrying an authenticated viewer may call it;
+// the viewer comes solely from the host context, never from guest input.
+func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+		return nil, err
+	}
+	viewerID, ok := ViewerFromContext(ctx)
+	if !ok || viewerID <= 0 {
+		return nil, fmt.Errorf("%w: kinds.visible requires an authenticated frontend adapter viewer", ErrPermissionDenied)
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "ids",
+			Message: fmt.Sprintf("kinds.visible accepts at most %d ids per call", MaxKindVisibleIDs),
+		}}}
+	}
+	if len(ids) == 0 {
+		return []string{}, nil
+	}
+	backend := h.m.kindBackends().KindVisible
+	if backend == nil {
+		return nil, ErrUnavailable
+	}
+	visible, err := backend(ctx, h.plugin, viewerID, kindKey, ids)
+	if err != nil {
+		return nil, err
+	}
+	if visible == nil {
+		visible = []string{}
+	}
+	return visible, nil
+}
+
+// KindBrowse browses or searches kindKey using the same LibraryPolicy path
+// as Ether's console and protocol projectors for the requesting
+// frontend-adapter viewer (#615). Only frontend adapter requests carrying an
+// authenticated viewer may call it; the viewer comes solely from the host
+// context, never from guest input.
+func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+		return core.KindPage{}, err
+	}
+	viewerID, ok := ViewerFromContext(ctx)
+	if !ok || viewerID <= 0 {
+		return core.KindPage{}, fmt.Errorf("%w: kinds.browse requires an authenticated frontend adapter viewer", ErrPermissionDenied)
+	}
+	if q.ParentID != "" && !ValidExternalID(q.ParentID) {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "parentId",
+			Message: "parentId must be a valid external id",
+		}}}
+	}
+	if q.Limit <= 0 {
+		q.Limit = 200
+	}
+	if q.Limit > MaxKindUpsertItems {
+		q.Limit = MaxKindUpsertItems
+	}
+	backend := h.m.kindBackends().KindBrowse
+	if backend == nil {
+		return core.KindPage{}, ErrUnavailable
+	}
+	page, err := backend(ctx, h.plugin, viewerID, kindKey, q)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []core.KindItem{}
+	}
+	return page, nil
+}
+
 func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
@@ -399,22 +488,107 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 	return id, ok
 }
 
-// withViewerHeader reads the X-Ether-Viewer header the frontend adapter
-// proxy injects and attaches that viewer to the context. A missing or
-// malformed header leaves the context unchanged.
-func withViewerHeader(ctx context.Context, headers map[string]string) context.Context {
-	if headers == nil {
-		return ctx
+type adapterViewerGrant struct {
+	pluginID string
+	viewerID int64
+	expires  time.Time
+}
+
+func isFrontendAdapterPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+
+// bindAdapterViewer attaches the authenticated viewer from X-Ether-Viewer to
+// ctx and mints a request-scoped X-Ether-Viewer-Token for remote callbacks,
+// strictly on /ether/v1/frontend/* adapter calls. Non-adapter calls never
+// receive a viewer context or token, and any pre-existing token header is
+// stripped before binding.
+func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *Request, deadline time.Duration) (context.Context, func()) {
+	if req != nil && req.Headers != nil {
+		for k := range req.Headers {
+			if strings.EqualFold(k, HeaderAdapterViewerToken) {
+				delete(req.Headers, k)
+			}
+		}
 	}
-	raw := headers["X-Ether-Viewer"]
+	if req == nil || !isFrontendAdapterPath(req.Path) || req.Headers == nil {
+		return ctx, func() {}
+	}
+	raw := req.Headers["X-Ether-Viewer"]
 	if raw == "" {
-		return ctx
+		return ctx, func() {}
 	}
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
-		return ctx
+		return ctx, func() {}
 	}
-	return WithViewer(ctx, id)
+	ctx = WithViewer(ctx, id)
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ctx, func() {}
+	}
+	token := hex.EncodeToString(b[:])
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	ttl := deadline
+	if ttl < time.Minute {
+		ttl = time.Minute
+	}
+	m.adapterViewerMu.Lock()
+	if m.adapterViewerTokens == nil {
+		m.adapterViewerTokens = make(map[string]adapterViewerGrant)
+	}
+	for k, v := range m.adapterViewerTokens {
+		if !now.Before(v.expires) {
+			delete(m.adapterViewerTokens, k)
+		}
+	}
+	m.adapterViewerTokens[token] = adapterViewerGrant{
+		pluginID: pluginID,
+		viewerID: id,
+		expires:  now.Add(ttl),
+	}
+	m.adapterViewerMu.Unlock()
+	req.Headers[HeaderAdapterViewerToken] = token
+	return ctx, func() { m.revokeAdapterViewerToken(token) }
+}
+
+func (m *Manager) revokeAdapterViewerToken(token string) {
+	if token == "" {
+		return
+	}
+	m.adapterViewerMu.Lock()
+	delete(m.adapterViewerTokens, token)
+	m.adapterViewerMu.Unlock()
+}
+
+// ResolveAdapterViewerToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
+func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+	token = strings.TrimSpace(token)
+	if pluginID == "" || token == "" {
+		return 0, false
+	}
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	m.adapterViewerMu.Lock()
+	defer m.adapterViewerMu.Unlock()
+	grant, ok := m.adapterViewerTokens[token]
+	if !ok {
+		return 0, false
+	}
+	if !now.Before(grant.expires) {
+		delete(m.adapterViewerTokens, token)
+		return 0, false
+	}
+	if grant.pluginID != pluginID || grant.viewerID <= 0 {
+		return 0, false
+	}
+	return grant.viewerID, true
 }
 
 // StreamURL mints a scoped stream ticket for one of the plugin's own kind

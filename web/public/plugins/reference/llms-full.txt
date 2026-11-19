@@ -385,12 +385,17 @@ ether.collections.upsert({id: "weekly", name: "Weekly picks", ids: []});
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
-## Kind item storage
+## Kind item storage & visibility
 
-Requires catalog_provider and your own declared kind. upsert/delete only work for push-mode kinds; pull sync owns its writes. items is cursor-paged. Items are validated against declared levels and fields. Unknown custom fields are dropped; invalid types reject the item.
+upsert/delete/items require catalog_provider and your own declared kind. upsert/delete only work for push-mode kinds; pull sync owns its writes. items is cursor-paged and unfiltered. Items are validated against declared levels and fields. Unknown custom fields are dropped; invalid types reject the item.
+
+For frontend adapters serving their own protocol, visible and browse apply the library's Rules, library grants, and viewer content safety for the requesting viewer (same LibraryPolicy as the console and built-in projectors). Both require frontend_adapter and an authenticated frontend adapter request; non-adapter calls fail with permission denied. Viewer identity comes only from Ether's authenticated request context (and request-scoped X-Ether-Viewer-Token on remote callbacks), never guest input. visible accepts at most 500 IDs per call.
 
 ```ts
 const page = ether.kinds.items("recordings", "", 50);
+// Inside a frontend adapter request:
+const allowed = ether.kinds.visible("recordings", ["rec-1", "rec-2"]);
+const filtered = ether.kinds.browse("recordings", { query: "live", limit: 50 });
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -416,11 +421,13 @@ const data = ether.cache.open(ref);
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
-## Frontend stream tickets
+## Frontend stream tickets & visibility
 
-Mint a scoped, short-lived URL for one of your own kind items. The authenticated viewer must see its library. Embed this URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
+Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL, and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.
 
 ```ts
+const page = ether.kinds.browse("comic", { limit: 50 });
+const allowed = ether.kinds.visible("comic", ["c1", "c2"]);
 const url = ether.frontend.streamURL("item-ref");
 ```
 
@@ -744,7 +751,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers, never a credential. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -980,7 +987,11 @@ owner reads them.
 
 Beyond the usual services, kind plugins get (capability-checked on
 every call): `KindUpsert` / `KindDelete` (push kinds), `KindItems`
-(read your own library back), `ResolveSources`, and
+(read your own library back unfiltered), `KindVisible` (`kinds.visible`,
+batch-capped at 500 IDs) and `KindBrowse` (`kinds.browse`) for
+viewer-authenticated `frontend_adapter` requests to apply the library's
+Rules, library grants, and viewer safety policy using the request's
+authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
 Default cache quota is 2 GiB per library under a shared cap of
@@ -1751,6 +1762,7 @@ type KindPage struct {
 | `cursor` | `string` | may be omitted (see validation for conditions) |  |
 | `limit` | `int` | may be omitted (see validation for conditions) |  |
 | `sort` | `string` | may be omitted (see validation for conditions) |  |
+| `desc` | `bool` | may be omitted (see validation for conditions) |  |
 | `facets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 
@@ -1759,13 +1771,15 @@ type KindPage struct {
 
 ``````
 // KindBrowseRequest is the request body sent to a catalog_provider
-// browse or search route (spec §3.1, §3.2).
+// browse or search route (spec §3.1, §3.2) and passed to the
+// viewer-scoped kinds.browse host service (#615).
 type KindBrowseRequest struct {
 	ParentID string              `json:"parentId,omitempty"`
 	Level    string              `json:"level,omitempty"`
 	Cursor   string              `json:"cursor,omitempty"`
 	Limit    int                 `json:"limit,omitempty"`
 	Sort     string              `json:"sort,omitempty"`
+	Desc     bool                `json:"desc,omitempty"`
 	Facets   map[string][]string `json:"facets,omitempty"`
 	Query    string              `json:"query,omitempty"`
 }
@@ -2303,12 +2317,11 @@ type ExpandJobRunner struct {
 ## Source: internal/plugins/action_jobs.go#*ExpandJobRunner.Call
 
 ``````
-// Call invokes a plugin route after yielding to active foreground streams and
-// increments the job's attempt counter.
+// Call invokes a plugin route and increments the job's attempt counter. A fill
+// always starts because a viewer opened that studio or person and is waiting
+// for it, so it does not yield to other streams the way speculative background
+// work does.
 func (r *ExpandJobRunner) Call(ctx context.Context, req Request) (Response, error) {
-	if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
-		return Response{}, err
-	}
 	r.job.mu.Lock()
 	r.job.status.Attempts++
 	r.job.mu.Unlock()
@@ -2344,9 +2357,6 @@ func (r *ExpandJobRunner) RunContinuation(ctx context.Context, jobPath string, i
 		return fmt.Errorf("invalid job path %q", jobPath)
 	}
 	return runActionJobWithHook(ctx, r.job, ActionJobAttempts, func(ctx context.Context, token json.RawMessage) (Response, error) {
-		if err := wasm.WaitBackground(ctx, r.m.deps.Busy); err != nil {
-			return Response{}, err
-		}
 		payload := map[string]json.RawMessage{}
 		_ = json.Unmarshal(initial, &payload)
 		if payload == nil {
@@ -4335,6 +4345,18 @@ type Host interface {
 	KindDelete(ctx context.Context, kindKey string, externalIDs []string) error
 	// KindItems reads the plugin's own library back, keyset-paged.
 	KindItems(ctx context.Context, kindKey, cursor string, limit int) (core.KindPage, error)
+	// KindVisible returns the subset of external IDs (at most MaxKindVisibleIDs)
+	// in kindKey that the library's Rules and viewer access policy allow for the
+	// requesting frontend-adapter viewer (#615). Only viewer-authenticated
+	// frontend adapter requests may call it; the viewer comes from the adapter
+	// request context, never from guest input.
+	KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	// KindBrowse browses or searches kindKey using the same LibraryPolicy path
+	// as Ether's console and protocol projectors for the requesting
+	// frontend-adapter viewer (#615). Only viewer-authenticated frontend adapter
+	// requests may call it; the viewer comes from the adapter request context,
+	// never from guest input.
+	KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	// ResolveSources needs kind_resolver and permissions.sources
 	// (search to look, acquire to open debrid content, §4.5).
 	ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error)
@@ -9120,7 +9142,12 @@ type KindBackends struct {
 	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
 	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
+	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
+	// access policy for the requesting frontend-adapter viewer (#615).
+	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
+	KindBrowse     func(ctx context.Context, pluginID string, viewerID int64, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -9142,7 +9169,10 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemsByID = b.KindItemsByID
 	m.deps.Backends.KindItemCount = b.KindItemCount
+	m.deps.Backends.KindVisible = b.KindVisible
+	m.deps.Backends.KindBrowse = b.KindBrowse
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
@@ -9162,7 +9192,10 @@ func (m *Manager) kindBackends() KindBackends {
 		KindUpsert:     m.deps.Backends.KindUpsert,
 		KindDelete:     m.deps.Backends.KindDelete,
 		KindItems:      m.deps.Backends.KindItems,
+		KindItemsByID:  m.deps.Backends.KindItemsByID,
 		KindItemCount:  m.deps.Backends.KindItemCount,
+		KindVisible:    m.deps.Backends.KindVisible,
+		KindBrowse:     m.deps.Backends.KindBrowse,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
@@ -9178,8 +9211,13 @@ func (m *Manager) kindBackends() KindBackends {
 // Per-call caps for kind host services (spec §3.3 sizes, host side).
 const (
 	MaxKindUpsertItems = 1000
+	MaxKindVisibleIDs  = 500
 	MaxKindHintsBytes  = 16 << 10
 	MaxKindArtRoles    = 16
+	// HeaderAdapterViewerToken carries a host-minted, request-scoped token on
+	// frontend adapter calls so remote plugins can prove the authenticated
+	// viewer on viewer-scoped host callbacks without supplying viewer IDs.
+	HeaderAdapterViewerToken = "X-Ether-Viewer-Token"
 )
 ``````
 
@@ -9317,41 +9355,32 @@ type kindInverse struct {
 // are in ids so a live KindUpsert or KindDelete can record a real
 // inverse in the journal.
 func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []string) (existing []core.KindItem, missing []string) {
-	readFn := h.m.kindBackends().KindItems
-	if readFn == nil || len(ids) == 0 {
-		return nil, append([]string(nil), ids...)
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	want := make(map[string]bool, len(ids))
+	unique := make([]string, 0, len(ids))
+	seenID := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		want[id] = true
+		if !seenID[id] {
+			seenID[id] = true
+			unique = append(unique, id)
+		}
 	}
-	found := make(map[string]core.KindItem, len(ids))
-	cursor := ""
-	seenCursor := map[string]bool{}
-	for pageNum := 0; pageNum < 50 && len(found) < len(want); pageNum++ {
-		seenCursor[cursor] = true
-		page, err := readFn(ctx, h.plugin, kindKey, cursor, MaxKindUpsertItems)
-		if err != nil {
-			break
-		}
-		for _, it := range page.Items {
-			if want[it.ID] {
-				if _, dup := found[it.ID]; !dup {
-					found[it.ID] = it
-				}
-			}
-		}
-		if page.NextCursor == "" || seenCursor[page.NextCursor] {
-			break
-		}
-		cursor = page.NextCursor
+	readFn := h.m.kindBackends().KindItemsByID
+	if readFn == nil {
+		return nil, unique
 	}
-	seenID := map[string]bool{}
-	for _, id := range ids {
-		if seenID[id] {
-			continue
+	items, err := readFn(ctx, h.plugin, kindKey, unique)
+	if err != nil {
+		return nil, unique
+	}
+	found := make(map[string]core.KindItem, len(items))
+	for _, it := range items {
+		if _, dup := found[it.ID]; !dup {
+			found[it.ID] = it
 		}
-		seenID[id] = true
+	}
+	for _, id := range unique {
 		if prev, ok := found[id]; ok {
 			existing = append(existing, prev)
 		} else {
@@ -9473,6 +9502,88 @@ func (h *host) KindItems(ctx context.Context, kindKey, cursor string, limit int)
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#*host.KindVisible
+
+``````
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (max MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// Only frontend adapter requests carrying an authenticated viewer may call it;
+// the viewer comes solely from the host context, never from guest input.
+func (h *host) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+		return nil, err
+	}
+	viewerID, ok := ViewerFromContext(ctx)
+	if !ok || viewerID <= 0 {
+		return nil, fmt.Errorf("%w: kinds.visible requires an authenticated frontend adapter viewer", ErrPermissionDenied)
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "ids",
+			Message: fmt.Sprintf("kinds.visible accepts at most %d ids per call", MaxKindVisibleIDs),
+		}}}
+	}
+	if len(ids) == 0 {
+		return []string{}, nil
+	}
+	backend := h.m.kindBackends().KindVisible
+	if backend == nil {
+		return nil, ErrUnavailable
+	}
+	visible, err := backend(ctx, h.plugin, viewerID, kindKey, ids)
+	if err != nil {
+		return nil, err
+	}
+	if visible == nil {
+		visible = []string{}
+	}
+	return visible, nil
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*host.KindBrowse
+
+``````
+// KindBrowse browses or searches kindKey using the same LibraryPolicy path
+// as Ether's console and protocol projectors for the requesting
+// frontend-adapter viewer (#615). Only frontend adapter requests carrying an
+// authenticated viewer may call it; the viewer comes solely from the host
+// context, never from guest input.
+func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	if _, _, err := h.kindCheck(ctx, kindKey, CapFrontendAdapter); err != nil {
+		return core.KindPage{}, err
+	}
+	viewerID, ok := ViewerFromContext(ctx)
+	if !ok || viewerID <= 0 {
+		return core.KindPage{}, fmt.Errorf("%w: kinds.browse requires an authenticated frontend adapter viewer", ErrPermissionDenied)
+	}
+	if q.ParentID != "" && !ValidExternalID(q.ParentID) {
+		return core.KindPage{}, &ValidationError{Fields: []FieldError{{
+			Field:   "parentId",
+			Message: "parentId must be a valid external id",
+		}}}
+	}
+	if q.Limit <= 0 {
+		q.Limit = 200
+	}
+	if q.Limit > MaxKindUpsertItems {
+		q.Limit = MaxKindUpsertItems
+	}
+	backend := h.m.kindBackends().KindBrowse
+	if backend == nil {
+		return core.KindPage{}, ErrUnavailable
+	}
+	page, err := backend(ctx, h.plugin, viewerID, kindKey, q)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []core.KindItem{}
+	}
+	return page, nil
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.ResolveSources
 
 ``````
@@ -9586,25 +9697,132 @@ func ViewerFromContext(ctx context.Context) (int64, bool) {
 }
 ``````
 
-## Source: internal/plugins/host_kinds.go#withViewerHeader
+## Source: internal/plugins/host_kinds.go#adapterViewerGrant.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_kinds.go#adapterViewerGrant
 
 ``````
-// withViewerHeader reads the X-Ether-Viewer header the frontend adapter
-// proxy injects and attaches that viewer to the context. A missing or
-// malformed header leaves the context unchanged.
-func withViewerHeader(ctx context.Context, headers map[string]string) context.Context {
-	if headers == nil {
-		return ctx
+type adapterViewerGrant struct {
+	pluginID string
+	viewerID int64
+	expires  time.Time
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isFrontendAdapterPath
+
+``````
+func isFrontendAdapterPath(path string) bool {
+	return strings.HasPrefix(path, "/ether/v1/frontend/") && len(path) > len("/ether/v1/frontend/")
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*Manager.bindAdapterViewer
+
+``````
+// bindAdapterViewer attaches the authenticated viewer from X-Ether-Viewer to
+// ctx and mints a request-scoped X-Ether-Viewer-Token for remote callbacks,
+// strictly on /ether/v1/frontend/* adapter calls. Non-adapter calls never
+// receive a viewer context or token, and any pre-existing token header is
+// stripped before binding.
+func (m *Manager) bindAdapterViewer(ctx context.Context, pluginID string, req *Request, deadline time.Duration) (context.Context, func()) {
+	if req != nil && req.Headers != nil {
+		for k := range req.Headers {
+			if strings.EqualFold(k, HeaderAdapterViewerToken) {
+				delete(req.Headers, k)
+			}
+		}
 	}
-	raw := headers["X-Ether-Viewer"]
+	if req == nil || !isFrontendAdapterPath(req.Path) || req.Headers == nil {
+		return ctx, func() {}
+	}
+	raw := req.Headers["X-Ether-Viewer"]
 	if raw == "" {
-		return ctx
+		return ctx, func() {}
 	}
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
-		return ctx
+		return ctx, func() {}
 	}
-	return WithViewer(ctx, id)
+	ctx = WithViewer(ctx, id)
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ctx, func() {}
+	}
+	token := hex.EncodeToString(b[:])
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	ttl := deadline
+	if ttl < time.Minute {
+		ttl = time.Minute
+	}
+	m.adapterViewerMu.Lock()
+	if m.adapterViewerTokens == nil {
+		m.adapterViewerTokens = make(map[string]adapterViewerGrant)
+	}
+	for k, v := range m.adapterViewerTokens {
+		if !now.Before(v.expires) {
+			delete(m.adapterViewerTokens, k)
+		}
+	}
+	m.adapterViewerTokens[token] = adapterViewerGrant{
+		pluginID: pluginID,
+		viewerID: id,
+		expires:  now.Add(ttl),
+	}
+	m.adapterViewerMu.Unlock()
+	req.Headers[HeaderAdapterViewerToken] = token
+	return ctx, func() { m.revokeAdapterViewerToken(token) }
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*Manager.revokeAdapterViewerToken
+
+``````
+func (m *Manager) revokeAdapterViewerToken(token string) {
+	if token == "" {
+		return
+	}
+	m.adapterViewerMu.Lock()
+	delete(m.adapterViewerTokens, token)
+	m.adapterViewerMu.Unlock()
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*Manager.ResolveAdapterViewerToken
+
+``````
+// ResolveAdapterViewerToken verifies that token belongs to an active
+// /ether/v1/frontend/* call for pluginID and returns its authenticated viewer.
+func (m *Manager) ResolveAdapterViewerToken(pluginID, token string) (int64, bool) {
+	token = strings.TrimSpace(token)
+	if pluginID == "" || token == "" {
+		return 0, false
+	}
+	now := time.Now()
+	if m.now != nil {
+		now = m.now()
+	}
+	m.adapterViewerMu.Lock()
+	defer m.adapterViewerMu.Unlock()
+	grant, ok := m.adapterViewerTokens[token]
+	if !ok {
+		return 0, false
+	}
+	if !now.Before(grant.expires) {
+		delete(m.adapterViewerTokens, token)
+		return 0, false
+	}
+	if grant.pluginID != pluginID || grant.viewerID <= 0 {
+		return 0, false
+	}
+	return grant.viewerID, true
 }
 ``````
 
@@ -10421,6 +10639,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return result(nil, b.h.KindDelete(ctx, str(0), ids))
 	case "kinds.items":
 		page, err := b.h.KindItems(ctx, str(0), str(1), int(num(2)))
+		return result(page, err)
+	case "kinds.visible":
+		var ids []string
+		if len(args) > 1 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &ids); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.visible takes (kind, ids[])"}
+			}
+		}
+		visible, err := b.h.KindVisible(ctx, str(0), ids)
+		return result(visible, err)
+	case "kinds.browse":
+		var q core.KindBrowseRequest
+		if len(args) > 1 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &q); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.browse takes (kind, query?)"}
+			}
+		}
+		page, err := b.h.KindBrowse(ctx, str(0), q)
 		return result(page, err)
 	case "frontend.streamURL":
 		var partIdx *int
@@ -16949,6 +17185,11 @@ type Host interface {
 	KindUpsert(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error)
 	KindDelete(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
+	// access policy for the requesting frontend-adapter viewer (#615). The
+	// viewer is resolved solely from the host-minted X-Ether-Viewer-Token.
+	KindVisible(ctx context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error)
+	KindBrowse(ctx context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error)
 	CacheOpen(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -17051,6 +17292,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/kinds/{kind}/items", h.kindItems)
 	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/upsert", h.kindUpsert)
 	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/delete", h.kindDelete)
+	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/visible", h.kindVisible)
+	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/browse", h.kindBrowse)
 	mux.HandleFunc("POST /ether/plugin-host/sources/resolve", h.resolveSources)
 	mux.HandleFunc("PUT /ether/plugin-host/cache/{libraryKey}/{name...}", h.cachePut)
 	mux.HandleFunc("POST /ether/plugin-host/cache/{libraryKey}", h.cachePut)
@@ -17460,6 +17703,74 @@ func (h *HostHandler) kindDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.kindVisible
+
+``````
+// kindVisible returns the subset of external IDs in {kind} allowed by the
+// library's Rules and viewer access policy (#615). The viewer identity comes
+// exclusively from the host-minted X-Ether-Viewer-Token header on active
+// frontend adapter requests, never from guest-supplied viewer IDs.
+func (h *HostHandler) kindVisible(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	var ids []string
+	var envelope struct {
+		IDs []string `json:"ids"`
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		ids = nil
+	} else if err := json.Unmarshal(raw, &envelope); err == nil && envelope.IDs != nil {
+		ids = envelope.IDs
+	} else if err := json.Unmarshal(raw, &ids); err != nil {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"ids": [...]} or a JSON array of item ids`)
+		return
+	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	visible, err := h.host.KindVisible(r.Context(), pluginIDOf(r), viewerToken, r.PathValue("kind"), ids)
+	if !h.finishErr(w, err) {
+		return
+	}
+	if visible == nil {
+		visible = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ids": visible})
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.kindBrowse
+
+``````
+// kindBrowse browses or searches {kind} using the same LibraryPolicy path as
+// Ether's console and protocol projectors for the requesting frontend-adapter
+// viewer (#615). The viewer identity comes exclusively from X-Ether-Viewer-Token.
+func (h *HostHandler) kindBrowse(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	var q core.KindBrowseRequest
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &q); err != nil {
+			writeHostError(w, http.StatusBadRequest, "invalid", "Body must be a JSON browse query object")
+			return
+		}
+	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	page, err := h.host.KindBrowse(r.Context(), pluginIDOf(r), viewerToken, r.PathValue("kind"), q)
+	if !h.finishErr(w, err) {
+		return
+	}
+	if page.Items == nil {
+		page.Items = []core.KindItem{}
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 ``````
 
@@ -21934,7 +22245,9 @@ globalThis.ether = (() => {
     collections: { upsert: (c) => call("collections.upsert", [c]) },
     kinds: { upsert: (kind, items) => call("kinds.upsert", [kind, items == null ? [] : items]),
              delete: (kind, ids) => call("kinds.delete", [kind, ids == null ? [] : ids]),
-             items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]) },
+             items: (kind, cursor, limit) => call("kinds.items", [kind, cursor == null ? "" : cursor, limit == null ? 0 : limit]),
+             visible: (kind, ids) => call("kinds.visible", [kind, ids == null ? [] : ids]),
+             browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]) },
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
              open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]) },
@@ -23094,7 +23407,7 @@ var DefaultCosts = map[string]int64{
 	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10, "kv.usage": 5, "badges.set": 20, "badges.clear": 10, "badges.usage": 5,
 	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
-	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20,
+	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "notify.owner": 20, "settings.get": 5,
 }
@@ -25722,7 +26035,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
 | ranking_step / rule_condition | `rank_key` / `cond_match` | Log/abort only: deterministic, no I/O or clock |
 | plugin_directory | declared add-on directories | HTTPFetch |
-| frontend_adapter | authenticated protocol routes | StreamURL for own items; Ether serves bytes |
+| frontend_adapter | authenticated protocol routes | StreamURL, KindVisible (<=500 IDs), KindBrowse for own items; viewer-authenticated adapter calls only; Ether serves bytes |
 | onair_content / livetv_pack | declared feeds/segments/TV packs | Only services the handler actually needs |
 
 Settings, KV, Log and NotifyOwner do not require an extra behavior capability.
@@ -26079,6 +26392,92 @@ may require bounded decompression from the start, so do not use this path for
 unbounded repeated seeks. Existing JSON `body` responses are unchanged. Remote
 HTTP plugins should stream bytes through their existing HTTP response instead;
 this descriptor is for the hosted JSON response envelope.
+
+## Recipe: Frontend adapter respecting library Rules
+
+`kinds.items` reads a plugin's raw kind items without evaluating the library's
+Rules or viewer visibility. A `frontend_adapter` serving its own protocol
+(OPDS, Subsonic, WebDAV, custom clients) must filter through Ether's policy so
+items hidden by Rules, hidden libraries, viewer library grants, or viewer
+content-safety restrictions never leak to the adapter's clients.
+
+Ether exposes two viewer-scoped host calls that run the exact same
+`LibraryPolicy` + `libraryfilter` + viewer-safety checks as the console and
+built-in protocol projectors:
+
+- `kinds.browse(kind, query)` — browse or search a kind page with policy already
+  applied for the requesting viewer (`{parentId?, level?, cursor?, limit?, sort?, desc?, facets?, query?}`).
+  Prefer this when your adapter lists or searches pages directly from Ether's library.
+- `kinds.visible(kind, ids)` — check a batch of up to **500** external IDs and
+  return only the IDs visible to the requesting viewer, preserving caller order
+  and dropping unknown or hidden IDs. Use this when your adapter builds a custom
+  list or keeps its own index and needs to prune hidden items before returning them.
+
+**Security guard:** Only viewer-authenticated frontend adapter requests
+(`/ether/v1/frontend/*` on a plugin with `frontend_adapter`) may call
+`kinds.visible` or `kinds.browse`. Any other route (catalogue browse, jobs,
+views, actions, unauthenticated requests) receives a permission error. The
+viewer identity always comes from Ether's authenticated request context (and the
+host-minted, request-scoped `X-Ether-Viewer-Token` header on remote plugin
+callbacks) — never from guest-supplied parameters.
+
+Hosted QuickJS (`plugin.js`):
+
+```js
+// Browse/search with Rules and viewer policy already applied:
+const page = ether.kinds.browse("comic", { level: "series", limit: 50, query: q });
+
+// Or filter your own candidate IDs in chunks of at most 500:
+const allowedIds = ether.kinds.visible("comic", candidateIds.slice(0, 500));
+const allowed = new Set(allowedIds);
+const visible = candidates.filter((it) => allowed.has(it.id));
+```
+
+TypeScript SDK (`@ether/plugin-sdk`, hosted or sidecar):
+
+```ts
+import { kindsBrowse, kindsVisible } from "@ether/plugin-sdk";
+
+app.onFrontend("opds", {
+  async handle(method, path, _headers, _body, ctx) {
+    if (!ctx) return { status: 500, body: "" };
+    const page = await kindsBrowse(ctx, "comic", { limit: 50 });
+    const visibleIds = await kindsVisible(ctx, "comic", page.items.map((it) => it.id));
+    return { status: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(visibleIds) };
+  },
+});
+```
+
+Go SDK (`sdk/go`):
+
+```go
+func (a *adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    pctx, ok := etherplugin.FrontendContext(r.Context())
+    if !ok {
+        http.Error(w, "missing context", http.StatusForbidden)
+        return
+    }
+    page, err := pctx.KindBrowse("comic", etherplugin.KindBrowseQuery{Limit: 50})
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusForbidden)
+        return
+    }
+    visibleIDs, err := pctx.KindVisible("comic", candidateIDs) // <= 500 IDs per call
+    _ = page
+    _ = visibleIDs
+}
+```
+
+Python SDK (`sdk/python`):
+
+```python
+class Adapter:
+    def handle(self, method, path, headers, body, ctx):
+        page = ctx.kinds_browse("comic", {"limit": 50})
+        visible_ids = ctx.kinds_visible("comic", candidate_ids[:500])
+        return 200, {"Content-Type": "application/json"}, json.dumps({"ids": visible_ids, "count": len(page["items"])})
+```
+
 
 
 ## Source: sdk/catalogue-template/README.md
@@ -32792,6 +33191,72 @@ type PartStreamHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#MaxKindVisibleIDs
+
+``````
+const (
+	// MaxKindVisibleIDs is the per-call batch cap for kinds.visible (#615).
+	MaxKindVisibleIDs = 500
+	// HeaderViewerToken carries the host-minted, request-scoped adapter viewer
+	// proof header on frontend adapter calls (#615).
+	HeaderViewerToken = "X-Ether-Viewer-Token"
+)
+``````
+
+## Source: sdk/go/host.go#viewerTokenContextKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/host.go#viewerTokenContextKey
+
+``````
+type viewerTokenContextKey struct{}
+``````
+
+## Source: sdk/go/host.go#WithViewerToken
+
+``````
+// WithViewerToken attaches the host-minted X-Ether-Viewer-Token from an
+// incoming frontend adapter request onto ctx so KindVisible and KindBrowse
+// authenticate as that request's viewer without passing a viewer ID (#615).
+func WithViewerToken(ctx context.Context, token string) context.Context {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, viewerTokenContextKey{}, token)
+}
+``````
+
+## Source: sdk/go/host.go#ViewerTokenFromContext
+
+``````
+// ViewerTokenFromContext returns the adapter viewer token attached by
+// WithViewerToken (or automatically during FrontendAdapter dispatch).
+func ViewerTokenFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	tok, ok := ctx.Value(viewerTokenContextKey{}).(string)
+	return tok, ok && tok != ""
+}
+``````
+
+## Source: sdk/go/host.go#KindPolicyHost
+
+``````
+// KindPolicyHost evaluates a plugin library's Rules and viewer access policy
+// for the requesting frontend-adapter viewer (#615). RemoteHostClient and
+// MockHost implement it. The viewer identity comes solely from the request's
+// authenticated X-Ether-Viewer-Token on ctx, never from caller-supplied IDs.
+type KindPolicyHost interface {
+	KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error)
+	KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error)
+}
+``````
+
 ## Source: sdk/go/host.go#RemoteHostOptions.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -32881,6 +33346,21 @@ func (c *RemoteHostClient) callJSON(
 	out any,
 	allow404 bool,
 ) (bool, error) {
+	return c.callJSONWithHeaders(ctx, method, path, nil, in, out, allow404)
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.callJSONWithHeaders
+
+``````
+func (c *RemoteHostClient) callJSONWithHeaders(
+	ctx context.Context,
+	method, path string,
+	extraHeaders map[string]string,
+	in any,
+	out any,
+	allow404 bool,
+) (bool, error) {
 	var bodyReader io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -32897,6 +33377,11 @@ func (c *RemoteHostClient) callJSON(
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range extraHeaders {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -33296,6 +33781,75 @@ func (c *RemoteHostClient) KindItems(ctx context.Context, kindKey, cursor string
 	var page KindPage
 	_, err := c.callJSON(ctx, http.MethodGet, path, nil, &page, false)
 	return page, err
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.KindVisible
+
+``````
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (at most MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// ctx must carry the incoming frontend adapter's X-Ether-Viewer-Token (via
+// WithViewerToken, attached automatically by FrontendAdapter dispatch).
+func (c *RemoteHostClient) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	tok, ok := ViewerTokenFromContext(ctx)
+	if !ok {
+		return nil, fmt.Errorf("kinds.visible: no authenticated frontend adapter viewer token on context")
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, fmt.Errorf("kinds.visible: batch larger than %d ids", MaxKindVisibleIDs)
+	}
+	var out struct {
+		IDs []string `json:"ids"`
+	}
+	_, err := c.callJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/visible",
+		map[string]string{HeaderViewerToken: tok},
+		map[string]any{"ids": ids},
+		&out,
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if out.IDs == nil {
+		out.IDs = []string{}
+	}
+	return out.IDs, nil
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.KindBrowse
+
+``````
+// KindBrowse browses or searches kindKey with the library's Rules and viewer
+// access policy applied for the requesting frontend-adapter viewer (#615).
+// ctx must carry the incoming frontend adapter's X-Ether-Viewer-Token (via
+// WithViewerToken, attached automatically by FrontendAdapter dispatch).
+func (c *RemoteHostClient) KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error) {
+	tok, ok := ViewerTokenFromContext(ctx)
+	if !ok {
+		return KindPage{}, fmt.Errorf("kinds.browse: no authenticated frontend adapter viewer token on context")
+	}
+	var page KindPage
+	_, err := c.callJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/ether/plugin-host/kinds/"+url.PathEscape(kindKey)+"/browse",
+		map[string]string{HeaderViewerToken: tok},
+		query,
+		&page,
+		false,
+	)
+	if err != nil {
+		return KindPage{}, err
+	}
+	if page.Items == nil {
+		page.Items = []KindItem{}
+	}
+	return page, nil
 }
 ``````
 
@@ -33742,6 +34296,7 @@ type KindPage struct {
 | `cursor` | `string` | may be omitted (see validation for conditions) |  |
 | `limit` | `int` | may be omitted (see validation for conditions) |  |
 | `sort` | `string` | may be omitted (see validation for conditions) |  |
+| `desc` | `bool` | may be omitted (see validation for conditions) |  |
 | `facets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 
@@ -33757,9 +34312,17 @@ type KindBrowseRequest struct {
 	Cursor   string              `json:"cursor,omitempty"`
 	Limit    int                 `json:"limit,omitempty"`
 	Sort     string              `json:"sort,omitempty"`
+	Desc     bool                `json:"desc,omitempty"`
 	Facets   map[string][]string `json:"facets,omitempty"`
 	Query    string              `json:"query,omitempty"`
 }
+``````
+
+## Source: sdk/go/kinds.go#KindBrowseQuery
+
+``````
+// KindBrowseQuery is the query passed to kinds.browse from a frontend adapter (#615).
+type KindBrowseQuery = KindBrowseRequest
 ``````
 
 ## Source: sdk/go/kinds.go#KindExpandRequest.fields.md
@@ -34433,6 +34996,66 @@ func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
 }
 ``````
 
+## Source: sdk/go/kinds.go#*Context.viewerToken
+
+``````
+func (c *Context) viewerToken() string {
+	if tok := strings.TrimSpace(headerValue(c.Headers, HeaderViewerToken)); tok != "" {
+		return tok
+	}
+	if tok, ok := ViewerTokenFromContext(c.Context); ok {
+		return tok
+	}
+	return ""
+}
+``````
+
+## Source: sdk/go/kinds.go#*Context.KindVisible
+
+``````
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (at most MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// Only frontend adapter requests carrying Ether's authenticated viewer token
+// may call it.
+func (c *Context) KindVisible(kindKey string, ids []string) ([]string, error) {
+	if c.Ether == nil {
+		return nil, errors.New("kinds.visible: no host service available")
+	}
+	kh, ok := c.Ether.(KindPolicyHost)
+	if !ok {
+		return nil, errors.New("kinds.visible: host client does not implement KindPolicyHost")
+	}
+	tok := c.viewerToken()
+	if tok == "" {
+		return nil, errors.New("kinds.visible: no authenticated frontend adapter viewer on this request")
+	}
+	return kh.KindVisible(WithViewerToken(c.Context, tok), kindKey, ids)
+}
+``````
+
+## Source: sdk/go/kinds.go#*Context.KindBrowse
+
+``````
+// KindBrowse browses or searches kindKey with the library's Rules and viewer
+// access policy applied for the requesting frontend-adapter viewer (#615).
+// Only frontend adapter requests carrying Ether's authenticated viewer token
+// may call it.
+func (c *Context) KindBrowse(kindKey string, query KindBrowseQuery) (KindPage, error) {
+	if c.Ether == nil {
+		return KindPage{}, errors.New("kinds.browse: no host service available")
+	}
+	kh, ok := c.Ether.(KindPolicyHost)
+	if !ok {
+		return KindPage{}, errors.New("kinds.browse: host client does not implement KindPolicyHost")
+	}
+	tok := c.viewerToken()
+	if tok == "" {
+		return KindPage{}, errors.New("kinds.browse: no authenticated frontend adapter viewer on this request")
+	}
+	return kh.KindBrowse(WithViewerToken(c.Context, tok), kindKey, query)
+}
+``````
+
 ## Source: sdk/go/kinds.go#*Plugin.dispatchKinds
 
 ``````
@@ -34652,6 +35275,33 @@ func kindPageResponse(page KindPage, err error, limit int) RawResponse {
 }
 ``````
 
+## Source: sdk/go/kinds.go#frontendContextKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/kinds.go#frontendContextKey
+
+``````
+type frontendContextKey struct{}
+``````
+
+## Source: sdk/go/kinds.go#FrontendContext
+
+``````
+// FrontendContext returns the Ether plugin Context attached to a
+// FrontendAdapter http.Request during dispatch, so ServeHTTP handlers can
+// call pctx.KindVisible, pctx.KindBrowse, pctx.StreamURL, etc. directly (#615).
+func FrontendContext(ctx context.Context) (*Context, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	pctx, ok := ctx.Value(frontendContextKey{}).(*Context)
+	return pctx, ok && pctx != nil
+}
+``````
+
 ## Source: sdk/go/kinds.go#maxFrontendBody
 
 ``````
@@ -34681,7 +35331,13 @@ func (p *Plugin) dispatchFrontend(pctx *Context, method, key, subPath string, re
 	if len(query) > 0 {
 		target += "?" + encodeQuery(query)
 	}
-	httpReq := httptest.NewRequestWithContext(pctx.Context, method, target, bytes.NewReader(req.Body))
+	reqCtx := pctx.Context
+	if tok := headerValue(req.Headers, HeaderViewerToken); tok != "" {
+		reqCtx = WithViewerToken(reqCtx, tok)
+		pctx.Context = reqCtx
+	}
+	reqCtx = context.WithValue(reqCtx, frontendContextKey{}, pctx)
+	httpReq := httptest.NewRequestWithContext(reqCtx, method, target, bytes.NewReader(req.Body))
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 	}
@@ -36322,6 +36978,9 @@ func (p *Plugin) buildContext(ctx context.Context, req RawRequest) *Context {
 	hdrs := map[string]string{}
 	for k, v := range req.Headers {
 		hdrs[k] = v
+	}
+	if tok := headerValue(req.Headers, HeaderViewerToken); tok != "" {
+		ctx = WithViewerToken(ctx, tok)
 	}
 
 	return &Context{
@@ -40696,6 +41355,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.server
+import inspect
 import json
 import logging
 import os
@@ -40713,6 +41373,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
 
 TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
+MAX_KIND_VISIBLE_IDS = 500
+HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
 
 ALLOWED_SETTING_KINDS = frozenset(
     {
@@ -41402,12 +42064,14 @@ class RemoteHostClient:
         self,
         base_url: Optional[str] = None,
         credential: Optional[str] = None,
+        viewer_token: Optional[str] = None,
     ) -> None:
         raw_base = base_url or os.environ.get("ETHER_HOST_URL") or "http://127.0.0.1:32450"
         self.base_url = raw_base.rstrip("/")
         self.credential = (
             credential if credential is not None else os.environ.get("ETHER_PLUGIN_CREDENTIAL", "")
         )
+        self.viewer_token = (viewer_token or "").strip()
         self.kv = _KVClient(self._call_json)
         self.badges = _BadgesClient(self._call_json)
         self.http = _HttpClient(self._call_json)
@@ -41415,7 +42079,7 @@ class RemoteHostClient:
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
-        self.kinds = _KindsClient(self._call_json)
+        self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
@@ -41452,11 +42116,16 @@ class RemoteHostClient:
         path: str,
         body: Optional[Any] = None,
         allow_404: bool = False,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> Any:
         headers: Dict[str, str] = {
             "X-Ether-Plugin-Credential": self.credential,
             "Accept": "application/json",
         }
+        if extra_headers:
+            for k, v in extra_headers.items():
+                if v:
+                    headers[str(k)] = str(v)
         data: Optional[bytes] = None
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -41506,8 +42175,9 @@ class RemoteHostClient:
 def create_remote_host_client(
     base_url: Optional[str] = None,
     credential: Optional[str] = None,
+    viewer_token: Optional[str] = None,
 ) -> RemoteHostClient:
-    return RemoteHostClient(base_url=base_url, credential=credential)
+    return RemoteHostClient(base_url=base_url, credential=credential, viewer_token=viewer_token)
 
 
 # ---------------------------------------------------------------------------
@@ -41556,6 +42226,40 @@ class PluginContext:
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
         return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
+
+    def _viewer_token(self) -> str:
+        raw = _get_header(self.headers, HEADER_VIEWER_TOKEN)
+        return str(raw).strip() if raw is not None else ""
+
+    def kinds_visible(self, kind: str, ids: List[str]) -> List[str]:
+        """Evaluate the library's Rules and viewer access policy for a bounded
+        batch (at most 500) of external IDs in `kind` (#615). Only frontend
+        adapter requests carrying Ether's authenticated viewer token may call it."""
+        if self.ether is None or getattr(self.ether, "kinds", None) is None:
+            raise RuntimeError("kinds.visible: no host service available")
+        tok = self._viewer_token()
+        if not tok:
+            raise RuntimeError("kinds.visible: no authenticated frontend adapter viewer on this request")
+        return self.ether.kinds.visible(str(kind), list(ids), viewer_token=tok)
+
+    def kinds_browse(
+        self,
+        kind: str,
+        query: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Browse or search `kind` with the library's Rules and viewer access
+        policy applied for the requesting frontend-adapter viewer (#615). Only
+        frontend adapter requests carrying Ether's authenticated viewer token
+        may call it."""
+        if self.ether is None or getattr(self.ether, "kinds", None) is None:
+            raise RuntimeError("kinds.browse: no host service available")
+        tok = self._viewer_token()
+        if not tok:
+            raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer on this request")
+        return self.ether.kinds.browse(str(kind), dict(query or {}), viewer_token=tok)
+
+    kindsVisible = kinds_visible
+    kindsBrowse = kinds_browse
 
 
 def _get_header(headers: Optional[Dict[str, Any]], name: str) -> Optional[str]:
@@ -41745,7 +42449,12 @@ class PluginInstance:
         locale = str(locale_raw).split(",")[0].strip() or "en"
         pick_token = _get_header(headers, "X-Ether-Pick")
         request_id = _get_header(headers, "X-Ether-Request-ID")
-        host_client = self._host if self._host is not None else create_remote_host_client()
+        viewer_token = _get_header(headers, HEADER_VIEWER_TOKEN)
+        host_client = (
+            self._host
+            if self._host is not None
+            else create_remote_host_client(viewer_token=viewer_token)
+        )
         settings = dict(self._current_settings)
         getter = getattr(host_client, "settings_get", None)
         if callable(getter) and str(req.get("path", "")) != "/ether/configure" and (not isinstance(host_client, RemoteHostClient) or host_client.credential):
@@ -42210,7 +42919,16 @@ class PluginInstance:
             )
             if query:
                 sub_path += "?" + urllib.parse.urlencode(query)
-            status, headers, resp_body = adapter.handle(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"")
+            handle_fn = adapter.handle
+            try:
+                params = list(inspect.signature(handle_fn).parameters.values())
+                accepts_ctx = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params) or len(params) >= 5
+            except (TypeError, ValueError):
+                accepts_ctx = False
+            if accepts_ctx:
+                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"", ctx)
+            else:
+                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"")
             # A HEAD reply carries headers only, exactly as a real server would.
             if method == "HEAD":
                 resp_body = b""
@@ -42907,6 +43625,8 @@ class MockHostClient:
         self.catalog = self._Catalog(self)
         self.viewers = self._Viewers(self)
         self.kind_store: Dict[str, List[Dict[str, Any]]] = {}
+        self.kind_hidden_ids: Dict[str, set] = {}
+        self.kind_policy_filter: Optional[Callable[[str, Dict[str, Any]], bool]] = None
         self.sources: List[Dict[str, Any]] = []
         self.blobs: Dict[str, bytes] = {}
         self.limits: RuntimeLimits = {
@@ -42973,6 +43693,98 @@ class MockHostClient:
             page = all_items[start:start + limit]
             out: Dict[str, Any] = {"items": page}
             if page and start + limit < len(all_items):
+                out["nextCursor"] = page[-1].get("id")
+            return out
+
+        def _allowed(self, kind: str, item: Dict[str, Any]) -> bool:
+            hidden = self._p.kind_hidden_ids.get(kind)
+            if hidden and item.get("id") in hidden:
+                return False
+            filt = self._p.kind_policy_filter
+            if filt is not None and not filt(kind, item):
+                return False
+            return True
+
+        def visible(
+            self,
+            kind: str,
+            ids: List[str],
+            viewer_token: Optional[str] = None,
+        ) -> List[str]:
+            if not (viewer_token or "").strip():
+                raise RuntimeError("kinds.visible: no authenticated frontend adapter viewer token on this request")
+            if len(ids) > MAX_KIND_VISIBLE_IDS:
+                raise ValueError(f"kinds.visible: batch larger than {MAX_KIND_VISIBLE_IDS} ids")
+            by_id = {str(it.get("id")): it for it in self._p.kind_store.get(kind, [])}
+            seen: set = set()
+            out: List[str] = []
+            for raw_id in ids:
+                ext_id = str(raw_id)
+                if not ext_id or ext_id in seen:
+                    continue
+                seen.add(ext_id)
+                it = by_id.get(ext_id)
+                if it is None or not self._allowed(kind, it):
+                    continue
+                out.append(ext_id)
+            return out
+
+        def browse(
+            self,
+            kind: str,
+            query: Optional[Dict[str, Any]] = None,
+            viewer_token: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            if not (viewer_token or "").strip():
+                raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer token on this request")
+            q = dict(query or {})
+            limit = int(q.get("limit") or 200)
+            if limit <= 0:
+                limit = 200
+            parent_id = str(q.get("parentId") or "")
+            level = str(q.get("level") or "")
+            needle = str(q.get("query") or "").strip().lower()
+            facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
+            matched: List[Dict[str, Any]] = []
+            for it in self._p.kind_store.get(kind, []):
+                if not self._allowed(kind, it):
+                    continue
+                if parent_id and str(it.get("parentId") or "") != parent_id:
+                    continue
+                if level and str(it.get("level") or "") != level:
+                    continue
+                if needle:
+                    hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
+                    if needle not in hay:
+                        continue
+                if facets:
+                    item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                    ok = True
+                    for fk, want in facets.items():
+                        if not want:
+                            continue
+                        raw = item_fields.get(fk)
+                        if isinstance(raw, list):
+                            have = [str(v).lower() for v in raw]
+                        elif raw is not None:
+                            have = [str(raw).lower()]
+                        else:
+                            have = []
+                        if not any(str(w).lower() in have for w in want):
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                matched.append(it)
+            if q.get("desc"):
+                matched = list(reversed(matched))
+            cursor = str(q.get("cursor") or "")
+            start = 0
+            if cursor:
+                start = next((i + 1 for i, it in enumerate(matched) if it.get("id") == cursor), len(matched))
+            page = matched[start:start + limit]
+            out: Dict[str, Any] = {"items": page}
+            if page and start + limit < len(matched):
                 out["nextCursor"] = page[-1].get("id")
             return out
 
@@ -43616,9 +44428,40 @@ def stream_url(
     return ctx.stream_url(item_ref, part_index=part_index)
 
 
+def kinds_visible(
+    ctx: PluginContext,
+    kind: str,
+    ids: List[str],
+) -> List[str]:
+    """Evaluate the library's Rules and viewer access policy for a bounded
+    batch (at most 500) of external IDs in `kind` (#615)."""
+    return ctx.kinds_visible(kind, ids)
+
+
+def kinds_browse(
+    ctx: PluginContext,
+    kind: str,
+    query: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Browse or search `kind` with the library's Rules and viewer access
+    policy applied for the requesting frontend-adapter viewer (#615)."""
+    return ctx.kinds_browse(kind, query=query)
+
+
 class _KindsClient:
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
+
+    def _resolve_viewer_token(self, viewer_token: Optional[str]) -> str:
+        tok = viewer_token if viewer_token is not None else (
+            self._default_viewer_token() if self._default_viewer_token else ""
+        )
+        return str(tok or "").strip()
 
     def upsert(self, kind: str, items: List[Dict[str, Any]]) -> int:
         result = self._call("POST", f"/ether/plugin-host/kinds/{urllib.parse.quote(kind)}/upsert", {"items": items})
@@ -43630,6 +44473,42 @@ class _KindsClient:
     def items(self, kind: str, cursor: str = "", limit: int = 200) -> Dict[str, Any]:
         q = urllib.parse.urlencode({"cursor": cursor, "limit": limit})
         return self._call("GET", f"/ether/plugin-host/kinds/{urllib.parse.quote(kind)}/items?{q}") or {"items": []}
+
+    def visible(
+        self,
+        kind: str,
+        ids: List[str],
+        viewer_token: Optional[str] = None,
+    ) -> List[str]:
+        tok = self._resolve_viewer_token(viewer_token)
+        if not tok:
+            raise RuntimeError("kinds.visible: no authenticated frontend adapter viewer token on this request")
+        if len(ids) > MAX_KIND_VISIBLE_IDS:
+            raise ValueError(f"kinds.visible: batch larger than {MAX_KIND_VISIBLE_IDS} ids")
+        result = self._call(
+            "POST",
+            f"/ether/plugin-host/kinds/{urllib.parse.quote(kind, safe='')}/visible",
+            {"ids": list(ids)},
+            extra_headers={HEADER_VIEWER_TOKEN: tok},
+        )
+        return list((result or {}).get("ids") or [])
+
+    def browse(
+        self,
+        kind: str,
+        query: Optional[Dict[str, Any]] = None,
+        viewer_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        tok = self._resolve_viewer_token(viewer_token)
+        if not tok:
+            raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer token on this request")
+        result = self._call(
+            "POST",
+            f"/ether/plugin-host/kinds/{urllib.parse.quote(kind, safe='')}/browse",
+            dict(query or {}),
+            extra_headers={HEADER_VIEWER_TOKEN: tok},
+        )
+        return result or {"items": []}
 
     def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find owner sources. indexer_search accepts category (comma-separated
@@ -44323,6 +45202,8 @@ export const MaxBadgeEntriesPerCall = 500;
 export const MaxBadgeLabelsPerTitle = 3;
 export const MaxBadgeLabelLen = 16;
 export const PosterBadgeQuotaTitles = 200_000;
+export const MAX_KIND_VISIBLE_IDS = 500;
+export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -44661,11 +45542,15 @@ export interface EtherHost {
   notify: {
     owner(text: string): MaybePromise<void>;
   };
-  /** Content-kind host services (remote + mock clients provide them). */
+  /** Content-kind host services (hosted, remote, and mock clients provide them). */
   kinds?: {
     upsert(kind: string, items: import("./types.ts").KindItem[]): MaybePromise<number>;
     delete(kind: string, externalIds: string[]): MaybePromise<void>;
     items(kind: string, cursor?: string, limit?: number): MaybePromise<import("./types.ts").KindPage>;
+    /** Returns the subset of external IDs (max 500) allowed by the library's Rules for the requesting adapter viewer (#615). */
+    visible(kind: string, ids: string[], viewerToken?: string): MaybePromise<string[]>;
+    /** Browses or searches a kind library with Rules and viewer policy applied for the requesting adapter viewer (#615). */
+    browse(kind: string, query?: import("./types.ts").KindBrowseQuery, viewerToken?: string): MaybePromise<import("./types.ts").KindPage>;
     resolveSources(q: import("./types.ts").SourceQuery): MaybePromise<import("./types.ts").SourceCandidate[]>;
   };
   cache?: {
@@ -44748,6 +45633,13 @@ interface GlobalEtherBindings {
     };
     notify: {
       owner: (text: string) => void;
+    };
+    kinds?: {
+      upsert: (kind: string, items: import("./types.ts").KindItem[]) => { accepted: number } | number;
+      delete: (kind: string, externalIds: string[]) => void;
+      items: (kind: string, cursor?: string, limit?: number) => import("./types.ts").KindPage;
+      visible: (kind: string, ids: string[]) => string[];
+      browse: (kind: string, query?: import("./types.ts").KindBrowseQuery) => import("./types.ts").KindPage;
     };
     frontend: {
       streamURL: (itemRef: string, partIndex?: number) => { url: string };
@@ -44961,6 +45853,48 @@ export function createHostedClient(): EtherHost {
         callHost("notify.owner", [text]);
       },
     },
+    kinds: {
+      upsert(kind, items) {
+        if (g.ether?.kinds?.upsert) {
+          const r = g.ether.kinds.upsert(kind, items);
+          return typeof r === "number" ? r : r?.accepted ?? 0;
+        }
+        const r = callHost<{ accepted: number }>("kinds.upsert", [kind, items]);
+        return r?.accepted ?? 0;
+      },
+      delete(kind, externalIds) {
+        if (g.ether?.kinds?.delete) {
+          g.ether.kinds.delete(kind, externalIds);
+          return;
+        }
+        callHost("kinds.delete", [kind, externalIds]);
+      },
+      items(kind, cursor = "", limit = 200) {
+        if (g.ether?.kinds?.items) {
+          return g.ether.kinds.items(kind, cursor, limit) ?? { items: [] };
+        }
+        return callHost<import("./types.ts").KindPage>("kinds.items", [kind, cursor, limit]) ?? { items: [] };
+      },
+      visible(kind, ids, _viewerToken) {
+        if (ids.length > MAX_KIND_VISIBLE_IDS) {
+          throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+        }
+        if (g.ether?.kinds?.visible) {
+          return g.ether.kinds.visible(kind, ids) ?? [];
+        }
+        return callHost<string[]>("kinds.visible", [kind, ids]) ?? [];
+      },
+      browse(kind, query = {}, _viewerToken) {
+        if (g.ether?.kinds?.browse) {
+          return g.ether.kinds.browse(kind, query) ?? { items: [] };
+        }
+        return callHost<import("./types.ts").KindPage>("kinds.browse", [kind, query]) ?? { items: [] };
+      },
+      resolveSources(q) {
+        const r = callHost<{ candidates: import("./types.ts").SourceCandidate[] }>("sources.resolve", [q]);
+        return r?.candidates ?? [];
+      },
+    },
     frontend: {
       streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
@@ -45012,6 +45946,8 @@ export interface RemoteHostOptions {
   baseUrl?: string;
   /** Plugin credential issued during pairing (`X-Ether-Plugin-Credential`). */
   credential?: string;
+  /** Optional host-minted frontend adapter viewer token (`X-Ether-Viewer-Token`, #615). */
+  viewerToken?: string;
   /** Optional custom fetch implementation for testing. */
   fetchImpl?: typeof fetch;
 }
@@ -45036,10 +45972,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     path: string,
     body?: unknown,
     allow404 = false,
+    extraHeaders?: Record<string, string>,
   ): Promise<T | null> => {
     const headers: Record<string, string> = {
       "X-Ether-Plugin-Credential": credential,
       Accept: "application/json",
+      ...(extraHeaders ?? {}),
     };
     let payload: string | undefined;
     if (body !== undefined) {
@@ -45239,6 +46177,37 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       async items(kind, cursor = "", limit = 200) {
         return (await callJson("GET", `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/items?cursor=${encodeURIComponent(cursor)}&limit=${limit}`)) ?? { items: [] };
       },
+      async visible(kind, ids, viewerToken) {
+        const tok = (viewerToken ?? opts.viewerToken ?? "").trim();
+        if (!tok) {
+          throw new Error("kinds.visible: no authenticated frontend adapter viewer token on this request");
+        }
+        if (ids.length > MAX_KIND_VISIBLE_IDS) {
+          throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+        }
+        const r = await callJson<{ ids: string[] }>(
+          "POST",
+          `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/visible`,
+          { ids },
+          false,
+          { [HEADER_VIEWER_TOKEN]: tok },
+        );
+        return r?.ids ?? [];
+      },
+      async browse(kind, query = {}, viewerToken) {
+        const tok = (viewerToken ?? opts.viewerToken ?? "").trim();
+        if (!tok) {
+          throw new Error("kinds.browse: no authenticated frontend adapter viewer token on this request");
+        }
+        const r = await callJson<import("./types.ts").KindPage>(
+          "POST",
+          `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/browse`,
+          query,
+          false,
+          { [HEADER_VIEWER_TOKEN]: tok },
+        );
+        return r ?? { items: [] };
+      },
       async resolveSources(q) {
         const r = await callJson<{ candidates: unknown[] }>("POST", "/ether/plugin-host/sources/resolve", q);
         return (r?.candidates ?? []) as never[];
@@ -45432,6 +46401,8 @@ export {
   MaxBadgeLabelsPerTitle,
   MaxBadgeLabelLen,
   PosterBadgeQuotaTitles,
+  MAX_KIND_VISIBLE_IDS,
+  HEADER_VIEWER_TOKEN,
   type BadgeEntry,
   type BadgeTitleRef,
   type BadgeUsage,
@@ -45505,6 +46476,8 @@ export {
 export {
   candidateRef,
   streamUrl,
+  kindsVisible,
+  kindsBrowse,
   type CatalogProvider,
   type FrontendAdapter,
   type KindMatcher,
@@ -45536,7 +46509,9 @@ export {
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS } from "./host.ts";
 import type {
+  KindBrowseQuery,
   KindBrowseRequest,
   KindChangePage,
   KindExpandRequest,
@@ -45555,6 +46530,8 @@ import type {
   SetupTestResult,
   SourceCandidate,
 } from "./types.ts";
+
+export { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS };
 
 export interface CatalogProvider<S = Record<string, unknown>> {
   browse(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
@@ -45578,12 +46555,13 @@ export interface KindMatcher<S = Record<string, unknown>> {
 /** Spec-name alias. */
 export type Matcher<S = Record<string, unknown>> = KindMatcher<S>;
 
-export interface FrontendAdapter {
+export interface FrontendAdapter<S = Record<string, unknown>> {
   handle(
     method: string,
     path: string,
     headers: Record<string, string>,
     body: string,
+    ctx?: PluginContext<S>,
   ): MaybePromise<{ status: number; headers?: Record<string, string>; body: string }>;
 }
 
@@ -45626,11 +46604,64 @@ export async function streamUrl<S = Record<string, unknown>>(
     : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
 }
 
+function readViewerToken<S>(ctx: PluginContext<S>): string {
+  for (const [k, v] of Object.entries(ctx.headers ?? {})) {
+    if (k.toLowerCase() === HEADER_VIEWER_TOKEN.toLowerCase()) {
+      const value = Array.isArray(v) ? v[0] : v;
+      return String(value ?? "").trim();
+    }
+  }
+  return "";
+}
+
+/**
+ * Evaluate the library's Rules and viewer access policy for a bounded batch
+ * (at most 500) of external IDs in `kind` (#615). Only frontend adapter
+ * requests carrying Ether's authenticated viewer token may call it.
+ */
+export async function kindsVisible<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  kind: string,
+  ids: string[],
+): Promise<string[]> {
+  if (!ctx.ether?.kinds?.visible) {
+    throw new Error("kinds.visible: no host service available");
+  }
+  const token = readViewerToken(ctx);
+  if (!token) {
+    throw new Error("kinds.visible: no authenticated frontend adapter viewer on this request");
+  }
+  if (ids.length > MAX_KIND_VISIBLE_IDS) {
+    throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+  }
+  return await ctx.ether.kinds.visible(kind, ids, token);
+}
+
+/**
+ * Browse or search `kind` with the library's Rules and viewer access policy
+ * applied for the requesting frontend-adapter viewer (#615). Only frontend
+ * adapter requests carrying Ether's authenticated viewer token may call it.
+ */
+export async function kindsBrowse<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  kind: string,
+  query: KindBrowseQuery = {},
+): Promise<KindPage> {
+  if (!ctx.ether?.kinds?.browse) {
+    throw new Error("kinds.browse: no host service available");
+  }
+  const token = readViewerToken(ctx);
+  if (!token) {
+    throw new Error("kinds.browse: no authenticated frontend adapter viewer on this request");
+  }
+  return await ctx.ether.kinds.browse(kind, query, token);
+}
+
 export interface KindHandlers<S = Record<string, unknown>> {
   catalog: Map<string, CatalogProvider<S>>;
   resolve: Map<string, KindResolver<S>>;
   match: Map<string, KindMatcher<S>>;
-  frontend: Map<string, FrontendAdapter>;
+  frontend: Map<string, FrontendAdapter<S>>;
   setup?: SetupTester<S>;
 }
 
@@ -45704,7 +46735,7 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const query = frontendQuery(req);
     const qs = query.toString();
     if (qs) subPath += `?${qs}`;
-    const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "");
+    const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "", ctx);
     if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
     // A HEAD reply carries headers only, exactly as a real server would.
     return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };
@@ -46172,6 +47203,7 @@ import {
 import {
   createHostedClient,
   createRemoteHostClient,
+  HEADER_VIEWER_TOKEN,
   isHostedRuntime,
   type EtherHost,
   type RemoteHostOptions,
@@ -46256,7 +47288,7 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onCatalog(kind: string, provider: CatalogProvider<S>): void;
   onResolve(kind: string, resolver: KindResolver<S>): void;
   onMatch(kind: string, matcher: KindMatcher<S>): void;
-  onFrontend(key: string, adapter: FrontendAdapter): void;
+  onFrontend(key: string, adapter: FrontendAdapter<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
 
@@ -46473,11 +47505,16 @@ export function plugin<S = Record<string, unknown>>(
     const locale = localeHeader.split(",")[0]?.trim() || "en";
     const pickToken = getHeader(req.headers, "X-Ether-Pick");
     const requestId = getHeader(req.headers, "X-Ether-Request-ID");
+    const viewerToken = getHeader(req.headers, HEADER_VIEWER_TOKEN);
     const hostClient =
       def.host ??
       (isHostedRuntime()
         ? createHostedClient()
-        : createRemoteHostClient(def.remoteHostOptions));
+        : createRemoteHostClient(
+            viewerToken
+              ? { ...(def.remoteHostOptions ?? {}), viewerToken }
+              : def.remoteHostOptions,
+          ));
     const makeContext = (settings: S): PluginContext<S> => ({
       manifest,
       settings,
@@ -48469,9 +49506,13 @@ export interface KindBrowseRequest {
   cursor?: string;
   limit?: number;
   sort?: string;
+  desc?: boolean;
   facets?: Record<string, string[]>;
   query?: string;
 }
+
+/** Query passed to kinds.browse from a frontend adapter (#615). */
+export type KindBrowseQuery = Omit<KindBrowseRequest, "kind">;
 
 export interface KindExpandRequest {
   kind: string;

@@ -6,6 +6,10 @@ import {
   createHostedClient,
   createMockHostClient,
   createRemoteHostClient,
+  HEADER_VIEWER_TOKEN,
+  kindsBrowse,
+  kindsVisible,
+  MAX_KIND_VISIBLE_IDS,
   parseFeed,
   plugin,
   streamUrl,
@@ -331,4 +335,104 @@ test("archive.read and runtime.limits wire hosted, remote, and mock clients", as
   assert.deepEqual([...rOut[1]!.body], [0, 255, 16, 42]);
   assert.equal(remoteSeen[0]!.url, "http://ether.local/ether/plugin-host/limits");
   assert.equal(remoteSeen[1]!.url, "http://ether.local/ether/plugin-host/data/archive.read");
+});
+
+test("kinds.visible and kinds.browse enforce viewer token, batch cap, and policy across hosted, remote, and mock clients", async () => {
+  const mock = createMockHostClient();
+  await mock.kinds!.upsert("comic", [
+    { id: "a", level: "series", title: "Alpha" },
+    { id: "b", level: "series", title: "Beta" },
+    { id: "c", level: "series", title: "Gamma" },
+  ]);
+  mock.state.kindHiddenIds.set("comic", new Set(["b"]));
+
+  // Mock client rejects missing token and oversized batch.
+  assert.throws(() => mock.kinds!.visible("comic", ["a", "b"]));
+  assert.throws(() => mock.kinds!.browse("comic", {}));
+  assert.throws(() =>
+    mock.kinds!.visible(
+      "comic",
+      Array.from({ length: MAX_KIND_VISIBLE_IDS + 1 }, (_, i) => `id-${i}`),
+      "tok-1",
+    ),
+  );
+  assert.deepEqual(await mock.kinds!.visible("comic", ["c", "b", "missing", "a", "c"], "tok-1"), ["c", "a"]);
+  const mockPage = await mock.kinds!.browse("comic", { query: "a", limit: 10 }, "tok-1");
+  assert.deepEqual(mockPage.items.map((it) => it.id), ["a", "c"]);
+
+  // FrontendAdapter receives ctx and kindsVisible/kindsBrowse pick up X-Ether-Viewer-Token.
+  const app = plugin({
+    manifest: { id: "org.example.comics", name: "Comics", version: "1.0.0", ether: { protocol: 1, kind: "content" } },
+    routes: {},
+    host: mock,
+  });
+  app.onFrontend("opds", {
+    async handle(_m, _p, _h, _b, ctx) {
+      const ids = await kindsVisible(ctx!, "comic", ["a", "b", "c"]);
+      const page = await kindsBrowse(ctx!, "comic", { desc: true, limit: 10 });
+      return { status: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, browse: page.items.map((it) => it.id) }) };
+    },
+  });
+  const okRes = await app.dispatch({
+    method: "GET",
+    path: "/ether/v1/frontend/opds/feed",
+    headers: { [HEADER_VIEWER_TOKEN]: "tok-live" },
+  });
+  assert.equal(okRes.status, 200);
+  assert.deepEqual(JSON.parse(String(okRes.body)), { ids: ["a", "c"], browse: ["c", "a"] });
+
+  const noTokRes = await app.dispatch({
+    method: "GET",
+    path: "/ether/v1/frontend/opds/feed",
+    headers: { "X-Ether-Viewer": "42" },
+  });
+  assert.equal(noTokRes.status, 500);
+
+  // Hosted client forwards to __ether_host kinds.visible / kinds.browse.
+  const g = globalThis as Record<string, unknown>;
+  const prev = g.__ether_host;
+  const hostedCalls: Array<{ name: string; args: unknown }> = [];
+  g.__ether_host = (name: string, raw: string) => {
+    hostedCalls.push({ name, args: JSON.parse(raw) });
+    if (name === "kinds.visible") return JSON.stringify(["a"]);
+    return JSON.stringify({ items: [{ id: "a", level: "series", title: "Alpha" }] });
+  };
+  try {
+    const hosted = createHostedClient();
+    assert.deepEqual(await hosted.kinds!.visible("comic", ["a", "b"]), ["a"]);
+    const page = await hosted.kinds!.browse("comic", { query: "alp" });
+    assert.deepEqual(page.items.map((it) => it.id), ["a"]);
+  } finally {
+    if (prev === undefined) delete g.__ether_host;
+    else g.__ether_host = prev;
+  }
+  assert.deepEqual(hostedCalls[0], { name: "kinds.visible", args: ["comic", ["a", "b"]] });
+  assert.deepEqual(hostedCalls[1], { name: "kinds.browse", args: ["comic", { query: "alp" }] });
+
+  // Remote client sends X-Ether-Viewer-Token header and never viewerId in body.
+  const seenRemote: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = [];
+  const remote = createRemoteHostClient({
+    baseUrl: "http://ether.local",
+    credential: "cred-1",
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      const hdrs = (init?.headers ?? {}) as Record<string, string>;
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+      seenRemote.push({ url: String(url), headers: hdrs, body });
+      if (String(url).endsWith("/visible")) {
+        return new Response(JSON.stringify({ ids: ["a"] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ items: [{ id: "a", level: "series", title: "Alpha" }] }), { status: 200 });
+    }) as typeof fetch,
+  });
+  await assert.rejects(() => Promise.resolve(remote.kinds!.visible("comic", ["a"])));
+  await assert.rejects(() => Promise.resolve(remote.kinds!.browse("comic", {})));
+  assert.deepEqual(await remote.kinds!.visible("comic", ["a", "b"], "tok-r"), ["a"]);
+  const rPage = await remote.kinds!.browse("comic", { query: "alp", desc: true }, "tok-r");
+  assert.equal(rPage.items.length, 1);
+  assert.equal(seenRemote[0]!.url, "http://ether.local/ether/plugin-host/kinds/comic/visible");
+  assert.equal(seenRemote[0]!.headers[HEADER_VIEWER_TOKEN], "tok-r");
+  assert.equal("viewerId" in seenRemote[0]!.body, false);
+  assert.equal(seenRemote[1]!.url, "http://ether.local/ether/plugin-host/kinds/comic/browse");
+  assert.equal(seenRemote[1]!.headers[HEADER_VIEWER_TOKEN], "tok-r");
+  assert.equal("viewerId" in seenRemote[1]!.body, false);
 });

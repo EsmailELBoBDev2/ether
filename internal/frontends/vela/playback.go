@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -45,6 +46,10 @@ type playSession struct {
 	observedRecords   []object
 	diagnosticHistory []object
 	clientErrors      []object
+	// observedState and observedAt are the client's last reported player
+	// state, logged on change so a rebuffer shows beside the server's log.
+	observedState string
+	observedAt    time.Time
 
 	mediaReads       atomic.Int32
 	lastActivityNano atomic.Int64
@@ -870,6 +875,17 @@ func (i *instance) observe(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sequence = b.Sequence
 	s.position = pos
+	if b.State != s.observedState {
+		attrs := []any{"session", s.id, "state", b.State, "previous", s.observedState, "position", pos.Round(time.Millisecond)}
+		if !s.observedAt.IsZero() {
+			attrs = append(attrs, "after", time.Since(s.observedAt).Round(time.Millisecond))
+		}
+		if b.Error != nil {
+			attrs = append(attrs, "errorClass", b.Error.Class)
+		}
+		slog.Info("vela player state", attrs...)
+		s.observedState, s.observedAt = b.State, time.Now()
+	}
 	if b.AudioTrackID != nil {
 		s.plan["selectedAudioTrackId"] = *b.AudioTrackID
 	}

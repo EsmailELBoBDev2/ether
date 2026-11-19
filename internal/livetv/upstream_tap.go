@@ -738,6 +738,9 @@ func (t *upstreamTap) readAs(ctx context.Context, rd *tapReader, off int64, p []
 	for off >= t.written && !t.closed && ctx.Err() == nil {
 		t.cond.Wait()
 	}
+	if !waited.IsZero() && rd != nil && rd.g != nil && rd.g.steady && rd.g.log != nil && time.Since(waited) >= tapPaceStarved {
+		rd.g.log.Info("live tap reader starved", "waited", time.Since(waited).Round(time.Millisecond), "paced", rd.pace != nil, "reserveTarget", rd.g.reserve, "stalled", t.stalled, "reconnects", t.reconnects)
+	}
 	if !waited.IsZero() && rd != nil && rd.pace != nil && time.Since(waited) >= tapPaceStarved {
 		// Starved at the live edge (a stall): the schedule restarts here,
 		// so the stall's time is not an allowance that swallows the
@@ -803,6 +806,39 @@ func (t *upstreamTap) paceLocked(p *tapPace, off int64) int64 {
 		return t.written
 	}
 	return t.marks[i].off
+}
+
+// refillSteadyInput re-anchors ss's paced release at its reader, so the
+// reader may take up to tapPaceLead beyond what it already has. The frame
+// clock calls it when its decoded pictures run low: a pace whose clock fell
+// behind real playout must never starve a decoder while the ring holds media.
+func (s *Service) refillSteadyInput(ss *session) {
+	g := s.healthGrant(ss)
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	t := g.tap
+	g.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.paces[g]
+	if p == nil || !p.anchored || t.ts == nil || len(t.marks) == 0 {
+		return
+	}
+	// Only a reader the pace is actually holding back, with media waiting
+	// in the ring, is released; otherwise the reserve stays where it is.
+	due := p.dueClock(time.Now()) + int64(tapPaceLead/time.Millisecond)*tsClockHz/1000
+	for rd := range t.active {
+		if rd.g == g && rd.pace == p && rd.off < t.written && t.clockAtLocked(rd.off) >= due-tsClockHz/5 {
+			p.anchored = false
+			t.cond.Broadcast()
+			return
+		}
+	}
 }
 
 // setSteadyInputRate adjusts the paced release rate of ss's grant on its
@@ -2087,22 +2123,37 @@ func (t *upstreamTap) healthForLocked(g *inputGrant) UpstreamHealth {
 	if t.ts != nil && t.ts.pmtSig != "" {
 		h.FormatGeneration = uint64(t.ts.format) + 1
 	}
+	h.EdgePTS = -1
 	if t.ts != nil {
 		h.Kind = "ts"
 		h.StallAfter = t.stallThresholdLocked(now)
+		h.EdgePTS = t.ts.maxPTS
 	}
 	h.Connected = liveSocket && !t.stalled
 	if !t.lastData.IsZero() {
 		h.DataAge = now.Sub(t.lastData)
 	}
-	var reader *tapReader
+	var reader, oldest *tapReader
 	for rd := range t.active {
-		if rd.g == g && (reader == nil || rd.off > reader.off) {
+		if rd.g != g {
+			continue
+		}
+		h.Readers++
+		if reader == nil || rd.off > reader.off {
 			reader = rd
 		}
+		if oldest == nil || rd.off < oldest.off {
+			oldest = rd
+		}
+	}
+	if reader != nil && oldest != reader && t.ts != nil && len(t.marks) > 0 {
+		h.Spread = time.Duration(t.clockAtLocked(reader.off)-t.clockAtLocked(oldest.off)) * time.Second / tsClockHz
 	}
 	if reader != nil {
 		h.ReserveDepth = t.readerDepthLocked(reader)
+		if p := reader.pace; p != nil && p.anchored && t.ts != nil && len(t.marks) > 0 {
+			h.PaceAhead = time.Duration(t.clockAtLocked(reader.off)-p.dueClock(now)) * time.Second / tsClockHz
+		}
 	} else if r, ok := t.resume[g]; ok {
 		h.ReserveDepth = t.depthLocked(r.last)
 	}

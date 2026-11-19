@@ -85,8 +85,8 @@ type PluginFacetPeoplePage struct {
 type PluginPresentationLibraries interface {
 	Presentation(ctx context.Context, lib core.Library) (PluginPresentation, bool)
 	FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error)
-	FacetCollections(ctx context.Context, lib core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error)
-	FacetPeople(ctx context.Context, lib core.Library, field, order string, offset, limit int) (PluginFacetPeoplePage, error)
+	FacetCollections(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error)
+	FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (PluginFacetPeoplePage, error)
 }
 
 var (
@@ -941,7 +941,7 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 	if !declared {
 		return frontend.FacetCollectionPage{}, core.ErrNotFound
 	}
-	out, err := pres.FacetCollections(ctx, lib, field, order, page.Offset, page.Limit)
+	out, err := pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
 	if err != nil {
 		return frontend.FacetCollectionPage{}, err
 	}
@@ -977,7 +977,7 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 	if !declaredPeople {
 		return frontend.FacetPersonPage{}, core.ErrNotFound
 	}
-	raw, err := pres.FacetPeople(ctx, lib, field, order, page.Offset, page.Limit)
+	raw, err := pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
 	if err != nil {
 		return frontend.FacetPersonPage{}, err
 	}

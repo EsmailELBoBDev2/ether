@@ -46,6 +46,7 @@ var (
 type IndexedFieldValue struct {
 	Field string
 	Text  string
+	Fold  string
 	Int   int64
 	Real  float64
 }
@@ -217,7 +218,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 		if utf8.RuneCountInString(s) > MaxFieldRunes {
 			return nil, nil, fmt.Errorf("string exceeds %d runes", MaxFieldRunes)
 		}
-		return []IndexedFieldValue{{Field: f.Key, Text: s}}, []string{s}, nil
+		return []IndexedFieldValue{{Field: f.Key, Text: s, Fold: FoldFieldText(s)}}, []string{s}, nil
 
 	case "enum":
 		var s string
@@ -237,7 +238,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 		if !allowed {
 			return nil, nil, fmt.Errorf("value %q is not in declared enum", s)
 		}
-		return []IndexedFieldValue{{Field: f.Key, Text: s}}, []string{s}, nil
+		return []IndexedFieldValue{{Field: f.Key, Text: s, Fold: FoldFieldText(s)}}, []string{s}, nil
 
 	case "int", "date", "duration":
 		n, err := parseJSONInt64(trimmed)
@@ -267,7 +268,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 			iv = 1
 			txt = "true"
 		}
-		return []IndexedFieldValue{{Field: f.Key, Text: txt, Int: iv}}, nil, nil
+		return []IndexedFieldValue{{Field: f.Key, Text: txt, Fold: txt, Int: iv}}, nil, nil
 
 	case "strings":
 		var arr []string
@@ -287,7 +288,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 			texts = append(texts, s)
 			if !seen[s] {
 				seen[s] = true
-				out = append(out, IndexedFieldValue{Field: f.Key, Text: s})
+				out = append(out, IndexedFieldValue{Field: f.Key, Text: s, Fold: FoldFieldText(s)})
 			}
 		}
 		return out, texts, nil
@@ -310,7 +311,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 				pid := core.PluginPersonID(cleanName)
 				if pid > 0 && !seen[pid] {
 					seen[pid] = true
-					out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Int: pid})
+					out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Fold: FoldFieldText(cleanName), Int: pid})
 				}
 			}
 			return out, texts, nil
@@ -341,7 +342,7 @@ func validateFieldValue(f plugins.KindField, raw json.RawMessage) ([]IndexedFiel
 			pid := core.PluginPersonID(cleanName)
 			if pid > 0 && !seen[pid] {
 				seen[pid] = true
-				out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Int: pid})
+				out = append(out, IndexedFieldValue{Field: f.Key, Text: cleanName, Fold: FoldFieldText(cleanName), Int: pid})
 			}
 		}
 		return out, texts, nil

@@ -514,6 +514,7 @@ func contributesUseT(c Contributes) bool {
 		check(k.Library.Name)
 		for _, t := range k.Library.Tabs {
 			check(t.Label)
+			check(t.SearchPlaceholder)
 		}
 		for _, lv := range k.Levels {
 			check(lv.Label)

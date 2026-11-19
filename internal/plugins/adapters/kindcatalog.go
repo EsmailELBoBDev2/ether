@@ -1433,6 +1433,12 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 			Label: c.resolvePluginText(ctx, rec.PluginID, tab.Label),
 			Kind:  tab.Kind,
 		}
+		if tab.Kind == "collections" || tab.Kind == "people" {
+			vt.Search = tab.EffectiveSearch()
+			if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
+				vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
+			}
+		}
 		if tab.Kind == "collections" && tab.Facet != "" {
 			vt.Facet = tab.Facet
 			effOrder := tab.Order
@@ -1557,7 +1563,7 @@ func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field 
 }
 
 // FacetCollections implements experience.PluginPresentationLibraries.
-func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field, order string, offset, limit int) (frontend.FacetCollectionPage, error) {
+func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error) {
 	if c == nil || c.items == nil {
 		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
@@ -1579,6 +1585,7 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 		Policy:    policy,
 		FieldKey:  field,
 		Order:     order,
+		Query:     query,
 		Offset:    offset,
 		Limit:     limit,
 	})
@@ -1615,7 +1622,7 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 }
 
 // FacetPeople implements experience.PluginPresentationLibraries.
-func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, order string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
+func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
 	if c == nil || c.items == nil {
 		return experience.PluginFacetPeoplePage{Items: []experience.PluginFacetPerson{}}, nil
 	}
@@ -1637,6 +1644,7 @@ func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, 
 		Policy:    policy,
 		FieldKey:  field,
 		Order:     order,
+		Query:     query,
 		Offset:    offset,
 		Limit:     limit,
 	})

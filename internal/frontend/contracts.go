@@ -69,13 +69,15 @@ type View struct {
 
 // ViewTab describes one sub-tab of a library view.
 type ViewTab struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"`
-	Facet     string `json:"facet,omitempty"`
-	Order     string `json:"order,omitempty"`
-	Sort      string `json:"sort,omitempty"`
-	Direction string `json:"direction,omitempty"`
+	ID                string `json:"id"`
+	Label             string `json:"label"`
+	Kind              string `json:"kind"`
+	Facet             string `json:"facet,omitempty"`
+	Order             string `json:"order,omitempty"`
+	Sort              string `json:"sort,omitempty"`
+	Direction         string `json:"direction,omitempty"`
+	Search            bool   `json:"search,omitempty"`
+	SearchPlaceholder string `json:"searchPlaceholder,omitempty"`
 }
 
 // ViewFacet describes one plugin-declared filter facet on a library view.
@@ -629,7 +631,10 @@ type CollectionPage struct {
 }
 
 // PageQuery defaults nonpositive Limit to 50 and caps it at 500.
-type PageQuery struct{ Offset, Limit int }
+type PageQuery struct {
+	Offset, Limit int
+	Query         string
+}
 
 // PlaylistPage is one viewer's own playlists. Item keys are titles that
 // viewer is allowed to see, in playlist order.

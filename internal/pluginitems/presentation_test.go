@@ -475,3 +475,461 @@ func TestFacetCollectionsScaleQueryCount(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration4BackfillsFoldedFieldsInBoundedBatches(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+
+	oldBatch := migration4FoldBatchSize
+	migration4FoldBatchSize = 2
+	t.Cleanup(func() { migration4FoldBatchSize = oldBatch })
+
+	decl := plugins.MediaKindMeta{
+		Key:     "game",
+		Label:   "Games",
+		Library: plugins.KindLibraryDecl{Name: "Games"},
+		Levels:  []plugins.KindLevel{{Key: "game", Label: "Game", Playable: true}},
+		Fields: []plugins.KindField{
+			{Key: "developers", Type: "strings", Label: "Developers", Indexed: true},
+			{Key: "voiceCast", Type: "people", Label: "Voice cast", Indexed: true},
+		},
+		Browse: plugins.KindBrowseDecl{Facets: []string{"developers", "voiceCast"}},
+		Sync:   plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	declJSON, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate pre-v4 schema: plugin_item_fields without v_fold and version 4 unapplied.
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS plugin_item_fields`,
+		`CREATE TABLE plugin_item_fields (
+			item_ref TEXT NOT NULL REFERENCES plugin_items(item_ref) ON DELETE CASCADE,
+			field    TEXT NOT NULL,
+			v_text   TEXT NOT NULL DEFAULT '',
+			v_int    INTEGER NOT NULL DEFAULT 0,
+			v_real   REAL NOT NULL DEFAULT 0.0
+		)`,
+		`CREATE INDEX plugin_item_fields_lookup ON plugin_item_fields(field, v_text, item_ref)`,
+		`CREATE INDEX plugin_item_fields_lookup_int ON plugin_item_fields(field, v_int, item_ref)`,
+		`CREATE INDEX plugin_item_fields_item ON plugin_item_fields(item_ref)`,
+		`DELETE FROM schema_migrations WHERE component = 'pluginitems' AND version = 4`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("setup v3 state (%s): %v", stmt, err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO plugin_kinds(plugin_id, kind_key, library_id, decl, decl_hash, schema_version, fts_version)
+		VALUES ('community.games', 'game', 77, ?, ?, 1, ?)
+	`, string(declJSON), decl.DeclHash(), currentFTSVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	ref1 := string(core.NewItemRef("community.games", "game", "g1"))
+	ref2 := string(core.NewItemRef("community.games", "game", "g2"))
+	for idx, ref := range []string{ref1, ref2} {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO plugin_items(
+				item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref,
+				level, idx, title, sort_title, summary, year, released, rating, playable,
+				child_count, leaf_count, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, unavailable
+			) VALUES (?, ?, 'community.games', 'game', 77, ?, '', 'game', ?, ?, ?, '', 2025, 1700000000, 8.0, 1, 0, 0, '{}', '{}', 'e1', 1700000000, 1700000000, 1700000000, 0, '')
+		`, ref, idx+1, fmt.Sprintf("g%d", idx+1), idx+1, fmt.Sprintf("Game %d", idx+1), fmt.Sprintf("game %d", idx+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	zoeID := core.PluginPersonID("Zoë Wanamaker")
+	joID := core.PluginPersonID("Mary Jones")
+	preRows := []struct {
+		ref   string
+		field string
+		text  string
+		vint  int64
+	}{
+		{ref1, "developers", "Zoë Mode", 0},
+		{ref1, "developers", "Jo Example Studios", 0},
+		{ref2, "developers", "Mary Jones Interactive", 0},
+		{ref1, "voiceCast", "Zoë Wanamaker", zoeID},
+		{ref2, "voiceCast", "Mary Jones", joID},
+	}
+	for _, r := range preRows {
+		if _, err := db.ExecContext(ctx, `INSERT INTO plugin_item_fields(item_ref, field, v_text, v_int, v_real) VALUES (?, ?, ?, ?, 0)`, r.ref, r.field, r.text, r.vint); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate v3->v4: %v", err)
+	}
+
+	svc, err := New(ctx, db, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	fc, err := svc.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77,
+		Level:     "game",
+		FieldKey:  "developers",
+		Order:     "name",
+		Query:     "zoe",
+		Limit:     10,
+	})
+	if err != nil || len(fc.Items) != 1 || fc.Items[0].Label != "Zoë Mode" {
+		t.Fatalf("backfilled FacetCollections(zoe) = %+v, err=%v", fc, err)
+	}
+
+	fp, err := svc.FacetPeople(ctx, FacetPeopleQuery{
+		LibraryID: 77,
+		Level:     "game",
+		FieldKey:  "voiceCast",
+		Order:     "name",
+		Query:     "jo",
+		Limit:     10,
+	})
+	if err != nil || len(fp.Items) != 1 || fp.Items[0].Name != "Mary Jones" {
+		t.Fatalf("backfilled FacetPeople(jo) = %+v, err=%v", fp, err)
+	}
+}
+
+func TestTabSearchFoldingCollectionsAndPeople(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestService(t, Options{})
+
+	decl := plugins.MediaKindMeta{
+		Key:     "game",
+		Label:   "Games",
+		Library: plugins.KindLibraryDecl{Name: "Games", Card: "landscape"},
+		Levels:  []plugins.KindLevel{{Key: "game", Label: "Game", Playable: true}},
+		Fields: []plugins.KindField{
+			{Key: "developers", Type: "strings", Label: "Developers", Indexed: true},
+			{Key: "voiceCast", Type: "people", Label: "Voice cast", Indexed: true},
+		},
+		Browse: plugins.KindBrowseDecl{
+			Sorts:  []string{"released", "title"},
+			Facets: []string{"developers", "voiceCast"},
+			Search: true,
+		},
+		Sync: plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	if _, err := s.UpsertKind(ctx, "community.games", 77, decl, false); err != nil {
+		t.Fatal(err)
+	}
+
+	kb := s.KindBackends()
+	_, err := kb.KindUpsert(ctx, "community.games", "game", []core.KindItem{
+		{
+			ID:       "g1",
+			Level:    "game",
+			Index:    1,
+			Title:    "Echoes of Zoë",
+			Released: time.Date(2025, 5, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			Playable: true,
+			Art:      []core.KindArtRef{{Role: "thumb", URL: "https://cdn.example/g1.jpg"}},
+			Fields: map[string]json.RawMessage{
+				"developers": rawJSON(t, []string{"Zoë Mode", "Mary Jones Interactive", "Major Games"}),
+				"voiceCast": rawJSON(t, []map[string]string{
+					{"name": "Zoë Wanamaker", "thumb": "https://cdn.example/cast/zoe.jpg"},
+					{"name": "Mary Jones", "thumb": "https://cdn.example/cast/mary.jpg"},
+					{"name": "Major Nelson"},
+				}),
+			},
+		},
+		{
+			ID:       "g2",
+			Level:    "game",
+			Index:    2,
+			Title:    "Galaxy Racers",
+			Released: time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			Playable: true,
+			Art:      []core.KindArtRef{{Role: "thumb", URL: "https://cdn.example/g2.jpg"}},
+			Fields: map[string]json.RawMessage{
+				"developers": rawJSON(t, []string{"Mary Jones Interactive", "Jo Example Studios"}),
+				"voiceCast": rawJSON(t, []map[string]string{
+					{"name": "Mary Jones"},
+					{"name": "Jo Example", "thumb": "https://cdn.example/cast/jo.jpg"},
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. FacetCollections (string branch): diacritic "zoe" -> "Zoë Mode".
+	fcZoe, err := s.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77, Level: "game", FieldKey: "developers", Order: "name", Query: "zoe", Limit: 10,
+	})
+	if err != nil || fcZoe.More || len(fcZoe.Items) != 1 || fcZoe.Items[0].Label != "Zoë Mode" || fcZoe.Items[0].NewestItem == nil {
+		t.Fatalf("FacetCollections string diacritic = %+v, err=%v", fcZoe, err)
+	}
+
+	// Word-prefix "jo" matches "Jo Example Studios" (1) and "Mary Jones Interactive" (2), NOT "Major Games"; preserves count & name order and pages.
+	fcJoCountP1, err := s.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77, Level: "game", FieldKey: "developers", Order: "count", Query: "jo", Offset: 0, Limit: 1,
+	})
+	if err != nil || !fcJoCountP1.More || len(fcJoCountP1.Items) != 1 || fcJoCountP1.Items[0].Label != "Mary Jones Interactive" || fcJoCountP1.Items[0].Count != 2 {
+		t.Fatalf("FacetCollections string jo count p1 = %+v, err=%v", fcJoCountP1, err)
+	}
+	fcJoCountP2, err := s.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77, Level: "game", FieldKey: "developers", Order: "count", Query: "jo", Offset: 1, Limit: 1,
+	})
+	if err != nil || fcJoCountP2.More || len(fcJoCountP2.Items) != 1 || fcJoCountP2.Items[0].Label != "Jo Example Studios" || fcJoCountP2.Items[0].Count != 1 {
+		t.Fatalf("FacetCollections string jo count p2 = %+v, err=%v", fcJoCountP2, err)
+	}
+	fcJoName, err := s.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77, Level: "game", FieldKey: "developers", Order: "name", Query: "jo", Limit: 10,
+	})
+	if err != nil || len(fcJoName.Items) != 2 || fcJoName.Items[0].Label != "Jo Example Studios" || fcJoName.Items[1].Label != "Mary Jones Interactive" {
+		t.Fatalf("FacetCollections string jo name = %+v, err=%v", fcJoName, err)
+	}
+
+	// 2. FacetCollections (people branch): diacritic "zoe" -> "Zoë Wanamaker", word-prefix "jo" excludes "Major Nelson".
+	fcPeopleZoe, err := s.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77, Level: "game", FieldKey: "voiceCast", Order: "name", Query: "zoe", Limit: 10,
+	})
+	if err != nil || len(fcPeopleZoe.Items) != 1 || fcPeopleZoe.Items[0].Label != "Zoë Wanamaker" {
+		t.Fatalf("FacetCollections people diacritic = %+v, err=%v", fcPeopleZoe, err)
+	}
+	fcPeopleJo, err := s.FacetCollections(ctx, FacetCollectionsQuery{
+		LibraryID: 77, Level: "game", FieldKey: "voiceCast", Order: "count", Query: "jo", Limit: 10,
+	})
+	if err != nil || len(fcPeopleJo.Items) != 2 || fcPeopleJo.Items[0].Label != "Mary Jones" || fcPeopleJo.Items[1].Label != "Jo Example" {
+		t.Fatalf("FacetCollections people jo count = %+v, err=%v", fcPeopleJo, err)
+	}
+
+	// 3. FacetPeople: diacritic "zoe" -> "Zoë Wanamaker"; word-prefix "jo" -> ["Jo Example", "Mary Jones"] (name) / ["Mary Jones", "Jo Example"] (count) with paging.
+	fpZoe, err := s.FacetPeople(ctx, FacetPeopleQuery{
+		LibraryID: 77, Level: "game", FieldKey: "voiceCast", Order: "name", Query: "zoe", Limit: 10,
+	})
+	if err != nil || fpZoe.More || len(fpZoe.Items) != 1 || fpZoe.Items[0].Name != "Zoë Wanamaker" || fpZoe.Items[0].Thumb != "https://cdn.example/cast/zoe.jpg" {
+		t.Fatalf("FacetPeople diacritic = %+v, err=%v", fpZoe, err)
+	}
+	fpJoNameP1, err := s.FacetPeople(ctx, FacetPeopleQuery{
+		LibraryID: 77, Level: "game", FieldKey: "voiceCast", Order: "name", Query: "jo", Offset: 0, Limit: 1,
+	})
+	if err != nil || !fpJoNameP1.More || len(fpJoNameP1.Items) != 1 || fpJoNameP1.Items[0].Name != "Jo Example" {
+		t.Fatalf("FacetPeople jo name p1 = %+v, err=%v", fpJoNameP1, err)
+	}
+	fpJoNameP2, err := s.FacetPeople(ctx, FacetPeopleQuery{
+		LibraryID: 77, Level: "game", FieldKey: "voiceCast", Order: "name", Query: "jo", Offset: 1, Limit: 1,
+	})
+	if err != nil || fpJoNameP2.More || len(fpJoNameP2.Items) != 1 || fpJoNameP2.Items[0].Name != "Mary Jones" || fpJoNameP2.Items[0].Count != 2 {
+		t.Fatalf("FacetPeople jo name p2 = %+v, err=%v", fpJoNameP2, err)
+	}
+	fpJoCount, err := s.FacetPeople(ctx, FacetPeopleQuery{
+		LibraryID: 77, Level: "game", FieldKey: "voiceCast", Order: "count", Query: "jo", Limit: 10,
+	})
+	if err != nil || len(fpJoCount.Items) != 2 || fpJoCount.Items[0].Name != "Mary Jones" || fpJoCount.Items[1].Name != "Jo Example" {
+		t.Fatalf("FacetPeople jo count = %+v, err=%v", fpJoCount, err)
+	}
+}
+
+func TestTabSearchScale35k(t *testing.T) {
+	ctx := context.Background()
+	s, db := openTestService(t, Options{})
+
+	decl := plugins.MediaKindMeta{
+		Key:   "game",
+		Label: "Games",
+		Library: plugins.KindLibraryDecl{
+			Name: "Games",
+			Card: "landscape",
+			Tabs: []plugins.KindLibraryTab{
+				{Key: "developers", Label: "Developers", Kind: "collections", Facet: "developers", Order: "name"},
+				{Key: "cast", Label: "Voice cast", Kind: "people", Facet: "voiceCast", Order: "name"},
+			},
+		},
+		Levels: []plugins.KindLevel{{Key: "game", Label: "Game", Playable: true}},
+		Fields: []plugins.KindField{
+			{Key: "developers", Type: "strings", Label: "Developers", Indexed: true},
+			{Key: "voiceCast", Type: "people", Label: "Voice cast", Indexed: true},
+		},
+		Browse: plugins.KindBrowseDecl{
+			Sorts:  []string{"released", "title", "added"},
+			Facets: []string{"developers", "voiceCast"},
+			Search: true,
+		},
+		Sync: plugins.KindSyncDecl{Mode: plugins.KindSyncPush},
+	}
+	if _, err := s.UpsertKind(ctx, "community.scale35k", 99, decl, false); err != nil {
+		t.Fatal(err)
+	}
+
+	const totalItems = 35000
+	const distinctValues = 15000
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemStmt, err := tx.PrepareContext(ctx, `INSERT INTO plugin_items (
+		item_ref, seq, plugin_id, kind_key, library_id, external_id,
+		parent_ref, level, idx, title, sort_title, summary,
+		year, released, rating, playable, child_count, leaf_count,
+		unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks
+	) VALUES (?, ?, 'community.scale35k', 'game', 99, ?, '', 'game', ?, ?, ?, '', 2025, ?, 8.0, 1, 0, 0, '', '{}', ?, 'e1', ?, ?, ?, 0)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer itemStmt.Close()
+	fieldStmt, err := tx.PrepareContext(ctx, `INSERT INTO plugin_item_fields (item_ref, field, v_text, v_int, v_real, v_fold) VALUES (?, ?, ?, ?, 0, ?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fieldStmt.Close()
+	artStmt, err := tx.PrepareContext(ctx, `INSERT INTO plugin_item_art (item_ref, role, url, width, height) VALUES (?, 'thumb', ?, 1280, 720)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artStmt.Close()
+
+	devs := make([]string, distinctValues)
+	devFolds := make([]string, distinctValues)
+	actors := make([]string, distinctValues)
+	actorFolds := make([]string, distinctValues)
+	actorIDs := make([]int64, distinctValues)
+	for b := 0; b < distinctValues; b++ {
+		switch {
+		case b < 60:
+			devs[b] = fmt.Sprintf("Zoë Studio %04d", b)
+			actors[b] = fmt.Sprintf("Zoë Actor %04d", b)
+		case b < 180:
+			devs[b] = fmt.Sprintf("Mary Jones %04d", b)
+			actors[b] = fmt.Sprintf("Mary Jones %04d", b)
+		default:
+			devs[b] = fmt.Sprintf("Developer %05d", b)
+			actors[b] = fmt.Sprintf("Performer %05d", b)
+		}
+		devFolds[b] = FoldFieldText(devs[b])
+		actorFolds[b] = FoldFieldText(actors[b])
+		actorIDs[b] = core.PluginPersonID(actors[b])
+	}
+
+	baseReleased := int64(1700000000)
+	for i := 1; i <= totalItems; i++ {
+		b := (i - 1) % distinctValues
+		ref := fmt.Sprintf("plugin:community.scale35k:game:g%d", i)
+		extID := fmt.Sprintf("g%d", i)
+		title := fmt.Sprintf("Game %05d", i)
+		rel := baseReleased + int64(i)
+		fieldsJSON := fmt.Sprintf(`{"voiceCast":[{"name":%q,"thumb":"https://cdn.example/cast/%d.jpg"}]}`, actors[b], b)
+		if _, err := itemStmt.ExecContext(ctx, ref, int64(200000+i), extID, i, title, strings.ToLower(title), rel, fieldsJSON, rel, rel, rel); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fieldStmt.ExecContext(ctx, ref, "developers", devs[b], 0, devFolds[b]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fieldStmt.ExecContext(ctx, ref, "voiceCast", actors[b], actorIDs[b], actorFolds[b]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := artStmt.ExecContext(ctx, ref, fmt.Sprintf("https://cdn.example/thumb/%d.jpg", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	explainPlan := func(sqlText string, args ...any) string {
+		pRows, err := db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+sqlText, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pRows.Close()
+		var parts []string
+		for pRows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := pRows.Scan(&id, &parent, &notused, &detail); err != nil {
+				t.Fatal(err)
+			}
+			parts = append(parts, detail)
+		}
+		return strings.Join(parts, " | ")
+	}
+
+	colPlan := explainPlan(`
+		SELECT f.v_text, COUNT(DISTINCT i.item_ref) AS c
+		FROM plugin_item_fields f
+		JOIN plugin_items i ON i.item_ref = f.item_ref
+		WHERE f.field = ? AND f.v_text != '' AND f.v_fold > '' AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)
+		  AND i.library_id + 0 = ? AND i.level = ?
+		GROUP BY f.v_text
+		ORDER BY LOWER(f.v_text) ASC, f.v_text ASC
+		LIMIT 51 OFFSET 0`, "developers", "zoe%", "% zoe%", int64(99), "game")
+	t.Logf("Collections EXPLAIN QUERY PLAN: %s", colPlan)
+	if !strings.Contains(colPlan, "plugin_item_fields_fold") {
+		t.Fatalf("expected collections plan to use plugin_item_fields_fold, got: %s", colPlan)
+	}
+
+	peoplePlan := explainPlan(`
+		SELECT f.v_int, MIN(f.v_text) AS name, COUNT(DISTINCT i.item_ref) AS c
+		FROM plugin_item_fields f
+		JOIN plugin_items i ON i.item_ref = f.item_ref
+		WHERE f.field = ? AND f.v_int + 0 > 1000000000 AND f.v_text != '' AND f.v_fold > '' AND (f.v_fold LIKE ? OR f.v_fold LIKE ?)
+		  AND i.library_id + 0 = ? AND i.level = ?
+		GROUP BY f.v_int
+		ORDER BY LOWER(MIN(f.v_text)) ASC, MIN(f.v_text) ASC, f.v_int ASC
+		LIMIT 51 OFFSET 0`, "voiceCast", "jo%", "% jo%", int64(99), "game")
+	t.Logf("People EXPLAIN QUERY PLAN: %s", peoplePlan)
+	if !strings.Contains(peoplePlan, "plugin_item_fields_fold") {
+		t.Fatalf("expected people plan to use plugin_item_fields_fold, got: %s", peoplePlan)
+	}
+
+	// Measure both collections and people tab search on 35,000 items / 15,000 distinct values (< 100 ms target).
+	for _, q := range []string{"zoe", "jo"} {
+		for _, order := range []string{"count", "name"} {
+			mCtx, stats := store.WithQueryStats(ctx)
+			start := time.Now()
+			fc, err := s.FacetCollections(mCtx, FacetCollectionsQuery{
+				LibraryID: 99,
+				Level:     "game",
+				FieldKey:  "developers",
+				Order:     order,
+				Query:     q,
+				Offset:    0,
+				Limit:     50,
+			})
+			elapsed := time.Since(start)
+			if err != nil || len(fc.Items) != 50 || !fc.More {
+				t.Fatalf("FacetCollections(35k, q=%q, order=%s) len=%d more=%v err=%v", q, order, len(fc.Items), fc.More, err)
+			}
+			t.Logf("FacetCollections(35k items, 15k distinct, query=%q, order=%s, limit=50): queries=%d rows=%d elapsed=%s", q, order, stats.Queries(), stats.Rows(), elapsed)
+			if stats.Queries() > 6 {
+				t.Fatalf("FacetCollections executed %d queries, want <= 6", stats.Queries())
+			}
+			if elapsed >= 100*time.Millisecond {
+				t.Fatalf("FacetCollections(query=%q, order=%s) took %s on 35k items / 15k distinct values, want < 100ms", q, order, elapsed)
+			}
+
+			mCtxP, statsP := store.WithQueryStats(ctx)
+			startP := time.Now()
+			fp, err := s.FacetPeople(mCtxP, FacetPeopleQuery{
+				LibraryID: 99,
+				Level:     "game",
+				FieldKey:  "voiceCast",
+				Order:     order,
+				Query:     q,
+				Offset:    0,
+				Limit:     50,
+			})
+			elapsedP := time.Since(startP)
+			if err != nil || len(fp.Items) != 50 || !fp.More {
+				t.Fatalf("FacetPeople(35k, q=%q, order=%s) len=%d more=%v err=%v", q, order, len(fp.Items), fp.More, err)
+			}
+			t.Logf("FacetPeople(35k items, 15k distinct, query=%q, order=%s, limit=50): queries=%d rows=%d elapsed=%s", q, order, statsP.Queries(), statsP.Rows(), elapsedP)
+			if statsP.Queries() > 5 {
+				t.Fatalf("FacetPeople executed %d queries, want <= 5", statsP.Queries())
+			}
+			if elapsedP >= 100*time.Millisecond {
+				t.Fatalf("FacetPeople(query=%q, order=%s) took %s on 35k items / 15k distinct values, want < 100ms", q, order, elapsedP)
+			}
+		}
+	}
+}

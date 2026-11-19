@@ -428,6 +428,12 @@
                                 "name"
                               ]
                             },
+                            "search": {
+                              "type": "boolean"
+                            },
+                            "searchPlaceholder": {
+                              "type": "string"
+                            },
                             "sort": {
                               "enum": [
                                 "title",

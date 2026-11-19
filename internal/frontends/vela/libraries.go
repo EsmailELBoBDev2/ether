@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
@@ -87,6 +88,12 @@ func libraryWire(view frontend.View) object {
 		tabs = make([]object, 0, len(srcTabs))
 		for _, t := range srcTabs {
 			tab := object{"id": t.ID, "label": t.Label, "kind": t.Kind}
+			if t.Kind == "collections" || t.Kind == "people" {
+				tab["search"] = t.Search
+				if t.Search && t.SearchPlaceholder != "" {
+					tab["searchPlaceholder"] = t.SearchPlaceholder
+				}
+			}
 			if t.Kind == "collections" && t.Facet != "" {
 				tab["facet"] = t.Facet
 				effOrder := t.Order
@@ -773,7 +780,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
 	for name, entries := range values {
 		switch name {
-		case "cursor", "limit", "tab":
+		case "cursor", "limit", "tab", "query":
 		default:
 			problem(w, 400, "request", "unsupported_library_query")
 			return
@@ -784,6 +791,11 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tabKey := values.Get("tab")
+	query := strings.TrimSpace(values.Get("query"))
+	if utf8.RuneCountInString(query) > 100 {
+		problem(w, 400, "request", "unsupported_library_query")
+		return
+	}
 	views, err := i.host.Experience.Views(r.Context(), v)
 	if err != nil {
 		fail(w, err, r)
@@ -803,24 +815,9 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
-	pageLimit := limit(r)
-	scope, err := i.livePageScope(r, v, token)
-	if err != nil {
-		fail(w, err, r)
-		return
-	}
-	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-collections", id, tabKey, pageLimit}))
-	if err != nil {
-		fail(w, err, r)
-		return
-	}
-	snapshot := hashJSON(views)
-	if c.Offset > 10000 || (c.Snapshot != "" && c.Snapshot != snapshot) {
-		fail(w, frontend.ErrLiveGuideStale)
-		return
-	}
-	if view.PluginID != "" || view.KindKey != "" {
-		var selectedTab frontend.ViewTab
+	isPlugin := view.PluginID != "" || view.KindKey != ""
+	var selectedTab frontend.ViewTab
+	if isPlugin {
 		if tabKey != "" {
 			matchedTab := false
 			for _, t := range view.Tabs {
@@ -842,6 +839,37 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if query != "" && !selectedTab.Search {
+			problem(w, 400, "request", "unsupported_library_query")
+			return
+		}
+	} else {
+		if tabKey != "" && tabKey != "collections" {
+			problem(w, 404, "not-found", "not_found")
+			return
+		}
+		if query != "" {
+			problem(w, 400, "request", "unsupported_library_query")
+			return
+		}
+	}
+	pageLimit := limit(r)
+	scope, err := i.livePageScope(r, v, token)
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-collections", id, tabKey, query, pageLimit}))
+	if err != nil {
+		fail(w, err, r)
+		return
+	}
+	snapshot := hashJSON(views)
+	if c.Offset > 10000 || (c.Snapshot != "" && c.Snapshot != snapshot) {
+		fail(w, frontend.ErrLiveGuideStale)
+		return
+	}
+	if isPlugin {
 		if selectedTab.Kind == "people" {
 			peopleReader, hasPeople := i.host.Experience.(frontend.LibraryFacetPeople)
 			if selectedTab.Facet == "" || !hasPeople {
@@ -851,6 +879,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			fpPage, err := peopleReader.LibraryFacetPeople(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
 				Offset: c.Offset,
 				Limit:  pageLimit,
+				Query:  query,
 			})
 			if err != nil {
 				fail(w, err, r)
@@ -881,6 +910,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
 			Offset: c.Offset,
 			Limit:  pageLimit,
+			Query:  query,
 		})
 		if err != nil {
 			fail(w, err, r)
@@ -901,10 +931,6 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			out["continuation"], out["nextCursor"] = "more", next
 		}
 		cache(w, r, out)
-		return
-	}
-	if tabKey != "" && tabKey != "collections" {
-		problem(w, 404, "not-found", "not_found")
 		return
 	}
 	colPage, err := i.host.Experience.Collections(r.Context(), v, requestDevice(r), frontend.CollectionQuery{

@@ -14,8 +14,10 @@ package vault
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -221,3 +223,38 @@ func KeyOf(r core.Release) Key {
 	}
 	return Key(r.ID[len("vault-"):])
 }
+
+// Sealer seals secrets at rest (the config sealer).
+type Sealer interface {
+	Seal(name string, plain []byte) (string, error)
+	Unseal(name, sealed string) ([]byte, error)
+}
+
+// Verifier proves a release's articles are still retrievable. Bound to
+// W119's (*usenet.Fetcher).VerifyArticles, which distrusts lying STAT.
+type Verifier interface {
+	VerifyArticles(ctx context.Context, ids []string, groups []string) (bool, error)
+}
+
+// Options open a vault.
+type Options struct {
+	Dir      string  // <cacheDir>/vault, or the NAS cache dir's vault/ when shared
+	DB       *sql.DB // server database (index only)
+	Sealer   Sealer
+	NodeID   string // this node (holders); "" on a standalone server
+	Shared   bool   // Dir is on the shared NAS (one copy for the cluster)
+	CapBytes int64  // payload cap; 0 = default (see DefaultCapBytes)
+	Logger   *slog.Logger
+	Now      func() time.Time
+}
+
+// DefaultCapBytes is the payload cap when the owner sets none: 20 GiB,
+// far beyond years of a household's releases at ~30 B/article.
+const DefaultCapBytes = 20 << 30
+
+// Open opens (creating) a vault. Implemented by the vault-core worker;
+// until then it reports ErrNotImplemented so dependants compile.
+var Open = func(ctx context.Context, o Options) (Store, error) { return nil, ErrNotImplemented }
+
+// ErrNotImplemented is returned by placeholders during the build.
+var ErrNotImplemented = errors.New("vault: not implemented yet")

@@ -386,6 +386,8 @@ type Service struct {
 
 	workersMu sync.Mutex
 	workers   map[string]*syncWorker
+
+	stats *statsRefresher
 }
 
 // New opens the pluginitems Service over a migrated database.
@@ -430,6 +432,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 	if maxGen > 0 {
 		s.syncGen.Store(uint64(maxGen))
 	}
+	s.stats = newStatsRefresher(ctx, db, s.log, s.now, s.leader)
 	return s, nil
 }
 

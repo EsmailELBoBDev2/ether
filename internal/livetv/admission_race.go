@@ -243,6 +243,20 @@ func (d *admissionDecoder) Next(ctx context.Context) (transcode.RawFrame, error)
 	return d.Decoder.Next(ctx)
 }
 
+func (d *admissionDecoder) StarvingErrors() (time.Duration, bool) {
+	if source, ok := d.Decoder.(starving); ok {
+		return source.StarvingErrors()
+	}
+	return 0, false
+}
+
+func (d *admissionDecoder) Diagnostics() string {
+	if source, ok := d.Decoder.(interface{ Diagnostics() string }); ok {
+		return source.Diagnostics()
+	}
+	return ""
+}
+
 func (s *Service) setInputAdmission(ss *session, admitting bool) {
 	s.inputRelay.mu.Lock()
 	g := s.inputRelay.bySess[ss]

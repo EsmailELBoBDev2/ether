@@ -380,7 +380,10 @@ func liveHLS(r DecoderRequest, u *url.URL) bool {
 
 // liveDecoderInputArgs are the input options of a live provider decoder.
 // The loopback relay owns provider connections; ffmpeg resumes a dropped
-// relay read in-process and bounds a read that never returns. Damaged
+// relay read in-process and bounds a read that never returns. Tapped streams
+// hold open across bursty provider gaps (up to 8 s) and quiet-socket holds
+// (up to 20 s), so non-HLS loopback reads match the relay's 30 s I/O bound
+// instead of timing out mid-gap and sending a Range reconnect. Damaged
 // pictures keep libavcodec's error concealment: dropping corrupt packets
 // measured no better and lost whole GOPs on packet loss.
 func liveDecoderInputArgs(r DecoderRequest, u *url.URL) []string {
@@ -389,7 +392,11 @@ func liveDecoderInputArgs(r DecoderRequest, u *url.URL) []string {
 	// seconds (or any long bound) of real-time media again before decoding.
 	args := []string{"-copyts", "-fflags", "+genpts", "-probesize", "5000000", "-analyzeduration", "1000000"}
 	if u.Scheme == "http" {
-		args = append(args, "-rw_timeout", "5000000", "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "2")
+		rwTimeout := "30000000"
+		if liveHLS(r, u) {
+			rwTimeout = "5000000"
+		}
+		args = append(args, "-rw_timeout", rwTimeout, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "2")
 	}
 	switch {
 	case liveHLS(r, u):

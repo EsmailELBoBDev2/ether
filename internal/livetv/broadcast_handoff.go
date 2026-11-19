@@ -100,7 +100,7 @@ func (s *Service) linkSessionInput(ss *session, c Channel, src StreamSource, inp
 	if err != nil {
 		return nil, err
 	}
-	release, err := s.reserveBroadcastProvider(account, c.ID, "broadcast-"+c.ID, entry.limit)
+	release, err := s.reserveBroadcastProvider(account, c.ID, "broadcast-"+c.ID+"-handoff-"+randomID(), entry.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,8 @@ func (s *Service) linkSessionInput(ss *session, c Channel, src StreamSource, inp
 		release()
 		return nil, err
 	}
-	return &steadyLink{src: src, ss: link, release: release, format: s.cachedInputFormat(link)}, nil
+	s.retainProbedTap(ss, link)
+	return newSteadyLink(src, link, release, s.cachedInputFormat(link)), nil
 }
 
 // cachedProbe is a granted input's cached probe, without probing.

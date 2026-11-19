@@ -233,7 +233,7 @@ func (p *tapPace) effectiveRate() float64 {
 	if p.rate <= 0 {
 		return 1.0
 	}
-	return p.rate
+	return min(p.rate, 1.0)
 }
 
 func (p *tapPace) dueClock(now time.Time) int64 {
@@ -246,7 +246,7 @@ func (p *tapPace) dueClock(now time.Time) int64 {
 }
 
 func (p *tapPace) setRate(rate float64, now time.Time) {
-	if rate <= 0 {
+	if rate <= 0 || rate > 1.0 {
 		rate = 1.0
 	}
 	if p.anchored {
@@ -751,11 +751,11 @@ func (t *upstreamTap) readAs(ctx context.Context, rd *tapReader, off int64, p []
 	if off >= t.written {
 		return 0, off, t.err
 	}
+	var g *inputGrant
+	if rd != nil {
+		g = rd.g
+	}
 	if t.written-off > int64(len(t.ring)) {
-		var g *inputGrant
-		if rd != nil {
-			g = rd.g
-		}
 		if t.ts != nil && g != nil && g.reserve > 0 {
 			off = t.keyAtDepthLocked(g.joinDepth())
 			if rd.pace != nil {
@@ -765,6 +765,13 @@ func (t *upstreamTap) readAs(ctx context.Context, rd *tapReader, off int64, p []
 			off = t.keyBeforeLocked(t.written, 2*time.Second)
 		} else {
 			off = t.joinOffsetLocked()
+		}
+	} else if t.ts != nil && g != nil && g.steady && t.depthLocked(off) > max(60*time.Second, g.joinDepth()+10*time.Second) {
+		// Safety valve: if accumulated hold delay ever exceeds 60 s, make one
+		// single clean cut at a keyframe rather than dropping frames per tick.
+		off = t.keyAtDepthLocked(max(g.joinDepth(), 2*time.Second))
+		if rd.pace != nil {
+			rd.pace.anchored = false
 		}
 	}
 	end := t.written
@@ -801,6 +808,7 @@ func (t *upstreamTap) paceLocked(p *tapPace, off int64) int64 {
 // setSteadyInputRate adjusts the paced release rate of ss's grant on its
 // shared tap so slow-playout reserve accrual stays in the tap's ring.
 func (s *Service) setSteadyInputRate(ss *session, rate float64) {
+	rate = min(rate, 1.0)
 	if s == nil || ss == nil {
 		return
 	}
@@ -925,8 +933,19 @@ func (g *inputGrant) setTap(t *upstreamTap) {
 // serveTapped serves a media input through its tap. It reports false when
 // the input turned out to be a manifest this reader must fetch itself.
 func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGrant, raw string) bool {
-	// A byte range is a seek into a file input, not a live read.
-	if rng := r.Header.Get("Range"); rng != "" && rng != "bytes=0-" {
+	// A byte range is a seek into a file input, not a live read; an active
+	// Steady transport-stream tap ignores ffmpeg reconnect Range headers so
+	// the decoder rejoins at resumeLocked instead of opening a raw upstream GET.
+	g.mu.Lock()
+	tExisting := g.tap
+	g.mu.Unlock()
+	steadyTS := g.steady && tExisting != nil
+	if steadyTS {
+		tExisting.mu.Lock()
+		steadyTS = !tExisting.closed && tExisting.ts != nil
+		tExisting.mu.Unlock()
+	}
+	if rng := r.Header.Get("Range"); rng != "" && rng != "bytes=0-" && !steadyTS {
 		return false
 	}
 	source, limit := s.tapSource(g)
@@ -1246,6 +1265,7 @@ func (t *upstreamTap) activateSplicedLocked(fromRace bool) {
 	t.epochClock = t.ts.clock
 	t.reconnects++
 	t.refusals = 0
+	t.failed = false
 	t.burstDone = false
 	t.haveBurst = false
 	t.rhythmGap = 0
@@ -1286,6 +1306,7 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 			recovered := t.stalled && t.body != nil
 			if recovered {
 				t.stalled = false
+				t.failed = false
 			}
 			clockBefore := t.ts.clock
 			var marks []tsMark
@@ -1303,9 +1324,7 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 			}
 			if time.Duration(t.ts.clock-t.epochClock)*time.Second/tsClockHz >= tapHealthy {
 				t.burstProbeUsed = false
-				if t.failures > 0 {
-					t.failures, t.failed = 0, false
-				}
+				t.failures, t.refusals, t.failed = 0, 0, false
 			}
 			t.mu.Unlock()
 			if doneRace != nil {
@@ -1577,7 +1596,7 @@ func (t *upstreamTap) watch() {
 		now := time.Now()
 		silence := now.Sub(t.lastData)
 		thresh := t.stallThresholdLocked(now)
-		picStall := t.body != nil && len(t.active) > 0 && t.minDepthLocked() == 0 && silence >= broadcastStall
+		picStall := t.body != nil && len(t.active) > 0 && t.minDepthLocked() == 0 && silence >= broadcastStall && (thresh <= tapStallAfter || silence >= thresh)
 		stall := !t.stalled && t.body != nil && silence >= thresh
 		if stall {
 			if t.reconnects > 0 && silence >= tapStallMax && t.ts != nil &&
@@ -1747,7 +1766,10 @@ func (s *Service) runTapRace(candCtx context.Context, candCancel context.CancelF
 				} else {
 					t.failures++
 				}
-				if t.failures+t.refusals >= tapFailAfter && !t.failed {
+				// Failed means the transport is actually gone; a refused or
+				// failed speculative parallel open while t.body is still alive
+				// must not declare the primary connection dead.
+				if t.body == nil && t.failures+t.refusals >= tapFailAfter && !t.failed {
 					t.failed = true
 					raise = true
 				}
@@ -2053,16 +2075,25 @@ func (g *inputGrant) snapHealth() (UpstreamHealth, bool) {
 
 // healthForLocked reports the tap's health as seen by grant g's reader.
 func (t *upstreamTap) healthForLocked(g *inputGrant) UpstreamHealth {
-	h := UpstreamHealth{Stalled: t.stalled, Failed: t.failed, Reconnects: t.reconnects, Bitrate: t.bitrate}
+	now := time.Now()
+	liveSocket := !t.closed && t.body != nil
+	h := UpstreamHealth{
+		Stalled:    t.stalled,
+		Failed:     t.failed,
+		Reconnects: t.reconnects,
+		Bitrate:    t.bitrate,
+		LiveSocket: liveSocket,
+	}
 	if t.ts != nil && t.ts.pmtSig != "" {
 		h.FormatGeneration = uint64(t.ts.format) + 1
 	}
 	if t.ts != nil {
 		h.Kind = "ts"
+		h.StallAfter = t.stallThresholdLocked(now)
 	}
-	h.Connected = !t.closed && t.body != nil && !t.stalled
+	h.Connected = liveSocket && !t.stalled
 	if !t.lastData.IsZero() {
-		h.DataAge = time.Since(t.lastData)
+		h.DataAge = now.Sub(t.lastData)
 	}
 	var reader *tapReader
 	for rd := range t.active {

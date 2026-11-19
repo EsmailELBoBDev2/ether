@@ -195,6 +195,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		oldDeclJSON string
 		oldHash     string
 		schemaVer   int64
+		purged      bool
 	)
 	err = tx.QueryRowContext(ctx,
 		`SELECT decl, decl_hash, schema_version FROM plugin_kinds WHERE plugin_id = ? AND kind_key = ?`,
@@ -239,6 +240,7 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 				if err := s.purgeKindTx(ctx, tx, pluginID, decl.Key, libraryID, false); err != nil {
 					return KindRecord{}, err
 				}
+				purged = true
 			} else {
 				needReindex = true
 			}
@@ -263,6 +265,9 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 
 	if err := tx.Commit(); err != nil {
 		return KindRecord{}, err
+	}
+	if purged {
+		s.forgetLibraryStats(libraryID)
 	}
 	return KindRecord{
 		PluginID:      pluginID,
@@ -356,15 +361,25 @@ func (s *Service) UpsertItemsWithAdded(ctx context.Context, pluginID, kindKey st
 	mu := s.kindLock(pluginID, kindKey)
 	mu.Lock()
 	defer mu.Unlock()
-	return s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true)
+	return s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, true)
 }
 
-func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, error) {
-	accepted, _, err := s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen)
+// upsertItemsForSync writes a batch as part of a pull SyncKind pass; SyncKind
+// notifies the planner-statistics refresher once the full sync completes.
+func (s *Service) upsertItemsForSync(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error) {
+	mu := s.kindLock(pluginID, kindKey)
+	mu.Lock()
+	defer mu.Unlock()
+	accepted, _, err := s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, s.now().Unix(), true, false)
 	return accepted, err
 }
 
-func (s *Service) upsertItemsWithAddedLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, int, error) {
+func (s *Service) upsertItemsLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen bool) (int, error) {
+	accepted, _, err := s.upsertItemsWithAddedLocked(ctx, pluginID, kindKey, items, seenAt, bumpGen, true)
+	return accepted, err
+}
+
+func (s *Service) upsertItemsWithAddedLocked(ctx context.Context, pluginID, kindKey string, items []core.KindItem, seenAt int64, bumpGen, notifyStats bool) (int, int, error) {
 	kind, err := s.GetKind(ctx, pluginID, kindKey)
 	if err != nil {
 		return 0, 0, err
@@ -655,14 +670,19 @@ INSERT INTO plugin_items(
 		return 0, 0, err
 	}
 
+	var totalItems int64
 	if bumpGen {
-		if err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, nowUnix); err != nil {
+		totalItems, err = s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, nowUnix)
+		if err != nil {
 			return 0, 0, err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return 0, 0, err
+	}
+	if notifyStats && totalItems > 0 {
+		s.noteLibraryItems(kind.LibraryID, totalItems, false)
 	}
 	return len(items), newCount, nil
 }
@@ -1350,12 +1370,12 @@ WHERE library_id = ? AND level = ? AND field = ? AND v_text = ? AND cnt <= 0`,
 	return nil
 }
 
-func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, nowUnix int64) error {
+func (s *Service) bumpKindSyncStateTx(ctx context.Context, tx *sql.Tx, pluginID, kindKey string, nowUnix int64) (int64, error) {
 	var totalItems int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM plugin_items WHERE plugin_id = ? AND kind_key = ?`,
 		pluginID, kindKey).Scan(&totalItems); err != nil {
-		return err
+		return 0, err
 	}
 	gen := int64(s.syncGen.Add(1))
 	_, err := tx.ExecContext(ctx, `
@@ -1367,7 +1387,7 @@ ON CONFLICT(plugin_id, kind_key) DO UPDATE SET
 	last_error = '',
 	items      = excluded.items`,
 		pluginID, kindKey, gen, nowUnix, totalItems)
-	return err
+	return totalItems, err
 }
 
 // KindDelete implements the store side of plugins.KindBackends.KindDelete
@@ -1413,7 +1433,7 @@ func (s *Service) deleteItemsLocked(ctx context.Context, pluginID, kindKey strin
 		return err
 	}
 	if bumpGen {
-		if err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, s.now().Unix()); err != nil {
+		if _, err := s.bumpKindSyncStateTx(ctx, tx, pluginID, kindKey, s.now().Unix()); err != nil {
 			return err
 		}
 	}
@@ -1784,6 +1804,9 @@ func (s *Service) PurgeKind(ctx context.Context, pluginID, kindKey string) error
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	if libID > 0 {
+		s.forgetLibraryStats(core.LibraryID(libID))
+	}
 	s.syncGen.Add(1)
 	return nil
 }
@@ -1823,6 +1846,11 @@ func (s *Service) PurgePlugin(ctx context.Context, pluginID string) error {
 
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	for _, k := range kinds {
+		if k.LibraryID > 0 {
+			s.forgetLibraryStats(k.LibraryID)
+		}
 	}
 	s.syncGen.Add(1)
 	return nil

@@ -9,6 +9,7 @@ import { createOnAirMock } from "./onair";
  * realistically offline.
  */
 import { createPrerollsMock } from "./prerolls";
+import { createVelaBrandingMock, VELA_SETTINGS_SCHEMA } from "./velaBranding";
 import type {
   ActivityDay,
   BuiltinLayoutSection,
@@ -677,6 +678,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
   const mdblistAccounts = new Map<number, { connected: boolean; lastSync?: string }>();
   const traktAccounts = new Map<number, { connected: boolean; username?: string }>();
   const extendMock = createExtendMock();
+  const velaBranding = createVelaBrandingMock();
   const prerolls = createPrerollsMock({
     seed: opts.prerolls,
     title: (key) => byKey.get(key),
@@ -3816,7 +3818,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       sections: [{ key: "connect", fields: [{ key: note, kind: "note" }] }],
     });
     const protocolDefs = [
-      { id: "vela", name: "Vela", settingsSchema: { sections: [] } },
+      { id: "vela", name: "Vela", settingsSchema: VELA_SETTINGS_SCHEMA },
       {
         id: "plex",
         name: "Plex",
@@ -3936,8 +3938,20 @@ export function createFakeServer(opts: FakeOptions = {}) {
       const entries =
         state.config.frontends ?? (state.config.frontends = { plex: { enabled: true } });
       const entry = entries[id!] ?? (entries[id!] = { enabled: id === "vela" });
+      if (id === "vela" && action === "wordmark" && method === "POST") {
+        const uploaded = await velaBranding.upload(body);
+        return json(uploaded.body, uploaded.status);
+      }
       if (action === "settings" && method === "PUT") {
         const { port, ...settings } = body as Record<string, unknown>;
+        if (id === "vela") {
+          if (typeof settings.appName === "string") {
+            const trimmed = settings.appName.trim();
+            if (trimmed) settings.appName = trimmed;
+            else delete settings.appName;
+          }
+          if (settings.wordmark == null) delete settings.wordmark;
+        }
         entry.settings = settings;
         if (typeof port === "number") (state.config.frontendPorts ??= {})[id!] = port;
         return json({ ok: true });
@@ -5637,7 +5651,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return handle(method, url, body);
   }
 
-  return { fetch: fetchImpl, state, catalog, evaluate, homeFor, releaseConsole, sites };
+  return {
+    fetch: fetchImpl,
+    state,
+    catalog,
+    evaluate,
+    homeFor,
+    releaseConsole,
+    sites,
+    velaBranding,
+  };
 }
 
 export type FakeServer = ReturnType<typeof createFakeServer>;

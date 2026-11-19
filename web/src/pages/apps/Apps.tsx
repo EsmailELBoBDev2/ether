@@ -8,7 +8,8 @@ import {
   Switch,
   confirmDialog,
 } from "@braedonsaunders/appkit-ui";
-import { useEffect, useState, type ReactNode } from "react";
+import { FileUp, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApp } from "../../app-context";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -29,7 +30,7 @@ import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { t } from "../../i18n";
 import { useOwnerViewerPath } from "../../components/pickers";
-import { API_BASE, api, apiBlob, apiFetch } from "../../lib/api";
+import { API_BASE, api, apiBlob, apiFetch, imageNeedsFetch } from "../../lib/api";
 import { isPlainObject } from "../../lib/format";
 import { useAsync, useInterval } from "../../lib/hooks";
 import { viewerStatus } from "../viewers/ViewerStatus";
@@ -74,6 +75,12 @@ type FrontendInfo = {
     warnings?: string[];
   };
 };
+export type VelaWordmark = {
+  url: string;
+  width: number;
+  height: number;
+  dark?: string;
+};
 type Settings = {
   port?: number;
   publicUrl?: string;
@@ -83,10 +90,21 @@ type Settings = {
   publicViewerPicker?: boolean;
   viewerId?: number;
   defaultSkinId?: string;
+  appName?: string;
+  wordmark?: VelaWordmark | null;
   homeRows?: boolean;
   homeRowCount?: number;
   homeRowKinds?: string[];
 };
+
+const VELA_MAX_APP_NAME_CHARS = 40;
+const VELA_MAX_WORDMARK_BYTES = 512 * 1024;
+const VELA_WORDMARK_ACCEPT = "image/png,image/svg+xml,image/webp,.png,.svg,.webp";
+
+function isSupportedWordmarkFile(file: File): boolean {
+  if (["image/png", "image/svg+xml", "image/webp"].includes(file.type)) return true;
+  return /\.(png|svg|webp)$/i.test(file.name);
+}
 
 const HOME_ROW_KINDS = [
   ["because-you-watched", () => t("Because you watched")],
@@ -313,13 +331,161 @@ function ConnectDevice({
   );
 }
 
-function VelaAppearance({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+function WordmarkImage({
+  src,
+  alt,
+  width,
+  height,
+  className,
+}: {
+  src: string;
+  alt: string;
+  width?: number;
+  height?: number;
+  className?: string;
+}) {
+  const needsFetch = imageNeedsFetch(src);
+  const [blobUrl, setBlobUrl] = useState<string>();
+  useEffect(() => {
+    if (!needsFetch) {
+      setBlobUrl(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    let created: string | undefined;
+    void apiBlob(src, controller.signal)
+      .then((blob) => {
+        if (!controller.signal.aborted) {
+          created = URL.createObjectURL(blob);
+          setBlobUrl(created);
+        }
+      })
+      .catch(() => setBlobUrl(undefined));
+    return () => {
+      controller.abort();
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [needsFetch, src]);
+  const resolved = needsFetch ? blobUrl : src;
+  if (!resolved) return null;
+  return <img src={resolved} alt={alt} width={width} height={height} className={className} />;
+}
+
+function VelaSurfacePreview({
+  mode,
+  displayName,
+  wordmarkUrl,
+  width,
+  height,
+}: {
+  mode: "light" | "dark";
+  displayName: string;
+  wordmarkUrl?: string;
+  width?: number;
+  height?: number;
+}) {
+  const dark = mode === "dark";
+  return (
+    <div
+      data-testid={`vela-preview-${mode}`}
+      className={
+        dark
+          ? "overflow-hidden rounded-xl border border-white/10 bg-[#0b0d12] text-[#f5f7fa]"
+          : "overflow-hidden rounded-xl border border-black/10 bg-[#f6f7f9] text-[#111318]"
+      }
+    >
+      <div
+        className={
+          dark
+            ? "flex items-center justify-between border-b border-white/10 bg-[#131720] px-3 py-1.5 text-xs text-[#9aa3b5]"
+            : "flex items-center justify-between border-b border-black/10 bg-[#ebedf2] px-3 py-1.5 text-xs text-[#525866]"
+        }
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex items-center gap-1" aria-hidden="true">
+            <span className="size-2 rounded-full bg-current opacity-25" />
+            <span className="size-2 rounded-full bg-current opacity-25" />
+            <span className="size-2 rounded-full bg-current opacity-25" />
+          </span>
+          <span
+            className={
+              dark
+                ? "truncate rounded-md bg-[#0b0d12] px-2 py-0.5 font-medium text-[#e6eaf2]"
+                : "truncate rounded-md bg-white px-2 py-0.5 font-medium text-[#1c2028]"
+            }
+          >
+            {displayName}
+          </span>
+        </div>
+        <span className="shrink-0 text-[11px] uppercase tracking-wider opacity-75">
+          {dark ? t("Dark") : t("Light")}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+        <div className="flex min-h-8 min-w-0 items-center">
+          {wordmarkUrl ? (
+            <WordmarkImage
+              src={wordmarkUrl}
+              alt={displayName}
+              width={width}
+              height={height}
+              className="max-h-7 w-auto max-w-[180px] object-contain"
+            />
+          ) : (
+            <span className="truncate text-base font-semibold tracking-tight">{displayName}</span>
+          )}
+        </div>
+        <div
+          aria-hidden="true"
+          className={
+            dark
+              ? "flex shrink-0 items-center gap-2.5 text-xs text-[#9aa3b5]"
+              : "flex shrink-0 items-center gap-2.5 text-xs text-[#596070]"
+          }
+        >
+          <span
+            className={
+              dark
+                ? "rounded-full bg-white/10 px-2.5 py-0.5 font-medium text-[#f5f7fa]"
+                : "rounded-full bg-black/8 px-2.5 py-0.5 font-medium text-[#111318]"
+            }
+          >
+            {t("Home")}
+          </span>
+          <span>{t("Movies")}</span>
+          <span>{t("Shows")}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VelaAppearance({
+  skinId,
+  appName,
+  wordmark,
+  onSkinChange,
+  onAppNameChange,
+  onWordmarkChange,
+}: {
+  skinId: string;
+  appName?: string;
+  wordmark?: VelaWordmark;
+  onSkinChange: (id: string) => void;
+  onAppNameChange: (name: string) => void;
+  onWordmarkChange: (wordmark?: VelaWordmark) => void;
+}) {
   const catalog = useAsync(async (signal) => {
     const response = await fetch("/vela/skins/catalog.json", { signal, cache: "no-cache" });
     if (!response.ok) return [];
     const data = (await response.json()) as { documents?: { id: string; name: string }[] };
     return Array.isArray(data.documents) ? data.documents : [];
   }, []);
+  const lightInputRef = useRef<HTMLInputElement>(null);
+  const darkInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState<"light" | "dark" | null>(null);
+  const [uploadError, setUploadError] = useState<unknown>();
+
   const options = [
     { value: "cinematic", label: t("Cinematic") },
     { value: "index", label: t("Index") },
@@ -330,7 +496,50 @@ function VelaAppearance({ value, onChange }: { value: string; onChange: (id: str
       .filter((doc) => !["cinematic", "index", "jellytwin", "marquee", "mochi"].includes(doc.id))
       .map((doc) => ({ value: doc.id, label: doc.name })),
   ];
-  if (!options.some((option) => option.value === value)) options.push({ value, label: value });
+  if (!options.some((option) => option.value === skinId))
+    options.push({ value: skinId, label: skinId });
+
+  async function handleWordmarkUpload(variant: "light" | "dark", file?: File) {
+    if (!file) return;
+    if (!isSupportedWordmarkFile(file)) {
+      setUploadError(new Error(t("Wordmark must be a PNG, SVG, or WebP image.")));
+      return;
+    }
+    if (file.size > VELA_MAX_WORDMARK_BYTES) {
+      setUploadError(new Error(t("Wordmark must be 512 KB or smaller.")));
+      return;
+    }
+    setUploading(variant);
+    setUploadError(undefined);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const uploaded = await apiFetch<{ url: string; width: number; height: number }>(
+        "/frontends/vela/wordmark",
+        { method: "POST", body: form },
+      );
+      if (variant === "light") {
+        onWordmarkChange({
+          url: uploaded.url,
+          width: uploaded.width,
+          height: uploaded.height,
+          ...(wordmark?.dark ? { dark: wordmark.dark } : {}),
+        });
+      } else if (wordmark) {
+        onWordmarkChange({
+          ...wordmark,
+          dark: uploaded.url,
+        });
+      }
+    } catch (err) {
+      setUploadError(err);
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  const displayName = (appName ?? "").trim() || "Vela";
+
   return (
     <SettingsSection title={t("Appearance")}>
       <SettingsRow
@@ -339,10 +548,209 @@ function VelaAppearance({ value, onChange }: { value: string; onChange: (id: str
         control={
           <SearchSelect
             ariaLabel={t("Default skin")}
-            value={value}
-            onChange={onChange}
+            value={skinId}
+            onChange={onSkinChange}
             options={options}
           />
+        }
+      />
+      <SettingsRow
+        title={<label htmlFor="vela-app-name">{t("App name")}</label>}
+        description={t(
+          "Shown instead of Vela in the app, browser tab, and installed web app. Up to 40 characters.",
+        )}
+        control={
+          <Input
+            id="vela-app-name"
+            aria-label={t("App name")}
+            maxLength={VELA_MAX_APP_NAME_CHARS}
+            autoComplete="off"
+            placeholder="Vela"
+            className="w-72"
+            value={appName ?? ""}
+            onChange={(e) => onAppNameChange(e.currentTarget.value)}
+          />
+        }
+      />
+      <SettingsRow
+        stacked
+        title={t("Wordmark")}
+        description={t(
+          "Replaces the text name in Vela's header and sign-in screen. PNG, SVG, or WebP up to 512 KB and 1024×256 px.",
+        )}
+        control={
+          <div className="space-y-3 pt-1">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-surface/60 p-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-fg">{t("Light background")}</span>
+                  <span className="text-xs text-fg-muted">
+                    {wordmark ? `${wordmark.width}×${wordmark.height} px` : t("Not set")}
+                  </span>
+                </div>
+                <div className="flex h-14 items-center justify-center rounded-lg border border-black/10 bg-[#f6f7f9] px-3">
+                  {wordmark ? (
+                    <WordmarkImage
+                      src={wordmark.url}
+                      alt={t("Light wordmark")}
+                      width={wordmark.width}
+                      height={wordmark.height}
+                      className="max-h-8 w-auto max-w-full object-contain"
+                    />
+                  ) : (
+                    <span className="text-xs text-[#596070]">{t("Uses app name")}</span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={uploading != null}
+                    onClick={() => lightInputRef.current?.click()}
+                  >
+                    <FileUp size={14} />
+                    {uploading === "light"
+                      ? t("Uploading…")
+                      : wordmark
+                        ? t("Replace")
+                        : t("Upload")}
+                  </Button>
+                  {wordmark ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={uploading != null}
+                      aria-label={t("Remove light wordmark")}
+                      onClick={() => {
+                        setUploadError(undefined);
+                        onWordmarkChange(undefined);
+                      }}
+                    >
+                      <X size={14} />
+                      {t("Remove")}
+                    </Button>
+                  ) : null}
+                  <input
+                    ref={lightInputRef}
+                    type="file"
+                    accept={VELA_WORDMARK_ACCEPT}
+                    className="sr-only"
+                    aria-label={t("Upload light wordmark")}
+                    onChange={(e) => {
+                      const file = e.currentTarget.files?.[0];
+                      e.currentTarget.value = "";
+                      void handleWordmarkUpload("light", file);
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-surface/60 p-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-fg">{t("Dark background")}</span>
+                  <span className="text-xs text-fg-muted">
+                    {wordmark?.dark
+                      ? t("Custom dark image")
+                      : wordmark
+                        ? t("Optional · uses light image")
+                        : t("Optional")}
+                  </span>
+                </div>
+                <div className="flex h-14 items-center justify-center rounded-lg border border-white/10 bg-[#0b0d12] px-3">
+                  {wordmark?.dark ? (
+                    <WordmarkImage
+                      src={wordmark.dark}
+                      alt={t("Dark wordmark")}
+                      width={wordmark.width}
+                      height={wordmark.height}
+                      className="max-h-8 w-auto max-w-full object-contain"
+                    />
+                  ) : wordmark ? (
+                    <WordmarkImage
+                      src={wordmark.url}
+                      alt={t("Light wordmark fallback")}
+                      width={wordmark.width}
+                      height={wordmark.height}
+                      className="max-h-8 w-auto max-w-full object-contain opacity-85"
+                    />
+                  ) : (
+                    <span className="text-xs text-[#9aa3b5]">{t("Uses app name")}</span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!wordmark || uploading != null}
+                    onClick={() => darkInputRef.current?.click()}
+                  >
+                    <FileUp size={14} />
+                    {uploading === "dark"
+                      ? t("Uploading…")
+                      : wordmark?.dark
+                        ? t("Replace")
+                        : t("Upload")}
+                  </Button>
+                  {wordmark?.dark ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={uploading != null}
+                      aria-label={t("Remove dark wordmark")}
+                      onClick={() => {
+                        setUploadError(undefined);
+                        const { dark: _dark, ...lightOnly } = wordmark;
+                        onWordmarkChange(lightOnly);
+                      }}
+                    >
+                      <X size={14} />
+                      {t("Remove")}
+                    </Button>
+                  ) : null}
+                  <input
+                    ref={darkInputRef}
+                    type="file"
+                    accept={VELA_WORDMARK_ACCEPT}
+                    className="sr-only"
+                    aria-label={t("Upload dark wordmark")}
+                    onChange={(e) => {
+                      const file = e.currentTarget.files?.[0];
+                      e.currentTarget.value = "";
+                      void handleWordmarkUpload("dark", file);
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+            {uploadError != null ? <ErrorPanel error={uploadError} /> : null}
+          </div>
+        }
+      />
+      <SettingsRow
+        stacked
+        title={t("Live preview")}
+        description={t("How your name and wordmark appear on light and dark Vela surfaces.")}
+        control={
+          <div data-testid="vela-branding-preview" className="grid gap-3 pt-1 sm:grid-cols-2">
+            <VelaSurfacePreview
+              mode="light"
+              displayName={displayName}
+              wordmarkUrl={wordmark?.url}
+              width={wordmark?.width}
+              height={wordmark?.height}
+            />
+            <VelaSurfacePreview
+              mode="dark"
+              displayName={displayName}
+              wordmarkUrl={wordmark ? (wordmark.dark ?? wordmark.url) : undefined}
+              width={wordmark?.width}
+              height={wordmark?.height}
+            />
+          </div>
         }
       />
     </SettingsSection>
@@ -369,10 +777,20 @@ function ProtocolSettings({
       setError(new Error(publicUrlError));
       return;
     }
+    const { serverName: _serverName, port: _port, ...body } = draft;
+    if (id === "vela") {
+      const trimmedName = (body.appName ?? "").trim();
+      if ([...trimmedName].length > VELA_MAX_APP_NAME_CHARS) {
+        setError(new Error(t("App name must be 40 characters or fewer.")));
+        return;
+      }
+      if (trimmedName) body.appName = trimmedName;
+      else delete body.appName;
+      if (!body.wordmark) delete body.wordmark;
+    }
     setSaving(true);
     setError(undefined);
     try {
-      const { serverName: _serverName, port: _port, ...body } = draft;
       await apiFetch(`/frontends/${id}/settings`, { method: "PUT", body: JSON.stringify(body) });
       await state.reload();
     } catch (err) {
@@ -381,7 +799,8 @@ function ProtocolSettings({
       setSaving(false);
     }
   }
-  if (id === "vela" && !info?.status.webPlayerReady) return hidden ? null : <VelaDistribution />;
+  if (id === "vela" && !info?.enabled && !info?.status.webPlayerReady)
+    return hidden ? null : <VelaDistribution />;
   if (state.error)
     return hidden ? null : <ErrorPanel error={state.error} onRetry={() => void state.reload()} />;
   if (!draft) return hidden ? null : <LoadingRows />;
@@ -420,12 +839,24 @@ function ProtocolSettings({
         {id === "vela" && !hidden ? (
           <>
             <VelaDistribution />
-            {info?.status.webPlayerReady ? (
-              <VelaAppearance
-                value={draft.defaultSkinId ?? "cinematic"}
-                onChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
-              />
-            ) : null}
+            <VelaAppearance
+              skinId={draft.defaultSkinId ?? "cinematic"}
+              appName={draft.appName}
+              wordmark={draft.wordmark ?? undefined}
+              onSkinChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
+              onAppNameChange={(next) => {
+                const nextDraft = { ...draft };
+                if (next) nextDraft.appName = next;
+                else delete nextDraft.appName;
+                setDraft(nextDraft);
+              }}
+              onWordmarkChange={(next) => {
+                const nextDraft = { ...draft };
+                if (next) nextDraft.wordmark = next;
+                else delete nextDraft.wordmark;
+                setDraft(nextDraft);
+              }}
+            />
           </>
         ) : null}
         {["jellyfin", "emby", "silo"].includes(id) ? (
@@ -451,7 +882,10 @@ function ProtocolSettings({
             </div>
           </SettingsSection>
         ) : null}
-        {id !== "plex" && id !== "dlna" && !lanViewer ? (
+        {id !== "plex" &&
+        id !== "dlna" &&
+        !lanViewer &&
+        (id !== "vela" || info?.status.webPlayerReady) ? (
           <SettingsSection title={t("Away from home")}>
             <SettingsRow
               title={<label htmlFor={`${id}-public-url`}>{t("Public address")}</label>}

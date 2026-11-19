@@ -50,4 +50,40 @@ describe("Apps mock API", () => {
     expect(created.url).toContain("/stremio/mock-grant/manifest.json");
     expect(created.qr).toMatch(/^data:image\/png;base64,/);
   });
+
+  it("uploads Vela wordmarks and stores normalized branding settings", async () => {
+    const fake = createFakeServer({ velaInstalled: true });
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="220" height="48" viewBox="0 0 220 48"><rect width="220" height="48" rx="8" fill="#111"/></svg>';
+    const form = new FormData();
+    form.append("file", new File([svg], "wordmark.svg", { type: "image/svg+xml" }));
+    const uploadRes = await fake.fetch("/ether/api/frontends/vela/wordmark", {
+      method: "POST",
+      body: form,
+    });
+    expect(uploadRes.status).toBe(200);
+    const uploaded = (await uploadRes.json()) as { url: string; width: number; height: number };
+    expect(uploaded.url).toMatch(/^\/vela\/v0\/branding\/[0-9a-f]{64}\.svg$/);
+    expect(uploaded.width).toBe(220);
+    expect(uploaded.height).toBe(48);
+
+    const served = fake.velaBranding.serveAsset(uploaded.url.replace("/vela/v0/branding/", ""));
+    expect(served.status).toBe(200);
+    expect(served.headers.get("Content-Type")).toBe("image/svg+xml");
+
+    await fake.fetch("/ether/api/frontends/vela/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        defaultSkinId: "cinematic",
+        appName: "  North Star Cinema  ",
+        wordmark: uploaded,
+      }),
+    });
+    const saved = await (await fake.fetch("/ether/api/frontends/vela/settings")).json();
+    expect(saved).toEqual({
+      defaultSkinId: "cinematic",
+      appName: "North Star Cinema",
+      wordmark: uploaded,
+    });
+  });
 });

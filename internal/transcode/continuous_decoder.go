@@ -151,7 +151,10 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		videoFilter = "trim=start=" + trim + "," + videoFilter
 		audioFilter = "atrim=start=" + trim + ",asetpts=PTS-STARTPTS," + audioFilter
 	}
-	pts := make(chan time.Duration, 16)
+	// One stamp per picture, parsed from showinfo. ffmpeg's filter thread runs
+	// ahead of the sockets by its own queues, so stamps may lead pictures by
+	// dozens; the queue holds far more than that.
+	pts := make(chan time.Duration, 4096)
 	ptsStop := make(chan struct{})
 	if r.Live {
 		args = append(args, "-loglevel", "info")
@@ -161,7 +164,16 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		audioFilter = liveAudioJumps(liveForwardJump(r, u)) + "ashowinfo," + "aresample=48000:async=1"
 	}
 	videoFilter += fmt.Sprintf("setpts=N*%d/(%d*TB)", f.FPSDen, f.FPSNum)
-	args = append(args, "-i", r.InputURL, "-map", "0:v:0", "-vf", videoFilter, "-pix_fmt", "yuv420p", "-c:v", "rawvideo", "-threads:v", "1", "-f", "rawvideo", sockets[0].url(), "-map", fmt.Sprintf("0:a:%d", max(r.AudioIndex, 0)), "-af", audioFilter, "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-f", "s16le", sockets[1].url())
+	videoOut := []string{"-c:v", "rawvideo", "-threads:v", "1"}
+	if r.Live {
+		// Every filtered picture (each with its showinfo stamp) is written
+		// exactly once: ffmpeg's default constant-rate output dropped about
+		// one picture in a hundred, leaving stamps without pictures.
+		videoOut = append(videoOut, "-fps_mode", "passthrough")
+	}
+	args = append(args, "-i", r.InputURL, "-map", "0:v:0", "-vf", videoFilter, "-pix_fmt", "yuv420p")
+	args = append(args, videoOut...)
+	args = append(args, "-f", "rawvideo", sockets[0].url(), "-map", fmt.Sprintf("0:a:%d", max(r.AudioIndex, 0)), "-af", audioFilter, "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", "-f", "s16le", sockets[1].url())
 	d := &continuousDecoder{readDone: make(chan struct{}), ptsStop: ptsStop}
 	d.audioStart.Store(-1)
 	p, e := m.startContinuous(ctx, args, "", true, sockets, nil, nil, func(line string) {
@@ -182,11 +194,13 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 			return
 		}
 		d.ptsLines.Add(1)
+		// Never block ffmpeg's log. A log reader that waits for the assembler
+		// stalls ffmpeg itself (it cannot write its next line), and with it
+		// the pictures the assembler is waiting for: a deadlock that froze
+		// live channels every 25-45 s whenever stamps ran 16 ahead of pictures.
 		select {
 		case pts <- stamp:
-		case <-ptsStop:
-		case <-ctx.Done():
-		case <-m.stop:
+		default:
 		}
 	})
 	if e != nil {

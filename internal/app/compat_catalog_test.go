@@ -73,18 +73,51 @@ func TestBuiltinAppsCoverConformProfilesAndCertification(t *testing.T) {
 			t.Errorf("catalog missing %q for profile client %q", name, client)
 		}
 	}
-	for _, want := range []string{"Jellyfin for Roku", "Emby Web", "Emby for Android TV", "Emby for TV", "Stremio", "DLNA renderer", "Files and media players"} {
+	for _, want := range []string{
+		"Plezy",
+		"Swiftfin",
+		"Infuse",
+		"Streamyfin",
+		"Findroid",
+		"Kodi",
+		"VLC",
+		"Nuvio",
+		"Plex Web",
+		"Plex for Apple TV",
+		"Plex for iOS",
+		"Plex for Android phones",
+		"Plex for Android TV",
+		"Plex HTPC",
+		"Plex for Windows",
+		"Plex for Mac",
+		"Plex for Linux",
+		"Plex for Roku",
+		"Plex for Kodi",
+		"Jellyfin for Roku",
+		"Emby Web",
+		"Emby for Android TV",
+		"Emby for TV",
+		"Stremio",
+		"DLNA renderer",
+		"Files and media players",
+	} {
 		if !names[want] {
 			t.Errorf("catalog missing %s", want)
 		}
 	}
-	var streamyfin, embyTV compatApp
+	var streamyfin, embyTV, plezy, vlc, swiftfin compatApp
 	for _, app := range apps {
-		if app.Name == "Streamyfin" {
+		switch app.Name {
+		case "Streamyfin":
 			streamyfin = app
-		}
-		if app.Name == "Emby for TV" {
+		case "Emby for TV":
 			embyTV = app
+		case "Plezy":
+			plezy = app
+		case "VLC":
+			vlc = app
+		case "Swiftfin":
+			swiftfin = app
 		}
 	}
 	if !slices.Equal(streamyfin.VideoCodecs, []string{"h264", "hevc", "vp8", "vp9", "av1"}) || streamyfin.Note != "no-dv5" {
@@ -92,6 +125,32 @@ func TestBuiltinAppsCoverConformProfilesAndCertification(t *testing.T) {
 	}
 	if embyTV.Certification != "unsupported" {
 		t.Fatalf("emby tv: %+v", embyTV)
+	}
+	if plezy.MaxHeight != 2160 || !plezy.HDR10 || !slices.Contains(plezy.VideoCodecs, "hevc") || !slices.Equal(plezy.DolbyVisionProfiles, []int{5, 7, 8}) {
+		t.Fatalf("plezy built-in caps missing: %+v", plezy)
+	}
+	if vlc.MaxHeight != 2160 || !vlc.HDR10 || !slices.Contains(vlc.VideoCodecs, "av1") {
+		t.Fatalf("vlc built-in caps missing: %+v", vlc)
+	}
+	if swiftfin.MaxHeight != 2160 || !swiftfin.HDR10 || !swiftfin.DolbyVision || !slices.Equal(swiftfin.DolbyVisionProfiles, []int{5, 8}) {
+		t.Fatalf("swiftfin built-in caps missing: %+v", swiftfin)
+	}
+	for _, rule := range clientreg.ProductRules() {
+		matched := false
+		for _, app := range apps {
+			for _, product := range app.products {
+				if rule.MatchesProduct(product) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("registry product match %+v has no Apps catalogue row", rule)
+		}
 	}
 	for _, device := range builtinDevices(nil) {
 		if device.Name == "Apple TV" && !slices.Equal(device.DolbyVisionProfiles, []int{5, 8}) {

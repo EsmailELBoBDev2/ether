@@ -4,6 +4,7 @@ import {
   Button,
   EmptyState,
   FilterChips,
+  Input,
   ListNavProvider,
   MultiSelect,
   PagedTable,
@@ -11,7 +12,7 @@ import {
   Select,
   type ListSearchParams,
 } from "@braedonsaunders/appkit-ui";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -33,6 +34,10 @@ type CompatApp = {
   audioCodecs?: string[] | null;
   containers?: string[] | null;
   subtitles: string[] | null;
+  dolbyVisionProfiles?: number[] | null;
+  maxHeight?: number;
+  hdr10?: boolean;
+  dolbyVision?: boolean;
   directPlay: string;
   note: string;
   certification: string;
@@ -100,6 +105,9 @@ type Catalog = {
   overrides?: CapabilityOverride[];
 };
 
+type SectionView = "apps" | "devices" | "seen";
+type SourceKind = "builtin" | "reported" | "override";
+
 type Draft = {
   force: boolean;
   platform: string;
@@ -137,7 +145,14 @@ const PROFILE_CHOICES = ["5", "7", "8", "4", "9"];
 
 type Editor =
   | { mode: "create"; view: "apps" | "devices" }
-  | { mode: "app"; name: string; product: string; custom: boolean; saved?: CapabilityOverride }
+  | {
+      mode: "app";
+      name: string;
+      product: string;
+      custom: boolean;
+      builtin?: CompatApp;
+      saved?: CapabilityOverride;
+    }
   | {
       mode: "device";
       name: string;
@@ -169,28 +184,15 @@ function protocolLabel(value: string) {
   }
 }
 
-function deviceNote(note: string) {
-  switch (note) {
-    case "Text is served separately; image subtitles require explicit client support.":
-      return t("Text is served separately; image subtitles require explicit client support.");
-    case "Dolby Vision profile 7 uses a compatible HDR base layer; TrueHD requires an audio transcode unless declared supported.":
-      return t(
-        "Dolby Vision profile 7 uses a compatible HDR base layer; TrueHD requires an audio transcode unless declared supported.",
-      );
-    case "Browser codec declarations govern playback; text subtitles remain sidecars.":
-      return t("Browser codec declarations govern playback; text subtitles remain sidecars.");
-    case "The TV or receiver advertises what it can play.":
-      return t("The TV or receiver advertises what it can play.");
-    default:
-      return note;
-  }
-}
-
 function seenFor(app: CompatApp, observed: ObservedClient[]) {
+  const product = appProduct(app);
   return observed.filter(
     (row) =>
       row.protocol === app.protocol &&
-      (row.name === app.name || app.name.includes(row.name) || row.name.includes(app.name)),
+      (sameText(row.name, app.name) ||
+        sameText(row.name, product) ||
+        app.name.includes(row.name) ||
+        row.name.includes(app.name)),
   );
 }
 
@@ -297,26 +299,124 @@ function selected(params: ListSearchParams, key: string) {
   return !value || value === "all" ? "" : value;
 }
 
-function CapabilityBadges({ row }: { row: CompatDevice }) {
-  const badges = [
-    ...(row.videoCodecs ?? []).map((codec) => codecLabel(codec)),
-    row.maxHeight ? t("Up to {height}p", { height: row.maxHeight }) : "",
-    row.hdr10 ? t("HDR") : "",
-    row.dolbyVision ? t("Dolby Vision") : "",
-    ...(row.dolbyVisionProfiles ?? []).map((profile) => t("Profile {profile}", { profile })),
-  ].filter(Boolean);
-  if (!badges.length) {
-    return <span className="text-fg-muted">{t("Reported by the app")}</span>;
+function hasBuiltinAppCaps(app: CompatApp) {
+  return Boolean(
+    (app.maxHeight ?? 0) > 0 ||
+      (app.videoCodecs?.length ?? 0) > 0 ||
+      app.hdr10 ||
+      app.dolbyVision ||
+      (app.dolbyVisionProfiles?.length ?? 0) > 0,
+  );
+}
+
+function hasBuiltinDeviceCaps(row: CompatDevice) {
+  return Boolean(
+    (row.maxHeight ?? 0) > 0 ||
+      (row.videoCodecs?.length ?? 0) > 0 ||
+      row.hdr10 ||
+      row.dolbyVision ||
+      (row.dolbyVisionProfiles?.length ?? 0) > 0,
+  );
+}
+
+function sourceLabel(kind: SourceKind) {
+  switch (kind) {
+    case "override":
+      return t("Override");
+    case "builtin":
+      return t("Built in");
+    case "reported":
+      return t("Reports its own");
+  }
+}
+
+function SourceBadge({ kind, copiedFrom }: { kind: SourceKind; copiedFrom?: string }) {
+  if (kind === "override") {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <Badge variant="warning" className="whitespace-nowrap">
+          {t("Override")}
+        </Badge>
+        {copiedFrom ? (
+          <Badge variant="secondary" className="whitespace-nowrap" title={copiedFrom}>
+            {t("Copied from a shared setting")}
+          </Badge>
+        ) : null}
+      </span>
+    );
+  }
+  if (kind === "builtin") {
+    return (
+      <Badge variant="secondary" className="whitespace-nowrap">
+        {t("Built in")}
+      </Badge>
+    );
   }
   return (
-    <span className="flex flex-wrap gap-1">
+    <Badge variant="outline" className="whitespace-nowrap">
+      {t("Reports its own")}
+    </Badge>
+  );
+}
+
+function VideoBadges({ codecs }: { codecs?: string[] | null }) {
+  if (!codecs?.length) {
+    return <span className="text-fg-subtle">—</span>;
+  }
+  const labels = codecs.map((codec) => codecLabel(codec));
+  const visible = labels.slice(0, 2);
+  const rest = labels.slice(2);
+  return (
+    <span className="inline-flex flex-nowrap items-center gap-1" title={labels.join(", ")}>
+      {visible.map((label) => (
+        <Badge key={label} variant="secondary" className="whitespace-nowrap">
+          {label}
+        </Badge>
+      ))}
+      {rest.length > 0 ? (
+        <Badge variant="outline" className="whitespace-nowrap" title={rest.join(", ")}>
+          +{rest.length}
+        </Badge>
+      ) : null}
+    </span>
+  );
+}
+
+function HdrDvBadges({
+  hdr10,
+  dolbyVision,
+  profiles,
+}: {
+  hdr10?: boolean;
+  dolbyVision?: boolean;
+  profiles?: number[] | null;
+}) {
+  const badges = [
+    hdr10 ? t("HDR") : "",
+    profiles?.length
+      ? t("Dolby Vision {profiles}", { profiles: profiles.join(" · ") })
+      : dolbyVision
+        ? t("Dolby Vision")
+        : "",
+  ].filter(Boolean);
+  if (!badges.length) {
+    return <span className="text-fg-subtle">—</span>;
+  }
+  return (
+    <span className="inline-flex flex-nowrap items-center gap-1">
       {badges.map((label) => (
-        <Badge key={label} variant="secondary">
+        <Badge key={label} variant="secondary" className="whitespace-nowrap">
           {label}
         </Badge>
       ))}
     </span>
   );
+}
+
+function formatDevices(devices: string[]) {
+  if (!devices.length) return t("Any");
+  if (devices.length <= 2) return devices.join(", ");
+  return `${devices.slice(0, 2).join(", ")} +${devices.length - 2}`;
 }
 
 function applyCapabilityDiff(
@@ -441,10 +541,13 @@ export function DeviceCapabilities() {
   const navigate = useNavigate();
   const location = useLocation();
   const { section } = useParams();
-  const view = section === "devices" ? "devices" : "apps";
+  const view: SectionView =
+    section === "devices" ? "devices" : section === "seen" ? "seen" : "apps";
   const params = queryMap(location.search);
   const protocol = selected(params, "protocol");
   const deviceFilter = selected(params, "device");
+  const platformFilter = selected(params, "platform");
+  const sourceFilter = selected(params, "source");
   const listNav = useMemo(
     () => ({
       pathname: location.pathname,
@@ -454,6 +557,7 @@ export function DeviceCapabilities() {
     }),
     [location.pathname, location.search, navigate],
   );
+  const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Editor | null>(null);
   const [draft, setDraft] = useState<Draft>(blankDraft);
   const [baseline, setBaseline] = useState<Draft>(blankDraft);
@@ -463,6 +567,7 @@ export function DeviceCapabilities() {
   const apps = matrix.data?.apps ?? [];
   const devices = matrix.data?.devices ?? [];
   const observed = matrix.data?.observed ?? [];
+  const seenDevices = matrix.data?.seenDevices ?? [];
   const overrides = matrix.data?.overrides ?? [];
 
   const appOverride = (name: string) =>
@@ -481,9 +586,23 @@ export function DeviceCapabilities() {
 
   const openApp = (app: CompatApp) => {
     const saved = appOverride(appProduct(app));
+    const lists = listsFrom(saved, app.maxHeight || 0);
     openDraft(
-      { mode: "app", name: app.name, product: appProduct(app), custom: false, saved },
-      { ...blankDraft(), pick: appKey(app), ...listsFrom(saved) },
+      {
+        mode: "app",
+        name: app.name,
+        product: appProduct(app),
+        custom: false,
+        builtin: app,
+        saved,
+      },
+      {
+        ...blankDraft(),
+        pick: appKey(app),
+        ...lists,
+        hdr: saved?.hdr10 ?? Boolean(app.hdr10),
+        dolby: saved?.dolbyVision ?? Boolean(app.dolbyVision),
+      },
     );
   };
 
@@ -559,7 +678,7 @@ export function DeviceCapabilities() {
   };
 
   const openCreate = () => {
-    openDraft({ mode: "create", view }, blankDraft());
+    openDraft({ mode: "create", view: view === "apps" ? "apps" : "devices" }, blankDraft());
   };
 
   const knownApp = (key: string) => apps.find((app) => appKey(app) === key);
@@ -656,11 +775,17 @@ export function DeviceCapabilities() {
         : editing?.mode === "create" && editing.view === "devices" && !draft.match.trim()
           ? knownDevice(draft.pick)
           : undefined;
+    const appBuiltin =
+      editing?.mode === "app"
+        ? editing.builtin
+        : editing?.mode === "create" && editing.view === "apps" && !draft.match.trim()
+          ? knownApp(draft.pick)
+          : undefined;
     applyCapabilityDiff(
       target.override,
       draft,
       baseline,
-      builtin?.builtinMaxHeight ?? builtin?.maxHeight ?? 0,
+      builtin?.builtinMaxHeight ?? builtin?.maxHeight ?? appBuiltin?.maxHeight ?? 0,
       editing?.mode === "app" || (editing?.mode === "create" && editing.view === "apps"),
     );
     const renamed =
@@ -683,6 +808,98 @@ export function DeviceCapabilities() {
     );
   };
 
+  const customApps = overrides.filter(
+    (item) => isAppOverride(item) && !apps.some((app) => sameText(appProduct(app), item.product)),
+  );
+  const customDevices = overrides.filter(
+    (item) => isDeviceMatch(item) && !devices.some((row) => sameText(row.name, item.device)),
+  );
+
+  const allAppRows = [
+    ...apps.map((app) => {
+      const saved = appOverride(appProduct(app));
+      const source: SourceKind = saved
+        ? "override"
+        : hasBuiltinAppCaps(app)
+          ? "builtin"
+          : "reported";
+      return { kind: "known" as const, app, saved, source };
+    }),
+    ...customApps.map((saved) => ({
+      kind: "custom" as const,
+      saved,
+      source: "override" as SourceKind,
+    })),
+  ];
+
+  const allDeviceRows = [
+    ...devices.map((row) => {
+      const saved = deviceOverride(row);
+      const changed =
+        Boolean(saved) ||
+        (row.maxHeight ?? 0) !== (row.builtinMaxHeight ?? 0) ||
+        Boolean(row.hdr10) !== Boolean(row.builtinHdr10) ||
+        Boolean(row.dolbyVision) !== Boolean(row.builtinDolbyVision);
+      const source: SourceKind = changed
+        ? "override"
+        : hasBuiltinDeviceCaps(row)
+          ? "builtin"
+          : "reported";
+      return { kind: "known" as const, row, saved, source };
+    }),
+    ...customDevices.map((saved) => ({
+      kind: "custom" as const,
+      saved,
+      source: "override" as SourceKind,
+    })),
+  ];
+
+  const allSeenRows = seenDevices.map((row) => {
+    const matched = seenOverride(row);
+    const matchedApp = apps.find(
+      (app) => sameText(appProduct(app), row.app) || sameText(app.name, row.app),
+    );
+    const matchedDevice = devices.find(
+      (dev) =>
+        sameText(dev.name, row.device) ||
+        sameText(dev.name, row.platform) ||
+        (row.device && dev.name.toLowerCase().includes(row.device.toLowerCase())),
+    );
+    const maxHeight =
+      matched?.maxHeight ?? matchedApp?.maxHeight ?? matchedDevice?.maxHeight ?? 0;
+    const videoCodecs =
+      matched?.videoCodecs ??
+      (matchedApp?.videoCodecs?.length ? matchedApp.videoCodecs : undefined) ??
+      matchedDevice?.videoCodecs ??
+      null;
+    const hdr10 = matched?.hdr10 ?? matchedApp?.hdr10 ?? matchedDevice?.hdr10;
+    const dolbyVision =
+      matched?.dolbyVision ?? matchedApp?.dolbyVision ?? matchedDevice?.dolbyVision;
+    const dolbyVisionProfiles =
+      matched?.dolbyVisionProfiles ??
+      matchedApp?.dolbyVisionProfiles ??
+      matchedDevice?.dolbyVisionProfiles ??
+      null;
+    const hasBuiltin = Boolean(
+      maxHeight > 0 ||
+        (videoCodecs?.length ?? 0) > 0 ||
+        hdr10 ||
+        dolbyVision ||
+        (dolbyVisionProfiles?.length ?? 0) > 0,
+    );
+    const source: SourceKind = matched ? "override" : hasBuiltin ? "builtin" : "reported";
+    return {
+      row,
+      matched,
+      maxHeight,
+      videoCodecs,
+      hdr10,
+      dolbyVision,
+      dolbyVisionProfiles,
+      source,
+    };
+  });
+
   const protocolOptions = [...new Set(apps.map((app) => app.protocol))].map((value) => ({
     value,
     label: protocolLabel(value),
@@ -693,33 +910,82 @@ export function DeviceCapabilities() {
     label: name,
     count: apps.filter((app) => app.devices.includes(name)).length,
   }));
+  const seenPlatformOptions = [
+    ...new Set(seenDevices.map((row) => row.platform).filter(Boolean)),
+  ]
+    .sort()
+    .map((name) => ({
+      value: name,
+      label: name,
+      count: seenDevices.filter((row) => row.platform === name).length,
+    }));
 
-  const visibleApps = apps.filter(
-    (app) =>
-      (!protocol || app.protocol === protocol) &&
-      (!deviceFilter || app.devices.includes(deviceFilter)),
-  );
-  const customApps = overrides.filter(
-    (item) => isAppOverride(item) && !apps.some((app) => sameText(appProduct(app), item.product)),
-  );
-  const customDevices = overrides.filter(
-    (item) => isDeviceMatch(item) && !devices.some((row) => sameText(row.name, item.device)),
-  );
+  const sourceCounts = (sources: SourceKind[]) =>
+    (["builtin", "reported", "override"] as const)
+      .map((value) => ({
+        value,
+        label: sourceLabel(value),
+        count: sources.filter((item) => item === value).length,
+      }))
+      .filter((opt) => opt.count > 0);
 
-  const appRows = [
-    ...visibleApps.map((app) => ({
-      kind: "known" as const,
-      app,
-      saved: appOverride(appProduct(app)),
-    })),
-    ...(protocol || deviceFilter
-      ? []
-      : customApps.map((saved) => ({ kind: "custom" as const, saved }))),
-  ];
-  const deviceRows = [
-    ...devices.map((row) => ({ kind: "known" as const, row, saved: deviceOverride(row) })),
-    ...customDevices.map((saved) => ({ kind: "custom" as const, saved })),
-  ];
+  const appSourceOptions = sourceCounts(allAppRows.map((r) => r.source));
+  const deviceSourceOptions = sourceCounts(allDeviceRows.map((r) => r.source));
+  const seenSourceOptions = sourceCounts(allSeenRows.map((r) => r.source));
+
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+
+  const appRows = allAppRows.filter((row) => {
+    if (sourceFilter && row.source !== sourceFilter) return false;
+    if (row.kind === "custom") {
+      if (protocol || deviceFilter) return false;
+      if (!normalizedQuery) return true;
+      return `${row.saved.product ?? ""} ${sourceLabel(row.source)}`
+        .toLocaleLowerCase()
+        .includes(normalizedQuery);
+    }
+    if (protocol && row.app.protocol !== protocol) return false;
+    if (deviceFilter && !row.app.devices.includes(deviceFilter)) return false;
+    if (!normalizedQuery) return true;
+    const haystack = [
+      row.app.name,
+      row.app.product ?? "",
+      protocolLabel(row.app.protocol),
+      row.app.protocol,
+      ...row.app.devices,
+      sourceLabel(row.source),
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+
+  const deviceRows = allDeviceRows.filter((row) => {
+    if (sourceFilter && row.source !== sourceFilter) return false;
+    if (!normalizedQuery) return true;
+    const haystack =
+      row.kind === "known"
+        ? `${row.row.name} ${row.row.id ?? ""} ${sourceLabel(row.source)}`
+        : `${row.saved.device ?? ""} ${row.saved.platform ?? ""} ${row.saved.product ?? ""} ${sourceLabel(row.source)}`;
+    return haystack.toLocaleLowerCase().includes(normalizedQuery);
+  });
+
+  const filteredSeenRows = allSeenRows.filter((item) => {
+    if (platformFilter && item.row.platform !== platformFilter) return false;
+    if (sourceFilter && item.source !== sourceFilter) return false;
+    if (!normalizedQuery) return true;
+    const haystack = [
+      item.row.name,
+      item.row.device,
+      item.row.platform,
+      item.row.app,
+      item.row.viewer,
+      sourceLabel(item.source),
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
 
   const builtin =
     editing?.mode === "device"
@@ -733,12 +999,13 @@ export function DeviceCapabilities() {
   const showMatch = editing?.mode === "create" || editing?.custom === true;
   const sourceApp =
     editing?.mode === "app" && !editing.custom
-      ? apps.find((app) => sameText(app.name, editing.name))
+      ? (editing.builtin ?? apps.find((app) => sameText(app.name, editing.name)))
       : editing?.mode === "create" && editing.view === "apps" && !draft.match.trim()
         ? knownApp(draft.pick)
         : undefined;
+  const dvBuiltin = builtin?.dolbyVisionProfiles ?? sourceApp?.dolbyVisionProfiles ?? [];
   const profileOptions = withChoices(PROFILE_CHOICES, [
-    ...(builtin?.dolbyVisionProfiles ?? []).map(String),
+    ...dvBuiltin.map(String),
     ...draft.profiles,
   ]).map((value) => ({ value, label: t("Profile {profile}", { profile: value }) }));
   const videoOptions = withChoices(VIDEO_CHOICES, [
@@ -765,30 +1032,40 @@ export function DeviceCapabilities() {
     ...draft.subtitles,
   ]).map((value) => ({ value, label: value }));
   const profilePlaceholder = builtIn(
-    (builtin?.dolbyVisionProfiles ?? []).map((profile) => t("Profile {profile}", { profile })),
+    dvBuiltin.map((profile) => t("Profile {profile}", { profile })),
   );
   const videoPlaceholder = builtIn(
     (builtin?.videoCodecs ?? sourceApp?.videoCodecs ?? []).map((codec) => codecLabel(codec)),
   );
   const subtitlePlaceholder = builtIn(builtin?.subtitleCodecs ?? sourceApp?.subtitles ?? []);
-  const heightBuiltin = builtin?.builtinMaxHeight || builtin?.maxHeight || 0;
+  const heightBuiltin =
+    builtin?.builtinMaxHeight || builtin?.maxHeight || sourceApp?.maxHeight || 0;
   const resolutionPlaceholder = builtIn(heightBuiltin ? [resolutionName(heightBuiltin)] : []);
   const heightOptions = withChoices(["720", "1080", "2160"], [draft.height]);
 
+  const searchPlaceholder =
+    view === "apps"
+      ? t("Search apps…")
+      : view === "devices"
+        ? t("Search device profiles…")
+        : t("Search seen devices…");
+
   return (
     <ListNavProvider value={listNav}>
-      <div className="space-y-4">
-        <div className="pb-2">
-          <SubtabNav
-            ariaLabel={t("App compatibility sections")}
-            active={view}
-            onSelect={(key) => navigate(`/playback/devices/${key}`)}
-            tabs={[
-              { key: "apps", label: t("Apps") },
-              { key: "devices", label: t("Devices") },
-            ]}
-          />
-        </div>
+      <div className="space-y-3">
+        <SubtabNav
+          ariaLabel={t("App compatibility sections")}
+          active={view}
+          onSelect={(key) => {
+            setQuery("");
+            navigate(`/playback/devices/${key}`);
+          }}
+          tabs={[
+            { key: "apps", label: t("Apps") },
+            { key: "devices", label: t("Device profiles") },
+            { key: "seen", label: t("Seen devices") },
+          ]}
+        />
         {matrix.error ? (
           <ErrorPanel error={matrix.error} onRetry={() => void matrix.reload()} />
         ) : !matrix.data ? (
@@ -796,9 +1073,21 @@ export function DeviceCapabilities() {
         ) : (
           <>
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" onClick={openCreate}>
-                <Plus size={14} /> {t("Add")}
-              </Button>
+              <div className="relative w-56 sm:w-64">
+                <Search
+                  size={14}
+                  aria-hidden
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
+                />
+                <Input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  aria-label={searchPlaceholder}
+                  placeholder={searchPlaceholder}
+                  className="h-8 py-1 pl-8 pr-2.5 text-sm"
+                />
+              </div>
               {view === "apps" ? (
                 <>
                   <FilterChips
@@ -817,293 +1106,442 @@ export function DeviceCapabilities() {
                     allLabel={t("All devices")}
                     options={deviceOptions}
                   />
+                  <FilterChips
+                    basePath={location.pathname}
+                    currentParams={params}
+                    paramKey="source"
+                    label={t("Source")}
+                    allLabel={t("All sources")}
+                    options={appSourceOptions}
+                  />
                 </>
-              ) : null}
+              ) : view === "devices" ? (
+                <FilterChips
+                  basePath={location.pathname}
+                  currentParams={params}
+                  paramKey="source"
+                  label={t("Source")}
+                  allLabel={t("All sources")}
+                  options={deviceSourceOptions}
+                />
+              ) : (
+                <>
+                  {seenPlatformOptions.length > 0 ? (
+                    <FilterChips
+                      basePath={location.pathname}
+                      currentParams={params}
+                      paramKey="platform"
+                      label={t("Platform")}
+                      allLabel={t("All platforms")}
+                      options={seenPlatformOptions}
+                    />
+                  ) : null}
+                  {seenSourceOptions.length > 0 ? (
+                    <FilterChips
+                      basePath={location.pathname}
+                      currentParams={params}
+                      paramKey="source"
+                      label={t("Source")}
+                      allLabel={t("All sources")}
+                      options={seenSourceOptions}
+                    />
+                  ) : null}
+                </>
+              )}
+              <Button size="sm" className="ml-auto" onClick={openCreate}>
+                <Plus size={14} /> {t("Add")}
+              </Button>
             </div>
-            {view === "apps" ? (
-              <PagedTable
-                rows={appRows}
-                rowKey={(row) =>
-                  row.kind === "known" ? appKey(row.app) : `custom:${row.saved.product}`
-                }
-                searchable
-                pageSize={15}
-                onRowClick={(row) =>
-                  row.kind === "known" ? openApp(row.app) : openCustomApp(row.saved)
-                }
-                defaultSort={{ key: "name", dir: "asc" }}
-                empty={<EmptyState title={t("No apps")} />}
-                labels={pagedTableLabels({ searchPlaceholder: t("Search apps…") })}
-                columns={[
-                  {
-                    key: "name",
-                    header: t("App"),
-                    search: (row) =>
-                      row.kind === "known"
-                        ? `${row.app.name} ${row.app.protocol} ${row.app.devices.join(" ")}`
-                        : (row.saved.product ?? ""),
-                    sortValue: (row) =>
-                      (row.kind === "known"
-                        ? row.app.name
-                        : (row.saved.product ?? "")
-                      ).toLowerCase(),
-                    cell: (row) => {
-                      const name = row.kind === "known" ? row.app.name : (row.saved.product ?? "");
-                      const seen = row.kind === "known" ? seenFor(row.app, observed) : [];
-                      return (
-                        <span>
-                          <button
-                            type="button"
-                            className="font-medium"
-                            aria-label={t("Edit {name}", { name })}
-                            onClick={() =>
-                              row.kind === "known" ? openApp(row.app) : openCustomApp(row.saved)
-                            }
-                          >
-                            {name}
-                          </button>
-                          {row.saved ? (
-                            <Badge variant="warning" className="ml-2" title={row.saved.copiedFrom}>
-                              {row.saved.copiedFrom
-                                ? t("Copied from a shared setting")
-                                : t("Changed")}
-                            </Badge>
-                          ) : null}
-                          {seen.length > 0 ? (
-                            <span className="mt-1 block text-xs font-normal text-fg-muted">
-                              {tx("Seen on this server, last {when}", {
-                                when: relativeTime(seen[0]!.lastSeen),
-                              })}
-                            </span>
-                          ) : null}
-                        </span>
-                      );
-                    },
-                  },
-                  {
-                    key: "protocol",
-                    header: t("Protocol"),
-                    sortValue: (row) => (row.kind === "known" ? row.app.protocol : ""),
-                    cell: (row) => (row.kind === "known" ? protocolLabel(row.app.protocol) : ""),
-                  },
-                  {
-                    key: "devices",
-                    header: t("Typical devices"),
-                    cell: (row) =>
-                      row.kind === "known" ? row.app.devices.join(", ") || t("Any") : t("Any"),
-                  },
-                  {
-                    key: "plays",
-                    header: t("Plays directly"),
-                    cell: (row) => {
-                      if (row.saved?.videoCodecs?.length) {
-                        return (
-                          <CapabilityBadges
-                            row={{
-                              name: "",
-                              dolbyVisionProfiles: row.saved.dolbyVisionProfiles ?? null,
-                              subtitleCodecs: row.saved.subtitleCodecs ?? null,
-                              notes: "",
-                              videoCodecs: row.saved.videoCodecs,
-                              maxHeight: row.saved.maxHeight,
-                              hdr10: row.saved.hdr10,
-                              dolbyVision: row.saved.dolbyVision,
-                            }}
-                          />
-                        );
-                      }
-                      if (
-                        row.kind === "known" &&
-                        row.app.directPlay === "listed" &&
-                        row.app.videoCodecs?.length
-                      ) {
-                        return (
-                          <span className="flex flex-wrap gap-1">
-                            {row.app.videoCodecs.map((codec) => (
-                              <Badge key={codec} variant="secondary">
-                                {codecLabel(codec)}
-                              </Badge>
-                            ))}
-                          </span>
-                        );
-                      }
-                      return (
-                        <Badge variant="secondary" className="whitespace-nowrap">
-                          {row.kind === "known" && row.app.directPlay === "stream"
-                            ? t("Stream link")
-                            : t("Reports its own")}
-                        </Badge>
-                      );
-                    },
-                  },
-                  {
-                    key: "subtitles",
-                    header: t("Subtitles"),
-                    cell: (row) => {
-                      const codecs =
-                        row.saved?.subtitleCodecs ??
-                        (row.kind === "known" ? row.app.subtitles : null);
-                      return codecs?.length ? (
-                        <span className="flex flex-wrap gap-1">
-                          {codecs.map((codec) => (
-                            <Badge key={codec} variant="secondary">
-                              {codec.toUpperCase()}
-                            </Badge>
-                          ))}
-                        </span>
-                      ) : (
-                        <Badge variant="secondary">{t("Reports its own")}</Badge>
-                      );
-                    },
-                  },
-                ]}
-              />
-            ) : (
-              <PagedTable
-                rows={deviceRows}
-                rowKey={(row) =>
-                  row.kind === "known"
-                    ? deviceKey(row.row)
-                    : `custom:${row.saved.platform}:${row.saved.device}:${row.saved.product}`
-                }
-                searchable
-                pageSize={15}
-                onRowClick={(row) =>
-                  row.kind === "known" ? openDevice(row.row) : openCustomDevice(row.saved)
-                }
-                defaultSort={{ key: "name", dir: "asc" }}
-                empty={<EmptyState title={t("No devices")} />}
-                labels={pagedTableLabels({ searchPlaceholder: t("Search devices…") })}
-                columns={[
-                  {
-                    key: "name",
-                    header: t("Device"),
-                    search: (row) =>
-                      row.kind === "known" ? row.row.name : (row.saved.device ?? ""),
-                    sortValue: (row) =>
-                      (row.kind === "known"
-                        ? row.row.name
-                        : (row.saved.device ?? "")
-                      ).toLowerCase(),
-                    cell: (row) => {
-                      const name = row.kind === "known" ? row.row.name : (row.saved.device ?? "");
-                      const changed =
-                        row.kind === "custom" ||
-                        Boolean(row.saved) ||
-                        (row.kind === "known" &&
-                          ((row.row.maxHeight ?? 0) !== (row.row.builtinMaxHeight ?? 0) ||
-                            Boolean(row.row.hdr10) !== Boolean(row.row.builtinHdr10) ||
-                            Boolean(row.row.dolbyVision) !== Boolean(row.row.builtinDolbyVision)));
-                      return (
-                        <span className="inline-flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            className="font-medium"
-                            aria-label={t("Edit {name}", { name })}
-                            onClick={() =>
-                              row.kind === "known"
-                                ? openDevice(row.row)
-                                : openCustomDevice(row.saved)
-                            }
-                          >
-                            {name}
-                          </button>
-                          {changed ? <Badge variant="warning">{t("Changed")}</Badge> : null}
-                        </span>
-                      );
-                    },
-                  },
-                  {
-                    key: "plays",
-                    header: t("Plays"),
-                    cell: (row) =>
-                      row.kind === "known" ? (
-                        <CapabilityBadges row={row.row} />
-                      ) : (
-                        <CapabilityBadges
-                          row={{
-                            name: "",
-                            dolbyVisionProfiles: row.saved.dolbyVisionProfiles ?? null,
-                            subtitleCodecs: row.saved.subtitleCodecs ?? null,
-                            notes: "",
-                            videoCodecs: row.saved.videoCodecs,
-                            maxHeight: row.saved.maxHeight,
-                            hdr10: row.saved.hdr10,
-                            dolbyVision: row.saved.dolbyVision,
-                          }}
-                        />
-                      ),
-                  },
-                  {
-                    key: "subtitles",
-                    header: t("Subtitles"),
-                    cell: (row) =>
-                      (row.kind === "known"
-                        ? row.row.subtitleCodecs
-                        : row.saved.subtitleCodecs
-                      )?.join(", ") || t("Reported by the app"),
-                  },
-                  {
-                    key: "notes",
-                    header: t("Notes"),
-                    cell: (row) => (
-                      <span className="text-fg-muted">
-                        {row.kind === "known" ? deviceNote(row.row.notes) : ""}
-                      </span>
-                    ),
-                  },
-                ]}
-              />
-            )}
-            {view === "devices" ? (
-              <section className="space-y-3">
-                <h2 className="text-lg font-medium">{t("Seen devices")}</h2>
+            <div className="[&_td]:px-2 [&_td]:py-2 [&_th]:h-9 [&_th]:px-2">
+              {view === "apps" ? (
                 <PagedTable
-                  rows={matrix.data.seenDevices ?? []}
-                  rowKey={(row) => row.clientIdentifier}
-                  pageSize={15}
-                  searchable
-                  labels={pagedTableLabels()}
-                  empty={<EmptyState title={t("No seen devices yet")} />}
-                  onRowClick={openSeenDevice}
+                  rows={appRows}
+                  rowKey={(row) =>
+                    row.kind === "known" ? appKey(row.app) : `custom:${row.saved.product}`
+                  }
+                  pageSize={25}
+                  onRowClick={(row) =>
+                    row.kind === "known" ? openApp(row.app) : openCustomApp(row.saved)
+                  }
+                  defaultSort={{ key: "name", dir: "asc" }}
+                  empty={<EmptyState title={t("No apps")} />}
+                  labels={pagedTableLabels({ searchPlaceholder: t("Search apps…") })}
                   columns={[
                     {
                       key: "name",
-                      header: t("Device"),
+                      header: t("Name"),
+                      sortValue: (row) =>
+                        (row.kind === "known"
+                          ? row.app.name
+                          : (row.saved.product ?? "")
+                        ).toLowerCase(),
+                      cell: (row) => {
+                        const name = row.kind === "known" ? row.app.name : (row.saved.product ?? "");
+                        return (
+                          <div className="flex items-center gap-2 text-left">
+                            <button
+                              type="button"
+                              className="whitespace-nowrap text-left font-medium text-fg hover:underline"
+                              aria-label={t("Edit {name}", { name })}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (row.kind === "known") openApp(row.app);
+                                else openCustomApp(row.saved);
+                              }}
+                            >
+                              {name}
+                            </button>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      key: "platform",
+                      header: t("Platform"),
+                      sortValue: (row) =>
+                        row.kind === "known" ? row.app.devices.join(", ") : "",
+                      cell: (row) =>
+                        row.kind === "known" ? (
+                          <span
+                            className="block max-w-44 truncate whitespace-nowrap text-fg-muted"
+                            title={row.app.devices.join(", ") || undefined}
+                          >
+                            {formatDevices(row.app.devices)}
+                          </span>
+                        ) : (
+                          <span className="text-fg-muted">{t("Any")}</span>
+                        ),
+                    },
+                    {
+                      key: "resolution",
+                      header: t("Resolution"),
+                      sortValue: (row) =>
+                        row.saved?.maxHeight ?? (row.kind === "known" ? (row.app.maxHeight ?? 0) : 0),
+                      cell: (row) => {
+                        const height =
+                          row.saved?.maxHeight ??
+                          (row.kind === "known" ? (row.app.maxHeight ?? 0) : 0);
+                        return height > 0 ? (
+                          <span className="whitespace-nowrap tabular-nums">
+                            {resolutionName(height)}
+                          </span>
+                        ) : (
+                          <span className="text-fg-subtle">—</span>
+                        );
+                      },
+                    },
+                    {
+                      key: "video",
+                      header: t("Video"),
+                      cell: (row) => {
+                        const codecs = row.saved?.videoCodecs?.length
+                          ? row.saved.videoCodecs
+                          : row.kind === "known"
+                            ? row.app.videoCodecs
+                            : null;
+                        return <VideoBadges codecs={codecs} />;
+                      },
+                    },
+                    {
+                      key: "hdr",
+                      header: t("HDR / DV"),
+                      cell: (row) => {
+                        const hdr10 =
+                          row.saved?.hdr10 ?? (row.kind === "known" ? row.app.hdr10 : undefined);
+                        const dolbyVision =
+                          row.saved?.dolbyVision ??
+                          (row.kind === "known" ? row.app.dolbyVision : undefined);
+                        const profiles =
+                          row.saved?.dolbyVisionProfiles ??
+                          (row.kind === "known" ? row.app.dolbyVisionProfiles : null);
+                        return (
+                          <HdrDvBadges
+                            hdr10={hdr10}
+                            dolbyVision={dolbyVision}
+                            profiles={profiles}
+                          />
+                        );
+                      },
+                    },
+                    {
+                      key: "source",
+                      header: t("Source"),
+                      sortValue: (row) => row.source,
                       cell: (row) => (
-                        <span className="inline-flex items-center gap-2">
-                          {row.name || row.device}
-                          {seenOverride(row) ? (
-                            <Badge variant="warning">{t("Changed")}</Badge>
-                          ) : null}
-                        </span>
+                        <SourceBadge kind={row.source} copiedFrom={row.saved?.copiedFrom} />
                       ),
                     },
-                    { key: "platform", header: t("Platform"), cell: (row) => row.platform },
-                    { key: "app", header: t("App"), cell: (row) => row.app || t("Unknown") },
                     {
                       key: "lastSeen",
                       header: t("Last seen"),
-                      cell: (row) => relativeTime(row.lastSeen),
+                      sortValue: (row) => {
+                        const seen = row.kind === "known" ? seenFor(row.app, observed) : [];
+                        return seen[0]?.lastSeen ?? "";
+                      },
+                      cell: (row) => {
+                        const seen = row.kind === "known" ? seenFor(row.app, observed) : [];
+                        return seen.length > 0 ? (
+                          <span className="whitespace-nowrap text-fg-muted">
+                            {relativeTime(seen[0]!.lastSeen)}
+                          </span>
+                        ) : (
+                          <span className="text-fg-subtle">—</span>
+                        );
+                      },
+                    },
+                  ]}
+                />
+              ) : view === "devices" ? (
+                <PagedTable
+                  rows={deviceRows}
+                  rowKey={(row) =>
+                    row.kind === "known"
+                      ? deviceKey(row.row)
+                      : `custom:${row.saved.platform}:${row.saved.device}:${row.saved.product}`
+                  }
+                  pageSize={25}
+                  onRowClick={(row) =>
+                    row.kind === "known" ? openDevice(row.row) : openCustomDevice(row.saved)
+                  }
+                  defaultSort={{ key: "name", dir: "asc" }}
+                  empty={<EmptyState title={t("No device profiles")} />}
+                  labels={pagedTableLabels({ searchPlaceholder: t("Search device profiles…") })}
+                  columns={[
+                    {
+                      key: "name",
+                      header: t("Name"),
+                      sortValue: (row) =>
+                        (row.kind === "known"
+                          ? row.row.name
+                          : (row.saved.device ?? "")
+                        ).toLowerCase(),
+                      cell: (row) => {
+                        const name = row.kind === "known" ? row.row.name : (row.saved.device ?? "");
+                        return (
+                          <div className="flex items-center gap-2 text-left">
+                            <button
+                              type="button"
+                              className="whitespace-nowrap text-left font-medium text-fg hover:underline"
+                              aria-label={t("Edit {name}", { name })}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (row.kind === "known") openDevice(row.row);
+                                else openCustomDevice(row.saved);
+                              }}
+                            >
+                              {name}
+                            </button>
+                          </div>
+                        );
+                      },
                     },
                     {
-                      key: "viewer",
-                      header: t("Viewer"),
-                      cell: (row) => row.viewer || t("Unknown"),
+                      key: "match",
+                      header: t("Match"),
+                      cell: (row) => {
+                        if (row.kind === "custom") {
+                          const parts = [
+                            row.saved.platform,
+                            row.saved.device,
+                            row.saved.product
+                              ? t("App: {app}", { app: row.saved.product })
+                              : "",
+                          ].filter(Boolean);
+                          return (
+                            <span className="text-fg-muted">{parts.join(" · ") || t("Any")}</span>
+                          );
+                        }
+                        if (row.saved?.product) {
+                          return (
+                            <span className="text-fg-muted">
+                              {t("{id} · App: {app}", {
+                                id: row.row.id || row.row.name,
+                                app: row.saved.product,
+                              })}
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="whitespace-nowrap font-mono text-xs text-fg-muted">
+                            {row.row.id || "dlna"}
+                          </span>
+                        );
+                      },
+                    },
+                    {
+                      key: "resolution",
+                      header: t("Resolution"),
+                      sortValue: (row) =>
+                        row.kind === "known" ? (row.row.maxHeight ?? 0) : (row.saved.maxHeight ?? 0),
+                      cell: (row) => {
+                        const height =
+                          row.kind === "known"
+                            ? (row.row.maxHeight ?? 0)
+                            : (row.saved.maxHeight ?? 0);
+                        return height > 0 ? (
+                          <span className="whitespace-nowrap tabular-nums">
+                            {resolutionName(height)}
+                          </span>
+                        ) : (
+                          <span className="text-fg-subtle">—</span>
+                        );
+                      },
+                    },
+                    {
+                      key: "video",
+                      header: t("Video"),
+                      cell: (row) => (
+                        <VideoBadges
+                          codecs={row.kind === "known" ? row.row.videoCodecs : row.saved.videoCodecs}
+                        />
+                      ),
+                    },
+                    {
+                      key: "hdr",
+                      header: t("HDR / DV"),
+                      cell: (row) =>
+                        row.kind === "known" ? (
+                          <HdrDvBadges
+                            hdr10={row.row.hdr10}
+                            dolbyVision={row.row.dolbyVision}
+                            profiles={row.row.dolbyVisionProfiles}
+                          />
+                        ) : (
+                          <HdrDvBadges
+                            hdr10={row.saved.hdr10}
+                            dolbyVision={row.saved.dolbyVision}
+                            profiles={row.saved.dolbyVisionProfiles}
+                          />
+                        ),
+                    },
+                    {
+                      key: "source",
+                      header: t("Source"),
+                      sortValue: (row) => row.source,
+                      cell: (row) => <SourceBadge kind={row.source} />,
+                    },
+                  ]}
+                />
+              ) : (
+                <PagedTable
+                  rows={filteredSeenRows}
+                  rowKey={(item) => item.row.clientIdentifier}
+                  pageSize={25}
+                  labels={pagedTableLabels({ searchPlaceholder: t("Search seen devices…") })}
+                  empty={<EmptyState title={t("No seen devices yet")} />}
+                  onRowClick={(item) => openSeenDevice(item.row)}
+                  columns={[
+                    {
+                      key: "name",
+                      header: t("Name"),
+                      sortValue: (item) => (item.row.name || item.row.device).toLowerCase(),
+                      cell: (item) => {
+                        const name = item.row.name || item.row.device;
+                        return (
+                          <div className="flex items-center gap-2 text-left">
+                            <button
+                              type="button"
+                              className="whitespace-nowrap text-left font-medium text-fg hover:underline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openSeenDevice(item.row);
+                              }}
+                            >
+                              {name}
+                            </button>
+                          </div>
+                        );
+                      },
+                    },
+                    {
+                      key: "platform",
+                      header: t("Platform / Match"),
+                      sortValue: (item) => `${item.row.platform} ${item.row.app}`.toLowerCase(),
+                      cell: (item) => {
+                        const parts = [
+                          item.row.platform,
+                          item.row.app || t("Unknown"),
+                          item.row.device && item.row.device !== item.row.name
+                            ? item.row.device
+                            : "",
+                        ].filter(Boolean);
+                        return (
+                          <span
+                            className="block max-w-32 truncate whitespace-nowrap text-fg-muted"
+                            title={parts.join(" · ")}
+                          >
+                            {parts.join(" · ")}
+                          </span>
+                        );
+                      },
+                    },
+                    {
+                      key: "resolution",
+                      header: t("Resolution"),
+                      sortValue: (item) => item.maxHeight,
+                      cell: (item) =>
+                        item.maxHeight > 0 ? (
+                          <span className="whitespace-nowrap tabular-nums">
+                            {resolutionName(item.maxHeight)}
+                          </span>
+                        ) : (
+                          <span className="text-fg-subtle">—</span>
+                        ),
+                    },
+                    {
+                      key: "video",
+                      header: t("Video"),
+                      cell: (item) => <VideoBadges codecs={item.videoCodecs} />,
+                    },
+                    {
+                      key: "hdr",
+                      header: t("HDR / DV"),
+                      cell: (item) => (
+                        <HdrDvBadges
+                          hdr10={item.hdr10}
+                          dolbyVision={item.dolbyVision}
+                          profiles={item.dolbyVisionProfiles}
+                        />
+                      ),
+                    },
+                    {
+                      key: "source",
+                      header: t("Source"),
+                      sortValue: (item) => item.source,
+                      cell: (item) => <SourceBadge kind={item.source} />,
+                    },
+                    {
+                      key: "lastSeen",
+                      header: t("Last seen"),
+                      sortValue: (item) => item.row.lastSeen,
+                      cell: (item) => (
+                        <span className="whitespace-nowrap text-fg-muted">
+                          {relativeTime(item.row.lastSeen)}
+                        </span>
+                      ),
                     },
                     {
                       key: "edit",
-                      header: t("Settings"),
-                      cell: (row) => (
-                        <Button size="sm" onClick={() => openSeenDevice(row)}>
-                          {t("Edit")}
+                      header: "",
+                      align: "right",
+                      cell: (item) => (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 whitespace-nowrap px-2"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openSeenDevice(item.row);
+                          }}
+                        >
+                          {item.matched ? t("Edit override") : t("Create override")}
                         </Button>
                       ),
                     },
                   ]}
                 />
-              </section>
-            ) : null}
+              )}
+            </div>
           </>
         )}
         <RecordDrawer
@@ -1166,7 +1604,7 @@ export function DeviceCapabilities() {
             value={draft.profiles}
             options={profileOptions}
             placeholder={profilePlaceholder}
-            builtin={(builtin?.dolbyVisionProfiles ?? []).map(String)}
+            builtin={dvBuiltin.map(String)}
             onChange={(profiles) => setDraft({ ...draft, profiles })}
           />
           <ChoiceRow
@@ -1231,7 +1669,11 @@ export function DeviceCapabilities() {
                 ? builtin.builtinHdr10
                   ? t("Built in: on.")
                   : t("Built in: off.")
-                : undefined
+                : sourceApp
+                  ? sourceApp.hdr10
+                    ? t("Built in: on.")
+                    : t("Built in: off.")
+                  : undefined
             }
             value={draft.hdr}
             onChange={(hdr) => setDraft({ ...draft, hdr })}
@@ -1243,7 +1685,11 @@ export function DeviceCapabilities() {
                 ? builtin.builtinDolbyVision
                   ? t("Built in: on.")
                   : t("Built in: off.")
-                : undefined
+                : sourceApp
+                  ? sourceApp.dolbyVision
+                    ? t("Built in: on.")
+                    : t("Built in: off.")
+                  : undefined
             }
             value={draft.dolby}
             onChange={(dolby) => setDraft({ ...draft, dolby })}

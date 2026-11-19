@@ -16,6 +16,10 @@ type libraryCounter interface {
 	LibraryCount(context.Context, *frontend.Viewer, string) (int, error)
 }
 
+type indexedLibraryCounter interface {
+	IndexedLibraryCount(context.Context, *frontend.Viewer, string) (int, error)
+}
+
 type viewFact struct {
 	gen   uint64
 	count int
@@ -40,28 +44,40 @@ type viewFactCache struct {
 }
 
 func (i *instance) fillJellyfinViewFacts(r *http.Request, viewer *frontend.Viewer, viewID string, item map[string]any) {
-	if i == nil || r == nil || viewer == nil || item == nil || i.host.Experience == nil {
+	if r == nil || item == nil {
 		return
 	}
-	counter, ok := i.host.Experience.(libraryCounter)
-	if !ok {
-		return
+	if count, ok := i.cachedLibraryCount(r.Context(), viewer, viewID); ok {
+		item["ChildCount"] = count
+	}
+}
+
+func (i *instance) cachedLibraryCount(ctx context.Context, viewer *frontend.Viewer, viewID string) (int, bool) {
+	if i == nil || viewer == nil || i.host.Experience == nil {
+		return 0, false
+	}
+	var countFn func(context.Context, *frontend.Viewer, string) (int, error)
+	if ic, ok := i.host.Experience.(indexedLibraryCounter); ok {
+		countFn = ic.IndexedLibraryCount
+	} else if lc, ok := i.host.Experience.(libraryCounter); ok {
+		countFn = lc.LibraryCount
+	} else {
+		return 0, false
 	}
 	key, gen, cacheable := i.viewFactKey(viewer, viewID)
 	if cacheable {
 		if fact, hit := i.views.get(key); hit && fact.gen == gen {
-			item["ChildCount"] = fact.count
-			return
+			return fact.count, true
 		}
 	}
-	count, err := counter.LibraryCount(r.Context(), viewer, viewID)
+	count, err := countFn(ctx, viewer, viewID)
 	if err != nil {
-		return
+		return 0, false
 	}
 	if cacheable {
 		i.views.store(key, viewFact{gen: gen, count: count})
 	}
-	item["ChildCount"] = count
+	return count, true
 }
 
 func (c *viewFactCache) get(key viewFactKey) (viewFact, bool) {

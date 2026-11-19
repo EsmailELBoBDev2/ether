@@ -164,6 +164,9 @@ func mount(ctx context.Context, host frontend.Host, machineID string, protocol f
 	if err := inst.routes(); err != nil {
 		return nil, err
 	}
+	if err := inst.dashboardRoutes(); err != nil {
+		return nil, err
+	}
 	mounted = true
 	return inst, nil
 }

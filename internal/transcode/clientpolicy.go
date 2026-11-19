@@ -141,6 +141,7 @@ func ApplyForcedOverrides(c core.ClientCaps, model string, overrides []core.Clie
 		if o.MaxHeight > 0 {
 			c.MaxHeight = o.MaxHeight
 			c.ExplicitMaxHeight = true
+			c.MaxHeightSource = "App compatibility forced override"
 		}
 		if o.MaxBitrateKbps > 0 {
 			c.MaxBitrateKbps = o.MaxBitrateKbps

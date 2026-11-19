@@ -383,9 +383,10 @@ type ClientCaps struct {
 
 	// PreferredSourceHeight softly favors a known HD source for a new quality
 	// request. It never constrains eligibility or replaces an active source.
-	PreferredSourceHeight int  `json:"preferredSourceHeight,omitempty"`
-	MaxHeight             int  `json:"maxHeight"`                   // 2160, 1080, 720...
-	ExplicitMaxHeight     bool `json:"explicitMaxHeight,omitempty"` // true when MaxHeight came from a request header/query limitation rather than a product default
+	PreferredSourceHeight int    `json:"preferredSourceHeight,omitempty"`
+	MaxHeight             int    `json:"maxHeight"`                   // 2160, 1080, 720...
+	ExplicitMaxHeight     bool   `json:"explicitMaxHeight,omitempty"` // true when MaxHeight came from a request header/query limitation rather than a product default
+	MaxHeightSource       string `json:"-"`                           // declaration, preset or override that established MaxHeight
 	// HDRFormats preserves explicit display range declarations for Vela.
 	HDRFormats           []string            `json:"hdrFormats,omitempty"`
 	HDR10                bool                `json:"hdr10"`

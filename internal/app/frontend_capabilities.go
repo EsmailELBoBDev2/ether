@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -143,6 +144,11 @@ func playbackFloor(declared core.ClientCaps, overrides []core.ClientCapabilityOv
 	}
 	if declared.MaxHeight == 0 && !declared.ExplicitMaxHeight && defaults.MaxHeight > 0 {
 		declared.MaxHeight = defaults.MaxHeight
+		if defaults.HeightLocked {
+			declared.MaxHeightSource = "App compatibility override"
+		} else {
+			declared.MaxHeightSource = fmt.Sprintf("registry preset %q", defaults.ID)
+		}
 	}
 	// An app that plays through its own native player (registry quirk
 	// native-player-dynamic-range: Stremio desktop/Android, Nuvio) renders

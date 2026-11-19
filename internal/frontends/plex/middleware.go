@@ -327,6 +327,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 					s.svc().remoteClientSeen(pr.RemoteIP.String())
 				}
 				s.dashboard().SeeDevice(pr.ClientID, pr.DeviceName, pr.Platform)
+				s.recentClients.recordRequest(r, pr, s.now())
 				s.observePlaybackRequestStart(r, pr)
 				next.ServeHTTP(w, r)
 				return

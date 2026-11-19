@@ -656,6 +656,7 @@ func applyDeviceTargetLimits(rule devicePlaybackRule, target *deviceMediaRule, i
 		if height > 0 && (p.caps.MaxHeight == 0 || height < p.caps.MaxHeight) {
 			p.caps.MaxHeight = height
 			p.caps.ExplicitMaxHeight = true
+			p.caps.MaxHeightSource = fmt.Sprintf("device profile target limit (%s=%s)", l.field, l.value)
 		}
 	}
 }
@@ -674,7 +675,8 @@ func applyExtraTranscodeTargetLimits(extra, protocol string, target *deviceMedia
 			continue
 		}
 		a := d.Args
-		if a["scope"] != "videoTranscodeTarget" || !strings.EqualFold(a["type"], "upperBound") {
+		scope := a["scope"]
+		if (scope != "videoTranscodeTarget" && !(scope == "videoCodec" && strings.EqualFold(strings.TrimSpace(a["protocol"]), protocol))) || !strings.EqualFold(a["type"], "upperBound") {
 			continue
 		}
 		if ctx := a["context"]; ctx != "" && ctx != "all" && ctx != "streaming" {
@@ -748,6 +750,7 @@ func applyExtraTranscodeTargetLimits(extra, protocol string, target *deviceMedia
 		if height > 0 && (p.caps.MaxHeight == 0 || height < p.caps.MaxHeight) {
 			p.caps.MaxHeight = height
 			p.caps.ExplicitMaxHeight = true
+			p.caps.MaxHeightSource = formatLimitationSource(a["scope"], a["scopeName"], a["name"], limitationValue(a))
 		}
 	}
 }

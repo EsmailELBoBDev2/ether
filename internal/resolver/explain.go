@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"cmp"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,8 +12,9 @@ import (
 
 // explainCeiling says why a resolution's winner is below 4K, or "" when it
 // is 4K or nothing won. In order: a profile that stops below 4K (and why
-// that profile applied), a client that reported a lower ceiling, else the
-// fate of each 4K release (rejected, ranked lower, failed its check).
+// that profile applied), a client or rule ceiling below 4K (naming the exact
+// declaration or source), else the fate of each 4K release (rejected, ranked
+// lower, failed its check).
 func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req core.ResolveRequest) string {
 	if tr.Winner == "" {
 		return ""
@@ -31,7 +33,10 @@ func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req cor
 		return fmt.Sprintf("The %s profile stops at %dp: %s.", profile.Name, configured, profileReason(s.qualityCfg(), req.Client, req.User, profile.Name))
 	}
 	if profile.MaxHeight > 0 && profile.MaxHeight < 2160 {
-		return fmt.Sprintf("The client reported it plays up to %dp, so 4K releases were not considered.", profile.MaxHeight)
+		if src := cmp.Or(strings.TrimSpace(profile.CeilingSource), strings.TrimSpace(req.Client.MaxHeightSource)); src != "" {
+			return fmt.Sprintf("Resolution capped at %dp by %s, so 4K releases were not considered.", profile.MaxHeight, src)
+		}
+		return fmt.Sprintf("Client capability maxHeight=%dp (unspecified source), so 4K releases were not considered.", profile.MaxHeight)
 	}
 	reasons := map[string]int{}
 	found := 0

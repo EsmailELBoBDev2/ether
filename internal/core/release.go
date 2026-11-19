@@ -296,7 +296,11 @@ type QualityProfile struct {
 	// 0 means unset (a profile built outside SelectProfile), in which
 	// case MaxHeight itself is the configured value. Runtime-only,
 	// never persisted with the profile.
-	ConfiguredMaxHeight    int      `json:"-"`
+	ConfiguredMaxHeight int `json:"-"`
+	// CeilingSource names the runtime declaration, registry default, owner
+	// override, quality rule, or download reshape that lowered MaxHeight
+	// below ConfiguredMaxHeight. Runtime-only, never persisted.
+	CeilingSource          string   `json:"-"`
 	FallbackBelowMin       bool     `json:"fallbackBelowMin,omitempty"`
 	MinHeight              int      `json:"minHeight"` // floor, e.g. 720
 	AllowHDR               bool     `json:"allowHdr"`  // only applied when the client also supports it

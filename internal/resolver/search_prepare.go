@@ -29,6 +29,7 @@ type searchPreparation struct {
 	disabled   bool
 	checks     candidateChecks
 	byID       map[string]*candidateCheck
+	byIdentity map[string]*candidateCheck
 	identities map[string]bool
 	releases   map[string]core.Release
 	all        []core.Release
@@ -47,8 +48,21 @@ const earlyCheckLimit = 32
 
 func newSearchPreparation(ctx context.Context, s *Service, req core.ResolveRequest, search core.SearchRequest, profile core.QualityProfile, pin string) *searchPreparation {
 	return &searchPreparation{ctx: ctx, svc: s, req: req, search: search, profile: profile,
-		disabled: pin != "" || req.Prefer != "" || s.resolverCfg().OptimisticStart || usesPluginRanking(profile),
-		byID:     map[string]*candidateCheck{}, identities: map[string]bool{}, releases: map[string]core.Release{}, seen: map[string]bool{}}
+		disabled:   pin != "" || req.Prefer != "" || s.resolverCfg().OptimisticStart || usesPluginRanking(profile),
+		byID:       map[string]*candidateCheck{},
+		byIdentity: map[string]*candidateCheck{},
+		identities: map[string]bool{},
+		releases:   map[string]core.Release{},
+		seen:       map[string]bool{}}
+}
+
+func discoveryIdentity(rel core.Release) string {
+	if rel.Protocol == core.ProtocolUsenet {
+		if cid := rel.EffectiveContentID(); cid != "" {
+			return "cid|" + cid
+		}
+	}
+	return rel.Protocol + "|" + strings.ToLower(strings.TrimSpace(rel.Name)) + "|" + strconv.FormatInt(rel.Size, 10) + "|" + strings.ToLower(rel.InfoHash)
 }
 
 func (p *searchPreparation) arrived(batch []core.Release) {
@@ -57,6 +71,7 @@ func (p *searchPreparation) arrived(batch []core.Release) {
 	if p.disabled || p.ctx.Err() != nil {
 		return
 	}
+	batch = expandReleaseFallbacks(batch)
 	var added []core.Release
 	reorder := false
 	for _, r := range batch {
@@ -162,10 +177,10 @@ func (p *searchPreparation) pumpLocked() {
 			}
 			continue
 		}
-		// Usenet reposts share a name and size, so one check covers them.
-		// Torrents with the same name can be different swarms, and only one
-		// may be cached: the info hash keeps each its own check.
-		identity := c.rel.Protocol + "|" + strings.ToLower(strings.TrimSpace(c.rel.Name)) + "|" + strconv.FormatInt(c.rel.Size, 10) + "|" + strings.ToLower(c.rel.InfoHash)
+		// Usenet copies sharing content identity or exact name+size share one
+		// check. Torrents with the same name can be different swarms, and only
+		// one may be cached: the info hash keeps each its own check.
+		identity := discoveryIdentity(c.rel)
 		if p.identities[identity] {
 			continue
 		}
@@ -188,6 +203,7 @@ func (p *searchPreparation) pumpLocked() {
 			check.retrySpeculative = func(ctx context.Context) validation { return p.svc.validateOne(ctx, c.rel) }
 		}
 		p.byID[c.rel.ID] = check
+		p.byIdentity[identity] = check
 		active++
 		if spendsGrab(c.rel) {
 			activeGrabs++
@@ -259,6 +275,9 @@ func (p *searchPreparation) readyResultsAfter(window time.Duration) []core.Relea
 	lead := -1
 	for i, c := range p.ranked {
 		f := p.byID[c.rel.ID]
+		if f == nil {
+			f = p.byIdentity[discoveryIdentity(c.rel)]
+		}
 		if f == nil {
 			if lead < 0 {
 				lead = i
@@ -391,13 +410,20 @@ func (s *Service) keepSearchCancel(context.CancelFunc) {}
 func (p *searchPreparation) attach(cs []candidate) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for i := range cs {
-		r := cs[i].rel
+	attachOne := func(c *candidate) {
+		r := c.rel
 		if original, ok := p.releases[r.ID]; ok && original.Name == r.Name && original.Size == r.Size && original.NZBURL == r.NZBURL && original.Protocol == r.Protocol {
-			cs[i].prepared = p.byID[r.ID]
+			c.prepared = p.byID[r.ID]
+		}
+	}
+	for i := range cs {
+		attachOne(&cs[i])
+		for j := range cs[i].fallbacks {
+			attachOne(&cs[i].fallbacks[j])
 		}
 	}
 }
+
 func (p *searchPreparation) close() {
 	p.mu.Lock()
 	p.closed = true

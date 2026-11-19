@@ -231,27 +231,21 @@ func (m *Manager) SearchRescueWith(ctx context.Context, req core.SearchRequest, 
 		}(i, cl)
 	}
 	wg.Wait()
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var merged []core.Release
 	for _, s := range slots {
 		if missingAnswer(s.err) {
 			core.NoteSearchIncomplete(ctx)
 		}
 		for _, r := range s.results {
-			key := strings.ToLower(strings.TrimSpace(r.Name)) + "|" + fmt.Sprint(r.Size)
-			if r.Size == 0 {
-				key = strings.ToLower(strings.TrimSpace(r.Name))
-			}
-			if r.Protocol != core.ProtocolUsenet {
-				key = r.Protocol + "|" + key
-				if r.InfoHash != "" {
-					key = r.Protocol + "|" + r.InfoHash
-				}
-			}
-			if seen[key] {
+			key := mergeDedupeKey(r)
+			if idx, ok := seen[key]; ok {
+				dup := r
+				dup.Fallbacks = nil
+				merged[idx].Fallbacks = append(merged[idx].Fallbacks, dup)
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(merged)
 			merged = append(merged, r)
 		}
 	}
@@ -317,7 +311,7 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 	m.searchTimingMu.Lock()
 	m.searchTimings = timings
 	m.searchTimingMu.Unlock()
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var merged []core.Release
 	var errs []error
 	anySearched := false
@@ -330,22 +324,14 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 			anySearched = true
 		}
 		for _, r := range s.results {
-			key := strings.ToLower(strings.TrimSpace(r.Name)) + "|" + fmt.Sprint(r.Size)
-			if r.Size == 0 {
-				key = strings.ToLower(strings.TrimSpace(r.Name))
-			}
-			if r.Protocol != core.ProtocolUsenet {
-				// A torrent and a Usenet post of the same name are distinct
-				// sources; torrents dedupe by info hash when known.
-				key = r.Protocol + "|" + key
-				if r.InfoHash != "" {
-					key = r.Protocol + "|" + r.InfoHash
-				}
-			}
-			if seen[key] {
+			key := mergeDedupeKey(r)
+			if idx, ok := seen[key]; ok {
+				dup := r
+				dup.Fallbacks = nil
+				merged[idx].Fallbacks = append(merged[idx].Fallbacks, dup)
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(merged)
 			merged = append(merged, r)
 		}
 	}
@@ -368,6 +354,22 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 		}
 	}
 	return merged, nil
+}
+
+func mergeDedupeKey(r core.Release) string {
+	key := strings.ToLower(strings.TrimSpace(r.Name)) + "|" + fmt.Sprint(r.Size)
+	if r.Size == 0 {
+		key = strings.ToLower(strings.TrimSpace(r.Name))
+	}
+	if r.Protocol != core.ProtocolUsenet {
+		// A torrent and a Usenet post of the same name are distinct
+		// sources; torrents dedupe by info hash when known.
+		key = r.Protocol + "|" + key
+		if r.InfoHash != "" {
+			key = r.Protocol + "|" + r.InfoHash
+		}
+	}
+	return key
 }
 
 // FetchNZB implements core.Indexer by routing to the originating client.

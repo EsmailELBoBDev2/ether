@@ -282,21 +282,24 @@ type Service struct {
 	scorerErr        error
 	sources          string // sourcesKey of the applied config
 
-	mu            sync.RWMutex
-	bad           map[string]badMark // release id -> blocklist mark
-	reps          map[string]reputation
-	avail         map[int64]availEntry
-	searchCache   map[string]searchCacheEntry
-	retentionDays int
-	verified      map[string]time.Time // release id -> last passed health check
-	verifiedMiss  map[string]time.Time // release id -> when resolver_verified last had no fresh check
-	failedHealth  map[string]time.Time // confirmed source failures, briefly skipped on subsequent resolves
-	healthTTL     time.Duration
-	seaDexMem     map[int64]*seaDexEntry
-	seaDexDBMiss  map[int64]time.Time
-	seaDexKeys    map[string]seaDexKeyCache
-	seaDexKeyMiss map[string]time.Time
-	seaDexFail    map[int64]time.Time
+	mu               sync.RWMutex
+	bad              map[string]badMark     // release id -> blocklist mark
+	badContent       map[string]badMark     // cross-indexer content id -> blocklist mark
+	contentByRelease map[string]contentLink // release id -> learned content identities
+	failedGrabs      map[string]failedGrabMark
+	reps             map[string]reputation
+	avail            map[int64]availEntry
+	searchCache      map[string]searchCacheEntry
+	retentionDays    int
+	verified         map[string]time.Time // release id -> last passed health check
+	verifiedMiss     map[string]time.Time // release id -> when resolver_verified last had no fresh check
+	failedHealth     map[string]time.Time // confirmed source failures, briefly skipped on subsequent resolves
+	healthTTL        time.Duration
+	seaDexMem        map[int64]*seaDexEntry
+	seaDexDBMiss     map[int64]time.Time
+	seaDexKeys       map[string]seaDexKeyCache
+	seaDexKeyMiss    map[string]time.Time
+	seaDexFail       map[int64]time.Time
 
 	tracesMu  sync.Mutex
 	traces    []Trace
@@ -345,7 +348,9 @@ var _ core.Resolver = (*Service)(nil)
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
 	s := &Service{vault: opts.Vault, verifier: opts.Verifier, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing,
 		indexer: indexer, health: health, db: db,
-		bad: map[string]badMark{}, reps: map[string]reputation{},
+		bad: map[string]badMark{}, badContent: map[string]badMark{},
+		contentByRelease: map[string]contentLink{}, failedGrabs: map[string]failedGrabMark{},
+		reps:  map[string]reputation{},
 		avail: map[int64]availEntry{}, searchCache: map[string]searchCacheEntry{},
 		flights:       map[string]*inflight{},
 		retentionDays: opts.RetentionDays,
@@ -430,10 +435,14 @@ func (s *Service) forgetSourceResults(ctx context.Context) {
 	}
 	clear(s.searchCache)
 	clear(s.failedHealth)
+	clear(s.failedGrabs)
 	s.mu.Unlock()
 	if s.db != nil {
 		if _, err := s.db.ExecContext(ctx, `DELETE FROM resolver_availability WHERE available = 0`); err != nil {
 			s.log.Warn("forget unavailable titles", "err", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM resolver_failed_grabs`); err != nil {
+			s.log.Warn("forget failed grabs", "err", err)
 		}
 	}
 	s.log.Info("sources changed: cleared cached searches and unavailable titles")
@@ -519,6 +528,7 @@ func (s *Service) MarkBad(ctx context.Context, releaseID string, reason string) 
 	if releaseID == "" {
 		return fmt.Errorf("resolver: empty release id")
 	}
+	contentKeys := s.idContentKeysDB(ctx, releaseID)
 	s.mu.Lock()
 	m := badMark{reason: reason, at: s.now()}
 	if prev, ok := s.bad[releaseID]; ok && prev.manual {
@@ -527,17 +537,20 @@ func (s *Service) MarkBad(ctx context.Context, releaseID string, reason string) 
 		m.reason, m.manual = prev.reason, true
 	}
 	s.bad[releaseID] = m
+	s.markBadContentLocked(contentKeys, m)
 	s.mu.Unlock()
-	s.forgetVerified(ctx, releaseID)
+	s.forgetVerifiedWithContent(ctx, releaseID, contentKeys...)
 	s.notePinsBlocked(ctx, releaseID, reason)
-	return s.persistBad(ctx, s.blockEntryFor(releaseID, reason, false))
+	e := s.blockEntryFor(releaseID, reason, false)
+	if e.ContentID == "" {
+		e.ContentID = preferredContentKey(contentKeys)
+	}
+	return s.persistBad(ctx, e)
 }
 
 func (s *Service) isBad(id string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	m, ok := s.bad[id]
-	return ok && m.live(s.now())
+	_, ok := s.badReason(id)
+	return ok
 }
 
 // badMark is one in-memory blocklist mark. Automatic marks expire
@@ -554,13 +567,32 @@ func (m badMark) live(now time.Time) bool {
 
 // badReason reports whether a release is on the live blocklist and why.
 func (s *Service) badReason(id string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	m, ok := s.bad[id]
-	if !ok || !m.live(s.now()) {
+	if id == "" {
 		return "", false
 	}
-	return m.reason, true
+	now := s.now()
+	s.mu.RLock()
+	if m, ok := s.bad[id]; ok && m.live(now) {
+		s.mu.RUnlock()
+		return m.reason, true
+	}
+	if m, ok := s.badContent[id]; ok && m.live(now) {
+		s.mu.RUnlock()
+		return m.reason, true
+	}
+	s.mu.RUnlock()
+	keys := s.idContentKeys(id)
+	if len(keys) == 0 {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, k := range keys {
+		if m, ok := s.badContent[k]; ok && m.live(now) {
+			return m.reason, true
+		}
+	}
+	return "", false
 }
 
 // Traces returns the most recent resolution traces, newest first.
@@ -855,6 +887,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 					candidates, _, rankErr := s.rankCandidates(ctx, req, sreq, profile, ready, &trace, "")
 					if rankErr == nil && len(candidates) > 0 && !candidates[0].fallback && !candidates[0].belowScore {
 						early.attach(candidates)
+						candidates = groupRepostCandidates(candidates)
 						idx, payload, checkErr := s.validateCandidates(ctx, candidates, &trace, 0)
 						if checkErr == nil && idx >= 0 {
 							deadline.Stop()
@@ -1159,6 +1192,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	var checks candidateChecks
 	defer checks.close()
 	cands = s.prepareSources(ctx, cands, req.Title, &trace, &checks)
+	cands = groupRepostCandidates(cands, pinID, req.Prefer)
 	trace.SourcePreparationDuration = time.Since(prepareStart)
 	if rcfg.OptimisticStart && !preferTried && vault.KeyOf(cands[0].rel) == "" {
 		if cands[0].rel.OpensOnDemand() && !core.OnDemandAllowedAt(ctx, cands[0].rel, 0) {
@@ -1166,28 +1200,38 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			trace.Err = errOnDemandForeground.Error()
 			return nil, errOnDemandForeground
 		}
-		at := time.Now()
-		if !reserveSpeculativeCheck(ctx) {
-			return nil, errHealthBudget
-		}
-		nzb, err := s.indexer.FetchNZB(ctx, cands[0].rel)
-		trace.Candidates[cands[0].trace].Attempted = true
-		trace.Candidates[cands[0].trace].FetchDuration = time.Since(at)
-		if err == nil {
-			winner := cands[0]
-			trace.Winner = winner.rel.ID
-			trace.Candidates[winner.trace].Reason = "optimistic start: health check pending"
-			s.optimisticCheck(winner.rel, nzb)
-			return s.resolution(t.Key, cands, 0, nzb, &trace), nil
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		trace.Candidates[cands[0].trace].Rejected = true
-		trace.Candidates[cands[0].trace].Reason = "nzb fetch: " + err.Error()
-		trace.Candidates[cands[0].trace].err = err
-		if !permanentFailure(err) {
-			optimisticErr = err
+		members := append([]candidate{cands[0]}, cands[0].fallbacks...)
+		for mi, m := range members {
+			if mi > 0 && (s.isBadRelease(m.rel) || s.recentlyFailedRelease(m.rel)) {
+				continue
+			}
+			at := time.Now()
+			if !reserveSpeculativeCheck(ctx) {
+				return nil, errHealthBudget
+			}
+			nzb, err := s.indexer.FetchNZB(ctx, m.rel)
+			trace.Candidates[m.trace].Attempted = true
+			trace.Candidates[m.trace].FetchDuration = time.Since(at)
+			if err == nil {
+				winner := m
+				winner.rel, _ = s.learnReleaseContent(ctx, winner.rel, nzb)
+				cands[0] = winner
+				trace.Winner = winner.rel.ID
+				trace.Candidates[winner.trace].Reason = "optimistic start: health check pending"
+				s.optimisticCheck(winner.rel, nzb)
+				return s.resolution(t.Key, cands, 0, nzb, &trace), nil
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			trace.Candidates[m.trace].Rejected = true
+			trace.Candidates[m.trace].Reason = "nzb fetch: " + err.Error()
+			trace.Candidates[m.trace].err = err
+			if permanentGrabFailure(err) {
+				s.recordFailedValidation(ctx, m.rel, validation{err: err})
+			} else if !permanentFailure(err) {
+				optimisticErr = err
+			}
 		}
 		cands = cands[1:]
 	}
@@ -1238,6 +1282,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 			defer rescueChecks.close()
 			at := time.Now()
 			rescueCands = s.prepareSources(ctx, rescueCands, req.Title, &trace, &rescueChecks)
+			rescueCands = groupRepostCandidates(rescueCands, pinID, req.Prefer)
 			trace.SourcePreparationDuration += time.Since(at)
 			var rescueDowngrades []candidate
 			rescuePrimary, rescueDowngrades = splitDowngrades(rescueCands, reference)
@@ -1255,6 +1300,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		sort.SliceStable(downgrades, func(i, j int) bool {
 			return compareCandidates(downgrades[i], downgrades[j])
 		})
+		downgrades = groupRepostCandidates(downgrades, pinID, req.Prefer)
 		index, nzb, verr := s.validateCandidates(ctx, downgrades, &trace, rcfg.HealthRace)
 		if verr == nil && index >= 0 {
 			trace.Downgrade = downgradeNote(reference, downgrades[index].rel, len(primary) > 0)
@@ -1314,7 +1360,8 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 	}
 	// A capped warm-up did not check every candidate, so it proves nothing.
-	if !clientRejected && !rescueSkipped && len(req.Exclude) == 0 && len(cands) <= maxHealthAttempts && !(core.IsSpeculative(ctx) && len(cands) > speculativeHealthAttempts) && !coverage.Incomplete() {
+	totalMembers := countGroupedMembers(cands)
+	if !clientRejected && !rescueSkipped && len(req.Exclude) == 0 && totalMembers <= maxHealthAttempts && !(core.IsSpeculative(ctx) && totalMembers > speculativeHealthAttempts) && !coverage.Incomplete() {
 		s.setAvailability(ctx, int64(t.Key), false, min(s.cooloff(), failedHealthTTL))
 	}
 	trace.Err = "no healthy candidates"
@@ -1429,6 +1476,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 	if err != nil {
 		return nil
 	}
+	results = expandReleaseFallbacks(results)
 	for i := range results {
 		if results[i].Info.Title == "" && results[i].Info.Height == 0 && results[i].Info.Source == core.SourceUnknown {
 			results[i].Info = releaseparse.Parse(results[i].Name)
@@ -1452,15 +1500,21 @@ func novelReleases(existing, incoming []core.Release) []core.Release {
 		if r.InfoHash != "" {
 			seen["h:"+r.InfoHash] = true
 		}
+		if r.ContentID != "" {
+			seen["c:"+r.ScopedContentID(r.ContentID)] = true
+		}
 	}
 	var out []core.Release
 	for _, r := range incoming {
-		if seen[r.ID] || (r.InfoHash != "" && seen["h:"+r.InfoHash]) {
+		if seen[r.ID] || (r.InfoHash != "" && seen["h:"+r.InfoHash]) || (r.ContentID != "" && seen["c:"+r.ScopedContentID(r.ContentID)]) {
 			continue
 		}
 		seen[r.ID] = true
 		if r.InfoHash != "" {
 			seen["h:"+r.InfoHash] = true
+		}
+		if r.ContentID != "" {
+			seen["c:"+r.ScopedContentID(r.ContentID)] = true
 		}
 		out = append(out, r)
 	}
@@ -1569,6 +1623,7 @@ func filterOutPlaceholders(in []core.Release) []core.Release {
 }
 
 func (s *Service) normalizeSearchResults(req core.SearchRequest, results []core.Release) []core.Release {
+	results = expandReleaseFallbacks(results)
 	results = filterOutPlaceholders(results)
 	for i := range results {
 		if results[i].Info.Title == "" && results[i].Info.Height == 0 && results[i].Info.Source == core.SourceUnknown {
@@ -1676,10 +1731,12 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	policy, hot, exclude, rcfg, wanted, accepted := env.policy, env.hot, env.exclude, env.rcfg, env.wanted, env.accepted
 	upscales := presumedUpscales(results, isAnime(t))
 	ids := make([]string, len(results))
+	targeted := make([]core.Release, len(results))
 	for i, r := range results {
 		ids[i] = r.ID
+		targeted[i] = withTarget(r, sreq)
 	}
-	verifiedIDs := s.verifiedAmong(ctx, ids)
+	verifiedIDs := s.verifiedReleases(ctx, targeted)
 	var subtitles map[string]bool
 	if rcfg.HardSubtitles != "allow" {
 		subtitleIDs := ids
@@ -2139,10 +2196,10 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 	if s.rejectedFor(t.Key, rel) {
 		return "release rejected for this title"
 	}
-	if s.isBad(rel.ID) {
+	if s.isBadRelease(rel) {
 		return "marked bad"
 	}
-	if s.recentlyFailedHealth(rel.ID) {
+	if s.recentlyFailedRelease(rel) {
 		return "source recently failed health check; retrying later"
 	}
 	lowerName := strings.ToLower(rel.Name)

@@ -46,10 +46,10 @@ func (s *Service) readyChannelFrom(ctx context.Context, req core.ResolveRequest,
 		if len(pool) >= 32 {
 			break
 		}
-		if req.Prefer != "" && r.ID != req.Prefer || slices.Contains(req.Exclude, r.ID) || r.Size <= 0 || r.Info.FullSeason || s.isBad(r.ID) || s.recentlyFailedHealth(r.ID) || !s.ChannelSourceAllowed(r, req.Client, req.Title) {
+		if req.Prefer != "" && r.ID != req.Prefer || slices.Contains(req.Exclude, r.ID) || r.Size <= 0 || r.Info.FullSeason || s.isBadRelease(r) || s.recentlyFailedRelease(r) || !s.ChannelSourceAllowed(r, req.Client, req.Title) {
 			continue
 		}
-		at, ok := s.verifiedAt(ctx, r.ID)
+		at, ok := s.verifiedAtRelease(ctx, r)
 		if !ok || s.now().Before(at) || s.now().Sub(at) > channelReadyTTL {
 			continue
 		}
@@ -80,5 +80,6 @@ func (s *Service) ResolveReadyChannel(ctx context.Context, req core.ResolveReque
 	if err != nil {
 		return nil, err
 	}
+	r, _ = s.learnReleaseContent(ctx, r, payload)
 	return &core.Resolution{Title: req.Title.Key, Release: r, NZB: payload, ResolvedAt: s.now()}, nil
 }

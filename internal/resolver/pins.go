@@ -64,7 +64,7 @@ func (s *Service) Pin(ctx context.Context, key core.RatingKey, titleName string,
 	if rel.ID == "" {
 		return Pin{}, fmt.Errorf("resolver: empty release id")
 	}
-	if s.isBad(rel.ID) {
+	if s.isBadRelease(rel) {
 		return Pin{}, ErrPinBlocked
 	}
 	if titleName == "" {
@@ -233,16 +233,20 @@ func (s *Service) notePin(ctx context.Context, key core.RatingKey, releaseID str
 // notePinsBlocked marks pins of a newly blocklisted release as failing, so
 // the Pinned list shows why the pin is being skipped.
 func (s *Service) notePinsBlocked(ctx context.Context, releaseID, reason string) {
+	type hit struct {
+		key core.RatingKey
+		id  string
+	}
 	s.con.mu.Lock()
-	var keys []core.RatingKey
+	var hits []hit
 	for k, p := range s.con.pins {
 		if p.Release.ID == releaseID {
-			keys = append(keys, k)
+			hits = append(hits, hit{key: k, id: p.Release.ID})
 		}
 	}
 	s.con.mu.Unlock()
-	for _, k := range keys {
-		s.notePin(ctx, k, releaseID, PinUnhealthy, "blocklisted: "+reason)
+	for _, h := range hits {
+		s.notePin(ctx, h.key, h.id, PinUnhealthy, "blocklisted: "+reason)
 	}
 }
 
@@ -288,7 +292,7 @@ func (s *Service) pinRejectReason(rel core.Release, sreq core.SearchRequest, _ c
 		return "passworded"
 	case exclude[rel.ID]:
 		return "excluded (already tried)"
-	case s.isBad(rel.ID):
+	case s.isBadRelease(rel):
 		return "marked bad"
 	case nonVideoRelease(rel, nil, sreq):
 		return ReasonNotAVideoFile

@@ -13,12 +13,9 @@ package vault
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
@@ -29,31 +26,13 @@ import (
 // IndexerID marks releases served from the vault (core.Release.IndexerID).
 const IndexerID = "vault"
 
-// Key is a release's cross-indexer content identity (lower-case hex).
-// It MUST equal W116's release identity (feat/0316-release-identity);
-// ContentKey is the shim until that lands and is swapped at merge.
+// Key is a release's cross-indexer content identity: W116's
+// nzb.ContentID ("nzb:" + hex sha256 over the NZB's sorted, de-duplicated
+// segment message-ids), or TorrentKey for torrent records.
 type Key string
 
-// ContentKey is sha256 over the NZB's sorted, de-duplicated message-ids.
-func ContentKey(doc *nzb.NZB) Key {
-	var ids []string
-	seen := map[string]bool{}
-	for _, f := range doc.Files {
-		for _, s := range f.Segments {
-			if !seen[s.MessageID] {
-				seen[s.MessageID] = true
-				ids = append(ids, s.MessageID)
-			}
-		}
-	}
-	sort.Strings(ids)
-	h := sha256.New()
-	for _, id := range ids {
-		h.Write([]byte(id))
-		h.Write([]byte{0})
-	}
-	return Key(hex.EncodeToString(h.Sum(nil)))
-}
+// ContentKey is the release's content identity (nzb.ContentID).
+func ContentKey(doc *nzb.NZB) Key { return Key(doc.ContentID()) }
 
 // TorrentKey is the key of a torrent record.
 func TorrentKey(infoHash string) Key { return Key("bt:" + infoHash) }

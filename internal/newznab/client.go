@@ -645,7 +645,8 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// and Usenet streams and read flag languages.
 	// v5: anime BD/BDMux source tags and three-letter audio languages.
 	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
-	fmt.Fprint(h, "release-parse-v6|")
+	// v7: Usenet poster and upload date preserved for cross-indexer content identity.
+	fmt.Fprint(h, "release-parse-v7|")
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
 	}

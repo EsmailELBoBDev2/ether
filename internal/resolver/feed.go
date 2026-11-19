@@ -158,8 +158,13 @@ func (e *feedEvaluation) Transient(id string) string {
 	if e.s.isBad(id) {
 		return "marked bad"
 	}
-	if e.s.recentlyFailedHealth(id) {
+	if e.s.recentlyFailedHealth(id) || e.s.recentlyFailedGrabKey(id) {
 		return "source recently failed health check; retrying later"
+	}
+	for _, k := range e.s.idContentKeys(id) {
+		if e.s.recentlyFailedHealth(k) || e.s.recentlyFailedGrabKey(k) {
+			return "source recently failed health check; retrying later"
+		}
 	}
 	return ""
 }
@@ -241,16 +246,30 @@ func (s *Service) VerifyFeedCandidate(ctx context.Context, t *core.Title, r core
 	}
 	payload, err := s.indexer.FetchNZB(ctx, r)
 	if err != nil {
+		if permanentGrabFailure(err) {
+			keys := append(s.releaseContentKeys(r), r.ID)
+			s.noteFailedGrab(ctx, keys, err.Error())
+		}
 		return err
 	}
+	var extraKeys []string
+	r, extraKeys = s.learnReleaseContent(ctx, r, payload)
 	ok, err := core.CheckReleaseHealth(ctx, s.health, r.ID, payload)
 	if err != nil {
+		if permanentFailure(err) {
+			if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+				s.noteFailedGrab(ctx, ckeys, err.Error())
+			}
+		}
 		return err
 	}
 	if !ok {
+		if ckeys := s.releaseContentKeys(r, extraKeys...); len(ckeys) > 0 {
+			s.noteFailedGrab(ctx, ckeys, "health: unhealthy")
+		}
 		return core.ErrSourceUnavailable
 	}
-	s.markVerified(ctx, r.ID)
+	s.markVerifiedKeys(ctx, s.allVerificationKeys(r, extraKeys...))
 	s.rememberReleases(t, []core.Release{r})
 	s.setAvailability(ctx, int64(t.Key), true, s.searchTTL())
 	return nil

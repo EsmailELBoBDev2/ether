@@ -442,9 +442,9 @@ func (s *Service) SearchReleases(ctx context.Context, t *core.Title, opts Search
 			}
 		}
 		cr.Release.Score = cr.Score
-		reason, bad := s.badReason(rel.ID)
+		reason, bad := s.badReasonRelease(rel)
 		cr.Blocked, cr.BlockReason = bad, reason
-		if h, ok := s.lastHealth(ctx, rel.ID); ok {
+		if h, ok := s.lastHealthRelease(ctx, rel); ok {
 			cr.Health = &h
 		}
 		out.Releases = append(out.Releases, cr)
@@ -757,9 +757,9 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 				}
 			}
 			cr.Release.Score = cr.Score
-			reason, bad := s.badReason(rel.ID)
+			reason, bad := s.badReasonRelease(rel)
 			cr.Blocked, cr.BlockReason = bad, reason
-			if h, ok := s.lastHealth(ctx, rel.ID); ok {
+			if h, ok := s.lastHealthRelease(ctx, rel); ok {
 				cr.Health = &h
 			}
 			epOut.Releases = append(epOut.Releases, cr)
@@ -834,17 +834,25 @@ type HealthResult struct {
 // lastHealth reports what is known about a release's health without
 // checking it.
 func (s *Service) lastHealth(ctx context.Context, id string) (HealthResult, bool) {
+	if rel, ok := s.LookupRelease(id); ok {
+		return s.lastHealthRelease(ctx, rel)
+	}
+	return s.lastHealthRelease(ctx, core.Release{ID: id})
+}
+
+func (s *Service) lastHealthRelease(ctx context.Context, rel core.Release) (HealthResult, bool) {
+	id := rel.ID
 	s.con.mu.Lock()
 	h, ok := s.con.checks[id]
 	s.con.mu.Unlock()
 	if ok {
 		return h, true
 	}
-	reason, bad := s.badReason(id)
+	reason, bad := s.badReasonRelease(rel)
 	if bad {
 		return HealthResult{ReleaseID: id, Reason: reason, Source: "blocked"}, true
 	}
-	if at, ok := s.verifiedAt(ctx, id); ok {
+	if at, ok := s.verifiedAtRelease(ctx, rel); ok {
 		return HealthResult{ReleaseID: id, CheckedAt: at, Healthy: true, Source: "verified"}, true
 	}
 	return HealthResult{}, false
@@ -881,10 +889,14 @@ func (s *Service) CheckRelease(ctx context.Context, releaseID string, titleKey c
 	res := HealthResult{ReleaseID: releaseID, Source: "check"}
 	definitive := false
 	nzb, err := s.indexer.FetchNZB(ctx, rel)
+	var extraKeys []string
+	if err == nil {
+		rel, extraKeys = s.learnReleaseContent(ctx, rel, nzb)
+	}
 	switch {
 	case err != nil:
 		res.Reason = "nzb fetch: " + err.Error()
-		definitive = permanentFailure(err)
+		definitive = permanentGrabFailure(err)
 	case s.health == nil:
 		res.Healthy = true
 		res.Reason = "no health checker configured"
@@ -893,7 +905,7 @@ func (s *Service) CheckRelease(ctx context.Context, releaseID string, titleKey c
 		switch {
 		case healthy && herr == nil:
 			res.Healthy = true
-			s.markVerified(ctx, releaseID)
+			s.markVerifiedKeys(ctx, s.allVerificationKeys(rel, extraKeys...))
 		case herr == nil:
 			res.Reason, definitive = "health: unhealthy", true
 		default:

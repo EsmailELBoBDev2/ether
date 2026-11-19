@@ -33,7 +33,7 @@ func TestUnattendedWorkKeepsToItsShare(t *testing.T) {
 		w.Write([]byte(`<?xml version="1.0"?><rss><channel></channel></rss>`))
 	}))
 	defer srv.Close()
-	m := NewManager(store.OpenTest(t), []config.Indexer{{ID: "ix", Name: "IX", URL: srv.URL, APIKey: "k", Enabled: true}}, Options{HTTPClient: srv.Client(), NZBDir: t.TempDir()})
+	m := NewManager(store.OpenTest(t), []config.Indexer{{ID: "ix", Name: "IX", URL: srv.URL, APIKey: "k", Enabled: true}}, Options{HTTPClient: srv.Client(), Vault: &testVault{}})
 	warm := core.WithUnattendedSearch(core.WithIndexerPurpose(context.Background(), core.IndexerPurposeWarmup))
 	play := core.WithIndexerPurpose(context.Background(), core.IndexerPurposePlayback)
 	search := func(ctx context.Context, n int, prefix string) {

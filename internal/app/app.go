@@ -81,6 +81,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/trickplay"
 	"github.com/braedonsaunders/ether/internal/updater"
 	"github.com/braedonsaunders/ether/internal/usenet"
+	"github.com/braedonsaunders/ether/internal/vault"
 	"github.com/braedonsaunders/ether/internal/veladist"
 	"github.com/braedonsaunders/ether/internal/watchlist"
 	"log/slog"
@@ -213,6 +214,7 @@ type App struct {
 	cache               *segcache.Cache
 	cacheConfig         atomic.Pointer[config.Cache]
 	engine              *stream.Engine
+	vault               vault.Store
 	indexers            *newznab.Manager
 	sites               *cardigann.Service // built-in indexer sites from owner-installed definitions
 	addons              *stremio.Service   // Stremio stream addons configured as indexers

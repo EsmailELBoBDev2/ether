@@ -268,6 +268,7 @@ type broadcast struct {
 	// healthAt is when the frame clock last logged a live health line.
 	healthAt   time.Time
 	stallSince time.Time
+	refillAt   time.Time
 }
 
 func newBroadcast(ctx context.Context, runner transcode.ContinuousRunner, planner broadcastPlanner, format transcode.RawFormat) (*broadcast, error) {
@@ -1168,6 +1169,16 @@ func (b *broadcast) step(now time.Time) bool {
 				b.current.lastFrameAt = now
 				fresh = true
 				mode = current.id
+			}
+		}
+		// A paced provider input releases media against a clock of its own.
+		// Whenever that clock lags real playout the decoder runs dry while the
+		// reserve sits in the tap: reopen the pace whenever the decoded buffer
+		// runs low, so the decoder never starves while the ring has media.
+		if b.current != nil && !b.current.lastFrameAt.IsZero() && len(b.current.frames) < b.format.FPSNum/max(1, 2*b.format.FPSDen) && now.Sub(b.refillAt) >= 250*time.Millisecond {
+			if source, ok := b.planner.(interface{ refillInput() }); ok {
+				b.refillAt = now
+				source.refillInput()
 			}
 		}
 		if fresh && b.current != nil && b.current.stalledNoted {

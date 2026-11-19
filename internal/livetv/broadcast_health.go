@@ -85,7 +85,7 @@ func (p *providerBroadcastPlanner) healthAttrs() []any {
 		behind = d.Round(time.Millisecond)
 	}
 	return []any{"source", a.src.ID, "transport", h.Kind, "behindLive", behind,
-		"reserve", h.ReserveDepth.Round(time.Millisecond), "reserveTarget", h.Target,
+		"reserve", h.ReserveDepth.Round(time.Millisecond), "reserveTarget", h.Target, "paceAhead", h.PaceAhead.Round(time.Millisecond),
 		"dataAge", h.DataAge.Round(time.Millisecond), "stallAfter", h.StallAfter.Round(time.Millisecond),
 		"liveSocket", h.LiveSocket, "providerStalled", h.Stalled, "failed", h.Failed,
 		"reconnects", h.Reconnects, "kbps", h.Bitrate / 1000}
@@ -95,4 +95,18 @@ func (q *broadcastFrameQueue) pending() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.frames) - q.head
+}
+
+// refillInput lets the current input's paced reader run a pace lead past
+// where it is now (see broadcast.step).
+func (p *providerBroadcastPlanner) refillInput() {
+	p.mu.Lock()
+	a := p.attempt
+	if a == nil {
+		a = p.stalledAttempt
+	}
+	p.mu.Unlock()
+	if a != nil && a.link != nil {
+		p.s.refillSteadyInput(a.link.ss)
+	}
 }

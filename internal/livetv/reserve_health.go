@@ -52,6 +52,9 @@ type UpstreamHealth struct {
 	// EdgePTS is the newest committed video PTS at the live edge (90 kHz,
 	// the stream's own timeline after splices); -1 when unknown.
 	EdgePTS int64
+	// PaceAhead is how far this session's paced reader is past its pace
+	// clock (negative: behind it); zero when unpaced.
+	PaceAhead time.Duration
 }
 
 // UpstreamEventKind names a change in an input's health.

@@ -808,6 +808,39 @@ func (t *upstreamTap) paceLocked(p *tapPace, off int64) int64 {
 	return t.marks[i].off
 }
 
+// refillSteadyInput re-anchors ss's paced release at its reader, so the
+// reader may take up to tapPaceLead beyond what it already has. The frame
+// clock calls it when its decoded pictures run low: a pace whose clock fell
+// behind real playout must never starve a decoder while the ring holds media.
+func (s *Service) refillSteadyInput(ss *session) {
+	g := s.healthGrant(ss)
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	t := g.tap
+	g.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.paces[g]
+	if p == nil || !p.anchored || t.ts == nil || len(t.marks) == 0 {
+		return
+	}
+	// Only a reader the pace is actually holding back, with media waiting
+	// in the ring, is released; otherwise the reserve stays where it is.
+	due := p.dueClock(time.Now()) + int64(tapPaceLead/time.Millisecond)*tsClockHz/1000
+	for rd := range t.active {
+		if rd.g == g && rd.pace == p && rd.off < t.written && t.clockAtLocked(rd.off) >= due-tsClockHz/5 {
+			p.anchored = false
+			t.cond.Broadcast()
+			return
+		}
+	}
+}
+
 // setSteadyInputRate adjusts the paced release rate of ss's grant on its
 // shared tap so slow-playout reserve accrual stays in the tap's ring.
 func (s *Service) setSteadyInputRate(ss *session, rate float64) {
@@ -2108,6 +2141,9 @@ func (t *upstreamTap) healthForLocked(g *inputGrant) UpstreamHealth {
 	}
 	if reader != nil {
 		h.ReserveDepth = t.readerDepthLocked(reader)
+		if p := reader.pace; p != nil && p.anchored && t.ts != nil && len(t.marks) > 0 {
+			h.PaceAhead = time.Duration(t.clockAtLocked(reader.off)-p.dueClock(now)) * time.Second / tsClockHz
+		}
 	} else if r, ok := t.resume[g]; ok {
 		h.ReserveDepth = t.depthLocked(r.last)
 	}

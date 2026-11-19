@@ -12,7 +12,7 @@ import {
   Select,
   type ListSearchParams,
 } from "@braedonsaunders/appkit-ui";
-import { Plus, Search } from "lucide-react";
+import { Pencil, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -20,7 +20,7 @@ import { SettingsRow } from "../../components/SettingsRow";
 import { pagedTableLabels, searchSelectLabels } from "../../i18n/appkit-labels";
 import { t, tx } from "../../i18n";
 import { api, apiFetch } from "../../lib/api";
-import { relativeTime } from "../../lib/format";
+import { parseTime, relativeTime } from "../../lib/format";
 import { useAsync } from "../../lib/hooks";
 import { BoolRow, RecordDrawer, TextRow } from "../sources/form";
 import { codecLabel } from "./hardwareCodecs";
@@ -333,12 +333,16 @@ function sourceLabel(kind: SourceKind) {
 function SourceBadge({ kind, copiedFrom }: { kind: SourceKind; copiedFrom?: string }) {
   if (kind === "override") {
     return (
-      <span className="inline-flex flex-wrap items-center gap-1.5">
-        <Badge variant="warning" className="whitespace-nowrap">
+      <span className="inline-flex flex-wrap items-center gap-1">
+        <Badge variant="warning" className="whitespace-nowrap px-1.5 py-0.5 text-[11px]">
           {t("Override")}
         </Badge>
         {copiedFrom ? (
-          <Badge variant="secondary" className="whitespace-nowrap" title={copiedFrom}>
+          <Badge
+            variant="secondary"
+            className="whitespace-nowrap px-1.5 py-0.5 text-[11px]"
+            title={copiedFrom}
+          >
             {t("Copied from a shared setting")}
           </Badge>
         ) : null}
@@ -347,13 +351,13 @@ function SourceBadge({ kind, copiedFrom }: { kind: SourceKind; copiedFrom?: stri
   }
   if (kind === "builtin") {
     return (
-      <Badge variant="secondary" className="whitespace-nowrap">
+      <Badge variant="secondary" className="whitespace-nowrap px-1.5 py-0.5 text-[11px]">
         {t("Built in")}
       </Badge>
     );
   }
   return (
-    <Badge variant="outline" className="whitespace-nowrap">
+    <Badge variant="outline" className="whitespace-nowrap px-1.5 py-0.5 text-[11px]">
       {t("Reports its own")}
     </Badge>
   );
@@ -367,14 +371,22 @@ function VideoBadges({ codecs }: { codecs?: string[] | null }) {
   const visible = labels.slice(0, 2);
   const rest = labels.slice(2);
   return (
-    <span className="inline-flex flex-nowrap items-center gap-1" title={labels.join(", ")}>
+    <span className="inline-flex flex-nowrap items-center gap-0.5" title={labels.join(", ")}>
       {visible.map((label) => (
-        <Badge key={label} variant="secondary" className="whitespace-nowrap">
+        <Badge
+          key={label}
+          variant="secondary"
+          className="whitespace-nowrap px-1.5 py-0.5 text-[11px]"
+        >
           {label}
         </Badge>
       ))}
       {rest.length > 0 ? (
-        <Badge variant="outline" className="whitespace-nowrap" title={rest.join(", ")}>
+        <Badge
+          variant="outline"
+          className="whitespace-nowrap px-1.5 py-0.5 text-[11px]"
+          title={rest.join(", ")}
+        >
           +{rest.length}
         </Badge>
       ) : null}
@@ -403,9 +415,13 @@ function HdrDvBadges({
     return <span className="text-fg-subtle">—</span>;
   }
   return (
-    <span className="inline-flex flex-nowrap items-center gap-1">
+    <span className="inline-flex flex-nowrap items-center gap-0.5">
       {badges.map((label) => (
-        <Badge key={label} variant="secondary" className="whitespace-nowrap">
+        <Badge
+          key={label}
+          variant="secondary"
+          className="whitespace-nowrap px-1.5 py-0.5 text-[11px]"
+        >
           {label}
         </Badge>
       ))}
@@ -1152,7 +1168,7 @@ export function DeviceCapabilities() {
                 <Plus size={14} /> {t("Add")}
               </Button>
             </div>
-            <div className="[&_td]:px-2 [&_td]:py-2 [&_th]:h-9 [&_th]:px-2">
+            <div className="[&_table]:text-[13px] [&_tbody_td]:transition-colors [&_tbody_td]:duration-150 [&_tbody_tr:hover]:delay-0 [&_tbody_tr:hover>td]:bg-surface-hover [&_td]:px-1.5 [&_td]:py-2 [&_td:first-child]:pl-2.5 [&_td:last-child]:pr-2.5 [&_th]:h-9 [&_th]:px-1.5 [&_th]:text-[11px] [&_th]:tracking-normal [&_th:first-child]:pl-2.5 [&_th:last-child]:pr-2.5">
               {view === "apps" ? (
                 <PagedTable
                   rows={appRows}
@@ -1181,7 +1197,8 @@ export function DeviceCapabilities() {
                           <div className="flex items-center gap-2 text-left">
                             <button
                               type="button"
-                              className="whitespace-nowrap text-left font-medium text-fg hover:underline"
+                              title={name}
+                              className="block max-w-36 truncate whitespace-nowrap text-left font-medium text-fg hover:underline"
                               aria-label={t("Edit {name}", { name })}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1203,13 +1220,13 @@ export function DeviceCapabilities() {
                       cell: (row) =>
                         row.kind === "known" ? (
                           <span
-                            className="block max-w-44 truncate whitespace-nowrap text-fg-muted"
+                            className="block max-w-36 truncate whitespace-nowrap text-xs text-fg-muted"
                             title={row.app.devices.join(", ") || undefined}
                           >
                             {formatDevices(row.app.devices)}
                           </span>
                         ) : (
-                          <span className="text-fg-muted">{t("Any")}</span>
+                          <span className="text-xs text-fg-muted">{t("Any")}</span>
                         ),
                     },
                     {
@@ -1276,12 +1293,12 @@ export function DeviceCapabilities() {
                       header: t("Last seen"),
                       sortValue: (row) => {
                         const seen = row.kind === "known" ? seenFor(row.app, observed) : [];
-                        return seen[0]?.lastSeen ?? "";
+                        return seen[0] && parseTime(seen[0].lastSeen) ? seen[0].lastSeen : "";
                       },
                       cell: (row) => {
                         const seen = row.kind === "known" ? seenFor(row.app, observed) : [];
-                        return seen.length > 0 ? (
-                          <span className="whitespace-nowrap text-fg-muted">
+                        return seen.length > 0 && parseTime(seen[0]!.lastSeen) ? (
+                          <span className="whitespace-nowrap text-xs text-fg-muted">
                             {relativeTime(seen[0]!.lastSeen)}
                           </span>
                         ) : (
@@ -1434,14 +1451,25 @@ export function DeviceCapabilities() {
                     {
                       key: "name",
                       header: t("Name"),
-                      sortValue: (item) => (item.row.name || item.row.device).toLowerCase(),
+                      sortValue: (item) =>
+                        (
+                          item.row.name ||
+                          item.row.device ||
+                          item.row.app ||
+                          item.row.clientIdentifier
+                        ).toLowerCase(),
                       cell: (item) => {
-                        const name = item.row.name || item.row.device;
+                        const name =
+                          item.row.name ||
+                          item.row.device ||
+                          item.row.app ||
+                          item.row.clientIdentifier;
                         return (
                           <div className="flex items-center gap-2 text-left">
                             <button
                               type="button"
-                              className="whitespace-nowrap text-left font-medium text-fg hover:underline"
+                              title={name}
+                              className="block max-w-32 truncate whitespace-nowrap text-left font-medium text-fg hover:underline min-[1400px]:max-w-44"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 openSeenDevice(item.row);
@@ -1467,7 +1495,7 @@ export function DeviceCapabilities() {
                         ].filter(Boolean);
                         return (
                           <span
-                            className="block max-w-32 truncate whitespace-nowrap text-fg-muted"
+                            className="block max-w-32 truncate whitespace-nowrap text-xs text-fg-muted min-[1400px]:max-w-48"
                             title={parts.join(" · ")}
                           >
                             {parts.join(" · ")}
@@ -1513,30 +1541,43 @@ export function DeviceCapabilities() {
                     {
                       key: "lastSeen",
                       header: t("Last seen"),
-                      sortValue: (item) => item.row.lastSeen,
-                      cell: (item) => (
-                        <span className="whitespace-nowrap text-fg-muted">
-                          {relativeTime(item.row.lastSeen)}
-                        </span>
-                      ),
+                      sortValue: (item) => (parseTime(item.row.lastSeen) ? item.row.lastSeen : ""),
+                      cell: (item) =>
+                        parseTime(item.row.lastSeen) ? (
+                          <span className="whitespace-nowrap text-xs text-fg-muted">
+                            {relativeTime(item.row.lastSeen)}
+                          </span>
+                        ) : (
+                          <span className="text-fg-subtle">—</span>
+                        ),
                     },
                     {
                       key: "edit",
                       header: "",
                       align: "right",
-                      cell: (item) => (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 whitespace-nowrap px-2"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openSeenDevice(item.row);
-                          }}
-                        >
-                          {item.matched ? t("Edit override") : t("Create override")}
-                        </Button>
-                      ),
+                      cell: (item) => {
+                        const label = item.matched ? t("Edit override") : t("Create override");
+                        return (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label={label}
+                            title={label}
+                            className="h-7 gap-1 whitespace-nowrap bg-transparent px-1.5 text-[11px] hover:bg-surface"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openSeenDevice(item.row);
+                            }}
+                          >
+                            {item.matched ? (
+                              <Pencil size={12} aria-hidden />
+                            ) : (
+                              <SlidersHorizontal size={12} aria-hidden />
+                            )}
+                            {item.matched ? t("Edit") : t("Override")}
+                          </Button>
+                        );
+                      },
                     },
                   ]}
                 />

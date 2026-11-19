@@ -525,8 +525,20 @@ describe("Apps connection hub", () => {
 
     renderApps("/apps/vela");
     const nameInput = await screen.findByLabelText("App name");
-    expect(screen.getByRole("heading", { name: "Branding" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Skins" })).toBeInTheDocument();
+    const connectHeading = screen.getByRole("heading", { name: "Connect a device" });
+    const awayHeading = screen.getByRole("heading", { name: "Away from home" });
+    const brandingHeading = screen.getByRole("heading", { name: "Branding" });
+    const skinsHeading = screen.getByRole("heading", { name: "Skins" });
+    expect(screen.getByLabelText("Public address")).toBeInTheDocument();
+    expect(
+      Boolean(connectHeading.compareDocumentPosition(awayHeading) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+    expect(
+      Boolean(awayHeading.compareDocumentPosition(brandingHeading) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+    expect(
+      Boolean(awayHeading.compareDocumentPosition(skinsHeading) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
     fireEvent.change(nameInput, { target: { value: "  Rialto House  " } });
 
     const lightPreview = screen.getByTestId("vela-preview-light");

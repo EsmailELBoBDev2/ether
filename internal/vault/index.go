@@ -29,6 +29,17 @@ CREATE INDEX vault_cache_id ON vault_releases(cache_id);
 CREATE INDEX vault_alias_key ON vault_aliases(key,indexer_id,release_id);
 UPDATE vault_releases SET cache_id=COALESCE((SELECT MIN(a.release_id) FROM vault_aliases a WHERE a.key=vault_releases.key AND a.indexer_id=vault_releases.source AND a.indexer_id<>'legacy:nzb'),'') WHERE kind='usenet' AND info NOT LIKE '%"fullSeason":true%';
 `)
+	store.Register("vault", 3, `
+CREATE TABLE vault_tracks(
+	key TEXT NOT NULL,
+	season INTEGER NOT NULL DEFAULT 0,
+	episode INTEGER NOT NULL DEFAULT 0,
+	info_json TEXT NOT NULL,
+	updated_at BIGINT NOT NULL,
+	PRIMARY KEY(key,season,episode)
+);
+CREATE INDEX vault_tracks_updated ON vault_tracks(updated_at);
+`)
 }
 
 const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id"
@@ -115,7 +126,19 @@ func (v *library) ByAlias(ctx context.Context, i, id string) (Key, bool, error) 
 	return k, e == nil, e
 }
 func (v *library) Kept(ctx context.Context, rels []core.Release) (map[string]bool, error) {
-	out := map[string]bool{}
+	keys, err := v.KeysFor(ctx, rels)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(keys))
+	for id := range keys {
+		out[id] = true
+	}
+	return out, nil
+}
+
+func (v *library) KeysFor(ctx context.Context, rels []core.Release) (map[string]Key, error) {
+	out := map[string]Key{}
 	if len(rels) == 0 {
 		return out, nil
 	}
@@ -130,22 +153,171 @@ func (v *library) Kept(ctx context.Context, rels []core.Release) (map[string]boo
 		if r.Target != nil && r.Target.PackID != "" {
 			base = r.Target.PackID
 		}
+		k := KeyOf(r)
+		if k == "" && strings.HasPrefix(r.ContentID, "nzb:") {
+			k = Key(r.ContentID)
+		}
+		if k == "" && r.Protocol == core.ProtocolTorrent && strings.TrimSpace(r.InfoHash) != "" {
+			k = TorrentKey(r.InfoHash)
+		}
 		vals = append(vals, "(CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT))")
-		a = append(a, r.ID, i, KeyOf(r), base)
+		a = append(a, r.ID, i, k, base)
 	}
-	rows, e := v.DB.QueryContext(ctx, "WITH candidates(id,idx,k,base) AS (VALUES "+strings.Join(vals, ",")+`) SELECT c.id FROM candidates c LEFT JOIN vault_aliases a ON a.indexer_id=c.idx AND a.release_id=c.id JOIN vault_releases r ON r.key=CASE WHEN c.k<>'' THEN c.k ELSE a.key END OR (c.idx='vault' AND c.k='' AND r.cache_id=c.base) WHERE r.dead=0`, a...)
+	rows, e := v.DB.QueryContext(ctx, "WITH candidates(id,idx,k,base) AS (VALUES "+strings.Join(vals, ",")+`) SELECT c.id, r.key FROM candidates c LEFT JOIN vault_aliases a ON a.indexer_id=c.idx AND (a.release_id=c.id OR (c.base<>'' AND a.release_id=c.base)) JOIN vault_releases r ON r.key=CASE WHEN c.k<>'' THEN c.k ELSE a.key END OR (c.idx='vault' AND c.k='' AND r.cache_id=c.base) WHERE r.dead=0`, a...)
 	if e != nil {
 		return nil, e
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		if e = rows.Scan(&id); e != nil {
+		var k Key
+		if e = rows.Scan(&id, &k); e != nil {
 			return nil, e
 		}
-		out[id] = true
+		if k != "" {
+			out[id] = k
+		}
 	}
 	return out, rows.Err()
+}
+
+type vaultTracksRecord struct {
+	FactsVersion int            `json:"factsVersion"`
+	Info         core.MediaInfo `json:"info"`
+}
+
+func sanitizeVaultMedia(info core.MediaInfo) core.MediaInfo {
+	c := core.CloneMediaInfo(info)
+	c.Estimated = false
+	c.Keyframes = nil
+	if len(c.Streams) > 0 {
+		embedded := make([]core.StreamInfo, 0, len(c.Streams))
+		for _, st := range c.Streams {
+			if st.External {
+				continue
+			}
+			embedded = append(embedded, st)
+		}
+		c.Streams = embedded
+	}
+	return c
+}
+
+func decodeVaultMedia(raw string) (core.MediaInfo, bool) {
+	if raw == "" {
+		return core.MediaInfo{}, false
+	}
+	var rec vaultTracksRecord
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+		return core.MediaInfo{}, false
+	}
+	if rec.FactsVersion != core.ProbeFactsVersion || rec.Info.Estimated || rec.Info.Video() == nil {
+		return core.MediaInfo{}, false
+	}
+	return rec.Info, true
+}
+
+func (v *library) preloadTracks(ctx context.Context) {
+	if v.DB == nil {
+		return
+	}
+	rows, err := v.DB.QueryContext(ctx, `SELECT key, season, episode, info_json FROM vault_tracks ORDER BY updated_at DESC LIMIT ?`, maxVaultTrackCache+1)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	loaded := make(map[trackKey]core.MediaInfo)
+	count := 0
+	for rows.Next() {
+		var k Key
+		var season, episode int
+		var raw string
+		if err := rows.Scan(&k, &season, &episode, &raw); err != nil {
+			continue
+		}
+		count++
+		if count > maxVaultTrackCache {
+			break
+		}
+		if info, ok := decodeVaultMedia(raw); ok {
+			loaded[trackKey{key: k, season: season, episode: episode}] = info
+		}
+	}
+	if rows.Err() != nil {
+		return
+	}
+	v.trackMu.Lock()
+	v.tracks = loaded
+	v.tracksLoaded = count <= maxVaultTrackCache
+	v.trackMu.Unlock()
+}
+
+func (v *library) Tracks(ctx context.Context, key Key, season, episode int) (core.MediaInfo, bool, error) {
+	if key == "" {
+		return core.MediaInfo{}, false, nil
+	}
+	tk := trackKey{key: key, season: season, episode: episode}
+	v.trackMu.RLock()
+	if v.tracks != nil {
+		if info, ok := v.tracks[tk]; ok {
+			v.trackMu.RUnlock()
+			return core.CloneMediaInfo(info), true, nil
+		}
+	}
+	complete := v.tracksLoaded
+	v.trackMu.RUnlock()
+	if complete || v.DB == nil {
+		return core.MediaInfo{}, false, nil
+	}
+	var raw string
+	err := v.DB.QueryRowContext(ctx, `SELECT info_json FROM vault_tracks WHERE key=? AND season=? AND episode=?`, key, season, episode).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.MediaInfo{}, false, nil
+	}
+	if err != nil {
+		return core.MediaInfo{}, false, err
+	}
+	info, ok := decodeVaultMedia(raw)
+	if !ok {
+		return core.MediaInfo{}, false, nil
+	}
+	v.trackMu.Lock()
+	if v.tracks == nil {
+		v.tracks = make(map[trackKey]core.MediaInfo)
+	}
+	if len(v.tracks) < maxVaultTrackCache {
+		v.tracks[tk] = core.CloneMediaInfo(info)
+	}
+	v.trackMu.Unlock()
+	return info, true, nil
+}
+
+func (v *library) SetTracks(ctx context.Context, key Key, season, episode int, info core.MediaInfo) error {
+	if key == "" || info.Estimated || info.Video() == nil {
+		return nil
+	}
+	clean := sanitizeVaultMedia(info)
+	raw, err := json.Marshal(vaultTracksRecord{FactsVersion: core.ProbeFactsVersion, Info: clean})
+	if err != nil {
+		return err
+	}
+	if _, err := v.DB.ExecContext(ctx, `INSERT INTO vault_tracks(key,season,episode,info_json,updated_at) VALUES(?,?,?,?,?)
+		ON CONFLICT(key,season,episode) DO UPDATE SET info_json=excluded.info_json,updated_at=excluded.updated_at`,
+		key, season, episode, string(raw), v.Now().Unix()); err != nil {
+		return err
+	}
+	tk := trackKey{key: key, season: season, episode: episode}
+	v.trackMu.Lock()
+	if v.tracks == nil {
+		v.tracks = make(map[trackKey]core.MediaInfo)
+	}
+	if _, exists := v.tracks[tk]; !exists && len(v.tracks) >= maxVaultTrackCache {
+		v.tracksLoaded = false
+	} else {
+		v.tracks[tk] = clean
+	}
+	v.trackMu.Unlock()
+	return nil
 }
 func (v *library) update(ctx context.Context, k Key, set string, a ...any) error {
 	r, e := v.DB.ExecContext(ctx, "UPDATE vault_releases SET "+set+" WHERE key=? AND dead=0", append(a, k)...)
@@ -173,7 +345,20 @@ func flag(b bool) int {
 func (v *library) Touch(ctx context.Context, k Key, avoided bool) error {
 	return v.update(ctx, k, "uses=uses+1,last_used=?,avoided=avoided+?", v.Now().Unix(), flag(avoided))
 }
-func (v *library) Purge(ctx context.Context, k Key) error { return v.update(ctx, k, "dead=1") }
+func (v *library) Purge(ctx context.Context, k Key) error {
+	if err := v.update(ctx, k, "dead=1"); err != nil {
+		return err
+	}
+	_, _ = v.DB.ExecContext(ctx, `DELETE FROM vault_tracks WHERE key=?`, k)
+	v.trackMu.Lock()
+	for tk := range v.tracks {
+		if tk.key == k {
+			delete(v.tracks, tk)
+		}
+	}
+	v.trackMu.Unlock()
+	return nil
+}
 func (v *library) Stats(ctx context.Context) (Stats, error) {
 	s := Stats{CapBytes: v.capBytes.Load()}
 	e := v.DB.QueryRowContext(ctx, `SELECT count(CASE WHEN dead=0 THEN 1 END),COALESCE(sum(CASE WHEN dead=0 THEN len ELSE 0 END),0),COALESCE(sum(avoided),0),COALESCE(sum(searches_avoided),0) FROM vault_releases`).Scan(&s.Releases, &s.Bytes, &s.GrabsAvoided, &s.SearchesAvoided)

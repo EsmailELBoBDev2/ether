@@ -106,7 +106,11 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 		info := estimateVariantInfo(req.Title, r, wanted)
 		if i < len(picks) && picks[i].ID != "" {
 			r = picks[i]
-			info = estimateVariantInfo(req.Title, r, wanted)
+			if probed, ok := s.probedMediaFor(r); ok {
+				info = probed
+			} else {
+				info = estimateVariantInfo(req.Title, r, wanted)
+			}
 			label = variantLabel(r, "alt")
 			if i == 0 {
 				label = variantLabel(r, "auto")

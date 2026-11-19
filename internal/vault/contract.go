@@ -204,6 +204,9 @@ func ReleaseFor(e Entry) core.Release {
 		r.ID = e.CacheID
 	}
 	r.Protocol = core.ProtocolUsenet
+	if e.Kind == KindUsenet && strings.HasPrefix(string(e.Key), nzb.ContentIDPrefix) {
+		r.ContentID = string(e.Key)
+	}
 	if e.Kind == KindTorrent {
 		r.Protocol = core.ProtocolTorrent
 		if len(e.Key) > 3 {
@@ -309,4 +312,16 @@ type Membership interface {
 // resolver's fast path), separately from grabs avoided (Touch).
 type SearchCounter interface {
 	SearchAvoided(ctx context.Context, key Key) error
+}
+
+// TrackStore persists and reads probed container tracks for vaulted releases.
+type TrackStore interface {
+	Tracks(ctx context.Context, key Key, season, episode int) (core.MediaInfo, bool, error)
+	SetTracks(ctx context.Context, key Key, season, episode int, info core.MediaInfo) error
+}
+
+// AliasResolver maps candidate releases to their vault keys in one batched
+// query without grabbing NZBs or touching pack files.
+type AliasResolver interface {
+	KeysFor(ctx context.Context, releases []core.Release) (map[string]Key, error)
 }

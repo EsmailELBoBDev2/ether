@@ -10,11 +10,21 @@ import (
 // mediaSummary reports only facts already present on the authorized detail.
 // Reading a title must not resolve a source just to fill a badge.
 func mediaSummary(d frontend.ItemDetail) object {
+	tracks := d.Tracks
 	if d.TracksEstimated {
-		return nil
+		tracks = nil
+		for _, v := range d.Versions {
+			if !v.Media.Estimated && len(v.Media.Streams) > 0 {
+				tracks = v.Media.Streams
+				break
+			}
+		}
+		if len(tracks) == 0 {
+			return nil
+		}
 	}
 	video, audio := []object{}, []object{}
-	for _, s := range d.Tracks {
+	for _, s := range tracks {
 		entry := object{}
 		if s.Codec != "" {
 			entry["codec"] = s.Codec

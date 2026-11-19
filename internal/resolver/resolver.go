@@ -114,6 +114,9 @@ type Options struct {
 	// UsenetServing reports whether at least one primary Usenet provider is
 	// able to serve new picks right now (false when all are in backoff).
 	UsenetServing func() bool
+	// ProbedMedia returns cached probed MediaInfo for a release from memory
+	// (no I/O) so ranking and variant lists can use real tracks when available.
+	ProbedMedia   func(core.Release) (core.MediaInfo, bool)
 	Logger        *slog.Logger
 	Now           func() time.Time
 	MaxTraces     int
@@ -277,6 +280,7 @@ type Service struct {
 	quality          config.Quality
 	catalogLang      string // catalogue metadata language ("en-US"): the server's language
 	debridCachedOnly bool
+	probedMedia      func(core.Release) (core.MediaInfo, bool)
 	scorer           *FormatScorer
 	indexerPriority  map[string]int // indexer id → Priority (lower ranks first)
 	scorerErr        error
@@ -346,7 +350,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{vault: opts.Vault, verifier: opts.Verifier, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing,
+	s := &Service{vault: opts.Vault, verifier: opts.Verifier, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing, probedMedia: opts.ProbedMedia,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, badContent: map[string]badMark{},
 		contentByRelease: map[string]contentLink{}, failedGrabs: map[string]failedGrabMark{},
@@ -378,6 +382,75 @@ func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config
 	s.initSeaDex(opts)
 	s.loadPersisted(context.Background())
 	return s
+}
+
+// SetProbedMedia wires a zero-I/O lookup returning cached probed container
+// MediaInfo for a release so ranking and version lists use real tracks when
+// available.
+func (s *Service) SetProbedMedia(fn func(core.Release) (core.MediaInfo, bool)) {
+	if s == nil {
+		return
+	}
+	s.cfgMu.Lock()
+	s.probedMedia = fn
+	s.cfgMu.Unlock()
+}
+
+// ContentIDForRelease returns the known W116 content ID for releaseID from
+// in-memory links without touching the database.
+func (s *Service) ContentIDForRelease(releaseID string) string {
+	if s == nil || releaseID == "" {
+		return ""
+	}
+	s.mu.RLock()
+	link, ok := s.contentByRelease[releaseID]
+	s.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+	if link.contentID != "" {
+		return link.contentID
+	}
+	return link.preFetchID
+}
+
+func (s *Service) probedMediaFor(rel core.Release) (core.MediaInfo, bool) {
+	if s == nil {
+		return core.MediaInfo{}, false
+	}
+	s.cfgMu.RLock()
+	fn := s.probedMedia
+	s.cfgMu.RUnlock()
+	if fn == nil {
+		return core.MediaInfo{}, false
+	}
+	if rel.ContentID == "" && rel.ID != "" {
+		if cid := s.ContentIDForRelease(rel.ID); cid != "" {
+			rel.ContentID = cid
+		}
+	}
+	info, ok := fn(rel)
+	if !ok || info.Estimated || len(info.Streams) == 0 {
+		return core.MediaInfo{}, false
+	}
+	return info, true
+}
+
+func (s *Service) probedAudioLanguagesFor(rel core.Release) []string {
+	info, ok := s.probedMediaFor(rel)
+	if !ok {
+		return nil
+	}
+	return releasepolicy.ProbedAudioLanguages(info.Streams)
+}
+
+func withProbedAudioLanguages(rel core.Release, probedLangs []string) core.Release {
+	if len(probedLangs) == 0 {
+		return rel
+	}
+	out := rel
+	out.Info.Languages = probedLangs
+	return out
 }
 
 // UpdateConfig swaps the resolver/quality config snapshot. When the owner
@@ -1821,11 +1894,13 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 		preferred := pinned || (req.Prefer != "" && rel.ID == req.Prefer)
-		policyResult := policy.Evaluate(rel, policyContext)
+		probedLangs := s.probedAudioLanguagesFor(rel)
+		langRel := withProbedAudioLanguages(rel, probedLangs)
+		policyResult := policy.Evaluate(langRel, policyContext)
 		var unverifiedLangs []string
 		audioUnverified := false
 		if !pinned {
-			unverifiedLangs, audioUnverified = classifyAudioVerification(policy, policyContext, &policyResult, profile, t, rel)
+			unverifiedLangs, audioUnverified = classifyAudioVerification(policy, policyContext, &policyResult, profile, t, langRel)
 		}
 		hardSubbed := subtitles[rel.ID] || releaseparse.HardSubbed(rel.Name)
 		if rcfg.HardSubtitles != "allow" && hardSubbed {
@@ -1855,7 +1930,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			clientRejected = true
 			reason = "unknown source resolution under a resolution limit"
 		} else if policyResult.Rejected {
-			reason = audioAbsentPolicyReason(policy, policyContext, rel, policyResult)
+			reason = audioAbsentPolicyReason(policy, policyContext, langRel, policyResult)
 		} else {
 			reason = s.rejectReason(rel, t, sreq, profile, rcfg, req.Client, exclude, preferred)
 			if reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
@@ -1897,8 +1972,8 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 			continue
 		}
-		langOK := audioAcceptable(rel.Info, accepted, t)
-		langWanted := langOK && foreignTitleWantedAudio(rel.Info, rel.SourceLanguage, wanted, t)
+		langOK := audioAcceptable(langRel.Info, accepted, t)
+		langWanted := langOK && foreignTitleWantedAudio(langRel.Info, rel.SourceLanguage, wanted, t)
 		lowBitrate := bitrateScore(sizedForEpisode(rel), t) < 0
 		starved := lowBitrate || upscales[ri]
 		yearGuessed := seriesYearGuessed(rel, sreq)
@@ -2216,7 +2291,7 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 	if nonVideoRelease(rel, t, sreq) {
 		return ReasonNotAVideoFile
 	}
-	if reason := sourceSuitability(rel, t, profile, preferred); reason != "" {
+	if reason := sourceSuitabilityWithLanguages(rel, t, profile, preferred, s.probedAudioLanguagesFor(rel)); reason != "" {
 		return reason
 	}
 	// Samples ("...Sample.mkv", "-sample" parts).

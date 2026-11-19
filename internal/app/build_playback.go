@@ -79,16 +79,43 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 			}
 			return nil, false
 		},
-		DB:             a.db,
-		Logger:         log,
-		Timeline:       a.observePlayTimeline,
-		Cluster:        a.clusterNode(),
-		DescribeGroup:  a.describeLiveGroup,
-		Availability:   a.dbAvail,
-		SeasonRevealer: a.revealTitleSeason,
+		DB:               a.db,
+		Logger:           log,
+		Timeline:         a.observePlayTimeline,
+		Cluster:          a.clusterNode(),
+		DescribeGroup:    a.describeLiveGroup,
+		Availability:     a.dbAvail,
+		SeasonRevealer:   a.revealTitleSeason,
+		Vault:            a.vault,
+		OpenVaulted:      a.openVaultedForProbe,
+		OpenCachedDebrid: a.openCachedDebridForProbe,
+		DebridFileMeta: func(rel core.Release) (string, int64, bool) {
+			if a.debrid == nil {
+				return "", 0, false
+			}
+			meta, ok := a.debrid.CachedFileMetadata(rel)
+			if !ok {
+				return "", 0, false
+			}
+			return meta.Path, meta.Size, true
+		},
+		ContentIDOf: func(releaseID string) string {
+			if a.resolver == nil {
+				return ""
+			}
+			return a.resolver.ContentIDForRelease(releaseID)
+		},
+		OnVersionProbed: func(_ core.RatingKey, _ core.Release) {
+			if a.resolver != nil {
+				a.resolver.InvalidateDetailVariants()
+			}
+		},
 	}, cfg, playback.Options{SessionSurface: sessionSurface, Now: parityClock(), DataDir: dataDir, PayloadReplayGrace: 5 * time.Second, VerifyNativeProbe: os.Getenv("ETHER_VERIFY_NATIVE_PROBE") == "1", TracePlayback: tracePlayback})
 	if err != nil {
 		return fmt.Errorf("playback: %w", err)
+	}
+	if a.resolver != nil {
+		a.resolver.SetProbedMedia(a.playback.CachedReleaseProbe)
 	}
 	a.playback.Subscribe(func(ev playback.Event) {
 		a.onPlaybackSubtitleEvent(ev)

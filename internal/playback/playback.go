@@ -29,6 +29,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // Deps are the components playback orchestrates. Resolver, Engine,
@@ -84,6 +85,26 @@ type Deps struct {
 	// SeasonRevealer, when set, checks an in-progress TV season in the
 	// background for streaming-dropped episodes on non-burst detail opens.
 	SeasonRevealer func(core.RatingKey)
+	// Vault holds already-stored NZBs and probed tracks (never triggers grabs).
+	Vault vault.Store
+	// OpenVaulted opens a vaulted Usenet release for low-priority header
+	// probing without touching any indexer. Returns (nil, nil, nil) when absent.
+	OpenVaulted func(ctx context.Context, rel core.Release) (core.MediaSource, []byte, error)
+	// OpenCachedDebrid opens a debrid-cached or non-on-demand HTTP release for
+	// low-priority header probing without touching any indexer or adding
+	// uncached torrents. Returns (nil, nil) when not freely reachable.
+	OpenCachedDebrid func(ctx context.Context, rel core.Release) (core.MediaSource, error)
+	// DebridFileMeta returns already-fetched debrid file path and size from
+	// memory without any database or API calls.
+	DebridFileMeta func(rel core.Release) (path string, size int64, ok bool)
+	// ContentIDOf maps a release ID to its known W116 content ID in memory.
+	ContentIDOf func(releaseID string) string
+	// OnVersionProbed notifies listeners when a background header probe stores
+	// new container tracks for a release.
+	OnVersionProbed func(key core.RatingKey, rel core.Release)
+	// HeaderProbeBudget bounds bytes read per low-priority container header
+	// probe (0 uses transcode.DefaultHeaderProbeBudget).
+	HeaderProbeBudget int
 }
 
 // Options tune the manager. Zero values take the defaults noted.
@@ -297,6 +318,18 @@ type Manager struct {
 	sharedMu sync.Mutex
 	shared   map[string]*sharedHold
 
+	releaseProbeMu      sync.RWMutex
+	releaseProbes       map[string]core.MediaInfo
+	releaseProbeKeys    map[string]string
+	releaseProbesLoaded bool
+
+	versionProbeMu     sync.Mutex
+	versionProbeClosed bool
+	versionProbes      map[core.RatingKey]*versionProbeState
+	versionProbeCancel context.CancelFunc
+	versionProbeSem    chan struct{}
+	versionProbeWG     sync.WaitGroup
+
 	srv     *http.Server
 	baseURL string
 
@@ -453,9 +486,13 @@ func New(deps Deps, cfg config.Config, opts Options) (*Manager, error) {
 		pending:  map[int64]int{},
 		lastCaps: map[int64]core.ClientCaps{},
 		warm:     map[identity]*warmEntry{}, warmRequests: map[warmBudgetKey][]time.Time{}, warmMisses: map[identity]time.Time{},
-		livePins:     map[string]int{},
-		progressPins: map[string]bool{},
-		pinKick:      make(chan struct{}, 1),
+		livePins:         map[string]int{},
+		progressPins:     map[string]bool{},
+		pinKick:          make(chan struct{}, 1),
+		releaseProbes:    map[string]core.MediaInfo{},
+		releaseProbeKeys: map[string]string{},
+		versionProbes:    map[core.RatingKey]*versionProbeState{},
+		versionProbeSem:  make(chan struct{}, 1),
 	}
 	m.resumeSaveCond = sync.NewCond(&m.resumeSaveMu)
 	chunk := opts.ChunkSize
@@ -473,6 +510,7 @@ func New(deps Deps, cfg config.Config, opts Options) (*Manager, error) {
 			rs.hold(deps.Availability, m.log)
 		}
 		m.resume = rs
+		m.preloadReleaseProbes()
 	}
 	if deps.Cluster != nil {
 		if deps.DB == nil {
@@ -543,11 +581,13 @@ func (m *Manager) Close() error {
 		m.Stop(id)
 	}
 	m.cancel()
+	m.closeVersionProbes()
 	err := m.srv.Close()
 	// Loops exit on cancellation. Source cleanup is a separate budget: it
 	// must not be extended by pin reconcile, registry sync, or resume flush,
 	// and it must not wait for a backend Close that is still blocked.
 	m.wg.Wait()
+	m.versionProbeWG.Wait()
 	cleanupCtx, cleanupCancel := m.sourceCleanupContext()
 	cleanupErr := m.drainSourceCleanup(cleanupCtx)
 	// Canceling the budget makes Err return Canceled even when the deadline
@@ -800,6 +840,9 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 	m.pending[user.ID]++
 	m.pendingN++
 	m.mu.Unlock()
+	// Yield any background version header probes immediately so playback
+	// preparation never competes for connections or I/O.
+	m.cancelVersionProbes()
 	if m.reg == nil {
 		return nil
 	}

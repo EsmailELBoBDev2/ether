@@ -17,11 +17,18 @@ func (s *Service) DiscoveryCandidate(t *core.Title, r core.Release) string {
 }
 
 func sourceSuitability(r core.Release, t *core.Title, p core.QualityProfile, explicit bool) string {
+	return sourceSuitabilityWithLanguages(r, t, p, explicit, nil)
+}
+
+func sourceSuitabilityWithLanguages(r core.Release, t *core.Title, p core.QualityProfile, explicit bool, probedLangs []string) string {
 	if nonVideoRelease(r, t, core.SearchRequest{}) {
 		return ReasonNotAVideoFile
 	}
 	// Reparse the name: saved feed payloads can contain older parser results.
 	info := releaseparse.Parse(r.Name)
+	if len(probedLangs) > 0 {
+		info.Languages = probedLangs
+	}
 	if !p.AllowCam {
 		// AllowCam is the one pre-release switch: cinema recordings,
 		// screeners, R5s and workprints all play only where it is on.

@@ -116,6 +116,9 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	labelPlayedAuto(req.Title, vs, played, results, s.LookupRelease, wanted)
 	// Every client version picker gets the same honest preference shortfall.
 	for i := range vs {
+		if info, ok := s.probedMediaFor(vs[i].Release); ok {
+			vs[i].Info = info
+		}
 		for _, c := range pool {
 			if c.rel.ID != vs[i].Release.ID {
 				continue
@@ -656,14 +659,18 @@ func estimateVariantInfo(t *core.Title, rel core.Release, wanted []string) core.
 		original = t.Language
 	}
 	var audioStreams []core.StreamInfo
-	if audioCodec != "" {
+	if audioCodec != "" || len(info.Languages) > 0 {
 		audioStreams = estimateAudioStreams(info, original, rel.SourceLanguage, wanted)
 		for i := range audioStreams {
-			audioStreams[i].Codec = audioCodec
-			audioStreams[i].Channels = channels.count
-			audioStreams[i].ChannelLayout = channels.layout
-			audioStreams[i].SampleRate = 48000
-			audioStreams[i].BitrateKbps = audioKbpsGuess(audioCodec, channels.count)
+			if channels.count > 0 {
+				audioStreams[i].Channels = channels.count
+				audioStreams[i].ChannelLayout = channels.layout
+			}
+			if audioCodec != "" {
+				audioStreams[i].Codec = audioCodec
+				audioStreams[i].SampleRate = 48000
+				audioStreams[i].BitrateKbps = audioKbpsGuess(audioCodec, channels.count)
+			}
 		}
 	}
 
@@ -753,10 +760,10 @@ func estimateAudioStreams(info core.ReleaseInfo, original, sourceLang string, wa
 func estimateAudioLanguages(info core.ReleaseInfo, original, sourceLang string) []string {
 	var out []string
 	seen := map[string]bool{}
-	add := func(v string) {
+	add := func(v string) bool {
 		name := releaseparse.LanguageName(v)
 		if name == "" || name == releaseparse.LanguageMulti || name == releaseparse.LanguageDual {
-			return
+			return false
 		}
 		// Display value: the canonical BCP 47 tag ("pt-BR", "en"), which
 		// frontends render, falling back to the parser's name when the tag
@@ -767,33 +774,39 @@ func estimateAudioLanguages(info core.ReleaseInfo, original, sourceLang string) 
 		}
 		key := strings.ToLower(name)
 		if seen[key] {
-			return
+			return false
 		}
 		seen[key] = true
 		out = append(out, code)
+		return true
 	}
 	wide := false
+	hasNonOriginal := false
 	for _, l := range info.Languages {
 		if l == releaseparse.LanguageMulti || l == releaseparse.LanguageDual {
 			wide = true
 			continue
 		}
-		add(l)
+		if add(l) {
+			if original == "" || releaseparse.LanguageMatch(l, original) == releaseparse.LanguageNoMatch {
+				hasNonOriginal = true
+			}
+		}
 	}
-	named := len(out)
 	if wide {
 		add(original)
-		if named == 0 {
-			// DUAL/MULTI with no named dub: the source language is the
-			// evidence we have for the other track, but only when it says
-			// something new — a source matching the original adds nothing,
-			// and an unset source stays unlabelled rather than guessed.
+		if !hasNonOriginal {
+			// DUAL/MULTI with no named dub beyond the title's original language:
+			// the source language is the evidence we have for the other track,
+			// but only when it says something new — a source matching the
+			// original adds nothing, and an unset source stays unlabelled rather
+			// than collapsing a multi-track release to only the original language.
 			src := langtag.CanonicalBCP47(sourceLang)
 			if src == "" {
 				src = strings.TrimSpace(sourceLang)
 			}
 			if src != "" && releaseparse.LanguageMatch(src, original) == releaseparse.LanguageNoMatch {
-				out = append(out, src)
+				add(src)
 			} else {
 				out = append(out, "")
 			}

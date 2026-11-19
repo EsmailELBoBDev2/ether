@@ -33,6 +33,9 @@ const (
 	nativeHeadBytes    = 256 << 10
 	nativeElementLimit = 4 << 20
 	nativeReadBudget   = 16 << 20
+	// DefaultHeaderProbeBudget bounds low-priority container header probes
+	// (MKV EBML/Info/Tracks or MP4 moov).
+	DefaultHeaderProbeBudget = 2 << 20
 )
 
 // Matroska element IDs (https://www.matroska.org/technical/elements.html).
@@ -263,6 +266,32 @@ func ProbeSource(ctx context.Context, src io.ReaderAt, size int64) (*core.MediaI
 		applyMKVTagBitrates(ctx, src, size, m)
 		applyMKVHeaderBitrates(ctx, src, size, m)
 		return m, nil
+	case isISOBMFF(head):
+		return s.mp4()
+	}
+	return nil, incomplete("container not supported natively")
+}
+
+// ProbeHeader probes only container headers (Matroska EBML/Info/Tracks or MP4
+// moov) within a strict byte budget, skipping tail tag/cluster bitrate reads
+// and never invoking ffprobe.
+func ProbeHeader(ctx context.Context, src io.ReaderAt, size int64, budget int) (*core.MediaInfo, error) {
+	if size <= 0 {
+		return nil, incomplete("empty source")
+	}
+	if budget <= 0 {
+		budget = DefaultHeaderProbeBudget
+	}
+	headSize := min(size, int64(nativeHeadBytes), int64(budget))
+	s := &nativeSource{ctx: ctx, src: src, size: size, left: budget}
+	head, err := s.read(0, int(headSize))
+	if err != nil {
+		return nil, err
+	}
+	s.head = head
+	switch {
+	case len(head) >= 4 && binary.BigEndian.Uint32(head) == mkvEBML:
+		return s.matroska()
 	case isISOBMFF(head):
 		return s.mp4()
 	}

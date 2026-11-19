@@ -738,6 +738,9 @@ func (t *upstreamTap) readAs(ctx context.Context, rd *tapReader, off int64, p []
 	for off >= t.written && !t.closed && ctx.Err() == nil {
 		t.cond.Wait()
 	}
+	if !waited.IsZero() && rd != nil && rd.g != nil && rd.g.steady && rd.g.log != nil && time.Since(waited) >= tapPaceStarved {
+		rd.g.log.Info("live tap reader starved", "waited", time.Since(waited).Round(time.Millisecond), "paced", rd.pace != nil, "reserveTarget", rd.g.reserve, "stalled", t.stalled, "reconnects", t.reconnects)
+	}
 	if !waited.IsZero() && rd != nil && rd.pace != nil && time.Since(waited) >= tapPaceStarved {
 		// Starved at the live edge (a stall): the schedule restarts here,
 		// so the stall's time is not an allowance that swallows the

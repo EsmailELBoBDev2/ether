@@ -483,7 +483,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		p.ladder.opened(id, now)
 		p.attempt = &steadyAttempt{src: src, link: link, decoder: wrapped}
 		p.mu.Unlock()
-		p.logger().Debug("live input opening", "input", id, "liveEdge", liveEdge, "format", link.format, "uses", link.uses)
+		p.logger().Info("live input opening", "input", id, "liveEdge", liveEdge, "format", link.format, "uses", link.uses)
 		return wrapped, func() { link.releaseRef(p.s) }, nil
 	}
 	return nil, nil, fmt.Errorf("broadcast provider: %w", last)

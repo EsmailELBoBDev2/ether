@@ -258,3 +258,29 @@ var Open = func(ctx context.Context, o Options) (Store, error) { return nil, Err
 
 // ErrNotImplemented is returned by placeholders during the build.
 var ErrNotImplemented = errors.New("vault: not implemented yet")
+
+// Migrator imports a directory of NZBs (Ether's pre-vault NZB cache or an
+// export). Crash-safe and idempotent: import, verify count and bytes, then
+// delete; never delete after a partial import. Files of the old cache are
+// named <hex>.nzb, where hex is newznab's old disk key; each import records
+// the alias (LegacyAliasIndexer, hex) so a release cached before the vault
+// is found without a grab.
+type Migrator interface {
+	MigrateDir(ctx context.Context, dir string) error
+}
+
+// LegacyAliasIndexer is the alias namespace of migrated pre-vault NZBs.
+const LegacyAliasIndexer = "legacy:nzb"
+
+// ReplicaStore is what the cluster layer needs from a node-local vault.
+type ReplicaStore interface {
+	Store
+	// ReadFrame returns the record's stored compressed frame.
+	ReadFrame(ctx context.Context, key Key) ([]byte, error)
+	// InstallFrame verifies the frame's CRC and content key, appends it to
+	// this node's pack and records this node as a holder, atomically.
+	InstallFrame(ctx context.Context, key Key, frame []byte) error
+	Holders(ctx context.Context, key Key) ([]string, error)
+	DropCache()
+	Compact(ctx context.Context) error
+}

@@ -1060,8 +1060,7 @@ func (e *Engine) LoadJS(id, version, source string, host Host, lim Limits) (*Plu
 	makeHot := func(ctx context.Context) (instance, error) {
 		return newJSInstance(ctx, source, &p.lim, true, e.logger, id)
 	}
-	p.svc = newPool(lim.PoolSize, makeSvc)
-	p.hot = newWarmPool(lim.PoolSize, makeHot)
+	p.initPools(makeSvc, makeHot)
 	probe, err := p.svc.get(context.Background())
 	if err != nil {
 		p.Close()

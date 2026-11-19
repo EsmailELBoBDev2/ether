@@ -3,6 +3,7 @@ package wasm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -37,15 +38,21 @@ func (f *Fault) Error() string { return f.Code + ": " + f.Message }
 // Forbidden builds a forbidden Fault, e.g. for a revoked permission.
 func Forbidden(message string) *Fault { return &Fault{Code: string(StatusForbidden), Message: message} }
 
+// ErrPoolBusy is wrapped by an *Error when a call times out waiting for a free
+// WASM instance in the pool. Pool contention is not a plugin crash.
+var ErrPoolBusy = errors.New("timed out waiting for a plugin instance")
+
 // Error is the error type returned by Plugin calls. It carries the Outcome so
 // WS7's health loop can read the status, trap flag and cost from one value.
 type Error struct {
 	Status  Status
 	Message string
-	Trap    bool // the instance trapped (panic in guest) or was killed by a deadline
+	Trap    bool  // the instance trapped (panic in guest) or was killed by a deadline
+	Err     error // optional wrapped sentinel (e.g. ErrPoolBusy)
 }
 
 func (e *Error) Error() string { return "wasm: " + string(e.Status) + ": " + e.Message }
+func (e *Error) Unwrap() error { return e.Err }
 
 // Outcome accounts for one finished call.
 type Outcome struct {
@@ -123,6 +130,9 @@ const (
 	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
+	// DefaultPoolSize and MaxPoolSize bound instances per hosted plugin pool.
+	DefaultPoolSize = 2
+	MaxPoolSize     = 4
 	// MinDataReadBytes and MaxDataReadBytes bound the per-call readBytes grant
 	// derived from memoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB).
 	MinDataReadBytes = 8 << 20
@@ -201,7 +211,7 @@ type Limits struct {
 	UnitBudget  int64         // per handle call; default UnitsForDeadline(Deadline)
 	Stremio     bool          // plugin answers Stremio add-on routes (uses StremioDeadline)
 	Busy        func() bool   // background work yields while playback or host load is high
-	PoolSize    int           // instances per pool; default 2
+	PoolSize    int           // instances per pool; default DefaultPoolSize (2), max MaxPoolSize (4)
 	// Hot-path budgets. A manifest may lower these, never raise them:
 	// normalize clamps to the defaults below.
 	RankPerCandidate time.Duration // default (and max) 2ms
@@ -231,7 +241,10 @@ func (l *Limits) normalize() {
 		l.UnitBudget = UnitsForDeadline(l.Deadline)
 	}
 	if l.PoolSize <= 0 {
-		l.PoolSize = 2
+		l.PoolSize = DefaultPoolSize
+	}
+	if l.PoolSize > MaxPoolSize {
+		l.PoolSize = MaxPoolSize
 	}
 	if l.RankPerCandidate <= 0 || (l.RankPerCandidate > DefaultRankPerCandidate && !l.unclamped) {
 		l.RankPerCandidate = DefaultRankPerCandidate
@@ -554,10 +567,11 @@ type pool struct {
 	warm   bool
 	mu     sync.Mutex // orders returning an instance against close
 	done   atomic.Bool
+	doneCh chan struct{}
 }
 
 func newPool(size int, makeFn func(context.Context) (instance, error)) *pool {
-	return &pool{makeFn: makeFn, idle: make(chan instance, size), slots: make(chan struct{}, size)}
+	return &pool{makeFn: makeFn, idle: make(chan instance, size), slots: make(chan struct{}, size), doneCh: make(chan struct{})}
 }
 
 func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool {
@@ -581,8 +595,10 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 		select {
 		case in := <-p.idle:
 			return in, nil
+		case <-p.doneCh:
+			return nil, &Error{Status: StatusError, Message: "plugin is closed"}
 		case <-ctx.Done():
-			return nil, &Error{Status: StatusTimeout, Message: "timed out waiting for a plugin instance"}
+			return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 		}
 	}
 	select {
@@ -595,8 +611,10 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 			return nil, err
 		}
 		return in, nil
+	case <-p.doneCh:
+		return nil, &Error{Status: StatusError, Message: "plugin is closed"}
 	case <-ctx.Done():
-		return nil, &Error{Status: StatusTimeout, Message: "timed out waiting for a plugin instance"}
+		return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
 }
 
@@ -670,7 +688,9 @@ func (p *pool) refill() {
 func (p *pool) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.done.Store(true)
+	if !p.done.Swap(true) && p.doneCh != nil {
+		close(p.doneCh)
+	}
 	for {
 		select {
 		case in := <-p.idle:
@@ -723,10 +743,21 @@ type Plugin struct {
 	caps        caps
 	svc         *pool
 	hot         *pool
+	jobSlots    chan struct{} // sized PoolSize-1 so background jobs leave >= 1 instance for viewer calls
+	closeCh     chan struct{}
 	stats       counters
 	memo        *memo
 	source      string // JS source (rebuild counts / cold start), raw: ""
 	closed      atomic.Bool
+}
+
+func (p *Plugin) initPools(makeSvc, makeHot func(context.Context) (instance, error)) {
+	p.closeCh = make(chan struct{})
+	if p.lim.PoolSize > 1 {
+		p.jobSlots = make(chan struct{}, p.lim.PoolSize-1)
+	}
+	p.svc = newPool(p.lim.PoolSize, makeSvc)
+	p.hot = newWarmPool(p.lim.PoolSize, makeHot)
 }
 
 // ID and Version identify the plugin for memo keys and logs.
@@ -750,6 +781,9 @@ func (p *Plugin) Stats() Stats { return p.stats.snapshot() }
 func (p *Plugin) Close() error {
 	if p.closed.Swap(true) {
 		return nil
+	}
+	if p.closeCh != nil {
+		close(p.closeCh)
 	}
 	if p.svc != nil {
 		p.svc.close()
@@ -791,6 +825,21 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	lim := limitsForRequest(p.lim, req.Path)
 	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
 	defer cancel()
+	if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
+		// Cap background jobs/syncs at PoolSize-1 so interactive viewer calls,
+		// frontend adapter requests and health checks always retain a free
+		// instance. The defer runs after p.svc.put returns the instance.
+		select {
+		case p.jobSlots <- struct{}{}:
+			defer func() { <-p.jobSlots }()
+		case <-p.closeCh:
+			out.Status = StatusError
+			return Response{}, out, &Error{Status: StatusError, Message: "plugin is closed"}
+		case <-callCtx.Done():
+			out.Status = StatusTimeout
+			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+		}
+	}
 	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
 		background: strings.HasPrefix(req.Path, "/ether/job/"),
 		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}

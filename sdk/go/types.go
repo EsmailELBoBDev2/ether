@@ -126,6 +126,7 @@ type RuntimeLimits struct {
 	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"`
+	PoolSize             int    `json:"poolSize,omitempty"`
 }
 
 // HealthDecl configures periodic health checks.

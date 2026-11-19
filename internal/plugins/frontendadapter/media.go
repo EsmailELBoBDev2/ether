@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
+	"github.com/braedonsaunders/ether/internal/plugins"
 )
 
 // KindMediaPath is the Ether-owned endpoint a plugin embeds in an adapter
@@ -107,6 +108,8 @@ func (h *MediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", strconv.Itoa(core.PreparingRetrySeconds(err, 5)))
 		} else if errors.Is(err, core.ErrJobsBusy) {
 			w.Header().Set("Retry-After", strconv.Itoa(core.JobsBusyRetrySeconds(err, 5)))
+		} else if errors.Is(err, plugins.ErrBusy) {
+			w.Header().Set("Retry-After", "5")
 		}
 		status, code, message := openFailure(err)
 		h.refuse(w, status, code, message, err, grant.ItemID)
@@ -150,7 +153,7 @@ func openFailure(err error) (int, string, string) {
 		return http.StatusNotFound, "item_not_found", "The item is not in a library this viewer can open."
 	case errors.Is(err, core.ErrArchiveUnstreamable):
 		return http.StatusUnprocessableEntity, "archive_unstreamable", "This archive format or compression method cannot be streamed."
-	case errors.Is(err, core.ErrSourceUnavailable):
+	case errors.Is(err, core.ErrSourceUnavailable), errors.Is(err, plugins.ErrBusy):
 		return http.StatusServiceUnavailable, "source_unavailable", "The item's source is temporarily unavailable."
 	default:
 		return http.StatusBadGateway, "open_failed", "The item's source could not be opened."

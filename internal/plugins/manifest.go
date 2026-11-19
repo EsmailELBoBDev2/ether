@@ -264,8 +264,8 @@ func (m Manifest) Validate() error {
 		switch e.Runtime.Kind {
 		case "hosted":
 		case "remote":
-			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 {
-				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline or unitBudget")
+			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 || l.PoolSize > 0 {
+				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline, unitBudget or poolSize")
 			}
 		default:
 			add("ether.runtime.limits", "data packages cannot request runtime limits")
@@ -280,6 +280,9 @@ func (m Manifest) Validate() error {
 		}
 		if l.UnitBudget < 0 {
 			add("ether.runtime.limits.unitBudget", "must not be negative")
+		}
+		if l.PoolSize < 0 {
+			add("ether.runtime.limits.poolSize", "must not be negative")
 		}
 	}
 	validateSidecar(e, add)

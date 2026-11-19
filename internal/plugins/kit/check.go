@@ -624,6 +624,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			ArchiveMembers:       65535,
 			MaxItems:             plugins.DefaultMaxPluginItems,
 			Deadline:             "12h",
+			PoolSize:             wasm.DefaultPoolSize,
 		}
 		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
 			limits = *l
@@ -633,6 +634,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			limits.ReadBytes = wasm.DataReadBytes(active.MemoryBytes)
 			limits.Deadline = active.Deadline.String()
 			limits.UnitBudget = active.UnitBudget
+			limits.PoolSize = active.PoolSize
 		}
 		b, _ := json.Marshal(limits)
 		return b, nil

@@ -194,6 +194,9 @@ func writeAuthError(w http.ResponseWriter, err error) {
 // writePluginError maps a plugin-call failure to a gateway error.
 func writePluginError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, plugins.ErrBusy):
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "adapter busy", http.StatusServiceUnavailable)
 	case errors.Is(err, plugins.ErrDisabled):
 		http.Error(w, "adapter disabled", http.StatusServiceUnavailable)
 	default:

@@ -12,7 +12,9 @@ type Policy = {
 };
 type Draft = Record<keyof RuntimeLimits, string>;
 function isIntegerLimit(key: keyof RuntimeLimits): boolean {
-  return key === "unitBudget" || key === "archiveMembers" || key === "maxItems";
+  return (
+    key === "unitBudget" || key === "poolSize" || key === "archiveMembers" || key === "maxItems"
+  );
 }
 export function RuntimeLimitsEditor({
   plugin = "",
@@ -225,8 +227,8 @@ export function RuntimeLimitsEditor({
                   "Memory, time and work per background job. Browsing and playback calls always stay fast.",
                 )}
               </p>
-              <div className="grid gap-3 sm:grid-cols-3">
-                {fields.slice(0, 3).map((f) => (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {fields.slice(0, 4).map((f) => (
                   <label key={f.key} className="space-y-1 text-xs">
                     {f.label}
                     {input(f)}
@@ -242,7 +244,7 @@ export function RuntimeLimitsEditor({
                 )}
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                {fields.slice(3, 7).map((f) => (
+                {fields.slice(4, 8).map((f) => (
                   <label key={f.key} className="space-y-1 text-xs">
                     {f.label}
                     {input(f)}
@@ -258,7 +260,7 @@ export function RuntimeLimitsEditor({
                 )}
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
-                {fields.slice(7).map((f) => (
+                {fields.slice(8).map((f) => (
                   <label key={f.key} className="space-y-1 text-xs">
                     {f.label}
                     {input(f)}

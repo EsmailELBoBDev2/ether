@@ -127,10 +127,12 @@ at most 1,024 UTF-8 bytes. The drawer supports progress and cancellation.
 
 Ether uses owner-controlled global/per-plugin ceilings under Plugins: default
 2 GiB memory (up to wasm32 4 GiB), 12 hours, effectively unlimited background
-compute, 8 GiB downloads/member expansion, 32 GiB total expansion and 65,535 ZIP
-members. Downloads also obey library cache quotas. Hosted manifests request
-`ether.runtime.limits` with `memoryBytes`, `deadline`, `unitBudget`, `fetchBytes`,
-`archiveMemberBytes`, `archiveExpandedBytes` and `archiveMembers`. Install preview
+compute, up to 4 hosted WASM instances (`poolSize`, default 2; background jobs
+hold at most `poolSize - 1`), 8 GiB downloads/member expansion, 32 GiB total
+expansion and 65,535 ZIP members. Downloads also obey library cache quotas.
+Hosted manifests request `ether.runtime.limits` with `memoryBytes`, `deadline`,
+`unitBudget`, `poolSize`, `fetchBytes`, `archiveMemberBytes`,
+`archiveExpandedBytes` and `archiveMembers`. Install preview
 and detail show requested and granted values. Jobs pause during playback/high
 host load and use low CPU/IO priority. A 1,000,000-call sanity bound applies;
 viewer browse/search/resolve/playback calls retain tight time and compute budgets.

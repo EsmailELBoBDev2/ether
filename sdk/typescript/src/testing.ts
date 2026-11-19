@@ -185,6 +185,7 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       archiveExpandedBytes: 32 * 1024 * 1024 * 1024,
       archiveMembers: 65535,
       deadline: "12h",
+      poolSize: 2,
     },
     folders: initial?.folders ?? new Map<string, FolderEntry[]>(),
     notifications: initial?.notifications ?? [],

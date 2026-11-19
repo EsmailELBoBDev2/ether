@@ -969,7 +969,7 @@ defaults per library afterwards.
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
   | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
   | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
-  | 503 | `source_unavailable` | The source is temporarily unavailable |
+  | 503 | `source_unavailable` | The source is temporarily unavailable (includes `Retry-After` when the plugin instance pool is busy) |
   | 502 | `open_failed` | The source could not be opened |
 
 A library the owner cannot see is invisible to that viewer on every
@@ -1251,11 +1251,13 @@ between calls and host operations during playback, Live TV or high host load.
 They are cancellable with visible progress. Persist checkpoints in KV for
 recovery on a later owner action after restart; Ether does not resume eagerly.
 
-`ether.runtime.limits` requests memory, time, compute, download, archive and
-catalogue-item resources within owner-controlled global/per-plugin ceilings.
+`ether.runtime.limits` requests memory, time, compute, instance pool size, download,
+archive and catalogue-item resources within owner-controlled global/per-plugin ceilings.
 Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
-12h, effectively unlimited background work units, 8 GiB download/member, 32 GiB
-total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
+12h, effectively unlimited background work units, 2 hosted WASM instances (`poolSize`,
+requestable up to the owner ceiling, default and max 4; background jobs and sync calls
+hold at most `poolSize - 1` instances so viewer calls keep one), 8 GiB download/member,
+32 GiB total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
 (`maxItems`, with no upper cap when raised by the owner). Remote plugins can
 also request data and `maxItems` limits. The library cache quota further bounds
 downloads. The owner
@@ -1367,6 +1369,7 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | zero means effectively unlimited |
+| `poolSize` | `int` | may be omitted (see validation for conditions) | hosted instance pool ceiling; default and max 4 |
 
 
 ## Source: internal/config/plugins.go#PluginRuntimeLimits
@@ -1383,6 +1386,7 @@ type PluginRuntimeLimits struct {
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
+	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default and max 4
 }
 ``````
 
@@ -3079,6 +3083,7 @@ const DefaultMaxPluginItems = 2_000_000
 | `readBytes` | `int64` | may be omitted (see validation for conditions) | ReadBytes is the granted per-call byte ceiling for cache.read, archive.open and archive.read, derived from MemoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB). |
 | `deadline` | `string` | may be omitted (see validation for conditions) | Deadline and UnitBudget are the granted ceilings in manifests/detail and the active route's effective call limits when read via runtime.limits. Go duration; default 12h ceiling, clamped per route on active calls |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline |
+| `poolSize` | `int` | may be omitted (see validation for conditions) | PoolSize is the hosted WASM instance pool size (default 2, ceiling owner-controlled up to 4). Background jobs hold at most PoolSize-1 instances so interactive calls retain a free instance. |
 
 
 ## Source: internal/plugins/contract.go#RuntimeLimits
@@ -3102,6 +3107,9 @@ type RuntimeLimits struct {
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
 	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline
+	// PoolSize is the hosted WASM instance pool size (default 2, ceiling owner-controlled up to 4).
+	// Background jobs hold at most PoolSize-1 instances so interactive calls retain a free instance.
+	PoolSize int `json:"poolSize,omitempty"`
 }
 ``````
 
@@ -4690,6 +4698,7 @@ var (
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
+	ErrBusy             = errors.New("plugins: plugin is busy")
 	ErrJobsBusy         = core.ErrJobsBusy
 
 	ErrDigestMismatch = errors.New("plugins: artifact digest does not match")
@@ -8826,6 +8835,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		limits.MemoryBytes = active.MemoryBytes
 		limits.Deadline = active.Deadline.String()
 		limits.UnitBudget = active.UnitBudget
+		limits.PoolSize = active.PoolSize
 	}
 	limits.ReadBytes = dataReadLimit(limits)
 	readCap := limits.ReadBytes
@@ -9119,6 +9129,7 @@ func defaultDataLimits() RuntimeLimits {
 		ArchiveMembers:       maxArchiveMembers,
 		MaxItems:             DefaultMaxPluginItems,
 		Deadline:             "12h",
+		PoolSize:             wasm.DefaultPoolSize,
 	}
 }
 ``````
@@ -9139,11 +9150,11 @@ func defaultDataLimits() RuntimeLimits {
 // debrid services, blobcache); the plugin id is always the caller's,
 // so a plugin can only ever reach its own kinds and cache.
 type KindBackends struct {
-	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
-	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
-	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
-	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
+	KindUpsert    func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
+	KindDelete    func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems     func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
 	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
@@ -10160,6 +10171,7 @@ func HostedRuntimeFactory(eng *wasm.Engine) RuntimeFactory {
 			lim.MemoryBytes = l.MemoryBytes
 			lim.Deadline, _ = time.ParseDuration(l.Deadline)
 			lim.UnitBudget = l.UnitBudget
+			lim.PoolSize = l.PoolSize
 		}
 		lim.Busy = inst.Busy
 		switch {
@@ -11518,6 +11530,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			ArchiveMembers:       65535,
 			MaxItems:             plugins.DefaultMaxPluginItems,
 			Deadline:             "12h",
+			PoolSize:             wasm.DefaultPoolSize,
 		}
 		if l := plugins.GrantedRuntimeLimits(h.man); l != nil {
 			limits = *l
@@ -11527,6 +11540,7 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 			limits.ReadBytes = wasm.DataReadBytes(active.MemoryBytes)
 			limits.Deadline = active.Deadline.String()
 			limits.UnitBudget = active.UnitBudget
+			limits.PoolSize = active.PoolSize
 		}
 		b, _ := json.Marshal(limits)
 		return b, nil
@@ -15166,8 +15180,8 @@ func (m Manifest) Validate() error {
 		switch e.Runtime.Kind {
 		case "hosted":
 		case "remote":
-			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 {
-				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline or unitBudget")
+			if l.MemoryBytes > 0 || l.Deadline != "" || l.UnitBudget > 0 || l.PoolSize > 0 {
+				add("ether.runtime.limits", "remote plugins cannot request hosted memory, deadline, unitBudget or poolSize")
 			}
 		default:
 			add("ether.runtime.limits", "data packages cannot request runtime limits")
@@ -15182,6 +15196,9 @@ func (m Manifest) Validate() error {
 		}
 		if l.UnitBudget < 0 {
 			add("ether.runtime.limits.unitBudget", "must not be negative")
+		}
+		if l.PoolSize < 0 {
+			add("ether.runtime.limits.poolSize", "must not be negative")
 		}
 	}
 	validateSidecar(e, add)
@@ -18494,6 +18511,7 @@ type runtimeCeilings struct {
 	memory                  uint64
 	deadline                time.Duration
 	units                   int64
+	poolSize                int
 	fetch, member, expanded int64
 	members                 int
 	maxItems                int
@@ -18508,6 +18526,7 @@ func defaultRuntimeCeilings() runtimeCeilings {
 		memory:   2 << 30,
 		deadline: 12 * time.Hour,
 		units:    1 << 60,
+		poolSize: wasm.MaxPoolSize,
 		fetch:    8 << 30,
 		member:   8 << 30,
 		expanded: 32 << 30,
@@ -18529,6 +18548,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	}
 	if l.UnitBudget > 0 {
 		c.units = l.UnitBudget
+	}
+	if l.PoolSize > 0 {
+		c.poolSize = min(l.PoolSize, wasm.MaxPoolSize)
 	}
 	if l.FetchBytes > 0 {
 		c.fetch = min(l.FetchBytes, int64(1<<60))
@@ -18609,7 +18631,13 @@ func (m *Manager) MaxPluginItems(id string) int {
 
 ``````
 func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
-	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units, Stremio: m.SpeaksStremio()}
+	l := wasm.Limits{
+		MemoryBytes: min(uint64(32<<20), c.memory),
+		Deadline:    c.deadline,
+		UnitBudget:  c.units,
+		PoolSize:    min(wasm.DefaultPoolSize, c.poolSize),
+		Stremio:     m.SpeaksStremio(),
+	}
 	if m.Ether != nil && m.Ether.Runtime.Limits != nil {
 		r := m.Ether.Runtime.Limits
 		if r.MemoryBytes > 0 {
@@ -18620,6 +18648,9 @@ func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
 		}
 		if r.UnitBudget > 0 {
 			l.UnitBudget = min(r.UnitBudget, c.units)
+		}
+		if r.PoolSize > 0 {
+			l.PoolSize = min(r.PoolSize, c.poolSize)
 		}
 	}
 	return l
@@ -18640,6 +18671,7 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
 		Deadline:    l.Deadline.String(),
 		UnitBudget:  l.UnitBudget,
+		PoolSize:    l.PoolSize,
 	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
@@ -18677,8 +18709,8 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB and resource limits must not be negative.", nil)
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
+			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB, instances at most 4, and resource limits must not be negative.", nil)
 			return
 		}
 		if req.Limits.Deadline != "" {
@@ -21834,6 +21866,19 @@ func GrantedLimitsPath(path string) bool {
 }
 ``````
 
+## Source: internal/plugins/wasm/background.go#BackgroundPoolPath
+
+``````
+// BackgroundPoolPath reports whether path is a background job or sync call
+// bounded to at most PoolSize-1 service instances so interactive viewer
+// resolves, frontend adapter requests and health checks always retain at least
+// one free instance.
+func BackgroundPoolPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p)
+}
+``````
+
 ## Source: internal/plugins/wasm/background.go#UnitsForDeadline
 
 ``````
@@ -23184,8 +23229,7 @@ func (e *Engine) LoadJS(id, version, source string, host Host, lim Limits) (*Plu
 	makeHot := func(ctx context.Context) (instance, error) {
 		return newJSInstance(ctx, source, &p.lim, true, e.logger, id)
 	}
-	p.svc = newPool(lim.PoolSize, makeSvc)
-	p.hot = newWarmPool(lim.PoolSize, makeHot)
+	p.initPools(makeSvc, makeHot)
 	probe, err := p.svc.get(context.Background())
 	if err != nil {
 		p.Close()
@@ -23278,6 +23322,14 @@ func (f *Fault) Error() string { return f.Code + ": " + f.Message }
 func Forbidden(message string) *Fault { return &Fault{Code: string(StatusForbidden), Message: message} }
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#ErrPoolBusy
+
+``````
+// ErrPoolBusy is wrapped by an *Error when a call times out waiting for a free
+// WASM instance in the pool. Pool contention is not a plugin crash.
+var ErrPoolBusy = errors.New("timed out waiting for a plugin instance")
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#Error.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -23292,7 +23344,8 @@ func Forbidden(message string) *Fault { return &Fault{Code: string(StatusForbidd
 type Error struct {
 	Status  Status
 	Message string
-	Trap    bool // the instance trapped (panic in guest) or was killed by a deadline
+	Trap    bool  // the instance trapped (panic in guest) or was killed by a deadline
+	Err     error // optional wrapped sentinel (e.g. ErrPoolBusy)
 }
 ``````
 
@@ -23300,6 +23353,12 @@ type Error struct {
 
 ``````
 func (e *Error) Error() string { return "wasm: " + string(e.Status) + ": " + e.Message }
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*Error.Unwrap
+
+``````
+func (e *Error) Unwrap() error { return e.Err }
 ``````
 
 ## Source: internal/plugins/wasm/wasm.go#Outcome.fields.md
@@ -23434,6 +23493,9 @@ const (
 	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
+	// DefaultPoolSize and MaxPoolSize bound instances per hosted plugin pool.
+	DefaultPoolSize = 2
+	MaxPoolSize     = 4
 	// MinDataReadBytes and MaxDataReadBytes bound the per-call readBytes grant
 	// derived from memoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB).
 	MinDataReadBytes = 8 << 20
@@ -23559,7 +23621,7 @@ type Limits struct {
 	UnitBudget  int64         // per handle call; default UnitsForDeadline(Deadline)
 	Stremio     bool          // plugin answers Stremio add-on routes (uses StremioDeadline)
 	Busy        func() bool   // background work yields while playback or host load is high
-	PoolSize    int           // instances per pool; default 2
+	PoolSize    int           // instances per pool; default DefaultPoolSize (2), max MaxPoolSize (4)
 	// Hot-path budgets. A manifest may lower these, never raise them:
 	// normalize clamps to the defaults below.
 	RankPerCandidate time.Duration // default (and max) 2ms
@@ -23593,7 +23655,10 @@ func (l *Limits) normalize() {
 		l.UnitBudget = UnitsForDeadline(l.Deadline)
 	}
 	if l.PoolSize <= 0 {
-		l.PoolSize = 2
+		l.PoolSize = DefaultPoolSize
+	}
+	if l.PoolSize > MaxPoolSize {
+		l.PoolSize = MaxPoolSize
 	}
 	if l.RankPerCandidate <= 0 || (l.RankPerCandidate > DefaultRankPerCandidate && !l.unclamped) {
 		l.RankPerCandidate = DefaultRankPerCandidate
@@ -24030,6 +24095,7 @@ type pool struct {
 	warm   bool
 	mu     sync.Mutex // orders returning an instance against close
 	done   atomic.Bool
+	doneCh chan struct{}
 }
 ``````
 
@@ -24037,7 +24103,7 @@ type pool struct {
 
 ``````
 func newPool(size int, makeFn func(context.Context) (instance, error)) *pool {
-	return &pool{makeFn: makeFn, idle: make(chan instance, size), slots: make(chan struct{}, size)}
+	return &pool{makeFn: makeFn, idle: make(chan instance, size), slots: make(chan struct{}, size), doneCh: make(chan struct{})}
 }
 ``````
 
@@ -24069,8 +24135,10 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 		select {
 		case in := <-p.idle:
 			return in, nil
+		case <-p.doneCh:
+			return nil, &Error{Status: StatusError, Message: "plugin is closed"}
 		case <-ctx.Done():
-			return nil, &Error{Status: StatusTimeout, Message: "timed out waiting for a plugin instance"}
+			return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 		}
 	}
 	select {
@@ -24083,8 +24151,10 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 			return nil, err
 		}
 		return in, nil
+	case <-p.doneCh:
+		return nil, &Error{Status: StatusError, Message: "plugin is closed"}
 	case <-ctx.Done():
-		return nil, &Error{Status: StatusTimeout, Message: "timed out waiting for a plugin instance"}
+		return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
 }
 ``````
@@ -24178,7 +24248,9 @@ func (p *pool) refill() {
 func (p *pool) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.done.Store(true)
+	if !p.done.Swap(true) && p.doneCh != nil {
+		close(p.doneCh)
+	}
 	for {
 		select {
 		case in := <-p.idle:
@@ -24259,10 +24331,25 @@ type Plugin struct {
 	caps        caps
 	svc         *pool
 	hot         *pool
+	jobSlots    chan struct{} // sized PoolSize-1 so background jobs leave >= 1 instance for viewer calls
+	closeCh     chan struct{}
 	stats       counters
 	memo        *memo
 	source      string // JS source (rebuild counts / cold start), raw: ""
 	closed      atomic.Bool
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*Plugin.initPools
+
+``````
+func (p *Plugin) initPools(makeSvc, makeHot func(context.Context) (instance, error)) {
+	p.closeCh = make(chan struct{})
+	if p.lim.PoolSize > 1 {
+		p.jobSlots = make(chan struct{}, p.lim.PoolSize-1)
+	}
+	p.svc = newPool(p.lim.PoolSize, makeSvc)
+	p.hot = newWarmPool(p.lim.PoolSize, makeHot)
 }
 ``````
 
@@ -24321,6 +24408,9 @@ func (p *Plugin) Close() error {
 	if p.closed.Swap(true) {
 		return nil
 	}
+	if p.closeCh != nil {
+		close(p.closeCh)
+	}
 	if p.svc != nil {
 		p.svc.close()
 	}
@@ -24369,6 +24459,21 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	lim := limitsForRequest(p.lim, req.Path)
 	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
 	defer cancel()
+	if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
+		// Cap background jobs/syncs at PoolSize-1 so interactive viewer calls,
+		// frontend adapter requests and health checks always retain a free
+		// instance. The defer runs after p.svc.put returns the instance.
+		select {
+		case p.jobSlots <- struct{}{}:
+			defer func() { <-p.jobSlots }()
+		case <-p.closeCh:
+			out.Status = StatusError
+			return Response{}, out, &Error{Status: StatusError, Message: "plugin is closed"}
+		case <-callCtx.Done():
+			out.Status = StatusTimeout
+			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+		}
+	}
 	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
 		background: strings.HasPrefix(req.Path, "/ether/job/"),
 		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}
@@ -24609,6 +24714,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.runtime.limits.fetchBytes` | `integer` | false | {"default":8589934592,"description":"Clamped to the owner ceiling; omitted or zero uses that ceiling.","minimum":0} |
 | `ether.runtime.limits.maxItems` | `integer` | false | {"default":2000000,"description":"Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.","minimum":0} |
 | `ether.runtime.limits.memoryBytes` | `integer` | false | {"default":33554432,"minimum":0} |
+| `ether.runtime.limits.poolSize` | `integer` | false | {"default":2,"description":"Hosted WASM instance pool size; default 2, clamped to the owner ceiling (max 4). Background jobs hold at most poolSize - 1 instances so interactive viewer and health calls keep a free instance.","minimum":0} |
 | `ether.runtime.limits.unitBudget` | `integer` | false | {"default":1152921504606847000,"minimum":0} |
 | `ether.runtime.module` | `string` | false | {"description":"WASM file. Hosted only."} |
 | `ether.schedule` | `any` | false | {"anyOf":[{"type":"string"},{"items":{"properties":{"call":{"pattern":"^/","type":"string"},"every":{"description":"Go duration, at least 15m.","type":"string"}},"required":["every","call"],"type":"object"},"type":"array"}]} |
@@ -25666,6 +25772,12 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                   "minimum": 0,
                   "type": "integer"
                 },
+                "poolSize": {
+                  "default": 2,
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (max 4). Background jobs hold at most poolSize - 1 instances so interactive viewer and health calls keep a free instance.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "unitBudget": {
                   "default": 1152921504606847000,
                   "minimum": 0,
@@ -26119,12 +26231,15 @@ than billed as guest wall time):
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
 SDK) inside a hosted handler returns the **effective** `deadline` and
 `unitBudget` for the current call after route and owner clamps, alongside
-`memoryBytes`, `readBytes`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
+`memoryBytes`, `readBytes`, `poolSize`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 
-Plugins request higher memory, time, download or archive limits in
-`ether.runtime.limits` in `manifest.json`. Owners raise or lower the server-wide
+Plugins request higher memory, time, instance pool (`poolSize`, default 2, max 4),
+download or archive limits in `ether.runtime.limits` in `manifest.json`. Background
+jobs and sync calls hold at most `poolSize - 1` instances so viewer, adapter and
+health calls retain a free instance; waiting for a busy instance returns a retryable
+busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
 ceilings in **Plugins → Settings**, or override them for a single plugin in that
 plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
 and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).
@@ -39029,6 +39144,7 @@ type RuntimeDecl struct {
 | `readBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) |  |
+| `poolSize` | `int` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#RuntimeLimits
@@ -39046,6 +39162,7 @@ type RuntimeLimits struct {
 	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"`
+	PoolSize             int    `json:"poolSize,omitempty"`
 }
 ``````
 
@@ -41322,10 +41439,12 @@ at most 1,024 UTF-8 bytes. The drawer supports progress and cancellation.
 
 Ether uses owner-controlled global/per-plugin ceilings under Plugins: default
 2 GiB memory (up to wasm32 4 GiB), 12 hours, effectively unlimited background
-compute, 8 GiB downloads/member expansion, 32 GiB total expansion and 65,535 ZIP
-members. Downloads also obey library cache quotas. Hosted manifests request
-`ether.runtime.limits` with `memoryBytes`, `deadline`, `unitBudget`, `fetchBytes`,
-`archiveMemberBytes`, `archiveExpandedBytes` and `archiveMembers`. Install preview
+compute, up to 4 hosted WASM instances (`poolSize`, default 2; background jobs
+hold at most `poolSize - 1`), 8 GiB downloads/member expansion, 32 GiB total
+expansion and 65,535 ZIP members. Downloads also obey library cache quotas.
+Hosted manifests request `ether.runtime.limits` with `memoryBytes`, `deadline`,
+`unitBudget`, `poolSize`, `fetchBytes`, `archiveMemberBytes`,
+`archiveExpandedBytes` and `archiveMembers`. Install preview
 and detail show requested and granted values. Jobs pause during playback/high
 host load and use low CPU/IO priority. A 1,000,000-call sanity bound applies;
 viewer browse/search/resolve/playback calls retain tight time and compute budgets.
@@ -41823,6 +41942,7 @@ class RuntimeLimits(TypedDict, total=False):
     readBytes: int
     deadline: str
     unitBudget: int
+    poolSize: int
 
 
 class DataRange(TypedDict):
@@ -43638,6 +43758,7 @@ class MockHostClient:
             "archiveMembers": 65535,
             "maxItems": 2_000_000,
             "deadline": "12h",
+            "poolSize": 2,
         }
         self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
@@ -45087,7 +45208,7 @@ then `LANG`) in the `X-Ether-Locale` header when the caller has not supplied one
 ### Owner-controlled resources and continuing jobs
 
 `ether.runtime.limits` requests `memoryBytes`, `deadline` (a positive Go duration
-such as `12h`), `unitBudget`, `fetchBytes`, `archiveMemberBytes`,
+such as `12h`), `unitBudget`, `poolSize`, `fetchBytes`, `archiveMemberBytes`,
 `archiveExpandedBytes`, `archiveMembers` and `maxItems`. Ether grants each request up to the
 owner's global or per-plugin ceiling. Owners can raise or lower ceilings under
 Plugins → Settings and in each plugin's drawer. A per-plugin value overrides the
@@ -45098,6 +45219,10 @@ The default memory ceiling is **2 GiB**, adjustable up to wasm32's **4 GiB**;
 omitted guest heap requests still use **32 MiB**, allocated only as needed.
 The default call/job time ceiling is **12 hours** and background compute is
 effectively unlimited (2^60 units per call); owners and manifests may lower it.
+The hosted WASM instance pool defaults to **2 instances** and manifests may
+request up to the owner ceiling (default and max **4**, `poolSize`); background
+jobs and sync calls hold at most `poolSize - 1` instances so viewer resolves,
+adapter requests and health checks retain a free instance.
 The default download and expanded-member ceilings are **8 GiB** each, total
 archive expansion **32 GiB**, archive members **65,535**, and stored catalogue
 items **2,000,000** (`maxItems`, owner-adjustable with no upper bound). Downloads also obey
@@ -45105,7 +45230,7 @@ the library cache quota (2 GiB unless the manifest declares a different quota).
 The host reports requested fields in the manifest and exact grants as
 `runtimeLimits` in install preview and detail, displayed side by side, and exposes
 the effective limits for the active call at runtime via `ctx.ether.runtime!.limits()` —
-including the route-clamped `deadline` and `unitBudget` plus
+including the route-clamped `deadline` and `unitBudget`, `poolSize`, plus
 `readBytes = clamp(memoryBytes / 4, 8 MiB, 512 MiB)` for sizing `cache.read`,
 `archive.open`, and `archive.read` batches without guessing.
 
@@ -49112,6 +49237,7 @@ export interface RuntimeLimits {
   readBytes?: number;
   deadline?: string;
   unitBudget?: number;
+  poolSize?: number;
 }
 export interface RuntimeDecl {
   kind: "hosted" | "remote";

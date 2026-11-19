@@ -327,7 +327,7 @@ defaults per library afterwards.
   | 422 | `archive_unstreamable` | This archive format or compression method cannot be streamed |
   | 503 | `preparing` | Resolve is still `pending` after the 25 s wait budget (`Retry-After` gives seconds to wait) |
   | 503 | `jobs_busy` | All four playback preparation job slots for the plugin are running (`Retry-After` gives seconds to wait) |
-  | 503 | `source_unavailable` | The source is temporarily unavailable |
+  | 503 | `source_unavailable` | The source is temporarily unavailable (includes `Retry-After` when the plugin instance pool is busy) |
   | 502 | `open_failed` | The source could not be opened |
 
 A library the owner cannot see is invisible to that viewer on every
@@ -609,11 +609,13 @@ between calls and host operations during playback, Live TV or high host load.
 They are cancellable with visible progress. Persist checkpoints in KV for
 recovery on a later owner action after restart; Ether does not resume eagerly.
 
-`ether.runtime.limits` requests memory, time, compute, download, archive and
-catalogue-item resources within owner-controlled global/per-plugin ceilings.
+`ether.runtime.limits` requests memory, time, compute, instance pool size, download,
+archive and catalogue-item resources within owner-controlled global/per-plugin ceilings.
 Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
-12h, effectively unlimited background work units, 8 GiB download/member, 32 GiB
-total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
+12h, effectively unlimited background work units, 2 hosted WASM instances (`poolSize`,
+requestable up to the owner ceiling, default and max 4; background jobs and sync calls
+hold at most `poolSize - 1` instances so viewer calls keep one), 8 GiB download/member,
+32 GiB total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
 (`maxItems`, with no upper cap when raised by the owner). Remote plugins can
 also request data and `maxItems` limits. The library cache quota further bounds
 downloads. The owner

@@ -25,6 +25,30 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	store.Register("pluginitems", 7, `
+CREATE TABLE plugin_item_field_tally (
+	library_id INTEGER NOT NULL,
+	level      TEXT    NOT NULL,
+	field      TEXT    NOT NULL,
+	v_text     TEXT    NOT NULL,
+	cnt        INTEGER NOT NULL,
+	PRIMARY KEY (library_id, level, field, v_text)
+);
+INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, cnt)
+SELECT i.library_id, i.level, f.field, f.v_text, COUNT(*)
+FROM plugin_item_fields f
+JOIN plugin_items i ON i.item_ref = f.item_ref
+WHERE f.v_text <> '' AND i.level <> ''
+GROUP BY i.library_id, i.level, f.field, f.v_text;
+INSERT INTO plugin_item_field_tally(library_id, level, field, v_text, cnt)
+SELECT library_id, '', field, v_text, CAST(SUM(cnt) AS INTEGER)
+FROM plugin_item_field_tally
+WHERE level <> ''
+GROUP BY library_id, field, v_text;
+CREATE INDEX plugin_item_field_tally_count
+	ON plugin_item_field_tally(library_id, level, field, cnt DESC, v_text);
+`)
+
 	store.Register("pluginitems", 5, `
 CREATE TABLE plugin_facet_expansions (
 	plugin_id   TEXT    NOT NULL,
@@ -473,12 +497,13 @@ func (s *Service) MaxItemsFor(pluginID string) int {
 }
 
 // KindBackends returns a plugins.KindBackends struct with KindUpsert,
-// KindDelete, KindItems and KindItemCount wired to this store (spec §3.6, §12 slice C).
+// KindDelete, KindItems, KindItemsByID and KindItemCount wired to this store (spec §3.6, §12 slice C).
 func (s *Service) KindBackends() plugins.KindBackends {
 	return plugins.KindBackends{
 		KindUpsert:    s.KindUpsert,
 		KindDelete:    s.KindDelete,
 		KindItems:     s.KindItems,
+		KindItemsByID: s.KindItemsByID,
 		KindItemCount: s.PluginItemCount,
 	}
 }

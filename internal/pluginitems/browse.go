@@ -364,28 +364,6 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 		query string
 		args  []any
 	)
-	if strings.TrimSpace(level) == "" {
-		query = `
-			SELECT f.v_text, COUNT(*) AS cnt
-			FROM plugin_item_fields f
-			JOIN plugin_items i ON i.item_ref = f.item_ref
-			WHERE i.library_id = ? AND f.field = ? AND f.v_text <> ''
-			GROUP BY f.v_text
-			ORDER BY cnt DESC, f.v_text ASC
-			LIMIT ?`
-		args = []any{int64(libraryID), fieldKey, fetch}
-	} else {
-		query = `
-			SELECT f.v_text, COUNT(*) AS cnt
-			FROM plugin_item_fields f
-			JOIN plugin_items i ON i.item_ref = f.item_ref
-			WHERE i.library_id = ? AND i.level = ? AND f.field = ? AND f.v_text <> ''
-			GROUP BY f.v_text
-			ORDER BY cnt DESC, f.v_text ASC
-			LIMIT ?`
-		args = []any{int64(libraryID), strings.TrimSpace(level), fieldKey, fetch}
-	}
-
 	if envelopeFacet(fieldKey) {
 		query = `SELECT CAST(i.` + fieldKey + ` AS TEXT), COUNT(*) AS cnt FROM plugin_items i WHERE i.library_id = ? AND i.` + fieldKey + ` > 0`
 		args = []any{int64(libraryID)}
@@ -395,6 +373,14 @@ func (s *Service) Facets(ctx context.Context, libraryID core.LibraryID, level, f
 		}
 		query += ` GROUP BY i.` + fieldKey + ` ORDER BY cnt DESC, i.` + fieldKey + ` ASC LIMIT ?`
 		args = append(args, fetch)
+	} else {
+		query = `
+			SELECT v_text, cnt
+			FROM plugin_item_field_tally
+			WHERE library_id = ? AND level = ? AND field = ? AND cnt > 0
+			ORDER BY cnt DESC, v_text ASC
+			LIMIT ?`
+		args = []any{int64(libraryID), strings.TrimSpace(level), fieldKey, fetch}
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

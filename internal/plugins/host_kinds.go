@@ -24,6 +24,7 @@ type KindBackends struct {
 	KindUpsert     func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
 	KindDelete     func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems      func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID  func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
 	KindItemCount  func(ctx context.Context, pluginID string) (int, error)
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
@@ -42,6 +43,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.KindUpsert = b.KindUpsert
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
+	m.deps.Backends.KindItemsByID = b.KindItemsByID
 	m.deps.Backends.KindItemCount = b.KindItemCount
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
@@ -58,6 +60,7 @@ func (m *Manager) kindBackends() KindBackends {
 		KindUpsert:     m.deps.Backends.KindUpsert,
 		KindDelete:     m.deps.Backends.KindDelete,
 		KindItems:      m.deps.Backends.KindItems,
+		KindItemsByID:  m.deps.Backends.KindItemsByID,
 		KindItemCount:  m.deps.Backends.KindItemCount,
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
@@ -175,41 +178,32 @@ type kindInverse struct {
 // are in ids so a live KindUpsert or KindDelete can record a real
 // inverse in the journal.
 func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []string) (existing []core.KindItem, missing []string) {
-	readFn := h.m.kindBackends().KindItems
-	if readFn == nil || len(ids) == 0 {
-		return nil, append([]string(nil), ids...)
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	want := make(map[string]bool, len(ids))
+	unique := make([]string, 0, len(ids))
+	seenID := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		want[id] = true
+		if !seenID[id] {
+			seenID[id] = true
+			unique = append(unique, id)
+		}
 	}
-	found := make(map[string]core.KindItem, len(ids))
-	cursor := ""
-	seenCursor := map[string]bool{}
-	for pageNum := 0; pageNum < 50 && len(found) < len(want); pageNum++ {
-		seenCursor[cursor] = true
-		page, err := readFn(ctx, h.plugin, kindKey, cursor, MaxKindUpsertItems)
-		if err != nil {
-			break
-		}
-		for _, it := range page.Items {
-			if want[it.ID] {
-				if _, dup := found[it.ID]; !dup {
-					found[it.ID] = it
-				}
-			}
-		}
-		if page.NextCursor == "" || seenCursor[page.NextCursor] {
-			break
-		}
-		cursor = page.NextCursor
+	readFn := h.m.kindBackends().KindItemsByID
+	if readFn == nil {
+		return nil, unique
 	}
-	seenID := map[string]bool{}
-	for _, id := range ids {
-		if seenID[id] {
-			continue
+	items, err := readFn(ctx, h.plugin, kindKey, unique)
+	if err != nil {
+		return nil, unique
+	}
+	found := make(map[string]core.KindItem, len(items))
+	for _, it := range items {
+		if _, dup := found[it.ID]; !dup {
+			found[it.ID] = it
 		}
-		seenID[id] = true
+	}
+	for _, id := range unique {
 		if prev, ok := found[id]; ok {
 			existing = append(existing, prev)
 		} else {

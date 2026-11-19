@@ -115,6 +115,7 @@ func kindDTOs(items []core.KindItem) []kindItemDTO {
 
 type libraryDTO struct {
 	core.Library
+	EffectiveTabs  []core.LibraryTab      `json:"effectiveTabs,omitempty"`
 	ItemCount      *int                   `json:"itemCount,omitempty"`
 	StoredItems    *int                   `json:"storedItems,omitempty"`
 	PluginItems    *int                   `json:"pluginItems,omitempty"`
@@ -125,7 +126,10 @@ type libraryDTO struct {
 }
 
 func (c *librariesConsole) decorate(ctx context.Context, lib core.Library) libraryDTO {
-	dto := libraryDTO{Library: lib}
+	dto := libraryDTO{
+		Library:       lib,
+		EffectiveTabs: c.effectiveTabs(ctx, lib),
+	}
 	switch lib.Source {
 	case core.LibraryPlugin:
 		if items, _, err := c.services(); err == nil && items != nil {
@@ -321,6 +325,7 @@ func (c *librariesConsole) handler() http.Handler {
 			CollectionID int64               `json:"collectionId"`
 			MediaType    core.MediaType      `json:"mediaType"`
 			Present      *core.Presentations `json:"present"`
+			Tabs         *[]core.LibraryTab  `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
 			return
@@ -354,6 +359,14 @@ func (c *librariesConsole) handler() http.Handler {
 			}
 			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
 		}
+		if body.Tabs != nil && len(*body.Tabs) > 0 {
+			if _, err = c.app.libraries.SetTabs(r.Context(), lib.ID, *body.Tabs, nil); err != nil {
+				_ = c.app.libraries.Delete(r.Context(), lib.ID)
+				libError(w, libErrStatus(err), err.Error())
+				return
+			}
+			lib, _ = c.app.libraries.Get(r.Context(), lib.ID)
+		}
 		libJSON(w, http.StatusCreated, c.decorate(r.Context(), lib))
 	})
 	mux.HandleFunc("GET /{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +391,7 @@ func (c *librariesConsole) handler() http.Handler {
 			Rules             *[]core.LibraryExclusion `json:"rules"`
 			VisibilityDefault *string                  `json:"visibilityDefault"`
 			QualityProfile    *string                  `json:"qualityProfile"`
+			Tabs              *[]core.LibraryTab       `json:"tabs"`
 		}
 		if !decodeLibBody(w, r, &body) {
 			return
@@ -463,6 +477,20 @@ func (c *librariesConsole) handler() http.Handler {
 				}
 			}
 		}
+		if body.Tabs != nil {
+			if len(*body.Tabs) == 0 {
+				if err := svc.ResetTabs(ctx, lib.ID); err != nil {
+					libError(w, libErrStatus(err), "Could not reset library tabs")
+					return
+				}
+			} else {
+				schema := c.pluginTabSchema(ctx, lib)
+				if _, err := svc.SetTabs(ctx, lib.ID, *body.Tabs, schema); err != nil {
+					libError(w, libErrStatus(err), err.Error())
+					return
+				}
+			}
+		}
 		fresh, err := svc.Get(ctx, lib.ID)
 		if err != nil {
 			libError(w, libErrStatus(err), "Library not found")
@@ -488,6 +516,10 @@ func (c *librariesConsole) handler() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /{id}/tabs", c.handleTabsGet)
+	mux.HandleFunc("PUT /{id}/tabs", c.handleTabsPut)
+	mux.HandleFunc("DELETE /{id}/tabs", c.handleTabsReset)
+	mux.HandleFunc("POST /{id}/tabs/preview", c.handleTabsPreview)
 	mux.HandleFunc("GET /{id}/items", c.handleItems)
 	mux.HandleFunc("GET /collection-sources", c.handleCollectionSources)
 	mux.HandleFunc("GET /catalogue-sources", c.handleCatalogueSources)

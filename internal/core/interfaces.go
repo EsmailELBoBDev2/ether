@@ -116,6 +116,8 @@ type Filter struct {
 	PreviewFallback         string             `json:"-"`
 	ExtraRules              []LibraryExclusion `json:"-"` // saved rules on a filter library
 	ExtraFallback           string             `json:"-"`
+	TabRules                []LibraryExclusion `json:"-"` // saved filters on a library or view tab
+	TabFallback             string             `json:"-"`
 	KnownAddedDate          bool               `json:"-"` // only released/aired titles, before pagination
 	// ExcludeKeys applies local visibility policy before counting and pagination.
 	ExcludeKeys []RatingKey `json:"-"`

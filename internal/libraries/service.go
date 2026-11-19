@@ -160,6 +160,13 @@ func cloneLibrary(lib core.Library) core.Library {
 		}
 		lib.Rules = rules
 	}
+	if len(lib.Tabs) > 0 {
+		tabs := make([]core.LibraryTab, len(lib.Tabs))
+		for i, t := range lib.Tabs {
+			tabs[i] = t.Clone()
+		}
+		lib.Tabs = tabs
+	}
 	return lib
 }
 

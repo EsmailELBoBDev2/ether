@@ -21,6 +21,7 @@ type BrowseQuery struct {
 	// NoTotal avoids count queries for clients using cursor continuation.
 	NoTotal   bool
 	Policy    *libraryfilter.Filter
+	TabPolicy *libraryfilter.Filter
 	Hidden    bool
 	LibraryID core.LibraryID
 	ParentRef core.ItemRef
@@ -141,7 +142,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 
 	level := strings.TrimSpace(q.Level)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
-	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
+	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
 
 	// Build person + facet predicates first so we know whether to drive the
 	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
@@ -197,6 +198,9 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		baseArgs = append(baseArgs, filterArgs...)
 	}
 	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden); err != nil {
+		return BrowsePage{}, err
+	}
+	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.TabPolicy, false); err != nil {
 		return BrowsePage{}, err
 	}
 

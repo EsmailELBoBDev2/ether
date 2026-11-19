@@ -3,14 +3,54 @@ package vela
 import (
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
+
+func hasOfferedSort(sorts []object, id string) bool {
+	for _, s := range sorts {
+		if s["id"] == id {
+			return true
+		}
+	}
+	return false
+}
+
+func allowedSortDirection(sorts []object, sort, direction string) bool {
+	for _, candidate := range sorts {
+		if candidate["id"] == sort {
+			for _, d := range candidate["directions"].([]string) {
+				if direction == d {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func defaultDirectionForSort(sorts []object, sort, preferred string) string {
+	if preferred != "" && allowedSortDirection(sorts, sort, preferred) {
+		return preferred
+	}
+	def := "desc"
+	switch sort {
+	case "server", "title", "index":
+		def = "asc"
+	}
+	if allowedSortDirection(sorts, sort, def) {
+		return def
+	}
+	if allowedSortDirection(sorts, sort, "asc") {
+		return "asc"
+	}
+	return "desc"
+}
 
 func libraryWire(view frontend.View) object {
 	kind := "mixed"
@@ -69,7 +109,7 @@ func libraryWire(view frontend.View) object {
 		}
 	}
 	var tabs []object
-	if !isPlugin {
+	if !isPlugin && len(view.Tabs) == 0 {
 		tabs = []object{
 			{"id": "recommended", "label": "Recommended", "kind": "recommended"},
 			{"id": "library", "label": "Library", "kind": "library"},
@@ -82,19 +122,23 @@ func libraryWire(view frontend.View) object {
 		if len(srcTabs) == 0 {
 			srcTabs = []frontend.ViewTab{
 				{ID: "recommended", Label: "Recommended", Kind: "recommended"},
-				{ID: "library", Label: "Library", Kind: "library"},
+				{ID: "library", Label: "Library", Kind: "library", Search: true},
 			}
 		}
 		tabs = make([]object, 0, len(srcTabs))
+		appliedLibrarySort := false
 		for _, t := range srcTabs {
 			tab := object{"id": t.ID, "label": t.Label, "kind": t.Kind}
-			if t.Kind == "collections" || t.Kind == "people" {
+			if t.Kind == "collections" || t.Kind == "people" || t.Kind == "view" {
 				tab["search"] = t.Search
 				if t.Search && t.SearchPlaceholder != "" {
 					tab["searchPlaceholder"] = t.SearchPlaceholder
 				}
+			} else if t.Kind == "library" && t.Search && t.SearchPlaceholder != "" {
+				tab["searchPlaceholder"] = t.SearchPlaceholder
 			}
-			if t.Kind == "collections" && t.Facet != "" {
+			switch {
+			case t.Kind == "collections" && t.Facet != "":
 				tab["facet"] = t.Facet
 				effOrder := t.Order
 				if effOrder == "" {
@@ -103,30 +147,34 @@ func libraryWire(view frontend.View) object {
 				tab["order"] = effOrder
 				effSort := t.Sort
 				if effSort == "" {
-					if slices.Contains(view.Sorts, "released") {
+					if hasOfferedSort(sorts, "released") {
 						effSort = "released"
 					} else {
 						effSort = defaultSort
 					}
 				}
-				effDir := t.Direction
-				if effDir == "" {
-					switch effSort {
-					case "server", "title", "index":
-						effDir = "asc"
-					default:
-						effDir = "desc"
-					}
-				}
+				effDir := defaultDirectionForSort(sorts, effSort, t.Direction)
 				tab["sort"] = effSort
 				tab["direction"] = effDir
-			} else if t.Kind == "people" && t.Facet != "" {
+			case t.Kind == "people" && t.Facet != "":
 				tab["facet"] = t.Facet
 				effOrder := t.Order
 				if effOrder == "" {
 					effOrder = "name"
 				}
 				tab["order"] = effOrder
+			case t.Kind == "view" || t.Kind == "library":
+				if t.Sort != "" && hasOfferedSort(sorts, t.Sort) {
+					effSort := t.Sort
+					effDir := defaultDirectionForSort(sorts, effSort, t.Direction)
+					tab["sort"] = effSort
+					tab["direction"] = effDir
+					if t.Kind == "library" && !appliedLibrarySort {
+						defaultSort = effSort
+						defaultDirection = effDir
+						appliedLibrarySort = true
+					}
+				}
 			}
 			tabs = append(tabs, tab)
 		}
@@ -201,51 +249,168 @@ func offeredFacet(filters object, field string) bool {
 	return false
 }
 
-func libraryQuery(r *http.Request, library object) (frontend.ItemQuery, string, string, bool) {
+func applyCatalogueFacetBuckets(f *core.Filter, canon string, bucketIDs []string) bool {
+	switch canon {
+	case "genre":
+		f.Genres = append(f.Genres, bucketIDs...)
+		return true
+	case "studio", "network":
+		if len(bucketIDs) != 1 || f.Studio != "" {
+			return false
+		}
+		f.Studio = bucketIDs[0]
+		return true
+	case "country":
+		f.Countries = append(f.Countries, bucketIDs...)
+		return true
+	case "year":
+		for _, raw := range bucketIDs {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 1 || n > 9999 {
+				return false
+			}
+			f.Years = append(f.Years, n)
+		}
+		return true
+	case "decade":
+		if len(bucketIDs) == 1 && len(f.Years) == 0 && f.YearFrom == 0 && f.YearTo == 0 {
+			trimmed := strings.TrimSuffix(strings.TrimSpace(bucketIDs[0]), "s")
+			n, err := strconv.Atoi(trimmed)
+			if err != nil || n < 1800 || n > 9990 || n%10 != 0 {
+				return false
+			}
+			f.YearFrom = n
+			f.YearTo = n + 9
+			return true
+		}
+		for _, raw := range bucketIDs {
+			trimmed := strings.TrimSuffix(strings.TrimSpace(raw), "s")
+			n, err := strconv.Atoi(trimmed)
+			if err != nil || n < 1800 || n > 9990 || n%10 != 0 {
+				return false
+			}
+			for y := n; y <= n+9; y++ {
+				f.Years = append(f.Years, y)
+			}
+		}
+		return true
+	case "franchise":
+		for _, raw := range bucketIDs {
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || id <= 0 {
+				return false
+			}
+			f.Collections = append(f.Collections, id)
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func libraryQuery(r *http.Request, view frontend.View, library object) (frontend.ItemQuery, string, string, int) {
 	q := frontend.ItemQuery{Limit: limit(r), NoTotal: true}
 	options := library["browse"].(object)
-	sort, direction := r.URL.Query().Get("sort"), r.URL.Query().Get("direction")
-	if sort == "" {
-		sort = options["defaultSort"].(string)
+	sorts := options["sorts"].([]object)
+	filters := options["filters"].(object)
+	isPlugin := view.PluginID != "" || view.KindKey != ""
+	values := r.URL.Query()
+	for name, entries := range values {
+		if strings.HasPrefix(name, "facet.") {
+			continue
+		}
+		switch name {
+		case "cursor", "limit", "sort", "direction", "kind", "genre", "year", "played", "favorite", "collectionId", "query", "tab":
+		default:
+			return q, "", "", 400
+		}
+		if len(entries) != 1 {
+			return q, "", "", 400
+		}
 	}
-	if direction == "" {
-		direction = options["defaultDirection"].(string)
-	}
-	allowed := false
-	for _, candidate := range options["sorts"].([]object) {
-		if candidate["id"] == sort {
-			for _, d := range candidate["directions"].([]string) {
-				if direction == d {
-					allowed = true
+
+	var activeTab *frontend.ViewTab
+	if tabKey := values.Get("tab"); tabKey != "" {
+		if len(view.Tabs) > 0 {
+			for idx := range view.Tabs {
+				t := &view.Tabs[idx]
+				if t.ID == tabKey && (t.Kind == "view" || t.Kind == "library") {
+					activeTab = t
+					break
 				}
+			}
+		} else if tabKey == "library" {
+			activeTab = &frontend.ViewTab{ID: "library", Kind: "library", Search: true}
+		}
+		if activeTab == nil {
+			return q, "", "", 404
+		}
+	} else if len(view.Tabs) > 0 {
+		for idx := range view.Tabs {
+			if view.Tabs[idx].Kind == "library" {
+				activeTab = &view.Tabs[idx]
+				break
 			}
 		}
 	}
-	if !allowed {
-		return q, sort, direction, false
+
+	defSort := options["defaultSort"].(string)
+	defDir := options["defaultDirection"].(string)
+	if activeTab != nil && activeTab.Sort != "" && hasOfferedSort(sorts, activeTab.Sort) {
+		defSort = activeTab.Sort
+		defDir = defaultDirectionForSort(sorts, defSort, activeTab.Direction)
+	} else if activeTab != nil && activeTab.Direction != "" && allowedSortDirection(sorts, defSort, activeTab.Direction) {
+		defDir = activeTab.Direction
+	}
+
+	sort, direction := values.Get("sort"), values.Get("direction")
+	if sort == "" {
+		sort = defSort
+	}
+	if direction == "" {
+		if values.Get("sort") != "" {
+			direction = options["defaultDirection"].(string)
+			if !allowedSortDirection(sorts, sort, direction) {
+				direction = defaultDirectionForSort(sorts, sort, "")
+			}
+		} else {
+			direction = defDir
+		}
+	}
+	if !allowedSortDirection(sorts, sort, direction) {
+		return q, sort, direction, 400
 	}
 	if sort != "server" {
 		q.Sort = frontend.SortOrder(sort)
 	}
 	q.Desc = direction == "desc"
-	filters := options["filters"].(object)
-	values := r.URL.Query()
+
+	if activeTab != nil && activeTab.Filters != nil {
+		q.Filter.TabRules, q.Filter.TabFallback = activeTab.Filters.ToPolicy(view.Type)
+	}
+
 	for name, entries := range values {
-		if strings.HasPrefix(name, "facet.") {
-			field := strings.TrimPrefix(name, "facet.")
-			if !offeredFacet(filters, field) || len(entries) == 0 {
-				return q, sort, direction, false
+		if !strings.HasPrefix(name, "facet.") {
+			continue
+		}
+		field := strings.TrimPrefix(name, "facet.")
+		if len(entries) == 0 {
+			return q, sort, direction, 400
+		}
+		var bucketIDs []string
+		seen := make(map[string]bool, len(entries))
+		for _, raw := range entries {
+			if raw == "" || len(raw) > 256 {
+				return q, sort, direction, 400
 			}
-			var bucketIDs []string
-			seen := make(map[string]bool, len(entries))
-			for _, raw := range entries {
-				if raw == "" || len(raw) > 256 {
-					return q, sort, direction, false
-				}
-				if !seen[raw] {
-					seen[raw] = true
-					bucketIDs = append(bucketIDs, raw)
-				}
+			if !seen[raw] {
+				seen[raw] = true
+				bucketIDs = append(bucketIDs, raw)
+			}
+		}
+		if isPlugin {
+			if !offeredFacet(filters, field) {
+				return q, sort, direction, 400
 			}
 			if q.Filter.Facets == nil {
 				q.Filter.Facets = make(map[string][]string)
@@ -253,18 +418,15 @@ func libraryQuery(r *http.Request, library object) (frontend.ItemQuery, string, 
 			q.Filter.Facets[field] = bucketIDs
 			continue
 		}
-		switch name {
-		case "cursor", "limit", "sort", "direction", "kind", "genre", "year", "played", "favorite", "collectionId", "query":
-		default:
-			return q, sort, direction, false
-		}
-		if len(entries) != 1 {
-			return q, sort, direction, false
+		canon, valid := core.NormalizeCatalogueTabFacet(core.TabCollections, field)
+		if !valid || canon == "" || !applyCatalogueFacetBuckets(&q.Filter, canon, bucketIDs) {
+			return q, sort, direction, 400
 		}
 	}
+
 	if rawQuery := strings.TrimSpace(values.Get("query")); rawQuery != "" {
-		if len(rawQuery) > 256 {
-			return q, sort, direction, false
+		if len(rawQuery) > 256 || (activeTab != nil && activeTab.Kind == "view" && !activeTab.Search) {
+			return q, sort, direction, 400
 		}
 		q.Filter.Query = rawQuery
 	}
@@ -277,37 +439,37 @@ func libraryQuery(r *http.Request, library object) (frontend.ItemQuery, string, 
 			}
 		}
 		if !ok {
-			return q, sort, direction, false
+			return q, sort, direction, 400
 		}
 		q.Types = []frontend.MediaType{frontend.MediaType(kind)}
 	}
 	if genre := values.Get("genre"); genre != "" {
 		if filters["genre"] != true || len(genre) > 256 {
-			return q, sort, direction, false
+			return q, sort, direction, 400
 		}
-		q.Filter.Genres = []string{genre}
+		q.Filter.Genres = append(q.Filter.Genres, genre)
 	}
 	if year := values.Get("year"); year != "" {
 		n, e := strconv.Atoi(year)
 		if filters["year"] != true || e != nil || n < 1 || n > 9999 {
-			return q, sort, direction, false
+			return q, sort, direction, 400
 		}
-		q.Filter.Years = []int{n}
+		q.Filter.Years = append(q.Filter.Years, n)
 	}
 	if colID := values.Get("collectionId"); colID != "" {
 		if filters["collectionId"] != true {
-			return q, sort, direction, false
+			return q, sort, direction, 400
 		}
 		colKey, e := ids.ParseRatingKeyGUID(colID)
 		if e != nil || (colKey.Kind() != frontend.KindCollection && colKey.Kind() != frontend.KindSmart) {
-			return q, sort, direction, false
+			return q, sort, direction, 400
 		}
 		q.CollectionKey = colKey
 	}
 	for _, name := range []string{"played", "favorite"} {
 		if raw, exists := values[name]; exists {
 			if filters[name] != true || (raw[0] != "true" && raw[0] != "false") {
-				return q, sort, direction, false
+				return q, sort, direction, 400
 			}
 			yes := raw[0] == "true"
 			if name == "played" {
@@ -317,7 +479,7 @@ func libraryQuery(r *http.Request, library object) (frontend.ItemQuery, string, 
 			}
 		}
 	}
-	return q, sort, direction, true
+	return q, sort, direction, 0
 }
 
 func markLandscapeTitles(ts []frontend.Title, view frontend.View) {
@@ -370,8 +532,12 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	library := libraryWire(view)
-	q, sort, direction, ok := libraryQuery(r, library)
-	if !ok {
+	q, sort, direction, errCode := libraryQuery(r, view, library)
+	if errCode == 404 {
+		problem(w, 404, "not-found", "not_found")
+		return
+	}
+	if errCode != 0 {
 		problem(w, 400, "request", "unsupported_library_query")
 		return
 	}
@@ -380,7 +546,7 @@ func (i *instance) libraryItems(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
-	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-items", id, q}))
+	c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-items", id, r.URL.Query().Get("tab"), q, q.Filter.TabRules, q.Filter.TabFallback}))
 	if err != nil {
 		fail(w, err, r)
 		return
@@ -815,31 +981,39 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
+
 	isPlugin := view.PluginID != "" || view.KindKey != ""
 	var selectedTab frontend.ViewTab
-	if isPlugin {
+	hasSelected := false
+	if isPlugin || len(view.Tabs) > 0 {
 		if tabKey != "" {
-			matchedTab := false
 			for _, t := range view.Tabs {
 				if t.ID == tabKey && (t.Kind == "collections" || t.Kind == "people") {
-					matchedTab = true
+					hasSelected = true
 					selectedTab = t
 					break
 				}
 			}
-			if !matchedTab {
+			if !hasSelected {
 				problem(w, 404, "not-found", "not_found")
 				return
 			}
 		} else {
 			for _, t := range view.Tabs {
-				if (t.Kind == "collections" || t.Kind == "people") && t.Facet != "" {
+				if isPlugin {
+					if (t.Kind == "collections" || t.Kind == "people") && t.Facet != "" {
+						hasSelected = true
+						selectedTab = t
+						break
+					}
+				} else if t.Kind == "collections" || t.Kind == "people" {
+					hasSelected = true
 					selectedTab = t
 					break
 				}
 			}
 		}
-		if query != "" && !selectedTab.Search {
+		if query != "" && (!hasSelected || !selectedTab.Search) {
 			problem(w, 400, "request", "unsupported_library_query")
 			return
 		}
@@ -853,6 +1027,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
 	pageLimit := limit(r)
 	scope, err := i.livePageScope(r, v, token)
 	if err != nil {
@@ -869,45 +1044,14 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		fail(w, frontend.ErrLiveGuideStale)
 		return
 	}
-	if isPlugin {
-		if selectedTab.Kind == "people" {
-			peopleReader, hasPeople := i.host.Experience.(frontend.LibraryFacetPeople)
-			if selectedTab.Facet == "" || !hasPeople {
-				cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
-				return
-			}
-			fpPage, err := peopleReader.LibraryFacetPeople(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
-				Offset: c.Offset,
-				Limit:  pageLimit,
-				Query:  query,
-			})
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			entries, err := i.facetPeopleWire(r, token, fpPage.Items)
-			if err != nil {
-				fail(w, err, r)
-				return
-			}
-			out := object{"items": entries, "continuation": "exhausted"}
-			if fpPage.More {
-				next, err := i.nextLiveCursor(c, c.Offset+len(fpPage.Items), snapshot)
-				if err != nil {
-					fail(w, err, r)
-					return
-				}
-				out["continuation"], out["nextCursor"] = "more", next
-			}
-			cache(w, r, out)
-			return
-		}
-		colReader, hasCols := i.host.Experience.(frontend.LibraryFacetCollections)
-		if selectedTab.Facet == "" || !hasCols {
+
+	if hasSelected && selectedTab.Kind == "people" {
+		peopleReader, hasPeople := i.host.Experience.(frontend.LibraryFacetPeople)
+		if selectedTab.Facet == "" || !hasPeople {
 			cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
 			return
 		}
-		fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
+		fpPage, err := peopleReader.LibraryFacetPeople(r.Context(), v, requestDevice(r), id, selectedTab.Facet, selectedTab.Order, frontend.PageQuery{
 			Offset: c.Offset,
 			Limit:  pageLimit,
 			Query:  query,
@@ -916,7 +1060,46 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
-		entries, err := i.facetCollectionsWire(r, v, token, selectedTab.Facet, view, fcPage.Items)
+		entries, err := i.facetPeopleWire(r, token, fpPage.Items)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		out := object{"items": entries, "continuation": "exhausted"}
+		if fpPage.More {
+			next, err := i.nextLiveCursor(c, c.Offset+len(fpPage.Items), snapshot)
+			if err != nil {
+				fail(w, err, r)
+				return
+			}
+			out["continuation"], out["nextCursor"] = "more", next
+		}
+		cache(w, r, out)
+		return
+	}
+
+	if hasSelected && selectedTab.Kind == "collections" && selectedTab.Facet != "" {
+		colReader, hasCols := i.host.Experience.(frontend.LibraryFacetCollections)
+		if !hasCols {
+			cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
+			return
+		}
+		facetField := selectedTab.Facet
+		if !isPlugin {
+			if canon, ok := core.NormalizeCatalogueTabFacet(core.TabCollections, facetField); ok && canon != "" {
+				facetField = canon
+			}
+		}
+		fcPage, err := colReader.LibraryFacetCollections(r.Context(), v, requestDevice(r), id, facetField, selectedTab.Order, frontend.PageQuery{
+			Offset: c.Offset,
+			Limit:  pageLimit,
+			Query:  query,
+		})
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		entries, err := i.facetCollectionsWire(r, v, token, facetField, view, fcPage.Items)
 		if err != nil {
 			fail(w, err, r)
 			return
@@ -933,8 +1116,15 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		cache(w, r, out)
 		return
 	}
+
+	if isPlugin {
+		cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
+		return
+	}
+
 	colPage, err := i.host.Experience.Collections(r.Context(), v, requestDevice(r), frontend.CollectionQuery{
 		ViewID: id,
+		Query:  query,
 		Types:  []frontend.MediaType{view.Type},
 		Offset: c.Offset,
 		Limit:  pageLimit + 1,

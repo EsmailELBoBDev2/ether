@@ -465,6 +465,13 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 		Cursor:    cursor,
 		Limit:     limit,
 	}
+	if len(q.Filter.TabRules) > 0 || q.Filter.TabFallback != "" {
+		tp, tpErr := c.items.CompilePolicy(ctx, lib.ID, q.Filter.TabRules, q.Filter.TabFallback)
+		if tpErr != nil {
+			return experience.PluginBrowsePage{}, tpErr
+		}
+		bq.TabPolicy = tp
+	}
 	page, err := c.items.Browse(ctx, bq)
 	if err != nil {
 		return experience.PluginBrowsePage{}, err
@@ -815,33 +822,33 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	if err != nil {
 		return nil, err
 	}
-	localPage, err := c.items.Search(ctx, pluginitems.SearchQuery{
+	facets := mapFilterToFacets(rec.Decl, q.Filter)
+	sq := pluginitems.SearchQuery{
 		Policy:    policy,
 		LibraryID: lib.ID,
 		Query:     query,
 		Levels:    searchLevels,
 		PersonID:  q.Filter.Person,
-		Facets:    mapFilterToFacets(rec.Decl, q.Filter),
+		Facets:    facets,
 		Limit:     limit,
-	})
+	}
+	if len(q.Filter.TabRules) > 0 || q.Filter.TabFallback != "" {
+		tp, tpErr := c.items.CompilePolicy(visCtx, lib.ID, q.Filter.TabRules, q.Filter.TabFallback)
+		if tpErr != nil {
+			return nil, tpErr
+		}
+		sq.TabPolicy = tp.ForSearch()
+	}
+	localPage, err := c.items.Search(ctx, sq)
 	if err != nil {
 		return nil, err
 	}
-	facets := mapFilterToFacets(rec.Decl, q.Filter)
 	combined := localPage.Items
 	if rec.Decl.Browse.LiveSearch && c.mgr != nil && c.IsPluginLibraryActive(ctx, lib) {
 		liveItems := c.runLiveSearch(ctx, rec, query, limit)
 		if len(liveItems) > 0 {
-			if len(facets) > 0 {
-				if refreshed, rErr := c.items.Search(ctx, pluginitems.SearchQuery{
-					Policy:    policy,
-					LibraryID: lib.ID,
-					Query:     query,
-					Levels:    searchLevels,
-					PersonID:  q.Filter.Person,
-					Facets:    facets,
-					Limit:     limit,
-				}); rErr == nil {
+			if len(facets) > 0 || sq.TabPolicy != nil {
+				if refreshed, rErr := c.items.Search(ctx, sq); rErr == nil {
 					combined = refreshed.Items
 				}
 			} else {
@@ -1413,6 +1420,39 @@ func parseKindDuration(raw string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+func fillPluginTabDefaults(vt *frontend.ViewTab, sorts []string) {
+	if vt.Kind == "collections" && vt.Facet != "" {
+		if vt.Order == "" {
+			vt.Order = "count"
+		}
+		effSort := vt.Sort
+		if effSort == "" {
+			if slices.Contains(sorts, "released") {
+				effSort = "released"
+			} else if len(sorts) > 0 {
+				effSort = sorts[0]
+			} else {
+				effSort = "server"
+			}
+		}
+		effDir := vt.Direction
+		if effDir == "" {
+			switch effSort {
+			case "server", "title", "index":
+				effDir = "asc"
+			default:
+				effDir = "desc"
+			}
+		}
+		vt.Sort = effSort
+		vt.Direction = effDir
+	} else if vt.Kind == "people" && vt.Facet != "" {
+		if vt.Order == "" {
+			vt.Order = "name"
+		}
+	}
+}
+
 // Presentation implements experience.PluginPresentationLibraries.
 func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (experience.PluginPresentation, bool) {
 	if c == nil || c.items == nil || lib.Source != core.LibraryPlugin {
@@ -1425,57 +1465,55 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	decl := rec.Decl
 	sorts := append([]string(nil), decl.Browse.Sorts...)
 
-	rawTabs := decl.Library.EffectiveTabs()
-	tabs := make([]frontend.ViewTab, 0, len(rawTabs))
-	for _, tab := range rawTabs {
-		vt := frontend.ViewTab{
-			ID:    tab.Key,
-			Label: c.resolvePluginText(ctx, rec.PluginID, tab.Label),
-			Kind:  tab.Kind,
-		}
-		if tab.Kind == "collections" || tab.Kind == "people" {
-			vt.Search = tab.EffectiveSearch()
-			if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
-				vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
+	var tabs []frontend.ViewTab
+	if lib.TabsCustomized {
+		tabs = make([]frontend.ViewTab, 0, len(lib.Tabs))
+		for _, tab := range lib.Tabs {
+			if tab.Hidden {
+				continue
 			}
-		}
-		if tab.Kind == "collections" && tab.Facet != "" {
-			vt.Facet = tab.Facet
-			effOrder := tab.Order
-			if effOrder == "" {
-				effOrder = "count"
+			effSearch := tab.EffectiveSearch()
+			var placeholder string
+			if effSearch && strings.TrimSpace(tab.SearchPlaceholder) != "" {
+				placeholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
 			}
-			vt.Order = effOrder
-			effSort := tab.Sort
-			if effSort == "" {
-				if slices.Contains(sorts, "released") {
-					effSort = "released"
-				} else if len(sorts) > 0 {
-					effSort = sorts[0]
-				} else {
-					effSort = "server"
+			vt := frontend.ViewTab{
+				ID:                tab.Key,
+				Label:             c.resolvePluginText(ctx, rec.PluginID, tab.Label),
+				Kind:              tab.Kind,
+				Facet:             tab.Facet,
+				Order:             tab.Order,
+				Sort:              tab.Sort,
+				Direction:         tab.Direction,
+				Search:            effSearch,
+				SearchPlaceholder: placeholder,
+				Filters:           tab.Filters.Clone(),
+			}
+			fillPluginTabDefaults(&vt, sorts)
+			tabs = append(tabs, vt)
+		}
+	} else {
+		rawTabs := decl.Library.EffectiveTabs()
+		tabs = make([]frontend.ViewTab, 0, len(rawTabs))
+		for _, tab := range rawTabs {
+			vt := frontend.ViewTab{
+				ID:        tab.Key,
+				Label:     c.resolvePluginText(ctx, rec.PluginID, tab.Label),
+				Kind:      tab.Kind,
+				Facet:     tab.Facet,
+				Order:     tab.Order,
+				Sort:      tab.Sort,
+				Direction: tab.Direction,
+			}
+			if tab.Kind == "collections" || tab.Kind == "people" {
+				vt.Search = tab.EffectiveSearch()
+				if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
+					vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
 				}
 			}
-			effDir := tab.Direction
-			if effDir == "" {
-				switch effSort {
-				case "server", "title", "index":
-					effDir = "asc"
-				default:
-					effDir = "desc"
-				}
-			}
-			vt.Sort = effSort
-			vt.Direction = effDir
-		} else if tab.Kind == "people" && tab.Facet != "" {
-			vt.Facet = tab.Facet
-			effOrder := tab.Order
-			if effOrder == "" {
-				effOrder = "name"
-			}
-			vt.Order = effOrder
+			fillPluginTabDefaults(&vt, sorts)
+			tabs = append(tabs, vt)
 		}
-		tabs = append(tabs, vt)
 	}
 
 	fieldsByKey := make(map[string]plugins.KindField, len(decl.Fields))

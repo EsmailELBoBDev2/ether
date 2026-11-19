@@ -69,15 +69,16 @@ type View struct {
 
 // ViewTab describes one sub-tab of a library view.
 type ViewTab struct {
-	ID                string `json:"id"`
-	Label             string `json:"label"`
-	Kind              string `json:"kind"`
-	Facet             string `json:"facet,omitempty"`
-	Order             string `json:"order,omitempty"`
-	Sort              string `json:"sort,omitempty"`
-	Direction         string `json:"direction,omitempty"`
-	Search            bool   `json:"search,omitempty"`
-	SearchPlaceholder string `json:"searchPlaceholder,omitempty"`
+	ID                string          `json:"id"`
+	Label             string          `json:"label"`
+	Kind              string          `json:"kind"`
+	Facet             string          `json:"facet,omitempty"`
+	Order             string          `json:"order,omitempty"`
+	Sort              string          `json:"sort,omitempty"`
+	Direction         string          `json:"direction,omitempty"`
+	Search            bool            `json:"search,omitempty"`
+	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"`
+	Filters           *core.TabFilter `json:"filters,omitempty"`
 }
 
 // ViewFacet describes one plugin-declared filter facet on a library view.

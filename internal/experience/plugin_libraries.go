@@ -1,6 +1,7 @@
 package experience
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -87,6 +88,11 @@ type PluginPresentationLibraries interface {
 	FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error)
 	FacetCollections(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error)
 	FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (PluginFacetPeoplePage, error)
+}
+
+type catalogTabFacetReader interface {
+	LibraryFacetCollections(context.Context, core.CatalogFacetCollectionsQuery) (core.CatalogFacetCollectionsPage, error)
+	LibraryFacetPeople(context.Context, core.CatalogFacetPeopleQuery) (core.CatalogFacetPeoplePage, error)
 }
 
 var (
@@ -180,6 +186,72 @@ func (s *Service) publishedLibrary(ctx context.Context, lib core.Library) (core.
 	}
 }
 
+var defaultCatalogueSortIDs = []string{"title", "added", "released", "year", "rating", "duration", "popularity"}
+
+func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue bool) []frontend.ViewTab {
+	out := make([]frontend.ViewTab, 0, len(tabs))
+	for _, tab := range tabs {
+		if tab.Hidden {
+			continue
+		}
+		vt := frontend.ViewTab{
+			ID:                tab.Key,
+			Label:             tab.Label,
+			Kind:              tab.Kind,
+			Facet:             tab.Facet,
+			Order:             tab.Order,
+			Sort:              tab.Sort,
+			Direction:         tab.Direction,
+			Search:            tab.EffectiveSearch(),
+			SearchPlaceholder: tab.SearchPlaceholder,
+			Filters:           tab.Filters.Clone(),
+		}
+		switch tab.Kind {
+		case core.TabCollections:
+			if isCatalogue && vt.Facet != "" {
+				if canon, ok := core.NormalizeCatalogueTabFacet(core.TabCollections, vt.Facet); ok {
+					vt.Facet = canon
+				}
+			}
+			if vt.Facet != "" {
+				vt.Order = cmp.Or(vt.Order, "count")
+				effSort := vt.Sort
+				if effSort == "" {
+					if slices.Contains(sorts, "released") {
+						effSort = "released"
+					} else if len(sorts) > 0 {
+						effSort = sorts[0]
+					} else {
+						effSort = "server"
+					}
+				}
+				effDir := vt.Direction
+				if effDir == "" {
+					switch effSort {
+					case "server", "title", "index":
+						effDir = "asc"
+					default:
+						effDir = "desc"
+					}
+				}
+				vt.Sort = effSort
+				vt.Direction = effDir
+			}
+		case core.TabPeople:
+			if isCatalogue && vt.Facet != "" {
+				if canon, ok := core.NormalizeCatalogueTabFacet(core.TabPeople, vt.Facet); ok {
+					vt.Facet = canon
+				}
+			}
+			if vt.Facet != "" {
+				vt.Order = cmp.Or(vt.Order, "name")
+			}
+		}
+		out = append(out, vt)
+	}
+	return out
+}
+
 // PublishedViews enumerates published libraries directly, without inventing a viewer.
 func (s *Service) PublishedViews(ctx context.Context) ([]frontend.View, error) {
 	if s.d.PluginLibraries == nil {
@@ -226,6 +298,15 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 					view.Facets = p.Facets
 				}
 			}
+			if lib.TabsCustomized && len(view.Tabs) == 0 && len(lib.Tabs) > 0 {
+				view.Tabs = libraryTabsToViewTabs(lib.Tabs, view.Sorts, false)
+			}
+		} else {
+			srcTabs := lib.Tabs
+			if !lib.TabsCustomized {
+				srcTabs = core.DefaultCatalogueTabs()
+			}
+			view.Tabs = libraryTabsToViewTabs(srcTabs, defaultCatalogueSortIDs, true)
 		}
 		out = append(out, view)
 	}
@@ -392,8 +473,10 @@ func (s *Service) sanitizePluginLibraryQuery(ctx context.Context, lib core.Libra
 		declared[vf.ID] = true
 	}
 	f := core.Filter{
-		Query:  q.Filter.Query,
-		Person: q.Filter.Person,
+		Query:       q.Filter.Query,
+		Person:      q.Filter.Person,
+		TabRules:    q.Filter.TabRules,
+		TabFallback: q.Filter.TabFallback,
 	}
 	if len(q.Filter.Genres) > 0 && (declared["genre"] || declared["genres"] || declared["tags"]) {
 		f.Genres = q.Filter.Genres
@@ -472,7 +555,7 @@ func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core
 		if err != nil {
 			return core.Page{}, err
 		}
-		if ppl, ok := s.d.PluginLibraries.(PluginPeopleLibraries); ok && len(subQ.Filter.Facets) == 0 {
+		if ppl, ok := s.d.PluginLibraries.(PluginPeopleLibraries); ok && len(subQ.Filter.Facets) == 0 && len(subQ.Filter.TabRules) == 0 && subQ.Filter.TabFallback == "" {
 			_, peopleTitles, pErr := s.searchPluginPeopleInLibraries(ctx, v, []core.Library{lib}, ppl, query, subQ, 20)
 			if pErr != nil && errors.Is(pErr, context.Canceled) {
 				return core.Page{}, pErr
@@ -873,19 +956,28 @@ func (s *Service) presentLibrary(p core.Presentations, mt core.MediaType) (core.
 	return s.d.LibraryPresentation(p, mt)
 }
 
-func (s *Service) pluginLibraryByViewID(ctx context.Context, v *core.User, viewID string) (core.Library, PluginPresentationLibraries, PluginPresentation, error) {
+func (s *Service) publishedLibraryByViewID(ctx context.Context, v *core.User, viewID string) (core.Library, core.MediaType, error) {
 	if s.d.PluginLibraries == nil || v == nil {
-		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+		return core.Library{}, "", core.ErrNotFound
 	}
 	idNum, err := strconv.ParseInt(strings.TrimSpace(viewID), 10, 64)
 	if err != nil || idNum <= 0 {
-		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+		return core.Library{}, "", core.ErrNotFound
 	}
 	lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(idNum))
-	if err != nil || lib.Source != core.LibraryPlugin || !v.AllowsLibrary(lib.ID) {
-		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
+	if err != nil || !v.AllowsLibrary(lib.ID) {
+		return core.Library{}, "", core.ErrNotFound
 	}
-	if _, _, ok := s.publishedLibrary(ctx, lib); !ok {
+	mt, _, ok := s.publishedLibrary(ctx, lib)
+	if !ok {
+		return core.Library{}, "", core.ErrNotFound
+	}
+	return lib, mt, nil
+}
+
+func (s *Service) pluginLibraryByViewID(ctx context.Context, v *core.User, viewID string) (core.Library, PluginPresentationLibraries, PluginPresentation, error) {
+	lib, _, err := s.publishedLibraryByViewID(ctx, v, viewID)
+	if err != nil || lib.Source != core.LibraryPlugin {
 		return core.Library{}, nil, PluginPresentation{}, core.ErrNotFound
 	}
 	pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
@@ -894,6 +986,28 @@ func (s *Service) pluginLibraryByViewID(ctx context.Context, v *core.User, viewI
 	}
 	p, _ := pres.Presentation(ctx, lib)
 	return lib, pres, p, nil
+}
+
+func (s *Service) catalogueFacetQueryFilter(ctx context.Context, v *core.User, lib core.Library, mt core.MediaType) (core.Filter, bool, error) {
+	base := s.libraryBrowseFilter(ctx, v, lib, core.Filter{Type: mt})
+	if s.d.PageExclusions != nil {
+		ex := s.d.PageExclusions(ctx, v, mt)
+		if ex.Err != nil {
+			return core.Filter{}, false, ex.Err
+		}
+		filter, fits, none := viewerBrowseFilter(base, v, ex, mt)
+		if none {
+			return filter, true, nil
+		}
+		if fits {
+			return filter, false, nil
+		}
+	}
+	if v != nil {
+		base.CatalogViewerID = v.ID
+		base.MaxContentRating = tightenRating(base.MaxContentRating, v.MaxContentRating)
+	}
+	return base, false, nil
 }
 
 // LibraryFacetBuckets implements frontend.LibraryFacetBuckets.
@@ -927,33 +1041,84 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 	if err != nil {
 		return frontend.FacetCollectionPage{}, err
 	}
-	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
-	if err != nil || pres == nil {
+	lib, mt, err := s.publishedLibraryByViewID(ctx, v, viewID)
+	if err != nil {
 		return frontend.FacetCollectionPage{}, core.ErrNotFound
 	}
-	declared := false
-	for _, f := range p.Facets {
-		if f.ID == field {
-			declared = true
-			break
+	if lib.Source == core.LibraryPlugin {
+		pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
+		if !ok || pres == nil {
+			return frontend.FacetCollectionPage{}, core.ErrNotFound
 		}
+		p, _ := pres.Presentation(ctx, lib)
+		declared := false
+		for _, f := range p.Facets {
+			if f.ID == field {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return frontend.FacetCollectionPage{}, core.ErrNotFound
+		}
+		out, err := pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+		if err != nil {
+			return frontend.FacetCollectionPage{}, err
+		}
+		for i := range out.Items {
+			if out.Items[i].NewestItem != nil {
+				piv := PluginItemView{Library: lib, Title: *out.Items[i].NewestItem}
+				if !s.pluginItemAllowed(ctx, v, piv) {
+					out.Items[i].NewestItem = nil
+				}
+			}
+		}
+		return out, nil
 	}
-	if !declared {
+
+	canonFacet, ok := core.NormalizeCatalogueTabFacet(core.TabCollections, field)
+	if !ok || canonFacet == "" {
 		return frontend.FacetCollectionPage{}, core.ErrNotFound
 	}
-	out, err := pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+	catReader, ok := s.d.Catalog.(catalogTabFacetReader)
+	if !ok || catReader == nil {
+		return frontend.FacetCollectionPage{}, core.ErrNotFound
+	}
+	filter, none, err := s.catalogueFacetQueryFilter(ctx, v, lib, mt)
 	if err != nil {
 		return frontend.FacetCollectionPage{}, err
 	}
-	for i := range out.Items {
-		if out.Items[i].NewestItem != nil {
-			piv := PluginItemView{Library: lib, Title: *out.Items[i].NewestItem}
-			if !s.pluginItemAllowed(ctx, v, piv) {
-				out.Items[i].NewestItem = nil
+	if none {
+		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
+	}
+	raw, err := catReader.LibraryFacetCollections(ctx, core.CatalogFacetCollectionsQuery{
+		Filter: filter,
+		Facet:  canonFacet,
+		Order:  order,
+		Query:  page.Query,
+		Offset: page.Offset,
+		Limit:  page.Limit,
+	})
+	if err != nil {
+		return frontend.FacetCollectionPage{}, err
+	}
+	items := make([]frontend.FacetCollection, 0, len(raw.Items))
+	for _, entry := range raw.Items {
+		var newest *core.Title
+		if entry.NewestItem != nil {
+			t := *entry.NewestItem
+			if s.visible(ctx, v, &t) {
+				newest = &t
 			}
 		}
+		items = append(items, frontend.FacetCollection{
+			ID:         entry.ID,
+			Name:       entry.Name,
+			ItemCount:  entry.ItemCount,
+			NewestItem: newest,
+		})
 	}
-	return out, nil
+	return frontend.FacetCollectionPage{Items: items, More: raw.More}, nil
 }
 
 // LibraryFacetPeople implements frontend.LibraryFacetPeople.
@@ -963,44 +1128,94 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 	if err != nil {
 		return frontend.FacetPersonPage{}, err
 	}
-	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
-	if err != nil || pres == nil {
+	lib, mt, err := s.publishedLibraryByViewID(ctx, v, viewID)
+	if err != nil {
 		return frontend.FacetPersonPage{}, core.ErrNotFound
 	}
-	declaredPeople := false
-	for _, f := range p.Facets {
-		if f.ID == field && f.Type == "people" {
-			declaredPeople = true
-			break
+	if lib.Source == core.LibraryPlugin {
+		pres, ok := s.d.PluginLibraries.(PluginPresentationLibraries)
+		if !ok || pres == nil {
+			return frontend.FacetPersonPage{}, core.ErrNotFound
 		}
+		p, _ := pres.Presentation(ctx, lib)
+		declaredPeople := false
+		for _, f := range p.Facets {
+			if f.ID == field && f.Type == "people" {
+				declaredPeople = true
+				break
+			}
+		}
+		if !declaredPeople {
+			return frontend.FacetPersonPage{}, core.ErrNotFound
+		}
+		raw, err := pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+		if err != nil {
+			return frontend.FacetPersonPage{}, err
+		}
+		items := make([]frontend.FacetPerson, 0, len(raw.Items))
+		for _, entry := range raw.Items {
+			if !core.IsPluginPersonID(entry.PersonID) || strings.TrimSpace(entry.Name) == "" || entry.Count <= 0 {
+				continue
+			}
+			var artKey core.RatingKey
+			if entry.SampleTitle != nil {
+				piv := PluginItemView{Library: lib, Title: *entry.SampleTitle}
+				if s.pluginItemAllowed(ctx, v, piv) {
+					artKey = entry.SampleTitle.Key
+				}
+			}
+			items = append(items, frontend.FacetPerson{
+				Person: frontend.PersonDetail{
+					ID:          personFacetID(entry.PersonID),
+					Name:        entry.Name,
+					TMDB:        entry.PersonID,
+					ArtworkItem: artKey,
+				},
+				ItemCount: entry.Count,
+			})
+		}
+		return frontend.FacetPersonPage{Items: items, More: raw.More}, nil
 	}
-	if !declaredPeople {
+
+	canonFacet, ok := core.NormalizeCatalogueTabFacet(core.TabPeople, field)
+	if !ok || canonFacet == "" {
 		return frontend.FacetPersonPage{}, core.ErrNotFound
 	}
-	raw, err := pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+	catReader, ok := s.d.Catalog.(catalogTabFacetReader)
+	if !ok || catReader == nil {
+		return frontend.FacetPersonPage{}, core.ErrNotFound
+	}
+	filter, none, err := s.catalogueFacetQueryFilter(ctx, v, lib, mt)
+	if err != nil {
+		return frontend.FacetPersonPage{}, err
+	}
+	if none {
+		return frontend.FacetPersonPage{Items: []frontend.FacetPerson{}}, nil
+	}
+	raw, err := catReader.LibraryFacetPeople(ctx, core.CatalogFacetPeopleQuery{
+		Filter: filter,
+		Facet:  canonFacet,
+		Order:  order,
+		Query:  page.Query,
+		Offset: page.Offset,
+		Limit:  page.Limit,
+	})
 	if err != nil {
 		return frontend.FacetPersonPage{}, err
 	}
 	items := make([]frontend.FacetPerson, 0, len(raw.Items))
 	for _, entry := range raw.Items {
-		if !core.IsPluginPersonID(entry.PersonID) || strings.TrimSpace(entry.Name) == "" || entry.Count <= 0 {
+		if entry.PersonTMDB <= 0 || strings.TrimSpace(entry.Name) == "" || entry.ItemCount <= 0 {
 			continue
-		}
-		var artKey core.RatingKey
-		if entry.SampleTitle != nil {
-			piv := PluginItemView{Library: lib, Title: *entry.SampleTitle}
-			if s.pluginItemAllowed(ctx, v, piv) {
-				artKey = entry.SampleTitle.Key
-			}
 		}
 		items = append(items, frontend.FacetPerson{
 			Person: frontend.PersonDetail{
-				ID:          personFacetID(entry.PersonID),
+				ID:          personFacetID(entry.PersonTMDB),
 				Name:        entry.Name,
-				TMDB:        entry.PersonID,
-				ArtworkItem: artKey,
+				TMDB:        entry.PersonTMDB,
+				ArtworkItem: entry.SampleKey,
 			},
-			ItemCount: entry.Count,
+			ItemCount: entry.ItemCount,
 		})
 	}
 	return frontend.FacetPersonPage{Items: items, More: raw.More}, nil

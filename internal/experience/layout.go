@@ -65,6 +65,9 @@ func LayoutRows(ctx context.Context, source core.NeutralHomeLayoutSource, librar
 	section := "home"
 	if req.Placement == frontend.PlacementLibrary {
 		section = "movies"
+		if id, err := strconv.Atoi(req.ViewID); err == nil && id > 0 {
+			sit.LibraryID = id
+		}
 		for _, l := range libraries {
 			if strconv.Itoa(l.ID) == req.ViewID && l.Type == core.TypeShow {
 				section = "shows"

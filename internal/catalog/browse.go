@@ -62,7 +62,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	}
 	gen := c.writeGen.Load()
 	minBucket := c.minuteBucket()
-	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback)
+	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s|tab:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback, q.Filter.TabRules, q.Filter.TabFallback)
 	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal)
 	cacheable := !groupHasState(q.Filter.Group)
 	// An export page holds partial titles (ListRows) and is read once per
@@ -626,6 +626,15 @@ func (c *Catalog) titlesInFilterChunk(ctx context.Context, f core.Filter, keys [
 		}
 		f.ExtraRules = rules
 	}
+	if len(f.TabRules) > 0 {
+		rules := make([]core.LibraryExclusion, 0, len(f.TabRules))
+		for _, rule := range f.TabRules {
+			if rule.Scope != core.VisibilityDiscovery {
+				rules = append(rules, rule)
+			}
+		}
+		f.TabRules = rules
+	}
 	f.IncludeKeys = keys
 	f.ExcludeKeys = nil
 	f.CatalogViewerID = 0
@@ -789,6 +798,17 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		}
 		if !extra.Passive() {
 			clause, values := extra.SQLShown()
+			conds = append(conds, "("+clause+")")
+			args = append(args, values...)
+		}
+	}
+	if len(f.TabRules) > 0 || f.TabFallback != "" {
+		tabPolicy, err := c.compileLibraryRulesMode(f.TabRules, f.TabFallback, membershipOnly)
+		if err != nil {
+			return "", nil, err
+		}
+		if !tabPolicy.Passive() {
+			clause, values := tabPolicy.SQLShown()
 			conds = append(conds, "("+clause+")")
 			args = append(args, values...)
 		}

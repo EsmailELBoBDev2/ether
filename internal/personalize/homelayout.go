@@ -10,6 +10,7 @@ import (
 	"math"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,92 @@ import (
 
 func init() {
 	store.Register("personalize", 2, `CREATE TABLE personalize_home_layout (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL);`)
+}
+
+// parseLibrarySection parses a "library:<id>" layout page section name.
+func parseLibrarySection(s string) (int, bool) {
+	raw, ok := strings.CutPrefix(s, "library:")
+	if !ok || raw == "" {
+		return 0, false
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 || strconv.Itoa(id) != raw {
+		return 0, false
+	}
+	return id, true
+}
+
+func isLibrarySection(s string) bool {
+	_, ok := parseLibrarySection(s)
+	return ok
+}
+
+func librarySectionName(id int) string {
+	if id <= 0 {
+		return ""
+	}
+	return "library:" + strconv.Itoa(id)
+}
+
+// layoutTargetForMedia returns the layout page name ("home", "movies",
+// "shows", or "library:<id>") and its media-type fallback ("movies" or "shows").
+func layoutTargetForMedia(section core.MediaType, sectionID int) (target, fallback string) {
+	if section == "" {
+		return surfHome, surfHome
+	}
+	base := sectionName(section)
+	if sectionID > 0 {
+		return librarySectionName(sectionID), base
+	}
+	return base, base
+}
+
+// layoutTarget resolves a string section ("home", "movies", "shows", or
+// "library:<id>") plus HubContext.SectionID into (target, fallback).
+func (e *Engine) layoutTarget(ctx context.Context, section string, sectionID int) (target, fallback string) {
+	if section == "" || section == surfHome {
+		return surfHome, surfHome
+	}
+	if id, ok := parseLibrarySection(section); ok {
+		fb := surfMovies
+		if mt, found := e.sectionMediaType(ctx, id); found && mt == core.TypeShow {
+			fb = surfShows
+		}
+		return section, fb
+	}
+	if sectionID > 0 && (section == surfMovies || section == surfShows) {
+		return librarySectionName(sectionID), section
+	}
+	return section, section
+}
+
+// pagesForTarget resolves the active Global and Viewer pages for target.
+// When target ("library:<id>") has no Global page of its own, it inherits
+// fallback ("movies" or "shows") so uncustomised libraries share their media
+// type's layout.
+func pagesForTarget(d core.HomeLayout, user int64, target, fallback string) (*core.LayoutPage, *core.LayoutPage) {
+	if target == "" {
+		target = surfHome
+	}
+	if fallback == "" {
+		fallback = target
+	}
+	g := pageFor(d.Global, target)
+	customized := g != nil
+	if !customized && fallback != target {
+		g = pageFor(d.Global, fallback)
+	}
+	var v *core.LayoutPage
+	for _, vl := range d.Viewers {
+		if vl.UserID == user {
+			v = pageFor(vl.Pages, target)
+			if v == nil && !customized && fallback != target {
+				v = pageFor(vl.Pages, fallback)
+			}
+			break
+		}
+	}
+	return g, v
 }
 
 func cloneLayout(d core.HomeLayout) core.HomeLayout {
@@ -109,8 +196,8 @@ func normalizeHomeLayout(d core.HomeLayout) (core.HomeLayout, error) {
 			if p.Section == "" {
 				p.Section = "home"
 			}
-			if p.Section != "home" && p.Section != "movies" && p.Section != "shows" {
-				ve.add(f+".section", "must be home, movies or shows")
+			if p.Section != "home" && p.Section != "movies" && p.Section != "shows" && !isLibrarySection(p.Section) {
+				ve.add(f+".section", "must be home, movies, shows or library:<id>")
 			}
 			if seen[p.Section] {
 				ve.add(f+".section", "duplicate section")
@@ -125,7 +212,7 @@ func normalizeHomeLayout(d core.HomeLayout) (core.HomeLayout, error) {
 				}
 			}
 			if p.DedupeHome != nil && p.Section == "home" {
-				ve.add(f+".dedupeHome", "only applies to the movies and shows pages")
+				ve.add(f+".dedupeHome", "only applies to the movies, shows and library pages")
 			}
 			if tu := p.Tuning; tu != nil {
 				for _, dial := range []struct {
@@ -315,13 +402,15 @@ func arrangeLayout(rows []core.HomeRow, d core.HomeLayout, user int64, hc core.H
 	if section == "" {
 		section = "home"
 	}
-	g := pageFor(d.Global, section)
-	var v *core.LayoutPage
-	for _, vl := range d.Viewers {
-		if vl.UserID == user {
-			v = pageFor(vl.Pages, section)
-		}
+	target, fallback := section, section
+	if hc.SectionID > 0 && (section == surfMovies || section == surfShows) {
+		target = librarySectionName(hc.SectionID)
 	}
+	return arrangeLayoutFor(rows, d, user, hc, target, fallback, def)
+}
+
+func arrangeLayoutFor(rows []core.HomeRow, d core.HomeLayout, user int64, hc core.HubContext, target, fallback string, def int) []core.HomeRow {
+	g, v := pagesForTarget(d, user, target, fallback)
 	maxRows := def
 	for _, p := range []*core.LayoutPage{g, v} {
 		if p != nil {
@@ -647,8 +736,9 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 		hc.Now = e.now()
 	}
 	hc.Now = hc.Now.In(e.loc)
+	target, fallback := e.layoutTarget(ctx, section, hc.SectionID)
 	def := e.opts.MaxHomeRows
-	if section != "" && section != "home" {
+	if target != "" && target != "home" {
 		def = e.opts.MaxSectionRows
 	}
 	for i := range rows {
@@ -670,7 +760,7 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 	kept := rows[:0]
 	for _, r := range rows {
 		if r.Kind == KindRecentlyAdded {
-			p, _ := effectiveHomePolicy(layoutDoc, user.ID, section, r)
+			p, _ := effectiveHomePolicyFor(layoutDoc, user.ID, target, fallback, r)
 			always := p != nil && p.Status == "always" && whenMatches(p.When, hc) && weekEligible(user.ID, p.Row, hc, p.MaxDaysPerWeek)
 			curated := curateFeed(r, taste)
 			if curated.Hidden {
@@ -694,7 +784,7 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 	}
 	rows = kept
 	out := []core.HomeRow{}
-	for _, row := range arrangeLayout(rows, layoutDoc, user.ID, hc, section, def) {
+	for _, row := range arrangeLayoutFor(rows, layoutDoc, user.ID, hc, target, fallback, def) {
 		if !row.Hidden {
 			out = append(out, row)
 		}
@@ -759,19 +849,24 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 		// Fill is a band, so shelf-only default slots (Recently Added at
 		// slot eight) do not apply. Explicit owner rules still do.
 		layout := e.layoutForContext(ctx)
+		target, fallback := e.layoutTarget(ctx, section, hc.SectionID)
+		effSec := fallback
+		if pageFor(layout.Global, target) != nil {
+			effSec = target
+		}
 		layout.Global = append([]core.LayoutPage(nil), layout.Global...)
-		page := pageFor(layout.Global, section)
+		page := pageFor(layout.Global, effSec)
 		if page == nil {
-			layout.Global = append(layout.Global, core.LayoutPage{Section: section})
+			layout.Global = append(layout.Global, core.LayoutPage{Section: effSec})
 			page = &layout.Global[len(layout.Global)-1]
 		}
 		page.Rows = append([]core.RowPolicy(nil), page.Rows...)
 		for _, row := range rows {
-			if policy, _ := effectiveHomePolicy(layout, user.ID, section, row); policy == nil {
+			if policy, _ := effectiveHomePolicyFor(layout, user.ID, target, fallback, row); policy == nil {
 				page.Rows = append(page.Rows, core.RowPolicy{Row: row.HubID, Status: "eligible"})
 			}
 		}
-		for _, row := range arrangeLayout(rows, layout, user.ID, hc, section, e.opts.MaxHomeRows) {
+		for _, row := range arrangeLayoutFor(rows, layout, user.ID, hc, target, fallback, e.opts.MaxHomeRows) {
 			if !row.Hidden {
 				arranged = append(arranged, row)
 			}
@@ -872,7 +967,8 @@ func (e *Engine) HubItemsFor(ctx context.Context, u *core.User, hc core.HubConte
 	}
 	day := dayOf(hc.Now, e.loc)
 	intent, _ := e.intentFor(user.ID, hc.Now)
-	tune := resolveTuning(layoutDoc, user.ID, sectionName(section))
+	target, fallback := layoutTargetForMedia(section, hc.SectionID)
+	tune := resolveTuningFor(layoutDoc, user.ID, target, fallback)
 	allowed := e.allowedFor(&user)
 	for _, mod := range models {
 		a := &assembly{
@@ -956,43 +1052,44 @@ func (e *Engine) LayoutDefaults() map[string]int {
 }
 
 func effectiveHomePolicy(d core.HomeLayout, user int64, section string, row core.HomeRow) (*core.RowPolicy, string) {
-	if section == "" {
-		section = "home"
+	return effectiveHomePolicyFor(d, user, section, section, row)
+}
+
+func effectiveHomePolicyFor(d core.HomeLayout, user int64, target, fallback string, row core.HomeRow) (*core.RowPolicy, string) {
+	g, v := pagesForTarget(d, user, target, fallback)
+	if p := matchingPolicy(v, row); p != nil {
+		return p, "override"
 	}
-	for _, v := range d.Viewers {
-		if v.UserID == user {
-			if p := matchingPolicy(pageFor(v.Pages, section), row); p != nil {
-				return p, "override"
-			}
-		}
-	}
-	return matchingPolicy(pageFor(d.Global, section), row), "global"
+	return matchingPolicy(g, row), "global"
 }
 
 // selectedCollections lists the collections the layout places on a page for
 // this viewer and moment (When and days-per-week applied).
 func selectedCollections(d core.HomeLayout, user int64, section string, hc core.HubContext) []string {
-	return layoutCollections(d, user, section, &hc)
+	return layoutCollectionsFor(d, user, section, section, &hc)
+}
+
+func selectedCollectionsFor(d core.HomeLayout, user int64, target, fallback string, hc core.HubContext) []string {
+	return layoutCollectionsFor(d, user, target, fallback, &hc)
 }
 
 // placedCollections lists every collection the layout places on a page for
 // this viewer, whatever the hour, daypart or day. Owner rows are fetched for
 // this set so a new daypart never finds its rows unfetched.
 func placedCollections(d core.HomeLayout, user int64, section string) []string {
-	return layoutCollections(d, user, section, nil)
+	return layoutCollectionsFor(d, user, section, section, nil)
 }
 
-func layoutCollections(d core.HomeLayout, user int64, section string, hc *core.HubContext) []string {
+func placedCollectionsFor(d core.HomeLayout, user int64, target, fallback string) []string {
+	return layoutCollectionsFor(d, user, target, fallback, nil)
+}
+
+func layoutCollectionsFor(d core.HomeLayout, user int64, target, fallback string, hc *core.HubContext) []string {
 	ids := []string{}
 	seen := map[string]bool{}
-	pages := append([]core.LayoutPage{}, d.Global...)
-	for _, v := range d.Viewers {
-		if v.UserID == user {
-			pages = append(pages, v.Pages...)
-		}
-	}
-	for _, page := range pages {
-		if page.Section != section {
+	g, v := pagesForTarget(d, user, target, fallback)
+	for _, page := range []*core.LayoutPage{g, v} {
+		if page == nil {
 			continue
 		}
 		for _, r := range page.Rows {
@@ -1000,7 +1097,7 @@ func layoutCollections(d core.HomeLayout, user int64, section string, hc *core.H
 			if key == r.Row || strings.ContainsAny(key, "*?[") {
 				continue
 			}
-			p, _ := effectiveHomePolicy(d, user, section, core.HomeRow{HubID: "collection." + key, Kind: "collection:" + key})
+			p, _ := effectiveHomePolicyFor(d, user, target, fallback, core.HomeRow{HubID: "collection." + key, Kind: "collection:" + key})
 			if p == nil || p.Status == "off" || seen[key] {
 				continue
 			}

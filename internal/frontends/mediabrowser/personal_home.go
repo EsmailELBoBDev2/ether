@@ -126,13 +126,15 @@ func personalViewNumber(viewerID int64, rowID string) int64 {
 }
 
 type personalShelf struct {
-	number int64
-	wireID string
-	name   string
-	kind   string
-	count  int
-	row    frontend.Row
-	titles []frontend.Title
+	number    int64
+	wireID    string
+	name      string
+	kind      string
+	count     int
+	placement frontend.Placement
+	viewID    string
+	row       frontend.Row
+	titles    []frontend.Title
 }
 
 type personalIdentitySlot struct {
@@ -147,10 +149,12 @@ type personalLoad struct {
 }
 
 type personalCredit struct {
-	viewer frontend.Viewer
-	device frontend.Device
-	rowID  string
-	row    frontend.Row
+	viewer    frontend.Viewer
+	device    frontend.Device
+	placement frontend.Placement
+	viewID    string
+	rowID     string
+	row       frontend.Row
 }
 
 type personalIdentityCache struct {
@@ -326,7 +330,7 @@ func decodeShelves(body []byte) ([]personalShelf, error) {
 		if shelf.WireID == "" || shelf.Name == "" {
 			continue
 		}
-		out = append(out, personalShelf{number: shelf.Number, wireID: shelf.WireID, name: shelf.Name, kind: shelf.Kind, count: shelf.Count, row: frontend.Row{PreviewOnFocus: shelf.PreviewOnFocus, RankedTop10: shelf.RankedTop10}})
+		out = append(out, personalShelf{number: shelf.Number, wireID: shelf.WireID, name: shelf.Name, kind: shelf.Kind, count: shelf.Count, placement: frontend.PlacementHome, row: frontend.Row{PreviewOnFocus: shelf.PreviewOnFocus, RankedTop10: shelf.RankedTop10}})
 	}
 	return out, nil
 }
@@ -436,6 +440,28 @@ func (i *instance) loadPersonalShelves(ctx context.Context, v *frontend.Viewer, 
 	if err != nil {
 		return nil
 	}
+	return shelvesFromRows(cfg, v, rows, frontend.PlacementHome, "")
+}
+
+func (i *instance) loadPersonalLibraryShelves(ctx context.Context, v *frontend.Viewer, dev frontend.Device, viewID string, budget int) ([]personalShelf, error) {
+	if v == nil || i.host.Experience == nil || viewID == "" {
+		return nil, nil
+	}
+	cfg := i.personalConfig()
+	if !cfg.enabled {
+		return []personalShelf{}, nil
+	}
+	if budget > cfg.count {
+		cfg.count = budget
+	}
+	rows, err := i.personalLibraryRows(ctx, v, dev, viewID)
+	if err != nil {
+		return nil, err
+	}
+	return shelvesFromRows(cfg, v, rows, frontend.PlacementLibrary, viewID), nil
+}
+
+func shelvesFromRows(cfg personalHomeConfig, v *frontend.Viewer, rows []frontend.Row, placement frontend.Placement, viewID string) []personalShelf {
 	if len(rows) == 0 {
 		return []personalShelf{}
 	}
@@ -470,12 +496,16 @@ func (i *instance) loadPersonalShelves(ctx context.Context, v *frontend.Viewer, 
 			continue
 		}
 		seen[row.ID] = true
-		number := personalViewNumber(v.ID, row.ID)
+		rowKey := row.ID
+		if viewID != "" {
+			rowKey = "library:" + viewID + ":" + row.ID
+		}
+		number := personalViewNumber(v.ID, rowKey)
 		wire, err := ids.GUID(ids.View, number)
 		if err != nil {
 			continue
 		}
-		shelf := personalShelf{number: number, wireID: wire, name: personalLibraryName(row), kind: personalCollectionType(titles), count: len(titles), row: row, titles: titles}
+		shelf := personalShelf{number: number, wireID: wire, name: personalLibraryName(row), kind: personalCollectionType(titles), count: len(titles), placement: placement, viewID: viewID, row: row, titles: titles}
 		if available {
 			copy := shelf
 			pinned = &copy
@@ -784,13 +814,43 @@ func (i *instance) personalHomeRows(ctx context.Context, v *frontend.Viewer, dev
 	return i.host.Experience.Rows(ctx, req)
 }
 
+func (i *instance) personalLibraryRows(ctx context.Context, v *frontend.Viewer, dev frontend.Device, viewID string) ([]frontend.Row, error) {
+	req := frontend.RowRequest{Viewer: v, Device: dev, Placement: frontend.PlacementLibrary, ViewID: viewID, Limit: personalRowFetch}
+	if snap, ok := i.host.Experience.(rowSnapshotter); ok {
+		return snap.SnapshotRows(ctx, req)
+	}
+	return i.host.Experience.Rows(ctx, req)
+}
+
+// parseLibraryParentView extracts a library ViewID from a ParentId query
+// parameter when present. scoped is false when ParentId is absent or names the
+// root folder; valid is false when duplicate ParentId parameters are supplied.
+func parseLibraryParentView(r *http.Request) (viewID string, scoped bool, valid bool) {
+	values := route.Query(r.URL.Query(), "ParentId")
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) > 1 {
+		return "", true, false
+	}
+	raw := strings.TrimSpace(values[0])
+	if raw == "" || strings.EqualFold(raw, jellyfinRootID()) {
+		return "", false, true
+	}
+	n, err := ids.ParseGUID(ids.View, raw)
+	if err != nil || n <= 0 || ids.PersonalView(n) || n == collectionsViewNumber || n == liveTVViewNumber {
+		return "", true, true
+	}
+	return ids.Decimal(n), true, true
+}
+
 func (i *instance) notePersonalDelivery(r *http.Request, v *frontend.Viewer, shelf personalShelf, titles []frontend.Title) {
 	if len(titles) == 0 {
 		return
 	}
 	dev := device(r)
 	if shelf.row.Handle == "" {
-		i.queuePersonalCredit(v, dev, shelf.row, titles)
+		i.queuePersonalCredit(v, dev, shelf.placement, shelf.viewID, shelf.row, titles)
 		return
 	}
 	i.reportPersonalImpression(r.Context(), v, dev, shelf.row.Handle)
@@ -810,10 +870,13 @@ func (i *instance) reportPersonalImpression(ctx context.Context, v *frontend.Vie
 	}
 }
 
-func (i *instance) queuePersonalCredit(v *frontend.Viewer, dev frontend.Device, row frontend.Row, titles []frontend.Title) {
+func (i *instance) queuePersonalCredit(v *frontend.Viewer, dev frontend.Device, placement frontend.Placement, viewID string, row frontend.Row, titles []frontend.Title) {
 	rowID := row.ID
 	if v == nil || dev.ID == "" || rowID == "" || len(titles) == 0 || i.host.Experience == nil {
 		return
+	}
+	if placement == "" {
+		placement = frontend.PlacementHome
 	}
 	// Keep only the title entries actually sent in this response.
 	row.Entries = make([]frontend.RowEntry, 0, min(len(titles), personalRowFetch))
@@ -821,11 +884,11 @@ func (i *instance) queuePersonalCredit(v *frontend.Viewer, dev frontend.Device, 
 		title := titles[n]
 		row.Entries = append(row.Entries, frontend.RowEntry{Kind: frontend.RowEntryTitle, Title: &title})
 	}
-	credit := personalCredit{viewer: *v, device: dev, rowID: rowID, row: row}
+	credit := personalCredit{viewer: *v, device: dev, placement: placement, viewID: viewID, rowID: rowID, row: row}
 	i.personal.mu.Lock()
 	// Repeated Latest requests for the same shelf share one pending receipt.
 	for n, pending := range i.personal.pending {
-		if pending.viewer.ID == v.ID && pending.device.ID == dev.ID && pending.rowID == rowID {
+		if pending.viewer.ID == v.ID && pending.device.ID == dev.ID && pending.placement == placement && pending.viewID == viewID && pending.rowID == rowID {
 			i.personal.pending[n] = credit
 			i.personal.mu.Unlock()
 			return
@@ -852,13 +915,17 @@ func (i *instance) flushPersonalCredits() {
 	}
 	groups := map[string][]personalCredit{}
 	for _, credit := range pending {
-		key := personalCacheKey(string(i.protocol), &credit.viewer, credit.device, i.personalConfig())
+		key := personalCacheKey(string(i.protocol), &credit.viewer, credit.device, i.personalConfig()) + "\n" + string(credit.placement) + "\n" + credit.viewID
 		groups[key] = append(groups[key], credit)
 	}
 	for _, credits := range groups {
 		viewer := credits[0].viewer
+		placement := credits[0].placement
+		if placement == "" {
+			placement = frontend.PlacementHome
+		}
 		ctx, cancel := context.WithTimeout(i.life, 15*time.Second)
-		req := frontend.RowRequest{Viewer: &viewer, Device: credits[0].device, Placement: frontend.PlacementHome, Limit: personalRowFetch}
+		req := frontend.RowRequest{Viewer: &viewer, Device: credits[0].device, Placement: placement, ViewID: credits[0].viewID, Limit: personalRowFetch}
 		var rows []frontend.Row
 		var err error
 		if issuer, ok := i.host.Experience.(frontend.RowReceiptIssuer); ok {
@@ -1146,11 +1213,33 @@ func (i *instance) recommendations(w http.ResponseWriter, r *http.Request, want 
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	shelves := i.loadPersonalShelves(r.Context(), v, device(r))
+	viewID, scoped, valid := parseLibraryParentView(r)
+	if !valid {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
 	// Jellyfin and Emby answer five categories of eight items unless asked
 	// otherwise (categoryLimit = 5, itemLimit = 8 on both servers).
 	categoryLimit := queryInt(r, "CategoryLimit", 5)
 	itemLimit := queryInt(r, "ItemLimit", queryInt(r, "Limit", 8))
+	var shelves []personalShelf
+	if scoped {
+		if viewID == "" {
+			jsonReply(w, []any{})
+			return
+		}
+		shelves, err = i.loadPersonalLibraryShelves(r.Context(), v, device(r), viewID, categoryLimit)
+		if errors.Is(err, frontend.ErrNotFound) {
+			jsonReply(w, []any{})
+			return
+		}
+		if err != nil {
+			http.Error(w, "Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	} else {
+		shelves = i.loadPersonalShelves(r.Context(), v, device(r))
+	}
 	categories := make([]any, 0, len(shelves))
 	for _, shelf := range shelves {
 		if len(categories) >= categoryLimit {

@@ -338,7 +338,7 @@ func (c *decodeProbeCache) probe(k decodeKey) (bool, string) {
 		if err != nil && detail == "" {
 			detail = err.Error()
 		}
-		return err == nil && strings.TrimSpace(stderr.String()) == ""
+		return err == nil && probeStderrClean(stderr.String())
 	}
 	args := []string{"-f", "lavfi", "-i", "color=size=128x128:rate=25,format=" + pixel, "-frames:v", "2", "-an", "-c:v", enc, "-threads", "1", "-pix_fmt", pixel, "-profile:v", profile}
 	switch enc {
@@ -422,4 +422,19 @@ func decodeInitFailure(stderr string, spec runSpec) bool {
 		}
 	}
 	return false
+}
+
+// probeStderrClean reports whether a probe's stderr holds no FFmpeg error.
+// libva prints "libva info: …" banner lines to stderr whatever FFmpeg's log
+// level, so on Intel and AMD Linux hosts every VAAPI and QSV probe would
+// otherwise read as failed and decoding would fall back to the CPU.
+func probeStderrClean(stderr string) bool {
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "libva info:") {
+			continue
+		}
+		return false
+	}
+	return true
 }

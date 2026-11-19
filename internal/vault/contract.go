@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -157,6 +158,7 @@ type Record struct {
 
 // Entry is one index row (no payload).
 type Entry struct {
+	CacheID   string // original playable release ID (the parent release ID for a pack)
 	Key       Key
 	Kind      Kind
 	Name      string
@@ -219,6 +221,9 @@ func ReleaseFor(e Entry) core.Release {
 		ID: "vault-" + string(e.Key), GUID: "vault:" + string(e.Key), Indexer: "Library", IndexerID: IndexerID,
 		Name: e.Name, Size: e.Size, PubDate: e.Added, Info: e.Info,
 	}
+	if e.Kind == KindUsenet && e.CacheID != "" {
+		r.ID = e.CacheID
+	}
 	r.Protocol = core.ProtocolUsenet
 	if e.Kind == KindTorrent {
 		r.Protocol = core.ProtocolTorrent
@@ -233,11 +238,17 @@ func ReleaseFor(e Entry) core.Release {
 // Pack targets rewrite release IDs (core.TargetReleaseID); the untargeted
 // pack ID is used when set.
 func KeyOf(r core.Release) Key {
+	if r.IndexerID != IndexerID {
+		return ""
+	}
+	if k, ok := strings.CutPrefix(r.GUID, "vault:"); ok && k != "" {
+		return Key(k)
+	}
 	id := r.ID
 	if r.Target != nil && r.Target.PackID != "" {
 		id = r.Target.PackID
 	}
-	if r.IndexerID != IndexerID || len(id) <= len("vault-") || id[:len("vault-")] != "vault-" {
+	if len(id) <= len("vault-") || id[:len("vault-")] != "vault-" {
 		return ""
 	}
 	return Key(id[len("vault-"):])
@@ -270,7 +281,6 @@ type Options struct {
 // DefaultCapBytes is the payload cap when the owner sets none: 20 GiB,
 // far beyond years of a household's releases at ~30 B/article.
 const DefaultCapBytes = 20 << 30
-
 
 // ErrNotImplemented is returned by placeholders during the build.
 var ErrNotImplemented = errors.New("vault: not implemented yet")

@@ -37,6 +37,9 @@ type cursor struct {
 
 // source implements core.MediaSource.
 type source struct {
+	healthyOnce             sync.Once
+	liveStart, missingStart uint64
+
 	recovery  repairObserver
 	bulk      *bulkReader
 	e         *Engine
@@ -68,15 +71,13 @@ type source struct {
 }
 
 func newSource(e *Engine, rel *release, p *plan, releaseID string) *source {
-	return newSourceWithCache(e, rel, p, releaseID, releaseID)
-}
-func newSourceWithCache(e *Engine, rel *release, p *plan, releaseID, cacheID string) *source {
+
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.active.Add(1)
 	s := &source{
 		e: e, rel: rel, plan: p, releaseID: releaseID,
-		bulk:   &bulkReader{e: e, r: rel, prio: core.PriorityReadahead, fo: fetchOpts{cacheID: cacheID}},
-		fo:     fetchOpts{cacheID: cacheID},
+		bulk:   &bulkReader{e: e, r: rel, prio: core.PriorityReadahead, fo: fetchOpts{cacheID: releaseID}},
+		fo:     fetchOpts{cacheID: releaseID},
 		ctx:    ctx,
 		cancel: cancel,
 		raSem:  make(chan struct{}, maxAdaptiveParallel),
@@ -200,6 +201,23 @@ func (s *source) readAtWithPriority(parent context.Context, p []byte, off int64,
 			err = fmt.Errorf("%w: %w", core.ErrReleaseRejected, err)
 		}
 		return n, err
+	}
+	if cb := s.e.opts.OnHealthy; cb != nil && prio == core.PriorityLive && n > 0 && s.rel.liveArticles.Load() > s.liveStart && !core.IsBackgroundCheck(parent) {
+		s.healthyOnce.Do(func() {
+			e := s.e
+			r := s.rel
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if !e.closed {
+				e.wg.Go(func() {
+					r.feedbackMu.Lock()
+					defer r.feedbackMu.Unlock()
+					if r.missingEpoch.Load() == s.missingStart {
+						cb(r.feedbackID)
+					}
+				})
+			}
+		})
 	}
 	if ahead && n > 0 {
 		s.clearBackoffBlocked(off, int64(n))

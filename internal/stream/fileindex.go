@@ -17,7 +17,8 @@ import (
 // ("anchor"); slots between anchors are re-estimated from the nearest anchor
 // before them, so a non-uniform post is corrected as more parts are seen.
 type postedFile struct {
-	idx     int // index in nzb.Files
+	record  *release // vault feedback for this posting, independent of disk-cache identity
+	idx     int      // index in nzb.Files
 	file    *nzb.File
 	groups  []string
 	segBase int // global segment number of slot 0 (cache key)

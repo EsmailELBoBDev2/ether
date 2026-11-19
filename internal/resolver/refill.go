@@ -54,6 +54,11 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 		return nil
 	}
 	req := searchRequestFor(title)
+	if !unattended && req.Anime {
+		if e, ok := s.getAvailability(s.bgCtx, int64(title.Key)); !ok || e.available {
+			s.warmSeaDexForOpen(title, req)
+		}
+	}
 	key := searchCacheKey(req)
 	s.bgMu.Lock()
 	defer s.bgMu.Unlock()

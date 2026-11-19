@@ -36,18 +36,18 @@ func init() {
 }
 
 type Settings struct {
-	Enabled         bool   `json:"enabled"`
-	EpisodeBadges   *bool  `json:"episodeBadges"`
-	Status          bool   `json:"status"`
-	Quality         bool   `json:"quality"`
-	Ratings         bool   `json:"ratings"`
-	Details         bool   `json:"details"`
-	Personalize     bool   `json:"personalize"`
-	Localize        bool   `json:"localize"`
-	Style           string `json:"style"`
-	Position        string `json:"position"`
-	Accent          string `json:"accent"`
-	Size            string `json:"size"`
+	Enabled           bool     `json:"enabled"`
+	EpisodeBadges     *bool    `json:"episodeBadges"`
+	Status            bool     `json:"status"`
+	Quality           bool     `json:"quality"`
+	Ratings           bool     `json:"ratings"`
+	Details           bool     `json:"details"`
+	Personalize       bool     `json:"personalize"`
+	Localize          bool     `json:"localize"`
+	Style             string   `json:"style"`
+	Position          string   `json:"position"`
+	Accent            string   `json:"accent"`
+	Size              string   `json:"size"`
 	HideDenominator   bool     `json:"hideDenominator"`
 	HideDot           bool     `json:"hideDot"`
 	DisabledBadgeSets []string `json:"disabledBadgeSets,omitempty"`

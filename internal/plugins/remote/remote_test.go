@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/httpclient"
+	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/coder/websocket"
 )

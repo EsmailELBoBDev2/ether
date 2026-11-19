@@ -623,9 +623,18 @@ func archiveEpisodeSizeGate(members []archive.Member, h nzb.EpisodeHint) release
 // memberMatchesHint reports whether an archive member's name is the episode h.
 func memberMatchesHint(h nzb.EpisodeHint, name string) bool {
 	info := releaseparse.Parse(path.Base(strings.ReplaceAll(name, `\`, "/")))
-	return releaseparse.EpisodeMatches(info, h.Season, h.Episode) ||
+	if releaseparse.EpisodeMatches(info, h.Season, h.Episode) ||
 		(h.Absolute > 0 && releaseparse.EpisodeMatchesAbsolute(info, h.Absolute)) ||
-		(len(info.Episodes) == 0 && releaseparse.ClassicPackEpisodeMatches(name, h.Season, h.Episode))
+		(len(info.Episodes) == 0 && releaseparse.ClassicPackEpisodeMatches(name, h.Season, h.Episode)) {
+		return true
+	}
+	for _, a := range h.Aliases {
+		if releaseparse.EpisodeMatches(info, a[0], a[1]) ||
+			(len(info.Episodes) == 0 && releaseparse.ClassicPackEpisodeMatches(name, a[0], a[1])) {
+			return true
+		}
+	}
+	return false
 }
 
 // pickRARFile chooses the likely video among the file headers of a volume.

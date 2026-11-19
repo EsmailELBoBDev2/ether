@@ -30,6 +30,9 @@ type ReleaseTarget struct {
 	// select a file using the owner's alternate release numbering.
 	CanonicalSeason  int `json:"canonicalSeason,omitempty"`
 	CanonicalEpisode int `json:"canonicalEpisode,omitempty"`
+	// Aliases lists verified alternate season/episode numbers for the same
+	// canonical episode so open-time file checks accept alias-numbered files.
+	Aliases []EpisodeNumber `json:"aliases,omitempty"`
 	// MovieTitles and MovieYear constrain file selection inside movie collections.
 	MovieTitles []string `json:"movieTitles,omitempty"`
 	MovieYear   int      `json:"movieYear,omitempty"`

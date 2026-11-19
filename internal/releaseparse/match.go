@@ -516,6 +516,41 @@ func EpisodeMatchesNumbering(parsed core.ReleaseInfo, season, episode, absolute 
 	return false
 }
 
+// EpisodeMatchesRequest reports whether parsed info matches req's canonical
+// episode, verified absolute count, anime cour mapping, or configured release
+// numbering aliases. Shared by the resolver and Stremio stream name selection.
+func EpisodeMatchesRequest(info core.ReleaseInfo, req core.SearchRequest) bool {
+	if info.Cour == 1 && req.Cour > 1 {
+		return false
+	}
+	if info.Cour > 1 {
+		if req.Cour == info.Cour && req.CourEpisode > 0 &&
+			(EpisodeMatches(info, req.Season, req.CourEpisode) ||
+				(req.CourTVDBSeason > 0 && EpisodeMatches(info, req.CourTVDBSeason, req.CourEpisode))) {
+			return true
+		}
+		return false
+	}
+	abs := req.AbsoluteEpisode
+	if abs <= 0 && req.Season == 1 {
+		abs = req.Episode
+	}
+	if EpisodeMatchesNumbering(info, req.Season, req.Episode, abs) {
+		return true
+	}
+	if req.CourTVDBSeason > 0 && req.CourTVDBEpisode > 0 && info.Cour == 0 && len(info.Seasons) > 0 &&
+		(len(info.AbsoluteEpisodes) == 0 || abs <= 0 || EpisodeMatchesAbsolute(info, abs)) &&
+		EpisodeMatches(info, req.CourTVDBSeason, req.CourTVDBEpisode) {
+		return true
+	}
+	for _, n := range core.EpisodeAliases(req) {
+		if EpisodeMatches(info, n.Season, n.Episode) {
+			return true
+		}
+	}
+	return false
+}
+
 // AnimeSearchEpisode is the absolute episode number an anime episode
 // request is also searched by ("Show 1071"), or 0: the catalogue's count,
 // or the episode itself in the first season.

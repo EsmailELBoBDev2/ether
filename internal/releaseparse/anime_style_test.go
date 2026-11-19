@@ -16,6 +16,7 @@ func TestAnimeReleaseStyle(t *testing.T) {
 		"Show Name S01 (Batch) 1080p HEVC",
 		"Show Name S01 Batch 1080p x265",
 		"Show Name S01E01 [1080p] [Judas]",
+		"One.Piece.-.750.-.ENG.UNCUT.1080p.WEB.H.264.-NanDesuKa.(FUNi)",
 	}
 	for _, name := range yes {
 		if !AnimeReleaseStyle(name, Parse(name)) {
@@ -37,6 +38,32 @@ func TestAnimeReleaseStyle(t *testing.T) {
 	for _, name := range no {
 		if AnimeReleaseStyle(name, Parse(name)) {
 			t.Errorf("expected AnimeReleaseStyle(%q) = false", name)
+		}
+	}
+}
+
+func TestParseAbsoluteEpisodeWithLanguageEditionTags(t *testing.T) {
+	const name = "One.Piece.-.750.-.ENG.UNCUT.1080p.WEB.H.264.-NanDesuKa.(FUNi)"
+	info := Parse(name)
+	if info.Title != "One Piece" {
+		t.Fatalf("Title = %q, want %q", info.Title, "One Piece")
+	}
+	if len(info.AbsoluteEpisodes) != 1 || info.AbsoluteEpisodes[0] != 750 || len(info.Seasons) != 0 || len(info.Episodes) != 0 {
+		t.Fatalf("episode parse = seasons=%v episodes=%v abs=%v, want abs=[750]", info.Seasons, info.Episodes, info.AbsoluteEpisodes)
+	}
+	if info.Height != 1080 || info.VideoCodec != "h264" || !info.Uncensored || len(info.Languages) != 1 || info.Languages[0] != "english" {
+		t.Fatalf("unexpected technical/language info: %+v", info)
+	}
+	if !AnimeReleaseStyle(name, info) {
+		t.Fatalf("AnimeReleaseStyle(%q) = false, want true", name)
+	}
+
+	for _, nonEp := range []string{
+		"One Piece - 01-12 1080p WEB-DL",
+		"Fast - 2 Fast 2 Furious 2003 1080p BluRay",
+	} {
+		if got := Parse(nonEp); len(got.AbsoluteEpisodes) != 0 {
+			t.Fatalf("Parse(%q).AbsoluteEpisodes = %v, want empty", nonEp, got.AbsoluteEpisodes)
 		}
 	}
 }

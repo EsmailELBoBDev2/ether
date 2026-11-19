@@ -677,7 +677,8 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// Audio and anime absolute episode numbers; Stremio addons keep HTTP
 	// and Usenet streams and read flag languages.
 	// v5: anime BD/BDMux source tags and three-letter audio languages.
-	fmt.Fprint(h, "release-parse-v5|")
+	// v6: anime absolute numbers followed by language/edition tags ("- 750 - ENG UNCUT 1080p").
+	fmt.Fprint(h, "release-parse-v6|")
 	if req.Category != "" {
 		fmt.Fprintf(h, "category:%s|", req.Category)
 	}

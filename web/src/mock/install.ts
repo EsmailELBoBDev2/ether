@@ -37,6 +37,7 @@ export function installMockBackend(): void {
     cacheRestart: params.has("cacheRestart"),
     restore: params.get("restore") ?? undefined,
     prerolls: params.has("prerolls"),
+    portConflict: params.get("portConflict") || (params.has("portConflict") ? true : undefined),
   });
   // Configured through the API, but the owner has not closed setup yet.
   if (params.get("setup") === "resume") {
@@ -45,10 +46,16 @@ export function installMockBackend(): void {
     fake.state.boot.ownerConfigured = true;
   }
   if (params.get("backups") === "empty") fake.state.backups = [];
+  const offApps = new Set(
+    (params.get("off") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   fake.state.config.frontends = Object.fromEntries(
     ["plex", "jellyfin", "emby", "silo", "stremio", "webdav", "m3u", "xtream", "dlna"].map((id) => [
       id,
-      { enabled: true },
+      { enabled: !offApps.has(id) },
     ]),
   );
   if (params.get("catalogKey") === "missing") fake.state.config.catalog.tmdbKey = "";

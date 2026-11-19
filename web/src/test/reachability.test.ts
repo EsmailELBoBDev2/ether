@@ -26,7 +26,7 @@ describe("app reachability copy", () => {
     );
   });
 
-  it("names only the chosen address when several are published", () => {
+  it("names the dedicated listener port first when several addresses are published", () => {
     const status = {
       lan: "unknown",
       connectUrls: [
@@ -38,11 +38,11 @@ describe("app reachability copy", () => {
       ],
     };
     const detail = homeSummary(status).detail;
-    expect(detail).toContain("http://192.168.68.65:32400/jellyfin");
-    expect(detail).not.toMatch(/fd79|100\.65|10\.255|:8098/);
-    const chosen = homeSummary(status, "http://192.168.68.65:8098").detail;
-    expect(chosen).toContain("http://192.168.68.65:8098");
-    expect(chosen).not.toContain("32400/jellyfin");
+    expect(detail).toContain("http://192.168.68.65:8098");
+    expect(detail).not.toMatch(/fd79|100\.65|10\.255|32400\/jellyfin/);
+    const chosen = homeSummary(status, "http://192.168.68.65:32400/jellyfin").detail;
+    expect(chosen).toContain("http://192.168.68.65:32400/jellyfin");
+    expect(chosen).not.toContain(":8098");
   });
 
   it("names the address people use when home reachability was not checked", () => {

@@ -70,6 +70,8 @@ function rows(
 
 export function settingsIndex(): SettingHit[] {
   const general = t("General");
+  const apps = t("Apps");
+  const serverAddress = `${apps} › ${t("Server address")}`;
   const quality = t("Quality");
   const playback = t("Playback");
   const cachePreloading = `${t("Cache")} › ${t("Preloading")}`;
@@ -77,6 +79,7 @@ export function settingsIndex(): SettingHit[] {
   const viewers = t("Viewers");
   const plex = "Plex";
   const away = t("Away from home");
+  const connectGroup = S.SERVER.find((g) => g.id === "connect");
   return [
     {
       key: "looks",
@@ -147,17 +150,17 @@ export function settingsIndex(): SettingHit[] {
       "local-shelf",
     ),
     // General
-    ...groupHits(S.SERVER, "/server", general),
+    ...groupHits(
+      S.SERVER.filter((g) => g.id !== "connect"),
+      "/server",
+      general,
+    ),
     ...rows("/server", general, [
       [
         "send-indexers-debrid-and-usenet-through-a-proxy",
         t("Send indexers, debrid and Usenet through a proxy"),
       ],
       ["proxy-address", t("Proxy address")],
-      ["how-apps-connect", t("How apps connect")],
-      ["port", t("Port")],
-      ["local-url", t("Local URL")],
-      ["remote-url", t("Remote URL")],
     ]),
     ...rows(
       "/server",
@@ -169,10 +172,28 @@ export function settingsIndex(): SettingHit[] {
       ],
       "how-ether-reaches-the-internet",
     ),
-    // Apps
-    ...groupHits(S.AWAY, "/apps/overview", t("Apps")).map((h) => ({
+    // Apps › Overview (Server address & connection hub)
+    ...rows("/apps/overview", serverAddress, [
+      ["server-port", t("Main port")],
+      ["local-address", t("Local")],
+      ["remote-address", t("Remote")],
+      ["tailscale-address", t("Tailscale")],
+    ]),
+    ...fieldHits(
+      (connectGroup?.more ?? []).filter((f) => f.key === "allowRemoteConsole"),
+      "/apps/overview",
+      serverAddress,
+      undefined,
+    ),
+    ...fieldHits(
+      (connectGroup?.more ?? []).filter((f) => f.key !== "allowRemoteConsole"),
+      "/apps/overview",
+      serverAddress,
+      "connect",
+    ),
+    ...groupHits(S.AWAY, "/apps/overview", apps).map((h) => ({
       ...h,
-      where: `${t("Apps")} › ${away}`,
+      where: `${apps} › ${away}`,
     })),
     ...groupHits(
       S.PLEX.filter((g) => g.id === "compatibility"),

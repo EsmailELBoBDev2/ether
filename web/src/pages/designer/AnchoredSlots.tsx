@@ -15,8 +15,11 @@ import {
   anchorsOf,
   effectivePolicy,
   freeSlot,
+  isLibrarySection,
+  pageOf,
   policyIn,
   reorderAnchors,
+  rowFits,
   setPolicy,
   type LayerKey,
 } from "../../lib/layout";
@@ -35,6 +38,7 @@ export function AnchoredSlots({
   layer,
   section,
   available,
+  mediaSection,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
@@ -42,22 +46,34 @@ export function AnchoredSlots({
   section: LayoutSection;
   viewers: Viewer[];
   available: AvailableRow[];
+  mediaSection?: "movies" | "shows";
 }) {
   const [adding, setAdding] = useState("");
   const own = anchorsOf(draft, layer, section);
-  // Global anchors a viewer inherits (unless they override that row).
+  const sharedSection =
+    isLibrarySection(section) && !pageOf(draft, "global", section) ? mediaSection : undefined;
+  // Global anchors a viewer inherits (or shared Movies/TV anchors an uncustomised library inherits).
   const inherited =
     layer === "global"
-      ? []
-      : anchorsOf(draft, "global", section).filter((g) => {
-          const eff = effectivePolicy(draft, layer, section, g.row);
+      ? sharedSection
+        ? anchorsOf(draft, "global", sharedSection)
+        : []
+      : anchorsOf(draft, "global", sharedSection ?? section).filter((g) => {
+          const eff = effectivePolicy(draft, layer, section, g.row, g.row, mediaSection);
           return eff?.layer === "global";
         });
   const unanchor = (p: RowPolicy) =>
     onChange(setPolicy(draft, layer, section, { ...p, slot: undefined, status: "always" }));
   const anchor = (row: string) => {
     const base = policyIn(draft, layer, section, row) ??
-      effectivePolicy(draft, layer === "global" ? null : layer, section, row)?.policy ?? {
+      effectivePolicy(
+        draft,
+        layer === "global" ? null : layer,
+        section,
+        row,
+        row,
+        mediaSection,
+      )?.policy ?? {
         row,
         status: "always" as const,
       };
@@ -74,7 +90,10 @@ export function AnchoredSlots({
   };
   const options = available
     .filter(
-      (a) => !FRONT_END_ROWS.has(a.kind) && (section === "home" || a.kind !== "continue-watching"),
+      (a) =>
+        !FRONT_END_ROWS.has(a.kind) &&
+        (section === "home" || a.kind !== "continue-watching") &&
+        rowFits(a, section, mediaSection),
     )
     .filter((a) => !own.some((p) => p.row === a.hubId))
     .map((a) => ({ value: a.hubId, label: a.title, hint: a.description }));
@@ -154,7 +173,13 @@ export function AnchoredSlots({
                 {p.slot}
               </span>
               <span className="min-w-0 flex-1 truncate text-sm">{rowTitle(available, p.row)}</span>
-              <Badge variant="secondary">{t("Everyone")}</Badge>
+              <Badge variant="secondary">
+                {layer === "global" && sharedSection
+                  ? sharedSection === "shows"
+                    ? t("TV layout")
+                    : t("Movies layout")
+                  : t("Everyone")}
+              </Badge>
             </li>
           ))}
         </ul>

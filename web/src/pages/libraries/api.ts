@@ -1,4 +1,5 @@
 import { apiFetch } from "../../lib/api";
+import type { Rule } from "../../lib/contract";
 import type { VisibilityRule } from "./browser/LibraryVisibility";
 
 /** Owner API shapes for /libraries and /plugins-setup (spec §11). */
@@ -11,6 +12,40 @@ export interface Presentations {
   stremio?: { type: string };
   xtream?: { category: string };
   silo?: { type: string };
+}
+
+export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view";
+export type LibraryTabsSource = "plugin" | "default" | "owner";
+
+export interface LibraryFacet {
+  id: string;
+  label: string;
+  type: "strings" | "people";
+}
+
+export interface LibraryTabFilter {
+  match?: "all" | "any";
+  rules: Rule[];
+}
+
+export interface LibraryTab {
+  key: string;
+  label: string;
+  kind: LibraryTabKind;
+  facet?: string;
+  order?: "count" | "name";
+  sort?: string;
+  direction?: "asc" | "desc";
+  search?: boolean;
+  searchPlaceholder?: string;
+  filters?: LibraryTabFilter;
+  hidden?: boolean;
+}
+
+export interface LibraryTabsResponse {
+  tabs: LibraryTab[];
+  source: LibraryTabsSource;
+  facets: LibraryFacet[];
 }
 
 export interface KindLevel {
@@ -189,6 +224,15 @@ export const librariesApi = {
   list: (signal?: AbortSignal) =>
     apiFetch<{ libraries: Library[] }>("/libraries", { signal }).then((r) => r.libraries),
   get: (id: number, signal?: AbortSignal) => apiFetch<Library>(`/libraries/${id}`, { signal }),
+  tabs: (id: number, signal?: AbortSignal) =>
+    apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, { signal }),
+  putTabs: (id: number, tabs: LibraryTab[]) =>
+    apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, {
+      method: "PUT",
+      body: JSON.stringify({ tabs }),
+    }),
+  resetTabs: (id: number) =>
+    apiFetch<LibraryTabsResponse>(`/libraries/${id}/tabs`, { method: "DELETE" }),
   create: (
     name: string,
     mediaType: string,

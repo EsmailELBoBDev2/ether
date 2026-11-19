@@ -5,6 +5,7 @@ import { effectiveLength, effectivePolicy, whenMatches, type Effective } from ".
 interface AssembleContext {
   viewer: { id: number; title: string } | null;
   section: LayoutSection;
+  fallbackSection?: "movies" | "shows";
   device: "tv" | "mobile" | "web" | "desktop";
   at: Date;
   defaultRows: number;
@@ -30,7 +31,14 @@ export function assemble(cands: HomeRow[], doc: HomeLayout, ctx: AssembleContext
   const pool: Candidate[] = [];
   const hidden: HomeRow[] = [];
   for (const input of cands) {
-    const eff = effectivePolicy(doc, viewerId, ctx.section, input.hubId, input.kind);
+    const eff = effectivePolicy(
+      doc,
+      viewerId,
+      ctx.section,
+      input.hubId,
+      input.kind,
+      ctx.fallbackSection,
+    );
     const row: HomeRow = {
       ...input,
       hidden: false,
@@ -102,7 +110,14 @@ export function assemble(cands: HomeRow[], doc: HomeLayout, ctx: AssembleContext
   }
   pool.sort((a, b) => b.rank - a.rank);
 
-  const length = effectiveLength(doc, viewerId, ctx.section, ctx.device, ctx.defaultRows).n;
+  const length = effectiveLength(
+    doc,
+    viewerId,
+    ctx.section,
+    ctx.device,
+    ctx.defaultRows,
+    ctx.fallbackSection,
+  ).n;
   const used = new Set<Candidate>();
   const counts = new Map<string, number>();
   const visible: HomeRow[] = [];

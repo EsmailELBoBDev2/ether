@@ -25,6 +25,7 @@ import { useAsync } from "../../lib/hooks";
 import { useQuality } from "../releases/useQuality";
 import { librariesApi, publishedTo, type Library, type Presentations } from "./api";
 import { LibraryCacheCard } from "./LibraryCache";
+import { LibraryTabsSection } from "./LibraryTabsSection";
 import { TitlesComeFrom } from "./TitlesComeFrom";
 import { NarrowingEditor } from "./NarrowingEditor";
 function presentationLabel(value: string): string {
@@ -255,6 +256,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
       library.source === "plugin" ? librariesApi.cache(library.id, signal) : Promise.resolve(null),
     [library.id, library.source],
   );
+  // i18n: memo holds no copy
   const stored = useMemo(
     () => ({
       name: library.name,
@@ -384,6 +386,7 @@ export function LibrarySettings({ library, onSaved }: { library: Library; onSave
               onChange={(present) => setDraft({ ...draft, present })}
             />
           )}
+          <LibraryTabsSection library={library} />
           {library.source !== "plugin" && (
             <SettingsSection title={t("Quality")}>
               <QualityProfileRow

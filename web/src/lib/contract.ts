@@ -270,7 +270,14 @@ export interface CollectionTemplateBundleApplyResult {
 }
 
 export type FacetName =
-  "tag" | "genre" | "decade" | "contentRating" | "studio" | "country" | "language" | "keyword";
+  | "tag"
+  | "genre"
+  | "decade"
+  | "contentRating"
+  | "studio"
+  | "country"
+  | "language"
+  | "keyword";
 export interface FacetValue {
   key: string;
   title: string;
@@ -280,7 +287,12 @@ export interface FacetValue {
 }
 
 export type LookupKind =
-  "person" | "keyword" | "company" | "network" | "collection" | "watchProvider";
+  | "person"
+  | "keyword"
+  | "company"
+  | "network"
+  | "collection"
+  | "watchProvider";
 export interface LookupResult {
   id: number;
   name: string;
@@ -400,7 +412,9 @@ export interface ViewerHome {
   homeDeduped?: number;
 }
 
-export type LayoutSection = "home" | "movies" | "shows";
+export type BuiltinLayoutSection = "home" | "movies" | "shows";
+export type LibraryLayoutSection = `library:${number}`;
+export type LayoutSection = BuiltinLayoutSection | LibraryLayoutSection;
 export type Device = "tv" | "mobile" | "web" | "desktop";
 export type Daypart = "morning" | "afternoon" | "evening" | "late";
 
@@ -504,7 +518,7 @@ export interface RankerInsight {
 export interface LayoutDoc {
   layout: HomeLayout;
   availableRows: AvailableRow[];
-  defaults: { maxRows: Record<LayoutSection, number> };
+  defaults: { maxRows: Record<BuiltinLayoutSection, number> & Partial<Record<LayoutSection, number>> };
 }
 
 interface LayoutImpact {

@@ -104,11 +104,21 @@ type Member struct {
 // Layout is learned by the stream engine on the first successful open so
 // later opens skip archive discovery entirely.
 type Layout struct {
-	Container string   `json:"container"` // raw | rar | 7z | split
-	Members   []Member `json:"members"`
+	Container string         `json:"container"` // raw | rar | 7z | split
+	Members   []Member       `json:"members"`
+	Volumes   []VolumeLayout `json:"volumes,omitempty"`
 	// FirstArticles are decoded first articles of archive volumes, keyed by
 	// file index, capped by the vault (archive headers only).
 	FirstArticles map[int][]byte `json:"-"`
+}
+
+// VolumeLayout is one archive volume as the engine verified it, so a
+// reopen keeps lazy verification and never trusts a truncated cached head.
+type VolumeLayout struct {
+	File     int   `json:"file"`
+	Size     int64 `json:"size"`
+	Verified bool  `json:"verified"`
+	HeadSize int   `json:"headSize"`
 }
 
 // TorrentFile is one file of a torrent record.
@@ -207,6 +217,7 @@ func ReleaseFor(e Entry) core.Release {
 		ID: "vault-" + string(e.Key), GUID: "vault:" + string(e.Key), Indexer: "Library", IndexerID: IndexerID,
 		Name: e.Name, Size: e.Size, PubDate: e.Added, Info: e.Info,
 	}
+	r.Protocol = core.ProtocolUsenet
 	if e.Kind == KindTorrent {
 		r.Protocol = core.ProtocolTorrent
 		if len(e.Key) > 3 {
@@ -217,11 +228,17 @@ func ReleaseFor(e Entry) core.Release {
 }
 
 // KeyOf returns the vault key of a vault release, or "".
+// Pack targets rewrite release IDs (core.TargetReleaseID); the untargeted
+// pack ID is used when set.
 func KeyOf(r core.Release) Key {
-	if r.IndexerID != IndexerID || len(r.ID) <= len("vault-") {
+	id := r.ID
+	if r.Target != nil && r.Target.PackID != "" {
+		id = r.Target.PackID
+	}
+	if r.IndexerID != IndexerID || len(id) <= len("vault-") || id[:len("vault-")] != "vault-" {
 		return ""
 	}
-	return Key(r.ID[len("vault-"):])
+	return Key(id[len("vault-"):])
 }
 
 // Sealer seals secrets at rest (the config sealer).

@@ -24,10 +24,11 @@ const broadcastStall = 1500 * time.Millisecond
 const broadcastStallReport = 250 * time.Millisecond
 
 // A live output at least liveWaitLead ahead of the wall clock waits up to
-// liveWaitMax for a late picture before holding.
+// liveWaitMax for a late picture before holding, without permanently
+// consuming its published lead.
 const (
 	liveWaitLead = time.Second
-	liveWaitMax  = 300 * time.Millisecond
+	liveWaitMax  = 40 * time.Millisecond
 )
 
 // gcSummary is the Go runtime's recent collection cost, to tell a process
@@ -250,7 +251,6 @@ type broadcast struct {
 	segment       time.Duration
 	clockWarned   time.Time
 	liveWaitSince time.Time
-	liveWaitSpent time.Duration
 	// steadyBitrate is a provider output's full-quality bitrate ceiling,
 	// shared by every viewer that joins it.
 	steadyBitrate int
@@ -262,6 +262,8 @@ type broadcast struct {
 	coldHoldFrame  []byte
 	holdMode       string
 	holdSince      time.Time
+	pacer          *reservePacer
+	rejoinDrop     int
 }
 
 func newBroadcast(ctx context.Context, runner transcode.ContinuousRunner, planner broadcastPlanner, format transcode.RawFormat) (*broadcast, error) {
@@ -272,7 +274,7 @@ func newBroadcast(ctx context.Context, runner transcode.ContinuousRunner, planne
 		return nil, fmt.Errorf("broadcast requires runners and a planner")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	b := &broadcast{ctx: ctx, cancel: cancel, runner: runner, planner: planner, format: format, origin: time.Now(), black: blackFrame(format, 0).Video, dvr: broadcastDVR, renditions: map[string]*broadcastRendition{}, opening: map[string]bool{}, openingAt: map[string]time.Time{}, retry: map[string]time.Time{}, prepared: make(chan broadcastPrepared, 4), retryRequests: make(chan struct{}, 1), lastViewer: time.Now()}
+	b := &broadcast{ctx: ctx, cancel: cancel, runner: runner, planner: planner, format: format, origin: time.Now(), black: blackFrame(format, 0).Video, dvr: broadcastDVR, renditions: map[string]*broadcastRendition{}, opening: map[string]bool{}, openingAt: map[string]time.Time{}, retry: map[string]time.Time{}, prepared: make(chan broadcastPrepared, 4), retryRequests: make(chan struct{}, 1), lastViewer: time.Now(), pacer: newReservePacer(format)}
 	b.created = b.origin
 	b.segment = segmentDuration
 	if source, ok := planner.(interface{ segmentDuration() time.Duration }); ok {
@@ -806,6 +808,7 @@ func (b *broadcast) step(now time.Time) bool {
 		}
 		b.plannedID = current.id
 		b.freshAt = time.Time{}
+		b.rejoinDrop = 0
 	}
 	clear(b.future)
 	if planner, ok := b.planner.(interface {
@@ -853,8 +856,8 @@ func (b *broadcast) step(now time.Time) bool {
 	}
 	b.accept(now, current, next)
 	// Keep one bounded screen input prewarmed while programmes play. A stall
-	// then cuts to its first frame at the 1.5 s deadline, without raster/decoder
-	// initialization on the frame clock or an intervening black frame.
+	// then cuts to its first frame once the picture hold expires, without
+	// raster/decoder initialization on the frame clock or an intervening black frame.
 	if b.fallback == nil {
 		b.open(b.screenPlan, now)
 	}
@@ -1000,51 +1003,135 @@ func (b *broadcast) step(now time.Time) bool {
 	samples := tickSamples(b.format, b.tick)
 	frame := transcode.RawFrame{}
 	mode := "screen"
+	pulledSourceFrame := false
 	momentBoundary := !current.liveMoment || b.current == nil || !b.current.lastFrameAt.IsZero() ||
 		(b.tick*int64(b.format.FPSDen)*int64(time.Second))%int64(b.segment*time.Duration(b.format.FPSNum)) == 0
 	if b.current != nil && momentBoundary && !momentFallback && (!introActive || b.intro.fill) {
-		select {
-		case f, ok := <-b.current.frames:
-			if ok && validRawFrame(b.format, f) {
+		paceSrc, canPace := b.planner.(reservePaceSource)
+		usePacer := canPace && b.pacer != nil && !b.bursting && !introActive && current.programme && current.mediaKey == 0 && !b.current.lastFrameAt.IsZero()
+		if !usePacer {
+			b.pacer.reset(b.current)
+			if canPace && b.pacer != nil {
+				b.pacer.syncRate(paceSrc, 1.0)
+			}
+			select {
+			case f, ok := <-b.current.frames:
+				if ok && validRawFrame(b.format, f) {
+					b.burstReady = true
+					frame = f
+					if b.current.policy != nil {
+						frame.PolicyTags = []any{b.current.policy}
+					}
+					if introActive && b.intro.fill {
+						if titleOpening || b.introFallback || (!b.introShownAt.IsZero() && now.Sub(b.introShownAt) >= time.Second) {
+							b.finishIntro(now)
+							introActive = false
+						}
+					}
+					if introActive {
+						frame = transcode.RawFrame{}
+						break
+					}
+					pulledSourceFrame = true
+					if source, ok := b.current.decoder.(interface{ Aired(transcode.RawFrame) }); ok {
+						source.Aired(frame)
+					}
+					if b.current.lastFrameAt.IsZero() && current.programme {
+						b.logger.Debug("broadcast programme first aired", "input", current.id, "prepareLatency", time.Since(b.current.openedAt), "sinceOutputStart", time.Since(b.created), "mediaTime", now.Sub(b.origin))
+						if handoff, ok := b.planner.(interface {
+							noteHandoff(core.RatingKey, time.Duration, time.Time)
+						}); ok {
+							handoff.noteHandoff(current.mediaKey, current.sourceOffset, now)
+						}
+					}
+					if current.programme {
+						b.airedProgramme = true
+					}
+					if current.interstitial && current.element != "offair" {
+						b.lastPodPlan = current
+						b.lastPodFrame = frame
+					}
+					b.freshAt = now
+					b.current.lastFrameAt = now
+					fresh = true
+					mode = current.id
+				}
+			default:
+			}
+		} else {
+			depth, target, paceOK := paceSrc.reserveTarget()
+			if b.rejoinDrop > 0 && len(b.current.frames) > 0 {
+				queuedDur := time.Duration(len(b.current.frames)) * frameDuration
+				totalAhead := depth
+				if target == 0 {
+					totalAhead += queuedDur
+				} else {
+					totalAhead = max(depth, queuedDur)
+				}
+				rejoinFloor := max(target, 1250*time.Millisecond)
+				if totalAhead <= rejoinFloor+frameDuration {
+					b.rejoinDrop = 0
+				} else if len(b.current.frames) > 1 {
+					b.pacer.syncRate(paceSrc, 2.0)
+					wantDrop := min(b.rejoinDrop, int((totalAhead-rejoinFloor)/frameDuration))
+					wantDrop = min(wantDrop, len(b.current.frames)-1)
+					droppedAny := false
+					for range wantDrop {
+						select {
+						case df, ok := <-b.current.frames:
+							if !ok {
+								break
+							}
+							if validRawFrame(b.format, df) {
+								if source, ok := b.current.decoder.(interface{ Aired(transcode.RawFrame) }); ok {
+									source.Aired(df)
+								}
+							}
+							b.rejoinDrop--
+							droppedAny = true
+						default:
+						}
+					}
+					if droppedAny {
+						b.pacer.reset(b.current)
+					}
+					depth, target, paceOK = paceSrc.reserveTarget()
+					if b.rejoinDrop <= 0 {
+						b.rejoinDrop = 0
+					}
+				}
+			}
+			tempo := b.pacer.desiredTempo(depth, target, paceOK)
+			if b.rejoinDrop == 0 {
+				b.pacer.syncRate(paceSrc, tempo)
+			}
+			pullOne := func() (transcode.RawFrame, bool) {
+				select {
+				case f, ok := <-b.current.frames:
+					if !ok || !validRawFrame(b.format, f) {
+						return transcode.RawFrame{}, false
+					}
+					if b.current.policy != nil {
+						f.PolicyTags = []any{b.current.policy}
+					}
+					if source, ok := b.current.decoder.(interface{ Aired(transcode.RawFrame) }); ok {
+						source.Aired(f)
+					}
+					return f, true
+				default:
+					return transcode.RawFrame{}, false
+				}
+			}
+			if f, pulledNew, got := b.pacer.next(b.current, samples, tempo, pullOne); got {
 				b.burstReady = true
 				frame = f
-				if b.current.policy != nil {
-					frame.PolicyTags = []any{b.current.policy}
-				}
-				if introActive && b.intro.fill {
-					if titleOpening || b.introFallback || (!b.introShownAt.IsZero() && now.Sub(b.introShownAt) >= time.Second) {
-						b.finishIntro(now)
-						introActive = false
-					}
-				}
-				if introActive {
-					frame = transcode.RawFrame{}
-					break
-				}
-				if source, ok := b.current.decoder.(interface{ Aired(transcode.RawFrame) }); ok {
-					source.Aired(frame)
-				}
-				if b.current.lastFrameAt.IsZero() && current.programme {
-					b.logger.Debug("broadcast programme first aired", "input", current.id, "prepareLatency", time.Since(b.current.openedAt), "sinceOutputStart", time.Since(b.created), "mediaTime", now.Sub(b.origin))
-					if handoff, ok := b.planner.(interface {
-						noteHandoff(core.RatingKey, time.Duration, time.Time)
-					}); ok {
-						handoff.noteHandoff(current.mediaKey, current.sourceOffset, now)
-					}
-				}
-				if current.programme {
-					b.airedProgramme = true
-				}
-				if current.interstitial && current.element != "offair" {
-					b.lastPodPlan = current
-					b.lastPodFrame = frame
-				}
+				pulledSourceFrame = pulledNew
+				b.airedProgramme = true
 				b.freshAt = now
 				b.current.lastFrameAt = now
 				fresh = true
 				mode = current.id
 			}
-		default:
 		}
 		if frame.Video == nil {
 			select {
@@ -1110,7 +1197,7 @@ func (b *broadcast) step(now time.Time) bool {
 	startupExpired := b.current != nil && b.current.lastFrameAt.IsZero() && now.Sub(b.current.started) >= startupWait
 	stalled := b.current != nil && !b.current.lastFrameAt.IsZero() && now.Sub(b.current.lastFrameAt) >= broadcastStall
 	// An input whose own transport is reconnecting stays open behind the
-	// screen: its media resumes on the same timeline without a reopen.
+	// held picture or screen: its media resumes on the same timeline without a reopen.
 	if stalled && !startupExpired && b.keepStalled(now.Sub(b.current.lastFrameAt)) {
 		stalled = false
 	}
@@ -1130,22 +1217,19 @@ func (b *broadcast) step(now time.Time) bool {
 		return false
 	}
 	// A live output well ahead of the wall clock waits briefly for a picture
-	// that is merely late (decode latency at the end of a startup burst)
-	// rather than holding a tick, which carries no sound. The wait is spent
-	// from its lead and bounded, so publication slips at most liveWaitMax.
+	// that is merely late (decode jitter) rather than holding a tick, without
+	// permanently shrinking b.lead.
 	if fresh || b.current == nil {
-		b.liveWaitSince, b.liveWaitSpent = time.Time{}, 0
+		b.liveWaitSince = time.Time{}
 	} else if frame.Video == nil && b.burstNoWait && !b.bursting && !introActive && !b.current.lastFrameAt.IsZero() && b.lead > liveWaitLead {
 		if b.liveWaitSince.IsZero() {
 			b.liveWaitSince = time.Now()
 		}
-		if waited := time.Since(b.liveWaitSince); waited < liveWaitMax {
-			b.lead = max(liveWaitLead, b.lead-waited+b.liveWaitSpent)
-			b.liveWaitSpent = waited
+		if time.Since(b.liveWaitSince) < liveWaitMax {
 			return false
 		}
 	}
-	if frame.Video == nil && !introActive && !b.freshAt.IsZero() && (now.Sub(b.freshAt) < broadcastStall || current.programme && current.mediaKey != 0) {
+	if frame.Video == nil && !introActive && !b.freshAt.IsZero() && (now.Sub(b.freshAt) < b.holdStalled() || current.programme && current.mediaKey != 0) {
 		frame = transcode.RawFrame{Video: b.lastFrame.Video, PolicyTags: b.lastFrame.PolicyTags}
 		mode = "hold"
 	}
@@ -1336,6 +1420,13 @@ func (b *broadcast) step(now time.Time) bool {
 			b.holdSince = now
 			b.holdMode = mode
 		}
+		b.pacer.reset(b.current)
+		if b.airedProgramme && current.programme && current.mediaKey == 0 {
+			maxDrop := 30 * max(1, b.format.FPSNum/b.format.FPSDen)
+			if b.rejoinDrop < maxDrop {
+				b.rejoinDrop++
+			}
+		}
 	} else if !b.holdSince.IsZero() {
 		if dur := now.Sub(b.holdSince); dur > 0 {
 			if holder, ok := b.planner.(interface{ noteHold(string, time.Duration) }); ok {
@@ -1345,11 +1436,13 @@ func (b *broadcast) step(now time.Time) bool {
 		b.holdSince = time.Time{}
 		b.holdMode = ""
 	}
+	if !current.programme || current.mediaKey != 0 {
+		b.rejoinDrop = 0
+	}
 	// PCM follows the output tick, including fractional frame rates. Never let a
 	// malformed decoder chunk shift every subsequent audio timestamp.
 	pcm := make([]byte, samples*b.format.Channels*2)
 	copy(pcm, frame.PCM)
-	frame.PCM = pcm
 	frame.PCM = pcm
 	cut := mode != b.mode
 	if cut {
@@ -1386,8 +1479,8 @@ func (b *broadcast) step(now time.Time) bool {
 	b.fade.apply(frame.PCM, b.format.Channels)
 	// Next transfers an exclusively owned video buffer. Composite a fresh frame
 	// once in place, then publish it immutably to all renditions. A stalled input
-	// holds that exact completed picture; it must not accumulate another blend.
-	if fresh && b.current != nil && b.current.overlays != nil {
+	// or stretched cadence tick reuses that completed picture without re-blending.
+	if pulledSourceFrame && b.current != nil && b.current.overlays != nil {
 		b.current.overlays.blend(frame.Video, b.format, now, current.start, current.end)
 	}
 	frame.PolicyTags = mergeBroadcastTags(frame.PolicyTags, []any{current.policy})
@@ -1453,6 +1546,15 @@ func newBroadcastInput(parent context.Context, plan broadcastPlan, d transcode.D
 		input.fpsDen = decoder.format.FPSDen
 	}
 	return input
+}
+
+func (b *broadcast) holdStalled() time.Duration {
+	if source, ok := b.planner.(interface{ holdStalled() time.Duration }); ok {
+		if d := source.holdStalled(); d > 0 {
+			return d
+		}
+	}
+	return broadcastStall
 }
 
 func (b *broadcast) keepStalled(stalledFor time.Duration) bool {

@@ -362,7 +362,41 @@ func (s *Service) probeSteadyLink(ctx context.Context, sniffBudget time.Duration
 	if _, _, err := s.sniffInput(sniffCtx, probe, 1); err != nil {
 		return nil, err
 	}
+	// Attach the link's grant to the open stream tap before probe's deferred
+	// revokeInput runs, so revoking the probe does not close the provider
+	// connection right before the decoder opens it.
+	s.retainProbedTap(probe, link.ss)
 	return s.probeSessionInput(ctx, probe)
+}
+
+func (s *Service) retainProbedTap(from, into *session) {
+	if from == nil || into == nil {
+		return
+	}
+	r := &s.inputRelay
+	r.mu.Lock()
+	fg := r.bySess[from]
+	ig := r.bySess[into]
+	r.mu.Unlock()
+	if fg == nil || ig == nil || ig.ctx.Err() != nil {
+		return
+	}
+	fg.mu.Lock()
+	t := fg.tap
+	fg.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	ok := !t.closed && !t.isManifest
+	if ok {
+		t.refs[ig] = struct{}{}
+		t.growLocked()
+	}
+	t.mu.Unlock()
+	if ok {
+		ig.setTap(t)
+	}
 }
 
 // steadyInputFormat names the demuxer of a probed live input.

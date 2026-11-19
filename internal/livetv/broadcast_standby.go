@@ -107,8 +107,8 @@ func (d *standbyDecoder) Diagnostics() string {
 
 // watchStandby opens a backup when the primary input shows stress and
 // closes it once the primary has stayed healthy for steadyStandbyLinger.
-// Stress is upstream data older than a second (the tap's health) or, without
-// that signal, a decoder that produced no picture for a second.
+// Stress is upstream data older than a second when little reserve remains,
+// or, without that signal, a decoder that produced no picture for a second.
 func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
@@ -152,12 +152,12 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 		}
 		stressed := a.decoder.stressed(now)
 		h, healthy := p.s.inputHealth(a.link.ss)
-		if healthy && (!h.Connected || h.Stalled || h.Failed || h.DataAge > steadyStress) {
+		if healthy && (!h.Connected || h.Stalled || h.Failed || (h.DataAge > steadyStress && h.ReserveDepth < 2*time.Second)) {
 			stressed = true
 		}
 		// Switch on failure: once the primary stops delivering pictures (or
 		// its tap gave up) a ready standby takes over at once, before the
-		// clock's 1.5 s stall hold would expire.
+		// clock's picture hold would expire.
 		if sb.ready() && (a.decoder.starved(now) || healthy && h.Failed) {
 			p.mu.Lock()
 			retry := p.retry

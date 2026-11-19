@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -42,12 +43,12 @@ import (
 //
 // A raw transport stream is the stability reserve (reserve_ts.go): the ring
 // holds packet-aligned bytes with a media clock beside them, sized from the
-// measured bitrate and the preset. When the provider stalls or drops the
-// connection the tap reconnects the same URL itself, under the same
-// provider-safety rules as every other open (pacing, refusal ceiling, one
-// connection per account), and splices the new connection in at a keyframe
-// on one continuous timeline. Readers keep playing their reserve meanwhile
-// and never see the reconnect.
+// measured bitrate and the preset. When the provider stalls on an open
+// connection, the tap keeps the connection open and, if the source's
+// connection limit has room, races a parallel replacement connection under
+// the same provider-safety rules (pacing, refusal ceiling, unified account
+// limit), splicing whichever delivers first onto one continuous timeline.
+// Readers keep playing their reserve meanwhile and never see the reconnect.
 //
 // A tap lives as long as a grant (a tune or a probe) references it, and
 // closes synchronously when the last one is revoked, so a viewer changing
@@ -81,6 +82,11 @@ var (
 	// tapStallMax caps a tap's learned stall threshold and burst runway so a
 	// source that goes silent for good still fails over quickly.
 	tapStallMax = 8 * time.Second
+	// tapQuietCutAfter bounds how long a quiet open connection is held when
+	// the account's connection limit prevents racing a parallel replacement:
+	// transient pauses resume without a teardown, while dead half-open sockets
+	// still reconnect inside the 10 s picture hold.
+	tapQuietCutAfter = 6 * time.Second
 	// tapYoung is how much media a tap may hold and still serve new readers
 	// from its first byte (the probe-then-ffmpeg sequence of a tune).
 	tapYoung = 20 * time.Second
@@ -209,7 +215,7 @@ type tapReader struct {
 }
 
 // tapPace is a real-time grant's release schedule: media up to anchor clock
-// plus elapsed real time plus tapPaceLead. Without it the reserve would
+// plus elapsed play time plus tapPaceLead. Without it the reserve would
 // drain into socket buffers the tap cannot see, into Steady's startup
 // burst, or into a copy relay's segments. It is per grant, so the readers
 // of one tune (probe, then ffmpeg) share one allowance rather than each
@@ -220,6 +226,34 @@ type tapPace struct {
 	anchored bool
 	clock    int64
 	wall     time.Time
+	rate     float64 // playout rate relative to real time (0 means 1.0)
+}
+
+func (p *tapPace) effectiveRate() float64 {
+	if p.rate <= 0 {
+		return 1.0
+	}
+	return p.rate
+}
+
+func (p *tapPace) dueClock(now time.Time) int64 {
+	elapsed := now.Sub(p.wall)
+	if elapsed <= 0 {
+		return p.clock
+	}
+	scaledMS := float64(elapsed) * p.effectiveRate() / float64(time.Millisecond)
+	return p.clock + int64(math.Round(scaledMS*float64(tsClockHz)/1000.0))
+}
+
+func (p *tapPace) setRate(rate float64, now time.Time) {
+	if rate <= 0 {
+		rate = 1.0
+	}
+	if p.anchored {
+		p.clock = p.dueClock(now)
+		p.wall = now
+	}
+	p.rate = rate
 }
 
 // tapResume is where a grant's last reader started and stopped.
@@ -228,6 +262,8 @@ type tapResume struct{ start, last int64 }
 type upstreamTap struct {
 	key, source string
 	reg         *tapRegistry
+	svc         *Service
+	rawURL      string
 
 	ready chan struct{} // closed once the first response is known
 	// Set before ready closes and immutable after.
@@ -252,6 +288,13 @@ type upstreamTap struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	body    io.Closer
+
+	// Parallel replacement race state (TS only, guarded by mu).
+	raceActive bool
+	raceCancel context.CancelFunc
+	raceWinner io.Reader
+	raceDone   chan struct{}
+	lastRaceAt time.Time
 
 	// Reserve state; ts is nil for an input that is not a transport stream.
 	ts        *tsSplicer
@@ -434,11 +477,19 @@ func (t *upstreamTap) close(err error) {
 		}
 	}
 	body, cancel, idle := t.body, t.cancel, t.idle
+	raceCancel, raceDone := t.raceCancel, t.raceDone
 	t.body = nil
+	t.raceCancel, t.raceDone, t.raceActive, t.raceWinner = nil, nil, false, nil
 	t.freeRingLocked()
 	t.publishLocked()
 	t.cond.Broadcast()
 	t.mu.Unlock()
+	if raceDone != nil {
+		close(raceDone)
+	}
+	if raceCancel != nil {
+		raceCancel()
+	}
 	if idle != nil {
 		idle.Stop()
 	}
@@ -733,18 +784,54 @@ func (t *upstreamTap) readAs(ctx context.Context, rd *tapReader, off int64, p []
 }
 
 // paceLocked is the end of what a paced reader at off may have now: media
-// up to its start plus elapsed real time plus tapPaceLead.
+// up to its start plus elapsed play time plus tapPaceLead.
 func (t *upstreamTap) paceLocked(p *tapPace, off int64) int64 {
 	now := time.Now()
 	if !p.anchored {
 		p.anchored, p.clock, p.wall = true, t.clockAtLocked(off), now
 	}
-	limit := p.clock + int64((now.Sub(p.wall)+tapPaceLead)/time.Millisecond)*tsClockHz/1000
+	limit := p.dueClock(now) + int64(tapPaceLead/time.Millisecond)*tsClockHz/1000
 	i := sort.Search(len(t.marks), func(i int) bool { return t.marks[i].clock > limit })
 	if i == len(t.marks) {
 		return t.written
 	}
 	return t.marks[i].off
+}
+
+// setSteadyInputRate adjusts the paced release rate of ss's grant on its
+// shared tap so slow-playout reserve accrual stays in the tap's ring.
+func (s *Service) setSteadyInputRate(ss *session, rate float64) {
+	if s == nil || ss == nil {
+		return
+	}
+	g := s.healthGrant(ss)
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	t := g.tap
+	g.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if !t.closed && g.reserve > 0 {
+		if t.paces == nil {
+			t.paces = map[*inputGrant]*tapPace{}
+		}
+		p := t.paces[g]
+		if p == nil {
+			p = &tapPace{}
+			t.paces[g] = p
+		}
+		prev := p.effectiveRate()
+		p.setRate(rate, time.Now())
+		t.publishLocked()
+		if p.effectiveRate() > prev {
+			t.cond.Broadcast()
+		}
+	}
+	t.mu.Unlock()
 }
 
 func (t *upstreamTap) attach() {
@@ -951,24 +1038,28 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	ctx, cancel := context.WithCancel(s.serviceContext())
 	t.mu.Lock()
 	t.ctx, t.cancel = ctx, cancel
+	t.svc, t.rawURL = s, raw
 	t.mu.Unlock()
 	stop := context.AfterFunc(opener, cancel)
 	defer stop() // initial body inspection is part of opening the stream
 	wait, err := s.paceGrant(ctx, g)
-	reqCtx := ctx
+	connCtx, connCancel := context.WithCancel(ctx)
+	var reqCtx context.Context = connCtx
 	if dl, ok := opener.Deadline(); ok {
-		reqCtx = openContext{Context: ctx, deadline: dl.Add(wait)}
+		reqCtx = openContext{Context: connCtx, deadline: dl.Add(wait)}
 	}
 	var res *http.Response
 	if err == nil {
-		res, err = s.relayFetch(reqCtx, cancel, g, raw, &http.Request{Header: hdr})
+		res, err = s.relayFetch(reqCtx, connCancel, g, raw, &http.Request{Header: hdr})
 	}
 	if opener.Err() != nil && err == nil {
 		// The opener left while headers arrived; nobody asked for this stream.
+		connCancel()
 		res.Body.Close()
 		err = opener.Err()
 	}
 	if err != nil {
+		connCancel()
 		if g.log != nil {
 			g.log.Debug("live upstream open failed", append(Diagnose("upstream_headers", err).LogAttrs(), "elapsed", time.Since(started))...)
 		}
@@ -977,13 +1068,14 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 		t.close(err)
 		return
 	}
+	closer := closeFunc(func() error { connCancel(); return res.Body.Close() })
 	t.status, t.header, t.base = res.StatusCode, res.Header.Clone(), res.Request.URL
 	t.ctype = res.Header.Get("Content-Type")
 	if g.log != nil {
 		g.log.Debug("live upstream headers", "status", res.StatusCode, "elapsed", time.Since(started))
 	}
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent {
-		res.Body.Close()
+		closer.Close()
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			s.failedLogin(g.login)
 		}
@@ -991,7 +1083,7 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 		t.close(nil)
 		return
 	}
-	idle := time.AfterFunc(relayIOTimeout, cancel)
+	idle := time.AfterFunc(relayIOTimeout, connCancel)
 	body := bufio.NewReaderSize(&idleReader{r: res.Body, t: idle}, 32<<10)
 	head := sniffHead(body)
 	ctype := strings.ToLower(res.Header.Get("Content-Type"))
@@ -1002,7 +1094,7 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 		t.isManifest = true
 		b, err := io.ReadAll(io.LimitReader(body, relayManifestLimit+1))
 		idle.Stop()
-		res.Body.Close()
+		closer.Close()
 		if err != nil || len(b) > relayManifestLimit {
 			t.openErr = errRelayUnsupported
 		} else {
@@ -1013,12 +1105,13 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 		t.close(nil)
 		return
 	}
-	// Three packets decide whether this is a transport stream the reserve
-	// can index and splice; anything else is relayed as before.
-	ts := tsPrefix(body)
+	// Three packets (or two sync bytes when HTTP/2 delivers one TS packet in
+	// its initial DATA frame) decide whether this is a transport stream the
+	// reserve can index and splice; anything else is relayed as before.
+	ts := tsPrefixWithType(body, ctype)
 	t.mu.Lock()
 	now := time.Now()
-	t.body = res.Body
+	t.body = closer
 	t.lastData, t.epochStart = now, now
 	t.dataAt.Store(now.UnixNano())
 	if ts {
@@ -1051,6 +1144,26 @@ func tsPrefix(br *bufio.Reader) bool {
 	return len(b) > tsPacket && b[0] == 0x47 && b[tsPacket] == 0x47
 }
 
+// tsPrefixWithType handles HTTP/2 providers that flush a single 188-byte TS
+// packet in their initial DATA frame: when Content-Type declares MPEG-TS (or
+// the first packet is a PAT with PUSI set), peek one more packet to confirm.
+func tsPrefixWithType(br *bufio.Reader, ctype string) bool {
+	if tsPrefix(br) {
+		return true
+	}
+	b, _ := br.Peek(br.Buffered())
+	if len(b) == 0 || b[0] != 0x47 {
+		return false
+	}
+	isMP2T := strings.Contains(ctype, "mp2t") || strings.Contains(ctype, "mpegts")
+	isPAT := len(b) >= tsPacket && pid(b[:tsPacket]) == 0 && b[1]&0x40 != 0
+	if !isMP2T && !isPAT {
+		return false
+	}
+	p, _ := br.Peek(2 * tsPacket)
+	return len(p) >= 2*tsPacket && p[0] == 0x47 && p[tsPacket] == 0x47
+}
+
 // tapRingSize rounds a ring to whole packets so every offset in it stays
 // packet aligned.
 func tapRingSize(n int) int { return n - n%tsPacket }
@@ -1061,17 +1174,52 @@ func (s *Service) pumpTap(t *upstreamTap, raw string, body io.Reader) {
 	for {
 		err := t.fillTS(body)
 		t.mu.Lock()
+		if t.closed {
+			old := t.body
+			t.body = nil
+			t.mu.Unlock()
+			if old != nil {
+				old.Close()
+			}
+			return
+		}
+		if t.raceWinner != nil {
+			next := t.raceWinner
+			t.raceWinner = nil
+			t.activateSplicedLocked(true)
+			t.mu.Unlock()
+			body = next
+			continue
+		}
 		old := t.body
 		t.body = nil
-		closed := t.closed
+		waitRace := t.raceDone
 		t.mu.Unlock()
 		if old != nil {
-			// The old connection closes before the new one opens: an account
+			// The old connection closes before a serial reopen: an account
 			// sold by the connection never sees two.
 			old.Close()
 		}
-		if closed {
-			return
+		if waitRace != nil {
+			select {
+			case <-waitRace:
+			case <-t.ctx.Done():
+				return
+			}
+			t.mu.Lock()
+			if t.closed {
+				t.mu.Unlock()
+				return
+			}
+			if t.raceWinner != nil {
+				next := t.raceWinner
+				t.raceWinner = nil
+				t.activateSplicedLocked(true)
+				t.mu.Unlock()
+				body = next
+				continue
+			}
+			t.mu.Unlock()
 		}
 		next, rerr := s.reconnectTap(t, raw, err)
 		if rerr != nil {
@@ -1082,6 +1230,31 @@ func (s *Service) pumpTap(t *upstreamTap, raw string, body io.Reader) {
 	}
 }
 
+func (t *upstreamTap) anySteadyLocked() bool {
+	for g := range t.refs {
+		if g != nil && g.steady {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *upstreamTap) activateSplicedLocked(fromRace bool) {
+	now := time.Now()
+	t.lastData, t.epochStart = now, now
+	t.dataAt.Store(now.UnixNano())
+	t.epochClock = t.ts.clock
+	t.reconnects++
+	t.refusals = 0
+	t.burstDone = false
+	t.haveBurst = false
+	t.rhythmGap = 0
+	t.pendingGap = 0
+	t.epochReads = 0
+	t.epochBytes = 0
+	t.ts.reconnect(fromRace || t.anySteadyLocked() || t.minDepthLocked() >= tapDedupeDepth)
+}
+
 // fillTS copies the provider body through the splicer into the ring.
 func (t *upstreamTap) fillTS(body io.Reader) error {
 	buf := make([]byte, 64<<10)
@@ -1090,9 +1263,15 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 		n, err := body.Read(buf)
 		if n > 0 {
 			t.mu.Lock()
-			if t.closed {
+			if t.closed || t.raceWinner != nil {
 				t.mu.Unlock()
 				return io.EOF
+			}
+			var abortRace context.CancelFunc
+			var doneRace chan struct{}
+			if t.raceCancel != nil {
+				abortRace, doneRace = t.raceCancel, t.raceDone
+				t.raceCancel, t.raceDone, t.raceActive = nil, nil, false
 			}
 			now := time.Now()
 			prev := t.lastData
@@ -1129,6 +1308,12 @@ func (t *upstreamTap) fillTS(body io.Reader) error {
 				}
 			}
 			t.mu.Unlock()
+			if doneRace != nil {
+				close(doneRace)
+			}
+			if abortRace != nil {
+				abortRace()
+			}
 			if adaptLog != nil {
 				adaptLog.Info("live provider stall threshold adapted", "gap", learnedGap, "stall_after", stallAfter)
 			}
@@ -1333,12 +1518,12 @@ func (t *upstreamTap) resizeLocked(n int) {
 }
 
 // readerDepthLocked is a reader's whole reserve: media in the tap ahead of
-// it, plus, for a paced reader, what it has been handed beyond real time
+// it, plus, for a paced reader, what it has been handed beyond play time
 // (up to tapPaceLead), which its consumer holds and plays through a stall.
 func (t *upstreamTap) readerDepthLocked(rd *tapReader) time.Duration {
 	d := t.depthLocked(rd.off)
 	if p := rd.pace; p != nil && p.anchored && t.ts != nil && len(t.marks) > 0 {
-		due := p.clock + int64(time.Since(p.wall)/time.Millisecond)*tsClockHz/1000
+		due := p.dueClock(time.Now())
 		if held := t.clockAtLocked(rd.off) - due; held > 0 {
 			d += min(time.Duration(held)*time.Second/tsClockHz, tapPaceLead)
 		}
@@ -1370,9 +1555,10 @@ func (t *upstreamTap) capacityLocked() time.Duration {
 	return time.Duration(float64(len(t.ring)) * 8 / float64(t.bitrate) * float64(time.Second))
 }
 
-// watch raises a stall as soon as the provider stops delivering, and cuts
-// the stalled connection so pumpTap reconnects while readers play their
-// reserve.
+// watch raises a stall when the provider stops delivering, keeps the open
+// connection alive while racing a parallel replacement when connection limits
+// allow, and only cuts a quiet connection on a single-connection account after
+// tapQuietCutAfter so transient silences resume without a teardown.
 func (t *upstreamTap) watch() {
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
@@ -1389,9 +1575,10 @@ func (t *upstreamTap) watch() {
 		}
 		t.publishLocked()
 		now := time.Now()
-		var cut io.Closer
 		silence := now.Sub(t.lastData)
-		stall := !t.stalled && t.body != nil && silence >= t.stallThresholdLocked(now)
+		thresh := t.stallThresholdLocked(now)
+		picStall := t.body != nil && len(t.active) > 0 && t.minDepthLocked() == 0 && silence >= broadcastStall
+		stall := !t.stalled && t.body != nil && silence >= thresh
 		if stall {
 			if t.reconnects > 0 && silence >= tapStallMax && t.ts != nil &&
 				time.Duration(t.ts.clock-t.epochClock)*time.Second/tsClockHz < tapHealthy {
@@ -1399,18 +1586,255 @@ func (t *upstreamTap) watch() {
 			}
 			t.stalled = true
 			t.stallCount++
-			cut, t.body = t.body, nil
+		}
+		wantRace := (picStall || t.stalled) && t.body != nil && !t.raceActive && t.raceWinner == nil && t.svc != nil
+		if wantRace && !t.lastRaceAt.IsZero() {
+			backoff := tapReconnectDelays[min(t.failures, len(tapReconnectDelays)-1)]
+			if t.refusals > 0 {
+				backoff = time.Second
+			}
+			if now.Sub(t.lastRaceAt) < backoff {
+				wantRace = false
+			}
 		}
 		t.measureBurstLocked()
 		due := now.Sub(t.rep.at) >= historyReportEvery
+		svc := t.svc
 		t.mu.Unlock()
+
 		if stall {
 			t.emit(InputStalled, errors.New("provider stopped delivering"))
-			cut.Close()
+		}
+		if wantRace {
+			raced := svc.startTapRace(t)
+			if !raced {
+				// Account cannot open a parallel replacement (e.g. limit == 1)
+				// or parallel races failed: hold quiet transport up to
+				// tapQuietCutAfter before cutting for serial reconnect.
+				t.mu.Lock()
+				var cut io.Closer
+				cutAfter := max(tapQuietCutAfter, thresh)
+				if !t.closed && t.body != nil && !t.raceActive && t.raceWinner == nil && now.Sub(t.lastData) >= cutAfter {
+					cut, t.body = t.body, nil
+				}
+				t.mu.Unlock()
+				if cut != nil {
+					cut.Close()
+				}
+			}
+		} else {
+			// Even if parallel races backed off after repeated failures on a
+			// dead socket, cut the silent socket once cutAfter has elapsed and
+			// at least two parallel attempts failed.
+			t.mu.Lock()
+			var cut io.Closer
+			cutAfter := max(tapQuietCutAfter, thresh)
+			if !t.closed && t.stalled && t.body != nil && !t.raceActive && t.raceWinner == nil && t.failures >= 2 && now.Sub(t.lastData) >= cutAfter {
+				cut, t.body = t.body, nil
+			}
+			t.mu.Unlock()
+			if cut != nil {
+				cut.Close()
+			}
 		}
 		if stall || due {
 			t.report()
 		}
+	}
+}
+
+// reserveParallelTapSlot takes one extra provider connection slot for racing a
+// replacement while the current tap stays open, honouring unified account
+// limits across direct sessions, Steady outputs, hot standbys, and taps.
+func (s *Service) reserveParallelTapSlot(account string, limit int) (func(), error) {
+	if account == "" {
+		return func() {}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	channels := map[string]bool{}
+	for _, ss := range s.sessions {
+		if ss.broadcast != nil || !ss.ready {
+			continue
+		}
+		src := ss.info.Channel.SourceID
+		if ss.inputSource.AuthSourceID != "" {
+			src = ss.inputSource.AuthSourceID
+		}
+		if src == account {
+			channels[ss.info.Channel.ID] = true
+		}
+	}
+	active := s.broadcastProviders[account]
+	for _, ch := range active {
+		delete(channels, ch)
+	}
+	live := len(channels) + len(active)
+	return s.inputRelay.taps.reserveWithLive(account, limit, false, live)
+}
+
+// startTapRace launches a parallel replacement connection on t if the source's
+// connection limit and burst ceilings allow one more stream right now.
+func (s *Service) startTapRace(t *upstreamTap) bool {
+	t.mu.Lock()
+	if t.closed || t.body == nil || t.raceActive || t.raceWinner != nil {
+		t.mu.Unlock()
+		return false
+	}
+	now := time.Now()
+	kept := t.attempts[:0]
+	for _, at := range t.attempts {
+		if now.Sub(at) < tapBurstWindow {
+			kept = append(kept, at)
+		}
+	}
+	t.attempts = kept
+	if t.failures >= tapGiveUpAfter || len(t.attempts) >= tapBurstLimit {
+		t.mu.Unlock()
+		return false
+	}
+	var g *inputGrant
+	for ref := range t.refs {
+		if ref.ctx.Err() == nil {
+			g = ref
+			break
+		}
+	}
+	raw := t.rawURL
+	t.mu.Unlock()
+	if g == nil {
+		return false
+	}
+
+	source, limit := s.tapSource(g)
+	release, err := s.reserveParallelTapSlot(source, limit)
+	if err != nil {
+		return false
+	}
+
+	t.mu.Lock()
+	if t.closed || t.body == nil || t.raceActive || t.raceWinner != nil {
+		t.mu.Unlock()
+		release()
+		return false
+	}
+	candCtx, candCancel := context.WithCancel(t.ctx)
+	done := make(chan struct{})
+	t.raceActive = true
+	t.raceCancel = candCancel
+	t.raceDone = done
+	t.lastRaceAt = time.Now()
+	t.attempts = append(t.attempts, t.lastRaceAt)
+	t.mu.Unlock()
+
+	go s.runTapRace(candCtx, candCancel, done, t, g, raw, release)
+	return true
+}
+
+func (s *Service) runTapRace(candCtx context.Context, candCancel context.CancelFunc, done chan struct{}, t *upstreamTap, g *inputGrant, raw string, release func()) {
+	defer release()
+	finishLose := func(err error) {
+		candCancel()
+		var raise bool
+		t.mu.Lock()
+		sameRace := t.raceDone == done
+		if sameRace {
+			t.raceCancel, t.raceDone, t.raceActive = nil, nil, false
+			t.lastRaceAt = time.Now()
+			if err != nil && t.ctx.Err() == nil {
+				if tapRefusal(err) {
+					t.refusals++
+				} else {
+					t.failures++
+				}
+				if t.failures+t.refusals >= tapFailAfter && !t.failed {
+					t.failed = true
+					raise = true
+				}
+			}
+		}
+		t.mu.Unlock()
+		if sameRace {
+			close(done)
+		}
+		if raise {
+			t.emit(InputFailed, err)
+		}
+	}
+
+	if g.source != "" {
+		e, _ := s.sourceEntry(candCtx, g.source)
+		wait, err := t.reg.reserveOpen(g.source, e.gap, e.perHour, time.Now())
+		if err != nil {
+			finishLose(err)
+			return
+		}
+		if wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-candCtx.Done():
+				finishLose(nil)
+				return
+			}
+		}
+	}
+
+	deadline := time.Now().Add(tapReconnectTimeout)
+	res, err := s.relayFetch(openContext{Context: candCtx, deadline: deadline}, candCancel, g, raw, &http.Request{Header: http.Header{}})
+	if err != nil {
+		if candCtx.Err() != nil {
+			finishLose(nil)
+		} else {
+			finishLose(err)
+		}
+		return
+	}
+	closer := closeFunc(func() error { candCancel(); return res.Body.Close() })
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent {
+		closer.Close()
+		finishLose(providerResponseError(res.StatusCode))
+		return
+	}
+	var silent atomic.Bool
+	timer := time.AfterFunc(time.Until(deadline), func() { silent.Store(true); candCancel() })
+	body := bufio.NewReaderSize(res.Body, 32<<10)
+	first, perr := body.Peek(1)
+	timer.Stop()
+	if perr != nil {
+		closer.Close()
+		if silent.Load() {
+			finishLose(errTapSilent)
+		} else if candCtx.Err() != nil {
+			finishLose(nil)
+		} else {
+			finishLose(perr)
+		}
+		return
+	}
+	if first[0] != 0x47 && !tsPrefix(body) {
+		closer.Close()
+		finishLose(errTapNotTS)
+		return
+	}
+
+	t.mu.Lock()
+	if t.closed || t.raceDone != done {
+		t.mu.Unlock()
+		closer.Close()
+		return
+	}
+	old := t.body
+	t.body = closer
+	t.raceWinner = body
+	t.raceCancel, t.raceDone, t.raceActive = nil, nil, false
+	t.mu.Unlock()
+
+	if old != nil {
+		old.Close()
+	}
+	close(done)
+	if g.log != nil {
+		g.log.Info("live provider parallel replacement spliced", "reconnects", t.reconnectCount()+1)
 	}
 }
 
@@ -1572,20 +1996,8 @@ func (s *Service) reopenTap(ctx context.Context, t *upstreamTap, g *inputGrant, 
 		closer.Close()
 		return nil, io.EOF
 	}
-	now := time.Now()
 	t.body = closer
-	t.lastData, t.epochStart = now, now
-	t.dataAt.Store(now.UnixNano())
-	t.epochClock = t.ts.clock
-	t.reconnects++
-	t.refusals = 0
-	t.burstDone = false
-	t.haveBurst = false
-	t.rhythmGap = 0
-	t.pendingGap = 0
-	t.epochReads = 0
-	t.epochBytes = 0
-	t.ts.reconnect(t.minDepthLocked() >= tapDedupeDepth)
+	t.activateSplicedLocked(false)
 	t.mu.Unlock()
 	return body, nil
 }

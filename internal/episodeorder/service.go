@@ -578,6 +578,30 @@ func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, seas
 	if err != nil {
 		return 0, 0, err
 	}
+	// TMDB subgroup order is already the season number when the orders
+	// start at 1, or when order 0 is the Specials subgroup (One Piece
+	// "TVDB Order": 0=Specials, 16=Season 16). Only a set whose first
+	// subgroup is a regular season at order 0 numbers seasons order+1.
+	seasonOffset := 0
+	for _, group := range g.Groups {
+		if group.Order != 0 {
+			continue
+		}
+		specials := strings.EqualFold(strings.TrimSpace(group.Name), "specials")
+		if !specials && len(group.Episodes) > 0 {
+			specials = true
+			for _, ep := range group.Episodes {
+				if ep.SeasonNumber != 0 {
+					specials = false
+					break
+				}
+			}
+		}
+		if !specials {
+			seasonOffset = 1
+		}
+		break
+	}
 	var found bool
 	var sn, en int
 	for _, group := range g.Groups {
@@ -587,7 +611,7 @@ func (s *Service) SearchNumbering(ctx context.Context, show core.RatingKey, seas
 					return 0, 0, nil
 				} // ambiguous membership
 				found = true
-				sn, en = group.Order+1, ep.Order+1
+				sn, en = group.Order+seasonOffset, ep.Order+1
 			}
 		}
 	}

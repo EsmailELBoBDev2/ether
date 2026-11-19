@@ -70,7 +70,7 @@ func TestAnimeOnlyAddonIsAskedByMappedEntryEpisode(t *testing.T) {
 		t.Fatalf("releases %+v", rels)
 	}
 	// The entry's third episode is the requested S3E15...
-	if i := rels[0].Info; len(i.Seasons) != 1 || i.Seasons[0] != 3 || len(i.Episodes) != 1 || i.Episodes[0] != 15 {
+	if i := rels[0].Info; len(i.Seasons) != 1 || i.Seasons[0] != 3 || len(i.Episodes) != 1 || i.Episodes[0] != 15 || len(i.AbsoluteEpisodes) != 0 {
 		t.Fatalf("entry episode identity %+v", i)
 	}
 	// ...a series-absolute number keeps its own identity...
@@ -117,15 +117,16 @@ func TestIDChoicePrefersIMDbThenTMDB(t *testing.T) {
 		manifest string
 		req      core.SearchRequest
 		want     string
+		wantAbs  string // the ":1:<absolute>" follow-up for absolute-numbered anime
 	}{
 		{`{"id":"x","resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tt","tmdb:","kitsu:"]}]}`,
-			animeRequest(), "/stream/series/tt2560140:3:15.json"},
+			animeRequest(), "/stream/series/tt2560140:3:15.json", "/stream/series/tt2560140:1:52.json"},
 		{`{"id":"x","resources":[{"name":"stream","types":["movie","series"],"idPrefixes":["tmdb:","kitsu:"]}]}`,
-			animeRequest(), "/stream/series/tmdb:1429:3:15.json"},
+			animeRequest(), "/stream/series/tmdb:1429:3:15.json", "/stream/series/tmdb:1429:1:52.json"},
 		{`{"id":"x","resources":[{"name":"stream","types":["movie"],"idPrefixes":["tt","tmdb"]}]}`,
-			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 603}, Title: "M"}, "/stream/movie/tmdb:603.json"},
+			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 603}, Title: "M"}, "/stream/movie/tmdb:603.json", ""},
 		{`{"id":"x","resources":[{"name":"stream","types":["movie"],"idPrefixes":["kitsu"]}]}`,
-			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 5000}, Title: "Film", Anime: true}, "/stream/movie/kitsu:108.json"},
+			core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{TMDB: 5000}, Title: "Film", Anime: true}, "/stream/movie/kitsu:108.json", ""},
 	} {
 		f := &fakeAddon{manifest: tc.manifest}
 		srv := httptest.NewServer(f.handler(t))
@@ -134,8 +135,12 @@ func TestIDChoicePrefersIMDbThenTMDB(t *testing.T) {
 		if _, err := b.Search(t.Context(), tc.req, noReserve); err != nil {
 			t.Fatal(err)
 		}
-		if got := f.streamRequests(); len(got) != 1 || got[0] != tc.want {
-			t.Errorf("manifest %s: requests %v, want %s", tc.manifest, got, tc.want)
+		want := []string{tc.want}
+		if tc.wantAbs != "" {
+			want = append(want, tc.wantAbs)
+		}
+		if got := f.streamRequests(); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("manifest %s: requests %v, want %v", tc.manifest, got, want)
 		}
 		srv.Close()
 	}
@@ -307,6 +312,60 @@ func TestAddonFixtureQueriesCanonicalAndAliasNumbering(t *testing.T) {
 	}
 	if rels[2].InfoHash != hashB || len(rels[2].Info.Seasons) != 1 || rels[2].Info.Seasons[0] != 18 || rels[2].Info.Episodes[0] != 4 {
 		t.Fatalf("rels[2] = %+v", rels[2])
+	}
+
+	// Straight-through TMDB numbering (#613: One Piece S15E583 is absolute
+	// 583) asks ":1:<absolute>" first, the season form second, then the
+	// group alias (S16E05), even with no XEM alias beyond the group, and
+	// merges the answers.
+	f613 := &fakeAddon{
+		manifest: manifest,
+		streams: map[string]string{
+			"/stream/series/tt0388629:1:583.json":  `{"streams":[{"name":"AIO","title":"[Group] One Piece - 583 (1080p)","infoHash":"` + hashA + `"}]}`,
+			"/stream/series/tt0388629:15:583.json": `{"streams":[{"name":"AIO","title":"One.Piece.S15E583.1080p.WEB-DL-GRP","infoHash":"` + hashB + `"}]}`,
+			"/stream/series/tt0388629:16:5.json":   `{"streams":[{"name":"AIO","title":"One.Piece.S16E005.1080p.WEB-DL-GRP","infoHash":"` + hashC + `"}]}`,
+		},
+	}
+	srv613 := httptest.NewServer(f613.handler(t))
+	defer srv613.Close()
+	b613 := backendWith(t, srv613.URL, Options{Client: srv613.Client()}, "ix613")
+	req613 := core.SearchRequest{
+		Type: core.TypeEpisode, IDs: core.IDs{IMDB: "tt0388629", TMDB: 37854, TVDB: 81797}, Title: "One Piece",
+		Season: 15, Episode: 583, AbsoluteEpisode: 583, Anime: true,
+		ReleaseAliases: []core.EpisodeNumber{{Season: 16, Episode: 5}},
+	}
+	rels613, err := b613.Search(t.Context(), req613, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got613 := f613.streamRequests()
+	if len(got613) < 3 || got613[0] != "/stream/series/tt0388629:1:583.json" || got613[1] != "/stream/series/tt0388629:15:583.json" || got613[2] != "/stream/series/tt0388629:16:5.json" {
+		t.Fatalf("straight-through requests = %v, want absolute, season, group in that order", got613)
+	}
+	hashes := map[string]bool{}
+	for _, r := range rels613 {
+		hashes[r.InfoHash] = true
+	}
+	if !hashes[hashA] || !hashes[hashB] || !hashes[hashC] {
+		t.Fatalf("merged releases missing a lookup's answer: %+v", rels613)
+	}
+
+	// Automatic mode (no XEM/group alias at all) still asks the absolute form.
+	fAuto := &fakeAddon{manifest: manifest, streams: map[string]string{
+		"/stream/series/tt0388629:1:1161.json":  `{"streams":[{"name":"AIO","title":"[Group] One Piece - 1161 (1080p)","infoHash":"` + hashA + `"}]}`,
+		"/stream/series/tt0388629:23:1161.json": `{"streams":[]}`,
+	}}
+	srvAuto := httptest.NewServer(fAuto.handler(t))
+	defer srvAuto.Close()
+	bAuto := backendWith(t, srvAuto.URL, Options{Client: srvAuto.Client()}, "ixauto")
+	reqAuto := req613
+	reqAuto.Season, reqAuto.Episode, reqAuto.AbsoluteEpisode, reqAuto.ReleaseAliases = 23, 1161, 1161, nil
+	relsAuto, err := bAuto.Search(t.Context(), reqAuto, noReserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fAuto.streamRequests(); len(got) < 2 || got[0] != "/stream/series/tt0388629:1:1161.json" || got[1] != "/stream/series/tt0388629:23:1161.json" || len(relsAuto) != 1 {
+		t.Fatalf("automatic requests=%v rels=%+v", got, relsAuto)
 	}
 
 	// ReleaseAliasesOnly queries only the alias route without repeating canonical.

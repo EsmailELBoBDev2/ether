@@ -68,12 +68,15 @@ type source struct {
 }
 
 func newSource(e *Engine, rel *release, p *plan, releaseID string) *source {
+	return newSourceWithCache(e, rel, p, releaseID, releaseID)
+}
+func newSourceWithCache(e *Engine, rel *release, p *plan, releaseID, cacheID string) *source {
 	ctx, cancel := context.WithCancel(e.ctx)
 	e.active.Add(1)
 	s := &source{
 		e: e, rel: rel, plan: p, releaseID: releaseID,
-		bulk:   &bulkReader{e: e, r: rel, prio: core.PriorityReadahead, fo: fetchOpts{cacheID: releaseID}},
-		fo:     fetchOpts{cacheID: releaseID},
+		bulk:   &bulkReader{e: e, r: rel, prio: core.PriorityReadahead, fo: fetchOpts{cacheID: cacheID}},
+		fo:     fetchOpts{cacheID: cacheID},
 		ctx:    ctx,
 		cancel: cancel,
 		raSem:  make(chan struct{}, maxAdaptiveParallel),

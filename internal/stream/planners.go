@@ -383,10 +383,27 @@ func (b *builder) rarFromVolumes(ctx context.Context, vols []*postedFile, parsed
 		return p, p.init()
 	}
 	p, err := plan(m)
+	if err == nil {
+		b.keepSiblings(p, members, m, plan)
+	}
 	if err == nil && isISOName(p.name) {
 		b.stashDiscs(members, m, plan)
 	}
 	return p, err
+}
+
+func (b *builder) keepSiblings(p *plan, members []archive.Member, m *archive.Member, plan func(*archive.Member) (*plan, error)) {
+	if b.e.opts.OnLayout != nil && !isISOName(p.name) {
+		for i := range members {
+			other := &members[i]
+			info := nzb.Classify(other.Name)
+			if other.Name != m.Name && info.Kind == nzb.KindVideo && !info.Sample && !info.Extra && other.Stored && !other.Encrypted {
+				if q, e := plan(other); e == nil {
+					p.siblings = append(p.siblings, q)
+				}
+			}
+		}
+	}
 }
 
 // stashDiscs plans the archive's other disc images, the further discs of a
@@ -498,6 +515,9 @@ func (b *builder) plan7z(ctx context.Context, vols []*postedFile) (*plan, error)
 		return p, p.init()
 	}
 	p, err := plan(m)
+	if err == nil {
+		b.keepSiblings(p, members, m, plan)
+	}
 	if err == nil && isISOName(p.name) {
 		b.stashDiscs(members, m, plan)
 	}
@@ -549,12 +569,19 @@ func (b *builder) planZIP(ctx context.Context, vols []*postedFile) (*plan, error
 	if m == nil {
 		return nil, fmt.Errorf("%w: zip %s holds no video (%d files)", ErrNoPlayableFile, vols[0].Name(), len(members))
 	}
-	if err := m.Streamable(); err != nil {
-		return nil, fmt.Errorf("stream: zip %s: %s: %w", vols[0].Name(), m.Name, err)
+	makePlan := func(m *archive.Member) (*plan, error) {
+		if err := m.Streamable(); err != nil {
+			return nil, fmt.Errorf("stream: zip %s: %s: %w", vols[0].Name(), m.Name, err)
+		}
+		p := newPlan(b.rel, kindZIP, path.Base(m.Name), m.Size, vols, info, verified)
+		p.concatExt = m.Extents
+		return p, p.init()
 	}
-	p := newPlan(b.rel, kindZIP, path.Base(m.Name), m.Size, vols, info, verified)
-	p.concatExt = m.Extents
-	return p, p.init()
+	p, err := makePlan(m)
+	if err == nil {
+		b.keepSiblings(p, members, m, makePlan)
+	}
+	return p, err
 }
 
 // chooseMember is chooseMember restricted to the episode the NZB asks for

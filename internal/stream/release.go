@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/vault"
 	"io"
 	"sort"
 	"sync"
@@ -20,6 +21,7 @@ var errEOF = io.EOF
 // release is the engine's state for one NZB: its posted files with their
 // indexes, and the plan (layout of the main video), built once.
 type release struct {
+	saved  *vault.Layout
 	e      *Engine
 	digest string
 	doc    *nzb.NZB
@@ -96,6 +98,17 @@ func (r *release) ensurePlanWithCandidate(ctx context.Context, prio core.Priorit
 		return nil, r.planErr
 	}
 	b := &builder{e: r.e, rel: r, prio: prio, fo: fetchOpts{cacheID: cacheID}, candidateReady: ready}
+	if r.saved != nil {
+		p, err := b.restore(ctx, r.saved)
+		if err != nil {
+			return nil, err
+		}
+		if p != nil {
+			r.plan = p
+			return p, nil
+		}
+		r.saved = nil
+	}
 	p, err := b.build(ctx)
 	if err != nil {
 		if IsRejection(err) && ctx.Err() == nil {
@@ -293,6 +306,9 @@ func (b *builder) planFor(ctx context.Context, c candidate) (*plan, error) {
 	switch c.kind {
 	case nzb.KindVideo, nzb.KindISO:
 		if movie, ok := b.rel.doc.MovieHint(); ok && len(movie.Titles) > 0 && b.hasMultipleMovieCandidates(b.candidates(b.rel.files)) && !releaseparse.MovieFileMatches(c.files[0].Name(), movie.Titles, movie.Year) {
+			return nil, ErrNoPlayableFile
+		}
+		if h, ok := b.rel.doc.EpisodeHint(); ok && !memberMatchesHint(h, c.files[0].Name()) && len(b.candidates(b.rel.files)) > 1 {
 			return nil, ErrNoPlayableFile
 		}
 		return b.planPlain(ctx, c.files[0])

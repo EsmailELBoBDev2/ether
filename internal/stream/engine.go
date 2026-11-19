@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/braedonsaunders/ether/internal/vault"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -41,7 +42,9 @@ const DefaultBackoffHold = 45 * time.Second
 
 // Options tune the engine. Zero values take the defaults noted.
 type Options struct {
-	Repair config.Repair
+	OnLayout  func(releaseID string, l vault.Layout)
+	OnMissing func(releaseID string)
+	Repair    config.Repair
 	// HotBufferBytes bounds decoded segments kept in memory across all
 	// sources (default 256 MiB).
 	HotBufferBytes int64
@@ -326,8 +329,12 @@ func (e *Engine) Open(ctx context.Context, releaseID string, nzbData []byte) (co
 	if err != nil {
 		return nil, err
 	}
+	return e.openRelease(ctx, releaseID, releaseID, rel)
+}
+
+func (e *Engine) openRelease(ctx context.Context, releaseID, cacheID string, rel *release) (core.MediaSource, error) {
 	// The plan probe is the cold-start head of line: its reads are one stream.
-	p, err := rel.ensurePlan(core.WithStreamKey(ctx, rel), core.PriorityLive, releaseID)
+	p, err := rel.ensurePlan(core.WithStreamKey(ctx, rel), core.PriorityLive, cacheID)
 	if err != nil {
 		e.release(rel)
 		if IsRejection(err) {
@@ -344,12 +351,28 @@ func (e *Engine) Open(ctx context.Context, releaseID string, nzbData []byte) (co
 	if e.repairOptions().Enabled {
 		warmCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		if rel.repairMu.TryLock() {
-			e.prepareRepair(warmCtx, rel, core.PriorityReadahead, fetchOpts{cacheID: releaseID, noRepair: true})
+			e.prepareRepair(warmCtx, rel, core.PriorityReadahead, fetchOpts{cacheID: cacheID, noRepair: true})
 			rel.repairMu.Unlock()
 		}
 		cancel()
 	}
-	return newSource(e, rel, p, releaseID), nil
+	if cb := e.opts.OnLayout; cb != nil && !p.restored {
+		p.report.Do(func() {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if e.closed {
+				return
+			}
+			rel.refs++
+			e.wg.Go(func() {
+				defer e.release(rel)
+				if l := p.vaultLayout(e.ctx, cacheID); l != nil && e.ctx.Err() == nil {
+					cb(cacheID, *l)
+				}
+			})
+		})
+	}
+	return newSourceWithCache(e, rel, p, releaseID, cacheID), nil
 }
 
 // Prefetch warms [offset, offset+length) of the main video into the
@@ -389,7 +412,12 @@ func (e *Engine) acquire(nzbData []byte) (*release, error) {
 	if err != nil {
 		return nil, err
 	}
+	return e.acquireDoc(digest, doc, nil), nil
+}
+
+func (e *Engine) acquireDoc(digest string, doc *nzb.NZB, saved *vault.Layout) *release {
 	rel := newRelease(e, digest, doc)
+	rel.saved = saved
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -397,12 +425,12 @@ func (e *Engine) acquire(nzbData []byte) (*release, error) {
 		other := el.Value.(*release)
 		other.refs++
 		e.relLRU.MoveToFront(el)
-		return other, nil
+		return other
 	}
 	rel.refs = 1
 	e.releases[digest] = e.relLRU.PushFront(rel)
 	e.trimReleasesLocked()
-	return rel, nil
+	return rel
 }
 
 func (e *Engine) release(rel *release) {

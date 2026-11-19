@@ -52,7 +52,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	}
 	a.cache.SetDiskUsage(diskUsage)
 	a.configureCache(cfg.Cache)
-	a.engine = stream.New(a.fetcher, a.cache, stream.OptionsFromConfig(cfg), log.With("component", "stream"))
+	a.engine = stream.New(a.fetcher, a.cache, a.vaultStreamOptions(cfg), log.With("component", "stream"))
 	a.closers = append(a.closers, func() { a.engine.Close() })
 
 	// Indexers and resolver.

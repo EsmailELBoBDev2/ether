@@ -83,11 +83,14 @@ func (l *layout) pieces(off, n int64) []piece {
 
 // plan is the resolved main video of a release.
 type plan struct {
-	kind planKind
-	name string
-	size int64
-	vols []*postedFile
-	rel  *release
+	report   sync.Once
+	restored bool
+	siblings []*plan
+	kind     planKind
+	name     string
+	size     int64
+	vols     []*postedFile
+	rel      *release
 
 	// RAR: the member name every continuation header must carry, and
 	// whether volumes use RAR5 headers.

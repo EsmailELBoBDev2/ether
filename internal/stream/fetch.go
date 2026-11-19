@@ -537,6 +537,9 @@ func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i i
 				return seg, false, aerr
 			}
 			e.missing.Add(1)
+			if cb := e.opts.OnMissing; cb != nil && fo.cacheID != "" {
+				cb(fo.cacheID)
+			}
 			return nil, false, fmt.Errorf("stream: %s part %d <%s>: %w", pf.Name(), i+1, id, err)
 		}
 		if ctx.Err() != nil {

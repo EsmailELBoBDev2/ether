@@ -78,7 +78,8 @@ func (a *App) buildSourceRole(ctx context.Context, cfg config.Config) error {
 	a.closers = append(a.closers, func() { _ = a.sourceProber.Close() })
 	var tc core.Transcoder = sourceProbeOnly{prober: a.sourceProber}
 	a.playback, err = playback.New(playback.Deps{
-		Resolver: a.resolver, Engine: playbackEngine(a), Transcoder: tc, Catalog: a.catalog, Cache: a.cache, DB: a.db, Logger: a.log, Cluster: a.clusterNode(), Availability: a.dbAvail,
+		OpenResolution: a.openVaultResolution,
+		Resolver:       a.resolver, Engine: playbackEngine(a), Transcoder: tc, Catalog: a.catalog, Cache: a.cache, DB: a.db, Logger: a.log, Cluster: a.clusterNode(), Availability: a.dbAvail,
 		NativeProbe: func(ctx context.Context, src core.MediaSource) (*core.MediaInfo, error) {
 			return transcode.ProbeSource(ctx, src, src.Size())
 		},

@@ -75,6 +75,7 @@ func (a *App) cacheHandler() http.Handler {
 	a.cache.SetBlockCheck(a.resolver.LocalReleaseBlocked)
 	mux := http.NewServeMux()
 	a.registerWarmingControls(mux)
+	a.registerVaultAdmin(mux)
 	mux.HandleFunc("POST /clear-all", func(w http.ResponseWriter, r *http.Request) {
 		if len(a.playback.Sessions()) > 0 || len(a.playback.RemoteSessions(r.Context())) > 0 {
 			cacheConflict(w)

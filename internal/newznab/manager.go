@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // Manager holds all configured indexers and spreads searches across
@@ -373,6 +374,21 @@ func (m *Manager) SearchWith(ctx context.Context, req core.SearchRequest, arrive
 // Events are emitted by the client at the point of cache hit, budget refusal
 // or HTTP download.
 func (m *Manager) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) {
+	// A library release is answered from the vault, never an indexer.
+	if key := vault.KeyOf(r); key != "" {
+		if m.opts.Vault == nil {
+			return nil, vault.ErrPayloadMissing
+		}
+		rec, err := m.opts.Vault.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if rec.Kind != vault.KindUsenet || len(rec.XML) == 0 {
+			return nil, vault.ErrPayloadMissing
+		}
+		_ = m.opts.Vault.Touch(ctx, key, true)
+		return rec.XML, nil
+	}
 	cl, err := m.releaseClient(r)
 	if err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
@@ -22,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/stremio"
 	"github.com/braedonsaunders/ether/internal/sysload"
 	"github.com/braedonsaunders/ether/internal/usenet"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
@@ -55,6 +57,30 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	a.engine = stream.New(a.fetcher, a.cache, a.vaultStreamOptions(cfg), log.With("component", "stream"))
 	a.closers = append(a.closers, func() { a.engine.Close() })
 
+	shared := cfg.Cache.Storage == "shared"
+	local, err := vault.Open(ctx, vault.Options{Dir: filepath.Join(cacheDir, "vault"), DB: a.db, Sealer: a.cfg, NodeID: a.cacheNodeID(), Shared: shared, Logger: log.With("component", "vault")})
+	if err != nil {
+		return fmt.Errorf("open vault: %w", err)
+	}
+	a.vault = a.clusterVault(ctx, local, shared)
+	legacyDir := filepath.Join(dataDir, "nzb")
+	var migrated atomic.Bool
+	if m, ok := local.(vault.Migrator); ok {
+		migrationCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := m.MigrateDir(migrationCtx, legacyDir); err != nil {
+				if migrationCtx.Err() == nil {
+					log.Warn("NZB migration incomplete")
+				}
+				return
+			}
+			migrated.Store(true)
+		}()
+		a.closers = append(a.closers, func() { cancel(); <-done })
+	}
+
 	// Indexers and resolver.
 	indexerHosts := newznab.NewHostLimiter(0)
 	siteOpts := cardigann.Options{DB: a.db, Sealer: a.cfg, Logger: log.With("component", "cardigann"), Sites: cfg.IndexerSites, HostLimiter: indexerHosts}
@@ -67,7 +93,20 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
 		Logger:         log.With("component", "newznab"),
 		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
-		NZBDir:         filepath.Join(dataDir, "nzb"),
+		Vault:          a.vault,
+		LegacyNZBDir: func() string {
+			if migrated.Load() {
+				return ""
+			}
+			return legacyDir
+		},
+		PublicIndexer: func(ctx context.Context, ix config.Indexer) bool {
+			if !ix.IsBuiltin() {
+				return false
+			}
+			d, err := a.sites.Definition(ctx, ix.Definition)
+			return err == nil && d.Type == "public"
+		},
 		ClientIdentity: cfg.ClientIdentity,
 		HostLimiter:    indexerHosts,
 		Backend: func(ix config.Indexer) (newznab.Backend, error) {
@@ -96,6 +135,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		}
 		return a.livetv.AcquireProvider(ctx, id)
 	}, DB: a.db, Logger: log.With("component", "debrid"), OnChange: a.publishDashboard})
+	a.debrid.SetVault(a.vault)
 	ss := a.initStreamSources(a.indexers)
 	ss.SetAnimeIDs(a.addons.AnimeIDs())
 	ss.SetSpecialEpisodes(specials)

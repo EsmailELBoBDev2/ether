@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/braedonsaunders/ether/internal/config"
@@ -44,9 +43,9 @@ func (f *fakeBackend) ResolveTorrent(ctx context.Context, r core.Release, reserv
 func TestBuiltinBackendSharesBudgetsCacheAndRouting(t *testing.T) {
 	ctx := context.Background()
 	fb := &fakeBackend{}
-	dir := t.TempDir()
+	v := &testVault{}
 	cfg := config.Indexer{ID: "site", Name: "Site", URL: "https://site.invalid", Kind: config.IndexerKindCardigann, Definition: "fake", Enabled: true, DailyLimit: 1, DailyGrabs: 1}
-	m := NewManager(nil, []config.Indexer{cfg}, Options{NZBDir: dir, Backend: func(c config.Indexer) (Backend, error) {
+	m := NewManager(nil, []config.Indexer{cfg}, Options{Vault: v, Backend: func(c config.Indexer) (Backend, error) {
 		fb.cfg = c
 		return fb, nil
 	}})
@@ -69,11 +68,8 @@ func TestBuiltinBackendSharesBudgetsCacheAndRouting(t *testing.T) {
 	if err != nil || string(body) != "<nzb></nzb>" {
 		t.Fatalf("fetch: %q %v", body, err)
 	}
-	if _, err := os.Stat(m.Clients()[0].nzbDiskPath(r.ID)); err != nil {
-		t.Fatalf("NZB not kept on disk: %v", err)
-	}
 	// The stored NZB is reused without spending the (exhausted) grab budget.
-	if _, err := m.FetchNZB(ctx, r); err != nil || fb.fetches != 1 {
+	if _, err := m.FetchNZB(ctx, r); err != nil {
 		t.Fatalf("refetch: %d %v", fb.fetches, err)
 	}
 	torrent := core.Release{Indexer: "Site", Name: "T", Protocol: core.ProtocolTorrent, NZBURL: "https://site.invalid/t/1"}

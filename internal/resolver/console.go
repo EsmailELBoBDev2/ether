@@ -624,10 +624,13 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, seasonSearchParallel)
 
+	// The pack search gets its own copy: episode searches rewrite their
+	// request in place (searchWithNumbering) while this one runs.
+	packReq := sreqs[0]
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		rescuePacks = s.searchSeasonPacks(ctx, sreqs[0], opts.Fresh)
+		rescuePacks = s.searchSeasonPacks(ctx, packReq, opts.Fresh)
 	}()
 
 	for i := range eps {

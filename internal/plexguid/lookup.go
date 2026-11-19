@@ -151,7 +151,16 @@ func (s *Service) Lookup(ctx context.Context, guid string) (core.RatingKey, erro
 	// canonical record must carry the same title and a year that cannot be a
 	// namesake, and the identity it proves is what gets stored. Reuse the
 	// record already fetched rather than calling Plex a second time.
-	id := s.verifyItems(ctx, found, kind, guid, items, s.localIdentity(ctx, found))
+	li := s.localIdentity(ctx, found)
+	if li.year <= 0 && s.o.EnsureTitle != nil {
+		err := s.o.EnsureTitle(ctx, found)
+		if err == nil || errors.Is(err, core.ErrNotFound) {
+			li = s.localIdentity(ctx, found)
+		} else {
+			return 0, err
+		}
+	}
+	id := s.verifyItems(ctx, found, kind, guid, items, li)
 	if id.GUID == "" {
 		return 0, core.ErrNotFound
 	}

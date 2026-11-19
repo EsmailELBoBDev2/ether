@@ -127,14 +127,35 @@ func suggestMatchingViewer(viewers []ViewerRecord, acct plexwatch.PMSAccount) *V
 }
 
 func (h *Handler) shareViewerPlex(ctx context.Context, usernameOrEmail string) error {
-	usernameOrEmail = strings.TrimSpace(usernameOrEmail)
-	if usernameOrEmail == "" {
-		return errors.New("plextv: username or email required")
-	}
 	// Note: PMS accounts from /accounts have local sequence IDs (e.g. 1 for owner, 2, 3),
 	// NOT global Plex.tv user IDs. Passing userID 0 ensures Plex.tv shares by username/email.
+	return h.shareViewerPlexTarget(ctx, usernameOrEmail, 0)
+}
+
+func (h *Handler) shareViewerPlexViewer(ctx context.Context, v *ViewerRecord, fallbackName string) error {
+	if v == nil {
+		return h.shareViewerPlexTarget(ctx, fallbackName, 0)
+	}
+	target := strings.TrimSpace(v.Email)
+	if target == "" {
+		target = strings.TrimSpace(v.Username)
+	}
+	if target == "" {
+		target = strings.TrimSpace(v.Title)
+	}
+	if target == "" {
+		target = strings.TrimSpace(fallbackName)
+	}
+	return h.shareViewerPlexTarget(ctx, target, v.PlexID)
+}
+
+func (h *Handler) shareViewerPlexTarget(ctx context.Context, usernameOrEmail string, userID int64) error {
+	usernameOrEmail = strings.TrimSpace(usernameOrEmail)
+	if usernameOrEmail == "" && userID <= 0 {
+		return errors.New("plextv: username or email required")
+	}
 	if h.deps.SharePlexViewer != nil {
-		err := h.deps.SharePlexViewer(ctx, usernameOrEmail, 0)
+		err := h.deps.SharePlexViewer(ctx, usernameOrEmail, userID)
 		if err != nil {
 			h.log.Warn("share plex library error", "account", usernameOrEmail, "err", err)
 		} else {
@@ -163,7 +184,7 @@ func (h *Handler) shareViewerPlex(ctx context.Context, usernameOrEmail string) e
 		h.log.Warn("create plextv client error", "err", err)
 		return err
 	}
-	err = client.ShareServer(ctx, token, usernameOrEmail, 0, nil)
+	err = client.ShareServer(ctx, token, usernameOrEmail, userID, nil)
 	if err != nil {
 		h.log.Warn("share plex library error", "account", usernameOrEmail, "err", err)
 	} else {
@@ -364,8 +385,8 @@ func (h *Handler) handleImportPlexViewer(w http.ResponseWriter, r *http.Request)
 	// 5. If matched in step 1 and not yet shared on Plex.tv, share library access now.
 	// Only share if the matched viewer is a Plex-authenticated user (PlexID > 0).
 	// For local viewers (PlexID == 0), sharing on Plex.tv would sync a duplicate friend into auth_users.
-	if !acct.Owner && (matched != nil && matched.PlexID > 0) && !sharedPlex && shareErr == "" && strings.TrimSpace(acct.Name) != "" {
-		if err := h.shareViewerPlex(r.Context(), acct.Name); err != nil {
+	if !acct.Owner && (matched != nil && matched.PlexID > 0) && !sharedPlex && shareErr == "" {
+		if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name); err != nil {
 			shareErr = err.Error()
 		} else {
 			sharedPlex = true
@@ -447,16 +468,18 @@ func (h *Handler) handleMatchPlexViewer(w http.ResponseWriter, r *http.Request) 
 		shareErr   string
 	)
 	var isPlexViewer bool
+	var matchedViewer *ViewerRecord
 	if viewers, err := h.storedViewers(r.Context()); err == nil {
-		for _, v := range viewers {
-			if v.ID == body.ViewerID {
-				isPlexViewer = v.PlexID > 0
+		for i := range viewers {
+			if viewers[i].ID == body.ViewerID {
+				matchedViewer = &viewers[i]
+				isPlexViewer = viewers[i].PlexID > 0
 				break
 			}
 		}
 	}
 	if !isOwner && isPlexViewer && acctName != "" {
-		if err := h.shareViewerPlex(r.Context(), acctName); err != nil {
+		if err := h.shareViewerPlexViewer(r.Context(), matchedViewer, acctName); err != nil {
 			shareErr = err.Error()
 		} else {
 			sharedPlex = true
@@ -610,8 +633,8 @@ func (h *Handler) handleImportAllPlexViewers(w http.ResponseWriter, r *http.Requ
 			// 4. If matched in step 1 and not yet shared on Plex.tv, share now.
 			// Only share if the matched viewer is a Plex-authenticated user (PlexID > 0).
 			// For local viewers (PlexID == 0), sharing on Plex.tv would sync a duplicate friend into auth_users.
-			if !acct.Owner && (matched != nil && matched.PlexID > 0) && !sharedPlex && shareErr == "" && strings.TrimSpace(acct.Name) != "" {
-				if err := h.shareViewerPlex(r.Context(), acct.Name); err != nil {
+			if !acct.Owner && (matched != nil && matched.PlexID > 0) && !sharedPlex && shareErr == "" {
+				if err := h.shareViewerPlexViewer(r.Context(), matched, acct.Name); err != nil {
 					shareErr = err.Error()
 				} else {
 					sharedPlex = true

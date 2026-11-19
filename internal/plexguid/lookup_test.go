@@ -175,3 +175,36 @@ func TestExactKeyDoesNotDeriveEpisodeFromShow(t *testing.T) {
 		t.Fatalf("ambiguous %v", err)
 	}
 }
+
+func TestLookupWarmsMissingCatalogTitle(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.OpenMemory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const guid = "plex://movie/5d7768265af944001f1f6976"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"MediaContainer":{"Metadata":[{"guid":%q,"type":"movie","title":"Fight Club","year":1999,"Guid":[{"id":"tmdb://550"}]}]}}`, guid)
+	}))
+	defer upstream.Close()
+
+	pg := New(db, Options{
+		BaseURL: upstream.URL,
+		Token:   func() string { return "fixture" },
+		EnsureTitle: func(ctx context.Context, k core.RatingKey) error {
+			if k != core.MovieKey(550) {
+				return core.ErrNotFound
+			}
+			seedCatalogTitle(t, db, k, "movie", "Fight Club", 1999)
+			return nil
+		},
+	})
+	defer pg.Close()
+
+	k, err := pg.Lookup(ctx, guid)
+	if err != nil || k != core.MovieKey(550) {
+		t.Fatalf("Lookup cold title = %v, %v; want %v", k, err, core.MovieKey(550))
+	}
+}

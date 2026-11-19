@@ -113,16 +113,17 @@ type Options struct {
 	OnFriendsRSSChanged func(context.Context)
 }
 type Service struct {
-	db              *sql.DB
-	o               Options
-	mu              sync.Mutex
-	rssMu           sync.Mutex
-	rssClient       *http.Client
-	communityMu     sync.Mutex
-	rssCheckMu      sync.Mutex
-	rssCheckPending map[int64]core.User
-	nextCheck       time.Time
-	gen             atomic.Uint64
+	db                 *sql.DB
+	o                  Options
+	mu                 sync.Mutex
+	rssMu              sync.Mutex
+	rssClient          *http.Client
+	communityMu        sync.Mutex
+	rssCheckMu         sync.Mutex
+	rssCheckPending    map[int64]core.User
+	nextCheck          time.Time
+	gen                atomic.Uint64
+	friendsSyncRunning atomic.Bool
 }
 
 // Generation changes when watchlist membership changes.

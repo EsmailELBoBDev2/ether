@@ -116,3 +116,19 @@ func cloneDetailVariants(in []core.ReleaseVariant) []core.ReleaseVariant {
 	}
 	return out
 }
+
+// InvalidateDetailVariants drops completed cached detail-variant snapshots so
+// newly probed container tracks and any updated ranking order appear on the
+// next detail read.
+func (s *Service) InvalidateDetailVariants() {
+	if s == nil {
+		return
+	}
+	s.bgMu.Lock()
+	for k, v := range s.detailVariants {
+		if !v.pending {
+			delete(s.detailVariants, k)
+		}
+	}
+	s.bgMu.Unlock()
+}

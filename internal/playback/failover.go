@@ -1875,6 +1875,9 @@ func (m *Manager) resumeResolution(ctx context.Context, userID int64, key core.R
 
 // saveResume remembers the release now serving a session.
 func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
+	if g.res != nil {
+		m.noteReleaseProbeMemory(g.res.Release, g.res.NZB, g.infoSnapshot())
+	}
 	if m.resume == nil || g.res == nil || len(g.res.NZB) == 0 {
 		return
 	}
@@ -1912,6 +1915,7 @@ func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 		if err := m.resume.putWithProbe(ctx, rec, nzb, points, info); err != nil {
 			m.log.Warn("save resume record failed", "key", rec.key, "err", err)
 		}
+		m.persistReleaseProbe(ctx, rec.release, nzb, info)
 	}()
 }
 

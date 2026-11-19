@@ -218,6 +218,38 @@ func (r Release) EffectiveContentID() string {
 	return r.PreFetchContentID()
 }
 
+// ProbeContentKeys returns the durable content-identity keys under which
+// probed container metadata for r may be stored or looked up, ordered from
+// strongest (exact content identity) to weakest (pre-fetch identity). Season
+// packs are episode-scoped via ScopedContentID.
+func (r Release) ProbeContentKeys() []string {
+	var out []string
+	add := func(k string) {
+		if k == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == k {
+				return
+			}
+		}
+		out = append(out, k)
+	}
+	if r.ContentID != "" {
+		add(r.ScopedContentID(r.ContentID))
+	}
+	if hash := strings.ToLower(strings.TrimSpace(r.InfoHash)); hash != "" {
+		add(r.ScopedContentID("bt:" + hash))
+	}
+	if pre := r.PreFetchContentID(); pre != "" {
+		add(pre)
+	}
+	if len(out) == 0 && r.ID != "" {
+		add(r.ScopedContentID("rel:" + r.ID))
+	}
+	return out
+}
+
 // Resolution is the resolver's answer for a title and client: the winning
 // release, already health-checked, plus fallbacks for mid-stream failover.
 type Resolution struct {

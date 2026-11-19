@@ -1314,7 +1314,15 @@ func audioDisplayTitle(st frontend.StreamInfo) string {
 	}
 	inner := audioStreamCodecLabel(st)
 	if ch := channelsLabel(st.Channels, st.ChannelLayout); ch != "" {
-		inner += " " + ch
+		if inner != "" {
+			inner += " " + ch
+		} else {
+			inner = ch
+		}
+	}
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return lang
 	}
 	return lang + " (" + inner + ")"
 }

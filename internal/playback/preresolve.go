@@ -179,10 +179,12 @@ func (m *Manager) ProbeMetadata(ctx context.Context, user *core.User, key core.R
 	}
 	if _, _, ok := m.ResumedTracks(ctx, user, key, caps); ok {
 		m.RevealDetail(user, caps.ClientID, key)
+		m.scheduleVersionProbes(user, key, caps)
 		return nil
 	}
 	if _, ok := m.WarmProbeInfo(user, caps, key); ok {
 		m.RevealDetail(user, caps.ClientID, key)
+		m.scheduleVersionProbes(user, key, caps)
 		return nil
 	}
 	if user != nil && core.DetailBurst(user.ID, caps.ClientID, key) {
@@ -301,6 +303,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 	if existing := m.warm[id]; existing != nil {
 		accepted := m.scheduleChannelWindowLocked(existing, opts.StartOffset)
 		m.mu.Unlock()
+		if reason == core.PrewarmDetail && !opts.DuringPlayback {
+			m.scheduleVersionProbes(user, key, caps)
+		}
 		return accepted
 	}
 	if at, ok := m.warmMisses[id]; ok {
@@ -430,6 +435,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		if err != nil || title == nil || title.IsFutureRelease(m.now()) || title.Type == core.TypeShow || title.Type == core.TypeSeason {
 			return
 		}
+		if reason == core.PrewarmDetail && !opts.DuringPlayback {
+			defer m.scheduleVersionProbes(&u, key, caps)
+		}
 		// Warming must not override the source that actually survived the
 		// previous playback with the original, slower top-ranked release.
 		res := m.resumeResolution(ctx, u.ID, key, e.profileObj, caps, strings.TrimSpace(title.Language))
@@ -523,6 +531,9 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		e.ready.Do(func() { close(e.done) })
 		if !usenetWarm(res) {
 			e.markOpeningReady()
+		}
+		if facts != nil && !facts.info.Estimated {
+			m.RecordReleaseProbe(ctx, res.Release, res.NZB, facts.info)
 		}
 		m.log.Debug("prewarm ready", "key", key, "reason", reason, "release", res.Release.Name, "prefetch", prefetchBytes, "detailOnly", detailOnly)
 		if prefetchBytes <= 0 || detailOnly {

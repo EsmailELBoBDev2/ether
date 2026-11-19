@@ -14,15 +14,27 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
+type trackKey struct {
+	key     Key
+	season  int
+	episode int
+}
+
+const maxVaultTrackCache = 4096
+
 type library struct {
 	Options
-	mu      sync.Mutex // writer name and transaction ordering on standalone SQLite
-	writer  string
-	cacheMu sync.Mutex
-	cache   []cached
+	mu           sync.Mutex // writer name and transaction ordering on standalone SQLite
+	writer       string
+	cacheMu      sync.Mutex
+	cache        []cached
+	trackMu      sync.RWMutex
+	tracks       map[trackKey]core.MediaInfo
+	tracksLoaded bool
 }
 type cached struct {
 	key Key
@@ -43,6 +55,8 @@ var (
 	_ Membership    = (*library)(nil)
 	_ SearchCounter = (*library)(nil)
 	_ Lister        = (*library)(nil)
+	_ TrackStore    = (*library)(nil)
+	_ AliasResolver = (*library)(nil)
 )
 
 func Open(ctx context.Context, o Options) (Store, error) {
@@ -61,7 +75,9 @@ func Open(ctx context.Context, o Options) (Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &library{Options: o}, nil
+	lib := &library{Options: o}
+	lib.preloadTracks(ctx)
+	return lib, nil
 }
 func (v *library) node() string {
 	if v.Shared {
@@ -202,7 +218,15 @@ func (v *library) ReadFrame(ctx context.Context, k Key) ([]byte, error) {
 	}
 	return v.read(l)
 }
-func (v *library) DropCache() { v.cacheMu.Lock(); defer v.cacheMu.Unlock(); v.cache = nil }
+func (v *library) DropCache() {
+	v.cacheMu.Lock()
+	v.cache = nil
+	v.cacheMu.Unlock()
+	v.trackMu.Lock()
+	v.tracks = nil
+	v.tracksLoaded = false
+	v.trackMu.Unlock()
+}
 func (v *library) InstallFrame(ctx context.Context, k Key, b []byte) error {
 	if len(b) > 64<<20 || !check(b) {
 		return invalid

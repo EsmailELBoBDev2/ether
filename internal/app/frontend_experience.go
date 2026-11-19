@@ -467,6 +467,17 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				}
 				result.Versions = append(result.Versions, frontendVersion(title, version))
 			}
+			// When Auto already has real probed tracks (e.g. from the durable
+			// content-ID probe cache or vault), surface them as the detail's
+			// verified tracks instead of falling back to an estimate.
+			if !hasResumed && result.TracksEstimated && len(versions) > 0 && !versions[0].Info.Estimated && len(versions[0].Info.Streams) > 0 {
+				probed := core.CloneMediaInfo(versions[0].Info)
+				if a.subtitles != nil {
+					probed.Streams = append(probed.Streams, (subtitleSurface{app: a}).CachedSidecars(ctx, title, u, probed.Streams)...)
+				}
+				result.Tracks = probed.Streams
+				result.TracksEstimated = false
+			}
 			var markerSource experience.MarkerSource
 			if a.markers != nil {
 				markerSource = a.markers

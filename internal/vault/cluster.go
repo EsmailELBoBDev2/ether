@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/clusterbus"
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // FramePeer exchanges sealed frames with a specific live member.
@@ -156,6 +157,31 @@ func (s *clusteredStore) List(ctx context.Context, q string, kind Kind, health *
 	}
 	if l, ok := s.ReplicaStore.(lister); ok {
 		return l.List(ctx, q, kind, health, limit, cursor)
+	}
+	return nil, ErrNotImplemented
+}
+
+func (s *clusteredStore) Tracks(ctx context.Context, key Key, season, episode int) (core.MediaInfo, bool, error) {
+	if ts, ok := s.ReplicaStore.(TrackStore); ok {
+		return ts.Tracks(ctx, key, season, episode)
+	}
+	return core.MediaInfo{}, false, nil
+}
+
+func (s *clusteredStore) SetTracks(ctx context.Context, key Key, season, episode int, info core.MediaInfo) error {
+	if ts, ok := s.ReplicaStore.(TrackStore); ok {
+		err := ts.SetTracks(ctx, key, season, episode, info)
+		if err == nil {
+			s.iv.Notify(string(key))
+		}
+		return err
+	}
+	return ErrNotImplemented
+}
+
+func (s *clusteredStore) KeysFor(ctx context.Context, releases []core.Release) (map[string]Key, error) {
+	if ar, ok := s.ReplicaStore.(AliasResolver); ok {
+		return ar.KeysFor(ctx, releases)
 	}
 	return nil, ErrNotImplemented
 }

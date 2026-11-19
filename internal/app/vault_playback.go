@@ -116,3 +116,99 @@ func (a *App) openVaultResolution(ctx context.Context, res *core.Resolution) (co
 	}
 	return src, err
 }
+
+// openVaultedForProbe opens a Usenet release whose NZB is already stored in
+// the vault for low-priority background header probing. It never queries any
+// indexer or grabs an NZB; releases absent from the vault return (nil, nil, nil).
+func (a *App) openVaultedForProbe(ctx context.Context, r core.Release) (core.MediaSource, []byte, error) {
+	if a.vault == nil || a.engine == nil || (r.Protocol != core.ProtocolUsenet && r.Protocol != "") {
+		return nil, nil, nil
+	}
+	key := vault.KeyOf(r)
+	if key == "" && strings.HasPrefix(r.ContentID, nzb.ContentIDPrefix) {
+		key = vault.Key(r.ContentID)
+	}
+	if key == "" {
+		idx := r.IndexerID
+		if idx == "" {
+			idx = vault.LegacyAliasIndexer
+		}
+		id := r.ID
+		if r.Target != nil && r.Target.PackID != "" {
+			id = r.Target.PackID
+		}
+		var err error
+		if id != "" {
+			key, _, err = a.vault.ByAlias(ctx, idx, id)
+		}
+		if key == "" && err == nil && r.ID != "" && r.ID != id {
+			key, _, err = a.vault.ByAlias(ctx, idx, r.ID)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if key == "" {
+		return nil, nil, nil
+	}
+	rec, err := a.vault.Get(ctx, key)
+	if errors.Is(err, vault.ErrNotFound) || errors.Is(err, vault.ErrPayloadMissing) || rec == nil || rec.NZB == nil {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	copyRec := *rec
+	doc := *rec.NZB
+	if t := r.Target; t != nil {
+		doc.Meta = maps.Clone(doc.Meta)
+		if doc.Meta == nil {
+			doc.Meta = map[string][]string{}
+		}
+		if t.Episode > 0 {
+			h := nzb.EpisodeHint{Season: t.Season, Episode: t.Episode, Absolute: t.AbsoluteEpisode}
+			for _, v := range t.Aliases {
+				h.Aliases = append(h.Aliases, [2]int{v.Season, v.Episode})
+			}
+			doc.Meta[nzb.MetaEpisode] = []string{h.String()}
+		} else if len(t.MovieTitles)+len(t.WantedLanguages) > 0 {
+			h := nzb.MovieHint{Titles: t.MovieTitles, Year: t.MovieYear, WantedLanguages: t.WantedLanguages, OriginalLanguage: t.OriginalLanguage}
+			doc.Meta[nzb.MetaMovie] = []string{h.String()}
+		}
+	}
+	copyRec.NZB = &doc
+	var target []byte
+	if r.Info.FullSeason && r.Target != nil && r.Target.Episode > 0 {
+		target, err = debrid.EpisodeNZB(rec.XML, r.Target)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	bgCtx := ctx
+	if !core.IsBackgroundCheck(bgCtx) {
+		bgCtx = core.WithBackgroundBudget(bgCtx, func(context.Context, string, string, int64) error { return nil })
+	}
+	src, err := a.engine.OpenRecordAlias(bgCtx, r.ID, vaultStreamPrefix+string(key), &copyRec, target)
+	if err != nil {
+		return nil, nil, err
+	}
+	return src, rec.XML, nil
+}
+
+// openCachedDebridForProbe opens an already-cached debrid or non-on-demand
+// HTTP release for low-priority header probing without touching any indexer
+// or queuing uncached downloads.
+func (a *App) openCachedDebridForProbe(ctx context.Context, r core.Release) (core.MediaSource, error) {
+	if a.debrid == nil || a.media == nil {
+		return nil, nil
+	}
+	bgCtx := ctx
+	if !core.IsBackgroundCheck(bgCtx) {
+		bgCtx = core.WithBackgroundBudget(bgCtx, func(context.Context, string, string, int64) error { return nil })
+	}
+	payload, ok := a.debrid.ProbePayload(bgCtx, r)
+	if !ok || len(payload) == 0 {
+		return nil, nil
+	}
+	return a.media.Open(bgCtx, r.ID, payload)
+}

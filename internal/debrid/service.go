@@ -92,6 +92,9 @@ type Service struct {
 	knownMu sync.Mutex
 	known   map[string]knownState // providerID|hash
 
+	payloadMetaMu sync.RWMutex
+	payloadMeta   map[string]CachedFileMeta // payloadKey or bt:<hash> -> already-fetched file metadata
+
 	queuedMu sync.Mutex
 	queued   map[string]queuedDownload // queueKey -> the download sent for that title
 
@@ -266,9 +269,10 @@ func NewService(cfg config.Debrid, opts Options) *Service {
 	if opts.ProviderOptions.Now == nil {
 		opts.ProviderOptions.Now = opts.Now
 	}
-	s := &Service{opts: opts, log: opts.Logger, db: opts.DB, now: opts.Now, known: map[string]knownState{}}
+	s := &Service{opts: opts, log: opts.Logger, db: opts.DB, now: opts.Now, known: map[string]knownState{}, payloadMeta: map[string]CachedFileMeta{}}
 	s.direct.guard = opts.DirectGuard
 	s.UpdateConfig(cfg)
+	s.preloadPayloadMeta()
 	return s
 }
 
@@ -759,6 +763,7 @@ func (s *Service) storedPayload(ctx context.Context, key string) (Payload, bool)
 
 func (s *Service) savePayload(ctx context.Context, p Payload) {
 	s.rememberCDNEdge(ctx, p)
+	s.rememberPayloadMeta(p)
 	if s.db == nil || p.Key == "" {
 		return
 	}

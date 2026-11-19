@@ -278,19 +278,36 @@ func (m *Manager) CachedVariantInfo(ctx context.Context, userID int64, key core.
 }
 
 // WithCachedVariantInfo enriches only the bounded list of offered versions.
+// It checks what Ether already knows first (durable content-ID probes, NZB
+// vault tracks, per-viewer playback probes, and already-fetched debrid file
+// metadata) without performing any indexer or network calls.
 func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, title *core.Title, variants []core.ReleaseVariant) []core.ReleaseVariant {
-	if user == nil || title == nil {
+	if title == nil {
 		return variants
 	}
 	out := append([]core.ReleaseVariant(nil), variants...)
 	for i := range out {
+		// Content-ID probe cache and vault tracks work across viewers and
+		// indexers in O(1) memory without touching the database.
+		if info, ok := m.CachedReleaseProbe(out[i].Release); ok {
+			out[i].Info = info
+			continue
+		}
 		// Menu identity may be a logical slot; probes belong to its concrete source.
 		release := out[i].Release.ID
 		if release == "" {
 			release = out[i].ID
 		}
-		if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
-			out[i].Info = info
+		if user != nil {
+			if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
+				out[i].Info = info
+				continue
+			}
+		}
+		if m.deps.DebridFileMeta != nil {
+			if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
+				enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+			}
 		}
 	}
 	return out

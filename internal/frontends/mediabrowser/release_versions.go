@@ -202,6 +202,34 @@ func (i *instance) releaseVersionSources(r *http.Request, scope frontend.Version
 	return i.releaseVersionSourcesFor(r, scope, key, i.releaseVariants(r, scope, title), auto)
 }
 
+// applyProbedMediaFacts enriches an already-built Auto MediaSource with real
+// probed container streams and media attributes without overwriting live
+// PlaybackInfo streams or exposing estimated facts.
+func (i *instance) applyProbedMediaFacts(source map[string]any, itemID string, info frontend.MediaInfo) {
+	if source == nil || info.Estimated || len(info.Streams) == 0 {
+		return
+	}
+	if existing, ok := source["MediaStreams"].([]any); ok && len(existing) > 0 {
+		return
+	}
+	if existing, ok := source["MediaStreams"].([]map[string]any); ok && len(existing) > 0 {
+		return
+	}
+	id, _ := source["Id"].(string)
+	probed := i.detailMediaSourceDTO(id, info)
+	for _, field := range []string{"MediaStreams", "Container", "Size", "RunTimeTicks", "Bitrate"} {
+		if val, ok := probed[field]; ok {
+			source[field] = val
+		}
+	}
+	if i.protocol == "emby" {
+		i.embyMediaSourceDTO(source, itemID, info)
+	}
+	if i.protocol == "jellyfin" {
+		i.jellyfinMediaSourceDTO(source, info, false)
+	}
+}
+
 // releaseVersionSourcesFor is releaseVersionSources with an already-resolved
 // variant list, so PlaybackInfo does not resolve it twice.
 func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.VersionScope, key frontend.RatingKey, variants []frontend.ReleaseVariant, auto map[string]any) []any {
@@ -211,6 +239,12 @@ func (i *instance) releaseVersionSourcesFor(r *http.Request, scope frontend.Vers
 	out := make([]any, 0, len(variants))
 	if auto != nil {
 		auto["Name"] = autoVersionName
+		for _, v := range variants {
+			if v.Auto {
+				i.applyProbedMediaFacts(auto, ids.RatingKeyGUID(key), v.Info)
+				break
+			}
+		}
 		out = append(out, auto)
 	}
 	offered := 0
@@ -297,7 +331,9 @@ func (i *instance) detailSources(r *http.Request, v *frontend.Viewer, token stri
 		// The first configured slot is Auto. Keep MediaBrowser's default
 		// item identity for it; explicit alternatives still use scoped handles.
 		if n == 0 && releaseID == "" && scopeErr == nil && strings.HasPrefix(version.ID, frontend.VersionSelectorPrefix) {
-			sources = append(sources, i.defaultMediaSource(r, v, token, key))
+			auto := i.defaultMediaSource(r, v, token, key)
+			i.applyProbedMediaFacts(auto, ids.RatingKeyGUID(d.Title.Key), version.Media)
+			sources = append(sources, auto)
 			continue
 		}
 		if scopeErr != nil {

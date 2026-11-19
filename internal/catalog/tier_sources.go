@@ -174,7 +174,7 @@ var tierUntouchedTables = []string{
 	"markers_cache", "markers_plugin_cache", "markers_breaks_", "ratings_cache", "ratings_settings",
 	"plexmeta_titles", "plexguid_", "resolver_availability", "resolver_hardsub", "resolver_reputation",
 	"resolver_seadex", "resolver_seadex_keys", "resolver_subtitle_checks", "resolver_verified", "collections_air_dates", "collections_external",
-	"collections_names", "collections_defaults", "collections_meta", "release_observations", "availability_",
+	"collections_names", "collections_defaults", "collections_meta", "release_observations", "release_probes", "vault_tracks", "availability_",
 	"cachefill_shared", "plex_ultrablur", "plex_shelf_generations", "onair_", "xtream_vod", "xtream_vod_refresh", "experience_row_",
 	"mediabrowser_personal_home", "segcache_", "debrid_", "newznab_", "cardigann_",
 	"livetv_programmes", "livetv_guide_", "livetv_group_", "livetv_owner_groups", "livetv_search_", "livetv_numbers", "livetv_sources", "livetv_policies",

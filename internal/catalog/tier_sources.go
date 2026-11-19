@@ -166,6 +166,14 @@ var tierTouchSources = []touchSource{
 // listed, which is the whole mirror.
 var tierUntouchedTables = []string{
 	"transcode_decode_caps", // Device capabilities hold no title references.
+	"personalize_meta",      // One-time migration markers, no titles.
+	// Release identity memory (blocklist links, failed grabs) names releases, not titles.
+	"resolver_content_links",
+	"resolver_failed_grabs",
+	// The NZB vault keeps release payloads and aliases; a removed title's
+	// releases are re-found by search, so the vault never pins a title.
+	"vault_",
+	"vela_wordmarks", // Owner branding images.
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Startup upgrade markers (credential conversion progress).

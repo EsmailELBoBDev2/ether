@@ -1467,6 +1467,13 @@ func (i *instance) serveInstalledSkinFile(w http.ResponseWriter, r *http.Request
 
 	snap := i.skins.ensureLoaded(r.Context())
 	rec, exists := snap.installed[id]
+	if !exists && wantKind == "document" && IsBuiltinSkinID(id) {
+		// Built-in documents ship inside the installed Vela web client
+		// (<clients>/vela/skins/<id>/<version>/), and some client builds
+		// address them under the appearance path like installed skins.
+		i.serveBuiltinSkinFile(w, r, id, version, file, mimeType, ext)
+		return
+	}
 	if !exists || rec.summary.Kind != wantKind || rec.summary.Version != version {
 		problem(w, http.StatusNotFound, "not-found", "not_found")
 		return
@@ -1489,6 +1496,33 @@ func (i *instance) serveInstalledSkinFile(w http.ResponseWriter, r *http.Request
 	}
 
 	root, err := os.OpenRoot(filepath.Join(i.skins.dir, id, version))
+	if err != nil {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	defer root.Close()
+	info, err := root.Stat(file)
+	if err != nil || !info.Mode().IsRegular() {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	data, err := root.ReadFile(file)
+	if err != nil {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	writeImmutableSkinBytes(w, r, mimeType, ext, data)
+}
+
+func (i *instance) serveBuiltinSkinFile(w http.ResponseWriter, r *http.Request, id, version, file, mimeType, ext string) {
+	if i.host.ClientsDir == "" {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	if file == "skin.json" {
+		file = "document.json"
+	}
+	root, err := os.OpenRoot(filepath.Join(i.host.ClientsDir, "vela", "skins", id, version))
 	if err != nil {
 		problem(w, http.StatusNotFound, "not-found", "not_found")
 		return

@@ -1311,7 +1311,6 @@
   "m_043b9d6c4759dd": "Ingen seer med overstyringer samsvarer med «{query}».",
   "m_043bd00cde941a": "URL eller ID for en offentlig TMDB-liste",
   "m_043bfb2b222139": "Nordlyshimmel, en kjent hilsen og en kanal som føles som hjemme.",
-  "m_043ca4bb36f2ce": "Bruker standardradene for Filmbiblioteker",
   "m_043d7f7f5f46a7": "Samsvar innen grupper",
   "m_043f19bc02d5bf": "Tor",
   "m_0440204c943fb4": "Bruk adressen for nettverket ditt. Portendringer krever omstart.",
@@ -4660,7 +4659,6 @@
   "m_0f8ba0bc05e6ee": "Notatet lagres som data, ikke som instruksjoner. Lenker og adresser skjules.",
   "m_0f8c7ccd5758d3": "Ingen kanaler samsvarer med søket ditt",
   "m_0f8edfd5434ec0": "Kunne ikke laste inn valgene: {error}",
-  "m_0f8fa8a4c3233f": "Bruker standardradene for TV-seriebiblioteker",
   "m_0f90618417a9de": "Forvarming og forhåndshenting",
   "m_0f9117ecd1e50e": {
     "one": "{count} håndplukket kanal inkludert",
@@ -5728,7 +5726,6 @@
   "m_12e3664efc78fd": "Søk i {catalog}",
   "m_12e5080b34176d": "Ether-seer",
   "m_12e5c284bfa2ca": "Legg til et plugin",
-  "m_12e628688aec16": "Rediger standardrader",
   "m_12e6d63063af84": {
     "one": "{count} dag",
     "other": "{count} dager"
@@ -8322,7 +8319,6 @@
   "m_1b8128e132cef4": "{hits} av {total} Debrid-blokker",
   "m_1b832c3fc2b5f7": "Blir kjent med dem: radene er personlige, men utforsker fortsatt.",
   "m_1b86404e2f0dd1": "Finn en utgivelse",
-  "m_1b86423d9b111d": "Velg rader for dette biblioteket",
   "m_1b868f1bcdf524": "Denne kanalen finnes ikke lenger.",
   "m_1b86955ceb0278": "Klargjøring ved start og avspilling",
   "m_1b8797fbdae067": "Ether er oppdatert",
@@ -9590,7 +9586,6 @@
   "m_1fbb7f90760b76": "Ether kan spille av denne episoden når den er sendt.",
   "m_1fbbc4f7bfbd9b": "Av: bare festede titler, overvåkingslister og det folk ser på.",
   "m_1fbc6f4325d11f": "KI-søk er utilgjengelig eller kunne ikke tolke denne forespørselen. Prøv igjen, eller bruk filtre.",
-  "m_1fbd675c242d2b": "Gå tilbake til standardradene",
   "m_1fbdb0dc814ddc": "Søn",
   "m_1fbe03036dfea2": "Klokkeavvik",
   "m_1fbec30f65907d": "Lagre som nytt klipp",

@@ -1233,7 +1233,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const defs = [
       {
         hubId: `plugin.${libId}.recently-added`,
-        kind: "recently-added",
+        kind: "recentlyAdded",
         title: `Recently Added ${label}`,
         description: `Newest items synced into ${label}.`,
         group: "picks" as const,
@@ -1241,7 +1241,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       },
       {
         hubId: `plugin.${libId}.top-rated`,
-        kind: "top-rated",
+        kind: "topRated",
         title: `Top Rated ${label}`,
         description: `Highest rated items in ${label}.`,
         group: "explore" as const,
@@ -1581,7 +1581,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     for (const c of state.collections) {
       if (!c.enabled || c.builtIn) continue;
       const targeted =
-        c.targets.homeRow &&
+        (section === "home" ? c.targets.homeRow : c.targets.sectionRow) &&
         (c.targets.users === "all" || (userId !== null && c.targets.users.includes(userId)));
       if (!targeted && !placed.has(String(c.id))) continue;
       // The collection's schedule (a draft's edit in a preview), unless this

@@ -10,7 +10,7 @@ import {
 } from "@braedonsaunders/appkit-ui";
 import { LayoutList, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { ErrorPanel } from "../../components/feedback";
 import { DragHandle, SortableList } from "../../components/Sortable";
 import { t, tn } from "../../i18n";
@@ -20,8 +20,7 @@ import { useAsync } from "../../lib/hooks";
 import {
   EMPTY_LAYOUT,
   collectionScheduleChanges,
-  hasLibraryOverride,
-  mediaSectionForLibrary,
+  pageOf,
   prune,
 } from "../../lib/layout";
 import {
@@ -126,24 +125,23 @@ type DrawerMode =
 export function LibraryTabsSection({ library }: { library: Library }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = useAsync((signal) => librariesApi.tabs(library.id, signal), [library.id]);
-  const layoutDoc = useAsync(() => api.layout(), [library.id]);
+  const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
+  const libraryLayoutDoc = useAsync(
+    (signal) =>
+      supportsRecommendedRows ? api.libraryLayout(library.id, signal) : Promise.resolve(null),
+    [library.id, supportsRecommendedRows],
+  );
   const [saving, setSaving] = useState(false);
   const [localDrawer, setLocalDrawer] = useState<DrawerMode>({ type: "closed" });
 
   const librarySection: LibraryLayoutSection = `library:${library.id}`;
-  const mediaSection = mediaSectionForLibrary(library);
-  const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
-  const recommendedCustomised =
-    supportsRecommendedRows && layoutDoc.data
-      ? hasLibraryOverride(layoutDoc.data.layout, librarySection)
-      : false;
+  const recommendedCustomised = Boolean(libraryLayoutDoc.data?.customized);
 
   const clearTabParams = () => {
     if (
       !searchParams.has("addTab") &&
       !searchParams.has("newTab") &&
-      !searchParams.has("editTab") &&
-      !searchParams.has("customiseRows")
+      !searchParams.has("editTab")
     ) {
       return;
     }
@@ -151,7 +149,6 @@ export function LibraryTabsSection({ library }: { library: Library }) {
     next.delete("addTab");
     next.delete("newTab");
     next.delete("editTab");
-    next.delete("customiseRows");
     setSearchParams(next, { replace: true });
   };
 
@@ -163,7 +160,6 @@ export function LibraryTabsSection({ library }: { library: Library }) {
   const urlEditKey = searchParams.get("editTab");
   const urlNewKind = searchParams.get("newTab") as LibraryTabKind | null;
   const urlAdd = searchParams.get("addTab") === "1";
-  const urlCustomiseRows = searchParams.get("customiseRows") === "1";
 
   const activeDrawer: DrawerMode =
     localDrawer.type !== "closed"
@@ -223,13 +219,20 @@ export function LibraryTabsSection({ library }: { library: Library }) {
     setSaving(true);
     try {
       if (nextLayout) {
-        const savedLayout = layoutDoc.data ? prune(layoutDoc.data.layout) : EMPTY_LAYOUT;
+        const savedLayout = libraryLayoutDoc.data
+          ? prune(libraryLayoutDoc.data.layout)
+          : EMPTY_LAYOUT;
         const schedules = collectionScheduleChanges(nextLayout, savedLayout);
-        const updatedLayout = await api.putLayout({
-          ...nextLayout,
-          collectionSchedules: Object.keys(schedules).length ? schedules : undefined,
-        });
-        layoutDoc.setData(updatedLayout);
+        const nextPage = pageOf(nextLayout, "global", librarySection);
+        const updatedLayout =
+          !nextPage && Object.keys(schedules).length === 0
+            ? await api.deleteLibraryLayout(library.id)
+            : await api.putLibraryLayout(library.id, {
+                page: nextPage ?? { section: librarySection, rows: [] },
+                ...(nextPage ? {} : { viewerPages: [] }),
+                ...(Object.keys(schedules).length ? { collectionSchedules: schedules } : {}),
+              });
+        libraryLayoutDoc.setData(updatedLayout);
       }
 
       if (tabChanged || !nextLayout) {
@@ -421,24 +424,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
                       {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
                     </button>
                     <p className="truncate text-xs text-fg-muted">
-                      {tab.kind === "recommended" &&
-                      supportsRecommendedRows &&
-                      !recommendedCustomised ? (
-                        <>
-                          {mediaSection === "shows"
-                            ? t("Uses the standard rows for TV shows libraries")
-                            : t("Uses the standard rows for Movies libraries")}
-                          {" · "}
-                          <Link
-                            to={`/home?section=${mediaSection}`}
-                            className="font-medium text-primary hover:underline"
-                          >
-                            {t("Edit standard rows")}
-                          </Link>
-                        </>
-                      ) : (
-                        summarizeTab(tab, availableFacets, recommendedCustomised)
-                      )}
+                      {summarizeTab(tab, availableFacets, recommendedCustomised)}
                     </p>
                   </div>
                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -530,9 +516,8 @@ export function LibraryTabsSection({ library }: { library: Library }) {
           tabs.length > 1 &&
           !editingIsOnlyVisible
         }
-        layoutDoc={layoutDoc.data ?? null}
-        layoutLoading={layoutDoc.loading}
-        initialCustomiseRows={urlCustomiseRows}
+        libraryLayoutDoc={libraryLayoutDoc.data ?? null}
+        layoutLoading={libraryLayoutDoc.loading}
         saving={saving}
         onClose={closeDrawers}
         onDelete={

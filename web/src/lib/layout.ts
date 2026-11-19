@@ -283,20 +283,6 @@ export function clearLibraryLayout(doc: HomeLayout, section: LibraryLayoutSectio
   });
 }
 
-export const hasLibraryOverride = hasLibraryLayout;
-export const clearLibraryOverride = clearLibraryLayout;
-export function customiseLibraryPage(
-  doc: HomeLayout,
-  section: LibraryLayoutSection,
-  _mediaSection?: LibraryMediaSurface,
-): HomeLayout {
-  if (pageOf(doc, "global", section)) return doc;
-  return prune({
-    ...doc,
-    global: [...(doc.global ?? []), { section, rows: [] }],
-  });
-}
-
 /** The policy a layer sets for exactly this row key. */
 export function policyIn(
   doc: HomeLayout,
@@ -442,8 +428,7 @@ export function effectiveLength(
 
 // ---- editing ------------------------------------------------------------------------
 
-function emptyPage(p: LayoutPage, keepExplicitLibrary = false): boolean {
-  if (keepExplicitLibrary && isLibrarySection(p.section)) return false;
+function emptyPage(p: LayoutPage): boolean {
   return (
     p.rows.length === 0 &&
     !p.maxRows &&
@@ -548,15 +533,15 @@ export function rowFits(
 
 /** Drop empty pages and viewer layers; order pages and viewers canonically. */
 export function prune(doc: HomeLayout): HomeLayout {
-  const order = (ps: LayoutPage[], keepExplicitLibrary: boolean) =>
+  const order = (ps: LayoutPage[]) =>
     ps
-      .filter((p) => !emptyPage(p, keepExplicitLibrary))
+      .filter((p) => !emptyPage(p))
       .sort((a, b) => sectionSortOrder(a.section) - sectionSortOrder(b.section));
   return {
     ...doc,
-    global: order(doc.global ?? [], true),
+    global: order(doc.global ?? []),
     viewers: (doc.viewers ?? [])
-      .map((v) => ({ ...v, pages: order(v.pages, false) }))
+      .map((v) => ({ ...v, pages: order(v.pages) }))
       .filter((v) => v.pages.length > 0)
       .sort((a, b) => a.userId - b.userId),
   };

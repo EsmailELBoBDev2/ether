@@ -1311,7 +1311,6 @@
   "m_043b9d6c4759dd": "Ingen seer med tilsidesættelser matcher “{query}”.",
   "m_043bd00cde941a": "URL eller ID for en offentlig TMDB-liste",
   "m_043bfb2b222139": "Nordlyshimmel, en velkendt hilsen og en kanal, der føles som hjemme.",
-  "m_043ca4bb36f2ce": "Bruger standardrækkerne for Filmbiblioteker",
   "m_043d7f7f5f46a7": "Match inden for grupper",
   "m_043f19bc02d5bf": "Tor",
   "m_0440204c943fb4": "Brug adressen til dit netværk. Ændringer af porte kræver en genstart.",
@@ -4660,7 +4659,6 @@
   "m_0f8ba0bc05e6ee": "Noten gemmes som data, ikke som instruktioner. Links og adresser skjules.",
   "m_0f8c7ccd5758d3": "Ingen kanaler matcher din søgning",
   "m_0f8edfd5434ec0": "Kunne ikke indlæse valgmulighederne: {error}",
-  "m_0f8fa8a4c3233f": "Bruger standardrækkerne for TV-seriebiblioteker",
   "m_0f90618417a9de": "Forvarmning og forhåndshentning",
   "m_0f9117ecd1e50e": {
     "one": "{count} håndplukket kanal inkluderet",
@@ -5728,7 +5726,6 @@
   "m_12e3664efc78fd": "Søg i {catalog}",
   "m_12e5080b34176d": "Ether-seer",
   "m_12e5c284bfa2ca": "Tilføj et plugin",
-  "m_12e628688aec16": "Rediger standardrækker",
   "m_12e6d63063af84": {
     "one": "{count} dag",
     "other": "{count} dage"
@@ -8322,7 +8319,6 @@
   "m_1b8128e132cef4": "{hits} af {total} debrid-blokke",
   "m_1b832c3fc2b5f7": "Lærer vedkommende at kende: Rækkerne er personlige, men udforsker stadig.",
   "m_1b86404e2f0dd1": "Find en udgivelse",
-  "m_1b86423d9b111d": "Vælg rækker til dette bibliotek",
   "m_1b868f1bcdf524": "Denne kanal findes ikke længere.",
   "m_1b86955ceb0278": "Opvarmning ved start og afspilning",
   "m_1b8797fbdae067": "Ether er opdateret",
@@ -9590,7 +9586,6 @@
   "m_1fbb7f90760b76": "Ether kan afspille dette afsnit, når det er vist.",
   "m_1fbbc4f7bfbd9b": "Fra: kun fastgjorte titler, overvågningslister og det folk ser.",
   "m_1fbc6f4325d11f": "AI-søgning er ikke tilgængelig eller kunne ikke forstå denne anmodning. Prøv igen, eller brug filtre.",
-  "m_1fbd675c242d2b": "Gå tilbage til standardrækkerne",
   "m_1fbdb0dc814ddc": "Søn",
   "m_1fbe03036dfea2": "Urafvigelse",
   "m_1fbec30f65907d": "Gem som nyt klip",

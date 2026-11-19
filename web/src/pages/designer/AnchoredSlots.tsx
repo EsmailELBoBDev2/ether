@@ -7,6 +7,7 @@ import type {
   AvailableRow,
   HomeLayout,
   LayoutSection,
+  LibraryMediaSurface,
   RowPolicy,
   Viewer,
 } from "../../lib/contract";
@@ -45,7 +46,7 @@ export function AnchoredSlots({
   section: LayoutSection;
   viewers: Viewer[];
   available: AvailableRow[];
-  mediaSection?: "movies" | "shows";
+  mediaSection?: LibraryMediaSurface | null;
 }) {
   const [adding, setAdding] = useState("");
   const onLibraryTab = isLibrarySection(section);

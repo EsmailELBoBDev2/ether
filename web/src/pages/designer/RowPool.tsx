@@ -231,7 +231,10 @@ export function RowPool({
       if (!isPluginDescriptor(d)) continue;
       const hubId = d.meta?.hubId ?? d.id;
       if (known.has(hubId)) continue;
-      if (!rowFits({ sections: d.meta?.sections as RowSectionTag[] | undefined }, section, mediaSection))
+      const descSections = d.meta?.sections as RowSectionTag[] | undefined;
+      if (isLibrarySection(section) && mediaSection === null && !descSections?.includes(section))
+        continue;
+      if (!rowFits({ sections: descSections }, section, mediaSection))
         continue;
       known.add(hubId);
       out.push({
@@ -318,28 +321,32 @@ export function RowPool({
             className="h-7 gap-1 px-2 text-xs"
             label={t("Add row")}
             items={[
-              {
-                key: "collection",
-                label: t("New collection row…"),
-                icon: Layers,
-                onSelect: () => {
-                  const spec = blankSpec(effectiveMedia);
-                  spec.targets = {
-                    ...spec.targets,
-                    collectionsTab: false,
-                    homeRow: section === "home",
-                    sectionRow: section !== "home",
-                  };
-                  navigate(newCollectionHref(), { state: { spec } });
-                },
-              },
-              {
-                key: "addon-catalog",
-                label: t("From a Stremio catalog…"),
-                icon: Puzzle,
-                onSelect: () => setAddonPickerOpen(true),
-              },
-              { key: "sep", separator: true },
+              ...(mediaSection === null
+                ? []
+                : [
+                    {
+                      key: "collection",
+                      label: t("New collection row…"),
+                      icon: Layers,
+                      onSelect: () => {
+                        const spec = blankSpec(effectiveMedia);
+                        spec.targets = {
+                          ...spec.targets,
+                          collectionsTab: false,
+                          homeRow: section === "home",
+                          sectionRow: section !== "home",
+                        };
+                        navigate(newCollectionHref(), { state: { spec } });
+                      },
+                    },
+                    {
+                      key: "addon-catalog",
+                      label: t("From a Stremio catalog…"),
+                      icon: Puzzle,
+                      onSelect: () => setAddonPickerOpen(true),
+                    },
+                    { key: "sep", separator: true as const },
+                  ]),
               {
                 key: "pattern",
                 label: t("Custom row pattern…"),
@@ -785,8 +792,9 @@ function PoolItem({
         !onCreate
           ? (ev) => {
               if (
+                !ev.currentTarget.contains(ev.target as Node) ||
                 (ev.target as HTMLElement).closest(
-                  "button, input, label, a, [role=\"radiogroup\"], [role=\"checkbox\"], [role=\"dialog\"]",
+                  "button, input, label, a, [role=\"radiogroup\"], [role=\"checkbox\"]",
                 )
               ) {
                 return;

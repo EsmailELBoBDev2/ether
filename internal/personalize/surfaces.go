@@ -9,8 +9,8 @@ import (
 )
 
 // Surfaces. Home is "what to watch right now": short, high-confidence,
-// context-aware and mixed. Movies → Recommended explores film taste
-// through lenses; TV Shows → Recommended is series-centric. Every row kind
+// context-aware and mixed. Movie libraries → Recommended explore film taste
+// through lenses; TV libraries → Recommended are series-centric. Every row kind
 // declares the surfaces it belongs to by default, with a prior weight per
 // surface, and the surfaces it can ever fit (kinds.go). The bandit learns
 // per (surface, kind) and falls back to the kind's evidence while a
@@ -68,9 +68,8 @@ func surfaceKey(surface, kind string) string { return surface + "|" + kind }
 // surface is the assembly's surface name.
 func (a *assembly) surface() string { return sectionName(a.section) }
 
-// layoutTarget is the assembly's layout page ("home", "movies", "shows", or
-// "library:<id>") and its media-type fallback ("movies" or "shows").
-func (a *assembly) layoutTarget() (string, string) {
+// layoutTarget is the assembly's layout page ("home" or "library:<id>").
+func (a *assembly) layoutTarget() string {
 	return layoutTargetForMedia(a.section, a.hc.SectionID)
 }
 
@@ -108,8 +107,8 @@ func (a *assembly) ownerPlaced(c *candRow, hubID string) bool {
 	if a.layout == nil {
 		return false
 	}
-	target, fallback := a.layoutTarget()
-	p, _ := effectiveHomePolicyFor(*a.layout, a.user.ID, target, fallback, core.HomeRow{HubID: hubID, Kind: c.kind})
+	target := a.layoutTarget()
+	p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: hubID, Kind: c.kind})
 	return p != nil && p.Status != "off" && !strings.ContainsAny(p.Row, "*?[")
 }
 
@@ -119,8 +118,8 @@ func (a *assembly) ownerAlways(c *candRow, hubID string) bool {
 	if a.layout == nil {
 		return false
 	}
-	target, fallback := a.layoutTarget()
-	p, _ := effectiveHomePolicyFor(*a.layout, a.user.ID, target, fallback, core.HomeRow{HubID: hubID, Kind: c.kind})
+	target := a.layoutTarget()
+	p, _ := effectiveHomePolicy(*a.layout, a.user.ID, target, core.HomeRow{HubID: hubID, Kind: c.kind})
 	return p != nil && p.Status == "always" && whenMatches(p.When, a.hc) && weekEligible(a.user.ID, p.Row, a.hc, p.MaxDaysPerWeek)
 }
 
@@ -173,8 +172,8 @@ func (a *assembly) banditRate(c *candRow, rng *rand.Rand) float64 {
 	return rate
 }
 
-// sectionBoost replaces the Home's editorial priors on a Movies or TV
-// Shows page: the lenses lead there, popularity rows follow.
+// sectionBoost replaces the Home's editorial priors on a library Recommended
+// page: the lenses lead there, popularity rows follow.
 func sectionBoost(kind string) float64 {
 	switch kind {
 	case KindNewSeasons:

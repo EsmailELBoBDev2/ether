@@ -330,6 +330,9 @@ func New(opts Options) (*Engine, error) {
 		queue: make(chan int64, 1024), events: make(chan state.Event, 4096), evSync: make(chan chan struct{}),
 	}
 	e.rec = newRecorder(st, e.log, opts.ImpressionBuffer, opts.FlushEvery)
+	if err := e.migrateLibraryLayouts(context.Background()); err != nil {
+		return nil, err
+	}
 	var err error
 	e.homeLayout, err = st.homeLayout(context.Background())
 	if err != nil {
@@ -410,6 +413,24 @@ func (e *Engine) allSections(ctx context.Context) map[int]core.MediaType {
 		}
 	}
 	return out
+}
+
+func (e *Engine) firstSectionID(ctx context.Context, want core.MediaType) int {
+	secs := e.allSections(ctx)
+	ids := make([]int, 0, len(secs))
+	for id, mt := range secs {
+		if mt == want && id > 0 {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		if want == core.TypeShow {
+			return 2
+		}
+		return 1
+	}
+	sort.Ints(ids)
+	return ids[0]
 }
 
 func (e *Engine) sectionMediaType(ctx context.Context, id int) (core.MediaType, bool) {
@@ -625,7 +646,7 @@ func (e *Engine) enrichRelated(ctx context.Context, user *core.User, key core.Ra
 func (e *Engine) HomeHubsFor(ctx context.Context, user *core.User, hc core.HubContext, limit int) ([]core.Hub, error) {
 	ctx = core.WithCatalogViewer(ctx, user)
 	p := e.home(ctx, user, hc, "", limit, false)
-	p.Rows = arrangeLayout(p.Rows, e.layoutForContext(ctx), userID(user), hc, sectionName(""), e.opts.MaxHomeRows)
+	p.Rows = arrangeLayoutFor(p.Rows, e.layoutForContext(ctx), userID(user), hc, surfHome, e.opts.MaxHomeRows)
 	return toHubs(p.Rows), nil
 }
 
@@ -634,8 +655,12 @@ func (e *Engine) HomeHubsFor(ctx context.Context, user *core.User, hc core.HubCo
 // Added).
 func (e *Engine) SectionHubsFor(ctx context.Context, user *core.User, t core.MediaType, hc core.HubContext, limit int) ([]core.Hub, error) {
 	ctx = core.WithCatalogViewer(ctx, user)
+	if hc.SectionID == 0 {
+		hc.SectionID = e.firstSectionID(ctx, t)
+	}
 	p := e.home(ctx, user, hc, t, limit, false)
-	p.Rows = arrangeLayout(p.Rows, e.layoutForContext(ctx), userID(user), hc, sectionName(t), e.opts.MaxSectionRows)
+	target := layoutTargetForMedia(t, hc.SectionID)
+	p.Rows = arrangeLayoutFor(p.Rows, e.layoutForContext(ctx), userID(user), hc, target, e.opts.MaxSectionRows)
 	return toHubs(p.Rows), nil
 }
 
@@ -669,6 +694,9 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	if hc.Now.IsZero() {
 		hc.Now = e.now().In(e.loc)
 	}
+	if section != "" && hc.SectionID == 0 {
+		hc.SectionID = e.firstSectionID(ctx, section)
+	}
 	u := core.User{}
 	if user != nil {
 		u = *user
@@ -696,12 +724,12 @@ func (e *Engine) homeWithPolicy(ctx context.Context, user *core.User, hc core.Hu
 	layoutVer := e.layoutVersion()
 	day := dayOf(hc.Now, e.loc)
 	intent, intentVer := e.intentFor(u.ID, hc.Now)
-	target, fallback := layoutTargetForMedia(section, hc.SectionID)
-	tune := resolveTuningFor(layoutDoc, u.ID, target, fallback)
-	// Movies / TV Shows / library pages keep what the Home leads with off the
-	// page (the draft layout's switch and Home in a preview).
+	target := layoutTargetForMedia(section, hc.SectionID)
+	tune := resolveTuning(layoutDoc, u.ID, target)
+	// Library Recommended pages keep what the Home leads with off the page
+	// (the draft layout's switch and Home in a preview).
 	var lead *homeLead
-	if section != "" && resolveDedupeHomeFor(layoutDoc, u.ID, target, fallback) {
+	if section != "" && resolveDedupeHome(layoutDoc, u.ID, target) {
 		lead = e.homeLeadFor(ctx, &u, hc, layoutDoc, limit, wait, allow)
 	}
 	key := memoKey{user: u.ID, section: section, bucket: hc.Bucket(), day: day, hour: hc.Now.Hour(), limit: limit, model: m.version,
@@ -854,7 +882,7 @@ type memoKey struct {
 	limits     string
 	intent     uint64 // live session-intent version (#32); 0 = none
 	tuning     string // the page's resolved dials
-	lead       uint64 // what the Home leads with (Movies/TV dedupe); 0 = none
+	lead       uint64 // what the Home leads with (library Home-dedupe); 0 = none
 	exclusions string // current explicit recommendation exclusions
 }
 

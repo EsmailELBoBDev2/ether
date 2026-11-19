@@ -28,7 +28,7 @@ const previewWait = 45 * time.Second
 // marked source "plex". Rows hidden by a layout policy or absent despite an
 // "always" policy are included last with Hidden set; Plex never receives them.
 //
-// section is "" or "home", "movies", "shows", "library:<id>", or a library section id.
+// section is "" or "home", "library:<id>", or a library section id.
 // The daypart and weekend flag are derived from hc.Now in server local
 // time (hc.Device is kept as given).
 func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubContext, sectionArg string, limit int) (*core.HomePreview, error) {
@@ -136,16 +136,9 @@ func (e *Engine) PreviewHome(ctx context.Context, user *core.User, hc core.HubCo
 		def = e.opts.MaxSectionRows
 	}
 	layoutDoc := e.layoutForContext(ctx)
-	// Previewing "movies" or "shows" directly inspects the shared media-type
-	// layout; previewing "library:<id>" or "<id>" inspects that library's
-	// effective layout (customised or inherited from its media type).
-	target, fallback := sectionName(section), sectionName(section)
-	trimmedArg := strings.ToLower(strings.TrimSpace(sectionArg))
-	if section != "" && trimmedArg != "movies" && trimmedArg != "movie" && trimmedArg != "shows" && trimmedArg != "show" && trimmedArg != "tv" {
-		target, fallback = layoutTargetForMedia(section, hc.SectionID)
-	}
-	p.Rows = arrangeLayoutFor(p.Rows, layoutDoc, user.ID, hc, target, fallback, def)
-	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, target, fallback, emptiedByRestrictions)
+	target := layoutTargetForMedia(section, hc.SectionID)
+	p.Rows = arrangeLayoutFor(p.Rows, layoutDoc, user.ID, hc, target, def)
+	p.Rows = e.appendAbsentAlwaysRows(ctx, p.Rows, layoutDoc, user, hc, section, target, emptiedByRestrictions)
 	return &p, nil
 }
 
@@ -238,7 +231,7 @@ func (e *Engine) collectionSpecs(ctx context.Context) []core.CollectionSpec {
 	return specs
 }
 
-func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow, d core.HomeLayout, user *core.User, hc core.HubContext, section core.MediaType, target, fallback string, emptied map[string]bool) []core.HomeRow {
+func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow, d core.HomeLayout, user *core.User, hc core.HubContext, section core.MediaType, target string, emptied map[string]bool) []core.HomeRow {
 	if user == nil {
 		return rows
 	}
@@ -247,7 +240,7 @@ func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow
 		layer string
 	}
 	var policies []activePol
-	gPage, vPage := pagesForTarget(d, user.ID, target, fallback)
+	gPage, vPage := pagesForTarget(d, user.ID, target)
 	if vPage != nil {
 		for _, pol := range vPage.Rows {
 			if pol.Status == "always" && !strings.ContainsAny(pol.Row, "*?[") {
@@ -261,7 +254,7 @@ func (e *Engine) appendAbsentAlwaysRows(ctx context.Context, rows []core.HomeRow
 				continue
 			}
 			hubID, kind, _, _ := e.resolvePolicyIdentity(ctx, pol.Row, user, hc, section, d)
-			eff, effLayer := effectiveHomePolicyFor(d, user.ID, target, fallback, core.HomeRow{HubID: hubID, Kind: kind})
+			eff, effLayer := effectiveHomePolicy(d, user.ID, target, core.HomeRow{HubID: hubID, Kind: kind})
 			if eff == nil || eff.Status != "always" || effLayer != "global" || eff.Row != pol.Row {
 				continue
 			}
@@ -448,42 +441,27 @@ func (e *Engine) absentAlwaysReason(ctx context.Context, pol core.RowPolicy, lay
 	}
 }
 
-// resolveSection maps a preview section name to a library section.
+// resolveSection maps a preview section name ("home", "library:<id>", or "<id>")
+// to a library section. Section-level "movies" and "shows" names are rejected.
 func (e *Engine) resolveSection(ctx context.Context, name string) (int, core.MediaType, error) {
 	secs := e.allSections(ctx)
-	var want core.MediaType
 	trimmed := strings.ToLower(strings.TrimSpace(name))
 	switch trimmed {
 	case "", "home", "foryou", "for-you":
 		return 0, "", nil
-	case "movies", "movie":
-		want = core.TypeMovie
-	case "shows", "show", "tv":
-		want = core.TypeShow
-	default:
-		if id, ok := parseLibrarySection(trimmed); ok {
-			if t, found := secs[id]; found {
-				return id, t, nil
-			}
-			return 0, "", &ValidationError{Problems: []Problem{{"section", "must be home, movies, shows or a library section id"}}}
-		}
-		id, err := strconv.Atoi(trimmed)
-		if t, ok := secs[id]; err == nil && ok {
+	}
+	if id, ok := parseLibrarySection(trimmed); ok {
+		if t, found := secs[id]; found {
 			return id, t, nil
 		}
-		return 0, "", &ValidationError{Problems: []Problem{{"section", "must be home, movies, shows or a library section id"}}}
+		return 0, "", &ValidationError{Problems: []Problem{{"section", "must be home or library:<id>"}}}
 	}
-	ids := make([]int, 0, len(secs))
-	for id := range secs {
-		ids = append(ids, id)
-	}
-	sort.Ints(ids)
-	for _, id := range ids {
-		if secs[id] == want {
-			return id, want, nil
+	if id, err := strconv.Atoi(trimmed); err == nil && id > 0 {
+		if t, ok := secs[id]; ok {
+			return id, t, nil
 		}
 	}
-	return 0, "", &ValidationError{Problems: []Problem{{"section", "no " + string(want) + " library"}}}
+	return 0, "", &ValidationError{Problems: []Problem{{"section", "must be home or library:<id>"}}}
 }
 
 func (e *Engine) filterLibraryCandItems(ctx context.Context, sectionID int, items []candItem) []candItem {

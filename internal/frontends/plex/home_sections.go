@@ -306,10 +306,7 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 			}
 		}
 	}
-	sectionName := "movies"
-	if sec.Type == frontend.TypeShow {
-		sectionName = "shows"
-	}
+	sectionName := "library:" + strconv.Itoa(sec.ID)
 	mc.Hub = stableHomeHubs(s.arrangeHomeRows(ctx, pr, pc, sectionName, mc.Hub, layoutHubs, layoutNeutral))
 	if promotedOnly {
 		for i := range mc.Hub {

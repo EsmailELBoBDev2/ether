@@ -53,6 +53,8 @@ describe("Home", () => {
     const { fake } = renderApp("/home");
     const cw = await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
     expect(screen.getByText("Preview Home as")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Rows" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "Device" })).toHaveTextContent("TV");
     expect(screen.queryByText(/^score /)).toBeNull();
     expect(within(cw).getByText(/Anchored for everyone/)).toBeInTheDocument();
@@ -267,6 +269,7 @@ describe("Home", () => {
       slot: Number(slot),
     });
     // Page structure and length are edited in place on the Layout tab, not in a drawer.
+    fireEvent.click(screen.getByRole("tab", { name: "Layout" }));
     expect(
       screen.queryByRole("button", { name: /Edit anchored slots|Edit page length/ }),
     ).toBeNull();
@@ -285,35 +288,29 @@ describe("Home", () => {
     expect(lastPreview(fake).layout?.global[0]?.maxRows).toBe(3);
   });
 
-  it("tunes a page with dials, keeps Home's picks off it, and shows what the model learned", async () => {
+  it("is Home-only, opens a row drawer on row click with Settings/Content subtabs, and tunes Home dials", async () => {
     const { fake } = renderApp("/home");
     await screen.findByRole("region", { name: "Slot 1: Continue Watching" }, WAIT);
-    // Switch to the TV libraries page: its catalogue has series rows, not Home-only ones.
-    fireEvent.click(screen.getByRole("button", { name: "Page" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "TV libraries" }));
-    await waitFor(() => expect(screen.queryByRole("menu", { name: "Page" })).toBeNull());
-    expect(
-      screen.getByText(
-        "The standard Recommended rows for every TV library. A library can use its own instead under Libraries › name › Tabs.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Anime Shows" })).toHaveAttribute(
-      "href",
-      "/libraries/7/tabs",
+    expect(screen.queryByRole("button", { name: "Page" })).toBeNull();
+
+    // Clicking the row item opens its drawer directly with Settings and Content subtabs.
+    const topCard = screen.getByRole("listitem", { name: "Row Top 10 Today" });
+    fireEvent.click(within(topCard).getByText("Top 10 Today"));
+    const drawer = await screen.findByRole("dialog", { name: "Top 10 Today" });
+    expect(within(drawer).getByRole("tab", { name: "Settings" })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Rows" }));
-    const series = screen.getByRole("group", { name: "Series" });
-    expect(
-      within(series).getByRole("listitem", { name: "Row Finish What You Started" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("listitem", { name: "Row Top 10 for You" })).toBeNull();
-    expect(screen.queryByRole("listitem", { name: "Row Acclaimed & Unseen" })).toBeNull();
+    fireEvent.click(within(drawer).getByRole("tab", { name: /Content/ }));
+    expect(within(drawer).getAllByRole("listitem").length).toBeGreaterThan(0);
+    await closeEditor();
 
     fireEvent.click(screen.getByRole("tab", { name: "Tuning" }));
+    expect(screen.queryByText(/Copy these dials to/)).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Don't repeat what Home shows" })).toBeNull();
     fireEvent.change(screen.getByRole("slider", { name: "Discovery" }), {
       target: { value: "80" },
     });
-    fireEvent.click(screen.getByRole("switch", { name: "Don't repeat what Home shows" }));
     const learning = await screen.findByRole("region", { name: "How it learns" }, WAIT);
     expect(within(learning).getByText("Active")).toBeInTheDocument();
     expect(within(learning).getByText("+47%")).toBeInTheDocument();
@@ -321,8 +318,8 @@ describe("Home", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Save layout/ }));
     await waitFor(() => expect(calls(fake, "PUT", "/layout")).toHaveLength(1), WAIT);
-    const shows = savedLayout(fake).global.find((p) => p.section === "shows");
-    expect(shows).toMatchObject({ dedupeHome: false, tuning: { discovery: 0.8 } });
+    const home = savedLayout(fake).global.find((p) => p.section === "home");
+    expect(home).toMatchObject({ tuning: { discovery: 0.8 } });
   });
 
   it("adds a custom row pattern from a drawer", async () => {

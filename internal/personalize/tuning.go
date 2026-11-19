@@ -42,13 +42,9 @@ const (
 
 // resolveTuning resolves each dial: the viewer's page, then the global
 // page, then the default.
-func resolveTuning(d core.HomeLayout, user int64, section string) tuning {
-	return resolveTuningFor(d, user, section, section)
-}
-
-func resolveTuningFor(d core.HomeLayout, user int64, target, fallback string) tuning {
+func resolveTuning(d core.HomeLayout, user int64, target string) tuning {
 	t := defaultTuning
-	g, viewer := pagesForTarget(d, user, target, fallback)
+	g, viewer := pagesForTarget(d, user, target)
 	for _, p := range []*core.LayoutPage{g, viewer} {
 		if p == nil || p.Tuning == nil {
 			continue
@@ -67,16 +63,12 @@ func resolveTuningFor(d core.HomeLayout, user int64, target, fallback string) tu
 
 // resolveDedupeHome resolves a page's DedupeHome switch (viewer page, then
 // global page; default on). Home never dedupes against itself.
-func resolveDedupeHome(d core.HomeLayout, user int64, section string) bool {
-	return resolveDedupeHomeFor(d, user, section, section)
-}
-
-func resolveDedupeHomeFor(d core.HomeLayout, user int64, target, fallback string) bool {
+func resolveDedupeHome(d core.HomeLayout, user int64, target string) bool {
 	if target == "" || target == surfHome {
 		return false
 	}
 	on := true
-	g, v := pagesForTarget(d, user, target, fallback)
+	g, v := pagesForTarget(d, user, target)
 	for _, p := range []*core.LayoutPage{g, v} {
 		if p != nil && p.DedupeHome != nil {
 			on = *p.DedupeHome

@@ -1,15 +1,17 @@
 import type {
-  BuiltinLayoutSection,
   Daypart,
   Device,
   HomeLayout,
   HomeRow,
+  LayoutDefaultsMaxRows,
   LayoutPage,
   LayoutSection,
   LayoutTuning,
   LayoutWhen,
   LibraryLayoutSection,
+  LibraryMediaSurface,
   RowPolicy,
+  RowSectionTag,
   RowStatus,
   TargetSchedule,
   TuningDial,
@@ -27,12 +29,6 @@ export type LayerKey = "global" | number;
 
 export const EMPTY_LAYOUT: HomeLayout = { global: [], viewers: [] };
 
-export const SECTIONS = localized<{ value: BuiltinLayoutSection; label: string }[]>(() => [
-  { value: "home", label: t("Home") },
-  { value: "movies", label: t("Movies libraries") },
-  { value: "shows", label: t("TV libraries") },
-]);
-
 /** Whether a layout section targets a specific library (`library:<id>`). */
 export function isLibrarySection(section: string): section is LibraryLayoutSection {
   return /^library:[1-9]\d*$/.test(section);
@@ -45,9 +41,9 @@ export function libraryIdOfSection(section: string): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-/** Parse a query or wire string into a valid LayoutSection, defaulting to `"home"`. */
+/** Parse a query or wire string into a valid LayoutSection (`"home"` or `library:<id>`), defaulting to `"home"`. */
 export function parseLayoutSection(raw: string | null | undefined): LayoutSection {
-  if (raw === "home" || raw === "movies" || raw === "shows") return raw;
+  if (raw === "home") return "home";
   if (raw && isLibrarySection(raw)) return raw;
   return "home";
 }
@@ -89,13 +85,12 @@ export function mediaSectionForLibrary(
   return "movies";
 }
 
-/** Human-readable page label for built-in sections and `library:<id>` pages. */
+/** Human-readable page label for Home and `library:<id>` pages. */
 export function sectionLabelOf(
   section: LayoutSection,
   libraries?: readonly LayoutLibrarySummary[],
 ): string {
-  const builtin = SECTIONS.find((s) => s.value === section);
-  if (builtin) return builtin.label;
+  if (section === "home") return t("Home");
   const id = libraryIdOfSection(section);
   if (id !== null) {
     const lib = libraries?.find((l) => l.id === id);
@@ -104,16 +99,15 @@ export function sectionLabelOf(
   return section;
 }
 
-/** Default maxRows for any section, falling back to its media-type default. */
+/** Default maxRows for Home or a `library:<id>` page. */
 export function defaultRowsForSection(
-  defaults: Record<BuiltinLayoutSection, number> & Partial<Record<LayoutSection, number>>,
+  defaults: LayoutDefaultsMaxRows,
   section: LayoutSection,
-  mediaSection: "movies" | "shows" = "movies",
 ): number {
   const direct = defaults[section];
   if (typeof direct === "number" && direct > 0) return direct;
-  if (isLibrarySection(section)) return defaults[mediaSection] ?? 10;
-  return 10;
+  if (isLibrarySection(section)) return defaults.library ?? 16;
+  return defaults.home ?? 14;
 }
 
 export const DEVICES = localized<{ value: Device; label: string }[]>(() => [
@@ -271,45 +265,14 @@ export function pageOf(
   return pagesOf(doc, layer).find((p) => (p.section ?? "home") === section);
 }
 
-/** Whether a `library:<id>` section has its own layout instead of inheriting Movies/TV. */
-export function hasLibraryOverride(doc: HomeLayout, section: LayoutSection): boolean {
+/** Whether a `library:<id>` section has saved Recommended row customisations. */
+export function hasLibraryLayout(doc: HomeLayout, section: LayoutSection): boolean {
   if (!isLibrarySection(section)) return false;
   return Boolean(pageOf(doc, "global", section));
 }
 
-/** Copy the shared media-type page (`movies` or `shows`) into `library:<id>` so it can be edited independently. */
-export function customiseLibraryPage(
-  doc: HomeLayout,
-  section: LibraryLayoutSection,
-  mediaSection: "movies" | "shows",
-): HomeLayout {
-  const existing = pageOf(doc, "global", section);
-  if (existing) return doc;
-  const base = pageOf(doc, "global", mediaSection);
-  const copied: LayoutPage = base
-    ? {
-        ...structuredClone(base),
-        section,
-      }
-    : { section, rows: [] };
-  const viewers = (doc.viewers ?? []).map((v) => {
-    if (v.pages.some((p) => p.section === section)) return v;
-    const vb = v.pages.find((p) => p.section === mediaSection);
-    if (!vb) return v;
-    return {
-      ...v,
-      pages: [...v.pages, { ...structuredClone(vb), section }],
-    };
-  });
-  return prune({
-    ...doc,
-    global: [...(doc.global ?? []), copied],
-    viewers,
-  });
-}
-
-/** Delete a `library:<id>` override (and any viewer overrides on it) so it returns to the shared media-type layout. */
-export function clearLibraryOverride(doc: HomeLayout, section: LibraryLayoutSection): HomeLayout {
+/** Reset a `library:<id>` page (and any viewer overrides on it) back to default rows. */
+export function clearLibraryLayout(doc: HomeLayout, section: LibraryLayoutSection): HomeLayout {
   return prune({
     ...doc,
     global: (doc.global ?? []).filter((p) => p.section !== section),
@@ -388,27 +351,19 @@ export interface Effective {
   layer: "global" | "override";
 }
 
-/** A row's effective policy for a viewer (null = typical viewer): override, else Global. */
+/** A row's effective policy for a viewer (null = typical viewer): override, else Global, with zero cross-page fallback. */
 export function effectivePolicy(
   doc: HomeLayout,
   viewerId: number | null,
   section: LayoutSection,
   hubId: string,
   kind = hubId,
-  fallbackSection?: "movies" | "shows",
 ): Effective | null {
   if (viewerId !== null) {
     const p = bestIn(pageOf(doc, viewerId, section), hubId, kind);
     if (p) return { policy: p, layer: "override" };
-    if (isLibrarySection(section) && fallbackSection && !pageOf(doc, viewerId, section)) {
-      const fp = bestIn(pageOf(doc, viewerId, fallbackSection), hubId, kind);
-      if (fp && !pageOf(doc, "global", section)) return { policy: fp, layer: "override" };
-    }
   }
-  const globalPage =
-    pageOf(doc, "global", section) ??
-    (isLibrarySection(section) && fallbackSection ? pageOf(doc, "global", fallbackSection) : undefined);
-  const g = bestIn(globalPage, hubId, kind);
+  const g = bestIn(pageOf(doc, "global", section), hubId, kind);
   return g ? { policy: g, layer: "global" } : null;
 }
 
@@ -454,33 +409,18 @@ export function effectiveLength(
   section: LayoutSection,
   device: Device,
   def: number,
-  fallbackSection?: "movies" | "shows",
 ): { n: number; layer: "global" | "override" | "default" } {
-  const globalSection =
-    isLibrarySection(section) && !pageOf(doc, "global", section) && fallbackSection
-      ? fallbackSection
-      : section;
-  const layers: [LayerKey, LayoutSection, "global" | "override"][] =
+  const layers: [LayerKey, "global" | "override"][] =
     viewerId !== null
       ? [
-          [viewerId, section, "override"],
-          ...(isLibrarySection(section) &&
-          !pageOf(doc, viewerId, section) &&
-          !pageOf(doc, "global", section) &&
-          fallbackSection
-            ? ([[viewerId, fallbackSection, "override"]] as [
-                LayerKey,
-                LayoutSection,
-                "override",
-              ][])
-            : []),
-          ["global", globalSection, "global"],
+          [viewerId, "override"],
+          ["global", "global"],
         ]
-      : [["global", globalSection, "global"]];
-  for (const [layer, sec, name] of layers) {
-    const d = lengthIn(doc, layer, sec, device);
+      : [["global", "global"]];
+  for (const [layer, name] of layers) {
+    const d = lengthIn(doc, layer, section, device);
     if (d) return { n: d, layer: name };
-    const p = lengthIn(doc, layer, sec, null);
+    const p = lengthIn(doc, layer, section, null);
     if (p) return { n: p, layer: name };
   }
   return { n: def, layer: "default" };
@@ -488,8 +428,7 @@ export function effectiveLength(
 
 // ---- editing ------------------------------------------------------------------------
 
-function emptyPage(p: LayoutPage, keepExplicitLibrary = false): boolean {
-  if (keepExplicitLibrary && isLibrarySection(p.section)) return false;
+function emptyPage(p: LayoutPage): boolean {
   return (
     p.rows.length === 0 &&
     !p.maxRows &&
@@ -500,8 +439,7 @@ function emptyPage(p: LayoutPage, keepExplicitLibrary = false): boolean {
 }
 
 function sectionSortOrder(section: LayoutSection): number {
-  const idx = SECTIONS.findIndex((s) => s.value === section);
-  if (idx >= 0) return idx;
+  if (section === "home") return 0;
   const libId = libraryIdOfSection(section);
   return libId !== null ? 1000 + libId : 9999;
 }
@@ -529,27 +467,13 @@ export function effectiveTuning(
   layer: LayerKey,
   section: LayoutSection,
   dial: TuningDial,
-  fallbackSection?: "movies" | "shows",
 ): { v: number; from: "override" | "global" | "default" } {
   if (layer !== "global") {
     const own = tuningIn(doc, layer, section, dial);
     if (own !== undefined) return { v: own, from: "override" };
-    if (
-      isLibrarySection(section) &&
-      fallbackSection &&
-      !pageOf(doc, layer, section) &&
-      !pageOf(doc, "global", section)
-    ) {
-      const fb = tuningIn(doc, layer, fallbackSection, dial);
-      if (fb !== undefined) return { v: fb, from: "override" };
-    }
   }
   const g = tuningIn(doc, "global", section, dial);
   if (g !== undefined) return { v: g, from: "global" };
-  if (isLibrarySection(section) && fallbackSection && !pageOf(doc, "global", section)) {
-    const gf = tuningIn(doc, "global", fallbackSection, dial);
-    if (gf !== undefined) return { v: gf, from: "global" };
-  }
   return { v: DIAL_DEFAULT, from: "default" };
 }
 
@@ -574,27 +498,13 @@ export function effectiveDedupe(
   doc: HomeLayout,
   layer: LayerKey,
   section: LayoutSection,
-  fallbackSection?: "movies" | "shows",
 ): { on: boolean; from: "override" | "global" | "default" } {
   if (layer !== "global") {
     const own = pageOf(doc, layer, section)?.dedupeHome;
     if (own !== undefined) return { on: own, from: "override" };
-    if (
-      isLibrarySection(section) &&
-      fallbackSection &&
-      !pageOf(doc, layer, section) &&
-      !pageOf(doc, "global", section)
-    ) {
-      const fb = pageOf(doc, layer, fallbackSection)?.dedupeHome;
-      if (fb !== undefined) return { on: fb, from: "override" };
-    }
   }
   const g = pageOf(doc, "global", section)?.dedupeHome;
   if (g !== undefined) return { on: g, from: "global" };
-  if (isLibrarySection(section) && fallbackSection && !pageOf(doc, "global", section)) {
-    const gf = pageOf(doc, "global", fallbackSection)?.dedupeHome;
-    if (gf !== undefined) return { on: gf, from: "global" };
-  }
   return { on: true, from: "default" };
 }
 
@@ -609,29 +519,29 @@ export function setDedupe(
 
 /** Rows that can appear on a page. */
 export function rowFits(
-  row: { sections?: LayoutSection[] },
+  row: { sections?: readonly RowSectionTag[] },
   section: LayoutSection,
-  mediaSection?: "movies" | "shows",
+  mediaSection?: LibraryMediaSurface | null,
 ): boolean {
   if (!row.sections || row.sections.length === 0) return true;
   if (row.sections.includes(section)) return true;
-  if (isLibrarySection(section)) {
-    return row.sections.includes(mediaSection ?? "movies");
+  if (isLibrarySection(section) && mediaSection) {
+    return row.sections.includes(mediaSection);
   }
   return false;
 }
 
 /** Drop empty pages and viewer layers; order pages and viewers canonically. */
 export function prune(doc: HomeLayout): HomeLayout {
-  const order = (ps: LayoutPage[], keepExplicitLibrary: boolean) =>
+  const order = (ps: LayoutPage[]) =>
     ps
-      .filter((p) => !emptyPage(p, keepExplicitLibrary))
+      .filter((p) => !emptyPage(p))
       .sort((a, b) => sectionSortOrder(a.section) - sectionSortOrder(b.section));
   return {
     ...doc,
-    global: order(doc.global ?? [], true),
+    global: order(doc.global ?? []),
     viewers: (doc.viewers ?? [])
-      .map((v) => ({ ...v, pages: order(v.pages, false) }))
+      .map((v) => ({ ...v, pages: order(v.pages) }))
       .filter((v) => v.pages.length > 0)
       .sort((a, b) => a.userId - b.userId),
   };
@@ -738,6 +648,7 @@ function tidyPolicy(p: RowPolicy): RowPolicy {
   const out: RowPolicy = { row: p.row, status: p.status };
   if (p.previewOnFocus !== undefined) out.previewOnFocus = p.previewOnFocus;
   if (p.rankedTop10 !== undefined) out.rankedTop10 = p.rankedTop10;
+  if (p.showRepeats) out.showRepeats = true;
   if (p.slot) {
     out.slot = p.slot;
     if (out.status !== "off") out.status = "always";

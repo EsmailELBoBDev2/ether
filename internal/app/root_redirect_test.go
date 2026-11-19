@@ -54,8 +54,10 @@ func TestBrowserRootRedirectsToConsole(t *testing.T) {
 		req.Header.Set("Accept", browserAcceptHeader)
 		w := httptest.NewRecorder()
 		a.Handler().ServeHTTP(w, req)
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("POST / = %d, want 401", w.Code)
+		// POST / is not a Plex route: it reaches Plex (no console redirect)
+		// and answers 404, never 401 (an unknown route must not sign clients out).
+		if w.Code != http.StatusNotFound || w.Header().Get("Location") != "" {
+			t.Fatalf("POST / = %d (Location %q), want 404 from Plex", w.Code, w.Header().Get("Location"))
 		}
 	})
 

@@ -37,7 +37,11 @@ func (s *Service) searchSQLite(ctx context.Context, q SearchQuery, tokens []stri
 
 	var where strings.Builder
 	args := []any{matchExpr, int64(q.LibraryID)}
-	where.WriteString(`f.plugin_item_fts MATCH ? AND i.library_id = ?`)
+	// The unary + keeps the planner from leading with the library's title
+	// index and running the FTS match once per item, which stale planner
+	// statistics (a library added after the last ANALYZE) make look cheap
+	// (#621). The plan always starts from the FTS matches.
+	where.WriteString(`f.plugin_item_fts MATCH ? AND +i.library_id = ?`)
 	if len(q.Levels) > 0 {
 		placeholders := make([]string, len(q.Levels))
 		for idx, lv := range q.Levels {

@@ -175,7 +175,7 @@ func (v *library) Touch(ctx context.Context, k Key, avoided bool) error {
 }
 func (v *library) Purge(ctx context.Context, k Key) error { return v.update(ctx, k, "dead=1") }
 func (v *library) Stats(ctx context.Context) (Stats, error) {
-	s := Stats{CapBytes: v.CapBytes}
+	s := Stats{CapBytes: v.capBytes.Load()}
 	e := v.DB.QueryRowContext(ctx, `SELECT count(CASE WHEN dead=0 THEN 1 END),COALESCE(sum(CASE WHEN dead=0 THEN len ELSE 0 END),0),COALESCE(sum(avoided),0),COALESCE(sum(searches_avoided),0) FROM vault_releases`).Scan(&s.Releases, &s.Bytes, &s.GrabsAvoided, &s.SearchesAvoided)
 	return s, e
 }

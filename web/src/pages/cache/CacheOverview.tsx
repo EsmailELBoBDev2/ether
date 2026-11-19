@@ -102,13 +102,18 @@ export function CacheOverview({
           [
             t("Release library"),
             vault ? tn(vault.releases, "{count} release", "{count} releases") : "—",
-            vault
-              ? t("{used} / {cap} · {count} indexer grabs avoided", {
-                  used: formatBytes(vault.bytes),
-                  cap: formatBytes(vault.capBytes),
-                  count: vault.grabsAvoided,
-                })
-              : "—",
+            !vault
+              ? "—"
+              : vault.capBytes > 0
+                ? t("{used} / {cap} · {count} indexer grabs avoided", {
+                    used: formatBytes(vault.bytes),
+                    cap: formatBytes(vault.capBytes),
+                    count: vault.grabsAvoided,
+                  })
+                : t("{used} · {count} indexer grabs avoided", {
+                    used: formatBytes(vault.bytes),
+                    count: vault.grabsAvoided,
+                  }),
           ],
         ].map(([label, value, hint]) => (
           <Kpi key={label} label={label!} value={value} detail={hint} />

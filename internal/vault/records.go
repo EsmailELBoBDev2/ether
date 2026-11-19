@@ -295,10 +295,11 @@ func (v *library) evict(ctx context.Context, tx *sql.Tx) error {
 	if e := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(len),0) FROM vault_releases WHERE dead=0`).Scan(&total); e != nil {
 		return e
 	}
-	if total <= v.CapBytes {
+	limit := v.capBytes.Load()
+	if limit <= 0 || total <= limit {
 		return nil
 	}
-	_, e := tx.ExecContext(ctx, `UPDATE vault_releases SET dead=1 WHERE key IN (SELECT key FROM (SELECT key,sum(len) OVER(ORDER BY CASE WHEN uses<=1 THEN 0 ELSE 1 END,last_used,key) - len AS prior FROM vault_releases WHERE dead=0) v WHERE prior<?)`, total-v.CapBytes)
+	_, e := tx.ExecContext(ctx, `UPDATE vault_releases SET dead=1 WHERE key IN (SELECT key FROM (SELECT key,sum(len) OVER(ORDER BY CASE WHEN uses<=1 THEN 0 ELSE 1 END,last_used,key) - len AS prior FROM vault_releases WHERE dead=0) v WHERE prior<?)`, total-limit)
 	return e
 }
 func members(ctx context.Context, tx *sql.Tx, k Key, m []Member) error {

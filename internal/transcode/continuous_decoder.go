@@ -38,6 +38,13 @@ type continuousDecoder struct {
 	// picture's source time (ns), for live diagnostics.
 	fillSkipped atomic.Int64
 	lastPTS     atomic.Int64
+	// Queue depths for live diagnostics: picture timestamps parsed from
+	// stderr, raw pictures and raw sound read from ffmpeg's sockets.
+	ptsQ      chan time.Duration
+	vq, aq    chan []byte
+	ptsLines  atomic.Int64
+	assembled atomic.Int64
+	stage     atomic.Int32 // where the assembler waits: 1 picture, 2 stamp, 3 sound, 4 handoff
 }
 
 // StarvingErrors is Starving plus whether the decoders reported errors
@@ -174,6 +181,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		if !ok {
 			return
 		}
+		d.ptsLines.Add(1)
 		select {
 		case pts <- stamp:
 		case <-ptsStop:
@@ -193,6 +201,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 	// blocks before the next picture. Bounded queues propagate prewarm pressure.
 	vq := make(chan []byte, 8)
 	aq := make(chan []byte, 32)
+	d.ptsQ, d.vq, d.aq = pts, vq, aq
 	for i, ch := range []chan []byte{vq, aq} {
 		d.workers.Add(1)
 		go func(s *rawSocket, ch chan []byte, video bool) {
@@ -231,6 +240,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 		var pcm []byte
 		ticks := int64(0)
 		for {
+			d.stage.Store(1)
 			v, err := d.receive(p, vq, aq, watch && paired, liveVideoStarved)
 			if err != nil {
 				d.readErr = err
@@ -238,6 +248,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 			}
 			stamp := time.Duration(0)
 			if r.Live {
+				d.stage.Store(2)
 				select {
 				case stamp = <-pts:
 				case <-p.ctx.Done():
@@ -260,6 +271,7 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 				}
 			}
 			for len(pcm) < tickPCM(f, ticks) {
+				d.stage.Store(3)
 				b, err := d.receive(p, aq, vq, watch && paired, liveAudioStarved)
 				if err != nil {
 					d.readErr = err
@@ -278,6 +290,8 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 				d.fillSkipped.Store(int64(fill.skipped))
 				d.lastPTS.Store(int64(stamp))
 			}
+			d.stage.Store(4)
+			d.assembled.Add(1)
 			for _, frame := range out {
 				select {
 				case d.frames <- frame:
@@ -450,7 +464,9 @@ func (d *continuousDecoder) Close() error {
 
 // Diagnostics reports bounded decoder progress without exposing the input URL.
 func (d *continuousDecoder) Diagnostics() string {
-	return fmt.Sprintf("videoFrames=%d audioTicks=%d queued=%d fillSkipped=%d lastPTS=%s stderr=%s", d.reads[0].Load(), d.reads[1].Load(), len(d.frames), d.fillSkipped.Load(), time.Duration(d.lastPTS.Load()), d.stderr.String())
+	return fmt.Sprintf("videoFrames=%d audioTicks=%d assembled=%d ptsLines=%d stage=%d ptsQ=%d vq=%d aq=%d queued=%d fillSkipped=%d lastPTS=%s exited=%t stderr=%s",
+		d.reads[0].Load(), d.reads[1].Load(), d.assembled.Load(), d.ptsLines.Load(), d.stage.Load(), len(d.ptsQ), len(d.vq), len(d.aq), len(d.frames),
+		d.fillSkipped.Load(), time.Duration(d.lastPTS.Load()), d.processExited(), d.stderr.String())
 }
 
 func liveFramePTS(line string) (time.Duration, bool) {
@@ -579,4 +595,13 @@ func (d *continuousDecoder) alignAudio(p *continuousProcess, aq, vq chan []byte,
 		*pcm, drop = (*pcm)[n:], drop-n
 	}
 	return false, nil
+}
+
+func (d *continuousDecoder) processExited() bool {
+	select {
+	case <-d.done:
+		return true
+	default:
+		return false
+	}
 }

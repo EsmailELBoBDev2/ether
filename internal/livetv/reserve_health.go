@@ -55,6 +55,10 @@ type UpstreamHealth struct {
 	// PaceAhead is how far this session's paced reader is past its pace
 	// clock (negative: behind it); zero when unpaced.
 	PaceAhead time.Duration
+	// Readers is how many relay readers this session's grant has open, and
+	// Behind the media between the newest of them and the oldest.
+	Readers int
+	Spread  time.Duration
 }
 
 // UpstreamEventKind names a change in an input's health.

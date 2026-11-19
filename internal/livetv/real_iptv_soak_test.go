@@ -35,6 +35,7 @@ var (
 	realIPTVLog  = flag.String("real-iptv-log", "", "write the soak's server log here")
 	realIPTVGap  = flag.Duration("real-iptv-gap", 4*time.Second, "longest provider burst gap")
 	realIPTVHt   = flag.Int("real-iptv-height", 720, "source height")
+	realIPTVDrop = flag.Duration("real-iptv-drop", 0, "lose two seconds of provider media this often (a missing segment)")
 )
 
 type madnetEmu struct {
@@ -89,12 +90,20 @@ func (m *madnetEmu) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/mp2t")
 	w.WriteHeader(http.StatusOK)
 	flusher := w.(http.Flusher)
+	dropAt := time.Now().Add(*realIPTVDrop)
 	for {
 		m.mu.Lock()
 		var out []byte
 		for i := next - m.base; i >= 0 && i < len(m.chunks); i++ {
+			if *realIPTVDrop > 0 && m.at[i].After(dropAt) && m.at[i].Before(dropAt.Add(2*time.Second)) {
+				next++
+				continue
+			}
 			out = append(out, m.chunks[i]...)
 			next++
+		}
+		if *realIPTVDrop > 0 && time.Now().After(dropAt.Add(2*time.Second)) {
+			dropAt = dropAt.Add(*realIPTVDrop)
 		}
 		m.mu.Unlock()
 		if len(out) > 0 {

@@ -107,7 +107,7 @@ func (p *providerBroadcastPlanner) healthAttrs() []any {
 		behind = d.Round(time.Millisecond)
 	}
 	return []any{"source", a.src.ID, "transport", h.Kind, "behindLive", behind,
-		"reserve", h.ReserveDepth.Round(time.Millisecond), "reserveTarget", h.Target, "paceAhead", h.PaceAhead.Round(time.Millisecond),
+		"reserve", h.ReserveDepth.Round(time.Millisecond), "reserveTarget", h.Target, "paceAhead", h.PaceAhead.Round(time.Millisecond), "readers", h.Readers, "readerSpread", h.Spread.Round(time.Millisecond),
 		"dataAge", h.DataAge.Round(time.Millisecond), "stallAfter", h.StallAfter.Round(time.Millisecond),
 		"liveSocket", h.LiveSocket, "providerStalled", h.Stalled, "failed", h.Failed,
 		"reconnects", h.Reconnects, "kbps", h.Bitrate / 1000}

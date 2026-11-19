@@ -2133,11 +2133,21 @@ func (t *upstreamTap) healthForLocked(g *inputGrant) UpstreamHealth {
 	if !t.lastData.IsZero() {
 		h.DataAge = now.Sub(t.lastData)
 	}
-	var reader *tapReader
+	var reader, oldest *tapReader
 	for rd := range t.active {
-		if rd.g == g && (reader == nil || rd.off > reader.off) {
+		if rd.g != g {
+			continue
+		}
+		h.Readers++
+		if reader == nil || rd.off > reader.off {
 			reader = rd
 		}
+		if oldest == nil || rd.off < oldest.off {
+			oldest = rd
+		}
+	}
+	if reader != nil && oldest != reader && t.ts != nil && len(t.marks) > 0 {
+		h.Spread = time.Duration(t.clockAtLocked(reader.off)-t.clockAtLocked(oldest.off)) * time.Second / tsClockHz
 	}
 	if reader != nil {
 		h.ReserveDepth = t.readerDepthLocked(reader)

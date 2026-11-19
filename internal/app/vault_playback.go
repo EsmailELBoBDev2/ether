@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"maps"
@@ -27,13 +28,15 @@ func (a *App) vaultStreamOptions(cfg config.Config) stream.Options {
 			_ = a.vault.SetLayout(ctx, vault.Key(k), l)
 		}
 	}
-	o.OnMissing = func(id string) {
+	mark := func(id string, health vault.Health) {
 		if k, ok := strings.CutPrefix(id, vaultStreamPrefix); ok && a.vault != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = a.vault.MarkHealth(ctx, vault.Key(k), vault.HealthDead)
+			_ = a.vault.MarkHealth(ctx, vault.Key(k), health)
 		}
 	}
+	o.OnMissing = func(id string) { mark(id, vault.HealthDead) }
+	o.OnHealthy = func(id string) { mark(id, vault.HealthOK) }
 	return o
 }
 
@@ -52,6 +55,9 @@ func (a *App) openVaultResolution(ctx context.Context, res *core.Resolution) (co
 		}
 		var err error
 		key, _, err = a.vault.ByAlias(ctx, r.IndexerID, id)
+		if key == "" && err == nil && id != r.ID {
+			key, _, err = a.vault.ByAlias(ctx, r.IndexerID, r.ID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +94,21 @@ func (a *App) openVaultResolution(ctx context.Context, res *core.Resolution) (co
 		}
 	}
 	copyRec.NZB = &doc
-	src, err := a.engine.OpenRecordAlias(ctx, r.ID, vaultStreamPrefix+string(key), &copyRec)
+	var target []byte
+	if len(res.NZB) == 0 && r.Info.FullSeason && r.Target != nil && r.Target.Episode > 0 {
+		// A record-only resume has no resolver payload. Recreate the same
+		// episode selection as FetchNZB so subsequent warmers see its slots.
+		target, err = debrid.EpisodeNZB(rec.XML, r.Target)
+		if err != nil {
+			return nil, err
+		}
+	} else if !bytes.Equal(res.NZB, rec.XML) {
+		target = res.NZB
+	}
+	src, err := a.engine.OpenRecordAlias(ctx, r.ID, vaultStreamPrefix+string(key), &copyRec, target)
+	if errors.Is(err, stream.ErrInvalidNZB) && len(target) > 0 {
+		return fallback()
+	}
 	// A resolver may have isolated an episode by its outer archive filename.
 	// Its narrowed payload remains authoritative when the inner names are opaque.
 	if errors.Is(err, stream.ErrNoPlayableFile) && r.Target != nil && len(res.NZB) > 0 {

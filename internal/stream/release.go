@@ -21,6 +21,11 @@ var errEOF = io.EOF
 // release is the engine's state for one NZB: its posted files with their
 // indexes, and the plan (layout of the main video), built once.
 type release struct {
+	feedbackID   string
+	liveArticles atomic.Uint64
+	missingEpoch atomic.Uint64
+	feedbackMu   sync.Mutex // orders health writes from concurrent reads
+
 	saved  *vault.Layout
 	e      *Engine
 	digest string

@@ -23,16 +23,22 @@ CREATE INDEX vault_title ON vault_releases(title_key,season,episode);
 CREATE INDEX vault_tmdb ON vault_releases(tmdb);
 CREATE INDEX vault_members_ep ON vault_members(season,episode);
 `)
+	store.Register("vault", 2, `
+ALTER TABLE vault_releases ADD COLUMN cache_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX vault_cache_id ON vault_releases(cache_id);
+CREATE INDEX vault_alias_key ON vault_aliases(key,indexer_id,release_id);
+UPDATE vault_releases SET cache_id=COALESCE((SELECT MIN(a.release_id) FROM vault_aliases a WHERE a.key=vault_releases.key AND a.indexer_id=vault_releases.source AND a.indexer_id<>'legacy:nzb'),'') WHERE kind='usenet' AND info NOT LIKE '%"fullSeason":true%';
+`)
 }
 
-const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info"
+const columns = "key,kind,name,title_key,tmdb,year,season,episode,size,segments,source,added,last_used,uses,health,health_at,private,profile_fp,info,cache_id"
 
 func scan(row interface{ Scan(...any) error }) (Entry, error) {
 	var x Entry
 	var added, used, health int64
 	var raw string
 	var private int
-	e := row.Scan(&x.Key, &x.Kind, &x.Name, &x.TitleKey, &x.TMDB, &x.Year, &x.Season, &x.Episode, &x.Size, &x.Segments, &x.Source, &added, &used, &x.Uses, &x.Health, &health, &private, &x.ProfileFP, &raw)
+	e := row.Scan(&x.Key, &x.Kind, &x.Name, &x.TitleKey, &x.TMDB, &x.Year, &x.Season, &x.Episode, &x.Size, &x.Segments, &x.Source, &added, &used, &x.Uses, &x.Health, &health, &private, &x.ProfileFP, &raw, &x.CacheID)
 	if errors.Is(e, sql.ErrNoRows) {
 		return x, ErrNotFound
 	}
@@ -120,10 +126,14 @@ func (v *library) Kept(ctx context.Context, rels []core.Release) (map[string]boo
 		if i == "" {
 			i = LegacyAliasIndexer
 		}
-		vals = append(vals, "(CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT))")
-		a = append(a, r.ID, i, KeyOf(r))
+		base := r.ID
+		if r.Target != nil && r.Target.PackID != "" {
+			base = r.Target.PackID
+		}
+		vals = append(vals, "(CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT),CAST(? AS TEXT))")
+		a = append(a, r.ID, i, KeyOf(r), base)
 	}
-	rows, e := v.DB.QueryContext(ctx, "WITH candidates(id,idx,k) AS (VALUES "+strings.Join(vals, ",")+`) SELECT c.id FROM candidates c LEFT JOIN vault_aliases a ON a.indexer_id=c.idx AND a.release_id=c.id JOIN vault_releases r ON r.key=CASE WHEN c.k<>'' THEN c.k ELSE a.key END WHERE r.dead=0`, a...)
+	rows, e := v.DB.QueryContext(ctx, "WITH candidates(id,idx,k,base) AS (VALUES "+strings.Join(vals, ",")+`) SELECT c.id FROM candidates c LEFT JOIN vault_aliases a ON a.indexer_id=c.idx AND a.release_id=c.id JOIN vault_releases r ON r.key=CASE WHEN c.k<>'' THEN c.k ELSE a.key END OR (c.idx='vault' AND c.k='' AND r.cache_id=c.base) WHERE r.dead=0`, a...)
 	if e != nil {
 		return nil, e
 	}

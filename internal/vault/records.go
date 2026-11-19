@@ -254,9 +254,23 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 			return e
 		}
 		if p.Release.ID != "" {
-			_, e = tx.ExecContext(ctx, `INSERT INTO vault_aliases(indexer_id,release_id,key) VALUES(?,?,?) ON CONFLICT(indexer_id,release_id) DO UPDATE SET key=excluded.key`, p.Release.IndexerID, p.Release.ID, k)
-			if e != nil {
-				return e
+			ids := []string{p.Release.ID}
+			cacheID := p.Release.ID
+			if t := p.Release.Target; t != nil && t.PackID != "" && t.PackID != cacheID {
+				cacheID = t.PackID
+				ids = append(ids, cacheID)
+			}
+			for _, id := range ids {
+				_, e = tx.ExecContext(ctx, `INSERT INTO vault_aliases(indexer_id,release_id,key) VALUES(?,?,?) ON CONFLICT(indexer_id,release_id) DO UPDATE SET key=excluded.key`, p.Release.IndexerID, id, k)
+				if e != nil {
+					return e
+				}
+			}
+			if r.Kind == KindUsenet && p.Release.IndexerID != LegacyAliasIndexer && p.Release.IndexerID != IndexerID {
+				_, e = tx.ExecContext(ctx, `UPDATE vault_releases SET cache_id=? WHERE key=? AND cache_id=''`, cacheID, k)
+				if e != nil {
+					return e
+				}
 			}
 		}
 		if write {

@@ -18,16 +18,16 @@ import (
 
 // OpenRecord uses the parsed posting and an optional previously learned mapping.
 func (e *Engine) OpenRecord(ctx context.Context, releaseID string, rec *vault.Record) (core.MediaSource, error) {
-	return e.openRecord(ctx, releaseID, releaseID, rec)
+	return e.openRecord(ctx, releaseID, releaseID, rec, nil)
 }
 
-// OpenRecordAlias keeps the resolver ID visible to the player while the complete
-// posting uses its own cache slots and vault feedback ID.
-func (e *Engine) OpenRecordAlias(ctx context.Context, releaseID, cacheID string, rec *vault.Record) (core.MediaSource, error) {
-	return e.openRecord(ctx, releaseID, cacheID, rec)
+// OpenRecordAlias uses the same cache ID and slot ordering as playback and preload.
+// A narrowed payload is needed only when the resolver selected a subset of the posting.
+func (e *Engine) OpenRecordAlias(ctx context.Context, releaseID, feedbackID string, rec *vault.Record, target []byte) (core.MediaSource, error) {
+	return e.openRecord(ctx, releaseID, feedbackID, rec, target)
 }
 
-func (e *Engine) openRecord(ctx context.Context, releaseID, cacheID string, rec *vault.Record) (core.MediaSource, error) {
+func (e *Engine) openRecord(ctx context.Context, releaseID, feedbackID string, rec *vault.Record, target []byte) (core.MediaSource, error) {
 	if e.ctx.Err() != nil {
 		return nil, ErrClosed
 	}
@@ -52,9 +52,9 @@ func (e *Engine) openRecord(ctx context.Context, releaseID, cacheID string, rec 
 		key = vault.ContentKey(&doc)
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", key, doc.MetaValue(nzb.MetaEpisode), doc.MetaValue(nzb.MetaMovie), doc.Password())))
-	id := fmt.Sprintf("vault-%x", digest[:])
+	id := fmt.Sprintf("vault-%x/%s/%x", digest, feedbackID, sha256.Sum256(target))
 	if rel := e.cachedRelease(id); rel != nil {
-		return e.openRelease(ctx, releaseID, cacheID, rel)
+		return e.openRelease(ctx, releaseID, feedbackID, rel)
 	}
 	doc.Files = make([]*nzb.File, len(rec.NZB.Files))
 	for i, f := range rec.NZB.Files {
@@ -64,8 +64,69 @@ func (e *Engine) openRecord(ctx context.Context, releaseID, cacheID string, rec 
 		copyFile := *f
 		doc.Files[i] = &copyFile
 	}
-	rel := e.acquireDoc(id, &doc, rec.Layout)
-	return e.openRelease(ctx, releaseID, cacheID, rel)
+	rel := newRelease(e, id, &doc)
+	rel.saved = rec.Layout
+	rel.feedbackID = feedbackID
+	for _, pf := range rel.files {
+		pf.record = rel
+	}
+	if len(target) > 0 {
+		view, err := e.acquire(target)
+		if err != nil {
+			return nil, err
+		}
+		err = rel.useTargetSlots(view)
+		e.release(view)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rel = e.retainRelease(rel)
+	return e.openRelease(ctx, releaseID, feedbackID, rel)
+}
+
+// Keep full-record file indexes for the vault layout, but use the resolver's
+// ordinal slots for cache reads, writes, repaired spans and presence checks.
+func (r *release) useTargetSlots(view *release) error {
+	files := make(map[string]*postedFile, len(r.files))
+	for _, pf := range r.files {
+		if len(pf.file.Segments) == 0 {
+			return ErrInvalidNZB
+		}
+		id := pf.file.Segments[0].MessageID
+		if files[id] != nil {
+			return ErrInvalidNZB
+		}
+		files[id] = pf
+	}
+	selected := make(map[*postedFile]bool, len(view.files))
+	base := 0
+	for _, v := range view.files {
+		f := v.file
+		if len(f.Segments) == 0 {
+			return ErrInvalidNZB
+		}
+		pf := files[f.Segments[0].MessageID]
+		if pf == nil || selected[pf] || f.SegmentCount() != pf.file.SegmentCount() || len(f.Segments) != len(pf.file.Segments) {
+			return ErrInvalidNZB
+		}
+		for i, s := range f.Segments {
+			q := pf.file.Segments[i]
+			if s.Number != q.Number || s.MessageID != q.MessageID {
+				return ErrInvalidNZB
+			}
+		}
+		selected[pf] = true
+		pf.segBase = v.segBase
+		base = v.segBase + f.SegmentCount() + 1
+	}
+	for _, pf := range r.files {
+		if !selected[pf] {
+			pf.segBase = base
+			base += pf.file.SegmentCount() + 1
+		}
+	}
+	return nil
 }
 
 func (p *plan) vaultLayout(ctx context.Context, cacheID string) *vault.Layout {

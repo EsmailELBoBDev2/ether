@@ -2,14 +2,18 @@ package playback
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 const (
@@ -440,77 +444,247 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		}
 		// Warming must not override the source that actually survived the
 		// previous playback with the original, slower top-ranked release.
-		res := m.resumeResolution(ctx, u.ID, key, e.profileObj, caps, strings.TrimSpace(title.Language))
-		if releasepolicy.UsesOriginalAudio(e.profileObj.ReleaseRules) {
+		profile := e.profileObj
+		res := m.resumeResolution(ctx, u.ID, key, profile, caps, strings.TrimSpace(title.Language))
+		if releasepolicy.UsesOriginalAudio(profile.ReleaseRules) {
 			e.originalAudio = true
 			e.originalLanguage = strings.TrimSpace(title.Language)
 		}
+		fromResume := false
 		detailOnly := false
-		if res == nil || !m.rememberedReleaseMatchesTitle(ctx, res.Release, title) || !payloadMatchesTitle(res.NZB, title) {
+		if res != nil && m.rememberedReleaseMatchesTitle(ctx, res.Release, title) && payloadMatchesTitle(res.NZB, title) {
+			fromResume = true
+			if reason == core.PrewarmDetail && !cachedMetadata {
+				// Reusing the remembered source skips Resolve/search. Recover only
+				// the picker candidates, without delaying or changing that source.
+				if refill, ok := m.deps.Resolver.(core.WarmupSearchCacheRefiller); ok {
+					refill.RefillWarmupSearchCache(title)
+				}
+			}
+		} else {
+			res = nil
 			if cachedMetadata {
 				return
 			}
-			res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
-			if (err != nil || res == nil) && reason == core.PrewarmDetail && caps.BroadcastBitrateKbps == 0 {
-				// A detail page for a title the viewer played keeps that
-				// file's stored tracks while no search can answer. The
-				// entry serves the page only; Play selects its own source.
-				if last := m.lastPlayedResolution(ctx, u.ID, title, e.profileObj, caps); last != nil {
-					res, err, detailOnly = last, nil, true
-				}
-			}
-		} else if reason == core.PrewarmDetail && !cachedMetadata {
-			// Reusing the remembered source skips Resolve/search. Recover only
-			// the picker candidates, without delaying or changing that source.
-			if refill, ok := m.deps.Resolver.(core.WarmupSearchCacheRefiller); ok {
-				refill.RefillWarmupSearchCache(title)
-			}
 		}
-		if err != nil || res == nil {
-			return
-		}
-		m.mu.Lock()
-		e.sourceReady = true
-		m.mu.Unlock()
 		session := newSession(randomID(16), id, &u, caps, title, e.profileKey, m.now())
+		defer session.stopCancel()
 		defer session.sources.seal()
-		src, finish, err := m.openSource(ctx, session.sources, res)
-		if err != nil {
-			if reason == core.PrewarmNextEpisode {
-				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
-			}
-			return
+		maxAttempts := m.opts.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 4
 		}
-		m.noteWarmCause(res, src, reason, cacheTitle(*title))
-		generation, err := m.probeGeneration(ctx, session, res, src, finish, func(size int64) core.MediaInfo {
-			info := EstimateInfo(title, caps, m.selectProfile(caps, &u, title.Key))
+		if cachedMetadata {
+			maxAttempts = 1
+		}
+		var (
+			tried              []string
+			alternates         []core.Release
+			unknownAudioProbes int
+			fallbackGen        *generation
+			fallbackRes        *core.Resolution
+			fallbackBurned     bool
+			chosenGen          *generation
+			chosenRes          *core.Resolution
+			lastRel            core.Release
+			lastErr            error
+		)
+		defer func() {
+			if fallbackGen != nil {
+				m.dropGeneration(fallbackGen)
+			}
+		}()
+		fallbackInfo := func(size int64) core.MediaInfo {
+			info := EstimateInfo(title, caps, profile)
 			info.Size = size
 			return info
-		}, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
-		if err != nil {
-			if reason == core.PrewarmNextEpisode {
-				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+		}
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			if res == nil {
+				fromResume = false
+				if len(tried) == 0 {
+					res, err = m.deps.Resolver.Resolve(ctx, core.ResolveRequest{Title: title, Client: caps, User: &u})
+					if (err != nil || res == nil) && reason == core.PrewarmDetail && caps.BroadcastBitrateKbps == 0 {
+						// A detail page for a title the viewer played keeps that
+						// file's stored tracks while no search can answer. The
+						// entry serves the page only; Play selects its own source.
+						if last := m.lastPlayedResolution(ctx, u.ID, title, profile, caps); last != nil {
+							res, err, detailOnly = last, nil, true
+						}
+					}
+				} else {
+					res, err = m.nextWarmResolution(ctx, session, &tried, alternates)
+				}
+				if err != nil || res == nil {
+					lastErr = err
+					break
+				}
+			}
+			m.mu.Lock()
+			e.sourceReady = true
+			m.mu.Unlock()
+			if len(res.NZB) > 0 {
+				res.Release.SourceHash = fmt.Sprintf("%x", sha256.Sum256(res.NZB))
+			}
+			if !cachedMetadata && !detailOnly {
+				if m.titleReleaseRejected(ctx, key, res.Release) {
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+				if m.releaseNamesakeRejected(ctx, session, res.Release) {
+					m.markBad(res.Release.ID, "release names the other title")
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+			}
+			needsAudioProbe := false
+			if !cachedMetadata && !detailOnly && m.ownerPinAllows(session, "") {
+				if langs, unverified := candidateNeedsAudioVerification(profile, title, res.Release); unverified {
+					if unknownAudioProbes >= maxUnknownAudioProbes {
+						lastRel, lastErr = res.Release, fmt.Errorf("audio is not in the profile's language (%s)", langs[0])
+						tried = append(tried, res.Release.ID)
+						if len(res.Alternates) > 0 {
+							alternates = res.Alternates
+						}
+						res = nil
+						continue
+					}
+					unknownAudioProbes++
+					needsAudioProbe = true
+				}
+			}
+			src, finish, err := m.openSource(ctx, session.sources, res)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				lastRel, lastErr = res.Release, err
+				if fromResume && reason == core.PrewarmNextEpisode && permanentSourceFailure(err) {
+					_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+					return
+				}
+				if cachedMetadata || detailOnly {
+					break
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			m.noteWarmCause(res, src, reason, cacheTitle(*title))
+			generation, err := m.probeGeneration(ctx, session, res, src, finish, fallbackInfo, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				lastRel, lastErr = res.Release, err
+				if fromResume && reason == core.PrewarmNextEpisode && permanentSourceFailure(err) {
+					_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, err)
+					return
+				}
+				if cachedMetadata || detailOnly {
+					break
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			m.RecordReleaseProbe(ctx, res.Release, res.NZB, generation.infoSnapshot())
+			burned := !cachedMetadata && !detailOnly && m.knownHardSubbed(ctx, generation)
+			if burned && m.hardSubtitleBlocked(ctx, res.Release) {
+				m.dropGeneration(generation)
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			if reqReason := probedRequiredAudioRejection(profile, title, res.Release, generation.infoSnapshot(), fromResume); reqReason != "" {
+				m.log.Debug("prewarm skipped: required audio absent", "key", key, "release", res.Release.Name, "reason", reqReason)
+				m.dropGeneration(generation)
+				lastRel, lastErr = res.Release, errors.New(reqReason)
+				if cachedMetadata || detailOnly {
+					break
+				}
+				if needsAudioProbe && unknownAudioProbes < maxUnknownAudioProbes {
+					attempt--
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			if !cachedMetadata && !detailOnly && !fromResume && (burned || !m.probedAudioAcceptable(session, profile, generation.infoSnapshot())) {
+				skipReason := "probed release lacks viewer audio language"
+				if burned {
+					skipReason = "burned-in subtitles detected"
+				}
+				m.log.Debug("prewarm trying next candidate", "key", key, "release", res.Release.Name, "reason", skipReason)
+				if fallbackGen == nil || (fallbackBurned && !burned) {
+					if fallbackGen != nil {
+						m.dropGeneration(fallbackGen)
+					}
+					fallbackGen, fallbackRes, fallbackBurned = generation, res, burned
+				} else {
+					m.dropGeneration(generation)
+				}
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res = nil
+				continue
+			}
+			if caps.BroadcastBitrateKbps > 0 {
+				file := res.Release
+				file.Size, file.Info.FullSeason = generation.src.Size(), false
+				if video := generation.infoSnapshot().Video(); video != nil && video.Height > file.Info.Height {
+					file.Info.Height = video.Height
+				}
+				if !m.channelSourceAllowed(session, file) {
+					m.dropGeneration(generation)
+					if cachedMetadata || detailOnly {
+						break
+					}
+					tried = append(tried, res.Release.ID)
+					if len(res.Alternates) > 0 {
+						alternates = res.Alternates
+					}
+					res = nil
+					continue
+				}
+			}
+			chosenGen, chosenRes = generation, res
+			break
+		}
+		if chosenGen == nil && fallbackGen != nil {
+			chosenGen, chosenRes = fallbackGen, fallbackRes
+			fallbackGen = nil
+		}
+		if chosenGen == nil {
+			if reason == core.PrewarmNextEpisode && lastRel.ID != "" && lastErr != nil {
+				_ = m.ReplaceWarmSource(ctx, &u, key, caps, lastRel, opts.StartOffset, title.Runtime, lastErr)
 			}
 			return
 		}
+		generation, res := chosenGen, chosenRes
 		defer m.dropGeneration(generation)
-		if reqReason := probedRequiredAudioRejection(m.selectProfile(caps, &u, title.Key), title, res.Release, generation.infoSnapshot(), false); reqReason != "" {
-			m.log.Debug("prewarm skipped: required audio absent", "key", key, "release", res.Release.Name, "reason", reqReason)
-			if reason == core.PrewarmNextEpisode {
-				_ = m.ReplaceWarmSource(ctx, &u, key, caps, res.Release, opts.StartOffset, title.Runtime, errors.New(reqReason))
-			}
-			return
-		}
-		if caps.BroadcastBitrateKbps > 0 {
-			file := res.Release
-			file.Size, file.Info.FullSeason = src.Size(), false
-			if video := generation.infoSnapshot().Video(); video != nil && video.Height > file.Info.Height {
-				file.Info.Height = video.Height
-			}
-			if !m.channelSourceAllowed(session, file) {
-				return
-			}
-		}
 		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), warmReads: generation.warmReads, points: generation.timeMapSnapshot().Points}
 		if facts.info.Estimated {
 			facts = nil
@@ -518,7 +692,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		if !metadata && (automaticReserve || reason == core.PrewarmDetail || reason == core.PrewarmNextEpisode) {
 			info := generation.infoSnapshot()
 			if info.Duration > 0 {
-				prefetchBytes = min(int64(256<<20), max(int64(8<<20), int64(float64(src.Size())*25/info.Duration.Seconds())))
+				prefetchBytes = min(int64(256<<20), max(int64(8<<20), int64(float64(generation.src.Size())*25/info.Duration.Seconds())))
 			}
 		}
 
@@ -548,7 +722,7 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		}
 		warmOffset := int64(0)
 		if resumeOffset > 0 && facts != nil {
-			tm := TimeMap{Size: src.Size(), Duration: facts.info.Duration, Points: facts.points}
+			tm := TimeMap{Size: generation.src.Size(), Duration: facts.info.Duration, Points: facts.points}
 			lo, hi := warmSpanFor(tm, resumeOffset, resumeOffset+25*time.Second)
 			warmOffset = lo
 			prefetchBytes = min(hi-lo, int64(256<<20))
@@ -596,6 +770,47 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 		}
 	}()
 	return true
+}
+
+func (m *Manager) nextWarmResolution(ctx context.Context, s *session, tried *[]string, alternates []core.Release) (*core.Resolution, error) {
+	if m.deps.Vault == nil || len(alternates) == 0 {
+		return nil, core.ErrNotAvailable
+	}
+	exclude := append(slices.Clone(*tried), s.caps.BroadcastExclude...)
+	m.mu.Lock()
+	for id := range m.openFailures[s.ident.key] {
+		if !slices.Contains(exclude, id) {
+			exclude = append(exclude, id)
+		}
+	}
+	m.mu.Unlock()
+	for i, alt := range alternates {
+		if alt.ID == "" || !m.ownerPinAllows(s, alt.ID) || !m.channelSourceAllowed(s, alt) || m.titleReleaseRejected(ctx, s.ident.key, alt) || m.releaseNamesakeRejected(ctx, s, alt) || slices.Contains(exclude, alt.ID) || !releaseMatchesTitle(alt, s.title) {
+			continue
+		}
+		vk := vault.KeyOf(alt)
+		if vk == "" && strings.HasPrefix(alt.ContentID, "nzb:") {
+			vk = vault.Key(alt.ContentID)
+		}
+		if vk == "" {
+			continue
+		}
+		rec, err := m.deps.Vault.Get(ctx, vk)
+		if err != nil || rec == nil || len(rec.XML) == 0 {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		return &core.Resolution{
+			Title:      s.ident.key,
+			Release:    alt,
+			NZB:        rec.XML,
+			Alternates: slices.Clone(alternates[i+1:]),
+			ResolvedAt: m.now(),
+		}, nil
+	}
+	return nil, core.ErrNotAvailable
 }
 
 // lastPlayedResolution is the release that last served the viewer's title,

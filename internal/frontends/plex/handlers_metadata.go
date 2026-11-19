@@ -679,7 +679,12 @@ func (s *Server) warmDetail(ctx context.Context, pr *Request, t *frontend.Title)
 			// A single wait: do not add speculative warmDetail's allowance
 			// after the metadata probe's own bounded wait. Errors/timeouts
 			// preserve the normal detail response and background preparation.
-			_ = s.probeDetailTracks(ctx, pr, t)
+			err := s.probeDetailTracks(ctx, pr, t)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				if warm, ok := s.playback().(frontend.Prewarmer); ok {
+					warm.Prewarm(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key), frontend.PrewarmOptions{Reason: frontend.PrewarmDetail, PlayIntent: true})
+				}
+			}
 			return
 		}
 	}

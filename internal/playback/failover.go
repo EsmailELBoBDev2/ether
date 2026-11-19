@@ -19,6 +19,17 @@ import (
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
+type deferGenerationFillsKey struct{}
+
+func withDeferredGenerationFills(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deferGenerationFillsKey{}, true)
+}
+
+func generationFillsDeferred(ctx context.Context) bool {
+	v, _ := ctx.Value(deferGenerationFillsKey{}).(bool)
+	return v
+}
+
 // errSourceBroken marks a release whose articles went missing while it was
 // being opened or probed.
 var errSourceBroken = fmt.Errorf("playback: source broken: %w", core.ErrArticleMissing)
@@ -147,6 +158,14 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			m.dropGeneration(fallbackGen)
 		}
 	}()
+	adoptInitial := func(g *generation, extraTried ...string) (*generation, error) {
+		s.mu.Lock()
+		s.tried = append(s.tried, tried...)
+		s.tried = append(s.tried, extraTried...)
+		s.mu.Unlock()
+		m.startGenerationFills(g)
+		return g, nil
+	}
 	fallback := func(size int64) core.MediaInfo {
 		info := EstimateInfo(s.title, s.caps, profile)
 		info.Size = size
@@ -164,6 +183,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			Detail:  timelineCandidateDetail(res.Release, len(res.Alternates)),
 		})
 	}
+	openCtx := withDeferredGenerationFills(ctx)
 	for attempt := 0; attempt < m.opts.MaxAttempts; attempt++ {
 		if res == nil {
 			fromResume = false
@@ -180,13 +200,10 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				m.notePreferenceStale(ctx, s, res.Release.ID, "picked version was unavailable; resolver selected Auto")
 			}
 			if err != nil {
-				if fallbackGen != nil {
+				if fallbackGen != nil && !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
 					g := fallbackGen
 					fallbackGen = nil
-					s.mu.Lock()
-					s.tried = append(s.tried, tried...)
-					s.mu.Unlock()
-					return g, nil
+					return adoptInitial(g)
 				}
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
@@ -254,7 +271,7 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				needsAudioProbe = true
 			}
 		}
-		g, err := m.openGeneration(ctx, s, res, fallback, cached)
+		g, err := m.openGeneration(openCtx, s, res, fallback, cached)
 		if err == nil && fromResume && !s.exact && !rememberedInfoCodecCurrent(g.infoSnapshot(), s.caps) {
 			m.dropGeneration(g)
 			tried = append(tried, res.Release.ID)
@@ -319,12 +336,17 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			continue
 		}
 		if err == nil {
-			s.mu.Lock()
-			s.tried = append(s.tried, tried...)
-			s.mu.Unlock()
-			return g, nil
+			return adoptInitial(g)
 		}
 		if ctx.Err() != nil {
+			if !s.exact && errors.Is(ctx.Err(), context.DeadlineExceeded) && m.ctx.Err() == nil {
+				m.log.Warn("release failed to open", "session", s.id, "release", res.Release.Name, "err", err)
+				if fallbackGen != nil {
+					g := fallbackGen
+					fallbackGen = nil
+					return adoptInitial(g, res.Release.ID)
+				}
+			}
 			return nil, ctx.Err()
 		}
 		lastErr = err
@@ -350,13 +372,10 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		}
 		res, cached, fromResume = nil, nil, false
 	}
-	if fallbackGen != nil {
+	if fallbackGen != nil && !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
 		g := fallbackGen
 		fallbackGen = nil
-		s.mu.Lock()
-		s.tried = append(s.tried, tried...)
-		s.mu.Unlock()
-		return g, nil
+		return adoptInitial(g)
 	}
 	return nil, releasesFailed(len(tried), lastErr, allUncached)
 }
@@ -413,6 +432,9 @@ func (m *Manager) nextResolution(ctx context.Context, s *session, tried []string
 			nzb, err := m.deps.FetchNZB(ctx, alt)
 			if err != nil {
 				if ctx.Err() != nil {
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) && m.ctx.Err() == nil {
+						m.log.Warn("alternate nzb fetch failed", "session", s.id, "release", alt.Name, "err", err)
+					}
 					return nil, ctx.Err()
 				}
 				m.log.Warn("alternate nzb fetch failed", "session", s.id, "release", alt.Name, "err", err)
@@ -767,6 +789,27 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	if ps, ok := src.(core.PlaybackDurationSetter); ok && mi.Duration > 0 {
 		ps.SetPlaybackDuration(mi.Duration)
 	}
+	g.mu.Lock()
+	g.needIndex = needIndex
+	g.needTrailer = prober == "native" || (facts != nil && facts.needsAugment)
+	g.mu.Unlock()
+	if !generationFillsDeferred(ctx) {
+		m.startGenerationFills(g)
+	}
+	return g, nil
+}
+
+// startGenerationFills starts the deferred keyframe-index and trailer fills
+// once a probed generation has been chosen rather than set aside as a
+// candidate-selection fallback.
+func (m *Manager) startGenerationFills(g *generation) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	needIndex, needTrailer := g.needIndex, g.needTrailer
+	g.needIndex, g.needTrailer = false, false
+	g.mu.Unlock()
 	if needIndex {
 		// Play never waits for the container index: publish now and fill
 		// TimeMap.Points / MediaInfo.Keyframes in the background.
@@ -774,12 +817,11 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	} else {
 		g.markIndexReady()
 	}
-	if prober == "native" || (facts != nil && facts.needsAugment) {
+	if needTrailer {
 		// Persisted facts predate any tail fill; it only fills facts
 		// that are still unknown, so a running decision never changes.
 		m.startTrailerFill(g)
 	}
-	return g, nil
 }
 
 // probeMedia reads stream parameters from the container headers when the
@@ -1005,6 +1047,7 @@ func (m *Manager) dropGeneration(g *generation) {
 	m.mu.Lock()
 	delete(m.tokens, g.sess.id+"/"+g.token)
 	m.mu.Unlock()
+	g.markIndexReady()
 	g.retire()
 }
 

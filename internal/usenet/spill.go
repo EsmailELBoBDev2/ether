@@ -116,6 +116,13 @@ func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pool
 	until := burstUntil(ctx)
 	first := pools[head]
 	if first.spare(prio, until) > 0 || (req.joinable != nil && req.joinable(first)) {
+		if head > 0 {
+			out := make([]*pool, 0, len(pools))
+			out = append(out, first)
+			out = append(out, pools[:head]...)
+			out = append(out, pools[head+1:]...)
+			return out, nil
+		}
 		return pools, nil
 	}
 	for i := head + 1; i < len(pools); i++ {
@@ -143,6 +150,13 @@ func (f *Fetcher) route(ctx context.Context, req routeReq, known []string) (pool
 			return out, nil
 		}
 		return out, p
+	}
+	if head > 0 {
+		out := make([]*pool, 0, len(pools))
+		out = append(out, first)
+		out = append(out, pools[:head]...)
+		out = append(out, pools[head+1:]...)
+		return out, nil
 	}
 	return pools, nil
 }

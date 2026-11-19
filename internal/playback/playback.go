@@ -1230,6 +1230,7 @@ func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, cap
 	log = log.With("session", s.id)
 	if kind != nil {
 		s.kindOpen = kind.Open
+		s.kindOpenCandidate = kind.OpenCandidate
 		s.kindSourceID = kind.SourceID
 	}
 	s.sources = sources

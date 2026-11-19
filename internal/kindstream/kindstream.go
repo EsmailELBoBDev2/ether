@@ -500,12 +500,24 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 
 	// Check if the release should compose with Container extraction (spec §4.3:
 	// "If the resolved file in the release is itself an archive (.rar, .cbz, .7z),
-	// release and container compose").
+	// release and container compose"). Use PrefetchReaderAt when available so a
+	// backing-off Usenet candidate fails fast here instead of holding candidate
+	// iteration for 45s.
 	var head [probeHeadBytes]byte
 	headLen := min(ms.Size(), int64(probeHeadBytes))
 	var headSlice []byte
 	if headLen > 0 {
-		n, rerr := ms.ReadAt(head[:headLen], 0)
+		var (
+			n    int
+			rerr error
+		)
+		if pr, ok := ms.(core.PrefetchReaderAt); ok {
+			n, rerr = pr.ReadAtPrefetchContext(ctx, head[:headLen], 0)
+		} else if cr, ok := ms.(core.ContextReaderAt); ok {
+			n, rerr = cr.ReadAtContext(ctx, head[:headLen], 0)
+		} else {
+			n, rerr = ms.ReadAt(head[:headLen], 0)
+		}
 		if rerr != nil && !errors.Is(rerr, io.EOF) {
 			_ = ms.Close()
 			return nil, rerr
@@ -988,6 +1000,29 @@ type byteSourceMediaAdapter struct {
 
 func (a *byteSourceMediaAdapter) ReleaseID() string { return a.releaseID }
 
+func (a *byteSourceMediaAdapter) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if cr, ok := a.ByteSource.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(ctx, p, off)
+	}
+	return a.ByteSource.ReadAt(p, off)
+}
+
+// UnwrapMediaSource returns the underlying core.MediaSource when bs wraps one
+// directly without archive extraction, preserving optional playback interfaces.
+func UnwrapMediaSource(bs ByteSource) core.MediaSource {
+	for bs != nil {
+		switch v := bs.(type) {
+		case *mediaSourceByteSource:
+			return v.ms
+		case *renamedByteSource:
+			bs = v.ByteSource
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 
@@ -1093,6 +1128,13 @@ func (r *renamedByteSource) MIME() string {
 	return r.ByteSource.MIME()
 }
 
+func (r *renamedByteSource) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if cr, ok := r.ByteSource.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(ctx, p, off)
+	}
+	return r.ByteSource.ReadAt(p, off)
+}
+
 type mediaSourceByteSource struct {
 	ms   core.MediaSource
 	name string
@@ -1100,6 +1142,13 @@ type mediaSourceByteSource struct {
 }
 
 func (m *mediaSourceByteSource) ReadAt(p []byte, off int64) (int, error) {
+	return m.ms.ReadAt(p, off)
+}
+
+func (m *mediaSourceByteSource) ReadAtContext(ctx context.Context, p []byte, off int64) (int, error) {
+	if cr, ok := m.ms.(core.ContextReaderAt); ok {
+		return cr.ReadAtContext(ctx, p, off)
+	}
 	return m.ms.ReadAt(p, off)
 }
 

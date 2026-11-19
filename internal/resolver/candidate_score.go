@@ -111,6 +111,7 @@ func ScoreSourceCandidates(ctx context.Context, s *Service, profileName string, 
 	}
 
 	preferRevision := !scorer.scoresRevision(profile.CustomFormatScores)
+	usenetBackoff := s != nil && s.usenetBackingOff()
 	out := make([]core.SourceCandidate, len(rels))
 
 	type videoSlot struct {
@@ -226,10 +227,18 @@ func ScoreSourceCandidates(ctx context.Context, s *Service, profileName string, 
 	}
 
 	for _, v := range videos {
-		score := combineSourceCandidateScore(v.rel.Info, profile, preferRevision, v.cf, v.rej, v.fb, v.pol.Fallback)
+		backingOff := usenetBackoff && isUsenetSourceRelease(v.rel)
+		score := combineSourceCandidateScore(v.rel.Info, profile, preferRevision, v.cf, v.rej, v.fb, v.pol.Fallback, backingOff)
 		out[v.idx].Score = &score
 	}
 	return out, nil
+}
+
+func isUsenetSourceRelease(rel core.Release) bool {
+	if rel.Protocol == core.ProtocolUsenet {
+		return true
+	}
+	return rel.Protocol == "" && strings.TrimSpace(rel.NZBURL) != "" && strings.TrimSpace(rel.InfoHash) == "" && strings.TrimSpace(rel.MagnetURL) == ""
 }
 
 func scoreSourceRelease(s *Service, scorer *FormatScorer, rel core.Release, profile core.QualityProfile, policy releasepolicy.Result, facts formatFacts) (releaseScore, error) {
@@ -306,18 +315,25 @@ func isRejectedSourceRelease(s *Service, rel core.Release, profile core.QualityP
 	return rejectPolicy(rel, &core.Title{}, profile, core.ClientCaps{}, false, false) != ""
 }
 
-func combineSourceCandidateScore(info core.ReleaseInfo, profile core.QualityProfile, preferRevision bool, cf int, rejected, fallback bool, policyFallback int) int {
+func combineSourceCandidateScore(info core.ReleaseInfo, profile core.QualityProfile, preferRevision bool, cf int, rejected, fallback bool, policyFallback int, providerBackoff bool) int {
 	if rejected {
 		return -1_000_000 + clampCandidatePoints(cf, -40_000, 40_000)
-	}
-	if fallback {
-		tier := min(max(policyFallback, 0), 8)
-		return -500_000 - tier*50_000 + fallbackHeight(info)*10 + clampCandidatePoints(cf, -10_000, 10_000)
 	}
 	pos := qualityPosition(profile.QualityOrder, info, info.Height)
 	rev := 0
 	if preferRevision {
 		rev = revisionRank(info)
+	}
+	if providerBackoff {
+		order := pos*100 + rev*50 + clampCandidatePoints(cf/100, -100, 100)
+		if fallback {
+			order -= 5_000
+		}
+		return -930_000 + clampCandidatePoints(order, -15_000, 15_000)
+	}
+	if fallback {
+		tier := min(max(policyFallback, 0), 8)
+		return -500_000 - tier*50_000 + fallbackHeight(info)*10 + clampCandidatePoints(cf, -10_000, 10_000)
 	}
 	return pos*100_000 + rev*50_000 + clampCandidatePoints(cf, -20_000, 20_000)
 }

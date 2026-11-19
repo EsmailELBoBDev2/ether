@@ -229,8 +229,9 @@ type session struct {
 	// kindOpen opens a non-catalogue plugin item's bytes (spec §15.1). When
 	// set, the session bypasses resolution/failover and opens this source
 	// directly, then runs the normal probe/decision pipeline.
-	kindOpen     func(ctx context.Context) (core.MediaSource, error)
-	kindSourceID string
+	kindOpen          func(ctx context.Context) (core.MediaSource, error)
+	kindOpenCandidate func(ctx context.Context, exclude []string) (core.MediaSource, core.Release, error)
+	kindSourceID      string
 
 	// virtual is the byte/time layout of the first generation: the file the
 	// client was told about. Direct-play byte offsets are always in these
@@ -341,6 +342,10 @@ func newSession(id string, ident identity, user *core.User, caps core.ClientCaps
 		graceUntil:       now,
 		expectPos:        -1,
 	}
+}
+
+func (s *session) isKind() bool {
+	return s != nil && (s.kindOpen != nil || s.kindOpenCandidate != nil)
 }
 
 // adopt makes g the session's first generation and fixes the virtual file.

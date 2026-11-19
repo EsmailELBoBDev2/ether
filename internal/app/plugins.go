@@ -443,16 +443,23 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	if a.debrid != nil {
 		deb = a.debrid
 	}
+	var usenetServing func() bool
+	if a.opts.FixtureMedia == nil {
+		usenetServing = func() bool {
+			return a.fetcher == nil || a.fetcher.HasServingProvider()
+		}
+	}
 	kindResolver := adapters.NewKindResolver(adapters.KindResolverDeps{
-		Manager:   mgr,
-		Libraries: a.libraries,
-		Items:     itemsSvc,
-		Blobs:     blobs,
-		Catalog:   kindCatalog,
-		Indexer:   idx,
-		Resolver:  a.resolver,
-		Debrid:    deb,
-		Engine:    eng,
+		Manager:       mgr,
+		Libraries:     a.libraries,
+		Items:         itemsSvc,
+		Blobs:         blobs,
+		Catalog:       kindCatalog,
+		Indexer:       idx,
+		Resolver:      a.resolver,
+		Debrid:        deb,
+		Engine:        eng,
+		UsenetServing: usenetServing,
 		Authorize: func(ctx context.Context, viewer *core.Viewer, key core.RatingKey) error {
 			_, err := a.pluginPlayableTitle(ctx, kindCatalog, viewer, key)
 			return err

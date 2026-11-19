@@ -202,7 +202,7 @@ func (m *Manager) maintainReserve(s *session, position time.Duration, state stri
 // transfers once to failover; otherwise the parent/session cancellation closes
 // it and revokes its loopback grant. Speculation never changes watch state.
 func (m *Manager) prepareSpeedAlternate(g *generation) {
-	if m.config().Cache.DisableSpeculation {
+	if m.config().Cache.DisableSpeculation || g.sess.isKind() {
 		return
 	}
 	d := &g.standby

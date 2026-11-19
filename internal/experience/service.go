@@ -188,6 +188,7 @@ type ServiceDeps struct {
 	State    core.State
 	Search   Search
 	Rows     *RowsService
+	Layout   core.NeutralHomeLayoutSource
 	Protocol core.Protocol
 	// Favorites manages the stable, per-viewer Favorites playlist mapping.
 	Favorites      func(context.Context, *core.User, core.RatingKey, bool) (bool, error)

@@ -294,7 +294,7 @@ func TestOwnerCollectionRows(t *testing.T) {
 	}
 	sec := hubContext(testNow, core.DeviceTV)
 	sec.SectionID = 1
-	p, _ = h.e.PreviewHome(context.Background(), &u, sec, "movies", 12)
+	p, _ = h.e.PreviewHome(context.Background(), &u, sec, "library:1", 12)
 	if rowByKind(p.Rows, KindCollectionPrefix+"secret") == nil {
 		t.Fatal("section row missing from the Movies section")
 	}

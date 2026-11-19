@@ -412,9 +412,11 @@ export interface ViewerHome {
   homeDeduped?: number;
 }
 
-export type BuiltinLayoutSection = "home" | "movies" | "shows";
+export type BuiltinLayoutSection = "home";
 export type LibraryLayoutSection = `library:${number}`;
 export type LayoutSection = BuiltinLayoutSection | LibraryLayoutSection;
+export type LibraryMediaSurface = "movies" | "shows";
+export type RowSectionTag = LayoutSection | LibraryMediaSurface;
 export type Device = "tv" | "mobile" | "web" | "desktop";
 export type Daypart = "morning" | "afternoon" | "evening" | "late";
 
@@ -494,8 +496,8 @@ export interface AvailableRow {
   title: string;
   kind: string;
   description: string;
-  /** Pages the row can appear on; empty or missing means every page. */
-  sections?: LayoutSection[];
+  /** Pages or media surfaces the row can appear on; empty or missing means every page. */
+  sections?: RowSectionTag[];
   group?: RowGroup;
 }
 
@@ -515,22 +517,43 @@ export interface RankerInsight {
   features: RankerFeature[] | null;
 }
 
-/** A movie or show library that inherits its media type's Recommended rows or uses its own `library:<id>` page. */
+/** A library with its own `library:<id>` Recommended rows page. */
 export interface LayoutLibrary {
   id: number;
   name: string;
   slug: string;
-  type: "movie" | "show";
+  type: "movie" | "show" | "plugin";
   section: LibraryLayoutSection;
-  basePage: "movies" | "shows";
   customized: boolean;
+}
+
+export interface LayoutDefaultsMaxRows {
+  home: number;
+  library?: number;
+  [section: string]: number | undefined;
 }
 
 export interface LayoutDoc {
   layout: HomeLayout;
   availableRows: AvailableRow[];
-  defaults: { maxRows: Record<BuiltinLayoutSection, number> & Partial<Record<LayoutSection, number>> };
+  defaults: { maxRows: LayoutDefaultsMaxRows };
   libraries?: LayoutLibrary[];
+}
+
+export interface ViewerLibraryPage {
+  userId: number;
+  page: LayoutPage;
+}
+
+export interface LibraryLayoutDoc {
+  library: LayoutLibrary;
+  customized: boolean;
+  effectivePage: LayoutPage;
+  viewerPages: ViewerLibraryPage[];
+  defaults: { maxRows: number };
+  availableRows: AvailableRow[];
+  collectionSchedules?: Record<string, TargetSchedule | null>;
+  layout: HomeLayout;
 }
 
 interface LayoutImpact {

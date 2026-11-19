@@ -7,6 +7,7 @@ import type {
   AvailableRow,
   HomeLayout,
   LayoutSection,
+  LibraryMediaSurface,
   RowPolicy,
   Viewer,
 } from "../../lib/contract";
@@ -45,7 +46,7 @@ export function AnchoredSlots({
   section: LayoutSection;
   viewers: Viewer[];
   available: AvailableRow[];
-  mediaSection?: "movies" | "shows";
+  mediaSection?: LibraryMediaSurface | null;
 }) {
   const [adding, setAdding] = useState("");
   const onLibraryTab = isLibrarySection(section);
@@ -55,7 +56,7 @@ export function AnchoredSlots({
     layer === "global"
       ? []
       : anchorsOf(draft, "global", section).filter((g) => {
-          const eff = effectivePolicy(draft, layer, section, g.row, g.row, mediaSection);
+          const eff = effectivePolicy(draft, layer, section, g.row, g.row);
           return eff?.layer === "global";
         });
   const unanchor = (p: RowPolicy) =>
@@ -68,7 +69,6 @@ export function AnchoredSlots({
         section,
         row,
         row,
-        mediaSection,
       )?.policy ?? {
         row,
         status: "always" as const,

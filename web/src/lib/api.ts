@@ -10,6 +10,10 @@ import type {
   FacetValue,
   HomeLayout,
   LayoutDoc,
+  LibraryLayoutDoc,
+  LayoutPage,
+  TargetSchedule,
+  ViewerLibraryPage,
   LayoutImpactResult,
   PreviewContext,
   LookupKind,
@@ -592,9 +596,20 @@ export const api = {
   ) => apiFetch<ViewerHome>(`/viewers/${id}/home${qs(ctx)}`, { signal }),
   refreshViewer: (id: number) => post<null>(`/viewers/${id}/refresh`),
 
-  // ---- Home Designer -----------------------------------------------------------
+  // ---- Home Designer & Library Recommended rows -------------------------------
   layout: () => apiFetch<LayoutDoc>("/layout"),
   putLayout: (layout: HomeLayout) => put<LayoutDoc>("/layout", { layout }),
+  libraryLayout: (id: number, signal?: AbortSignal) =>
+    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { signal }),
+  putLibraryLayout: (
+    id: number,
+    body: {
+      page?: LayoutPage;
+      viewerPages?: ViewerLibraryPage[];
+      collectionSchedules?: Record<string, TargetSchedule | null>;
+    },
+  ) => put<LibraryLayoutDoc>(`/layout/libraries/${id}`, body),
+  deleteLibraryLayout: (id: number) => apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { method: "DELETE" }),
   /** The Plex Home a viewer (null = the typical viewer) gets with a draft layout (omitted = saved). */
   previewLayout: (
     body: PreviewContext & { viewerId: number | null; layout?: HomeLayout; count?: number },

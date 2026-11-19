@@ -32,6 +32,8 @@ var builtinFormatNames = map[string]string{
 	core.FormatAtmosPassthrough:        "Atmos passthrough",
 	core.FormatToneMapping:             "Tone mapping",
 	core.FormatPastRetention:           "Past retention",
+	FormatSeaDexBest:                   "SeaDex Best",
+	FormatSeaDexAlt:                    "SeaDex Alt",
 }
 
 func init() {

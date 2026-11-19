@@ -13,13 +13,18 @@ import { createPrerollsMock } from "./prerolls";
 import { createVelaBrandingMock, VELA_SETTINGS_SCHEMA } from "./velaBranding";
 import type {
   ActivityDay,
-  BuiltinLayoutSection,
+  AvailableRow,
   CollectionSpec,
   Device,
   HomeLayout,
   HomeRow,
+  LayoutDefaultsMaxRows,
   LayoutPage,
   LayoutSection,
+  LibraryMediaSurface,
+  RowGroup,
+  RowSectionTag,
+  ViewerLibraryPage,
   Rule,
   Source,
   TasteOverride,
@@ -32,7 +37,8 @@ import {
   daypartOf,
   defaultRowsForSection,
   effectivePolicy,
-  isLibrarySection,
+  clearLibraryLayout,
+  prune,
   libraryIdOfSection,
   matchRank,
   mediaSectionForLibrary,
@@ -132,6 +138,8 @@ export interface FakeOptions {
   householdAudio?: boolean;
   /** Seed pre-rolls, their recent plays and a video still converting. */
   prerolls?: boolean;
+  /** Simulate a port conflict on Jellyfin (true / "named" / "unknown"). */
+  portConflict?: boolean | string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -1221,38 +1229,91 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
   // ---- Homes (layered Home Designer) ---------------------------------------------------
 
-  const DEFAULT_ROWS: Record<BuiltinLayoutSection, number> = { home: 10, movies: 8, shows: 8 };
+  const DEFAULT_ROWS: LayoutDefaultsMaxRows = { home: 10, library: 8 };
   let lookupMockLib: (id: number) => Record<string, unknown> | undefined = () => undefined;
   let listMockLibs: () => Record<string, unknown>[] = () => [];
 
+  function pluginLibraryCandidates(libId: number, lib: Record<string, unknown>): {
+    descriptors: AvailableRow[];
+    rows: HomeRow[];
+  } {
+    const label = String(lib.name ?? "Items");
+    const section = `library:${libId}` as const;
+    const itemsA = pickTitles(`plugin-${libId}-recent`, 8, () => true).map(card);
+    const itemsB = pickTitles(`plugin-${libId}-top`, 8, (x) => (x.rating ?? 0) > 7.2).map(card);
+    const itemsC = pickTitles(`plugin-${libId}-subject`, 8, () => true).map(card);
+    const defs = [
+      {
+        hubId: `plugin.${libId}.recently-added`,
+        kind: "recentlyAdded",
+        title: `Recently Added ${label}`,
+        description: `Newest items synced into ${label}.`,
+        group: "picks" as const,
+        items: itemsA,
+      },
+      {
+        hubId: `plugin.${libId}.top-rated`,
+        kind: "topRated",
+        title: `Top Rated ${label}`,
+        description: `Highest rated items in ${label}.`,
+        group: "explore" as const,
+        items: itemsB,
+      },
+      {
+        hubId: `plugin.${libId}.facet-subject`,
+        kind: "facet",
+        title: "Featured Subjects",
+        description: `Grouped by indexed facets in ${label}.`,
+        group: "explore" as const,
+        items: itemsC,
+      },
+    ];
+    return {
+      descriptors: defs.map((d) => ({
+        hubId: d.hubId,
+        title: d.title,
+        kind: d.kind,
+        description: d.description,
+        group: d.group,
+        sections: [section],
+      })),
+      rows: defs.map((d, idx) => ({
+        hubId: d.hubId,
+        title: d.title,
+        kind: d.kind,
+        reason: d.description,
+        score: 0.9 - idx * 0.1,
+        source: "engine" as const,
+        items: d.items,
+      })),
+    };
+  }
+
   function resolveSectionMedia(section: LayoutSection): {
-    fallbackSection?: "movies" | "shows";
+    mediaSurface?: LibraryMediaSurface;
+    isPluginLibrary: boolean;
     effectiveMedia: "home" | "movies" | "shows";
     mediaFilter: (x: FakeTitle) => boolean;
   } {
     if (section === "home") {
-      return { effectiveMedia: "home", mediaFilter: () => true };
-    }
-    if (section === "movies") {
-      return { effectiveMedia: "movies", mediaFilter: (x) => x.type === "movie" };
-    }
-    if (section === "shows") {
-      return { effectiveMedia: "shows", mediaFilter: (x) => x.type === "show" };
+      return { isPluginLibrary: false, effectiveMedia: "home", mediaFilter: () => true };
     }
     const libId = libraryIdOfSection(section);
     const lib = libId !== null ? lookupMockLib(libId) : undefined;
-    const fallbackSection = mediaSectionForLibrary(lib as never);
+    const isPluginLibrary = lib?.source === "plugin";
+    const mediaSurface = isPluginLibrary ? undefined : mediaSectionForLibrary(lib as never);
+    const effectiveMedia = mediaSurface ?? "movies";
     const baseFilter = (x: FakeTitle) =>
-      fallbackSection === "shows" ? x.type === "show" : x.type === "movie";
+      effectiveMedia === "shows" ? x.type === "show" : x.type === "movie";
     const rules = Array.isArray(lib?.rules) ? (lib.rules as VisibilityGroup[]) : [];
     const visDefault = String(lib?.visibilityDefault ?? "show");
-    if (rules.length > 0 || visDefault === "hide") {
+    if (!isPluginLibrary && (rules.length > 0 || visDefault === "hide")) {
       const scoped = (x: FakeTitle) => baseFilter(x) && !hiddenByRules(x, rules, visDefault);
       if (catalog.filter(scoped).length >= 4) {
-        return { fallbackSection, effectiveMedia: fallbackSection, mediaFilter: scoped };
+        return { mediaSurface, isPluginLibrary, effectiveMedia, mediaFilter: scoped };
       }
     }
-    return { fallbackSection, effectiveMedia: fallbackSection, mediaFilter: baseFilter };
+    return { mediaSurface, isPluginLibrary, effectiveMedia, mediaFilter: baseFilter };
   }
 
   /** Candidate rows the "engine" proposes for a viewer (null = the typical viewer). */
@@ -1268,7 +1329,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const weekend = day === 0 || day === 6;
     const t = userId === null ? null : taste(userId);
     const top = t?.genres[0]?.name ?? "Drama";
-    const { fallbackSection, effectiveMedia, mediaFilter: media } = resolveSectionMedia(section);
+    const { isPluginLibrary, effectiveMedia, mediaFilter: media } = resolveSectionMedia(section);
+    if (isPluginLibrary) {
+      const libId = libraryIdOfSection(section)!;
+      return pluginLibraryCandidates(libId, lookupMockLib(libId) ?? {}).rows;
+    }
     const short = device === "mobile" || (!weekend && hour >= 21);
     const seed = `${userId ?? "typical"}-${section}`;
     const prefix =
@@ -1454,14 +1519,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         ),
       );
       const wantsAlways = (stem: string, kind: string) => {
-        const eff = effectivePolicy(
-          layout,
-          userId,
-          section,
-          `${prefix}.${stem}`,
-          kind,
-          fallbackSection,
-        );
+        const eff = effectivePolicy(layout, userId, section, `${prefix}.${stem}`, kind);
         return eff?.policy.status === "always" || Boolean(eff?.policy.slot);
       };
       if (wantsAlways("newreleases", "new-releases"))
@@ -1526,11 +1584,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       });
     }
     // Owner collections: targeted ones, plus those the layout places on this page.
-    const page = (l: "global" | number) =>
-      pageOf(layout, l, section)?.rows ??
-      (l === "global" && fallbackSection && !pageOf(layout, "global", section)
-        ? (pageOf(layout, "global", fallbackSection)?.rows ?? [])
-        : []);
+    const page = (l: "global" | number) => pageOf(layout, l, section)?.rows ?? [];
     const placed = new Set(
       [...page("global"), ...(userId === null ? [] : page(userId))]
         .filter((r) => r.status !== "off" && r.row.startsWith("collection:"))
@@ -1539,7 +1593,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     for (const c of state.collections) {
       if (!c.enabled || c.builtIn) continue;
       const targeted =
-        c.targets.homeRow &&
+        (section === "home" ? c.targets.homeRow : c.targets.sectionRow) &&
         (c.targets.users === "all" || (userId !== null && c.targets.users.includes(userId)));
       if (!targeted && !placed.has(String(c.id))) continue;
       // The collection's schedule (a draft's edit in a preview), unless this
@@ -1577,7 +1631,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     layout: HomeLayout = state.layout,
   ) {
     const sec = parseLayoutSection(section);
-    const { fallbackSection, effectiveMedia, mediaFilter: media } = resolveSectionMedia(sec);
+    const { isPluginLibrary, effectiveMedia, mediaFilter: media } = resolveSectionMedia(sec);
     const day = at.getDay();
     const hour = at.getHours();
     const weekend = day === 0 || day === 6 || (day === 5 && hour >= 17);
@@ -1587,7 +1641,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         ? null
         : { id: userId, title: VIEWERS.find((v) => v.id === userId)?.title ?? `Viewer ${userId}` };
     let rows = candidatesFor(userId, device, at, sec, layout);
-    if (sec !== "home") {
+    if (sec !== "home" && !isPluginLibrary) {
       const prefix = effectiveMedia === "movies" ? "movie" : "tv";
       rows = [
         {
@@ -1616,10 +1670,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
     rows = assemble(rows, layout, {
       viewer,
       section: sec,
-      fallbackSection,
       device: device as Device,
       at,
-      defaultRows: defaultRowsForSection(DEFAULT_ROWS, sec, fallbackSection ?? "movies"),
+      defaultRows: defaultRowsForSection(DEFAULT_ROWS, sec),
     });
     rows = appendAbsentAlwaysRows(rows, userId, device, at, sec, layout);
     return {
@@ -1670,34 +1723,27 @@ export function createFakeServer(opts: FakeOptions = {}) {
   ): HomeRow[] {
     const day = at.getDay();
     const hour = at.getHours();
-    const { fallbackSection, effectiveMedia } = resolveSectionMedia(sec);
+    const { mediaSurface, isPluginLibrary, effectiveMedia } = resolveSectionMedia(sec);
+    if (isPluginLibrary) return rows;
     const prefix =
       effectiveMedia === "movies" ? "movie" : effectiveMedia === "shows" ? "tv" : "home";
     const availList = availableRows();
     const active: { pol: LayoutPage["rows"][number]; layer: "global" | "override" }[] = [];
     if (userId !== null) {
-      const viewerPage =
-        pageOf(layout, userId, sec) ??
-        (isLibrarySection(sec) && fallbackSection && !pageOf(layout, "global", sec)
-          ? pageOf(layout, userId, fallbackSection)
-          : undefined);
+      const viewerPage = pageOf(layout, userId, sec);
       for (const pol of viewerPage?.rows ?? []) {
         if ((pol.status === "always" || pol.slot) && !/[*?[]/.test(pol.row))
           active.push({ pol, layer: "override" });
       }
     }
-    const globalPage =
-      pageOf(layout, "global", sec) ??
-      (isLibrarySection(sec) && fallbackSection
-        ? pageOf(layout, "global", fallbackSection)
-        : undefined);
+    const globalPage = pageOf(layout, "global", sec);
     for (const pol of globalPage?.rows ?? []) {
       if ((pol.status !== "always" && !pol.slot) || /[*?[]/.test(pol.row)) continue;
       const colId = collectionIdOf(pol.row);
       const avail = availList.find((a) => a.hubId === pol.row || a.kind === pol.row);
       const kind = colId ? `collection:${colId}` : (avail?.kind ?? pol.row);
       const hubId = colId ? `collection.${colId}` : `${prefix}.${avail?.hubId ?? pol.row}`;
-      const eff = effectivePolicy(layout, userId, sec, hubId, kind, fallbackSection);
+      const eff = effectivePolicy(layout, userId, sec, hubId, kind);
       if (
         !eff ||
         (eff.policy.status !== "always" && !eff.policy.slot) ||
@@ -1766,7 +1812,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             hiddenReason = "Collection has no titles for this viewer";
           }
         }
-      } else if (avail && !rowFits(avail as { sections?: LayoutSection[] }, sec, fallbackSection)) {
+      } else if (avail && !rowFits(avail as { sections?: RowSectionTag[] }, sec, mediaSurface)) {
         hiddenCode = "wrong_surface";
         hiddenReason = "Not available on this page";
       } else if (userId === null && PERSONAL_KINDS.has(kind)) {
@@ -1820,7 +1866,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     return out;
   }
 
-  const ROW_META: Record<string, { group: string; sections?: string[] }> = {
+  const ROW_META: Record<string, { group: RowGroup; sections?: RowSectionTag[] }> = {
     "continue-watching": { group: "picks", sections: ["home", "movies", "shows"] },
     "up-next": { group: "shows", sections: ["home", "shows"] },
     "top-10": { group: "picks", sections: ["home"] },
@@ -1832,7 +1878,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
     "popular-on-server": { group: "household" },
     trending: { group: "household" },
   };
-  const SECTION_ROWS = [
+  const SECTION_ROWS: AvailableRow[] = [
     {
       hubId: "fans-also-loved",
       title: "Fans of What You Watch Also Loved",
@@ -1949,10 +1995,11 @@ export function createFakeServer(opts: FakeOptions = {}) {
     },
   ];
 
-  function availableRows() {
-    return baseRows()
-      .map((r) => ({ ...(ROW_META[r.kind] ?? { group: "picks" }), ...r }))
-      .concat(SECTION_ROWS);
+  function availableRows(): AvailableRow[] {
+    return [
+      ...baseRows().map((r) => ({ ...(ROW_META[r.kind] ?? { group: "picks" as RowGroup }), ...r })),
+      ...SECTION_ROWS,
+    ];
   }
 
   function baseRows() {
@@ -2078,7 +2125,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             ? ["home", "movies"]
             : c.mediaType === "show"
               ? ["home", "shows"]
-              : ["home", "movies", "shows"]) as LayoutSection[],
+              : ["home", "movies", "shows"]) as RowSectionTag[],
         })),
     ];
   }
@@ -2090,18 +2137,20 @@ export function createFakeServer(opts: FakeOptions = {}) {
       ),
     );
     const libraries = listMockLibs()
-      .filter((l) => l.source !== "plugin" && (l.mediaType === "movie" || l.mediaType === "show"))
+      .filter((l) => l.source === "plugin" || l.mediaType === "movie" || l.mediaType === "show")
       .map((l) => {
         const id = Number(l.id);
         const section = `library:${id}` as const;
-        const basePage = l.mediaType === "show" ? ("shows" as const) : ("movies" as const);
+        const type =
+          l.source === "plugin"
+            ? ("plugin" as const)
+            : (l.mediaType as "movie" | "show");
         return {
           id,
           name: String(l.name),
           slug: String(l.key),
-          type: l.mediaType as "movie" | "show",
+          type,
           section,
-          basePage,
           customized: state.layout.global.some((p) => p.section === section),
         };
       });
@@ -2112,6 +2161,52 @@ export function createFakeServer(opts: FakeOptions = {}) {
       availableRows: availableRows(),
       defaults: { maxRows: DEFAULT_ROWS },
       libraries,
+    };
+  }
+
+
+  function libraryLayoutDoc(libId: number) {
+    const raw = lookupMockLib(libId);
+    if (!raw) return null;
+    const section = `library:${libId}` as const;
+    const isPlugin = raw.source === "plugin";
+    const type = isPlugin ? ("plugin" as const) : (raw.mediaType as "movie" | "show");
+    const customPage = state.layout.global.find((p) => p.section === section);
+    const customized = Boolean(customPage);
+    const effectivePage: LayoutPage = customPage
+      ? structuredClone(customPage)
+      : { section, rows: [] };
+    const viewerPages: ViewerLibraryPage[] = state.layout.viewers.flatMap((v) => {
+      const vp = v.pages.find((p) => p.section === section);
+      return vp ? [{ userId: v.userId, page: structuredClone(vp) }] : [];
+    });
+    const collectionSchedules = Object.fromEntries(
+      state.collections.flatMap((c) =>
+        c.targets.schedule ? [[String(c.id), c.targets.schedule] as const] : [],
+      ),
+    );
+    const surface: LibraryMediaSurface = type === "show" ? "shows" : "movies";
+    const candidates: AvailableRow[] = isPlugin
+      ? pluginLibraryCandidates(libId, raw).descriptors
+      : availableRows().filter((r) => rowFits(r, section, surface));
+    return {
+      library: {
+        id: libId,
+        name: String(raw.name),
+        slug: String(raw.key),
+        type,
+        section,
+        customized,
+      },
+      customized,
+      effectivePage,
+      viewerPages,
+      defaults: { maxRows: DEFAULT_ROWS.library ?? 8 },
+      availableRows: candidates,
+      collectionSchedules,
+      layout: Object.keys(collectionSchedules).length
+        ? { ...state.layout, collectionSchedules }
+        : state.layout,
     };
   }
 
@@ -3775,14 +3870,58 @@ export function createFakeServer(opts: FakeOptions = {}) {
     const ex = experience.handle(method, seg, q);
     if (ex) return json(ex.body, ex.status);
 
+    if (seg[0] === "frontends" && seg[1] === "qr" && seg.length === 2 && method === "GET") {
+      const target = q.get("url") ?? "";
+      if (!target || /:\/\/[^/]*@/.test(target)) {
+        return err(400, "invalid_url", "Invalid URL");
+      }
+      const b64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAMAAAADAAQMAAABoEv5EAAAABlBMVEX///8AAABVwtN+AAABJklEQVR42uzWMa6rMBCF4R+5oPQSvBR2BsnOvJRZAiWFlfPkASV5UaorBbvgNAh9zQgP4+HKlR9FNUGSLTJ/uXUABUgwSbfR/OVMSNoSUBhkJar0A0GZdO8PFGzpCYAUVoAvZ94K9m5fp2Dz+OU3+C0AEJQd+EwrKAxbUgVIkt4+YkOAQUaUdPdnMDqAIEkFqF1fmAo9gPTwLpfN3vWyHgDmUVoJNni5b7/B70E2bJS4X2zE/DzBpgBeJn7XhvV1gm3BLxSmYMtGWCdZDyBbtkTMskE6Gr89AHiZteuJ+VQ4VrVcUt2WougCCpD2Lh/3oXnrAY69BBglvT5ieyCqpEedW9P/5TaGLJvBpyk9wHG0viLso/Q8OHa4ZzWfy10buHLlj/k3ACp8cxu0+Cr1AAAAAElFTkSuQmCC";
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Response(bytes, { status: 200, headers: { "Content-Type": "image/png" } });
+    }
+    const mockRuntimePort = (id: string, configuredPort?: number) => {
+      if (
+        opts.portConflict &&
+        id === "jellyfin" &&
+        state.config.frontendPorts?.jellyfin == null &&
+        configuredPort
+      ) {
+        return {
+          actualPort: 8098,
+          busyPort: configuredPort,
+          busyPortHolder: opts.portConflict === "unknown" ? undefined : "Jellyfin Server",
+        };
+      }
+      return { actualPort: configuredPort, busyPort: undefined, busyPortHolder: undefined };
+    };
     const mockConnectUrls = (id: string, port?: number) => {
-      if (port)
+      if (id === "plex" && port) {
         return [
           `http://192.168.1.20:${port}`,
-          id === "plex"
-            ? `https://203-0-113-7.abc.plex.direct:${port}`
-            : `https://${id}.example.com`,
+          `http://100.64.0.20:${port}`,
+          `https://203-0-113-7.abc.plex.direct:${port}`,
         ];
+      }
+      if ((id === "jellyfin" || id === "emby" || id === "silo") && port) {
+        return [
+          `http://192.168.1.20:${port}`,
+          `http://100.64.0.20:${port}`,
+          `http://[fd00::20]:${port}`,
+          `http://192.168.1.20:${state.config.server.port}/${id}`,
+          `https://${id}.example.com`,
+        ];
+      }
+      if (id === "vela") {
+        return opts.velaInstalled === true
+          ? [
+              `http://192.168.1.20:${state.config.server.port}/vela`,
+              `http://100.64.0.20:${state.config.server.port}/vela`,
+            ]
+          : [];
+      }
       if (id === "stremio" || id === "webdav" || id === "dlna" || id === "m3u" || id === "xtream") {
         return [`http://192.168.1.20:${state.config.server.port}/${id}`];
       }
@@ -3891,7 +4030,12 @@ export function createFakeServer(opts: FakeOptions = {}) {
             entry?.enabled ??
             (descriptor.id === "vela" ||
               (state.config.frontends == null && descriptor.id === "plex"));
-          const port = state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort;
+          const configuredPort =
+            descriptor.id === "plex"
+              ? (state.config.frontendPorts?.plex ?? state.config.server.port ?? descriptor.defaultPort)
+              : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
+          const runtime = mockRuntimePort(descriptor.id, configuredPort);
+          const port = runtime.actualPort;
           return {
             descriptor,
             enabled,
@@ -3902,6 +4046,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
                   : descriptor.id === "jellyfin",
               addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
               connectUrls: enabled ? mockConnectUrls(descriptor.id, port) : [],
+              ...(enabled && runtime.busyPort
+                ? {
+                    busyPort: runtime.busyPort,
+                    actualPort: runtime.actualPort,
+                    ...(runtime.busyPortHolder ? { busyPortHolder: runtime.busyPortHolder } : {}),
+                    warnings: [
+                      `Another server on this computer is using port ${runtime.busyPort}; Ether still works at 127.0.0.1:${runtime.actualPort}`,
+                    ],
+                  }
+                : {}),
               lan: "unknown",
               wan: "unknown",
               clients24h: 0,
@@ -3923,11 +4077,26 @@ export function createFakeServer(opts: FakeOptions = {}) {
         const enabled =
           state.config.frontends?.[id!]?.enabled ??
           (id === "vela" || (state.config.frontends == null && id === "plex"));
-        const port = state.config.frontendPorts?.[id!] ?? descriptor.defaultPort;
+        const configuredPort =
+          id === "plex"
+            ? (state.config.frontendPorts?.plex ?? state.config.server.port ?? descriptor.defaultPort)
+            : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
+        const runtime = mockRuntimePort(id ?? "", configuredPort);
+        const port = runtime.actualPort;
         return json({
           webPlayerReady: id === "vela" ? opts.velaInstalled === true : id === "jellyfin",
           addresses: enabled && port ? [`127.0.0.1:${port}`] : [],
           connectUrls: enabled ? mockConnectUrls(id ?? "", port) : [],
+          ...(enabled && runtime.busyPort
+            ? {
+                busyPort: runtime.busyPort,
+                actualPort: runtime.actualPort,
+                ...(runtime.busyPortHolder ? { busyPortHolder: runtime.busyPortHolder } : {}),
+                warnings: [
+                  `Another server on this computer is using port ${runtime.busyPort}; Ether still works at 127.0.0.1:${runtime.actualPort}`,
+                ],
+              }
+            : {}),
           lan: "unknown",
           wan: "unknown",
           clients24h: 0,
@@ -3963,7 +4132,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
           if (settings.wordmark == null) delete settings.wordmark;
         }
         entry.settings = settings;
-        if (typeof port === "number") (state.config.frontendPorts ??= {})[id!] = port;
+        if (typeof port === "number") {
+          (state.config.frontendPorts ??= {})[id!] = port;
+          if (id === "plex") state.config.server.port = port;
+        }
         return json({ ok: true });
       }
       if (
@@ -5624,6 +5796,68 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       restoredHidden.add(`${viewerHidden[1]}:${(body as { handle: string }).handle}`);
       return json({ restored: true });
+    }
+    if (seg[0] === "layout" && seg[1] === "libraries" && seg[2] && seg.length === 3) {
+      const libId = Number(seg[2]);
+      const section = `library:${libId}` as const;
+      if (!Number.isSafeInteger(libId) || libId <= 0 || !lookupMockLib(libId)) {
+        return err(404, "not_found", "no such library");
+      }
+      if (method === "GET") {
+        return json(libraryLayoutDoc(libId));
+      }
+      if (method === "DELETE") {
+        state.layout = {
+          ...clearLibraryLayout(state.layout, section),
+          updatedAt: new Date().toISOString(),
+        };
+        return json(libraryLayoutDoc(libId));
+      }
+      if (method === "PUT") {
+        const b = (body ?? {}) as {
+          page?: LayoutPage;
+          viewerPages?: ViewerLibraryPage[];
+          collectionSchedules?: Record<string, Record<string, unknown> | null>;
+        };
+        let global = state.layout.global.filter((p) => p.section !== section);
+        if (b.page) {
+          global = [...global, { ...b.page, section, rows: b.page.rows ?? [] }];
+        }
+        let viewers = state.layout.viewers;
+        if (b.viewerPages) {
+          const byUser = new Map(b.viewerPages.map((vp) => [vp.userId, { ...vp.page, section }]));
+          const seen = new Set<number>();
+          viewers = viewers.map((v) => {
+            seen.add(v.userId);
+            const rest = v.pages.filter((p) => p.section !== section);
+            const next = byUser.get(v.userId);
+            return { ...v, pages: next ? [...rest, next] : rest };
+          });
+          for (const [uid, page] of byUser.entries()) {
+            if (!seen.has(uid)) viewers = [...viewers, { userId: uid, pages: [page] }];
+          }
+        }
+        const nextDoc = prune({ ...state.layout, global, viewers });
+        const problems = validateLayout(nextDoc);
+        if (problems.length) {
+          return json(
+            {
+              error: {
+                code: "validation",
+                message: `${problems[0]!.field}: ${problems[0]!.message}`,
+                fields: problems,
+              },
+            },
+            400,
+          );
+        }
+        state.layout = { ...nextDoc, updatedAt: new Date().toISOString() };
+        for (const [id, schedule] of Object.entries(b.collectionSchedules ?? {})) {
+          const c = state.collections.find((x) => String(x.id) === id);
+          if (c) c.targets = { ...c.targets, schedule: tidySchedule(schedule as never) ?? null };
+        }
+        return json(libraryLayoutDoc(libId));
+      }
     }
     return err(404, "not_found", "no such API endpoint");
   }

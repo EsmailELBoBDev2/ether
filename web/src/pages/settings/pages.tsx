@@ -13,7 +13,6 @@ import type { UpdateStatus } from "../../lib/types";
 import Logs from "../Logs";
 import { BackupsAndImport } from "./Backups";
 import { ClusterOverview, useClustered } from "./Cluster";
-import { AppConnections } from "./AppConnections";
 import { OutboundInternet } from "./OutboundInternet";
 import { ServerProtection } from "./ServerProtection";
 import { ConnectedServices, integrationTabs, type ServiceTab } from "./ConnectedServices";
@@ -32,7 +31,7 @@ function ServerStatus() {
   );
 }
 
-/** Names, how apps reach this computer, how it reaches the internet, and setup. */
+/** Names, how Ether reaches the internet, and setup. */
 export function GeneralPage() {
   const { reloadBoot } = useApp();
   const clustered = useClustered();
@@ -52,7 +51,6 @@ export function GeneralPage() {
         before={() => <ServerStatus />}
         onSaved={() => void reloadBoot()}
       />
-      <AppConnections />
       <OutboundInternet />
       <RunSetupWizard />
     </DomainPage>

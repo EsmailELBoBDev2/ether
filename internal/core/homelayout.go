@@ -26,7 +26,7 @@ type LayoutPage struct {
 	DeviceMaxRows map[string]int `json:"deviceMaxRows,omitempty"`
 	Rows          []RowPolicy    `json:"rows"`
 	// DedupeHome keeps titles the viewer's Home leads with off this page
-	// (Movies/TV Shows only). Nil means the default: on.
+	// (library Recommended pages only). Nil means the default: on.
 	DedupeHome *bool `json:"dedupeHome,omitempty"`
 	// Tuning shapes how the page's rows and titles are chosen. Nil fields
 	// inherit (viewer page → global page → engine default).

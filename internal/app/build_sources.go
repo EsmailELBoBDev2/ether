@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
+	"github.com/braedonsaunders/ether/internal/animemap"
 	"github.com/braedonsaunders/ether/internal/cardigann"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -88,8 +89,13 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		siteOpts.LoginLock = a.clusterLoginLock // one login per site across nodes
 	}
 	a.sites = cardigann.New(siteOpts)
+	var animeCacheDir string
+	if dataDir != "" {
+		animeCacheDir = filepath.Join(dataDir, "cache", "animemap")
+	}
+	animeMap := animemap.New(animemap.Options{CacheDir: animeCacheDir, Logger: log.With("component", "animemap")})
 	specials := stremio.NewSpecialMapper(egress.Client(egress.CapStremio, 3*time.Second), "https://v3-cinemeta.strem.io")
-	a.addons = stremio.NewServiceWithOptions(stremio.Options{Specials: specials})
+	a.addons = stremio.NewServiceWithOptions(stremio.Options{Anime: animeMap, Specials: specials})
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
 		Logger:         log.With("component", "newznab"),
 		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
@@ -162,12 +168,14 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	indexer := core.Indexer(parityIndexer(a.sources, dataDir))
 	health := core.HealthChecker(parityHealth(a.media, dataDir))
 	animeCour := resolver.AnimeCour(a.addons)
+	animeIDs := resolver.AnimeIDs(animeMap)
 	usenetServing := func() bool {
 		return a.fetcher == nil || a.fetcher.HasServingProvider()
 	}
 	if a.opts.FixtureMedia != nil {
 		indexer, health = a.opts.FixtureMedia, a.opts.FixtureMedia
 		animeCour = nil
+		animeIDs = nil
 		usenetServing = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
@@ -197,7 +205,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			}
 			return sceneNumbers.Lookup(ctx, req, func() (core.EpisodeLayout, error) { return a.catalog.ReleaseEpisodeLayout(ctx, show) })
 		}
-	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
+	}, EpisodeIdentity: a.catalog.EpisodeIdentity, SpecialTitles: a.cachedSpecialTitles, Now: parityClock(), SearchObserved: a.observeSearch, Discovered: a.discoveredReleases, Observed: a.observeRelease, Invalidated: a.invalidateRelease, SeriesYearConflict: a.seriesYearConflict, SeriesNamesake: a.seriesNamesake, AnimeCour: animeCour, AnimeIDs: animeIDs, LibraryProfiles: newLibraryProfiles(a), UsenetServing: usenetServing, Logger: log.With("component", "resolver")})
 	a.resolver.SetSourceSignals(a.debrid)
 	a.closers = append(a.closers, func() { a.resolver.Close() })
 

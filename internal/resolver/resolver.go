@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"regexp"
 	"slices"
@@ -98,6 +99,15 @@ type Options struct {
 	// AnimeCour maps multi-cour TMDB anime season episodes to their cour
 	// and cour-relative episode number; nil disables cour mapping.
 	AnimeCour AnimeCour
+	// AnimeIDs maps anime titles to AniList IDs for SeaDex release ranking;
+	// nil disables SeaDex lookups.
+	AnimeIDs AnimeIDs
+	// SeaDexURL overrides DefaultSeaDexURL; empty uses DefaultSeaDexURL.
+	SeaDexURL string
+	// SeaDexClient queries SeaDex; nil builds a public-only safefetch client.
+	SeaDexClient *http.Client
+	// SeaDexTTL bounds how long a SeaDex entry stays fresh before background refresh (0 = 24h).
+	SeaDexTTL time.Duration
 	// LibraryProfiles resolves a title's per-library quality profile; nil
 	// leaves selection to the existing home/away defaults.
 	LibraryProfiles LibraryProfiles
@@ -238,6 +248,10 @@ type Service struct {
 	seriesNamesake            func(context.Context, core.RatingKey, string, int) (bool, error)
 	seriesYearConflict        func(ctx context.Context, show core.RatingKey, title string, year int) (bool, error)
 	animeCour                 AnimeCour
+	animeIDs                  AnimeIDs
+	seaDexURL                 string
+	seaDexClient              *http.Client
+	seaDexTTL                 time.Duration
 	libProfiles               LibraryProfiles
 	availabilityGeneration    uint64
 	availabilityDeadlines     availabilityDeadlines
@@ -278,6 +292,11 @@ type Service struct {
 	verifiedMiss  map[string]time.Time // release id -> when resolver_verified last had no fresh check
 	failedHealth  map[string]time.Time // confirmed source failures, briefly skipped on subsequent resolves
 	healthTTL     time.Duration
+	seaDexMem     map[int64]*seaDexEntry
+	seaDexDBMiss  map[int64]time.Time
+	seaDexKeys    map[string]seaDexKeyCache
+	seaDexKeyMiss map[string]time.Time
+	seaDexFail    map[int64]time.Time
 
 	tracesMu  sync.Mutex
 	traces    []Trace
@@ -298,6 +317,10 @@ type Service struct {
 	detailVariantWorkers int                                 // bgMu
 	refills              map[string]chan struct{}            // episode search key -> completion; guarded by bgMu
 	refillRetryAfter     map[string]refillMark               // next detail discovery allowed; guarded by bgMu
+	seaDexQueue          []seaDexJob                         // guarded by bgMu
+	seaDexPending        map[string]bool                     // guarded by bgMu
+	seaDexRunning        bool                                // guarded by bgMu
+	seaDexIdle           chan struct{}                       // guarded by bgMu
 
 	flightMu sync.Mutex
 	flights  map[string]*inflight
@@ -347,6 +370,7 @@ func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config
 	}
 	s.UpdateConfig(cfg)
 	s.con.init(opts)
+	s.initSeaDex(opts)
 	s.loadPersisted(context.Background())
 	return s
 }
@@ -1594,6 +1618,7 @@ func (s *Service) rankCandidates(ctx context.Context, req core.ResolveRequest, s
 	env.rcfg = s.resolverCfg()
 	env.lang = s.catalogLanguage()
 	env.audio(profile, req)
+	env.seaDex = s.seaDexForRank(ctx, sreq, seaDexFetchAllowed(ctx, req))
 	return s.rankWith(ctx, env, req, sreq, profile, results, trace, pinID)
 }
 
@@ -1603,6 +1628,7 @@ func (s *Service) rankCandidates(ctx context.Context, req core.ResolveRequest, s
 type rankEnv struct {
 	policy           *releasepolicy.Policy
 	hot              RankingSession
+	seaDex           *seaDexEntry
 	exclude          map[string]bool
 	rcfg             config.Resolver
 	lang             string
@@ -1904,6 +1930,9 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, t, sreq), identityConflict: namesake && identityEv == "" && episodeRegionConflict(rel, t), audioUnverified: audioUnverified, unverifiedLangs: unverifiedLangs, fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, delivery: delivery, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
+	}
+	if env.seaDex != nil && len(cands) > 0 {
+		s.addSeaDexScores(env.seaDex, cands, trace)
 	}
 	if hot != nil && len(cands) > 0 {
 		s.addPluginScores(hot, profile, cands, trace)

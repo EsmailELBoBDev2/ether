@@ -19,14 +19,41 @@ func TestConsoleConnectURLsReplaceContainerAddress(t *testing.T) {
 	}
 }
 
-func TestConsoleConnectURLsKeepHostNetworkListener(t *testing.T) {
-	r := httptestRequest("192.168.1.5:32400")
-	got := consoleConnectURLs(r, "jellyfin", []string{
-		"http://192.168.1.5:8096",
-		"http://192.168.1.5:32400/jellyfin",
-	}, config.Config{}, nil)
-	if len(got) != 2 || got[0] != "http://192.168.1.5:32400/jellyfin" || got[1] != "http://192.168.1.5:8096" {
-		t.Fatalf("connect URLs = %#v", got)
+func TestConsoleConnectURLsPreferDedicatedListenerOverSharedPort(t *testing.T) {
+	for _, tc := range []struct {
+		id         string
+		console    string
+		urls       []string
+		wantFirst  string
+		wantSecond string
+	}{
+		{
+			id:         "jellyfin",
+			console:    "192.168.68.65:32550",
+			urls:       []string{"http://192.168.68.65:32550/jellyfin", "http://192.168.68.65:8096"},
+			wantFirst:  "http://192.168.68.65:8096",
+			wantSecond: "http://192.168.68.65:32550/jellyfin",
+		},
+		{
+			id:         "emby",
+			console:    "192.168.68.65:32550",
+			urls:       []string{"http://192.168.68.65:32550/emby", "http://192.168.68.65:8097"},
+			wantFirst:  "http://192.168.68.65:8097",
+			wantSecond: "http://192.168.68.65:32550/emby",
+		},
+		{
+			id:         "silo",
+			console:    "10.0.0.43:32450",
+			urls:       []string{"http://10.0.0.43:8090", "http://10.0.0.43:32450/silo"},
+			wantFirst:  "http://10.0.0.43:8090",
+			wantSecond: "http://10.0.0.43:32450/silo",
+		},
+	} {
+		r := httptestRequest(tc.console)
+		got := consoleConnectURLs(r, tc.id, tc.urls, config.Config{}, nil)
+		if len(got) != 2 || got[0] != tc.wantFirst || got[1] != tc.wantSecond {
+			t.Fatalf("%s connect URLs = %#v, want [%q, %q]", tc.id, got, tc.wantFirst, tc.wantSecond)
+		}
 	}
 }
 
@@ -94,7 +121,7 @@ func TestConsoleConnectURLsPreferLANOverLoopback(t *testing.T) {
 		"http://192.168.68.66:8096",
 		"http://192.168.68.66:32400/jellyfin",
 	}, config.Config{}, nil)
-	if len(got) < 2 || got[0] != "http://192.168.68.66:32400/jellyfin" || got[1] != "http://192.168.68.66:8096" {
+	if len(got) < 2 || got[0] != "http://192.168.68.66:8096" || got[1] != "http://192.168.68.66:32400/jellyfin" {
 		t.Fatalf("connect URLs = %#v", got)
 	}
 	if got[len(got)-1] == "http://192.168.68.66:8096" {

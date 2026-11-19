@@ -37,21 +37,35 @@ describe("Settings", () => {
       url: "http://gluetun:8888",
     });
   });
-  it("shows enabled app addresses and saves a non-Plex port from General", async () => {
-    const { fake } = renderApp("/server", {}, (f) => {
+  it("removes How apps connect from General and saves dedicated app ports on the app page", async () => {
+    const general = renderApp("/server", {}, (f) => {
       f.state.config.frontends = {
         plex: { enabled: true },
         jellyfin: { enabled: true },
         emby: { enabled: false },
       };
     });
-    const port = await screen.findByLabelText("Jellyfin port", {}, WAIT);
+    expect(await screen.findByLabelText("Server name", {}, WAIT)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "How apps connect" })).toBeNull();
+    expect(screen.queryByLabelText("Jellyfin port")).toBeNull();
+    expect(screen.queryByLabelText("Plex port")).toBeNull();
+    general.unmount();
+
+    const { fake } = renderApp("/apps/jellyfin", {}, (f) => {
+      f.state.config.frontends = {
+        plex: { enabled: true },
+        jellyfin: { enabled: true },
+        emby: { enabled: false },
+      };
+    });
+    const port = await screen.findByRole("spinbutton", { name: "Port" }, WAIT);
     await waitFor(() => {
       expect(port).toBeEnabled();
       expect(port).toHaveValue(8096);
     }, WAIT);
-    expect(screen.queryByLabelText("Emby port")).toBeNull();
-    expect(screen.getByText("http://192.168.1.20:8096")).toBeVisible();
+    expect(screen.getByRole("link", { name: "http://192.168.1.20:8096" })).toBeVisible();
+    expect(screen.getByText("Also reachable at")).toBeVisible();
+    expect(screen.getByText("http://192.168.1.20:32400/jellyfin")).toBeVisible();
     expect(screen.getByText("https://jellyfin.example.com")).toBeVisible();
     fireEvent.change(port, { target: { value: "8098" } });
     fireEvent.click(screen.getByRole("button", { name: /Save changes/ }));
@@ -64,23 +78,17 @@ describe("Settings", () => {
     );
   });
 
-  it("collapses secondary interface URLs behind Other addresses with meaningful labels and renders Vela's icon", async () => {
-    renderAppWith("/server", (method, path) => {
+  it("shows server listener power options on Apps Overview and secondary interface labels on app pages", async () => {
+    const overview = renderApp("/apps/overview");
+    expect(await screen.findByRole("heading", { name: "Server address" }, WAIT)).toBeVisible();
+    expect(screen.queryByLabelText("Listen address")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More options: Server address" }));
+    expect(screen.getByLabelText("Listen address")).toBeInTheDocument();
+    overview.unmount();
+
+    renderAppWith("/apps/jellyfin", (method, path) => {
       if (method === "GET" && path === "/frontends") {
         return [
-          {
-            descriptor: { id: "vela", name: "Vela" },
-            enabled: true,
-            status: {
-              webPlayerReady: true,
-              connectUrls: [
-                "http://192.168.68.65:32550/vela",
-                "http://100.65.221.123:32550/vela",
-                "http://[fd79:f184::1]:32550/vela",
-              ],
-              addresses: ["http://192.168.68.65:32550/vela"],
-            },
-          },
           {
             descriptor: { id: "jellyfin", name: "Jellyfin", defaultPort: 8096 },
             enabled: true,
@@ -97,32 +105,19 @@ describe("Settings", () => {
           },
         ];
       }
-      if (method === "GET" && path === "/frontends/vela/settings") {
-        return { defaultSkinId: "cinematic" };
-      }
       if (method === "GET" && path === "/frontends/jellyfin/settings") {
         return { port: 8096 };
       }
       return undefined;
     });
 
-    const velaHeading = await screen.findByRole("heading", { name: "Vela" }, WAIT);
-    const velaCard = velaHeading.closest("div.rounded-xl") as HTMLElement;
-    expect(velaCard.querySelector("svg")).not.toBeNull();
-    expect(within(velaCard).getByText("http://192.168.68.65:32550/vela")).toBeVisible();
-    expect(within(velaCard).queryByText("http://100.65.221.123:32550/vela")).toBeNull();
-
-    const jellyfinHeading = screen.getByRole("heading", { name: "Jellyfin" });
-    const jellyfinCard = jellyfinHeading.closest("div.rounded-xl") as HTMLElement;
-    expect(within(jellyfinCard).getByText("http://192.168.68.65:8096")).toBeVisible();
-    expect(within(jellyfinCard).queryByText("http://192.168.68.65:32550/jellyfin")).toBeNull();
-    expect(within(jellyfinCard).queryByText("http://100.65.221.123:8096")).toBeNull();
-
-    fireEvent.click(within(jellyfinCard).getByRole("button", { name: /Other addresses/ }));
-    expect(within(jellyfinCard).getByText("Shared Ether port")).toBeVisible();
-    expect(within(jellyfinCard).getByText("Tailscale")).toBeVisible();
-    expect(within(jellyfinCard).getByText("Local network (IPv6)")).toBeVisible();
-    expect(within(jellyfinCard).getByText("Other network interface")).toBeVisible();
+    expect(
+      await screen.findByRole("link", { name: "http://192.168.68.65:8096" }, WAIT),
+    ).toBeVisible();
+    expect(screen.getByText("Also reachable at")).toBeVisible();
+    expect(screen.getByText("Tailscale")).toBeVisible();
+    expect(screen.getByText("LAN IPv6")).toBeVisible();
+    expect(screen.getByText("Other network interface")).toBeVisible();
   });
 
   it("shows and filters client families reported by other protocols", async () => {
@@ -555,13 +550,11 @@ describe("Settings", () => {
       } as never;
     });
     expect(await screen.findByLabelText("Server name", {}, WAIT)).toBeInTheDocument();
-    expect(await screen.findByLabelText("Plex port", {}, WAIT)).toBeInTheDocument();
     expect(screen.getByText("Living Room Ether is ready for viewers.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "How apps connect" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Experiments" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Listen address")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Advanced" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "More options: How apps connect" }));
-    expect(screen.getByLabelText("Listen address")).toBeInTheDocument();
     // Moved off General: logging to Maintenance › Logs, stream limits to Playback.
     expect(screen.queryByLabelText("Log level")).not.toBeInTheDocument();
     expect(
@@ -692,13 +685,13 @@ describe("Settings", () => {
     expect(calls(fake, "PUT", "/config/plex")[0]!.body).not.toHaveProperty("remoteAccess");
   });
 
-  it("returns disabled Plex settings to the overview without changing the saved account", async () => {
+  it("opens disabled Plex settings without changing the saved account", async () => {
     const { fake } = renderApp("/apps/plex", {}, (f) => {
       f.state.config.frontends = { plex: { enabled: false } };
     });
     const accountBefore = JSON.stringify(fake.state.config.plex);
     expect(await screen.findByRole("switch", { name: "Plex enabled" }, WAIT)).not.toBeChecked();
-    expect(screen.queryByRole("tab", { name: "Plex" })).toBeNull();
+    expect(screen.getByText("Off")).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Connection checks" })).toBeNull();
     expect(calls(fake, "PUT", "/config")).toHaveLength(0);
     expect(JSON.stringify(fake.state.config.plex)).toBe(accountBefore);
@@ -717,7 +710,7 @@ describe("Settings", () => {
       ((await screen.findByRole("switch", { name: "Quick Connect" }, WAIT)) as HTMLInputElement)
         .checked,
     ).toBe(!before);
-    expect(screen.queryByRole("spinbutton", { name: "Port" })).not.toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Port" })).toHaveValue(8096);
     expect(screen.queryByRole("textbox", { name: "Server name" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeVisible();
   });

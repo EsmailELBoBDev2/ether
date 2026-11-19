@@ -844,7 +844,7 @@ func (e *Engine) ownerScopeKey(user *core.User, section core.MediaType, sectionI
 	if e.opts.CatalogRulesRevision != nil {
 		ruleRevision = e.opts.CatalogRulesRevision(user)
 	}
-	target, _ := layoutTargetForMedia(section, sectionID)
+	target := layoutTargetForMedia(section, sectionID)
 	scope = fmt.Sprint("|rules:", ruleRevision) + "|" + target + "|" + fmt.Sprint(hash.Sum64(), user.MaxContentRating, user.AllowedLibraries, user.IsOwner)
 	prefix = strconv.FormatInt(user.ID, 10) + "|"
 	return prefix, scope
@@ -889,7 +889,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	if e.opts.Collections == nil {
 		return nil, 0
 	}
-	target, fallback := layoutTargetForMedia(section, hc.SectionID)
+	target := layoutTargetForMedia(section, hc.SectionID)
 	prefix, scope := e.ownerScopeKey(user, section, hc.SectionID, d)
 	key := prefix + hc.Now.Format("2006-01-02") + scope
 	e.mu.Lock()
@@ -904,7 +904,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 		ent.loading = true
 		ent.done = make(chan struct{})
 		u := *user
-		go e.fetchOwnerRows(key, &u, hc, ent, placedCollectionsFor(d, user.ID, target, fallback))
+		go e.fetchOwnerRows(key, &u, hc, ent, placedCollections(d, user.ID, target))
 	}
 	done, have := ent.done, !ent.at.IsZero()
 	if !have {
@@ -933,7 +933,7 @@ func (e *Engine) ownerRows(ctx context.Context, user *core.User, hc core.HubCont
 	var selected map[string]bool
 	if len(layoutOnly) > 0 {
 		selected = map[string]bool{}
-		for _, id := range selectedCollectionsFor(d, user.ID, target, fallback, hc) {
+		for _, id := range selectedCollections(d, user.ID, target, hc) {
 			selected[id] = true
 		}
 	}
@@ -1018,14 +1018,14 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 func collectionScheduleAllows(d core.HomeLayout, user int64, section core.MediaType, hc core.HubContext, cr core.CollectionRow) bool {
 	if strings.HasPrefix(cr.CollectionID, "plugin:") {
 		row := core.HomeRow{HubID: cr.CollectionID, Kind: cr.CollectionID}
-		target, fallback := layoutTargetForMedia(section, hc.SectionID)
-		if p, layer := effectiveHomePolicyFor(d, user, target, fallback, row); layer == "override" && p != nil && p.When != nil && p.Row == cr.CollectionID {
+		target := layoutTargetForMedia(section, hc.SectionID)
+		if p, layer := effectiveHomePolicy(d, user, target, row); layer == "override" && p != nil && p.When != nil && p.Row == cr.CollectionID {
 			return true
 		}
 	} else {
 		row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
-		target, fallback := layoutTargetForMedia(section, hc.SectionID)
-		if p, layer := effectiveHomePolicyFor(d, user, target, fallback, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
+		target := layoutTargetForMedia(section, hc.SectionID)
+		if p, layer := effectiveHomePolicy(d, user, target, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
 			return true
 		}
 	}

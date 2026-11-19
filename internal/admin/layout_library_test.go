@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -19,10 +20,26 @@ func (e *libraryAwareEngine) AvailableRows(context.Context) ([]core.RowDescripto
 	return e.rows, nil
 }
 
+func (e *libraryAwareEngine) PreviewCandidateRows(_ context.Context, u *core.User, hc core.HubContext, section string, _ int, d core.HomeLayout, rows []core.HomeRow) (*core.HomePreview, error) {
+	e.draft = d
+	e.who = u.ID
+	e.hc = hc
+	e.section = section
+	out := make([]core.HomeRow, 0, len(rows))
+	for i, r := range rows {
+		r.Slot = i + 1
+		out = append(out, r)
+	}
+	return &core.HomePreview{
+		Context:     hc,
+		GeneratedAt: time.Date(2026, 10, 19, 1, 0, 0, 0, time.UTC),
+		Rows:        out,
+	}, nil
+}
+
 type libraryLayoutResp struct {
 	Library       admin.LayoutLibrary       `json:"library"`
 	Customized    bool                      `json:"customized"`
-	InheritedFrom string                    `json:"inheritedFrom"`
 	EffectivePage core.LayoutPage           `json:"effectivePage"`
 	ViewerPages   []admin.ViewerLibraryPage `json:"viewerPages"`
 	Defaults      struct {
@@ -36,8 +53,13 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 		doc: core.HomeLayout{
 			Global: []core.LayoutPage{
 				{
-					Section: "movies",
+					Section: "home",
 					MaxRows: 8,
+					Rows:    []core.RowPolicy{{Row: "movies.top10", Status: "always", Slot: 1}},
+				},
+				{
+					Section: "library:1",
+					MaxRows: 6,
 					Rows:    []core.RowPolicy{{Row: "movies.top10", Status: "always", Slot: 1}},
 				},
 			},
@@ -45,7 +67,7 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 				{
 					UserID: 2,
 					Pages: []core.LayoutPage{
-						{Section: "movies", Rows: []core.RowPolicy{{Row: "movies.gems", Status: "always", Slot: 2}}},
+						{Section: "library:1", Rows: []core.RowPolicy{{Row: "movies.gems", Status: "always", Slot: 2}}},
 					},
 				},
 			},
@@ -71,7 +93,22 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 				{ID: 1, Name: "Movies", Slug: "movies", Type: "movie"},
 				{ID: 2, Name: "TV Shows", Slug: "shows", Type: "show"},
 				{ID: 3, Name: "Kids Movies", Slug: "kids-movies", Type: "movie"},
+				{ID: 4, Name: "Creator Clips", Slug: "creator-clips", Type: "plugin"},
 			}, nil
+		},
+		PluginLibraryRows: func(_ context.Context, _ *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error) {
+			if libraryID != 4 {
+				return nil, nil, core.ErrNotFound
+			}
+			descs := []core.RowDescriptor{
+				{HubID: "plugin:4:added", Title: "Recently Added", Kind: "recentlyAdded", Sections: []string{"library:4"}},
+				{HubID: "plugin:4:rating", Title: "Top Rated", Kind: "topRated", Sections: []string{"library:4"}},
+			}
+			rows := []core.HomeRow{
+				{HubID: "plugin:4:added", Title: "Recently Added", Kind: "recentlyAdded", Items: []core.Title{poster}},
+				{HubID: "plugin:4:rating", Title: "Top Rated", Kind: "topRated", Items: []core.Title{poster}},
+			}
+			return descs, rows, nil
 		},
 	})
 
@@ -85,10 +122,11 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &rootResp); err != nil {
 		t.Fatal(err)
 	}
-	if len(rootResp.Libraries) != 3 || rootResp.Libraries[2].Section != "library:3" || rootResp.Libraries[2].BasePage != "movies" || rootResp.Libraries[2].Customized {
+	if len(rootResp.Libraries) != 4 || !rootResp.Libraries[0].Customized || rootResp.Libraries[2].Section != "library:3" || rootResp.Libraries[2].Customized {
 		t.Fatalf("unexpected libraries in GET /api/layout: %+v", rootResp.Libraries)
 	}
 
+	// Uncustomised library:3 starts clean (zero inheritance from home or library:1).
 	rec = serve(h, req(http.MethodGet, "/ether/api/layout/libraries/3", ""))
 	if rec.Code != 200 {
 		t.Fatalf("GET /api/layout/libraries/3: %d %s", rec.Code, rec.Body)
@@ -97,29 +135,22 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &libGet); err != nil {
 		t.Fatal(err)
 	}
-	if libGet.Customized || libGet.InheritedFrom != "movies" || libGet.EffectivePage.Section != "library:3" || libGet.EffectivePage.MaxRows != 8 {
-		t.Fatalf("unexpected inherited library layout: %+v", libGet)
+	if libGet.Customized || libGet.EffectivePage.Section != "library:3" || libGet.EffectivePage.MaxRows != 0 || len(libGet.EffectivePage.Rows) != 0 {
+		t.Fatalf("expected clean independent library:3 page, got %+v", libGet)
 	}
-	if len(libGet.ViewerPages) != 1 || libGet.ViewerPages[0].UserID != 2 || libGet.ViewerPages[0].Page.Section != "library:3" {
-		t.Fatalf("expected inherited viewer override for user 2: %+v", libGet.ViewerPages)
+	if len(libGet.ViewerPages) != 0 {
+		t.Fatalf("expected zero inherited viewer overrides on library:3, got %+v", libGet.ViewerPages)
 	}
 	if len(libGet.AvailableRows) != 2 || libGet.AvailableRows[0].HubID != "movies.top10" || libGet.AvailableRows[1].HubID != "movies.gems" {
-		t.Fatalf("availableRows not filtered to movies basePage: %+v", libGet.AvailableRows)
+		t.Fatalf("availableRows not filtered to movie candidates: %+v", libGet.AvailableRows)
 	}
 	if libGet.Defaults.MaxRows != 10 {
 		t.Fatalf("defaults.maxRows = %d, want 10", libGet.Defaults.MaxRows)
 	}
 
-	rec = serve(h, req(http.MethodPost, "/ether/api/layout/libraries/3", ""))
-	if rec.Code != 200 {
-		t.Fatalf("POST /api/layout/libraries/3: %d %s", rec.Code, rec.Body)
-	}
-	var afterFork libraryLayoutResp
-	if err := json.Unmarshal(rec.Body.Bytes(), &afterFork); err != nil {
-		t.Fatal(err)
-	}
-	if !afterFork.Customized || afterFork.InheritedFrom != "" || base.writes != 1 {
-		t.Fatalf("after fork: customized=%v inheritedFrom=%q writes=%d", afterFork.Customized, afterFork.InheritedFrom, base.writes)
+	// POST /api/layout/libraries/{id} (fork from standard rows) no longer exists.
+	if rPost := serve(h, req(http.MethodPost, "/ether/api/layout/libraries/3", "")); rPost.Code == 200 {
+		t.Fatalf("expected POST /api/layout/libraries/3 to be removed, got 200")
 	}
 
 	putBody := `{
@@ -137,8 +168,8 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 	if !afterPut.Customized || afterPut.EffectivePage.MaxRows != 5 || len(afterPut.EffectivePage.Rows) != 1 || afterPut.EffectivePage.Rows[0].Row != "movies.gems" {
 		t.Fatalf("after PUT: effectivePage = %+v", afterPut.EffectivePage)
 	}
-	if len(base.doc.Global) != 2 || base.doc.Global[0].Section != "movies" || base.doc.Global[0].MaxRows != 8 {
-		t.Fatalf("shared movies page clobbered: %+v", base.doc.Global)
+	if base.doc.Global[0].Section != "home" || base.doc.Global[0].MaxRows != 8 || base.doc.Global[1].Section != "library:1" || base.doc.Global[1].MaxRows != 6 {
+		t.Fatalf("home or library:1 clobbered: %+v", base.doc.Global)
 	}
 
 	writesBefore := base.writes
@@ -151,6 +182,23 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 		t.Fatalf("preview mutated state or lost section: writes=%d section=%q", base.writes, base.section)
 	}
 
+	// Plugin library layout + preview works end-to-end.
+	rec = serve(h, req(http.MethodGet, "/ether/api/layout/libraries/4", ""))
+	if rec.Code != 200 {
+		t.Fatalf("GET /api/layout/libraries/4: %d %s", rec.Code, rec.Body)
+	}
+	var pluginGet libraryLayoutResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &pluginGet); err != nil {
+		t.Fatal(err)
+	}
+	if pluginGet.Defaults.MaxRows != 8 || len(pluginGet.AvailableRows) != 2 || pluginGet.AvailableRows[0].HubID != "plugin:4:added" {
+		t.Fatalf("unexpected plugin library layout: %+v", pluginGet)
+	}
+	rec = serve(h, req(http.MethodPost, "/ether/api/layout/preview", `{"section": "library:4"}`))
+	if rec.Code != 200 || base.section != "library:4" {
+		t.Fatalf("POST /api/layout/preview(library:4): %d %s (section=%q)", rec.Code, rec.Body, base.section)
+	}
+
 	rec = serve(h, req(http.MethodDelete, "/ether/api/layout/libraries/3", ""))
 	if rec.Code != 200 {
 		t.Fatalf("DELETE /api/layout/libraries/3: %d %s", rec.Code, rec.Body)
@@ -159,7 +207,7 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &afterReset); err != nil {
 		t.Fatal(err)
 	}
-	if afterReset.Customized || afterReset.InheritedFrom != "movies" || afterReset.EffectivePage.MaxRows != 8 {
+	if afterReset.Customized || afterReset.EffectivePage.MaxRows != 0 || len(afterReset.EffectivePage.Rows) != 0 {
 		t.Fatalf("after DELETE reset: %+v", afterReset)
 	}
 

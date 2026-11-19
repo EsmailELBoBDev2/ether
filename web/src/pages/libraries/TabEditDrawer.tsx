@@ -19,7 +19,6 @@ import {
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Artwork } from "../../components/Artwork";
 import { Drawer } from "../../components/Drawer";
 import { Segmented } from "../../components/fields";
@@ -29,7 +28,7 @@ import { api } from "../../lib/api";
 import { asObj } from "../settings/SchemaForm";
 import type {
   HomeLayout,
-  LayoutDoc,
+  LibraryLayoutDoc,
   LibraryLayoutSection,
   Rule,
   RuleField,
@@ -38,17 +37,19 @@ import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
 import {
   EMPTY_LAYOUT,
-  clearLibraryOverride,
-  customiseLibraryPage,
-  hasLibraryOverride,
+  clearLibraryLayout,
+  effectiveDedupe,
+  hasLibraryLayout,
   mediaSectionForLibrary,
   prune,
   sameLayout,
+  setDedupe,
 } from "../../lib/layout";
 import { fieldMeta, isRuleComplete, type FieldMeta } from "../../lib/rules";
 import { titlePosterURL } from "../../lib/titles";
 import { RuleRow } from "../collections/RuleRow";
 import { AnchoredSlots } from "../designer/AnchoredSlots";
+import { PageSettings } from "../designer/PageSettings";
 import { RowPool } from "../designer/RowPool";
 import {
   librariesApi,
@@ -93,7 +94,7 @@ const FALLBACK_CATALOG_SORTS = [
 ] as const;
 
 export function supportsLibraryRecommendedRows(library: Library): boolean {
-  if (library.source === "plugin") return false;
+  if (library.source === "plugin") return true;
   return !library.mediaType || library.mediaType === "movie" || library.mediaType === "show";
 }
 
@@ -617,9 +618,8 @@ export function TabEditDrawer({
   existingKeys,
   canHide = true,
   canDelete = true,
-  layoutDoc,
+  libraryLayoutDoc,
   layoutLoading,
-  initialCustomiseRows,
   saving,
   onSave,
   onDelete,
@@ -634,9 +634,8 @@ export function TabEditDrawer({
   existingKeys: Set<string>;
   canHide?: boolean;
   canDelete?: boolean;
-  layoutDoc?: LayoutDoc | null;
+  libraryLayoutDoc?: LibraryLayoutDoc | null;
   layoutLoading?: boolean;
-  initialCustomiseRows?: boolean;
   saving: boolean;
   onSave: (tab: LibraryTab, nextLayout?: HomeLayout) => void;
   onDelete?: () => void;
@@ -654,9 +653,8 @@ export function TabEditDrawer({
       existingKeys={existingKeys}
       canHide={canHide}
       canDelete={canDelete}
-      layoutDoc={layoutDoc ?? null}
+      libraryLayoutDoc={libraryLayoutDoc ?? null}
       layoutLoading={layoutLoading ?? false}
-      initialCustomiseRows={initialCustomiseRows ?? false}
       saving={saving}
       onSave={onSave}
       onDelete={onDelete}
@@ -674,9 +672,8 @@ function TabEditDrawerInner({
   existingKeys,
   canHide,
   canDelete,
-  layoutDoc,
+  libraryLayoutDoc,
   layoutLoading,
-  initialCustomiseRows,
   saving,
   onSave,
   onDelete,
@@ -690,9 +687,8 @@ function TabEditDrawerInner({
   existingKeys: Set<string>;
   canHide: boolean;
   canDelete: boolean;
-  layoutDoc: LayoutDoc | null;
+  libraryLayoutDoc: LibraryLayoutDoc | null;
   layoutLoading: boolean;
-  initialCustomiseRows: boolean;
   saving: boolean;
   onSave: (tab: LibraryTab, nextLayout?: HomeLayout) => void;
   onDelete?: () => void;
@@ -704,28 +700,24 @@ function TabEditDrawerInner({
   const [labelTouched, setLabelTouched] = useState(!isNew);
   const [freshRuleIndex, setFreshRuleIndex] = useState<number | null>(null);
 
+  const isPlugin = library.source === "plugin";
   const section: LibraryLayoutSection = `library:${library.id}`;
-  const mediaSection = mediaSectionForLibrary(library);
+  const mediaSection = isPlugin ? null : mediaSectionForLibrary(library);
   const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
 
   // i18n: memo holds no copy
   const savedLayout = useMemo(
-    () => (layoutDoc ? prune(layoutDoc.layout) : EMPTY_LAYOUT),
-    [layoutDoc],
+    () => (libraryLayoutDoc ? prune(libraryLayoutDoc.layout) : EMPTY_LAYOUT),
+    [libraryLayoutDoc],
   );
-  const [adoptedLayout, setAdoptedLayout] = useState<LayoutDoc | null>(null);
+  const [adoptedLayout, setAdoptedLayout] = useState<LibraryLayoutDoc | null>(null);
   const [layoutDraft, setLayoutDraft] = useState<HomeLayout>(EMPTY_LAYOUT);
   const [focusRow, setFocusRow] = useState<string | null>(null);
-  if (layoutDoc && layoutDoc !== adoptedLayout) {
-    setAdoptedLayout(layoutDoc);
-    const base = prune(layoutDoc.layout);
-    setLayoutDraft(
-      supportsRecommendedRows && initialCustomiseRows && !hasLibraryOverride(base, section)
-        ? customiseLibraryPage(base, section, mediaSection)
-        : base,
-    );
+  if (libraryLayoutDoc && libraryLayoutDoc !== adoptedLayout) {
+    setAdoptedLayout(libraryLayoutDoc);
+    setLayoutDraft(prune(libraryLayoutDoc.layout));
   }
-  const availableRows = (layoutDoc?.availableRows ?? []).map((row) =>
+  const availableRows = (libraryLayoutDoc?.availableRows ?? []).map((row) =>
     row.kind === "favorites"
       ? {
           ...row,
@@ -734,10 +726,36 @@ function TabEditDrawerInner({
         }
       : row,
   );
-  const rowsCustomised = supportsRecommendedRows && hasLibraryOverride(layoutDraft, section);
-  const layoutDirty = Boolean(layoutDoc) && !sameLayout(layoutDraft, savedLayout);
-
-  const isPlugin = library.source === "plugin";
+  const rowsCustomised = supportsRecommendedRows && hasLibraryLayout(layoutDraft, section);
+  const layoutDirty = Boolean(libraryLayoutDoc) && !sameLayout(layoutDraft, savedLayout);
+  const debouncedLayoutDraft = useDebouncedValue(layoutDraft, 200);
+  const hasLoadedLibraryLayout = Boolean(libraryLayoutDoc);
+  const rowPreview = useAsync(
+    (signal) => {
+      if (draft.kind !== "recommended" || !supportsRecommendedRows || !hasLoadedLibraryLayout) {
+        return Promise.resolve(null);
+      }
+      const dirty = !sameLayout(debouncedLayoutDraft, savedLayout);
+      return api.previewLayout(
+        {
+          viewerId: null,
+          device: "tv",
+          at: new Date().toISOString(),
+          section,
+          ...(dirty ? { layout: debouncedLayoutDraft } : {}),
+        },
+        signal,
+      );
+    },
+    [
+      draft.kind,
+      supportsRecommendedRows,
+      hasLoadedLibraryLayout,
+      section,
+      debouncedLayoutDraft,
+      savedLayout,
+    ],
+  );
   const mediaType: "movie" | "show" | "mixed" =
     library.mediaType === "movie" || library.mediaType === "show" ? library.mediaType : "mixed";
 
@@ -1098,9 +1116,11 @@ function TabEditDrawerInner({
                 <div className="min-w-0 flex-1 space-y-1">
                   <h3 className="text-sm font-medium text-fg">{t("Rows on this tab")}</h3>
                   <p className="text-xs text-fg-muted">
-                    {t(
-                      "These rows also show on this library's Recommended page in Plex, Jellyfin and Emby.",
-                    )}
+                    {isPlugin
+                      ? t("Rows arranged for {name}'s Recommended tab.", { name: library.name })
+                      : t(
+                          "These rows also show on this library's Recommended page in Plex, Jellyfin and Emby.",
+                        )}
                   </p>
                 </div>
               </div>
@@ -1109,43 +1129,18 @@ function TabEditDrawerInner({
                   type="button"
                   size="sm"
                   variant="ghost"
-                  onClick={() => setLayoutDraft(clearLibraryOverride(layoutDraft, section))}
+                  onClick={() => setLayoutDraft(clearLibraryLayout(layoutDraft, section))}
                 >
                   <RotateCcw size={13} />
-                  {t("Go back to the standard rows")}
+                  {t("Reset to default rows")}
                 </Button>
               ) : null}
             </div>
 
-            {layoutLoading && !layoutDoc ? (
+            {layoutLoading && !libraryLayoutDoc ? (
               <div className="flex items-center gap-2 py-3 text-xs text-fg-muted">
                 <Spinner size={14} label={t("Loading rows")} />
                 <span>{t("Loading rows…")}</span>
-              </div>
-            ) : !rowsCustomised ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border-subtle bg-bg-subtle/50 px-3.5 py-3">
-                <p className="text-sm text-fg">
-                  {mediaSection === "shows"
-                    ? t("Uses the standard rows for TV shows libraries")
-                    : t("Uses the standard rows for Movies libraries")}
-                  {" · "}
-                  <Link
-                    to={`/home?section=${mediaSection}`}
-                    className="font-medium text-primary hover:underline"
-                  >
-                    {t("Edit standard rows")}
-                  </Link>
-                </p>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setLayoutDraft(customiseLibraryPage(layoutDraft, section, mediaSection))
-                  }
-                >
-                  {t("Choose rows for this library")}
-                </Button>
               </div>
             ) : (
               <div className="space-y-5 border-t border-border-subtle pt-4">
@@ -1169,7 +1164,47 @@ function TabEditDrawerInner({
                     focusRow={focusRow}
                     onFocusRow={setFocusRow}
                     mediaSection={mediaSection}
+                    preview={rowPreview.data}
+                    previewWho={t("Typical viewer")}
                   />
+                </div>
+                <div className="space-y-3 border-t border-border-subtle pt-4">
+                  <PageSettings
+                    draft={layoutDraft}
+                    onChange={setLayoutDraft}
+                    layer="global"
+                    section={section}
+                    viewers={[]}
+                    defaults={{
+                      home: 14,
+                      library: libraryLayoutDoc?.defaults.maxRows ?? 16,
+                    }}
+                    label={t("Recommended")}
+                  />
+                  {!isPlugin ? (
+                    <div className="flex items-start gap-3 rounded-lg border border-border bg-bg-subtle/40 p-3">
+                      <Switch
+                        aria-label={t("Don't repeat what Home shows")}
+                        checked={effectiveDedupe(layoutDraft, "global", section).on}
+                        onChange={(e) =>
+                          setLayoutDraft(
+                            setDedupe(layoutDraft, "global", section, e.currentTarget.checked),
+                          )
+                        }
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-fg">
+                          {t("Don't repeat what Home shows")}
+                        </p>
+                        <p className="text-xs text-fg-muted">
+                          {t(
+                            "Titles the viewer's Home leads with stay off {page}, so switching tabs always shows something new.",
+                            { page: library.name },
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )}

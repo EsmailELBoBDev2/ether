@@ -99,6 +99,16 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 			delete(s.bad, k)
 		}
 	}
+	for k, e := range s.seaDexMem {
+		if e == nil || now.Sub(e.fetchedAt) > seaDexRetention {
+			delete(s.seaDexMem, k)
+		}
+	}
+	for k, e := range s.seaDexKeys {
+		if now.Sub(e.updatedAt) > seaDexRetention {
+			delete(s.seaDexKeys, k)
+		}
+	}
 	s.mu.Unlock()
 	if s.db == nil {
 		return 0, nil
@@ -107,6 +117,7 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 	if s.healthTTL > 0 {
 		verifiedCutoff = now.Add(-s.healthTTL).Unix()
 	}
+	seaDexCutoff := now.Add(-seaDexRetention).Unix()
 	var total int64
 	for _, q := range []struct {
 		sql  string
@@ -115,6 +126,8 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 		{`DELETE FROM resolver_availability WHERE expires_at<? AND (available=1 OR checked_at<?)`, []any{now.Unix(), now.Add(-s.unavailableRetention()).Unix()}},
 		{`DELETE FROM resolver_verified WHERE checked_at<?`, []any{verifiedCutoff}},
 		{`DELETE FROM resolver_bad WHERE manual=0 AND updated_at<?`, []any{now.Add(-badRetention).Unix()}},
+		{`DELETE FROM resolver_seadex WHERE fetched_at<?`, []any{seaDexCutoff}},
+		{`DELETE FROM resolver_seadex_keys WHERE updated_at<?`, []any{seaDexCutoff}},
 	} {
 		res, err := s.db.ExecContext(ctx, q.sql, q.args...)
 		if err != nil {

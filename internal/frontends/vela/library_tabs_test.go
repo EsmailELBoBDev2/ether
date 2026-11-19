@@ -202,4 +202,26 @@ func TestVelaCustomLibraryTabsWireBrowseAndCollections(t *testing.T) {
 	if len(pItems) != 1 || pItems[0].(map[string]any)["kind"] != "person" {
 		t.Fatalf("unexpected people tab wire: %+v", pItems)
 	}
+
+	code, _ = callSub("1", "/vela/v0/libraries/1/items?facet.rating=9-10&facet.rating=8-8.9&facet.runtime=60-90m&facet.addedMonth=2026-02&facet.director=137427&facet.resolution=4k&facet.hdr=dv&facet.audioLanguage=en", inst.libraryItems)
+	if code != 200 {
+		t.Fatalf("libraryItems(extra catalogue facets) status = %d", code)
+	}
+	gotF := exp.lastItemQuery.Filter
+	if gotF.Group == nil || gotF.Group.Operator != "or" || len(gotF.Group.Children) != 2 ||
+		gotF.MinRuntime == 0 || gotF.MaxRuntime == 0 ||
+		gotF.EtherAddedFrom == 0 || gotF.EtherAddedTo == 0 ||
+		len(gotF.Credits) != 1 || gotF.Credits[0].Kind != "director" ||
+		len(gotF.EvidenceResolutions) != 1 || gotF.EvidenceResolutions[0] != "4k" ||
+		len(gotF.EvidenceHDR) != 1 || gotF.EvidenceHDR[0] != "dv" ||
+		len(gotF.EvidenceAudioLanguages) != 1 || gotF.EvidenceAudioLanguages[0] != "en" {
+		t.Fatalf("extra catalogue facets not translated: %+v", gotF)
+	}
+
+	if code, _ := callSub("1", "/vela/v0/libraries/1/items?facet.rating=invalid-band", inst.libraryItems); code != 400 {
+		t.Fatalf("invalid rating band status = %d, want 400", code)
+	}
+	if code, _ := callSub("1", "/vela/v0/libraries/1/items?facet.studio=A24&facet.studio=Neon", inst.libraryItems); code != 400 {
+		t.Fatalf("multi studio facet status = %d, want 400", code)
+	}
 }

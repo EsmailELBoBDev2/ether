@@ -6,10 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
-	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/ids"
 )
@@ -251,204 +249,6 @@ func offeredFacet(filters object, field string) bool {
 	return false
 }
 
-func applyCatalogueFacetBuckets(f *core.Filter, canon string, bucketIDs []string) bool {
-	switch canon {
-	case "genre":
-		f.Genres = append(f.Genres, bucketIDs...)
-		return true
-	case "studio", "network":
-		if len(bucketIDs) != 1 || f.Studio != "" {
-			return false
-		}
-		f.Studio = bucketIDs[0]
-		return true
-	case "country":
-		f.Countries = append(f.Countries, bucketIDs...)
-		return true
-	case "year":
-		for _, raw := range bucketIDs {
-			n, err := strconv.Atoi(raw)
-			if err != nil || n < 1 || n > 9999 {
-				return false
-			}
-			f.Years = append(f.Years, n)
-		}
-		return true
-	case "decade":
-		if len(bucketIDs) == 1 && len(f.Years) == 0 && f.YearFrom == 0 && f.YearTo == 0 {
-			trimmed := strings.TrimSuffix(strings.TrimSpace(bucketIDs[0]), "s")
-			n, err := strconv.Atoi(trimmed)
-			if err != nil || n < 1800 || n > 9990 || n%10 != 0 {
-				return false
-			}
-			f.YearFrom = n
-			f.YearTo = n + 9
-			return true
-		}
-		for _, raw := range bucketIDs {
-			trimmed := strings.TrimSuffix(strings.TrimSpace(raw), "s")
-			n, err := strconv.Atoi(trimmed)
-			if err != nil || n < 1800 || n > 9990 || n%10 != 0 {
-				return false
-			}
-			for y := n; y <= n+9; y++ {
-				f.Years = append(f.Years, y)
-			}
-		}
-		return true
-	case "franchise":
-		for _, raw := range bucketIDs {
-			id, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil || id <= 0 {
-				return false
-			}
-			f.Collections = append(f.Collections, id)
-		}
-		return true
-	case "language":
-		f.Languages = append(f.Languages, bucketIDs...)
-		return true
-	case "contentRating":
-		f.ContentRatings = append(f.ContentRatings, bucketIDs...)
-		return true
-	case "tag":
-		f.Tags = append(f.Tags, bucketIDs...)
-		return true
-	case "keyword":
-		f.Keywords = append(f.Keywords, bucketIDs...)
-		return true
-	case "director", "writer":
-		people := make([]int64, 0, len(bucketIDs))
-		for _, raw := range bucketIDs {
-			id, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil || id <= 0 {
-				return false
-			}
-			people = append(people, id)
-		}
-		f.Credits = append(f.Credits, core.CreditFilter{People: people, Kind: canon})
-		return true
-	case "resolution":
-		for _, raw := range bucketIDs {
-			v := strings.ToLower(strings.TrimSpace(raw))
-			switch v {
-			case "4k", "1080p", "720p", "sd":
-				f.EvidenceResolutions = append(f.EvidenceResolutions, v)
-			default:
-				return false
-			}
-		}
-		return true
-	case "hdr":
-		for _, raw := range bucketIDs {
-			v := strings.ToLower(strings.TrimSpace(raw))
-			switch v {
-			case "dv", "hdr10", "sdr":
-				f.EvidenceHDR = append(f.EvidenceHDR, v)
-			default:
-				return false
-			}
-		}
-		return true
-	case "audioLanguage":
-		for _, raw := range bucketIDs {
-			v := strings.TrimSpace(raw)
-			if v == "" {
-				return false
-			}
-			f.EvidenceAudioLanguages = append(f.EvidenceAudioLanguages, v)
-		}
-		return true
-	case "rating":
-		if len(bucketIDs) == 1 && f.MinRating == 0 && f.MaxRating == 0 {
-			minR, maxR, excl, ok := core.ParseCatalogueRatingBand(bucketIDs[0])
-			if !ok {
-				return false
-			}
-			f.MinRating = minR
-			f.MaxRating = maxR
-			f.MaxRatingExclusive = excl
-			return true
-		}
-		children := make([]core.FilterGroup, 0, len(bucketIDs))
-		for _, raw := range bucketIDs {
-			minR, maxR, excl, ok := core.ParseCatalogueRatingBand(raw)
-			if !ok {
-				return false
-			}
-			children = append(children, core.FilterGroup{
-				Operator: "and",
-				Filter:   &core.Filter{MinRating: minR, MaxRating: maxR, MaxRatingExclusive: excl},
-			})
-		}
-		appendOrFilterGroup(f, children)
-		return true
-	case "runtime":
-		if len(bucketIDs) == 1 && f.MinRuntime == 0 && f.MaxRuntime == 0 {
-			minS, maxS, ok := core.ParseCatalogueRuntimeBand(bucketIDs[0])
-			if !ok {
-				return false
-			}
-			f.MinRuntime = time.Duration(minS) * time.Second
-			if maxS > 0 {
-				f.MaxRuntime = time.Duration(maxS) * time.Second
-			}
-			return true
-		}
-		children := make([]core.FilterGroup, 0, len(bucketIDs))
-		for _, raw := range bucketIDs {
-			minS, maxS, ok := core.ParseCatalogueRuntimeBand(raw)
-			if !ok {
-				return false
-			}
-			sub := &core.Filter{MinRuntime: time.Duration(minS) * time.Second}
-			if maxS > 0 {
-				sub.MaxRuntime = time.Duration(maxS) * time.Second
-			}
-			children = append(children, core.FilterGroup{Operator: "and", Filter: sub})
-		}
-		appendOrFilterGroup(f, children)
-		return true
-	case "addedMonth":
-		if len(bucketIDs) == 1 && f.EtherAddedFrom == 0 && f.EtherAddedTo == 0 {
-			fromTS, toTS, ok := core.ParseCatalogueAddedMonth(bucketIDs[0])
-			if !ok {
-				return false
-			}
-			f.EtherAddedFrom = fromTS
-			f.EtherAddedTo = toTS
-			return true
-		}
-		children := make([]core.FilterGroup, 0, len(bucketIDs))
-		for _, raw := range bucketIDs {
-			fromTS, toTS, ok := core.ParseCatalogueAddedMonth(raw)
-			if !ok {
-				return false
-			}
-			children = append(children, core.FilterGroup{
-				Operator: "and",
-				Filter:   &core.Filter{EtherAddedFrom: fromTS, EtherAddedTo: toTS},
-			})
-		}
-		appendOrFilterGroup(f, children)
-		return true
-	default:
-		return false
-	}
-}
-
-func appendOrFilterGroup(f *core.Filter, children []core.FilterGroup) {
-	orGroup := core.FilterGroup{Operator: "or", Children: children}
-	if f.Group == nil {
-		f.Group = &orGroup
-		return
-	}
-	f.Group = &core.FilterGroup{
-		Operator: "and",
-		Children: []core.FilterGroup{*f.Group, orGroup},
-	}
-}
-
 func libraryQuery(r *http.Request, view frontend.View, library object) (frontend.ItemQuery, string, string, int) {
 	q := frontend.ItemQuery{Limit: limit(r), NoTotal: true}
 	options := library["browse"].(object)
@@ -559,8 +359,7 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 			q.Filter.Facets[field] = bucketIDs
 			continue
 		}
-		canon, valid := core.NormalizeCatalogueTabFacet(core.TabCollections, field)
-		if !valid || canon == "" || !applyCatalogueFacetBuckets(&q.Filter, canon, bucketIDs) {
+		if !(frontend.CatalogueFacetFilter{Facet: field, BucketIDs: bucketIDs}).Apply(&q.Filter) {
 			return q, sort, direction, 400
 		}
 	}
@@ -1248,7 +1047,7 @@ func (i *instance) libraryCollections(w http.ResponseWriter, r *http.Request) {
 		}
 		facetField := selectedTab.Facet
 		if !isPlugin {
-			if canon, ok := core.NormalizeCatalogueTabFacet(core.TabCollections, facetField); ok && canon != "" {
+			if canon, ok := frontend.NormalizeCatalogueTabFacet(frontend.TabCollections, facetField); ok && canon != "" {
 				facetField = canon
 			}
 		}

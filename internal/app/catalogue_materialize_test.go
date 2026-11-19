@@ -3,6 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/braedonsaunders/ether/internal/catalog"
 	"github.com/braedonsaunders/ether/internal/collections"
 	"github.com/braedonsaunders/ether/internal/config"
@@ -10,27 +14,50 @@ import (
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/store"
-	"testing"
-	"time"
 )
 
 type demandCatalogueKind struct {
-	calls int
-	fail  bool
+	catID   string
+	catType string
+	tmdbID  int64
+	calls   int
+	fail    bool
+	errMsg  string
 }
 
-func (*demandCatalogueKind) ID() string {
-	return extend.PluginID("catalogue-test", plugins.StremioCatalogKey(plugins.StremioCat{Type: "movie", ID: "test"}))
+func (k *demandCatalogueKind) ID() string {
+	catType, catID := k.catType, k.catID
+	if catType == "" {
+		catType = "movie"
+	}
+	if catID == "" {
+		catID = "test"
+	}
+	return extend.PluginID("catalogue-test", plugins.StremioCatalogKey(plugins.StremioCat{Type: catType, ID: catID}))
 }
 func (*demandCatalogueKind) Describe() collections.KindDescribe                                   { return collections.KindDescribe{} }
 func (*demandCatalogueKind) Validate(*collections.ValidationError, string, core.CollectionSource) {}
 func (k *demandCatalogueKind) Gather(g *collections.Gather) {
 	k.calls++
 	if k.fail {
-		g.Fail(errors.New("upstream unavailable"))
+		msg := k.errMsg
+		if msg == "" {
+			msg = "upstream unavailable"
+		}
+		g.Fail(errors.New(msg))
 		return
 	}
-	g.ResolveExternal("Test", []collections.ExternalRef{{TMDB: 101, Type: "movie"}, {TMDB: 101, Type: "movie"}}, 0)
+	tmdbID := k.tmdbID
+	if tmdbID == 0 {
+		tmdbID = 101
+	}
+	mediaType := k.catType
+	if mediaType == "" || mediaType == "movie" {
+		mediaType = "movie"
+	} else {
+		mediaType = "show"
+	}
+	g.ResolveExternal("Test", []collections.ExternalRef{{TMDB: tmdbID, Type: mediaType}, {TMDB: tmdbID, Type: mediaType}}, 0)
 }
 
 func TestCatalogueMaterializationDemandCacheAndFailure(t *testing.T) {
@@ -94,5 +121,86 @@ func TestCatalogueMaterializationDemandCacheAndFailure(t *testing.T) {
 	var count int
 	if err = db.QueryRow(`SELECT COUNT(*) FROM libraries_catalogue_members WHERE source_id=?`, id).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("old membership lost: %d %v", count, err)
+	}
+}
+
+func TestCatalogueMaterializationIsolatesFailingSourceAndPersistsError(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	cat, err := catalog.New(db, nil, config.Catalog{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	show := core.Title{Key: core.ShowKey(201), Type: core.TypeShow, IDs: core.IDs{TMDB: 201}, Title: "Good Show", Year: 2022, Released: time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if err = cat.UpsertDetailedTitle(ctx, show); err != nil {
+		t.Fatal(err)
+	}
+	cols, err := collections.New(db, cat, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextUp := &demandCatalogueKind{catType: "series", catID: "next-up", fail: true, errMsg: "Next Up gateway timeout"}
+	topShows := &demandCatalogueKind{catType: "series", catID: "top-shows", tmdbID: 201}
+	if err = cols.RegisterSourceKind(nextUp); err != nil {
+		t.Fatal(err)
+	}
+	if err = cols.RegisterSourceKind(topShows); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := plugins.New(plugins.Deps{DB: db})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"catalogue-test","name":"MDBList","version":"1.0.0","resources":["catalog"],"types":["series"],"catalogs":[{"type":"series","id":"next-up","name":"Next Up"},{"type":"series","id":"top-shows","name":"Top Shows"}]}`
+	if _, err = db.Exec(`INSERT INTO plugins_installed(id,name,version,manifest,installed_at,updated_at) VALUES('catalogue-test','MDBList','1.0.0',?,0,0)`, manifest); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{db: db, catalog: cat, collections: cols, pluginsRT: &pluginRuntime{mgr: mgr}}
+	a.wireCatalogueSources()
+
+	nextUpID := "stremio:catalogue-test:" + plugins.StremioCatalogKey(plugins.StremioCat{Type: "series", ID: "next-up"})
+	topShowsID := "stremio:catalogue-test:" + plugins.StremioCatalogKey(plugins.StremioCat{Type: "series", ID: "top-shows"})
+
+	page, err := cat.Browse(ctx, core.BrowseQuery{
+		Filter: core.Filter{Type: core.TypeShow, LocalOnly: true, CatalogueSources: []string{nextUpID, topShowsID}},
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("failing Next Up list blocked sibling list import: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Key != core.ShowKey(201) {
+		t.Fatalf("expected sibling list items, got %+v", page)
+	}
+
+	var nextUpErr string
+	if err = db.QueryRow(`SELECT last_error FROM libraries_catalogue_state WHERE source_id=?`, nextUpID).Scan(&nextUpErr); err != nil {
+		t.Fatalf("missing Next Up state row: %v", err)
+	}
+	if !strings.Contains(nextUpErr, "Next Up gateway timeout") {
+		t.Fatalf("expected per-list error persisted, got %q", nextUpErr)
+	}
+	var topCount int
+	var topErr string
+	if err = db.QueryRow(`SELECT item_count, last_error FROM libraries_catalogue_state WHERE source_id=?`, topShowsID).Scan(&topCount, &topErr); err != nil {
+		t.Fatalf("missing Top Shows state row: %v", err)
+	}
+	if topCount != 1 || topErr != "" {
+		t.Fatalf("unexpected Top Shows state: count=%d err=%q", topCount, topErr)
+	}
+
+	// Manual force sync retries even within the 60s failure throttle window.
+	nextUp.fail = false
+	nextUp.tmdbID = 201
+	if _, err = db.Exec(`UPDATE libraries_catalogue_state SET refreshed=0 WHERE source_id=?`, nextUpID); err != nil {
+		t.Fatal(err)
+	}
+	if err = cat.BrowseSourceLibrary(withForceCatalogueSync(ctx), []string{nextUpID}); err != nil {
+		t.Fatalf("manual force sync failed: %v", err)
+	}
+	if err = db.QueryRow(`SELECT item_count, last_error FROM libraries_catalogue_state WHERE source_id=?`, nextUpID).Scan(&topCount, &nextUpErr); err != nil {
+		t.Fatal(err)
+	}
+	if topCount != 1 || nextUpErr != "" {
+		t.Fatalf("expected recovered Next Up state count=1 err='', got count=%d err=%q", topCount, nextUpErr)
 	}
 }

@@ -1016,10 +1016,18 @@ func (e *Engine) fetchOwnerRows(key string, user *core.User, hc core.HubContext,
 // viewer override for the row that sets its own When replaces it; the
 // layout pass applies that When.
 func collectionScheduleAllows(d core.HomeLayout, user int64, section core.MediaType, hc core.HubContext, cr core.CollectionRow) bool {
-	row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
-	target, fallback := layoutTargetForMedia(section, hc.SectionID)
-	if p, layer := effectiveHomePolicyFor(d, user, target, fallback, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
-		return true
+	if strings.HasPrefix(cr.CollectionID, "plugin:") {
+		row := core.HomeRow{HubID: cr.CollectionID, Kind: cr.CollectionID}
+		target, fallback := layoutTargetForMedia(section, hc.SectionID)
+		if p, layer := effectiveHomePolicyFor(d, user, target, fallback, row); layer == "override" && p != nil && p.When != nil && p.Row == cr.CollectionID {
+			return true
+		}
+	} else {
+		row := core.HomeRow{HubID: "collection." + cr.CollectionID, Kind: KindCollectionPrefix + cr.CollectionID}
+		target, fallback := layoutTargetForMedia(section, hc.SectionID)
+		if p, layer := effectiveHomePolicyFor(d, user, target, fallback, row); layer == "override" && p != nil && p.When != nil && collectionRowID(p.Row) == cr.CollectionID {
+			return true
+		}
 	}
 	sc := cr.Schedule
 	if draft, ok := d.CollectionSchedules[cr.CollectionID]; ok {
@@ -1063,7 +1071,13 @@ func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, u
 			return nil
 		}
 	}
-	if hub.ID == "" {
+	kind := KindCollectionPrefix + cr.CollectionID
+	if strings.HasPrefix(cr.CollectionID, "plugin:") {
+		kind = cr.CollectionID
+		if hub.ID == "" {
+			hub.ID = cr.CollectionID
+		}
+	} else if hub.ID == "" {
 		hub.ID = "collection." + cr.CollectionID
 	}
 	e.mu.Lock()
@@ -1081,7 +1095,7 @@ func (e *Engine) ownerCandidate(cr core.CollectionRow, section core.MediaType, u
 		items = append(items, candItem{t: t, base: rankScore(i, len(hub.Items)), fit: fit, qual: quality(&t), reason: why})
 	}
 	desc := hub.Title
-	c := &candRow{kind: KindCollectionPrefix + cr.CollectionID, id: hub.ID, title: hub.Title,
+	c := &candRow{kind: kind, id: hub.ID, title: hub.Title,
 		reason: "Owner collection “" + desc + "”, targeted at this viewer.", context: "collection",
 		source: core.RowSourceOwner, items: items, minItems: collectionMinItems, keepOrder: true, scale: 1, hub: &hub}
 	return c

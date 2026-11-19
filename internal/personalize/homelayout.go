@@ -1093,11 +1093,22 @@ func layoutCollectionsFor(d core.HomeLayout, user int64, target, fallback string
 			continue
 		}
 		for _, r := range page.Rows {
-			key := strings.TrimPrefix(strings.TrimPrefix(r.Row, "collection:"), "collection.")
-			if key == r.Row || strings.ContainsAny(key, "*?[") {
-				continue
+			var key string
+			var probe core.HomeRow
+			if strings.HasPrefix(r.Row, "plugin:") {
+				if strings.ContainsAny(r.Row, "*?[") {
+					continue
+				}
+				key = r.Row
+				probe = core.HomeRow{HubID: r.Row, Kind: r.Row}
+			} else {
+				key = strings.TrimPrefix(strings.TrimPrefix(r.Row, "collection:"), "collection.")
+				if key == r.Row || strings.ContainsAny(key, "*?[") {
+					continue
+				}
+				probe = core.HomeRow{HubID: "collection." + key, Kind: "collection:" + key}
 			}
-			p, _ := effectiveHomePolicyFor(d, user, target, fallback, core.HomeRow{HubID: "collection." + key, Kind: "collection:" + key})
+			p, _ := effectiveHomePolicyFor(d, user, target, fallback, probe)
 			if p == nil || p.Status == "off" || seen[key] {
 				continue
 			}

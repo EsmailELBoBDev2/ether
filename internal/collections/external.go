@@ -27,7 +27,7 @@ type ExternalBases struct {
 	TraktAPI        string // https://api.trakt.tv
 	Letterboxd      string // https://letterboxd.com
 	MDBList         string // https://mdblist.com
-	MDBListPageSize int    // optional page size override for tests; defaults to 2000
+	MDBListPageSize int    // optional page size override for tests; defaults to 100
 	AniListAPI      string // https://graphql.anilist.co
 	AnimeIDs        string // the anime id mapping document (anilist -> TMDB/TVDB/IMDb)
 	StevenLu        string // https://popular-movies-data.stevenlu.com
@@ -62,6 +62,7 @@ type extRef struct {
 	MetadataProvider string
 	ProviderID       string
 	TMDB             int64
+	FallbackID       int64 // legacy MDBList id when explicit tmdb_id is absent
 	IMDB             string
 	TVDB             int64
 	Type             string // "movie", "show" or "" (unknown)
@@ -490,17 +491,30 @@ func (s *Service) letterboxdFilmTMDB(ctx context.Context, slug string) (int64, s
 // ---------------------------------------------------------------------------
 // MDBList
 
-const mdbListDefaultPageSize = 2000
+const mdbListDefaultPageSize = 100
 
 type mdbListItem struct {
 	ID          json.Number `json:"id"`
 	TMDBID      json.Number `json:"tmdb_id"`
+	TMDBIDAlt   json.Number `json:"tmdbid"`
 	IMDB        string      `json:"imdb_id"`
+	IMDBAlt     string      `json:"imdb"`
 	TVDB        json.Number `json:"tvdb_id"`
+	TVDBAlt     json.Number `json:"tvdbid"`
 	Title       string      `json:"title"`
 	MediaType   string      `json:"mediatype"`
 	ReleaseYear json.Number `json:"release_year"`
+	YearAlt     json.Number `json:"year"`
 	Rank        int         `json:"rank"`
+}
+
+func parseMDBInt64(nums ...json.Number) int64 {
+	for _, num := range nums {
+		if n, err := num.Int64(); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 func decodeMDBListPage(body []byte) ([]mdbListItem, error) {
@@ -526,27 +540,33 @@ func decodeMDBListPage(body []byte) ([]mdbListItem, error) {
 }
 
 func mdbListExtRef(it mdbListItem) extRef {
-	r := extRef{IMDB: it.IMDB, Title: it.Title}
-	if n, err := it.TMDBID.Int64(); err == nil && n > 0 {
-		r.TMDB = n
-	} else if n, err := it.ID.Int64(); err == nil && n > 0 {
-		r.TMDB = n
+	r := extRef{
+		IMDB:  firstNonEmpty(it.IMDB, it.IMDBAlt),
+		Title: it.Title,
+		TVDB:  parseMDBInt64(it.TVDB, it.TVDBAlt),
+		Year:  int(parseMDBInt64(it.ReleaseYear, it.YearAlt)),
 	}
-	r.TVDB, _ = it.TVDB.Int64()
-	y, _ := it.ReleaseYear.Int64()
-	r.Year = int(y)
-	switch strings.ToLower(it.MediaType) {
+	if tmdb := parseMDBInt64(it.TMDBID, it.TMDBIDAlt); tmdb > 0 {
+		r.TMDB = tmdb
+	} else if legacyID := parseMDBInt64(it.ID); legacyID > 0 {
+		if r.IMDB == "" && r.TVDB == 0 {
+			r.TMDB = legacyID
+		} else {
+			r.FallbackID = legacyID
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(it.MediaType)) {
 	case "movie":
 		r.Type = "movie"
-	case "show", "tv":
+	case "show", "tv", "series":
 		r.Type = "show"
 	}
 	return r
 }
 
 func mdbListRefKey(r extRef) string {
-	return fmt.Sprintf("%s|tmdb:%d|imdb:%s|tvdb:%d|title:%s|year:%d",
-		r.Type, r.TMDB, strings.ToLower(strings.TrimSpace(r.IMDB)), r.TVDB,
+	return fmt.Sprintf("%s|tmdb:%d|fallback:%d|imdb:%s|tvdb:%d|title:%s|year:%d",
+		r.Type, r.TMDB, r.FallbackID, strings.ToLower(strings.TrimSpace(r.IMDB)), r.TVDB,
 		strings.ToLower(strings.TrimSpace(r.Title)), r.Year)
 }
 

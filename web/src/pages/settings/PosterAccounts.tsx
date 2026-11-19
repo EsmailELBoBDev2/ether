@@ -10,7 +10,7 @@ import { IntegrationTab } from "../../components/IntegrationTab";
 import { IntegrationMark } from "../../components/integration-brands";
 import { SaveBar } from "../../components/SaveBar";
 import { localized, t } from "../../i18n";
-import { api, apiFetch } from "../../lib/api";
+import { api, apiFetch, errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { PosterProviderConfig as Posters } from "../../lib/types";
 const emptyPoster: Posters = {
@@ -175,6 +175,9 @@ export function PosterAccounts({
       toast.success(t("Poster provider saved"));
     } catch (e) {
       setError(e);
+      if (!draft && !editing) {
+        toast.error(t("Couldn't save the change"), { description: errorMessage(e) });
+      }
     } finally {
       setSaving(false);
     }

@@ -64,19 +64,24 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
+	priorEntry, _ := s.sessionEntryForStart(pr, p.sessionID, p.key)
+	startPR := mergeSessionProfile(pr, priorEntry)
 	entry, ok := s.transcodes.get(p.sessionID)
 	var ps *frontend.PlaySession
 	if ok && entry.key == p.key && entry.userID == pr.User.ID {
 		ps, ok = s.playback().Session(entry.playID)
+		if ok && ps != nil {
+			ps = sessionWithInfo(ps, entry.info)
+		}
 	}
-	if !ok || ps == nil || !p.sameSettings(entry.requested) {
-		if _, ps, _, err = s.prepare(ctx, pr, &p); err != nil {
+	if !ok || ps == nil || !p.sameSettings(entryExpectedStart(entry)) {
+		if _, ps, _, err = s.prepare(ctx, startPR, &p); err != nil {
 			s.log.Info("start playback failed", "key", p.key, "reason", playbackMessage(err), "err", err)
 			s.writeStartErr(w, r, pr, err)
 			return
 		}
 		entry, _ = s.transcodes.get(p.sessionID)
-	} else if dec, err := s.publishBrokerPlayback(ctx, pr, replayPlay(p, entry), ps); err != nil {
+	} else if dec, err := s.publishBrokerPlayback(ctx, startPR, replayPlay(p, entry), ps); err != nil {
 		s.writeStartErr(w, r, pr, err)
 		return
 	} else {
@@ -87,9 +92,10 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 	s.transcodes.put(entry)
 
 	dec := frontend.HLSDecision(entry.decision, p.opts.DirectPlay, func() frontend.Decision {
-		resolvePlaySelection(&p, ps.Info)
-		applySelections(&p, ps.Info, s.audioLanguages(pr.User))
-		return s.transcoder().Decide(ps.Info, p.caps, p.opts)
+		opts := entry.opts
+		opts.DirectPlay = false
+		opts.Protocol = frontend.ProtocolHTTP
+		return s.transcoder().Decide(ps.Info, entry.caps, opts)
 	}, func(dec frontend.Decision) frontend.Decision {
 		if len(entry.caps.TranscodeAudioCodecs) > 0 && dec.AudioCodec != "" && !slices.Contains(entry.caps.TranscodeAudioCodecs, dec.AudioCodec) {
 			opts := entry.opts

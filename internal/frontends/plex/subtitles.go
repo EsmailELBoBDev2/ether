@@ -751,12 +751,18 @@ func (s *Server) handleTranscodeSubtitles(w http.ResponseWriter, r *http.Request
 		sessionID = sanitizeSessionID(cmp.Or(q.Get("session"), q.Get("transcodeSessionId"), pr.SessionID))
 	}
 	entry, ok := s.transcodes.get(sessionID)
+	if !ok && perr == nil {
+		if fallback, found := s.sessionEntryForStart(pr, sessionID, p.key); found {
+			entry, ok = fallback, true
+			sessionID = entry.id
+		}
+	}
 	if !ok || pr.User == nil || entry.userID != pr.User.ID || (pr.ClientID != "" && entry.clientID != "" && entry.clientID != pr.ClientID) || entry.key == 0 || (perr == nil && p.key != entry.key) {
 		s.writeEmpty(w, r)
 		return
 	}
 	pos := entry.subtitle
-	if perr == nil && q.Get("subtitleStreamID") != "" {
+	if perr == nil && q.Get("subtitleStreamID") != "" && q.Get("subtitleStreamID") != "-1" {
 		resolvePlaySelection(&p, entry.info)
 		pos = p.subSel
 	}
@@ -769,13 +775,14 @@ func (s *Server) handleTranscodeSubtitles(w http.ResponseWriter, r *http.Request
 		s.writeEmpty(w, r)
 		return
 	}
+	subPR := mergeSessionProfile(pr, entry)
 	format := subtitleFormat(q.Get("format"))
-	if soft := q.Get("format") == "" && (strings.HasPrefix(r.URL.Path, "/subtitles/") || browserClient(pr)); soft || softASSFormat(q.Get("format")) {
+	if soft := q.Get("format") == "" && (strings.HasPrefix(r.URL.Path, "/subtitles/") || browserClient(subPR)); soft || softASSFormat(q.Get("format")) {
 		format = "ass"
 	}
 	if !st.External {
 		if format == "ass" {
-			if strings.HasPrefix(r.URL.Path, "/video/") && browserClient(pr) {
+			if strings.HasPrefix(r.URL.Path, "/video/") && browserClient(subPR) {
 				s.serveSessionASS(w, r, sessionID, st.Index)
 				return
 			}

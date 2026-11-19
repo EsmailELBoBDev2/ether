@@ -106,15 +106,6 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	if s.total > 0 && seg >= s.total {
 		seg = s.total - 1
 	}
-	s.stopRunForLocked("input swap")
-	for t, done := range s.done {
-		for n := range done {
-			if n >= seg {
-				_ = os.Remove(s.trackSegPath(t, n))
-				delete(done, n)
-			}
-		}
-	}
 	next := adaptToContract(s.audioMatchBaseDecision(), s.info, info, s.container, s.contract)
 	next = s.applyAudioMatchLocked(inputURL, next)
 	if inputURL == s.input {
@@ -126,6 +117,18 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 	}
 	if s.isDASH() {
 		next = dashDecision(info, next)
+	}
+	if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() && info.Video() != nil && !next.VideoCopy {
+		return ErrVideoTranscodingDisabled
+	}
+	s.stopRunForLocked("input swap")
+	for t, done := range s.done {
+		for n := range done {
+			if n >= seg {
+				_ = os.Remove(s.trackSegPath(t, n))
+				delete(done, n)
+			}
+		}
 	}
 	if next.Kind != s.decision.Kind || next.VideoCopy != s.decision.VideoCopy || next.AudioCopy != s.decision.AudioCopy {
 		s.log.Info("failover changes decision", "from", s.decision.Kind, "to", next.Kind, "reason", next.Reason)
@@ -189,6 +192,9 @@ func (s *Session) swapInput(ctx context.Context, inputURL string, info core.Medi
 // format the client already opened. Playback calls it before committing
 // a replacement so an incompatible candidate is skipped, not spliced.
 func (s *Session) CheckSwap(info core.MediaInfo) error {
+	if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() && !info.Estimated && info.Video() != nil && !s.SwapWouldCopyVideo(info) {
+		return ErrVideoTranscodingDisabled
+	}
 	if s.contract == nil {
 		return nil
 	}

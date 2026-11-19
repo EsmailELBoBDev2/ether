@@ -633,6 +633,7 @@ func (s *Session) notifyInputFailureLocked(r *run) {
 func (s *Session) recoverCopyLocked(r *run, stderr string) bool {
 	v := s.info.Video()
 	if s.copyFallback || s.inputFailed || s.liveInput || s.isDASH() ||
+		(s.m != nil && s.m.VideoTranscodingOff()) ||
 		s.container != ContainerMPEGTS || !r.spec.Decision.VideoCopy ||
 		v == nil || v.Codec != "h264" || encodedRange(v) != rangeSDR ||
 		!strings.Contains(strings.ToLower(stderr), "error applying bitstream filters") {
@@ -871,6 +872,9 @@ func deterministicHeaderFailure(stderr string) bool {
 // recoverHeaderLocked permits one copy-to-encode attempt per input and at
 // most eight failing header attempts per minute across all input swaps.
 func (s *Session) recoverHeaderLocked(r *run) bool {
+	if !s.liveInput && s.m != nil && s.m.VideoTranscodingOff() {
+		return false
+	}
 	if s.headerInputs == nil {
 		s.headerInputs = make(map[string]int)
 	}

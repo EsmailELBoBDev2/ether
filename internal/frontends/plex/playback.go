@@ -60,6 +60,7 @@ const (
 	msgDownloadRefused     = "Not cached. The download could not be started; check the Ether log for the reason."
 	msgDownloadPaused      = "Not cached. Ether temporarily paused downloads after debrid service refusals. Try again later."
 	msgDownloadLimit       = "Not cached. Your debrid account has reached its active download limit."
+	msgVideoTranscodingOff = "This title needs a video transcode to play on this device, and video transcoding is turned off."
 )
 
 func playbackMessage(err error) string {
@@ -68,6 +69,8 @@ func playbackMessage(err error) string {
 		return bedtime.Error()
 	}
 	switch {
+	case errors.Is(err, frontend.ErrVideoTranscodingDisabled):
+		return msgVideoTranscodingOff
 	case errors.Is(err, frontend.ErrUnreleased):
 		return "This title has not been released yet. Playback is unavailable."
 	case errors.Is(err, frontend.ErrDebridAuth):

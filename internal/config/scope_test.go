@@ -76,6 +76,7 @@ func TestScopeOf(t *testing.T) {
 		"cache.budgetBytes":          Local,
 		"cache.prefetchBytes":        Shared,
 		"transcode.hwAccel":          Local,
+		"transcode.videoTranscoding": Local,
 		"database":                   Local,
 		"spike":                      Local,
 		"usenet":                     Shared,

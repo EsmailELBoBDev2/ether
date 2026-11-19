@@ -243,7 +243,19 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		var allowed bool
 		dec, allowed = b.hlsOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
 		if !allowed {
+			if !s.live && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+				return "", &frontend.NoCompatiblePathError{
+					RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
+					Cause:         core.ErrVideoTranscodingDisabled,
+				}
+			}
 			return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
+		}
+	}
+	if !s.live && b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+		return "", &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
 		}
 	}
 	if s.allowTranscoding != nil && !*s.allowTranscoding && decisionEncodes(dec, ps.Info) {
@@ -272,7 +284,7 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 		// A continuous playback client declares its decoder set. Optional
 		// encoded rungs must also respect its session's transcoding policy.
 		request.LadderVideoCodecs = []string{}
-		if s.allowTranscoding == nil || *s.allowTranscoding {
+		if (s.allowTranscoding == nil || *s.allowTranscoding) && (s.live || !b.videoTranscodingOff()) {
 			request.LadderVideoCodecs = append(request.LadderVideoCodecs, s.caps.VideoCodecs...)
 		}
 	}
@@ -372,6 +384,9 @@ func (b *Broker) hlsOutputDecision(ps *core.PlaySession, caps core.ClientCaps, o
 		return core.Decision{}, false
 	}
 	dec = HLSDecision(dec, opts.DirectPlay, func() core.Decision { return b.deps.Transcoder.Decide(ps.Info, caps, opts) }, nil)
+	if b.videoTranscodingOff() && decisionEncodesVideo(dec, ps.Info) {
+		return dec, false
+	}
 	if allowTranscoding != nil && !*allowTranscoding && decisionEncodes(dec, ps.Info) {
 		return dec, false
 	}

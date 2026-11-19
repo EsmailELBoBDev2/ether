@@ -797,6 +797,30 @@
           "fields": [
             {
               "help": {
+                "source": "Turn off to never re-encode video for movies and shows. Direct play, remuxing, and audio or subtitle conversion still work. Live TV is unaffected."
+              },
+              "key": "videoTranscoding",
+              "kind": "select",
+              "label": {
+                "source": "Video transcoding"
+              },
+              "options": [
+                {
+                  "value": "on",
+                  "label": {
+                    "source": "On"
+                  }
+                },
+                {
+                  "value": "off",
+                  "label": {
+                    "source": "Off"
+                  }
+                }
+              ]
+            },
+            {
+              "help": {
                 "source": "Automatic uses this computer's graphics chip when an app can't play the file as-is. Choose Off only if converted video looks wrong."
               },
               "key": "hwAccel",

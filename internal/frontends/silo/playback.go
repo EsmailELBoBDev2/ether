@@ -147,7 +147,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleStreamIndex: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(b.Capabilities.Video) > 0}})
 	if err != nil {
-		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) {
+		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 			i.versionUnavailable(w, err, "plan")
 			return
 		}
@@ -156,7 +156,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := i.host.Sessions.Open(r.Context(), frontend.OpenRequest{Protocol: "silo", PlanID: plan.ID, Viewer: v, Device: d})
 	if err != nil {
-		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) {
+		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 			i.versionUnavailable(w, err, "open")
 			return
 		}
@@ -761,6 +761,10 @@ func (i *instance) progress(w http.ResponseWriter, r *http.Request) {
 }
 
 func playbackError(w http.ResponseWriter, err error) {
+	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		http.Error(w, "This title needs a video transcode to play on this device, and video transcoding is turned off.", http.StatusUnprocessableEntity)
+		return
+	}
 	if errors.Is(err, frontend.ErrTrackNotFound) {
 		http.Error(w, "Selected track unavailable", http.StatusUnprocessableEntity)
 		return

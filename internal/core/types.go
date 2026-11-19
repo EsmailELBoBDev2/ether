@@ -196,7 +196,18 @@ var (
 	// ErrSeekUnavailable means a page's seek title no longer matches its
 	// filter; the caller pages by offset instead.
 	ErrSeekUnavailable = errors.New("seek title unavailable")
+	// ErrVideoTranscodingDisabled means delivery requires re-encoding video
+	// while transcode.videoTranscoding is set to "off".
+	ErrVideoTranscodingDisabled error = videoTranscodingDisabledError{}
 )
+
+type videoTranscodingDisabledError struct{}
+
+func (videoTranscodingDisabledError) Error() string {
+	return "needs a video transcode, and transcoding is off"
+}
+
+func (videoTranscodingDisabledError) Unwrap() error { return ErrNotAvailable }
 
 // PreparingError wraps ErrPreparing with a suggested retry delay (#580).
 type PreparingError struct {

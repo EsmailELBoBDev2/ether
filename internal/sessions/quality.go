@@ -10,6 +10,9 @@ import (
 )
 
 func (b *Broker) ProactiveFallbackAvailable() bool {
+	if b.videoTranscodingOff() {
+		return false
+	}
 	provider, ok := b.deps.Transcoder.(interface{ ProactiveFallbackAvailable() bool })
 	return ok && provider.ProactiveFallbackAvailable()
 }
@@ -20,6 +23,9 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 	}
 	if s.public.Protocol != "vela" || s.live || s.restored {
 		return nil, nil, nil
+	}
+	if b.videoTranscodingOff() {
+		return deny("transcoding_disabled")
 	}
 	if !b.ProactiveFallbackAvailable() {
 		return deny("quality_service_unavailable")

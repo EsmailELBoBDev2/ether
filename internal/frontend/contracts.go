@@ -872,6 +872,9 @@ type PlayPlan struct {
 	// Alternatives are evaluated against this same source and client policy.
 	// DirectPlay, DirectStream, Transcoding are evaluated against this same source.
 	DirectPlay, DirectStream, Transcoding bool
+	// VideoTranscodingOff reports that video re-encoding is disabled for movies
+	// and shows (audio/subtitle conversion and remuxing may still run).
+	VideoTranscodingOff bool
 	// HLS reports whether this resolved source can be delivered as HLS under
 	// the declared client profile. Encoder capacity is checked at stream start.
 	HLS bool

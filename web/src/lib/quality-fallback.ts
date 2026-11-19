@@ -15,6 +15,9 @@ function classifyDecisionClause(line: string): { text: string; generic?: boolean
   const fallback = qualityFallback(line);
   if (fallback !== line) return { text: fallback };
 
+  if (/needs a video transcode|without a video transcode/i.test(line)) {
+    return { text: t("Every matching release needs a video transcode, and transcoding is off") };
+  }
   if (/no acceptable candidates/i.test(line)) {
     return { text: t("No releases matched this profile") };
   }

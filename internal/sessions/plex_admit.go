@@ -102,12 +102,20 @@ func (b *Broker) planPlexAdmission(ctx context.Context, req frontend.PlanRequest
 		protocol = string(req.Protocol)
 	}
 	preferRemux := admitted.PreferRemux || req.Intent.PreferRemux
+	videoOff := req.Channel == "" && b.videoTranscodingOff()
 	dec, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{
 		Session: ps, Caps: caps, Options: opts, PreferRemux: preferRemux,
 		Protocol: protocol, RemoteMaxBitrateKbps: admitted.RemoteMaxBitrateKbps,
+		NoVideoTranscode: videoOff,
 	})
 	if err != nil {
 		return frontend.PlayPlan{}, err
+	}
+	if videoOff && decisionEncodesVideo(dec, media) {
+		return frontend.PlayPlan{}, &frontend.NoCompatiblePathError{
+			RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+			Cause:         core.ErrVideoTranscodingDisabled,
+		}
 	}
 	req.Caps = caps
 	req.Intent.Options = opts

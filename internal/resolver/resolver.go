@@ -275,16 +275,18 @@ type Service struct {
 	log            *slog.Logger
 	now            func() time.Time
 
-	cfgMu            sync.RWMutex
-	rcfg             config.Resolver
-	quality          config.Quality
-	catalogLang      string // catalogue metadata language ("en-US"): the server's language
-	debridCachedOnly bool
-	probedMedia      func(core.Release) (core.MediaInfo, bool)
-	scorer           *FormatScorer
-	indexerPriority  map[string]int // indexer id → Priority (lower ranks first)
-	scorerErr        error
-	sources          string // sourcesKey of the applied config
+	cfgMu                sync.RWMutex
+	rcfg                 config.Resolver
+	quality              config.Quality
+	catalogLang          string // catalogue metadata language ("en-US"): the server's language
+	debridCachedOnly     bool
+	videoTranscodingOff  bool
+	remoteMaxBitrateKbps int
+	probedMedia          func(core.Release) (core.MediaInfo, bool)
+	scorer               *FormatScorer
+	indexerPriority      map[string]int // indexer id → Priority (lower ranks first)
+	scorerErr            error
+	sources              string // sourcesKey of the applied config
 
 	mu               sync.RWMutex
 	bad              map[string]badMark     // release id -> blocklist mark
@@ -464,6 +466,8 @@ func (s *Service) UpdateConfig(cfg config.Config) {
 	s.quality = cfg.Quality
 	s.catalogLang = cfg.Catalog.Language
 	s.debridCachedOnly = cfg.Debrid.CachedOnly
+	s.videoTranscodingOff = cfg.Transcode.VideoTranscodingOff()
+	s.remoteMaxBitrateKbps = cfg.Transcode.RemoteMaxBitrateKbps
 	s.scorer, s.scorerErr = NewFormatScorer(cfg.Resolver.CustomFormats)
 	s.indexerPriority = make(map[string]int, len(cfg.Indexers))
 	for _, ix := range cfg.Indexers {
@@ -796,7 +800,8 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	libProfile := s.libProfileForTitle(ctx, req.Title)
 	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
-	key := flightKey(req, profile) + "|pin:" + s.PinnedReleaseID(req)
+	videoOff, _ := s.transcodeSettings()
+	key := fmt.Sprintf("%s|pin:%s|vt:%t", flightKey(req, profile), s.PinnedReleaseID(req), videoOff)
 	if channelAvailabilityCheck(ctx) {
 		key += "/channel-availability"
 	}
@@ -912,7 +917,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		out, err := s.resolvePreferred(ctx, req, pin, cands, &trace, 1)
 		if err != nil || out.resolution == nil {
 			reason := candidateReason(&trace, pinID)
-			if err == nil {
+			if reason == ReasonNeedsVideoTranscode && (err == nil || errors.Is(err, core.ErrNotAvailable)) {
+				err = core.ErrVideoTranscodingDisabled
+			} else if err == nil {
 				err = core.ErrNotAvailable
 			}
 			trace.Err = fmt.Sprintf("pinned release %s cannot be played: %s", pinID, reason)
@@ -1186,6 +1193,10 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 				}
 			}
 			s.mu.Unlock()
+		}
+		if videoOff, _ := s.transcodeSettings(); videoOff && traceHasRejectionReason(&trace, ReasonNeedsVideoTranscode) {
+			trace.Err = "no release can play without a video transcode, and transcoding is off"
+			return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrVideoTranscodingDisabled))
 		}
 		trace.Err = "no acceptable candidates"
 		return nil, failed(fmt.Errorf("%q: %w", t.Title, core.ErrNotAvailable))
@@ -1926,14 +1937,20 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			reason = identityAmbiguousReason("shared series title (name only)", sreq, identity.animeIdentifiesTarget(t, sreq), true)
 		} else if pinned {
 			reason = s.pinRejectReason(rel, sreq, req.Client, exclude)
+			if reason == "" {
+				if videoOff, remoteCap := s.transcodeSettings(); videoOff && releaseNeedsVideoTranscode(rel, t, req.Client, remoteCap) {
+					reason = ReasonNeedsVideoTranscode
+				}
+			}
 		} else if rel.Info.Height <= 0 && aboveCeiling && !withinCeiling {
 			clientRejected = true
 			reason = "unknown source resolution under a resolution limit"
 		} else if policyResult.Rejected {
 			reason = audioAbsentPolicyReason(policy, policyContext, langRel, policyResult)
 		} else {
+			videoOff, _ := s.transcodeSettings()
 			reason = s.rejectReason(rel, t, sreq, profile, rcfg, req.Client, exclude, preferred)
-			if reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
+			if !videoOff && reason == "video codec unsupported by client" && req.ExactHEVCTranscode && !req.Client.Download && req.Prefer != "" && rel.ID == req.Prefer && strings.EqualFold(rel.Info.VideoCodec, "hevc") {
 				// Only relax the codec gate for the explicitly selected source;
 				// every other policy and the final probed output decision still apply.
 				caps := req.Client
@@ -1951,7 +1968,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 			ct.Rejected = true
 			switch reason {
-			case ReasonAboveProfileMaxResolution, ReasonAboveClientMaxResolution, ReasonBelowProfileMinResolution, "dolby vision not allowed for client", "video codec unsupported by client", "quality excluded by imported profile", "source recently failed health check; retrying later",
+			case ReasonAboveProfileMaxResolution, ReasonAboveClientMaxResolution, ReasonBelowProfileMinResolution, ReasonNeedsVideoTranscode, "dolby vision not allowed for client", "video codec unsupported by client", "quality excluded by imported profile", "source recently failed health check; retrying later",
 				// Size ranges are per profile: a remux too large for a
 				// download or mobile profile still plays for others.
 				"size too small for runtime", "size too large for runtime":
@@ -2306,7 +2323,8 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 	if reason := rejectIdentityYears(rel, t, sreq, s.catalogLanguage(), acceptYear); reason != "" {
 		return reason
 	}
-	return rejectPolicy(rel, t, profile, caps, preferred, preferred && s.resolverCfg().OfferHigherVersions)
+	videoOff, remoteCap := s.transcodeSettings()
+	return rejectPolicyWithTranscode(rel, t, profile, caps, preferred, preferred && s.resolverCfg().OfferHigherVersions, videoOff, remoteCap)
 }
 
 // rejectIdentity checks the result's reported identity without client policy.
@@ -2565,6 +2583,88 @@ func preferenceReason(result releasepolicy.Result) string {
 		}
 	}
 	return "release preference: rejected"
+}
+
+func (s *Service) transcodeSettings() (videoOff bool, remoteCap int) {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.videoTranscodingOff, s.remoteMaxBitrateKbps
+}
+
+func traceHasRejectionReason(trace *Trace, reason string) bool {
+	if trace == nil {
+		return false
+	}
+	for _, c := range trace.Candidates {
+		if c.Rejected && c.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseNeedsVideoTranscode reports whether rel's parsed video characteristics
+// require re-encoding video for caps. Container and audio mismatches are
+// excluded because direct stream / remux and audio conversion remain allowed.
+func releaseNeedsVideoTranscode(rel core.Release, t *core.Title, caps core.ClientCaps, remoteCap int) bool {
+	hasClient := len(caps.VideoCodecs) > 0 || len(caps.Containers) > 0 || caps.MaxHeight > 0 ||
+		caps.MaxBitrateKbps > 0 || len(caps.VideoMaxHeights) > 0 || caps.Product != "" ||
+		caps.Platform != "" || caps.Protocol != "" || caps.ExplicitNoHDR
+	if !hasClient {
+		return false
+	}
+	info := rel.Info
+	if info.VideoCodec != "" && len(caps.VideoCodecs) > 0 && !caps.SupportsVideo(info.VideoCodec) {
+		return true
+	}
+	if caps.MaxHeight > 0 && info.Height > caps.MaxHeight {
+		return true
+	}
+	if info.VideoCodec != "" && caps.VideoMaxHeights[info.VideoCodec] > 0 && info.Height > caps.VideoMaxHeights[info.VideoCodec] {
+		return true
+	}
+	if info.DolbyVision && !caps.DolbyVision && !(info.HDR10 && caps.HDR10) {
+		return true
+	}
+	if info.HDR10 && !info.DolbyVision && !caps.HDR10 {
+		return true
+	}
+	capKbps := caps.MaxBitrateKbps
+	if caps.Remote && remoteCap > 0 && (capKbps == 0 || remoteCap < capKbps) {
+		capKbps = remoteCap
+	}
+	if capKbps > 0 && !info.FullSeason && t != nil && t.Runtime > 0 {
+		if size := sizedForEpisode(rel).Size; size > 0 {
+			estKbps := float64(size) * 8 / t.Runtime.Seconds() / 1000
+			audioHeadroom := 0.0
+			switch info.AudioCodec {
+			case "truehd", "dtshd", "flac":
+				audioHeadroom = 4000
+			}
+			if estKbps-audioHeadroom > float64(capKbps) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func rejectPolicyWithTranscode(rel core.Release, t *core.Title, profile core.QualityProfile, caps core.ClientCaps, preferred, ceilingBypass, videoOff bool, remoteCap int) string {
+	if !ceilingBypass && profile.MaxHeight > 0 && rel.Info.Height > profile.MaxHeight {
+		if configured := configuredMaxHeight(profile); caps.MaxHeight > 0 &&
+			(configured == configuredUnlimited || caps.MaxHeight < configured) &&
+			rel.Info.Height > caps.MaxHeight {
+			if videoOff {
+				return ReasonNeedsVideoTranscode
+			}
+			return ReasonAboveClientMaxResolution
+		}
+		return ReasonAboveProfileMaxResolution
+	}
+	if videoOff && releaseNeedsVideoTranscode(rel, t, caps, remoteCap) {
+		return ReasonNeedsVideoTranscode
+	}
+	return rejectPolicy(rel, t, profile, caps, preferred, ceilingBypass)
 }
 
 // rejectPolicy applies client support and quality/size policy in rejection order.

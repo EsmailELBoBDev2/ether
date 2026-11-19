@@ -103,5 +103,5 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)
 	hls, hlsContainer := b.hlsPlanOutput(ps, req, dec)
-	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
+	return frontend.PlayPlan{ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
 }

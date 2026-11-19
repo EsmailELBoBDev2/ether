@@ -60,6 +60,10 @@ func (m *Manager) startHTTP(ctx context.Context, req core.HLSRequest, life *enco
 		m.mu.Unlock()
 		return nil, errors.New("transcode: manager closed")
 	}
+	if !req.LiveInput && encoding && m.cfg.VideoTranscodingOff() {
+		m.mu.Unlock()
+		return nil, ErrVideoTranscodingDisabled
+	}
 	if encoding && m.cfg.MaxTranscodes > 0 {
 		if m.encodingLocked("") >= m.cfg.MaxTranscodes {
 			m.preemptBackgroundLocked()

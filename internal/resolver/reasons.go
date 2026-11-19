@@ -7,4 +7,5 @@ const (
 	ReasonAboveClientMaxResolution  = "above client max resolution"
 	ReasonBelowProfileMinResolution = "below profile min resolution"
 	ReasonNotAVideoFile             = "not a video file"
+	ReasonNeedsVideoTranscode       = "needs a video transcode, and transcoding is off"
 )

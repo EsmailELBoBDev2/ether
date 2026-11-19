@@ -127,10 +127,16 @@ func offerJellyfinStatic(source map[string]any, opts frontend.DecideOptions) {
 	source["Protocol"] = "File"
 }
 
+const msgVideoTranscodingOff = "This title needs a video transcode to play on this device, and video transcoding is turned off."
+
 func streamError(protocol frontend.Protocol, w http.ResponseWriter, err error) {
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
 		http.Error(w, bedtime.Error(), http.StatusForbidden)
+		return
+	}
+	if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		http.Error(w, msgVideoTranscodingOff, http.StatusUnprocessableEntity)
 		return
 	}
 
@@ -1284,6 +1290,8 @@ func (i *instance) playbackInfoError(w http.ResponseWriter, stage string, err er
 	var bedtime *frontend.ErrBedtime
 	if errors.As(err, &bedtime) {
 		body["Message"] = bedtime.Error()
+	} else if errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
+		body["Message"] = msgVideoTranscodingOff
 	}
 	jsonReply(w, body)
 }

@@ -29,6 +29,21 @@ func (b *Broker) profileDiagnostic(event ProfileDiagnostic) {
 	}
 }
 
+const reasonVideoTranscodingOff = "needs a video transcode, and transcoding is off"
+
+func (b *Broker) videoTranscodingOff() bool {
+	if b == nil {
+		return false
+	}
+	if b.deps.VideoTranscodingOff != nil && b.deps.VideoTranscodingOff() {
+		return true
+	}
+	if v, ok := b.deps.Transcoder.(interface{ VideoTranscodingOff() bool }); ok && v.VideoTranscodingOff() {
+		return true
+	}
+	return false
+}
+
 func decisionEncodes(d core.Decision, info core.MediaInfo) bool {
 	if d.Kind == core.DecisionTranscode {
 		return true
@@ -37,6 +52,19 @@ func decisionEncodes(d core.Decision, info core.MediaInfo) bool {
 		return false
 	}
 	return info.Video() != nil && !d.VideoCopy || profileStream(info, "audio", d.AudioStream) != nil && !d.AudioCopy
+}
+
+func decisionEncodesVideo(d core.Decision, info core.MediaInfo) bool {
+	if info.Video() == nil {
+		return false
+	}
+	if d.Kind == core.DecisionTranscode {
+		return true
+	}
+	if d.Kind != core.DecisionRemux {
+		return false
+	}
+	return !d.VideoCopy
 }
 
 func applySubtitleProfiles(caps *core.ClientCaps) {
@@ -949,7 +977,8 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		}
 		rejected = append(rejected, frontend.RejectedPlaybackPath{Path: path, Reasons: []string{reason}})
 	}
-	r := DecisionRequest{Session: ps, Caps: req.Caps, Options: req.Intent.Options, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true}
+	videoOff := req.Channel == "" && b.videoTranscodingOff()
+	r := DecisionRequest{Session: ps, Caps: req.Caps, Options: req.Intent.Options, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true, NoVideoTranscode: videoOff}
 	d, err := Decide(b.deps.Playback, b.deps.Transcoder, r)
 	if err == nil && d.Reason == "remux for failover safety: health unverified" && b.deps.Logger != nil {
 		b.deps.Logger.Debug(d.Reason, "session", ps.ID)
@@ -958,6 +987,12 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 	// nothing about playback (Findroid's "Direct play all"); the ordinary
 	// capability decision stands.
 	if err != nil || req.Caps.Profiles == nil || (req.Caps.Profiles.DirectPlay == nil && req.Caps.Profiles.Transcoding == nil) {
+		if err == nil && videoOff && decisionEncodesVideo(d, ps.Info) {
+			return core.Decision{}, &frontend.NoCompatiblePathError{
+				RejectedPaths: []frontend.RejectedPlaybackPath{{Path: "video", Reasons: []string{reasonVideoTranscodingOff}}},
+				Cause:         core.ErrVideoTranscodingDisabled,
+			}
+		}
 		return d, err
 	}
 	if d.Kind == core.DecisionDirectPlay && profileDirectAllowed(req.Caps.Profiles, ps.Info, d) {
@@ -970,7 +1005,12 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			b.profileDiagnostic(ProfileRequiredConditionUnknown)
 		}
 	}
+	rejectedForVideoOff := false
 	allowed := func(d core.Decision) bool {
+		if videoOff && decisionEncodesVideo(d, ps.Info) {
+			rejectedForVideoOff = true
+			return false
+		}
 		return req.Intent.AllowTranscoding == nil || *req.Intent.AllowTranscoding || !decisionEncodes(d, ps.Info)
 	}
 	if output, ok := constrainedH264(d, ps.Info, req.Caps, b.h264EncoderVerified()); d.Kind != core.DecisionDirectPlay && ok && allowed(output) && (profileDeliveryAllowed(req.Caps.Profiles, output, ps.Info, "hls") || profileDeliveryAllowed(req.Caps.Profiles, output, ps.Info, "dash")) {
@@ -978,7 +1018,12 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 	}
 	if d.Kind != core.DecisionDirectPlay {
 		b.profileDiagnostic(ProfileDeliveryRejected)
-		reject("delivery", outputRejection(d, ps.Info, req.Intent.AllowTranscoding))
+		if videoOff && decisionEncodesVideo(d, ps.Info) {
+			rejectedForVideoOff = true
+			reject("delivery", reasonVideoTranscodingOff)
+		} else {
+			reject("delivery", outputRejection(d, ps.Info, req.Intent.AllowTranscoding))
+		}
 	}
 	for _, candidate := range req.Caps.Profiles.Transcoding {
 		reject(candidate.Delivery, "no output matches declared containers ["+strings.Join(candidate.Containers, ",")+"] video ["+strings.Join(candidate.VideoCodecs, ",")+"] audio ["+strings.Join(candidate.AudioCodecs, ",")+"] and profile constraints")
@@ -1006,9 +1051,13 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 			// cap. This allows a lower resolution when the required H.264 level
 			// or dimensions cannot support the original size.
 			tryAttempt := func(attempt core.DecideOptions) (core.Decision, bool, bool) {
-				decision, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: attempt, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true})
+				decision, err := Decide(b.deps.Playback, b.deps.Transcoder, DecisionRequest{Session: ps, Caps: caps, Options: attempt, PreferRemux: req.Intent.PreferRemux, PreserveSourceOnFailure: true, NoVideoTranscode: videoOff})
 				if err == nil && !allowed(decision) {
-					reject(candidate.Delivery, "transcode not allowed")
+					if videoOff && decisionEncodesVideo(decision, ps.Info) {
+						reject(candidate.Delivery, reasonVideoTranscodingOff)
+					} else {
+						reject(candidate.Delivery, "transcode not allowed")
+					}
 				}
 				if err != nil || decision.Kind == core.DecisionDirectPlay || !allowed(decision) {
 					return decision, false, false
@@ -1031,7 +1080,7 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 				if matched {
 					return decision, true
 				}
-				if valid && decision.VideoCopy && attempt.DirectStream {
+				if !videoOff && valid && decision.VideoCopy && attempt.DirectStream {
 					attempt.DirectStream = false
 					opts.DirectStream = false
 					decision, matched, valid = tryAttempt(attempt)
@@ -1083,7 +1132,11 @@ func (b *Broker) decideProfile(ps *core.PlaySession, req frontend.PlanRequest) (
 		}
 	}
 	b.profileDiagnostic(ProfileNoDelivery)
-	return core.Decision{}, &frontend.NoCompatiblePathError{RejectedPaths: rejected}
+	outErr := &frontend.NoCompatiblePathError{RejectedPaths: rejected}
+	if rejectedForVideoOff {
+		outErr.Cause = core.ErrVideoTranscodingDisabled
+	}
+	return core.Decision{}, outErr
 }
 
 // Original-file decoders cannot apply a server-side image subtitle selection.

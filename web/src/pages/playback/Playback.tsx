@@ -44,6 +44,13 @@ function TrailerStatus({ draft }: { draft: Record<string, unknown> }) {
   );
 }
 
+const VIDEO_TRANSCODING_OFF_DISABLED = new Set([
+  "hwAccel",
+  "vaapiDevice",
+  "maxTranscodes",
+  "rtxVideo",
+]);
+
 /**
  * How a chosen release reaches the screen: audio and subtitles, streams and
  * transcoding, what each app can play, and what plays around the title.
@@ -81,6 +88,9 @@ export default function Playback() {
         configKey="transcode"
         endpoint="transcode"
         groups={transcodeGroups}
+        fieldDisabled={(field, draft) =>
+          draft.videoTranscoding === "off" && VIDEO_TRANSCODING_OFF_DISABLED.has(field.key)
+        }
         label={t("Streams & transcoding")}
       />
       <ConfigSection

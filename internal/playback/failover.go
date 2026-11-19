@@ -95,6 +95,11 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			}
 		}
 	}
+	if res != nil && m.videoTranscodingOff() && cached != nil {
+		if _, needs := m.probedNeedsVideoTranscode(cached.info, s.caps); needs {
+			return nil, nil, false
+		}
+	}
 	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}
@@ -212,6 +217,12 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 					return nil, lastErr
 				}
 				if lastErr != nil && errors.Is(err, core.ErrNotAvailable) {
+					if errors.Is(err, core.ErrVideoTranscodingDisabled) {
+						return nil, err
+					}
+					if errors.Is(lastErr, core.ErrVideoTranscodingDisabled) {
+						return nil, fmt.Errorf("%w: %w", err, core.ErrVideoTranscodingDisabled)
+					}
 					if errors.Is(lastErr, core.ErrDebridAuth) {
 						return nil, fmt.Errorf("%w (last failure: %v): %w", err, lastErr, core.ErrDebridAuth)
 					}
@@ -272,6 +283,33 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			}
 		}
 		g, err := m.openGeneration(openCtx, s, res, fallback, cached)
+		if err == nil && m.videoTranscodingOff() {
+			if dec, needs := m.probedNeedsVideoTranscode(g.infoSnapshot(), s.caps); needs {
+				reason := core.ErrVideoTranscodingDisabled.Error()
+				if dec.Reason != "" {
+					reason += " (" + dec.Reason + ")"
+				}
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", reason)
+				m.recordTimeline(s, TimelineEvent{
+					Kind:    "candidate",
+					Level:   "info",
+					Message: "Skipped candidate " + releaseLabel(res.Release),
+					Detail:  reason,
+				})
+				m.dropGeneration(g)
+				if s.exact {
+					return nil, core.ErrVideoTranscodingDisabled
+				}
+				lastErr = core.ErrVideoTranscodingDisabled
+				allUncached = false
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				res, cached, fromResume = nil, nil, false
+				continue
+			}
+		}
 		if err == nil && fromResume && !s.exact && !rememberedInfoCodecCurrent(g.infoSnapshot(), s.caps) {
 			m.dropGeneration(g)
 			tried = append(tried, res.Release.ID)
@@ -388,6 +426,8 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 // like) cannot change how the failure is reported to the client.
 func releasesFailed(n int, lastErr error, allUncached bool) error {
 	switch {
+	case errors.Is(lastErr, core.ErrVideoTranscodingDisabled):
+		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, frontend.ErrTrackSourceUnavailable):
 		return fmt.Errorf("%d releases failed: %w", n, lastErr)
 	case errors.Is(lastErr, core.ErrDebridAuth):

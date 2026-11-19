@@ -804,7 +804,7 @@ func TestTabSearchScale35k(t *testing.T) {
 			actors[b] = fmt.Sprintf("Mary Jones %04d", b)
 		default:
 			devs[b] = fmt.Sprintf("Developer %05d", b)
-			actors[b] = fmt.Sprintf("Performer %05d", b)
+			actors[b] = fmt.Sprintf("Voice actor %05d", b)
 		}
 		devFolds[b] = FoldFieldText(devs[b])
 		actorFolds[b] = FoldFieldText(actors[b])

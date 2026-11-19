@@ -43,8 +43,8 @@ func titleDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
 	if t.Type == "movie" || t.Type == "episode" {
 		out["play_content_id"] = id
 	}
-	// Captured silo-apple and silo-android home cards carry progress only in
-	// user_state. Position and duration belong on the item user_data rollup.
+	// Progress is not part of a title: in-progress home cards add it
+	// (sectionCards), and item pages carry it on the user_data rollup.
 	if t.ShowKey != 0 {
 		out["series_id"] = ids.RatingKeyGUID(t.ShowKey)
 		out["series_title"] = t.ShowTitle
@@ -235,6 +235,51 @@ func (i *instance) views(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, 200, map[string]any{"items": items})
 }
+// pluginLibraryRows serves a plugin library's own rows (as Vela's library
+// page does). The shared library placement does not know plugin views, so
+// without this a plugin library's tab answered 503 and the app showed it as
+// empty. ok is false for ordinary libraries.
+func (i *instance) pluginLibraryRows(r *http.Request, v *frontend.Viewer, placement frontend.Placement, view string, limit int) ([]frontend.Row, bool, error) {
+	if placement != frontend.PlacementLibrary || view == "" {
+		return nil, false, nil
+	}
+	reader, ok := i.host.Experience.(frontend.PluginLibraryRowsReader)
+	if !ok {
+		return nil, false, nil
+	}
+	views, err := i.host.Experience.Views(r.Context(), v)
+	if err != nil {
+		return nil, false, nil
+	}
+	plugin := false
+	for _, candidate := range views {
+		if candidate.ID == view {
+			plugin = candidate.PluginID != "" || candidate.KindKey != ""
+			break
+		}
+	}
+	if !plugin {
+		return nil, false, nil
+	}
+	rows, err := reader.PluginLibraryRows(r.Context(), v, device(r), view)
+	if err != nil {
+		return nil, true, err
+	}
+	if limit > 0 {
+		for n := range rows {
+			if len(rows[n].Items) > limit {
+				rows[n].Items = rows[n].Items[:limit]
+				rows[n].More = true
+			}
+			if len(rows[n].Entries) > limit {
+				rows[n].Entries = rows[n].Entries[:limit]
+				rows[n].More = true
+			}
+		}
+	}
+	return rows, true, nil
+}
+
 func (i *instance) logSectionError(stage string, placement frontend.Placement, view, row string, err error) {
 	if i.host.Log != nil {
 		i.host.Log.Warn("silo section unavailable", "stage", stage, "placement", placement, "view", view, "row", row, "err", err)
@@ -281,6 +326,8 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 	var rows []frontend.Row
 	if view == nowAvailableLibraryID {
 		rows, err = i.snapshotHome(r, v, limit)
+	} else if pluginRows, ok, e := i.pluginLibraryRows(r, v, placement, view, limit); ok {
+		rows, err = pluginRows, e
 	} else {
 		rows, err = i.host.Experience.Rows(r.Context(), frontend.RowRequest{Viewer: v, Device: device(r), Placement: placement, ViewID: view, Limit: limit})
 	}
@@ -348,7 +395,11 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 			id = base + ":" + strconv.Itoa(seen[base])
 		}
 		used[id] = true
-		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": row.Promoted, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
+		// The app shows a library tab's featured sections only in its hero,
+		// so a library whose rows were all promoted rendered as "Movies is
+		// empty". Featured is a Home distinction.
+		featured := row.Promoted && placement != frontend.PlacementLibrary
+		section := map[string]any{"id": id, "title": row.Title, "section_type": kind, "customized": false, "featured": featured, "is_custom": kind == "custom", "item_limit": len(items), "items": items}
 		if !row.More {
 			section["total_count"] = len(items)
 		}

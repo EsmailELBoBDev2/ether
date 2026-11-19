@@ -109,7 +109,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers, never a credential. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -345,7 +345,11 @@ owner reads them.
 
 Beyond the usual services, kind plugins get (capability-checked on
 every call): `KindUpsert` / `KindDelete` (push kinds), `KindItems`
-(read your own library back), `ResolveSources`, and
+(read your own library back unfiltered), `KindVisible` (`kinds.visible`,
+batch-capped at 500 IDs) and `KindBrowse` (`kinds.browse`) for
+viewer-authenticated `frontend_adapter` requests to apply the library's
+Rules, library grants, and viewer safety policy using the request's
+authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
 Default cache quota is 2 GiB per library under a shared cap of

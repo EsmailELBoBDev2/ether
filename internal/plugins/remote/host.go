@@ -46,6 +46,11 @@ type Host interface {
 	KindUpsert(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (int, error)
 	KindDelete(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
 	KindItems(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
+	// access policy for the requesting frontend-adapter viewer (#615). The
+	// viewer is resolved solely from the host-minted X-Ether-Viewer-Token.
+	KindVisible(ctx context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error)
+	KindBrowse(ctx context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error)
 	ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error)
 	CacheOpen(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
@@ -120,6 +125,8 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/kinds/{kind}/items", h.kindItems)
 	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/upsert", h.kindUpsert)
 	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/delete", h.kindDelete)
+	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/visible", h.kindVisible)
+	mux.HandleFunc("POST /ether/plugin-host/kinds/{kind}/browse", h.kindBrowse)
 	mux.HandleFunc("POST /ether/plugin-host/sources/resolve", h.resolveSources)
 	mux.HandleFunc("PUT /ether/plugin-host/cache/{libraryKey}/{name...}", h.cachePut)
 	mux.HandleFunc("POST /ether/plugin-host/cache/{libraryKey}", h.cachePut)
@@ -441,6 +448,66 @@ func (h *HostHandler) kindDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// kindVisible returns the subset of external IDs in {kind} allowed by the
+// library's Rules and viewer access policy (#615). The viewer identity comes
+// exclusively from the host-minted X-Ether-Viewer-Token header on active
+// frontend adapter requests, never from guest-supplied viewer IDs.
+func (h *HostHandler) kindVisible(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	var ids []string
+	var envelope struct {
+		IDs []string `json:"ids"`
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		ids = nil
+	} else if err := json.Unmarshal(raw, &envelope); err == nil && envelope.IDs != nil {
+		ids = envelope.IDs
+	} else if err := json.Unmarshal(raw, &ids); err != nil {
+		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"ids": [...]} or a JSON array of item ids`)
+		return
+	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	visible, err := h.host.KindVisible(r.Context(), pluginIDOf(r), viewerToken, r.PathValue("kind"), ids)
+	if !h.finishErr(w, err) {
+		return
+	}
+	if visible == nil {
+		visible = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ids": visible})
+}
+
+// kindBrowse browses or searches {kind} using the same LibraryPolicy path as
+// Ether's console and protocol projectors for the requesting frontend-adapter
+// viewer (#615). The viewer identity comes exclusively from X-Ether-Viewer-Token.
+func (h *HostHandler) kindBrowse(w http.ResponseWriter, r *http.Request) {
+	raw, err := readBody(w, r, maxHostBodyBytes)
+	if err != nil {
+		h.finishErr(w, err)
+		return
+	}
+	var q core.KindBrowseRequest
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := json.Unmarshal(raw, &q); err != nil {
+			writeHostError(w, http.StatusBadRequest, "invalid", "Body must be a JSON browse query object")
+			return
+		}
+	}
+	viewerToken := strings.TrimSpace(r.Header.Get(HeaderViewerToken))
+	page, err := h.host.KindBrowse(r.Context(), pluginIDOf(r), viewerToken, r.PathValue("kind"), q)
+	if !h.finishErr(w, err) {
+		return
+	}
+	if page.Items == nil {
+		page.Items = []core.KindItem{}
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (h *HostHandler) resolveSources(w http.ResponseWriter, r *http.Request) {

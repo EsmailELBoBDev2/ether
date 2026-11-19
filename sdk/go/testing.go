@@ -110,8 +110,10 @@ type MockHost struct {
 	History          map[int64][]ViewerWatchEntry
 	WatchState       map[string]bool
 	Collections      []map[string]any
-	Kinds            map[string][]KindItem // kindKey -> pushed items, in upsert order
-	Sources          []SourceCandidate     // returned by ResolveSources
+	Kinds            map[string][]KindItem        // kindKey -> pushed items, in upsert order
+	KindHiddenIDs    map[string]map[string]bool   // kindKey -> externalID -> hidden by mock library Rules (#615)
+	KindPolicyFilter func(kindKey string, item KindItem) bool
+	Sources          []SourceCandidate            // returned by ResolveSources
 	Blobs            map[string][]byte     // cache blob ref -> bytes
 	Folders          map[string][]FolderEntry
 	Notifications    []string
@@ -136,6 +138,7 @@ func NewMockHost() *MockHost {
 		Folders:          map[string][]FolderEntry{},
 		Collections:      []map[string]any{},
 		Kinds:            map[string][]KindItem{},
+		KindHiddenIDs:    map[string]map[string]bool{},
 		Blobs:            map[string][]byte{},
 	}
 }
@@ -476,6 +479,147 @@ func (m *MockHost) KindItems(_ context.Context, kindKey, cursor string, limit in
 		out = []KindItem{}
 	}
 	return KindPage{Items: out}, nil
+}
+
+func (m *MockHost) mockKindItemAllowed(kindKey string, item KindItem) bool {
+	if hidden := m.KindHiddenIDs[kindKey]; hidden != nil && hidden[item.ID] {
+		return false
+	}
+	if m.KindPolicyFilter != nil && !m.KindPolicyFilter(kindKey, item) {
+		return false
+	}
+	return true
+}
+
+// KindVisible filters ids against MockHost.Kinds, KindHiddenIDs, and
+// KindPolicyFilter (#615). Requires a viewer token on ctx (WithViewerToken).
+func (m *MockHost) KindVisible(ctx context.Context, kindKey string, ids []string) ([]string, error) {
+	if _, ok := ViewerTokenFromContext(ctx); !ok {
+		return nil, fmt.Errorf("kinds.visible: no authenticated frontend adapter viewer token on context")
+	}
+	if len(ids) > MaxKindVisibleIDs {
+		return nil, fmt.Errorf("kinds.visible: batch larger than %d ids", MaxKindVisibleIDs)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	byID := make(map[string]KindItem, len(m.Kinds[kindKey]))
+	for _, it := range m.Kinds[kindKey] {
+		byID[it.ID] = it
+	}
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		it, ok := byID[id]
+		if !ok || !m.mockKindItemAllowed(kindKey, it) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// KindBrowse filters and pages MockHost.Kinds with KindHiddenIDs and
+// KindPolicyFilter applied (#615). Requires a viewer token on ctx.
+func (m *MockHost) KindBrowse(ctx context.Context, kindKey string, query KindBrowseQuery) (KindPage, error) {
+	if _, ok := ViewerTokenFromContext(ctx); !ok {
+		return KindPage{}, fmt.Errorf("kinds.browse: no authenticated frontend adapter viewer token on context")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	var matched []KindItem
+	for _, it := range m.Kinds[kindKey] {
+		if !m.mockKindItemAllowed(kindKey, it) {
+			continue
+		}
+		if query.ParentID != "" && it.ParentID != query.ParentID {
+			continue
+		}
+		if query.Level != "" && it.Level != query.Level {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(it.Title+" "+it.Summary), needle) {
+			continue
+		}
+		if len(query.Facets) > 0 && !mockItemMatchesFacets(it, query.Facets) {
+			continue
+		}
+		matched = append(matched, it)
+	}
+	if query.Desc {
+		for i, j := 0, len(matched)-1; i < j; i, j = i+1, j-1 {
+			matched[i], matched[j] = matched[j], matched[i]
+		}
+	}
+	var out []KindItem
+	after := query.Cursor == ""
+	for i, it := range matched {
+		if !after {
+			after = it.ID == query.Cursor
+			continue
+		}
+		out = append(out, it)
+		if len(out) == limit {
+			next := ""
+			if i+1 < len(matched) {
+				next = it.ID
+			}
+			return KindPage{Items: out, NextCursor: next}, nil
+		}
+	}
+	if out == nil {
+		out = []KindItem{}
+	}
+	return KindPage{Items: out}, nil
+}
+
+func mockItemMatchesFacets(item KindItem, facets map[string][]string) bool {
+	for k, want := range facets {
+		if len(want) == 0 {
+			continue
+		}
+		raw, ok := item.Fields[k]
+		if !ok || len(raw) == 0 {
+			return false
+		}
+		var vals []string
+		var single string
+		if json.Unmarshal(raw, &vals) != nil {
+			if json.Unmarshal(raw, &single) == nil && single != "" {
+				vals = []string{single}
+			}
+		}
+		if len(vals) == 0 {
+			return false
+		}
+		found := false
+		for _, w := range want {
+			for _, h := range vals {
+				if strings.EqualFold(w, h) {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveSources returns the canned Sources.

@@ -51,6 +51,7 @@ import {
 import {
   createHostedClient,
   createRemoteHostClient,
+  HEADER_VIEWER_TOKEN,
   isHostedRuntime,
   type EtherHost,
   type RemoteHostOptions,
@@ -135,7 +136,7 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onCatalog(kind: string, provider: CatalogProvider<S>): void;
   onResolve(kind: string, resolver: KindResolver<S>): void;
   onMatch(kind: string, matcher: KindMatcher<S>): void;
-  onFrontend(key: string, adapter: FrontendAdapter): void;
+  onFrontend(key: string, adapter: FrontendAdapter<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
 
@@ -352,11 +353,16 @@ export function plugin<S = Record<string, unknown>>(
     const locale = localeHeader.split(",")[0]?.trim() || "en";
     const pickToken = getHeader(req.headers, "X-Ether-Pick");
     const requestId = getHeader(req.headers, "X-Ether-Request-ID");
+    const viewerToken = getHeader(req.headers, HEADER_VIEWER_TOKEN);
     const hostClient =
       def.host ??
       (isHostedRuntime()
         ? createHostedClient()
-        : createRemoteHostClient(def.remoteHostOptions));
+        : createRemoteHostClient(
+            viewerToken
+              ? { ...(def.remoteHostOptions ?? {}), viewerToken }
+              : def.remoteHostOptions,
+          ));
     const makeContext = (settings: S): PluginContext<S> => ({
       manifest,
       settings,

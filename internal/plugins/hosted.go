@@ -519,6 +519,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "kinds.items":
 		page, err := b.h.KindItems(ctx, str(0), str(1), int(num(2)))
 		return result(page, err)
+	case "kinds.visible":
+		var ids []string
+		if len(args) > 1 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &ids); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.visible takes (kind, ids[])"}
+			}
+		}
+		visible, err := b.h.KindVisible(ctx, str(0), ids)
+		return result(visible, err)
+	case "kinds.browse":
+		var q core.KindBrowseRequest
+		if len(args) > 1 && string(args[1]) != "null" {
+			if err := json.Unmarshal(args[1], &q); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.browse takes (kind, query?)"}
+			}
+		}
+		page, err := b.h.KindBrowse(ctx, str(0), q)
+		return result(page, err)
 	case "frontend.streamURL":
 		var partIdx *int
 		if len(args) > 1 && string(args[1]) != "null" {

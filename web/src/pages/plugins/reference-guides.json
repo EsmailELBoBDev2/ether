@@ -229,9 +229,9 @@
   },
   {
     "id": "host-kinds",
-    "title": "Kind item storage",
+    "title": "Kind item storage & visibility",
     "group": "Host services",
-    "body": "Requires catalog_provider and your own declared kind. upsert/delete only work for push-mode kinds; pull sync owns its writes. items is cursor-paged. Items are validated against declared levels and fields. Unknown custom fields are dropped; invalid types reject the item.\n\n```ts\nconst page = ether.kinds.items(\"recordings\", \"\", 50);\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
+    "body": "upsert/delete/items require catalog_provider and your own declared kind. upsert/delete only work for push-mode kinds; pull sync owns its writes. items is cursor-paged and unfiltered. Items are validated against declared levels and fields. Unknown custom fields are dropped; invalid types reject the item.\n\nFor frontend adapters serving their own protocol, visible and browse apply the library's Rules, library grants, and viewer content safety for the requesting viewer (same LibraryPolicy as the console and built-in projectors). Both require frontend_adapter and an authenticated frontend adapter request; non-adapter calls fail with permission denied. Viewer identity comes only from Ether's authenticated request context (and request-scoped X-Ether-Viewer-Token on remote callbacks), never guest input. visible accepts at most 500 IDs per call.\n\n```ts\nconst page = ether.kinds.items(\"recordings\", \"\", 50);\n// Inside a frontend adapter request:\nconst allowed = ether.kinds.visible(\"recordings\", [\"rec-1\", \"rec-2\"]);\nconst filtered = ether.kinds.browse(\"recordings\", { query: \"live\", limit: 50 });\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
     "patterns": ["@host:Kind"]
   },
   {
@@ -250,9 +250,9 @@
   },
   {
     "id": "host-frontend",
-    "title": "Frontend stream tickets",
+    "title": "Frontend stream tickets & visibility",
     "group": "Host services",
-    "body": "Mint a scoped, short-lived URL for one of your own kind items. The authenticated viewer must see its library. Embed this URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.\n\n```ts\nconst url = ether.frontend.streamURL(\"item-ref\");\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
+    "body": "Mint a scoped, short-lived URL for one of your own kind items with frontend.streamURL, and evaluate the library's Rules and viewer access policy with kinds.visible (up to 500 IDs) or kinds.browse. The authenticated viewer comes from the frontend adapter request context (and X-Ether-Viewer-Token on remote callbacks), never guest-supplied input. Embed the stream URL in the protocol response; Ether serves the bytes without proxying through your plugin. Raw hosted spelling is streamURL; the TypeScript SDK uses streamUrl.\n\n```ts\nconst page = ether.kinds.browse(\"comic\", { limit: 50 });\nconst allowed = ether.kinds.visible(\"comic\", [\"c1\", \"c2\"]);\nconst url = ether.frontend.streamURL(\"item-ref\");\n```\n\nThe declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).",
     "patterns": ["@host:StreamURL"]
   },
   {

@@ -6,7 +6,9 @@
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS } from "./host.ts";
 import type {
+  KindBrowseQuery,
   KindBrowseRequest,
   KindChangePage,
   KindExpandRequest,
@@ -25,6 +27,8 @@ import type {
   SetupTestResult,
   SourceCandidate,
 } from "./types.ts";
+
+export { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS };
 
 export interface CatalogProvider<S = Record<string, unknown>> {
   browse(req: KindBrowseRequest, ctx: PluginContext<S>): MaybePromise<KindPage>;
@@ -48,12 +52,13 @@ export interface KindMatcher<S = Record<string, unknown>> {
 /** Spec-name alias. */
 export type Matcher<S = Record<string, unknown>> = KindMatcher<S>;
 
-export interface FrontendAdapter {
+export interface FrontendAdapter<S = Record<string, unknown>> {
   handle(
     method: string,
     path: string,
     headers: Record<string, string>,
     body: string,
+    ctx?: PluginContext<S>,
   ): MaybePromise<{ status: number; headers?: Record<string, string>; body: string }>;
 }
 
@@ -96,11 +101,64 @@ export async function streamUrl<S = Record<string, unknown>>(
     : ctx.ether.frontend.streamUrl(viewerId, itemRef, partIndex);
 }
 
+function readViewerToken<S>(ctx: PluginContext<S>): string {
+  for (const [k, v] of Object.entries(ctx.headers ?? {})) {
+    if (k.toLowerCase() === HEADER_VIEWER_TOKEN.toLowerCase()) {
+      const value = Array.isArray(v) ? v[0] : v;
+      return String(value ?? "").trim();
+    }
+  }
+  return "";
+}
+
+/**
+ * Evaluate the library's Rules and viewer access policy for a bounded batch
+ * (at most 500) of external IDs in `kind` (#615). Only frontend adapter
+ * requests carrying Ether's authenticated viewer token may call it.
+ */
+export async function kindsVisible<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  kind: string,
+  ids: string[],
+): Promise<string[]> {
+  if (!ctx.ether?.kinds?.visible) {
+    throw new Error("kinds.visible: no host service available");
+  }
+  const token = readViewerToken(ctx);
+  if (!token) {
+    throw new Error("kinds.visible: no authenticated frontend adapter viewer on this request");
+  }
+  if (ids.length > MAX_KIND_VISIBLE_IDS) {
+    throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+  }
+  return await ctx.ether.kinds.visible(kind, ids, token);
+}
+
+/**
+ * Browse or search `kind` with the library's Rules and viewer access policy
+ * applied for the requesting frontend-adapter viewer (#615). Only frontend
+ * adapter requests carrying Ether's authenticated viewer token may call it.
+ */
+export async function kindsBrowse<S = Record<string, unknown>>(
+  ctx: PluginContext<S>,
+  kind: string,
+  query: KindBrowseQuery = {},
+): Promise<KindPage> {
+  if (!ctx.ether?.kinds?.browse) {
+    throw new Error("kinds.browse: no host service available");
+  }
+  const token = readViewerToken(ctx);
+  if (!token) {
+    throw new Error("kinds.browse: no authenticated frontend adapter viewer on this request");
+  }
+  return await ctx.ether.kinds.browse(kind, query, token);
+}
+
 export interface KindHandlers<S = Record<string, unknown>> {
   catalog: Map<string, CatalogProvider<S>>;
   resolve: Map<string, KindResolver<S>>;
   match: Map<string, KindMatcher<S>>;
-  frontend: Map<string, FrontendAdapter>;
+  frontend: Map<string, FrontendAdapter<S>>;
   setup?: SetupTester<S>;
 }
 
@@ -174,7 +232,7 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const query = frontendQuery(req);
     const qs = query.toString();
     if (qs) subPath += `?${qs}`;
-    const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "");
+    const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "", ctx);
     if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
     // A HEAD reply carries headers only, exactly as a real server would.
     return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };

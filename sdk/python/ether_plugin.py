@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.server
+import inspect
 import json
 import logging
 import os
@@ -34,6 +35,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
 
 TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
+MAX_KIND_VISIBLE_IDS = 500
+HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
 
 ALLOWED_SETTING_KINDS = frozenset(
     {
@@ -723,12 +726,14 @@ class RemoteHostClient:
         self,
         base_url: Optional[str] = None,
         credential: Optional[str] = None,
+        viewer_token: Optional[str] = None,
     ) -> None:
         raw_base = base_url or os.environ.get("ETHER_HOST_URL") or "http://127.0.0.1:32450"
         self.base_url = raw_base.rstrip("/")
         self.credential = (
             credential if credential is not None else os.environ.get("ETHER_PLUGIN_CREDENTIAL", "")
         )
+        self.viewer_token = (viewer_token or "").strip()
         self.kv = _KVClient(self._call_json)
         self.badges = _BadgesClient(self._call_json)
         self.http = _HttpClient(self._call_json)
@@ -736,7 +741,7 @@ class RemoteHostClient:
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
-        self.kinds = _KindsClient(self._call_json)
+        self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
         self.cache = self._Cache(self)
         self.archive = _ArchiveClient(self._call_json)
@@ -773,11 +778,16 @@ class RemoteHostClient:
         path: str,
         body: Optional[Any] = None,
         allow_404: bool = False,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> Any:
         headers: Dict[str, str] = {
             "X-Ether-Plugin-Credential": self.credential,
             "Accept": "application/json",
         }
+        if extra_headers:
+            for k, v in extra_headers.items():
+                if v:
+                    headers[str(k)] = str(v)
         data: Optional[bytes] = None
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -827,8 +837,9 @@ class RemoteHostClient:
 def create_remote_host_client(
     base_url: Optional[str] = None,
     credential: Optional[str] = None,
+    viewer_token: Optional[str] = None,
 ) -> RemoteHostClient:
-    return RemoteHostClient(base_url=base_url, credential=credential)
+    return RemoteHostClient(base_url=base_url, credential=credential, viewer_token=viewer_token)
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +888,40 @@ class PluginContext:
         if checked is None:
             return self.ether.frontend.stream_url(viewer_id, str(item_ref))
         return self.ether.frontend.stream_url(viewer_id, str(item_ref), checked)
+
+    def _viewer_token(self) -> str:
+        raw = _get_header(self.headers, HEADER_VIEWER_TOKEN)
+        return str(raw).strip() if raw is not None else ""
+
+    def kinds_visible(self, kind: str, ids: List[str]) -> List[str]:
+        """Evaluate the library's Rules and viewer access policy for a bounded
+        batch (at most 500) of external IDs in `kind` (#615). Only frontend
+        adapter requests carrying Ether's authenticated viewer token may call it."""
+        if self.ether is None or getattr(self.ether, "kinds", None) is None:
+            raise RuntimeError("kinds.visible: no host service available")
+        tok = self._viewer_token()
+        if not tok:
+            raise RuntimeError("kinds.visible: no authenticated frontend adapter viewer on this request")
+        return self.ether.kinds.visible(str(kind), list(ids), viewer_token=tok)
+
+    def kinds_browse(
+        self,
+        kind: str,
+        query: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Browse or search `kind` with the library's Rules and viewer access
+        policy applied for the requesting frontend-adapter viewer (#615). Only
+        frontend adapter requests carrying Ether's authenticated viewer token
+        may call it."""
+        if self.ether is None or getattr(self.ether, "kinds", None) is None:
+            raise RuntimeError("kinds.browse: no host service available")
+        tok = self._viewer_token()
+        if not tok:
+            raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer on this request")
+        return self.ether.kinds.browse(str(kind), dict(query or {}), viewer_token=tok)
+
+    kindsVisible = kinds_visible
+    kindsBrowse = kinds_browse
 
 
 def _get_header(headers: Optional[Dict[str, Any]], name: str) -> Optional[str]:
@@ -1066,7 +1111,12 @@ class PluginInstance:
         locale = str(locale_raw).split(",")[0].strip() or "en"
         pick_token = _get_header(headers, "X-Ether-Pick")
         request_id = _get_header(headers, "X-Ether-Request-ID")
-        host_client = self._host if self._host is not None else create_remote_host_client()
+        viewer_token = _get_header(headers, HEADER_VIEWER_TOKEN)
+        host_client = (
+            self._host
+            if self._host is not None
+            else create_remote_host_client(viewer_token=viewer_token)
+        )
         settings = dict(self._current_settings)
         getter = getattr(host_client, "settings_get", None)
         if callable(getter) and str(req.get("path", "")) != "/ether/configure" and (not isinstance(host_client, RemoteHostClient) or host_client.credential):
@@ -1531,7 +1581,16 @@ class PluginInstance:
             )
             if query:
                 sub_path += "?" + urllib.parse.urlencode(query)
-            status, headers, resp_body = adapter.handle(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"")
+            handle_fn = adapter.handle
+            try:
+                params = list(inspect.signature(handle_fn).parameters.values())
+                accepts_ctx = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params) or len(params) >= 5
+            except (TypeError, ValueError):
+                accepts_ctx = False
+            if accepts_ctx:
+                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"", ctx)
+            else:
+                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"")
             # A HEAD reply carries headers only, exactly as a real server would.
             if method == "HEAD":
                 resp_body = b""
@@ -2228,6 +2287,8 @@ class MockHostClient:
         self.catalog = self._Catalog(self)
         self.viewers = self._Viewers(self)
         self.kind_store: Dict[str, List[Dict[str, Any]]] = {}
+        self.kind_hidden_ids: Dict[str, set] = {}
+        self.kind_policy_filter: Optional[Callable[[str, Dict[str, Any]], bool]] = None
         self.sources: List[Dict[str, Any]] = []
         self.blobs: Dict[str, bytes] = {}
         self.limits: RuntimeLimits = {
@@ -2294,6 +2355,98 @@ class MockHostClient:
             page = all_items[start:start + limit]
             out: Dict[str, Any] = {"items": page}
             if page and start + limit < len(all_items):
+                out["nextCursor"] = page[-1].get("id")
+            return out
+
+        def _allowed(self, kind: str, item: Dict[str, Any]) -> bool:
+            hidden = self._p.kind_hidden_ids.get(kind)
+            if hidden and item.get("id") in hidden:
+                return False
+            filt = self._p.kind_policy_filter
+            if filt is not None and not filt(kind, item):
+                return False
+            return True
+
+        def visible(
+            self,
+            kind: str,
+            ids: List[str],
+            viewer_token: Optional[str] = None,
+        ) -> List[str]:
+            if not (viewer_token or "").strip():
+                raise RuntimeError("kinds.visible: no authenticated frontend adapter viewer token on this request")
+            if len(ids) > MAX_KIND_VISIBLE_IDS:
+                raise ValueError(f"kinds.visible: batch larger than {MAX_KIND_VISIBLE_IDS} ids")
+            by_id = {str(it.get("id")): it for it in self._p.kind_store.get(kind, [])}
+            seen: set = set()
+            out: List[str] = []
+            for raw_id in ids:
+                ext_id = str(raw_id)
+                if not ext_id or ext_id in seen:
+                    continue
+                seen.add(ext_id)
+                it = by_id.get(ext_id)
+                if it is None or not self._allowed(kind, it):
+                    continue
+                out.append(ext_id)
+            return out
+
+        def browse(
+            self,
+            kind: str,
+            query: Optional[Dict[str, Any]] = None,
+            viewer_token: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            if not (viewer_token or "").strip():
+                raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer token on this request")
+            q = dict(query or {})
+            limit = int(q.get("limit") or 200)
+            if limit <= 0:
+                limit = 200
+            parent_id = str(q.get("parentId") or "")
+            level = str(q.get("level") or "")
+            needle = str(q.get("query") or "").strip().lower()
+            facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
+            matched: List[Dict[str, Any]] = []
+            for it in self._p.kind_store.get(kind, []):
+                if not self._allowed(kind, it):
+                    continue
+                if parent_id and str(it.get("parentId") or "") != parent_id:
+                    continue
+                if level and str(it.get("level") or "") != level:
+                    continue
+                if needle:
+                    hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
+                    if needle not in hay:
+                        continue
+                if facets:
+                    item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
+                    ok = True
+                    for fk, want in facets.items():
+                        if not want:
+                            continue
+                        raw = item_fields.get(fk)
+                        if isinstance(raw, list):
+                            have = [str(v).lower() for v in raw]
+                        elif raw is not None:
+                            have = [str(raw).lower()]
+                        else:
+                            have = []
+                        if not any(str(w).lower() in have for w in want):
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                matched.append(it)
+            if q.get("desc"):
+                matched = list(reversed(matched))
+            cursor = str(q.get("cursor") or "")
+            start = 0
+            if cursor:
+                start = next((i + 1 for i, it in enumerate(matched) if it.get("id") == cursor), len(matched))
+            page = matched[start:start + limit]
+            out: Dict[str, Any] = {"items": page}
+            if page and start + limit < len(matched):
                 out["nextCursor"] = page[-1].get("id")
             return out
 
@@ -2937,9 +3090,40 @@ def stream_url(
     return ctx.stream_url(item_ref, part_index=part_index)
 
 
+def kinds_visible(
+    ctx: PluginContext,
+    kind: str,
+    ids: List[str],
+) -> List[str]:
+    """Evaluate the library's Rules and viewer access policy for a bounded
+    batch (at most 500) of external IDs in `kind` (#615)."""
+    return ctx.kinds_visible(kind, ids)
+
+
+def kinds_browse(
+    ctx: PluginContext,
+    kind: str,
+    query: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Browse or search `kind` with the library's Rules and viewer access
+    policy applied for the requesting frontend-adapter viewer (#615)."""
+    return ctx.kinds_browse(kind, query=query)
+
+
 class _KindsClient:
-    def __init__(self, call_json: Callable[..., Any]) -> None:
+    def __init__(
+        self,
+        call_json: Callable[..., Any],
+        default_viewer_token: Optional[Callable[[], str]] = None,
+    ) -> None:
         self._call = call_json
+        self._default_viewer_token = default_viewer_token
+
+    def _resolve_viewer_token(self, viewer_token: Optional[str]) -> str:
+        tok = viewer_token if viewer_token is not None else (
+            self._default_viewer_token() if self._default_viewer_token else ""
+        )
+        return str(tok or "").strip()
 
     def upsert(self, kind: str, items: List[Dict[str, Any]]) -> int:
         result = self._call("POST", f"/ether/plugin-host/kinds/{urllib.parse.quote(kind)}/upsert", {"items": items})
@@ -2951,6 +3135,42 @@ class _KindsClient:
     def items(self, kind: str, cursor: str = "", limit: int = 200) -> Dict[str, Any]:
         q = urllib.parse.urlencode({"cursor": cursor, "limit": limit})
         return self._call("GET", f"/ether/plugin-host/kinds/{urllib.parse.quote(kind)}/items?{q}") or {"items": []}
+
+    def visible(
+        self,
+        kind: str,
+        ids: List[str],
+        viewer_token: Optional[str] = None,
+    ) -> List[str]:
+        tok = self._resolve_viewer_token(viewer_token)
+        if not tok:
+            raise RuntimeError("kinds.visible: no authenticated frontend adapter viewer token on this request")
+        if len(ids) > MAX_KIND_VISIBLE_IDS:
+            raise ValueError(f"kinds.visible: batch larger than {MAX_KIND_VISIBLE_IDS} ids")
+        result = self._call(
+            "POST",
+            f"/ether/plugin-host/kinds/{urllib.parse.quote(kind, safe='')}/visible",
+            {"ids": list(ids)},
+            extra_headers={HEADER_VIEWER_TOKEN: tok},
+        )
+        return list((result or {}).get("ids") or [])
+
+    def browse(
+        self,
+        kind: str,
+        query: Optional[Dict[str, Any]] = None,
+        viewer_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        tok = self._resolve_viewer_token(viewer_token)
+        if not tok:
+            raise RuntimeError("kinds.browse: no authenticated frontend adapter viewer token on this request")
+        result = self._call(
+            "POST",
+            f"/ether/plugin-host/kinds/{urllib.parse.quote(kind, safe='')}/browse",
+            dict(query or {}),
+            extra_headers={HEADER_VIEWER_TOKEN: tok},
+        )
+        return result or {"items": []}
 
     def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Find owner sources. indexer_search accepts category (comma-separated

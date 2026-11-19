@@ -329,7 +329,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		defer cancel()
 		_, _ = mgr.CheckHealth(ctx, pluginID)
 	})
-	host := remote.NewHostHandler(remote.HostOptions{Host: remote.HostAdapter{HostFor: mgr.HostFor, SettingsWithSecrets: mgr.PluginSettings}, Auth: auth, Logger: log})
+	host := remote.NewHostHandler(remote.HostOptions{Host: remote.HostAdapter{HostFor: mgr.HostFor, SettingsWithSecrets: mgr.PluginSettings, ResolveAdapterViewerToken: mgr.ResolveAdapterViewerToken}, Auth: auth, Logger: log})
 	pairing := remote.NewPairing(a.db, grants, func(ctx context.Context) (int64, error) {
 		owner, err := a.users.Owner(ctx)
 		if err != nil {
@@ -474,6 +474,8 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		KindItems:      itemsSvc.KindItems,
 		KindItemsByID:  itemsSvc.KindItemsByID,
 		KindItemCount:  itemsSvc.PluginItemCount,
+		KindVisible:    a.adapterKindVisible(),
+		KindBrowse:     a.adapterKindBrowse(),
 		ResolveSources: kindResolver.ResolveSources,
 		CachePut:       cachePut,
 		CacheOpen:      cacheOpen,

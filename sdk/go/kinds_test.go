@@ -432,3 +432,139 @@ func TestRemoteBlobHostArchiveReadAndLimits(t *testing.T) {
 		t.Fatal("empty reads accepted")
 	}
 }
+
+func TestKindVisibleAndBrowseSDK(t *testing.T) {
+	ctx := context.Background()
+	host := etherplugin.NewMockHost()
+	if _, err := host.KindUpsert(ctx, "comic", []etherplugin.KindItem{
+		{ID: "a", Level: "series", Title: "Alpha"},
+		{ID: "b", Level: "series", Title: "Beta"},
+		{ID: "c", Level: "series", Title: "Gamma"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	host.KindHiddenIDs["comic"] = map[string]bool{"b": true}
+
+	// Missing viewer token must fail on both Context and MockHost.
+	noViewerCtx := &etherplugin.Context{Context: ctx, Ether: host}
+	if _, err := noViewerCtx.KindVisible("comic", []string{"a", "b"}); err == nil {
+		t.Fatal("KindVisible without viewer token succeeded")
+	}
+	if _, err := noViewerCtx.KindBrowse("comic", etherplugin.KindBrowseQuery{}); err == nil {
+		t.Fatal("KindBrowse without viewer token succeeded")
+	}
+
+	// Authenticated frontend adapter context succeeds and applies hidden rules.
+	adapterCtx := &etherplugin.Context{
+		Context: ctx,
+		Headers: map[string]string{etherplugin.HeaderViewerToken: "tok-1"},
+		Ether:   host,
+	}
+	gotIDs, err := adapterCtx.KindVisible("comic", []string{"c", "b", "missing", "a", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotIDs, []string{"c", "a"}) {
+		t.Fatalf("KindVisible = %v, want [c a]", gotIDs)
+	}
+	page, err := adapterCtx.KindBrowse("comic", etherplugin.KindBrowseQuery{Query: "a", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].ID != "a" || page.Items[1].ID != "c" {
+		t.Fatalf("KindBrowse = %+v", page)
+	}
+
+	// Batch larger than 500 is rejected client-side.
+	tooMany := make([]string, etherplugin.MaxKindVisibleIDs+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("id-%d", i)
+	}
+	if _, err := adapterCtx.KindVisible("comic", tooMany); err == nil {
+		t.Fatal("oversized KindVisible succeeded")
+	}
+
+	// FrontendAdapter dispatch attaches FrontendContext + viewer token onto r.Context().
+	p := etherplugin.New(etherplugin.Definition{
+		Manifest: etherplugin.Manifest{
+			ID:      "org.example.comics",
+			Name:    "Comics",
+			Version: "1.0.0",
+			Ether:   &etherplugin.EtherManifestBlock{Protocol: 1, Kind: "content"},
+		},
+		Host: host,
+	})
+	p.OnFrontend("opds", frontendFunc(func(w http.ResponseWriter, r *http.Request) {
+		pctx, ok := etherplugin.FrontendContext(r.Context())
+		if !ok {
+			http.Error(w, "no frontend context", http.StatusInternalServerError)
+			return
+		}
+		ids, err := pctx.KindVisible("comic", []string{"a", "b"})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(ids)
+	}))
+	rawResp := p.Dispatch(ctx, etherplugin.RawRequest{
+		Method:  http.MethodGet,
+		Path:    "/ether/v1/frontend/opds/feed",
+		Headers: map[string]string{etherplugin.HeaderViewerToken: "tok-live"},
+	})
+	if rawResp.Status != http.StatusOK || strings.TrimSpace(string(rawResp.BinaryBody)) != `["a"]` {
+		t.Fatalf("frontend dispatch: status=%d body=%q", rawResp.Status, string(rawResp.BinaryBody))
+	}
+
+	// RemoteHostClient sends X-Ether-Viewer-Token header and never viewerId in the JSON body.
+	var seenHeader string
+	var seenBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get(etherplugin.HeaderViewerToken)
+		seenBody = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ether/plugin-host/kinds/comic/visible":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ids": []string{"a"}})
+		case "/ether/plugin-host/kinds/comic/browse":
+			_ = json.NewEncoder(w).Encode(etherplugin.KindPage{Items: []etherplugin.KindItem{{ID: "a", Level: "series", Title: "Alpha"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	remoteClient := etherplugin.NewRemoteHostClient(etherplugin.RemoteHostOptions{
+		BaseURL:    srv.URL,
+		Credential: "cred-1",
+	})
+	if _, err := remoteClient.KindVisible(ctx, "comic", []string{"a"}); err == nil {
+		t.Fatal("remote KindVisible without token succeeded")
+	}
+	rCtx := etherplugin.WithViewerToken(ctx, "tok-remote")
+	rIDs, err := remoteClient.KindVisible(rCtx, "comic", []string{"a", "b"})
+	if err != nil || !reflect.DeepEqual(rIDs, []string{"a"}) {
+		t.Fatalf("remote KindVisible = %v, err = %v", rIDs, err)
+	}
+	if seenHeader != "tok-remote" {
+		t.Fatalf("remote viewer token header = %q, want tok-remote", seenHeader)
+	}
+	if _, hasViewerID := seenBody["viewerId"]; hasViewerID {
+		t.Fatalf("remote body must not include viewerId: %+v", seenBody)
+	}
+	rPage, err := remoteClient.KindBrowse(rCtx, "comic", etherplugin.KindBrowseQuery{Query: "alp", Desc: true, Limit: 5})
+	if err != nil || len(rPage.Items) != 1 || rPage.Items[0].ID != "a" {
+		t.Fatalf("remote KindBrowse = %+v, err = %v", rPage, err)
+	}
+	if seenHeader != "tok-remote" || seenBody["query"] != "alp" || seenBody["desc"] != true {
+		t.Fatalf("remote browse request mismatch: header=%q body=%+v", seenHeader, seenBody)
+	}
+	if _, hasViewerID := seenBody["viewerId"]; hasViewerID {
+		t.Fatalf("remote browse body must not include viewerId: %+v", seenBody)
+	}
+}
+
+type frontendFunc http.HandlerFunc
+
+func (f frontendFunc) Handler() http.Handler { return http.HandlerFunc(f) }

@@ -47,6 +47,10 @@ const (
 	// set it through Request.Headers; the constant keeps the spelling
 	// in one place.
 	HeaderPick = "X-Ether-Pick"
+	// HeaderViewerToken carries a host-minted, request-scoped token on
+	// frontend adapter calls so remote plugins can invoke viewer-scoped host
+	// services (kinds.visible, kinds.browse) without supplying viewer IDs.
+	HeaderViewerToken = "X-Ether-Viewer-Token"
 )
 
 // TunnelProtocol is the tunnel wire protocol version. It is sent as

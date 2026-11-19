@@ -149,3 +149,80 @@ func (s *Service) FilterVisibleRefs(ctx context.Context, lib core.Library, refs 
 	}
 	return visible, nil
 }
+
+// FilterVisibleIDs evaluates lib's visibility policy for externalIDs belonging
+// to (pluginID, kindKey) in bounded SQL chunks, returning the subset of stored
+// external IDs allowed by lib's LibraryPolicy in deduplicated input order.
+// Unknown or syntactically invalid IDs are omitted even when the policy is
+// passive so behavior stays identical whether or not Rules are configured.
+func (s *Service) FilterVisibleIDs(ctx context.Context, pluginID, kindKey string, lib core.Library, externalIDs []string) ([]string, error) {
+	if s == nil || s.db == nil || len(externalIDs) == 0 {
+		return []string{}, nil
+	}
+	policy, err := s.LibraryPolicy(ctx, lib)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		q     string
+		pArgs []any
+	)
+	if !policy.Passive() {
+		q, pArgs, err = s.policySQL(ctx, lib.ID, policy)
+		if err != nil {
+			return nil, err
+		}
+	}
+	uniq := make([]string, 0, len(externalIDs))
+	seen := make(map[string]bool, len(externalIDs))
+	for _, id := range externalIDs {
+		if core.ValidExternalID(id) && !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if len(uniq) == 0 {
+		return []string{}, nil
+	}
+	allowed := make(map[string]bool, len(uniq))
+	const chunkSize = 500
+	for start := 0; start < len(uniq); start += chunkSize {
+		chunk := uniq[start:min(start+chunkSize, len(uniq))]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, 0, 1+len(chunk)+len(pArgs))
+		args = append(args, int64(lib.ID))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args = append(args, string(core.NewItemRef(pluginID, kindKey, id)))
+		}
+		sqlQuery := `SELECT i.external_id FROM plugin_items i WHERE i.library_id = ? AND i.item_ref IN (` + strings.Join(placeholders, ",") + `)`
+		if !policy.Passive() {
+			sqlQuery += ` AND NOT (` + q + `)`
+			args = append(args, pArgs...)
+		}
+		rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var extID string
+			if err := rows.Scan(&extID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			allowed[extID] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	out := make([]string, 0, len(allowed))
+	for _, id := range uniq {
+		if allowed[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}

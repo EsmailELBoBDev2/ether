@@ -349,6 +349,102 @@ class ArchiveExtractSdkTest(unittest.TestCase):
         self.assertEqual(seen[0], ("GET", "/ether/plugin-host/limits", None))
         self.assertEqual(seen[1][1], "/ether/plugin-host/data/archive.read")
 
+    def test_kinds_visible_and_browse(self):
+        from ether_plugin import (
+            HEADER_VIEWER_TOKEN,
+            MAX_KIND_VISIBLE_IDS,
+            RemoteHostClient,
+            kinds_browse,
+            kinds_visible,
+        )
+
+        mock = create_mock_host_client()
+        mock.kinds.upsert(
+            "comic",
+            [
+                {"id": "a", "level": "series", "title": "Alpha"},
+                {"id": "b", "level": "series", "title": "Beta"},
+                {"id": "c", "level": "series", "title": "Gamma"},
+            ],
+        )
+        mock.kind_hidden_ids["comic"] = {"b"}
+
+        with self.assertRaises(RuntimeError):
+            mock.kinds.visible("comic", ["a", "b"])
+        with self.assertRaises(RuntimeError):
+            mock.kinds.browse("comic", {})
+        with self.assertRaises(ValueError):
+            mock.kinds.visible("comic", [f"id-{i}" for i in range(MAX_KIND_VISIBLE_IDS + 1)], viewer_token="tok-1")
+
+        self.assertEqual(mock.kinds.visible("comic", ["c", "b", "missing", "a", "c"], viewer_token="tok-1"), ["c", "a"])
+        page = mock.kinds.browse("comic", {"query": "a", "limit": 10}, viewer_token="tok-1")
+        self.assertEqual([it["id"] for it in page["items"]], ["a", "c"])
+
+        # FrontendAdapter 5-arg handle receives ctx with X-Ether-Viewer-Token.
+        app = plugin(
+            manifest={
+                "id": "org.example.comics",
+                "name": "Comics",
+                "version": "1.0.0",
+                "ether": {"protocol": 1, "kind": "content"},
+            },
+            routes={},
+            host=mock,
+        )
+
+        class Adapter:
+            def handle(self, method, path, headers, body, ctx):
+                ids = kinds_visible(ctx, "comic", ["a", "b", "c"])
+                bpage = kinds_browse(ctx, "comic", {"desc": True, "limit": 10})
+                return (
+                    200,
+                    {"Content-Type": "application/json"},
+                    json.dumps({"ids": ids, "browse": [it["id"] for it in bpage["items"]]}),
+                )
+
+        app.on_frontend("opds", Adapter())
+        res = app.dispatch(
+            {
+                "method": "GET",
+                "path": "/ether/v1/frontend/opds/feed",
+                "headers": {HEADER_VIEWER_TOKEN: "tok-live"},
+            }
+        )
+        self.assertEqual(res["status"], 200)
+        self.assertEqual(json.loads(res["body"]), {"ids": ["a", "c"], "browse": ["c", "a"]})
+
+        no_tok = app.dispatch(
+            {
+                "method": "GET",
+                "path": "/ether/v1/frontend/opds/feed",
+                "headers": {"X-Ether-Viewer": "42"},
+            }
+        )
+        self.assertEqual(no_tok["status"], 500)
+
+        # RemoteHostClient sends X-Ether-Viewer-Token header and never viewerId in body.
+        seen = []
+        client = RemoteHostClient(base_url="http://ether.local", credential="cred")
+
+        def fake_call(method, path, body=None, allow_404=False, extra_headers=None):
+            seen.append((method, path, body, extra_headers))
+            if path.endswith("/visible"):
+                return {"ids": ["a"]}
+            return {"items": [{"id": "a", "level": "series", "title": "Alpha"}]}
+
+        client.kinds._call = fake_call  # type: ignore[method-assign]
+        with self.assertRaises(RuntimeError):
+            client.kinds.visible("comic", ["a"])
+        with self.assertRaises(RuntimeError):
+            client.kinds.browse("comic", {})
+        self.assertEqual(client.kinds.visible("comic", ["a", "b"], viewer_token="tok-r"), ["a"])
+        r_page = client.kinds.browse("comic", {"query": "alp", "desc": True}, viewer_token="tok-r")
+        self.assertEqual(len(r_page["items"]), 1)
+        self.assertEqual(seen[0], ("POST", "/ether/plugin-host/kinds/comic/visible", {"ids": ["a", "b"]}, {HEADER_VIEWER_TOKEN: "tok-r"}))
+        self.assertNotIn("viewerId", seen[0][2])
+        self.assertEqual(seen[1], ("POST", "/ether/plugin-host/kinds/comic/browse", {"query": "alp", "desc": True}, {HEADER_VIEWER_TOKEN: "tok-r"}))
+        self.assertNotIn("viewerId", seen[1][2])
+
 
 if __name__ == "__main__":
     unittest.main()

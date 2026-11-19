@@ -41,6 +41,8 @@ export const MaxBadgeEntriesPerCall = 500;
 export const MaxBadgeLabelsPerTitle = 3;
 export const MaxBadgeLabelLen = 16;
 export const PosterBadgeQuotaTitles = 200_000;
+export const MAX_KIND_VISIBLE_IDS = 500;
+export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -379,11 +381,15 @@ export interface EtherHost {
   notify: {
     owner(text: string): MaybePromise<void>;
   };
-  /** Content-kind host services (remote + mock clients provide them). */
+  /** Content-kind host services (hosted, remote, and mock clients provide them). */
   kinds?: {
     upsert(kind: string, items: import("./types.ts").KindItem[]): MaybePromise<number>;
     delete(kind: string, externalIds: string[]): MaybePromise<void>;
     items(kind: string, cursor?: string, limit?: number): MaybePromise<import("./types.ts").KindPage>;
+    /** Returns the subset of external IDs (max 500) allowed by the library's Rules for the requesting adapter viewer (#615). */
+    visible(kind: string, ids: string[], viewerToken?: string): MaybePromise<string[]>;
+    /** Browses or searches a kind library with Rules and viewer policy applied for the requesting adapter viewer (#615). */
+    browse(kind: string, query?: import("./types.ts").KindBrowseQuery, viewerToken?: string): MaybePromise<import("./types.ts").KindPage>;
     resolveSources(q: import("./types.ts").SourceQuery): MaybePromise<import("./types.ts").SourceCandidate[]>;
   };
   cache?: {
@@ -466,6 +472,13 @@ interface GlobalEtherBindings {
     };
     notify: {
       owner: (text: string) => void;
+    };
+    kinds?: {
+      upsert: (kind: string, items: import("./types.ts").KindItem[]) => { accepted: number } | number;
+      delete: (kind: string, externalIds: string[]) => void;
+      items: (kind: string, cursor?: string, limit?: number) => import("./types.ts").KindPage;
+      visible: (kind: string, ids: string[]) => string[];
+      browse: (kind: string, query?: import("./types.ts").KindBrowseQuery) => import("./types.ts").KindPage;
     };
     frontend: {
       streamURL: (itemRef: string, partIndex?: number) => { url: string };
@@ -679,6 +692,48 @@ export function createHostedClient(): EtherHost {
         callHost("notify.owner", [text]);
       },
     },
+    kinds: {
+      upsert(kind, items) {
+        if (g.ether?.kinds?.upsert) {
+          const r = g.ether.kinds.upsert(kind, items);
+          return typeof r === "number" ? r : r?.accepted ?? 0;
+        }
+        const r = callHost<{ accepted: number }>("kinds.upsert", [kind, items]);
+        return r?.accepted ?? 0;
+      },
+      delete(kind, externalIds) {
+        if (g.ether?.kinds?.delete) {
+          g.ether.kinds.delete(kind, externalIds);
+          return;
+        }
+        callHost("kinds.delete", [kind, externalIds]);
+      },
+      items(kind, cursor = "", limit = 200) {
+        if (g.ether?.kinds?.items) {
+          return g.ether.kinds.items(kind, cursor, limit) ?? { items: [] };
+        }
+        return callHost<import("./types.ts").KindPage>("kinds.items", [kind, cursor, limit]) ?? { items: [] };
+      },
+      visible(kind, ids, _viewerToken) {
+        if (ids.length > MAX_KIND_VISIBLE_IDS) {
+          throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+        }
+        if (g.ether?.kinds?.visible) {
+          return g.ether.kinds.visible(kind, ids) ?? [];
+        }
+        return callHost<string[]>("kinds.visible", [kind, ids]) ?? [];
+      },
+      browse(kind, query = {}, _viewerToken) {
+        if (g.ether?.kinds?.browse) {
+          return g.ether.kinds.browse(kind, query) ?? { items: [] };
+        }
+        return callHost<import("./types.ts").KindPage>("kinds.browse", [kind, query]) ?? { items: [] };
+      },
+      resolveSources(q) {
+        const r = callHost<{ candidates: import("./types.ts").SourceCandidate[] }>("sources.resolve", [q]);
+        return r?.candidates ?? [];
+      },
+    },
     frontend: {
       streamUrl(viewerId: number, itemRef: string, partIndex?: number): string {
         // The hosted binding is viewer-scoped by Ether already; the viewerId
@@ -730,6 +785,8 @@ export interface RemoteHostOptions {
   baseUrl?: string;
   /** Plugin credential issued during pairing (`X-Ether-Plugin-Credential`). */
   credential?: string;
+  /** Optional host-minted frontend adapter viewer token (`X-Ether-Viewer-Token`, #615). */
+  viewerToken?: string;
   /** Optional custom fetch implementation for testing. */
   fetchImpl?: typeof fetch;
 }
@@ -754,10 +811,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     path: string,
     body?: unknown,
     allow404 = false,
+    extraHeaders?: Record<string, string>,
   ): Promise<T | null> => {
     const headers: Record<string, string> = {
       "X-Ether-Plugin-Credential": credential,
       Accept: "application/json",
+      ...(extraHeaders ?? {}),
     };
     let payload: string | undefined;
     if (body !== undefined) {
@@ -956,6 +1015,37 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
       },
       async items(kind, cursor = "", limit = 200) {
         return (await callJson("GET", `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/items?cursor=${encodeURIComponent(cursor)}&limit=${limit}`)) ?? { items: [] };
+      },
+      async visible(kind, ids, viewerToken) {
+        const tok = (viewerToken ?? opts.viewerToken ?? "").trim();
+        if (!tok) {
+          throw new Error("kinds.visible: no authenticated frontend adapter viewer token on this request");
+        }
+        if (ids.length > MAX_KIND_VISIBLE_IDS) {
+          throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+        }
+        const r = await callJson<{ ids: string[] }>(
+          "POST",
+          `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/visible`,
+          { ids },
+          false,
+          { [HEADER_VIEWER_TOKEN]: tok },
+        );
+        return r?.ids ?? [];
+      },
+      async browse(kind, query = {}, viewerToken) {
+        const tok = (viewerToken ?? opts.viewerToken ?? "").trim();
+        if (!tok) {
+          throw new Error("kinds.browse: no authenticated frontend adapter viewer token on this request");
+        }
+        const r = await callJson<import("./types.ts").KindPage>(
+          "POST",
+          `/ether/plugin-host/kinds/${encodeURIComponent(kind)}/browse`,
+          query,
+          false,
+          { [HEADER_VIEWER_TOKEN]: tok },
+        );
+        return r ?? { items: [] };
       },
       async resolveSources(q) {
         const r = await callJson<{ candidates: unknown[] }>("POST", "/ether/plugin-host/sources/resolve", q);

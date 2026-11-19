@@ -2,6 +2,7 @@ package etherplugin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,9 +83,13 @@ type KindBrowseRequest struct {
 	Cursor   string              `json:"cursor,omitempty"`
 	Limit    int                 `json:"limit,omitempty"`
 	Sort     string              `json:"sort,omitempty"`
+	Desc     bool                `json:"desc,omitempty"`
 	Facets   map[string][]string `json:"facets,omitempty"`
 	Query    string              `json:"query,omitempty"`
 }
+
+// KindBrowseQuery is the query passed to kinds.browse from a frontend adapter (#615).
+type KindBrowseQuery = KindBrowseRequest
 
 // KindExpandRequest asks a plugin to expand one declared facet bucket or
 // plugin person slice in the background via POST /ether/v1/kinds/{kind}/expand.
@@ -414,6 +419,54 @@ func (c *Context) StreamPartURL(itemRef string, partIndex int) (string, error) {
 	return u + sep + "part=" + strconv.Itoa(partIndex), nil
 }
 
+func (c *Context) viewerToken() string {
+	if tok := strings.TrimSpace(headerValue(c.Headers, HeaderViewerToken)); tok != "" {
+		return tok
+	}
+	if tok, ok := ViewerTokenFromContext(c.Context); ok {
+		return tok
+	}
+	return ""
+}
+
+// KindVisible evaluates the library's Rules and viewer access policy for a
+// bounded batch (at most MaxKindVisibleIDs) of external IDs in kindKey (#615).
+// Only frontend adapter requests carrying Ether's authenticated viewer token
+// may call it.
+func (c *Context) KindVisible(kindKey string, ids []string) ([]string, error) {
+	if c.Ether == nil {
+		return nil, errors.New("kinds.visible: no host service available")
+	}
+	kh, ok := c.Ether.(KindPolicyHost)
+	if !ok {
+		return nil, errors.New("kinds.visible: host client does not implement KindPolicyHost")
+	}
+	tok := c.viewerToken()
+	if tok == "" {
+		return nil, errors.New("kinds.visible: no authenticated frontend adapter viewer on this request")
+	}
+	return kh.KindVisible(WithViewerToken(c.Context, tok), kindKey, ids)
+}
+
+// KindBrowse browses or searches kindKey with the library's Rules and viewer
+// access policy applied for the requesting frontend-adapter viewer (#615).
+// Only frontend adapter requests carrying Ether's authenticated viewer token
+// may call it.
+func (c *Context) KindBrowse(kindKey string, query KindBrowseQuery) (KindPage, error) {
+	if c.Ether == nil {
+		return KindPage{}, errors.New("kinds.browse: no host service available")
+	}
+	kh, ok := c.Ether.(KindPolicyHost)
+	if !ok {
+		return KindPage{}, errors.New("kinds.browse: host client does not implement KindPolicyHost")
+	}
+	tok := c.viewerToken()
+	if tok == "" {
+		return KindPage{}, errors.New("kinds.browse: no authenticated frontend adapter viewer on this request")
+	}
+	return kh.KindBrowse(WithViewerToken(c.Context, tok), kindKey, query)
+}
+
 // dispatchKinds handles the /ether/v1/kinds, /ether/v1/setup and
 // /ether/v1/frontend route families. It reports false when the path is
 // none of them so Dispatch can fall through to its 404.
@@ -617,6 +670,19 @@ func kindPageResponse(page KindPage, err error, limit int) RawResponse {
 	return okJSON(page, http.StatusOK)
 }
 
+type frontendContextKey struct{}
+
+// FrontendContext returns the Ether plugin Context attached to a
+// FrontendAdapter http.Request during dispatch, so ServeHTTP handlers can
+// call pctx.KindVisible, pctx.KindBrowse, pctx.StreamURL, etc. directly (#615).
+func FrontendContext(ctx context.Context) (*Context, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	pctx, ok := ctx.Value(frontendContextKey{}).(*Context)
+	return pctx, ok && pctx != nil
+}
+
 const maxFrontendBody = 10 << 20
 
 func (p *Plugin) dispatchFrontend(pctx *Context, method, key, subPath string, req RawRequest) RawResponse {
@@ -639,7 +705,13 @@ func (p *Plugin) dispatchFrontend(pctx *Context, method, key, subPath string, re
 	if len(query) > 0 {
 		target += "?" + encodeQuery(query)
 	}
-	httpReq := httptest.NewRequestWithContext(pctx.Context, method, target, bytes.NewReader(req.Body))
+	reqCtx := pctx.Context
+	if tok := headerValue(req.Headers, HeaderViewerToken); tok != "" {
+		reqCtx = WithViewerToken(reqCtx, tok)
+		pctx.Context = reqCtx
+	}
+	reqCtx = context.WithValue(reqCtx, frontendContextKey{}, pctx)
+	httpReq := httptest.NewRequestWithContext(reqCtx, method, target, bytes.NewReader(req.Body))
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 	}

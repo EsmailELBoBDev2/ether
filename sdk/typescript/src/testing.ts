@@ -26,6 +26,7 @@ import type {
 } from "./types.ts";
 import {
   encodeText,
+  MAX_KIND_VISIBLE_IDS,
   MaxBadgeEntriesPerCall,
   MaxBadgeLabelLen,
   MaxBadgeLabelsPerTitle,
@@ -140,6 +141,10 @@ export interface MockHostState {
   watchState: Map<string, boolean>;
   collections: Record<string, unknown>[];
   kinds: Map<string, import("./types.ts").KindItem[]>;
+  /** External IDs hidden by mock library Rules, keyed by kind (#615). */
+  kindHiddenIds: Map<string, Set<string>>;
+  /** Optional custom predicate simulating library Rules + viewer policy (#615). */
+  kindPolicyFilter?: (kind: string, item: import("./types.ts").KindItem) => boolean;
   sources: import("./types.ts").SourceCandidate[];
   blobs: Map<string, Uint8Array>;
   limits: import("./types.ts").RuntimeLimits;
@@ -168,6 +173,8 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
     watchState: initial?.watchState ?? new Map<string, boolean>(),
     collections: initial?.collections ?? [],
     kinds: initial?.kinds ?? new Map(),
+    kindHiddenIds: initial?.kindHiddenIds ?? new Map(),
+    kindPolicyFilter: initial?.kindPolicyFilter,
     sources: initial?.sources ?? [],
     blobs: initial?.blobs ?? new Map(),
     limits: initial?.limits ?? {
@@ -346,6 +353,68 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         const pageItems = all.slice(start, start + limit);
         const page: import("./types.ts").KindPage = { items: pageItems };
         if (pageItems.length && start + limit < all.length) page.nextCursor = pageItems[pageItems.length - 1]?.id;
+        return page;
+      },
+      visible: (kind, ids, viewerToken) => {
+        if (!viewerToken || !viewerToken.trim()) {
+          throw new Error("kinds.visible: no authenticated frontend adapter viewer token on this request");
+        }
+        if (ids.length > MAX_KIND_VISIBLE_IDS) {
+          throw new Error(`kinds.visible: batch larger than ${MAX_KIND_VISIBLE_IDS} ids`);
+        }
+        const byId = new Map<string, import("./types.ts").KindItem>();
+        for (const it of state.kinds.get(kind) ?? []) byId.set(it.id, it);
+        const hidden = state.kindHiddenIds.get(kind);
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const id of ids) {
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          const it = byId.get(id);
+          if (!it) continue;
+          if (hidden?.has(id)) continue;
+          if (state.kindPolicyFilter && !state.kindPolicyFilter(kind, it)) continue;
+          out.push(id);
+        }
+        return out;
+      },
+      browse: (kind, query = {}, viewerToken) => {
+        if (!viewerToken || !viewerToken.trim()) {
+          throw new Error("kinds.browse: no authenticated frontend adapter viewer token on this request");
+        }
+        const hidden = state.kindHiddenIds.get(kind);
+        const needle = (query.query ?? "").trim().toLowerCase();
+        const limit = query.limit && query.limit > 0 ? query.limit : 200;
+        let matched = (state.kinds.get(kind) ?? []).filter((it) => {
+          if (hidden?.has(it.id)) return false;
+          if (state.kindPolicyFilter && !state.kindPolicyFilter(kind, it)) return false;
+          if (query.parentId && it.parentId !== query.parentId) return false;
+          if (query.level && it.level !== query.level) return false;
+          if (needle) {
+            const hay = `${it.title ?? ""} ${it.summary ?? ""}`.toLowerCase();
+            if (!hay.includes(needle)) return false;
+          }
+          if (query.facets) {
+            for (const [k, want] of Object.entries(query.facets)) {
+              if (!want?.length) continue;
+              const raw = it.fields?.[k];
+              const have = Array.isArray(raw)
+                ? raw.map((v) => String(v).toLowerCase())
+                : raw != null
+                  ? [String(raw).toLowerCase()]
+                  : [];
+              if (!want.some((w) => have.includes(w.toLowerCase()))) return false;
+            }
+          }
+          return true;
+        });
+        if (query.desc) matched = [...matched].reverse();
+        const start = query.cursor ? matched.findIndex((it) => it.id === query.cursor) + 1 : 0;
+        const pageItems = matched.slice(start, start + limit);
+        const page: import("./types.ts").KindPage = { items: pageItems };
+        if (pageItems.length && start + limit < matched.length) {
+          page.nextCursor = pageItems[pageItems.length - 1]?.id;
+        }
         return page;
       },
       resolveSources: () => [...state.sources],

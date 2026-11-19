@@ -135,3 +135,76 @@ func TestDeclaredFacetRules(t *testing.T) {
 		t.Fatal("undeclared field accepted")
 	}
 }
+
+func TestFilterVisibleIDs(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTestService(t, Options{})
+	decl := sampleBookDecl()
+	if _, err := s.UpsertKind(ctx, "community.books", 10, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertItems(ctx, "community.books", "book", []core.KindItem{
+		{ID: "a", Level: "series", Title: "Alpha", Rating: 9.0, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["fantasy"]`)}},
+		{ID: "b", Level: "series", Title: "Beta", Rating: 6.0, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["horror"]`)}},
+		{ID: "c", Level: "series", Title: "Gamma", Rating: 8.5, Fields: map[string]json.RawMessage{"tags": json.RawMessage(`["fantasy"]`)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Passive library: returns existing items in caller order, deduplicated, omitting unknowns.
+	passiveLib := core.Library{ID: 10, VisibilityDefault: "show"}
+	got, err := s.FilterVisibleIDs(ctx, "community.books", "book", passiveLib, []string{"c", "missing", "a", "c", "", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"c", "a", "b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("passive FilterVisibleIDs = %v, want %v", got, want)
+	}
+
+	// Hide rule drops matching items (horror).
+	hideLib := core.Library{
+		ID:                10,
+		VisibilityDefault: "show",
+		Rules: []core.LibraryExclusion{{
+			Name:      "Hide horror",
+			Action:    "hide",
+			MediaType: "mixed",
+			Match:     "all",
+			Rules:     []core.CollectionRule{{Field: "genre", Op: "in", Value: json.RawMessage(`["horror"]`)}},
+		}},
+	}
+	got, err = s.FilterVisibleIDs(ctx, "community.books", "book", hideLib, []string{"b", "c", "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "c" || got[1] != "a" {
+		t.Fatalf("hide FilterVisibleIDs = %v, want [c a]", got)
+	}
+
+	// Default hide + explicit show rule only surfaces items matching the allow rule.
+	defaultHideLib := core.Library{
+		ID:                10,
+		VisibilityDefault: "hide",
+		Rules: []core.LibraryExclusion{{
+			Name:      "Show 9+",
+			Action:    "show",
+			MediaType: "mixed",
+			Match:     "all",
+			Rules:     []core.CollectionRule{{Field: "rating", Op: "gte", Value: json.RawMessage(`9`)}},
+		}},
+	}
+	got, err = s.FilterVisibleIDs(ctx, "community.books", "book", defaultHideLib, []string{"a", "b", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "a" {
+		t.Fatalf("default-hide FilterVisibleIDs = %v, want [a]", got)
+	}
+
+	// Empty input returns empty non-nil slice.
+	got, err = s.FilterVisibleIDs(ctx, "community.books", "book", hideLib, nil)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("empty FilterVisibleIDs = %#v, err = %v", got, err)
+	}
+}

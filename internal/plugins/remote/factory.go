@@ -262,6 +262,10 @@ type HostAdapter struct {
 	// secret.get, so this is how it recovers configuration after a
 	// restart or reconnect. Without it only non-secret settings are served.
 	SettingsWithSecrets func(ctx context.Context, pluginID string) (map[string]any, error)
+	// ResolveAdapterViewerToken verifies an X-Ether-Viewer-Token minted for an
+	// active frontend adapter call for pluginID and returns its authenticated
+	// viewer ID (Manager.ResolveAdapterViewerToken).
+	ResolveAdapterViewerToken func(pluginID, token string) (int64, bool)
 }
 
 func (a HostAdapter) host(pluginID string) (plugins.Host, error) {
@@ -441,6 +445,43 @@ func (a HostAdapter) KindItems(ctx context.Context, pluginID, kindKey, cursor st
 		return core.KindPage{}, err
 	}
 	page, err := h.KindItems(ctx, kindKey, cursor, limit)
+	return page, mapHostErr(err)
+}
+
+func (a HostAdapter) resolveAdapterViewer(pluginID, viewerToken string) (int64, error) {
+	if a.ResolveAdapterViewerToken == nil {
+		return 0, ErrPermissionDenied
+	}
+	viewerID, ok := a.ResolveAdapterViewerToken(pluginID, viewerToken)
+	if !ok || viewerID <= 0 {
+		return 0, ErrPermissionDenied
+	}
+	return viewerID, nil
+}
+
+func (a HostAdapter) KindVisible(ctx context.Context, pluginID, viewerToken, kindKey string, ids []string) ([]string, error) {
+	viewerID, err := a.resolveAdapterViewer(pluginID, viewerToken)
+	if err != nil {
+		return nil, err
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return nil, err
+	}
+	visible, err := h.KindVisible(plugins.WithViewer(ctx, viewerID), kindKey, ids)
+	return visible, mapHostErr(err)
+}
+
+func (a HostAdapter) KindBrowse(ctx context.Context, pluginID, viewerToken, kindKey string, q core.KindBrowseRequest) (core.KindPage, error) {
+	viewerID, err := a.resolveAdapterViewer(pluginID, viewerToken)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	h, err := a.host(pluginID)
+	if err != nil {
+		return core.KindPage{}, err
+	}
+	page, err := h.KindBrowse(plugins.WithViewer(ctx, viewerID), kindKey, q)
 	return page, mapHostErr(err)
 }
 

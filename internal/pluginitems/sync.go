@@ -141,6 +141,8 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		WHERE plugin_id = ? AND kind_key = ?`,
 		nextCursor, gen, nowEnd, int64(totalAfter), pluginID, kindKey,
 	)
+	firstSync := state.LastOK.IsZero() || storedCount == 0
+	s.noteLibraryItems(rec.LibraryID, int64(totalAfter), firstSync)
 	return res, nil
 }
 
@@ -175,7 +177,7 @@ func (s *Service) syncInitialWalk(ctx context.Context, caller Caller, rec KindRe
 	if len(walked) > 0 {
 		for start := 0; start < len(walked); start += MaxUpsertBatch {
 			end := min(start+MaxUpsertBatch, len(walked))
-			n, err := s.UpsertItems(ctx, rec.PluginID, rec.KindKey, walked[start:end])
+			n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, walked[start:end])
 			if err != nil {
 				return res, err
 			}
@@ -230,7 +232,7 @@ func (s *Service) syncViaChanges(ctx context.Context, caller Caller, rec KindRec
 
 	for start := 0; start < len(allUpserts); start += MaxUpsertBatch {
 		end := min(start+MaxUpsertBatch, len(allUpserts))
-		n, err := s.UpsertItems(ctx, rec.PluginID, rec.KindKey, allUpserts[start:end])
+		n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, allUpserts[start:end])
 		if err != nil {
 			return res, false, err
 		}
@@ -308,7 +310,7 @@ func (s *Service) syncRewalkDiff(ctx context.Context, caller Caller, rec KindRec
 
 	for start := 0; start < len(toUpsert); start += MaxUpsertBatch {
 		end := min(start+MaxUpsertBatch, len(toUpsert))
-		n, err := s.UpsertItems(ctx, rec.PluginID, rec.KindKey, toUpsert[start:end])
+		n, err := s.upsertItemsForSync(ctx, rec.PluginID, rec.KindKey, toUpsert[start:end])
 		if err != nil {
 			return res, err
 		}
@@ -772,7 +774,7 @@ func (s *Service) StopPluginSync(pluginID string) {
 	}
 }
 
-// Close stops all background sync workers.
+// Close stops all background sync workers and planner statistics refreshes.
 func (s *Service) Close() {
 	if s == nil {
 		return
@@ -790,6 +792,7 @@ func (s *Service) Close() {
 			<-w.done
 		}
 	}
+	s.stats.close()
 }
 
 func workerKey(pluginID, kindKey string) string {

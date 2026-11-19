@@ -43,8 +43,8 @@ func titleDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
 	if t.Type == "movie" || t.Type == "episode" {
 		out["play_content_id"] = id
 	}
-	// Captured silo-apple and silo-android home cards carry progress only in
-	// user_state. Position and duration belong on the item user_data rollup.
+	// Progress is not part of a title: in-progress home cards add it
+	// (sectionCards), and item pages carry it on the user_data rollup.
 	if t.ShowKey != 0 {
 		out["series_id"] = ids.RatingKeyGUID(t.ShowKey)
 		out["series_title"] = t.ShowTitle

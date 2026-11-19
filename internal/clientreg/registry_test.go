@@ -72,6 +72,8 @@ func TestPolicyMatchesHistoricalFamilies(t *testing.T) {
 		{"htpc", Identity{Product: "HTPC"}, "HTPC", genericNote, []int{5, 7, 8}, image},
 		{"kodi", Identity{Product: "Kodi"}, "HTPC", genericNote, []int{5, 7, 8}, image},
 		{"infuse", Identity{Product: "Infuse"}, "HTPC", genericNote, []int{5, 7, 8}, image},
+		{"plezy", Identity{Product: "Plezy"}, "HTPC", genericNote, []int{5, 7, 8}, image},
+		{"vlc", Identity{Product: "VLC"}, "HTPC", genericNote, []int{5, 7, 8}, image},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +112,7 @@ func TestPlaybackMatchesHistoricalProducts(t *testing.T) {
 		{"Plezy", "Android", "Pixel 8", "", true, false, false, 1080, true},
 		{"Plezy", "Android", "Android", "", true, false, false, 1080, true},
 		{"Plezy", "Android", "SHIELD Android TV", "", true, true, false, 2160, true},
+		{"VLC", "Linux", "standalone", "", true, true, false, 2160, true},
 		{"Plex for Android (TV)", "Android", "SHIELD Android TV", "", true, true, false, 2160, true},
 		{"Plex for Android (Mobile)", "Android", "Pixel 8", "", true, false, false, 1080, true},
 		{"Plex for Android", "Android", "AFTKA", "AFTKA", true, true, false, 2160, true},
@@ -290,5 +293,30 @@ func TestStremioNativePlayers(t *testing.T) {
 	web := Identity{Product: "Stremio"}
 	if got := Playback(web, nil); got.ID != "generic" || HasQuirk(web, "native-player-dynamic-range") {
 		t.Errorf("Stremio Web must stay generic: %+v", got)
+	}
+}
+
+func TestEveryRegistryProductMatchHasAppsRow(t *testing.T) {
+	apps := Apps()
+	rules := ProductRules()
+	if len(rules) == 0 {
+		t.Fatal("expected product rules in registry")
+	}
+	for _, rule := range rules {
+		matched := false
+		for _, app := range apps {
+			for _, product := range app.AllProducts() {
+				if rule.MatchesProduct(product) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("registry product match %+v has no row in Apps()", rule)
+		}
 	}
 }

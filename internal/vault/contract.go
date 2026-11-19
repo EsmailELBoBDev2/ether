@@ -252,14 +252,15 @@ type Options struct {
 	Sealer   Sealer
 	NodeID   string // this node (holders); "" on a standalone server
 	Shared   bool   // Dir is on the shared NAS (one copy for the cluster)
-	CapBytes int64  // payload cap; 0 = default (see DefaultCapBytes)
+	CapBytes int64  // payload cap; 0 = no limit (config Cache.LibraryBudgetBytes)
 	Logger   *slog.Logger
 	Now      func() time.Time
 }
 
-// DefaultCapBytes is the payload cap when the owner sets none: 20 GiB,
-// far beyond years of a household's releases at ~30 B/article.
-const DefaultCapBytes = 20 << 30
+// Capper changes the payload cap at run time (0 = no limit).
+type Capper interface {
+	SetCapBytes(n int64)
+}
 
 // ErrNotImplemented is returned by placeholders during the build.
 var ErrNotImplemented = errors.New("vault: not implemented yet")

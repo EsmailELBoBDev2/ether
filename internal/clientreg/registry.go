@@ -46,6 +46,57 @@ type Result struct {
 	DolbyVisionOff bool
 }
 
+// App describes a client application in the registry catalogue.
+// Capabilities are evaluated through Playback and Policy on Identity unless
+// the entry lists conform-captured codecs that do not come from a preset.
+type App struct {
+	Protocol      string   `json:"protocol"`
+	Name          string   `json:"name"`
+	Product       string   `json:"product,omitempty"`
+	Products      []string `json:"products,omitempty"`
+	Identity      Identity `json:"identity,omitempty"`
+	Devices       []string `json:"devices"`
+	VideoCodecs   []string `json:"videoCodecs,omitempty"`
+	Subtitles     []string `json:"subtitles,omitempty"`
+	DirectPlay    string   `json:"directPlay"`
+	Note          string   `json:"note,omitempty"`
+	Certification string   `json:"certification"`
+}
+
+// AllProducts returns every product string associated with this app row.
+func (a App) AllProducts() []string {
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if !slices.ContainsFunc(out, func(existing string) bool { return strings.EqualFold(existing, s) }) {
+			out = append(out, s)
+		}
+	}
+	add(a.Product)
+	add(a.Name)
+	add(a.Identity.Product)
+	for _, p := range a.Products {
+		add(p)
+	}
+	return out
+}
+
+// Apps returns the registry's app catalogue in display order.
+func Apps() []App {
+	out := make([]App, len(loaded.Apps))
+	for i, item := range loaded.Apps {
+		item.Products = slices.Clone(item.Products)
+		item.Devices = slices.Clone(item.Devices)
+		item.VideoCodecs = slices.Clone(item.VideoCodecs)
+		item.Subtitles = slices.Clone(item.Subtitles)
+		out[i] = item
+	}
+	return out
+}
+
 // Device describes a representative catalogue identity, not a capability table.
 // Evaluate it through Playback and Policy just like a runtime client. Actual
 // clients can still declare capabilities or match more specific model rules.
@@ -58,6 +109,7 @@ type Device struct {
 func Devices() []Device { return slices.Clone(loaded.Devices) }
 
 type document struct {
+	Apps        []App             `json:"apps"`
 	Devices     []Device          `json:"devices"`
 	Version     int               `json:"version"`
 	Presets     map[string]preset `json:"presets"`
@@ -106,6 +158,40 @@ type Match struct {
 	Field string  `json:"field,omitempty"`
 	Op    string  `json:"op,omitempty"`
 	Value string  `json:"value,omitempty"`
+}
+
+// MatchesProduct reports whether m matches a client with the given product name.
+func (m Match) MatchesProduct(product string) bool {
+	return m.ok(Identity{Product: product})
+}
+
+// ProductRules returns all positive product-field match leaves across registry definitions.
+func ProductRules() []Match {
+	var out []Match
+	var walk func(m Match)
+	walk = func(m Match) {
+		if strings.EqualFold(m.Field, "product") {
+			op := strings.ToLower(m.Op)
+			if !strings.HasPrefix(op, "not") {
+				exists := slices.ContainsFunc(out, func(prev Match) bool {
+					return strings.EqualFold(prev.Op, m.Op) && strings.EqualFold(prev.Value, m.Value)
+				})
+				if !exists {
+					out = append(out, Match{Field: "product", Op: m.Op, Value: m.Value})
+				}
+			}
+		}
+		for _, child := range m.All {
+			walk(child)
+		}
+		for _, child := range m.Any {
+			walk(child)
+		}
+	}
+	for i := range loaded.Definitions {
+		walk(loaded.Definitions[i].Match)
+	}
+	return out
 }
 
 var loaded = mustLoad()

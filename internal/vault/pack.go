@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/store"
@@ -19,10 +20,11 @@ import (
 
 type library struct {
 	Options
-	mu      sync.Mutex // writer name and transaction ordering on standalone SQLite
-	writer  string
-	cacheMu sync.Mutex
-	cache   []cached
+	capBytes atomic.Int64 // 0 = no limit
+	mu       sync.Mutex   // writer name and transaction ordering on standalone SQLite
+	writer   string
+	cacheMu  sync.Mutex
+	cache    []cached
 }
 type cached struct {
 	key Key
@@ -43,6 +45,7 @@ var (
 	_ Membership    = (*library)(nil)
 	_ SearchCounter = (*library)(nil)
 	_ Lister        = (*library)(nil)
+	_ Capper        = (*library)(nil)
 )
 
 func Open(ctx context.Context, o Options) (Store, error) {
@@ -52,17 +55,20 @@ func Open(ctx context.Context, o Options) (Store, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	if o.CapBytes <= 0 {
-		o.CapBytes = DefaultCapBytes
-	}
 	if err := os.MkdirAll(filepath.Join(o.Dir, "packs"), 0700); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &library{Options: o}, nil
+	v := &library{Options: o}
+	v.capBytes.Store(max(o.CapBytes, 0))
+	return v, nil
 }
+
+// SetCapBytes implements Capper. A lower cap takes effect at the next
+// store; nothing is evicted eagerly.
+func (v *library) SetCapBytes(n int64) { v.capBytes.Store(max(n, 0)) }
 func (v *library) node() string {
 	if v.Shared {
 		return ""

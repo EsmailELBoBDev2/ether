@@ -905,6 +905,9 @@ func (s *Service) MatchGuides(ctx context.Context, req GuideMatchRequest) (Guide
 			return res, err
 		}
 	}
+	if _, _, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil); err != nil {
+		return res, err
+	}
 	if err := tx.Commit(); err != nil {
 		return res, err
 	}

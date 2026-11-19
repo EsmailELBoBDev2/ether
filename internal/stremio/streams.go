@@ -152,6 +152,9 @@ func entryEpisodeIdentity(info core.ReleaseInfo, req core.SearchRequest, entryEp
 		return info
 	}
 	info.Seasons, info.Episodes = []int{req.Season}, []int{req.Episode}
+	// The parsed absolute number was the entry-local one just consumed;
+	// keeping it would name a different series-absolute episode.
+	info.AbsoluteEpisodes = nil
 	return info
 }
 

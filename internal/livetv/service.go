@@ -1004,6 +1004,8 @@ func validateChannel(c *Channel) error {
 	} else {
 		c.InputMerge = nil
 		c.MergedInto = ""
+		c.SuppressedAutoBackups = nil
+		c.OwnerStreamSources = false
 	}
 	if c.Personal == nil && c.Kind == "virtual" && len(c.Items) == 0 && len(c.Blocks) == 0 && len(c.Pins) == 0 && !c.OffAir && len(c.Fallback) == 0 {
 		return fmt.Errorf("virtual channel needs base programming")
@@ -1118,12 +1120,15 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 	if c.ID == "" {
 		c.ID = randomID()
 	}
+	var old Channel
+	var hasOld bool
 	if c.LogoMatched || c.Kind == "iptv" {
-		old, err := s.Channel(ctx, c.ID)
-		if err == nil {
+		if prev, err := s.Channel(ctx, c.ID); err == nil {
+			old = prev
+			hasOld = true
 			c.ProviderAdult = old.ProviderAdult
 		}
-		if err != nil || !old.LogoMatched || old.Logo != c.Logo {
+		if !hasOld || !old.LogoMatched || old.Logo != c.Logo {
 			c.LogoMatched = false
 		}
 	}
@@ -1137,6 +1142,7 @@ func (s *Service) SaveChannel(ctx context.Context, c Channel) (Channel, error) {
 			return c, err
 		}
 	}
+	reconcileSavedAutoBackups(&c, old, hasOld)
 	if err := validateChannel(&c); err != nil {
 		return c, err
 	}
@@ -1184,8 +1190,12 @@ func (s *Service) DeleteChannel(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	invalidated = inv
-	if mergedChanged {
+	autoChanged, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+	if err != nil {
+		return err
+	}
+	invalidated = append(inv, autoInv...)
+	if mergedChanged || autoChanged {
 		if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
 			return err
 		}
@@ -2237,7 +2247,29 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		if err != nil {
 			return old, err
 		}
-		_, err = s.o.DB.ExecContext(ctx, `UPDATE livetv_sources SET data=? WHERE id=?`, b, old.ID)
+		tx, err := s.o.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return old, err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, `UPDATE livetv_sources SET data=? WHERE id=?`, b, old.ID); err != nil {
+			return old, err
+		}
+		autoChanged, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+		if err != nil {
+			return old, err
+		}
+		if autoChanged {
+			if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
+				return old, err
+			}
+		}
+		err = tx.Commit()
+		if err == nil {
+			for _, cid := range autoInv {
+				s.invalidate(cid, "")
+			}
+		}
 		s.forgetSourceAuth(old.ID)
 		s.wakeSourceRefresh()
 		s.notifySourcesChanged()
@@ -2376,6 +2408,8 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 				c.Transcode = previous.Transcode
 				c.Stability = previous.Stability
 				c.InputMerge = previous.InputMerge
+				c.SuppressedAutoBackups = slices.Clone(previous.SuppressedAutoBackups)
+				c.OwnerStreamSources = previous.OwnerStreamSources
 				if previous.CustomGroup {
 					c.Group, c.CustomGroup = previous.Group, true
 				}
@@ -2425,11 +2459,16 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 		return src, err
 	}
 	writes.GuideChannelsWritten, writes.GuideChannelsDeleted = gw.GuideChannelsWritten, gw.GuideChannelsDeleted
+	autoChanged, autoInvalidated, err := s.reconcileAutoBackupsTx(ctx, tx, batch, stored)
+	if err != nil {
+		return src, err
+	}
+	crossInvalidated = append(crossInvalidated, autoInvalidated...)
 	if progress != nil {
 		progress.setSavedChannels(len(stored))
 		progress.setSavedProgrammes(len(g.Programmes))
 	}
-	changed := sourceWritten || writes.changed() || crossChanged
+	changed := sourceWritten || writes.changed() || crossChanged || autoChanged
 	if changed {
 		// Guide-only sources change coverage without touching any channel
 		// rows. Publish that change transactionally to every cluster node's
@@ -2730,6 +2769,11 @@ func (s *Service) DeleteSource(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	_, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+	if err != nil {
+		return err
+	}
+	delInv = append(delInv, autoInv...)
 	if _, err = tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
 		return err
 	}

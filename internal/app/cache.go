@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/resolver"
 	"github.com/braedonsaunders/ether/internal/segcache"
+	"github.com/braedonsaunders/ether/internal/vault"
 )
 
 // cacheNodeID identifies the NAS writer. Standalone metadata stays in this
@@ -53,6 +54,9 @@ func (a *App) configureCache(c config.Cache) {
 	a.cacheConfig.Store(&c)
 	a.cache.SetPolicy(segcache.Policy{Mode: c.Mode, Retention: time.Duration(c.RetentionDays) * 24 * time.Hour, ReplayBoost: time.Duration(c.ReplayBoostHours) * time.Hour})
 	a.cache.SetBudget(c.BudgetBytes)
+	if capper, ok := a.vault.(vault.Capper); ok {
+		capper.SetCapBytes(c.LibraryBudgetBytes)
+	}
 }
 
 func protocolOrigin(protocol string) string {

@@ -97,18 +97,22 @@ func streamQualityTier(names ...string) (int, string) {
 			}
 			tok := lower[start:i]
 			start = -1
-			switch tok {
-			case "4k", "uhd", "2160p", "2160i", "2160", "4kuhd", "uhd4k":
+			tier, isMarker, _ := classifyQualityToken(tok)
+			if !isMarker {
+				continue
+			}
+			switch tier {
+			case qualityTier4K:
 				return qualityTier4K, "4K"
-			case "fhd", "1080p", "1080i", "1080", "fullhd":
+			case qualityTierFHD:
 				if qualityTierFHD < best {
 					best = qualityTierFHD
 				}
-			case "hd", "720p", "720i", "720":
+			case qualityTierHD:
 				if qualityTierHD < best {
 					best = qualityTierHD
 				}
-			case "sd", "480p", "480i", "480", "576p", "576i", "576":
+			case qualityTierSD:
 				sawSD = true
 			}
 		}
@@ -258,7 +262,7 @@ func donorCandidateStreams(donor Channel) []StreamSource {
 	if len(donor.StreamSources) > 0 {
 		out := make([]StreamSource, 0, len(donor.StreamSources))
 		for _, src := range donor.StreamSources {
-			if src.MergedFrom != "" || !validStreamURL(strings.TrimSpace(src.URL)) {
+			if src.MergedFrom != "" || src.AutoFrom != "" || !validStreamURL(strings.TrimSpace(src.URL)) {
 				continue
 			}
 			out = append(out, src)
@@ -555,7 +559,26 @@ func reconcileChannelInputMerges(cs []Channel, srcs []Source, cached *inputMerge
 			prevByID[src.ID] = src
 		}
 
-		candidates := append([]StreamSource(nil), base...)
+		candidates := make([]StreamSource, 0, len(base))
+		for _, src := range base {
+			if src.AutoFrom == "" {
+				candidates = append(candidates, src)
+			}
+		}
+		if len(candidates) == 0 && validStreamURL(strings.TrimSpace(target.StreamURL)) {
+			id := stableID(target.ID, "primary")
+			name := "Primary stream"
+			if target.SourceID != "" {
+				id = stableID(target.ID, "playlist")
+				name = "Imported stream"
+			}
+			candidates = append(candidates, StreamSource{
+				ID:      id,
+				Name:    name,
+				URL:     strings.TrimSpace(target.StreamURL),
+				Enabled: true,
+			})
+		}
 		for _, di := range donorOrder {
 			if di == ti {
 				continue
@@ -862,6 +885,12 @@ func (s *Service) SetSourceOrder(ctx context.Context, ids []string) ([]Source, e
 	if err != nil {
 		return nil, err
 	}
+	autoChanged, autoInv, err := s.reconcileAutoBackupsTx(ctx, tx, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	channelsChanged = channelsChanged || autoChanged
+	invalidated = append(invalidated, autoInv...)
 	if anyChanged || channelsChanged {
 		if _, err := tx.ExecContext(ctx, `UPDATE livetv_channel_epoch SET generation=generation+1 WHERE id=1`); err != nil {
 			return nil, err
@@ -1021,8 +1050,28 @@ func (s *Service) PreviewChannelMerge(ctx context.Context, req ChannelMergePrevi
 	}
 	var raw []rawCandidate
 	for _, base := range channelOwnBaseStreams(target) {
-		if !validStreamURL(strings.TrimSpace(base.URL)) {
+		if base.AutoFrom != "" || !validStreamURL(strings.TrimSpace(base.URL)) {
 			continue
+		}
+		raw = append(raw, rawCandidate{
+			src:      base,
+			donor:    target,
+			primary:  true,
+			qualName: inputQualityNames(target, base, donorByID),
+		})
+	}
+	if len(raw) == 0 && validStreamURL(strings.TrimSpace(target.StreamURL)) {
+		id := stableID(target.ID, "primary")
+		name := "Primary stream"
+		if target.SourceID != "" {
+			id = stableID(target.ID, "playlist")
+			name = "Imported stream"
+		}
+		base := StreamSource{
+			ID:      id,
+			Name:    name,
+			URL:     strings.TrimSpace(target.StreamURL),
+			Enabled: true,
 		}
 		raw = append(raw, rawCandidate{
 			src:      base,

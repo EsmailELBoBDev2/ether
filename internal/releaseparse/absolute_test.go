@@ -111,6 +111,35 @@ func TestAnimeSearchEpisodeArcSeason(t *testing.T) {
 	}
 }
 
+// A release naming a different absolute episode must not satisfy a request
+// through its season numbering (#613: S17E005 = absolute 633 was accepted
+// for One Piece absolute 583, whose group alias is S16E05).
+func TestEpisodeMatchesRequestRejectsDifferentAbsolute(t *testing.T) {
+	req := core.SearchRequest{Type: core.TypeEpisode, Title: "One Piece", Season: 15, Episode: 583, AbsoluteEpisode: 583, Anime: true,
+		ReleaseAliases: []core.EpisodeNumber{{Season: 16, Episode: 5}}}
+	cases := []struct {
+		info core.ReleaseInfo
+		want bool
+	}{
+		{core.ReleaseInfo{Seasons: []int{17}, Episodes: []int{5}, AbsoluteEpisodes: []int{633}}, false},
+		{core.ReleaseInfo{Seasons: []int{16}, Episodes: []int{5}, AbsoluteEpisodes: []int{633}}, false},
+		{core.ReleaseInfo{Seasons: []int{15}, Episodes: []int{583}, AbsoluteEpisodes: []int{1099}}, false},
+		{core.ReleaseInfo{AbsoluteEpisodes: []int{1099}}, false},
+		{core.ReleaseInfo{Seasons: []int{16}, Episodes: []int{5}, AbsoluteEpisodes: []int{583}}, true},
+		{core.ReleaseInfo{Seasons: []int{16}, Episodes: []int{5}}, true},
+		{core.ReleaseInfo{AbsoluteEpisodes: []int{583}}, true},
+		{core.ReleaseInfo{Seasons: []int{15}, Episodes: []int{583}}, true},
+	}
+	for _, tc := range cases {
+		if got := EpisodeMatchesRequest(tc.info, req); got != tc.want {
+			t.Errorf("info %+v: got %v want %v", tc.info, got, tc.want)
+		}
+		if tc.want == false && EpisodeMatchesNumbering(tc.info, 15, 583, 583) {
+			t.Errorf("info %+v: numbering matched a different absolute episode", tc.info)
+		}
+	}
+}
+
 func TestEpisodeMatchesAbsolute(t *testing.T) {
 	if EpisodeMatchesAbsolute(Parse("[G] Show - 1071 (1080p)"), 1070) {
 		t.Error("1071 matched 1070")

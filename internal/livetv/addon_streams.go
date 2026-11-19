@@ -60,7 +60,7 @@ func mergeAddonStreams(fresh, previous []StreamSource) []StreamSource {
 		out = append(out, input)
 	}
 	for _, input := range previous {
-		if !isAddonInput(input.ID) {
+		if !isAddonInput(input.ID) || input.AutoFrom != "" {
 			out = append(out, input)
 		}
 	}

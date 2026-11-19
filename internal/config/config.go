@@ -347,6 +347,10 @@ type Cache struct {
 
 	Dir         string `json:"dir"`
 	BudgetBytes int64  `json:"budgetBytes"`
+	// LibraryBudgetBytes bounds the release library (kept NZBs and torrent
+	// records, internal/vault). Zero means no limit; when set, releases
+	// never replayed leave first.
+	LibraryBudgetBytes int64 `json:"libraryBudgetBytes,omitempty"`
 	// Prefetch
 	PrefetchNextEpisode bool    `json:"prefetchNextEpisode"`
 	PrefetchBytes       int64   `json:"prefetchBytes"` // opening bytes pulled ahead

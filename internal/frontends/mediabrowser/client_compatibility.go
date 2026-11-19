@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,7 +46,59 @@ func (i *instance) clientCompatibilityRoutes() error {
 			return err
 		}
 	}
+	if i.protocol == "jellyfin" {
+		if err := i.router.Handle("POST", "/ClientLog/Document", http.HandlerFunc(i.clientLogDocument)); err != nil {
+			return err
+		}
+	}
 	return i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding))
+}
+
+// clientLogDocument accepts a client log upload the way Jellyfin 10.10
+// does: authenticated, at most 1,000,000 bytes, answered with the stored
+// file name. Ether keeps no client logs, so the body is drained and
+// discarded; the name follows Jellyfin's client-log naming so clients
+// that surface it show something sensible.
+func (i *instance) clientLogDocument(w http.ResponseWriter, r *http.Request) {
+	v, _, err := i.viewer(r)
+	if err != nil || v == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	const maxClientLogDocument = 1_000_000
+	if r.ContentLength > maxClientLogDocument {
+		http.Error(w, "Payload must be less than 1,000,000 bytes", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if _, err := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxClientLogDocument)); err != nil {
+		http.Error(w, "Payload must be less than 1,000,000 bytes", http.StatusRequestEntityTooLarge)
+		return
+	}
+	client := device(r).Client
+	if client == "" {
+		client = "unknown-client"
+	}
+	name := "clientlog-" + clientLogNamePart(client) + "-" + time.Now().UTC().Format("20060102150405") + ".log"
+	jsonReply(w, map[string]any{"FileName": name})
+}
+
+func clientLogNamePart(client string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(client) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0:
+			b.WriteByte('-')
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	if s := strings.Trim(b.String(), "-"); s != "" {
+		return s
+	}
+	return "client"
 }
 
 func (i *instance) queryFilters(w http.ResponseWriter, r *http.Request) {
@@ -127,29 +180,48 @@ func (i *instance) upcomingEpisodes(w http.ResponseWriter, r *http.Request) {
 	q.Desc = false
 	now := time.Now().UTC().Truncate(24 * time.Hour)
 	q.Filter.ReleasedFilters = []frontend.DateFilter{{Op: ">=", Unix: now.AddDate(0, 0, -1).Unix()}}
-	if len(route.Query(r.URL.Query(), "Limit")) == 0 {
-		q.Limit = showChildPageMax
+	if len(route.Query(r.URL.Query(), "Limit")) == 0 || q.Limit <= 0 {
+		q.Limit = upcomingEpisodesMax
+	} else if q.Limit > upcomingEpisodesMax {
+		q.Limit = upcomingEpisodesMax
 	}
-	view := ""
+	var page frontend.Page
 	if parent := route.Query(r.URL.Query(), "parentId"); len(parent) > 0 {
-		if len(parent) != 1 {
+		if len(parent) != 1 || parent[0] == "" {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
-		n, e := ids.ParseGUID(ids.View, parent[0])
-		if e != nil {
+		// Jellyfin clients (Android TV's series page) scope Upcoming to the
+		// series item id. A view id scopes it to that library instead.
+		if key, e := ids.ParseRatingKeyGUID(parent[0]); e == nil {
+			page, err = i.host.Experience.Children(r.Context(), v, device(r), key, q)
+			if err == nil {
+				i.nameChildSeries(r, v, key, &page)
+			}
+		} else if n, e := ids.ParseGUID(ids.View, parent[0]); e == nil {
+			page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), ids.Decimal(n), q)
+		} else {
 			http.NotFound(w, r)
 			return
 		}
-		view = ids.Decimal(n)
+	} else {
+		page, err = i.host.Experience.LibraryItems(r.Context(), v, device(r), "", q)
 	}
-	page, err := i.host.Experience.LibraryItems(r.Context(), v, device(r), view, q)
 	if err != nil {
+		if errors.Is(err, frontend.ErrNotFound) {
+			i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+			return
+		}
 		http.Error(w, "Unavailable", 503)
 		return
 	}
 	i.page(w, r, v, page, q.Offset)
 }
+
+// upcomingEpisodesMax bounds one /Shows/Upcoming page. The premiere-date
+// filter and sort run on the catalogue's release index, so the bound is a
+// page size, not a scan limit.
+const upcomingEpisodesMax = 100
 
 func (i *instance) additionalParts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := i.authorizedItem(w, r); !ok {

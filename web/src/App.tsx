@@ -171,7 +171,7 @@ function navIcon(icon: string | undefined): ReactNode {
 /** Sidebar groups in display order; the top group has no heading. */
 const NAV_GROUPS: { key: string; label: () => string }[] = [
   { key: "", label: () => "" },
-  { key: "library", label: () => t("Library") },
+  { key: "library", label: () => t("Content") },
   { key: "streaming", label: () => t("Streaming") },
   { key: "server", label: () => t("Server") },
 ];

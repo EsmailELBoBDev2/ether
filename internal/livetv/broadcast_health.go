@@ -1,8 +1,21 @@
 package livetv
 
 import (
+	"regexp"
 	"time"
 )
+
+var diagnosticURL = regexp.MustCompile(`[a-z]+://[^\s'"]+`)
+
+// sanitizeDiagnostics drops URLs (relay grants, provider tokens) from decoder
+// diagnostics and bounds their length for the log.
+func sanitizeDiagnostics(s string) string {
+	s = diagnosticURL.ReplaceAllString(s, "[url]")
+	if len(s) > 900 {
+		s = s[:900] + "…"
+	}
+	return s
+}
 
 // liveHealthEvery spaces the frame clock's periodic health line for a live
 // provider output. One line per channel every half minute names everything a
@@ -36,6 +49,15 @@ func (b *broadcast) logHealth(reason string, now, scheduled time.Time) {
 	}
 	if b.holdMode != "" {
 		attrs = append(attrs, "hold", b.holdMode, "holdFor", now.Sub(b.holdSince).Round(time.Millisecond))
+	}
+	if b.current != nil && reason != "periodic" {
+		d := b.current.decoder
+		if wrapped, ok := d.(*overlayDecoder); ok {
+			d = wrapped.Decoder
+		}
+		if source, ok := d.(interface{ Diagnostics() string }); ok {
+			attrs = append(attrs, "decoder", sanitizeDiagnostics(source.Diagnostics()))
+		}
 	}
 	if source, ok := b.planner.(interface{ healthAttrs() []any }); ok {
 		attrs = append(attrs, source.healthAttrs()...)

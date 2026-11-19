@@ -34,6 +34,10 @@ type continuousDecoder struct {
 	otherAtWait  atomic.Int64 // its buffers read when the wait began
 	errorLines   atomic.Int64 // decoder error lines on stderr
 	errorsAtWait atomic.Int64
+	// fillSkipped counts filler ticks liveFill dropped; lastPTS is the newest
+	// picture's source time (ns), for live diagnostics.
+	fillSkipped atomic.Int64
+	lastPTS     atomic.Int64
 }
 
 // StarvingErrors is Starving plus whether the decoders reported errors
@@ -271,6 +275,8 @@ func (m *Manager) StartDecoder(ctx context.Context, r DecoderRequest) (Decoder, 
 			out := []RawFrame{frame}
 			if r.Live {
 				out = fill.next(frame, time.Now())
+				d.fillSkipped.Store(int64(fill.skipped))
+				d.lastPTS.Store(int64(stamp))
 			}
 			for _, frame := range out {
 				select {
@@ -444,7 +450,7 @@ func (d *continuousDecoder) Close() error {
 
 // Diagnostics reports bounded decoder progress without exposing the input URL.
 func (d *continuousDecoder) Diagnostics() string {
-	return fmt.Sprintf("videoFrames=%d audioTicks=%d queued=%d stderr=%s", d.reads[0].Load(), d.reads[1].Load(), len(d.frames), d.stderr.String())
+	return fmt.Sprintf("videoFrames=%d audioTicks=%d queued=%d fillSkipped=%d lastPTS=%s stderr=%s", d.reads[0].Load(), d.reads[1].Load(), len(d.frames), d.fillSkipped.Load(), time.Duration(d.lastPTS.Load()), d.stderr.String())
 }
 
 func liveFramePTS(line string) (time.Duration, bool) {

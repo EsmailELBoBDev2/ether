@@ -39,9 +39,17 @@ vi.mock("../../lib/extend", async (load) => {
     }),
   };
 });
+const previewLayoutMock = vi.fn();
 vi.mock("../../lib/api", async (load) => {
   const actual = await load<typeof import("../../lib/api")>();
-  return { ...actual, api: { ...actual.api, rowInsights: async () => [] } };
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      rowInsights: async () => [],
+      previewLayout: (...args: unknown[]) => previewLayoutMock(...args),
+    },
+  };
 });
 function Destination() {
   const location = useLocation();
@@ -415,7 +423,6 @@ it("does not bulk edit a selected row hidden by an inline status change", () => 
   expect(screen.queryByRole("region", { name: "Selected rows" })).toBeNull();
 });
 
-
 describe("row drawer Settings and Content subtabs", () => {
   it("opens the drawer when clicking the row body and switches between Settings and Content", () => {
     render(
@@ -438,21 +445,102 @@ describe("row drawer Settings and Content subtabs", () => {
     expect(contentTab.getAttribute("aria-selected")).toBe("true");
     expect(within(dialog).getAllByText("Arrival")[0]).toBeTruthy();
     expect(within(dialog).getAllByText("Dune")[0]).toBeTruthy();
+    expect(previewLayoutMock).not.toHaveBeenCalled();
+  });
+
+  it("probes previewLayout on demand when a library row is absent from the assembled page", async () => {
+    previewLayoutMock.mockReset();
+    previewLayoutMock.mockResolvedValueOnce({
+      generatedAt: "2026-11-19T12:00:00Z",
+      context: { device: "tv", daypart: "evening", weekend: false },
+      rows: [
+        {
+          hubId: "movie.comfort",
+          title: "Comfort Rewatches",
+          kind: "comfort-rewatches",
+          reason: "Favourites you've watched more than once.",
+          score: 0.7,
+          source: "engine",
+          items: [{ key: "m9", type: "movie", title: "Blade Runner 2049", year: 2017 }],
+        },
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <RowPoolWithPreview
+          section="library:1"
+          available={[
+            ...picks,
+            {
+              hubId: "comfort-rewatches",
+              title: "Comfort Rewatches",
+              kind: "comfort-rewatches",
+              description: "",
+              group: "picks",
+            },
+          ]}
+          previewRequest={{
+            viewerId: 1,
+            device: "tv",
+            at: "2026-11-19T20:00:00Z",
+          }}
+          previewWho="Alex Rivera"
+        />
+      </MemoryRouter>,
+    );
+
+    const card = screen.getByRole("listitem", { name: "Row Comfort Rewatches" });
+    fireEvent.click(within(card).getByText("Comfort Rewatches"));
+    const dialog = screen.getByRole("dialog", { name: "Comfort Rewatches" });
+    fireEvent.click(within(dialog).getByRole("tab", { name: /Content/ }));
+
+    expect((await within(dialog).findAllByText("Blade Runner 2049"))[0]).toBeTruthy();
+    expect(previewLayoutMock).toHaveBeenCalledTimes(1);
+    expect(previewLayoutMock.mock.calls[0]![0]).toMatchObject({
+      viewerId: 1,
+      device: "tv",
+      section: "library:1",
+      layout: {
+        global: [
+          {
+            section: "library:1",
+            rows: [{ row: "comfort-rewatches", status: "always", slot: 1 }],
+          },
+        ],
+        viewers: [],
+      },
+    });
   });
 });
 
-function RowPoolWithPreview() {
+function RowPoolWithPreview({
+  section = "home",
+  available = picks,
+  previewRequest,
+  previewWho,
+}: {
+  section?: "home" | `library:${number}`;
+  available?: AvailableRow[];
+  previewRequest?: {
+    viewerId: number | null;
+    device: "tv" | "mobile" | "web" | "desktop";
+    at: string;
+  };
+  previewWho?: string;
+} = {}) {
   const [focus, setFocus] = useState<string | null>(null);
   return (
     <RowPool
       draft={EMPTY_LAYOUT}
       onChange={() => {}}
       layer="global"
-      section="home"
+      section={section}
       viewers={[]}
-      available={picks}
+      available={available}
       focusRow={focus}
       onFocusRow={setFocus}
+      previewWho={previewWho}
+      previewRequest={previewRequest}
       preview={{
         generatedAt: "2026-11-19T12:00:00Z",
         context: { device: "tv", daypart: "evening", weekend: false },

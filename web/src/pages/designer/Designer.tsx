@@ -11,6 +11,7 @@ import { useAsync } from "../../lib/hooks";
 import { Workspace, PanelHead } from "../../components/workspace";
 import {
   EMPTY_LAYOUT,
+  atFor,
   collectionScheduleChanges,
   overrideCount,
   prune,
@@ -66,6 +67,11 @@ export default function Designer() {
   const defaults = doc.data?.defaults.maxRows ?? { home: 14, library: 16 };
 
   const viewerId = layer === "global" ? spotCheck : layer;
+  const previewAt = useMemo(() => atFor(ctx.day, ctx.hour).toISOString(), [ctx.day, ctx.hour]);
+  const previewRequest = useMemo(
+    () => ({ viewerId, device: ctx.device, at: previewAt }),
+    [viewerId, ctx.device, previewAt],
+  );
   const overrideTotal = (viewers ?? []).reduce((n, v) => n + overrideCount(draft, v.id), 0);
   // i18n: memo holds no copy
   const viewerById = useMemo(() => new Map((viewers ?? []).map((v) => [v.id, v])), [viewers]);
@@ -218,6 +224,7 @@ export default function Designer() {
                   onFocusRow={setFocusRow}
                   preview={preview}
                   previewWho={previewWho}
+                  previewRequest={previewRequest}
                 />
               )}
               {tools === "tuning" && <TuningPanel {...editing} />}

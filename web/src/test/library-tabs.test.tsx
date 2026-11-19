@@ -8,8 +8,7 @@ const WAIT = { timeout: 15000 };
 
 function lastPutTabs(fake: Parameters<typeof calls>[0], id: number): LibraryTab[] {
   const body = calls(fake, "PUT", `/libraries/${id}/tabs`).at(-1)?.body as
-    | { tabs: LibraryTab[] }
-    | undefined;
+    { tabs: LibraryTab[] } | undefined;
   return body?.tabs ?? [];
 }
 
@@ -18,8 +17,7 @@ function lastPutLibraryLayout(
   id: number,
 ): LayoutPage | undefined {
   const body = calls(fake, "PUT", `/layout/libraries/${id}`).at(-1)?.body as
-    | { page?: LayoutPage }
-    | undefined;
+    { page?: LayoutPage } | undefined;
   return body?.page;
 }
 
@@ -28,12 +26,11 @@ describe("Library tabs page", () => {
     const first = renderApp("/libraries/2/settings");
 
     const nav = await screen.findByRole("tablist", { name: "Library sections" }, WAIT);
-    expect(within(nav).getAllByRole("tab").map((el) => el.textContent)).toEqual([
-      "Browse",
-      "Rules",
-      "Tabs",
-      "Settings",
-    ]);
+    expect(
+      within(nav)
+        .getAllByRole("tab")
+        .map((el) => el.textContent),
+    ).toEqual(["Browse", "Rules", "Tabs", "Settings"]);
     expect(screen.queryByRole("switch", { name: "Display Recommended tab" })).toBeNull();
 
     fireEvent.click(within(nav).getByRole("tab", { name: "Tabs" }));
@@ -71,7 +68,9 @@ describe("Library tabs page", () => {
     const dialog = await screen.findByRole("dialog", { name: "Edit Recommended" }, WAIT);
 
     expect(within(dialog).queryByText(/standard rows/i)).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: /Choose rows for this library/i })).toBeNull();
+    expect(
+      within(dialog).queryByRole("button", { name: /Choose rows for this library/i }),
+    ).toBeNull();
 
     const rowsSection = within(dialog).getByRole("region", { name: "Rows on this tab" });
     expect(
@@ -98,16 +97,13 @@ describe("Library tabs page", () => {
       within(rowsSection).queryByRole("listitem", { name: "Row New Seasons of Your Shows" }),
     ).toBeNull();
 
-    // Clicking a row opens its nested row drawer with Settings and Content subtabs.
+    // Clicking a row opens its nested row drawer with Settings and Content subtabs,
+    // defaulting to the owner viewer (Alex Rivera) rather than Typical viewer.
     const popularRow = within(rowsSection).getByRole("listitem", {
       name: "Row Popular on This Server",
     });
     fireEvent.click(within(popularRow).getByText("Popular on This Server"));
-    const rowDialog = await screen.findByRole(
-      "dialog",
-      { name: "Popular on This Server" },
-      WAIT,
-    );
+    const rowDialog = await screen.findByRole("dialog", { name: "Popular on This Server" }, WAIT);
     const rowSubtabs = within(rowDialog).getByRole("tablist", { name: "Row sections" });
     expect(
       within(rowSubtabs)
@@ -117,14 +113,71 @@ describe("Library tabs page", () => {
     fireEvent.click(within(rowSubtabs).getByRole("tab", { name: /Content/ }));
     expect(
       await within(rowDialog).findByText(
-        /titles? in the current preview for Typical viewer/,
+        /titles? in the current preview for Alex Rivera/,
         undefined,
         WAIT,
       ),
     ).toBeInTheDocument();
+    expect(calls(fake, "POST", "/layout/preview").at(-1)?.body).toMatchObject({
+      viewerId: 1,
+      section: "library:1",
+      layout: {
+        global: expect.arrayContaining([
+          expect.objectContaining({
+            section: "library:1",
+            rows: [{ row: "popular-on-server", status: "always", slot: 1 }],
+          }),
+        ]),
+      },
+    });
     fireEvent.click(within(rowDialog).getByRole("button", { name: "Done" }));
     await waitFor(
       () => expect(screen.queryByRole("dialog", { name: "Popular on This Server" })).toBeNull(),
+      WAIT,
+    );
+
+    // Personal rows like New This Week also show populated Content for the selected viewer.
+    const newThisWeekRow = within(rowsSection).getByRole("listitem", {
+      name: "Row New This Week",
+    });
+    fireEvent.click(within(newThisWeekRow).getByText("New This Week"));
+    const newThisWeekDialog = await screen.findByRole("dialog", { name: "New This Week" }, WAIT);
+    fireEvent.click(within(newThisWeekDialog).getByRole("tab", { name: /Content/ }));
+    expect(
+      await within(newThisWeekDialog).findByText(
+        /titles? in the current preview for Alex Rivera/,
+        undefined,
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(newThisWeekDialog).getByRole("button", { name: "Done" }));
+    await waitFor(
+      () => expect(screen.queryByRole("dialog", { name: "New This Week" })).toBeNull(),
+      WAIT,
+    );
+
+    // Switching "Preview as" to another viewer updates the row Content preview to that viewer.
+    fireEvent.click(within(rowsSection).getByRole("button", { name: "Preview as" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Sam Rivera/ }, WAIT));
+    await settleUi(() => {
+      expect(calls(fake, "POST", "/layout/preview").at(-1)?.body).toMatchObject({
+        viewerId: 2,
+        section: "library:1",
+      });
+    });
+    fireEvent.click(within(newThisWeekRow).getByText("New This Week"));
+    const samDialog = await screen.findByRole("dialog", { name: "New This Week" }, WAIT);
+    fireEvent.click(within(samDialog).getByRole("tab", { name: /Content/ }));
+    expect(
+      await within(samDialog).findByText(
+        /titles? in the current preview for Sam Rivera/,
+        undefined,
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(samDialog).getByRole("button", { name: "Done" }));
+    await waitFor(
+      () => expect(screen.queryByRole("dialog", { name: "New This Week" })).toBeNull(),
       WAIT,
     );
 
@@ -164,9 +217,7 @@ describe("Library tabs page", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(within(rowsSection).getByRole("button", { name: "Reset to default rows" }));
-    expect(
-      within(rowsSection).queryByRole("button", { name: "Reset to default rows" }),
-    ).toBeNull();
+    expect(within(rowsSection).queryByRole("button", { name: "Reset to default rows" })).toBeNull();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Save tab" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), WAIT);
@@ -267,11 +318,7 @@ describe("Library tabs page", () => {
     expect(within(picker1).getByText("Already in tabs")).toBeInTheDocument();
     fireEvent.click(within(picker1).getByRole("button", { name: /Collections by…/ }));
 
-    const colDialog = await screen.findByRole(
-      "dialog",
-      { name: "New Collections by… tab" },
-      WAIT,
-    );
+    const colDialog = await screen.findByRole("dialog", { name: "New Collections by… tab" }, WAIT);
     // Verify Owner collections omits Bucket order & Sort, then switch to Decades
     fireEvent.click(within(colDialog).getByRole("radio", { name: "Owner collections" }));
     expect(within(colDialog).getByLabelText("Tab label")).toHaveValue("Collections");

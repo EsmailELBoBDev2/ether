@@ -36,6 +36,7 @@ type providerBroadcastPlanner struct {
 	primed     *steadyLink // the tune's probed input; the first open reads the bytes it probed
 	attempt    *steadyAttempt
 	standby    *steadyStandby
+	lastOpened StreamSource
 	retryAt    time.Time
 	lastStress time.Time
 	retry      func() // asks the clock to replace the current input now
@@ -278,8 +279,18 @@ func (p *providerBroadcastPlanner) failed(err error) time.Time {
 		p.ladder.next, p.ladder.liveEdge = sb.src.ID, false
 		at = now
 	}
+	var nextSrc StreamSource
+	for _, cand := range candidates {
+		if cand.ID == p.ladder.next {
+			nextSrc = cand
+			break
+		}
+	}
+	if nextSrc.ID == "" && p.standby != nil && p.standby.src.ID == p.ladder.next {
+		nextSrc = p.standby.src
+	}
 	p.waiting = at.Sub(now) > 250*time.Millisecond
-	p.logger().Info("live input lost", "input", a.src.ID, "reason", err, "aired", aired, "failover", failover, "next", p.ladder.next, "retryIn", at.Sub(now))
+	p.logger().Info("live input lost", append([]any{"input", a.src.ID, "reason", err, "aired", aired, "failover", failover, "next", p.ladder.next, "retryIn", at.Sub(now)}, p.s.duplicateFailoverLogAttrs(p.channel, a.src, nextSrc)...)...)
 	return at
 }
 
@@ -326,6 +337,8 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		// never do that under p.mu, which the frame clock also takes.
 		var retired []*steadyLink
 		if sb := p.standby; sb != nil && sb.src.ID == id && sb.ready() {
+			prev := p.lastOpened
+			p.lastOpened = src
 			p.standby = nil
 			if p.link != sb.link {
 				retired = append(retired, p.link)
@@ -338,7 +351,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			for _, l := range retired {
 				l.close(p.s)
 			}
-			p.logger().Info("live input switched to standby", "input", id)
+			p.logger().Info("live input switched to standby", append([]any{"input", id}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
 			return decoder, nil, nil
 		}
 		link := p.link
@@ -393,10 +406,15 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		}
 		wrapped := p.wrap(ctx, src, link, decoder, p.firstFrameDeadline(src.ID, len(candidates) > 1))
 		p.mu.Lock()
+		prev := p.lastOpened
+		p.lastOpened = src
 		link.uses++
 		p.ladder.opened(id, now)
 		p.attempt = &steadyAttempt{src: src, link: link, decoder: wrapped}
 		p.mu.Unlock()
+		if prev.ID != "" && prev.ID != src.ID {
+			p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+		}
 		p.logger().Debug("live input opening", "input", id, "liveEdge", liveEdge, "format", link.format, "uses", link.uses)
 		return wrapped, nil, nil
 	}
@@ -407,6 +425,9 @@ func (p *providerBroadcastPlanner) syncFailure(src StreamSource, err error, now 
 	p.mu.Lock()
 	if !p.firstAired {
 		p.noteStartupFailure(src.ID, err)
+	}
+	if p.lastOpened.ID == "" {
+		p.lastOpened = src
 	}
 	p.mu.Unlock()
 	p.s.recordSourceHealth(p.channel.ID, src, err, false)

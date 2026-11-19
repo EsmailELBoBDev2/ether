@@ -862,7 +862,10 @@ function StreamSources({
       clearInterval(timer);
     };
   }, [c.id]);
-  const commit = (next: StreamSource[]) => {
+  const commit = (
+    next: StreamSource[],
+    extra?: Pick<Channel, "suppressedAutoBackups" | "ownerStreamSources">,
+  ) => {
     const ranked = next.map((x, i) => ({ ...x, priority: i }));
     const first = ranked.find((x) => x.enabled && x.url.trim());
     onChange({
@@ -870,10 +873,24 @@ function StreamSources({
       // so removing a backup actually removes it server-side.
       streamSources: c.streamSources !== undefined || ranked.length > 1 ? ranked : undefined,
       streamUrl: first?.url ?? ranked[0]?.url ?? "",
+      ...extra,
     });
   };
   const update = (i: number, patch: Partial<StreamSource>) =>
-    commit(list.map((x, n) => (n === i ? { ...x, ...patch } : x)));
+    commit(
+      list.map((x, n) => (n === i ? { ...x, ...patch } : x)),
+      { ownerStreamSources: true },
+    );
+  const removeSource = (i: number) => {
+    const removed = list[i];
+    const next = list.filter((_, n) => n !== i);
+    if (removed?.autoFrom) {
+      const suppressed = [...new Set([...(c.suppressedAutoBackups ?? []), removed.autoFrom])];
+      commit(next, { suppressedAutoBackups: suppressed });
+      return;
+    }
+    commit(next, { ownerStreamSources: true });
+  };
   // Each source's role by position: 0 is the primary, -1 is off, n is backup n.
   const ranks = new Map<string, number>();
   let rank = 0;
@@ -898,16 +915,19 @@ function StreamSources({
           variant="outline"
           size="sm"
           onClick={() =>
-            commit([
-              ...list,
-              {
-                id: newSourceId(),
-                name: t("Backup {number}", { number: list.length }),
-                url: "",
-                enabled: true,
-                priority: list.length,
-              },
-            ])
+            commit(
+              [
+                ...list,
+                {
+                  id: newSourceId(),
+                  name: t("Backup {number}", { number: list.length }),
+                  url: "",
+                  enabled: true,
+                  priority: list.length,
+                },
+              ],
+              { ownerStreamSources: true },
+            )
           }
         >
           <Plus size={13} /> {t("Add backup")}
@@ -916,7 +936,7 @@ function StreamSources({
       <SortableList
         items={list}
         getId={(x) => x.id}
-        onReorder={(next) => commit(next)}
+        onReorder={(next) => commit(next, { ownerStreamSources: true })}
         className="space-y-2"
         renderItem={(x, handle, i) => {
           const role = ranks.get(x.id) ?? -1;
@@ -929,7 +949,7 @@ function StreamSources({
           return (
             <div
               className={cn(
-                "flex items-center gap-2 rounded-xl border bg-surface p-2",
+                "flex flex-wrap items-center gap-2 rounded-xl border bg-surface p-2",
                 role === 0 ? "border-primary/40" : "border-border",
                 !x.enabled && "opacity-60",
               )}
@@ -961,14 +981,22 @@ function StreamSources({
                   className="h-8 w-32 shrink-0 text-sm"
                 />
               ) : null}
-              {x.mergedFrom || (!logins.length && x.authSourceId) ? (
+              {x.autoFrom ? (
+                <Badge variant="info" className="shrink-0">
+                  {t("Automatic")}
+                  {x.autoNumber ? ` · #${x.autoNumber.replace(/^#/, "")}` : ""}
+                </Badge>
+              ) : null}
+              {x.mergedFrom ||
+              (x.autoFrom && x.authSourceId && x.authSourceId !== c.sourceId) ||
+              (!x.autoFrom && !logins.length && x.authSourceId) ? (
                 <Badge className="shrink-0">
                   {sources.find((s) => s.id === (x.authSourceId || c.sourceId))?.name ??
                     x.authSourceId}
                 </Badge>
               ) : null}
               <SourceHealth status={status.get(x.id)} />
-              {logins.length ? (
+              {!x.autoFrom && logins.length ? (
                 <ToolbarPicker
                   ariaLabel={t("Login for source {number}", { number: i + 1 })}
                   value={x.authSourceId ?? ""}
@@ -978,33 +1006,47 @@ function StreamSources({
                   menuClassName="w-64"
                 />
               ) : null}
-              <Input
-                value={x.url}
-                onChange={(e) => update(i, { url: e.currentTarget.value })}
-                aria-label={
-                  list.length > 1 ? t("Source {number} URL", { number: i + 1 }) : t("Stream URL")
-                }
-                placeholder="https://…/stream.m3u8"
-                className="h-8 min-w-0 flex-1 font-mono text-xs"
-              />
-              {list.length > 1 ? (
-                <>
-                  <Switch
-                    checked={x.enabled}
-                    onChange={(e) => update(i, { enabled: e.currentTarget.checked })}
-                    aria-label={t("Use source {number}", { number: i + 1 })}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="size-7 p-0 text-fg-subtle hover:text-danger"
-                    aria-label={t("Remove source {number}", { number: i + 1 })}
-                    onClick={() => commit(list.filter((_, n) => n !== i))}
-                  >
-                    <X size={14} />
-                  </Button>
-                </>
-              ) : null}
+              <div className="flex min-w-[18rem] flex-1 items-center gap-2">
+                <Input
+                  value={x.url}
+                  onChange={(e) => update(i, { url: e.currentTarget.value })}
+                  aria-label={
+                    list.length > 1 ? t("Source {number} URL", { number: i + 1 }) : t("Stream URL")
+                  }
+                  placeholder="https://…/stream.m3u8"
+                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                />
+                {list.length > 1 ? (
+                  <>
+                    <Switch
+                      checked={x.enabled}
+                      onChange={(e) => update(i, { enabled: e.currentTarget.checked })}
+                      aria-label={t("Use source {number}", { number: i + 1 })}
+                    />
+                    {x.autoFrom ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 px-2 text-xs text-fg-muted hover:text-danger"
+                        aria-label={t("Remove source {number}", { number: i + 1 })}
+                        onClick={() => removeSource(i)}
+                      >
+                        <X size={13} /> {t("Remove")}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="size-7 shrink-0 p-0 text-fg-subtle hover:text-danger"
+                        aria-label={t("Remove source {number}", { number: i + 1 })}
+                        onClick={() => removeSource(i)}
+                      >
+                        <X size={14} />
+                      </Button>
+                    )}
+                  </>
+                ) : null}
+              </div>
             </div>
           );
         }}

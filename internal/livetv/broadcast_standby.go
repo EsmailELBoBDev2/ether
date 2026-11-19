@@ -170,7 +170,7 @@ func (p *providerBroadcastPlanner) watchStandby(ctx context.Context) {
 			p.mu.Unlock()
 			if retry != nil {
 				p.s.recordSourceHealth(p.channel.ID, a.src, errSteadyStarved, false)
-				p.logger().Info("live input lost", "input", a.src.ID, "reason", errSteadyStarved, "next", sb.src.ID, "standby", true)
+				p.logger().Info("live input lost", append([]any{"input", a.src.ID, "reason", errSteadyStarved, "next", sb.src.ID, "standby", true}, p.s.duplicateFailoverLogAttrs(p.channel, a.src, sb.src)...)...)
 				retry()
 			}
 			continue
@@ -234,7 +234,7 @@ func (p *providerBroadcastPlanner) openStandby(ctx context.Context, primary Stre
 		}
 		p.standby = sb
 		p.mu.Unlock()
-		p.logger().Info("live standby opened", "input", src.ID, "primary", primary.ID)
+		p.logger().Info("live standby opened", append([]any{"input", src.ID, "primary", primary.ID}, p.s.duplicateFailoverLogAttrs(c, primary, src)...)...)
 		return
 	}
 }

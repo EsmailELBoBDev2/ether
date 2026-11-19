@@ -387,8 +387,9 @@ func (p *passthroughProducer) run(ctx context.Context) {
 			select {
 			case choice := <-p.suggest:
 				if choice.src.ID != p.src.ID || choice.raw != p.raw {
+					prev := p.src
 					if oerr := p.open(ctx, choice.src, choice.raw, choice.headers, false); oerr == nil {
-						p.log.Warn("owned passthrough took a viewer's freshly tuned source", "input", choice.src.ID)
+						p.log.Warn("owned passthrough took a viewer's freshly tuned source", append([]any{"input", choice.src.ID}, p.s.duplicateFailoverLogAttrs(p.c, prev, choice.src)...)...)
 						p.errs, p.reresolved = 0, false
 						continue
 					}
@@ -506,7 +507,7 @@ func (p *passthroughProducer) failover(ctx context.Context) bool {
 			p.log.Warn("owned passthrough source unavailable", append(Diagnose("source_failover", err).LogAttrs(), "input", src.ID)...)
 			continue
 		}
-		p.log.Warn("owned passthrough switched source", "from", failed.ID, "to", src.ID)
+		p.log.Warn("owned passthrough switched source", append([]any{"from", failed.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(p.c, failed, src)...)...)
 		return true
 	}
 	return false

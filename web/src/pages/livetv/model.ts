@@ -130,6 +130,10 @@ export type Channel = {
   streamUrl?: string;
   /** Ordered stream sources: the first enabled one plays, the rest are backups. */
   streamSources?: StreamSource[];
+  /** Donor channel IDs removed from automatic duplicate backups by the owner. */
+  suppressedAutoBackups?: string[];
+  /** True when the owner manually edited, added, or reordered streamSources. */
+  ownerStreamSources?: boolean;
   /** Rules that merge matching feeds across IPTV providers into streamSources. */
   inputMerge?: ChannelInputMerge;
   /** Target channel ID when this channel is hidden as a merged duplicate. */
@@ -265,6 +269,10 @@ export type StreamSource = {
   authSourceId?: string;
   /** Imported channel ID when attached automatically by input merge rules. */
   mergedFrom?: string;
+  /** Duplicate channel ID when attached automatically as a backup stream. */
+  autoFrom?: string;
+  /** Duplicate channel's lineup number for failover and console display. */
+  autoNumber?: string;
 };
 export type AuthType = "" | "basic" | "bearer" | "headers" | "xtream";
 /** Provider login. Secrets come back as "••••"; sending that back keeps them. */
@@ -1250,12 +1258,28 @@ export function streamQualityTier(...names: (string | undefined)[]): {
     if (!raw) continue;
     for (const tok of raw.toLowerCase().split(/[^a-z0-9]+/)) {
       if (!tok) continue;
-      if (["4k", "uhd", "2160p", "2160i", "2160", "4kuhd", "uhd4k"].includes(tok)) {
+      if (
+        ["4k", "uhd", "2160p", "2160i", "2160", "4kuhd", "uhd4k"].includes(tok) ||
+        /^2160[pi]\d{2,3}$/.test(tok)
+      ) {
         return { rank: 0, label: "4K" };
       }
-      if (["fhd", "1080p", "1080i", "1080", "fullhd"].includes(tok) && 1 < best) best = 1;
-      else if (["hd", "720p", "720i", "720"].includes(tok) && 2 < best) best = 2;
-      else if (["sd", "480p", "480i", "480", "576p", "576i", "576"].includes(tok)) sawSD = true;
+      if (
+        (["fhd", "1080p", "1080i", "1080", "fullhd"].includes(tok) ||
+          /^1080[pi]\d{2,3}$/.test(tok)) &&
+        1 < best
+      )
+        best = 1;
+      else if (
+        (["hd", "720p", "720i", "720"].includes(tok) || /^720[pi]\d{2,3}$/.test(tok)) &&
+        2 < best
+      )
+        best = 2;
+      else if (
+        ["sd", "480p", "480i", "480", "576p", "576i", "576"].includes(tok) ||
+        /^(?:480|576)[pi]\d{2,3}$/.test(tok)
+      )
+        sawSD = true;
     }
   }
   if (best === 1) return { rank: 1, label: "FHD" };

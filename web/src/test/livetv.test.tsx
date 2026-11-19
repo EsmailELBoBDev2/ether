@@ -1882,4 +1882,56 @@ describe("Live TV channel drawers and responsive workspace polish", () => {
       window.matchMedia = originalMatchMedia;
     }
   });
+
+  it("marks automatic duplicate backups in Channel Studio and suppresses removed donors", async () => {
+    const calls = backend([
+      iptv("xtream-2113", {
+        number: "2113",
+        name: "FOX News",
+        group: "US | News",
+        sourceId: "src-a",
+        streamUrl: "https://a.example/2113.ts",
+        streamSources: [
+          {
+            id: "playlist-xtream-2113",
+            name: "Imported stream",
+            url: "https://a.example/2113.ts",
+            enabled: true,
+            priority: 0,
+            authSourceId: "src-a",
+          },
+          {
+            id: "auto-xtream-1873",
+            name: "FOX News",
+            url: "https://a.example/1873.ts",
+            enabled: true,
+            priority: 1,
+            authSourceId: "src-a",
+            autoFrom: "xtream-1873",
+            autoNumber: "1873",
+          },
+        ],
+      }),
+    ]);
+
+    renderLiveTV("/livetv?channel=xtream-2113");
+    const section = await screen.findByRole("region", { name: "Stream sources" }, WAIT);
+    expect(await within(section).findByText("Automatic · #1873", {}, WAIT)).toBeVisible();
+
+    const removeBtn = within(section).getByRole("button", { name: "Remove source 2" });
+    expect(removeBtn).toHaveTextContent("Remove");
+    fireEvent.click(removeBtn);
+
+    expect(within(section).queryByText("Automatic · #1873")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Save channel/ }));
+
+    await waitFor(() =>
+      expect(sent(calls, "PUT", /\/livetv\/channels\/xtream-2113$/).length).toBeGreaterThan(0),
+    );
+    const saved = body(sent(calls, "PUT", /\/livetv\/channels\/xtream-2113$/)[0]);
+    expect(saved.suppressedAutoBackups).toContain("xtream-1873");
+    expect(saved.streamSources).toMatchObject([
+      { id: "playlist-xtream-2113", url: "https://a.example/2113.ts", priority: 0 },
+    ]);
+  });
 });

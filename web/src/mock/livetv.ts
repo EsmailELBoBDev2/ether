@@ -391,6 +391,106 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
     },
     look: { lookId: "personal", ident: true, upNext: true, offAir: true, breaks: "between" },
   });
+  channels.push(
+    {
+      id: "xtream-2113",
+      number: "2113",
+      name: "FOX News",
+      group: "US | News",
+      kind: "iptv",
+      enabled: true,
+      favorite: true,
+      sourceId: "demo-xtream",
+      guideId: "foxnews.us",
+      streamUrl: "http://panel.example:8080/live/demo/secret/2113.ts",
+      streamSources: [
+        {
+          id: "playlist-xtream-2113",
+          name: "Imported stream",
+          url: "http://panel.example:8080/live/demo/secret/2113.ts",
+          enabled: true,
+          priority: 0,
+          authSourceId: "demo-xtream",
+        },
+        {
+          id: "auto-xtream-1873",
+          name: "FOX News",
+          url: "http://panel.example:8080/live/demo/secret/1873.ts",
+          enabled: true,
+          priority: 1,
+          authSourceId: "demo-xtream",
+          autoFrom: "xtream-1873",
+          autoNumber: "1873",
+        },
+        {
+          id: "auto-fast-fox",
+          name: "FOX News FHD",
+          url: "https://iptv.example/live/foxnews-fhd.m3u8",
+          enabled: true,
+          priority: 2,
+          authSourceId: "demo-fast",
+          autoFrom: "fast-fox",
+          autoNumber: "118",
+        },
+      ],
+      epoch: "1970-01-01T00:00:00Z",
+      seed: 1,
+      shuffle: false,
+      items: [],
+    },
+    {
+      id: "xtream-1873",
+      number: "1873",
+      name: "FOX News",
+      group: "CA | News",
+      kind: "iptv",
+      enabled: true,
+      favorite: false,
+      sourceId: "demo-xtream",
+      guideId: "foxnews.us",
+      streamUrl: "http://panel.example:8080/live/demo/secret/1873.ts",
+      streamSources: [
+        {
+          id: "playlist-xtream-1873",
+          name: "Imported stream",
+          url: "http://panel.example:8080/live/demo/secret/1873.ts",
+          enabled: true,
+          priority: 0,
+          authSourceId: "demo-xtream",
+        },
+        {
+          id: "auto-xtream-2113",
+          name: "FOX News",
+          url: "http://panel.example:8080/live/demo/secret/2113.ts",
+          enabled: true,
+          priority: 1,
+          authSourceId: "demo-xtream",
+          autoFrom: "xtream-2113",
+          autoNumber: "2113",
+        },
+      ],
+      epoch: "1970-01-01T00:00:00Z",
+      seed: 1,
+      shuffle: false,
+      items: [],
+    },
+    {
+      id: "fast-fox",
+      number: "118",
+      name: "FOX News FHD",
+      group: "News",
+      kind: "iptv",
+      enabled: true,
+      favorite: false,
+      sourceId: "demo-fast",
+      guideId: "foxnews.us",
+      streamUrl: "https://iptv.example/live/foxnews-fhd.m3u8",
+      epoch: "1970-01-01T00:00:00Z",
+      seed: 1,
+      shuffle: false,
+      items: [],
+    },
+  );
   if (empty) channels.length = 0;
   // Two channels have a guide id their own source doesn't carry.
   const unlisted = new Set(["iptv-4", "iptv-10", "iptv-11", "iptv-16"]);
@@ -474,7 +574,7 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
       return interstitials(out, c.look as ChannelLook | undefined);
     }
     if (!c.enabled || unlisted.has(c.id) || !c.guideId) return out;
-    const names = c.group === "News" ? NEWS : SHOWS;
+    const names = c.group?.includes("News") ? NEWS : SHOWS;
     const slot = 30 * 60000;
     let t = Math.floor(from / slot) * slot;
     while (t < until) {
@@ -801,6 +901,23 @@ export function createLiveTVMock(titles: FakeTitle[], empty = false) {
           ),
           nextNumber: String(Math.max(0, ...channels.map((c) => Number(c.number))) + 1),
         },
+      };
+    }
+    if (
+      method === "GET" &&
+      seg[1] === "channels" &&
+      seg[2] &&
+      seg[3] === "sources" &&
+      seg[4] === "status"
+    ) {
+      const ch = channels.find((c) => c.id === seg[2]);
+      const list = (ch?.streamSources as { id: string }[] | undefined) ?? [];
+      return {
+        body: list.map((src) => ({
+          id: src.id,
+          state: "available",
+          lastPlayed: new Date(now - 15 * 60e3).toISOString(),
+        })),
       };
     }
     if (method === "GET" && seg[1] === "channels" && seg.length === 3)

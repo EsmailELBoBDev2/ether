@@ -485,6 +485,7 @@ class RuntimeLimits(TypedDict, total=False):
     readBytes: int
     deadline: str
     unitBudget: int
+    poolSize: int
 
 
 class DataRange(TypedDict):
@@ -2300,6 +2301,7 @@ class MockHostClient:
             "archiveMembers": 65535,
             "maxItems": 2_000_000,
             "deadline": "12h",
+            "poolSize": 2,
         }
         self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)

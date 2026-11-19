@@ -205,6 +205,9 @@ type RuntimeLimits struct {
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
 	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline
+	// PoolSize is the hosted WASM instance pool size (default 2, ceiling owner-controlled up to 4).
+	// Background jobs hold at most PoolSize-1 instances so interactive calls retain a free instance.
+	PoolSize int `json:"poolSize,omitempty"`
 }
 
 // SidecarDecl says how a remote plugin's program comes to be: a Docker image,
@@ -953,6 +956,7 @@ var (
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
+	ErrBusy             = errors.New("plugins: plugin is busy")
 	ErrJobsBusy         = core.ErrJobsBusy
 
 	ErrDigestMismatch = errors.New("plugins: artifact digest does not match")

@@ -645,6 +645,14 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		m.store.addCall(ctx, rec)
 		return Response{}, ctx.Err()
 	}
+	if err != nil && errors.Is(err, wasm.ErrPoolBusy) {
+		// Waiting for a free instance is pool contention, not a plugin crash:
+		// keep the runtime and any running jobs intact and do not record a
+		// health failure.
+		rec.Error = m.store.redactKnown(ctx, pluginID, err.Error())
+		m.store.addCall(ctx, rec)
+		return Response{}, fmt.Errorf("%w: %w", ErrBusy, err)
+	}
 	if err != nil {
 		if req.Path == "/ether/notify" || req.Path == "/ether/configure" {
 			err = errors.New("notification delivery failed")

@@ -290,6 +290,9 @@ func (m *Manager) fail(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusForbidden, "revoked", "This plugin has been revoked in the catalogue and cannot be enabled.", nil)
 	case errors.Is(err, ErrPermissionDenied):
 		writeErr(w, http.StatusForbidden, "permission_denied", "That access was not granted.", nil)
+	case errors.Is(err, ErrBusy):
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, http.StatusServiceUnavailable, "busy", "This plugin is busy right now. Try again shortly.", nil)
 	case errors.Is(err, ErrNoRuntime):
 		writeErr(w, http.StatusServiceUnavailable, "no_runtime", "This plugin cannot run yet because its runtime is not available.", nil)
 	case errors.Is(err, ErrDisabled):

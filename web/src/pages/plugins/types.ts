@@ -121,6 +121,7 @@ export interface RuntimeLimits {
   memoryBytes: number;
   deadline: string;
   unitBudget: number;
+  poolSize?: number;
 }
 
 export interface PluginDetail extends PluginSummary {

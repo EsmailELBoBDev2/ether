@@ -13,6 +13,7 @@ type runtimeCeilings struct {
 	memory                  uint64
 	deadline                time.Duration
 	units                   int64
+	poolSize                int
 	fetch, member, expanded int64
 	members                 int
 	maxItems                int
@@ -23,6 +24,7 @@ func defaultRuntimeCeilings() runtimeCeilings {
 		memory:   2 << 30,
 		deadline: 12 * time.Hour,
 		units:    1 << 60,
+		poolSize: wasm.MaxPoolSize,
 		fetch:    8 << 30,
 		member:   8 << 30,
 		expanded: 32 << 30,
@@ -39,6 +41,9 @@ func applyRuntimeCeilings(c runtimeCeilings, l config.PluginRuntimeLimits) runti
 	}
 	if l.UnitBudget > 0 {
 		c.units = l.UnitBudget
+	}
+	if l.PoolSize > 0 {
+		c.poolSize = min(l.PoolSize, wasm.MaxPoolSize)
 	}
 	if l.FetchBytes > 0 {
 		c.fetch = min(l.FetchBytes, int64(1<<60))
@@ -95,7 +100,13 @@ func (m *Manager) MaxPluginItems(id string) int {
 	return c.maxItems
 }
 func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
-	l := wasm.Limits{MemoryBytes: min(uint64(32<<20), c.memory), Deadline: c.deadline, UnitBudget: c.units, Stremio: m.SpeaksStremio()}
+	l := wasm.Limits{
+		MemoryBytes: min(uint64(32<<20), c.memory),
+		Deadline:    c.deadline,
+		UnitBudget:  c.units,
+		PoolSize:    min(wasm.DefaultPoolSize, c.poolSize),
+		Stremio:     m.SpeaksStremio(),
+	}
 	if m.Ether != nil && m.Ether.Runtime.Limits != nil {
 		r := m.Ether.Runtime.Limits
 		if r.MemoryBytes > 0 {
@@ -106,6 +117,9 @@ func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
 		}
 		if r.UnitBudget > 0 {
 			l.UnitBudget = min(r.UnitBudget, c.units)
+		}
+		if r.PoolSize > 0 {
+			l.PoolSize = min(r.PoolSize, c.poolSize)
 		}
 	}
 	return l
@@ -121,6 +135,7 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
 		Deadline:    l.Deadline.String(),
 		UnitBudget:  l.UnitBudget,
+		PoolSize:    l.PoolSize,
 	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
@@ -153,8 +168,8 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			m.fail(w, err)
 			return
 		}
-		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB and resource limits must not be negative.", nil)
+		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
+			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB, instances at most 4, and resource limits must not be negative.", nil)
 			return
 		}
 		if req.Limits.Deadline != "" {

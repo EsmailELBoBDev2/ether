@@ -80,6 +80,7 @@ export interface RuntimeLimits {
   readBytes?: number;
   deadline?: string;
   unitBudget?: number;
+  poolSize?: number;
 }
 export interface RuntimeDecl {
   kind: "hosted" | "remote";

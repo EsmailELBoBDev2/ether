@@ -1038,6 +1038,12 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "poolSize": {
+                  "default": 2,
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (max 4). Background jobs hold at most poolSize - 1 instances so interactive viewer and health calls keep a free instance.",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "unitBudget": {
                   "default": 1152921504606847000,
                   "minimum": 0,

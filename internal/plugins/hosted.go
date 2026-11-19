@@ -121,6 +121,7 @@ func HostedRuntimeFactory(eng *wasm.Engine) RuntimeFactory {
 			lim.MemoryBytes = l.MemoryBytes
 			lim.Deadline, _ = time.ParseDuration(l.Deadline)
 			lim.UnitBudget = l.UnitBudget
+			lim.PoolSize = l.PoolSize
 		}
 		lim.Busy = inst.Busy
 		switch {

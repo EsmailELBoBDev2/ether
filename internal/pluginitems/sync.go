@@ -3,6 +3,7 @@ package pluginitems
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -122,7 +123,9 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		_, _ = s.db.ExecContext(ctx,
 			`UPDATE plugin_sync_state SET last_error = ? WHERE plugin_id = ? AND kind_key = ?`,
 			syncErr.Error(), pluginID, kindKey)
-		s.noteAttention(ctx, pluginID, syncErr.Error())
+		if !errors.Is(syncErr, plugins.ErrBusy) {
+			s.noteAttention(ctx, pluginID, syncErr.Error())
+		}
 		return res, syncErr
 	}
 

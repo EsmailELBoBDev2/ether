@@ -202,12 +202,15 @@ than billed as guest wall time):
 Calling `ether.runtime.limits()` (`ctx.ether.runtime.limits()` in the TypeScript
 SDK) inside a hosted handler returns the **effective** `deadline` and
 `unitBudget` for the current call after route and owner clamps, alongside
-`memoryBytes`, `readBytes`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
+`memoryBytes`, `readBytes`, `poolSize`, `fetchBytes`, `maxItems` and archive limits. If a viewer-path
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 
-Plugins request higher memory, time, download or archive limits in
-`ether.runtime.limits` in `manifest.json`. Owners raise or lower the server-wide
+Plugins request higher memory, time, instance pool (`poolSize`, default 2, max 4),
+download or archive limits in `ether.runtime.limits` in `manifest.json`. Background
+jobs and sync calls hold at most `poolSize - 1` instances so viewer, adapter and
+health calls retain a free instance; waiting for a busy instance returns a retryable
+busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
 ceilings in **Plugins → Settings**, or override them for a single plugin in that
 plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
 and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).

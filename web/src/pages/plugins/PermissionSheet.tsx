@@ -483,6 +483,7 @@ export function RuntimeLimitsCard({
       value: (l) =>
         !l?.unitBudget ? t("Default") : l.unitBudget >= 2 ** 53 ? t("Unlimited") : l.unitBudget,
     },
+    { label: t("Instances"), value: (l) => l?.poolSize || t("Default") },
     {
       label: t("Download (GiB)"),
       value: (l) => (l?.fetchBytes ? l.fetchBytes / 1073741824 : t("Default")),

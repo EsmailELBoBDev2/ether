@@ -467,6 +467,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		limits.MemoryBytes = active.MemoryBytes
 		limits.Deadline = active.Deadline.String()
 		limits.UnitBudget = active.UnitBudget
+		limits.PoolSize = active.PoolSize
 	}
 	limits.ReadBytes = dataReadLimit(limits)
 	readCap := limits.ReadBytes
@@ -756,5 +757,6 @@ func defaultDataLimits() RuntimeLimits {
 		ArchiveMembers:       maxArchiveMembers,
 		MaxItems:             DefaultMaxPluginItems,
 		Deadline:             "12h",
+		PoolSize:             wasm.DefaultPoolSize,
 	}
 }

@@ -361,3 +361,70 @@ func indexedBrowseQuery(library *Library, q frontend.ItemQuery) bool {
 	}
 	return true
 }
+
+// IndexedLibraryCount returns the indexed size of one library without ever
+// falling back to a full-library scan.
+func (s *Service) IndexedLibraryCount(ctx context.Context, viewer *core.Viewer, viewID string) (int, error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	if s == nil {
+		return 0, errors.New("experience: library count unavailable")
+	}
+	if s.d.PluginLibraries != nil {
+		v, err := s.viewer(ctx, viewer)
+		if err != nil {
+			return 0, err
+		}
+		id, err := strconv.Atoi(viewID)
+		if err != nil {
+			return 0, core.ErrNotFound
+		}
+		lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id))
+		if err != nil {
+			return 0, core.ErrNotFound
+		}
+		mt, _, ok := s.publishedLibrary(ctx, lib)
+		if !ok {
+			return 0, core.ErrNotFound
+		}
+		if !v.AllowsLibrary(lib.ID) {
+			return 0, nil
+		}
+		target := &Library{ID: int(lib.ID), Name: lib.Name, Type: mt, Virtual: true}
+		switch lib.Source {
+		case core.LibraryPlugin:
+			return s.d.PluginLibraries.Count(ctx, lib)
+		case core.LibraryCatalog:
+			q := frontend.ItemQuery{Filter: s.libraryBrowseFilter(ctx, v, lib, core.Filter{}), Limit: 1}
+			if page, ok, err := s.indexedLibraryPage(ctx, v, target, q); err != nil {
+				return 0, err
+			} else if ok {
+				return page.Total, nil
+			}
+			if len(q.Filter.CatalogueSources) == 0 && len(q.Filter.ExtraRules) == 0 && v.MaxContentRating == "" && s.d.CountBrowsable != nil {
+				return s.d.CountBrowsable(ctx, mt)
+			}
+			return 0, errors.New("experience: indexed library count unavailable")
+		case core.LibraryCollection:
+			q := frontend.ItemQuery{Filter: s.libraryBrowseFilter(ctx, v, lib, core.Filter{}), Limit: 1}
+			if page, ok, err := s.indexedLibraryPage(ctx, v, target, q); err != nil {
+				return 0, err
+			} else if ok {
+				return page.Total, nil
+			}
+			if s.d.Browse == nil {
+				return 0, errors.New("experience: library count unavailable")
+			}
+			page, err := s.collectionLibraryScan(ctx, v, target, q, lib.CollectionID)
+			if err != nil {
+				return 0, err
+			}
+			return page.Total, nil
+		default:
+			if s.d.CountBrowsable == nil {
+				return 0, errors.New("experience: library count unavailable")
+			}
+			return s.d.CountBrowsable(ctx, mt)
+		}
+	}
+	return s.LibraryCount(ctx, viewer, viewID)
+}

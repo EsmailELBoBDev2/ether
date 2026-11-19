@@ -79,3 +79,68 @@ func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, libra
 	}
 	return core.Page{Items: permitted[start:end], Total: total}, true, nil
 }
+
+// MirrorCounts returns the indexed episode and franchise totals when the
+// viewer has no per-title content cap or judged rule that would invalidate
+// the mirror-wide tally.
+func (s *Service) MirrorCounts(ctx context.Context, viewer *core.Viewer) (episodes, collections int, err error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	if s == nil || s.d.Catalog == nil {
+		return 0, 0, nil
+	}
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return 0, 0, err
+	}
+	if v.MaxContentRating != "" {
+		return 0, 0, nil
+	}
+	if s.d.ViewerRules != nil {
+		if _, judged := s.d.ViewerRules(v); judged {
+			return 0, 0, nil
+		}
+	}
+	counter, ok := s.d.Catalog.(interface {
+		MirrorCounts(context.Context) (int, int, error)
+	})
+	if !ok {
+		return 0, 0, nil
+	}
+	return counter.MirrorCounts(ctx)
+}
+
+// FavoriteCounts counts a viewer's visible favorite movies, series and
+// episodes from their bounded favorite rows without walking any library.
+func (s *Service) FavoriteCounts(ctx context.Context, viewer *core.Viewer) (movies, series, episodes int, err error) {
+	ctx = core.WithCatalogViewer(ctx, viewer)
+	if s == nil || s.d.FavoriteTitleKeys == nil || s.d.CachedGetMany == nil {
+		return 0, 0, 0, nil
+	}
+	v, err := s.viewer(ctx, viewer)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	keys, _, err := s.d.FavoriteTitleKeys(ctx, v, maxIndexedExclusions)
+	if err != nil || len(keys) == 0 {
+		return 0, 0, 0, err
+	}
+	titles, err := s.d.CachedGetMany(ctx, keys)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for _, k := range keys {
+		title, found := titles[k]
+		if !found || !s.visible(ctx, v, &title) {
+			continue
+		}
+		switch title.Type {
+		case core.TypeMovie:
+			movies++
+		case core.TypeShow:
+			series++
+		case core.TypeEpisode:
+			episodes++
+		}
+	}
+	return movies, series, episodes, nil
+}

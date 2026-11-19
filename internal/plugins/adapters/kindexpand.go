@@ -23,9 +23,18 @@ const (
 	MaxKindExpandItems = 2000
 )
 
+// firstOpenWait bounds how long the first page of a studio or performer
+// waits for its catalogue fill, so the first open already shows the full
+// catalogue. A fill that runs longer keeps going and the page shows what has
+// arrived.
+var firstOpenWait = 20 * time.Second
+
 var (
 	_              experience.PluginSliceExpander = (*KindCatalog)(nil)
 	expandLaunchMu sync.Mutex
+	// expandDone holds one channel per running fill (dedup key), closed when
+	// the fill finishes, so first-page readers can wait for it.
+	expandDone sync.Map
 )
 
 type expandTarget struct {
@@ -35,11 +44,11 @@ type expandTarget struct {
 }
 
 // MaybeExpand checks whether viewer browse query q opens a single declared
-// expandable facet bucket or a plugin person's credits on lib. If an expansion
-// for that slice is currently running it returns true immediately; if no fresh
-// expansion exists within ttlHours it launches a background expansion job via
-// Manager.StartExpandJob and returns true; otherwise it returns false without
-// blocking the viewer request.
+// expandable facet bucket or a plugin person's credits on lib. When no fresh
+// expansion exists within ttlHours it launches one via Manager.StartExpandJob.
+// The first page of the slice then waits (at most firstOpenWait) for the fill
+// to finish, so the first open shows the full catalogue. It reports whether a
+// fill is still running when it returns; later pages never wait.
 func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q frontend.ItemQuery) bool {
 	if c == nil || c.items == nil || c.mgr == nil || lib.Source != core.LibraryPlugin {
 		return false
@@ -138,6 +147,7 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 	}
 
 	ttl := time.Duration(rec.Decl.Browse.Expand.EffectiveTTLHours()) * time.Hour
+	var waits []chan struct{}
 	now := c.items.Now()
 	routePath := "/ether/v1/kinds/" + rec.KindKey + "/expand"
 	anyRunning := false
@@ -146,6 +156,9 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 		dedupKey := rec.KindKey + "\x00" + t.facet + "\x00" + t.valueKey
 		expandLaunchMu.Lock()
 		if c.mgr.IsExpandJobRunning(rec.PluginID, dedupKey) {
+			if ch, ok := expandDone.Load(dedupKey); ok {
+				waits = append(waits, ch.(chan struct{}))
+			}
 			expandLaunchMu.Unlock()
 			anyRunning = true
 			continue
@@ -156,8 +169,13 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 			continue
 		}
 		ready := make(chan struct{})
+		done := make(chan struct{})
 		target := t
 		started, startErr := c.mgr.StartExpandJob(rec.PluginID, routePath, dedupKey, func(jobCtx context.Context, run *plugins.ExpandJobRunner) error {
+			defer func() {
+				expandDone.Delete(dedupKey)
+				close(done)
+			}()
 			<-ready
 			return c.runFacetExpansion(jobCtx, run, rec, lib.ID, routePath, target)
 		})
@@ -176,12 +194,34 @@ func (c *KindCatalog) MaybeExpand(ctx context.Context, lib core.Library, q front
 		markCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = c.items.MarkFacetExpansionRunning(markCtx, rec.PluginID, rec.KindKey, lib.ID, t.facet, t.valueKey)
 		cancel()
+		expandDone.Store(dedupKey, done)
+		waits = append(waits, done)
 		close(ready)
 		expandLaunchMu.Unlock()
 		anyRunning = true
 	}
 
-	return anyRunning
+	if !anyRunning {
+		return false
+	}
+	// The first page waits for the fill (its own or another viewer's), so a
+	// viewer opening a studio or performer sees the whole catalogue the first
+	// time. Later pages never wait.
+	if q.Offset != 0 || q.StartAt != 0 || q.AdjacentTo != 0 || len(waits) == 0 || firstOpenWait <= 0 {
+		return true
+	}
+	timer := time.NewTimer(firstOpenWait)
+	defer timer.Stop()
+	for _, ch := range waits {
+		select {
+		case <-ch:
+		case <-timer.C:
+			return true
+		case <-ctx.Done():
+			return true
+		}
+	}
+	return false
 }
 
 func (c *KindCatalog) runFacetExpansion(jobCtx context.Context, run *plugins.ExpandJobRunner, rec pluginitems.KindRecord, libID core.LibraryID, routePath string, target expandTarget) error {

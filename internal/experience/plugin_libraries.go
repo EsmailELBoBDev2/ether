@@ -548,15 +548,20 @@ func pluginCursorPrefix(scope string, q frontend.ItemQuery) string {
 const maxPluginBrowseWalkPages = 40
 
 func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
+	// A studio or performer opened for the first time fills its catalogue
+	// before the page is read (MaybeExpand waits, bounded, on the first page),
+	// so the viewer sees every title the first time.
+	expanding := false
+	if !q.SuppressExpand && strings.TrimSpace(q.Filter.Query) == "" {
+		if exp, ok := s.d.PluginLibraries.(PluginSliceExpander); ok {
+			expanding = exp.MaybeExpand(ctx, lib, q)
+		}
+	}
 	page, err := s.readPluginLibraryItems(ctx, v, lib, q)
 	if err != nil {
 		return core.Page{}, err
 	}
-	if !q.SuppressExpand && strings.TrimSpace(q.Filter.Query) == "" {
-		if exp, ok := s.d.PluginLibraries.(PluginSliceExpander); ok && exp.MaybeExpand(ctx, lib, q) {
-			page.Expanding = true
-		}
-	}
+	page.Expanding = expanding
 	return page, nil
 }
 

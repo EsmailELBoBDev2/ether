@@ -13,6 +13,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
+	"github.com/braedonsaunders/ether/internal/plugins/adapters"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	ethersdk "github.com/braedonsaunders/ether/sdk/go"
 )
@@ -196,6 +197,10 @@ func TestKindCatalogFacetAndPersonExpansion(t *testing.T) {
 
 	enterExpand := make(chan core.KindExpandRequest, 8)
 	releaseExpand := make(chan struct{})
+	// The facet fill below is held open by the test, so the first open must
+	// give up waiting and show the stored items; the person fill later runs
+	// freely and the first open waits for it.
+	defer adapters.SetFirstOpenWait(0)()
 	var expandCalls atomic.Int32
 
 	h.rt.mu.Lock()
@@ -394,6 +399,7 @@ func TestKindCatalogFacetAndPersonExpansion(t *testing.T) {
 		t.Fatalf("FacetPeople = %+v, err=%v", fp, err)
 	}
 	personID := fp.Items[0].PersonID
+	defer adapters.SetFirstOpenWait(time.Minute)()
 	personPage, err := exp.LibraryItems(ctx, viewer, core.Device{}, viewID, frontend.ItemQuery{
 		Filter: core.Filter{Person: personID},
 		Limit:  20,
@@ -401,8 +407,8 @@ func TestKindCatalogFacetAndPersonExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !personPage.Expanding || len(personPage.Items) != 1 {
-		t.Fatalf("person initial open = %+v, want Expanding=true and 1 item", personPage)
+	if personPage.Expanding || len(personPage.Items) != 2 {
+		t.Fatalf("person first open = %+v, want the filled catalogue (Expanding=false, 2 items)", personPage)
 	}
 	select {
 	case req := <-enterExpand:

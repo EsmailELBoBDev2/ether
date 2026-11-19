@@ -284,3 +284,10 @@ type ReplicaStore interface {
 	DropCache()
 	Compact(ctx context.Context) error
 }
+
+// Chooser records that a stored release won resolution for a profile
+// (winner-only fingerprint update; called after newznab's Put and on alias
+// hits).
+type Chooser interface {
+	MarkChosen(ctx context.Context, key Key, profileFP string) error
+}

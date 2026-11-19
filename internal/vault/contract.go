@@ -269,9 +269,6 @@ type Options struct {
 // far beyond years of a household's releases at ~30 B/article.
 const DefaultCapBytes = 20 << 30
 
-// Open opens (creating) a vault. Implemented by the vault-core worker;
-// until then it reports ErrNotImplemented so dependants compile.
-var Open = func(ctx context.Context, o Options) (Store, error) { return nil, ErrNotImplemented }
 
 // ErrNotImplemented is returned by placeholders during the build.
 var ErrNotImplemented = errors.New("vault: not implemented yet")

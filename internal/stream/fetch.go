@@ -11,6 +11,30 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+type providerBackoffWaiter interface {
+	IsProviderBackoff(err error) bool
+	WaitProviderBackoff(ctx context.Context, messageID string, cause error) (bool, error)
+}
+
+func (e *Engine) isProviderBackoff(err error) bool {
+	if err == nil {
+		return false
+	}
+	bw, ok := e.fetcher.(providerBackoffWaiter)
+	return ok && bw.IsProviderBackoff(err)
+}
+
+type backoffHoldKey struct{}
+
+func withBackoffHold(ctx context.Context, until time.Time) context.Context {
+	return context.WithValue(ctx, backoffHoldKey{}, until)
+}
+
+func backoffHoldDeadline(ctx context.Context) (time.Time, bool) {
+	until, ok := ctx.Value(backoffHoldKey{}).(time.Time)
+	return until, ok && !until.IsZero()
+}
+
 // flightKey isolates the three scheduling lanes for an article. A viewer must
 // never inherit a queued speculative fetch's lower connection-pool priority.
 // Completed bytes still share the ordinary hot/disk segment key.
@@ -29,6 +53,20 @@ type flight struct {
 	err     error
 	waiters int
 	cancel  context.CancelFunc
+
+	liveWaiters int
+	liveCtx     context.Context
+	liveCancel  context.CancelFunc
+	holdUntil   time.Time
+	backoffErr  error
+	stateCh     chan struct{}
+}
+
+func (fl *flight) notifyStateLocked() {
+	if fl.stateCh != nil {
+		close(fl.stateCh)
+		fl.stateCh = make(chan struct{})
+	}
 }
 
 // fetchOpts says where a fetched segment may be stored.
@@ -117,6 +155,11 @@ func (e *Engine) segmentOnce(ctx context.Context, rel *release, pf *postedFile, 
 		hkey := flightKey{segKey: key, priority: higher}
 		if candidate := e.flights[hkey]; candidate != nil && candidate.waiters > 0 &&
 			(!fo.noHot || e.cache == nil || candidate.cacheID == fo.cacheID) {
+			if candidate.backoffErr != nil {
+				berr := candidate.backoffErr
+				e.mu.Unlock()
+				return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, berr)
+			}
 			fkey, fl, joined = hkey, candidate, true
 			break
 		}
@@ -134,32 +177,57 @@ func (e *Engine) segmentOnce(ctx context.Context, rel *release, pf *postedFile, 
 		}
 	}
 	if joined {
+		if prio != core.PriorityLive && fl.backoffErr != nil {
+			berr := fl.backoffErr
+			e.mu.Unlock()
+			return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, berr)
+		}
 		fl.waiters++
+		if prio == core.PriorityLive {
+			fl.liveWaiters++
+			if until, ok := backoffHoldDeadline(ctx); ok && until.After(fl.holdUntil) {
+				fl.holdUntil = until
+				fl.notifyStateLocked()
+			}
+		}
 		e.coalesced.Add(1)
 	} else {
 		// The owner's stream key lets the fetcher tell this stream's stalls
 		// from other viewers' variance.
 		fctx, cancel := context.WithCancel(core.WithStreamKey(core.InheritBackground(e.ctx, ctx), core.StreamKey(ctx)))
-		fl = &flight{decoded: make(chan struct{}), stored: make(chan struct{}), done: make(chan struct{}), cacheID: fo.cacheID, waiters: 1, cancel: cancel}
+		liveCtx, liveCancel := context.WithCancel(fctx)
+		fl = &flight{
+			decoded:    make(chan struct{}),
+			stored:     make(chan struct{}),
+			done:       make(chan struct{}),
+			cacheID:    fo.cacheID,
+			waiters:    1,
+			cancel:     cancel,
+			liveCtx:    liveCtx,
+			liveCancel: liveCancel,
+			stateCh:    make(chan struct{}),
+		}
+		if prio == core.PriorityLive {
+			fl.liveWaiters = 1
+			if until, ok := backoffHoldDeadline(ctx); ok {
+				fl.holdUntil = until
+			}
+		}
 		e.flights[fkey] = fl
 		e.wg.Add(1)
 		go e.run(fctx, fl, fkey, rel, pf, i, id, prio, fo)
 	}
 	e.mu.Unlock()
 
-	ready := fl.done
-	if fo.noHot {
-		ready = fl.stored
-	}
-	select {
-	case <-ready:
-		if fl.err != nil && errors.Is(fl.err, context.Canceled) && ctx.Err() == nil && e.ctx.Err() == nil {
-			return nil, true, fl.err
-		}
-		return fl.seg, false, fl.err
-	case <-ctx.Done():
+	detach := func() bool {
 		e.mu.Lock()
 		fl.waiters--
+		if prio == core.PriorityLive {
+			fl.liveWaiters--
+			if fl.liveWaiters == 0 && fl.liveCancel != nil {
+				fl.liveCancel()
+			}
+		}
 		last := fl.waiters == 0
 		if last {
 			// Independent priority lanes remain alive for their own waiters.
@@ -167,14 +235,90 @@ func (e *Engine) segmentOnce(ctx context.Context, rel *release, pf *postedFile, 
 			fl.cancel()
 		}
 		e.mu.Unlock()
-		// A health call owns its canceled work through termination, so it
-		// cannot spend bytes after reporting completion. Shared live work
-		// and ordinary readers retain independent, prompt cancellation.
-		if last && ctx.Value(healthWorkKey{}) == true {
-			<-fl.done
-		}
-		return nil, false, ctx.Err()
+		return last
 	}
+
+	ready := fl.done
+	if fo.noHot {
+		ready = fl.stored
+	}
+	callerHold, hasCallerHold := backoffHoldDeadline(ctx)
+	for {
+		e.mu.Lock()
+		berr := fl.backoffErr
+		sch := fl.stateCh
+		e.mu.Unlock()
+
+		if berr != nil {
+			if prio != core.PriorityLive || !hasCallerHold || !time.Now().Before(callerHold) {
+				detach()
+				return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, berr)
+			}
+		}
+
+		var holdTimer *time.Timer
+		var holdC <-chan time.Time
+		if berr != nil && hasCallerHold {
+			holdTimer = time.NewTimer(time.Until(callerHold))
+			holdC = holdTimer.C
+		}
+		select {
+		case <-ready:
+			if holdTimer != nil {
+				holdTimer.Stop()
+			}
+			if fl.err != nil && errors.Is(fl.err, context.Canceled) && ctx.Err() == nil && e.ctx.Err() == nil {
+				return nil, true, fl.err
+			}
+			return fl.seg, false, fl.err
+		case <-holdC:
+			e.mu.Lock()
+			berr = fl.backoffErr
+			e.mu.Unlock()
+			if berr == nil {
+				continue
+			}
+			detach()
+			return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, berr)
+		case <-sch:
+			if holdTimer != nil {
+				holdTimer.Stop()
+			}
+		case <-ctx.Done():
+			if holdTimer != nil {
+				holdTimer.Stop()
+			}
+			last := detach()
+			// A health call owns its canceled work through termination, so it
+			// cannot spend bytes after reporting completion. Shared live work
+			// and ordinary readers retain independent, prompt cancellation.
+			if last && ctx.Value(healthWorkKey{}) == true {
+				<-fl.done
+			}
+			return nil, false, ctx.Err()
+		}
+	}
+}
+
+func (e *Engine) flightHoldState(fl *flight) (time.Time, context.Context) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if fl == nil || fl.liveWaiters <= 0 {
+		return time.Time{}, nil
+	}
+	return fl.holdUntil, fl.liveCtx
+}
+
+func (e *Engine) setFlightBackoff(fl *flight, err error) {
+	if fl == nil {
+		return
+	}
+	e.mu.Lock()
+	if fl.backoffErr != err {
+		fl.backoffErr = err
+		fl.notifyStateLocked()
+	}
+	e.mu.Unlock()
 }
 
 // liveHedgeDelay bounds the latency a live reader may inherit from an
@@ -271,8 +415,13 @@ func (e *Engine) learnHot(rel *release, pf *postedFile, i int, seg *segData) {
 func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *release, pf *postedFile, i int, id string, prio core.Priority, fo fetchOpts) {
 	defer e.wg.Done()
 	defer close(fl.stored)
-	defer fl.cancel()
-	seg, fromCache, err := e.load(ctx, pf, i, id, key.seg, prio, fo)
+	defer func() {
+		if fl.liveCancel != nil {
+			fl.liveCancel()
+		}
+		fl.cancel()
+	}()
+	seg, fromCache, err := e.loadFlight(ctx, fl, pf, i, id, key.seg, prio, fo)
 	if err == nil {
 		if !seg.repairedSpan {
 			pf.learn(i, seg.begin, seg.end(), seg.fileSize, seg.total)
@@ -285,6 +434,7 @@ func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *releas
 	// Publish normalized data before any slow disk write. A live hedge may
 	// consume/promote these bytes while a noHot owner awaits durable storage.
 	e.mu.Lock()
+	fl.backoffErr = nil
 	fl.seg, fl.err = seg, err
 	e.mu.Unlock()
 	close(fl.decoded)
@@ -315,6 +465,10 @@ func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *releas
 // load reads a segment from the disk cache or fetches it, with retries for
 // transient errors.
 func (e *Engine) load(ctx context.Context, pf *postedFile, i int, id string, global int, prio core.Priority, fo fetchOpts) (*segData, bool, error) {
+	return e.loadFlight(ctx, nil, pf, i, id, global, prio, fo)
+}
+
+func (e *Engine) loadFlight(ctx context.Context, fl *flight, pf *postedFile, i int, id string, global int, prio core.Priority, fo fetchOpts) (*segData, bool, error) {
 	if fo.cacheID != "" && e.cache != nil {
 		if seg, ok := e.cachedSegment(fo.cacheID, global); ok {
 			e.cacheHits.Add(1)
@@ -342,6 +496,37 @@ func (e *Engine) load(ctx context.Context, pf *postedFile, i int, id string, glo
 		if err == nil {
 			seg, err := e.normalize(pf, i, data, part)
 			return seg, false, err
+		}
+		if prio == core.PriorityLive && fl != nil {
+			if bw, ok := e.fetcher.(providerBackoffWaiter); ok && bw.IsProviderBackoff(err) {
+				for {
+					until, liveCtx := e.flightHoldState(fl)
+					if until.IsZero() || liveCtx == nil || !time.Now().Before(until) || liveCtx.Err() != nil {
+						e.setFlightBackoff(fl, nil)
+						return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, err)
+					}
+					e.setFlightBackoff(fl, err)
+					waitCtx, cancelWait := context.WithDeadline(liveCtx, until)
+					ready, werr := bw.WaitProviderBackoff(waitCtx, id, err)
+					cancelWait()
+					if !ready || werr != nil {
+						e.setFlightBackoff(fl, nil)
+						if ctx.Err() != nil && liveCtx.Err() != nil && time.Now().Before(until) {
+							return nil, false, ctx.Err()
+						}
+						return nil, false, fmt.Errorf("stream: %s part %d: %w", pf.Name(), i+1, err)
+					}
+					e.setFlightBackoff(fl, nil)
+					data, part, err = e.bodyPart(ctx, pf, id, prio, fo)
+					if err == nil {
+						seg, nerr := e.normalize(pf, i, data, part)
+						return seg, false, nerr
+					}
+					if !bw.IsProviderBackoff(err) {
+						break
+					}
+				}
+			}
 		}
 		if errors.Is(err, core.ErrBudgetExhausted) {
 			return nil, false, err

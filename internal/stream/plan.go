@@ -346,60 +346,76 @@ func (p *plan) inspect(ctx context.Context, v verifier, k int) (volInfo, error) 
 
 // rebuildExact inspects every volume and rebuilds the layout from facts.
 func (p *plan) rebuildExact(ctx context.Context, v verifier) error {
-	p.mu.Lock()
-	if p.exactErr != nil {
-		err := p.exactErr
-		p.mu.Unlock()
-		return err
-	}
-	if ch := p.exact; ch != nil {
-		p.mu.Unlock()
-		select {
-		case <-ch:
+	for {
+		p.mu.Lock()
+		if p.exactErr != nil {
+			err := p.exactErr
+			p.mu.Unlock()
+			return err
+		}
+		allVerified := true
+		for _, ok := range p.verified {
+			if !ok {
+				allVerified = false
+				break
+			}
+		}
+		if allVerified {
+			p.mu.Unlock()
 			return nil
-		case <-ctx.Done():
-			return ctx.Err()
 		}
-	}
-	ch := make(chan struct{})
-	p.exact = ch
-	p.mu.Unlock()
-
-	infos := make([]volInfo, len(p.vols))
-	b := &builder{e: v.e, rel: p.rel, prio: v.prio, fo: v.fo}
-	err := b.parallel(ctx, len(p.vols), func(ctx context.Context, k int) error {
-		vi, err := p.inspect(ctx, v, k)
-		infos[k] = vi
-		return err
-	})
-
-	p.mu.Lock()
-	defer func() {
-		p.exact = nil
-		close(ch)
+		if ch := p.exact; ch != nil {
+			p.mu.Unlock()
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
+		p.exact = ch
 		p.mu.Unlock()
-	}()
-	if err != nil {
-		if IsRejection(err) && ctx.Err() == nil {
-			p.exactErr = err
+
+		infos := make([]volInfo, len(p.vols))
+		b := &builder{e: v.e, rel: p.rel, prio: v.prio, fo: v.fo}
+		err := b.parallel(ctx, len(p.vols), func(ctx context.Context, k int) error {
+			vi, err := p.inspect(ctx, v, k)
+			infos[k] = vi
+			return err
+		})
+
+		p.mu.Lock()
+		finish := func() {
+			p.exact = nil
+			close(ch)
+			p.mu.Unlock()
 		}
-		return err
+		if err != nil {
+			if IsRejection(err) && ctx.Err() == nil {
+				p.exactErr = err
+			}
+			finish()
+			return err
+		}
+		p.info = infos
+		for k := range p.verified {
+			p.verified[k] = true
+		}
+		version := 1
+		if p.lay != nil {
+			version = p.lay.version + 1
+		}
+		l, err := p.buildLocked(version)
+		if err != nil {
+			p.exactErr = err
+			finish()
+			return err
+		}
+		p.lay = l
+		finish()
+		return nil
 	}
-	p.info = infos
-	for k := range p.verified {
-		p.verified[k] = true
-	}
-	version := 1
-	if p.lay != nil {
-		version = p.lay.version + 1
-	}
-	l, err := p.buildLocked(version)
-	if err != nil {
-		p.exactErr = err
-		return err
-	}
-	p.lay = l
-	return nil
 }
 
 // clipBoundary is one clip of a concatenated Blu-ray main feature.

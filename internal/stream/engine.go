@@ -35,6 +35,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
+// DefaultBackoffHold bounds how long an active client byte-range read waits
+// for a Usenet provider to leave backoff before failing.
+const DefaultBackoffHold = 45 * time.Second
+
 // Options tune the engine. Zero values take the defaults noted.
 type Options struct {
 	Repair config.Repair
@@ -63,6 +67,10 @@ type Options struct {
 	OpenParallel int
 	// ReadTimeout bounds one ReadAt (default 90 s); ReadAt has no context.
 	ReadTimeout time.Duration
+	// BackoffHold bounds how long an active live ReadAt holds when every
+	// provider able to serve an article is backing off (default 45 s,
+	// capped at 45 s; negative disables holding).
+	BackoffHold time.Duration
 	// MaxReleases is how many parsed release indexes are kept for reuse
 	// (default 32). Releases with open sources are never dropped.
 	MaxReleases int
@@ -115,6 +123,11 @@ func (o Options) withDefaults() Options {
 	}
 	if o.ReadTimeout <= 0 {
 		o.ReadTimeout = 90 * time.Second
+	}
+	if o.BackoffHold == 0 {
+		o.BackoffHold = DefaultBackoffHold
+	} else if o.BackoffHold > DefaultBackoffHold {
+		o.BackoffHold = DefaultBackoffHold
 	}
 	return o
 }

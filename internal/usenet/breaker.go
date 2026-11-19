@@ -211,18 +211,26 @@ func cappedDouble(d, lo, hi time.Duration) time.Duration {
 }
 
 // connFailure records a failed dial, TLS handshake, greeting, or transport
-// setup. Established sockets are not at fault.
+// setup. Established sockets are not at fault. Simultaneous-IP capacity
+// refusals open the connect window immediately rather than spending a second
+// login handshake against an IP-locked account.
 func (b *breaker) connFailure(err error) time.Duration {
-	return b.open(&b.connectFailures, &b.connectUntil, tripConnect, err)
+	return b.open(&b.connectFailures, &b.connectUntil, tripConnect, err, isIPLimitErr(err))
+}
+
+// connLimitFailure records a connection-limit refusal after retries left zero
+// established sockets on the pool, opening connect backoff immediately.
+func (b *breaker) connLimitFailure(err error) time.Duration {
+	return b.open(&b.connectFailures, &b.connectUntil, tripConnect, err, true)
 }
 
 // commandFailure records a failure of a command on a socket that was
 // already up: BODY 502, a reset, or a timeout.
 func (b *breaker) commandFailure(err error) time.Duration {
-	return b.open(&b.commandFailures, &b.commandUntil, tripCommand, err)
+	return b.open(&b.commandFailures, &b.commandUntil, tripCommand, err, false)
 }
 
-func (b *breaker) open(failures *int, until *time.Time, cause tripCause, err error) time.Duration {
+func (b *breaker) open(failures *int, until *time.Time, cause tripCause, err error, immediate bool) time.Duration {
 	var notify bool
 	defer func() {
 		if notify {
@@ -237,6 +245,9 @@ func (b *breaker) open(failures *int, until *time.Time, cause tripCause, err err
 		notify = b.onChange != nil && (curState != prevState || curErr != prevErr)
 	}()
 	*failures++
+	if immediate && *failures < b.failThreshold {
+		*failures = b.failThreshold
+	}
 	b.lastErr, b.lastAt = err, b.now()
 	if *failures < b.failThreshold {
 		return 0
@@ -284,6 +295,7 @@ func (b *breaker) authFailure(err error) time.Duration {
 	}
 	d = min(d, b.maxMax())
 	b.authUntil = now.Add(d)
+	b.signalLocked()
 	return d
 }
 
@@ -315,6 +327,7 @@ func (b *breaker) authRecovered() {
 	defer b.mu.Unlock()
 	prevState, prevErr := b.reportedLocked()
 	b.authErr, b.authFails, b.authUntil, b.probing = nil, 0, time.Time{}, false
+	b.signalLocked()
 	curState, curErr := b.reportedLocked()
 	notify = b.onChange != nil && (curState != prevState || curErr != prevErr)
 }
@@ -372,6 +385,31 @@ func (b *breaker) recoveryDelay() (time.Duration, bool) {
 		return 0, false
 	}
 	return max(0, b.blockedUntil().Sub(b.now())), true
+}
+
+// backoffWait reports whether this breaker currently permits serving (given
+// whether the pool holds an already-authenticated idle socket), or the next
+// wakeup channel / timer needed to observe recovery.
+func (b *breaker) backoffWait(hasIdle bool) (ready, disabled, hasTimer bool, wait time.Duration, ch <-chan struct{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.authErr != nil {
+		return false, true, false, 0, nil
+	}
+	now := b.now()
+	if now.Before(b.commandUntil) {
+		return false, false, true, b.commandUntil.Sub(now), b.changed
+	}
+	if hasIdle {
+		return true, false, false, 0, nil
+	}
+	if now.Before(b.connectUntil) {
+		return false, false, true, b.connectUntil.Sub(now), b.changed
+	}
+	if b.networkProbe {
+		return false, false, false, 0, b.changed
+	}
+	return true, false, false, 0, nil
 }
 
 // waitReady does not claim a probe. The connection admission path still grants

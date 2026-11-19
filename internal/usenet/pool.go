@@ -41,11 +41,12 @@ type pool struct {
 	sem           *prioSem
 	brk           *breaker
 
-	mu     sync.Mutex
-	warmMu sync.Mutex
-	idle   []*Conn // LIFO: the most recently used connection is reused first
-	live   int     // idle + in use + being dialled
-	closed bool
+	mu       sync.Mutex
+	warmMu   sync.Mutex
+	idle     []*Conn       // LIFO: the most recently used connection is reused first
+	idleWake chan struct{} // closed and replaced when idle transitions 0 -> 1
+	live     int           // idle + in use + being dialled
+	closed   bool
 	// size is the configured connection count; limit is what the server
 	// was learned to allow (see limit.go), which can hold the semaphore
 	// below it.
@@ -148,6 +149,7 @@ func newPool(key string, cfg config.UsenetProvider, o *Options, log *slog.Logger
 		log:           log.With("provider", providerLabel(cfg)),
 		sem:           newPrioSem(size, prefetchSlots(size, o.PrefetchFraction)),
 		brk:           newBreaker(o.BackoffMin, o.BackoffMax, o.FailThreshold, time.Now),
+		idleWake:      make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
 		stop:          make(chan struct{}),
@@ -240,7 +242,7 @@ func (p *pool) noteBodyTransfer(c *Conn, wireBytes int64, d time.Duration) {
 // every socket.
 func (p *pool) get(ctx context.Context, prio core.Priority) (*Conn, error) {
 	for try := 0; ; try++ {
-		if err := p.brk.authDisabled(); err != nil {
+		if err := p.brk.idleAllowed(); err != nil {
 			return nil, err
 		}
 		if err := p.sem.Acquire(ctx, prio); err != nil {
@@ -311,11 +313,36 @@ func (p *pool) limitUnusable(err error) {
 	}
 	p.errs.Add(1)
 	p.dialFailed()
-	if d := p.brk.connFailure(al.err); d > 0 {
+	if d := p.brk.connLimitFailure(al.err); d > 0 {
 		p.log.Warn("usenet: connect failed; backing off", "err", al.err, "backoff", d)
 	} else {
 		p.log.Warn("usenet: connect failed", "err", al.err)
 	}
+}
+
+// backoffWait reports whether this pool can serve immediately, is permanently
+// unavailable (closed or credential-disabled), or provides wakeup channels/timer
+// until it may serve again.
+func (p *pool) backoffWait() (ready, disabled, hasTimer bool, wait time.Duration, brkCh, idleCh <-chan struct{}) {
+	p.mu.Lock()
+	closed := p.closed
+	hasIdle := !closed && len(p.idle) > 0
+	var iCh <-chan struct{}
+	if !closed && !hasIdle {
+		iCh = p.idleWake
+	}
+	p.mu.Unlock()
+	if closed {
+		return false, true, false, 0, nil, nil
+	}
+	ready, disabled, hasTimer, wait, brkCh = p.brk.backoffWait(hasIdle)
+	if ready || disabled {
+		return ready, disabled, false, 0, nil, nil
+	}
+	if p.brk.idleAllowed() != nil {
+		iCh = nil
+	}
+	return false, false, hasTimer, wait, brkCh, iCh
 }
 
 // takeIdle returns a live idle connection, or (nil, nil) when the caller
@@ -449,8 +476,13 @@ func (p *pool) put(c *Conn, prio core.Priority) {
 			p.noteClose(1)
 			go c.Quit()
 		} else {
+			wasEmpty := len(p.idle) == 0
 			c.idleSince = now
 			p.idle = append(p.idle, c)
+			if wasEmpty && p.idleWake != nil {
+				close(p.idleWake)
+				p.idleWake = make(chan struct{})
+			}
 			p.mu.Unlock()
 		}
 	}
@@ -700,7 +732,12 @@ func (p *pool) keepAliveOne(now time.Time) bool {
 	}
 	// Just pinged, but still the least recently used for requests: keep it
 	// at the bottom of the stack.
+	wasEmpty := len(p.idle) == 0
 	p.idle = slices.Insert(p.idle, 0, c)
+	if wasEmpty && p.idleWake != nil {
+		close(p.idleWake)
+		p.idleWake = make(chan struct{})
+	}
 	p.mu.Unlock()
 	return true
 }
@@ -721,6 +758,10 @@ func (p *pool) closeMode(abort bool) {
 		return
 	}
 	p.closed = true
+	if p.idleWake != nil {
+		close(p.idleWake)
+		p.idleWake = nil
+	}
 	idle := p.idle
 	p.idle = nil
 	p.live -= len(idle)

@@ -581,7 +581,12 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 					i.shapeLiveMediaSource(source, sourceID, channelName, session.ID, url, media, true)
 				} else if subtitleService := i.host.Sessions; subtitleService != nil {
 					streams := i.mediaStreams(plan.Media.Streams)
-					for n, stream := range plan.Media.Streams {
+					n := -1
+					for _, stream := range plan.Media.Streams {
+						if mediaStreamKind(stream.Type) == "" {
+							continue
+						}
+						n++
 						if stream.Type != "subtitle" {
 							continue
 						}
@@ -945,20 +950,37 @@ func (i *instance) mediaSourceDTO(id string, media frontend.MediaInfo) map[strin
 
 func (i *instance) mediaStreams(streams []frontend.StreamInfo) []any {
 	out := mediaStreams(streams)
-	for n, stream := range streams {
+	n := 0
+	for _, stream := range streams {
+		if mediaStreamKind(stream.Type) == "" {
+			continue
+		}
 		if i.protocol == "emby" {
 			i.embyMediaStreamDTO(out[n].(map[string]any), stream)
 		} else if i.protocol == "jellyfin" {
 			i.jellyfinStreamDTO(out[n].(map[string]any), stream)
 		}
+		n++
 	}
 	return out
+}
+
+// mediaStreamKind maps a probe stream type to its MediaBrowser kind, or
+// "" for streams (data, attachments) that have none.
+func mediaStreamKind(t string) string {
+	return map[string]string{"video": "Video", "audio": "Audio", "subtitle": "Subtitle"}[t]
 }
 
 func mediaStreams(streams []frontend.StreamInfo) []any {
 	out := make([]any, 0, len(streams))
 	for _, s := range streams {
-		kind := map[string]string{"video": "Video", "audio": "Audio", "subtitle": "Subtitle"}[s.Type]
+		kind := mediaStreamKind(s.Type)
+		if kind == "" {
+			// MediaStream.Type is a required enum in the Jellyfin SDK;
+			// an empty value fails decoding of the whole item (#614).
+			// Data/attachment streams have no MediaBrowser kind.
+			continue
+		}
 		m := map[string]any{"Index": s.Index, "Type": kind, "Codec": s.Codec, "Language": s.Language, "IsDefault": s.Default, "IsForced": s.Forced, "IsExternal": s.External, "Width": s.Width, "Height": s.Height, "Channels": s.Channels, "IsInterlaced": s.Interlaced, "IsHearingImpaired": false, "IsOriginal": false, "IsTextSubtitleStream": false, "SupportsExternalStream": false}
 		if s.DefaultDisposition != nil {
 			m["IsDefault"] = *s.DefaultDisposition
@@ -1007,7 +1029,7 @@ func addChapters(source map[string]any, media frontend.MediaInfo) {
 	}
 	chapters := make([]any, 0, len(media.Chapters))
 	for _, chapter := range media.Chapters {
-		chapters = append(chapters, map[string]any{"Name": chapter.Title, "StartPositionTicks": chapter.Start.Nanoseconds() / 100})
+		chapters = append(chapters, map[string]any{"Name": chapter.Title, "StartPositionTicks": chapter.Start.Nanoseconds() / 100, "ImageDateModified": wireTime(time.Time{})})
 	}
 	source["Chapters"] = chapters
 }

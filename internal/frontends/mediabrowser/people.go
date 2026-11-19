@@ -76,10 +76,14 @@ func (i *instance) peopleDTO(r *http.Request, viewer *frontend.Viewer, token str
 		} else {
 			id = c.wire
 		}
-		dto := map[string]any{"Name": c.name, "Type": c.kind}
-		if id != "" {
-			dto["Id"] = id
+		// BaseItemPerson.Id is a required UUID in the Jellyfin SDK: one
+		// credit without a usable id fails decoding of the whole item
+		// (Jellyfin Android TV then exits the detail page, #614). Drop the
+		// credit rather than the page.
+		if id == "" || (i.protocol == "jellyfin" && !guidLike(id)) {
+			continue
 		}
+		dto := map[string]any{"Name": c.name, "Type": c.kind, "Id": id}
 		if c.role != "" {
 			dto["Role"] = c.role
 		}

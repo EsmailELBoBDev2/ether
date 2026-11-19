@@ -412,8 +412,8 @@ func (i *instance) browseRoutes() error {
 			}
 			state, err := i.host.Experience.UserData(r.Context(), v, keys)
 			if err != nil {
-				http.Error(w, "Unavailable", 503)
-				return
+				i.logRowFailure(purpose, err)
+				state = map[frontend.RatingKey]frontend.WatchStatus{}
 			}
 			items := make([]any, 0, len(page))
 			images := i.gridListImages(r, page)
@@ -803,8 +803,14 @@ func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *fron
 	}
 	state, err := i.host.Experience.UserData(r.Context(), v, keys)
 	if err != nil {
-		http.Error(w, "Unavailable", 503)
-		return
+		// Watch state is decoration on a browse page. A transient store
+		// failure (SQLite writer contention turned whole /Items pages
+		// into 503s, #614) must not fail browsing: serve the page with
+		// unwatched defaults and log it, as Next Up already does.
+		if i.host.Log != nil {
+			i.host.Log.Warn("jellyfin page user data unavailable", "err", err)
+		}
+		state = map[frontend.RatingKey]frontend.WatchStatus{}
 	}
 	items := make([]any, 0, len(page.Items))
 	images := i.gridListImages(r, page.Items)
@@ -1284,8 +1290,10 @@ func (i *instance) ancestors(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := i.host.Experience.UserData(r.Context(), v, keys)
 	if err != nil {
-		http.Error(w, "Unavailable", 503)
-		return
+		if i.host.Log != nil {
+			i.host.Log.Warn("jellyfin ancestors user data unavailable", "err", err)
+		}
+		state = map[frontend.RatingKey]frontend.WatchStatus{}
 	}
 	items := make([]any, 0, len(titles))
 	paths := i.virtualPaths(r, v, keys)

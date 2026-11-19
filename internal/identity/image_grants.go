@@ -7,12 +7,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/authhdr"
@@ -451,6 +453,13 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 		data, contentType, err = fitGrantedImage(data, contentType, width, height)
 	}
 	if err != nil {
+		// A missing image is a 404, never a gateway error: clients treat
+		// 502 as a server fault and retry in a loop (#614). Only a
+		// failure that is not "the image does not exist" stays 502.
+		if errors.Is(err, core.ErrNotFound) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, artwork.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "image unavailable", 502)
 		return
 	}

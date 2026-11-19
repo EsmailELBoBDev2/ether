@@ -53,6 +53,14 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusBadRequest)
 		return
 	}
+	var start frontend.RatingKey
+	if q.Has("key") {
+		start = keyFromPath(q.Get("key"))
+		if start == 0 {
+			writeHTTPError(w, http.StatusBadRequest)
+			return
+		}
+	}
 	var keys []frontend.RatingKey
 	var plKey frontend.RatingKey
 	var plTitle string
@@ -80,7 +88,7 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	case uri != "":
 		var err error
-		keys, err = s.continuousKeys(ctx, pr, uri, q.Get("continuous") == "1")
+		keys, err = s.expandQueueURI(ctx, pr, uri, q.Get("continuous") == "1")
 		if path, e := uriPath(uri); e == nil {
 			if m := rePlaylistPath.FindStringSubmatch(path); len(m) > 0 {
 				if k, e := frontend.ParseRatingKey(m[1]); e == nil {
@@ -105,15 +113,17 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A show queue follows regular episodes, including specials explicitly
-	// placed inside a regular presented season, but not the Specials season.
+	// placed inside a regular presented season, but not the Specials season
+	// unless the viewer explicitly starts from a special.
 	if plKey == 0 {
 		if path, err := uriPath(uri); err == nil {
 			path, _, _ = strings.Cut(path, "?")
 			if m := reMetadataPath.FindStringSubmatch(path); len(m) > 0 {
 				if k, err := frontend.ParseRatingKey(m[1]); err == nil && k.Kind() == frontend.KindShow {
+					keepSpecials := start != 0 && s.queueSpecial(ctx, pr, start)
 					filtered := keys[:0]
 					for _, item := range keys {
-						if !s.queueSpecial(ctx, pr, item) {
+						if s.queueSpecial(ctx, pr, item) == keepSpecials {
 							filtered = append(filtered, item)
 						}
 					}
@@ -123,6 +133,23 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	startIdx := 0
+	if start != 0 {
+		startIdx = -1
+		for i, k := range keys {
+			if k == start {
+				startIdx = i
+				break
+			}
+		}
+		if startIdx < 0 || !s.queueStartPlayable(ctx, pr, start) {
+			writeHTTPError(w, http.StatusNotFound)
+			return
+		}
+	}
+	keys, baseOffset, tailCount := windowKeys(keys, startIdx)
+	selectedIdx := startIdx - baseOffset
+
 	// Cinema Trailers and the owner's pre-roll: prepend them before the
 	// feature and warm the feature while they play. A pre-roll needs no
 	// extrasPrefixCount; it never precedes a resume.
@@ -130,15 +157,7 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 	if !shuffle && len(keys) > 0 {
 		n, err := strconv.Atoi(q.Get("extrasPrefixCount"))
 		cinema := err == nil && n > 0
-		featureIdx := 0
-		if start := keyFromPath(q.Get("key")); start != 0 {
-			for i, k := range keys {
-				if k == start {
-					featureIdx = i
-					break
-				}
-			}
-		}
+		featureIdx := selectedIdx
 		feature := keys[featureIdx]
 		var prefix []frontend.RatingKey
 		if cinema && feature.Kind() == frontend.KindMovie {
@@ -176,13 +195,9 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		p.PlaylistID, p.PlaylistTitle = plKey, plTitle
-		if start := keyFromPath(q.Get("key")); start != 0 {
-			for i, it := range p.Items {
-				if it.Key == start {
-					p.Selected = i
-					break
-				}
-			}
+		p.BaseOffset, p.TailCount = baseOffset, tailCount
+		if len(p.Items) > 0 {
+			p.Selected = selectedIdx
 		}
 		if prefixAt >= 0 {
 			p.Selected = prefixAt // playback starts with the first trailer
@@ -198,16 +213,34 @@ func (s *Server) handlePlayQueueCreate(w http.ResponseWriter, r *http.Request) {
 	s.writePlayQueue(w, r, snap)
 }
 
-// continuousKeys resolves a play queue URI; with continuous=1 a single
-// episode expands to the remaining episodes in its presented season.
+func (s *Server) queueStartPlayable(ctx context.Context, pr *Request, key frontend.RatingKey) bool {
+	if key.Kind() == frontend.KindExtra {
+		_, ok := s.extraMetadataByKey(ctx, pr, key)
+		return ok
+	}
+	t, err := s.metadataTitle(ctx, pr, key)
+	if err != nil || t == nil || !s.pluginAwarePlayable(ctx, pr.User, t) {
+		return false
+	}
+	return len(s.visibleTitles(pr.User, []frontend.Title{*t})) > 0
+}
+
+// continuousKeys resolves a play queue URI, capped to maxExpand; with
+// continuous=1 a single episode expands to the remaining episodes in its
+// presented season.
 func (s *Server) continuousKeys(ctx context.Context, pr *Request, uri string, continuous bool) ([]frontend.RatingKey, error) {
+	keys, err := s.expandQueueURI(ctx, pr, uri, continuous)
+	return capKeys(keys), err
+}
+
+func (s *Server) expandQueueURI(ctx context.Context, pr *Request, uri string, continuous bool) ([]frontend.RatingKey, error) {
 	if strings.HasPrefix(uri, "server://") {
 		authority, _, _ := strings.Cut(strings.TrimPrefix(uri, "server://"), "/")
 		if authority != s.identity().MachineIdentifier {
 			return nil, nil
 		}
 	}
-	keys, err := s.resolveURI(ctx, pr, uri)
+	keys, err := s.expandURI(ctx, pr, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +270,7 @@ func (s *Server) continuousKeys(ctx context.Context, pr *Request, uri string, co
 				candidates = append(candidates, candidate)
 			}
 			candidates = s.availableForViewer(ctx, pr.User, s.visibleTitles(pr.User, candidates))
-			return capKeys(append([]frontend.RatingKey{ep}, titleKeys(candidates)...)), nil
+			return append([]frontend.RatingKey{ep}, titleKeys(candidates)...), nil
 		}
 	}
 	return keys, nil
@@ -384,6 +417,8 @@ func (s *Server) handlePlayQueueMutate(op string) http.HandlerFunc {
 					p.Items = nil
 				}
 				p.Selected = 0
+				p.BaseOffset = 0
+				p.TailCount = 0
 				p.Original = nil
 				p.Version++
 			case "remove":
@@ -529,10 +564,14 @@ func (s *Server) writePlayQueue(w http.ResponseWriter, r *http.Request, pq playQ
 	mc.Extra = []model.Attr{model.A("playQueueID", pq.ID), model.A("playQueueShuffled", pq.Shuffled), model.A("playQueueVersion", pq.Version)}
 	if len(pq.Items) > 0 || pq.Selected < 0 {
 		offset := max(0, pq.Selected)
+		if !pq.Shuffled && pq.Selected >= 0 {
+			offset += pq.BaseOffset
+		}
 		if pq.ForceOffsetZero {
 			offset = 0
 		}
-		mc.Extra = append(mc.Extra, model.A("playQueueSelectedItemOffset", offset), model.A("playQueueTotalCount", len(pq.Items)))
+		total := pq.BaseOffset + len(pq.Items) + pq.TailCount
+		mc.Extra = append(mc.Extra, model.A("playQueueSelectedItemOffset", offset), model.A("playQueueTotalCount", total))
 	}
 	if selItem.ID != 0 {
 		mc.Extra = append(mc.Extra, model.A("playQueueSelectedItemID", selItem.ID))

@@ -690,7 +690,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
   const liveTV = createLiveTVMock(catalog, opts.liveTVEmpty);
   const onAir = createOnAirMock(liveTV, opts.onAirLayout);
   const calendar = createCalendarMock();
-  const flowsMock = createFlowsMock();
+  const flowsMock = createFlowsMock({
+    llmEnabled: () => Boolean(state.config.llm.enabled && state.config.llm.model),
+    channels: maintenance.channels,
+  });
   const qualityMock = createQualityMock();
   const safetyPolicies = new Map<number, Record<string, unknown>>();
   const simklAccounts = new Map<number, { connected: boolean; lastSync?: string }>();

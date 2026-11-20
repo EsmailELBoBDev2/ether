@@ -1276,6 +1276,13 @@ func (e *Engine) TestRun(ctx context.Context, req TestRunRequest) (*TestRunResul
 		cfg, _ := DecodeConfig[EventTriggerConfig](*trigNode)
 		if ev.Type == "" {
 			ev = e.sampleEventForPatterns(cfg.Events, now)
+		} else if trimmed := strings.TrimSpace(string(ev.Payload)); (trimmed == "" || trimmed == "null") && e.opts.Events != nil {
+			if s, ok := e.opts.Events.Get(ev.Type); ok && s.Sample != nil {
+				ev.Payload = marshalJSONRaw(s.Sample)
+				if ev.Version <= 0 {
+					ev.Version = max(s.Version, 1)
+				}
+			}
 		}
 		if ev.ID == "" {
 			ev.ID = events.NewID()

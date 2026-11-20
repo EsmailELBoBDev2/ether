@@ -12,8 +12,10 @@ import (
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/agent/builtin"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/flows"
 	"github.com/braedonsaunders/ether/internal/flows/actions"
+	"github.com/braedonsaunders/ether/internal/llm"
 )
 
 // flowsRuntime owns Ether's durable Flows store, action/trigger registries,
@@ -198,6 +200,14 @@ func (a *App) flowsAdminDeps() *admin.FlowsDeps {
 	if a.notifications != nil {
 		d.NotifyChannels = a.notifications.Channels
 		d.SaveNotifyChannel = a.notifications.Save
+	}
+	if a.llm != nil && a.llm.Client() != nil {
+		// Share the personalization client so applyConfig updates reach Flows.
+		d.LLM = a.llm.Client()
+	} else if a.cfg != nil {
+		chat := llm.NewClient(llm.ClientOptions{Config: a.cfg.Read().LLM, Logger: logger})
+		a.cfg.Subscribe(func(c config.Config) { chat.UpdateConfig(c.LLM) })
+		d.LLM = chat
 	}
 	return d
 }

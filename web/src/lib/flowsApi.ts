@@ -58,6 +58,24 @@ export interface DescribeFlowResult {
   explanation: string;
 }
 
+export interface CustomizeNotificationRequest {
+  channelId: string;
+  event?: string;
+  events?: string[];
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+  removeLegacyRule?: boolean;
+}
+
+export interface CustomizeNotificationResult {
+  flow: Flow;
+  channelId: string;
+  migrated: string[];
+  kept: string[];
+  notes?: string[];
+}
+
 export interface FlowSummaryStats {
   totalFlows: number;
   enabledFlows: number;
@@ -216,6 +234,10 @@ export const flowsApi = {
 
   describe(prompt: string, signal?: AbortSignal): Promise<DescribeFlowResult> {
     return send<DescribeFlowResult>("POST", "/flows/describe", { prompt }, signal);
+  },
+
+  customizeNotification(req: CustomizeNotificationRequest): Promise<CustomizeNotificationResult> {
+    return send<CustomizeNotificationResult>("POST", "/flows/customize-notification", req);
   },
 
   async createFromTemplate(

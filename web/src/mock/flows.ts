@@ -7,6 +7,7 @@
  */
 import {
   autoLayoutGraph,
+  LEGACY_NOTIFY_TO_CANONICAL,
   validateTemplateSyntax,
   wouldCreateCycle,
   type ActionSpec,
@@ -655,7 +656,22 @@ export function describeFlow(prompt: string): { name: string; description: strin
 
 // ---------- Stateful mock service ----------
 
-export function createFlowsMock() {
+export interface MockNotifyChannel {
+  id: string;
+  name?: string;
+  kind: string;
+  enabled: boolean;
+  events: string[];
+  digestMinutes?: number;
+  perMinute?: number;
+}
+
+export interface FlowsMockOptions {
+  llmEnabled?: () => boolean;
+  channels?: MockNotifyChannel[];
+}
+
+export function createFlowsMock(opts: FlowsMockOptions = {}) {
   const templates = flowTemplates();
   const seed = (templateId: string, patch: Partial<Flow>): Flow => {
     const t = templates.find((x) => x.id === templateId)!;
@@ -753,9 +769,26 @@ export function createFlowsMock() {
       if (method === "GET" && seg[1] === "catalogue" && seg[2] === "actions") return json({ actions: FLOW_ACTIONS });
       if (method === "GET" && seg[1] === "templates") return json({ templates });
       if (method === "POST" && seg[1] === "validate") return json(validateFlowGraph((b.graph ?? { schemaVersion: 1, nodes: [], edges: [] }) as Graph));
-      if (method === "POST" && seg[1] === "describe") return json(describeFlow(String(b.prompt ?? "")));
+      if (method === "POST" && seg[1] === "describe") {
+        const prompt = String(b.prompt ?? "").trim();
+        if (!prompt || prompt.length > 2000) {
+          return json({ error: { code: "bad_request", message: "describe the flow you want in at most 2,000 characters" } }, 400);
+        }
+        if (opts.llmEnabled && !opts.llmEnabled()) {
+          return json({ error: { code: "ai_unavailable", message: "Configure AI in Integrations to describe flows in plain language." } }, 409);
+        }
+        return json(describeFlow(prompt));
+      }
       if (method === "POST" && seg[1] === "test") {
-        const graph = (b.graph ?? { schemaVersion: 1, nodes: [], edges: [] }) as Graph;
+        if (!b.graph) {
+          return json({ error: { code: "bad_request", message: "graph is required" } }, 400);
+        }
+        const graph = b.graph as Graph;
+        const v = validateFlowGraph(graph);
+        if (!v.valid) {
+          return json({ error: { code: "validation_failed", message: "flow definition is invalid" }, validation: v }, 400);
+        }
+        const dryRun = b.dryRun !== false;
         const eventType = String((b.event as Record<string, unknown> | undefined)?.type ?? "playback.session.started");
         const schema = FLOW_EVENTS.find((e) => e.type === eventType);
         const payload = { ...((schema?.sample ?? PLAYBACK_SAMPLE) as Record<string, unknown>), ...(((b.event as Record<string, unknown> | undefined)?.payload ?? {}) as Record<string, unknown>) };
@@ -763,10 +796,127 @@ export function createFlowsMock() {
         const runId = `run_${runSeq.toString(16)}`;
         const steps = simulate(graph, payload, eventType, runId);
         const now = new Date().toISOString();
-        const run: Run = { id: runId, flowId: "draft", flowName: "Draft", flowVersion: 0, triggerKind: "trigger.event", eventType, status: "completed", attempt: 1, dryRun: true, stepCount: steps.length, startedAt: now, updatedAt: now, finishedAt: now };
-        runs.unshift(run);
-        stepsByRun.set(runId, steps);
+        const run: Run = { id: runId, flowId: "", flowName: "Draft", flowVersion: 1, triggerKind: "trigger.event", eventType, status: "completed", attempt: 1, dryRun, stepCount: steps.length, startedAt: now, updatedAt: now, finishedAt: now };
         return json({ run, steps });
+      }
+      if (method === "POST" && seg[1] === "customize-notification") {
+        const channelId = String(b.channelId ?? "").trim();
+        if (!channelId) {
+          return json({ error: { code: "bad_request", message: "channelId is required" } }, 400);
+        }
+        const ch = opts.channels?.find((c) => c.id === channelId);
+        if (!ch) {
+          return json({ error: { code: "not_found", message: "notification channel not found" } }, 404);
+        }
+        const requestedRaw: string[] = [];
+        if (typeof b.event === "string" && b.event.trim()) requestedRaw.push(b.event.trim());
+        if (Array.isArray(b.events)) {
+          for (const ev of b.events) {
+            const s = String(ev ?? "").trim();
+            if (s && !requestedRaw.includes(s)) requestedRaw.push(s);
+          }
+        }
+        const channelHasWildcard = ch.events.includes("*");
+        const requested = requestedRaw.length ? requestedRaw : [...ch.events];
+        if (requested.length === 0) {
+          return json({ error: { code: "cannot_customize", message: "channel does not have any matching legacy notification rules to customize" } }, 409);
+        }
+        const expandedRequested: string[] = [];
+        for (const r of requested) {
+          if (r === "*") {
+            for (const k of Object.keys(LEGACY_NOTIFY_TO_CANONICAL)) {
+              if (!expandedRequested.includes(k)) expandedRequested.push(k);
+            }
+            continue;
+          }
+          if (!channelHasWildcard && !ch.events.includes(r)) {
+            return json({ error: { code: "bad_request", message: `channel "${ch.name ?? ch.id}" is not subscribed to legacy rule "${r}"` } }, 400);
+          }
+          if (!expandedRequested.includes(r)) expandedRequested.push(r);
+        }
+        const notes: string[] = [];
+        const migrated: string[] = [];
+        const canonicalEvents: string[] = [];
+        let isNewsletter = false;
+        let hasCrash = false;
+        for (const k of expandedRequested) {
+          if (k === "server.crash") {
+            hasCrash = true;
+            notes.push("server.crash remains on the notification channel because it is delivered by the out-of-process crash watcher.");
+            continue;
+          }
+          if (k === "newsletter.weekly") {
+            isNewsletter = true;
+            migrated.push(k);
+            continue;
+          }
+          const canonical = LEGACY_NOTIFY_TO_CANONICAL[k];
+          if (!canonical) {
+            return json({ error: { code: "bad_request", message: `unknown legacy notification event "${k}"` } }, 400);
+          }
+          migrated.push(k);
+          if (!canonicalEvents.includes(canonical)) canonicalEvents.push(canonical);
+        }
+        if (migrated.length === 0) {
+          const msg = hasCrash
+            ? "server.crash is delivered by the out-of-process crash watcher and cannot be moved exclusively into an in-process flow"
+            : "channel does not have any matching legacy notification rules to customize";
+          return json({ error: { code: "cannot_customize", message: msg } }, 409);
+        }
+        const removeLegacy = b.removeLegacyRule !== false;
+        const sourceEvents = channelHasWildcard ? Object.keys(LEGACY_NOTIFY_TO_CANONICAL) : ch.events;
+        let kept = removeLegacy ? sourceEvents.filter((k) => !migrated.includes(k)) : [...ch.events];
+        const chLabel = ch.name?.trim() || ch.id;
+        let graph: Graph;
+        if (isNewsletter && canonicalEvents.length === 0) {
+          graph = autoLayoutGraph({
+            schemaVersion: 1,
+            nodes: [
+              { id: "trigger_1", kind: "trigger.schedule", label: "Weekly schedule", position: { x: 0, y: 0 }, config: { cron: "0 17 * * 5" } },
+              { id: "digest_1", kind: "action", label: "Generate weekly digest", position: { x: 0, y: 0 }, config: { actionType: "digest.generate", params: { window: "7d", groupEpisodes: true } } },
+              { id: "notify_1", kind: "action", label: `Notify ${chLabel}`, position: { x: 0, y: 0 }, config: { actionType: "notify.send", params: { channelIds: [ch.id], title: "Weekly Recently Added", message: "{{ steps.digest_1.output.text }}", html: "{{ steps.digest_1.output.html }}", bypassDigest: true } } },
+            ],
+            edges: [
+              { id: "e1", source: "trigger_1", sourceHandle: "next", target: "digest_1" },
+              { id: "e2", source: "digest_1", sourceHandle: "next", target: "notify_1" },
+            ],
+          });
+        } else {
+          if (isNewsletter) {
+            notes.push("newsletter.weekly uses a weekly schedule and can be customized separately via the Weekly Recently Added template.");
+            const idx = migrated.indexOf("newsletter.weekly");
+            if (idx >= 0) migrated.splice(idx, 1);
+            if (removeLegacy && !kept.includes("newsletter.weekly")) kept = [...kept, "newsletter.weekly"];
+          }
+          graph = autoLayoutGraph({
+            schemaVersion: 1,
+            nodes: [
+              { id: "trigger_1", kind: "trigger.event", label: "Notification events", position: { x: 0, y: 0 }, config: { events: canonicalEvents } },
+              { id: "notify_1", kind: "action", label: `Notify ${chLabel}`, position: { x: 0, y: 0 }, config: { actionType: "notify.send", params: { channelIds: [ch.id], title: "Ether alert: {{ event.type }}", message: "Event {{ event.type }} on {{ event.node }}.", bypassDigest: (ch.digestMinutes ?? 0) <= 0 } } },
+            ],
+            edges: [{ id: "e1", source: "trigger_1", sourceHandle: "next", target: "notify_1" }],
+          });
+        }
+        if (removeLegacy) ch.events = kept;
+        const name = String(b.name ?? "").trim() || (migrated.length === 1 ? `${chLabel}: ${migrated[0]}` : `${chLabel} notifications`);
+        const description = String(b.description ?? "").trim() || `Customized from notification channel "${chLabel}" (${migrated.join(", ")}).`;
+        const flow: Flow = {
+          id: `flow-${Date.now().toString(36)}`,
+          name,
+          description,
+          enabled: typeof b.enabled === "boolean" ? b.enabled : ch.enabled,
+          version: 1,
+          graph,
+          tags: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          runs24h: 0,
+          failures24h: 0,
+          activeRuns: 0,
+          triggerSummary: triggerSummaryOf(graph),
+        };
+        flows.unshift(flow);
+        return json({ flow, channelId: ch.id, migrated, kept, notes }, 201);
       }
       if (method === "POST" && seg[1] === "from-template") {
         const t = templates.find((x) => x.id === decodeURIComponent(seg[2] ?? ""));

@@ -153,6 +153,32 @@ func TestFlowsAppWiringEndToEnd(t *testing.T) {
 	if rec := doAPI(http.MethodGet, "/ether/api/flows/templates", nil); rec.Code != http.StatusOK {
 		t.Fatalf("GET templates = %d: %s", rec.Code, rec.Body.String())
 	}
+	// Verify POST /ether/api/flows/describe returns 409 ai_unavailable when LLM is off.
+	if rec := doAPI(http.MethodPost, "/ether/api/flows/describe", map[string]any{"prompt": "Notify me on backup failure"}); rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte(`"ai_unavailable"`)) {
+		t.Fatalf("POST describe without LLM = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Verify POST /ether/api/flows/test executes an unsaved draft graph dry without incrementing live actionCalls.
+	draftTestRec := doAPI(http.MethodPost, "/ether/api/flows/test", map[string]any{
+		"dryRun": true,
+		"event":  map[string]any{"type": events.EventSystemBackupFailed},
+		"graph": flows.Graph{
+			SchemaVersion: flows.SchemaVersion,
+			Nodes: []flows.Node{
+				{ID: "t1", Kind: flows.NodeTriggerEvent, Config: flows.MustMarshalConfig(flows.EventTriggerConfig{Events: []string{events.EventSystemBackupFailed}})},
+				{ID: "a1", Kind: flows.NodeAction, Config: flows.MustMarshalConfig(flows.ActionNodeConfig{
+					ActionType: "notify.send",
+					Params:     map[string]any{"channelIds": []string{"discord-1"}, "title": "Draft", "message": "{{ payload.error }}"},
+				})},
+			},
+			Edges: []flows.Edge{{ID: "e1", Source: "t1", SourceHandle: flows.HandleNext, Target: "a1"}},
+		},
+	})
+	if draftTestRec.Code != http.StatusOK || !bytes.Contains(draftTestRec.Body.Bytes(), []byte(`"dryRun":true`)) {
+		t.Fatalf("POST /ether/api/flows/test = %d: %s", draftTestRec.Code, draftTestRec.Body.String())
+	}
+	if actionCalls.Load() != 0 {
+		t.Fatalf("draft dry test must not trigger live action, calls=%d", actionCalls.Load())
+	}
 
 	// 2. Create a flow via /ether/api/flows listening on system.backup.failed.
 	createRec := doAPI(http.MethodPost, "/ether/api/flows", map[string]any{

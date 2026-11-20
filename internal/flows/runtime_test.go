@@ -999,6 +999,30 @@ func TestRuntimeTestRunManualWebhookAndCancel(t *testing.T) {
 		t.Fatalf("dry TestRun must not persist runs, found %d", len(allRuns))
 	}
 
+	// 1b. TestRun with event type only (empty payload) fills sample payload from schema; explicit {} stays empty.
+	typeOnlyRes, err := eng.TestRun(ctx, TestRunRequest{
+		Graph:  &draftGraph,
+		DryRun: true,
+		Event:  events.Envelope{Type: "library.item.added"},
+	})
+	if err != nil {
+		t.Fatalf("TestRun type-only event: %v", err)
+	}
+	if typeOnlyRes.Run.Status != RunCompleted || len(testAct.Calls()) != 2 || testAct.Calls()[1].Params["message"] != "Added Sample Movie" {
+		t.Fatalf("expected schema sample payload for type-only test event, got %+v", testAct.Calls())
+	}
+	emptyPayloadRes, err := eng.TestRun(ctx, TestRunRequest{
+		Graph:  &draftGraph,
+		DryRun: true,
+		Event:  events.Envelope{Type: "library.item.added", Payload: json.RawMessage(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("TestRun explicit empty payload: %v", err)
+	}
+	if emptyPayloadRes.Run.Status != RunCompleted || len(testAct.Calls()) != 3 || testAct.Calls()[2].Params["message"] != "Added " {
+		t.Fatalf("expected explicit empty payload preserved, got %+v", testAct.Calls())
+	}
+
 	// 2. TestRun (live) on saved flow -> DryRun=false, persists run & steps, simulates delay synchronously.
 	savedFlow, err := st.SaveFlow(ctx, Flow{Name: "Saved Testable", Enabled: true, Graph: draftGraph})
 	if err != nil {
@@ -1011,7 +1035,7 @@ func TestRuntimeTestRunManualWebhookAndCancel(t *testing.T) {
 	if liveRes.Run.Status != RunCompleted || liveRes.Run.DryRun {
 		t.Fatalf("unexpected live TestRun: status=%s dry=%v", liveRes.Run.Status, liveRes.Run.DryRun)
 	}
-	if len(testAct.Calls()) != 2 || testAct.Calls()[1].Actx.DryRun {
+	if len(testAct.Calls()) != 4 || testAct.Calls()[3].Actx.DryRun {
 		t.Fatalf("expected live TestRun action with DryRun=false, got %+v", testAct.Calls())
 	}
 	if _, err := st.GetRun(ctx, liveRes.Run.ID); err != nil {

@@ -3,6 +3,7 @@ package livetv
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -972,7 +973,11 @@ func (g *inputGrant) setManifest(cm *cachedManifest) {
 	}
 	g.mu.Lock()
 	g.manifest = cm
+	direct := g.direct
 	g.mu.Unlock()
+	if direct != nil {
+		direct.setManifest(cm)
+	}
 }
 
 func (g *inputGrant) peekManifest(raw string) *cachedManifest {
@@ -980,9 +985,19 @@ func (g *inputGrant) peekManifest(raw string) *cachedManifest {
 		return nil
 	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.manifest != nil && g.manifest.raw == raw {
-		return g.manifest
+	cm := g.manifest
+	direct := g.direct
+	g.mu.Unlock()
+	if direct != nil {
+		if dm := direct.manifestFor(raw); dm != nil {
+			return dm
+		}
+		if _, _, _, _, _, invalidated, _ := direct.current(); invalidated {
+			return nil
+		}
+	}
+	if cm != nil && cm.raw == raw {
+		return cm
 	}
 	return nil
 }
@@ -994,6 +1009,23 @@ func (g *inputGrant) peekManifest(raw string) *cachedManifest {
 func (g *inputGrant) consumeManifest(raw string) *cachedManifest {
 	if g == nil {
 		return nil
+	}
+	g.mu.Lock()
+	direct := g.direct
+	g.mu.Unlock()
+	if direct != nil {
+		if dm := direct.manifestFor(raw); dm != nil {
+			g.mu.Lock()
+			g.manifest = dm
+			g.mu.Unlock()
+			return dm
+		}
+		if _, _, _, _, _, invalidated, _ := direct.current(); invalidated {
+			g.mu.Lock()
+			g.manifest = nil
+			g.mu.Unlock()
+			return nil
+		}
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1010,10 +1042,6 @@ func (g *inputGrant) consumeManifest(raw string) *cachedManifest {
 // serveTapped serves a media input through its tap. It reports false when
 // the input turned out to be a manifest this reader must fetch itself.
 func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGrant, raw string) bool {
-	if cm := g.consumeManifest(raw); cm != nil {
-		s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
-		return true
-	}
 	// A byte range is a seek into a file input, not a live read; an active
 	// Steady transport-stream tap ignores ffmpeg reconnect Range headers so
 	// the decoder rejoins at resumeLocked instead of opening a raw upstream GET.
@@ -1026,48 +1054,108 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 		steadyTS = !tExisting.closed && tExisting.ts != nil
 		tExisting.mu.Unlock()
 	}
-	if rng := r.Header.Get("Range"); rng != "" && rng != "bytes=0-" && !steadyTS {
-		return false
-	}
-	source, limit := s.tapSource(g)
-	t, created, err := s.inputRelay.taps.acquire(tapKey(raw+"\x00"+tapKey("", g.mediaHeaders), g.headers), source, limit, g)
-	if err != nil {
-		w.Header().Set(tapBusyHeader, "1")
-		http.Error(w, "provider connections in use", http.StatusServiceUnavailable)
-		return true
-	}
-	if created {
-		hdr := r.Header.Clone()
-		hdr.Del("Range")
-		hdr.Del("If-Range")
-		s.openTap(t, g, raw, hdr, r.Context())
-	}
-	select {
-	case <-t.ready:
-	case <-r.Context().Done():
-		return true
-	}
-	if t.openErr != nil || t.status != http.StatusOK && t.status != http.StatusPartialContent {
-		code := t.status
-		if code < 400 || code > 599 {
-			code = http.StatusBadGateway
+	var t *upstreamTap
+	refreshed := false
+	for {
+		var directGen uint64
+		if g.direct != nil {
+			var invalidated bool
+			var expStatus int
+			raw, _, directGen, invalidated, expStatus = g.syncDirect()
+			if invalidated {
+				if refreshed {
+					code := expStatus
+					if code < 400 || code > 599 {
+						code = http.StatusForbidden
+					}
+					http.Error(w, "upstream unavailable", code)
+					return true
+				}
+				nextRaw, rerr := g.refreshDirect(r.Context(), directGen)
+				if rerr != nil {
+					code := http.StatusBadGateway
+					if st, ok := expiredProviderStatus(rerr); ok {
+						code = st
+					} else if errors.Is(rerr, context.DeadlineExceeded) {
+						code = http.StatusGatewayTimeout
+					} else if expStatus >= 400 && expStatus <= 599 && !g.direct.canResolve() {
+						code = expStatus
+					}
+					http.Error(w, "upstream unavailable", code)
+					return true
+				}
+				raw = nextRaw
+				refreshed = true
+				continue
+			}
 		}
-		if errors.Is(t.openErr, context.DeadlineExceeded) {
-			code = http.StatusGatewayTimeout
-		}
-		http.Error(w, "upstream unavailable", code)
-		return true
-	}
-	if t.isManifest {
 		if cm := g.consumeManifest(raw); cm != nil {
 			s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
 			return true
 		}
-		if body := t.manifestCopy(); body != nil {
-			s.serveRelayManifest(w, g, raw, t.base, bytes.NewReader(body), t.hls)
+		if rng := r.Header.Get("Range"); rng != "" && rng != "bytes=0-" && !steadyTS {
+			return false
+		}
+		source, limit := s.tapSource(g)
+		_, headers, mediaHeaders := g.requestScope()
+		var created bool
+		var err error
+		t, created, err = s.inputRelay.taps.acquire(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g)
+		if err != nil {
+			w.Header().Set(tapBusyHeader, "1")
+			http.Error(w, "provider connections in use", http.StatusServiceUnavailable)
 			return true
 		}
-		return false
+		if created {
+			hdr := r.Header.Clone()
+			hdr.Del("Range")
+			hdr.Del("If-Range")
+			s.openTap(t, g, raw, hdr, r.Context())
+		}
+		select {
+		case <-t.ready:
+		case <-r.Context().Done():
+			return true
+		}
+		if t.openErr != nil || t.status != http.StatusOK && t.status != http.StatusPartialContent {
+			if t.openErr == nil && isExpiredStatus(t.status) {
+				g.noteExpiredManifest(t.status)
+				if !refreshed && g.direct != nil && g.direct.canResolve() {
+					if nextRaw, rerr := g.refreshDirect(r.Context(), directGen); rerr == nil {
+						raw = nextRaw
+						refreshed = true
+						continue
+					}
+				}
+			}
+			code := t.status
+			if code < 400 || code > 599 {
+				code = http.StatusBadGateway
+			}
+			if errors.Is(t.openErr, context.DeadlineExceeded) {
+				code = http.StatusGatewayTimeout
+			}
+			http.Error(w, "upstream unavailable", code)
+			return true
+		}
+		if t.isManifest {
+			if cm := g.consumeManifest(raw); cm != nil {
+				s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
+				return true
+			}
+			if body := t.manifestCopy(); body != nil {
+				if t.hls && isMasterPlaylist(body) {
+					cm := newCachedManifest(raw, body, t.base, true)
+					g.setManifest(cm)
+					s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), true)
+					return true
+				}
+				s.serveRelayManifest(w, g, raw, t.base, bytes.NewReader(body), t.hls)
+				return true
+			}
+			return false
+		}
+		break
 	}
 	g.setTap(t)
 	if mt, params, err := mime.ParseMediaType(t.header.Get("Content-Type")); err == nil {
@@ -1187,6 +1275,31 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 	}
 	idle := time.AfterFunc(relayIOTimeout, connCancel)
 	body := bufio.NewReaderSize(&idleReader{r: res.Body, t: idle}, 32<<10)
+	if magic, _ := body.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		packed, _ := io.ReadAll(io.LimitReader(body, relayManifestLimit+1))
+		if len(packed) <= relayManifestLimit {
+			if zr, err := gzip.NewReader(bytes.NewReader(packed)); err == nil {
+				plain, err := io.ReadAll(io.LimitReader(zr, relayManifestLimit+1))
+				zr.Close()
+				if err == nil && len(plain) <= relayManifestLimit {
+					if trimmed := bytes.TrimLeft(bytes.TrimPrefix(plain, []byte("\xef\xbb\xbf")), " \t\r\n"); bytes.HasPrefix(trimmed, []byte("#EXTM3U")) {
+						idle.Stop()
+						closer.Close()
+						t.hls = true
+						t.isManifest = true
+						cm := newCachedManifest(raw, plain, t.base, true)
+						t.manifest = bytes.Clone(cm.body)
+						g.setManifest(cm)
+						t.header = nil
+						close(t.ready)
+						t.close(nil)
+						return
+					}
+				}
+			}
+		}
+		body = bufio.NewReaderSize(io.MultiReader(bytes.NewReader(packed), body), 32<<10)
+	}
 	head := sniffHead(body)
 	ctype := strings.ToLower(res.Header.Get("Content-Type"))
 	t.hls = bytes.HasPrefix(head, []byte("#EXTM3U"))
@@ -1200,14 +1313,9 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 		if err != nil || len(b) > relayManifestLimit {
 			t.openErr = errRelayUnsupported
 		} else {
-			t.manifest = b
-			g.setManifest(&cachedManifest{
-				raw:      raw,
-				body:     bytes.Clone(b),
-				base:     t.base,
-				hls:      t.hls,
-				isMaster: t.hls && isMasterPlaylist(b),
-			})
+			cm := newCachedManifest(raw, b, t.base, t.hls)
+			t.manifest = bytes.Clone(cm.body)
+			g.setManifest(cm)
 		}
 		t.header = nil
 		close(t.ready)
@@ -2225,6 +2333,10 @@ func (t *upstreamTap) healthForLocked(g *inputGrant) UpstreamHealth {
 // It joins (or opens) the same provider connection the probe and ffmpeg
 // read from.
 func (s *Service) sniffInput(ctx context.Context, ss *session, n int) ([]byte, string, error) {
+	return s.sniffInputAttempt(ctx, ss, n, false)
+}
+
+func (s *Service) sniffInputAttempt(ctx context.Context, ss *session, n int, refreshed bool) ([]byte, string, error) {
 	r := &s.inputRelay
 	r.mu.Lock()
 	g := r.bySess[ss]
@@ -2232,9 +2344,32 @@ func (s *Service) sniffInput(ctx context.Context, ss *session, n int) ([]byte, s
 	if g == nil || g.ctx.Err() != nil {
 		return nil, "", core.ErrNotAvailable
 	}
-	g.mu.Lock()
-	raw := g.resources["0"].url
-	g.mu.Unlock()
+	var raw string
+	var directGen uint64
+	if g.direct != nil {
+		var invalidated bool
+		var expStatus int
+		raw, _, directGen, invalidated, expStatus = g.syncDirect()
+		if invalidated {
+			if refreshed {
+				return nil, "", providerResponseError(expStatus)
+			}
+			nextRaw, rerr := g.refreshDirect(ctx, directGen)
+			if rerr != nil {
+				return nil, "", rerr
+			}
+			_, dRawHdrs, dHdrs, _, _, _, _ := g.direct.current()
+			ss.mu.Lock()
+			ss.inputURL = nextRaw
+			ss.inputHeaders = dHdrs
+			ss.inputSource.URL = nextRaw
+			ss.inputSource.Headers = dRawHdrs
+			ss.mu.Unlock()
+			return s.sniffInputAttempt(ctx, ss, n, true)
+		}
+	} else {
+		raw = g.rootURL()
+	}
 	if cm := g.peekManifest(raw); cm != nil {
 		ss.setSniffedManifest(cm)
 		if cm.hls {
@@ -2243,7 +2378,8 @@ func (s *Service) sniffInput(ctx context.Context, ss *session, n int) ([]byte, s
 		return []byte("<?xml"), "application/dash+xml", nil
 	}
 	source, limit := s.tapSource(g)
-	t, created, err := r.taps.acquire(tapKey(raw+"\x00"+tapKey("", g.mediaHeaders), g.headers), source, limit, g)
+	_, headers, mediaHeaders := g.requestScope()
+	t, created, err := r.taps.acquire(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2269,19 +2405,30 @@ func (s *Service) sniffInput(ctx context.Context, ss *session, n int) ([]byte, s
 			if err := s.grantInputFor(ss, src, ss.inputHeaders, g.steady, g.lead); err != nil {
 				return nil, "", err
 			}
-			return s.sniffInput(ctx, ss, n)
+			return s.sniffInputAttempt(ctx, ss, n, refreshed)
+		}
+		if isExpiredStatus(t.status) {
+			g.noteExpiredManifest(t.status)
+			if !refreshed && g.direct != nil && g.direct.canResolve() && ctx.Err() == nil {
+				nextRaw, rerr := g.refreshDirect(ctx, directGen)
+				if rerr != nil {
+					return nil, "", rerr
+				}
+				_, dRawHdrs, dHdrs, _, _, _, _ := g.direct.current()
+				ss.mu.Lock()
+				ss.inputURL = nextRaw
+				ss.inputHeaders = dHdrs
+				ss.inputSource.URL = nextRaw
+				ss.inputSource.Headers = dRawHdrs
+				ss.mu.Unlock()
+				return s.sniffInputAttempt(ctx, ss, n, true)
+			}
 		}
 		return nil, "", providerResponseError(t.status)
 	}
 	if t.isManifest {
 		if body := t.manifestCopy(); body != nil {
-			cm := &cachedManifest{
-				raw:      raw,
-				body:     body,
-				base:     t.base,
-				hls:      t.hls,
-				isMaster: t.hls && isMasterPlaylist(body),
-			}
+			cm := newCachedManifest(raw, body, t.base, t.hls)
 			g.setManifest(cm)
 			ss.setSniffedManifest(cm)
 		}

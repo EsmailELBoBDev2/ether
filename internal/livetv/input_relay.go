@@ -103,8 +103,10 @@ type inputGrant struct {
 	paced       atomic.Bool // initial provider tune-gap slot booked once per grant
 	reported    atomic.Bool // the grant's session has been counted in history
 	service     *Service
+	direct      *directStreamState // shared reuse/re-resolve state for direct live streams
 
 	mu               sync.Mutex
+	directGen        uint64
 	tap              *upstreamTap    // the shared connection the root input reads through
 	manifest         *cachedManifest // cached root manifest (master kept for grant lifetime; media consumed once)
 	hls              *hlsInput       // provider playlist state when the root input is HLS
@@ -216,6 +218,31 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 		src.URL = lease.raw
 		headers = lease.headers
 	}
+	ss.mu.Lock()
+	direct := ss.direct
+	ephemeral := ss.ephemeral
+	ss.mu.Unlock()
+	var directGen uint64
+	manifest := ss.sniffedManifestFor(src.URL)
+	if direct != nil {
+		dURL, dRawHdrs, dHdrs, dCM, dGen, _, _ := direct.current()
+		if dURL != "" && (dURL == src.URL || ephemeral) {
+			src.URL = dURL
+			src.Headers = dRawHdrs
+			headers = dHdrs
+			manifest = dCM
+			directGen = dGen
+		}
+	} else if manifest == nil {
+		s.inputRelay.mu.Lock()
+		old := s.inputRelay.bySess[ss]
+		s.inputRelay.mu.Unlock()
+		if old != nil {
+			if cm := old.peekManifest(src.URL); cm != nil && cm.isMaster {
+				manifest = cm
+			}
+		}
+	}
 	u, err := url.Parse(src.URL)
 	if err != nil || !validHTTP(src.URL) {
 		return core.ErrNotAvailable
@@ -236,11 +263,11 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 	if ss.inputSource.ID != "" {
 		histSrc = ss.inputSource
 	}
-	g := &inputGrant{variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, histChannel: c.ID, histSrc: histSrc,
+	g := &inputGrant{variantCaps: core.ClientCaps{MaxHeight: ss.caps.MaxHeight, MaxBitrateKbps: ss.caps.MaxBitrateKbps}, login: lease, reserve: reserve, lead: lead, steady: steady, service: s, direct: direct, directGen: directGen, histChannel: c.ID, histSrc: histSrc,
 		log:   s.sessionLog(ss).With("input", src.ID),
 		token: base64.RawURLEncoding.EncodeToString(b[:]), origin: relayOrigin(u), headers: headers.Clone(), mediaHeaders: redirectMediaHeaders(src.Headers),
 		ctx: ctx, cancel: cancel, slots: make(chan struct{}, relayConcurrency), source: source,
-		manifest:  ss.sniffedManifestFor(src.URL),
+		manifest:  manifest,
 		resources: map[string]*relayResource{"0": {name: relayName("stream", u.Path), url: src.URL}},
 		byKey:     map[string]string{},
 	}
@@ -333,9 +360,11 @@ func (s *Service) paceSessionInput(ctx context.Context, ss *session) (time.Durat
 	}
 	g.mu.Lock()
 	raw := g.resources["0"].url
+	headers := g.headers.Clone()
+	mediaHeaders := g.mediaHeaders.Clone()
 	g.mu.Unlock()
 	source, limit := s.tapSource(g)
-	joined, err := r.taps.canJoinOrOpen(tapKey(raw+"\x00"+tapKey("", g.mediaHeaders), g.headers), source, limit)
+	joined, err := r.taps.canJoinOrOpen(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -431,6 +460,100 @@ func (s *Service) startRelayLocked() error {
 		srv.Close()
 	}()
 	return nil
+}
+
+func (g *inputGrant) requestScope() (origin string, headers, mediaHeaders http.Header) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.origin, g.headers.Clone(), g.mediaHeaders.Clone()
+}
+
+func (g *inputGrant) rootURL() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if res := g.resources["0"]; res != nil {
+		return res.url
+	}
+	return ""
+}
+
+// syncDirect aligns this grant with the latest resolved direct-stream URL and
+// headers. Replacing resource "0" with a fresh struct keeps lookupResource
+// lock-free on the resource value while preserving the loopback path name so
+// existing ffmpeg/client URLs stay valid across a re-resolve.
+func (g *inputGrant) syncDirect() (raw string, cm *cachedManifest, gen uint64, invalidated bool, expStatus int) {
+	g.mu.Lock()
+	direct := g.direct
+	if res := g.resources["0"]; res != nil {
+		raw = res.url
+	}
+	cm = g.manifest
+	gen = g.directGen
+	if direct == nil {
+		g.mu.Unlock()
+		return raw, cm, gen, false, 0
+	}
+	g.mu.Unlock()
+
+	dURL, dRawHdrs, dHdrs, dCM, dGen, dInvalid, dStatus := direct.current()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if dGen > g.directGen && dURL != "" {
+		if u, err := url.Parse(dURL); err == nil && validHTTP(dURL) {
+			name := relayName("stream", u.Path)
+			if old := g.resources["0"]; old != nil {
+				name = old.name
+			}
+			g.resources["0"] = &relayResource{name: name, url: dURL}
+			g.origin = relayOrigin(u)
+			g.headers = dHdrs.Clone()
+			g.mediaHeaders = redirectMediaHeaders(dRawHdrs)
+			g.directGen = dGen
+			g.manifest = dCM
+			g.upstreamFailures = 0
+			g.upstreamRetryAt = time.Time{}
+		}
+	} else if dInvalid {
+		g.manifest = nil
+	} else if g.manifest == nil && dCM != nil {
+		if res := g.resources["0"]; res != nil && dCM.raw == res.url {
+			g.manifest = dCM
+		}
+	}
+	if res := g.resources["0"]; res != nil {
+		raw = res.url
+	}
+	return raw, g.manifest, g.directGen, dInvalid, dStatus
+}
+
+// refreshDirect asks the direct-stream resolver for a fresh URL after expiry
+// and syncs this grant to it.
+func (g *inputGrant) refreshDirect(ctx context.Context, failedGen uint64) (string, error) {
+	if g.direct == nil {
+		return g.rootURL(), providerResponseError(http.StatusForbidden)
+	}
+	if _, _, _, _, err := g.direct.refresh(ctx, failedGen); err != nil {
+		return g.rootURL(), err
+	}
+	raw, _, _, _, _ := g.syncDirect()
+	return raw, nil
+}
+
+// noteExpiredManifest drops any cached master manifest on this grant and marks
+// its direct-stream state as expired so the next root open re-resolves instead
+// of reusing stale variant URLs or re-fetching a dead single-use master.
+func (g *inputGrant) noteExpiredManifest(status int) {
+	if g == nil || !isExpiredStatus(status) {
+		return
+	}
+	g.mu.Lock()
+	g.manifest = nil
+	gen := g.directGen
+	direct := g.direct
+	g.mu.Unlock()
+	if direct != nil {
+		direct.invalidate(gen, status)
+	}
 }
 
 // relayURL registers an exact upstream URL with the grant.
@@ -551,6 +674,9 @@ func (s *Service) serveInputRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.relayFetchAs(ctx, cancel, g, raw, r, segment)
 	if err == nil && res.StatusCode >= 400 || err != nil && r.Context().Err() == nil {
+		if err == nil && ((!segment && isExpiredStatus(res.StatusCode)) || (segment && res.StatusCode == http.StatusForbidden)) {
+			g.noteExpiredManifest(res.StatusCode)
+		}
 		if h := g.hlsIfAny(); h != nil {
 			h.deliver(h.failedFetch(raw))
 			if segment {
@@ -644,6 +770,9 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 	}
 	if hls {
 		if isMasterPlaylist(b) {
+			if raw == g.rootURL() && g.peekManifest(raw) == nil {
+				g.setManifest(newCachedManifest(raw, b, base, true))
+			}
 			b = selectedHLSMaster(b, base, g.variantCaps)
 			g.variantLogged.Do(func() {
 				m := parseMasterPlaylist(b, base)
@@ -759,7 +888,8 @@ func (s *Service) relayFetchAs(ctx context.Context, cancel context.CancelFunc, g
 	client := *s.o.HTTPClient
 	client.Timeout = 0 // a live input is endless; idle time is bounded instead
 	ua := defaultUserAgent()
-	scopeInputRedirects(&client, g.origin, g.headers, ua, g.mediaHeaders)
+	origin, headers, mediaHeaders := g.requestScope()
+	scopeInputRedirects(&client, origin, headers, ua, mediaHeaders)
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, errRelayUnsupported
@@ -788,10 +918,10 @@ func (s *Service) relayFetchAs(ctx context.Context, cancel context.CancelFunc, g
 		if err != nil {
 			return nil, errRelayUnsupported
 		}
-		if relayOrigin(u) == g.origin {
-			req.Header = g.headers.Clone()
+		if relayOrigin(u) == origin {
+			req.Header = headers.Clone()
 		}
-		applyMediaHeaders(req, g.mediaHeaders)
+		applyMediaHeaders(req, mediaHeaders)
 		if req.Header.Get("User-Agent") == "" && ua != "" {
 			req.Header.Set("User-Agent", ua)
 		}

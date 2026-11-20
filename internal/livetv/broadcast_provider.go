@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,8 @@ type providerBroadcastPlanner struct {
 	startupFailures       []TuneInputFailure
 
 	ladder         *steadyLadder
+	direct         *directStreamState
+	manifest       *cachedManifest
 	link           *steadyLink // granted input of the current source, reused by same-source reopens
 	primed         *steadyLink // the tune's probed input; the first open reads the bytes it probed
 	attempt        *steadyAttempt
@@ -56,6 +59,7 @@ type steadyLink struct {
 	release       func()
 	format        string // probed container: "hls", "mpegts" or empty
 	uses          int
+	directGen     uint64
 	primedDecoder transcode.Decoder // admission already obtained its first picture
 	refs          atomic.Int32
 	closed        atomic.Bool
@@ -532,7 +536,8 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 				retired = append(retired, primed)
 			}
 		}
-		if link != nil && (link.src.ID != id || link.src.URL != src.URL || link.uses >= steadyMaxLinkUses && !p.s.linkTransportAlive(link)) {
+		if link != nil && (link.src.ID != id || (p.direct == nil && link.src.URL != src.URL) || (p.direct != nil && p.direct.needsRefresh(link.directGen)) || link.uses >= steadyMaxLinkUses && !p.s.linkTransportAlive(link)) {
+			p.rememberManifestLocked(link)
 			retired = append(retired, link)
 			if heldDisplaced == nil {
 				heldDisplaced = link
@@ -543,6 +548,8 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		if link != nil {
 			link.retain()
 		}
+		direct := p.direct
+		cached := p.manifestForLocked(src.URL)
 		p.mu.Unlock()
 		for _, l := range retired {
 			l.releaseRef(p.s)
@@ -550,7 +557,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		if link == nil {
 			var err error
 			resID := "broadcast-" + c.ID + "-" + strconv.FormatUint(p.linkSeq.Add(1), 10)
-			link, err = p.s.linkSteadySource(ctx, c, src, resID, 0)
+			link, err = p.s.linkSteadySourceWithState(ctx, c, src, resID, 0, direct, cached)
 			if errors.Is(err, ErrProviderBusy) || errors.Is(err, ErrProviderPaced) {
 				busy[id] = true
 				last = err
@@ -710,9 +717,44 @@ func (s *Service) linkTransportAlive(l *steadyLink) bool {
 	return ok && !h.Failed
 }
 
+func (p *providerBroadcastPlanner) rememberManifestLocked(link *steadyLink) {
+	if link == nil || link.ss == nil {
+		return
+	}
+	link.ss.mu.Lock()
+	raw := link.ss.inputURL
+	link.ss.mu.Unlock()
+	if cm := link.ss.cachedMasterFor(raw); cm != nil {
+		p.manifest = cm
+		return
+	}
+	p.s.inputRelay.mu.Lock()
+	g := p.s.inputRelay.bySess[link.ss]
+	p.s.inputRelay.mu.Unlock()
+	if g != nil {
+		if cm := g.peekManifest(g.rootURL()); cm != nil && cm.isMaster {
+			p.manifest = cm
+		}
+	}
+}
+
+func (p *providerBroadcastPlanner) manifestForLocked(raw string) *cachedManifest {
+	if p.direct != nil {
+		return p.direct.manifestFor(raw)
+	}
+	if p.manifest != nil && p.manifest.isMaster && p.manifest.raw == raw {
+		return p.manifest
+	}
+	return nil
+}
+
 // linkSteadySource reserves the provider account's connection, resolves the
 // input and grants it to the loopback relay.
 func (s *Service) linkSteadySource(ctx context.Context, c Channel, src StreamSource, reservation string, lead time.Duration) (*steadyLink, error) {
+	return s.linkSteadySourceWithState(ctx, c, src, reservation, lead, nil, nil)
+}
+
+func (s *Service) linkSteadySourceWithState(ctx context.Context, c Channel, src StreamSource, reservation string, lead time.Duration, direct *directStreamState, cached *cachedManifest) (*steadyLink, error) {
 	account := src.AuthSourceID
 	if account == "" {
 		account = c.SourceID
@@ -725,15 +767,43 @@ func (s *Service) linkSteadySource(ctx context.Context, c Channel, src StreamSou
 	if err != nil {
 		return nil, err
 	}
-	attempt, cancelAttempt := context.WithTimeout(ctx, steadyOpenResolveTimeout)
-	resolved, headers, err := s.ResolveStreamSource(attempt, c, src)
-	cancelAttempt()
-	if err != nil {
-		release()
-		return nil, err
+	var resolved string
+	var headers http.Header
+	var directGen uint64
+	var manifest *cachedManifest
+	var ephemeral bool
+	if direct != nil {
+		ephemeral = true
+		dURL, dRawHdrs, dHdrs, dCM, dGen, dInvalid, _ := direct.current()
+		if dInvalid || dURL == "" {
+			attempt, cancelAttempt := context.WithTimeout(ctx, steadyOpenResolveTimeout)
+			var rerr error
+			dURL, dRawHdrs, dHdrs, dGen, rerr = direct.refresh(attempt, dGen)
+			cancelAttempt()
+			if rerr != nil {
+				release()
+				return nil, rerr
+			}
+			dCM = direct.manifestFor(dURL)
+		}
+		resolved, headers, directGen, manifest = dURL, dHdrs, dGen, dCM
+		src.URL = resolved
+		src.Headers = dRawHdrs
+	} else {
+		attempt, cancelAttempt := context.WithTimeout(ctx, steadyOpenResolveTimeout)
+		var rerr error
+		resolved, headers, rerr = s.ResolveStreamSource(attempt, c, src)
+		cancelAttempt()
+		if rerr != nil {
+			release()
+			return nil, rerr
+		}
+		if cached != nil && cached.isMaster && cached.raw == resolved {
+			manifest = cached
+		}
 	}
 	inputCtx, cancel := context.WithCancel(s.serviceContext())
-	ss := &session{ctx: inputCtx, cancel: cancel, info: SessionInfo{ID: reservation, Channel: c}, inputSource: src, inputURL: resolved, inputHeaders: headers}
+	ss := &session{ctx: inputCtx, cancel: cancel, info: SessionInfo{ID: reservation, Channel: c}, ephemeral: ephemeral, direct: direct, sniffedManifest: manifest, inputSource: src, inputURL: resolved, inputHeaders: headers}
 	grant := src
 	grant.URL = resolved
 	// The tune's first input also feeds the startup burst: it joins that much
@@ -743,7 +813,9 @@ func (s *Service) linkSteadySource(ctx context.Context, c Channel, src StreamSou
 		release()
 		return nil, err
 	}
-	return newSteadyLink(src, ss, release, s.cachedInputFormat(ss)), nil
+	sl := newSteadyLink(src, ss, release, s.cachedInputFormat(ss))
+	sl.directGen = directGen
+	return sl, nil
 }
 
 // reserveBroadcastProvider takes a provider connection under the same

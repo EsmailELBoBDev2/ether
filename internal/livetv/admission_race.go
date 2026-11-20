@@ -27,6 +27,10 @@ const (
 // from the probe's measured latency. Provider tune-gap waits happen before a
 // candidate's probe timer starts so provider pacing never eats startup time.
 func (s *Service) raceSteadyInputs(ctx context.Context, c Channel, candidates []StreamSource) (*steadyAdmission, []TuneInputFailure, bool, bool, error) {
+	return s.raceSteadyInputsSeed(ctx, c, candidates, nil, nil)
+}
+
+func (s *Service) raceSteadyInputsSeed(ctx context.Context, c Channel, candidates []StreamSource, direct *directStreamState, manifest *cachedManifest) (*steadyAdmission, []TuneInputFailure, bool, bool, error) {
 	type result struct {
 		src         StreamSource
 		account     string
@@ -130,7 +134,7 @@ func (s *Service) raceSteadyInputs(ctx context.Context, c Channel, candidates []
 					openCtx, stopOpen := context.WithTimeout(life, openBudget)
 					opened := time.Now()
 					var err error
-					link, err = s.linkSteadySource(openCtx, c, src, "broadcast-"+c.ID+"-admit-"+randomID(), s.latencyPolicy().TargetLatency()+s.latencyPolicy().SegmentDuration())
+					link, err = s.linkSteadySourceWithState(openCtx, c, src, "broadcast-"+c.ID+"-admit-"+randomID(), s.latencyPolicy().TargetLatency()+s.latencyPolicy().SegmentDuration(), direct, manifest)
 					sourceOpenElapsed += time.Since(opened)
 					stopOpen()
 					if err != nil {

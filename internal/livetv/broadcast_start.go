@@ -400,7 +400,11 @@ func (s *Service) startBroadcast(ctx context.Context, ss *session) error {
 		} else {
 			var code, detail string
 			var admissionErr error
-			admitted, code, detail, admissionErr = s.admitSteady(ctx, c)
+			ss.mu.Lock()
+			direct := ss.direct
+			inputURL := ss.inputURL
+			ss.mu.Unlock()
+			admitted, code, detail, admissionErr = s.admitSteadySeed(ctx, c, direct, ss.cachedMasterFor(inputURL))
 			if admissionErr != nil {
 				return admissionErr
 			}
@@ -542,7 +546,18 @@ func (s *Service) launchBroadcast(ctx context.Context, ss *session, l broadcastL
 		if c.Kind == "virtual" {
 			planner = &scheduleBroadcastPlanner{s: s, channel: c, user: inputUser, caps: core.ClientCaps{MaxHeight: format.Height, VideoCodecs: []string{"h264"}, AudioCodecs: []string{"aac"}}, format: format, runner: runner}
 		} else {
-			provider := &providerBroadcastPlanner{s: s, channel: c, format: format, runner: runner, ladder: newSteadyLadder()}
+			ss.mu.Lock()
+			direct := ss.direct
+			ssURL := ss.inputURL
+			ss.mu.Unlock()
+			cm := ss.cachedMasterFor(ssURL)
+			if cm == nil && admitted != nil && admitted.link != nil && admitted.link.ss != nil {
+				admitted.link.ss.mu.Lock()
+				adURL := admitted.link.ss.inputURL
+				admitted.link.ss.mu.Unlock()
+				cm = admitted.link.ss.cachedMasterFor(adURL)
+			}
+			provider := &providerBroadcastPlanner{s: s, channel: c, format: format, runner: runner, ladder: newSteadyLadder(), direct: direct, manifest: cm}
 			if admitted != nil && admitted.link != nil {
 				provider.primed = admitted.link
 				provider.ladder.next = admitted.link.src.ID

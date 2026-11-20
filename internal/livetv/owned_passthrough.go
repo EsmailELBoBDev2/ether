@@ -101,9 +101,29 @@ func (s *Service) acquirePassthrough(ss *session) *ownedLease {
 		policy := s.latencyPolicy()
 		tl.windowSpan, tl.startBehind = policy.PlaylistWindow(), policy.TargetLatency()
 		tl.setHint(slateProfileFromInfo(c.ID, ss.info.MediaInfo, "ts"))
+		ss.mu.Lock()
+		src := ss.inputSource
+		raw := ss.inputURL
+		hdrs := ss.inputHeaders.Clone()
+		ephemeral := ss.ephemeral
+		direct := ss.direct
+		ss.mu.Unlock()
+		var directGen uint64
+		cm := ss.sniffedManifestFor(raw)
+		if direct != nil {
+			dURL, dRawHdrs, dHdrs, dCM, dGen, _, _ := direct.current()
+			if dURL != "" && (dURL == raw || ephemeral) {
+				raw = dURL
+				src.URL = dURL
+				src.Headers = dRawHdrs
+				hdrs = dHdrs
+				cm = dCM
+				directGen = dGen
+			}
+		}
 		p := &passthroughProducer{s: s, tl: tl, c: c, caps: ss.caps, log: log,
-			src: ss.inputSource, raw: ss.inputURL, headers: ss.inputHeaders.Clone(),
-			ephemeral: ss.ephemeral, initialManifest: ss.sniffedManifestFor(ss.inputURL),
+			src: src, raw: raw, headers: hdrs,
+			ephemeral: ephemeral, direct: direct, directGen: directGen, cachedManifest: cm,
 			suggest: make(chan sourceChoice, 1)}
 		sh = &ownedShared{key: key, tl: tl, p: p, ctx: ctx, cancel: cancel}
 		st.channels[key] = sh
@@ -238,8 +258,11 @@ type passthroughProducer struct {
 	raw     string // resolved source URL
 	headers http.Header
 
-	ephemeral       bool
-	initialManifest *cachedManifest
+	ephemeral           bool
+	direct              *directStreamState
+	directGen           uint64
+	cachedManifest      *cachedManifest
+	directFailoverTried bool
 
 	suggest chan sourceChoice
 	playing atomic.Pointer[string] // source ID, read by sessions
@@ -268,24 +291,97 @@ type passthroughProducer struct {
 	seenSkipped   int64
 }
 
+func (p *passthroughProducer) manifestFor(raw string) *cachedManifest {
+	if raw == "" {
+		return nil
+	}
+	if p.direct != nil {
+		if dm := p.direct.manifestFor(raw); dm != nil {
+			return dm
+		}
+		if _, _, _, _, _, invalidated, _ := p.direct.current(); invalidated {
+			return nil
+		}
+	}
+	if p.cachedManifest != nil && p.cachedManifest.raw == raw && p.cachedManifest.hls {
+		return p.cachedManifest
+	}
+	return nil
+}
+
+func (p *passthroughProducer) setCachedMaster(cm *cachedManifest) {
+	if cm == nil || !cm.isMaster {
+		return
+	}
+	p.cachedManifest = cm
+	if p.direct != nil {
+		p.direct.setManifest(cm)
+	}
+}
+
+func (p *passthroughProducer) invalidateDirect(status int) {
+	p.cachedManifest = nil
+	if p.direct != nil {
+		p.direct.invalidate(p.directGen, status)
+	}
+}
+
+func (p *passthroughProducer) refreshDirect(ctx context.Context) (StreamSource, string, http.Header, error) {
+	if p.direct == nil {
+		return p.src, p.raw, p.headers, providerResponseError(http.StatusForbidden)
+	}
+	dURL, dRawHdrs, dHdrs, dGen, err := p.direct.refresh(ctx, p.directGen)
+	if err != nil {
+		return p.src, p.raw, p.headers, err
+	}
+	src := p.src
+	src.URL = dURL
+	src.Headers = dRawHdrs
+	p.directGen = dGen
+	p.cachedManifest = p.direct.manifestFor(dURL)
+	return src, dURL, dHdrs, nil
+}
+
 // open points the producer at a source: it selects the best current variant
 // and rebases the ingest. keep preserves the ingest
 // position when the source is the same stream (a re-resolution).
 func (p *passthroughProducer) open(ctx context.Context, src StreamSource, raw string, headers http.Header, keep bool) error {
+	return p.openAttempt(ctx, src, raw, headers, keep, false)
+}
+
+func (p *passthroughProducer) openAttempt(ctx context.Context, src StreamSource, raw string, headers http.Header, keep, refreshed bool) error {
 	o := &providerOrigin{s: p.s, mediaURL: raw, source: raw, headers: headers, public: redirectMediaHeaders(src.Headers), name: "provider:" + src.ID}
 	var (
 		body []byte
 		base *url.URL
 		err  error
 	)
-	if cm := p.initialManifest; cm != nil && cm.raw == raw && cm.hls {
-		p.initialManifest = nil
+	if cm := p.manifestFor(raw); cm != nil && cm.hls {
+		if !cm.isMaster {
+			p.cachedManifest = nil
+		}
 		body, base = cm.body, cm.base
 	} else {
-		p.initialManifest = nil
+		p.cachedManifest = nil
 		body, base, err = o.media(ctx)
 		if err != nil {
+			if status, ok := expiredProviderStatus(err); ok {
+				p.invalidateDirect(status)
+				if !refreshed && p.direct != nil && p.direct.canResolve() {
+					p.directFailoverTried = true
+					nextSrc, nextRaw, nextHdrs, rerr := p.refreshDirect(ctx)
+					if rerr != nil {
+						return rerr
+					}
+					return p.openAttempt(ctx, nextSrc, nextRaw, nextHdrs, keep, true)
+				}
+			}
 			return err
+		}
+		if isMasterPlaylist(body) {
+			cm := newCachedManifest(raw, body, base, true)
+			p.setCachedMaster(cm)
+			body, base = cm.body, cm.base
 		}
 	}
 	if isMasterPlaylist(body) {
@@ -379,7 +475,7 @@ func (p *passthroughProducer) run(ctx context.Context) {
 		p.watchChurn(ctx)
 		now := time.Now()
 		if progress {
-			p.errs, p.reresolved, p.rounds, backoff = 0, false, 0, 250*time.Millisecond
+			p.errs, p.reresolved, p.rounds, p.directFailoverTried, backoff = 0, false, 0, false, 250*time.Millisecond
 			if now.Sub(p.healthAt) > time.Minute {
 				p.healthAt = now
 				p.s.recordSourceHealth(p.c.ID, p.src, nil, true)
@@ -398,7 +494,11 @@ func (p *passthroughProducer) run(ctx context.Context) {
 		}
 		stale := p.ingest.stale(now)
 		var segErr *segmentError
-		hard := !errors.As(err, &segErr) && isHardProviderError(err) || errors.Is(err, errOriginEnded) || errors.Is(err, errMasterSource)
+		isSegErr := errors.As(err, &segErr)
+		if status, ok := expiredProviderStatus(err); ok && (!isSegErr || status == http.StatusForbidden) {
+			p.invalidateDirect(status)
+		}
+		hard := !isSegErr && isHardProviderError(err) || errors.Is(err, errOriginEnded) || errors.Is(err, errMasterSource)
 		if err != nil || stale >= td/2 {
 			select {
 			case choice := <-p.suggest:
@@ -494,6 +594,22 @@ func (p *passthroughProducer) reportHistory() {
 func (p *passthroughProducer) reresolve(ctx context.Context) error {
 	rctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
+	if p.direct != nil {
+		dURL, dRawHdrs, dHdrs, dCM, dGen, dInvalid, _ := p.direct.current()
+		if !dInvalid && dCM != nil && dCM.isMaster && dURL != "" {
+			src := p.src
+			src.URL = dURL
+			src.Headers = dRawHdrs
+			p.directGen = dGen
+			p.cachedManifest = dCM
+			return p.open(rctx, src, dURL, dHdrs, true)
+		}
+		src, raw, headers, err := p.refreshDirect(rctx)
+		if err != nil {
+			return err
+		}
+		return p.openAttempt(rctx, src, raw, headers, true, true)
+	}
 	raw, headers, err := p.s.ResolveStreamSource(rctx, p.c, p.src)
 	if err != nil {
 		return err
@@ -505,6 +621,21 @@ func (p *passthroughProducer) reresolve(ctx context.Context) error {
 // current one again. It reports whether a source opened.
 func (p *passthroughProducer) failover(ctx context.Context) bool {
 	if p.ephemeral {
+		if p.direct != nil && p.direct.canResolve() && !p.directFailoverTried {
+			p.directFailoverTried = true
+			rctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			src, raw, headers, err := p.refreshDirect(rctx)
+			if err == nil {
+				err = p.openAttempt(rctx, src, raw, headers, p.tl.started(), true)
+			}
+			cancel()
+			if err == nil {
+				return true
+			}
+			if !errors.Is(err, context.Canceled) {
+				p.log.Warn("owned passthrough direct re-resolve failed", Diagnose("source_failover", err).LogAttrs()...)
+			}
+		}
 		return false
 	}
 	failed := p.src

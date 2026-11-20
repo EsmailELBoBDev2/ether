@@ -46,6 +46,7 @@ func (l sessionLive) TuneDirect(ctx context.Context, viewer *core.Viewer, target
 	libID := target.LibraryID
 	tab := target.Tab
 	var allowCheck func(context.Context, *core.User) error
+	var resolve func(context.Context) (livetv.DirectStreamResult, error)
 	if l.app != nil {
 		allowCheck = func(checkCtx context.Context, u *core.User) error {
 			svc := l.app.pluginLiveService()
@@ -55,6 +56,25 @@ func (l sessionLive) TuneDirect(ctx context.Context, viewer *core.Viewer, target
 			_, _, err := svc.AllowViewer(core.WithLiveApp(checkCtx, surface), u, libID, tab)
 			return err
 		}
+		if libID > 0 && target.ItemID != "" && viewer != nil {
+			itemID := target.ItemID
+			viewerCopy := *viewer
+			resolve = func(resolveCtx context.Context) (livetv.DirectStreamResult, error) {
+				svc := l.app.pluginLiveService()
+				if svc == nil {
+					return livetv.DirectStreamResult{}, core.ErrNotAvailable
+				}
+				lib, _, err := svc.AllowViewer(core.WithLiveApp(resolveCtx, surface), &viewerCopy, libID, tab)
+				if err != nil {
+					return livetv.DirectStreamResult{}, err
+				}
+				stream, err := svc.Resolve(resolveCtx, lib, itemID)
+				if err != nil {
+					return livetv.DirectStreamResult{}, err
+				}
+				return livetv.DirectStreamResult{URL: stream.URL, Headers: stream.Headers}, nil
+			}
+		}
 	}
 	info, err := l.service.TuneDirectStream(ctx, viewer, livetv.DirectStream{
 		ID:         target.ItemID,
@@ -62,6 +82,7 @@ func (l sessionLive) TuneDirect(ctx context.Context, viewer *core.Viewer, target
 		URL:        target.URL,
 		Headers:    target.Headers,
 		AllowCheck: allowCheck,
+		Resolve:    resolve,
 	}, liveTVClientCaps(caps), clientSession)
 	return info.ID, info.MediaInfo, err
 }

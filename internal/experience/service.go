@@ -50,6 +50,10 @@ type ServiceDeps struct {
 	BeginPeopleRead     func(context.Context, *core.User) (PeopleRead, error)
 	NotInterestedSource func(context.Context, *core.User) ([]frontend.NotInterestedEntry, error)
 	ByExternalID        func(context.Context, string, string) (*core.Title, error)
+	// KeysByProviderID resolves one external provider id ("tmdb", "imdb",
+	// "tvdb", case-insensitive) to candidate rating keys via indexed lookup,
+	// never scanning the catalogue.
+	KeysByProviderID    func(context.Context, string, string, []core.MediaType) ([]core.RatingKey, error)
 	Active              func(context.Context, int64) (*core.User, error)
 	Libraries           []Library
 	// LiveLibraries, when set, is read on each surface call so configured
@@ -476,6 +480,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	// Person/Music* favorites asks used to scan the whole TV library.
 	if !s.requestedTypesServable(ctx, v, q) {
 		return core.Page{Items: []core.Title{}}, nil
+	}
+	if q.FilterByProviderIDs {
+		return s.providerIDLibraryItems(ctx, v, viewID, q)
 	}
 	if viewID == "" {
 		if q.Sort == "" {
@@ -1493,6 +1500,9 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		return core.Page{}, err
 	}
 	if key.IsPluginKey() {
+		if q.FilterByProviderIDs {
+			return emptyProviderIDPage(q)
+		}
 		return s.pluginChildren(ctx, v, key, q)
 	}
 	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart || key.Kind() == core.KindPlaylist {
@@ -1518,9 +1528,27 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		if err != nil {
 			return core.Page{}, err
 		}
+		var providerKeySet map[core.RatingKey]bool
+		if q.FilterByProviderIDs {
+			allowedTypes := intersectRequestedTypes([]core.MediaType{core.TypeMovie, core.TypeShow, core.TypeSeason, core.TypeEpisode}, q)
+			matchedKeys, kerr := s.resolveProviderIDKeys(ctx, q.ProviderIDs, allowedTypes)
+			if kerr != nil {
+				return core.Page{}, kerr
+			}
+			providerKeySet = make(map[core.RatingKey]bool, len(matchedKeys))
+			for _, mk := range matchedKeys {
+				providerKeySet[mk] = true
+			}
+		}
+		check := q
+		check.FilterByProviderIDs = false
+		check.ProviderIDs = nil
 		filtered := make([]core.Title, 0, len(items))
 		for _, title := range items {
-			ok, e := s.matchesUserQuery(ctx, v, title, q)
+			if q.FilterByProviderIDs && !providerKeySet[title.Key] && !titleMatchesProviderIDs(title, q.ProviderIDs) {
+				continue
+			}
+			ok, e := s.matchesUserQuery(ctx, v, title, check)
 			if e != nil {
 				return core.Page{}, e
 			}
@@ -1548,6 +1576,9 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 	}
 	if _, err = s.item(ctx, v, key); err != nil {
 		return core.Page{}, err
+	}
+	if q.FilterByProviderIDs {
+		return s.providerIDChildren(ctx, v, key, q)
 	}
 	if page, handled, err := s.pagedSeason(ctx, v, key, q); handled || err != nil {
 		return page, err

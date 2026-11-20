@@ -339,6 +339,26 @@ func (c *Catalog) StoredEpisodesByKey(ctx context.Context, show core.Filter, aft
 // total, a large count is served from the last one while it recounts.
 func (c *Catalog) CountStoredEpisodes(ctx context.Context, show core.Filter) (int, error) {
 	show = c.viewerPaging(ctx, show)
+	if g := show.Group; g != nil {
+		if watchedOnly(*g) {
+			plain := show
+			plain.Group = nil
+			return c.CountPlayedEpisodes(ctx, plain, g.UserID, 0)
+		}
+		if unwatchedOnly(*g) {
+			plain := show
+			plain.Group = nil
+			all, err := c.CountStoredEpisodes(ctx, plain)
+			if err != nil {
+				return 0, err
+			}
+			played, err := c.CountPlayedEpisodes(ctx, plain, g.UserID, 0)
+			if err != nil {
+				return 0, err
+			}
+			return max(all-played, 0), nil
+		}
+	}
 	where, args, err := c.storedEpisodesProbeWhere(show)
 	if err != nil {
 		return 0, err
@@ -481,6 +501,25 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 
 	var items []core.Title
 	switch {
+	case q.Filter.Group != nil && watchedOnly(*q.Filter.Group):
+		plain := q.Filter
+		plain.Group = nil
+		where, args, werr := c.playedEpisodesWhere(ctx, plain, 0)
+		if werr != nil {
+			return core.Page{}, werr
+		}
+		if q.Sort == core.SortUpdated && plain.UpdatedAfter == 0 {
+			where = "e.fetched_at>=? AND " + where
+			args = append([]any{int64(0)}, args...)
+		}
+		order := "e.key ASC"
+		if !keyOrder {
+			order = storedChildOrder("e", q) + ", e.key ASC"
+		}
+		sqlQ := `SELECT ` + prefixedCols("e") + ` FROM state_watch w CROSS JOIN catalog_titles e JOIN catalog_titles t ON t.key=e.show_key WHERE w.user_id=? AND w.view_count>0 AND e.key=w.rating_key AND ` + where + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+		a := append([]any{q.Filter.Group.UserID}, args...)
+		a = append(a, limit, offset)
+		items, err = c.queryPagedTitles(ctx, sqlQ, a...)
 	case keyOrder && (offset == 0 || afterKey > 0):
 		items, err = c.StoredEpisodesByKey(ctx, q.Filter, afterKey, limit)
 	case keyOrder:
@@ -663,6 +702,26 @@ func (c *Catalog) StoredSeasonsByKey(ctx context.Context, show core.Filter, afte
 // the browse filter show.
 func (c *Catalog) CountStoredSeasons(ctx context.Context, show core.Filter) (int, error) {
 	show = c.viewerPaging(ctx, show)
+	if g := show.Group; g != nil {
+		if watchedOnly(*g) {
+			plain := show
+			plain.Group = nil
+			return c.countPlayedSeasons(ctx, plain, g.UserID)
+		}
+		if unwatchedOnly(*g) {
+			plain := show
+			plain.Group = nil
+			all, err := c.CountStoredSeasons(ctx, plain)
+			if err != nil {
+				return 0, err
+			}
+			played, err := c.countPlayedSeasons(ctx, plain, g.UserID)
+			if err != nil {
+				return 0, err
+			}
+			return max(all-played, 0), nil
+		}
+	}
 	where, args, err := c.storedSeasonsWhere(show, false)
 	if err != nil {
 		return 0, err
@@ -710,6 +769,32 @@ func (c *Catalog) CountStoredSeasons(ctx context.Context, show core.Filter) (int
 		return ent.total, nil
 	}
 	return count(ctx)
+}
+
+func (c *Catalog) countPlayedSeasons(ctx context.Context, show core.Filter, userID int64) (int, error) {
+	where, args, err := c.storedSeasonsWhere(show, false)
+	if err != nil {
+		return 0, err
+	}
+	a := append([]any{userID}, args...)
+	var total int
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM state_watch w CROSS JOIN catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE w.user_id=? AND w.view_count>0 AND s.key=w.rating_key AND `+where, a...).Scan(&total); err != nil {
+		return 0, err
+	}
+	if total > 0 && total <= 500 {
+		rows, err := c.queryTitles(ctx, `SELECT `+prefixedCols("s")+` FROM state_watch w CROSS JOIN catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE w.user_id=? AND w.view_count>0 AND s.key=w.rating_key AND `+where+` ORDER BY s.key ASC`, a...)
+		if err == nil {
+			now := c.now()
+			kept := 0
+			for i := range rows {
+				if listableSeason(&rows[i], now) {
+					kept++
+				}
+			}
+			total = kept
+		}
+	}
+	return total, nil
 }
 
 // BrowseStoredSeasons pages stored, listable seasons in the library without
@@ -790,6 +875,34 @@ func (c *Catalog) BrowseStoredSeasons(ctx context.Context, q core.BrowseQuery) (
 	now := c.now()
 	var items []core.Title
 	switch {
+	case q.Filter.Group != nil && watchedOnly(*q.Filter.Group):
+		plain := q.Filter
+		plain.Group = nil
+		requireKnown := q.Sort == core.SortReleased || q.Sort == core.SortAdded
+		where, args, werr := c.storedSeasonsWhere(plain, requireKnown)
+		if werr != nil {
+			return core.Page{}, werr
+		}
+		if q.Sort == core.SortUpdated && plain.UpdatedAfter == 0 {
+			where = "s.fetched_at>=? AND " + where
+			args = append([]any{int64(0)}, args...)
+		}
+		order := "s.key ASC"
+		if !keyOrder {
+			order = storedChildOrder("s", q) + ", s.key ASC"
+		}
+		sqlQ := `SELECT ` + prefixedCols("s") + ` FROM state_watch w CROSS JOIN catalog_titles s JOIN catalog_titles t ON t.key=s.show_key WHERE w.user_id=? AND w.view_count>0 AND s.key=w.rating_key AND ` + where + ` ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+		a := append([]any{q.Filter.Group.UserID}, args...)
+		a = append(a, limit, offset)
+		raw, qerr := c.queryTitles(ctx, sqlQ, a...)
+		if qerr != nil {
+			return core.Page{}, qerr
+		}
+		for i := range raw {
+			if listableSeason(&raw[i], now) {
+				items = append(items, raw[i])
+			}
+		}
 	case keyOrder && (offset == 0 || afterKey > 0):
 		items, err = c.StoredSeasonsByKey(ctx, q.Filter, afterKey, limit)
 	case keyOrder && total <= 500:

@@ -569,7 +569,18 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 // unwatchedOnly reports whether g is a viewer's "unwatched" state filter
 // and nothing else.
 func unwatchedOnly(g core.FilterGroup) bool {
-	return g.Unwatched != nil && *g.Unwatched && g.UserID > 0 && g.Watched == nil && g.InProgress == nil && g.History == nil && g.Favorite == nil && g.Watchlist == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
+	wantUnwatched := (g.Unwatched != nil && *g.Unwatched && g.Watched == nil) ||
+		(g.Watched != nil && !*g.Watched && g.Unwatched == nil)
+	return wantUnwatched && g.UserID > 0 && g.InProgress == nil && g.History == nil && g.Favorite == nil && g.Watchlist == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
+		g.OnWatchlist == nil && g.StateField == "" && !g.ParentOnly && g.Operator == "" && g.Filter == nil && len(g.Children) == 0
+}
+
+// watchedOnly reports whether g is a viewer's "watched" state filter and
+// nothing else (accepting both Watched=true and Unwatched=false).
+func watchedOnly(g core.FilterGroup) bool {
+	wantWatched := (g.Watched != nil && *g.Watched && g.Unwatched == nil) ||
+		(g.Unwatched != nil && !*g.Unwatched && g.Watched == nil)
+	return wantWatched && g.UserID > 0 && g.InProgress == nil && g.History == nil && g.Favorite == nil && g.Watchlist == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
 		g.OnWatchlist == nil && g.StateField == "" && !g.ParentOnly && g.Operator == "" && g.Filter == nil && len(g.Children) == 0
 }
 

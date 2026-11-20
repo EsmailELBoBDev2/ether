@@ -343,6 +343,13 @@ type ItemRequest struct {
 // DateFilter is the date predicate accepted by the shared catalogue boundary.
 type DateFilter = core.DateFilter
 
+// ProviderID is one external provider identifier requested by a client
+// (for example Jellyfin/Emby AnyProviderIdEquals=tmdb.872585).
+type ProviderID struct {
+	Provider string // lowercased provider name: "tmdb", "imdb", "tvdb", ...
+	ID       string // trimmed provider-specific id value
+}
+
 type ItemQuery struct {
 	// AdjacentTo selects the anchor and its immediately neighboring visible items.
 	AdjacentTo core.RatingKey
@@ -370,6 +377,13 @@ type ItemQuery struct {
 	Filter        core.Filter
 	Watched       *bool
 	Favorite      *bool
+	// ProviderIDs holds external provider identifiers to match (OR semantics:
+	// an item matches if it carries any listed provider id). When
+	// FilterByProviderIDs is true, only matching items are returned; an empty
+	// or unknown-provider list returns an empty page (Total 0) rather than
+	// dropping the filter.
+	ProviderIDs         []ProviderID
+	FilterByProviderIDs bool
 	// NoTotal is for clients that page without a total. A library page
 	// answered from the catalogue's indexes then skips counting the matches,
 	// which reads every title the filter admits; Page.Total is Offset plus

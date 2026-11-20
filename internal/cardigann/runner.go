@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/langtag"
 	"github.com/braedonsaunders/ether/internal/newznab"
 )
@@ -35,6 +36,7 @@ type Runner struct {
 	// the definition's `language`, canonicalised to a BCP 47 tag. Empty
 	// when neither names one.
 	language string
+	clientID func() config.ClientIdentity
 
 	mu       sync.Mutex
 	loggedIn bool
@@ -55,7 +57,8 @@ type runnerOptions struct {
 	HostLimiter *newznab.HostLimiter
 	// Language is the owner's per-indexer Release language override; empty
 	// leaves the definition's own `language` in force (see Runner.language).
-	Language string
+	Language       string
+	ClientIdentity func() config.ClientIdentity
 }
 
 func newRunner(def *Definition, o runnerOptions) (*Runner, error) {
@@ -77,7 +80,7 @@ func newRunner(def *Definition, o runnerOptions) (*Runner, error) {
 		km := &keyedMutex{}
 		o.Lock = km.lock
 	}
-	r := &Runner{def: def, id: o.IndexerID, settings: o.Settings, site: site, sessions: o.Sessions, lock: o.Lock, log: o.Logger, now: o.Now}
+	r := &Runner{def: def, id: o.IndexerID, settings: o.Settings, site: site, sessions: o.Sessions, lock: o.Lock, log: o.Logger, now: o.Now, clientID: o.ClientIdentity}
 	r.language = canonicalLanguage(o.Language)
 	if r.language == "" {
 		r.language = canonicalLanguage(def.Language)

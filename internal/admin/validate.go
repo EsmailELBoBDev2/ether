@@ -261,12 +261,6 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	for i, ix := range cfg.Indexers {
 		f := fmt.Sprintf("indexers[%d]", i)
 		v.httpURL(f+".url", ix.URL, true)
-		if msg := config.ValidateUserAgent(ix.UserAgent); msg != "" {
-			v.add(f+".userAgent", "%s", msg)
-		}
-		for _, e := range ix.RequestIdentity.Validate() {
-			v.add(f+"."+e.Field, "%s", e.Message)
-		}
 		if ix.Kind != "" {
 			v.oneOf(f+".kind", ix.Kind, config.IndexerKindNewznab, config.IndexerKindCardigann, config.IndexerKindStremio, config.IndexerKindZilean)
 		}

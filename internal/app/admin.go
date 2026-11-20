@@ -116,8 +116,22 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return newznab.Test(ctx, ix, a.cfg.Get().ClientIdentity)
 		},
-		IndexerPreview: func(ix config.Indexer) (any, error) {
-			return newznab.PreviewRequestIdentity(ix, a.cfg.Get().ClientIdentity)
+		TestIndexerIdentity: func(ctx context.Context, ix config.Indexer, policy config.ClientIdentity) (config.Identity, error) {
+			if a.indexers != nil {
+				return a.indexers.TestIndexerCaps(ctx, ix, policy)
+			}
+			return newznab.TestCaps(ctx, ix, policy)
+		},
+		IndexerPreview: func(req admin.IndexerPreviewRequest) (any, error) {
+			cfg := a.cfg.Get()
+			return newznab.PreviewRequestIdentity(newznab.PreviewInput{
+				Rule:          req.Rule,
+				Rules:         req.Rules,
+				HasRules:      req.HasRules,
+				Indexer:       req.Indexer,
+				SavedIndexers: cfg.Indexers,
+				SavedPolicy:   cfg.ClientIdentity,
+			})
 		},
 		TestDebrid: func(ctx context.Context, p config.DebridProvider) error {
 			return a.debrid.Test(ctx, p)

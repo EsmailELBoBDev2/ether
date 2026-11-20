@@ -69,6 +69,24 @@ func (s *StreamSources) SetNZBClient(c *http.Client) {
 	s.mu.Unlock()
 }
 
+// SetClientIdentity wires the server-wide request identity lookup used when
+// downloading add-on NZBs.
+func (s *StreamSources) SetClientIdentity(fn func() config.ClientIdentity) {
+	s.mu.Lock()
+	s.identity = fn
+	s.mu.Unlock()
+}
+
+func (s *StreamSources) clientIdentity() config.ClientIdentity {
+	s.mu.RLock()
+	fn := s.identity
+	s.mu.RUnlock()
+	if fn == nil {
+		return config.ClientIdentity{}
+	}
+	return fn()
+}
+
 type addonBackend struct {
 	s        *StreamSources
 	plugin   string
@@ -325,7 +343,7 @@ func (b *addonBackend) FetchNZB(ctx context.Context, r core.Release, reserve fun
 	if u, err := stremio.NormalizeURL(rec.SourceURL); err == nil {
 		origin = stremio.Origin(u)
 	}
-	return stremio.FetchNZB(ctx, b.s.nzbClient(), origin, r, func(ctx context.Context, kind string) error {
+	return stremio.FetchNZBWithIdentity(ctx, b.s.nzbClient(), origin, b.instance, b.s.clientIdentity(), r, func(ctx context.Context, kind string) error {
 		if err := reserve(ctx, kind); err != nil {
 			return err
 		}

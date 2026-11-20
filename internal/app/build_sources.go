@@ -97,7 +97,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 
 	// Indexers and resolver.
 	indexerHosts := newznab.NewHostLimiter(0)
-	siteOpts := cardigann.Options{DB: a.db, Sealer: a.cfg, Logger: log.With("component", "cardigann"), Sites: cfg.IndexerSites, HostLimiter: indexerHosts}
+	siteOpts := cardigann.Options{DB: a.db, Sealer: a.cfg, Logger: log.With("component", "cardigann"), Sites: cfg.IndexerSites, HostLimiter: indexerHosts, ClientIdentity: cfg.ClientIdentity}
 	if a.clustered() {
 		siteOpts.LoginLock = a.clusterLoginLock // one login per site across nodes
 	}
@@ -108,7 +108,16 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	}
 	animeMap := animemap.New(animemap.Options{CacheDir: animeCacheDir, Logger: log.With("component", "animemap")})
 	specials := stremio.NewSpecialMapper(egress.Client(egress.CapStremio, 3*time.Second), "https://v3-cinemeta.strem.io")
-	a.addons = stremio.NewServiceWithOptions(stremio.Options{Anime: animeMap, Specials: specials})
+	a.addons = stremio.NewServiceWithOptions(stremio.Options{
+		Anime:    animeMap,
+		Specials: specials,
+		ClientIdentity: func() config.ClientIdentity {
+			if a.cfg == nil {
+				return config.ClientIdentity{}
+			}
+			return a.cfg.Get().ClientIdentity
+		},
+	})
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
 		Logger:         log.With("component", "newznab"),
 		Events:         a.eventBus,

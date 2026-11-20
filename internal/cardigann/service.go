@@ -48,6 +48,8 @@ type Options struct {
 	MaxPerHost int
 	// HostLimiter shares a per-host limiter across indexer subsystems when set.
 	HostLimiter *newznab.HostLimiter
+	// ClientIdentity supplies server-wide request identity rules for downloads.
+	ClientIdentity config.ClientIdentity
 }
 
 // Service manages installed definitions and the runners of configured
@@ -67,11 +69,12 @@ type Service struct {
 	lock     LoginLock
 	hosts    *newznab.HostLimiter
 
-	mu      sync.Mutex
-	sites   config.IndexerSites
-	parsed  map[string]*parsedDef
-	runners map[string]*runnerEntry
-	catalog *catalogCache
+	mu       sync.Mutex
+	sites    config.IndexerSites
+	clientID config.ClientIdentity
+	parsed   map[string]*parsedDef
+	runners  map[string]*runnerEntry
+	catalog  *catalogCache
 }
 
 type parsedDef struct {
@@ -118,14 +121,15 @@ func New(o Options) *Service {
 		lock:     o.LoginLock,
 		hosts:    hosts,
 		sites:    o.Sites,
+		clientID: o.ClientIdentity,
 		parsed:   map[string]*parsedDef{},
 		runners:  map[string]*runnerEntry{},
 		catalog:  &catalogCache{},
 	}
 }
 
-// ApplyConfig takes the definitions source and FlareSolverr settings from
-// a config snapshot; subscribe it to config changes.
+// ApplyConfig takes the definitions source, FlareSolverr, and request identity
+// rules from a config snapshot; subscribe it to config changes.
 func (s *Service) ApplyConfig(cfg config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,6 +137,13 @@ func (s *Service) ApplyConfig(cfg config.Config) {
 		s.catalog = &catalogCache{}
 	}
 	s.sites = cfg.IndexerSites
+	s.clientID = cfg.ClientIdentity
+}
+
+func (s *Service) clientIdentity() config.ClientIdentity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clientID
 }
 
 func (s *Service) siteSettings() config.IndexerSites {
@@ -239,9 +250,10 @@ func (s *Service) newRunner(cfg config.Indexer, p *parsedDef) (*Runner, error) {
 		Sessions:    s.sessions,
 		Lock:        s.lock,
 		Logger:      s.log.With("indexer", cfg.Name),
-		Now:         s.now,
-		HostLimiter: s.hosts,
-		Language:    cfg.Language,
+		Now:            s.now,
+		HostLimiter:    s.hosts,
+		Language:       cfg.Language,
+		ClientIdentity: s.clientIdentity,
 	})
 }
 

@@ -70,6 +70,7 @@ type Service struct {
 	nzb      *http.Client
 	anime    AnimeIDs
 	specials SpecialEpisodes
+	identity func() config.ClientIdentity
 
 	animeOnce sync.Once
 	mu        sync.Mutex
@@ -96,6 +97,9 @@ type Options struct {
 	Anime AnimeIDs
 	// Specials maps catalogue season zero to IMDb numbering; nil skips IMDb specials.
 	Specials SpecialEpisodes
+	// ClientIdentity returns the current server-wide request identity rules
+	// for NZB downloads; nil uses Ether's honest default.
+	ClientIdentity func() config.ClientIdentity
 }
 
 // NewService returns a Service. client nil uses a default client with a
@@ -112,7 +116,24 @@ func NewServiceWithOptions(o Options) *Service {
 	if o.NZBClient == nil {
 		o.NZBClient = (&safefetch.Guard{}).Client(egress.Client(egress.CapStremio, nzbTimeout))
 	}
-	return &Service{client: o.Client, nzb: o.NZBClient, anime: o.Anime, specials: o.Specials, backends: map[string]*Backend{}}
+	return &Service{client: o.Client, nzb: o.NZBClient, anime: o.Anime, specials: o.Specials, identity: o.ClientIdentity, backends: map[string]*Backend{}}
+}
+
+// SetClientIdentity updates the request-identity lookup used for NZB downloads.
+func (s *Service) SetClientIdentity(fn func() config.ClientIdentity) {
+	s.mu.Lock()
+	s.identity = fn
+	s.mu.Unlock()
+}
+
+func (s *Service) clientIdentity() config.ClientIdentity {
+	s.mu.Lock()
+	fn := s.identity
+	s.mu.Unlock()
+	if fn == nil {
+		return config.ClientIdentity{}
+	}
+	return fn()
 }
 
 // animeIDs returns the anime id map, creating the default one on first use.

@@ -1,146 +1,100 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { Indexer } from "../lib/types";
+import type { ClientIdentityConfig } from "../lib/types";
 import { calls, renderApp } from "./harness";
 
 const WAIT = { timeout: 4000 };
-const DEFAULT_UA = "Ether/dev (+https://github.com/braedonsaunders/ether)";
+const DEFAULT_UA =
+  "Ether/dev (+https://github.com/braedonsaunders/ether/blob/main/docs/indexer-operators.md)";
 
-describe("Sources › Indexers client identity", () => {
-  it("shows the default Ether placeholder and warning note, and saves a free-text user agent", async () => {
-    const { fake } = renderApp("/sources/indexers");
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    const uaInput = screen.getByLabelText("User agent");
-    expect(uaInput).toHaveAttribute("placeholder", DEFAULT_UA);
-    expect(
-      screen.getByText(
-        "Leave empty to identify as Ether. Indexers may block or ban clients that pretend to be another app.",
-      ),
-    ).toBeInTheDocument();
-
-    fireEvent.change(uaInput, { target: { value: "CustomClient/2.0" } });
-    const bar = screen.getByRole("region", { name: "Unsaved changes" });
-    fireEvent.click(within(bar).getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(calls(fake, "PUT", "/config/clientIdentity")).toHaveLength(1), WAIT);
-    expect(calls(fake, "PUT", "/config/clientIdentity")[0]!.body).toEqual({
-      userAgent: "CustomClient/2.0",
-      headers: {},
-    });
-  });
-
-  it("overrides the user agent on one indexer", async () => {
-    const { fake } = renderApp("/sources/indexers");
-    fireEvent.click(await screen.findByRole("button", { name: /Add indexer/ }, WAIT));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Newznab or Torznab URL…" }));
-    const drawer = await screen.findByRole("dialog", { name: "New indexer" }, WAIT);
-    fireEvent.change(within(drawer).getByLabelText("Name"), { target: { value: "Idx" } });
-    fireEvent.change(within(drawer).getByLabelText("URL"), {
-      target: { value: "https://idx.example" },
-    });
-    fireEvent.change(within(drawer).getByLabelText("User agent (optional)"), {
-      target: { value: "IndexerClient/1.0" },
-    });
-    fireEvent.click(within(drawer).getByRole("button", { name: "Save indexer" }));
-    await waitFor(() => expect(calls(fake, "PUT", "/config/indexers")).toHaveLength(1), WAIT);
-    const body = calls(fake, "PUT", "/config/indexers")[0]!.body as Indexer[];
-    expect(body.at(-1)).toMatchObject({ name: "Idx", userAgent: "IndexerClient/1.0" });
-  });
-
-  it("refuses two rows with the same header name", async () => {
-    const { fake } = renderApp("/sources/indexers");
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    fireEvent.click(screen.getByRole("button", { name: "More options: Client identity" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add header" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add header" }));
-    fireEvent.change(screen.getAllByLabelText("Header name")[0]!, {
-      target: { value: "X-Test" },
-    });
-    fireEvent.change(screen.getAllByLabelText("Header name")[1]!, {
-      target: { value: "X-Test" },
-    });
-    // The duplicate keystroke is refused rather than silently collapsing.
-    expect((screen.getAllByLabelText("Header name")[1] as HTMLInputElement).value).toBe("");
-    fireEvent.change(screen.getAllByLabelText("Value")[0]!, { target: { value: "one" } });
-    const bar = screen.getByRole("region", { name: "Unsaved changes" });
-    fireEvent.click(within(bar).getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(calls(fake, "PUT", "/config/clientIdentity")).toHaveLength(1), WAIT);
-    // The unfilled row is a placeholder, not a header.
-    expect(calls(fake, "PUT", "/config/clientIdentity")[0]!.body).toMatchObject({
-      headers: { "X-Test": "one" },
-    });
-  });
-
-  it("renders custom headers as secret rows", async () => {
-    const { fake } = renderApp("/sources/indexers");
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    fireEvent.click(screen.getByRole("button", { name: "More options: Client identity" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add header" }));
-    fireEvent.change(screen.getByLabelText("Header name"), { target: { value: "X-Api-Client" } });
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "s3cret" } });
-    const bar = screen.getByRole("region", { name: "Unsaved changes" });
-    fireEvent.click(within(bar).getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(calls(fake, "PUT", "/config/clientIdentity")).toHaveLength(1), WAIT);
-    expect(calls(fake, "PUT", "/config/clientIdentity")[0]!.body).toMatchObject({
-      headers: { "X-Api-Client": "s3cret" },
-    });
-  });
-
-  it("counts inheriting indexers and names the backend exceptions", async () => {
+describe("Sources › Indexers identity rules", () => {
+  it("shows the compact honest-default card and opens the rules drawer", async () => {
     renderApp("/sources/indexers");
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    // The mock has three Newznab/Torznab indexers and one Stremio addon.
-    expect(screen.getByText("All 3 indexers inherit this policy")).toBeInTheDocument();
-    expect(
-      screen.getByText("Built-in sites and Stremio addons use their own identity."),
-    ).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "How Ether identifies itself" }, WAIT);
+    expect(screen.getByText("Ether (honest, recommended)")).toBeInTheDocument();
+    expect(screen.getByText("No rules")).toBeInTheDocument();
+    expect(screen.getByText(DEFAULT_UA)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage rules" }));
+    const drawer = await screen.findByRole("dialog", { name: "How Ether identifies itself" }, WAIT);
+    expect(within(drawer).getByText("Default")).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "Add rule" })).toBeInTheDocument();
   });
 
-  it("counts overrides and follows an indexer edit", async () => {
-    renderApp("/sources/indexers", {}, (fake) => {
-      fake.state.config.indexers!.find((ix) => ix.id === "i1")!.userAgent = "CustomIdx/1.0";
+  it("adds a rule with Advanced header/parameter edits and renders masked preview", async () => {
+    const { fake } = renderApp("/sources/indexers");
+    await screen.findByRole("heading", { name: "How Ether identifies itself" }, WAIT);
+    fireEvent.click(screen.getByRole("button", { name: "Manage rules" }));
+    const drawer = await screen.findByRole("dialog", { name: "How Ether identifies itself" }, WAIT);
+    fireEvent.click(within(drawer).getByRole("button", { name: "Add rule" }));
+
+    const editor = await screen.findByRole("dialog", { name: "Add identity rule" }, WAIT);
+    fireEvent.click(within(editor).getByRole("button", { name: /Advanced/ }));
+    fireEvent.click(within(editor).getByRole("button", { name: "Add header edit" }));
+    fireEvent.change(within(editor).getByLabelText("Header name"), {
+      target: { value: "X-Owner" },
     });
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    expect(
-      screen.getByText("2 of 3 indexers inherit this policy; 1 has its own identity"),
-    ).toBeInTheDocument();
+    fireEvent.change(within(editor).getByLabelText("Header value"), {
+      target: { value: "yes" },
+    });
+
+    await waitFor(() => expect(within(editor).getAllByText(/apikey=••••/)).toHaveLength(2), WAIT);
+
+    fireEvent.click(within(editor).getByRole("button", { name: "Save rule" }));
+    await waitFor(() => expect(calls(fake, "PUT", "/config/clientIdentity")).toHaveLength(1), WAIT);
+    const body = calls(fake, "PUT", "/config/clientIdentity")[0]!.body as ClientIdentityConfig;
+    expect(body.rules).toHaveLength(1);
+    expect(body.rules![0]).toMatchObject({
+      target: "indexer",
+      indexerId: "i1",
+      profile: "sonarr",
+      headers: [{ name: "X-Owner", value: "yes" }],
+    });
+  });
+
+  it("shows read-only Identifies as summary inside an indexer drawer and opens rules drawer", async () => {
+    renderApp("/sources/indexers", {}, (fake) => {
+      fake.state.config.clientIdentity = {
+        rules: [
+          { id: "r1", target: "indexer", indexerId: "i1", profile: "sonarr" },
+          { id: "r2", target: "nzb_downloads", profile: "sabnzbd" },
+        ],
+      };
+    });
+    await screen.findByRole("heading", { name: "How Ether identifies itself" }, WAIT);
+    expect(screen.getByText("2 rules")).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "Edit Indexer One" }));
     const drawer = await screen.findByRole("dialog", { name: "Indexer One" }, WAIT);
-    fireEvent.change(within(drawer).getByLabelText("User agent (optional)"), {
-      target: { value: "" },
+    expect(
+      within(drawer).getByText("Identifies as: Compatible with Sonarr (from rule: Indexer One)"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Manage rules" }));
+    await screen.findByRole("dialog", { name: "How Ether identifies itself" }, WAIT);
+  });
+
+  it("runs a capabilities test for a chosen indexer from the rules drawer", async () => {
+    const { fake } = renderApp("/sources/indexers", {}, (f) => {
+      f.state.config.clientIdentity = {
+        rules: [{ id: "r1", target: "indexer", indexerId: "i1", profile: "sonarr" }],
+      };
     });
-    fireEvent.click(within(drawer).getByRole("button", { name: "Save indexer" }));
+    await screen.findByRole("heading", { name: "How Ether identifies itself" }, WAIT);
+    fireEvent.click(screen.getByRole("button", { name: "Manage rules" }));
+    const drawer = await screen.findByRole("dialog", { name: "How Ether identifies itself" }, WAIT);
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Test" }));
     await waitFor(
-      () => expect(screen.getByText("All 3 indexers inherit this policy")).toBeInTheDocument(),
+      () => expect(calls(fake, "POST", "/test/indexer-identity")).toHaveLength(1),
       WAIT,
     );
-  });
-
-  it("omits the count when no indexer can inherit", async () => {
-    renderApp("/sources/indexers", {}, (fake) => {
-      fake.state.config.indexers = fake.state.config.indexers!.filter(
-        (ix) => ix.kind === "stremio",
-      );
-    });
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    expect(screen.queryByText(/inherit this policy/)).toBeNull();
-  });
-
-  it("labels the disclosure Fewer options while it is open", async () => {
-    renderApp("/sources/indexers");
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    const more = screen.getByRole("button", { name: "More options: Client identity" });
-    fireEvent.click(more);
-    expect(more).toHaveTextContent("Fewer options");
-    fireEvent.click(more);
-    expect(more).toHaveTextContent("More options");
-  });
-
-  it("shows both custom header fields inside More options", async () => {
-    renderApp("/sources/indexers");
-    await screen.findByRole("heading", { name: "Client identity" }, WAIT);
-    fireEvent.click(screen.getByRole("button", { name: "More options: Client identity" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add header" }));
-    expect(screen.getByLabelText("Header name")).toBeInTheDocument();
-    expect(screen.getByLabelText("Value")).toBeInTheDocument();
+    await waitFor(
+      () =>
+        expect(
+          within(drawer).getByText(/Capabilities answered using Compatible with Sonarr\./),
+        ).toBeInTheDocument(),
+      WAIT,
+    );
   });
 });

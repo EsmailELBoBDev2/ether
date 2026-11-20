@@ -2,6 +2,8 @@ package stremio
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/animemap"
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -166,13 +169,21 @@ func entryEpisodeIdentity(info core.ReleaseInfo, req core.SearchRequest, entryEp
 // body today says nothing permanent about the release. Only a release
 // without a usable NZB link is rejected (core.ErrReleaseRejected).
 func (b *Backend) FetchNZB(ctx context.Context, r core.Release, reserve func(context.Context, string) error) ([]byte, error) {
-	return FetchNZB(ctx, b.svc.nzb, b.origin(), r, reserve)
+	return FetchNZBWithIdentity(ctx, b.svc.nzb, b.origin(), b.instance, b.svc.clientIdentity(), r, reserve)
 }
 
-// FetchNZB downloads an add-on Usenet stream's NZB with client, trusting
-// only the add-on's own origin (see Backend.FetchNZB). Installed add-ons
-// (internal/plugins/adapters) fetch their NZBs through it too.
+// FetchNZB downloads an add-on Usenet stream's NZB with client using Ether's
+// default identity. Callers with server-wide request identity rules use
+// FetchNZBWithIdentity.
 func FetchNZB(ctx context.Context, client *http.Client, origin string, r core.Release, reserve func(context.Context, string) error) ([]byte, error) {
+	return FetchNZBWithIdentity(ctx, client, origin, "", config.ClientIdentity{}, r, reserve)
+}
+
+// FetchNZBWithIdentity downloads an add-on Usenet stream's NZB with client,
+// resolving policy for RequestNZBDownload against indexerID and r.NZBURL, and
+// trusting only the add-on's own origin (see Backend.FetchNZB). Installed
+// add-ons (internal/plugins/adapters) fetch their NZBs through it too.
+func FetchNZBWithIdentity(ctx context.Context, client *http.Client, origin, indexerID string, policy config.ClientIdentity, r core.Release, reserve func(context.Context, string) error) ([]byte, error) {
 	if r.Protocol != core.ProtocolUsenet || r.NZBURL == "" {
 		return nil, fmt.Errorf("stremio: %q has no NZB to fetch: %w", r.Name, core.ErrReleaseRejected)
 	}
@@ -183,12 +194,44 @@ func FetchNZB(ctx context.Context, client *http.Client, origin string, r core.Re
 	if err := reserve(ctx, "grab"); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(safefetch.WithTrustedOriginFor(ctx, origin, r.NZBURL), http.MethodGet, r.NZBURL, nil)
+	id := policy.ResolveRequest(config.IdentityRequest{
+		Kind:      config.RequestNZBDownload,
+		IndexerID: indexerID,
+		URL:       r.NZBURL,
+	})
+	targetURL := id.ApplyToURL(r.NZBURL)
+	req, err := http.NewRequestWithContext(safefetch.WithTrustedOriginFor(ctx, origin, targetURL), http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("stremio: NZB from %s: invalid request", link.Host)
 	}
-	req.Header.Set("User-Agent", userAgent())
-	resp, err := client.Do(req)
+	applyNZBIdentity(req, id)
+	hc := client
+	if len(id.Headers) > 0 || len(id.Ordered) > 1 {
+		copyClient := *client
+		initialURL := req.URL.String()
+		priorRedirect := copyClient.CheckRedirect
+		copyClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+			if !safefetch.SameOrigin(initialURL, next.URL.String()) {
+				for k := range id.Headers {
+					next.Header.Del(k)
+				}
+				for _, h := range id.Ordered {
+					if !strings.EqualFold(h.Name, "User-Agent") {
+						next.Header.Del(h.Name)
+					}
+				}
+			}
+			if priorRedirect != nil {
+				return priorRedirect(next, via)
+			}
+			if len(via) >= 10 {
+				return errors.New("stremio: too many redirects")
+			}
+			return nil
+		}
+		hc = &copyClient
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -204,7 +247,14 @@ func FetchNZB(ctx context.Context, client *http.Client, origin string, r core.Re
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		return nil, fmt.Errorf("stremio: NZB from %s: HTTP %d: %w", link.Host, resp.StatusCode, core.ErrSourceUnavailable)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNZB+1))
+	reader, derr := decodeNZBBody(resp)
+	if derr != nil {
+		return nil, fmt.Errorf("stremio: NZB from %s: %w: %v", link.Host, core.ErrSourceUnavailable, derr)
+	}
+	if reader != resp.Body {
+		defer reader.Close()
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, maxNZB+1))
 	if err != nil {
 		return nil, fmt.Errorf("stremio: NZB from %s: %w: %v", link.Host, core.ErrSourceUnavailable, err)
 	}
@@ -215,6 +265,38 @@ func FetchNZB(ctx context.Context, client *http.Client, origin string, r core.Re
 		return nil, fmt.Errorf("stremio: %s did not answer with an NZB: %w", link.Host, core.ErrSourceUnavailable)
 	}
 	return body, nil
+}
+
+func applyNZBIdentity(req *http.Request, id config.Identity) {
+	req.Header.Set("User-Agent", id.UserAgent)
+	for _, h := range id.Ordered {
+		switch {
+		case strings.EqualFold(h.Name, "User-Agent"):
+			req.Header.Set("User-Agent", h.Value)
+		case strings.EqualFold(h.Name, "Connection"):
+			if strings.EqualFold(h.Value, "close") {
+				req.Close = true
+			}
+		default:
+			req.Header.Set(h.Name, h.Value)
+		}
+	}
+}
+
+func decodeNZBBody(resp *http.Response) (io.ReadCloser, error) {
+	if resp.Uncompressed {
+		return resp.Body, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+		return resp.Body, nil
+	case "gzip":
+		return gzip.NewReader(resp.Body)
+	case "deflate":
+		return flate.NewReader(resp.Body), nil
+	default:
+		return nil, fmt.Errorf("unsupported Content-Encoding %q", resp.Header.Get("Content-Encoding"))
+	}
 }
 
 // DefaultNZBClient is the guarded client add-on NZBs are downloaded with.

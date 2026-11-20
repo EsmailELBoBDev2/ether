@@ -75,6 +75,13 @@ func (m *Manager) TestIndexer(ctx context.Context, cfg config.Indexer, policy co
 	return TestWithOptions(core.WithIndexerPurpose(ctx, core.IndexerPurposeTest), cfg, Options{ClientIdentity: policy, usageDB: m.db, onEvent: m.emitEvent})
 }
 
+// TestIndexerCaps runs a single t=caps request through the resolved identity
+// for cfg under policy, recording the request as a manual test without
+// spending the daily budget.
+func (m *Manager) TestIndexerCaps(ctx context.Context, cfg config.Indexer, policy config.ClientIdentity) (config.Identity, error) {
+	return TestCapsWithOptions(core.WithIndexerPurpose(ctx, core.IndexerPurposeTest), cfg, Options{ClientIdentity: policy, usageDB: m.db, onEvent: m.emitEvent})
+}
+
 // PurposeCount is one purpose's share of a usage window.
 type PurposeCount struct {
 	Purpose string `json:"purpose"`

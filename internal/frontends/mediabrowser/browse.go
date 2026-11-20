@@ -824,7 +824,7 @@ func itemQuery(r *http.Request) frontend.ItemQuery {
 	}
 	for _, value := range route.Query(r.URL.Query(), "Filters") {
 		for _, f := range strings.Split(value, ",") {
-			switch strings.ToLower(f) {
+			switch strings.ToLower(strings.TrimSpace(f)) {
 			case "isplayed":
 				v := true
 				q.Watched = &v
@@ -837,7 +837,79 @@ func itemQuery(r *http.Request) frontend.ItemQuery {
 			}
 		}
 	}
+	if values := route.Query(r.URL.Query(), "IsPlayed"); len(values) > 0 {
+		for _, raw := range values {
+			if played, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+				v := played
+				q.Watched = &v
+			}
+		}
+	}
+	q.ProviderIDs, q.FilterByProviderIDs = parseAnyProviderIDEquals(route.Query(r.URL.Query(), "AnyProviderIdEquals"))
 	return q
+}
+
+const maxProviderIDs = 200
+
+func parseAnyProviderIDEquals(values []string) ([]frontend.ProviderID, bool) {
+	var out []frontend.ProviderID
+	var active bool
+	seen := make(map[frontend.ProviderID]bool)
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		active = true
+		for _, raw := range strings.Split(value, ",") {
+			token := strings.TrimSpace(raw)
+			if token == "" {
+				continue
+			}
+			provider, id, ok := strings.Cut(token, ".")
+			provider = strings.ToLower(strings.TrimSpace(provider))
+			id = strings.TrimSpace(id)
+			if !ok || provider == "" || id == "" {
+				continue
+			}
+			if provider == "imdb" {
+				id = strings.ToLower(id)
+			}
+			entry := frontend.ProviderID{Provider: provider, ID: id}
+			if seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			out = append(out, entry)
+			if len(out) >= maxProviderIDs {
+				return out, true
+			}
+		}
+	}
+	return out, active
+}
+
+func titleMatchesProviderIDs(t frontend.Title, ids []frontend.ProviderID) bool {
+	for _, p := range ids {
+		id := strings.TrimSpace(p.ID)
+		if id == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(p.Provider)) {
+		case "tmdb":
+			if t.IDs.TMDB > 0 && strconv.FormatInt(t.IDs.TMDB, 10) == id {
+				return true
+			}
+		case "imdb":
+			if t.IDs.IMDB != "" && strings.EqualFold(t.IDs.IMDB, id) {
+				return true
+			}
+		case "tvdb":
+			if t.IDs.TVDB > 0 && strconv.FormatInt(t.IDs.TVDB, 10) == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (i *instance) page(w http.ResponseWriter, r *http.Request, v *frontend.Viewer, page frontend.Page, offset int) {
 	i.pageWithVersion(w, r, v, page, offset, 0, "")
@@ -1100,10 +1172,15 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
-	if i.writeLiveSearchItems(w, r, v) {
+	q := itemQuery(r)
+	if !q.FilterByProviderIDs && i.writeLiveSearchItems(w, r, v) {
 		return
 	}
 	if liveChannelTypesOnly(r) {
+		if q.FilterByProviderIDs {
+			i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+			return
+		}
 		// Swiftfin › Media › Live TV › Channels asks /Items for LiveTvChannel.
 		// The catalogue library is the wrong index and was counting every season.
 		i.writeLiveChannelItems(w, r, v)
@@ -1117,6 +1194,10 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		// its channels; without this the folder 404'd while /LiveTv/Channels
 		// worked. Answer the same channel list.
 		if n, e := ids.ParseGUID(ids.View, parent[0]); e == nil && n == liveTVViewNumber {
+			if q.FilterByProviderIDs {
+				i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+				return
+			}
 			i.writeLiveChannelItems(w, r, v)
 			return
 		}
@@ -1133,18 +1214,29 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
-	q := itemQuery(r)
 	if len(parent) == 1 {
 		if n, e := ids.ParseGUID(ids.View, parent[0]); e == nil && n == collectionsViewNumber {
+			if q.FilterByProviderIDs {
+				i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+				return
+			}
 			i.writeBoxSets(w, r, v, q)
 			return
 		}
 	}
 	switch requestedSpecialItems(r) {
 	case specialBoxSets:
+		if q.FilterByProviderIDs {
+			i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+			return
+		}
 		i.writeBoxSets(w, r, v, q)
 		return
 	case specialPlaylists:
+		if q.FilterByProviderIDs {
+			i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
+			return
+		}
 		i.writePlaylists(w, r, v, q)
 		return
 	}
@@ -1157,7 +1249,7 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var page frontend.Page
-	if search := q.Filter.Query; search != "" && i.searchableParent(parent) {
+	if search := q.Filter.Query; search != "" && !q.FilterByProviderIDs && i.searchableParent(parent) {
 		if q.Favorite == nil {
 			if only, excluded := personTypesOnly(q); only {
 				if excluded {

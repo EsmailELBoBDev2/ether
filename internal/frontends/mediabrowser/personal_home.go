@@ -756,7 +756,7 @@ func (i *instance) writePersonalFolder(w http.ResponseWriter, r *http.Request, v
 
 func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf personalShelf, q frontend.ItemQuery, latest bool) ([]frontend.Title, int, error) {
 	titles := append([]frontend.Title(nil), shelf.titles...)
-	if len(q.Types) > 0 || q.Watched != nil || q.Favorite != nil || latest {
+	if len(q.Types) > 0 || q.Watched != nil || q.Favorite != nil || q.FilterByProviderIDs || latest {
 		keys := make([]frontend.RatingKey, 0, len(titles))
 		for _, title := range titles {
 			keys = append(keys, title.Key)
@@ -768,6 +768,9 @@ func (i *instance) personalTitlePage(r *http.Request, v *frontend.Viewer, shelf 
 		played, filterPlayed := frontend.LatestPlayedFilter(r.Context())
 		kept := titles[:0]
 		for _, title := range titles {
+			if q.FilterByProviderIDs && !titleMatchesProviderIDs(title, q.ProviderIDs) {
+				continue
+			}
 			state := states[title.Key]
 			watched := state.ViewCount > 0
 			if latest && filterPlayed && watched != played {

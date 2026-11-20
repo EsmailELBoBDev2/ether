@@ -472,19 +472,20 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
 	adapterTickets := frontendadapter.NewTicketIssuer()
 	mgr.SetKindBackends(plugins.KindBackends{
-		KindUpsert:     itemsSvc.KindUpsert,
-		KindDelete:     itemsSvc.KindDelete,
-		KindItems:      itemsSvc.KindItems,
-		KindItemsByID:  itemsSvc.KindItemsByID,
-		KindItemCount:  itemsSvc.PluginItemCount,
-		KindVisible:    a.adapterKindVisible(),
-		KindBrowse:     a.adapterKindBrowse(),
-		ResolveSources: kindResolver.ResolveSources,
-		CachePut:       cachePut,
-		CacheOpen:      cacheOpen,
-		CacheDelete:    cacheDelete,
-		StreamURL:      a.adapterStreamURL(adapterTickets),
-		StreamPartURL:  a.adapterStreamPartURL(adapterTickets),
+		KindUpsert:      itemsSvc.KindUpsert,
+		KindUpsertStats: itemsSvc.KindUpsertWithStats,
+		KindDelete:      itemsSvc.KindDelete,
+		KindItems:       itemsSvc.KindItems,
+		KindItemsByID:   itemsSvc.KindItemsByID,
+		KindItemCount:   itemsSvc.PluginItemCount,
+		KindVisible:     a.adapterKindVisible(),
+		KindBrowse:      a.adapterKindBrowse(),
+		ResolveSources:  kindResolver.ResolveSources,
+		CachePut:        cachePut,
+		CacheOpen:       cacheOpen,
+		CacheDelete:     cacheDelete,
+		StreamURL:       a.adapterStreamURL(adapterTickets),
+		StreamPartURL:   a.adapterStreamPartURL(adapterTickets),
 	})
 
 	if err := mgr.Start(ctx); err != nil {

@@ -505,11 +505,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.upsert takes (kind, items[])"}
 			}
 		}
-		accepted, err := b.h.KindUpsert(ctx, str(0), items)
+		var upserted KindUpsertResult
+		var err error
+		if wh, ok := b.h.(interface {
+			KindUpsertWithResult(context.Context, string, []core.KindItem) (KindUpsertResult, error)
+		}); ok {
+			upserted, err = wh.KindUpsertWithResult(ctx, str(0), items)
+		} else {
+			var accepted int
+			accepted, err = b.h.KindUpsert(ctx, str(0), items)
+			upserted.Accepted = accepted
+		}
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		return result(map[string]any{"accepted": accepted}, nil)
+		return result(map[string]any{
+			"accepted": upserted.Accepted, "added": upserted.Added,
+			"updated": upserted.Updated, "unchanged": upserted.Unchanged,
+		}, nil)
 	case "kinds.delete":
 		var ids []string
 		if len(args) > 1 {

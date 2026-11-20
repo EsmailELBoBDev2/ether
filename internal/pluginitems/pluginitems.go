@@ -25,6 +25,16 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	// Migration 10 (#646): the content hash of the canonical stored item,
+	// so a republish can skip items that have not changed instead of
+	// rewriting their row, field rows, art and FTS entry. Existing rows
+	// start empty and are rewritten (and hashed) on their next upsert.
+	// (Migration 9 is taken by plugin_items.rating_level on the preview
+	// branch.)
+	store.Register("pluginitems", 10, `
+ALTER TABLE plugin_items ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';
+`)
+
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain
 	// (field, 0, item_ref) entries for every text value. Both SQLite and
@@ -549,11 +559,12 @@ func (s *Service) MaxItemsFor(pluginID string) int {
 // KindDelete, KindItems, KindItemsByID and KindItemCount wired to this store (spec §3.6, §12 slice C).
 func (s *Service) KindBackends() plugins.KindBackends {
 	return plugins.KindBackends{
-		KindUpsert:    s.KindUpsert,
-		KindDelete:    s.KindDelete,
-		KindItems:     s.KindItems,
-		KindItemsByID: s.KindItemsByID,
-		KindItemCount: s.PluginItemCount,
+		KindUpsert:      s.KindUpsert,
+		KindUpsertStats: s.KindUpsertWithStats,
+		KindDelete:      s.KindDelete,
+		KindItems:       s.KindItems,
+		KindItemsByID:   s.KindItemsByID,
+		KindItemCount:   s.PluginItemCount,
 	}
 }
 

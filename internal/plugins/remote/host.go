@@ -423,11 +423,23 @@ func (h *HostHandler) kindUpsert(w http.ResponseWriter, r *http.Request) {
 		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"items": [...]} or a JSON array of KindItem`)
 		return
 	}
-	accepted, err := h.host.KindUpsert(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+	result := plugins.KindUpsertResult{}
+	if wh, ok := h.host.(interface {
+		KindUpsertWithResult(context.Context, string, string, []core.KindItem) (plugins.KindUpsertResult, error)
+	}); ok {
+		result, err = wh.KindUpsertWithResult(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+	} else {
+		var accepted int
+		accepted, err = h.host.KindUpsert(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+		result.Accepted = accepted
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": accepted})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "accepted": result.Accepted, "added": result.Added,
+		"updated": result.Updated, "unchanged": result.Unchanged,
+	})
 }
 
 func (h *HostHandler) kindDelete(w http.ResponseWriter, r *http.Request) {

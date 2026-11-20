@@ -413,6 +413,14 @@ func buildCodecArgs(s runSpec) []string {
 			noAccurateSeek = true
 		} else if fmp4CopyDelayedMoovAudio(s, d, v, a) {
 			noAccurateSeek = true
+		} else if s.Protocol == core.ProtocolHTTP && d.VideoCopy && !s.LiveInput {
+			// A progressive player starts at the first picture it gets:
+			// the keyframe at or before Start. Accurate seek would still
+			// cut the (transcoded) audio at Start, so the stream would
+			// open with up to a GOP of silent video (#650, Roku). Start
+			// the audio at the same demuxer landing as the video; the
+			// retained title timestamps report the true position.
+			noAccurateSeek = true
 		}
 		if noAccurateSeek {
 			args = append(args, "-noaccurate_seek")

@@ -51,21 +51,29 @@ type options struct {
 	// segmentPadLimit bounds padding a slow segment (segment_padding.go).
 	segmentPadLimit time.Duration
 	stallTimeout    time.Duration
-	restartAhead    time.Duration
-	maxAhead        time.Duration
-	keepBehind      time.Duration
-	pollInterval    time.Duration
-	segmentURI      func(n int, container string) string
-	dashURLs        DASHURLs
-	manifestWait    time.Duration
-	onFailure       func(sessionID string, at time.Duration, err error)
-	onInputFailure  func(sessionID, inputURL string, at time.Duration, err error)
-	onRunStart      func(inputURL string, from, to time.Duration)
-	onEncoder       func(sessionID string, started bool, excerpt string)
-	onChange        func()
-	events          *events.Bus
-	openSubtitle    func(id, format, source string) (io.ReadCloser, string, error)
-	tracePlayback   bool
+	// httpWriteTimeout bounds one blocked progressive (protocol=http)
+	// socket write. A progressive client that has buffered ahead, or is
+	// paused with a full buffer, legitimately stops reading for far
+	// longer than the segment stall budget; killing its stream then
+	// reads as a clean EOF and the player enters post-play (#650). The
+	// bound therefore matches the paused-session retention Ether
+	// already promises, and only retires truly dead sockets.
+	httpWriteTimeout time.Duration
+	restartAhead     time.Duration
+	maxAhead         time.Duration
+	keepBehind       time.Duration
+	pollInterval     time.Duration
+	segmentURI       func(n int, container string) string
+	dashURLs         DASHURLs
+	manifestWait     time.Duration
+	onFailure        func(sessionID string, at time.Duration, err error)
+	onInputFailure   func(sessionID, inputURL string, at time.Duration, err error)
+	onRunStart       func(inputURL string, from, to time.Duration)
+	onEncoder        func(sessionID string, started bool, excerpt string)
+	onChange         func()
+	events           *events.Bus
+	openSubtitle     func(id, format, source string) (io.ReadCloser, string, error)
+	tracePlayback    bool
 	// rungDwell is how long a run keeps producing its rung before a
 	// request on another rung may replace it (see Session.rungDwellLocked).
 	rungDwell time.Duration
@@ -86,6 +94,7 @@ func defaultOptions() options {
 		segmentPadLimit:   segmentPadMax,
 		copySamplePackets: copySamplePackets,
 		stallTimeout:      30 * time.Second,
+		httpWriteTimeout:  core.PausedSessionRetention,
 		restartAhead:      24 * time.Second,
 		maxAhead:          2 * time.Minute,
 		keepBehind:        3 * time.Minute,

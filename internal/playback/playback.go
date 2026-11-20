@@ -315,6 +315,7 @@ type Manager struct {
 	onDemandWarmByAddon map[string][]time.Time
 	stalePrefers        map[stalePreferKey]stalePreference // picked releases that fell back (stalePreferTTL)
 	namesake            map[core.RatingKey]bool            // cached namesake lookups (namesake.go)
+	probedRuntimes      map[core.RatingKey]time.Duration   // consensus probed runtimes overriding stale metadata (namesake.go)
 
 	pinMu        sync.Mutex
 	livePins     map[string]int

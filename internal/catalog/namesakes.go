@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -186,4 +187,26 @@ func (c *Catalog) SeriesNamesake(ctx context.Context, key core.RatingKey, title 
 		}
 	}
 	return false, nil
+}
+
+// UpdateRuntime persists a consensus media duration onto catalog_titles when
+// independent probes agree on a runtime different from what the metadata
+// provider reported. It is an O(1) primary-key update and invalidates the
+// title cache entry when the row changes.
+func (c *Catalog) UpdateRuntime(ctx context.Context, key core.RatingKey, runtime time.Duration) error {
+	sec := int64(runtime.Round(time.Second) / time.Second)
+	if key == 0 || sec <= 0 {
+		return nil
+	}
+	res, err := c.db.ExecContext(ctx, `UPDATE catalog_titles SET runtime_sec=? WHERE key=? AND runtime_sec<>?`, sec, key, sec)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		c.cacheMu.Lock()
+		delete(c.titleCache, key)
+		c.cacheMu.Unlock()
+		c.writeGen.Add(1)
+	}
+	return nil
 }

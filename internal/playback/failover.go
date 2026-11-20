@@ -163,13 +163,56 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 			m.dropGeneration(fallbackGen)
 		}
 	}()
+	rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
+		info := g.infoSnapshot()
+		if m.videoTranscodingOff() {
+			if _, needs := m.probedNeedsVideoTranscode(info, s.caps); needs {
+				return false
+			}
+		}
+		if s.caps.BroadcastBitrateKbps > 0 {
+			file := res.Release
+			file.Size, file.Info.FullSeason = info.Size, false
+			if video := info.Video(); video != nil && video.Height > file.Info.Height {
+				file.Info.Height = video.Height
+			}
+			if !m.channelSourceAllowed(s, file) {
+				return false
+			}
+		}
+		if m.knownHardSubbed(ctx, g) && m.hardSubtitleBlocked(ctx, res.Release) {
+			return false
+		}
+		if s.prefer == "" && probedRequiredAudioRejection(profile, s.title, res.Release, info, false) != "" {
+			return false
+		}
+		return true
+	})
+	defer rt.close(m)
 	adoptInitial := func(g *generation, extraTried ...string) (*generation, error) {
+		rt.commitPendingRejections(m.ctx, m, s)
 		s.mu.Lock()
 		s.tried = append(s.tried, tried...)
 		s.tried = append(s.tried, extraTried...)
 		s.mu.Unlock()
 		m.startGenerationFills(g)
 		return g, nil
+	}
+	adoptRuntimeFallback := func(extraTried ...string) (*generation, error) {
+		g, fRes, med, disagree, ok := rt.takeFallback()
+		if !ok {
+			return nil, nil
+		}
+		m.recordConsensusRuntime(m.ctx, s.title, med)
+		for _, r := range disagree {
+			if err := m.RejectRelease(m.ctx, s.title.Key, r); err != nil {
+				m.log.Debug("persist runtime rejection failed", "key", s.title.Key, "release", r.ID, "err", err)
+			}
+			m.rememberOpenFailure(s, r, core.ErrReleaseRejected)
+		}
+		m.log.Info("probed runtime consensus overrides catalogue runtime",
+			"session", s.id, "release", fRes.Release.Name, "consensus", med, "catalogue", s.title.Runtime, "fallback", true)
+		return adoptInitial(g, extraTried...)
 	}
 	fallback := func(size int64) core.MediaInfo {
 		info := EstimateInfo(s.title, s.caps, profile)
@@ -189,6 +232,9 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		})
 	}
 	openCtx := withDeferredGenerationFills(ctx)
+	if !s.exact {
+		openCtx = withRuntimeTracker(openCtx, rt)
+	}
 	for attempt := 0; attempt < m.opts.MaxAttempts; attempt++ {
 		if res == nil {
 			fromResume = false
@@ -205,14 +251,20 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 				m.notePreferenceStale(ctx, s, res.Release.ID, "picked version was unavailable; resolver selected Auto")
 			}
 			if err != nil {
-				if fallbackGen != nil && !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
-					g := fallbackGen
-					fallbackGen = nil
-					return adoptInitial(g)
+				if !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
+					if fallbackGen != nil {
+						g := fallbackGen
+						fallbackGen = nil
+						return adoptInitial(g)
+					}
+					if g, aerr := adoptRuntimeFallback(); g != nil || aerr != nil {
+						return g, aerr
+					}
 				}
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
+				rt.commitPendingRejections(m.ctx, m, s)
 				if errors.Is(lastErr, frontend.ErrTrackSourceUnavailable) {
 					return nil, lastErr
 				}
@@ -384,6 +436,10 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 					fallbackGen = nil
 					return adoptInitial(g, res.Release.ID)
 				}
+				if g, aerr := adoptRuntimeFallback(res.Release.ID); g != nil || aerr != nil {
+					return g, aerr
+				}
+				rt.commitPendingRejections(m.ctx, m, s)
 			}
 			return nil, ctx.Err()
 		}
@@ -410,10 +466,16 @@ func (m *Manager) openInitial(ctx context.Context, s *session, profile core.Qual
 		}
 		res, cached, fromResume = nil, nil, false
 	}
-	if fallbackGen != nil && !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
-		g := fallbackGen
-		fallbackGen = nil
-		return adoptInitial(g)
+	if !errors.Is(ctx.Err(), context.Canceled) && m.ctx.Err() == nil {
+		if fallbackGen != nil {
+			g := fallbackGen
+			fallbackGen = nil
+			return adoptInitial(g)
+		}
+		if g, aerr := adoptRuntimeFallback(); g != nil || aerr != nil {
+			return g, aerr
+		}
+		rt.commitPendingRejections(m.ctx, m, s)
 	}
 	return nil, releasesFailed(len(tried), lastErr, allUncached)
 }
@@ -663,7 +725,9 @@ func (m *Manager) openGeneration(ctx context.Context, s *session, res *core.Reso
 			return nil, budgetErr
 		}
 	}
-	m.rememberOpenFailure(s, res.Release, err)
+	if !errors.Is(err, errRuntimeMismatchDeferred) {
+		m.rememberOpenFailure(s, res.Release, err)
+	}
 	if err != nil {
 		if ctx.Err() == nil {
 			m.recordTimeline(s, TimelineEvent{
@@ -766,17 +830,55 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	}
 	// Reused persisted probes pass through here too, including a remembered
 	// playback_resume release played from zero with no requested offset.
-	if !mi.Estimated && s.title != nil &&
-		(releaseRuntimeMismatch(s.title, res.Release, mi.Duration) ||
-			(m.namesakeRequest(ctx, s.title) && s.title.Type != core.TypeEpisode &&
-				namesakeDurationMismatch(s.title.Runtime, mi.Duration))) {
-		m.dropGeneration(g)
-		if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
-			return nil, fmt.Errorf("remember runtime rejection: %w", err)
+	rt := runtimeTrackerFrom(ctx)
+	effTitle := m.titleWithEffectiveRuntime(s.title)
+	holdRuntimeFallback := false
+	if !mi.Estimated && effTitle != nil {
+		mismatch := releaseRuntimeMismatch(effTitle, res.Release, mi.Duration) ||
+			(m.namesakeRequest(ctx, effTitle) && effTitle.Type != core.TypeEpisode &&
+				namesakeDurationMismatch(effTitle.Runtime, mi.Duration))
+		if !mismatch {
+			if rt != nil && mi.Duration > 0 {
+				rt.observeMatch(res.Release, mi.Duration)
+			}
+		} else if rt != nil {
+			decision, consensusDur, disagree := rt.observeMismatch(res.Release, mi.Duration, runtimeConsensusEligible(effTitle, res.Release, mi.Duration))
+			switch decision {
+			case runtimeAcceptLive:
+				m.recordConsensusRuntime(ctx, s.title, consensusDur)
+				for _, r := range disagree {
+					if err := m.RejectRelease(ctx, s.title.Key, r); err != nil {
+						m.log.Debug("persist runtime rejection failed", "key", s.title.Key, "release", r.ID, "err", err)
+					}
+					m.rememberOpenFailure(s, r, core.ErrReleaseRejected)
+				}
+				m.log.Info("probed runtime consensus overrides catalogue runtime",
+					"session", s.id, "release", res.Release.Name, "consensus", consensusDur, "catalogue", effTitle.Runtime)
+			case runtimeHoldFallback:
+				holdRuntimeFallback = true
+			case runtimeDefer:
+				m.dropGeneration(g)
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+					"probed", mi.Duration, "catalogue", effTitle.Runtime)
+				return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, errRuntimeMismatchDeferred)
+			default:
+				m.dropGeneration(g)
+				if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
+					return nil, fmt.Errorf("remember runtime rejection: %w", err)
+				}
+				m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+					"probed", mi.Duration, "catalogue", effTitle.Runtime)
+				return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
+			}
+		} else {
+			m.dropGeneration(g)
+			if err := m.RejectRelease(ctx, s.title.Key, res.Release); err != nil {
+				return nil, fmt.Errorf("remember runtime rejection: %w", err)
+			}
+			m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+				"probed", mi.Duration, "catalogue", effTitle.Runtime)
+			return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
 		}
-		m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
-			"probed", mi.Duration, "catalogue", s.title.Runtime)
-		return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, core.ErrReleaseRejected)
 	}
 	if mi.Size <= 0 {
 		mi.Size = src.Size()
@@ -833,6 +935,14 @@ func (m *Manager) probeGeneration(ctx context.Context, s *session, res *core.Res
 	g.needIndex = needIndex
 	g.needTrailer = prober == "native" || (facts != nil && facts.needsAugment)
 	g.mu.Unlock()
+	if holdRuntimeFallback {
+		if !rt.tryStashFallback(g, res, mi.Duration) {
+			m.dropGeneration(g)
+		}
+		m.log.Info("trying next candidate", "session", s.id, "release", res.Release.Name, "reason", "runtime doesn't match this title",
+			"probed", mi.Duration, "catalogue", effTitle.Runtime)
+		return nil, fmt.Errorf("probe %s: %w: runtime doesn't match this title", res.Release.Name, errRuntimeMismatchDeferred)
+	}
 	if !generationFillsDeferred(ctx) {
 		m.startGenerationFills(g)
 	}

@@ -270,14 +270,7 @@ export interface CollectionTemplateBundleApplyResult {
 }
 
 export type FacetName =
-  | "tag"
-  | "genre"
-  | "decade"
-  | "contentRating"
-  | "studio"
-  | "country"
-  | "language"
-  | "keyword";
+  "tag" | "genre" | "decade" | "contentRating" | "studio" | "country" | "language" | "keyword";
 export interface FacetValue {
   key: string;
   title: string;
@@ -287,12 +280,7 @@ export interface FacetValue {
 }
 
 export type LookupKind =
-  | "person"
-  | "keyword"
-  | "company"
-  | "network"
-  | "collection"
-  | "watchProvider";
+  "person" | "keyword" | "company" | "network" | "collection" | "watchProvider";
 export interface LookupResult {
   id: number;
   name: string;

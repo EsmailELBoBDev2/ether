@@ -168,11 +168,7 @@ export function createLibraryTabsMock({
       const seenPeople = new Set<string>();
       const fieldsByKey = new Map((kind?.fields ?? []).map((f) => [f.key, f]));
 
-      const addCol = (
-        id: string,
-        label: string,
-        category: "essentials" | "plugin" = "plugin",
-      ) => {
+      const addCol = (id: string, label: string, category: "essentials" | "plugin" = "plugin") => {
         if (!seenCol.has(id)) {
           seenCol.add(id);
           collections.push({ id, label, category });
@@ -617,9 +613,7 @@ export function createLibraryTabsMock({
     }
 
     const mediaType = String(lib.mediaType ?? "");
-    const pool = catalog.filter(
-      (x) => !mediaType || mediaType === "mixed" || x.type === mediaType,
-    );
+    const pool = catalog.filter((x) => !mediaType || mediaType === "mixed" || x.type === mediaType);
     const counts = new Map<string, { title: string; count: number }>();
     const bump = (key: string, title = key) => {
       if (!key) return;
@@ -662,7 +656,8 @@ export function createLibraryTabsMock({
         if (p) bump(p.name);
       } else if (field === "language" || field === "audioLanguage") {
         const code = (item.language || "en").toLowerCase();
-        const label = new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code.toUpperCase();
+        const label =
+          new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code.toUpperCase();
         bump(code, label);
       } else if (field === "contentRating") {
         bump(item.contentRating || (item.type === "show" ? "TV-14" : "PG-13"));
@@ -692,9 +687,15 @@ export function createLibraryTabsMock({
         const ym = (item.addedAt ?? "2026-01-15").slice(0, 7);
         bump(ym, ym);
       } else if (field === "resolution") {
-        bump(item.year && item.year >= 2018 ? "4k" : "1080p", item.year && item.year >= 2018 ? "4K" : "1080p");
+        bump(
+          item.year && item.year >= 2018 ? "4k" : "1080p",
+          item.year && item.year >= 2018 ? "4K" : "1080p",
+        );
       } else if (field === "hdr") {
-        bump(item.year && item.year >= 2020 ? "dv" : "sdr", item.year && item.year >= 2020 ? "Dolby Vision" : "SDR");
+        bump(
+          item.year && item.year >= 2020 ? "dv" : "sdr",
+          item.year && item.year >= 2020 ? "Dolby Vision" : "SDR",
+        );
       }
     }
 
@@ -835,8 +836,7 @@ export function createLibraryTabsMock({
     const defaultSort = lib.source === "plugin" ? "title" : "popularity";
     const sort = tab.sort || defaultSort;
     const direction =
-      tab.direction ??
-      (sort === "server" || sort === "title" || sort === "index" ? "asc" : "desc");
+      tab.direction ?? (sort === "server" || sort === "title" || sort === "index" ? "asc" : "desc");
 
     if (lib.source === "plugin") {
       const items = [
@@ -856,9 +856,7 @@ export function createLibraryTabsMock({
     }
 
     const mediaType = String(lib.mediaType ?? "");
-    let pool = catalog.filter(
-      (x) => !mediaType || mediaType === "mixed" || x.type === mediaType,
-    );
+    let pool = catalog.filter((x) => !mediaType || mediaType === "mixed" || x.type === mediaType);
     if (query) {
       pool = pool.filter((x) => x.title.toLowerCase().includes(query));
     }

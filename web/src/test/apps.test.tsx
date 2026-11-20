@@ -85,7 +85,15 @@ const defaultConfig = () => ({
 
 function row(id: string, name: string, enabled: boolean, extra?: Partial<AppRow>): AppRow {
   const defaultPort =
-    id === "jellyfin" ? 8096 : id === "emby" ? 8097 : id === "silo" ? 8090 : id === "plex" ? 32400 : undefined;
+    id === "jellyfin"
+      ? 8096
+      : id === "emby"
+        ? 8097
+        : id === "silo"
+          ? 8090
+          : id === "plex"
+            ? 32400
+            : undefined;
   const addr = defaultPort ? `http://192.168.1.2:${defaultPort}` : `http://192.168.1.2:32400/${id}`;
   return {
     descriptor: {
@@ -276,10 +284,7 @@ describe("Apps connection hub", () => {
           row("jellyfin", "Jellyfin", true, {
             status: {
               addresses: ["127.0.0.1:8098"],
-              connectUrls: [
-                "http://192.168.1.2:8098",
-                "http://192.168.1.2:32400/jellyfin",
-              ],
+              connectUrls: ["http://192.168.1.2:8098", "http://192.168.1.2:32400/jellyfin"],
               busyPort: 8096,
               actualPort: 8098,
               lan: "reachable",
@@ -531,10 +536,14 @@ describe("Apps connection hub", () => {
     const skinsHeading = screen.getByRole("heading", { name: "Skins" });
     expect(screen.getByLabelText("Public address")).toBeInTheDocument();
     expect(
-      Boolean(connectHeading.compareDocumentPosition(awayHeading) & Node.DOCUMENT_POSITION_FOLLOWING),
+      Boolean(
+        connectHeading.compareDocumentPosition(awayHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
     ).toBe(true);
     expect(
-      Boolean(awayHeading.compareDocumentPosition(brandingHeading) & Node.DOCUMENT_POSITION_FOLLOWING),
+      Boolean(
+        awayHeading.compareDocumentPosition(brandingHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
     ).toBe(true);
     expect(
       Boolean(awayHeading.compareDocumentPosition(skinsHeading) & Node.DOCUMENT_POSITION_FOLLOWING),

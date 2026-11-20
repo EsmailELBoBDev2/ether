@@ -1,19 +1,5 @@
-import {
-  Button,
-  Input,
-  SettingsSection,
-  Spinner,
-  Switch,
-  toast,
-} from "@braedonsaunders/appkit-ui";
-import {
-  AlertTriangle,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  XCircle,
-} from "lucide-react";
+import { Button, Input, SettingsSection, Spinner, Switch, toast } from "@braedonsaunders/appkit-ui";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, XCircle } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { MoreOptions } from "../../components/ConfigSection";
@@ -328,13 +314,7 @@ export function appLiveStatus(info: HubFrontendInfo): {
   return { tone: "ok", text: t("Listening") };
 }
 
-function CopyAddressButton({
-  address,
-  ariaLabel,
-}: {
-  address: string;
-  ariaLabel?: string;
-}) {
+function CopyAddressButton({ address, ariaLabel }: { address: string; ariaLabel?: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -515,9 +495,7 @@ export function ServerAddressPanel({
 }) {
   const internalConfig = useAsync(
     () =>
-      configData || configError !== undefined
-        ? Promise.resolve(undefined)
-        : fetchEtherConfig(),
+      configData || configError !== undefined ? Promise.resolve(undefined) : fetchEtherConfig(),
     [Boolean(configData), configError !== undefined],
   );
   const resolvedConfig = configData ?? internalConfig.data;
@@ -1160,7 +1138,9 @@ function connectInstructions(
       return {
         clients: t("TiviMate, UHF, IPTV Smarters, iMPlayer"),
         steps: [
-          t("Create an Xtream login below (or on your account page) to get a username and password."),
+          t(
+            "Create an Xtream login below (or on your account page) to get a username and password.",
+          ),
           tx("In your IPTV app, choose Add Xtream Codes and enter {address}.", {
             address: inlineCode(address),
           }),
@@ -1170,7 +1150,8 @@ function connectInstructions(
       };
     default:
       return {
-        clients: info.descriptor.certifiedApps?.map((a) => a.name).join(", ") || info.descriptor.name,
+        clients:
+          info.descriptor.certifiedApps?.map((a) => a.name).join(", ") || info.descriptor.name,
         steps: [
           t("Open the app on your device."),
           tx("Enter {address}.", { address: inlineCode(address) }),

@@ -104,9 +104,7 @@ export function catalogueGroups(sources: CatalogueSource[]) {
     );
     const perListError =
       entries.length > 1 && failed.length > 0
-        ? failed
-            .map((s) => `${sourceName(s)}: ${s.lastError || t("Needs attention")}`)
-            .join("; ")
+        ? failed.map((s) => `${sourceName(s)}: ${s.lastError || t("Needs attention")}`).join("; ")
         : failed.find((s) => s.lastError)?.lastError;
     return {
       ...first,

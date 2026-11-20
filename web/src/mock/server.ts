@@ -1234,7 +1234,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
   let lookupMockLib: (id: number) => Record<string, unknown> | undefined = () => undefined;
   let listMockLibs: () => Record<string, unknown>[] = () => [];
 
-  function pluginLibraryCandidates(libId: number, lib: Record<string, unknown>): {
+  function pluginLibraryCandidates(
+    libId: number,
+    lib: Record<string, unknown>,
+  ): {
     descriptors: AvailableRow[];
     rows: HomeRow[];
   } {
@@ -2143,9 +2146,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         const id = Number(l.id);
         const section = `library:${id}` as const;
         const type =
-          l.source === "plugin"
-            ? ("plugin" as const)
-            : (l.mediaType as "movie" | "show");
+          l.source === "plugin" ? ("plugin" as const) : (l.mediaType as "movie" | "show");
         return {
           id,
           name: String(l.name),
@@ -2164,7 +2165,6 @@ export function createFakeServer(opts: FakeOptions = {}) {
       libraries,
     };
   }
-
 
   function libraryLayoutDoc(libId: number) {
     const raw = lookupMockLib(libId);
@@ -4039,7 +4039,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
               (state.config.frontends == null && descriptor.id === "plex"));
           const configuredPort =
             descriptor.id === "plex"
-              ? (state.config.frontendPorts?.plex ?? state.config.server.port ?? descriptor.defaultPort)
+              ? (state.config.frontendPorts?.plex ??
+                state.config.server.port ??
+                descriptor.defaultPort)
               : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
           const runtime = mockRuntimePort(descriptor.id, configuredPort);
           const port = runtime.actualPort;
@@ -4086,7 +4088,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
           (id === "vela" || (state.config.frontends == null && id === "plex"));
         const configuredPort =
           id === "plex"
-            ? (state.config.frontendPorts?.plex ?? state.config.server.port ?? descriptor.defaultPort)
+            ? (state.config.frontendPorts?.plex ??
+              state.config.server.port ??
+              descriptor.defaultPort)
             : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
         const runtime = mockRuntimePort(id ?? "", configuredPort);
         const port = runtime.actualPort;
@@ -4353,8 +4357,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         const activeOverrides =
           (
             (state.config as unknown as Record<string, unknown>).clients as
-              | { overrides?: Array<Record<string, unknown>> }
-              | undefined
+              { overrides?: Array<Record<string, unknown>> } | undefined
           )?.overrides ??
           opts.capabilityOverrides ??
           [];

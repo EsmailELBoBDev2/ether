@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -729,6 +730,9 @@ func (d *autoBackupRaceDecoder) Close() error {
 }
 
 func TestAutoBackupsFailoverUsesParallelReplacementRace(t *testing.T) {
+	if os.Getenv("ETHER_TEST_POSTGRES") != "" {
+		t.Skip("synctest bubbles cannot own PostgreSQL connections; the race is store-independent")
+	}
 	runCase := func(t *testing.T, maxConns int, recoverPrimary bool) {
 		t.Helper()
 		db, err := store.OpenMemory(context.Background())

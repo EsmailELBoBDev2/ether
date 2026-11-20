@@ -70,16 +70,15 @@ export interface LayoutLibrarySummary {
 }
 
 /** Shared media-type page (`movies` or `shows`) a library inherits when uncustomised. */
-export function mediaSectionForLibrary(
-  lib?: LayoutLibrarySummary | null,
-): "movies" | "shows" {
+export function mediaSectionForLibrary(lib?: LayoutLibrarySummary | null): "movies" | "shows" {
   if (!lib) return "movies";
   if (lib.mediaType === "show") return "shows";
   const vela = lib.present?.vela?.type ?? lib.kind?.present?.vela?.type;
   if (vela === "shows") return "shows";
   const plex = lib.present?.plex?.base ?? lib.kind?.present?.plex?.base;
   if (plex === "show") return "shows";
-  const mb = lib.present?.mediaBrowser?.collectionType ?? lib.kind?.present?.mediaBrowser?.collectionType;
+  const mb =
+    lib.present?.mediaBrowser?.collectionType ?? lib.kind?.present?.mediaBrowser?.collectionType;
   if (mb === "tvshows") return "shows";
   if (lib.source === "plugin" && (lib.kind?.levels?.length ?? 1) >= 3) return "shows";
   return "movies";
@@ -810,13 +809,7 @@ export function freeSlot(doc: HomeLayout, layer: LayerKey, section: LayoutSectio
 
 /** What a policy chip describes; stable across languages, for filtering. */
 type PolicyChipKind =
-  | "slot"
-  | "minSlot"
-  | "maxSlot"
-  | "priority"
-  | "maxPerPage"
-  | "maxDaysPerWeek"
-  | "when";
+  "slot" | "minSlot" | "maxSlot" | "priority" | "maxPerPage" | "maxDaysPerWeek" | "when";
 
 interface PolicyChip {
   kind: PolicyChipKind;

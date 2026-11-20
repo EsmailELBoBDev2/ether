@@ -21,10 +21,7 @@ export function ImpactBar({
   ctx: ViewContext;
   at: string;
 }) {
-  const key = useDebouncedValue(
-    JSON.stringify({ draft, device: ctx.device, at }),
-    500,
-  );
+  const key = useDebouncedValue(JSON.stringify({ draft, device: ctx.device, at }), 500);
   const [result, setResult] = useState<LayoutImpactResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

@@ -110,11 +110,11 @@ type MockHost struct {
 	History          map[int64][]ViewerWatchEntry
 	WatchState       map[string]bool
 	Collections      []map[string]any
-	Kinds            map[string][]KindItem        // kindKey -> pushed items, in upsert order
-	KindHiddenIDs    map[string]map[string]bool   // kindKey -> externalID -> hidden by mock library Rules (#615)
+	Kinds            map[string][]KindItem      // kindKey -> pushed items, in upsert order
+	KindHiddenIDs    map[string]map[string]bool // kindKey -> externalID -> hidden by mock library Rules (#615)
 	KindPolicyFilter func(kindKey string, item KindItem) bool
-	Sources          []SourceCandidate            // returned by ResolveSources
-	Blobs            map[string][]byte     // cache blob ref -> bytes
+	Sources          []SourceCandidate // returned by ResolveSources
+	Blobs            map[string][]byte // cache blob ref -> bytes
 	Folders          map[string][]FolderEntry
 	Notifications    []string
 	Logs             []RecordedLog

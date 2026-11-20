@@ -121,14 +121,7 @@ export function integrationTabs(
 interface Service {
   tab: Exclude<ServiceTab, "overview" | "ratings">;
   configKey:
-    | "plexServers"
-    | "trakt"
-    | "simkl"
-    | "mdblist"
-    | "llm"
-    | "openSubtitles"
-    | "subdl"
-    | "markers";
+    "plexServers" | "trakt" | "simkl" | "mdblist" | "llm" | "openSubtitles" | "subdl" | "markers";
   endpoint: string;
   /** Boolean this card's switch writes. Omitted fields stay stored. */
   flag: "enabled" | "theIntroDb";

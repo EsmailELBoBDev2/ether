@@ -572,9 +572,7 @@ function ProtocolSettings({
           info={info}
           configuredRemote={draft?.publicUrl}
           port={draft ? draft.port : info.descriptor.defaultPort}
-          onPortChange={
-            draft && editablePort ? (port) => setDraft({ ...draft, port }) : undefined
-          }
+          onPortChange={draft && editablePort ? (port) => setDraft({ ...draft, port }) : undefined}
           serverPort={serverPort}
           busy={toggleBusy}
           onToggle={onToggle}
@@ -1004,9 +1002,7 @@ export default function Apps() {
     ...apps
       .filter(
         (info) =>
-          info.enabled ||
-          info.descriptor.id === "vela" ||
-          pathFor(info.descriptor.id) === routeTab,
+          info.enabled || info.descriptor.id === "vela" || pathFor(info.descriptor.id) === routeTab,
       )
       .map((info) => ({ key: pathFor(info.descriptor.id), label: nameFor(info) })),
   ];
@@ -1050,7 +1046,9 @@ export default function Apps() {
       base="/apps"
       tabs={tabs}
       active={tab}
-      actions={tab === "overview" && state.data ? <OverviewPortConflictChip apps={apps} /> : undefined}
+      actions={
+        tab === "overview" && state.data ? <OverviewPortConflictChip apps={apps} /> : undefined
+      }
     >
       {tab === "overview" &&
         (state.error ? (
@@ -1109,7 +1107,9 @@ export default function Apps() {
         .filter((info) => info.descriptor.id !== "plex")
         .filter((info) => {
           const key = pathFor(info.descriptor.id);
-          return visited.has(key) || tab === key || matchedApp?.descriptor.id === info.descriptor.id;
+          return (
+            visited.has(key) || tab === key || matchedApp?.descriptor.id === info.descriptor.id
+          );
         })
         .map((info) => {
           const key = pathFor(info.descriptor.id);

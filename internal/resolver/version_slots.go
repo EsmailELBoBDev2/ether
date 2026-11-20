@@ -127,7 +127,7 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 		}
 		label := slotLabel(slot)
 		r := core.Release{ID: slot.id(), Name: label, Info: core.ReleaseInfo{Height: height, VideoCodec: "h264", AudioCodec: "aac", Source: core.SourceWEBDL}}
-		info := estimateVariantInfo(req.Title, r, wanted)
+		var info core.MediaInfo
 		placeholder := true
 		if i < len(picks) && picks[i].ID != "" {
 			r = picks[i]
@@ -140,6 +140,16 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 			label = variantLabel(r, "alt")
 			if i == 0 {
 				label = variantLabel(r, "auto")
+			}
+		} else {
+			// A cold configured slot has neither a picked release nor a probe;
+			// keep one placeholder audio stream without claiming a language it
+			// does not know (#624).
+			info = estimateVariantInfo(req.Title, r, wanted)
+			for j := range info.Streams {
+				if info.Streams[j].Type == "audio" {
+					info.Streams[j].Language = ""
+				}
 			}
 		}
 		v := core.ReleaseVariant{ID: slot.id(), Label: label, Auto: i == 0, Edition: r.Info.Edition, Release: r, Info: info}

@@ -462,14 +462,33 @@ func mergeSessionProfile(pr *Request, entry *transcodeEntry) *Request {
 	return &cp
 }
 
+// entryAudioPosition returns the slice index in entry.info.Streams of the
+// audio track selected for a probed decision. Estimated decisions return -1 so
+// a subsequent start re-resolves against real probed tracks.
+func entryAudioPosition(entry *transcodeEntry) int {
+	if entry == nil || entry.info.Estimated || entry.opts.AudioStream < 0 {
+		return -1
+	}
+	for i, st := range entry.info.Streams {
+		if st.Type == "audio" && st.Index == entry.opts.AudioStream {
+			return i
+		}
+	}
+	return -1
+}
+
 // entryExpectedStart normalizes a decision's requested controls to the stream
-// identity resolved onto entry.info, so a start request that omits or defaults
-// subtitleStreamID matches the decision's selected subtitle.
+// identities resolved onto entry.info, so a start request that omits or
+// defaults audioStreamID/subtitleStreamID matches the decision's selection.
 func entryExpectedStart(entry *transcodeEntry) playRequest {
 	if entry == nil {
 		return playRequest{}
 	}
 	req := entry.requested
+	if pos := entryAudioPosition(entry); pos >= 0 {
+		st := entry.info.Streams[pos]
+		req.audioSel, req.audioStream = pos, &st
+	}
 	if entry.subtitle >= 0 && entry.subtitle < len(entry.info.Streams) && entry.info.Streams[entry.subtitle].Type == "subtitle" {
 		st := entry.info.Streams[entry.subtitle]
 		req.subSel, req.subSet, req.subStream = entry.subtitle, true, &st
@@ -480,9 +499,10 @@ func entryExpectedStart(entry *transcodeEntry) playRequest {
 }
 
 // sessionWithInfo retains sidecar streams attached during decision preparation
-// when reusing an underlying playback source session.
+// when reusing an underlying playback source session, without downgrading a
+// probed session back to estimated metadata.
 func sessionWithInfo(ps *frontend.PlaySession, info frontend.MediaInfo) *frontend.PlaySession {
-	if ps == nil || len(info.Streams) == 0 {
+	if ps == nil || len(info.Streams) == 0 || (info.Estimated && !ps.Info.Estimated) {
 		return ps
 	}
 	cp := *ps
@@ -624,8 +644,15 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 			return playRequest{}, rerr
 		}
 		if rerr == nil && binding.Key == key && binding.Info.Type == "audio" {
-			info := binding.Info
-			p.audioSel, p.audioStream = binding.Index, &info
+			if binding.Estimated {
+				// Pre-probe placeholder or estimated audio IDs carry no real
+				// track identity: treat them as no explicit choice so the
+				// viewer's language preferences apply to the real tracks.
+				audioDefaultOrOmitted = true
+			} else {
+				info := binding.Info
+				p.audioSel, p.audioStream = binding.Index, &info
+			}
 		}
 	}
 	rawSub := q.Get("subtitleStreamID")
@@ -650,8 +677,18 @@ func (s *Server) parsePlayRequest(r *http.Request) (playRequest, error) {
 	rawSubStream := p.subStream
 	inheritedSub := false
 	if hasEntry {
-		if audioDefaultOrOmitted && !sel.audioSet && (entry.requested.audioSel >= 0 || entry.requested.audioStream != nil) {
-			p.audioSel, p.audioStream = entry.requested.audioSel, entry.requested.audioStream
+		if audioDefaultOrOmitted && !sel.audioSet {
+			if pos := entryAudioPosition(entry); pos >= 0 {
+				st := entry.info.Streams[pos]
+				p.audioSel, p.audioStream = pos, &st
+			} else if entry.requested.audioSel >= 0 || entry.requested.audioStream != nil {
+				p.audioSel, p.audioStream = entry.requested.audioSel, entry.requested.audioStream
+			}
+		} else if p.audioSel >= 0 && p.audioStream != nil && !entry.info.Estimated {
+			if pos := frontend.ResolveAudio(p.audioStream, p.audioSel, entry.info); pos >= 0 && pos < len(entry.info.Streams) {
+				st := entry.info.Streams[pos]
+				p.audioSel, p.audioStream = pos, &st
+			}
 		}
 		if subDefaultOrOmitted && !p.subNamed && !sel.subtitleSet {
 			if entry.subtitle >= 0 && entry.subtitle < len(entry.info.Streams) && entry.info.Streams[entry.subtitle].Type == "subtitle" {
@@ -1031,14 +1068,25 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	mc := s.decisionContainer(ctx, pr, t, ps, dec, p)
 	audio, subtitles, selectedSubtitle := 0, 0, int64(0)
-	for _, st := range mc.Metadata[0].Media[0].Part[0].Stream {
-		switch st.StreamType {
-		case 2:
-			audio++
-		case 3:
-			subtitles++
-			if st.Selected != nil && *st.Selected {
-				selectedSubtitle = st.ID
+	if len(mc.Metadata) > 0 && len(mc.Metadata[0].Media) > 0 {
+		chosenMedia := mc.Metadata[0].Media[0]
+		for _, m := range mc.Metadata[0].Media {
+			if m.Selected != nil && *m.Selected {
+				chosenMedia = m
+				break
+			}
+		}
+		if len(chosenMedia.Part) > 0 {
+			for _, st := range chosenMedia.Part[0].Stream {
+				switch st.StreamType {
+				case 2:
+					audio++
+				case 3:
+					subtitles++
+					if st.Selected != nil && *st.Selected {
+						selectedSubtitle = st.ID
+					}
+				}
 			}
 		}
 	}
@@ -1046,7 +1094,7 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request) {
 		"session", p.sessionID, "mediaIndex", p.mediaIndex, "mediaID", p.mediaID,
 		"directPlay", p.opts.DirectPlay, "directStream", p.opts.DirectStream,
 		"maxBitrate", p.opts.MaxBitrateKbps, "maxHeight", p.opts.MaxHeight,
-		"subtitles", p.subtitles, "subtitleStream", p.subSel,
+		"audioStream", p.audioSel, "subtitles", p.subtitles, "subtitleStream", p.subSel,
 		"audioTracks", audio, "subtitleTracks", subtitles, "selectedSubtitle", selectedSubtitle)
 	s.write(w, r, mc)
 }
@@ -1196,6 +1244,7 @@ func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *frontend
 	}
 	chosen := s.decisionMedia(t, ps, shown, p, pr.User)
 	if pr.configuredSlots && len(md.Media) > 0 {
+		replaced := false
 		for i := range md.Media {
 			md.Media[i].Selected = nil
 			if len(md.Media[i].Part) > 0 {
@@ -1203,7 +1252,11 @@ func (s *Server) decisionContainer(ctx context.Context, pr *Request, t *frontend
 			}
 			if md.Media[i].ID == chosen.ID {
 				md.Media[i] = chosen
+				replaced = true
 			}
+		}
+		if !replaced {
+			md.Media = []model.Media{chosen}
 		}
 	} else {
 		md.Media = []model.Media{chosen}
@@ -1335,10 +1388,15 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 	// facts remain estimated. Preserve every known track across quality changes.
 	selectedOnly := !p.listAllTracks
 	// Local files already publish their complete tracks before Play. On-demand
-	// versions may discover subtitles only now; publish their whole menu.
-	allSubtitles := onDemandSession(ps)
+	// versions may discover audio and subtitle tracks only now; publish the
+	// whole probed audio menu and subtitle menu so non-Android clients (such as
+	// Apple TV) see the real tracks and selection rather than keeping a
+	// pre-probe placeholder.
+	allOnDemand := onDemandSession(ps)
+	selectedAudioOnly := selectedOnly && !(allOnDemand && !info.Estimated)
+	selectedSubtitleOnly := selectedOnly && !allOnDemand
 	if dec.Kind == frontend.DecisionDirectPlay {
-		return directPlayMedia(m, streams, selectedOnly, !allSubtitles && selectedOnly, p.subtitles)
+		return directPlayMedia(m, streams, selectedAudioOnly, selectedSubtitleOnly, p.subtitles)
 	}
 	applyTranscodeMedia(&m, dec, p.protocol, selectedAudioStream(info, dec))
 	var kept []model.Stream
@@ -1347,7 +1405,7 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		if rerr != nil && !streamMiss(rerr) {
 			continue
 		}
-		if shaped, keep := applyStreamDecision(st, binding.Info, dec, selectedOnly, !allSubtitles && selectedOnly, p.subtitles, p.softText); keep {
+		if shaped, keep := applyStreamDecision(st, binding.Info, dec, selectedAudioOnly, selectedSubtitleOnly, p.listAllTracks, p.subtitles, p.softText); keep {
 			if plexAndroidClient(&Request{Product: p.caps.Product, Device: p.caps.Device}) && shaped.Decision == "burn" && frontend.IsImageSubtitle(binding.Info.Codec) && p.protocol == frontend.ProtocolHLS {
 				shaped.Location = "segments-av"
 				shaped.Extra = append(shaped.Extra, model.A("burn", "1"))
@@ -1507,7 +1565,7 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string,
 // decision="transcode", location="segments-subs") and read from
 // /video/:/transcode/universal/subtitles; a text track copied into
 // Matroska segments keeps its format.
-func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.Decision, selectedOnly, selectedSubtitleOnly bool, subtitles string, softText bool) (model.Stream, bool) {
+func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.Decision, selectedAudioOnly, selectedSubtitleOnly, keepSubtitleIndex bool, subtitles string, softText bool) (model.Stream, bool) {
 	idx := st.Index
 	st.Index = nil // segments carry their own stream layout
 	switch st.StreamType {
@@ -1547,7 +1605,7 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 		st.Location = "segments-av"
 	case 2:
 		if st.Selected == nil || !*st.Selected {
-			if selectedOnly {
+			if selectedAudioOnly {
 				return st, false
 			}
 			st.Index = idx
@@ -1642,7 +1700,7 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			// app replaces any present index with 2, which is the output
 			// index of this mux: one video, one audio, then this subtitle.
 			// Other clients keep the index off the selected row.
-			if !selectedOnly {
+			if keepSubtitleIndex {
 				st.Index = idx
 			}
 		}
@@ -1712,7 +1770,11 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	if ok && entry.key == p.key && entry.userID == pr.User.ID {
 		ps, ok = s.playback().Session(entry.playID)
 		if ok && ps != nil {
-			ps = sessionWithInfo(ps, entry.info)
+			if entry.info.Estimated && !ps.Info.Estimated {
+				ok = false
+			} else {
+				ps = sessionWithInfo(ps, entry.info)
+			}
 		}
 	}
 	if !ok || ps == nil || !p.sameSettings(entryExpectedStart(entry)) {
@@ -3146,13 +3208,13 @@ func (s *Server) handlePartSelect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.selections.update(pr.User.ID, id, func(sel *selection) {
-		if audioDefault {
+		if audioDefault || (audio != nil && audio.Estimated) {
 			sel.audio, sel.audioSet, sel.audioStream = 0, false, nil
 		}
 		if subDefault {
 			sel.subtitle, sel.subtitleSet, sel.subtitleStream, sel.subtitlePart = 0, false, nil, 0
 		}
-		if audio != nil {
+		if audio != nil && !audio.Estimated {
 			info := audio.Info
 			sel.audio, sel.audioSet, sel.audioStream = audio.Index, true, &info
 		}

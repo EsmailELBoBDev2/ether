@@ -595,13 +595,15 @@ type StartHintKey struct {
 
 // StreamBinding is one Plex-visible stream id. WireID is zero on bind;
 // BindStream assigns it. SessionID is empty for library metadata and is
-// the broker session id after Open.
+// the broker session id after Open. Estimated is true when the id was issued
+// from pre-probe placeholder or estimated metadata rather than probed tracks.
 type StreamBinding struct {
 	WireID    int64
 	SessionID string
 	Key       core.RatingKey
 	Index     int
 	Info      core.StreamInfo
+	Estimated bool
 }
 
 // PlanAdmission is the source and the version and track selections for one

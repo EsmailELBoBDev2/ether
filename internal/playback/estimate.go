@@ -91,7 +91,6 @@ func EstimateInfo(t *core.Title, caps core.ClientCaps, p core.QualityProfile) co
 	var dur time.Duration
 	if t != nil {
 		dur = t.Runtime
-		audio.Language = t.Language
 	}
 	if dur <= 0 {
 		dur = defaultMovieRuntime

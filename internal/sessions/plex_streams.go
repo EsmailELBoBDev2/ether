@@ -86,13 +86,19 @@ func (t *StreamTable) Bind(binding StreamBinding) (int64, error) {
 				ref.binding.Index = binding.Index
 				ref.binding.Info = binding.Info
 				ref.binding.WireID = id
+				if !binding.Estimated {
+					ref.binding.Estimated = false
+				}
 				t.byID[id] = ref
 				return id, nil
 			}
 			stored := binding
 			stored.WireID = id
-			if ok && stored.SessionID == "" {
-				stored.SessionID = ref.binding.SessionID
+			if ok {
+				if stored.SessionID == "" {
+					stored.SessionID = ref.binding.SessionID
+				}
+				stored.Estimated = ref.binding.Estimated && binding.Estimated
 			}
 			t.byID[id] = adapterStreamRef{binding: stored, slot: slot}
 			return id, nil

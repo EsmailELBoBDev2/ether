@@ -912,7 +912,7 @@ func (s *Server) renderStreams(key frontend.RatingKey, info frontend.MediaInfo, 
 		subSelected = sel.subtitle
 	}
 	for i, st := range info.Streams {
-		id := s.assignStream(context.Background(), u, key, i, st, "")
+		id := s.assignStream(context.Background(), u, key, i, st, "", info.Estimated)
 		ps := model.Stream{
 			ID:               id,
 			Codec:            plexCodec(st.Codec),

@@ -287,6 +287,7 @@ type Service struct {
 	videoTranscodingOff  bool
 	remoteMaxBitrateKbps int
 	probedMedia          func(core.Release) (core.MediaInfo, bool)
+	localCacheHas        func(releaseID string) bool
 	scorer               *FormatScorer
 	indexerPriority      map[string]int // indexer id → Priority (lower ranks first)
 	scorerErr            error
@@ -812,7 +813,7 @@ func (s *Service) Resolve(ctx context.Context, req core.ResolveRequest) (*core.R
 	req.Client, _ = applyClientRules(q, req.Client, req.User, media, libProfile)
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
 	videoOff, _ := s.transcodeSettings()
-	key := fmt.Sprintf("%s|pin:%s|vt:%t", flightKey(req, profile), s.PinnedReleaseID(req), videoOff)
+	key := fmt.Sprintf("%s|pin:%s|vc:%s|vt:%t", flightKey(req, profile), s.PinnedReleaseID(req), s.viewerChoiceFlightKey(req), videoOff)
 	if channelAvailabilityCheck(ctx) {
 		key += "/channel-availability"
 	}
@@ -904,12 +905,46 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		s.persistBookkeeping(ctx, func(ctx context.Context) { s.recordHistory(ctx, history) })
 	}()
 
+	exclude := make(map[string]bool, len(req.Exclude))
+	for _, id := range req.Exclude {
+		exclude[id] = true
+	}
+
+	// Precedence in the Auto slot: viewer choice, then owner pin, then owner
+	// quality rules. A viewer choice retains full safety gates and falls back
+	// silently when unhealthy, blocklisted or unavailable.
+	if titleVC := s.viewerTitleChoiceForResolve(req, exclude); titleVC != nil {
+		sreq := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
+		if s.pinRejectReason(titleVC.Release, sreq, req.Client, exclude) == "" {
+			vResults := withRelease(nil, titleVC.Release)
+			vReq := req
+			vReq.Prefer, vReq.PreferredOnly = titleVC.Release.ID, true
+			rankProfile := profile
+			if s.resolverCfg().OfferHigherVersions {
+				if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
+					rankProfile = relaxed
+				}
+			}
+			if cands, _, rankErr := s.rankCandidatesLocal(ctx, vReq, sreq, rankProfile, vResults, &trace, "", false); rankErr == nil && len(cands) > 0 {
+				if out, vErr := s.resolvePreferred(ctx, vReq, nil, cands, &trace, 1); vErr == nil && out.resolution != nil {
+					if autoVersion(req.Prefer) {
+						selector, slotRelease = req.Prefer, titleVC.Release.ID
+					}
+					return out.resolution, nil
+				}
+			}
+		}
+	}
+
+	showVC := s.viewerShowChoiceForResolve(req)
+
 	// The owner's pin for this title, when it applies to this request
-	// (pins.go). It is authoritative, including when it cannot be played.
+	// (pins.go). It is authoritative, including when it cannot be played,
+	// unless a viewer's show-level episode choice matches a healthy candidate.
 	pin, pinNote := s.pinForResolve(req)
 	trace.PinStatus = pinNote
 	pinID := ""
-	if pin != nil {
+	resolveOwnerPin := func() (*core.Resolution, error) {
 		pinID = pin.Release.ID
 		trace.Pinned = pinID
 		// A stored pin already has the complete source. Do not search, rescue,
@@ -938,6 +973,9 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 		return out.resolution, nil
 	}
+	if pin != nil && (showVC == nil || s.profileMatchesRelease(showVC.Profile, pin.Release)) {
+		return resolveOwnerPin()
+	}
 
 	ctx, inconclusive := withUnverifiedPool(ctx)
 	sreq := s.explicitNumberedRequest(ctx, s.searchRequest(ctx, t))
@@ -952,14 +990,14 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		s.mu.Unlock()
 	}
 	library, hit, retry := s.libraryCandidates(ctx, req, sreq, profile, fp, &trace, forgotten)
-	if hit != nil {
+	if hit != nil && (showVC == nil || s.profileMatchesRelease(showVC.Profile, hit.Release)) {
 		return hit, nil
 	}
 	early := newSearchPreparation(ctx, s, req, sreq, profile, pinID)
 	defer early.close()
 	ctx = context.WithValue(ctx, searchPreparationKey{}, early)
 	var discovered []core.Release
-	if !retry && !forgotten && s.discovered != nil && pin == nil && req.Prefer == "" && len(req.Exclude) == 0 {
+	if !retry && !forgotten && s.discovered != nil && pin == nil && showVC == nil && req.Prefer == "" && len(req.Exclude) == 0 {
 		discovered = filterOutPlaceholders(s.discovered(ctx, t))
 		if len(discovered) > 0 {
 			trace.Discovery = append(trace.Discovery, DiscoveryTrace{Path: "feed", Count: len(discovered)})
@@ -1105,6 +1143,32 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 	if err != nil {
 		trace.Err = err.Error()
 		return nil, err
+	}
+	// Show-level episode preference (e.g. "4K DV" or "1080p Remux") applies in
+	// the Auto slot ahead of owner pins and owner quality rules. If no matching
+	// healthy release exists, fall back silently.
+	if showVC != nil {
+		showPool := acceptableVariantAudio(clearIdentityVariants(cands))
+		if s.resolverCfg().OfferHigherVersions {
+			if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
+				if ranked, _, e := s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, &trace, "", false); e == nil {
+					showPool = acceptableVariantAudio(clearIdentityVariants(ranked))
+				}
+			}
+		}
+		if matched := s.matchShowChoiceCandidates(showVC, showPool); len(matched) > 0 {
+			if idx, payload, verr := s.validateCandidates(ctx, matched, &trace, 0); verr == nil && idx >= 0 {
+				trace.Winner = matched[idx].rel.ID
+				s.setAvailability(ctx, int64(t.Key), true, s.searchTTL())
+				if autoVersion(req.Prefer) {
+					selector, slotRelease = req.Prefer, matched[idx].rel.ID
+				}
+				return s.resolution(t.Key, matched, idx, payload, &trace), nil
+			}
+		}
+		if pin != nil {
+			return resolveOwnerPin()
+		}
 	}
 	// Logical version selectors are resolved only after normal discovery and
 	// policy gates. A missing slot falls back exactly like an unavailable

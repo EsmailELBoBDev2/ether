@@ -34,18 +34,24 @@ type client struct {
 	HDR              []string                               `json:"hdr,omitempty"`
 }
 type playSession struct {
-	id                string
-	qualityRungs      map[string]string
-	scope             string
-	media             frontend.MediaInfo
-	subtitleFormats   []string
-	canBurn           bool
-	mse               bool
-	preparation       []frontend.HLSPreparationEvent
-	diagnostics       any
-	observedRecords   []object
-	diagnosticHistory []object
-	clientErrors      []object
+	id                  string
+	item                frontend.RatingKey
+	titleID             string
+	client              client
+	declaredCaps        frontend.ClientCaps
+	activeVersionHandle string
+	activeReleaseID     string
+	qualityRungs        map[string]string
+	scope               string
+	media               frontend.MediaInfo
+	subtitleFormats     []string
+	canBurn             bool
+	mse                 bool
+	preparation         []frontend.HLSPreparationEvent
+	diagnostics         any
+	observedRecords     []object
+	diagnosticHistory   []object
+	clientErrors        []object
 	// observedState and observedAt are the client's last reported player
 	// state, logged on change so a rebuffer shows beside the server's log.
 	observedState string
@@ -93,6 +99,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	var b struct {
 		TitleID, ChannelID, ExtraID string
+		VersionID                   string
 		IdempotencyKey              string
 		LiveMode                    string
 		Client                      client
@@ -114,6 +121,16 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	if targets != 1 {
 		problem(w, 400, "request", "invalid_target")
 		return
+	}
+	if b.VersionID != "" {
+		if b.TitleID == "" {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		if !i.versionsAvailable() {
+			i.unavailable(w, r)
+			return
+		}
 	}
 	if b.ExtraID != "" {
 		if _, err := ids.ParseRatingKeyGUID(b.ExtraID); err != nil {
@@ -203,8 +220,14 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	plan, e := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Protocol: "vela", Viewer: v, Device: requestDevice(r), Item: item, Channel: b.ChannelID, Caps: declared.Client, Intent: frontend.PlayIntent{Options: options, AudioSet: audioSet, SubtitleSet: subtitleSet, Position: pos, AllowTranscoding: b.AllowTranscode, DeclaredCaps: true, OriginalPlayback: b.Client.OriginalPlayback}})
+	plan, e := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Protocol: "vela", Viewer: v, Device: requestDevice(r), Item: item, Channel: b.ChannelID, Version: b.VersionID, Caps: declared.Client, Intent: frontend.PlayIntent{Options: options, AudioSet: audioSet, SubtitleSet: subtitleSet, Position: pos, ExactVersion: b.VersionID != "", AllowTranscoding: b.AllowTranscode, DeclaredCaps: true, OriginalPlayback: b.Client.OriginalPlayback}})
 	if e != nil {
+		if b.VersionID != "" && errors.Is(e, frontend.ErrNotFound) {
+			if _, itemErr := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), item), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: item}); itemErr == nil {
+				problem(w, 400, "request", "invalid_version")
+				return
+			}
+		}
 		fail(w, e, r)
 		return
 	}
@@ -305,7 +328,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 		p["paths"] = []object{path, {"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}}}
 	}
 	dev := requestDevice(r)
-	ps := &playSession{id: s.ID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
+	ps := &playSession{id: s.ID, item: item, titleID: b.TitleID, client: b.Client, declaredCaps: declared.Client, activeVersionHandle: plan.VersionHandle, activeReleaseID: plan.ReleaseID, scope: scope, canBurn: canBurn, media: plan.Media, subtitleFormats: append([]string(nil), b.Client.SubtitleFormats...), mse: b.Client.MSE, viewer: v.ID, device: dev.ID, accessViewer: v, accessDevice: dev, plan: p, source: 1, seek: 1, revision: 1, cursor: 1, signal: make(chan struct{}), position: pos}
 	ps.noteActivity()
 
 	if !plan.SourceChosenAt.IsZero() {
@@ -319,6 +342,9 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	i.addQualityPaths(r.Context(), i.access(r, v), s.ID, ps)
 	i.refreshOutput(r.Context(), s.ID, ps)
+	if b.TitleID != "" && i.versionsAvailable() {
+		i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, plan.VersionHandle, plan.ReleaseID, p)
+	}
 	i.mu.Lock()
 	for id, old := range i.sessions {
 		old.mu.Lock()
@@ -427,10 +453,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 	}
 	var b struct {
 		Kind, PathID, AudioTrackID       string
+		VersionID                        string
 		MaxBitrate                       int
 		AtSeconds                        *float64
 		SubtitleTrackID                  json.RawMessage
-		PositionSeconds                  float64
+		PositionSeconds                  *float64
 		SourceGeneration, SeekGeneration uint64
 	}
 	if body(r, &b) != nil {
@@ -480,7 +507,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "switch":
-		pos, ok := seconds(b.PositionSeconds)
+		var pos time.Duration
+		ok := true
+		if b.PositionSeconds != nil {
+			pos, ok = seconds(*b.PositionSeconds)
+		}
 		if b.AtSeconds != nil {
 			pos, ok = seconds(*b.AtSeconds)
 		}
@@ -565,7 +596,11 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "seek":
-		pos, ok := seconds(b.PositionSeconds)
+		var pos time.Duration
+		ok := true
+		if b.PositionSeconds != nil {
+			pos, ok = seconds(*b.PositionSeconds)
+		}
 		if b.AtSeconds != nil {
 			pos, ok = seconds(*b.AtSeconds)
 		}
@@ -739,6 +774,190 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 		s.preparation = []frontend.HLSPreparationEvent{{Stage: "decision", At: time.Now().UTC()}}
 		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
 			return
+		}
+	case "version":
+		switcher, canSwitch := i.host.Sessions.(frontend.VersionSwitcher)
+		if !canSwitch || !i.versionsAvailable() {
+			i.unavailable(w, r)
+			return
+		}
+		if _, live := s.plan["live"]; live {
+			i.unavailable(w, r)
+			return
+		}
+		if b.VersionID == "" {
+			problem(w, 400, "request", "invalid_version")
+			return
+		}
+		pos := s.position
+		ok := true
+		if b.PositionSeconds != nil {
+			pos, ok = seconds(*b.PositionSeconds)
+		}
+		if b.AtSeconds != nil {
+			pos, ok = seconds(*b.AtSeconds)
+		}
+		if !ok {
+			problem(w, 400, "request", "invalid_position")
+			return
+		}
+		var plan frontend.PlayPlan
+		var err error
+		if !s.port(w, func() {
+			plan, err = switcher.SwitchVersion(r.Context(), i.access(r, v), id, b.VersionID, pos)
+		}) {
+			return
+		}
+		if err != nil {
+			switch {
+			case errors.Is(err, frontend.ErrPreparing):
+				versionPreparing(w, err)
+			case errors.Is(err, frontend.ErrVersionUnavailable):
+				problem(w, 409, "source", "version_unavailable")
+			case errors.Is(err, frontend.ErrNotFound):
+				problem(w, 400, "request", "invalid_version")
+			default:
+				fail(w, err, r)
+			}
+			return
+		}
+		format := frontend.StreamDirect
+		transport := "file"
+		mime := sourceMIME(plan.Media.Container)
+		if plan.Decision.Kind != frontend.DecisionDirectPlay {
+			if (!s.client.HLS && !s.client.MSE) || !plan.HLS {
+				problem(w, 422, "decoder", "unsupported_transport")
+				return
+			}
+			format = frontend.StreamHLS
+			transport = "hls"
+			mime = "application/vnd.apple.mpegurl"
+		}
+		var url string
+		if !s.port(w, func() {
+			url, err = i.host.Sessions.StartStream(r.Context(), i.access(r, v), id, frontend.StreamRequest{Format: format, Position: pos, LazyStart: true, Continuous: true})
+		}) {
+			return
+		}
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		kind := "direct"
+		if plan.Decision.Kind == frontend.DecisionRemux {
+			kind = "remux"
+		}
+		if plan.Decision.Kind == frontend.DecisionTranscode {
+			kind = "transcode"
+		}
+		original := plan.Decision.Reason == "original_runtime"
+		path := object{"id": "primary", "kind": kind, "transport": transport, "url": url, "mimeType": mime, "readiness": "ready", "timelineOriginSeconds": float64(0), "qualities": []object{}, "boundaries": []object{}}
+		if transport == "hls" {
+			path["timelineOriginSeconds"] = pos.Seconds()
+		}
+		if plan.ETag != "" {
+			path["timelineId"] = plan.ETag
+			path["sourceId"] = plan.ETag
+		}
+		if original {
+			if facts := originalVideo(plan.Media); facts != nil {
+				path["originalVideo"] = facts
+			}
+			path["original"], path["range"] = true, true
+			if plan.Media.Size > 0 {
+				path["byteLength"] = plan.Media.Size
+			}
+		}
+		path["decisionReason"] = plan.Decision.Reason
+		paths := []object{path}
+		if original && (s.client.HLS || s.client.MSE) && plan.HLS {
+			fallbackKind := "transcode"
+			if plan.DirectStream {
+				fallbackKind = "remux"
+			}
+			paths = append(paths, object{"id": "fallback-hls", "kind": fallbackKind, "transport": "hls", "mimeType": "application/vnd.apple.mpegurl", "readiness": "on-demand", "sourceId": plan.ETag, "timelineId": plan.ETag, "qualities": []object{}, "boundaries": []object{}})
+		}
+		_, trackChanges := i.host.Sessions.(frontend.StreamDecisionReader)
+		canBurn := trackChanges && plan.Transcoding && !plan.VideoTranscodingOff && plan.HLS && (s.client.HLS || s.client.MSE)
+		formats := append([]string(nil), s.subtitleFormats...)
+		var audioTracks, subtitleTracks []object
+		var selectedAudio string
+		var selectedSub any
+		if !s.port(w, func() {
+			audioTracks, subtitleTracks, selectedAudio, selectedSub = i.playbackTracks(r.Context(), i.access(r, v), id, plan.Media, plan.Decision, plan.Decision.SubtitleStream, original, formats, canBurn)
+		}) {
+			return
+		}
+		s.media = plan.Media
+		s.canBurn = canBurn
+		s.qualityRungs = nil
+		s.activeVersionHandle = plan.VersionHandle
+		s.activeReleaseID = plan.ReleaseID
+		s.plan["paths"] = paths
+		s.plan["selectedPathId"] = "primary"
+		s.plan["audioTracks"] = audioTracks
+		s.plan["subtitleTracks"] = subtitleTracks
+		if selectedAudio != "" {
+			s.plan["selectedAudioTrackId"] = selectedAudio
+		} else {
+			delete(s.plan, "selectedAudioTrackId")
+		}
+		s.plan["selectedSubtitleTrackId"] = selectedSub
+		s.plan["chapters"] = chapters(plan.Media)
+		s.plan["fallback"] = object{"state": "unsupported"}
+		delete(s.plan, "qualityLimitations")
+		if plan.Media.Duration > 0 {
+			s.plan["durationSeconds"] = plan.Media.Duration.Seconds()
+		} else {
+			delete(s.plan, "durationSeconds")
+		}
+		s.position = pos
+		s.retainDiagnostics()
+		s.source++
+		s.seek++
+		s.preparation = nil
+		if !plan.SourceChosenAt.IsZero() {
+			s.preparation = append(s.preparation, frontend.HLSPreparationEvent{Stage: "source-chosen", At: plan.SourceChosenAt})
+		}
+		if !plan.DecisionAt.IsZero() {
+			s.preparation = append(s.preparation, frontend.HLSPreparationEvent{Stage: "decision", At: plan.DecisionAt})
+		}
+		if transport == "hls" {
+			if !s.portSnapshot(w, func(copy *playSession) { i.refreshTrackDelivery(r.Context(), i.access(r, v), id, copy) }) {
+				return
+			}
+		}
+		qSnap := s.outputSnapshot()
+		if !s.port(w, func() { i.addQualityPaths(r.Context(), i.access(r, v), id, qSnap) }) {
+			return
+		}
+		s.qualityRungs = qSnap.qualityRungs
+		s.plan["paths"] = qSnap.plan["paths"]
+		if fb, ok := qSnap.plan["fallback"]; ok {
+			s.plan["fallback"] = fb
+		}
+		if limits, ok := qSnap.plan["qualityLimitations"]; ok {
+			s.plan["qualityLimitations"] = limits
+		}
+		if !s.portSnapshot(w, func(copy *playSession) { i.refreshOutput(r.Context(), id, copy) }) {
+			return
+		}
+		if s.item != 0 {
+			item, caps, dev := s.item, s.declaredCaps, requestDevice(r)
+			activeHandle, activeRel := plan.VersionHandle, plan.ReleaseID
+			versionPlan := object{}
+			if !s.port(w, func() {
+				i.attachPlaybackVersions(r.Context(), v, dev, item, caps, activeHandle, activeRel, versionPlan)
+			}) {
+				return
+			}
+			for _, field := range []string{"selectedVersionId", "versions", "rememberedChoice"} {
+				if val, exists := versionPlan[field]; exists {
+					s.plan[field] = val
+				} else if field == "rememberedChoice" {
+					delete(s.plan, field)
+				}
+			}
 		}
 	case "pause", "resume":
 		state := "paused"

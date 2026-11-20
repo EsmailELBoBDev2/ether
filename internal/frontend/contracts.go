@@ -1012,6 +1012,13 @@ type PlayPlan struct {
 	ETag string
 	// DetailSource is a scoped, expiring handle for the resolved source.
 	DetailSource string
+	// VersionHandle is the opaque VersionHandles ID for the admitted version
+	// when one was resolved or matched for this plan.
+	VersionHandle string
+	// ReleaseID is the internal resolved release identity used by frontends
+	// to correlate the admitted source with offered VersionSlots (never
+	// exposed directly on external APIs).
+	ReleaseID string
 }
 
 // DetailPlanner resolves a playable single item within a bounded admission

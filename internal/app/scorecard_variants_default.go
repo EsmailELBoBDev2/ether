@@ -19,7 +19,7 @@ func scorecardVariants(ctx context.Context, a *App, v *core.Viewer, t *core.Titl
 			req.PlayedRelease = played
 		}
 	}
-	variants, err := a.resolver.Variants(ctx, req, 4)
+	variants, err := a.resolver.Variants(ctx, req, core.MaxVariants)
 	if err == nil && a.playback != nil {
 		variants = a.playback.WithCachedVariantInfo(ctx, v, t, variants)
 	}

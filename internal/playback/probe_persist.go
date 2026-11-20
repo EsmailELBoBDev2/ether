@@ -291,22 +291,38 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 		// indexers in O(1) memory without touching the database.
 		if info, ok := m.CachedReleaseProbe(out[i].Release); ok {
 			out[i].Info = info
-			continue
-		}
-		// Menu identity may be a logical slot; probes belong to its concrete source.
-		release := out[i].Release.ID
-		if release == "" {
-			release = out[i].ID
-		}
-		if user != nil {
-			if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
-				out[i].Info = info
-				continue
+		} else {
+			// Menu identity may be a logical slot; probes belong to its concrete source.
+			release := out[i].Release.ID
+			if release == "" {
+				release = out[i].ID
+			}
+			if user != nil {
+				if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
+					out[i].Info = info
+				} else if m.deps.DebridFileMeta != nil {
+					if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
+						enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+					}
+				}
+			} else if m.deps.DebridFileMeta != nil {
+				if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
+					enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+				}
 			}
 		}
-		if m.deps.DebridFileMeta != nil {
-			if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
-				enrichEstimatedFromDebridMeta(&out[i], filePath, size)
+		if out[i].Availability != core.VersionUnavailable {
+			relID := out[i].Release.ID
+			var uid int64
+			if user != nil {
+				uid = user.ID
+			}
+			if relID != "" && relID != out[i].ID && m.hasLiveOrCachedRelease(uid, title.Key, relID) {
+				out[i].Availability = core.VersionInstant
+				out[i].AvailabilityNote = ""
+			} else if !out[i].Info.Estimated && len(out[i].Info.Streams) > 0 && (out[i].Availability == "" || out[i].Availability == core.VersionFetch) {
+				out[i].Availability = core.VersionCached
+				out[i].AvailabilityNote = ""
 			}
 		}
 	}

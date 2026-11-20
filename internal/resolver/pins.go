@@ -93,6 +93,7 @@ func (s *Service) Pin(ctx context.Context, key core.RatingKey, titleName string,
 	s.con.mu.Lock()
 	s.con.pins[key] = p
 	s.con.mu.Unlock()
+	s.InvalidateDetailVariants()
 	s.notifyPin(key)
 	return p, nil
 }
@@ -103,6 +104,9 @@ func (s *Service) Unpin(ctx context.Context, key core.RatingKey) (bool, error) {
 	_, had := s.con.pins[key]
 	delete(s.con.pins, key)
 	s.con.mu.Unlock()
+	if had {
+		s.InvalidateDetailVariants()
+	}
 	if s.db == nil {
 		return had, nil
 	}
@@ -110,6 +114,7 @@ func (s *Service) Unpin(ctx context.Context, key core.RatingKey) (bool, error) {
 	if err != nil {
 		return had, err
 	}
+	s.InvalidateDetailVariants()
 	s.notifyPin(key)
 	n, _ := res.RowsAffected()
 	return had || n > 0, nil
@@ -195,13 +200,14 @@ func (s *Service) reloadPin(ctx context.Context, key core.RatingKey) {
 	}
 	p, err := scanPin(s.db.QueryRowContext(ctx, `SELECT `+pinColumns+` FROM resolver_pins WHERE rating_key=?`, int64(key)))
 	s.con.mu.Lock()
-	defer s.con.mu.Unlock()
 	switch {
 	case err == nil:
 		s.con.pins[key] = p
 	case errors.Is(err, sql.ErrNoRows):
 		delete(s.con.pins, key) // unpinned on another node
 	}
+	s.con.mu.Unlock()
+	s.InvalidateDetailVariants()
 }
 
 // notePin records the outcome of trying a title's pin, when releaseID is
@@ -271,8 +277,12 @@ func (s *Service) pinForResolve(req core.ResolveRequest) (*Pin, string) {
 
 // PinnedReleaseID returns the authoritative playback source, if this request
 // uses an owner pin. Playback uses it to recheck warm/resume and failover paths
-// that can otherwise reuse a release without calling Resolve.
+// that can otherwise reuse a release without calling Resolve. An active viewer
+// remembered choice overrides the owner pin in the Auto slot.
 func (s *Service) PinnedReleaseID(req core.ResolveRequest) string {
+	if s.viewerTitleChoiceForResolve(req, nil) != nil || s.viewerShowChoiceForResolve(req) != nil {
+		return ""
+	}
 	if pin, _ := s.pinForResolve(req); pin != nil {
 		return pin.Release.ID
 	}

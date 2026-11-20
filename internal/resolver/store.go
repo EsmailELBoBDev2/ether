@@ -66,6 +66,7 @@ func (s *Service) loadPersisted(ctx context.Context) {
 	s.loadContentIdentityState(ctx)
 	s.loadRejections(ctx)
 	s.loadPins(ctx)
+	s.loadViewerChoices(ctx)
 	s.loadReleaseTitles(ctx)
 	rrows, err := s.db.QueryContext(ctx, `SELECT indexer, successes, failures FROM resolver_reputation`)
 	if err == nil {

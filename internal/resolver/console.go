@@ -101,20 +101,22 @@ type rememberedRelease struct {
 // from the database; remembered releases fill blocklist metadata and let
 // the owner act on a search result by id.
 type consoleState struct {
-	mu         sync.Mutex
-	pins       map[core.RatingKey]Pin
-	recent     map[string]rememberedRelease
-	order      []string
-	checks     map[string]HealthResult
-	blocks     map[string]BlockEntry // memory-only mode (no database)
-	history    []HistoryRecord       // memory-only mode (no database)
-	historySeq int64
-	historyMax int
-	historyAge time.Duration
+	mu            sync.Mutex
+	pins          map[core.RatingKey]Pin
+	viewerChoices map[viewerChoiceKey]ViewerChoice
+	recent        map[string]rememberedRelease
+	order         []string
+	checks        map[string]HealthResult
+	blocks        map[string]BlockEntry // memory-only mode (no database)
+	history       []HistoryRecord       // memory-only mode (no database)
+	historySeq    int64
+	historyMax    int
+	historyAge    time.Duration
 }
 
 func (c *consoleState) init(opts Options) {
 	c.pins = map[core.RatingKey]Pin{}
+	c.viewerChoices = map[viewerChoiceKey]ViewerChoice{}
 	c.recent = map[string]rememberedRelease{}
 	c.checks = map[string]HealthResult{}
 	c.blocks = map[string]BlockEntry{}

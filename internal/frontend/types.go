@@ -50,6 +50,16 @@ type DecisionKind = core.DecisionKind
 type DecisionCandidate = core.DecisionCandidate
 type DecisionTrace = core.DecisionTrace
 type ReleaseVariant = core.ReleaseVariant
+type VersionAvailability = core.VersionAvailability
+type VersionProfile = core.VersionProfile
+type ViewerChoiceSummary = core.ViewerChoiceSummary
+
+const (
+	VersionInstant     = core.VersionInstant
+	VersionCached      = core.VersionCached
+	VersionFetch       = core.VersionFetch
+	VersionUnavailable = core.VersionUnavailable
+)
 
 const (
 	DecisionDirectPlay = core.DecisionDirectPlay

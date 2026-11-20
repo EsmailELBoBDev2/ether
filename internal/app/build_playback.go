@@ -116,6 +116,11 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 	}
 	if a.resolver != nil {
 		a.resolver.SetProbedMedia(a.playback.CachedReleaseProbe)
+		if a.cache != nil {
+			a.resolver.SetLocalCacheLookup(func(releaseID string) bool {
+				return releaseID != "" && a.cache.ReleaseBytes(releaseID) > 0
+			})
+		}
 	}
 	a.playback.Subscribe(func(ev playback.Event) {
 		a.onPlaybackSubtitleEvent(ev)

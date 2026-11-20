@@ -52,15 +52,30 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	profile := SelectProfileForTitle(q, req.Client, req.User, req.Title, libProfile)
 	sreq := searchRequestFor(req.Title)
 	results, ok := s.peekSearchCache(searchCacheKey(sreq))
-	if !ok || len(results) == 0 {
-		return nil, nil
+	titleVC := s.viewerTitleChoiceForResolve(req, nil)
+	showVC := s.viewerShowChoiceForResolve(req)
+	ownerPin, hasOwnerPin := s.PinFor(req.Title.Key)
+	if req.Client.Download {
+		hasOwnerPin = false
 	}
-	// An owner pin that applies to this client is what normal resolution
-	// tries first, so it is Auto (pins.go).
+	if !ok || len(results) == 0 {
+		if titleVC == nil {
+			return nil, nil
+		}
+		results = withRelease(nil, titleVC.Release)
+		if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
+			results = withRelease(results, ownerPin.Release)
+		}
+	}
+	// An owner pin that applies to this client is kept in the candidate pool,
+	// while an active viewer remembered choice takes precedence in Auto.
 	pinID := ""
-	if pin, _ := s.pinForResolve(req); pin != nil {
-		pinID = pin.Release.ID
-		results = withRelease(results, pin.Release)
+	if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
+		pinID = ownerPin.Release.ID
+		results = withRelease(results, ownerPin.Release)
+	}
+	if titleVC != nil {
+		results = withRelease(results, titleVC.Release)
 	}
 	// Auto uses the same preferences and hard rules as normal resolution.
 	strict, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, results, nil, pinID, true)
@@ -88,16 +103,26 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	}
 	strict = acceptableVariantAudio(clearIdentityVariants(strict))
 	pool = acceptableVariantAudio(clearIdentityVariants(pool))
+	autoRel := strict[0].rel
+	autoRemembered := false
+	if titleVC != nil || showVC != nil {
+		if picked, remembered := s.slotAutoWithSource(req, strict, pool, titleVC, showVC); remembered && picked.ID != "" {
+			autoRel, autoRemembered = picked, true
+		}
+	}
 	var vs []core.ReleaseVariant
 	rcfg := s.resolverCfg()
 	wanted := wantedAudio(profile, req.User, s.catalogLanguage())
 	if rcfg.AlternativesPerSource || rcfg.AlternativesPerResolution {
-		vs = pickResolutionVariants(req.Title, profile, strict[0].rel, pool, s.sameQualityAlternatives(), max, allowTaller, rcfg.AlternativesPerResolution, rcfg.AlternativesPerSource, wanted)
+		vs = pickResolutionVariants(req.Title, profile, autoRel, pool, s.sameQualityAlternatives(), max, allowTaller, rcfg.AlternativesPerResolution, rcfg.AlternativesPerSource, wanted)
 	} else {
-		vs = pickVariants(req.Title, req.Client, profile, strict[0].rel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
+		vs = pickVariants(req.Title, req.Client, profile, autoRel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
 	}
 	// A historical play must not put a now-rejected namesake back into Auto.
 	played := req.PlayedRelease
+	if autoRemembered {
+		played = ""
+	}
 	if played != "" {
 		r, found := s.LookupRelease(played)
 		for _, result := range results {
@@ -119,6 +144,9 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 		if info, ok := s.probedMediaFor(vs[i].Release); ok {
 			vs[i].Info = info
 		}
+		vs[i].Remembered = i == 0 && autoRemembered
+		vs[i].Pinned = hasOwnerPin && vs[i].Release.ID == ownerPin.Release.ID
+		vs[i].Availability, vs[i].AvailabilityNote = s.classifyVariantAvailability(ctx, req.Title.Key, vs[i].Release, vs[i].Info, false, ok)
 		for _, c := range pool {
 			if c.rel.ID != vs[i].Release.ID {
 				continue

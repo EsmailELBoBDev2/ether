@@ -35,6 +35,7 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 	now := m.now()
 	for _, s := range sessions {
 		s.mu.Lock()
+		prevState := s.viewerState
 		stateChanged := s.viewerAt.IsZero() || s.viewerState != state
 		s.viewerPosition = max(0, position)
 		s.viewerAt = time.Now()
@@ -56,6 +57,7 @@ func (m *Manager) PlaybackProgress(userID int64, clientID string, key core.Ratin
 			pausedRelease = s.cur.releaseID()
 		}
 		s.mu.Unlock()
+		m.observeViewerVersionChoice(s, max(0, position), state, prevState)
 		m.noteTimelineStall(s, now)
 		m.observeTimelineStall(s, now)
 		if stateChanged {

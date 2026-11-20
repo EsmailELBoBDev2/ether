@@ -24,6 +24,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/kindstream"
 	"github.com/braedonsaunders/ether/internal/libraries"
+	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/resolver"
@@ -38,6 +39,7 @@ const maxRecentSourceCandidates = 100
 type DebridSourceBackend interface {
 	CheckCached(ctx context.Context, hashes []string) (map[string]bool, bool)
 	Acquire(ctx context.Context, rel core.Release) ([]byte, error)
+	ListReleaseFiles(ctx context.Context, rel core.Release) ([]core.ReleaseFile, error)
 }
 
 const (
@@ -732,6 +734,68 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		}
 		return out, nil
 
+	case "release_files":
+		cand := core.SourceCandidate{
+			InfoHash: strings.ToLower(strings.TrimSpace(q.InfoHash)),
+			Magnet:   strings.TrimSpace(q.Magnet),
+		}
+		if q.Candidate != nil {
+			cand = *q.Candidate
+			cand.InfoHash = strings.ToLower(strings.TrimSpace(cand.InfoHash))
+			if q.InfoHash != "" {
+				cand.InfoHash = strings.ToLower(strings.TrimSpace(q.InfoHash))
+			}
+			if q.Magnet != "" {
+				cand.Magnet = strings.TrimSpace(q.Magnet)
+			}
+		}
+		// The listing answers for the whole release; any file choice the
+		// candidate already carries does not narrow it.
+		listCand := cand
+		listCand.FileIndex = nil
+		listCand.Files = nil
+		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &listCand}, "")
+		if err != nil {
+			return nil, err
+		}
+		if rel.Protocol == core.ProtocolUsenet {
+			if r.indexer == nil {
+				return []core.SourceCandidate{cand}, nil
+			}
+			// Fetching through the originating indexer is the same call
+			// playback makes, so the NZB lands in the vault and playback
+			// does not fetch it again.
+			data, err := r.indexer.FetchNZB(ctx, rel)
+			if err != nil {
+				return nil, err
+			}
+			doc, err := nzb.Parse(data)
+			if err != nil {
+				return nil, err
+			}
+			cand.Files = make([]core.ReleaseFile, len(doc.Files))
+			for i, f := range doc.Files {
+				cand.Files[i] = core.ReleaseFile{Index: i, Path: f.Name, Size: f.Bytes()}
+			}
+			return []core.SourceCandidate{cand}, nil
+		}
+		if r.debrid == nil {
+			return []core.SourceCandidate{cand}, nil
+		}
+		files, err := r.debrid.ListReleaseFiles(ctx, rel)
+		if err != nil {
+			if errors.Is(err, core.ErrNotCached) {
+				// Only cached torrents are worth listing; an uncached one
+				// answers with no files rather than an error.
+				cand.Cached = false
+				return []core.SourceCandidate{cand}, nil
+			}
+			return nil, err
+		}
+		cand.Cached = true
+		cand.Files = files
+		return []core.SourceCandidate{cand}, nil
+
 	case "debrid_acquire":
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
@@ -843,7 +907,24 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 	return leaves, nil
 }
 
-func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int) kindstream.Deps {
+// skippedSources collects candidates that failed before a later one opened
+// during one item open, so the resolver can decline to save a fallback as
+// the item's resolution when an earlier candidate failed because the
+// plugin's answer was wrong (#641).
+type skippedSources struct {
+	failures []kindstream.SourceFailure
+}
+
+func (s *skippedSources) pluginAnswerFailed() bool {
+	for _, f := range s.failures {
+		if f.PluginAnswer() {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindRecord, lib core.Library, item core.KindItem, partIdx *int, skipped *skippedSources) kindstream.Deps {
 	var quota blobcache.Quota
 	if r.catalog != nil && lib.Key != "" {
 		quota = r.catalog.QuotaFor(rec.PluginID, lib.Key)
@@ -899,6 +980,25 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		MaxDownloadBytes: quota.EffectiveMaxBytes(),
 		ItemIndex:        effectiveItemIndex(item.Index, partIdx),
 		Backoff:          r.backoff,
+		OnSourceSkipped: func(failures []kindstream.SourceFailure, winning core.PlayableSource) {
+			if skipped != nil {
+				skipped.failures = append(skipped.failures, failures...)
+			}
+			for _, f := range failures {
+				if r.log == nil {
+					break
+				}
+				r.log.Warn("kind source failed to open; serving a later source",
+					"plugin", rec.PluginID,
+					"library", lib.Key,
+					"item", item.ID,
+					"source", f.Source.ID,
+					"pattern", f.Source.Pattern,
+					"winning", winning.ID,
+					"err", f.Err,
+				)
+			}
+		},
 	}
 }
 
@@ -919,7 +1019,8 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 	if item.Unavailable != nil {
 		return nil, core.PlayableSource{}, core.ErrNotAvailable
 	}
-	ksDeps := r.kindstreamDeps(ctx, rec, lib, item, partIdx)
+	skipped := &skippedSources{}
+	ksDeps := r.kindstreamDeps(ctx, rec, lib, item, partIdx, skipped)
 	fk := flightKeyForItem(item.Ref, partIdx)
 
 	saveAndReturn := func(bs kindstream.ByteSource, winning core.PlayableSource) (kindstream.ByteSource, core.PlayableSource, error) {
@@ -929,7 +1030,20 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 		if winning.MIME == "" && bs.MIME() != "" {
 			winning.MIME = bs.MIME()
 		}
-		_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, winning)
+		// A fallback that opened only because an earlier candidate failed
+		// on the plugin's own answer is not saved as the item's
+		// resolution: the plugin's first choice is broken, and saving
+		// the fallback would hide that on every later play. Nor is a
+		// source whose declared digest is still verifying (#641, #642).
+		save := !skipped.pluginAnswerFailed()
+		if dr, ok := bs.(kindstream.DigestReporter); ok {
+			if declared, verified := dr.DigestState(); declared && !verified {
+				save = false
+			}
+		}
+		if save {
+			_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, winning)
+		}
 		return bs, winning, nil
 	}
 
@@ -1429,9 +1543,6 @@ func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (
 		return r.engine.Open(ctx, rel.ID, payload)
 	}
 	if rel.NZBURL != "" {
-		if rel.Target != nil {
-			return nil, fmt.Errorf("explicit release file selection requires a torrent; use a container source for NZB members")
-		}
 		if r.indexer == nil {
 			return nil, core.ErrSourceUnavailable
 		}

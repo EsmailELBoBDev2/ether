@@ -45,6 +45,8 @@ export interface Indexer {
   secretSettings?: Record<string, string> | null;
   /** User agent overriding the global client identity for this indexer. */
   userAgent?: string;
+  /** How this indexer's requests look: client profile plus overrides. */
+  requestIdentity?: IndexerRequestIdentity | null;
   /**
    * The audio language of the releases this indexer returns, as a BCP 47
    * tag ("pt-BR"). It is evidence for a bare DUAL/MULTI whose name names no
@@ -62,6 +64,32 @@ export interface ClientIdentityConfig {
   userAgent?: string;
   /** Header values are sealed server-side and arrive redacted to "••••". */
   headers?: Record<string, string> | null;
+}
+
+/** One header or query-parameter override in a request identity. */
+export interface KVOverride {
+  name: string;
+  value?: string;
+  remove?: boolean;
+}
+
+/** Per-indexer request identity (config.IndexerRequestIdentity). */
+export interface IndexerRequestIdentity {
+  profile?: string;
+  headers?: KVOverride[] | null;
+  params?: KVOverride[] | null;
+  grabProfile?: string;
+  grabHeaders?: KVOverride[] | null;
+  grabParams?: KVOverride[] | null;
+}
+
+/** Masked sample requests from POST /indexer/preview. */
+export interface RequestPreview {
+  profile: string;
+  grabProfile: string;
+  search: { requestLine: string; headers: { name: string; value: string }[] };
+  grab: { requestLine: string; headers: { name: string; value: string }[] };
+  profiles: { id: string; userAgent: string; grabPaired?: string }[];
 }
 
 export type IndexerProtocol = "usenet" | "torrent";

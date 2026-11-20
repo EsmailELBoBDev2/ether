@@ -133,7 +133,7 @@ type KindChangesRequest struct {
 
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -144,6 +144,15 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// Candidate carries an indexer_search candidate back for release_files.
+	Candidate *SourceCandidate `json:"candidate,omitempty"`
+}
+
+// ReleaseFile is one file inside a candidate release (release_files).
+type ReleaseFile struct {
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
 }
 
 // SourceCandidate is one Ether-found release for a resolver to rank.
@@ -166,6 +175,8 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
+	// Files is populated only by a release_files query.
+	Files []ReleaseFile `json:"files,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -226,10 +237,14 @@ type PlayableSource struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 	BlobRef     string            `json:"blobRef,omitempty"`
 	SHA256      string            `json:"sha256,omitempty"`
-	MaxBytes    int64             `json:"maxBytes,omitempty"`
-	ExpiresAt   int64             `json:"expiresAt,omitempty"`
-	Container   *ContainerRef     `json:"container,omitempty"`
-	Release     *ReleaseHint      `json:"release,omitempty"`
+	// SHA1 and CRC32 are hex digests checked against the served bytes,
+	// including a release's selected file or container member; Size too.
+	SHA1      string        `json:"sha1,omitempty"`
+	CRC32     string        `json:"crc32,omitempty"`
+	MaxBytes  int64         `json:"maxBytes,omitempty"`
+	ExpiresAt int64         `json:"expiresAt,omitempty"`
+	Container *ContainerRef `json:"container,omitempty"`
+	Release   *ReleaseHint  `json:"release,omitempty"`
 }
 
 // ContainerRef describes an archive member inside ordered volumes.

@@ -61,6 +61,9 @@ func hasUnnamedFiles(data []byte) bool {
 // The stream engine then plays that episode like any single-episode
 // release. A pack with no file for the episode wraps core.ErrNotAvailable.
 func EpisodeNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
+	if t != nil && t.AllowNonVideo && (t.FileIndex != nil || t.ExactFile != "") {
+		return exactFileNZB(data, t)
+	}
 	if t != nil && t.Episode <= 0 && (len(t.MovieTitles) > 0 || len(t.WantedLanguages) > 0) {
 		doc, err := nzb.Parse(data)
 		if err != nil {
@@ -142,6 +145,87 @@ func EpisodeNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
 		return nil, fmt.Errorf("usenet season pack has no file for S%02dE%02d: %w", t.Season, t.Episode, core.ErrNotAvailable)
 	}
 	return out, nil
+}
+
+// exactFileNZB narrows an NZB to one explicitly selected file — by NZB
+// document index (FileIndex, the order a release_files listing returns) or
+// by name (ExactFile, full name or unique basename) — plus its archive set
+// when the file is one volume of one, and its PAR2 index. This is how a
+// plugin's file choice is honoured on Usenet as ChooseFile honours it on
+// debrid.
+func exactFileNZB(data []byte, t *core.ReleaseTarget) ([]byte, error) {
+	doc, err := nzb.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	var selected *nzb.File
+	if t.FileIndex != nil {
+		i := *t.FileIndex
+		if i < 0 || i >= len(doc.Files) {
+			return nil, fmt.Errorf("usenet fileIndex %d outside file list of %d: %w", i, len(doc.Files), core.ErrNotAvailable)
+		}
+		selected = doc.Files[i]
+		if t.ExactFile != "" && !exactNZBNameMatches(selected.Name, t.ExactFile) {
+			return nil, fmt.Errorf("usenet file at index %d is %q, not %q: %w", i, selected.Name, t.ExactFile, core.ErrWrongContent)
+		}
+	} else {
+		var matches []*nzb.File
+		for _, f := range doc.Files {
+			if exactNZBNameMatches(f.Name, t.ExactFile) {
+				matches = append(matches, f)
+			}
+		}
+		if len(matches) != 1 {
+			return nil, fmt.Errorf("usenet file %q matched %d files: %w", t.ExactFile, len(matches), core.ErrNotAvailable)
+		}
+		selected = matches[0]
+	}
+	keep := map[*nzb.File]bool{selected: true}
+	stems := []string{strings.ToLower(strings.TrimSuffix(selected.Name, path.Ext(selected.Name)))}
+	if selected.Info.Kind.IsArchive() {
+		for _, s := range nzb.GroupSets(doc.Files) {
+			for _, v := range s.Volumes {
+				if v == selected {
+					for _, vol := range s.Volumes {
+						keep[vol] = true
+					}
+					stems = append(stems, strings.ToLower(s.Name))
+				}
+			}
+		}
+	}
+	own := map[*nzb.File]bool{}
+	ownIndex := false
+	for _, f := range doc.Files {
+		if f.Info.Kind != nzb.KindPar2 || nzb.IsPar2Volume(f.Name) {
+			continue
+		}
+		for _, stem := range stems {
+			if strings.HasPrefix(strings.ToLower(f.Name), stem) {
+				own[f] = true
+				ownIndex = true
+			}
+		}
+	}
+	packIndex := nzb.Par2Index(doc.Files)
+	out, ok := doc.SubsetMeta(func(f *nzb.File) bool {
+		return keep[f] || own[f] || (!ownIndex && f == packIndex)
+	}, nil)
+	if !ok {
+		return nil, fmt.Errorf("usenet release has no file %q: %w", t.ExactFile, core.ErrNotAvailable)
+	}
+	return out, nil
+}
+
+func exactNZBNameMatches(name, want string) bool {
+	want = strings.ReplaceAll(strings.TrimSpace(want), "\\", "/")
+	name = strings.ReplaceAll(name, "\\", "/")
+	if strings.TrimPrefix(name, "/") == strings.TrimPrefix(want, "/") {
+		return true
+	}
+	// NZB file names carry no directories, so a torrent-style path the
+	// plugin learned elsewhere still selects by its basename.
+	return path.Base(name) == path.Base(want)
 }
 
 // opaqueArchives returns the archive sets whose names carry no episode (an

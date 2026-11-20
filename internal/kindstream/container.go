@@ -267,6 +267,7 @@ func extractFromOpenVolumes(
 	nonDirIdx int,
 	declaredMIME string,
 	maxBytes int64,
+	digests expectedDigests,
 	deps Deps,
 ) (ByteSource, error) {
 	if selected.Encrypted {
@@ -307,7 +308,7 @@ func extractFromOpenVolumes(
 		if limit > 0 {
 			reader = &limitEnforcingReader{r: rc, max: limit}
 		}
-		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, extractKey, reader, m.Size, "", declaredMIME)
+		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, extractKey, newDigestVerifyReader(reader, digests), m.Size, digests.sha256, declaredMIME)
 		if err != nil {
 			if errors.Is(err, blobcache.ErrTooLarge) {
 				return "", fmt.Errorf("%w: %v", ErrSizeLimitExceeded, err)
@@ -451,7 +452,7 @@ func openVolumeRef(ctx context.Context, v core.VolumeRef, maxBytes int64, deps D
 		if deps.Cache == nil {
 			return nil, err
 		}
-		return downloadFromNoRangeResponse(ctx, v.URL, noRange, "", "application/octet-stream", maxBytes, deps)
+		return downloadFromNoRangeResponse(ctx, v.URL, noRange, expectedDigests{}, "application/octet-stream", maxBytes, deps)
 	}
 	return nil, err
 }
@@ -611,13 +612,13 @@ func selectArchiveMember(members []archive.Member, wantName string, wantIndex *i
 				return nonDir[matchIdx], matchIdx, nil
 			}
 		}
-		return archive.Member{}, -1, fmt.Errorf("kindstream: archive member %q not found", wantName)
+		return archive.Member{}, -1, fmt.Errorf("kindstream: archive member %q not found: %w", wantName, ErrPluginAnswer)
 	}
 
 	if wantIndex != nil {
 		idx := *wantIndex
 		if idx < 0 || idx >= len(nonDir) {
-			return archive.Member{}, -1, fmt.Errorf("kindstream: archive memberIndex %d out of range [0,%d)", idx, len(nonDir))
+			return archive.Member{}, -1, fmt.Errorf("kindstream: archive memberIndex %d out of range [0,%d): %w", idx, len(nonDir), ErrPluginAnswer)
 		}
 		return nonDir[idx], idx, nil
 	}

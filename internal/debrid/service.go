@@ -893,6 +893,74 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	return nil, joined
 }
 
+// ListReleaseFiles lists the files of a torrent already cached on a debrid
+// provider, in the provider's file-list order (the order ReleaseTarget
+// FileIndex counts). It never adds an uncached torrent: a hash no provider
+// is known to hold wraps core.ErrNotCached.
+func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]core.ReleaseFile, error) {
+	if s == nil {
+		return nil, ErrNoProvider
+	}
+	entries := s.active()
+	if len(entries) == 0 {
+		return nil, ErrNoProvider
+	}
+	hash := strings.ToLower(strings.TrimSpace(rel.InfoHash))
+	if hash == "" {
+		if mh := reMagnetHash.FindStringSubmatch(rel.MagnetURL); mh != nil {
+			hash = strings.ToLower(mh[1])
+		}
+	}
+	if hash == "" {
+		return nil, fmt.Errorf("debrid: torrent %q has no info hash: %w", rel.Name, core.ErrReleaseRejected)
+	}
+	magnet := rel.MagnetURL
+	if rel.Private || magnet == "" {
+		magnet = bareMagnet(hash)
+	}
+	base := Payload{ReleaseID: rel.ID, InfoHash: hash, Magnet: magnet, Private: rel.Private, Release: rel.Name}
+	var errs []error
+	for _, e := range entries {
+		if e.blocked(s.now()) != nil {
+			continue
+		}
+		cached, known, _ := s.knownFor(ctx, e.cfg.ID, hash)
+		if !(known && cached) && !slices.Contains(rel.DebridCached, e.cfg.Kind) {
+			continue
+		}
+		var captured []File
+		choose := func(files []File) (File, error) {
+			s.recordTorrentFiles(ctx, rel, files)
+			captured = slices.Clone(files)
+			if f, err := ChooseFile(files, nil); err == nil {
+				return f, nil
+			}
+			if len(files) > 0 {
+				return files[0], nil
+			}
+			return File{}, core.ErrWrongContent
+		}
+		_, err := s.acquireOn(ctx, e, base, choose, false)
+		if len(captured) > 0 {
+			out := make([]core.ReleaseFile, len(captured))
+			for i, f := range captured {
+				out[i] = core.ReleaseFile{Index: i, Path: f.Path, Size: f.Size}
+			}
+			return out, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrNotCached, errors.Join(errs...))
+	}
+	return nil, fmt.Errorf("%q: %w", rel.Name, core.ErrNotCached)
+}
+
 // CachedPackMatcher inspects a cached season-pack torrent once and returns a
 // matcher reporting which episode targets exist in its file list, plus
 // definitive=true when the configured providers gave a conclusive answer.

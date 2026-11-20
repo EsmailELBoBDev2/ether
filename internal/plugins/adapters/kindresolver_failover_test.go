@@ -56,6 +56,10 @@ func (d *kindFailoverDebrid) Acquire(_ context.Context, rel core.Release) ([]byt
 	return []byte("torbox-default"), nil
 }
 
+func (d *kindFailoverDebrid) ListReleaseFiles(_ context.Context, _ core.Release) ([]core.ReleaseFile, error) {
+	return nil, core.ErrNotCached
+}
+
 type kindFailoverEngine struct {
 	core.Engine
 }

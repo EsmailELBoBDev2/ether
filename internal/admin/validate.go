@@ -264,6 +264,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		if msg := config.ValidateUserAgent(ix.UserAgent); msg != "" {
 			v.add(f+".userAgent", "%s", msg)
 		}
+		for _, e := range ix.RequestIdentity.Validate() {
+			v.add(f+"."+e.Field, "%s", e.Message)
+		}
 		if ix.Kind != "" {
 			v.oneOf(f+".kind", ix.Kind, config.IndexerKindNewznab, config.IndexerKindCardigann, config.IndexerKindStremio, config.IndexerKindZilean)
 		}

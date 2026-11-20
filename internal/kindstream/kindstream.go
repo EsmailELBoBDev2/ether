@@ -65,6 +65,17 @@ type ByteSource interface {
 	Close() error
 }
 
+// SourceFailure is one candidate that failed to open before a later
+// candidate succeeded (or before every candidate failed).
+type SourceFailure struct {
+	Source core.PlayableSource
+	Err    error
+}
+
+// PluginAnswer reports whether the failure points at the plugin's own
+// answer (see ErrPluginAnswer) rather than at an unavailable host.
+func (f SourceFailure) PluginAnswer() bool { return errors.Is(f.Err, ErrPluginAnswer) }
+
 // Deps supplies the runtime dependencies needed by Open and OpenSources
 // (spec §5.1).
 type Deps struct {
@@ -77,6 +88,10 @@ type Deps struct {
 	MaxDownloadBytes int64
 	ItemIndex        int
 	Backoff          *HostBackoff
+	// OnSourceSkipped, when set, is called for each candidate that failed
+	// before a later one opened, so the caller can log it and decide
+	// whether the winner may be saved as the item's resolution.
+	OnSourceSkipped func(failures []SourceFailure, winning core.PlayableSource)
 }
 
 // Open resolves a single core.PlayableSource into a random-access ByteSource
@@ -110,6 +125,12 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 			_ = cached.Close()
 			return nil, fmt.Errorf("kindstream: blobRef size %d != declared %d", cached.Size(), src.Size)
 		}
+		if d := digestsOf(src); d.hasHash() {
+			if err := d.verifyReaderAt(cached, cached.Size()); err != nil {
+				_ = cached.Close()
+				return nil, err
+			}
+		}
 		return finalizeSourceMIME(cached, src.MIME, src.ID)
 	}
 
@@ -129,7 +150,13 @@ func Open(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, 
 		if src.Container == nil {
 			return nil, errors.New("kindstream: container pattern requires core.ContainerRef")
 		}
-		return OpenContainer(ctx, *src.Container, src.MIME, src.MaxBytes, deps)
+		bs, err := OpenContainer(ctx, *src.Container, src.MIME, src.MaxBytes, deps)
+		if err != nil {
+			return nil, err
+		}
+		keySum := sha256.Sum256([]byte(containerExtractCacheKey(*src.Container, bs.Name(), 0, deps.ItemIndex)))
+		cacheKey := "container-" + hex.EncodeToString(keySum[:12]) + "-" + bs.Name()
+		return applyDigests(ctx, bs, digestsOf(src), src.MaxBytes, cacheKey, deps)
 	case PatternRelease:
 		return openReleaseSource(ctx, src, deps)
 	default:
@@ -147,6 +174,7 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		return nil, core.PlayableSource{}, core.ErrSourceUnavailable
 	}
 	var errs []error
+	var failures []SourceFailure
 	allUnstreamable := true
 	for _, cand := range sources {
 		if err := ctx.Err(); err != nil {
@@ -154,11 +182,15 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 		}
 		bs, err := Open(ctx, cand, deps)
 		if err == nil {
+			if len(failures) > 0 && deps.OnSourceSkipped != nil {
+				deps.OnSourceSkipped(failures, cand)
+			}
 			return bs, cand, nil
 		}
 		if !errors.Is(err, core.ErrArchiveUnstreamable) {
 			allUnstreamable = false
 		}
+		failures = append(failures, SourceFailure{Source: cand, Err: err})
 		errs = append(errs, fmt.Errorf("source %q (%s): %w", cand.ID, cand.Pattern, err))
 	}
 	if allUnstreamable && len(errs) > 0 {
@@ -200,7 +232,7 @@ func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (B
 	if errors.As(err, &noRange) {
 		defer noRange.closeBody()
 		// Demote range -> download when within maxBytes (spec §4.3, §5.2).
-		return downloadFromNoRangeResponse(ctx, src.URL, noRange, src.SHA256, src.MIME, src.MaxBytes, deps)
+		return downloadFromNoRangeResponse(ctx, src.URL, noRange, digestsOf(src), src.MIME, src.MaxBytes, deps)
 	}
 	return nil, err
 }
@@ -209,7 +241,7 @@ func downloadFromNoRangeResponse(
 	ctx context.Context,
 	rawURL string,
 	noRange *noRangeSupportError,
-	expectedSHA256 string,
+	digests expectedDigests,
 	declaredMIME string,
 	maxBytes int64,
 	deps Deps,
@@ -234,7 +266,7 @@ func downloadFromNoRangeResponse(
 		if noRange.size > 0 {
 			expectedSize = noRange.size
 		}
-		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, combined, expectedSize, expectedSHA256, resolvedMIME)
+		ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, newDigestVerifyReader(combined, digests), expectedSize, digests.sha256, resolvedMIME)
 		if err != nil {
 			if errors.Is(err, blobcache.ErrTooLarge) {
 				return nil, fmt.Errorf("%w: %v", ErrSizeLimitExceeded, err)
@@ -252,7 +284,7 @@ func downloadFromNoRangeResponse(
 		}, nil
 	}
 
-	return readIntoMemoryByteSource(combined, limit, noRange.size, expectedSHA256, defaultNameFromURL(rawURL), resolvedMIME)
+	return readIntoMemoryByteSource(combined, limit, noRange.size, digests, defaultNameFromURL(rawURL), resolvedMIME)
 }
 
 func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
@@ -335,7 +367,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 			if limit > 0 {
 				r = &limitEnforcingReader{r: resp.Body, max: limit}
 			}
-			ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, r, expectedSize, src.SHA256, src.MIME)
+			ref, err := deps.Cache.PutWithExpectedSHA256(ctx, cacheKey, newDigestVerifyReader(r, digestsOf(src)), expectedSize, src.SHA256, src.MIME)
 			if err != nil {
 				if errors.Is(err, blobcache.ErrTooLarge) {
 					return "", fmt.Errorf("%w: %v", ErrSizeLimitExceeded, err)
@@ -367,7 +399,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 	if expectedSize <= 0 && resp.ContentLength > 0 {
 		expectedSize = resp.ContentLength
 	}
-	return readIntoMemoryByteSource(resp.Body, limit, expectedSize, src.SHA256, name, src.MIME)
+	return readIntoMemoryByteSource(resp.Body, limit, expectedSize, digestsOf(src), name, src.MIME)
 }
 
 // DirectSource represents a validated "direct" core.PlayableSource. Callers that
@@ -486,6 +518,11 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 	}
 	ms, err := deps.OpenRelease(ctx, *src.Release)
 	if err != nil {
+		if hasExplicitReleaseSelector(*src.Release) && errors.Is(err, core.ErrWrongContent) {
+			// The plugin named a file the release does not contain as
+			// named: its answer is wrong, the release is not down.
+			return nil, fmt.Errorf("%w: %w", ErrPluginAnswer, err)
+		}
 		return nil, err
 	}
 
@@ -542,7 +579,7 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 			member = src.Release.FileHint
 		}
 		cacheSeed := ms.ReleaseID() + "|" + wrapped.name
-		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, src.MIME, src.MaxBytes, deps)
+		return openContainerOverVolumes(ctx, []archive.Volume{{R: ms, Size: ms.Size()}}, []io.Closer{ms}, cacheSeed, fmtHint, member, memberIdx, pwSecret, src.MIME, src.MaxBytes, digestsOf(src), deps)
 	}
 
 	declaredMIME := strings.TrimSpace(src.MIME)
@@ -557,7 +594,9 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 		return nil, merr
 	}
 	wrapped.mime = resolvedMIME
-	return wrapped, nil
+	keySum := sha256.Sum256([]byte(ms.ReleaseID() + "|" + wrapped.name))
+	cacheKey := "rel-" + hex.EncodeToString(keySum[:12]) + "-" + wrapped.name
+	return applyDigests(ctx, wrapped, digestsOf(src), src.MaxBytes, cacheKey, deps)
 }
 
 func shouldAutoComposeReleaseArchive(src core.PlayableSource, fileName string, head []byte) bool {
@@ -613,6 +652,7 @@ func openContainerOverVolumes(
 	passwordSecret string,
 	declaredMIME string,
 	maxBytes int64,
+	digests expectedDigests,
 	deps Deps,
 ) (ByteSource, error) {
 	closeAll := func() {
@@ -655,6 +695,12 @@ func openContainerOverVolumes(
 		closeAll()
 		return nil, err
 	}
+	// The archive directory already knows the member's size: a declared
+	// size that disagrees rejects the wrong member before any data reads.
+	if err := digests.checkSize(selected.Size); err != nil {
+		closeAll()
+		return nil, err
+	}
 	streamErr := selected.Streamable()
 	if streamErr == nil {
 		mr, err := archive.NewMemberReader(selected, vols)
@@ -674,17 +720,20 @@ func openContainerOverVolumes(
 			closeAll()
 			return nil, merr
 		}
-		return &containerMemberSource{
+		memberSrc := &containerMemberSource{
 			r:       mr,
 			size:    selected.Size,
 			name:    memberDisplayName(selected.Name),
 			mime:    resolvedMIME,
 			closers: closers,
-		}, nil
+		}
+		keySum := sha256.Sum256([]byte(cacheSeed + "|" + selected.Name))
+		memberKey := "relmember-" + hex.EncodeToString(keySum[:12]) + "-" + memberSrc.name
+		return applyDigests(ctx, memberSrc, digests, maxBytes, memberKey, deps)
 	}
 	if errors.Is(streamErr, archive.ErrCompressed) || errors.Is(streamErr, archive.ErrSolid) {
 		defer closeAll()
-		return extractFromOpenVolumes(ctx, vols, cacheSeed, format, memberName, selected, nonDirIdx, declaredMIME, maxBytes, deps)
+		return extractFromOpenVolumes(ctx, vols, cacheSeed, format, memberName, selected, nonDirIdx, declaredMIME, maxBytes, digests, deps)
 	}
 	closeAll()
 	return nil, wrapArchiveUnstreamable(streamErr)
@@ -1061,7 +1110,7 @@ func (l *limitEnforcingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func readIntoMemoryByteSource(r io.Reader, limit, expectedSize int64, expectedSHA256, name, declaredMIME string) (ByteSource, error) {
+func readIntoMemoryByteSource(r io.Reader, limit, expectedSize int64, digests expectedDigests, name, declaredMIME string) (ByteSource, error) {
 	if limit > 0 {
 		r = &limitEnforcingReader{r: r, max: limit}
 	}
@@ -1072,12 +1121,11 @@ func readIntoMemoryByteSource(r io.Reader, limit, expectedSize int64, expectedSH
 	if expectedSize > 0 && int64(len(data)) != expectedSize {
 		return nil, fmt.Errorf("kindstream: size mismatch: got %d bytes, want %d", len(data), expectedSize)
 	}
-	if strings.TrimSpace(expectedSHA256) != "" {
-		sum := sha256.Sum256(data)
-		got := hex.EncodeToString(sum[:])
-		if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
-			return nil, fmt.Errorf("kindstream: sha256 mismatch: got %s, want %s", got, expectedSHA256)
-		}
+	if digests.size <= 0 {
+		digests.size = expectedSize
+	}
+	if err := digests.verifyBytes(data); err != nil {
+		return nil, err
 	}
 	head := data[:min(len(data), probeHeadBytes)]
 	resolvedMIME, err := verifyAndResolveMIME(head, declaredMIME, name)

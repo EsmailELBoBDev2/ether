@@ -662,7 +662,7 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire";
+  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
@@ -671,6 +671,15 @@ export interface SourceQuery {
   infoHashes?: string[];
   infoHash?: string;
   magnet?: string;
+  /** A candidate from indexer_search handed back for release_files, so an NZB is fetched through its indexer. */
+  candidate?: SourceCandidate;
+}
+
+/** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
+export interface ReleaseFile {
+  index: number;
+  path: string;
+  size: number;
 }
 
 export interface SourceCandidate {
@@ -690,6 +699,8 @@ export interface SourceCandidate {
   resolution?: number;
   source?: string;
   codec?: string;
+  /** Files inside this release; populated only by a release_files query. */
+  files?: ReleaseFile[];
 }
 
 export interface KindMatchRequest {
@@ -717,6 +728,9 @@ export interface PlayableSource {
   headers?: Record<string, string>;
   blobRef?: string;
   sha256?: string;
+  /** Hex digests checked against the served bytes (including a release file or container member); size is checked too. */
+  sha1?: string;
+  crc32?: string;
   maxBytes?: number;
   expiresAt?: number;
   container?: {
@@ -1285,6 +1299,9 @@ export interface RawRequest {
   query?: Record<string, string | string[]>;
   headers?: Record<string, string | string[]>;
   body?: unknown;
+  /** Exact request bytes, base64-encoded (frontend adapter routes). A non-JSON body arrives only here. */
+  bodyBase64?: string;
+  contentType?: string;
   locale?: string;
 }
 

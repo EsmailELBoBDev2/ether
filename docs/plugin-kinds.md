@@ -150,7 +150,7 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
-| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. |
+| `/ether/v1/frontend/{key}/…` | Your frontend adapter's traffic | Any method, and the original query string (repeated keys flatten to the first value). Ether authenticated the viewer first; you get `X-Ether-Viewer` headers plus a request-scoped `X-Ether-Viewer-Token` for `kinds.visible` / `kinds.browse` callbacks, never a credential. Bodies are capped at 1 MiB (larger gets 413). The exact request bytes always arrive base64-encoded in `bodyBase64` with the client's `contentType`; `body` additionally holds the parsed JSON value when the bytes are valid JSON, and is absent for non-JSON bodies (multipart, form-encoded, binary). The TypeScript SDK's `frontendBodyBytes(req)` returns the exact bytes. |
 
 Clients are **always served from Ether's store** — browse, search
 and detail never call you live, so nothing scales with your catalogue
@@ -227,7 +227,7 @@ order. Patterns:
 - **range** — a URL Ether reads with HTTP Range (demoted to download
   when the host cannot range and the size fits the cache).
 - **download** — fetched whole into the per-library blob cache
-  (SHA-256 checked when you provide one), then served locally.
+  (digests checked when you provide them), then served locally.
 - **direct** — the client surface is handed the URL (only where the
   surface supports it).
 - **container** — one member of a zip/RAR/7z, possibly multi-volume:
@@ -250,9 +250,25 @@ order. Patterns:
   Without either selector the existing video picker is used. In Go, indices
   are `*int`: a pointer to zero selects the first file; nil leaves selection
   automatic. Indices refer to the provider's ordering, not its file IDs;
-  prefer a path when the provider's ordering is unknown. Explicit selectors
-  on an NZB release are rejected; use a container source for archive members.
-  `fileHint` retains its existing meaning as an archive member hint.
+  prefer a path when the provider's ordering is unknown. On an NZB release
+  the same selectors narrow the NZB to that file (and its archive/PAR2 set):
+  `fileIndex` counts NZB document order and `file` matches a full name or
+  unique basename. `fileHint` retains its existing meaning as an archive
+  member hint.
+
+Any source may declare `sha256`, `sha1` or `crc32` (hex; CRC32 is the IEEE
+polynomial as 8 hex digits) and `size`. Ether checks them against the bytes
+actually served — for a release, the selected file; for a container, the
+member (whose size the archive directory reveals before any data is read).
+Bytes that fit `maxBytes` are read into the library cache and verified
+before serving; larger sources are hashed as they stream and the read
+fails at the end on a mismatch. A mismatch is an ordinary open failure:
+the next candidate source is tried. When several sources are returned and
+an earlier one fails, Ether logs the failure (plugin, library, item,
+source id, pattern, error) even though a later source plays; if the
+failure contradicts your answer itself (a missing archive member, an
+out-of-range index, a digest or size mismatch), the fallback that played
+is not saved as the item's resolution, so the next play resolves again.
 
 `ResolveSources({kind: "indexer_search", query?, category?, profile?})` accepts a
 comma-separated list of Newznab category IDs (`"3000"`, `"7030"`) or standard
@@ -284,6 +300,19 @@ content) your resolver can ask Ether to find bytes through the
 owner's indexers and debrid via the `ResolveSources` host service,
 rank the candidates yourself (or in `/match`), and return a
 `release` source.
+
+`ResolveSources({kind: "release_files", infoHash})` (or `magnet`, or
+`candidate` carrying an `indexer_search` result back) returns one
+candidate whose `files` lists what is inside the release:
+`[{index, path, size}]` in the order Ether's own file selection counts
+(provider file-list order for torrents, NZB document order for Usenet).
+Torrents are listed only when a debrid provider already holds them
+cached — an uncached hash answers with `cached: false` and no files,
+and is never added. NZBs are fetched through their originating indexer
+(the same fetch playback makes, so the NZB is vaulted for playback).
+Match a file to your item by name, then return the release with
+`release.file` or `release.fileIndex` set; the choice is honoured on
+Usenet as on debrid.
 
 ### Multi-file items (`hints.parts`)
 

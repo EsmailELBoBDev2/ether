@@ -1317,7 +1317,6 @@
   },
   "m_03e87ee2b55e59": "Wszystkie typy",
   "m_03e9675d097dd9": "Skonfiguruj Ether",
-  "m_03eb58dffdc05a": "Pozostaw puste, aby użyć karty Tożsamość klienta na stronie Indeksatory.",
   "m_03ebeb5bd72d43": "Odtwarzanie",
   "m_03ec648bbbf58b": "Dostawca nie odpowiedział na czas. Spróbuj ponownie za chwilę.",
   "m_03ecc601d0d959": "Sezonowe i świąteczne",
@@ -6153,7 +6152,6 @@
     "one": "Dziś wykorzystano {used} z {count} żądania API",
     "other": "Dziś wykorzystano {used} z {count} żądania API"
   },
-  "m_1258cfc611553a": "Za co ten indeksator uważa Ether.",
   "m_125952708f2adf": "{service} (region domyślny)",
   "m_125a3da17154a8": "{indexer} nie będzie już przeszukiwany.",
   "m_125a82d7760449": "Dźwięk: {choice}",
@@ -8747,7 +8745,6 @@
   "m_1a11b4c96916aa": "Wtyczka zostanie usunięta z tego serwera wraz z ustawieniami i danymi. Jej wersja robocza w Studio również zostanie usunięta.",
   "m_1a13bd3413b35f": "Tokeny dołączenia",
   "m_1a143a79f9f54f": "W kbps. 0 oznacza ustawienie domyślne serwera.",
-  "m_1a15dd27526d8a": "User agent (opcjonalnie)",
   "m_1a166bcd4dc588": "Zakończ",
   "m_1a17cde9dd4908": "Utwórz hasło aplikacji w sekcji Połącz aplikacje na swoim koncie.",
   "m_1a19ae5f5f47d8": "Powrót z przerwy",

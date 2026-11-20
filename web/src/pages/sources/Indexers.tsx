@@ -39,6 +39,7 @@ import { useResolver } from "../releases/resolverDraft";
 import { LANGUAGE_TAGS } from "../libraries/browser/CatalogPickers";
 import { REGIONAL_TRACK_TAGS } from "../setup/language";
 import { ClientIdentity } from "./ClientIdentity";
+import { RequestIdentitySection } from "./RequestIdentity";
 import { hasUsableDebrid } from "./Debrid";
 import {
   BoolRow,
@@ -889,18 +890,11 @@ export function IndexerList({
                     />
                   </SettingsRow>
                 </SettingsSection>
-                <SettingsSection
-                  title={t("Client identity")}
-                  description={t("What this indexer sees Ether as.")}
-                >
-                  <TextRow
-                    label={t("User agent (optional)")}
-                    value={draft.userAgent ?? ""}
-                    onChange={(v) => set({ userAgent: v })}
-                    error={errors.userAgent}
-                    help={t("Leave empty to use the Client identity card on the Indexers page.")}
-                  />
-                </SettingsSection>
+                <RequestIdentitySection
+                  draft={draft}
+                  error={errors.requestIdentity ?? errors.userAgent}
+                  onChange={set}
+                />
               </>
             )}
             {builtin && draftDef ? (

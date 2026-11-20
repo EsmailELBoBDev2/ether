@@ -12,6 +12,7 @@ import (
 
 type captureDebridBackend struct {
 	lastRelease core.Release
+	files       []core.ReleaseFile
 }
 
 func (c *captureDebridBackend) CheckCached(_ context.Context, hashes []string) (map[string]bool, bool) {
@@ -22,6 +23,14 @@ func (c *captureDebridBackend) CheckCached(_ context.Context, hashes []string) (
 func (c *captureDebridBackend) Acquire(_ context.Context, rel core.Release) ([]byte, error) {
 	c.lastRelease = rel
 	return []byte("payload"), nil
+}
+
+func (c *captureDebridBackend) ListReleaseFiles(_ context.Context, rel core.Release) ([]core.ReleaseFile, error) {
+	c.lastRelease = rel
+	if c.files != nil {
+		return c.files, nil
+	}
+	return nil, core.ErrNotCached
 }
 
 type stubEngine struct {
@@ -130,5 +139,67 @@ func TestKindResolverReleaseExplicitSelectorsEnableAllowNonVideo(t *testing.T) {
 	lf := &kindLocalFile{mime: ""}
 	if got := lf.MIME(); got != "application/octet-stream" {
 		t.Fatalf("kindLocalFile.MIME() = %q, want application/octet-stream", got)
+	}
+}
+
+type releaseFilesIndexer struct{ nzbs map[string][]byte }
+
+func (i releaseFilesIndexer) Name() string { return "release-files-idx" }
+func (i releaseFilesIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+	return nil, nil
+}
+func (i releaseFilesIndexer) FetchNZB(_ context.Context, rel core.Release) ([]byte, error) {
+	if b, ok := i.nzbs[rel.NZBURL]; ok {
+		return b, nil
+	}
+	return nil, core.ErrNotAvailable
+}
+
+// release_files lists a cached torrent's files through debrid and an
+// NZB's files through its indexer; an uncached torrent answers empty.
+func TestResolveSourcesReleaseFiles(t *testing.T) {
+	ctx := context.Background()
+	deb := &captureDebridBackend{files: []core.ReleaseFile{
+		{Index: 0, Path: "Collection/First.2020.mp4", Size: 111},
+		{Index: 1, Path: "Collection/Second.2021.mp4", Size: 222},
+	}}
+	nzbDoc := []byte(`<nzb>` +
+		`<file poster="p" date="1" subject="&quot;First.2020.mp4&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="100" number="1">a@x</segment></segments></file>` +
+		`<file poster="p" date="1" subject="&quot;Second.2021.mp4&quot; yEnc (1/1)"><groups><group>a.b</group></groups><segments><segment bytes="200" number="1">b@x</segment></segments></file>` +
+		`</nzb>`)
+	kr := NewKindResolver(KindResolverDeps{
+		Debrid:  deb,
+		Indexer: releaseFilesIndexer{nzbs: map[string][]byte{"https://idx.test/nzb/1": nzbDoc}},
+	})
+
+	out, err := kr.ResolveSources(ctx, "plug", core.SourceQuery{Kind: "release_files", InfoHash: "ABCDEF"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || !out[0].Cached || len(out[0].Files) != 2 || out[0].Files[1].Path != "Collection/Second.2021.mp4" || out[0].Files[1].Index != 1 {
+		t.Fatalf("torrent release_files = %+v", out)
+	}
+	if deb.lastRelease.InfoHash != "abcdef" {
+		t.Fatalf("debrid saw hash %q", deb.lastRelease.InfoHash)
+	}
+
+	deb.files = nil // uncached now
+	out, err = kr.ResolveSources(ctx, "plug", core.SourceQuery{Kind: "release_files", InfoHash: "abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Cached || len(out[0].Files) != 0 {
+		t.Fatalf("uncached release_files = %+v, want cached=false no files", out)
+	}
+
+	out, err = kr.ResolveSources(ctx, "plug", core.SourceQuery{
+		Kind:      "release_files",
+		Candidate: &core.SourceCandidate{NZBURL: "https://idx.test/nzb/1", Indexer: "idx"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || len(out[0].Files) != 2 || out[0].Files[0].Path != "First.2020.mp4" || out[0].Files[0].Size != 100 {
+		t.Fatalf("nzb release_files = %+v", out)
 	}
 }

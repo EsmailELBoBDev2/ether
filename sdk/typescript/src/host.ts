@@ -259,6 +259,11 @@ export function decodeText(bytes: ArrayBuffer | ArrayBufferView): string {
   return out;
 }
 
+/** Decode a base64 string (for example a frontend request's bodyBase64) to bytes. */
+export function decodeBase64(text: string): Uint8Array {
+  return decodeData({ bodyBase64: text });
+}
+
 function decodeData(r: { bodyBase64: string }): Uint8Array {
   const text = r.bodyBase64;
   if (text.length === 0) return new Uint8Array(0);

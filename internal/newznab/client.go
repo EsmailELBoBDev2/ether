@@ -2,6 +2,8 @@ package newznab
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -148,10 +150,12 @@ type Client struct {
 	budgetWarnDay    map[string]string
 	budgetExhaustDay map[string]string
 
-	// Resolved identity the client presents to this indexer, refreshed from
-	// the policy on every config reload.
-	idMu sync.RWMutex
-	id   config.Identity
+	// Resolved identities the client presents to this indexer (search/caps
+	// and grabs), refreshed from the policy on every config reload.
+	idMu   sync.RWMutex
+	id     config.Identity
+	grabID config.Identity
+	policy config.ClientIdentity
 }
 
 // nzbFlight is one shared in-flight NZB fetch. done is closed after body
@@ -293,6 +297,10 @@ func (c *Client) UpdateConfig(cfg config.Indexer) {
 	changed := c.cfg.URL != cfg.URL || c.cfg.APIKey != cfg.APIKey
 	c.cfg = cfg
 	c.cfgMu.Unlock()
+	c.idMu.Lock()
+	c.id = c.policy.ResolveIndexer(cfg, false)
+	c.grabID = c.policy.ResolveIndexer(cfg, true)
+	c.idMu.Unlock()
 	if changed {
 		// A corrected URL or key deserves a fresh caps attempt, and the
 		// old endpoint's caps no longer describe this indexer.
@@ -315,20 +323,36 @@ func (c *Client) SetCacheTTL(d time.Duration) {
 	}
 }
 
-// SetClientIdentity resolves the owner's policy into the identity this
-// indexer presents, honoring the indexer's own user-agent override.
+// SetClientIdentity resolves the owner's policy into the identities this
+// indexer presents, honoring its per-indexer request identity.
 func (c *Client) SetClientIdentity(p config.ClientIdentity) {
 	ix := c.Config()
 	c.idMu.Lock()
 	defer c.idMu.Unlock()
-	c.id = p.Resolve(ix.UserAgent)
+	c.policy = p
+	c.id = p.ResolveIndexer(ix, false)
+	c.grabID = p.ResolveIndexer(ix, true)
 }
 
-// clientIdentity returns the resolved identity for this indexer.
+// clientIdentity returns the resolved search/caps identity for this indexer.
 func (c *Client) clientIdentity() config.Identity {
 	c.idMu.RLock()
 	defer c.idMu.RUnlock()
+	if len(c.id.Ordered) == 0 && c.id.UserAgent == "" {
+		// Built without SetClientIdentity (tests): resolve on the fly.
+		return config.ClientIdentity{}.ResolveIndexer(c.Config(), false)
+	}
 	return c.id
+}
+
+// grabIdentity returns the resolved NZB/torrent grab identity.
+func (c *Client) grabIdentity() config.Identity {
+	c.idMu.RLock()
+	defer c.idMu.RUnlock()
+	if len(c.grabID.Ordered) == 0 && c.grabID.UserAgent == "" {
+		return config.ClientIdentity{}.ResolveIndexer(c.Config(), true)
+	}
+	return c.grabID
 }
 
 // Name implements core.Indexer.
@@ -370,6 +394,10 @@ func zileanTorznabBase(base string) string {
 }
 
 func (c *Client) apiURL(params url.Values) (string, error) {
+	return c.apiURLFor(params, c.clientIdentity())
+}
+
+func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error) {
 	cfg := c.Config()
 	raw := strings.TrimSpace(cfg.URL)
 	if raw == "" {
@@ -393,7 +421,7 @@ func (c *Client) apiURL(params url.Values) (string, error) {
 		if cfg.APIKey != "" && q.Get("apikey") == "" {
 			q.Set("apikey", cfg.APIKey)
 		}
-		return base + "?" + q.Encode(), nil
+		return base + "?" + id.ShapeQuery(q), nil
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	if !strings.HasSuffix(u.Path, "/api") {
@@ -407,7 +435,7 @@ func (c *Client) apiURL(params url.Values) (string, error) {
 	if cfg.APIKey != "" && q.Get("apikey") == "" {
 		q.Set("apikey", cfg.APIKey)
 	}
-	u.RawQuery = q.Encode()
+	u.RawQuery = id.ShapeQuery(q)
 	return u.String(), nil
 }
 
@@ -420,8 +448,27 @@ func (c *Client) applyIdentity(req *http.Request, id config.Identity) {
 	if !safefetch.SameOrigin(c.Config().URL, req.URL.String()) {
 		return
 	}
-	for k, v := range id.Headers {
-		req.Header.Set(k, v)
+	ordered := id.Ordered
+	if len(ordered) == 0 {
+		for k, v := range id.Headers {
+			req.Header.Set(k, v)
+		}
+		return
+	}
+	for _, h := range ordered {
+		v := h.Value
+		switch {
+		case strings.EqualFold(h.Name, "traceparent") && v == "{traceparent}":
+			if tp := config.NewTraceparent(); tp != "" {
+				req.Header.Set(h.Name, tp)
+			}
+		case strings.EqualFold(h.Name, "Connection"):
+			if strings.EqualFold(v, "close") {
+				req.Close = true
+			}
+		default:
+			req.Header.Set(h.Name, v)
+		}
 	}
 }
 
@@ -429,7 +476,7 @@ func (c *Client) applyIdentity(req *http.Request, id config.Identity) {
 // indexer origin: net/http copies non-sensitive headers onto a redirect,
 // including one that leaves the origin.
 func (c *Client) send(req *http.Request, id config.Identity) (*http.Response, error) {
-	if len(id.Headers) == 0 {
+	if len(id.Headers) == 0 && len(id.Ordered) <= 1 {
 		return c.guarded.Do(req)
 	}
 	hc := *c.guarded
@@ -455,6 +502,33 @@ func (c *Client) dropForeignIdentityHeaders(next *http.Request, id config.Identi
 	}
 	for k := range id.Headers {
 		next.Header.Del(k)
+	}
+	for _, h := range id.Ordered {
+		if !strings.EqualFold(h.Name, "User-Agent") {
+			next.Header.Del(h.Name)
+		}
+	}
+}
+
+// decodeBody undoes a Content-Encoding the transport left in place because
+// the request identity set Accept-Encoding itself.
+func decodeBody(resp *http.Response) (io.ReadCloser, error) {
+	if resp.Uncompressed {
+		return resp.Body, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+		return resp.Body, nil
+	case "gzip":
+		zr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		return zr, nil
+	case "deflate":
+		return flate.NewReader(resp.Body), nil
+	default:
+		return nil, fmt.Errorf("newznab: indexer replied with Content-Encoding %q Ether cannot read; adjust the Accept-Encoding header in the request identity", resp.Header.Get("Content-Encoding"))
 	}
 }
 
@@ -504,7 +578,11 @@ func (c *Client) get(ctx context.Context, rawURL string, limit int64, id config.
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	decoded, derr := decodeBody(resp)
+	if derr != nil {
+		return nil, derr
+	}
+	body, err := io.ReadAll(io.LimitReader(decoded, limit+1))
 	if err != nil {
 		return nil, err
 	}
@@ -834,6 +912,8 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []ur
 			}
 			if season > 0 {
 				v.Set("season", strconv.Itoa(season))
+			} else if episode > 0 && c.clientIdentity().Shape.PadSeasonZero {
+				v.Set("season", "00")
 			}
 			if episode > 0 {
 				v.Set("ep", strconv.Itoa(episode))
@@ -1714,7 +1794,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		c.keepNZB(ctx, r, body)
 		return body, reserved, nil
 	}
-	id := c.clientIdentity()
+	id := c.grabIdentity()
 	// r.NZBURL comes from the indexer's feed, so it is untrusted data:
 	// c.get dials it through the safefetch guard. Only a URL that stays
 	// on the owner-configured indexer origin (relative links resolve
@@ -1725,7 +1805,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		if r.GUID == "" {
 			return nil, false, fmt.Errorf("newznab: release %q has no NZB URL or GUID: %w", r.Name, core.ErrReleaseRejected)
 		}
-		u, err := c.apiURL(url.Values{"t": {"get"}, "id": {r.GUID}})
+		u, err := c.apiURLFor(url.Values{"t": {"get"}, "id": {r.GUID}}, id)
 		if err != nil {
 			return nil, false, err
 		}

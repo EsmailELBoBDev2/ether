@@ -241,3 +241,60 @@ func TestChooseFileAndEpisodeNZBAcceptAliasNumberedFiles(t *testing.T) {
 		t.Fatalf("EpisodeNZB alias doc = %+v, err=%v", doc, err)
 	}
 }
+
+// A plugin's explicit file choice narrows an NZB to that file (and its
+// archive set), by document index or by name (#644).
+func TestEpisodeNZBExactFileSelection(t *testing.T) {
+	data := packNZB(
+		`&quot;Collection/First.2020.mp4&quot; yEnc (1/1)`,
+		`&quot;Second.2021.mp4&quot; yEnc (1/1)`,
+		`&quot;Second.2021.par2&quot; yEnc (1/1)`,
+		`&quot;Third.2022.part1.rar&quot; yEnc (1/1)`,
+		`&quot;Third.2022.part2.rar&quot; yEnc (1/1)`,
+	)
+	names := func(out []byte) []string {
+		doc, err := nzb.Parse(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, f := range doc.Files {
+			got = append(got, f.Name)
+		}
+		return got
+	}
+
+	out, err := EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, ExactFile: "Second.2021.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); len(got) != 2 || got[0] != "Second.2021.mp4" || got[1] != "Second.2021.par2" {
+		t.Fatalf("exact name kept %v", got)
+	}
+
+	idx := 3 // first RAR volume: the whole set is kept, plus the pack PAR2 index
+	out, err = EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, FileIndex: &idx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := names(out); len(got) != 3 || got[0] != "Second.2021.par2" || got[1] != "Third.2022.part1.rar" || got[2] != "Third.2022.part2.rar" {
+		t.Fatalf("fileIndex kept %v", got)
+	}
+
+	if _, err := EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, ExactFile: "Missing.mp4"}); err == nil {
+		t.Fatal("expected error for missing exact file")
+	}
+	bad := 9
+	if _, err := EpisodeNZB(data, &core.ReleaseTarget{AllowNonVideo: true, FileIndex: &bad}); err == nil {
+		t.Fatal("expected error for out-of-range fileIndex")
+	}
+	// Without AllowNonVideo the selectors stay video-target machinery and
+	// do not narrow on their own.
+	out, err = EpisodeNZB(data, &core.ReleaseTarget{ExactFile: "Second.2021.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(data) {
+		t.Fatal("non-plugin target unexpectedly narrowed the NZB")
+	}
+}

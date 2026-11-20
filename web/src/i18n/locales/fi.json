@@ -1259,7 +1259,6 @@
   },
   "m_03e87ee2b55e59": "Kaikki tyypit",
   "m_03e9675d097dd9": "Ota Ether käyttöön",
-  "m_03eb58dffdc05a": "Jätä tyhjäksi käyttääksesi Indeksoijat-sivun Asiakasidentiteetti-korttia.",
   "m_03ebeb5bd72d43": "Toisto",
   "m_03ec648bbbf58b": "Palveluntarjoajan vastaus kesti liian kauan. Yritä pian uudelleen.",
   "m_03ecc601d0d959": "Kaudet ja juhlapäivät",
@@ -5855,7 +5854,6 @@
     "one": "{used} / {count} API-pyynnöstä käytetty tänään",
     "other": "{used} / {count} API-pyynnöstä käytetty tänään"
   },
-  "m_1258cfc611553a": "Miksi tämä indeksoija näkee Etherin.",
   "m_125952708f2adf": "{service} (oletusalue)",
   "m_125a3da17154a8": "Indeksoijaa {indexer} ei enää haeta.",
   "m_125a82d7760449": "Ääni: {choice}",
@@ -8316,7 +8314,6 @@
   "m_1a11b4c96916aa": "Se poistetaan tältä palvelimelta asetuksineen ja tallennustiloineen. Sen luonnos Studiossa poistetaan myös.",
   "m_1a13bd3413b35f": "Liittymistokenit",
   "m_1a143a79f9f54f": "kbps. 0 käyttää palvelimen oletusta.",
-  "m_1a15dd27526d8a": "User agent (valinnainen)",
   "m_1a166bcd4dc588": "Valmis",
   "m_1a17cde9dd4908": "Luo sovellussalasana tililläsi kohdassa Yhdistä sovelluksia.",
   "m_1a19ae5f5f47d8": "Paluu tauolta",

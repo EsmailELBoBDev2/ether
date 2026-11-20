@@ -99,7 +99,7 @@ func (p *searchPreparation) arrived(batch []core.Release) {
 		p.first = time.Now()
 	}
 	if len(added) > 0 {
-		ranked, _, err := p.svc.rankCandidates(p.ctx, p.req, p.search, p.profile, added, nil, "")
+		ranked, _, err := p.svc.rankCandidatesLocal(p.ctx, p.req, p.search, p.profile, added, nil, "", false)
 		if err != nil {
 			return
 		}

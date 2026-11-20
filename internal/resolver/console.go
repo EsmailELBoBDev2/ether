@@ -712,7 +712,7 @@ func (s *Service) SeasonReleases(ctx context.Context, season *core.Title, episod
 			results = withRelease(results, pin.Release)
 		}
 		var trace Trace
-		cands, _, err := s.rankCandidates(ctx, req, sreqs[i], profile, results, &trace, pinID)
+		cands, _, err := s.rankCandidatesLocal(ctx, req, sreqs[i], profile, results, &trace, pinID, true)
 		if err != nil {
 			return nil, err
 		}

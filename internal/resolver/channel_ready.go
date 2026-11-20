@@ -62,7 +62,7 @@ func (s *Service) readyChannelFrom(ctx context.Context, req core.ResolveRequest,
 		return core.Release{}, false
 	}
 	profile := SelectProfileForTitle(s.qualityCfg(), req.Client, req.User, req.Title, s.libProfileForTitle(ctx, req.Title))
-	ranked, _, err := s.rankCandidates(ctx, req, sreq, profile, pool, nil, "")
+	ranked, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, pool, nil, "", false)
 	if err != nil || len(ranked) == 0 {
 		return core.Release{}, false
 	}

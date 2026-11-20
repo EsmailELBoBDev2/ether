@@ -5,16 +5,22 @@ import { formatDateTime, relativeTime } from "../../lib/format";
 import type { Catalogue } from "./shared";
 import { categoryTone, formatValue, iconForNode, RunStatusBadge } from "./shared";
 import type { ConditionTrace, Graph, Run, RunStep } from "./types";
-import { nodeKindLabel, operatorLabel } from "./types";
+import { nodeKindLabel, operatorLabel, outputHandlesForNode } from "./types";
 
 function TraceRows({ trace, catalogue }: { trace: ConditionTrace; catalogue?: Catalogue }) {
-  const labelFor = (field: string) => {
-    if (!catalogue) return field;
+  const schemaFor = (field: string) => {
+    if (!catalogue) return undefined;
     for (const ev of catalogue.events) {
       const hit = ev.fields.find((f) => f.name === field);
-      if (hit) return hit.label;
+      if (hit) return hit;
     }
-    return field;
+    return undefined;
+  };
+  const labelFor = (field: string) => schemaFor(field)?.label ?? field;
+  const valueLabel = (field: string, v: unknown) => {
+    const hit = schemaFor(field);
+    if (hit?.enum && typeof v === "string") return hit.enum.find((o) => o.value === v)?.label ?? v;
+    return formatValue(v);
   };
   return (
     <div className="space-y-1">
@@ -29,9 +35,9 @@ function TraceRows({ trace, catalogue }: { trace: ConditionTrace; catalogue?: Ca
           {r.matched ? <Check size={13} className="text-success" /> : <X size={13} className="text-danger" />}
           <span className="font-medium text-fg">{labelFor(r.field)}</span>
           <span className="text-fg-muted">{operatorLabel(r.op)}</span>
-          {r.expected !== undefined ? <span className="font-medium text-fg">{formatValue(r.expected)}</span> : null}
+          {r.expected !== undefined ? <span className="font-medium text-fg">{valueLabel(r.field, r.expected)}</span> : null}
           <span className="ml-auto text-fg-muted">
-            {t("was")} <span className="font-medium text-fg">{r.found ? formatValue(r.actual) : t("not set")}</span>
+            {t("was")} <span className="font-medium text-fg">{r.found ? valueLabel(r.field, r.actual) : t("not set")}</span>
           </span>
         </div>
       ))}
@@ -49,7 +55,7 @@ function TraceRows({ trace, catalogue }: { trace: ConditionTrace; catalogue?: Ca
 
 function OutputRows({ output }: { output?: Record<string, unknown> }) {
   if (!output) return null;
-  const entries = Object.entries(output).filter(([k]) => k !== "trace" && k !== "matched" && k !== "actionType");
+  const entries = Object.entries(output).filter(([k]) => k !== "trace" && k !== "matched" && k !== "actionType" && k !== "dryRun");
   if (entries.length === 0) return null;
   return (
     <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
@@ -98,7 +104,11 @@ export function StepTrace({ run, steps, graph, catalogue }: { run: Run; steps: R
                     <span className="ml-auto flex items-center gap-2">
                       {step.branch ? (
                         <Badge variant="outline" className="gap-0.5">
-                          <ChevronRight size={11} /> {step.branch}
+                          <ChevronRight size={11} />{" "}
+                          {(() => {
+                            const node = graph?.nodes.find((n) => n.id === step.nodeId);
+                            return node ? (outputHandlesForNode(node).find((h) => h.id === step.branch)?.label ?? step.branch) : step.branch;
+                          })()}
                         </Badge>
                       ) : null}
                       {step.status === "completed" ? <Check size={14} className="text-success" /> : step.status === "failed" ? <X size={14} className="text-danger" /> : step.status === "skipped" ? <Minus size={14} className="text-fg-subtle" /> : <span className="size-2 animate-pulse rounded-full bg-primary" />}

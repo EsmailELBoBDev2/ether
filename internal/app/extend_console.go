@@ -188,7 +188,7 @@ func consolePages() []consolePage {
 			},
 		}},
 		{id: "flows", label: T("Flows"), icon: "Workflow", order: 55, meta: extend.PageMeta{
-			Route: "/flows", NavGroup: extend.NavGroupServer, InNav: true, Mobile: true,
+			Route: "/flows", NavGroup: extend.NavGroupServer, InNav: true,
 			Keywords: T("automations automation workflows triggers actions events rules alerts"),
 			Sections: []extend.PageSection{
 				section("templates", T("Templates"), T("recipes starter tautulli kill stream newsletter")),

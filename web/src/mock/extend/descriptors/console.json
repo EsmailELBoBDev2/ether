@@ -708,8 +708,7 @@
     "order": 55,
     "meta": {
       "route": "/flows",
-      "page": "flows",
-      "mobile": true
+      "page": "flows"
     }
   },
   {
@@ -1478,7 +1477,6 @@
       "route": "/flows",
       "navGroup": "server",
       "inNav": true,
-      "mobile": true,
       "keywords": {
         "source": "automations automation workflows triggers actions events rules alerts"
       },

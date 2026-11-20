@@ -2,7 +2,6 @@ import { t } from "../../i18n";
 import { Badge, Button, EmptyState, confirmDialog, toast } from "@braedonsaunders/appkit-ui";
 import { BellRing, Pencil, Plus, Send, Smartphone, Trash2, Workflow } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Section } from "../../components/layout";
 import { apiFetch, errorMessage } from "../../lib/api";
 import { flowsApi } from "../../lib/flowsApi";
@@ -24,11 +23,13 @@ import {
 export function Channels({
   data,
   onChanged,
+  onFlowCreated,
 }: {
   data: NotificationsData;
   onChanged: () => Promise<void>;
+  /** Opens a flow materialized from a channel ("Customize as Flow"). */
+  onFlowCreated?: (flowId: string) => void;
 }) {
-  const navigate = useNavigate();
   const { descriptors } = useRegistry("channelKind", "eventKind");
   const [editing, setEditing] = useState<{ channel: Channel; isNew: boolean } | null>(null);
   const [open, setOpen] = useState(false);
@@ -140,7 +141,8 @@ export function Channels({
         body: JSON.stringify({ ...c, events: [] }),
       });
       toast.success(t("Flow created — “{channel}” now alerts through it", { channel: name }));
-      navigate(`/flows/edit/${flow.id}`);
+      if (onFlowCreated) onFlowCreated(flow.id);
+      else await onChanged();
     } catch (e) {
       if (flowId) await flowsApi.deleteFlow(flowId).catch(() => undefined);
       toast.error(errorMessage(e));

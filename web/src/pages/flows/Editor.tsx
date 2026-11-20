@@ -21,6 +21,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Field, NumberInput } from "../../components/fields";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t } from "../../i18n";
+import { useLocale } from "../../i18n/react";
 import { errorMessage } from "../../lib/api";
 import { flowsApi } from "../../lib/flowsApi";
 import { useAsync } from "../../lib/hooks";
@@ -66,6 +67,7 @@ const PALETTE_TRIGGERS: NodeKind[] = ["trigger.event", "trigger.schedule", "trig
 const PALETTE_LOGIC: NodeKind[] = ["condition", "logic.switch", "logic.delay", "logic.wait_event", "logic.window", "logic.dedupe"];
 
 export function FlowEditor({ flowId }: { flowId?: string }) {
+  const { locale } = useLocale();
   const navigate = useNavigate();
   const location = useLocation();
   const catalogueState = useCatalogue();
@@ -375,7 +377,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
   const fieldGroups = useMemo(() => {
     if (!catalogue || !selected) return [];
     return buildFieldGroups(graph, selected.id, catalogue.events, catalogue.actions, { filterableOnly: false });
-  }, [catalogue, graph, selected]);
+    // `locale` re-runs the memo so picker group labels follow a language switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogue, graph, selected, locale]);
   const sample = useMemo(() => {
     if (!catalogue || !selected) return undefined;
     return upstreamEventSchemas(graph, selected.id, catalogue.events)[0]?.sample;

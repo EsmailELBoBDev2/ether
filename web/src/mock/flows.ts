@@ -785,7 +785,7 @@ export function createFlowsMock() {
           const flowId = q.get("flowId") ?? "";
           const status = q.get("status") ?? "";
           const limit = Number(q.get("limit") ?? 50);
-          return json({ runs: runs.filter((r) => (!flowId || r.flowId === flowId) && (!status || r.status === status)).slice(0, limit) });
+          return json({ runs: runs.filter((r) => (!flowId || r.flowId === flowId) && (!status || r.status === status)).sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, limit) });
         }
         const run = runs.find((r) => r.id === seg[2]);
         if (method === "GET" && seg.length === 3) return run ? json({ run, steps: stepsByRun.get(run.id) ?? [] }) : notFound();
@@ -816,7 +816,7 @@ export function createFlowsMock() {
       const flow = flows.find((x) => x.id === decodeURIComponent(seg[1] ?? ""));
       if (!flow) return notFound();
       if (method === "GET" && seg.length === 2) return json({ flow });
-      if (method === "GET" && seg[2] === "runs") return json({ runs: runs.filter((r) => r.flowId === flow.id).slice(0, Number(q.get("limit") ?? 50)) });
+      if (method === "GET" && seg[2] === "runs") return json({ runs: runs.filter((r) => r.flowId === flow.id).sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, Number(q.get("limit") ?? 50)) });
       if (method === "PUT" && seg.length === 2) {
         const graph = b.graph as Graph;
         const v = validateFlowGraph(graph);

@@ -2,6 +2,7 @@ package nzb
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -486,5 +487,35 @@ func TestRejectsHostilePartCounts(t *testing.T) {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Fatal("accepted hostile sparse file")
 		}
+	}
+}
+
+func TestOldRARThreeDigitVolumes(t *testing.T) {
+	var files []*File
+	add := func(name string) {
+		files = append(files, &File{
+			Name:     name,
+			Info:     Classify(name),
+			Segments: []Segment{{Number: 1, Bytes: 1000, MessageID: name}},
+		})
+	}
+	add("The.Runner.2026.rar")
+	for i := 0; i <= 105; i++ {
+		if i < 100 {
+			add(fmt.Sprintf("The.Runner.2026.r%02d", i))
+		} else {
+			add(fmt.Sprintf("The.Runner.2026.r%03d", i))
+		}
+	}
+	sets := GroupSets(files)
+	if len(sets) != 1 {
+		t.Fatalf("got %d sets, want 1", len(sets))
+	}
+	s := sets[0]
+	if s.Kind != KindRAR || len(s.Volumes) != 107 || len(s.Missing) != 0 {
+		t.Fatalf("set = kind=%v vols=%d missing=%v", s.Kind, len(s.Volumes), s.Missing)
+	}
+	if s.Volumes[101].Name != "The.Runner.2026.r100" || s.Volumes[106].Name != "The.Runner.2026.r105" {
+		t.Fatalf("tail volumes = %q .. %q", s.Volumes[101].Name, s.Volumes[106].Name)
 	}
 }

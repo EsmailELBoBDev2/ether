@@ -83,6 +83,7 @@ func IsVideoExt(ext string) bool { return videoExts[strings.ToLower(ext)] }
 var (
 	rePartRAR  = regexp.MustCompile(`(?i)^(.*)\.part(\d{1,4})\.rar$`)
 	reOldRAR   = regexp.MustCompile(`(?i)^(.*)\.([r-y])(\d{2})$`)
+	reOldRAR3  = regexp.MustCompile(`(?i)^(.*)\.r(\d{3})$`)
 	rePlainRAR = regexp.MustCompile(`(?i)^(.*)\.rar$`)
 	re7zVol    = regexp.MustCompile(`(?i)^(.*)\.7z\.(\d{1,4})$`)
 	re7z       = regexp.MustCompile(`(?i)^(.*)\.7z$`)
@@ -129,6 +130,12 @@ func Classify(name string) FileInfo {
 		letter := int(m[2][0] - 'r')
 		info.Kind, info.Ext, info.SetName = KindRAR, "rar", m[1]
 		info.Volume = 1 + letter*100 + n
+		return info
+	case reOldRAR3.MatchString(lower):
+		m := reOldRAR3.FindStringSubmatch(lower)
+		n, _ := strconv.Atoi(m[2])
+		info.Kind, info.Ext, info.SetName = KindRAR, "rar", m[1]
+		info.Volume = 1 + n
 		return info
 	case re7zVol.MatchString(lower):
 		m := re7zVol.FindStringSubmatch(lower)
@@ -200,7 +207,7 @@ var (
 	reSegCounter     = regexp.MustCompile(`\(\s*(\d{1,6})\s*/\s*(\d{1,6})\s*\)\s*(?:\d+\s*)?$`)
 	reTrailingYEnc   = regexp.MustCompile(`(?i)\s*(?:-\s*)?(?:yenc)?\s*(?:\(\s*\d+\s*/\s*\d+\s*\))?\s*(?:\d+\s*)?$`)
 	reSizeNoise      = regexp.MustCompile(`(?i)\s+-?\s*\d+(?:[.,]\d+)?\s*[kmgt]i?b\b.*$`)
-	reBareName       = regexp.MustCompile(`([^\s"\[\]()/\\]+\.(?:part\d+\.rar|r\d{2}|7z\.\d{3}|zip\.\d{3}|z\d{2}|\d{3}|vol\d+[+-]\d+\.par2|[A-Za-z0-9]{2,4}))(?:\s|$)`)
+	reBareName       = regexp.MustCompile(`([^\s"\[\]()/\\]+\.(?:part\d+\.rar|r\d{2,3}|7z\.\d{3}|zip\.\d{3}|z\d{2}|\d{3}|vol\d+[+-]\d+\.par2|[A-Za-z0-9]{2,4}))(?:\s|$)`)
 )
 
 // NameFromSubject extracts the file name from a Usenet subject line, e.g.

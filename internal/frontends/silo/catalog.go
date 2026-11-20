@@ -262,6 +262,22 @@ func (i *instance) childItems(w http.ResponseWriter, r *http.Request) {
 			item["episode_count"] = t.LeafCount
 		}
 		i.paintCardArtwork(r, artwork[t.Key], item)
+		if t.Type == "episode" {
+			// The series page labels its next-up episode "Resume S4·E2" and
+			// draws watched/progress state from each episode's user_data.
+			st := states[t.Key]
+			data := map[string]any{"played": st.ViewCount > 0, "is_in_progress": st.ViewOffset > 0 && st.ViewCount == 0}
+			if st.ViewOffset > 0 {
+				data["position_seconds"] = st.ViewOffset.Seconds()
+			}
+			switch {
+			case st.Duration > 0:
+				data["duration_seconds"] = st.Duration.Seconds()
+			case t.Runtime > 0:
+				data["duration_seconds"] = t.Runtime.Seconds()
+			}
+			item["user_data"] = data
+		}
 		if t.Type == "episode" && (t.StillPath != "" || t.PosterPath != "" || t.BackdropPath != "") {
 			item["poster_is_episode_still"] = t.StillPath != "" && t.PosterPath == t.StillPath
 			item["backdrop_is_episode_still"] = t.StillPath != "" && t.BackdropPath == t.StillPath

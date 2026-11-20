@@ -44,6 +44,17 @@ func ValidCardShape(s string) bool {
 	}
 }
 
+// Library date display formats.
+const (
+	DateDisplayYear = "year"
+	DateDisplayDate = "date"
+)
+
+// ValidDateDisplay reports whether s is a valid library dateDisplay value.
+func ValidDateDisplay(s string) bool {
+	return s == "" || s == DateDisplayYear || s == DateDisplayDate
+}
+
 // Library tab kinds.
 const (
 	TabRecommended = "recommended"
@@ -51,6 +62,7 @@ const (
 	TabCollections = "collections"
 	TabPeople      = "people"
 	TabView        = "view"
+	TabLive        = "live"
 )
 
 // TabFilter narrows a library or view tab using the same rule model as
@@ -201,15 +213,30 @@ func (f *TabFilter) ToPolicy(mediaType MediaType) ([]LibraryExclusion, string) {
 type LibraryTab struct {
 	Key               string     `json:"key"`
 	Label             string     `json:"label"`
-	Kind              string     `json:"kind"`                        // recommended|library|collections|people|view
+	Kind              string     `json:"kind"`                        // recommended|library|collections|people|view|live
 	Facet             string     `json:"facet,omitempty"`             // collections or people facet
 	Order             string     `json:"order,omitempty"`             // count|name (collections or people)
 	Sort              string     `json:"sort,omitempty"`              // default sort (library, view, facet collections)
 	Direction         string     `json:"direction,omitempty"`         // asc|desc
-	Search            *bool      `json:"search,omitempty"`            // defaults true for library/collections/people/view, false for recommended
+	Card              string     `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Search            *bool      `json:"search,omitempty"`            // defaults true for library/collections/people/view/live, false for recommended
 	SearchPlaceholder string     `json:"searchPlaceholder,omitempty"` // optional custom search placeholder
 	Filters           *TabFilter `json:"filters,omitempty"`           // saved filter rules (view or library)
 	Hidden            bool       `json:"hidden,omitempty"`            // hidden from Vela while kept in editor
+}
+
+// EffectiveCard returns the tab's card shape ("landscape" by default for live
+// tabs, empty for other tab kinds).
+func (t LibraryTab) EffectiveCard() string {
+	if t.Kind != TabLive {
+		return ""
+	}
+	switch t.Card {
+	case CardPoster, CardLandscape, CardSquare:
+		return t.Card
+	default:
+		return CardLandscape
+	}
 }
 
 // EffectiveSearch reports whether in-tab search is enabled on t.

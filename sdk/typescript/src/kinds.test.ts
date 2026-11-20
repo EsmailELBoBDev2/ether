@@ -436,3 +436,45 @@ test("kinds.visible and kinds.browse enforce viewer token, batch cap, and policy
   assert.equal(seenRemote[1]!.headers[HEADER_VIEWER_TOKEN], "tok-r");
   assert.equal("viewerId" in seenRemote[1]!.body, false);
 });
+
+test("onLive dispatches /live and /live/resolve", async () => {
+  const app = plugin({
+    manifest: { id: "org.example.games", name: "Games", version: "1.0.0", ether: { protocol: 1, kind: "content" } },
+    routes: {},
+  });
+  let seenReq: unknown;
+  let seenResolve: unknown;
+  app.onLive("esports", {
+    live(req) {
+      seenReq = req;
+      return {
+        items: [{ id: "ch-1", title: "Finals", subtitle: "Main Stage", badge: "LIVE", viewers: 420, tags: ["Esports"] }],
+        filters: [{ key: "featured", label: "Featured" }],
+        nextCursor: "cur-2",
+      };
+    },
+    resolveLive(req) {
+      seenResolve = req;
+      return { url: "https://stream.example/live/ch-1/master.m3u8?token=once", mime: "application/vnd.apple.mpegurl", title: "Finals" };
+    },
+  });
+
+  const liveRes = await app.dispatch({
+    method: "POST",
+    path: "/ether/v1/kinds/esports/live",
+    body: JSON.stringify({ tab: "live", q: "finals", filter: "featured", limit: 10 }),
+  });
+  assert.equal(liveRes.status, 200);
+  assert.deepEqual(seenReq, { kind: "esports", tab: "live", q: "finals", filter: "featured", limit: 10 });
+  assert.equal((liveRes.body as { items: unknown[]; nextCursor: string }).items.length, 1);
+  assert.equal((liveRes.body as { nextCursor: string }).nextCursor, "cur-2");
+
+  const resolveRes = await app.dispatch({
+    method: "POST",
+    path: "/ether/v1/kinds/esports/live/resolve",
+    body: JSON.stringify({ id: "ch-1" }),
+  });
+  assert.equal(resolveRes.status, 200);
+  assert.deepEqual(seenResolve, { kind: "esports", id: "ch-1" });
+  assert.equal((resolveRes.body as { url: string }).url, "https://stream.example/live/ch-1/master.m3u8?token=once");
+});

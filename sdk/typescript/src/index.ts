@@ -105,6 +105,7 @@ export {
   kindsBrowse,
   type CatalogProvider,
   type FrontendAdapter,
+  type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
   type Matcher,

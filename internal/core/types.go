@@ -59,6 +59,7 @@ type Title struct {
 	ItemIndex     int       `json:"-"`
 	PluginAddedAt int64     `json:"-"`
 	LandscapeCard bool      `json:"-"`
+	DateDisplay   string    `json:"-"`
 
 	// Seasons and episodes.
 	ShowKey           RatingKey `json:"showKey,omitempty"`

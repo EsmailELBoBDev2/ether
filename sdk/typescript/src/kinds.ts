@@ -14,6 +14,10 @@ import type {
   KindExpandRequest,
   KindExpandResponse,
   KindItem,
+  KindLivePage,
+  KindLiveRequest,
+  KindLiveResolveRequest,
+  KindLiveResolveResponse,
   PendingReply,
   KindMatchRequest,
   KindMatchScore,
@@ -51,6 +55,11 @@ export interface KindMatcher<S = Record<string, unknown>> {
 
 /** Spec-name alias. */
 export type Matcher<S = Record<string, unknown>> = KindMatcher<S>;
+
+export interface KindLiveProvider<S = Record<string, unknown>> {
+  live(req: KindLiveRequest, ctx: PluginContext<S>): MaybePromise<KindLivePage>;
+  resolveLive(req: KindLiveResolveRequest, ctx: PluginContext<S>): MaybePromise<KindLiveResolveResponse>;
+}
 
 export interface FrontendAdapter<S = Record<string, unknown>> {
   handle(
@@ -158,12 +167,13 @@ export interface KindHandlers<S = Record<string, unknown>> {
   catalog: Map<string, CatalogProvider<S>>;
   resolve: Map<string, KindResolver<S>>;
   match: Map<string, KindMatcher<S>>;
+  live: Map<string, KindLiveProvider<S>>;
   frontend: Map<string, FrontendAdapter<S>>;
   setup?: SetupTester<S>;
 }
 
 export function createKindHandlers<S = Record<string, unknown>>(): KindHandlers<S> {
-  return { catalog: new Map(), resolve: new Map(), match: new Map(), frontend: new Map() };
+  return { catalog: new Map(), resolve: new Map(), match: new Map(), live: new Map(), frontend: new Map() };
 }
 
 function ok(body: unknown): RawResponse {
@@ -301,6 +311,21 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const result = { ...(await resolver.resolve({ ...body, kind } as unknown as KindResolveRequest, ctx)) };
     result.sources = result.sources ?? [];
     return ok(result);
+  }
+  if (tail.length === 1 && tail[0] === "live") {
+    const provider = handlers.live.get(kind);
+    if (!provider) return err(404, "not_found", `No live provider is registered for kind "${kind}".`);
+    const liveReq = { ...body, kind } as unknown as KindLiveRequest;
+    const result = { ...(await provider.live(liveReq, ctx)) };
+    const limit = Number(liveReq.limit || 50);
+    result.items = (result.items ?? []).slice(0, limit);
+    if (!result.nextCursor) delete result.nextCursor;
+    return ok(result);
+  }
+  if (tail.length === 2 && tail[0] === "live" && tail[1] === "resolve") {
+    const provider = handlers.live.get(kind);
+    if (!provider) return err(404, "not_found", `No live provider is registered for kind "${kind}".`);
+    return ok(await provider.resolveLive({ ...body, kind } as unknown as KindLiveResolveRequest, ctx));
   }
   if (tail.length === 1 && tail[0] === "match") {
     const matcher = handlers.match.get(kind);

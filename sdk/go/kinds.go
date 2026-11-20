@@ -276,6 +276,57 @@ type KindResolveResponse struct {
 	TTLSec    int              `json:"ttlSec,omitempty"`
 }
 
+// KindLiveRequest asks a kind live provider for currently live items on a
+// declared "live" library tab (POST /ether/v1/kinds/{kind}/live).
+type KindLiveRequest struct {
+	Kind   string `json:"-"`
+	Tab    string `json:"tab,omitempty"`
+	Q      string `json:"q,omitempty"`
+	Filter string `json:"filter,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// KindLiveItem is one live stream item returned by POST /ether/v1/kinds/{kind}/live.
+type KindLiveItem struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Subtitle string   `json:"subtitle,omitempty"`
+	Badge    string   `json:"badge,omitempty"`
+	Viewers  *int     `json:"viewers,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Thumb    string   `json:"thumb,omitempty"`
+	Live     *bool    `json:"live,omitempty"`
+}
+
+// KindLiveFilter is one optional filter option returned by a live tab.
+type KindLiveFilter struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// KindLivePage is returned by POST /ether/v1/kinds/{kind}/live.
+type KindLivePage struct {
+	Items      []KindLiveItem   `json:"items"`
+	Filters    []KindLiveFilter `json:"filters,omitempty"`
+	NextCursor string           `json:"nextCursor,omitempty"`
+}
+
+// KindLiveResolveRequest asks a kind live provider to resolve one live item ID
+// into a playable stream URL (POST /ether/v1/kinds/{kind}/live/resolve).
+type KindLiveResolveRequest struct {
+	Kind string `json:"-"`
+	ID   string `json:"id"`
+}
+
+// KindLiveResolveResponse is returned by POST /ether/v1/kinds/{kind}/live/resolve.
+type KindLiveResolveResponse struct {
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+	MIME    string            `json:"mime,omitempty"`
+	Title   string            `json:"title,omitempty"`
+}
+
 // SetupTestRequest is Ether's setup-step test call: the step key plus the
 // saved (non-secret) values of the step's fields.
 type SetupTestRequest struct {
@@ -329,6 +380,13 @@ type KindMatcher interface {
 	Match(ctx *Context, req KindMatchRequest) (KindMatchResponse, error)
 }
 
+// KindLiveProvider serves a kind's declared "live" library tab: listing
+// currently live streams and resolving an item ID into a playable stream URL.
+type KindLiveProvider interface {
+	Live(ctx *Context, req KindLiveRequest) (KindLivePage, error)
+	ResolveLive(ctx *Context, req KindLiveResolveRequest) (KindLiveResolveResponse, error)
+}
+
 // FrontendAdapter is a plugin-provided protocol surface (OPDS, Subsonic,
 // custom). Ether authenticates the viewer first and forwards the request
 // under /ether/v1/frontend/{key}; the handler sees X-Ether-Viewer headers
@@ -346,6 +404,7 @@ type kindHandlers struct {
 	catalog  map[string]CatalogProvider
 	resolve  map[string]KindResolver
 	match    map[string]KindMatcher
+	live     map[string]KindLiveProvider
 	frontend map[string]FrontendAdapter
 	setup    SetupTester
 }
@@ -354,7 +413,8 @@ func (p *Plugin) kinds() *kindHandlers {
 	if p.kindHandlers == nil {
 		p.kindHandlers = &kindHandlers{
 			catalog: map[string]CatalogProvider{}, resolve: map[string]KindResolver{},
-			match: map[string]KindMatcher{}, frontend: map[string]FrontendAdapter{},
+			match: map[string]KindMatcher{}, live: map[string]KindLiveProvider{},
+			frontend: map[string]FrontendAdapter{},
 		}
 	}
 	return p.kindHandlers
@@ -368,6 +428,9 @@ func (p *Plugin) OnResolve(kind string, r KindResolver) { p.kinds().resolve[kind
 
 // OnMatch registers the matcher for one declared kind.
 func (p *Plugin) OnMatch(kind string, m KindMatcher) { p.kinds().match[kind] = m }
+
+// OnLive registers the live-tab provider for one declared kind.
+func (p *Plugin) OnLive(kind string, l KindLiveProvider) { p.kinds().live[kind] = l }
 
 // OnFrontend registers one declared frontend adapter.
 func (p *Plugin) OnFrontend(key string, a FrontendAdapter) { p.kinds().frontend[key] = a }
@@ -621,6 +684,51 @@ func (p *Plugin) dispatchKind(pctx *Context, kind string, tail []string, req Raw
 		}
 		if res.Sources == nil {
 			res.Sources = []PlayableSource{}
+		}
+		return okJSON(res, http.StatusOK)
+	case len(tail) == 1 && tail[0] == "live":
+		var lp KindLiveProvider
+		if h != nil {
+			lp = h.live[kind]
+		}
+		if lp == nil {
+			return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No live provider is registered for kind %q.", kind))
+		}
+		var in KindLiveRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		if in.Limit <= 0 {
+			in.Limit = 50
+		}
+		page, err := lp.Live(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
+		}
+		if page.Items == nil {
+			page.Items = []KindLiveItem{}
+		}
+		if in.Limit > 0 && len(page.Items) > in.Limit {
+			page.Items = page.Items[:in.Limit]
+		}
+		return okJSON(page, http.StatusOK)
+	case len(tail) == 2 && tail[0] == "live" && tail[1] == "resolve":
+		var lp KindLiveProvider
+		if h != nil {
+			lp = h.live[kind]
+		}
+		if lp == nil {
+			return errorJSON(http.StatusNotFound, "not_found", fmt.Sprintf("No live provider is registered for kind %q.", kind))
+		}
+		var in KindLiveResolveRequest
+		if resp, ok := decode(&in); !ok {
+			return resp
+		}
+		in.Kind = kind
+		res, err := lp.ResolveLive(pctx, in)
+		if err != nil {
+			return toRouteErrorResponse(err)
 		}
 		return okJSON(res, http.StatusOK)
 	case len(tail) == 1 && tail[0] == "match":

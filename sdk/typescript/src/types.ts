@@ -358,12 +358,14 @@ export interface KindArt {
 export interface KindLibraryTab {
   key: string;
   label: string;
-  kind: "recommended" | "library" | "collections" | "people";
+  kind: "recommended" | "library" | "collections" | "people" | "live";
   /** Declared browse.facets entry (optional on collections; required people-type facet on people). */
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
-  /** Enables in-tab name filtering on "collections" and "people" tabs (default true). */
+  /** Card aspect ratio on "live" tabs (default "landscape"). */
+  card?: "poster" | "landscape" | "square";
+  /** Enables in-tab search on "collections", "people", and "live" tabs (default true). */
   search?: boolean;
   /** Optional localizable search input placeholder (at most 60 characters; "$t:" supported) when search is enabled. */
   searchPlaceholder?: string;
@@ -375,6 +377,8 @@ export interface KindLibraryDecl {
   name: string;
   icon?: string;
   card?: "poster" | "landscape" | "square";
+  /** How item release dates are rendered on cards and detail headers: "year" (default) or "date" (YYYY-MM-DD). */
+  dateDisplay?: "year" | "date";
   tabs?: KindLibraryTab[];
 }
 
@@ -601,6 +605,49 @@ export interface KindResolveResponse {
   job?: string;
   sources: PlayableSource[];
   ttlSec?: number;
+}
+
+export interface KindLiveRequest {
+  kind: string;
+  tab?: string;
+  q?: string;
+  filter?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface KindLiveItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  viewers?: number;
+  tags?: string[];
+  thumb?: string;
+  live?: boolean;
+}
+
+export interface KindLiveFilter {
+  key: string;
+  label: string;
+}
+
+export interface KindLivePage {
+  items: KindLiveItem[];
+  filters?: KindLiveFilter[];
+  nextCursor?: string;
+}
+
+export interface KindLiveResolveRequest {
+  kind: string;
+  id: string;
+}
+
+export interface KindLiveResolveResponse {
+  url: string;
+  headers?: Record<string, string>;
+  mime?: string;
+  title?: string;
 }
 
 export interface SetupTestRequest {

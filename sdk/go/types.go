@@ -295,21 +295,23 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string           `json:"name"`
-	Icon string           `json:"icon,omitempty"`
-	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
-	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+	Name        string           `json:"name"`
+	Icon        string           `json:"icon,omitempty"`
+	Card        string           `json:"card,omitempty"`        // poster (default)|landscape|square
+	DateDisplay string           `json:"dateDisplay,omitempty"` // year (default)|date
+	Tabs        []KindLibraryTab `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
 }
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
 	Key               string `json:"key"`
 	Label             string `json:"label"`
-	Kind              string `json:"kind"`                        // recommended|library|collections|people
+	Kind              string `json:"kind"`                        // recommended|library|collections|people|live
 	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
 	Order             string `json:"order,omitempty"`             // count|name (default count on collections, name on people)
-	Search            *bool  `json:"search,omitempty"`            // collections/people only; default true
-	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people when search is enabled)
+	Card              string `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Search            *bool  `json:"search,omitempty"`            // collections/people/live only; default true
+	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/live when search is enabled)
 	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
 	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
 }

@@ -135,8 +135,22 @@ func (s *Service) ValidateTabs(ctx context.Context, lib core.Library, tabs []cor
 		t.Kind = strings.ToLower(strings.TrimSpace(t.Kind))
 		switch t.Kind {
 		case core.TabRecommended, core.TabLibrary, core.TabCollections, core.TabPeople, core.TabView:
+		case core.TabLive:
+			if lib.Source != core.LibraryPlugin {
+				return nil, fmt.Errorf("%w: live tab %q is only supported on plugin libraries", ErrInvalid, t.Key)
+			}
 		default:
 			return nil, fmt.Errorf("%w: tab %q has unknown kind %q", ErrInvalid, t.Key, t.Kind)
+		}
+
+		// Card validation (live tabs only).
+		t.Card = strings.ToLower(strings.TrimSpace(t.Card))
+		if t.Kind == core.TabLive {
+			if !core.ValidCardShape(t.Card) {
+				return nil, fmt.Errorf("%w: live tab %q card must be poster, landscape or square", ErrInvalid, t.Key)
+			}
+		} else if t.Card != "" {
+			return nil, fmt.Errorf("%w: tab %q of kind %s cannot set card", ErrInvalid, t.Key, t.Kind)
 		}
 
 		// Facet validation.

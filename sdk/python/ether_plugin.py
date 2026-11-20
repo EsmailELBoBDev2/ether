@@ -1536,6 +1536,9 @@ class PluginInstance:
     def on_match(self, kind: str, matcher: Any) -> None:
         self._kind_match()[kind] = matcher
 
+    def on_live(self, kind: str, provider: Any) -> None:
+        self._kind_live()[kind] = provider
+
     def on_frontend(self, key: str, adapter: Any) -> None:
         self._kind_frontend()[key] = adapter
 
@@ -1545,6 +1548,7 @@ class PluginInstance:
     onCatalog = on_catalog
     onResolve = on_resolve
     onMatch = on_match
+    onLive = on_live
     onFrontend = on_frontend
     onSetupTest = on_setup_test
 
@@ -1556,6 +1560,9 @@ class PluginInstance:
 
     def _kind_match(self) -> Dict[str, Any]:
         return self.__dict__.setdefault("_kind_matchers", {})
+
+    def _kind_live(self) -> Dict[str, Any]:
+        return self.__dict__.setdefault("_kind_live_providers", {})
 
     def _kind_frontend(self) -> Dict[str, Any]:
         return self.__dict__.setdefault("_frontend_adapters", {})
@@ -1668,6 +1675,27 @@ class PluginInstance:
             result = dict(resolver.resolve(ctx, body) or {})
             result.setdefault("sources", [])
             return _ok_response(result)
+        if tail == ["live"]:
+            provider = self._kind_live().get(kind)
+            if provider is None:
+                return _error_response(404, "not_found", f'No live provider is registered for kind "{kind}".')
+            result = dict(provider.live(ctx, body) or {})
+            limit = int(body.get("limit") or 50)
+            items = list(result.get("items") or [])
+            if len(items) > limit:
+                items = items[:limit]
+            result["items"] = items
+            if not result.get("nextCursor"):
+                result.pop("nextCursor", None)
+            return _ok_response(result)
+        if tail == ["live", "resolve"]:
+            provider = self._kind_live().get(kind)
+            if provider is None:
+                return _error_response(404, "not_found", f'No live provider is registered for kind "{kind}".')
+            resolve_fn = getattr(provider, "resolve_live", None) or getattr(provider, "resolveLive", None)
+            if not callable(resolve_fn):
+                return _error_response(501, "not_implemented", "This live provider does not resolve live streams.")
+            return _ok_response(dict(resolve_fn(ctx, body) or {}))
         if tail == ["match"]:
             matcher = self._kind_match().get(kind)
             if matcher is None:
@@ -3046,6 +3074,17 @@ class KindMatcher:
     """Score source candidates for one item (spec: matches, best first)."""
 
     def match(self, ctx: PluginContext, req: Dict[str, Any]) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class KindLiveProvider:
+    """Serve a kind's declared "live" tab: list currently live streams and
+    resolve a live item ID into a playable stream URL."""
+
+    def live(self, ctx: PluginContext, req: Dict[str, Any]) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def resolve_live(self, ctx: PluginContext, req: Dict[str, Any]) -> Dict[str, Any]:
         raise NotImplementedError
 
 

@@ -170,11 +170,12 @@ func agentFor(t frontend.MediaType) (agent, scanner string) {
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	u := FromContext(r.Context()).User
 	now := s.now().Unix()
+	includePrefs := r.URL.Query().Get("includePreferences") == "1"
 	dirs := []model.ProviderDirectory{{HubKey: "/hubs", Title: "Home"}} // discovery only: no browse key
 	for _, sec := range s.userSections(u) {
 		agent, scanner := agentFor(sec.Type)
 		id := strconv.Itoa(sec.ID)
-		dirs = append(dirs, model.ProviderDirectory{
+		dir := model.ProviderDirectory{
 			Agent:      agent,
 			Language:   sec.Language,
 			Refreshing: model.Ptr(false),
@@ -188,7 +189,13 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt:  now,
 			ScannedAt:  now,
 			Pivot:      sectionPivots(sec),
-		})
+		}
+		if includePrefs {
+			// PMS repeats the section's /prefs settings here; Roku crashes
+			// opening a library whose entry has none (#652).
+			dir.Preferences = &model.TrackPreferences{Setting: sectionPrefs(sec)}
+		}
+		dirs = append(dirs, dir)
 	}
 	dirs = append(dirs, model.ProviderDirectory{
 		ID: "playlists", Key: "/playlists", Type: "playlist", Title: "Playlists",

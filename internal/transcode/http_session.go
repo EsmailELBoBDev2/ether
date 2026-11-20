@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,6 +187,26 @@ func (s *httpSession) busy() bool {
 	return s.proc != nil
 }
 
+// rangeStartsAfterZero reports whether a Range header asks for bytes
+// after the start of the body (including suffix ranges). Unparsable
+// headers are ignored, as HTTP allows.
+func rangeStartsAfterZero(rng string) bool {
+	spec, ok := strings.CutPrefix(strings.TrimSpace(rng), "bytes=")
+	if !ok {
+		return false
+	}
+	first, _, _ := strings.Cut(spec, ",")
+	start, _, ok := strings.Cut(strings.TrimSpace(first), "-")
+	if !ok {
+		return false
+	}
+	if start == "" {
+		return true // suffix range: the last N bytes of a stream with no end yet
+	}
+	n, err := strconv.ParseInt(start, 10, 64)
+	return err == nil && n > 0
+}
+
 func (s *httpSession) writeHTTPHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "video/x-matroska")
@@ -204,7 +226,13 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.lastAccess = time.Now()
 	// A byte range cannot resume an encoder's Matroska output: a new encoder
 	// writes a different header and its offsets do not describe the old stream.
-	if s.forceCPU && r.Header.Get("Range") != "" {
+	// Roku retries a stalled progressive stream with a nonzero Range (#650):
+	// answering 200 with a restarted encode corrupts its demuxer, and the
+	// restart also supersedes (kills) the connection it is still playing,
+	// whose clean EOF then looks like the end of the title. Refuse the
+	// range without touching the running encoder; a range from byte 0 is
+	// just a fresh GET and is served normally.
+	if rng := r.Header.Get("Range"); rng != "" && (s.forceCPU || rangeStartsAfterZero(rng)) {
 		s.mu.Unlock()
 		http.Error(w, "progressive transcode does not support byte ranges", http.StatusRequestedRangeNotSatisfiable)
 		return
@@ -319,7 +347,7 @@ func (s *httpSession) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientWriteFailed := false
 		if n > 0 {
 			s.writeHTTPHeaders(w)
-			fw := &httpWriteTracker{writer: flushWriter{ResponseWriter: w, s: s, timeout: s.m.opts.stallTimeout}}
+			fw := &httpWriteTracker{writer: flushWriter{ResponseWriter: w, s: s, timeout: s.m.opts.httpWriteTimeout}}
 			if spec.usesHW() {
 				copyErr = copyHTTPMatroska(fw, io.MultiReader(bytes.NewReader(buf[:n]), pr))
 			} else {
@@ -450,7 +478,7 @@ func (w flushWriter) Write(p []byte) (int, error) {
 	rc := http.NewResponseController(w.ResponseWriter)
 	timeout := w.timeout
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = core.PausedSessionRetention
 	}
 	arm := func() error {
 		err := rc.SetWriteDeadline(time.Now().Add(timeout))

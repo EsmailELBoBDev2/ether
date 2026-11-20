@@ -163,7 +163,11 @@ type ProviderDirectory struct {
 	Icon       string `plex:"icon,omitempty"`
 	Context    string `plex:"context,omitempty"`
 
-	Pivot []Pivot `plex:"Pivot"`
+	// Preferences is present only when the client asked for
+	// includePreferences=1, as on PMS; Plex for Roku reads
+	// Preferences.Setting unguarded when opening a library (#652).
+	Preferences *TrackPreferences `plex:"Preferences"`
+	Pivot       []Pivot           `plex:"Pivot"`
 }
 
 // XMLElementName implements ElementNamer.

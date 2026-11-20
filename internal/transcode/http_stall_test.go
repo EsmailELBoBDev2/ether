@@ -24,6 +24,7 @@ func TestHTTPStallRetiresSocket(t *testing.T) {
 			fr := newFakeRunner()
 			m := newTestManager(t, fr, config.Transcode{})
 			m.opts.stallTimeout = 250 * time.Millisecond
+			m.opts.httpWriteTimeout = 250 * time.Millisecond
 			m.runner = retirementRunner{Runner: fr, start: func(c Command) (Process, error) {
 				p := &fakeProc{done: make(chan struct{}), kill: make(chan struct{})}
 				go func() {

@@ -294,6 +294,7 @@ globalThis.ether = (() => {
                hashCancel: (id) => call("folders.hashCancel", [id]),
                hash: (root, path) => call("folders.hash", [root, path]),
                stat: (root, path) => call("folders.stat", [root, path]) },
+    events: { publish: (key, payload, correlation) => call("events.publish", correlation == null ? [key, payload == null ? {} : payload] : [key, payload == null ? {} : payload, correlation]) },
     notify: { owner: (text) => call("notify.owner", [text]) },
   };
   return ether;

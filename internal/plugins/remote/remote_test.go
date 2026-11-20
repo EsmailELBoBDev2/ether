@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins/remotetest"
 	"io"
 	"net"
@@ -1026,6 +1027,10 @@ func (f *fakeHost) Settings(_ context.Context, pluginID string) (map[string]any,
 
 func (f *fakeHost) StreamURL(_ context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
 	return fmt.Sprintf("/ether/v1/kind-media/%s-%d-%s", pluginID, viewerID, itemRef), nil
+}
+
+func (f *fakeHost) PublishEvent(_ context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error {
+	return nil
 }
 
 func (f *fakeHost) NotifyOwner(_ context.Context, pluginID, text string) error {

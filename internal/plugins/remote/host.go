@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
 	"github.com/braedonsaunders/ether/internal/httpjson"
 	"github.com/braedonsaunders/ether/internal/plugins"
@@ -60,6 +61,8 @@ type Host interface {
 	StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)
 
 	Settings(ctx context.Context, pluginID string) (map[string]any, error)
+
+	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
@@ -134,6 +137,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
+	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -613,6 +617,28 @@ func (h *HostHandler) runtimeLimits(w http.ResponseWriter, r *http.Request) {
 	h.writeRaw(w, out, err)
 }
 
+func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key         string             `json:"key"`
+		Payload     json.RawMessage    `json:"payload"`
+		Correlation events.Correlation `json:"correlation"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Key) == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "key is required")
+		return
+	}
+	if len(body.Payload) == 0 || string(body.Payload) == "null" {
+		body.Payload = json.RawMessage(`{}`)
+	}
+	if !h.finishErr(w, h.host.PublishEvent(r.Context(), pluginIDOf(r), body.Key, body.Payload, body.Correlation)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (h *HostHandler) notify(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text string `json:"text"`
@@ -706,6 +732,8 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 		writeHostError(w, http.StatusRequestEntityTooLarge, "too_large", "Request body is too large")
 	case errors.Is(err, ErrInvalid):
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
+	case errors.Is(err, ErrRateLimited):
+		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
 	case errors.Is(err, ErrUnavailable):
 		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service is not available")
 	case errors.Is(err, ErrUnauthorized):

@@ -28,6 +28,7 @@ export {
   PosterBadgeQuotaTitles,
   MAX_KIND_VISIBLE_IDS,
   HEADER_VIEWER_TOKEN,
+  HEADER_IDEMPOTENCY_KEY,
   type BadgeEntry,
   type BadgeTitleRef,
   type BadgeUsage,
@@ -96,6 +97,7 @@ export {
   type MockHostClient,
   type MockHostState,
   type RecordedLog,
+  type RecordedPublishedEvent,
   type TestHarness,
 } from "./testing.ts";
 export {

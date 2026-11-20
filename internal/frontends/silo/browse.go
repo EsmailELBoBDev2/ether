@@ -107,6 +107,42 @@ func (i *instance) rememberedLiveCard(channelGUID string) (liveChannelCardMeta, 
 	return meta, ok
 }
 
+// paintLiveCardArtwork gives On Now cards their channel's artwork, the same
+// grant the channel's detail page issues. Without it every live card was a
+// blank tile with a TV glyph.
+func (i *instance) paintLiveCardArtwork(r *http.Request, v *frontend.Viewer, credential string, items []any) {
+	if i.host.ImageGrants == nil || i.host.LiveTV == nil {
+		return
+	}
+	prefix := ""
+	if r.Context().Value(sharedPrefix{}) != nil {
+		prefix = "/silo"
+	}
+	for _, raw := range items {
+		card, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		guid, _ := card["content_id"].(string)
+		ch, err := i.host.LiveTV.ResolveChannelGUID(r.Context(), v, guid)
+		if err != nil || ch.ID == "" {
+			continue
+		}
+		for _, img := range ch.Images {
+			if img.Path == "" {
+				continue
+			}
+			grant, err := i.host.ImageGrants.Issue(r.Context(), frontend.ImageGrantRequest{Credential: credential, Device: device(r), Channel: ch.ID, Image: img})
+			if err != nil || grant == "" {
+				continue
+			}
+			path := prefix + "/api/v2/images/" + grant
+			card["backdrop_url"], card["poster_url"] = path, path
+			break
+		}
+	}
+}
+
 func (i *instance) buildLiveChannelCards(row frontend.Row) []any {
 	items := make([]any, 0, len(row.Entries))
 	for _, entry := range row.Entries {
@@ -367,6 +403,7 @@ func (i *instance) sections(w http.ResponseWriter, r *http.Request) {
 		var e error
 		if row.Purpose == frontend.RowLive {
 			items = i.buildLiveChannelCards(row)
+			i.paintLiveCardArtwork(r, v, credential, items)
 			if len(items) == 0 {
 				continue
 			}

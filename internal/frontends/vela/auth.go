@@ -57,6 +57,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Username, Password, RefreshToken, Code, Browser, ExistingToken, UserCode, DeviceCode, Secret, TargetOrigin string
 		PlexToken                                                                                                  string `json:"plexToken"`
+		SelectProfile                                                                                              bool   `json:"selectProfile"`
+		SelectionToken                                                                                             string `json:"selectionToken"`
+		ProfileID                                                                                                  string `json:"profileId"`
+		PIN                                                                                                        string `json:"pin"`
 		Device                                                                                                     device `json:"device"`
 	}
 	if body(r, &b) != nil {
@@ -99,12 +103,20 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		i.tokens(w, r, a, "", d)
 	case "plex":
+		if b.SelectProfile {
+			i.plexSignInSelect(w, r, b.PlexToken, d)
+			return
+		}
 		a, e := i.host.Identity.SignInWithPlex(ctx, b.PlexToken, d)
 		if e != nil {
 			plexAuthFail(w, e)
 			return
 		}
 		i.tokens(w, r, a, "", d)
+	case "plex/profile":
+		i.plexProfileComplete(w, r, b.SelectionToken, b.ProfileID, b.PIN, d)
+	case "plex/profiles/challenge":
+		i.plexProfileChallenge(w, r, d)
 	case "refresh":
 		a, f, e := i.host.Identity.Refresh(ctx, b.RefreshToken, d)
 		if e != nil {

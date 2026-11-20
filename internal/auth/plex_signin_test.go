@@ -127,6 +127,25 @@ func TestAuthenticatePlexAccount(t *testing.T) {
 	}
 }
 
+func TestActivePlexUserByPlexID(t *testing.T) {
+	s, _, _ := setup(t)
+	if u := s.ActivePlexUserByPlexID(42); u == nil || !u.IsOwner {
+		t.Fatalf("owner lookup = %+v", u)
+	}
+	if u := s.ActivePlexUserByPlexID(100); u == nil || u.Username != "alice" {
+		t.Fatalf("alice lookup = %+v", u)
+	}
+	// Pending friend (102), unknown accounts and non-ids have no active viewer.
+	for _, id := range []int64{102, 999, 0, -1} {
+		if u := s.ActivePlexUserByPlexID(id); u != nil {
+			t.Fatalf("lookup %d = %+v, want nil", id, u)
+		}
+	}
+	if got := s.OwnerPlexID(); got != 42 {
+		t.Fatalf("OwnerPlexID = %d, want 42", got)
+	}
+}
+
 func TestAuthenticatePlexAccountRejectsUnconfiguredServer(t *testing.T) {
 	ctx := context.Background()
 	db := openDB(t)

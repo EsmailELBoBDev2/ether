@@ -17,6 +17,7 @@ const VALID_KINDS = new Set<LibraryTabKind>([
   "collections",
   "people",
   "view",
+  "live",
 ]);
 
 const CATALOGUE_SORTS = [
@@ -411,6 +412,9 @@ export function createLibraryTabsMock({
       if (!VALID_KINDS.has(kind)) {
         return { ok: false, message: `invalid: tab "${key}" has unknown kind "${kind}"` };
       }
+      if (kind === "live" && !isPlugin) {
+        return { ok: false, message: `invalid: tab "${key}" of kind live is only supported on plugin libraries` };
+      }
 
       const facet = String(raw.facet ?? "").trim();
       if (kind === "collections") {
@@ -494,6 +498,9 @@ export function createLibraryTabsMock({
         if (raw.search !== undefined) tab.search = Boolean(raw.search);
         const ph = String(raw.searchPlaceholder ?? "").trim();
         if (ph) tab.searchPlaceholder = ph;
+      }
+      if (kind === "live") {
+        tab.card = raw.card === "poster" || raw.card === "square" ? raw.card : "landscape";
       }
       if (raw.filters && raw.filters.rules?.length) {
         tab.filters = structuredClone(raw.filters);
@@ -827,6 +834,17 @@ export function createLibraryTabsMock({
             itemCount: b.count,
           })),
           more: buckets.length > limit,
+        },
+      };
+    }
+
+    if (tab.kind === "live") {
+      return {
+        ok: true,
+        data: {
+          kind: "live",
+          card: tab.card ?? "landscape",
+          scopeNote: SCOPE_NOTE,
         },
       };
     }

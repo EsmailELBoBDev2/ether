@@ -216,7 +216,7 @@ export function LibraryPage() {
         ) : tab === "tabs" ? (
           <div className="app-scroll min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-4xl space-y-5 px-4 pb-5 pt-4 sm:px-5 lg:px-7">
-              <LibraryTabsSection library={lib} />
+              <LibraryTabsSection library={lib} onChanged={() => void library.reload()} />
             </div>
           </div>
         ) : (

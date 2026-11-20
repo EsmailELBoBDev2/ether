@@ -301,6 +301,14 @@ type session struct {
 	closed            bool
 	registered        bool
 
+	// Marker enter/exit tracking for playback.marker.* events (guarded by mu).
+	lastProgressAt    time.Time
+	markersLoaded     bool
+	markersCache      []MarkerSpan
+	activeMarkerKind  string
+	activeMarkerStart int64
+	activeMarkerEnd   int64
+
 	// Speed-coupled down-failover state (guarded by speedMu).
 	speedMu           sync.Mutex
 	speed             speedTracker

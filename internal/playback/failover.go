@@ -1679,6 +1679,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			Message: "Switched to lower-bitrate release " + releaseLabel(g.res.Release),
 			Detail:  timelineOpenedDetail(newInfo, g.res.Release, g.src.Size()),
 		})
+		m.emitSourceFailover(s, cur, g, true, fo.reason)
 		m.emitEvent("downfailover", s, nil)
 	} else {
 		detail := timelineOpenedDetail(newInfo, g.res.Release, g.src.Size())
@@ -1695,6 +1696,7 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 			Message: "Switched to " + releaseLabel(g.res.Release),
 			Detail:  detail,
 		})
+		m.emitSourceFailover(s, cur, g, false, fo.reason)
 		m.emitEvent("failover", s, nil)
 	}
 	log.Info("failed over", "release", g.res.Release.Name, "size", g.src.Size(), "duration", newInfo.Duration, "remuxSwitch", remuxSwitch)

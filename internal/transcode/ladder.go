@@ -178,7 +178,7 @@ func buildRungs(info core.MediaInfo, primary core.Decision, adapt adaptiveSettin
 		if ph > 0 && step.height*100 > ph*rungMaxHeightPercent {
 			continue
 		}
-		w, h := fitRungBox(v.Width, v.Height, step.height)
+		w, h := fitRungBox(v, step.height)
 		// Advertise what the rung really sends: its video never drops
 		// below the encoder floor, so copied lossless or surround audio can
 		// make a "lower" rung no cheaper than the one above it.
@@ -237,12 +237,13 @@ func copyStreamPeakKbps(info core.MediaInfo, streamAvgKbps int) int {
 	return peak
 }
 
-// fitRungBox fits a w x h picture into the 16:9 box of a ladder class
+// fitRungBox fits v's display picture into the 16:9 box of a ladder class
 // (1280x720 for 720p), never upscaling, so wide scope pictures shrink by
 // width as release naming classes them. The size is what the encoder
-// makes of the returned height (outputSize), so the advertised RESOLUTION
-// matches the rung's bytes.
-func fitRungBox(w, h, boxH int) (int, int) {
+// makes of the returned height (displayOutputSize), so the advertised
+// RESOLUTION matches the rung's bytes.
+func fitRungBox(v *core.StreamInfo, boxH int) (int, int) {
+	w, h := displaySize(v)
 	if w > 0 && h > 0 && w*9 > h*16 { // wider than 16:9: width bound
 		boxH = even(h * boxH * 16 / (w * 9))
 	}

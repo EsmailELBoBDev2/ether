@@ -234,9 +234,15 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		s.reportBrokerTimeline(ctx, pr, key, offset, duration, "stopped", sanitizeSessionID(q.Get("session")))
 	}
 	for _, id := range tids {
-		if e, ok := s.transcodes.get(id); ok && s.playbackOwners.Stale(user.ID, pr.ClientID, key, e.playbackID) {
-			s.cleanSupersededEncoders(ctx, user.ID, pr.ClientID, key, e.playbackID)
-			continue
+		if e, ok := s.transcodes.get(id); ok {
+			if s.playbackOwners.Stale(user.ID, pr.ClientID, key, e.playbackID) {
+				s.cleanSupersededEncoders(ctx, user.ID, pr.ClientID, key, e.playbackID)
+				continue
+			}
+			if state != "stopped" && e.started && !s.transcodeEntryLive(e) {
+				s.dropTranscode(id)
+				continue
+			}
 		}
 		s.transcodes.touch(id, s.now())
 		frontend.NotifyTranscodeActivity(s.transcoder(), id, state)
@@ -295,7 +301,11 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		armed := s.decisionArmed(pr, 0)
 		var changed bool
 		e := s.sessions.update(tid, func(e *playEntry) {
-			changed = fresh || e.key != key || e.state != state
+			nextTranscodeID := ""
+			if te, ok := s.activeTranscodeForClient(user.ID, pr.ClientID, pr.SessionID, key, e.transcodeID); ok {
+				nextTranscodeID = te.id
+			}
+			changed = fresh || e.key != key || e.state != state || e.transcodeID != nextTranscodeID
 			if e.key != key {
 				e.startedAt = s.now()
 			}
@@ -308,10 +318,7 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			e.offset = offset
 			e.duration = duration
 			e.playQueueItemID = pqItem
-			e.transcodeID = ""
-			if len(tids) > 0 {
-				e.transcodeID = tids[0]
-			}
+			e.transcodeID = nextTranscodeID
 			e.updatedAt = s.now()
 		})
 		s.notifyPlaying(e, state)
@@ -577,10 +584,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			sessionTitle = t
 			md = s.metadata(ctx, viewer, t, renderOpts{media: true, session: true})
 		}
-		if e.node == "" && e.transcodeID != "" && sessionTitle != nil {
-			if te, ok := s.transcodes.get(e.transcodeID); ok && te.started {
-				if m, ok := s.sessionTranscodeMedia(sessionTitle, te, viewer); ok {
-					md.Media = []model.Media{m}
+		var activeTE *transcodeEntry
+		if e.node == "" {
+			if te, ok := s.activeTranscodeForSession(e); ok {
+				activeTE = te
+				if sessionTitle != nil {
+					if m, ok := s.sessionTranscodeMedia(sessionTitle, te, viewer); ok {
+						md.Media = []model.Media{m}
+					}
 				}
 			}
 		}
@@ -625,13 +636,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		if e.node != "" {
 			md.TranscodeSession = e.remoteTS
-		} else if e.transcodeID != "" {
-			if te, ok := s.transcodes.get(e.transcodeID); ok {
-				ts := s.servedTranscodeSessionModel(te)
-				md.TranscodeSession = &ts
-			}
+		} else if activeTE != nil {
+			ts := s.servedTranscodeSessionModel(activeTE)
+			md.TranscodeSession = &ts
 		}
-		md.Session.Bandwidth = s.sessionBandwidth(e, md)
+		md.Session.Bandwidth = s.sessionBandwidth(e, activeTE, md)
 		sessionClient := e.client
 		sessionClient.User = &e.user
 		if !e.decisionSeen && !s.decisionArmed(&sessionClient, 0) {

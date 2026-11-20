@@ -488,6 +488,14 @@ func (s *Server) notifyPlaying(e playEntry, state string) {
 	if state == "" {
 		state = e.state
 	}
+	transcodeID := ""
+	if state != "stopped" {
+		if te, ok := s.activeTranscodeForSession(e); ok {
+			transcodeID = te.id
+		} else if e.node != "" {
+			transcodeID = e.transcodeID
+		}
+	}
 	s.publishNotification(model.NotificationContainer{
 		Type: "playing",
 		Size: 1,
@@ -501,7 +509,7 @@ func (s *Server) notifyPlaying(e playEntry, state string) {
 			ViewOffset:       ms(e.offset),
 			PlayQueueItemID:  e.playQueueItemID,
 			State:            state,
-			TranscodeSession: e.transcodeID,
+			TranscodeSession: transcodeID,
 		}},
 	}, e.user.ID)
 }

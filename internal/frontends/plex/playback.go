@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/plexparts"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -1339,7 +1340,7 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 	if dec.Kind == frontend.DecisionDirectPlay {
 		return directPlayMedia(m, streams, selectedOnly, !allSubtitles && selectedOnly, p.subtitles)
 	}
-	applyTranscodeMedia(&m, dec, p.protocol)
+	applyTranscodeMedia(&m, dec, p.protocol, selectedAudioStream(info, dec))
 	var kept []model.Stream
 	for _, st := range streams {
 		binding, rerr := s.resolveIssuedStream(context.Background(), u, p.caps.ClientID, st.ID)
@@ -1355,6 +1356,22 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 		}
 	}
 	part.Stream = kept
+	if !dec.VideoCopy && dec.BitrateKbps > 0 {
+		audioBitrate := 0
+		for _, st := range kept {
+			if st.StreamType == 2 && st.Decision != "" && st.Bitrate > 0 {
+				audioBitrate = st.Bitrate
+				break
+			}
+		}
+		if audioBitrate > 0 && dec.BitrateKbps > audioBitrate {
+			for i := range kept {
+				if kept[i].StreamType == 1 && kept[i].Decision == "transcode" {
+					kept[i].Bitrate = dec.BitrateKbps - audioBitrate
+				}
+			}
+		}
+	}
 	if p.protocol == frontend.ProtocolDASH {
 		dashDecisionMedia(&m)
 	}
@@ -1415,7 +1432,7 @@ func textSidecarCodec(codec string) bool {
 }
 
 // applyTranscodeMedia describes the output container and media dimensions.
-func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string) {
+func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string, srcAudio *frontend.StreamInfo) {
 	part := &m.Part[0]
 	// Describe the actual HLS segment container so native MDE does not see
 	// HEVC paired with the MPEG-TS container it cannot use.
@@ -1445,6 +1462,7 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 	part.Size = 0
 	m.OptimizedForStreaming, m.Has64bitOffsets = nil, nil
 	part.OptimizedForStreaming, part.Has64bitOffsets = nil, nil
+	srcH := m.Height
 	if r := m.VideoResolution; r != "" && r != "4k" && r != "sd" {
 		m.VideoResolution = r + "p"
 	}
@@ -1452,23 +1470,23 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string)
 		if dec.VideoCodec != "" {
 			m.VideoCodec = plexCodec(dec.VideoCodec)
 		}
-		if dec.MaxHeight > 0 && m.Height > dec.MaxHeight {
-			if m.Height > 0 {
-				m.Width = m.Width * dec.MaxHeight / m.Height
-			}
-			m.Height = dec.MaxHeight
-			if res := videoResolution(m.Width, m.Height); res != "" && res != "4k" && res != "sd" {
-				m.VideoResolution = res + "p"
-			} else {
-				m.VideoResolution = res
-			}
-		}
+		m.Width, m.Height = transcodeOutputSize(m.Width, m.Height, dec)
+		m.VideoResolution = transcodeVideoResolution(m.Width, m.Height, srcH, dec)
 		if dec.BitrateKbps > 0 {
 			m.Bitrate = dec.BitrateKbps
 		}
 	}
-	if !dec.AudioCopy && dec.AudioCodec != "" {
-		m.AudioCodec = plexCodec(dec.AudioCodec)
+	if !dec.AudioCopy {
+		if dec.AudioCodec != "" {
+			m.AudioCodec = plexCodec(dec.AudioCodec)
+		}
+		srcCh := m.AudioChannels
+		if srcAudio != nil && srcAudio.Channels > 0 {
+			srcCh = srcAudio.Channels
+		}
+		if ch := transcodeAudioChannels(dec, srcCh); ch > 0 {
+			m.AudioChannels = ch
+		}
 	}
 	part.Bitrate, part.Width, part.Height = m.Bitrate, m.Width, m.Height
 }
@@ -1510,14 +1528,12 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			if dec.VideoCodec != "" {
 				st.Codec = plexCodec(dec.VideoCodec)
 			}
-			if dec.MaxHeight > 0 && st.Height > dec.MaxHeight {
-				st.Width = st.Width * dec.MaxHeight / max(st.Height, 1)
-				st.Height = dec.MaxHeight
-			}
+			st.Width, st.Height = transcodeOutputSize(st.Width, st.Height, dec)
 			if dec.BitrateKbps > 0 {
 				st.Bitrate = dec.BitrateKbps
 			}
 			st.Profile, st.ChromaSubsampling, st.ScanType = "", "", ""
+			st.CodedWidth, st.CodedHeight = 0, 0
 			st.DOVIPresent, st.DOVIProfile = nil, 0
 			st.DOVIBLCompatID, st.DOVIBLPresent, st.DOVIELPresent, st.DOVIRPUPresent = nil, nil, nil, nil
 			st.DOVILevel, st.DOVIVersion, st.Level = 0, "", 0
@@ -1542,6 +1558,13 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			st.Decision = "transcode"
 			if dec.AudioCodec != "" {
 				st.Codec = plexCodec(dec.AudioCodec)
+			}
+			ch := transcodeAudioChannels(dec, src.Channels)
+			if ch > 0 {
+				st.Channels = ch
+			}
+			if br := transcodeAudioBitrate(dec, ch); br > 0 {
+				st.Bitrate = br
 			}
 			// Source-only details go, as in PMS's transcoded audio.
 			st.Profile, st.AudioChannelLayout, st.SamplingRate, st.Title = "", "", 0, ""
@@ -1714,7 +1737,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		startPR = mergeSessionProfile(pr, entry)
 	}
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
-	entry.playbackID = pr.SessionID
+	preserveStartIdentity(entry, pr, priorEntry)
 	s.transcodes.put(entry)
 
 	dec := frontend.HLSDecision(entry.decision, p.opts.DirectPlay, func() frontend.Decision {
@@ -1749,6 +1772,8 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 	})
 	if existing, ok := s.plexHLSSession(p.sessionID); ok && existing != nil {
 		if entry.started && entry.offset == p.offset {
+			dec = liveSessionDecision(existing, dec)
+			s.rebindSessionTranscode(entry)
 			s.notePlexEncoder(p.sessionID, frontend.StreamHLS, dec, p.offset)
 			unlockEncoder()
 			unlockOwner()
@@ -1778,6 +1803,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		s.writeStartErr(w, r, pr, err)
 		return
 	}
+	dec = liveSessionDecision(hs, dec)
 	s.bindTranscodeStarted(entry, dec, p.offset)
 	s.notePlexEncoder(p.sessionID, frontend.StreamHLS, dec, p.offset)
 	unlockEncoder()
@@ -2160,10 +2186,7 @@ func (s *Server) handleTranscodeSessions(w http.ResponseWriter, r *http.Request)
 		if !u.IsOwner && e.user.ID != u.ID {
 			continue
 		}
-		if e.transcodeID == "" {
-			continue
-		}
-		if te, ok := s.transcodes.get(e.transcodeID); ok {
+		if te, ok := s.activeTranscodeForSession(e); ok {
 			mc.TranscodeSess = append(mc.TranscodeSess, s.servedTranscodeSessionModel(te))
 		}
 	}
@@ -2185,25 +2208,254 @@ func (s *Server) handleTranscodeSessionStatus(w http.ResponseWriter, r *http.Req
 	s.write(w, r, &model.MediaContainer{Size: 1, TranscodeSess: []model.TranscodeSess{s.servedTranscodeSessionModel(te)}})
 }
 
-// servedTranscodeSessionModel is the TranscodeSession of what is actually
-// being served. A player that stepped down to an encoded ABR rung of a
-// Direct Stream session is transcoding video, and the Plex dashboard must
-// say so just as Ether's Activity does.
-func (s *Server) servedTranscodeSessionModel(te *transcodeEntry) model.TranscodeSess {
-	ts := transcodeSessionModel(te)
+// preserveStartIdentity keeps the decision's playback and client identity when
+// a native player omits X-Plex-Session-Identifier or X-Plex-Client-Identifier
+// on start.m3u8/start.mpd/start.
+func preserveStartIdentity(entry *transcodeEntry, pr *Request, prior *transcodeEntry) {
+	if entry == nil {
+		return
+	}
+	if pr != nil && pr.SessionID != "" {
+		entry.playbackID = pr.SessionID
+	} else if entry.playbackID == "" && prior != nil {
+		entry.playbackID = prior.playbackID
+	}
+	if entry.clientID == "" {
+		if pr != nil && pr.ClientID != "" {
+			entry.clientID = pr.ClientID
+		} else if prior != nil {
+			entry.clientID = prior.clientID
+		}
+	}
+}
+
+func liveSessionDecision(hs frontend.HLSSession, fallback frontend.Decision) frontend.Decision {
+	if hs == nil {
+		return fallback
+	}
+	if src, ok := hs.(interface{ Decision() frontend.Decision }); ok {
+		if actual := src.Decision(); actual.Kind != "" {
+			return mergeLiveDecision(fallback, actual)
+		}
+	}
+	return fallback
+}
+
+func (s *Server) transcodeEntryLive(te *transcodeEntry) bool {
+	if te == nil || !te.started || te.failErr != nil {
+		return false
+	}
+	if s.transcoder() != nil || s.broker() != nil {
+		_, ok := s.plexHLSSession(te.id)
+		return ok
+	}
+	return true
+}
+
+func (s *Server) activeTranscodeForSession(e playEntry) (*transcodeEntry, bool) {
+	if e.node != "" || e.user.ID == 0 || e.key == 0 {
+		return nil, false
+	}
+	return s.activeTranscodeForClient(e.user.ID, e.client.ClientID, e.client.SessionID, e.key, e.transcodeID)
+}
+
+func (s *Server) activeTranscodeForClient(userID int64, clientID, playbackID string, key frontend.RatingKey, preferredID string) (*transcodeEntry, bool) {
+	if userID == 0 || key == 0 {
+		return nil, false
+	}
+	var candidates []*transcodeEntry
+	seen := map[string]bool{}
+	consider := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		te, ok := s.transcodes.get(id)
+		if !ok || te.userID != userID || te.key != key || !s.transcodeEntryLive(te) {
+			return
+		}
+		if clientID != "" && te.clientID != "" && te.clientID != clientID {
+			return
+		}
+		if te.playbackID != "" {
+			if playbackID != "" && te.playbackID != playbackID {
+				return
+			}
+			if s.playbackOwners.Stale(userID, clientID, key, te.playbackID) {
+				return
+			}
+		}
+		candidates = append(candidates, te)
+	}
+	consider(preferredID)
+	if clientID != "" {
+		for _, id := range s.transcodes.forClient(userID, clientID, key) {
+			consider(id)
+		}
+	}
+	if len(candidates) == 0 && clientID != "" {
+		var clientPlayID string
+		if pb := s.playback(); pb != nil {
+			if ps, ok := pb.SessionFor(userID, clientID, key); ok && ps != nil {
+				clientPlayID = ps.ID
+			}
+		}
+		for _, id := range s.transcodes.forClient(userID, "", key) {
+			if te, ok := s.transcodes.get(id); ok && clientPlayID != "" && te.playID != "" && te.playID != clientPlayID {
+				continue
+			}
+			consider(id)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, false
+	}
+	best := candidates[0]
+	for _, te := range candidates[1:] {
+		if betterActiveTranscode(te, best, playbackID, preferredID) {
+			best = te
+		}
+	}
+	return best, true
+}
+
+func betterActiveTranscode(a, b *transcodeEntry, playbackID, preferredID string) bool {
+	if playbackID != "" {
+		aExact, bExact := a.playbackID == playbackID, b.playbackID == playbackID
+		if aExact != bExact {
+			return aExact
+		}
+	}
+	if !a.updatedAt.Equal(b.updatedAt) {
+		return a.updatedAt.After(b.updatedAt)
+	}
+	if preferredID != "" {
+		aPref, bPref := a.id == preferredID, b.id == preferredID
+		if aPref != bPref {
+			return aPref
+		}
+	}
+	return a.id > b.id
+}
+
+type liveTranscodeState struct {
+	info              frontend.MediaInfo
+	decision          frontend.Decision
+	protocol          string
+	container         string
+	speed             float64
+	hwRequested       bool
+	hwFullPipeline    bool
+	hasHWFullPipeline bool
+}
+
+func mergeLiveDecision(base, live frontend.Decision) frontend.Decision {
+	if live.Kind == "" {
+		return base
+	}
+	out := live
+	if out.Container == "" {
+		out.Container = base.Container
+	}
+	if !out.AudioCopy && out.AudioCodec == "" {
+		out.AudioCodec = base.AudioCodec
+	}
+	if out.AudioStream == 0 && base.AudioStream > 0 && live.Container == "" && live.Reason == "" {
+		out.AudioStream = base.AudioStream
+	}
+	if out.SubtitleStream == 0 && base.SubtitleStream != 0 && live.Container == "" && live.Reason == "" {
+		out.SubtitleStream = base.SubtitleStream
+	}
+	return out
+}
+
+func (s *Server) liveTranscode(te *transcodeEntry) liveTranscodeState {
+	state := liveTranscodeState{
+		info:     te.info,
+		decision: te.decision,
+		protocol: "hls",
+	}
+	if te.started {
+		switch cmp.Or(te.opts.Protocol, te.requested.protocol) {
+		case frontend.ProtocolDASH:
+			state.protocol = frontend.ProtocolDASH
+		case frontend.ProtocolHTTP:
+			state.protocol = frontend.ProtocolHTTP
+		default:
+			state.protocol = frontend.ProtocolHLS
+		}
+		state.container = te.decision.Container
+	}
+	if pb := s.playback(); pb != nil {
+		var ps *frontend.PlaySession
+		if live, ok := pb.Session(te.playID); ok && live != nil {
+			ps = live
+		} else if live, ok := pb.SessionFor(te.userID, te.clientID, te.key); ok && live != nil {
+			ps = live
+		}
+		if ps != nil && len(ps.Info.Streams) > 0 {
+			state.info = ps.Info
+		}
+	}
 	hs, ok := s.plexHLSSession(te.id)
-	if !ok || hs == nil {
-		return ts
+	if ok && hs != nil {
+		if src, ok := hs.(interface{ Info() frontend.MediaInfo }); ok {
+			if info := src.Info(); len(info.Streams) > 0 || info.Duration > 0 || info.BitrateKbps > 0 {
+				state.info = info
+			}
+		}
+		if src, ok := hs.(interface{ Decision() frontend.Decision }); ok {
+			state.decision = mergeLiveDecision(state.decision, src.Decision())
+		}
+		if src, ok := hs.(interface{ Protocol() string }); ok {
+			if p := src.Protocol(); p != "" {
+				state.protocol = p
+			}
+		}
+		if src, ok := hs.(interface{ Container() string }); ok {
+			if c := src.Container(); c != "" {
+				state.container = c
+			}
+		}
+		var hasStatus bool
+		if src, ok := hs.(frontend.EncoderStatusSession); ok {
+			if st := src.EncoderStatus(); st != nil {
+				hasStatus = true
+				state.decision = mergeLiveDecision(state.decision, st.Decision)
+				if st.Speed > 0 {
+					state.speed = math.Round(st.Speed*10) / 10
+				}
+				if !state.decision.VideoCopy {
+					switch st.Processor {
+					case "gpu":
+						state.hwRequested = true
+						if st.Filters == "gpu" || st.Filters == "cpu" {
+							state.hwFullPipeline = st.Filters == "gpu"
+							state.hasHWFullPipeline = true
+						}
+					case "cpu":
+						state.hwRequested = false
+					}
+				}
+			}
+		}
+		if !hasStatus && !state.decision.VideoCopy {
+			if hwSrc, ok := hs.(interface{ HWAccelerated() bool }); ok && hwSrc.HWAccelerated() {
+				state.hwRequested = true
+			}
+		}
 	}
-	src, ok := hs.(frontend.EncoderStatusSession)
-	if !ok {
-		return ts
+	if state.container == "" {
+		state.container = state.decision.Container
 	}
-	if st := src.EncoderStatus(); st != nil && st.Rung != "" && st.Rung != "base" && !st.Decision.VideoCopy {
-		ts.VideoDecision = "transcode"
-		ts.VideoCodec = plexCodec(st.Decision.VideoCodec)
-	}
-	return ts
+	return state
+}
+
+// servedTranscodeSessionModel is the TranscodeSession of what is actually
+// being served: initial start, quality change, ABR rung switch, failover, or
+// adaptive copy-to-encode.
+func (s *Server) servedTranscodeSessionModel(te *transcodeEntry) model.TranscodeSess {
+	return buildTranscodeSessionModel(te, s.liveTranscode(te))
 }
 
 // sessionTranscodeMedia renders the active conversion/remux Media for
@@ -2215,28 +2467,26 @@ func (s *Server) sessionTranscodeMedia(t *frontend.Title, te *transcodeEntry, vi
 	if t == nil || te == nil || !te.started || viewer == nil || viewer.User == nil {
 		return model.Media{}, false
 	}
-	ps := &frontend.PlaySession{Info: te.info, StartedAt: t.UpdatedAt}
+	live := s.liveTranscode(te)
+	ps := &frontend.PlaySession{Info: live.info, StartedAt: t.UpdatedAt}
 	if pb := s.playback(); pb != nil {
-		if live, ok := pb.Session(te.playID); ok && live != nil {
-			ps = live
-		} else if live, ok := pb.SessionFor(te.userID, te.clientID, te.key); ok && live != nil {
-			ps = live
+		if psLive, ok := pb.Session(te.playID); ok && psLive != nil {
+			ps = psLive
+		} else if psLive, ok := pb.SessionFor(te.userID, te.clientID, te.key); ok && psLive != nil {
+			ps = psLive
 		}
 	}
-	if len(ps.Info.Streams) == 0 && len(te.info.Streams) > 0 {
+	if len(live.info.Streams) > 0 {
 		cp := *ps
-		cp.Info = te.info
+		cp.Info = live.info
 		ps = &cp
 	}
-	dec := te.decision
-	if dec.Kind == frontend.DecisionDirectPlay {
-		dec.Kind = frontend.DecisionRemux
-	}
-	if hs, ok := s.plexHLSSession(te.id); ok && hs != nil {
-		if src, ok := hs.(frontend.EncoderStatusSession); ok {
-			if st := src.EncoderStatus(); st != nil && st.Rung != "" && st.Rung != "base" && !st.Decision.VideoCopy {
-				dec = st.Decision
-			}
+	dec := live.decision
+	if dec.Kind == "" || dec.Kind == frontend.DecisionDirectPlay {
+		if !dec.VideoCopy {
+			dec.Kind = frontend.DecisionTranscode
+		} else {
+			dec.Kind = frontend.DecisionRemux
 		}
 	}
 	p := te.requested
@@ -2245,7 +2495,9 @@ func (s *Server) sessionTranscodeMedia(t *frontend.Title, te *transcodeEntry, vi
 	if p.caps.ClientID == "" {
 		p.caps.ClientID = te.clientID
 	}
-	if p.protocol == "" {
+	if live.protocol != "" {
+		p.protocol = live.protocol
+	} else if p.protocol == "" {
 		if te.opts.Protocol != "" {
 			p.protocol = te.opts.Protocol
 		} else {
@@ -2258,6 +2510,7 @@ func (s *Server) sessionTranscodeMedia(t *frontend.Title, te *transcodeEntry, vi
 	} else if p.mediaID == 0 {
 		p.mediaID = int64(t.Key)
 	}
+	p.audioSel = -1
 	for i, st := range ps.Info.Streams {
 		if st.Type == "audio" && st.Index == dec.AudioStream {
 			p.audioSel = i
@@ -2278,31 +2531,46 @@ func (s *Server) sessionTranscodeMedia(t *frontend.Title, te *transcodeEntry, vi
 }
 
 func transcodeSessionModel(te *transcodeEntry) model.TranscodeSess {
-	ts := model.TranscodeSess{
-		Key:        "/transcode/sessions/" + te.id,
-		Context:    "streaming",
-		Protocol:   "hls",
-		Container:  "mpegts",
-		Duration:   ms(te.info.Duration),
-		Progress:   -1,
-		TimeStamp:  float64(te.updatedAt.Unix()),
-		AudioCodec: plexCodec(te.decision.AudioCodec),
-		VideoCodec: plexCodec(te.decision.VideoCodec),
-	}
+	live := liveTranscodeState{info: te.info, decision: te.decision, protocol: "hls"}
 	if te.started {
 		switch cmp.Or(te.opts.Protocol, te.requested.protocol) {
 		case frontend.ProtocolDASH:
-			ts.Protocol = frontend.ProtocolDASH
+			live.protocol = frontend.ProtocolDASH
 		case frontend.ProtocolHTTP:
-			ts.Protocol = frontend.ProtocolHTTP
+			live.protocol = frontend.ProtocolHTTP
 		default:
-			ts.Protocol = frontend.ProtocolHLS
+			live.protocol = frontend.ProtocolHLS
 		}
-		switch te.decision.Container {
+		live.container = te.decision.Container
+	}
+	return buildTranscodeSessionModel(te, live)
+}
+
+func buildTranscodeSessionModel(te *transcodeEntry, live liveTranscodeState) model.TranscodeSess {
+	dec := live.decision
+	info := live.info
+	ts := model.TranscodeSess{
+		Key:        "/transcode/sessions/" + te.id,
+		Context:    "streaming",
+		Protocol:   cmp.Or(live.protocol, "hls"),
+		Container:  "mpegts",
+		Duration:   ms(info.Duration),
+		Progress:   -1,
+		Speed:      live.speed,
+		TimeStamp:  float64(te.updatedAt.Unix()),
+		AudioCodec: plexCodec(dec.AudioCodec),
+		VideoCodec: plexCodec(dec.VideoCodec),
+	}
+	if ts.Protocol == frontend.ProtocolDASH {
+		ts.Container = "mp4"
+	} else if te.started || live.container != "" {
+		switch live.container {
 		case frontend.ContainerMatroska:
 			ts.Container = "mkv"
-		case frontend.ContainerFMP4:
+		case frontend.ContainerFMP4, "mp4":
 			ts.Container = "mp4"
+		case frontend.ContainerMPEGTS:
+			ts.Container = "mpegts"
 		default:
 			if ts.Protocol == frontend.ProtocolHTTP {
 				ts.Container = "mkv"
@@ -2311,43 +2579,184 @@ func transcodeSessionModel(te *transcodeEntry) model.TranscodeSess {
 			}
 		}
 	}
-	if v := te.info.Video(); v != nil {
+	v := info.Video()
+	if v != nil {
 		ts.SourceVideoCodec = plexCodec(v.Codec)
-	}
-	for _, st := range te.info.Streams {
-		if st.Type == "audio" {
-			ts.SourceAudioCodec = plexCodec(st.Codec)
-			break
+		if v.Width > 0 && v.Height > 0 {
+			ts.Width, ts.Height = transcodeOutputSize(v.Width, v.Height, dec)
 		}
 	}
+	a := selectedAudioStream(info, dec)
+	if a != nil {
+		ts.SourceAudioCodec = plexCodec(a.Codec)
+	}
 	ts.VideoDecision, ts.AudioDecision = "copy", "copy"
-	if !te.decision.VideoCopy {
+	if !dec.VideoCopy {
 		ts.VideoDecision = "transcode"
+		ts.TranscodeHwRequested = live.hwRequested
+		if live.hasHWFullPipeline {
+			ts.TranscodeHwFullPipeline = model.Ptr(live.hwFullPipeline)
+		}
 	} else {
 		ts.VideoCodec = ts.SourceVideoCodec
 	}
-	if !te.decision.AudioCopy {
+	if !dec.AudioCopy {
 		ts.AudioDecision = "transcode"
+		srcCh := 0
+		if a != nil {
+			srcCh = a.Channels
+		}
+		if srcCh > 0 || dec.AudioChannels > 0 {
+			ts.AudioChannels = transcodeAudioChannels(dec, srcCh)
+		}
 	} else {
 		ts.AudioCodec = ts.SourceAudioCodec
+		if a != nil && a.Channels > 0 {
+			ts.AudioChannels = a.Channels
+		}
 	}
-	if te.decision.BurnSubtitles {
+	if dec.BurnSubtitles {
 		ts.SubtitleDecision = "burn"
-	} else if te.started && te.subtitle >= 0 && te.subtitle < len(te.info.Streams) && te.info.Streams[te.subtitle].Type == "subtitle" {
-		sub := te.info.Streams[te.subtitle]
+	} else if te.started && te.subtitle >= 0 && te.subtitle < len(info.Streams) && info.Streams[te.subtitle].Type == "subtitle" {
+		sub := info.Streams[te.subtitle]
 		codec := plexCodec(sub.Codec)
 		text := textSidecarCodec(codec)
-		inSegments := text && te.decision.Container == frontend.ContainerMatroska && te.decision.SubtitleStream >= 0 && te.decision.SubtitleStream == sub.Index
+		inSegments := text && dec.Container == frontend.ContainerMatroska && dec.SubtitleStream >= 0 && dec.SubtitleStream == sub.Index
 		softText := browserClient(&Request{Product: te.caps.Product})
 		switch {
 		case te.requested.subtitles == "none" && !inSegments:
-		case softText && text && te.decision.Container != frontend.ContainerMatroska:
+		case softText && text && dec.Container != frontend.ContainerMatroska:
 			ts.SubtitleDecision = "transcode"
 		default:
 			ts.SubtitleDecision = "copy"
 		}
 	}
 	return ts
+}
+
+func evenDim(n int) int {
+	if n%2 != 0 {
+		n--
+	}
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+func transcodeOutputSize(w, h int, dec frontend.Decision) (int, int) {
+	if dec.VideoCopy {
+		return w, h
+	}
+	if dec.Enhancement.Width > 0 && dec.Enhancement.Height > 0 {
+		return dec.Enhancement.Width, dec.Enhancement.Height
+	}
+	if w <= 0 || h <= 0 {
+		if dec.MaxHeight > 0 {
+			return evenDim(dec.MaxHeight * 16 / 9), evenDim(dec.MaxHeight)
+		}
+		return w, h
+	}
+	if dec.MaxHeight <= 0 || dec.MaxHeight >= h {
+		return evenDim(w), evenDim(h)
+	}
+	nw := int(float64(w)*float64(dec.MaxHeight)/float64(h) + 0.5)
+	return evenDim(nw), evenDim(dec.MaxHeight)
+}
+
+func transcodeVideoResolution(w, h, srcH int, dec frontend.Decision) string {
+	res := videoResolution(w, h)
+	if !dec.VideoCopy && dec.MaxHeight > 0 && srcH > dec.MaxHeight {
+		switch dec.MaxHeight {
+		case 480, 576, 720, 1080, 2160:
+			if frontend.ResolutionTier(w, h) > dec.MaxHeight {
+				res = videoResolution(0, dec.MaxHeight)
+			}
+		}
+	}
+	if res != "" && res != "4k" && res != "sd" {
+		return res + "p"
+	}
+	return res
+}
+
+func transcodeResolutionLabel(w, h, srcH int, dec frontend.Decision) string {
+	res := transcodeVideoResolution(w, h, srcH, dec)
+	switch res {
+	case "", "sd":
+		return "SD"
+	case "4k":
+		return "4K"
+	case "2k":
+		return "2K"
+	case "2.7k":
+		return "2.7K"
+	default:
+		return res
+	}
+}
+
+func selectedAudioStream(info frontend.MediaInfo, dec frontend.Decision) *frontend.StreamInfo {
+	var first *frontend.StreamInfo
+	for i := range info.Streams {
+		st := &info.Streams[i]
+		if st.Type != "audio" {
+			continue
+		}
+		if first == nil {
+			first = st
+		}
+		if dec.AudioStream >= 0 && st.Index == dec.AudioStream {
+			return st
+		}
+	}
+	return first
+}
+
+func transcodeAudioChannels(dec frontend.Decision, srcChannels int) int {
+	if dec.AudioChannels > 0 {
+		return dec.AudioChannels
+	}
+	ch := 2
+	if srcChannels > 0 {
+		ch = srcChannels
+	}
+	switch strings.ToLower(dec.AudioCodec) {
+	case "ac3", "eac3":
+		if ch > 6 {
+			return 6
+		}
+		return ch
+	}
+	if ch > 2 {
+		return 2
+	}
+	return ch
+}
+
+func transcodeAudioBitrate(dec frontend.Decision, channels int) int {
+	if dec.AudioBitrateKbps > 0 {
+		return dec.AudioBitrateKbps
+	}
+	switch strings.ToLower(dec.AudioCodec) {
+	case "ac3":
+		if channels > 2 {
+			return 640
+		}
+		return 256
+	case "eac3":
+		if channels > 2 {
+			return 768
+		}
+		return 384
+	case "":
+		return 0
+	default:
+		if channels > 2 {
+			return 384
+		}
+		return 192
+	}
 }
 
 // ---------------------------------------------------------------------------

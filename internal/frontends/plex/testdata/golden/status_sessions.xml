@@ -21,6 +21,5 @@
 <User id="1001" title="Owner" />
 <Player address="192.168.1.50" device="OSX" machineIdentifier="client-1" platform="Chrome" product="Plex Web" profile="Web" state="playing" title="Chrome" local="1" relayed="0" secure="0" userID="1001" />
 <Session id="sess-1" bandwidth="15960" location="lan" />
-<TranscodeSession key="/transcode/sessions/sess-1" throttled="0" complete="0" progress="-1" duration="8340000" context="streaming" sourceVideoCodec="h264" sourceAudioCodec="eac3" videoDecision="copy" audioDecision="copy" protocol="hls" container="mpegts" videoCodec="h264" audioCodec="eac3" transcodeHwRequested="0" timeStamp="1792324800" />
 </Video>
 </MediaContainer>

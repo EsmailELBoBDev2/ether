@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/store"
 )
@@ -331,7 +332,23 @@ func (v *library) update(ctx context.Context, k Key, set string, a ...any) error
 	return e
 }
 func (v *library) MarkHealth(ctx context.Context, k Key, h Health) error {
-	return v.update(ctx, k, "health=?,health_at=?", h, v.Now().Unix())
+	if err := v.update(ctx, k, "health=?,health_at=?", h, v.Now().Unix()); err != nil {
+		return err
+	}
+	if h == HealthDead && v.Events != nil {
+		var kind, titleKey, releaseName string
+		if v.DB != nil {
+			_ = v.DB.QueryRowContext(ctx, `SELECT kind, title_key, name FROM vault_releases WHERE key=?`, k).Scan(&kind, &titleKey, &releaseName)
+		}
+		v.publishEvent(events.EventVaultRecordDead, events.VaultRecordDeadPayload{
+			VaultKey:    string(k),
+			Kind:        kind,
+			TitleKey:    titleKey,
+			ReleaseName: releaseName,
+			Reason:      "health_check_failed",
+		}, events.WithCorrelation(events.Correlation{TitleID: titleKey}))
+	}
+	return nil
 }
 func (v *library) MarkChosen(ctx context.Context, k Key, fp string) error {
 	return v.update(ctx, k, "profile_fp=?", fp)

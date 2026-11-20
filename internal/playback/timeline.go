@@ -307,6 +307,7 @@ func (m *Manager) noteDecisionTimeline(s *session, d core.Decision) {
 			Message: timelineDecisionSummary(d),
 			Detail:  timelineDecisionWhy(d),
 		})
+		m.emitStreamDecision(s, "", d)
 		return
 	}
 	bitrateChanged := prevBitrate > 0 && d.BitrateKbps > 0 && prevBitrate != d.BitrateKbps
@@ -329,6 +330,10 @@ func (m *Manager) noteDecisionTimeline(s *session, d core.Decision) {
 			Message: msg,
 			Detail:  timelineDecisionWhy(d),
 		})
+		m.emitStreamQualityChanged(s, prevHeight, d.MaxHeight, prevBitrate, d.BitrateKbps, d.Reason)
+		if prevKind != d.Kind || prevReason != d.Reason {
+			m.emitStreamDecision(s, prevKind, d)
+		}
 		return
 	}
 	if prevKind != d.Kind || prevReason != d.Reason {
@@ -338,6 +343,7 @@ func (m *Manager) noteDecisionTimeline(s *session, d core.Decision) {
 			Message: timelineDecisionSummary(d),
 			Detail:  timelineDecisionWhy(d),
 		})
+		m.emitStreamDecision(s, prevKind, d)
 	}
 }
 
@@ -371,6 +377,7 @@ func (m *Manager) noteTimelineStall(s *session, now time.Time) {
 		Message: fmt.Sprintf("Playback stalled (rebuffer #%d)", stalls),
 		Detail:  detail,
 	})
+	m.emitStreamStalled(s, stalls, pos)
 }
 
 func timelineStopEvent(s *session, now time.Time) (TimelineEvent, bool) {

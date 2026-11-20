@@ -429,6 +429,7 @@ func (s *Session) finish(r *run) {
 			caps.reject(r.spec.Accel, r.spec.Info.Video())
 		}
 		s.log.Warn("hardware decode failed; retrying with software decode and hardware encode", "hwaccel", r.spec.Accel.Name)
+		s.emitTranscodeFallback(r.spec.Accel.Name, "software_decode", "hardware decode init failed; retrying with software decode")
 		if retryErr := s.startRunForLocked(r.next(), r.spec.BigProbe, "software decode fallback"); retryErr != nil {
 			s.failErr = retryErr
 		}
@@ -445,6 +446,7 @@ func (s *Session) finish(r *run) {
 		if err != nil && r.hw && !s.forceCPU && looksLikeEncoderFailure(r.stderr.String(), r.spec) {
 			s.forceCPU = true
 			log.Warn("live hardware encoder failed; falling back to CPU", "hwaccel", r.spec.Accel.Name, "segment", r.next())
+			s.emitTranscodeFallback(r.spec.Accel.Name, "libx264", "live hardware encoder failed")
 		}
 		s.recoverLiveLocked(r, err)
 		return
@@ -566,6 +568,7 @@ func (s *Session) finish(r *run) {
 	if s.isDASH() && r.hw && r.produced == 0 && !s.forceCPU && !r.stalled && !s.inputFailed {
 		s.forceCPU = true
 		log.Warn("hardware encoder failed; falling back to CPU", "hwaccel", r.spec.Accel.Name, "segment", r.startSeg)
+		s.emitTranscodeFallback(r.spec.Accel.Name, "libx264", "hardware DASH startup failed")
 		if retryErr := s.startRunForLocked(r.startSeg, r.spec.BigProbe, "hardware startup fallback"); retryErr != nil {
 			s.failErr = retryErr
 		}
@@ -588,6 +591,7 @@ func (s *Session) finish(r *run) {
 		s.forceCPU = true
 		next := r.next()
 		log.Warn("hardware encoder failed; falling back to CPU", "hwaccel", r.spec.Accel.Name, "segment", next)
+		s.emitTranscodeFallback(r.spec.Accel.Name, "libx264", "hardware encoder failed")
 		if err := s.startRunForLocked(next, r.spec.BigProbe, "hardware fallback"); err != nil {
 			s.failErr = err
 		}

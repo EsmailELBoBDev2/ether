@@ -39,7 +39,14 @@ func (m *Manager) DirectDelivery(sessionID string) (core.DirectSourceLink, bool)
 		return core.DirectSourceLink{}, false
 	}
 	now := m.now()
-	s.markDirectPlay()
+	if s.markDirectPlay() {
+		m.emitStreamDecision(s, "", core.Decision{
+			Kind:      core.DecisionDirectPlay,
+			VideoCopy: true,
+			AudioCopy: true,
+			Reason:    "Direct URL delivery",
+		})
+	}
 	s.touchMedia(now)
 	return link, true
 }

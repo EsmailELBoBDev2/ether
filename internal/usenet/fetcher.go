@@ -23,6 +23,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/yenc"
 )
 
@@ -104,6 +105,8 @@ type Options struct {
 	TraceProtocol bool
 	// OnStateChange is notified when provider pools or circuit-breaker states change.
 	OnStateChange func()
+	// Events receives non-blocking provider.* domain events when set.
+	Events *events.Bus
 
 	// limits paces connection-limit learning and handshake backoff
 	// (defaults in limit.go; tests shorten them).

@@ -110,10 +110,14 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 				a.resolver.InvalidateDetailVariants()
 			}
 		},
+		Events:             a.eventBus,
+		EnrichEventContext: a.enrichPlaybackEventContext,
+		CachedMarkers:      a.cachedPlaybackMarkers,
 	}, cfg, playback.Options{SessionSurface: sessionSurface, Now: parityClock(), DataDir: dataDir, PayloadReplayGrace: 5 * time.Second, VerifyNativeProbe: os.Getenv("ETHER_VERIFY_NATIVE_PROBE") == "1", TracePlayback: tracePlayback})
 	if err != nil {
 		return fmt.Errorf("playback: %w", err)
 	}
+	a.initMediaEventBridges()
 	if a.resolver != nil {
 		a.resolver.SetProbedMedia(a.playback.CachedReleaseProbe)
 		if a.cache != nil {
@@ -200,7 +204,7 @@ func (a *App) buildEncoder(ctx context.Context, cfg config.Config) error {
 	tracePlayback := os.Getenv("ETHER_TRACE_PLAYBACK") == "1"
 	a.tracePlayback = tracePlayback
 	if a.opts.FixtureTranscoder == nil {
-		a.transcoder, err = transcode.New(cfg.Transcode, log, transcode.WithDecodeStore(a.db), transcode.WithRuntimeDir(filepath.Join(dataDir, "tools")), transcode.WithTracePlayback(tracePlayback), transcode.WithOnChange(a.publishDashboard), transcode.WithSubtitleOpener(a.openTranscodeSubtitle), transcode.WithEncoderObserver(func(sessionID string, started bool, excerpt string) {
+		a.transcoder, err = transcode.New(cfg.Transcode, log, transcode.WithEvents(a.eventBus), transcode.WithDecodeStore(a.db), transcode.WithRuntimeDir(filepath.Join(dataDir, "tools")), transcode.WithTracePlayback(tracePlayback), transcode.WithOnChange(a.publishDashboard), transcode.WithSubtitleOpener(a.openTranscodeSubtitle), transcode.WithEncoderObserver(func(sessionID string, started bool, excerpt string) {
 			if !started && excerpt != "" {
 				a.observePlayTimeline(playback.TimelineEvent{
 					SessionID: a.resolvePlayLogSession(sessionID),

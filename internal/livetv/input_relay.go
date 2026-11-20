@@ -112,6 +112,7 @@ type inputGrant struct {
 	manifest         *cachedManifest // cached root manifest (master kept for grant lifetime; media consumed once)
 	hls              *hlsInput       // provider playlist state when the root input is HLS
 	watchers         map[*func(UpstreamEvent)]struct{}
+	stalledAt        time.Time                  // guarded by mu; tracks stall onset for downtimeMs
 	snap             atomic.Pointer[healthSnap] // published health; see inputHealth
 	resources        map[string]*relayResource
 	byKey            map[string]string

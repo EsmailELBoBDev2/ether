@@ -204,5 +204,6 @@ func (m *Manager) NoteFailedStart(id, reason string) {
 			Message: "Playback failed before first frame",
 			Detail:  clean,
 		})
+		m.emitSessionFailed(s, s.snapshot(m.now()), "start", errors.New(clean))
 	}
 }

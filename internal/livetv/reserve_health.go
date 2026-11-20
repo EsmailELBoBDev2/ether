@@ -220,11 +220,25 @@ func (s *Service) sessionGrant(ss *session) *inputGrant {
 // notify delivers ev to the grant's watchers outside every lock.
 func (g *inputGrant) notify(ev UpstreamEvent) {
 	g.mu.Lock()
+	var stalledAt time.Time
+	switch ev.Kind {
+	case InputStalled:
+		if g.stalledAt.IsZero() {
+			g.stalledAt = ev.At
+		}
+		stalledAt = g.stalledAt
+	case InputRecovered:
+		stalledAt = g.stalledAt
+		g.stalledAt = time.Time{}
+	}
 	fns := make([]func(UpstreamEvent), 0, len(g.watchers))
 	for fn := range g.watchers {
 		fns = append(fns, *fn)
 	}
 	g.mu.Unlock()
+	if g.service != nil {
+		g.service.emitInputHealthEvent(g, ev, stalledAt)
+	}
 	for _, fn := range fns {
 		fn(ev)
 	}

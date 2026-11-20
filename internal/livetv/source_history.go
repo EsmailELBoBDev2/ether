@@ -164,7 +164,19 @@ func (s *Service) noteSourceEvidence(channelID string, src StreamSource, ev Sour
 	if src.ID == "" || strings.HasPrefix(channelID, directChannelPrefix) || ev.empty() {
 		return
 	}
-	s.history.update(channelID, src, func(h *SourceHistory) { h.add(ev) })
+	var transitioned bool
+	var after SourceHistory
+	s.history.update(channelID, src, func(h *SourceHistory) {
+		wasDegraded := isSourceDegraded(*h)
+		h.add(ev)
+		if !wasDegraded && isSourceDegraded(*h) {
+			transitioned = true
+			after = *h
+		}
+	})
+	if transitioned {
+		s.emitSourceDegraded(after)
+	}
 }
 
 // noteSourceMode records the mode a session used on a source and how it

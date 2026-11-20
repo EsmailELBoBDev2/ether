@@ -95,19 +95,23 @@ func (s *Service) Pin(ctx context.Context, key core.RatingKey, titleName string,
 	s.con.mu.Unlock()
 	s.InvalidateDetailVariants()
 	s.notifyPin(key)
+	s.emitPinCreated(p, "owner")
 	return p, nil
 }
 
 // Unpin removes a title's pin; it reports whether there was one.
 func (s *Service) Unpin(ctx context.Context, key core.RatingKey) (bool, error) {
 	s.con.mu.Lock()
-	_, had := s.con.pins[key]
+	prev, had := s.con.pins[key]
 	delete(s.con.pins, key)
 	s.con.mu.Unlock()
 	if had {
 		s.InvalidateDetailVariants()
 	}
 	if s.db == nil {
+		if had {
+			s.emitPinRemoved(key, prev, true, "owner")
+		}
 		return had, nil
 	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM resolver_pins WHERE rating_key=?`, int64(key))
@@ -117,7 +121,11 @@ func (s *Service) Unpin(ctx context.Context, key core.RatingKey) (bool, error) {
 	s.InvalidateDetailVariants()
 	s.notifyPin(key)
 	n, _ := res.RowsAffected()
-	return had || n > 0, nil
+	removed := had || n > 0
+	if removed {
+		s.emitPinRemoved(key, prev, had, "owner")
+	}
+	return removed, nil
 }
 
 // Pins lists every pin, newest first.
@@ -213,14 +221,22 @@ func (s *Service) reloadPin(ctx context.Context, key core.RatingKey) {
 // notePin records the outcome of trying a title's pin, when releaseID is
 // still the pinned release.
 func (s *Service) notePin(ctx context.Context, key core.RatingKey, releaseID string, status PinStatus, reason string) {
+	s.notePinForClient(ctx, key, releaseID, status, reason, "")
+}
+
+func (s *Service) notePinForClient(ctx context.Context, key core.RatingKey, releaseID string, status PinStatus, reason, client string) {
 	now := s.now()
 	s.con.mu.Lock()
 	p, ok := s.con.pins[key]
-	if ok && p.Release.ID == releaseID {
+	matched := ok && p.Release.ID == releaseID
+	if matched {
 		p.LastStatus, p.LastReason, p.LastCheckedAt = status, reason, now
 		s.con.pins[key] = p
 	}
 	s.con.mu.Unlock()
+	if matched {
+		s.emitPinStatusEvent(p, status, reason, client)
+	}
 	if !ok || s.db == nil {
 		return
 	}

@@ -204,10 +204,10 @@ type session struct {
 	viewerPosition        time.Duration // guarded by mu, from authenticated Plex timeline
 	viewerAt              time.Time
 	viewerState           string
-	choiceStartSet        bool          // guarded by mu; tracks real-play duration on an explicit version
-	choiceLastPos         time.Duration // guarded by mu
-	choicePlayed          time.Duration // guarded by mu
-	choiceRecorded        bool          // guarded by mu
+	choiceStartSet        bool            // guarded by mu; tracks real-play duration on an explicit version
+	choiceLastPos         time.Duration   // guarded by mu
+	choicePlayed          time.Duration   // guarded by mu
+	choiceRecorded        bool            // guarded by mu
 	exp                   experienceState // guarded by mu
 	stallObserved         int             // guarded by mu; timeline stalls evaluated against delivery
 	timelineEnabled       bool
@@ -304,6 +304,14 @@ type session struct {
 	explicit          bool // decision set by SetDecision
 	closed            bool
 	registered        bool
+
+	// Marker enter/exit tracking for playback.marker.* events (guarded by mu).
+	lastProgressAt    time.Time
+	markersLoaded     bool
+	markersCache      []MarkerSpan
+	activeMarkerKind  string
+	activeMarkerStart int64
+	activeMarkerEnd   int64
 
 	// Speed-coupled down-failover state (guarded by speedMu).
 	speedMu           sync.Mutex

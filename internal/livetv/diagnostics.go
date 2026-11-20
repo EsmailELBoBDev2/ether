@@ -222,6 +222,7 @@ func (w *mediaObservation) done() {
 	failed := w.status >= 400 || w.writeFailed
 	now := time.Now()
 	ss.mu.Lock()
+	ss.bytesServed += int64(w.bytes)
 	first := success && !ss.firstMediaDelivered
 	if first {
 		ss.firstMediaDelivered = true

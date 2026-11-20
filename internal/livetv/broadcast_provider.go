@@ -303,11 +303,14 @@ func (p *providerBroadcastPlanner) commitReplacement() {
 	}
 	p.mu.Unlock()
 	if prev.ID != "" && cur.ID != "" && prev.ID != cur.ID {
+		reason := "input failover"
 		if standby {
+			reason = "standby promoted"
 			p.logger().Info("live input switched to standby", append([]any{"input", cur.ID}, p.s.duplicateFailoverLogAttrs(p.channel, prev, cur)...)...)
 		} else {
 			p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", cur.ID}, p.s.duplicateFailoverLogAttrs(p.channel, prev, cur)...)...)
 		}
+		p.s.emitSourceFailover(p.channel, prev.ID, cur.ID, reason, "broadcast")
 	}
 }
 
@@ -517,8 +520,12 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 			if !racing {
 				if ready {
 					p.logger().Info("live input switched to standby", append([]any{"input", id}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+					if prev.ID != "" && prev.ID != src.ID {
+						p.s.emitSourceFailover(c, prev.ID, src.ID, "standby promoted", "broadcast")
+					}
 				} else if prev.ID != "" && prev.ID != src.ID {
 					p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+					p.s.emitSourceFailover(c, prev.ID, src.ID, "input failover", "broadcast")
 				}
 			}
 			return decoder, func() { sbLink.releaseRef(p.s) }, nil
@@ -624,6 +631,7 @@ func (p *providerBroadcastPlanner) open(ctx context.Context) (transcode.Decoder,
 		p.mu.Unlock()
 		if !racing && prev.ID != "" && prev.ID != src.ID {
 			p.logger().Info("live input switched source", append([]any{"from", prev.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(c, prev, src)...)...)
+			p.s.emitSourceFailover(c, prev.ID, src.ID, "input failover", "broadcast")
 		}
 		p.logger().Info("live input opening", "input", id, "liveEdge", liveEdge, "format", link.format, "uses", link.uses)
 		return wrapped, func() { link.releaseRef(p.s) }, nil
@@ -855,7 +863,10 @@ func (s *Service) reserveBroadcastProvider(account, channel, id string, limit in
 	if _, exists := active[id]; exists {
 		return nil, ErrProviderBusy
 	}
-	if limit > 0 && len(channels)+len(active)+s.inputRelay.taps.externalCount(account) >= limit {
+	if activeCount := len(channels) + len(active) + s.inputRelay.taps.externalCount(account); limit > 0 && activeCount >= limit {
+		s.mu.Unlock()
+		s.emitProviderLimitReached(account, activeCount, limit, channel)
+		s.mu.Lock()
 		return nil, ErrProviderBusy
 	}
 	active[id] = channel

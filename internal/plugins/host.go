@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -231,8 +232,9 @@ func fetchError(host string, err error) error {
 		return blockedOp
 	}
 	reason := "network error"
+	var netErr net.Error
 	switch {
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
 		reason = "timed out"
 	case errors.Is(err, context.Canceled):
 		reason = "canceled"
@@ -296,9 +298,12 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	}
 	// Recheck the current grant before every redirect, as well as the SSRF
 	// guard's own redirect policy. A redirect is another network request.
+	// When ctx already has a deadline, let Request.Context govern both headers
+	// and body reads so timeouts always surface context.DeadlineExceeded rather
+	// than net/http's non-unwrapping Client.Timeout error.
 	client := *h.m.client
-	if deadline, ok := ctx.Deadline(); ok {
-		client.Timeout = time.Until(deadline)
+	if _, ok := ctx.Deadline(); ok {
+		client.Timeout = 0
 	}
 	lastURL := u
 	previousRedirect := client.CheckRedirect

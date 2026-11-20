@@ -48,7 +48,14 @@ export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
 export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
-export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
+export interface FetchCacheRequest {
+  /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
+  timeoutMs?: number;
+  url: string;
+  headers?: Record<string, string>;
+  libraryKey: string;
+  name: string;
+}
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
 export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }

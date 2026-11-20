@@ -9,11 +9,14 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"image/jpeg"
 	"image/png"
 	"io"
+	"net"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -213,7 +216,13 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
-	resp, err := h.openFetch(ctx, req.FetchRequest)
+	fetchCtx := ctx
+	if req.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		fetchCtx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
+	resp, err := h.openFetch(fetchCtx, req.FetchRequest)
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
@@ -222,10 +231,17 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 		return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache HTTP %d", resp.StatusCode)
 	}
 	crc, m, s := crc32.NewIEEE(), md5.New(), sha1.New()
-	reader := &boundedDataReader{ctx: ctx, r: resp.Body, left: min(h.DataLimits(ctx).FetchBytes, decl.Cache.EffectiveMaxBytes())}
-	ref, err := h.CachePut(ctx, req.LibraryKey, req.Name, io.TeeReader(reader, io.MultiWriter(crc, m, s)))
+	reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: min(h.DataLimits(ctx).FetchBytes, decl.Cache.EffectiveMaxBytes())}
+	ref, err := h.CachePut(fetchCtx, req.LibraryKey, req.Name, io.TeeReader(reader, io.MultiWriter(crc, m, s)))
 	h.noteFetchTraffic(ctx, req.FetchRequest, reader.size)
 	if err != nil {
+		var netErr net.Error
+		if errors.Is(err, context.DeadlineExceeded) ||
+			(errors.As(err, &netErr) && netErr.Timeout()) ||
+			(errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && !errors.Is(err, ErrPermissionDenied) && !errors.Is(err, ErrQuotaExceeded)) {
+			u, _ := url.Parse(req.URL)
+			return FetchCacheResult{}, fetchError(u.Hostname(), context.DeadlineExceeded)
+		}
 		return FetchCacheResult{}, err
 	}
 	return FetchCacheResult{Blob: ref, Size: reader.size, CRC32: fmt.Sprintf("%08x", crc.Sum32()), MD5: fmt.Sprintf("%x", m.Sum(nil)), SHA1: fmt.Sprintf("%x", s.Sum(nil)), Status: resp.StatusCode}, nil
@@ -597,6 +613,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		value, err = service.HTTPHash(ctx, req)
 	} else if name == "http.fetchToCache" {
 		var req struct {
+			TimeoutMS  int64             `json:"timeoutMs"`
 			Method     string            `json:"method"`
 			URL        string            `json:"url"`
 			Headers    map[string]string `json:"headers"`
@@ -618,7 +635,11 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		if !ok {
 			return nil, ErrUnavailable
 		}
-		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
+		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{
+			FetchRequest: FetchRequest{TimeoutMS: req.TimeoutMS, Method: req.Method, URL: req.URL, Headers: req.Headers},
+			LibraryKey:   req.LibraryKey,
+			Name:         req.Name,
+		})
 	} else if name == "cache.rasterize" {
 		if len(args) < 3 || len(args) > 4 {
 			return nil, fmt.Errorf("plugins: cache.rasterize takes (libraryKey, name, sourceBlob[, options])")

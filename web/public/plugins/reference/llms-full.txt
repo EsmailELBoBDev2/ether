@@ -7157,8 +7157,9 @@ func fetchError(host string, err error) error {
 		return blockedOp
 	}
 	reason := "network error"
+	var netErr net.Error
 	switch {
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
 		reason = "timed out"
 	case errors.Is(err, context.Canceled):
 		reason = "canceled"
@@ -7226,9 +7227,12 @@ func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response,
 	}
 	// Recheck the current grant before every redirect, as well as the SSRF
 	// guard's own redirect policy. A redirect is another network request.
+	// When ctx already has a deadline, let Request.Context govern both headers
+	// and body reads so timeouts always surface context.DeadlineExceeded rather
+	// than net/http's non-unwrapping Client.Timeout error.
 	client := *h.m.client
-	if deadline, ok := ctx.Deadline(); ok {
-		client.Timeout = time.Until(deadline)
+	if _, ok := ctx.Deadline(); ok {
+		client.Timeout = 0
 	}
 	lastURL := u
 	previousRedirect := client.CheckRedirect
@@ -9431,7 +9435,13 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
-	resp, err := h.openFetch(ctx, req.FetchRequest)
+	fetchCtx := ctx
+	if req.TimeoutMS > 0 {
+		var cancel context.CancelFunc
+		fetchCtx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
+		defer cancel()
+	}
+	resp, err := h.openFetch(fetchCtx, req.FetchRequest)
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
@@ -9440,10 +9450,17 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 		return FetchCacheResult{}, fmt.Errorf("plugins: fetchToCache HTTP %d", resp.StatusCode)
 	}
 	crc, m, s := crc32.NewIEEE(), md5.New(), sha1.New()
-	reader := &boundedDataReader{ctx: ctx, r: resp.Body, left: min(h.DataLimits(ctx).FetchBytes, decl.Cache.EffectiveMaxBytes())}
-	ref, err := h.CachePut(ctx, req.LibraryKey, req.Name, io.TeeReader(reader, io.MultiWriter(crc, m, s)))
+	reader := &boundedDataReader{ctx: fetchCtx, r: resp.Body, left: min(h.DataLimits(ctx).FetchBytes, decl.Cache.EffectiveMaxBytes())}
+	ref, err := h.CachePut(fetchCtx, req.LibraryKey, req.Name, io.TeeReader(reader, io.MultiWriter(crc, m, s)))
 	h.noteFetchTraffic(ctx, req.FetchRequest, reader.size)
 	if err != nil {
+		var netErr net.Error
+		if errors.Is(err, context.DeadlineExceeded) ||
+			(errors.As(err, &netErr) && netErr.Timeout()) ||
+			(errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && !errors.Is(err, ErrPermissionDenied) && !errors.Is(err, ErrQuotaExceeded)) {
+			u, _ := url.Parse(req.URL)
+			return FetchCacheResult{}, fetchError(u.Hostname(), context.DeadlineExceeded)
+		}
 		return FetchCacheResult{}, err
 	}
 	return FetchCacheResult{Blob: ref, Size: reader.size, CRC32: fmt.Sprintf("%08x", crc.Sum32()), MD5: fmt.Sprintf("%x", m.Sum(nil)), SHA1: fmt.Sprintf("%x", s.Sum(nil)), Status: resp.StatusCode}, nil
@@ -9880,6 +9897,7 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		value, err = service.HTTPHash(ctx, req)
 	} else if name == "http.fetchToCache" {
 		var req struct {
+			TimeoutMS  int64             `json:"timeoutMs"`
 			Method     string            `json:"method"`
 			URL        string            `json:"url"`
 			Headers    map[string]string `json:"headers"`
@@ -9901,7 +9919,11 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		if !ok {
 			return nil, ErrUnavailable
 		}
-		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
+		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{
+			FetchRequest: FetchRequest{TimeoutMS: req.TimeoutMS, Method: req.Method, URL: req.URL, Headers: req.Headers},
+			LibraryKey:   req.LibraryKey,
+			Name:         req.Name,
+		})
 	} else if name == "cache.rasterize" {
 		if len(args) < 3 || len(args) > 4 {
 			return nil, fmt.Errorf("plugins: cache.rasterize takes (libraryKey, name, sourceBlob[, options])")
@@ -25716,6 +25738,14 @@ func Forbidden(message string) *Fault { return &Fault{Code: string(StatusForbidd
 var ErrPoolBusy = errors.New("timed out waiting for a plugin instance")
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#ErrClosed
+
+``````
+// ErrClosed is wrapped by an *Error when a call cannot run because the plugin
+// runtime was closed.
+var ErrClosed = errors.New("plugin is closed")
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#Error.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -26508,7 +26538,7 @@ func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool
 ``````
 func (p *pool) get(ctx context.Context) (instance, error) {
 	if p.done.Load() {
-		return nil, &Error{Status: StatusError, Message: "plugin is closed"}
+		return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
 	select {
 	case in := <-p.idle:
@@ -26522,7 +26552,7 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 		case in := <-p.idle:
 			return in, nil
 		case <-p.doneCh:
-			return nil, &Error{Status: StatusError, Message: "plugin is closed"}
+			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-ctx.Done():
 			return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 		}
@@ -26531,14 +26561,23 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 	case in := <-p.idle:
 		return in, nil
 	case p.slots <- struct{}{}:
+		if p.done.Load() {
+			<-p.slots
+			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
 		in, err := p.makeFn(ctx)
 		if err != nil {
 			<-p.slots
 			return nil, err
 		}
+		if p.done.Load() {
+			in.closeInstance()
+			<-p.slots
+			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
 		return in, nil
 	case <-p.doneCh:
-		return nil, &Error{Status: StatusError, Message: "plugin is closed"}
+		return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	case <-ctx.Done():
 		return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
@@ -26831,7 +26870,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	}()
 	if p.closed.Load() {
 		out.Status = StatusError
-		return Response{}, out, &Error{Status: StatusError, Message: "plugin is closed"}
+		return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
 	if !p.caps.Handle {
 		out.Status = StatusError
@@ -26854,7 +26893,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 			defer func() { <-p.jobSlots }()
 		case <-p.closeCh:
 			out.Status = StatusError
-			return Response{}, out, &Error{Status: StatusError, Message: "plugin is closed"}
+			return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-callCtx.Done():
 			out.Status = StatusTimeout
 			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
@@ -26878,7 +26917,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	respJSON, callErr := in.handle(callCtx, cs, reqJSON)
 	out.Units = cs.finishUnits()
 	healthy := callErr == nil || !callErr.Trap
-	if callErr != nil && callErr.Status == StatusTimeout {
+	if (callErr != nil && callErr.Status == StatusTimeout) || callCtx.Err() != nil {
 		healthy = false
 	}
 	p.svc.put(in, healthy)
@@ -29391,9 +29430,11 @@ work ahead of an actual request. Owner/scheduled jobs (up to 2) and playback
 resolver jobs (up to 4) have separate limits per plugin; if all four resolver
 slots are busy, Ether returns `503` with `code: "jobs_busy"` and `Retry-After`.
 
-`ether.http.fetch({url,timeoutMs:1200})` bounds a slow remote request by the
-remaining call deadline. Hosted code can catch `e.code === "timeout"`.
-Remote SDK fetches use their local request context/timeout.
+`ether.http.fetch({url,timeoutMs:1200})` and
+`ether.http.fetchToCache({url,libraryKey,name,timeoutMs:1200})` bound a slow
+remote request (including streaming into cache) by the remaining call deadline.
+Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
+request context/timeout.
 
 `ether.http.hash({url,algo:"sha256",expectSize:12345})` returns either
 `{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` is
@@ -38350,6 +38391,7 @@ type ArchiveReadResult struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `libraryKey` | `string` | emitted (validation may require a value) |  |
@@ -38360,6 +38402,7 @@ type ArchiveReadResult struct {
 
 ``````
 type FetchCacheRequest struct {
+	TimeoutMS  int64             `json:"timeoutMs,omitempty"`
 	URL        string            `json:"url"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	LibraryKey string            `json:"libraryKey"`
@@ -52013,7 +52056,14 @@ export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
 export interface ArchiveReadResult { index: number; member: number; size: number; body: Uint8Array }
-export interface FetchCacheRequest { url: string; headers?: Record<string, string>; libraryKey: string; name: string }
+export interface FetchCacheRequest {
+  /** Bounded by the call deadline. Timeout throws an error with code "timeout". */
+  timeoutMs?: number;
+  url: string;
+  headers?: Record<string, string>;
+  libraryKey: string;
+  name: string;
+}
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
 export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }

@@ -77,15 +77,20 @@ type KindPage struct {
 
 // KindBrowseRequest is Ether's browse/search request for one kind level.
 type KindBrowseRequest struct {
-	Kind     string              `json:"-"` // filled from the route, never on the wire
-	ParentID string              `json:"parentId,omitempty"`
-	Level    string              `json:"level,omitempty"`
-	Cursor   string              `json:"cursor,omitempty"`
-	Limit    int                 `json:"limit,omitempty"`
-	Sort     string              `json:"sort,omitempty"`
-	Desc     bool                `json:"desc,omitempty"`
-	Facets   map[string][]string `json:"facets,omitempty"`
-	Query    string              `json:"query,omitempty"`
+	Kind     string `json:"-"` // filled from the route, never on the wire
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Sort     string `json:"sort,omitempty"`
+	Desc     bool   `json:"desc,omitempty"`
+	// Facets requires any of the listed values per field; AllFacets
+	// requires every listed value and ExcludeFacets drops items having
+	// any listed value. All three combine with AND.
+	Facets        map[string][]string `json:"facets,omitempty"`
+	AllFacets     map[string][]string `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
+	Query         string              `json:"query,omitempty"`
 }
 
 // KindBrowseQuery is the query passed to kinds.browse from a frontend adapter (#615).

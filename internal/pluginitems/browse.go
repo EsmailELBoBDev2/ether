@@ -33,9 +33,14 @@ type BrowseQuery struct {
 	PersonID  int64
 	Sort      string              // title (default), added, released, year, rating, index, lastViewed
 	Desc      bool                // false = default direction for Sort; true = reverse
-	Facets    map[string][]string // field key -> required values (OR within key, AND across keys)
-	Cursor    string              // opaque keyset cursor
-	Limit     int
+	Facets    map[string][]string // field key -> values, any of (OR within key, AND across keys)
+	// AllFacets requires every listed value per field; ExcludeFacets
+	// drops items having any listed value. Both combine with Facets
+	// using AND and the same per-type value handling.
+	AllFacets     map[string][]string
+	ExcludeFacets map[string][]string
+	Cursor        string // opaque keyset cursor
+	Limit         int
 }
 
 // BrowsePage is a keyset page of plugin items.
@@ -148,7 +153,10 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 
 	level := strings.TrimSpace(q.Level)
 	parentRef := strings.TrimSpace(string(q.ParentRef))
-	hasFacets := hasActiveFacets(q.Facets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
+	if err := checkFacetValueBound(q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
+		return BrowsePage{}, err
+	}
+	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
 
 	// Build person + facet predicates first so we know whether to drive the
 	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
@@ -172,6 +180,18 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	}
 	if usedFacetIndex {
 		driveFromFields = true
+	}
+	usedAllFacetIndex, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.AllFacets, facetAll)
+	if err != nil {
+		return BrowsePage{}, err
+	}
+	if usedAllFacetIndex {
+		driveFromFields = true
+	}
+	// Exclusion predicates are NOT IN subqueries over the same indexed
+	// field rows; they filter the item scan and never drive it.
+	if _, err := s.appendBrowseFacetsMode(ctx, q.LibraryID, &filterWhere, &filterArgs, q.ExcludeFacets, facetNone); err != nil {
+		return BrowsePage{}, err
 	}
 	if !q.Hidden && (q.TabPolicy.HasPositiveViewerFilter() || q.Policy.HasPositiveViewerFilter()) {
 		driveFromFields = true
@@ -1427,10 +1447,90 @@ func hasActiveFacets(facets map[string][]string) bool {
 	return false
 }
 
+// facetMode selects how one facet map's values combine within a field:
+// any of them (OR), all of them (one predicate per value), or none of
+// them (negated). Fields always combine with AND.
+type facetMode int
+
+const (
+	facetAny facetMode = iota
+	facetAll
+	facetNone
+)
+
+func checkFacetValueBound(maps ...map[string][]string) error {
+	total := 0
+	for _, facets := range maps {
+		for _, vals := range facets {
+			total += len(vals)
+			if total > MaxBrowseFacetValues {
+				return fmt.Errorf("pluginitems: facet values exceed %d per query", MaxBrowseFacetValues)
+			}
+		}
+	}
+	return nil
+}
+
+func cleanFacetValues(vals []string) []string {
+	var clean []string
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); v != "" {
+			clean = append(clean, v)
+		}
+	}
+	return clean
+}
+
+func sortedFacetKeys(facets map[string][]string) []string {
+	keys := make([]string, 0, len(facets))
+	for k := range facets {
+		if strings.TrimSpace(k) != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// appendLibraryFacetMode emits libraryfilter facet predicates for one
+// mode: any uses the map directly, all repeats the predicate per value,
+// and none negates each field's predicate.
+func appendLibraryFacetMode(where *strings.Builder, args *[]any, facets map[string][]string, types map[string]string, mode facetMode) {
+	switch mode {
+	case facetAny:
+		libraryfilter.AppendPluginFacetClauses(where, args, facets, types)
+	case facetAll:
+		for _, key := range sortedFacetKeys(facets) {
+			for _, v := range cleanFacetValues(facets[key]) {
+				libraryfilter.AppendPluginFacetClauses(where, args, map[string][]string{key: {v}}, types)
+			}
+		}
+	case facetNone:
+		for _, key := range sortedFacetKeys(facets) {
+			cleanVals := cleanFacetValues(facets[key])
+			if len(cleanVals) == 0 {
+				continue
+			}
+			var tmp strings.Builder
+			var tmpArgs []any
+			libraryfilter.AppendPluginFacetClauses(&tmp, &tmpArgs, map[string][]string{key: cleanVals}, types)
+			clause := strings.TrimPrefix(tmp.String(), " AND ")
+			if clause == "" || clause == "0=1" {
+				continue
+			}
+			*args = append(*args, tmpArgs...)
+			where.WriteString(` AND NOT (` + clause + `)`)
+		}
+	}
+}
+
 // appendFacets resolves field types only when a browse/search uses facets.
-func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string) error {
-	if !hasActiveFacets(facets) {
+func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets, allFacets, excludeFacets map[string][]string) error {
+	if !hasActiveFacets(facets) && !hasActiveFacets(allFacets) && !hasActiveFacets(excludeFacets) {
 		return nil
+	}
+	if err := checkFacetValueBound(facets, allFacets, excludeFacets); err != nil {
+		return err
 	}
 	rec, err := s.GetKindByLibrary(ctx, lib)
 	if err != nil {
@@ -1440,7 +1540,9 @@ func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *s
 	for _, field := range rec.Decl.Fields {
 		types[field.Key] = field.Type
 	}
-	libraryfilter.AppendPluginFacetClauses(where, args, facets, types)
+	appendLibraryFacetMode(where, args, facets, types, facetAny)
+	appendLibraryFacetMode(where, args, allFacets, types, facetAll)
+	appendLibraryFacetMode(where, args, excludeFacets, types, facetNone)
 	return nil
 }
 
@@ -1450,6 +1552,15 @@ func (s *Service) appendFacets(ctx context.Context, lib core.LibraryID, where *s
 // plugin_item_fields_lookup_real instead of scanning all library items with
 // correlated EXISTS checks.
 func (s *Service) appendBrowseFacets(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string) (bool, error) {
+	return s.appendBrowseFacetsMode(ctx, lib, where, args, facets, facetAny)
+}
+
+// appendBrowseFacetsMode is appendBrowseFacets for one facet mode. All
+// repeats the indexed predicate once per value so every value must be
+// present; none emits the same indexed subquery under NOT IN so items
+// having any listed value are dropped. The returned flag reports whether
+// a positive field-index predicate can drive the query.
+func (s *Service) appendBrowseFacetsMode(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, facets map[string][]string, mode facetMode) (bool, error) {
 	if !hasActiveFacets(facets) {
 		return false, nil
 	}
@@ -1461,49 +1572,34 @@ func (s *Service) appendBrowseFacets(ctx context.Context, lib core.LibraryID, wh
 	for _, field := range rec.Decl.Fields {
 		types[field.Key] = field.Type
 	}
-	keys := make([]string, 0, len(facets))
-	for k := range facets {
-		if strings.TrimSpace(k) != "" {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-
+	negate := mode == facetNone
 	usedFieldIndex := false
-	for _, key := range keys {
-		var cleanVals []string
-		for _, v := range facets[key] {
-			if v = strings.TrimSpace(v); v != "" {
-				cleanVals = append(cleanVals, v)
-			}
-		}
-		if len(cleanVals) == 0 {
-			continue
-		}
+
+	emit := func(key string, cleanVals []string) {
 		if key == "decade" && types["decade"] == "" {
-			libraryfilter.AppendPluginFacetClauses(where, args, map[string][]string{key: cleanVals}, types)
-			continue
+			appendLibraryFacetMode(where, args, map[string][]string{key: cleanVals}, types, mode)
+			return
 		}
 		if base, ok := libraryfilter.SplitDateDecadeFacet(key); ok && types[base] == "date" {
-			appendBrowseDateDecadeClause(where, args, base, cleanVals, &usedFieldIndex)
-			continue
+			appendBrowseDateDecadeClause(where, args, base, cleanVals, &usedFieldIndex, negate)
+			return
 		}
 		ftype := types[key]
 		if envelopeFacet(key) {
-			libraryfilter.AppendPluginFacetClauses(where, args, map[string][]string{key: cleanVals}, types)
-			continue
+			appendLibraryFacetMode(where, args, map[string][]string{key: cleanVals}, types, mode)
+			return
 		}
 		switch ftype {
 		case "int", "date", "duration":
-			appendBrowseIntFieldClause(where, args, key, ftype, cleanVals, &usedFieldIndex)
+			appendBrowseIntFieldClause(where, args, key, ftype, cleanVals, &usedFieldIndex, negate)
 		case "float":
-			appendBrowseFloatFieldClause(where, args, key, cleanVals, &usedFieldIndex)
+			appendBrowseFloatFieldClause(where, args, key, cleanVals, &usedFieldIndex, negate)
 		case "people":
-			appendBrowsePeopleFieldClause(where, args, key, cleanVals, &usedFieldIndex)
+			appendBrowsePeopleFieldClause(where, args, key, cleanVals, &usedFieldIndex, negate)
 		default:
 			if ftype == "" && browseAllIntRanges(cleanVals) {
-				appendBrowseIntFieldClause(where, args, key, "int", cleanVals, &usedFieldIndex)
-				continue
+				appendBrowseIntFieldClause(where, args, key, "int", cleanVals, &usedFieldIndex, negate)
+				return
 			}
 			placeholders := make([]string, len(cleanVals))
 			*args = append(*args, key)
@@ -1511,9 +1607,29 @@ func (s *Service) appendBrowseFacets(ctx context.Context, lib core.LibraryID, wh
 				placeholders[idx] = "?"
 				*args = append(*args, v)
 			}
-			where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
-			usedFieldIndex = true
+			op := "IN"
+			if negate {
+				op = "NOT IN"
+			}
+			where.WriteString(` AND i.item_ref ` + op + ` (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_text IN (` + strings.Join(placeholders, ", ") + `))`)
+			if !negate {
+				usedFieldIndex = true
+			}
 		}
+	}
+
+	for _, key := range sortedFacetKeys(facets) {
+		cleanVals := cleanFacetValues(facets[key])
+		if len(cleanVals) == 0 {
+			continue
+		}
+		if mode == facetAll {
+			for _, v := range cleanVals {
+				emit(key, []string{v})
+			}
+			continue
+		}
+		emit(key, cleanVals)
 	}
 	return usedFieldIndex, nil
 }
@@ -1536,20 +1652,24 @@ func intRangePartialPred(lo, hi int64) string {
 // index applies. Multiple disjuncts use UNION ALL instead of a single OR so
 // SQLite seeks the partial index on every branch rather than falling back to a
 // full field scan.
-func appendBrowseFieldDisjuncts(where *strings.Builder, args *[]any, fieldKey, defaultPartialPred string, disjuncts []fieldDisjunct) {
+func appendBrowseFieldDisjuncts(where *strings.Builder, args *[]any, fieldKey, defaultPartialPred string, disjuncts []fieldDisjunct, negate bool) {
 	predFor := func(d fieldDisjunct) string {
 		if d.partialPred != "" {
 			return d.partialPred
 		}
 		return defaultPartialPred
 	}
+	op := "IN"
+	if negate {
+		op = "NOT IN"
+	}
 	if len(disjuncts) == 1 {
 		*args = append(*args, fieldKey)
 		*args = append(*args, disjuncts[0].args...)
-		where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(disjuncts[0]) + ` AND ` + disjuncts[0].sql + `)`)
+		where.WriteString(` AND i.item_ref ` + op + ` (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(disjuncts[0]) + ` AND ` + disjuncts[0].sql + `)`)
 		return
 	}
-	where.WriteString(` AND i.item_ref IN (`)
+	where.WriteString(` AND i.item_ref ` + op + ` (`)
 	for idx, d := range disjuncts {
 		if idx > 0 {
 			where.WriteString(` UNION ALL `)
@@ -1561,7 +1681,7 @@ func appendBrowseFieldDisjuncts(where *strings.Builder, args *[]any, fieldKey, d
 	where.WriteString(`)`)
 }
 
-func appendBrowseDateDecadeClause(where *strings.Builder, args *[]any, baseField string, vals []string, used *bool) {
+func appendBrowseDateDecadeClause(where *strings.Builder, args *[]any, baseField string, vals []string, used *bool, negate bool) {
 	var disjuncts []fieldDisjunct
 	for _, v := range vals {
 		if lo, hi, ok := libraryfilter.ParseDateDecadeBucket(v); ok {
@@ -1573,14 +1693,18 @@ func appendBrowseDateDecadeClause(where *strings.Builder, args *[]any, baseField
 		}
 	}
 	if len(disjuncts) == 0 {
-		where.WriteString(` AND 0=1`)
+		if !negate {
+			where.WriteString(` AND 0=1`)
+		}
 		return
 	}
-	appendBrowseFieldDisjuncts(where, args, baseField, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts)
-	*used = true
+	appendBrowseFieldDisjuncts(where, args, baseField, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts, negate)
+	if !negate {
+		*used = true
+	}
 }
 
-func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool) {
+func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool, negate bool) {
 	var disjuncts []fieldDisjunct
 	var exactPh []string
 	var exactArgs []any
@@ -1611,11 +1735,15 @@ func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key strin
 		})
 	}
 	if len(disjuncts) == 0 {
-		where.WriteString(` AND 0=1`)
+		if !negate {
+			where.WriteString(` AND 0=1`)
+		}
 		return
 	}
-	appendBrowseFieldDisjuncts(where, args, key, `f.v_text = ''`, disjuncts)
-	*used = true
+	appendBrowseFieldDisjuncts(where, args, key, `f.v_text = ''`, disjuncts, negate)
+	if !negate {
+		*used = true
+	}
 }
 
 func browseAllIntRanges(vals []string) bool {
@@ -1636,7 +1764,7 @@ func browseAllIntRanges(vals []string) bool {
 	return true
 }
 
-func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype string, vals []string, used *bool) {
+func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype string, vals []string, used *bool, negate bool) {
 	var disjuncts []fieldDisjunct
 	var exactPh []string
 	var exactArgs []any
@@ -1705,14 +1833,18 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 		})
 	}
 	if len(disjuncts) == 0 {
-		where.WriteString(` AND 0=1`)
+		if !negate {
+			where.WriteString(` AND 0=1`)
+		}
 		return
 	}
-	appendBrowseFieldDisjuncts(where, args, key, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts)
-	*used = true
+	appendBrowseFieldDisjuncts(where, args, key, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts, negate)
+	if !negate {
+		*used = true
+	}
 }
 
-func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool) {
+func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool, negate bool) {
 	var pids []int64
 	for _, v := range vals {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && core.IsPluginPersonID(n) {
@@ -1724,7 +1856,9 @@ func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key stri
 		}
 	}
 	if len(pids) == 0 {
-		where.WriteString(` AND 0=1`)
+		if !negate {
+			where.WriteString(` AND 0=1`)
+		}
 		return
 	}
 	placeholders := make([]string, len(pids))
@@ -1733,8 +1867,14 @@ func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key stri
 		placeholders[idx] = "?"
 		*args = append(*args, pid)
 	}
-	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
-	*used = true
+	op := "IN"
+	if negate {
+		op = "NOT IN"
+	}
+	where.WriteString(` AND i.item_ref ` + op + ` (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
+	if !negate {
+		*used = true
+	}
 }
 
 func (s *Service) appendBrowsePersonFilter(ctx context.Context, lib core.LibraryID, where *strings.Builder, args *[]any, personID int64) (bool, error) {

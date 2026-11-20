@@ -615,7 +615,12 @@ export interface KindBrowseRequest {
   limit?: number;
   sort?: string;
   desc?: boolean;
+  /** Any of the listed values per field (OR within a field, AND across fields). */
   facets?: Record<string, string[]>;
+  /** Every listed value per field must be present. */
+  allFacets?: Record<string, string[]>;
+  /** Items having any listed value per field are dropped. */
+  excludeFacets?: Record<string, string[]>;
   query?: string;
 }
 

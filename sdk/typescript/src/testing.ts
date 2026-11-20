@@ -407,16 +407,30 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
             const hay = `${it.title ?? ""} ${it.summary ?? ""}`.toLowerCase();
             if (!hay.includes(needle)) return false;
           }
+          const facetHave = (k: string): string[] => {
+            const raw = it.fields?.[k];
+            return Array.isArray(raw)
+              ? raw.map((v) => String(v).toLowerCase())
+              : raw != null
+                ? [String(raw).toLowerCase()]
+                : [];
+          };
           if (query.facets) {
             for (const [k, want] of Object.entries(query.facets)) {
               if (!want?.length) continue;
-              const raw = it.fields?.[k];
-              const have = Array.isArray(raw)
-                ? raw.map((v) => String(v).toLowerCase())
-                : raw != null
-                  ? [String(raw).toLowerCase()]
-                  : [];
-              if (!want.some((w) => have.includes(w.toLowerCase()))) return false;
+              if (!want.some((w) => facetHave(k).includes(w.toLowerCase()))) return false;
+            }
+          }
+          if (query.allFacets) {
+            for (const [k, want] of Object.entries(query.allFacets)) {
+              if (!want?.length) continue;
+              if (!want.every((w) => facetHave(k).includes(w.toLowerCase()))) return false;
+            }
+          }
+          if (query.excludeFacets) {
+            for (const [k, want] of Object.entries(query.excludeFacets)) {
+              if (!want?.length) continue;
+              if (want.some((w) => facetHave(k).includes(w.toLowerCase()))) return false;
             }
           }
           return true;

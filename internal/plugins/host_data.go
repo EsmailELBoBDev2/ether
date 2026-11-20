@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha1"
@@ -10,11 +11,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"path"
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -99,6 +103,26 @@ type ArchiveExtractResult struct {
 	SHA1  string `json:"sha1"`
 	MD5   string `json:"md5"`
 	CRC32 string `json:"crc32"`
+}
+
+// RasterizeOptions selects the output size and format for cache.rasterize.
+// A zero Width or Height keeps the SVG aspect ratio; both zero renders at
+// the rasteriser's default width. Width and Height are each bounded by
+// artwork.MaxRasterDimension and Format is "png" (default) or "jpeg".
+type RasterizeOptions struct {
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Format string `json:"format,omitempty"`
+}
+
+// RasterizeResult is returned by cache.rasterize after rasterising a cached
+// SVG blob into a new cached bitmap blob in the plugin's own library cache.
+type RasterizeResult struct {
+	Blob        string `json:"blob"`
+	ContentType string `json:"contentType"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Size        int64  `json:"size"`
 }
 
 // boundedDataReader propagates cancellation and rejects overflow instead of
@@ -205,6 +229,65 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 		return FetchCacheResult{}, err
 	}
 	return FetchCacheResult{Blob: ref, Size: reader.size, CRC32: fmt.Sprintf("%08x", crc.Sum32()), MD5: fmt.Sprintf("%x", m.Sum(nil)), SHA1: fmt.Sprintf("%x", s.Sum(nil)), Status: resp.StatusCode}, nil
+}
+
+// CacheRasterize rasterises an SVG already in the plugin's own blob cache
+// into a new cached bitmap blob, using Ether's bounded SVG rasteriser. The
+// source read is capped at the rasteriser's SVG size limit, output sizes
+// are bounded by its dimension limit, and artwork.ErrSVG is returned for
+// documents the rasteriser refuses. Rendered variants are cached by the
+// rasteriser (by source content and size) and the stored blob is
+// content-addressed, so repeat calls return the same reference.
+func (h *host) CacheRasterize(ctx context.Context, libraryKey, name, sourceBlobRef string, opts RasterizeOptions) (RasterizeResult, error) {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return RasterizeResult{}, err
+	}
+	if _, err := h.cacheWriteCheck(ctx, libraryKey, name); err != nil {
+		return RasterizeResult{}, err
+	}
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format == "" {
+		format = "png"
+	}
+	if opts.Width < 0 || opts.Height < 0 || opts.Width > artwork.MaxRasterDimension || opts.Height > artwork.MaxRasterDimension || (format != "png" && format != "jpeg") {
+		return RasterizeResult{}, artwork.ErrSVG
+	}
+	rc, err := h.CacheOpen(ctx, sourceBlobRef)
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	source, err := io.ReadAll(io.LimitReader(rc, artwork.MaxSVGBytes+1))
+	_ = rc.Close()
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	raster := h.m.iconRaster
+	if raster == nil {
+		raster = artwork.NewSVGRasterizer()
+	}
+	data, contentType, err := raster.Rasterize(ctx, "plugin:"+h.plugin+":"+sourceBlobRef, source, artwork.RasterOptions{Width: opts.Width, Height: opts.Height, Format: format})
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	var dims struct{ Width, Height int }
+	if format == "png" {
+		cfg, derr := png.DecodeConfig(bytes.NewReader(data))
+		if derr != nil {
+			return RasterizeResult{}, derr
+		}
+		dims.Width, dims.Height = cfg.Width, cfg.Height
+	} else {
+		cfg, derr := jpeg.DecodeConfig(bytes.NewReader(data))
+		if derr != nil {
+			return RasterizeResult{}, derr
+		}
+		dims.Width, dims.Height = cfg.Width, cfg.Height
+	}
+	ref, err := h.CachePut(ctx, libraryKey, name, bytes.NewReader(data))
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	return RasterizeResult{Blob: ref, ContentType: contentType, Width: dims.Width, Height: dims.Height, Size: int64(len(data))}, nil
 }
 
 func validDataRange(r DataRange, maxBytes int64) error {
@@ -536,6 +619,31 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, ErrUnavailable
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
+	} else if name == "cache.rasterize" {
+		if len(args) < 3 || len(args) > 4 {
+			return nil, fmt.Errorf("plugins: cache.rasterize takes (libraryKey, name, sourceBlob[, options])")
+		}
+		var libraryKey, entryName, sourceBlobRef string
+		var opts RasterizeOptions
+		if err = json.Unmarshal(args[0], &libraryKey); err == nil {
+			err = json.Unmarshal(args[1], &entryName)
+		}
+		if err == nil {
+			err = json.Unmarshal(args[2], &sourceBlobRef)
+		}
+		if err == nil && len(args) == 4 && string(args[3]) != "null" {
+			err = json.Unmarshal(args[3], &opts)
+		}
+		if err != nil {
+			return nil, err
+		}
+		service, ok := h.(interface {
+			CacheRasterize(context.Context, string, string, string, RasterizeOptions) (RasterizeResult, error)
+		})
+		if !ok {
+			return nil, ErrUnavailable
+		}
+		value, err = service.CacheRasterize(ctx, libraryKey, entryName, sourceBlobRef, opts)
 	} else {
 		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.read" && name != "archive.extract" {
 			return nil, ErrPermissionDenied

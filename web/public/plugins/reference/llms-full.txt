@@ -1042,6 +1042,14 @@ Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
+A `kinds.browse` query filters with three facet maps that combine with
+AND: `facets` (any of the listed values per field), `allFacets` (every
+listed value per field, for "tagged both X and Y"), and `excludeFacets`
+(none of the listed values, for "without X"). All three accept the same
+per-type values as `facets`, including `lo..hi` ranges for numbers and
+dates and people names, and are evaluated inside the browse query so
+paging and `total` stay correct. The total number of facet values
+across the three maps is bounded (256 per query).
 Default cache quota is 2 GiB per library under a shared cap of
 min(10 GiB, 5% of the cache disk); your `cache.maxBytes` and the
 owner can override it.
@@ -1233,10 +1241,22 @@ computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enfor
 `archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
 index with `UnsafeArchiveMemberError` and directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
-The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
+The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `CacheRasterize`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
 `RemoteHostClient` and `MockHostClient` expose `runtime.limits()` and `archive.list`,
 `archive.open`, `archive.read`, and `archive.extract`.
+
+`cache.rasterize(libraryKey, name, sourceBlob[, {width?, height?, format?}])` rasterises an
+SVG already in the plugin's own library cache into a new cached bitmap blob, for clients
+that only draw bitmaps. It returns `{blob, contentType, width, height, size}`; serve the
+result as a blob response like any other cached image. A zero `width` or `height` keeps
+the SVG aspect ratio and `format` is `"png"` (default) or `"jpeg"`. The host bounds the
+source document (512 KiB) and each output dimension (2048), applies the same SVG safety
+rules Ether uses for logos (no external resources, scripts, or unsafe constructs), and
+returns an error for documents it refuses. Rendered variants are cached by source content
+and size, and the stored blob is content-addressed, so repeat calls return the same
+reference. The existing content capability and library cache quota apply; no new
+permission is needed.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
@@ -1816,7 +1836,9 @@ type KindPage struct {
 | `limit` | `int` | may be omitted (see validation for conditions) |  |
 | `sort` | `string` | may be omitted (see validation for conditions) |  |
 | `desc` | `bool` | may be omitted (see validation for conditions) |  |
-| `facets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
+| `facets` | `map[string][]string` | may be omitted (see validation for conditions) | Facets requires any of the listed values per field (OR within a field, AND across fields). AllFacets requires every listed value per field and ExcludeFacets drops items having any listed value; all three maps combine with AND and accept the same per-type values (including lo..hi ranges and people names). |
+| `allFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
+| `excludeFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -1827,14 +1849,21 @@ type KindPage struct {
 // browse or search route (spec §3.1, §3.2) and passed to the
 // viewer-scoped kinds.browse host service (#615).
 type KindBrowseRequest struct {
-	ParentID string              `json:"parentId,omitempty"`
-	Level    string              `json:"level,omitempty"`
-	Cursor   string              `json:"cursor,omitempty"`
-	Limit    int                 `json:"limit,omitempty"`
-	Sort     string              `json:"sort,omitempty"`
-	Desc     bool                `json:"desc,omitempty"`
-	Facets   map[string][]string `json:"facets,omitempty"`
-	Query    string              `json:"query,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Sort     string `json:"sort,omitempty"`
+	Desc     bool   `json:"desc,omitempty"`
+	// Facets requires any of the listed values per field (OR within a
+	// field, AND across fields). AllFacets requires every listed value
+	// per field and ExcludeFacets drops items having any listed value;
+	// all three maps combine with AND and accept the same per-type
+	// values (including lo..hi ranges and people names).
+	Facets        map[string][]string `json:"facets,omitempty"`
+	AllFacets     map[string][]string `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
+	Query         string              `json:"query,omitempty"`
 }
 ``````
 
@@ -9235,6 +9264,54 @@ type ArchiveExtractResult struct {
 }
 ``````
 
+## Source: internal/plugins/host_data.go#RasterizeOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `width` | `int` | may be omitted (see validation for conditions) |  |
+| `height` | `int` | may be omitted (see validation for conditions) |  |
+| `format` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/host_data.go#RasterizeOptions
+
+``````
+// RasterizeOptions selects the output size and format for cache.rasterize.
+// A zero Width or Height keeps the SVG aspect ratio; both zero renders at
+// the rasteriser's default width. Width and Height are each bounded by
+// artwork.MaxRasterDimension and Format is "png" (default) or "jpeg".
+type RasterizeOptions struct {
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Format string `json:"format,omitempty"`
+}
+``````
+
+## Source: internal/plugins/host_data.go#RasterizeResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `blob` | `string` | emitted (validation may require a value) |  |
+| `contentType` | `string` | emitted (validation may require a value) |  |
+| `width` | `int` | emitted (validation may require a value) |  |
+| `height` | `int` | emitted (validation may require a value) |  |
+| `size` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/host_data.go#RasterizeResult
+
+``````
+// RasterizeResult is returned by cache.rasterize after rasterising a cached
+// SVG blob into a new cached bitmap blob in the plugin's own library cache.
+type RasterizeResult struct {
+	Blob        string `json:"blob"`
+	ContentType string `json:"contentType"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Size        int64  `json:"size"`
+}
+``````
+
 ## Source: internal/plugins/host_data.go#boundedDataReader.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -9370,6 +9447,69 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 		return FetchCacheResult{}, err
 	}
 	return FetchCacheResult{Blob: ref, Size: reader.size, CRC32: fmt.Sprintf("%08x", crc.Sum32()), MD5: fmt.Sprintf("%x", m.Sum(nil)), SHA1: fmt.Sprintf("%x", s.Sum(nil)), Status: resp.StatusCode}, nil
+}
+``````
+
+## Source: internal/plugins/host_data.go#*host.CacheRasterize
+
+``````
+// CacheRasterize rasterises an SVG already in the plugin's own blob cache
+// into a new cached bitmap blob, using Ether's bounded SVG rasteriser. The
+// source read is capped at the rasteriser's SVG size limit, output sizes
+// are bounded by its dimension limit, and artwork.ErrSVG is returned for
+// documents the rasteriser refuses. Rendered variants are cached by the
+// rasteriser (by source content and size) and the stored blob is
+// content-addressed, so repeat calls return the same reference.
+func (h *host) CacheRasterize(ctx context.Context, libraryKey, name, sourceBlobRef string, opts RasterizeOptions) (RasterizeResult, error) {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return RasterizeResult{}, err
+	}
+	if _, err := h.cacheWriteCheck(ctx, libraryKey, name); err != nil {
+		return RasterizeResult{}, err
+	}
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format == "" {
+		format = "png"
+	}
+	if opts.Width < 0 || opts.Height < 0 || opts.Width > artwork.MaxRasterDimension || opts.Height > artwork.MaxRasterDimension || (format != "png" && format != "jpeg") {
+		return RasterizeResult{}, artwork.ErrSVG
+	}
+	rc, err := h.CacheOpen(ctx, sourceBlobRef)
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	source, err := io.ReadAll(io.LimitReader(rc, artwork.MaxSVGBytes+1))
+	_ = rc.Close()
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	raster := h.m.iconRaster
+	if raster == nil {
+		raster = artwork.NewSVGRasterizer()
+	}
+	data, contentType, err := raster.Rasterize(ctx, "plugin:"+h.plugin+":"+sourceBlobRef, source, artwork.RasterOptions{Width: opts.Width, Height: opts.Height, Format: format})
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	var dims struct{ Width, Height int }
+	if format == "png" {
+		cfg, derr := png.DecodeConfig(bytes.NewReader(data))
+		if derr != nil {
+			return RasterizeResult{}, derr
+		}
+		dims.Width, dims.Height = cfg.Width, cfg.Height
+	} else {
+		cfg, derr := jpeg.DecodeConfig(bytes.NewReader(data))
+		if derr != nil {
+			return RasterizeResult{}, derr
+		}
+		dims.Width, dims.Height = cfg.Width, cfg.Height
+	}
+	ref, err := h.CachePut(ctx, libraryKey, name, bytes.NewReader(data))
+	if err != nil {
+		return RasterizeResult{}, err
+	}
+	return RasterizeResult{Blob: ref, ContentType: contentType, Width: dims.Width, Height: dims.Height, Size: int64(len(data))}, nil
 }
 ``````
 
@@ -9762,6 +9902,31 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, ErrUnavailable
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{FetchRequest: FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers}, LibraryKey: req.LibraryKey, Name: req.Name})
+	} else if name == "cache.rasterize" {
+		if len(args) < 3 || len(args) > 4 {
+			return nil, fmt.Errorf("plugins: cache.rasterize takes (libraryKey, name, sourceBlob[, options])")
+		}
+		var libraryKey, entryName, sourceBlobRef string
+		var opts RasterizeOptions
+		if err = json.Unmarshal(args[0], &libraryKey); err == nil {
+			err = json.Unmarshal(args[1], &entryName)
+		}
+		if err == nil {
+			err = json.Unmarshal(args[2], &sourceBlobRef)
+		}
+		if err == nil && len(args) == 4 && string(args[3]) != "null" {
+			err = json.Unmarshal(args[3], &opts)
+		}
+		if err != nil {
+			return nil, err
+		}
+		service, ok := h.(interface {
+			CacheRasterize(context.Context, string, string, string, RasterizeOptions) (RasterizeResult, error)
+		})
+		if !ok {
+			return nil, ErrUnavailable
+		}
+		value, err = service.CacheRasterize(ctx, libraryKey, entryName, sourceBlobRef, opts)
 	} else {
 		if name != "cache.read" && name != "archive.list" && name != "archive.open" && name != "archive.read" && name != "archive.extract" {
 			return nil, ErrPermissionDenied
@@ -12155,7 +12320,7 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 		return out, err
 	}
 	switch name {
-	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "archive.list", "archive.open", "archive.read", "archive.extract":
+	case "runtime.limits", "http.hash", "http.fetchToCache", "cache.read", "cache.rasterize", "archive.list", "archive.open", "archive.read", "archive.extract":
 		out, err := CallDataHost(ctx, b.h, name, raw)
 		if err != nil {
 			return nil, mapHostError(err)
@@ -24514,7 +24679,8 @@ globalThis.ether = (() => {
              browse: (kind, query) => call("kinds.browse", [kind, query == null ? {} : query]) },
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
-             open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]) },
+             open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]),
+             rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]) },
     archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
     frontend: { streamURL: (itemRef, partIndex) => call("frontend.streamURL", partIndex == null ? [itemRef] : [itemRef, partIndex]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
@@ -25659,7 +25825,7 @@ type Response struct {
 // service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get,
 // http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
-// kinds.items, sources.resolve, cache.put, cache.open, cache.read, frontend.streamURL,
+// kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, frontend.streamURL,
 // folders.list, folders.stat, events.publish, notify.owner, log. Args is a JSON array of positional
 // arguments; the result is any JSON value. Return a *Fault to classify the
 // failure (forbidden for a missing or revoked grant).
@@ -25684,7 +25850,7 @@ type HostFunc func(ctx context.Context, name string, args json.RawMessage) (json
 // additionally charges ArchiveExtractUnitsPerMiB per started MiB streamed.
 var DefaultCosts = map[string]int64{
 	"log": 1, "runtime.limits": 1, "kv.get": 5, "kv.put": 10, "kv.delete": 5, "kv.list": 10, "kv.usage": 5, "badges.set": 20, "badges.clear": 10, "badges.usage": 5,
-	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
+	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
@@ -38115,6 +38281,7 @@ type BlobHost interface {
 	RuntimeLimits(context.Context) (RuntimeLimits, error)
 	FetchToCache(context.Context, FetchCacheRequest) (FetchCacheResult, error)
 	CacheRead(context.Context, string, DataRange) ([]byte, error)
+	CacheRasterize(context.Context, string, string, string, RasterizeOptions) (RasterizeResult, error)
 	ArchiveList(context.Context, string) ([]ArchiveMember, error)
 	ArchiveOpen(context.Context, string, int, DataRange) ([]byte, error)
 	ArchiveRead(context.Context, string, []ArchiveReadItem) ([]ArchiveReadResult, error)
@@ -38289,6 +38456,53 @@ type ArchiveExtractResult struct {
 }
 ``````
 
+## Source: sdk/go/data_host.go#RasterizeOptions.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `width` | `int` | may be omitted (see validation for conditions) |  |
+| `height` | `int` | may be omitted (see validation for conditions) |  |
+| `format` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/data_host.go#RasterizeOptions
+
+``````
+// RasterizeOptions selects the output size and format for CacheRasterize.
+// A zero Width or Height keeps the SVG aspect ratio; Format is "png"
+// (default) or "jpeg". Each dimension is bounded at 2048 by the host.
+type RasterizeOptions struct {
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Format string `json:"format,omitempty"`
+}
+``````
+
+## Source: sdk/go/data_host.go#RasterizeResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `blob` | `string` | emitted (validation may require a value) |  |
+| `contentType` | `string` | emitted (validation may require a value) |  |
+| `width` | `int` | emitted (validation may require a value) |  |
+| `height` | `int` | emitted (validation may require a value) |  |
+| `size` | `int64` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/data_host.go#RasterizeResult
+
+``````
+// RasterizeResult is returned by CacheRasterize: the new cached bitmap
+// blob, its content type and pixel dimensions.
+type RasterizeResult struct {
+	Blob        string `json:"blob"`
+	ContentType string `json:"contentType"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Size        int64  `json:"size"`
+}
+``````
+
 ## Source: sdk/go/data_host.go#*RemoteHostClient.dataCall
 
 ``````
@@ -38418,6 +38632,30 @@ func (c *RemoteHostClient) ArchiveRead(ctx context.Context, blob string, reads [
 		out[i] = ArchiveReadResult{Index: w.Index, Member: w.Member, Size: w.Size, Body: body}
 	}
 	return out, nil
+}
+``````
+
+## Source: sdk/go/data_host.go#*RemoteHostClient.CacheRasterize
+
+``````
+// CacheRasterize rasterises an SVG already in the plugin's blob cache into
+// a new cached bitmap blob under libraryKey/name, using Ether's bounded SVG
+// rasteriser (source and output sizes are host-bounded, unsafe documents
+// are refused, and rendered variants are cached host-side).
+func (c *RemoteHostClient) CacheRasterize(ctx context.Context, libraryKey, name, blob string, opts RasterizeOptions) (RasterizeResult, error) {
+	if opts.Width < 0 || opts.Width > 2048 || opts.Height < 0 || opts.Height > 2048 {
+		return RasterizeResult{}, fmt.Errorf("cache.rasterize width and height must be within 0..2048")
+	}
+	if opts.Format != "" && opts.Format != "png" && opts.Format != "jpeg" {
+		return RasterizeResult{}, fmt.Errorf("cache.rasterize format must be png or jpeg")
+	}
+	args := []any{libraryKey, name, blob}
+	if opts != (RasterizeOptions{}) {
+		args = append(args, opts)
+	}
+	var out RasterizeResult
+	err := c.dataCall(ctx, "cache.rasterize", args, &out)
+	return out, err
 }
 ``````
 
@@ -39899,7 +40137,9 @@ type KindPage struct {
 | `limit` | `int` | may be omitted (see validation for conditions) |  |
 | `sort` | `string` | may be omitted (see validation for conditions) |  |
 | `desc` | `bool` | may be omitted (see validation for conditions) |  |
-| `facets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
+| `facets` | `map[string][]string` | may be omitted (see validation for conditions) | Facets requires any of the listed values per field; AllFacets requires every listed value and ExcludeFacets drops items having any listed value. All three combine with AND. |
+| `allFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
+| `excludeFacets` | `map[string][]string` | may be omitted (see validation for conditions) |  |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -39908,15 +40148,20 @@ type KindPage struct {
 ``````
 // KindBrowseRequest is Ether's browse/search request for one kind level.
 type KindBrowseRequest struct {
-	Kind     string              `json:"-"` // filled from the route, never on the wire
-	ParentID string              `json:"parentId,omitempty"`
-	Level    string              `json:"level,omitempty"`
-	Cursor   string              `json:"cursor,omitempty"`
-	Limit    int                 `json:"limit,omitempty"`
-	Sort     string              `json:"sort,omitempty"`
-	Desc     bool                `json:"desc,omitempty"`
-	Facets   map[string][]string `json:"facets,omitempty"`
-	Query    string              `json:"query,omitempty"`
+	Kind     string `json:"-"` // filled from the route, never on the wire
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Sort     string `json:"sort,omitempty"`
+	Desc     bool   `json:"desc,omitempty"`
+	// Facets requires any of the listed values per field; AllFacets
+	// requires every listed value and ExcludeFacets drops items having
+	// any listed value. All three combine with AND.
+	Facets        map[string][]string `json:"facets,omitempty"`
+	AllFacets     map[string][]string `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
+	Query         string              `json:"query,omitempty"`
 }
 ``````
 
@@ -48090,6 +48335,33 @@ class ArchiveExtractResult(TypedDict):
     crc32: str
 
 
+class RasterizeOptions(TypedDict, total=False):
+    width: int
+    height: int
+    format: str
+
+
+class RasterizeResult(TypedDict):
+    blob: str
+    contentType: str
+    width: int
+    height: int
+    size: int
+
+
+def _check_rasterize_options(options: Optional[RasterizeOptions]) -> Optional[Dict[str, Any]]:
+    if options is None:
+        return None
+    out: Dict[str, Any] = dict(options)
+    for dim in (out.get("width"), out.get("height")):
+        if dim is not None and (isinstance(dim, bool) or not isinstance(dim, int) or dim < 0 or dim > 2048):
+            raise ValueError("cache.rasterize width and height must be within 0..2048")
+    fmt = out.get("format")
+    if fmt is not None and fmt not in ("png", "jpeg"):
+        raise ValueError("cache.rasterize format must be png or jpeg")
+    return out
+
+
 def _check_data_range(data_range: Dict[str, Any], max_bytes: int = MAX_DATA_READ_BYTES) -> Dict[str, int]:
     offset = data_range.get("offset")
     length = data_range.get("length")
@@ -48436,6 +48708,20 @@ class RemoteHostClient:
             norm = _check_data_range(data_range)
             res = self._p._call_json("POST", "/ether/plugin-host/data/cache.read", [str(blob_ref), norm])
             return base64.b64decode((res or {}).get("bodyBase64") or "")
+
+        def rasterize(
+            self,
+            library_key: str,
+            name: str,
+            blob_ref: str,
+            options: Optional[RasterizeOptions] = None,
+        ) -> RasterizeResult:
+            args: List[Any] = [str(library_key), str(name), str(blob_ref)]
+            norm = _check_rasterize_options(options)
+            if norm is not None:
+                args.append(norm)
+            res = self._p._call_json("POST", "/ether/plugin-host/data/cache.rasterize", args)
+            return res if isinstance(res, dict) else {}  # type: ignore[return-value]
 
     def _call_json(
         self,
@@ -50133,6 +50419,8 @@ class MockHostClient:
             level = str(q.get("level") or "")
             needle = str(q.get("query") or "").strip().lower()
             facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
+            all_facets = q.get("allFacets") if isinstance(q.get("allFacets"), dict) else {}
+            exclude_facets = q.get("excludeFacets") if isinstance(q.get("excludeFacets"), dict) else {}
             matched: List[Dict[str, Any]] = []
             for it in self._p.kind_store.get(kind, []):
                 if not self._allowed(kind, it):
@@ -50145,22 +50433,32 @@ class MockHostClient:
                     hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
                     if needle not in hay:
                         continue
-                if facets:
+                if facets or all_facets or exclude_facets:
                     item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
-                    ok = True
-                    for fk, want in facets.items():
-                        if not want:
-                            continue
+
+                    def _have(fk: str) -> List[str]:
                         raw = item_fields.get(fk)
                         if isinstance(raw, list):
-                            have = [str(v).lower() for v in raw]
-                        elif raw is not None:
-                            have = [str(raw).lower()]
-                        else:
-                            have = []
-                        if not any(str(w).lower() in have for w in want):
+                            return [str(v).lower() for v in raw]
+                        if raw is not None:
+                            return [str(raw).lower()]
+                        return []
+
+                    ok = True
+                    for fk, want in facets.items():
+                        if want and not any(str(w).lower() in _have(fk) for w in want):
                             ok = False
                             break
+                    if ok:
+                        for fk, want in all_facets.items():
+                            if want and not all(str(w).lower() in _have(fk) for w in want):
+                                ok = False
+                                break
+                    if ok:
+                        for fk, want in exclude_facets.items():
+                            if want and any(str(w).lower() in _have(fk) for w in want):
+                                ok = False
+                                break
                     if not ok:
                         continue
                 matched.append(it)
@@ -50196,6 +50494,17 @@ class MockHostClient:
             norm = _check_data_range(data_range, max_bytes=cap)
             raw = self._p.blobs[blob_ref]
             return raw[norm["offset"] : norm["offset"] + norm["length"]]
+
+        def rasterize(
+            self,
+            library_key: str,
+            name: str,
+            blob_ref: str,
+            options: Optional[RasterizeOptions] = None,
+        ) -> RasterizeResult:
+            _check_rasterize_options(options)
+            _ = self._p.blobs[blob_ref]
+            raise RuntimeError("cache.rasterize is not available in MockHostClient; use a real Ether host to rasterise SVG")
 
     class _Archive:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -51708,6 +52017,9 @@ export interface FetchCacheRequest { url: string; headers?: Record<string, strin
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
 export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }
+/** Output size/format for cache.rasterize; a zero dimension keeps the SVG aspect ratio and each dimension is host-bounded at 2048. */
+export interface RasterizeOptions { width?: number; height?: number; format?: "png" | "jpeg" }
+export interface RasterizeResult { blob: string; contentType: string; width: number; height: number; size: number }
 
 const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64_TABLE = (() => {
@@ -51745,6 +52057,18 @@ function checkArchiveReads(reads: ArchiveReadItem[]): void {
     if (total > MaxDataReadBytes) {
       throw new Error(`archive.read requested bytes exceed maximum readBytes ceiling (${MaxDataReadBytes})`);
     }
+  }
+}
+
+function checkRasterizeOptions(opts?: RasterizeOptions): void {
+  if (!opts) return;
+  for (const dim of [opts.width, opts.height]) {
+    if (dim !== undefined && (!Number.isSafeInteger(dim) || dim < 0 || dim > 2048)) {
+      throw new Error("cache.rasterize width and height must be within 0..2048");
+    }
+  }
+  if (opts.format !== undefined && opts.format !== "png" && opts.format !== "jpeg") {
+    throw new Error("cache.rasterize format must be png or jpeg");
   }
 }
 
@@ -52060,6 +52384,8 @@ export interface EtherHost {
     put(libraryKey: string, name: string, data: Uint8Array): MaybePromise<string>;
     open(blobRef: string): MaybePromise<Uint8Array>;
     read?(blobRef: string, range: DataRange): MaybePromise<Uint8Array>;
+    /** Rasterises a cached SVG blob into a new cached bitmap blob with Ether's bounded SVG rasteriser; unsafe documents are refused. */
+    rasterize?(libraryKey: string, name: string, blobRef: string, opts?: RasterizeOptions): MaybePromise<RasterizeResult>;
   };
   /** ZIP (Store/Deflate), 7z (Copy/LZMA/LZMA2), and RAR 4/5 data services.
    * Ranges bound returned bytes; solid reads restart at the block beginning.
@@ -52213,6 +52539,10 @@ export function createHostedClient(): EtherHost {
           return new Uint8Array(g.__ether_host_binary("cache.read", JSON.stringify([blob, range])) as ArrayBuffer);
         }
         return decodeData(callHost("cache.read", [blob, range]));
+      },
+      rasterize: (lib, name, blob, opts) => {
+        checkRasterizeOptions(opts);
+        return callHost<RasterizeResult>("cache.rasterize", opts == null ? [lib, name, blob] : [lib, name, blob, opts]);
       },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
@@ -52762,6 +53092,7 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     },
     cache: {
       read: async (blob, range) => { checkDataRange(range); return decodeData((await callJson<{bodyBase64: string}>("POST", "/ether/plugin-host/data/cache.read", [blob, range]))!); },
+      rasterize: async (lib, name, blob, opts) => { checkRasterizeOptions(opts); return (await callJson<RasterizeResult>("POST", "/ether/plugin-host/data/cache.rasterize", opts == null ? [lib, name, blob] : [lib, name, blob, opts]))!; },
       async put(libraryKey, name, data) {
         const resp = await doFetch(`${base}/ether/plugin-host/cache/${encodeURIComponent(libraryKey)}?name=${encodeURIComponent(name)}`, {
           method: "POST",
@@ -52966,6 +53297,8 @@ export {
   type HashResult,
   type ArchiveExtractOptions,
   type ArchiveExtractResult,
+  type RasterizeOptions,
+  type RasterizeResult,
   type FetchCacheRequest,
   type FetchCacheResult,
   type HostFetchRequest,
@@ -56268,7 +56601,12 @@ export interface KindBrowseRequest {
   limit?: number;
   sort?: string;
   desc?: boolean;
+  /** Any of the listed values per field (OR within a field, AND across fields). */
   facets?: Record<string, string[]>;
+  /** Every listed value per field must be present. */
+  allFacets?: Record<string, string[]>;
+  /** Items having any listed value per field are dropped. */
+  excludeFacets?: Record<string, string[]>;
   query?: string;
 }
 

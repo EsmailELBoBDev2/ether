@@ -309,12 +309,14 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		if queryStr := strings.TrimSpace(q.Query); queryStr != "" {
 			searchPolicy := policy.ForSearch()
 			page, err := items.Search(ctx, pluginitems.SearchQuery{
-				Policy:    searchPolicy,
-				LibraryID: lib.ID,
-				Query:     queryStr,
-				Level:     q.Level,
-				Facets:    q.Facets,
-				Limit:     limit,
+				Policy:        searchPolicy,
+				LibraryID:     lib.ID,
+				Query:         queryStr,
+				Level:         q.Level,
+				Facets:        q.Facets,
+				AllFacets:     q.AllFacets,
+				ExcludeFacets: q.ExcludeFacets,
+				Limit:         limit,
 			})
 			if err != nil {
 				return core.KindPage{}, err
@@ -349,15 +351,17 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		}
 		if !filterSafety {
 			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
-				Policy:    policy,
-				LibraryID: lib.ID,
-				ParentRef: parentRef,
-				Level:     q.Level,
-				Sort:      q.Sort,
-				Desc:      q.Desc,
-				Facets:    q.Facets,
-				Cursor:    q.Cursor,
-				Limit:     limit,
+				Policy:        policy,
+				LibraryID:     lib.ID,
+				ParentRef:     parentRef,
+				Level:         q.Level,
+				Sort:          q.Sort,
+				Desc:          q.Desc,
+				Facets:        q.Facets,
+				AllFacets:     q.AllFacets,
+				ExcludeFacets: q.ExcludeFacets,
+				Cursor:        q.Cursor,
+				Limit:         limit,
 			})
 			if err != nil {
 				return core.KindPage{}, mapBrowseErr(err)
@@ -376,16 +380,18 @@ func (a *App) adapterKindBrowse() func(ctx context.Context, pluginID string, vie
 		for walk := 0; walk < maxSafetyWalkPages && len(kept) < limit; walk++ {
 			remaining := limit - len(kept)
 			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
-				NoTotal:   true,
-				Policy:    policy,
-				LibraryID: lib.ID,
-				ParentRef: parentRef,
-				Level:     q.Level,
-				Sort:      q.Sort,
-				Desc:      q.Desc,
-				Facets:    q.Facets,
-				Cursor:    cursor,
-				Limit:     remaining,
+				NoTotal:       true,
+				Policy:        policy,
+				LibraryID:     lib.ID,
+				ParentRef:     parentRef,
+				Level:         q.Level,
+				Sort:          q.Sort,
+				Desc:          q.Desc,
+				Facets:        q.Facets,
+				AllFacets:     q.AllFacets,
+				ExcludeFacets: q.ExcludeFacets,
+				Cursor:        cursor,
+				Limit:         remaining,
 			})
 			if err != nil {
 				return core.KindPage{}, mapBrowseErr(err)

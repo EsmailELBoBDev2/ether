@@ -609,7 +609,8 @@ export const api = {
       collectionSchedules?: Record<string, TargetSchedule | null>;
     },
   ) => put<LibraryLayoutDoc>(`/layout/libraries/${id}`, body),
-  deleteLibraryLayout: (id: number) => apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { method: "DELETE" }),
+  deleteLibraryLayout: (id: number) =>
+    apiFetch<LibraryLayoutDoc>(`/layout/libraries/${id}`, { method: "DELETE" }),
   /** The Plex Home a viewer (null = the typical viewer) gets with a draft layout (omitted = saved). */
   previewLayout: (
     body: PreviewContext & { viewerId: number | null; layout?: HomeLayout; count?: number },

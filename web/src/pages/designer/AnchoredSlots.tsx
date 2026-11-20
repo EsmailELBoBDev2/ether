@@ -63,13 +63,7 @@ export function AnchoredSlots({
     onChange(setPolicy(draft, layer, section, { ...p, slot: undefined, status: "always" }));
   const anchor = (row: string) => {
     const base = policyIn(draft, layer, section, row) ??
-      effectivePolicy(
-        draft,
-        layer === "global" ? null : layer,
-        section,
-        row,
-        row,
-      )?.policy ?? {
+      effectivePolicy(draft, layer === "global" ? null : layer, section, row, row)?.policy ?? {
         row,
         status: "always" as const,
       };

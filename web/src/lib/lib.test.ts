@@ -297,7 +297,9 @@ describe("layout", () => {
     expect(effectivePolicy(doc, 5, "home", "home.because.42", "because-you-watched")).toMatchObject(
       { layer: "override", policy: { row: "because.*" } },
     );
-    expect(effectivePolicy(doc, 5, "library:1", "movie.because.42", "because-you-watched")).toBeNull();
+    expect(
+      effectivePolicy(doc, 5, "library:1", "movie.because.42", "because-you-watched"),
+    ).toBeNull();
     expect(matchRank("collection:*", "collection.7", "collection:7")).toBe(1);
   });
 

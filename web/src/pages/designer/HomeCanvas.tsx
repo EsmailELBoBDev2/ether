@@ -102,7 +102,12 @@ export function HomeCanvas({
     (readOnly && r.viewerId !== null
       ? api.viewerHome(r.viewerId, when, ctl.signal)
       : api.previewLayout(
-          { viewerId: r.viewerId, ...when, section: "home", ...(r.layout ? { layout: r.layout } : {}) },
+          {
+            viewerId: r.viewerId,
+            ...when,
+            section: "home",
+            ...(r.layout ? { layout: r.layout } : {}),
+          },
           ctl.signal,
         )
     )

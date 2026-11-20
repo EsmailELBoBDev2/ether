@@ -302,20 +302,20 @@ function selected(params: ListSearchParams, key: string) {
 function hasBuiltinAppCaps(app: CompatApp) {
   return Boolean(
     (app.maxHeight ?? 0) > 0 ||
-      (app.videoCodecs?.length ?? 0) > 0 ||
-      app.hdr10 ||
-      app.dolbyVision ||
-      (app.dolbyVisionProfiles?.length ?? 0) > 0,
+    (app.videoCodecs?.length ?? 0) > 0 ||
+    app.hdr10 ||
+    app.dolbyVision ||
+    (app.dolbyVisionProfiles?.length ?? 0) > 0,
   );
 }
 
 function hasBuiltinDeviceCaps(row: CompatDevice) {
   return Boolean(
     (row.maxHeight ?? 0) > 0 ||
-      (row.videoCodecs?.length ?? 0) > 0 ||
-      row.hdr10 ||
-      row.dolbyVision ||
-      (row.dolbyVisionProfiles?.length ?? 0) > 0,
+    (row.videoCodecs?.length ?? 0) > 0 ||
+    row.hdr10 ||
+    row.dolbyVision ||
+    (row.dolbyVisionProfiles?.length ?? 0) > 0,
   );
 }
 
@@ -881,8 +881,7 @@ export function DeviceCapabilities() {
         sameText(dev.name, row.platform) ||
         (row.device && dev.name.toLowerCase().includes(row.device.toLowerCase())),
     );
-    const maxHeight =
-      matched?.maxHeight ?? matchedApp?.maxHeight ?? matchedDevice?.maxHeight ?? 0;
+    const maxHeight = matched?.maxHeight ?? matchedApp?.maxHeight ?? matchedDevice?.maxHeight ?? 0;
     const videoCodecs =
       matched?.videoCodecs ??
       (matchedApp?.videoCodecs?.length ? matchedApp.videoCodecs : undefined) ??
@@ -898,10 +897,10 @@ export function DeviceCapabilities() {
       null;
     const hasBuiltin = Boolean(
       maxHeight > 0 ||
-        (videoCodecs?.length ?? 0) > 0 ||
-        hdr10 ||
-        dolbyVision ||
-        (dolbyVisionProfiles?.length ?? 0) > 0,
+      (videoCodecs?.length ?? 0) > 0 ||
+      hdr10 ||
+      dolbyVision ||
+      (dolbyVisionProfiles?.length ?? 0) > 0,
     );
     const source: SourceKind = matched ? "override" : hasBuiltin ? "builtin" : "reported";
     return {
@@ -926,9 +925,7 @@ export function DeviceCapabilities() {
     label: name,
     count: apps.filter((app) => app.devices.includes(name)).length,
   }));
-  const seenPlatformOptions = [
-    ...new Set(seenDevices.map((row) => row.platform).filter(Boolean)),
-  ]
+  const seenPlatformOptions = [...new Set(seenDevices.map((row) => row.platform).filter(Boolean))]
     .sort()
     .map((name) => ({
       value: name,
@@ -1192,7 +1189,8 @@ export function DeviceCapabilities() {
                           : (row.saved.product ?? "")
                         ).toLowerCase(),
                       cell: (row) => {
-                        const name = row.kind === "known" ? row.app.name : (row.saved.product ?? "");
+                        const name =
+                          row.kind === "known" ? row.app.name : (row.saved.product ?? "");
                         return (
                           <div className="flex items-center gap-2 text-left">
                             <button
@@ -1215,8 +1213,7 @@ export function DeviceCapabilities() {
                     {
                       key: "platform",
                       header: t("Platform"),
-                      sortValue: (row) =>
-                        row.kind === "known" ? row.app.devices.join(", ") : "",
+                      sortValue: (row) => (row.kind === "known" ? row.app.devices.join(", ") : ""),
                       cell: (row) =>
                         row.kind === "known" ? (
                           <span
@@ -1233,7 +1230,8 @@ export function DeviceCapabilities() {
                       key: "resolution",
                       header: t("Resolution"),
                       sortValue: (row) =>
-                        row.saved?.maxHeight ?? (row.kind === "known" ? (row.app.maxHeight ?? 0) : 0),
+                        row.saved?.maxHeight ??
+                        (row.kind === "known" ? (row.app.maxHeight ?? 0) : 0),
                       cell: (row) => {
                         const height =
                           row.saved?.maxHeight ??
@@ -1360,9 +1358,7 @@ export function DeviceCapabilities() {
                           const parts = [
                             row.saved.platform,
                             row.saved.device,
-                            row.saved.product
-                              ? t("App: {app}", { app: row.saved.product })
-                              : "",
+                            row.saved.product ? t("App: {app}", { app: row.saved.product }) : "",
                           ].filter(Boolean);
                           return (
                             <span className="text-fg-muted">{parts.join(" · ") || t("Any")}</span>
@@ -1389,7 +1385,9 @@ export function DeviceCapabilities() {
                       key: "resolution",
                       header: t("Resolution"),
                       sortValue: (row) =>
-                        row.kind === "known" ? (row.row.maxHeight ?? 0) : (row.saved.maxHeight ?? 0),
+                        row.kind === "known"
+                          ? (row.row.maxHeight ?? 0)
+                          : (row.saved.maxHeight ?? 0),
                       cell: (row) => {
                         const height =
                           row.kind === "known"
@@ -1409,7 +1407,9 @@ export function DeviceCapabilities() {
                       header: t("Video"),
                       cell: (row) => (
                         <VideoBadges
-                          codecs={row.kind === "known" ? row.row.videoCodecs : row.saved.videoCodecs}
+                          codecs={
+                            row.kind === "known" ? row.row.videoCodecs : row.saved.videoCodecs
+                          }
                         />
                       ),
                     },

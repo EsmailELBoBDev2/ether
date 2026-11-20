@@ -2,8 +2,21 @@ import { Button, Input, cn } from "@braedonsaunders/appkit-ui";
 import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { t } from "../../i18n";
-import type { Device, HomeLayout, LayoutDefaultsMaxRows, LayoutSection, Viewer } from "../../lib/contract";
-import { DEVICES, defaultRowsForSection, lengthIn, sectionLabelOf, setPageLength, type LayerKey } from "../../lib/layout";
+import type {
+  Device,
+  HomeLayout,
+  LayoutDefaultsMaxRows,
+  LayoutSection,
+  Viewer,
+} from "../../lib/contract";
+import {
+  DEVICES,
+  defaultRowsForSection,
+  lengthIn,
+  sectionLabelOf,
+  setPageLength,
+  type LayerKey,
+} from "../../lib/layout";
 
 /**
  * Page length (rows the engine arranges; Plex's own rows not counted), for

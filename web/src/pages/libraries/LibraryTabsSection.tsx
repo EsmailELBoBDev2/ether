@@ -17,12 +17,7 @@ import { t, tn } from "../../i18n";
 import { api, errorMessage } from "../../lib/api";
 import type { HomeLayout, LibraryLayoutSection } from "../../lib/contract";
 import { useAsync } from "../../lib/hooks";
-import {
-  EMPTY_LAYOUT,
-  collectionScheduleChanges,
-  pageOf,
-  prune,
-} from "../../lib/layout";
+import { EMPTY_LAYOUT, collectionScheduleChanges, pageOf, prune } from "../../lib/layout";
 import {
   librariesApi,
   type Library,
@@ -76,9 +71,7 @@ function summarizeTab(
   recommendedCustomised: boolean,
 ): string {
   if (tab.kind === "recommended") {
-    return recommendedCustomised
-      ? t("Personalized rows · Custom rows")
-      : t("Personalized rows");
+    return recommendedCustomised ? t("Personalized rows · Custom rows") : t("Personalized rows");
   }
   const parts: string[] = [];
   if (tab.kind === "live") {
@@ -295,9 +288,7 @@ export function LibraryTabsSection({
       onChanged?.();
       closeDrawers();
       toast.success(
-        library.source === "plugin"
-          ? t("Restored plugin tabs")
-          : t("Restored default tabs"),
+        library.source === "plugin" ? t("Restored plugin tabs") : t("Restored default tabs"),
       );
     } catch (e) {
       toast.error(errorMessage(e));
@@ -308,20 +299,17 @@ export function LibraryTabsSection({
 
   const existingKeys = new Set(tabs.map((tab) => tab.key));
   const editingExisting =
-    activeDrawer.type === "edit" ? tabs.find((tab) => tab.key === activeDrawer.key) ?? null : null;
+    activeDrawer.type === "edit"
+      ? (tabs.find((tab) => tab.key === activeDrawer.key) ?? null)
+      : null;
   const seededNew =
     activeDrawer.type === "new" && state.data
-      ? createSeedTab(
-          activeDrawer.kind,
-          library,
-          availableFacets,
-          availableSorts,
-          existingKeys,
-        )
+      ? createSeedTab(activeDrawer.kind, library, availableFacets, availableSorts, existingKeys)
       : null;
 
-  const editingIsOnlyVisible =
-    Boolean(editingExisting && !editingExisting.hidden && visibleTabCount <= 1);
+  const editingIsOnlyVisible = Boolean(
+    editingExisting && !editingExisting.hidden && visibleTabCount <= 1,
+  );
 
   return (
     <SettingsSection title={t("Tabs")}>

@@ -749,7 +749,8 @@ function SelectRow({
   disabled,
 }: RowProps<Extract<FieldDef, { kind: "select" }>>) {
   const { options, loading, loadError } = useFieldOptions(def, loadOptions);
-  const raw = value === undefined || value === null || value === "" ? (def.defaultValue ?? "") : value;
+  const raw =
+    value === undefined || value === null || value === "" ? (def.defaultValue ?? "") : value;
   return (
     <SettingsRow
       className={disabled ? "opacity-50" : undefined}

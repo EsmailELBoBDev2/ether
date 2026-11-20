@@ -242,9 +242,7 @@ export function PolicyEditor({
         <legend className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
           {t("Schedule")}
         </legend>
-        <p className="text-fg-muted">
-          {t("Leave unselected to allow any day, time or device.")}
-        </p>
+        <p className="text-fg-muted">{t("Leave unselected to allow any day, time or device.")}</p>
         {schedule ? <p className="text-fg-muted">{schedule.note}</p> : null}
         <div className="space-y-3.5 rounded-xl border border-border bg-surface p-3.5">
           <Field label={t("Days")}>

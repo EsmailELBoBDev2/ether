@@ -171,6 +171,44 @@ release type to 1203. So WEB-DL (4000) always beats WEBRip (2000), and HDR
 profiles use the same shape at smaller weights (release type 1000 a step,
 Viewer's language 10000, Series year differs −5000).
 
+## Stremio add-on order
+
+A Stremio add-on source (such as AIOStreams or Comet) may already sort its
+own stream list. Each Stremio add-on indexer has an optional **Use the
+add-on's order** switch (`useAddonOrder`, off by default).
+
+When it is on for a source:
+
+- Releases from that source keep the add-on's response order among themselves
+  instead of being re-ranked by quality position, custom format scores,
+  SeaDex/plugin points, size, seeders, source routing or health racing.
+- Hard filters and gates still apply: device codec and Dolby Vision
+  compatibility, profile resolution and size limits, CAM/screener bans,
+  viewer and profile audio language rules, Never-play and Only-play rules,
+  blocked custom formats (score ≤ −10000), title identity checks, connection
+  bandwidth fit, health checks and failover. If the add-on's first result is
+  rejected or fails validation, the next compatible result in the add-on's
+  order plays.
+
+### Interleaving with other sources
+
+When at least one enabled Stremio add-on uses its own order, enabled sources
+are partitioned into ordered **priority bands** following indexer priority
+(the source order on the Indexers page, top to bottom):
+
+- Each add-on-ordered Stremio source forms its own band and keeps its exact
+  internal order inside it.
+- Contiguous profile-ranked sources between add-on-ordered sources share a
+  band and continue competing with one another by quality profile.
+
+For example, with priorities `[NZBGeek, DrunkenSlug, AIOStreams (add-on order), Torrentio]`,
+compatible releases from NZBGeek and DrunkenSlug compete by quality profile
+first (band 0), then AIOStreams keeps its own order (band 1), and Torrentio
+ranks by quality profile after it (band 2). Moving AIOStreams to the top puts
+AIOStreams in band 0 and every profile-ranked source below it in band 1. When
+no enabled Stremio add-on has this option on, all sources share band 0 and
+ranking is unchanged.
+
 ## Upgrading
 
 Profiles are not converted. When an install upgrades from a release before

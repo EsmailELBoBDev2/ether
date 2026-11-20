@@ -239,6 +239,12 @@ type Indexer struct {
 	// is the site address and Protocol follows the definition; for an
 	// add-on URL is its install link and results are torrents.
 	Kind string `json:"kind,omitempty"`
+	// UseAddonOrder keeps a Stremio add-on's own result order among its
+	// releases instead of re-ranking them with the quality profile. Hard
+	// compatibility, language, reject and health rules still apply; indexer
+	// priority orders this source relative to other sources. Valid only when
+	// Kind is IndexerKindStremio.
+	UseAddonOrder bool `json:"useAddonOrder,omitempty"`
 	// Plugin is the installed plugin an IndexerKindAddon row searches. Such
 	// rows exist only in the running search manager, never in config.
 	Plugin string `json:"plugin,omitempty"`

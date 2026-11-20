@@ -244,8 +244,18 @@ func (s *Service) routeSources(cands []candidate, t *core.Title, trace *Trace) [
 	if mode == PreferDebrid {
 		preferredProtocol = core.ProtocolTorrent
 	}
+	if len(cands) > 0 && cands[0].keys.addonOrder > 0 && trace != nil && trace.Routing == "" {
+		if cands[0].rel.Indexer != "" {
+			trace.Routing = "first compatible result from " + cands[0].rel.Indexer + " (add-on order)"
+		} else {
+			trace.Routing = "first compatible result (add-on order)"
+		}
+	}
 	if explicit && rcfg.SourceAlwaysFirst {
 		return s.sourceAlwaysFirst(cands, preferredProtocol, trace)
+	}
+	if len(cands) > 0 && cands[0].keys.addonOrder > 0 {
+		return cands
 	}
 	// Automatic routing reuses a verified source. An explicit owner change
 	// still takes effect for equal-quality releases, even after prior plays.
@@ -450,6 +460,15 @@ func (s *Service) sourceAlwaysFirst(cands []candidate, want string, trace *Trace
 		}
 		if a.langOK != b.langOK {
 			return a.langOK
+		}
+		if a.keys.sourceBand != b.keys.sourceBand {
+			return a.keys.sourceBand < b.keys.sourceBand
+		}
+		if a.keys.addonOrder > 0 && b.keys.addonOrder > 0 {
+			if a.keys.addonOrder != b.keys.addonOrder {
+				return a.keys.addonOrder < b.keys.addonOrder
+			}
+			return !a.keys.pack && b.keys.pack
 		}
 
 		return preferred(a) && !preferred(b)

@@ -1854,6 +1854,7 @@ func (c *Client) stampBackend(ctx context.Context, kind string, run func(context
 			}
 		}
 		c.markOnDemand(results)
+		c.stampSourceOrder(results)
 	}
 	if admitted && !(err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrIndexerPaused))) {
 		now := c.now()

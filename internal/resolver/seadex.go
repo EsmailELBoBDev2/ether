@@ -617,6 +617,9 @@ func (s *Service) addSeaDexScores(entry *seaDexEntry, cands []candidate, trace *
 		return
 	}
 	for i := range cands {
+		if cands[i].keys.addonOrder > 0 {
+			continue
+		}
 		id, name, points := entry.match(cands[i].rel)
 		if points == 0 {
 			continue

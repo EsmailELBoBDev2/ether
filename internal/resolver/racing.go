@@ -131,6 +131,20 @@ func (s *Service) resolution(key core.RatingKey, cands []candidate, winner int, 
 // candidates cannot serve as failover alternates.
 func (s *Service) resolutionSkipping(key core.RatingKey, cands []candidate, winner int, nzb []byte, skip func(candidate) bool) *core.Resolution {
 	res := &core.Resolution{Title: key, Release: cands[winner].rel, NZB: nzb, ResolvedAt: s.now()}
+	if cands[winner].keys.addonOrder > 0 {
+		// Failover for an add-on-ordered source follows the ranked order
+		// directly instead of regrouping by edition or cache status.
+		for i, c := range cands {
+			if i == winner || len(res.Alternates) >= s.maxCandidates() {
+				continue
+			}
+			if skip(c) {
+				continue
+			}
+			res.Alternates = append(res.Alternates, c.rel)
+		}
+		return res
+	}
 	// Failover stays on the same cut first: alternates of the winner's
 	// edition come before other cuts (ranked order within each group).
 	edition := cands[winner].rel.Info.Edition
@@ -230,17 +244,19 @@ func (s *Service) validateCandidates(ctx context.Context, cands []candidate, tr 
 			}
 		}
 		count := min(width, limit-base)
-		if cands[base].verified || cands[base].rel.OpensOnDemand() {
+		if cands[base].verified || cands[base].rel.OpensOnDemand() || cands[base].keys.addonOrder > 0 {
 			// Reusing a known working release must not start speculative
 			// downloads and health checks for other releases alongside it,
-			// and an on-demand open makes its add-on fetch the release.
+			// an on-demand open makes its add-on fetch the release, and
+			// add-on-ordered sources validate strictly in add-on order.
 			count = 1
 		} else {
-			// A race stays inside one policy tier. A healthy fallback must
-			// not be selected while a primary in this window is still valid.
-			// It never includes an on-demand link.
+			// A race stays inside one policy tier and priority band. A healthy
+			// fallback must not be selected while a primary in this window is
+			// still valid. It never includes an on-demand link or an add-on-ordered
+			// release.
 			same := 1
-			for same < count && !cands[base+same].rel.OpensOnDemand() && samePreferenceTier(cands[base], cands[base+same]) && releasepolicy.Equivalent(cands[base].policy, cands[base+same].policy) && pluginKeysEqual(cands[base], cands[base+same]) {
+			for same < count && !cands[base+same].rel.OpensOnDemand() && cands[base+same].keys.addonOrder == 0 && cands[base+same].keys.sourceBand == cands[base].keys.sourceBand && samePreferenceTier(cands[base], cands[base+same]) && releasepolicy.Equivalent(cands[base].policy, cands[base+same].policy) && pluginKeysEqual(cands[base], cands[base+same]) {
 				same++
 			}
 			count = same

@@ -126,6 +126,12 @@ func isAnimation(t *core.Title) bool {
 // above or both below their bitrate floor, and both in an accepted audio
 // language or both not.
 func sameTier(a, b candidate) bool {
+	if a.keys.sourceBand != b.keys.sourceBand {
+		return false
+	}
+	if a.keys.addonOrder > 0 || b.keys.addonOrder > 0 {
+		return a.keys.addonOrder == b.keys.addonOrder
+	}
 	return a.keys.position == b.keys.position &&
 		qualityTier(a.rel.Info) == qualityTier(b.rel.Info) &&
 		a.starved == b.starved &&

@@ -6,7 +6,15 @@ import { BulkBar } from "../../components/BulkBar";
 import { Drawer } from "../../components/Drawer";
 import { SubtabNav } from "../../components/layout";
 import { PosterGrid } from "../../components/Poster";
-import { Badge, Button, Checkbox, EmptyState, Input, cn } from "@braedonsaunders/appkit-ui";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  EmptyState,
+  Input,
+  Spinner,
+  cn,
+} from "@braedonsaunders/appkit-ui";
 import {
   ChevronDown,
   ChevronRight,
@@ -36,9 +44,10 @@ import type {
   Viewer,
   ViewerHome,
 } from "../../lib/contract";
-import { api } from "../../lib/api";
+import { api, isAbort } from "../../lib/api";
 import { localized, t, tn, tx } from "../../i18n";
 import { WEEKDAYS, formatNumber } from "../../lib/format";
+import { useDebouncedValue } from "../../lib/hooks";
 import {
   CONTINUE,
   FRONT_END_ROWS,
@@ -141,6 +150,30 @@ const GROUPS = localized<{ key: PoolGroup; label: string; hint: string }[]>(() =
   { key: "custom", label: t("Custom patterns"), hint: t("Hub ids, kinds or globs") },
 ]);
 
+/** Context used to fetch an on-demand preview for a single row whose items are absent from the page preview. */
+export interface RowPreviewRequest {
+  viewerId: number | null;
+  device: "tv" | "mobile" | "web" | "desktop";
+  at: string;
+}
+
+function probeLayoutForRow(draft: HomeLayout, section: LayoutSection, row: string): HomeLayout {
+  const cur = draft.global.find((p) => p.section === section);
+  const home = section !== "home" ? draft.global.find((p) => p.section === "home") : undefined;
+  const isPattern = /[*?[]/.test(row);
+  const page = {
+    section,
+    ...(cur?.dedupeHome !== undefined ? { dedupeHome: cur.dedupeHome } : {}),
+    ...(cur?.tuning ? { tuning: cur.tuning } : {}),
+    rows: [{ row, status: "always" as const, ...(isPattern ? {} : { slot: 1 }) }],
+  };
+  return {
+    global: home ? [home, page] : [page],
+    viewers: [],
+    ...(draft.collectionSchedules ? { collectionSchedules: draft.collectionSchedules } : {}),
+  };
+}
+
 /**
  * The row catalogue: every row the engine, Plex or the owner's collections
  * can put on the page, with its status and constraints in this layer.
@@ -157,6 +190,7 @@ export function RowPool({
   onFocusRow,
   preview,
   previewWho,
+  previewRequest,
 }: {
   draft: HomeLayout;
   onChange: (d: HomeLayout) => void;
@@ -169,6 +203,7 @@ export function RowPool({
   onFocusRow: (row: string | null) => void;
   preview?: ViewerHome | null;
   previewWho?: string;
+  previewRequest?: RowPreviewRequest | null;
 }) {
   const navigate = useNavigate();
   const onLibraryTab = isLibrarySection(section);
@@ -234,8 +269,7 @@ export function RowPool({
       const descSections = d.meta?.sections as RowSectionTag[] | undefined;
       if (isLibrarySection(section) && mediaSection === null && !descSections?.includes(section))
         continue;
-      if (!rowFits({ sections: descSections }, section, mediaSection))
-        continue;
+      if (!rowFits({ sections: descSections }, section, mediaSection)) continue;
       known.add(hubId);
       out.push({
         row: hubId,
@@ -481,6 +515,7 @@ export function RowPool({
                       viewers={viewers}
                       preview={preview}
                       previewWho={previewWho}
+                      previewRequest={previewRequest}
                       open={focusRow === e.row}
                       onToggle={() => onFocusRow(focusRow === e.row ? null : e.row)}
                     />
@@ -661,6 +696,7 @@ function PoolItem({
   viewers,
   preview,
   previewWho,
+  previewRequest,
   open,
   onToggle,
 }: {
@@ -679,6 +715,7 @@ function PoolItem({
   viewers: Viewer[];
   preview?: ViewerHome | null;
   previewWho?: string;
+  previewRequest?: RowPreviewRequest | null;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -748,9 +785,88 @@ function PoolItem({
       : t("Reset to Everyone");
   const who = previewWho || t("Typical viewer");
   // i18n: memo holds no copy
-  const matchedRows = useMemo(
+  const pageMatchedRows = useMemo(
     () => (preview?.rows ?? []).filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0),
     [preview, entry.row],
+  );
+  // i18n: memo holds no copy
+  const pageActiveRows = useMemo(
+    () => pageMatchedRows.filter((r) => r.items.length > 0),
+    [pageMatchedRows],
+  );
+  const pageHiddenMatch = pageMatchedRows.find((r) => r.hidden);
+  // Rows that did not land on the assembled page (e.g. a Home-only default
+  // row or one cut by page length on a library tab) probe on demand via
+  // /layout/preview with the row pinned so Content still shows its real titles.
+  const debouncedDraft = useDebouncedValue(draft, 200);
+  const needsRowFallback =
+    open && !onCreate && Boolean(preview) && Boolean(previewRequest) && pageActiveRows.length === 0;
+  const fallbackPayload = useMemo(
+    () =>
+      needsRowFallback && previewRequest
+        ? {
+            viewerId: previewRequest.viewerId,
+            device: previewRequest.device,
+            at: previewRequest.at,
+            section,
+            layout: probeLayoutForRow(debouncedDraft, section, entry.row),
+          }
+        : null,
+    [
+      needsRowFallback,
+      previewRequest?.viewerId,
+      previewRequest?.device,
+      previewRequest?.at,
+      section,
+      entry.row,
+      debouncedDraft,
+    ],
+  );
+  const fallbackKey = useMemo(
+    () => (fallbackPayload ? JSON.stringify(fallbackPayload) : null),
+    [fallbackPayload],
+  );
+  const fallbackPayloadRef = useRef(fallbackPayload);
+  fallbackPayloadRef.current = fallbackPayload;
+  const [rowFallback, setRowFallback] = useState<{
+    key: string;
+    data: ViewerHome | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!fallbackKey || !fallbackPayloadRef.current) return;
+    const req = fallbackPayloadRef.current;
+    const ac = new AbortController();
+    api
+      .previewLayout(req, ac.signal)
+      .then((data) => {
+        if (!ac.signal.aborted) setRowFallback({ key: fallbackKey, data });
+      })
+      .catch((e) => {
+        if (!isAbort(e) && !ac.signal.aborted) {
+          setRowFallback({ key: fallbackKey, data: null });
+        }
+      });
+    return () => ac.abort();
+  }, [fallbackKey]);
+  const fallbackCurrent = fallbackKey !== null && rowFallback?.key === fallbackKey;
+  const fallbackLoading = fallbackKey !== null && !fallbackCurrent;
+  // i18n: memo holds no copy
+  const fallbackRows = useMemo(
+    () =>
+      fallbackCurrent
+        ? (rowFallback?.data?.rows ?? []).filter((r) => matchRank(entry.row, r.hubId, r.kind) > 0)
+        : [],
+    [fallbackCurrent, rowFallback, entry.row],
+  );
+  // i18n: memo holds no copy
+  const matchedRows = useMemo(
+    () =>
+      pageActiveRows.length > 0
+        ? pageMatchedRows
+        : fallbackRows.length > 0
+          ? fallbackRows
+          : pageMatchedRows,
+    [pageActiveRows.length, pageMatchedRows, fallbackRows],
   );
   // i18n: memo holds no copy
   const activePreviewRows = useMemo(
@@ -761,29 +877,29 @@ function PoolItem({
   const hiddenMatch = matchedRows.find((r) => r.hidden);
   const absenceNote = useMemo(() => {
     if (!preview || onCreate) return "";
-    if (matchedRows.some((r) => !r.hidden && r.items.length > 0)) return "";
+    if (pageMatchedRows.some((r) => !r.hidden && r.items.length > 0)) return "";
     if (effective.status === "always") {
-      if (matchedRows.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
+      if (pageMatchedRows.some((r) => !r.hidden && r.kind === CONTINUE && r.items.length === 0)) {
         return t("Hidden for {who}: nothing in progress", { who });
       }
-      if (hiddenMatch) return describeHiddenRow(hiddenMatch, who);
+      if (pageHiddenMatch) return describeHiddenRow(pageHiddenMatch, who);
       return t("Hidden for {who}: no matching titles", { who });
     }
     if (
       effective.status === "eligible" &&
-      hiddenMatch?.hiddenCode &&
+      pageHiddenMatch?.hiddenCode &&
       [
         "outside_collection_schedule",
         "collection_disabled",
         "collection_not_shared",
         "outside_schedule",
         "weekly_cap",
-      ].includes(hiddenMatch.hiddenCode)
+      ].includes(pageHiddenMatch.hiddenCode)
     ) {
-      return describeHiddenRow(hiddenMatch, who);
+      return describeHiddenRow(pageHiddenMatch, who);
     }
     return "";
-  }, [preview, onCreate, matchedRows, hiddenMatch, effective.status, who, locale]);
+  }, [preview, onCreate, pageMatchedRows, pageHiddenMatch, effective.status, who, locale]);
   return (
     <li
       ref={ref}
@@ -794,7 +910,7 @@ function PoolItem({
               if (
                 !ev.currentTarget.contains(ev.target as Node) ||
                 (ev.target as HTMLElement).closest(
-                  "button, input, label, a, [role=\"radiogroup\"], [role=\"checkbox\"]",
+                  'button, input, label, a, [role="radiogroup"], [role="checkbox"]',
                 )
               ) {
                 return;
@@ -1022,15 +1138,18 @@ function PoolItem({
             title={t("Preview unavailable")}
             description={t("Waiting for the current preview to finish loading.")}
           />
+        ) : fallbackLoading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-xs text-fg-muted">
+            <Spinner size={16} label={t("Loading preview")} />
+            <span>{t("Loading preview…")}</span>
+          </div>
         ) : activePreviewRows.length === 0 ? (
           <EmptyState
             icon={<Film />}
             title={t("No titles in this preview")}
             description={
-              absenceNote ||
-              (hiddenMatch
-                ? describeHiddenRow(hiddenMatch, who)
-                : t("No matching titles for {who} right now.", { who }))
+              (hiddenMatch ? describeHiddenRow(hiddenMatch, who) : absenceNote) ||
+              t("No matching titles for {who} right now.", { who })
             }
           />
         ) : (

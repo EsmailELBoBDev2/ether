@@ -366,3 +366,85 @@ func TestPreviewCandidateRowsArrangesPluginShelves(t *testing.T) {
 		t.Fatalf("PreviewCandidateRows visible = %v, want [plugin:9:rating plugin:9:released]", got)
 	}
 }
+
+func TestPreviewLayoutPinnedProbePopulatesLibraryRows(t *testing.T) {
+	lib3Allowed := map[core.RatingKey]bool{movieKey(0, 9): true}
+	h := newHarness(t, func(o *Options) {
+		o.MinRowItems = 12
+		o.LibrarySections = func(context.Context) map[int]core.MediaType {
+			return map[int]core.MediaType{1: core.TypeMovie, 3: core.TypeMovie}
+		}
+		o.LibraryMembers = func(_ context.Context, sectionID core.LibraryID, keys []core.RatingKey) (map[core.RatingKey]bool, int64, bool, error) {
+			if sectionID != 3 {
+				return nil, 0, false, nil
+			}
+			out := map[core.RatingKey]bool{}
+			for _, k := range keys {
+				if lib3Allowed[k] {
+					out[k] = true
+				}
+			}
+			return out, 1, true, nil
+		}
+	})
+	ctx := context.Background()
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := waitGenericReady(h.e, waitCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	u := core.User{ID: 1, Username: "alice", IsOwner: true}
+	sciFiFan(h, u.ID)
+	h.rebuild(u)
+	hc := hubContext(testNow, core.DeviceTV)
+
+	probe := func(user *core.User, section, row string) *core.HomeRow {
+		t.Helper()
+		draft := core.HomeLayout{
+			Global: []core.LayoutPage{{
+				Section: section,
+				Rows:    []core.RowPolicy{{Row: row, Status: "always", Slot: 1}},
+			}},
+		}
+		prev, err := h.e.PreviewLayout(ctx, user, hc, section, 12, draft)
+		if err != nil {
+			t.Fatalf("PreviewLayout(%s, %s): %v", section, row, err)
+		}
+		for i := range prev.Rows {
+			if prev.Rows[i].Kind == row {
+				return &prev.Rows[i]
+			}
+		}
+		return nil
+	}
+
+	// Rows not on the default movie tab (Comfort Rewatches, New This Week, Popular)
+	// resolve their real library-scoped posters when probed as pinned.
+	for _, kind := range []string{KindComfort, KindNewThisWeek, KindPopular} {
+		row := probe(&u, "library:1", kind)
+		if row == nil || len(row.Items) == 0 {
+			t.Fatalf("probed %s on library:1 = %+v, want populated row", kind, row)
+		}
+		for _, it := range row.Items {
+			if it.Type != core.TypeMovie {
+				t.Fatalf("probed %s leaked %v onto movie library", kind, it.Type)
+			}
+		}
+	}
+
+	// Custom scoped library:3 restricts the probed row to that library's members.
+	lib3 := probe(&u, "library:3", KindComfort)
+	if lib3 == nil || len(lib3.Items) != 1 || lib3.Items[0].Key != movieKey(0, 9) {
+		t.Fatalf("probed comfort on library:3 = %+v, want only movieKey(0,9)", lib3)
+	}
+
+	// Typical viewer (ID 0) gets typical_viewer_personal on personal rows and real posters on Popular.
+	typical := &core.User{IsOwner: true}
+	if row := probe(typical, "library:1", KindComfort); row == nil || row.HiddenCode != "typical_viewer_personal" {
+		t.Fatalf("typical viewer comfort = %+v, want typical_viewer_personal", row)
+	}
+	if row := probe(typical, "library:1", KindPopular); row == nil || len(row.Items) == 0 {
+		t.Fatalf("typical viewer popular = %+v, want populated row", row)
+	}
+}

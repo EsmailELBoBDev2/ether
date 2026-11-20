@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -26,7 +27,26 @@ const (
 	// them (Jellyfin/Emby "DatePlayed"). It is served from the viewer's watch
 	// rows, never the catalogue's sort columns.
 	SortPlayed SortOrder = "played"
+	// SortLastViewed is the canonical Vela/tab sort ID for ordering titles by
+	// when the requesting viewer last viewed them.
+	SortLastViewed SortOrder = "lastViewed"
 )
+
+// IsLastViewed reports whether s requests viewer watch-recency ordering.
+func (s SortOrder) IsLastViewed() bool {
+	return IsLastViewedSort(string(s))
+}
+
+// IsLastViewedSort reports whether raw names the lastViewed sort or one of its
+// accepted aliases ("lastViewed", "played", "last_viewed").
+func IsLastViewedSort(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "lastviewed", "last_viewed", "played":
+		return true
+	default:
+		return false
+	}
+}
 
 // SortSpec pairs a catalogue sort column with its direction.
 type SortSpec struct {
@@ -70,8 +90,12 @@ type FilterGroup struct {
 	LastViewedAfter  int64         `json:"lastViewedAfter,omitempty"`
 	LastViewedBefore int64         `json:"lastViewedBefore,omitempty"`
 	OnWatchlist      *bool         `json:"onWatchlist,omitempty"`
+	Watchlist        *bool         `json:"watchlist,omitempty"`
+	Favorite         *bool         `json:"favorite,omitempty"`
+	Watched          *bool         `json:"watched,omitempty"`
 	Unwatched        *bool         `json:"unwatched,omitempty"`
 	InProgress       *bool         `json:"inProgress,omitempty"`
+	History          *bool         `json:"history,omitempty"`
 	UserID           int64         `json:"userId,omitempty"`
 	Operator         string        `json:"operator"`
 	Filter           *Filter       `json:"filter,omitempty"`

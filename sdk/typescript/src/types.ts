@@ -355,22 +355,38 @@ export interface KindArt {
   label: string;
 }
 
+export interface KindLibraryTabRule {
+  field: string;
+  op: string;
+  value?: unknown;
+}
+
+export interface KindLibraryTabFilter {
+  match?: "all" | "any";
+  rules?: KindLibraryTabRule[];
+  exclude?: KindLibraryTabRule[];
+}
+
 export interface KindLibraryTab {
   key: string;
   label: string;
-  kind: "recommended" | "library" | "collections" | "people" | "live";
+  kind: "recommended" | "library" | "collections" | "people" | "view" | "live";
   /** Declared browse.facets entry (optional on collections; required people-type facet on people). */
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
   /** Card aspect ratio on "live" tabs (default "landscape"). */
   card?: "poster" | "landscape" | "square";
-  /** Enables in-tab search on "collections", "people", and "live" tabs (default true). */
+  /** Presentation layout on "view" tabs: "grid" (default), "list", or "timeline". */
+  layout?: "grid" | "list" | "timeline";
+  /** Enables in-tab search on "collections", "people", "view", and "live" tabs (default true). */
   search?: boolean;
   /** Optional localizable search input placeholder (at most 60 characters; "$t:" supported) when search is enabled. */
   searchPlaceholder?: string;
-  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index" | "lastViewed";
   direction?: "asc" | "desc";
+  /** Saved filter rules on "view" tabs (indexed fields and/or viewer-state rules). */
+  filters?: KindLibraryTabFilter;
 }
 
 export interface KindLibraryShelf {
@@ -398,6 +414,7 @@ export interface KindLibraryDecl {
   card?: "poster" | "landscape" | "square";
   /** How item release dates are rendered on cards and detail headers: "year" (default) or "date" (YYYY-MM-DD). */
   dateDisplay?: "year" | "date";
+  /** Up to 50 sub-tabs shown inside the library; defaults to Recommended + Library. */
   tabs?: KindLibraryTab[];
   /** Up to 40 default Recommended shelves evaluated in order when present. */
   shelves?: KindLibraryShelf[];

@@ -405,10 +405,7 @@
                         ]
                       },
                       "dateDisplay": {
-                        "enum": [
-                          "year",
-                          "date"
-                        ]
+                        "type": "string"
                       },
                       "icon": {
                         "type": "string"
@@ -486,6 +483,112 @@
                             "facet": {
                               "type": "string"
                             },
+                            "filters": {
+                              "properties": {
+                                "exclude": {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "groups": {
+                                  "items": {
+                                    "properties": {
+                                      "action": {
+                                        "type": "string"
+                                      },
+                                      "match": {
+                                        "type": "string"
+                                      },
+                                      "mediaType": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      },
+                                      "rules": {
+                                        "items": {
+                                          "properties": {
+                                            "field": {
+                                              "type": "string"
+                                            },
+                                            "label": {
+                                              "type": "string"
+                                            },
+                                            "labels": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "op": {
+                                              "type": "string"
+                                            },
+                                            "value": {}
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "scope": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "match": {
+                                  "type": "string"
+                                },
+                                "rules": {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "visibilityDefault": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
                             "key": {
                               "type": "string"
                             },
@@ -495,11 +598,19 @@
                                 "library",
                                 "collections",
                                 "people",
+                                "view",
                                 "live"
                               ]
                             },
                             "label": {
                               "type": "string"
+                            },
+                            "layout": {
+                              "enum": [
+                                "grid",
+                                "list",
+                                "timeline"
+                              ]
                             },
                             "order": {
                               "enum": [
@@ -520,7 +631,8 @@
                                 "released",
                                 "year",
                                 "rating",
-                                "index"
+                                "index",
+                                "lastViewed"
                               ]
                             }
                           },

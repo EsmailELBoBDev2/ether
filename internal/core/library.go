@@ -55,6 +55,24 @@ func ValidDateDisplay(s string) bool {
 	return s == "" || s == DateDisplayYear || s == DateDisplayDate
 }
 
+// Library tab view layouts (used on kind: "view" tabs).
+const (
+	TabLayoutGrid     = "grid"
+	TabLayoutList     = "list"
+	TabLayoutTimeline = "timeline"
+)
+
+// ValidTabLayout reports whether s is a valid stored LibraryTab.Layout value
+// ("" for default "grid", or "grid" | "list" | "timeline").
+func ValidTabLayout(s string) bool {
+	switch s {
+	case "", TabLayoutGrid, TabLayoutList, TabLayoutTimeline:
+		return true
+	default:
+		return false
+	}
+}
+
 // Library tab kinds.
 const (
 	TabRecommended = "recommended"
@@ -162,6 +180,9 @@ func (f *TabFilter) ToPolicy(mediaType MediaType) ([]LibraryExclusion, string) {
 		return nil, ""
 	}
 	mt := NormalizeRuleMediaType(string(mediaType))
+	if mt == "" {
+		mt = "mixed"
+	}
 	if len(f.Groups) > 0 {
 		groups := make([]LibraryExclusion, len(f.Groups))
 		hasShow := false
@@ -219,10 +240,25 @@ type LibraryTab struct {
 	Sort              string     `json:"sort,omitempty"`              // default sort (library, view, facet collections)
 	Direction         string     `json:"direction,omitempty"`         // asc|desc
 	Card              string     `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Layout            string     `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
 	Search            *bool      `json:"search,omitempty"`            // defaults true for library/collections/people/view/live, false for recommended
 	SearchPlaceholder string     `json:"searchPlaceholder,omitempty"` // optional custom search placeholder
 	Filters           *TabFilter `json:"filters,omitempty"`           // saved filter rules (view or library)
 	Hidden            bool       `json:"hidden,omitempty"`            // hidden from Vela while kept in editor
+}
+
+// EffectiveLayout returns the tab's layout ("grid" by default for view tabs,
+// empty for other tab kinds).
+func (t LibraryTab) EffectiveLayout() string {
+	if t.Kind != TabView {
+		return ""
+	}
+	switch t.Layout {
+	case TabLayoutGrid, TabLayoutList, TabLayoutTimeline:
+		return t.Layout
+	default:
+		return TabLayoutGrid
+	}
 }
 
 // EffectiveCard returns the tab's card shape ("landscape" by default for live

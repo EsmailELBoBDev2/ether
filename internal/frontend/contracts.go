@@ -79,6 +79,7 @@ type ViewTab struct {
 	Sort              string          `json:"sort,omitempty"`
 	Direction         string          `json:"direction,omitempty"`
 	Card              string          `json:"card,omitempty"`
+	Layout            string          `json:"layout,omitempty"`
 	Search            bool            `json:"search,omitempty"`
 	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"`
 	Filters           *core.TabFilter `json:"filters,omitempty"`

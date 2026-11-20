@@ -311,15 +311,19 @@ func (c *Catalog) PreviewVisibilityScoped(ctx context.Context, specs []core.Libr
 }
 
 func (c *Catalog) compileLibraryRules(rules []core.LibraryExclusion, fallback string) (*libraryfilter.Filter, error) {
-	return c.compileLibraryRulesMode(rules, fallback, false)
+	return c.compileLibraryRulesModeForViewer(rules, fallback, false, 0)
 }
 
 func (c *Catalog) compileLibraryRulesMode(rules []core.LibraryExclusion, fallback string, membershipOnly bool) (*libraryfilter.Filter, error) {
+	return c.compileLibraryRulesModeForViewer(rules, fallback, membershipOnly, 0)
+}
+
+func (c *Catalog) compileLibraryRulesModeForViewer(rules []core.LibraryExclusion, fallback string, membershipOnly bool, viewerID int64) (*libraryfilter.Filter, error) {
 	f, err := libraryfilter.CompilePolicy(rules, fallback)
 	if err != nil {
 		return nil, libraryfilter.MarkInvalidFilter(err)
 	}
-	bound, err := c.bindLibraryRulesMode(f, membershipOnly)
+	bound, err := c.bindLibraryRulesModeForViewer(f, membershipOnly, viewerID)
 	if err != nil {
 		return nil, libraryfilter.MarkInvalidFilter(err)
 	}
@@ -327,13 +331,22 @@ func (c *Catalog) compileLibraryRulesMode(rules []core.LibraryExclusion, fallbac
 }
 
 func (c *Catalog) bindLibraryRules(f *libraryfilter.Filter) (*libraryfilter.Filter, error) {
-	return c.bindLibraryRulesMode(f, false)
+	return c.bindLibraryRulesModeForViewer(f, false, 0)
 }
 
 func (c *Catalog) bindLibraryRulesMode(f *libraryfilter.Filter, membershipOnly bool) (*libraryfilter.Filter, error) {
+	return c.bindLibraryRulesModeForViewer(f, membershipOnly, 0)
+}
+
+func (c *Catalog) bindLibraryRulesModeForViewer(f *libraryfilter.Filter, membershipOnly bool, viewerID int64) (*libraryfilter.Filter, error) {
 	return f.BindCatalogue(func(p core.Filter) (string, []any, error) {
 		p.LocalOnly = true
 		p.CatalogCandidates = true
+		if p.Group != nil && p.Group.UserID == 0 && viewerID > 0 {
+			g := *p.Group
+			g.UserID = viewerID
+			p.Group = &g
+		}
 		where, args, err := c.browseWhereMode(p, membershipOnly)
 		if err == nil && where == "" {
 			where = "1=1"

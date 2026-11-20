@@ -44,6 +44,8 @@ const VALID_NEW_KINDS = new Set<LibraryTabKind>([
   "live",
 ]);
 
+const MAX_LIBRARY_TABS = 50;
+
 const EMPTY_FACETS: LibraryAvailableFacets = { collections: [], people: [] };
 
 function canonicalTab(tab: LibraryTab): LibraryTab {
@@ -56,6 +58,7 @@ function canonicalTab(tab: LibraryTab): LibraryTab {
     ...(tab.sort ? { sort: tab.sort } : {}),
     ...(tab.direction ? { direction: tab.direction } : {}),
     ...(tab.kind === "live" ? { card: tab.card ?? "landscape" } : {}),
+    ...(tab.kind === "view" ? { layout: tab.layout ?? "grid" } : {}),
     ...(tab.kind !== "recommended" ? { search: tab.search !== false } : {}),
     ...(tab.kind !== "recommended" && tab.search !== false && tab.searchPlaceholder
       ? { searchPlaceholder: tab.searchPlaceholder }
@@ -110,6 +113,11 @@ function summarizeTab(
     parts.push(t("Saved view"));
     const ruleCount = tab.filters?.rules.length ?? 0;
     parts.push(tn(ruleCount, "{count} rule", "{count} rules"));
+    if (tab.layout === "list") {
+      parts.push(t("List"));
+    } else if (tab.layout === "timeline") {
+      parts.push(t("Timeline"));
+    }
   }
 
   if (tab.kind !== "people" && (tab.kind !== "collections" || Boolean(tab.facet)) && tab.sort) {
@@ -328,6 +336,11 @@ export function LibraryTabsSection({
                   ? t("Plugin default")
                   : t("Default")}
             </Badge>
+            {tabs.length >= 12 ? (
+              <Badge variant={tabs.length >= MAX_LIBRARY_TABS ? "warning" : "secondary"}>
+                {t("{count} / {max} tabs", { count: tabs.length, max: MAX_LIBRARY_TABS })}
+              </Badge>
+            ) : null}
             <Button
               type="button"
               size="sm"
@@ -342,7 +355,7 @@ export function LibraryTabsSection({
               type="button"
               size="sm"
               variant="outline"
-              disabled={saving || !state.data}
+              disabled={saving || !state.data || tabs.length >= MAX_LIBRARY_TABS}
               onClick={() => {
                 clearTabParams();
                 setLocalDrawer({ type: "pick" });
@@ -397,99 +410,101 @@ export function LibraryTabsSection({
             }
           />
         ) : (
-          <SortableList
-            items={tabs}
-            getId={(tab) => tab.key}
-            onReorder={(next) => {
-              void persistTabs(next, t("Tab order saved"));
-            }}
-            className="space-y-2"
-            renderItem={(tab, handle) => {
-              const isOnlyVisible = !tab.hidden && visibleTabCount <= 1;
-              return (
-                <div
-                  className={cn(
-                    "flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 transition-colors sm:flex-nowrap sm:gap-3 sm:px-3 sm:py-2.5",
-                    tab.hidden && "bg-bg-subtle/50 opacity-75",
-                  )}
-                >
-                  <DragHandle
-                    handle={handle}
-                    label={t("Reorder {label} tab", { label: tab.label })}
-                  />
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
-                    {tabKindIcon(tab.kind, 16)}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        clearTabParams();
-                        setLocalDrawer({ type: "edit", key: tab.key });
-                      }}
-                      className="flex max-w-full flex-wrap items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                    >
-                      <span className="truncate text-sm font-medium text-fg hover:underline">
-                        {tab.label}
-                      </span>
-                      {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
-                    </button>
-                    <p className="truncate text-xs text-fg-muted">
-                      {summarizeTab(tab, availableFacets, recommendedCustomised)}
-                    </p>
-                  </div>
-                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <Switch
-                      aria-label={t("Display {label} tab", { label: tab.label })}
-                      checked={!tab.hidden}
-                      disabled={saving || isOnlyVisible}
-                      onChange={(e) => {
-                        const visible = e.target.checked;
-                        const next = tabs.map((item) =>
-                          item.key === tab.key
-                            ? { ...item, hidden: visible ? undefined : true }
-                            : item,
-                        );
-                        void persistTabs(
-                          next,
-                          visible
-                            ? t("{label} tab shown", { label: tab.label })
-                            : t("{label} tab hidden", { label: tab.label }),
-                        );
-                      }}
+          <div className={cn(tabs.length > 10 && "max-h-[34rem] overflow-y-auto pr-1")}>
+            <SortableList
+              items={tabs}
+              getId={(tab) => tab.key}
+              onReorder={(next) => {
+                void persistTabs(next, t("Tab order saved"));
+              }}
+              className="space-y-2"
+              renderItem={(tab, handle) => {
+                const isOnlyVisible = !tab.hidden && visibleTabCount <= 1;
+                return (
+                  <div
+                    className={cn(
+                      "flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-2.5 py-2 transition-colors sm:flex-nowrap sm:gap-3 sm:px-3 sm:py-2.5",
+                      tab.hidden && "bg-bg-subtle/50 opacity-75",
+                    )}
+                  >
+                    <DragHandle
+                      handle={handle}
+                      label={t("Reorder {label} tab", { label: tab.label })}
                     />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-8 text-fg-muted hover:text-fg"
-                      aria-label={t("Edit {label} tab", { label: tab.label })}
-                      onClick={() => {
-                        clearTabParams();
-                        setLocalDrawer({ type: "edit", key: tab.key });
-                      }}
-                    >
-                      <Pencil size={15} />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-8 text-fg-muted hover:text-danger"
-                      aria-label={t("Delete {label} tab", { label: tab.label })}
-                      disabled={saving || tabs.length <= 1 || isOnlyVisible}
-                      onClick={() => {
-                        const next = tabs.filter((item) => item.key !== tab.key);
-                        void persistTabs(next, t("Removed {label} tab", { label: tab.label }));
-                      }}
-                    >
-                      <Trash2 size={15} />
-                    </Button>
+                    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary-subtle text-primary">
+                      {tabKindIcon(tab.kind, 16)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearTabParams();
+                          setLocalDrawer({ type: "edit", key: tab.key });
+                        }}
+                        className="flex max-w-full flex-wrap items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      >
+                        <span className="truncate text-sm font-medium text-fg hover:underline">
+                          {tab.label}
+                        </span>
+                        {tab.hidden ? <Badge variant="outline">{t("Hidden")}</Badge> : null}
+                      </button>
+                      <p className="truncate text-xs text-fg-muted">
+                        {summarizeTab(tab, availableFacets, recommendedCustomised)}
+                      </p>
+                    </div>
+                    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                      <Switch
+                        aria-label={t("Display {label} tab", { label: tab.label })}
+                        checked={!tab.hidden}
+                        disabled={saving || isOnlyVisible}
+                        onChange={(e) => {
+                          const visible = e.target.checked;
+                          const next = tabs.map((item) =>
+                            item.key === tab.key
+                              ? { ...item, hidden: visible ? undefined : true }
+                              : item,
+                          );
+                          void persistTabs(
+                            next,
+                            visible
+                              ? t("{label} tab shown", { label: tab.label })
+                              : t("{label} tab hidden", { label: tab.label }),
+                          );
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-fg-muted hover:text-fg"
+                        aria-label={t("Edit {label} tab", { label: tab.label })}
+                        onClick={() => {
+                          clearTabParams();
+                          setLocalDrawer({ type: "edit", key: tab.key });
+                        }}
+                      >
+                        <Pencil size={15} />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-fg-muted hover:text-danger"
+                        aria-label={t("Delete {label} tab", { label: tab.label })}
+                        disabled={saving || tabs.length <= 1 || isOnlyVisible}
+                        onClick={() => {
+                          const next = tabs.filter((item) => item.key !== tab.key);
+                          void persistTabs(next, t("Removed {label} tab", { label: tab.label }));
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              );
-            }}
-          />
+                );
+              }}
+            />
+          </div>
         )}
       </div>
 

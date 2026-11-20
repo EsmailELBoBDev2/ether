@@ -189,11 +189,24 @@ func compileConditionDepth(r core.CollectionRule, depth int, browse BrowseCompil
 		var f core.Filter
 		if r.Field == "viewer" {
 			var g core.FilterGroup
-			if err := json.Unmarshal(r.Value, &g); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(r.Value))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&g); err != nil {
 				return condition{}, err
 			}
 			if g.Filter != nil || len(g.Children) > 0 {
 				return condition{}, fmt.Errorf("viewer conditions only describe activity")
+			}
+			if g.LastViewedAfter < 0 || g.LastViewedBefore < 0 {
+				return condition{}, fmt.Errorf("viewer timestamp bounds must be non-negative")
+			}
+			if !viewerGroupHasCondition(&g) {
+				return condition{}, fmt.Errorf("viewer condition needs at least one activity filter")
+			}
+			if g.StateField != "" {
+				if !validViewerStateOperator(g.StateOperator) {
+					return condition{}, fmt.Errorf("invalid viewer state operator %q", g.StateOperator)
+				}
 			}
 			g.Operator = "and"
 			f.Group = &g
@@ -895,15 +908,28 @@ func (f *Filter) SQLHiddenForType(typ core.MediaType) (string, []any) {
 	if f == nil {
 		return "0=1", nil
 	}
+	return f.specializeForType(typ).SQLHidden()
+}
+
+// SQLShownForType specializes the policy for a known media type while keeping
+// a single allow rule sargable (no wrapping CASE).
+func (f *Filter) SQLShownForType(typ core.MediaType) (string, []any) {
+	if f == nil {
+		return "1=1", nil
+	}
+	return f.specializeForType(typ).SQLShown()
+}
+
+func (f *Filter) specializeForType(typ core.MediaType) *Filter {
 	fb := f.FallbackForType(typ)
-	copy := &Filter{movieFallback: fb, showFallback: fb}
+	cp := &Filter{movieFallback: fb, showFallback: fb}
 	for _, r := range f.rules {
 		if r.typ == "mixed" || r.typ == string(typ) {
 			r.typ = "mixed"
-			copy.rules = append(copy.rules, r)
+			cp.rules = append(cp.rules, r)
 		}
 	}
-	return copy.SQLHidden()
+	return cp
 }
 
 func (f *Filter) legacyOr() bool {
@@ -1223,4 +1249,79 @@ func (f *Filter) SQLShown() (string, []any) {
 	}
 	q, a := f.SQLHidden()
 	return "NOT (" + q + ")", a
+}
+
+func viewerGroupHasCondition(g *core.FilterGroup) bool {
+	if g == nil {
+		return false
+	}
+	return g.Watched != nil || g.Unwatched != nil || g.InProgress != nil || g.History != nil ||
+		g.Favorite != nil || g.Watchlist != nil || g.OnWatchlist != nil ||
+		g.LastViewedAfter > 0 || g.LastViewedBefore > 0 || g.StateField != ""
+}
+
+func validViewerStateOperator(op string) bool {
+	switch op {
+	case "=", "==", "!=", "!==", "<<", "<", "<<=", "<=", ">>", ">", ">>=", ">=":
+		return true
+	default:
+		return false
+	}
+}
+
+// HasViewerState reports whether any compiled rule in f contains a viewer-state
+// condition.
+func (f *Filter) HasViewerState() bool {
+	if f == nil {
+		return false
+	}
+	var walk func(condition) bool
+	walk = func(c condition) bool {
+		if c.field == "viewer" {
+			return true
+		}
+		for _, child := range c.children {
+			if walk(child) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, g := range f.rules {
+		for _, c := range g.rules {
+			if walk(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RulesHaveViewerState reports whether specs contain any viewer-state condition
+// (including nested inside rule groups).
+func RulesHaveViewerState(specs []core.LibraryExclusion) bool {
+	var walk func([]core.CollectionRule, int) bool
+	walk = func(rules []core.CollectionRule, depth int) bool {
+		if depth > 8 {
+			return false
+		}
+		for _, r := range rules {
+			if r.Field == "viewer" {
+				return true
+			}
+			if r.Field == "group" {
+				var children []core.CollectionRule
+				if json.Unmarshal(r.Value, &children) == nil && walk(children, depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, s := range specs {
+		if walk(s.Rules, 0) {
+			return true
+		}
+	}
+	return false
 }

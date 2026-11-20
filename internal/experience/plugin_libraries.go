@@ -204,7 +204,7 @@ func (s *Service) publishedLibrary(ctx context.Context, lib core.Library) (core.
 	}
 }
 
-var defaultCatalogueSortIDs = []string{"title", "added", "released", "year", "rating", "duration", "popularity"}
+var defaultCatalogueSortIDs = []string{"title", "added", "released", "year", "rating", "duration", "popularity", "lastViewed"}
 
 func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue bool) []frontend.ViewTab {
 	out := make([]frontend.ViewTab, 0, len(tabs))
@@ -212,15 +212,20 @@ func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue b
 		if tab.Hidden {
 			continue
 		}
+		sortID := tab.Sort
+		if sortID != "" && core.IsLastViewedSort(sortID) {
+			sortID = string(core.SortLastViewed)
+		}
 		vt := frontend.ViewTab{
 			ID:                tab.Key,
 			Label:             tab.Label,
 			Kind:              tab.Kind,
 			Facet:             tab.Facet,
 			Order:             tab.Order,
-			Sort:              tab.Sort,
+			Sort:              sortID,
 			Direction:         tab.Direction,
 			Card:              tab.EffectiveCard(),
+			Layout:            tab.EffectiveLayout(),
 			Search:            tab.EffectiveSearch(),
 			SearchPlaceholder: tab.SearchPlaceholder,
 			Filters:           tab.Filters.Clone(),
@@ -489,7 +494,7 @@ func (s *Service) sanitizePluginLibraryQuery(ctx context.Context, lib core.Libra
 	if !ok {
 		return q
 	}
-	if q.Sort != "" && !slices.Contains(p.Sorts, string(q.Sort)) {
+	if q.Sort != "" && !q.Sort.IsLastViewed() && !slices.Contains(p.Sorts, string(q.Sort)) {
 		q.Sort, q.Desc = "", false
 	}
 	declared := make(map[string]bool, len(p.Facets))
@@ -579,7 +584,38 @@ func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core
 	return page, nil
 }
 
+func (s *Service) sortTitlesByLastViewed(ctx context.Context, v *core.User, items []core.Title, desc bool) {
+	if len(items) < 2 || v == nil || s.d.State == nil {
+		return
+	}
+	keys := make([]core.RatingKey, len(items))
+	for i := range items {
+		keys[i] = items[i].Key
+	}
+	states, err := s.d.State.GetMany(ctx, v.ID, keys)
+	if err != nil {
+		return
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		ti := states[items[i].Key].LastViewedAt
+		tj := states[items[j].Key].LastViewedAt
+		if ti.IsZero() != tj.IsZero() {
+			return !ti.IsZero()
+		}
+		if !ti.IsZero() && !ti.Equal(tj) {
+			if desc {
+				return ti.After(tj)
+			}
+			return ti.Before(tj)
+		}
+		return false
+	})
+}
+
 func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
+	if v != nil && core.CatalogViewerID(ctx) == 0 {
+		ctx = core.WithCatalogViewer(ctx, v)
+	}
 	if query := strings.TrimSpace(q.Filter.Query); query != "" {
 		limit := q.Limit
 		if limit <= 0 {
@@ -615,7 +651,9 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 				}
 			}
 		}
-		if q.Sort != "" {
+		if q.Sort.IsLastViewed() {
+			s.sortTitlesByLastViewed(ctx, v, filtered, q.Desc)
+		} else if q.Sort != "" {
 			if err := s.sortTitles(ctx, filtered, q); err != nil {
 				return core.Page{}, err
 			}
@@ -635,7 +673,11 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 
 	// Fast O(limit) keyset path when no post-SQL viewer predicates apply.
 	if simplePluginBrowse(v, q, s.d.Visibility.Policy) && q.Limit > 0 {
-		prefix := pluginCursorPrefix("lib:"+strconv.FormatInt(int64(lib.ID), 10), q)
+		viewerID := int64(0)
+		if v != nil {
+			viewerID = v.ID
+		}
+		prefix := pluginCursorPrefix(fmt.Sprintf("lib:%d:u:%d", lib.ID, viewerID), q)
 		cursor := ""
 		curOffset := 0
 		if offset > 0 && s.pluginCursors != nil {

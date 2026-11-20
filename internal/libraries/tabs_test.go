@@ -209,3 +209,81 @@ func TestPluginLibraryTabsValidation(t *testing.T) {
 		t.Fatalf("expected ErrInvalid for sort on live tab, got %v", err)
 	}
 }
+
+func TestLibraryTabs50TabCapLayoutAndLastViewedSort(t *testing.T) {
+	s, _ := openService(t)
+	ctx := context.Background()
+
+	// 50 tabs accepted, 51 rejected.
+	fifty := make([]core.LibraryTab, MaxLibraryTabs)
+	for i := range fifty {
+		fifty[i] = core.LibraryTab{
+			Key:    "tab-" + string(rune('a'+i/26)) + string(rune('a'+i%26)),
+			Label:  "Tab",
+			Kind:   core.TabView,
+			Layout: core.TabLayoutGrid,
+		}
+	}
+	saved, err := s.SetTabs(ctx, core.LibraryMovies, fifty, nil)
+	if err != nil {
+		t.Fatalf("50 tabs should succeed, got %v", err)
+	}
+	if len(saved) != 50 {
+		t.Fatalf("saved len = %d, want 50", len(saved))
+	}
+
+	fiftyOne := append(append([]core.LibraryTab(nil), fifty...), core.LibraryTab{
+		Key: "tab-extra", Label: "Extra", Kind: core.TabView,
+	})
+	if _, err := s.SetTabs(ctx, core.LibraryMovies, fiftyOne, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("51 tabs err = %v, want ErrInvalid", err)
+	}
+
+	// Layout + lastViewed sort (including aliases) normalize cleanly on catalogue and plugin libraries.
+	histFilter := &core.TabFilter{
+		Match: "all",
+		Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{"history":true}`)}},
+	}
+	viewTabs, err := s.SetTabs(ctx, core.LibraryMovies, []core.LibraryTab{
+		{Key: "history", Label: "History", Kind: core.TabView, Layout: "timeline", Sort: "played", Direction: "desc", Filters: histFilter},
+		{Key: "recent", Label: "Recent", Kind: core.TabView, Layout: "list", Sort: "last_viewed"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("SetTabs catalogue history: %v", err)
+	}
+	if viewTabs[0].Layout != core.TabLayoutTimeline || viewTabs[0].Sort != "lastViewed" || viewTabs[1].Layout != core.TabLayoutList || viewTabs[1].Sort != "lastViewed" {
+		t.Fatalf("normalized view tabs = %+v", viewTabs)
+	}
+
+	// Reject bad layout or layout on non-view tabs.
+	if _, err := s.SetTabs(ctx, core.LibraryMovies, []core.LibraryTab{
+		{Key: "bad", Label: "Bad", Kind: core.TabView, Layout: "carousel"},
+	}, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid layout err = %v, want ErrInvalid", err)
+	}
+	if _, err := s.SetTabs(ctx, core.LibraryMovies, []core.LibraryTab{
+		{Key: "lib", Label: "Library", Kind: core.TabLibrary, Layout: "list"},
+	}, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("layout on library tab err = %v, want ErrInvalid", err)
+	}
+
+	// Plugin library accepts lastViewed sort even if manifest browse.sorts didn't list it.
+	plugin, err := s.UpsertPluginLibrary(ctx, "docs", "doc", PluginLibraryDecl{Name: "Documentaries"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pluginSchema := &PluginTabSchema{
+		CollectionFacets: map[string]bool{"topic": true},
+		PeopleFacets:     map[string]bool{},
+		Sorts:            map[string]bool{"title": true},
+	}
+	savedPlugin, err := s.SetTabs(ctx, plugin.ID, []core.LibraryTab{
+		{Key: "history", Label: "History", Kind: core.TabView, Layout: "timeline", Sort: "lastViewed", Direction: "desc", Filters: histFilter},
+	}, pluginSchema)
+	if err != nil {
+		t.Fatalf("plugin history tab rejected: %v", err)
+	}
+	if savedPlugin[0].Layout != core.TabLayoutTimeline || savedPlugin[0].Sort != "lastViewed" {
+		t.Fatalf("saved plugin history tab = %+v", savedPlugin[0])
+	}
+}

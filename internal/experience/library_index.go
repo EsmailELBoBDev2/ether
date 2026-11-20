@@ -52,7 +52,7 @@ func (s *Service) indexedLibraryPage(ctx context.Context, v *core.User, library 
 		return core.Page{Items: []core.Title{}}, true, nil
 	}
 	bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: max(q.Offset, 0), Limit: q.Limit, NoTotal: q.NoTotal}
-	if q.Sort == core.SortPlayed {
+	if q.Sort.IsLastViewed() {
 		bq.Sort = core.SortTitle
 		bq.SortLastViewed = true
 		bq.SortViewerID = v.ID

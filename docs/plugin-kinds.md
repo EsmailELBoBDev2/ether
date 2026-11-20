@@ -26,7 +26,7 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     "name": "Field recordings",     // default name; the owner can rename
     "card": "landscape",            // optional: poster (default) | landscape | square
     "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
-    "tabs": [                       // optional (<= 6); defaults to Recommended + Library
+    "tabs": [                       // optional (<= 50); defaults to Recommended + Library
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
       { "key": "library", "label": "Library", "kind": "library" }
     ]
@@ -66,25 +66,41 @@ unless the owner agrees to replace the library's contents.
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
-- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, card?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
-  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
+- `library.tabs`: up to 50 entries of `{key, label, kind, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts` or `"lastViewed"`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
+  - **`"view"` tabs (Smart Views)**: define filtered, sorted sub-views inside the library — including per-viewer History, Watchlist, Favorites, Unwatched, or field-filtered tabs. Accepts optional `layout` (`"grid"` default, `"list"`, or `"timeline"`), `sort` (one of `browse.sorts` or `"lastViewed"`), `direction` (`"asc"` or `"desc"`, defaulting to `"desc"` for `"lastViewed"`), `search` (`true` by default), `searchPlaceholder` (≤60 characters when `search` is enabled), and `filters` (`{match?: "all"|"any", rules: [...], exclude?: [...]}`). Filter rules may target declared indexed fields (`"browse:<field>"`, `"year"`, `"rating"`, or mapped indexed facts) and per-viewer state (`{"field":"viewer","op":"is","value":{...}}` supporting `history`, `watched`, `unwatched`, `inProgress`, `favorite`, `watchlist`, `lastViewedAfter`, and `lastViewedBefore`, evaluated strictly for the requesting viewer). Vela reads items via `GET /vela/v0/libraries/{id}/items?tab=<tabKey>` and receives `title.watch.lastViewedAt` (RFC3339 UTC) on viewed items.
   - **`"live"` tabs**: surface ephemeral currently-live streams inside the library without registering Live TV channels or requiring Live TV setup. Accepts optional `card` (`"landscape"` default, `"poster"`, or `"square"`), `search` (`true` by default), and `searchPlaceholder` (≤60 characters when `search` is enabled); `facet`, `order`, `sort`, and `direction` are not used. Vela lists items via `GET /vela/v0/libraries/{id}/live?tab=&query=&filter=&cursor=&limit=` and starts playback via `POST /vela/v0/libraries/{id}/live/play` (returning a standard Vela `PlaybackPlan` and session). Thumbnails are proxied and signed by Ether — upstream URLs never reach clients.
-  - For example, an esports broadcasts library can combine dated VODs (`dateDisplay: "date"`) with a searchable `"live"` tab and tournament collections:
+  - For example, a documentary & broadcasts library can combine dated items (`dateDisplay: "date"`), a searchable `"live"` tab, tournament collections, and a per-viewer `"view"` History tab:
     ```json
     "library": {
-      "name": "Esports",
+      "name": "Documentaries",
       "card": "landscape",
       "dateDisplay": "date",
       "tabs": [
-        { "key": "live", "label": "Live", "kind": "live", "card": "landscape", "searchPlaceholder": "Search live matches" },
+        { "key": "live", "label": "Live", "kind": "live", "card": "landscape", "searchPlaceholder": "Search live streams" },
         { "key": "recommended", "label": "Recommended", "kind": "recommended" },
-        { "key": "library", "label": "VODs", "kind": "library" },
-        { "key": "tournaments", "label": "Tournaments", "kind": "collections", "facet": "tournament", "order": "name", "searchPlaceholder": "Search tournaments" }
+        { "key": "library", "label": "Library", "kind": "library" },
+        { "key": "topics", "label": "Topics", "kind": "collections", "facet": "topic", "order": "name", "searchPlaceholder": "Search topics" },
+        {
+          "key": "history",
+          "label": "History",
+          "kind": "view",
+          "layout": "timeline",
+          "sort": "lastViewed",
+          "direction": "desc",
+          "searchPlaceholder": "Search watch history",
+          "filters": {
+            "match": "all",
+            "rules": [
+              { "field": "viewer", "op": "is", "value": { "history": true } }
+            ]
+          }
+        }
       ]
     }
     ```
-- `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
+- `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets` (with `"lastViewed"` always available for recently watched ordering). Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
 - Recommended rows (`GET /vela/v0/libraries/{id}/rows`):
   - When `library.shelves` is omitted, Ether builds auto-generated shelves (up to 8 by default, 20 items each) from your stored items — Continue watching, Newest, Recently added, Top rated (when `rating` is a declared sort), and daily-rotating values from your declared facets.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:

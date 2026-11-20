@@ -11,30 +11,19 @@ import (
 
 // RuleFields exposes only rule facts backed by indexed storage.
 func RuleFields(decl plugins.MediaKindMeta) map[string]string {
-	out := map[string]string{}
-	aliases := map[string][]string{"genre": {"genre", "genres", "tags", "tag"}, "studio": {"studio", "studios"}, "country": {"country", "countries"}, "keyword": {"keyword", "keywords"}, "language": {"language"}, "runtime": {"runtime", "duration", "length"}, "votes": {"votes"}, "popularity": {"popularity"}}
-	for field, keys := range aliases {
-		for _, key := range keys {
-			for _, f := range decl.Fields {
-				text := f.Type == "string" || f.Type == "strings" || f.Type == "enum" || f.Type == "people"
-				numeric := f.Type == "int" || f.Type == "float" || f.Type == "duration"
-				wantNumeric := field == "runtime" || field == "votes" || field == "popularity"
-				if f.Key == key && f.Indexed && ((wantNumeric && numeric) || (!wantNumeric && text)) {
-					out[field] = key
-					break
-				}
-			}
-			if out[field] != "" {
-				break
-			}
-		}
-	}
-	return out
+	return plugins.KindRuleFields(decl.Fields)
 }
 
 func (s *Service) policySQL(ctx context.Context, libraryID core.LibraryID, policy *libraryfilter.Filter) (string, []any, error) {
+	return s.policySQLForViewer(ctx, libraryID, policy, true, core.CatalogViewerID(ctx))
+}
+
+func (s *Service) policySQLForViewer(ctx context.Context, libraryID core.LibraryID, policy *libraryfilter.Filter, hidden bool, viewerID int64) (string, []any, error) {
 	if policy.Passive() {
-		return "0=1", nil, nil
+		if hidden {
+			return "0=1", nil, nil
+		}
+		return "1=1", nil, nil
 	}
 	rec, err := s.GetKindByLibrary(ctx, libraryID)
 	if err != nil {
@@ -44,23 +33,29 @@ func (s *Service) policySQL(ctx context.Context, libraryID core.LibraryID, polic
 	if len(rec.Decl.Levels) > 1 {
 		typ = core.TypeShow
 	}
-	q, args := policy.PluginSQLHidden(typ, RuleFields(rec.Decl))
+	if hidden {
+		q, args := policy.PluginSQLHiddenForViewer(typ, RuleFields(rec.Decl), viewerID)
+		return q, args, nil
+	}
+	q, args := policy.PluginSQLShownForViewer(typ, RuleFields(rec.Decl), viewerID)
 	return q, args, nil
 }
 
 func (s *Service) appendVisibility(ctx context.Context, where *strings.Builder, args *[]any, lib core.LibraryID, policy *libraryfilter.Filter, hidden bool) error {
+	return s.appendVisibilityForViewer(ctx, where, args, lib, policy, hidden, core.CatalogViewerID(ctx))
+}
+
+func (s *Service) appendVisibilityForViewer(ctx context.Context, where *strings.Builder, args *[]any, lib core.LibraryID, policy *libraryfilter.Filter, hidden bool, viewerID int64) error {
 	if policy.Passive() && !hidden {
 		return nil
 	}
-	q, a, err := s.policySQL(ctx, lib, policy)
+	q, a, err := s.policySQLForViewer(ctx, lib, policy, hidden, viewerID)
 	if err != nil {
 		return err
 	}
-	where.WriteString(" AND ")
-	if !hidden {
-		where.WriteString("NOT ")
-	}
-	where.WriteString("(" + q + ")")
+	where.WriteString(" AND (")
+	where.WriteString(q)
+	where.WriteString(")")
 	*args = append(*args, a...)
 	return nil
 }
@@ -104,7 +99,7 @@ func (s *Service) PreviewVisibility(ctx context.Context, lib core.LibraryID, spe
 	for i := range counts {
 		counts[i] = map[string]int{"movies": 0, "shows": 0}
 	}
-	if columns, args := policy.PluginCatchCountsSQL(typ, RuleFields(rec.Decl)); columns != "" {
+	if columns, args := policy.PluginCatchCountsSQLForViewer(typ, RuleFields(rec.Decl), core.CatalogViewerID(ctx)); columns != "" {
 		args = append(args, int64(lib), level)
 		values := make([]int, len(keptSpecs)*2)
 		dest := make([]any, len(values))
@@ -144,7 +139,7 @@ func (s *Service) ItemHidden(ctx context.Context, lib core.Library, ref core.Ite
 	if policy.Passive() {
 		return false, nil
 	}
-	q, args, err := s.policySQL(ctx, lib.ID, policy)
+	q, args, err := s.policySQLForViewer(ctx, lib.ID, policy, true, core.CatalogViewerID(ctx))
 	if err != nil {
 		return false, err
 	}

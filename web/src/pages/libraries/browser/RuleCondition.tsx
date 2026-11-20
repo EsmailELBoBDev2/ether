@@ -4,12 +4,24 @@ import { t } from "../../../i18n";
 import type { MediaKind } from "../api";
 import type { Rule, RuleField } from "../../../lib/contract";
 
+const VIEWER_BROWSE_FIELDS = (): [string, string][] => [
+  ["__history", t("Watch history")],
+  ["__watched", t("Watched")],
+  ["__unwatched", t("Unwatched")],
+  ["__progress", t("In progress")],
+  ["__favorite", t("Favorite")],
+  ["__watchlist", t("On watchlist")],
+  ["__lastViewedAfter", t("Watched after")],
+  ["__lastViewedBefore", t("Watched before")],
+];
+
 // The extended rules use the catalogue's existing indexed predicates. These
 // are individual rule conditions, never a second saved library filter.
 export function browseFields(kind?: MediaKind): [string, string][] {
   if (kind)
     return [
       ["__group", t("Rules")],
+      ...VIEWER_BROWSE_FIELDS(),
       ...["year", "rating", "released"].map((key): [string, string] => [
         key,
         kind.fields?.find((f) => f.key === key)?.label ??
@@ -21,9 +33,7 @@ export function browseFields(kind?: MediaKind): [string, string][] {
     ];
   return [
     ["__group", t("Rules")],
-    ["__unwatched", t("Unwatched")],
-    ["__progress", t("In progress")],
-    ["__watchlist", t("On watchlist")],
+    ...VIEWER_BROWSE_FIELDS(),
     ["__rated", t("Rated")],
     ["type", t("Type")],
     ["releaseGate", t("New-release gate")],
@@ -88,14 +98,18 @@ export function conditionTitle(rule: Rule, kind?: MediaKind): string {
 function valueLabel(key: string): string {
   const labels: Record<string, string> = {
     userId: t("Viewer"),
+    history: t("Watch history"),
+    watched: t("Watched"),
     unwatched: t("Unwatched"),
     inProgress: t("In progress"),
+    favorite: t("Favorite"),
+    watchlist: t("On watchlist"),
     onWatchlist: t("On watchlist"),
     stateField: t("Activity"),
     stateOperator: t("Comparison"),
     stateValue: t("Value"),
-    lastViewedAfter: t("Watch status") + " · " + t("Minimum"),
-    lastViewedBefore: t("Watch status") + " · " + t("Maximum"),
+    lastViewedAfter: t("Watched after"),
+    lastViewedBefore: t("Watched before"),
     people: t("Person"),
     names: t("Name"),
     kind: t("Role"),
@@ -344,27 +358,38 @@ export function ExtendedCondition({
   );
 }
 export function newBrowseCondition(key: string, kind?: MediaKind): Rule {
-  if (kind && key !== "__group")
+  if (key === "__group") return { field: "group", op: "is", value: [] };
+  if (key.startsWith("__")) {
+    const todayUnix = Math.floor(Date.now() / 86_400_000) * 86_400;
+    const value: Record<string, unknown> =
+      key === "__history"
+        ? { history: true }
+        : key === "__watched"
+          ? { watched: true }
+          : key === "__unwatched"
+            ? { unwatched: true }
+            : key === "__progress"
+              ? { inProgress: true }
+              : key === "__favorite"
+                ? { favorite: true }
+                : key === "__watchlist"
+                  ? { onWatchlist: true }
+                  : key === "__lastViewedAfter"
+                    ? { lastViewedAfter: todayUnix - 30 * 86_400 }
+                    : key === "__lastViewedBefore"
+                      ? { lastViewedBefore: todayUnix }
+                      : { stateField: "lastRatedAt", stateOperator: ">", stateValue: 0 };
+    return {
+      field: "viewer",
+      op: "is",
+      value,
+    };
+  }
+  if (kind)
     return {
       field: `browse:${key}`,
       op: "is",
       value: kind.fields?.find((field) => field.key === key)?.enum?.[0] ?? "",
-    };
-  if (key === "__group") return { field: "group", op: "is", value: [] };
-  if (key.startsWith("__"))
-    return {
-      field: "viewer",
-      op: "is",
-      value: {
-        userId: 0,
-        ...(key === "__unwatched"
-          ? { unwatched: true }
-          : key === "__progress"
-            ? { inProgress: true }
-            : key === "__watchlist"
-              ? { onWatchlist: true }
-              : { stateField: "lastRatedAt", stateOperator: ">", stateValue: 0 }),
-      },
     };
 
   const arrays = [

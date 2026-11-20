@@ -14,6 +14,7 @@ import (
 type SearchQuery struct {
 	Policy    *libraryfilter.Filter
 	TabPolicy *libraryfilter.Filter
+	ViewerID  int64
 	Hidden    bool
 	LibraryID core.LibraryID
 	Query     string

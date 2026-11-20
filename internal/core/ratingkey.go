@@ -61,6 +61,9 @@ const MaxTitleRuleKeys = 500
 const (
 	PluginKeyBase   int64 = 5_000_000_000_000
 	PluginKeyMaxSeq int64 = 2_000_000_000_000
+	// PluginKeyOffset is the base integer added to plugin_items.seq to produce
+	// its RatingKey: RatingKey(PluginKeyOffset + seq) == PluginKey(seq).
+	PluginKeyOffset int64 = int64(KindLocal)*keyBase + PluginKeyBase
 )
 
 // PluginPersonIDBase and PluginPersonIDSpan carve out deterministic positive

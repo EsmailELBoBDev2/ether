@@ -21,6 +21,9 @@ func schemaType(typ reflect.Type) map[string]any {
 	for typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
+	if typ == reflect.TypeFor[json.RawMessage]() {
+		return map[string]any{}
+	}
 	switch typ.Kind() {
 	case reflect.Struct:
 		props := map[string]any{}
@@ -38,10 +41,12 @@ func schemaType(typ reflect.Type) map[string]any {
 		case reflect.TypeFor[plugins.KindLibraryDecl]():
 			props["card"] = map[string]any{"enum": []string{"poster", "landscape", "square"}}
 		case reflect.TypeFor[plugins.KindLibraryTab]():
-			props["kind"] = map[string]any{"enum": []string{"recommended", "library", "collections", "people"}}
-			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index"}}
+			props["kind"] = map[string]any{"enum": []string{"recommended", "library", "collections", "people", "view", "live"}}
+			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index", "lastViewed"}}
 			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}
 			props["order"] = map[string]any{"enum": []string{"count", "name"}}
+			props["card"] = map[string]any{"enum": []string{"poster", "landscape", "square"}}
+			props["layout"] = map[string]any{"enum": []string{"grid", "list", "timeline"}}
 		case reflect.TypeFor[plugins.KindLibraryShelf]():
 			props["sort"] = map[string]any{"enum": []string{"title", "added", "released", "year", "rating", "index"}}
 			props["direction"] = map[string]any{"enum": []string{"asc", "desc"}}

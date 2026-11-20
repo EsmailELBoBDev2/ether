@@ -668,7 +668,7 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
     "name": "Field recordings",     // default name; the owner can rename
     "card": "landscape",            // optional: poster (default) | landscape | square
     "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
-    "tabs": [                       // optional (<= 6); defaults to Recommended + Library
+    "tabs": [                       // optional (<= 50); defaults to Recommended + Library
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
       { "key": "library", "label": "Library", "kind": "library" }
     ]
@@ -708,25 +708,41 @@ unless the owner agrees to replace the library's contents.
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
-- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, card?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
-  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
+- `library.tabs`: up to 50 entries of `{key, label, kind, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+  - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts` or `"lastViewed"`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
+  - **`"view"` tabs (Smart Views)**: define filtered, sorted sub-views inside the library — including per-viewer History, Watchlist, Favorites, Unwatched, or field-filtered tabs. Accepts optional `layout` (`"grid"` default, `"list"`, or `"timeline"`), `sort` (one of `browse.sorts` or `"lastViewed"`), `direction` (`"asc"` or `"desc"`, defaulting to `"desc"` for `"lastViewed"`), `search` (`true` by default), `searchPlaceholder` (≤60 characters when `search` is enabled), and `filters` (`{match?: "all"|"any", rules: [...], exclude?: [...]}`). Filter rules may target declared indexed fields (`"browse:<field>"`, `"year"`, `"rating"`, or mapped indexed facts) and per-viewer state (`{"field":"viewer","op":"is","value":{...}}` supporting `history`, `watched`, `unwatched`, `inProgress`, `favorite`, `watchlist`, `lastViewedAfter`, and `lastViewedBefore`, evaluated strictly for the requesting viewer). Vela reads items via `GET /vela/v0/libraries/{id}/items?tab=<tabKey>` and receives `title.watch.lastViewedAt` (RFC3339 UTC) on viewed items.
   - **`"live"` tabs**: surface ephemeral currently-live streams inside the library without registering Live TV channels or requiring Live TV setup. Accepts optional `card` (`"landscape"` default, `"poster"`, or `"square"`), `search` (`true` by default), and `searchPlaceholder` (≤60 characters when `search` is enabled); `facet`, `order`, `sort`, and `direction` are not used. Vela lists items via `GET /vela/v0/libraries/{id}/live?tab=&query=&filter=&cursor=&limit=` and starts playback via `POST /vela/v0/libraries/{id}/live/play` (returning a standard Vela `PlaybackPlan` and session). Thumbnails are proxied and signed by Ether — upstream URLs never reach clients.
-  - For example, an esports broadcasts library can combine dated VODs (`dateDisplay: "date"`) with a searchable `"live"` tab and tournament collections:
+  - For example, a documentary & broadcasts library can combine dated items (`dateDisplay: "date"`), a searchable `"live"` tab, tournament collections, and a per-viewer `"view"` History tab:
     ```json
     "library": {
-      "name": "Esports",
+      "name": "Documentaries",
       "card": "landscape",
       "dateDisplay": "date",
       "tabs": [
-        { "key": "live", "label": "Live", "kind": "live", "card": "landscape", "searchPlaceholder": "Search live matches" },
+        { "key": "live", "label": "Live", "kind": "live", "card": "landscape", "searchPlaceholder": "Search live streams" },
         { "key": "recommended", "label": "Recommended", "kind": "recommended" },
-        { "key": "library", "label": "VODs", "kind": "library" },
-        { "key": "tournaments", "label": "Tournaments", "kind": "collections", "facet": "tournament", "order": "name", "searchPlaceholder": "Search tournaments" }
+        { "key": "library", "label": "Library", "kind": "library" },
+        { "key": "topics", "label": "Topics", "kind": "collections", "facet": "topic", "order": "name", "searchPlaceholder": "Search topics" },
+        {
+          "key": "history",
+          "label": "History",
+          "kind": "view",
+          "layout": "timeline",
+          "sort": "lastViewed",
+          "direction": "desc",
+          "searchPlaceholder": "Search watch history",
+          "filters": {
+            "match": "all",
+            "rules": [
+              { "field": "viewer", "op": "is", "value": { "history": true } }
+            ]
+          }
+        }
       ]
     }
     ```
-- `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
+- `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets` (with `"lastViewed"` always available for recently watched ordering). Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
 - Recommended rows (`GET /vela/v0/libraries/{id}/rows`):
   - When `library.shelves` is omitted, Ether builds auto-generated shelves (up to 8 by default, 20 items each) from your stored items — Continue watching, Newest, Recently added, Top rated (when `rating` is a declared sort), and daily-rotating values from your declared facets.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
@@ -3695,6 +3711,13 @@ type MediaKindMeta struct {
 }
 ``````
 
+## Source: internal/plugins/contract.go#MaxKindLibraryTabs
+
+``````
+// MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.
+const MaxKindLibraryTabs = 50
+``````
+
 ## Source: internal/plugins/contract.go#KindLibraryDecl.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -3703,7 +3726,7 @@ type MediaKindMeta struct {
 | `icon` | `string` | may be omitted (see validation for conditions) |  |
 | `card` | `string` | may be omitted (see validation for conditions) | poster (default)\|landscape\|square |
 | `dateDisplay` | `string` | may be omitted (see validation for conditions) | year (default)\|date |
-| `tabs` | `[]KindLibraryTab` | may be omitted (see validation for conditions) | up to 6; defaults to Recommended + Library |
+| `tabs` | `[]KindLibraryTab` | may be omitted (see validation for conditions) | up to 50; defaults to Recommended + Library |
 | `shelves` | `[]KindLibraryShelf` | may be omitted (see validation for conditions) | up to 40; default Recommended shelves |
 
 
@@ -3716,7 +3739,7 @@ type KindLibraryDecl struct {
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
-	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
+	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
 }
 ``````
@@ -3727,14 +3750,16 @@ type KindLibraryDecl struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
-| `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people\|live |
+| `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people\|view\|live |
 | `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (collections or people) |
-| `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts (facet collections only) |
-| `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections only) |
+| `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts or lastViewed (facet collections or view) |
+| `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections or view) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (facet collections or people) |
 | `card` | `string` | may be omitted (see validation for conditions) | landscape (default)\|poster\|square (live tabs only) |
-| `search` | `*bool` | may be omitted (see validation for conditions) | collections, people or live (default true) |
+| `layout` | `string` | may be omitted (see validation for conditions) | grid (default)\|list\|timeline (view tabs only) |
+| `search` | `*bool` | may be omitted (see validation for conditions) | collections, people, view or live (default true) |
 | `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder, <= 60 chars |
+| `filters` | `*core.TabFilter` | may be omitted (see validation for conditions) | saved filter rules (view tabs only) |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryTab
@@ -3742,16 +3767,18 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key               string `json:"key"`
-	Label             string `json:"label"`
-	Kind              string `json:"kind"`                        // recommended|library|collections|people|live
-	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
-	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
-	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
-	Order             string `json:"order,omitempty"`             // count|name (facet collections or people)
-	Card              string `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
-	Search            *bool  `json:"search,omitempty"`            // collections, people or live (default true)
-	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+	Key               string          `json:"key"`
+	Label             string          `json:"label"`
+	Kind              string          `json:"kind"`                        // recommended|library|collections|people|view|live
+	Facet             string          `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
+	Sort              string          `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
+	Direction         string          `json:"direction,omitempty"`         // asc|desc (facet collections or view)
+	Order             string          `json:"order,omitempty"`             // count|name (facet collections or people)
+	Card              string          `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Layout            string          `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
+	Search            *bool           `json:"search,omitempty"`            // collections, people, view or live (default true)
+	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+	Filters           *core.TabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
 }
 ``````
 
@@ -3759,16 +3786,34 @@ type KindLibraryTab struct {
 
 ``````
 // EffectiveSearch reports whether tab search is enabled. Search defaults to
-// true on collections, people and live tabs and is never enabled on other
-// manifest tab kinds.
+// true on collections, people, view and live tabs and is never enabled on
+// other manifest tab kinds.
 func (t KindLibraryTab) EffectiveSearch() bool {
-	if t.Kind != "collections" && t.Kind != "people" && t.Kind != "live" {
+	if t.Kind != "collections" && t.Kind != "people" && t.Kind != "view" && t.Kind != "live" {
 		return false
 	}
 	if t.Search != nil {
 		return *t.Search
 	}
 	return true
+}
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryTab.EffectiveLayout
+
+``````
+// EffectiveLayout returns the tab's layout ("grid" by default for view tabs,
+// empty for other tab kinds).
+func (t KindLibraryTab) EffectiveLayout() string {
+	if t.Kind != "view" {
+		return ""
+	}
+	switch t.Layout {
+	case core.TabLayoutGrid, core.TabLayoutList, core.TabLayoutTimeline:
+		return t.Layout
+	default:
+		return core.TabLayoutGrid
+	}
 }
 ``````
 
@@ -16233,7 +16278,7 @@ var kindFieldTypes = map[string]bool{
 
 ``````
 var kindSorts = map[string]bool{
-	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true,
+	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true, "lastViewed": true,
 }
 ``````
 
@@ -16257,7 +16302,53 @@ var kindLibraryDateDisplays = map[string]bool{
 
 ``````
 var kindLibraryTabKinds = map[string]bool{
-	"recommended": true, "library": true, "collections": true, "people": true, "live": true,
+	"recommended": true, "library": true, "collections": true, "people": true, "view": true, "live": true,
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#kindLibraryTabLayouts
+
+``````
+var kindLibraryTabLayouts = map[string]bool{
+	"grid": true, "list": true, "timeline": true,
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#KindRuleFields
+
+``````
+// KindRuleFields maps built-in rule facts (genre, studio, runtime, ...) onto
+// declared, indexed plugin field keys. Shared by manifest validation and
+// pluginitems SQL compilation so both agree on which built-in facts exist.
+func KindRuleFields(fields []KindField) map[string]string {
+	out := map[string]string{}
+	aliases := map[string][]string{
+		"genre":      {"genre", "genres", "tags", "tag"},
+		"studio":     {"studio", "studios"},
+		"country":    {"country", "countries"},
+		"keyword":    {"keyword", "keywords"},
+		"language":   {"language"},
+		"runtime":    {"runtime", "duration", "length"},
+		"votes":      {"votes"},
+		"popularity": {"popularity"},
+	}
+	for field, keys := range aliases {
+		wantNumeric := field == "runtime" || field == "votes" || field == "popularity"
+		for _, key := range keys {
+			for _, f := range fields {
+				text := f.Type == "string" || f.Type == "strings" || f.Type == "enum" || f.Type == "people"
+				numeric := f.Type == "int" || f.Type == "float" || f.Type == "duration"
+				if f.Key == key && f.Indexed && ((wantNumeric && numeric) || (!wantNumeric && text)) {
+					out[field] = key
+					break
+				}
+			}
+			if out[field] != "" {
+				break
+			}
+		}
+	}
+	return out
 }
 ``````
 
@@ -16327,8 +16418,8 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
 			add(base+".library.dateDisplay", "must be year or date")
 		}
-		if len(k.Library.Tabs) > 6 {
-			add(base+".library.tabs", "at most six tabs may be declared")
+		if len(k.Library.Tabs) > MaxKindLibraryTabs {
+			add(base+".library.tabs", fmt.Sprintf("at most %d tabs may be declared", MaxKindLibraryTabs))
 		}
 		seenTab := map[string]bool{}
 		for j, tab := range k.Library.Tabs {
@@ -16342,7 +16433,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			seenTab[tab.Key] = true
 			label(tbase+".label", tab.Label, 40)
 			if !kindLibraryTabKinds[tab.Kind] {
-				add(tbase+".kind", "must be recommended, library, collections, people or live")
+				add(tbase+".kind", "must be recommended, library, collections, people, view or live")
 			}
 		}
 	}
@@ -16423,7 +16514,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	seenSort := map[string]bool{}
 	for j, s := range k.Browse.Sorts {
 		if !kindSorts[s] || seenSort[s] {
-			add(fmt.Sprintf("%s.browse.sorts[%d]", base, j), "must be title, added, released, year, rating or index, listed once")
+			add(fmt.Sprintf("%s.browse.sorts[%d]", base, j), "must be title, added, released, year, rating, index or lastViewed, listed once")
 		}
 		seenSort[s] = true
 	}
@@ -16467,6 +16558,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 	}
 	if !k.Library.IsZero() {
+		declaredIndexed := make(map[string]string, len(k.Fields))
+		for _, f := range k.Fields {
+			if f.Indexed {
+				declaredIndexed[f.Key] = f.Type
+			}
+		}
+		ruleFields := KindRuleFields(k.Fields)
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
 			switch tab.Kind {
@@ -16477,7 +16575,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Sort != "" {
 					if tab.Facet == "" {
 						add(tbase+".sort", "requires facet to be set")
-					} else if !seenSort[tab.Sort] {
+					} else if !seenSort[tab.Sort] && !core.IsLastViewedSort(tab.Sort) {
 						add(tbase+".sort", "must name a declared browse sort")
 					}
 				}
@@ -16504,6 +16602,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Card != "" {
 					add(tbase+".card", "only live tabs may set card")
 				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
 					add(tbase+".facet", "must name a declared browse facet")
@@ -16511,10 +16615,10 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".facet", "must name a people field")
 				}
 				if tab.Sort != "" {
-					add(tbase+".sort", "only collections tabs may set sort")
+					add(tbase+".sort", "only collections or view tabs may set sort")
 				}
 				if tab.Direction != "" {
-					add(tbase+".direction", "only collections tabs may set direction")
+					add(tbase+".direction", "only collections or view tabs may set direction")
 				}
 				if tab.Order != "" && tab.Order != "count" && tab.Order != "name" {
 					add(tbase+".order", "must be count or name")
@@ -16528,21 +16632,72 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Card != "" {
 					add(tbase+".card", "only live tabs may set card")
 				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+			case "view":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live tabs may set card")
+				}
+				if tab.Layout != "" && !kindLibraryTabLayouts[tab.Layout] {
+					add(tbase+".layout", "must be grid, list or timeline")
+				}
+				if tab.Sort != "" && !seenSort[tab.Sort] && !core.IsLastViewedSort(tab.Sort) {
+					add(tbase+".sort", "must name a declared browse sort or lastViewed")
+				}
+				if tab.Direction != "" && tab.Direction != "asc" && tab.Direction != "desc" {
+					add(tbase+".direction", "must be asc or desc")
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
+				if tab.Filters != nil {
+					if tab.Filters.Match != "" && tab.Filters.Match != "all" && tab.Filters.Match != "any" {
+						add(tbase+".filters.match", "must be all or any")
+					}
+					if tab.Filters.VisibilityDefault != "" && tab.Filters.VisibilityDefault != "show" && tab.Filters.VisibilityDefault != "hide" {
+						add(tbase+".filters.visibilityDefault", "must be show or hide")
+					}
+					if !tab.Filters.IsEmpty() {
+						specs, fallback := tab.Filters.ToPolicy("")
+						if err := libraryfilter.ValidatePluginManifestPolicy(specs, fallback, declaredIndexed, ruleFields); err != nil {
+							add(tbase+".filters", err.Error())
+						}
+					}
+				}
 			case "live":
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
 				}
 				if tab.Sort != "" {
-					add(tbase+".sort", "only collections tabs may set sort")
+					add(tbase+".sort", "only collections or view tabs may set sort")
 				}
 				if tab.Direction != "" {
-					add(tbase+".direction", "only collections tabs may set direction")
+					add(tbase+".direction", "only collections or view tabs may set direction")
 				}
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
 				if tab.Card != "" && !kindLibraryCards[tab.Card] {
 					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
 				}
 				if tab.SearchPlaceholder != "" {
 					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
@@ -16555,10 +16710,10 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".facet", "only collections or people tabs may set facet")
 				}
 				if tab.Sort != "" {
-					add(tbase+".sort", "only collections tabs may set sort")
+					add(tbase+".sort", "only collections or view tabs may set sort")
 				}
 				if tab.Direction != "" {
-					add(tbase+".direction", "only collections tabs may set direction")
+					add(tbase+".direction", "only collections or view tabs may set direction")
 				}
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
@@ -16566,11 +16721,17 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Card != "" {
 					add(tbase+".card", "only live tabs may set card")
 				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
 				if tab.Search != nil {
-					add(tbase+".search", "only collections, people or live tabs may set search")
+					add(tbase+".search", "only collections, people, view or live tabs may set search")
 				}
 				if tab.SearchPlaceholder != "" {
-					add(tbase+".searchPlaceholder", "only collections, people or live tabs may set searchPlaceholder")
+					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
 				}
 			}
 		}
@@ -25062,7 +25223,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].levels[].playable` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].library` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].library.card` | `any` | false | {"enum":["poster","landscape","square"]} |
-| `ether.contributes.mediaKinds[].library.dateDisplay` | `any` | false | {"enum":["year","date"]} |
+| `ether.contributes.mediaKinds[].library.dateDisplay` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.icon` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.name` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves` | `array` | false | {} |
@@ -25078,13 +25239,41 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.tabs[].card` | `any` | false | {"enum":["poster","landscape","square"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].direction` | `any` | false | {"enum":["asc","desc"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].facet` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters` | `object` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.exclude` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.exclude[].field` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.exclude[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.exclude[].labels` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.exclude[].op` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.exclude[].value` | `any` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].action` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].match` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].mediaType` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].name` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].rules` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].rules[].field` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].rules[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].rules[].labels` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].rules[].op` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].rules[].value` | `any` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.groups[].scope` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.match` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.rules` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.rules[].field` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.rules[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.rules[].labels` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.rules[].op` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.rules[].value` | `any` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].filters.visibilityDefault` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].key` | `string` | false | {} |
-| `ether.contributes.mediaKinds[].library.tabs[].kind` | `any` | false | {"enum":["recommended","library","collections","people","live"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].kind` | `any` | false | {"enum":["recommended","library","collections","people","view","live"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.tabs[].layout` | `any` | false | {"enum":["grid","list","timeline"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].order` | `any` | false | {"enum":["count","name"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].search` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].searchPlaceholder` | `string` | false | {} |
-| `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
 | `ether.contributes.mediaKinds[].present` | `object` | false | {} |
@@ -25611,10 +25800,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         ]
                       },
                       "dateDisplay": {
-                        "enum": [
-                          "year",
-                          "date"
-                        ]
+                        "type": "string"
                       },
                       "icon": {
                         "type": "string"
@@ -25692,6 +25878,112 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                             "facet": {
                               "type": "string"
                             },
+                            "filters": {
+                              "properties": {
+                                "exclude": {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "groups": {
+                                  "items": {
+                                    "properties": {
+                                      "action": {
+                                        "type": "string"
+                                      },
+                                      "match": {
+                                        "type": "string"
+                                      },
+                                      "mediaType": {
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "type": "string"
+                                      },
+                                      "rules": {
+                                        "items": {
+                                          "properties": {
+                                            "field": {
+                                              "type": "string"
+                                            },
+                                            "label": {
+                                              "type": "string"
+                                            },
+                                            "labels": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "op": {
+                                              "type": "string"
+                                            },
+                                            "value": {}
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "scope": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "match": {
+                                  "type": "string"
+                                },
+                                "rules": {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "visibilityDefault": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
                             "key": {
                               "type": "string"
                             },
@@ -25701,11 +25993,19 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                                 "library",
                                 "collections",
                                 "people",
+                                "view",
                                 "live"
                               ]
                             },
                             "label": {
                               "type": "string"
+                            },
+                            "layout": {
+                              "enum": [
+                                "grid",
+                                "list",
+                                "timeline"
+                              ]
                             },
                             "order": {
                               "enum": [
@@ -25726,7 +26026,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                                 "released",
                                 "year",
                                 "rating",
-                                "index"
+                                "index",
+                                "lastViewed"
                               ]
                             }
                           },
@@ -26656,7 +26957,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, `library.dateDisplay` `year\|date`, up to 6 `library.tabs` of `recommended\|library\|collections\|people\|live` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs, required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, optional `card` `landscape\|poster\|square` plus `search`/`searchPlaceholder` on `live` tabs backed by `/ether/v1/kinds/{kind}/live` and `/live/resolve`, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, `library.dateDisplay` `year\|date`, up to 50 `library.tabs` of `recommended\|library\|collections\|people\|view\|live` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs, required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, optional `layout` `grid\|list\|timeline`, `sort` (including `lastViewed`), `direction`, `search`/`searchPlaceholder`, and `filters` on `view` tabs supporting declared indexed fields and per-viewer state rules, optional `card` `landscape\|poster\|square` plus `search`/`searchPlaceholder` on `live` tabs backed by `/ether/v1/kinds/{kind}/live` and `/live/resolve`, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -26814,7 +27115,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 ```
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`), `library.dateDisplay` (`year|date`),
-`library.tabs` (`recommended|library|collections|people|live`, such as `{key:"live",label:"Live",kind:"live",card:"landscape",searchPlaceholder:"Search live matches"}`, `{key:"tournaments",label:"Tournaments",kind:"collections",facet:"tournament",order:"name",searchPlaceholder:"Search tournaments"}`, or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
+`library.tabs` (up to 50 tabs of `recommended|library|collections|people|view|live`, such as `{key:"live",label:"Live",kind:"live",card:"landscape",searchPlaceholder:"Search live streams"}`, `{key:"topics",label:"Topics",kind:"collections",facet:"topic",order:"name",searchPlaceholder:"Search topics"}`, `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`, or a Smart View History tab `{key:"history",label:"History",kind:"view",layout:"timeline",sort:"lastViewed",direction:"desc",filters:{match:"all",rules:[{field:"viewer",op:"is",value:{history:true}}]}}`),
 optional `library.shelves` (up to 40 default Recommended shelves such as `{key:"science-docs",label:"Science documentaries",facet:"topic",values:["Science","Nature"],sort:"released",direction:"desc"}` or multi-facet `filters`),
 and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["tournaments","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/live/resolve
 handlers in `src/plugin.ts` (`onLive` / `OnLive` / `on_live` for live tabs). Keep cursor pages bounded and item IDs stable. Read
@@ -42522,6 +42823,13 @@ type MediaKindMeta struct {
 }
 ``````
 
+## Source: sdk/go/types.go#MaxKindLibraryTabs
+
+``````
+// MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.
+const MaxKindLibraryTabs = 50
+``````
+
 ## Source: sdk/go/types.go#KindLibraryDecl.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -42530,7 +42838,7 @@ type MediaKindMeta struct {
 | `icon` | `string` | may be omitted (see validation for conditions) |  |
 | `card` | `string` | may be omitted (see validation for conditions) | poster (default)\|landscape\|square |
 | `dateDisplay` | `string` | may be omitted (see validation for conditions) | year (default)\|date |
-| `tabs` | `[]KindLibraryTab` | may be omitted (see validation for conditions) | up to 6; defaults to Recommended + Library |
+| `tabs` | `[]KindLibraryTab` | may be omitted (see validation for conditions) | up to 50; defaults to Recommended + Library |
 | `shelves` | `[]KindLibraryShelf` | may be omitted (see validation for conditions) | up to 40; default Recommended shelves |
 
 
@@ -42543,8 +42851,52 @@ type KindLibraryDecl struct {
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
-	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
+	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
+}
+``````
+
+## Source: sdk/go/types.go#KindLibraryTabFilter.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `match` | `string` | may be omitted (see validation for conditions) | "all" (default) or "any" |
+| `rules` | `[]KindLibraryTabRule` | may be omitted (see validation for conditions) | matching conditions |
+| `exclude` | `[]KindLibraryTabRule` | may be omitted (see validation for conditions) | excluded conditions |
+
+
+## Source: sdk/go/types.go#KindLibraryTabFilter
+
+``````
+// KindLibraryTabFilter defines saved filter rules on a "view" tab.
+type KindLibraryTabFilter struct {
+	Match   string                 `json:"match,omitempty"`   // "all" (default) or "any"
+	Rules   []KindLibraryTabRule   `json:"rules,omitempty"`   // matching conditions
+	Exclude []KindLibraryTabRule   `json:"exclude,omitempty"` // excluded conditions
+}
+``````
+
+## Source: sdk/go/types.go#KindLibraryTabRule.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `field` | `string` | emitted (validation may require a value) |  |
+| `op` | `string` | emitted (validation may require a value) |  |
+| `value` | `any` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#KindLibraryTabRule
+
+``````
+// KindLibraryTabRule is one filter condition inside a "view" tab's filters.
+// Field may be "browse:<indexedField>", "viewer" (with value such as
+// {"history":true}, {"watched":true}, {"unwatched":true}, {"inProgress":true},
+// {"favorite":true}, {"watchlist":true}, {"lastViewedAfter":unix},
+// {"lastViewedBefore":unix}), "year", "rating", or a mapped indexed field.
+type KindLibraryTabRule struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value any    `json:"value,omitempty"`
 }
 ``````
 
@@ -42554,14 +42906,16 @@ type KindLibraryDecl struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
-| `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people\|live |
+| `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people\|view\|live |
 | `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (optional on collections; required people-type facet on people) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (default count on collections, name on people) |
 | `card` | `string` | may be omitted (see validation for conditions) | landscape (default)\|poster\|square (live tabs only) |
-| `search` | `*bool` | may be omitted (see validation for conditions) | collections/people/live only; default true |
-| `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder (<=60 chars; collections/people/live when search is enabled) |
-| `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts (facet collections only) |
-| `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections only) |
+| `layout` | `string` | may be omitted (see validation for conditions) | grid (default)\|list\|timeline (view tabs only) |
+| `search` | `*bool` | may be omitted (see validation for conditions) | collections/people/view/live only; default true |
+| `searchPlaceholder` | `string` | may be omitted (see validation for conditions) | localizable placeholder (<=60 chars; collections/people/view/live when search is enabled) |
+| `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts or lastViewed (facet collections or view) |
+| `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections or view) |
+| `filters` | `*KindLibraryTabFilter` | may be omitted (see validation for conditions) | saved filter rules (view tabs only) |
 
 
 ## Source: sdk/go/types.go#KindLibraryTab
@@ -42569,16 +42923,18 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key               string `json:"key"`
-	Label             string `json:"label"`
-	Kind              string `json:"kind"`                        // recommended|library|collections|people|live
-	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
-	Order             string `json:"order,omitempty"`             // count|name (default count on collections, name on people)
-	Card              string `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
-	Search            *bool  `json:"search,omitempty"`            // collections/people/live only; default true
-	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/live when search is enabled)
-	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
-	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
+	Key               string                `json:"key"`
+	Label             string                `json:"label"`
+	Kind              string                `json:"kind"`                        // recommended|library|collections|people|view|live
+	Facet             string                `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
+	Order             string                `json:"order,omitempty"`             // count|name (default count on collections, name on people)
+	Card              string                `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Layout            string                `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
+	Search            *bool                 `json:"search,omitempty"`            // collections/people/view/live only; default true
+	SearchPlaceholder string                `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/view/live when search is enabled)
+	Sort              string                `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
+	Direction         string                `json:"direction,omitempty"`         // asc|desc (facet collections or view)
+	Filters           *KindLibraryTabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
 }
 ``````
 
@@ -47511,13 +47867,31 @@ class KindLibraryShelf(TypedDict, total=False):
     filters: Dict[str, List[str]]
 
 
+class KindLibraryTab(TypedDict, total=False):
+    """One sub-tab declared on a kind library (up to 50)."""
+
+    key: str
+    label: str
+    kind: Literal["recommended", "library", "collections", "people", "view", "live"]
+    facet: str
+    order: Literal["count", "name"]
+    card: Literal["poster", "landscape", "square"]
+    layout: Literal["grid", "list", "timeline"]
+    search: bool
+    searchPlaceholder: str
+    sort: Literal["title", "added", "released", "year", "rating", "index", "lastViewed"]
+    direction: Literal["asc", "desc"]
+    filters: Dict[str, Any]
+
+
 class KindLibraryDecl(TypedDict, total=False):
     """Library presentation declaration on a contributed content kind."""
 
     name: str
     icon: str
     card: Literal["poster", "landscape", "square"]
-    tabs: List[Dict[str, Any]]
+    dateDisplay: Literal["year", "date"]
+    tabs: List[KindLibraryTab]
     shelves: List[KindLibraryShelf]
 
 
@@ -52596,22 +52970,38 @@ export interface KindArt {
   label: string;
 }
 
+export interface KindLibraryTabRule {
+  field: string;
+  op: string;
+  value?: unknown;
+}
+
+export interface KindLibraryTabFilter {
+  match?: "all" | "any";
+  rules?: KindLibraryTabRule[];
+  exclude?: KindLibraryTabRule[];
+}
+
 export interface KindLibraryTab {
   key: string;
   label: string;
-  kind: "recommended" | "library" | "collections" | "people" | "live";
+  kind: "recommended" | "library" | "collections" | "people" | "view" | "live";
   /** Declared browse.facets entry (optional on collections; required people-type facet on people). */
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
   order?: "count" | "name";
   /** Card aspect ratio on "live" tabs (default "landscape"). */
   card?: "poster" | "landscape" | "square";
-  /** Enables in-tab search on "collections", "people", and "live" tabs (default true). */
+  /** Presentation layout on "view" tabs: "grid" (default), "list", or "timeline". */
+  layout?: "grid" | "list" | "timeline";
+  /** Enables in-tab search on "collections", "people", "view", and "live" tabs (default true). */
   search?: boolean;
   /** Optional localizable search input placeholder (at most 60 characters; "$t:" supported) when search is enabled. */
   searchPlaceholder?: string;
-  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index" | "lastViewed";
   direction?: "asc" | "desc";
+  /** Saved filter rules on "view" tabs (indexed fields and/or viewer-state rules). */
+  filters?: KindLibraryTabFilter;
 }
 
 export interface KindLibraryShelf {
@@ -52639,6 +53029,7 @@ export interface KindLibraryDecl {
   card?: "poster" | "landscape" | "square";
   /** How item release dates are rendered on cards and detail headers: "year" (default) or "date" (YYYY-MM-DD). */
   dateDisplay?: "year" | "date";
+  /** Up to 50 sub-tabs shown inside the library; defaults to Recommended + Library. */
   tabs?: KindLibraryTab[];
   /** Up to 40 default Recommended shelves evaluated in order when present. */
   shelves?: KindLibraryShelf[];

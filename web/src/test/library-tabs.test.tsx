@@ -409,6 +409,14 @@ describe("Library tabs page", () => {
     await settleUi(() => {
       expect(rulesPreview).toHaveTextContent(/\d+ of \d+ titles match/);
     });
+    // Choose Timeline layout and Recently watched sort on the Saved view tab
+    fireEvent.click(
+      within(within(viewDialog).getByRole("radiogroup", { name: "Layout" })).getByRole("radio", {
+        name: "Timeline",
+      }),
+    );
+    fireEvent.click(within(viewDialog).getByRole("button", { name: "Default sort" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Recently watched" }, WAIT));
     fireEvent.change(within(viewDialog).getByLabelText("Search placeholder"), {
       target: { value: "Find unwatched movies…" },
     });
@@ -421,6 +429,9 @@ describe("Library tabs page", () => {
           key: "unwatched",
           label: "Unwatched",
           kind: "view",
+          layout: "timeline",
+          sort: "lastViewed",
+          direction: "desc",
           search: true,
           searchPlaceholder: "Find unwatched movies…",
         }),

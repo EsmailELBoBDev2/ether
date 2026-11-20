@@ -427,41 +427,60 @@ type MediaKindMeta struct {
 	Match   KindMatchDecl      `json:"match,omitempty"`
 }
 
+// MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.
+const MaxKindLibraryTabs = 50
+
 // KindLibraryDecl is the optional library created for a kind on install.
 type KindLibraryDecl struct {
 	Name        string             `json:"name"` // default name; the owner may rename it after
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
-	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
+	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
 }
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key               string `json:"key"`
-	Label             string `json:"label"`
-	Kind              string `json:"kind"`                        // recommended|library|collections|people|live
-	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
-	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
-	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
-	Order             string `json:"order,omitempty"`             // count|name (facet collections or people)
-	Card              string `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
-	Search            *bool  `json:"search,omitempty"`            // collections, people or live (default true)
-	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+	Key               string          `json:"key"`
+	Label             string          `json:"label"`
+	Kind              string          `json:"kind"`                        // recommended|library|collections|people|view|live
+	Facet             string          `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
+	Sort              string          `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
+	Direction         string          `json:"direction,omitempty"`         // asc|desc (facet collections or view)
+	Order             string          `json:"order,omitempty"`             // count|name (facet collections or people)
+	Card              string          `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Layout            string          `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
+	Search            *bool           `json:"search,omitempty"`            // collections, people, view or live (default true)
+	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
+	Filters           *core.TabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
 }
 
 // EffectiveSearch reports whether tab search is enabled. Search defaults to
-// true on collections, people and live tabs and is never enabled on other
-// manifest tab kinds.
+// true on collections, people, view and live tabs and is never enabled on
+// other manifest tab kinds.
 func (t KindLibraryTab) EffectiveSearch() bool {
-	if t.Kind != "collections" && t.Kind != "people" && t.Kind != "live" {
+	if t.Kind != "collections" && t.Kind != "people" && t.Kind != "view" && t.Kind != "live" {
 		return false
 	}
 	if t.Search != nil {
 		return *t.Search
 	}
 	return true
+}
+
+// EffectiveLayout returns the tab's layout ("grid" by default for view tabs,
+// empty for other tab kinds).
+func (t KindLibraryTab) EffectiveLayout() string {
+	if t.Kind != "view" {
+		return ""
+	}
+	switch t.Layout {
+	case core.TabLayoutGrid, core.TabLayoutList, core.TabLayoutTimeline:
+		return t.Layout
+	default:
+		return core.TabLayoutGrid
+	}
 }
 
 // EffectiveCard returns the tab's card shape ("landscape" by default for live

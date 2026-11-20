@@ -9,6 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
 
 var (
@@ -31,7 +34,7 @@ var kindFieldTypes = map[string]bool{
 }
 
 var kindSorts = map[string]bool{
-	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true,
+	"title": true, "added": true, "released": true, "year": true, "rating": true, "index": true, "lastViewed": true,
 }
 
 var kindLibraryCards = map[string]bool{
@@ -43,7 +46,45 @@ var kindLibraryDateDisplays = map[string]bool{
 }
 
 var kindLibraryTabKinds = map[string]bool{
-	"recommended": true, "library": true, "collections": true, "people": true, "live": true,
+	"recommended": true, "library": true, "collections": true, "people": true, "view": true, "live": true,
+}
+
+var kindLibraryTabLayouts = map[string]bool{
+	"grid": true, "list": true, "timeline": true,
+}
+
+// KindRuleFields maps built-in rule facts (genre, studio, runtime, ...) onto
+// declared, indexed plugin field keys. Shared by manifest validation and
+// pluginitems SQL compilation so both agree on which built-in facts exist.
+func KindRuleFields(fields []KindField) map[string]string {
+	out := map[string]string{}
+	aliases := map[string][]string{
+		"genre":      {"genre", "genres", "tags", "tag"},
+		"studio":     {"studio", "studios"},
+		"country":    {"country", "countries"},
+		"keyword":    {"keyword", "keywords"},
+		"language":   {"language"},
+		"runtime":    {"runtime", "duration", "length"},
+		"votes":      {"votes"},
+		"popularity": {"popularity"},
+	}
+	for field, keys := range aliases {
+		wantNumeric := field == "runtime" || field == "votes" || field == "popularity"
+		for _, key := range keys {
+			for _, f := range fields {
+				text := f.Type == "string" || f.Type == "strings" || f.Type == "enum" || f.Type == "people"
+				numeric := f.Type == "int" || f.Type == "float" || f.Type == "duration"
+				if f.Key == key && f.Indexed && ((wantNumeric && numeric) || (!wantNumeric && text)) {
+					out[field] = key
+					break
+				}
+			}
+			if out[field] != "" {
+				break
+			}
+		}
+	}
+	return out
 }
 
 var mediaBrowserCollectionTypes = map[string]bool{
@@ -97,8 +138,8 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
 			add(base+".library.dateDisplay", "must be year or date")
 		}
-		if len(k.Library.Tabs) > 6 {
-			add(base+".library.tabs", "at most six tabs may be declared")
+		if len(k.Library.Tabs) > MaxKindLibraryTabs {
+			add(base+".library.tabs", fmt.Sprintf("at most %d tabs may be declared", MaxKindLibraryTabs))
 		}
 		seenTab := map[string]bool{}
 		for j, tab := range k.Library.Tabs {
@@ -112,7 +153,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			seenTab[tab.Key] = true
 			label(tbase+".label", tab.Label, 40)
 			if !kindLibraryTabKinds[tab.Kind] {
-				add(tbase+".kind", "must be recommended, library, collections, people or live")
+				add(tbase+".kind", "must be recommended, library, collections, people, view or live")
 			}
 		}
 	}
@@ -193,7 +234,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 	seenSort := map[string]bool{}
 	for j, s := range k.Browse.Sorts {
 		if !kindSorts[s] || seenSort[s] {
-			add(fmt.Sprintf("%s.browse.sorts[%d]", base, j), "must be title, added, released, year, rating or index, listed once")
+			add(fmt.Sprintf("%s.browse.sorts[%d]", base, j), "must be title, added, released, year, rating, index or lastViewed, listed once")
 		}
 		seenSort[s] = true
 	}
@@ -237,6 +278,13 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 	}
 	if !k.Library.IsZero() {
+		declaredIndexed := make(map[string]string, len(k.Fields))
+		for _, f := range k.Fields {
+			if f.Indexed {
+				declaredIndexed[f.Key] = f.Type
+			}
+		}
+		ruleFields := KindRuleFields(k.Fields)
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
 			switch tab.Kind {
@@ -247,7 +295,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Sort != "" {
 					if tab.Facet == "" {
 						add(tbase+".sort", "requires facet to be set")
-					} else if !seenSort[tab.Sort] {
+					} else if !seenSort[tab.Sort] && !core.IsLastViewedSort(tab.Sort) {
 						add(tbase+".sort", "must name a declared browse sort")
 					}
 				}
@@ -274,6 +322,12 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Card != "" {
 					add(tbase+".card", "only live tabs may set card")
 				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
 					add(tbase+".facet", "must name a declared browse facet")
@@ -281,10 +335,10 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".facet", "must name a people field")
 				}
 				if tab.Sort != "" {
-					add(tbase+".sort", "only collections tabs may set sort")
+					add(tbase+".sort", "only collections or view tabs may set sort")
 				}
 				if tab.Direction != "" {
-					add(tbase+".direction", "only collections tabs may set direction")
+					add(tbase+".direction", "only collections or view tabs may set direction")
 				}
 				if tab.Order != "" && tab.Order != "count" && tab.Order != "name" {
 					add(tbase+".order", "must be count or name")
@@ -298,21 +352,72 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Card != "" {
 					add(tbase+".card", "only live tabs may set card")
 				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
+			case "view":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live tabs may set card")
+				}
+				if tab.Layout != "" && !kindLibraryTabLayouts[tab.Layout] {
+					add(tbase+".layout", "must be grid, list or timeline")
+				}
+				if tab.Sort != "" && !seenSort[tab.Sort] && !core.IsLastViewedSort(tab.Sort) {
+					add(tbase+".sort", "must name a declared browse sort or lastViewed")
+				}
+				if tab.Direction != "" && tab.Direction != "asc" && tab.Direction != "desc" {
+					add(tbase+".direction", "must be asc or desc")
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
+				if tab.Filters != nil {
+					if tab.Filters.Match != "" && tab.Filters.Match != "all" && tab.Filters.Match != "any" {
+						add(tbase+".filters.match", "must be all or any")
+					}
+					if tab.Filters.VisibilityDefault != "" && tab.Filters.VisibilityDefault != "show" && tab.Filters.VisibilityDefault != "hide" {
+						add(tbase+".filters.visibilityDefault", "must be show or hide")
+					}
+					if !tab.Filters.IsEmpty() {
+						specs, fallback := tab.Filters.ToPolicy("")
+						if err := libraryfilter.ValidatePluginManifestPolicy(specs, fallback, declaredIndexed, ruleFields); err != nil {
+							add(tbase+".filters", err.Error())
+						}
+					}
+				}
 			case "live":
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
 				}
 				if tab.Sort != "" {
-					add(tbase+".sort", "only collections tabs may set sort")
+					add(tbase+".sort", "only collections or view tabs may set sort")
 				}
 				if tab.Direction != "" {
-					add(tbase+".direction", "only collections tabs may set direction")
+					add(tbase+".direction", "only collections or view tabs may set direction")
 				}
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
 				if tab.Card != "" && !kindLibraryCards[tab.Card] {
 					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
 				}
 				if tab.SearchPlaceholder != "" {
 					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
@@ -325,10 +430,10 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 					add(tbase+".facet", "only collections or people tabs may set facet")
 				}
 				if tab.Sort != "" {
-					add(tbase+".sort", "only collections tabs may set sort")
+					add(tbase+".sort", "only collections or view tabs may set sort")
 				}
 				if tab.Direction != "" {
-					add(tbase+".direction", "only collections tabs may set direction")
+					add(tbase+".direction", "only collections or view tabs may set direction")
 				}
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
@@ -336,11 +441,17 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Card != "" {
 					add(tbase+".card", "only live tabs may set card")
 				}
+				if tab.Layout != "" {
+					add(tbase+".layout", "only view tabs may set layout")
+				}
+				if tab.Filters != nil && !tab.Filters.IsEmpty() {
+					add(tbase+".filters", "only view tabs may set filters")
+				}
 				if tab.Search != nil {
-					add(tbase+".search", "only collections, people or live tabs may set search")
+					add(tbase+".search", "only collections, people, view or live tabs may set search")
 				}
 				if tab.SearchPlaceholder != "" {
-					add(tbase+".searchPlaceholder", "only collections, people or live tabs may set searchPlaceholder")
+					add(tbase+".searchPlaceholder", "only collections, people, view or live tabs may set searchPlaceholder")
 				}
 			}
 		}

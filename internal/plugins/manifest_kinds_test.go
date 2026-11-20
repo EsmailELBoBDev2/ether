@@ -746,3 +746,165 @@ func TestValidateKindLibraryShelves(t *testing.T) {
 		t.Fatal("expected missing strings.en error when shelf label uses $t:")
 	}
 }
+
+func TestManifestKindLibraryViewTabsAnd50TabCap(t *testing.T) {
+	makeDocManifest := func(tabs []KindLibraryTab) Manifest {
+		m := contentManifest()
+		k := m.Ether.Contributes.MediaKinds[0]
+		k.Fields = []KindField{
+			{Key: "topic", Type: "enum", Label: "Topic", Indexed: true, Enum: []string{"science", "nature", "history"}},
+			{Key: "notes", Type: "string", Label: "Notes", Indexed: false},
+		}
+		k.Browse.Sorts = []string{"released", "title", "added"}
+		k.Browse.Facets = []string{"topic"}
+		k.Browse.SearchFields = nil
+		k.Library.Tabs = tabs
+		m.Ether.Contributes.MediaKinds[0] = k
+		return m
+	}
+
+	// Valid Smart View tabs: History (timeline + lastViewed + viewer history), Favorites (list), and indexed-field filter (grid).
+	searchOff := false
+	validTabs := []KindLibraryTab{
+		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "library", Label: "Library", Kind: "library"},
+		{
+			Key: "history", Label: "History", Kind: "view", Layout: "timeline",
+			Sort: "lastViewed", Direction: "desc", SearchPlaceholder: "Search watch history",
+			Filters: &core.TabFilter{
+				Match: "all",
+				Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{"history":true}`)}},
+			},
+		},
+		{
+			Key: "favorites", Label: "Favorites", Kind: "view", Layout: "list",
+			Sort: "title", Direction: "asc", Search: &searchOff,
+			Filters: &core.TabFilter{
+				Match: "all",
+				Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{"favorite":true}`)}},
+			},
+		},
+		{
+			Key: "science", Label: "Science", Kind: "view", Layout: "grid",
+			Sort: "released", Direction: "desc",
+			Filters: &core.TabFilter{
+				Match: "all",
+				Rules: []core.CollectionRule{
+					{Field: "browse:topic", Op: "is", Value: json.RawMessage(`"science"`)},
+					{Field: "viewer", Op: "is", Value: json.RawMessage(`{"unwatched":true}`)},
+				},
+			},
+		},
+	}
+	if err := makeDocManifest(validTabs).Validate(); err != nil {
+		t.Fatalf("valid view tabs rejected: %v", err)
+	}
+	if !validTabs[2].EffectiveSearch() || validTabs[3].EffectiveSearch() {
+		t.Fatalf("unexpected view tab EffectiveSearch(): history=%v favorites=%v", validTabs[2].EffectiveSearch(), validTabs[3].EffectiveSearch())
+	}
+	if validTabs[2].EffectiveLayout() != "timeline" || validTabs[3].EffectiveLayout() != "list" || validTabs[4].EffectiveLayout() != "grid" {
+		t.Fatalf("unexpected view tab EffectiveLayout()")
+	}
+
+	// 50 tabs accepted, 51 rejected.
+	fifty := make([]KindLibraryTab, MaxKindLibraryTabs)
+	for i := range fifty {
+		fifty[i] = KindLibraryTab{Key: fmt.Sprintf("tab-%d", i+1), Label: fmt.Sprintf("Tab %d", i+1), Kind: "view"}
+	}
+	if err := makeDocManifest(fifty).Validate(); err != nil {
+		t.Fatalf("50 tabs should validate, got: %v", err)
+	}
+	fiftyOne := append(append([]KindLibraryTab(nil), fifty...), KindLibraryTab{Key: "tab-51", Label: "Tab 51", Kind: "view"})
+	if err := makeDocManifest(fiftyOne).Validate(); err == nil {
+		t.Fatal("51 tabs should be rejected")
+	}
+
+	// Invalid view tab configurations must be rejected.
+	badCases := []struct {
+		name string
+		tab  KindLibraryTab
+		want string
+	}{
+		{
+			name: "invalid layout",
+			tab:  KindLibraryTab{Key: "v", Label: "View", Kind: "view", Layout: "masonry"},
+			want: ".layout",
+		},
+		{
+			name: "layout on library tab",
+			tab:  KindLibraryTab{Key: "lib", Label: "Library", Kind: "library", Layout: "list"},
+			want: ".layout",
+		},
+		{
+			name: "filters on library tab",
+			tab: KindLibraryTab{
+				Key: "lib", Label: "Library", Kind: "library",
+				Filters: &core.TabFilter{Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{"history":true}`)}}},
+			},
+			want: ".filters",
+		},
+		{
+			name: "unindexed field in view filters",
+			tab: KindLibraryTab{
+				Key: "v", Label: "View", Kind: "view",
+				Filters: &core.TabFilter{Rules: []core.CollectionRule{{Field: "browse:notes", Op: "is", Value: json.RawMessage(`"abc"`)}}},
+			},
+			want: ".filters",
+		},
+		{
+			name: "undeclared built-in genre in view filters",
+			tab: KindLibraryTab{
+				Key: "v", Label: "View", Kind: "view",
+				Filters: &core.TabFilter{Rules: []core.CollectionRule{{Field: "genre", Op: "in", Value: json.RawMessage(`["Drama"]`)}}},
+			},
+			want: ".filters",
+		},
+		{
+			name: "unknown viewer field",
+			tab: KindLibraryTab{
+				Key: "v", Label: "View", Kind: "view",
+				Filters: &core.TabFilter{Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{"bogusFlag":true}`)}}},
+			},
+			want: ".filters",
+		},
+		{
+			name: "empty viewer condition",
+			tab: KindLibraryTab{
+				Key: "v", Label: "View", Kind: "view",
+				Filters: &core.TabFilter{Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{}`)}}},
+			},
+			want: ".filters",
+		},
+		{
+			name: "facet on view tab",
+			tab:  KindLibraryTab{Key: "v", Label: "View", Kind: "view", Facet: "topic"},
+			want: ".facet",
+		},
+		{
+			name: "undeclared sort on view tab",
+			tab:  KindLibraryTab{Key: "v", Label: "View", Kind: "view", Sort: "rating"},
+			want: ".sort",
+		},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := makeDocManifest([]KindLibraryTab{tc.tab}).Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %s, got nil", tc.want)
+			}
+			ve, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+			}
+			found := false
+			for _, f := range ve.Fields {
+				if strings.Contains(f.Field, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected field containing %s in %+v", tc.want, ve.Fields)
+			}
+		})
+	}
+}

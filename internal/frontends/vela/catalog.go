@@ -82,7 +82,16 @@ func titleWire(t frontend.Title) object {
 	return out
 }
 func watchWire(s frontend.WatchStatus) object {
-	return object{"positionSeconds": s.ViewOffset.Seconds(), "played": s.ViewCount > 0, "favorite": s.IsFavorite, "watchlisted": s.InWatchlist}
+	out := object{
+		"positionSeconds": s.ViewOffset.Seconds(),
+		"played":          s.ViewCount > 0,
+		"favorite":        s.IsFavorite,
+		"watchlisted":     s.InWatchlist,
+	}
+	if !s.LastViewedAt.IsZero() {
+		out["lastViewedAt"] = s.LastViewedAt.UTC().Format(time.RFC3339)
+	}
+	return out
 }
 
 type homeTitlesKey struct{}

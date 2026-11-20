@@ -57,6 +57,8 @@ const (
 	DecisionTranscode  = core.DecisionTranscode
 )
 
+func IsLastViewedSort(raw string) bool { return core.IsLastViewedSort(raw) }
+
 func IsSurroundAudioCodec(c string) bool { return core.IsSurroundAudioCodec(c) }
 
 // Release and variant-resolution values stay owned by core. Adapters
@@ -94,6 +96,7 @@ const (
 	SortDuration   = core.SortDuration
 	SortPopularity = core.SortPopularity
 	SortPlayed     = core.SortPlayed
+	SortLastViewed = core.SortLastViewed
 	SortRating     = core.SortRating
 	SortReleased   = core.SortReleased
 	SortTitle      = core.SortTitle

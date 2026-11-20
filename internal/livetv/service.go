@@ -2402,6 +2402,7 @@ func (s *Service) importSource(ctx context.Context, src Source) (Source, error) 
 				c.HiddenApps = previous.HiddenApps
 				c.ShownApps = previous.ShownApps
 				c.Favorite = previous.Favorite
+				c.Private = previous.Private
 				c.Rating = previous.Rating
 				c.GuideID = previous.GuideID
 				c.GuideSourceID = previous.GuideSourceID

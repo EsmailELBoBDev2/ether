@@ -604,6 +604,7 @@ type PlexHomeIdentity struct {
 	HouseholdProfilesFunc          func(context.Context, string) ([]frontend.HouseholdProfile, error)
 	HouseholdProfilesForViewerFunc func(context.Context, *core.Viewer) ([]frontend.HouseholdProfile, error)
 	SignInWithHouseholdProfileFunc func(context.Context, frontend.HouseholdProfileSignIn) (string, error)
+	FetchHouseholdAvatarFunc       func(context.Context, frontend.HouseholdAvatarRequest) ([]byte, string, error)
 }
 
 func (f PlexHomeIdentity) HouseholdProfiles(ctx context.Context, token string) ([]frontend.HouseholdProfile, error) {
@@ -623,6 +624,12 @@ func (f PlexHomeIdentity) SignInWithHouseholdProfile(ctx context.Context, req fr
 		return f.SignInWithHouseholdProfileFunc(ctx, req)
 	}
 	return "", frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) FetchHouseholdAvatar(ctx context.Context, req frontend.HouseholdAvatarRequest) ([]byte, string, error) {
+	if f.FetchHouseholdAvatarFunc != nil {
+		return f.FetchHouseholdAvatarFunc(ctx, req)
+	}
+	return nil, "", frontend.ErrIdentityUnavailable
 }
 
 var _ frontend.HouseholdProfileAuth = PlexHomeIdentity{}

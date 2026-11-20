@@ -17,12 +17,27 @@ var ErrHouseholdProfileIneligible = errors.New("frontend: Plex Home profile not 
 
 // HouseholdProfile is one selectable profile: an active Ether viewer mapped
 // to a member of a Plex Home. Name is the viewer's display name; Protected
-// mirrors plex.tv PIN protection for that Home member.
+// mirrors plex.tv PIN protection for that Home member and Restricted its
+// managed/restricted status. Thumb is the host-internal avatar source (a
+// plex.tv thumb URL that may require authentication): frontends must proxy
+// it through FetchHouseholdAvatar and never expose it to clients.
 type HouseholdProfile struct {
+	ViewerID   int64
+	PlexID     int64
+	Name       string
+	Thumb      string
+	Protected  bool
+	Restricted bool
+}
+
+// HouseholdAvatarRequest asks the host to fetch one selected profile's
+// avatar bytes. PlexToken and ViewerID select the credential source exactly
+// as in HouseholdProfileSignIn; the token must never be logged or placed
+// in a client-visible URL.
+type HouseholdAvatarRequest struct {
+	PlexToken string
 	ViewerID  int64
-	PlexID    int64
-	Name      string
-	Protected bool
+	Profile   HouseholdProfile
 }
 
 // HouseholdProfileSignIn asks for a grant for one selected profile. Exactly
@@ -52,4 +67,8 @@ type HouseholdProfileAuth interface {
 	// through plex.tv for protected profiles) and returns an access grant
 	// for the selected viewer on the bound surface and device.
 	SignInWithHouseholdProfile(context.Context, HouseholdProfileSignIn) (string, error)
+	// FetchHouseholdAvatar returns the selected profile's avatar image
+	// bytes and content type, fetched host-side from Profile.Thumb with
+	// SSRF and size bounds. The thumb URL itself never reaches clients.
+	FetchHouseholdAvatar(context.Context, HouseholdAvatarRequest) ([]byte, string, error)
 }

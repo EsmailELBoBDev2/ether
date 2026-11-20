@@ -43,8 +43,8 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 	kid := &frontend.Viewer{ID: 2, Username: "kid"}
 	guest := &frontend.Viewer{ID: 3, Username: "guest"}
 	profiles := []frontend.HouseholdProfile{
-		{ViewerID: 1, PlexID: 42, Name: "Owner", Protected: true},
-		{ViewerID: 2, PlexID: 300, Name: "Kid", Protected: true},
+		{ViewerID: 1, PlexID: 42, Name: "Owner", Thumb: "https://plex.tv/users/owner/avatar?c=7", Protected: true},
+		{ViewerID: 2, PlexID: 300, Name: "Kid", Thumb: "https://plex.tv/users/kid/avatar?c=9", Protected: true, Restricted: true},
 		{ViewerID: 3, PlexID: 301, Name: "Guest", Protected: false},
 	}
 
@@ -52,6 +52,7 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 	revoked := map[string]bool{}
 	profilesCalls, signInCalls, completeCalls := 0, 0, 0
 	var lastComplete frontend.HouseholdProfileSignIn
+	var lastAvatar frontend.HouseholdAvatarRequest
 	homeEnabled := false
 
 	var id plexHomeTestIdentity
@@ -113,6 +114,15 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 		}
 		return append([]frontend.HouseholdProfile(nil), profiles...), nil
 	}
+	id.FetchHouseholdAvatarFunc = func(_ context.Context, req frontend.HouseholdAvatarRequest) ([]byte, string, error) {
+		mu.Lock()
+		lastAvatar = req
+		mu.Unlock()
+		if req.Profile.ViewerID == 2 && req.Profile.Thumb == "https://plex.tv/users/kid/avatar?c=9" {
+			return []byte("\x89PNG-kid"), "image/png", nil
+		}
+		return nil, "", frontend.ErrPlexUnreachable
+	}
 	id.SignInWithHouseholdProfileFunc = func(_ context.Context, req frontend.HouseholdProfileSignIn) (string, error) {
 		mu.Lock()
 		completeCalls++
@@ -165,9 +175,11 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 		SelectionToken string `json:"selectionToken"`
 		ExpiresAt      string `json:"expiresAt"`
 		Profiles       []struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			Protected bool   `json:"protected"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Protected  bool   `json:"protected"`
+			Restricted *bool  `json:"restricted"`
+			AvatarURL  string `json:"avatarUrl"`
 		} `json:"profiles"`
 	}
 	startSelection := func(idem string) selection {
@@ -178,6 +190,9 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 		}
 		if strings.Contains(w.Body.String(), "secret-owner-plex-token") {
 			t.Fatal("selection response leaked the plex token")
+		}
+		if strings.Contains(w.Body.String(), "plex.tv/users") {
+			t.Fatal("selection response leaked a raw thumb URL")
 		}
 		var sel selection
 		if err := json.Unmarshal(w.Body.Bytes(), &sel); err != nil {
@@ -271,6 +286,54 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 
 	kidID, guestID := sel.Profiles[1].ID, sel.Profiles[2].ID
 
+	// restricted and avatarUrl: kid is restricted with a signed,
+	// selection-bound avatar on the images path; the owner has an avatar
+	// and no restricted; guest (no thumb) has neither. No raw thumb URL
+	// or token appears in any avatarUrl.
+	ownerP, kidP, guestP := sel.Profiles[0], sel.Profiles[1], sel.Profiles[2]
+	if kidP.Restricted == nil || !*kidP.Restricted {
+		t.Fatalf("kid restricted = %v, want true", kidP.Restricted)
+	}
+	if ownerP.Restricted != nil || guestP.Restricted != nil {
+		t.Fatalf("restricted present when false: owner=%v guest=%v", ownerP.Restricted, guestP.Restricted)
+	}
+	for _, p := range []struct {
+		name, url string
+	}{{"owner", ownerP.AvatarURL}, {"kid", kidP.AvatarURL}} {
+		if !strings.HasPrefix(p.url, "/vela/v0/images/plexavatar-") ||
+			strings.Contains(p.url, "plex.tv") || strings.Contains(p.url, "secret-") || strings.Contains(p.url, "avatar?c=") {
+			t.Fatalf("%s avatarUrl = %q", p.name, p.url)
+		}
+	}
+	if guestP.AvatarURL != "" {
+		t.Fatalf("guest avatarUrl = %q, want omitted (no thumb)", guestP.AvatarURL)
+	}
+	getAvatar := func(url string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+		return w
+	}
+	// Usable before any session exists; the fetch sees the retained
+	// token and thumb server-side only.
+	if w := getAvatar(kidP.AvatarURL); w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/png" || !strings.Contains(w.Body.String(), "PNG-kid") {
+		t.Fatalf("kid avatar: %d ct=%q body=%q", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	mu.Lock()
+	if lastAvatar.PlexToken != "secret-owner-plex-token" || lastAvatar.Profile.ViewerID != 2 || lastAvatar.Profile.Thumb != "https://plex.tv/users/kid/avatar?c=9" {
+		t.Fatalf("avatar fetch not server-side bound: %+v", lastAvatar)
+	}
+	mu.Unlock()
+	// Upstream failure -> 502; tampered capability -> 404.
+	if w := getAvatar(ownerP.AvatarURL); w.Code != http.StatusBadGateway || errCode(w) != "avatar_unavailable" {
+		t.Fatalf("owner avatar upstream failure: %d %s", w.Code, w.Body.String())
+	}
+	if w := getAvatar(kidP.AvatarURL + "x"); w.Code != http.StatusNotFound {
+		t.Fatalf("tampered avatar: %d %s", w.Code, w.Body.String())
+	}
+	if w := getAvatar("/vela/v0/images/plexavatar-not-a-capability"); w.Code != http.StatusNotFound {
+		t.Fatalf("garbage avatar: %d %s", w.Code, w.Body.String())
+	}
+
 	// Ineligible profile (not in the selection) -> 403, selection survives.
 	strangerID, _ := ids.GUID(ids.User, 99)
 	if w := complete(sel, strangerID, "", "inel-1"); w.Code != http.StatusForbidden || errCode(w) != "profile_ineligible" {
@@ -308,6 +371,10 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 	if w := complete(sel, guestID, "", "consumed-1"); w.Code != http.StatusConflict || errCode(w) != "selection_consumed" {
 		t.Fatalf("consumed: %d %s", w.Code, w.Body.String())
 	}
+	// Its avatars die with it.
+	if w := getAvatar(kidP.AvatarURL); w.Code != http.StatusConflict || errCode(w) != "selection_consumed" {
+		t.Fatalf("consumed avatar: %d %s", w.Code, w.Body.String())
+	}
 
 	// Unknown and expired selections -> 410.
 	unknown := selection{SelectionToken: strings.Repeat("ab", 32)}
@@ -315,11 +382,15 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 		t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
 	}
 	expiring := startSelection("expiry-1")
+	expiringKidAvatar := expiring.Profiles[1].AvatarURL
 	inst.plexSelMu.Lock()
 	inst.plexSels[hash(expiring.SelectionToken)].expires = time.Now().Add(-time.Minute)
 	inst.plexSelMu.Unlock()
 	if w := complete(expiring, guestID, "", "expired-1"); w.Code != http.StatusGone || errCode(w) != "selection_expired" {
 		t.Fatalf("expired: %d %s", w.Code, w.Body.String())
+	}
+	if w := getAvatar(expiringKidAvatar); w.Code != http.StatusGone || errCode(w) != "selection_expired" {
+		t.Fatalf("expired avatar: %d %s", w.Code, w.Body.String())
 	}
 
 	// Device binding: another device cannot spend the selection.
@@ -356,6 +427,19 @@ func TestVelaHouseholdProfileSelection(t *testing.T) {
 	if err := json.Unmarshal(chal.Body.Bytes(), &switchSel); err != nil || len(switchSel.Profiles) != 3 {
 		t.Fatalf("challenge selection: %+v %v", switchSel, err)
 	}
+	// Switch selections carry the same avatar/restricted fields, fetched
+	// through the retained link (no client Plex token).
+	if switchSel.Profiles[1].Restricted == nil || !*switchSel.Profiles[1].Restricted || switchSel.Profiles[1].AvatarURL == "" {
+		t.Fatalf("switch kid profile = %+v", switchSel.Profiles[1])
+	}
+	if w := getAvatar(switchSel.Profiles[1].AvatarURL); w.Code != http.StatusOK {
+		t.Fatalf("switch kid avatar: %d %s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	if lastAvatar.PlexToken != "" || lastAvatar.ViewerID != 1 {
+		t.Fatalf("switch avatar should use the retained link, got %+v", lastAvatar)
+	}
+	mu.Unlock()
 	switched := complete(switchSel, kidID, "1234", "switch-1")
 	if switched.Code != http.StatusOK || viewerName(switched) != "kid" {
 		t.Fatalf("switch completion: %d %s", switched.Code, switched.Body.String())

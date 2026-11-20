@@ -63,11 +63,19 @@ func (f *velaPlexHomeRoundTripper) RoundTrip(r *http.Request) (*http.Response, e
 			return reply(http.StatusUnauthorized, "application/json", `{}`), nil
 		}
 		return reply(http.StatusOK, "application/xml", `<MediaContainer size="4">
-<User id="42" uuid="u-owner" username="owner" title="Owner" protected="1" homeAdmin="1"/>
-<User id="300" uuid="u-kid" username="kid" title="Kid" protected="1" restricted="1"/>
+<User id="42" uuid="u-owner" username="owner" title="Owner" thumb="https://plex.tv/users/owner/avatar?c=7" protected="1" homeAdmin="1"/>
+<User id="300" uuid="u-kid" username="kid" title="Kid" thumb="https://plex.tv/users/kid/avatar?c=9" protected="1" restricted="1"/>
 <User id="301" uuid="u-guest" username="guest" title="Guest" protected="0"/>
 <User id="400" uuid="u-ghost" username="ghost" title="Ghost" protected="0"/>
 </MediaContainer>`), nil
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/users/") && strings.HasSuffix(r.URL.Path, "/avatar"):
+		// Avatars require the account token header server-side; the
+		// client never holds it when following avatarUrl.
+		if tok != "plex-owner-iphone" && tok != "server-secret-token" {
+			return reply(http.StatusUnauthorized, "application/json", `{}`), nil
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/users/"), "/avatar")
+		return reply(http.StatusOK, "image/png", "\x89PNG-avatar-"+name), nil
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/home/users/") && strings.HasSuffix(r.URL.Path, "/switch"):
 		if tok != "plex-owner-iphone" && tok != "server-secret-token" {
 			return reply(http.StatusUnauthorized, "application/json", `{}`), nil
@@ -180,13 +188,18 @@ func TestVelaPlexHomeProfilesEndToEnd(t *testing.T) {
 	if strings.Contains(selRes.Body.String(), "plex-owner-iphone") || strings.Contains(selRes.Body.String(), "Ghost") {
 		t.Fatalf("selection leaked token or unmapped member: %s", selRes.Body.String())
 	}
+	if strings.Contains(selRes.Body.String(), "plex.tv/users") {
+		t.Fatalf("selection leaked a raw thumb URL: %s", selRes.Body.String())
+	}
 	var sel struct {
 		SelectionToken string `json:"selectionToken"`
 		ExpiresAt      string `json:"expiresAt"`
 		Profiles       []struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			Protected bool   `json:"protected"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Protected  bool   `json:"protected"`
+			Restricted *bool  `json:"restricted"`
+			AvatarURL  string `json:"avatarUrl"`
 		} `json:"profiles"`
 	}
 	if err := json.Unmarshal(selRes.Body.Bytes(), &sel); err != nil {
@@ -197,13 +210,34 @@ func TestVelaPlexHomeProfilesEndToEnd(t *testing.T) {
 	}
 	byName := map[string]string{}
 	protected := map[string]bool{}
+	restricted := map[string]*bool{}
+	avatars := map[string]string{}
 	for _, p := range sel.Profiles {
 		byName[p.Name] = p.ID
 		protected[p.Name] = p.Protected
+		restricted[p.Name] = p.Restricted
+		avatars[p.Name] = p.AvatarURL
 	}
 	kidProfile, guestProfile := byName["Kid"], byName["Guest"]
 	if kidProfile == "" || guestProfile == "" || !protected["Kid"] || protected["Guest"] {
 		t.Fatalf("profiles = %+v", sel.Profiles)
+	}
+	// Kid is a restricted Home member with a proxied avatar; Guest has
+	// no thumb upstream, so no avatarUrl and no restricted.
+	if restricted["Kid"] == nil || !*restricted["Kid"] || restricted["Guest"] != nil {
+		t.Fatalf("restricted = kid %v guest %v", restricted["Kid"], restricted["Guest"])
+	}
+	if !strings.HasPrefix(avatars["Kid"], "/vela/v0/images/plexavatar-") || avatars["Guest"] != "" {
+		t.Fatalf("avatars = %+v", avatars)
+	}
+	// The avatar is fetchable before sign-in completes, proxied through
+	// Ether with the Plex token applied server-side only.
+	avatarReq := httptest.NewRequest(http.MethodGet, avatars["Kid"], nil)
+	avatarReq.RemoteAddr = "198.51.100.60:54321"
+	avatarRec := httptest.NewRecorder()
+	handler.ServeHTTP(avatarRec, avatarReq)
+	if avatarRec.Code != http.StatusOK || avatarRec.Header().Get("Content-Type") != "image/png" || !strings.Contains(avatarRec.Body.String(), "PNG-avatar-kid") {
+		t.Fatalf("kid avatar = %d ct=%q body=%q", avatarRec.Code, avatarRec.Header().Get("Content-Type"), avatarRec.Body.String())
 	}
 	// Owner sorts first.
 	if !protected[sel.Profiles[0].Name] || sel.Profiles[0].ID == kidProfile {
@@ -250,6 +284,14 @@ func TestVelaPlexHomeProfilesEndToEnd(t *testing.T) {
 	if got := getLib(kidTokens.AccessToken); got != http.StatusOK {
 		t.Fatalf("kid libraries = %d", got)
 	}
+	// Completing the selection consumed its avatar capabilities.
+	deadAvatarReq := httptest.NewRequest(http.MethodGet, avatars["Kid"], nil)
+	deadAvatarReq.RemoteAddr = "198.51.100.60:54321"
+	deadAvatarRec := httptest.NewRecorder()
+	handler.ServeHTTP(deadAvatarRec, deadAvatarReq)
+	if deadAvatarRec.Code != http.StatusConflict {
+		t.Fatalf("avatar after completion = %d: %s", deadAvatarRec.Code, deadAvatarRec.Body.String())
+	}
 
 	// Switch profile as kid -> owner (PIN 9999), revoking kid's session.
 	chal := post("/vela/v0/auth/plex/profiles/challenge", `{"idempotencyKey":"home-chal-1","device":`+device+`}`, kidTokens.AccessToken)
@@ -259,19 +301,32 @@ func TestVelaPlexHomeProfilesEndToEnd(t *testing.T) {
 	var switchSel struct {
 		SelectionToken string `json:"selectionToken"`
 		Profiles       []struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			Protected bool   `json:"protected"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Protected  bool   `json:"protected"`
+			Restricted *bool  `json:"restricted"`
+			AvatarURL  string `json:"avatarUrl"`
 		} `json:"profiles"`
 	}
 	if err := json.Unmarshal(chal.Body.Bytes(), &switchSel); err != nil || len(switchSel.Profiles) != 3 {
 		t.Fatalf("switch selection = %+v %v", switchSel, err)
 	}
-	ownerProfile := ""
+	ownerProfile, ownerAvatar := "", ""
 	for _, p := range switchSel.Profiles {
 		if p.ID != kidProfile && p.ID != guestProfile {
-			ownerProfile = p.ID
+			ownerProfile, ownerAvatar = p.ID, p.AvatarURL
 		}
+		if p.ID == kidProfile && (p.Restricted == nil || !*p.Restricted) {
+			t.Fatalf("switch kid restricted = %v", p.Restricted)
+		}
+	}
+	// Switch avatars proxy through the retained account link.
+	switchAvatarReq := httptest.NewRequest(http.MethodGet, ownerAvatar, nil)
+	switchAvatarReq.RemoteAddr = "198.51.100.60:54321"
+	switchAvatarRec := httptest.NewRecorder()
+	handler.ServeHTTP(switchAvatarRec, switchAvatarReq)
+	if switchAvatarRec.Code != http.StatusOK || !strings.Contains(switchAvatarRec.Body.String(), "PNG-avatar-owner") {
+		t.Fatalf("switch owner avatar = %d: %s", switchAvatarRec.Code, switchAvatarRec.Body.String())
 	}
 	ownerRes := post("/vela/v0/auth/plex/profile", fmt.Sprintf(`{"selectionToken":%q,"profileId":%q,"pin":"9999","idempotencyKey":"home-switch-1","device":%s}`, switchSel.SelectionToken, ownerProfile, device), "")
 	if ownerRes.Code != http.StatusOK {

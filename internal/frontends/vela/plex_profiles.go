@@ -2,9 +2,14 @@ package vela
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -47,16 +52,143 @@ func (i *instance) plexHomeAuth() (frontend.HouseholdProfileAuth, bool) {
 	return auth, true
 }
 
-func plexProfilesWire(profiles []frontend.HouseholdProfile) []object {
+func (i *instance) plexProfilesWire(selectionKey string, expires time.Time, profiles []frontend.HouseholdProfile) []object {
 	out := make([]object, 0, len(profiles))
 	for _, p := range profiles {
 		id, err := ids.GUID(ids.User, p.ViewerID)
 		if err != nil {
 			continue
 		}
-		out = append(out, object{"id": id, "name": p.Name, "protected": p.Protected})
+		profile := object{"id": id, "name": p.Name, "protected": p.Protected}
+		if p.Restricted {
+			profile["restricted"] = true
+		}
+		if avatar := i.plexAvatarURL(selectionKey, expires, p); avatar != "" {
+			profile["avatarUrl"] = avatar
+		}
+		out = append(out, profile)
 	}
 	return out
+}
+
+// plexAvatarPrefix marks an images-path secret as a profile-selection
+// avatar capability rather than an artwork grant.
+const plexAvatarPrefix = "plexavatar-"
+
+const plexAvatarDomain = "vela-plex-avatar"
+
+type plexAvatarClaim struct {
+	Selection string `json:"s"`
+	ViewerID  int64  `json:"v"`
+	Expires   int64  `json:"e"`
+}
+
+// plexAvatarURL seals a selection-bound avatar capability into the images
+// path. It carries no thumb URL and no credential, and it expires with
+// the selection; the bytes are proxied by plexAvatar below. Profiles
+// without a plausible absolute thumb URL get no avatarUrl.
+func (i *instance) plexAvatarURL(selectionKey string, expires time.Time, p frontend.HouseholdProfile) string {
+	if i.seal == nil || selectionKey == "" || p.ViewerID <= 0 {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(p.Thumb))
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return ""
+	}
+	b, err := json.Marshal(plexAvatarClaim{Selection: selectionKey, ViewerID: p.ViewerID, Expires: expires.Unix()})
+	if err != nil {
+		return ""
+	}
+	nonce, err := i.cursorNonce(plexAvatarDomain, b)
+	if err != nil {
+		return ""
+	}
+	sealed := base64.RawURLEncoding.EncodeToString(i.seal.Seal(nonce, nonce, b, []byte(plexAvatarDomain)))
+	return "/vela/v0/images/" + plexAvatarPrefix + sealed
+}
+
+func (i *instance) readPlexAvatarClaim(secret string) (plexAvatarClaim, bool) {
+	var claim plexAvatarClaim
+	token := strings.TrimPrefix(secret, plexAvatarPrefix)
+	if token == secret || token == "" || len(token) > 4096 || i.seal == nil {
+		return claim, false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(b) < i.seal.NonceSize() {
+		return claim, false
+	}
+	b, err = i.seal.Open(nil, b[:i.seal.NonceSize()], b[i.seal.NonceSize():], []byte(plexAvatarDomain))
+	if err != nil || json.Unmarshal(b, &claim) != nil || claim.Selection == "" || claim.ViewerID <= 0 {
+		return plexAvatarClaim{}, false
+	}
+	return claim, true
+}
+
+// plexAvatar proxies one profile avatar for a live selection. It is
+// usable before the client has a session: the sealed capability, bound
+// to the selection and expiring with it, is the only credential. The
+// upstream thumb URL and any Plex token stay server-side.
+func (i *instance) plexAvatar(w http.ResponseWriter, r *http.Request, secret string) {
+	claim, ok := i.readPlexAvatarClaim(secret)
+	if !ok {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	if claim.Expires <= time.Now().Unix() {
+		plexSelectionGone(w, false)
+		return
+	}
+	i.plexSelMu.Lock()
+	sel := i.plexSels[claim.Selection]
+	if sel == nil {
+		i.plexSelMu.Unlock()
+		plexSelectionGone(w, false)
+		return
+	}
+	if time.Now().After(sel.expires) {
+		delete(i.plexSels, claim.Selection)
+		i.plexSelMu.Unlock()
+		plexSelectionGone(w, false)
+		return
+	}
+	if sel.consumed {
+		i.plexSelMu.Unlock()
+		plexSelectionGone(w, true)
+		return
+	}
+	var profile *frontend.HouseholdProfile
+	for idx := range sel.profiles {
+		if sel.profiles[idx].ViewerID == claim.ViewerID {
+			p := sel.profiles[idx]
+			profile = &p
+			break
+		}
+	}
+	plexToken, viewerID := sel.plexToken, sel.viewerID
+	i.plexSelMu.Unlock()
+	if profile == nil || strings.TrimSpace(profile.Thumb) == "" {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	auth, ok := i.plexHomeAuth()
+	if !ok {
+		problem(w, http.StatusNotFound, "not-found", "not_found")
+		return
+	}
+	body, contentType, err := auth.FetchHouseholdAvatar(i.identityContext(r), frontend.HouseholdAvatarRequest{
+		PlexToken: plexToken,
+		ViewerID:  viewerID,
+		Profile:   *profile,
+	})
+	if err != nil || len(body) == 0 || !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		problem(w, http.StatusBadGateway, "transient", "avatar_unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 func (i *instance) newPlexSelection(sel *plexSelection) (string, bool) {
@@ -93,7 +225,7 @@ func (i *instance) sendPlexSelection(w http.ResponseWriter, sel *plexSelection) 
 	send(w, http.StatusOK, object{
 		"selectionToken": token,
 		"expiresAt":      sel.expires.UTC().Format(time.RFC3339),
-		"profiles":       plexProfilesWire(sel.profiles),
+		"profiles":       i.plexProfilesWire(hash(token), sel.expires, sel.profiles),
 	})
 }
 

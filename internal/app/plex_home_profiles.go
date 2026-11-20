@@ -18,6 +18,7 @@ import (
 type plexHomeTV interface {
 	HomeUsers(context.Context, string) ([]plextv.HomeUser, error)
 	HomeUserToken(context.Context, string, int64, string) (string, error)
+	HomeUserAvatar(context.Context, string, string) ([]byte, string, error)
 }
 
 // plexHomeUsers is the auth surface Plex Home profile selection needs.
@@ -91,11 +92,17 @@ func eligibleHouseholdProfiles(users plexHomeUsers, members []plextv.HomeUser) [
 		if u == nil || u.ID <= 0 {
 			continue
 		}
+		thumb := m.Thumb
+		if thumb == "" {
+			thumb = u.Thumb
+		}
 		out = append(out, frontend.HouseholdProfile{
-			ViewerID:  u.ID,
-			PlexID:    m.ID,
-			Name:      plexHomeProfileName(u, m),
-			Protected: m.Protected,
+			ViewerID:   u.ID,
+			PlexID:     m.ID,
+			Name:       plexHomeProfileName(u, m),
+			Thumb:      thumb,
+			Protected:  m.Protected,
+			Restricted: m.Restricted,
 		})
 	}
 	ownerPlexID := users.OwnerPlexID()
@@ -186,7 +193,7 @@ func (s surfaceIdentity) HouseholdProfiles(ctx context.Context, plexToken string
 	if err != nil {
 		if errors.Is(err, core.ErrUnauthorized) || errors.Is(err, core.ErrNotFound) {
 			return []frontend.HouseholdProfile{{
-				ViewerID: initiator.ID, PlexID: plexID,
+				ViewerID: initiator.ID, PlexID: plexID, Thumb: initiator.Thumb,
 				Name: plexHomeProfileName(initiator, plextv.HomeUser{}),
 			}}, nil
 		}
@@ -198,7 +205,7 @@ func (s surfaceIdentity) HouseholdProfiles(ctx context.Context, plexToken string
 		// plex.tv's Home listing does not name it (defensive; keeps the
 		// one-profile shortcut honest instead of failing a valid sign-in).
 		profiles = []frontend.HouseholdProfile{{
-			ViewerID: initiator.ID, PlexID: plexID,
+			ViewerID: initiator.ID, PlexID: plexID, Thumb: initiator.Thumb,
 			Name: plexHomeProfileName(initiator, plextv.HomeUser{}),
 		}}
 	}
@@ -374,6 +381,37 @@ func (s surfaceIdentity) SignInWithHouseholdProfile(ctx context.Context, req fro
 		s.app.emitLoginSucceeded(target.ID, target.Username, "plex", clientName, string(s.surface), remoteIP)
 	}
 	return tok, nil
+}
+
+// FetchHouseholdAvatar fetches the selected profile's avatar bytes through
+// the plex.tv client, which confines the thumb URL to Plex avatar hosts.
+// The credential mirrors completion: the initiating token when present,
+// otherwise the retained server/owner token for a signed-in switch. The
+// profile must still be the active viewer for its Plex account.
+func (s surfaceIdentity) FetchHouseholdAvatar(ctx context.Context, req frontend.HouseholdAvatarRequest) ([]byte, string, error) {
+	users, tv, ok := s.plexHomeSource()
+	if !ok {
+		return nil, "", frontend.ErrIdentityUnavailable
+	}
+	if s.policy.ExternalIdentity || req.Profile.ViewerID <= 0 || req.Profile.PlexID <= 0 || strings.TrimSpace(req.Profile.Thumb) == "" {
+		return nil, "", frontend.ErrHouseholdProfileIneligible
+	}
+	target := users.ActivePlexUserByPlexID(req.Profile.PlexID)
+	if target == nil || target.ID != req.Profile.ViewerID {
+		return nil, "", frontend.ErrHouseholdProfileIneligible
+	}
+	token := strings.TrimSpace(req.PlexToken)
+	if token == "" {
+		token = s.retainedPlexToken()
+	}
+	if token == "" {
+		return nil, "", frontend.ErrIdentityUnavailable
+	}
+	body, contentType, err := tv.HomeUserAvatar(ctx, token, req.Profile.Thumb)
+	if err != nil {
+		return nil, "", frontend.ErrPlexUnreachable
+	}
+	return body, contentType, nil
 }
 
 func plexHomeContains(members []plextv.HomeUser, plexID int64) bool {

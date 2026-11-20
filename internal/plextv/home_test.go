@@ -22,8 +22,8 @@ func TestHomeUsersAndSwitchPIN(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/xml")
 			_, _ = w.Write([]byte(`<MediaContainer size="3">
-<User id="42" uuid="u42" username="owner" title="Owner" protected="1" homeAdmin="1"/>
-<User id="300" uuid="u300" username="kid" title="Kid" protected="1" restricted="1"/>
+<User id="42" uuid="u42" username="owner" title="Owner" thumb="https://plex.tv/users/owner/avatar?c=7" protected="1" homeAdmin="1"/>
+<User id="300" uuid="u300" username="kid" title="Kid" thumb="https://plex.tv/users/kid/avatar?c=9" protected="1" restricted="1"/>
 <User id="301" uuid="u301" username="guest" title="Guest" protected="0"/>
 </MediaContainer>`))
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/home/users/"):
@@ -48,6 +48,20 @@ func TestHomeUsersAndSwitchPIN(t *testing.T) {
 			default:
 				w.WriteHeader(http.StatusNotFound)
 			}
+		case r.Method == http.MethodGet && r.URL.Path == "/avatar/kid":
+			if r.Header.Get("X-Plex-Token") != ownerToken {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if r.URL.Query().Get("redir") == "evil" {
+				http.Redirect(w, r, "http://127.0.0.1:1/secret", http.StatusFound)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nkid-avatar"))
+		case r.Method == http.MethodGet && r.URL.Path == "/avatar/text":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("not an image"))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/user":
 			w.Header().Set("Content-Type", "application/json")
 			switch r.Header.Get("X-Plex-Token") {
@@ -78,6 +92,28 @@ func TestHomeUsersAndSwitchPIN(t *testing.T) {
 		users[1].ID != 300 || users[1].DisplayName() != "Kid" || !users[1].Restricted ||
 		users[2].ID != 301 || users[2].Protected {
 		t.Fatalf("home users = %+v", users)
+	}
+	if users[1].Thumb != "https://plex.tv/users/kid/avatar?c=9" || users[2].Thumb != "" || users[0].Restricted || users[2].Restricted {
+		t.Fatalf("home user thumbs/restricted = %+v", users)
+	}
+
+	// Avatar proxy fetch: token header to the avatar host, image bytes out;
+	// off-list hosts, plain HTTP, non-images and evil redirects are refused.
+	body, contentType, err := c.HomeUserAvatar(ctx, ownerToken, combined.URL+"/avatar/kid?c=9")
+	if err != nil || contentType != "image/png" || !strings.Contains(string(body), "kid-avatar") {
+		t.Fatalf("avatar: ct=%q body=%q err=%v", contentType, body, err)
+	}
+	for name, bad := range map[string]string{
+		"off-list host": "https://evil.example/avatar.png",
+		"plain http":    "http://plex.tv/users/kid/avatar",
+		"non-image":     combined.URL + "/avatar/text",
+		"evil redirect": combined.URL + "/avatar/kid?redir=evil",
+		"relative":      "/users/kid/avatar",
+		"empty":         "",
+	} {
+		if _, _, err := c.HomeUserAvatar(ctx, ownerToken, bad); !errors.Is(err, ErrAvatarUnavailable) {
+			t.Fatalf("avatar %s: err = %v, want ErrAvatarUnavailable", name, err)
+		}
 	}
 	if _, err := c.HomeUsers(ctx, "bad-token"); err == nil {
 		t.Fatal("bad token listed home users")

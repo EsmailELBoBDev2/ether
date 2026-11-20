@@ -154,7 +154,8 @@ function err(status: number, code: string, message: string): Response {
 }
 
 /** Mirrors internal/config/clientid.go DefaultUserAgent(). */
-const DEFAULT_USER_AGENT = "Ether/dev (+https://github.com/braedonsaunders/ether)";
+const DEFAULT_USER_AGENT =
+  "Ether/dev (+https://github.com/braedonsaunders/ether/blob/main/docs/indexer-operators.md)";
 
 function defaultConfig(): EtherConfig {
   return {
@@ -303,6 +304,7 @@ function defaultConfig(): EtherConfig {
         kind: "stremio",
       },
     ],
+    clientIdentity: { rules: [] },
     debrid: {
       providers: [
         {
@@ -4366,49 +4368,382 @@ export function createFakeServer(opts: FakeOptions = {}) {
         });
       }
       case "POST /indexer/preview": {
-        const ix = (body ?? {}) as {
+        type MockKV = { name: string; value?: string; remove?: boolean };
+        type MockRule = {
+          id?: string;
+          target: string;
+          indexerId?: string;
+          host?: string;
+          scope?: string;
+          profile?: string;
+          headers?: MockKV[] | null;
+          params?: MockKV[] | null;
+        };
+        const req = (body ?? {}) as {
+          rule?: MockRule;
+          rules?: MockRule[];
+          indexer?: { id?: string; url?: string; protocol?: string };
           url?: string;
-          requestIdentity?: { profile?: string; grabProfile?: string };
         };
-        const profile = ix.requestIdentity?.profile || "ether";
-        const uas: Record<string, string> = {
-          ether: "Ether/dev (+https://github.com/braedonsaunders/ether)",
-          prowlarr: "Prowlarr/2.7.0.5723 (alpine 3.24.4)",
-          sonarr: "Sonarr/4.0.20.3014 (alpine 3.24.4)",
-          radarr: "Radarr/7.0.3.10918 (alpine 3.24.4)",
-          nzbhydra2: "NZBHydra2 9.3.1",
-          sabnzbd: "SABnzbd/5.1.3",
-          nzbget: "nzbget/26.3",
-          browser:
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36",
-          custom: "Ether/dev (+https://github.com/braedonsaunders/ether)",
+        const arrAccept = "application/rss+xml, text/rss+xml, application/xml, text/xml";
+        const profiles: Record<string, { name: string; value: string }[]> = {
+          ether: [{ name: "User-Agent", value: DEFAULT_USER_AGENT }],
+          sonarr: [
+            { name: "User-Agent", value: "Sonarr/4.0.20.3014 (alpine 3.24.4)" },
+            { name: "Accept", value: arrAccept },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          radarr: [
+            { name: "User-Agent", value: "Radarr/7.0.3.10918 (alpine 3.24.4)" },
+            { name: "Accept", value: arrAccept },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          prowlarr: [
+            { name: "User-Agent", value: "Prowlarr/2.7.0.5723 (alpine 3.24.4)" },
+            { name: "Accept", value: arrAccept },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          nzbhydra2: [
+            { name: "User-Agent", value: "NZBHydra2 9.3.1" },
+            { name: "Accept", value: "application/xml" },
+            { name: "Accept-Encoding", value: "gzip" },
+          ],
+          sabnzbd: [
+            { name: "User-Agent", value: "SABnzbd/5.1.3" },
+            { name: "Accept-Encoding", value: "gzip" },
+            { name: "Connection", value: "close" },
+          ],
+          nzbget: [
+            { name: "User-Agent", value: "nzbget/26.3" },
+            { name: "Accept", value: "*/*" },
+            { name: "Accept-Encoding", value: "gzip" },
+            { name: "Connection", value: "close" },
+          ],
+          browser: [
+            {
+              name: "User-Agent",
+              value:
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36",
+            },
+            {
+              name: "Accept",
+              value:
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            },
+            { name: "Accept-Encoding", value: "gzip, deflate" },
+          ],
+          custom: [{ name: "User-Agent", value: DEFAULT_USER_AGENT }],
         };
-        const grabProfile = ix.requestIdentity?.grabProfile || "sabnzbd";
-        let host = "indexer.example.com";
-        try {
-          host = new URL(ix.url || "").host || host;
-        } catch {
-          /* keep example host */
+        const sensitiveHeader = (name: string) => {
+          const n = name.toLowerCase();
+          return (
+            n === "authorization" ||
+            n === "proxy-authorization" ||
+            n === "cookie" ||
+            n === "x-api-key" ||
+            n.includes("token") ||
+            n.includes("secret") ||
+            n.includes("auth") ||
+            n.includes("key")
+          );
+        };
+        const sensitiveParam = (name: string) => {
+          const n = name.toLowerCase();
+          return (
+            n === "apikey" ||
+            n === "api_key" ||
+            n === "key" ||
+            n === "token" ||
+            n === "passkey" ||
+            n === "password" ||
+            n === "secret" ||
+            n === "auth" ||
+            n.includes("token") ||
+            n.includes("secret") ||
+            n.includes("key")
+          );
+        };
+        const applyHeaders = (profileId: string, overrides?: MockKV[] | null) => {
+          const base = (profiles[profileId] ?? profiles.ether!).map((h) => ({ ...h }));
+          for (const ov of overrides ?? []) {
+            const name = ov.name.trim();
+            if (!name) continue;
+            const idx = base.findIndex((h) => h.name.toLowerCase() === name.toLowerCase());
+            if (ov.remove) {
+              if (idx >= 0) base.splice(idx, 1);
+              continue;
+            }
+            const val = sensitiveHeader(name) && ov.value ? "••••" : (ov.value ?? "");
+            if (idx >= 0) base[idx] = { name: base[idx]!.name, value: val };
+            else base.push({ name, value: val });
+          }
+          return base;
+        };
+        const applyParams = (base: [string, string][], overrides?: MockKV[] | null) => {
+          const map = new Map<string, string>(base);
+          for (const ov of overrides ?? []) {
+            const name = ov.name.trim();
+            if (!name) continue;
+            if (ov.remove) {
+              if (name !== "apikey" && name !== "t") map.delete(name);
+              continue;
+            }
+            map.set(name, sensitiveParam(name) ? "••••" : (ov.value ?? ""));
+          }
+          const keys = [...map.keys()].sort();
+          return keys
+            .map((k) => {
+              const v = map.get(k) ?? "";
+              return `${encodeURIComponent(k)}=${v === "••••" ? "••••" : encodeURIComponent(v)}`;
+            })
+            .join("&");
+        };
+        const matchHost = (pattern: string, host: string) => {
+          const p = pattern.trim().toLowerCase();
+          const h = host.trim().toLowerCase().replace(/:\d+$/, "");
+          if (!p || !h) return false;
+          if (p.startsWith("*.")) {
+            const suf = p.slice(1);
+            return h.length > suf.length && h.endsWith(suf);
+          }
+          return h === p;
+        };
+        const activeRules: MockRule[] =
+          req.rules ?? (state.config.clientIdentity?.rules as MockRule[] | null | undefined) ?? [];
+        const resolve = (
+          rules: MockRule[],
+          kind: "search" | "nzb_download" | "torrent_download",
+          indexerId: string,
+          host: string,
+        ): { profile: string; ruleId: string; headers: MockKV[]; params: MockKV[] } => {
+          let bestSpec = 0;
+          let best: MockRule | null = null;
+          const isDownload = kind !== "search";
+          for (const r of rules) {
+            let spec = 0;
+            if (r.target === "indexer") {
+              if (r.indexerId !== indexerId) continue;
+              if (r.scope === "search" && isDownload) continue;
+              if (r.scope === "download" && !isDownload) continue;
+              spec = 4;
+            } else if (r.target === "host") {
+              if (!matchHost(r.host ?? "", host)) continue;
+              if (r.scope === "search" && isDownload) continue;
+              if (r.scope === "download" && !isDownload) continue;
+              spec = (r.host ?? "").trim().startsWith("*.") ? 2 : 3;
+            } else if (r.target === "nzb_downloads") {
+              if (kind !== "nzb_download") continue;
+              spec = 1;
+            } else if (r.target === "torrent_downloads") {
+              if (kind !== "torrent_download") continue;
+              spec = 1;
+            } else if (r.target === "all_searches") {
+              if (kind !== "search") continue;
+              spec = 1;
+            }
+            if (spec > bestSpec) {
+              bestSpec = spec;
+              best = r;
+            }
+          }
+          if (!best) return { profile: "ether", ruleId: "", headers: [], params: [] };
+          return {
+            profile: best.profile || "ether",
+            ruleId: best.id || "",
+            headers: best.headers ?? [],
+            params: best.params ?? [],
+          };
+        };
+
+        const indexers = state.config.indexers ?? [];
+        const rule = req.rule;
+        let sampleHost = "indexer.example.com";
+        let sampleIndexerId = "";
+        let downloadKind: "nzb" | "torrent" = "nzb";
+        const isShadowed = (id: string) =>
+          activeRules.some((r) => r.target === "indexer" && r.indexerId === id);
+        const pickUnshadowed = (wantTorrent: boolean) =>
+          indexers.find(
+            (x) =>
+              (!x.kind || x.kind === "newznab") &&
+              (x.protocol === "torrent") === wantTorrent &&
+              x.url &&
+              !isShadowed(x.id),
+          );
+        if (rule) {
+          if (rule.target === "indexer" && rule.indexerId) {
+            sampleIndexerId = rule.indexerId;
+            const ix = indexers.find((x) => x.id === rule.indexerId);
+            if (ix?.url) {
+              try {
+                sampleHost = new URL(ix.url).host || sampleHost;
+              } catch {
+                /* keep default */
+              }
+            }
+            if (ix?.protocol === "torrent") downloadKind = "torrent";
+          } else if (rule.target === "host" && rule.host?.trim()) {
+            const h = rule.host.trim();
+            sampleHost = h.startsWith("*.") ? `api.${h.slice(2)}` : h;
+          } else if (rule.target === "torrent_downloads") {
+            downloadKind = "torrent";
+            const ix = pickUnshadowed(true);
+            if (ix) {
+              sampleIndexerId = ix.id;
+              try {
+                sampleHost = new URL(ix.url).host || "tracker.example.org";
+              } catch {
+                sampleHost = "tracker.example.org";
+              }
+            } else {
+              sampleHost = "tracker.example.org";
+            }
+          } else if (rule.target === "nzb_downloads" || rule.target === "all_searches") {
+            const ix = pickUnshadowed(false);
+            if (ix) {
+              sampleIndexerId = ix.id;
+              try {
+                sampleHost = new URL(ix.url).host || sampleHost;
+              } catch {
+                /* keep default */
+              }
+            }
+          }
+        } else {
+          const ix = req.indexer ?? (req.url ? { url: req.url } : undefined);
+          if (ix?.id) sampleIndexerId = ix.id;
+          if (ix?.url) {
+            try {
+              sampleHost = new URL(ix.url).host || sampleHost;
+            } catch {
+              /* keep default */
+            }
+          }
+          if (ix?.protocol === "torrent") downloadKind = "torrent";
         }
-        const call = (line: string, uaProfile: string) => ({
-          requestLine: `GET ${line} HTTP/1.1\nHost: ${host}`,
-          headers: [{ name: "User-Agent", value: uas[uaProfile] ?? uas.ether }],
-        });
+        const evalRules = rule ? (req.rules ? req.rules : [rule]) : activeRules;
+        let searchId = resolve(evalRules, "search", sampleIndexerId, sampleHost);
+        const dlKind = downloadKind === "torrent" ? "torrent_download" : "nzb_download";
+        let dlId = resolve(evalRules, dlKind, sampleIndexerId, sampleHost);
+        if (rule) {
+          const direct = {
+            profile: rule.profile || "ether",
+            ruleId: rule.id || "",
+            headers: rule.headers ?? [],
+            params: rule.params ?? [],
+          };
+          if (rule.target === "all_searches") {
+            searchId = direct;
+          } else if (rule.target === "nzb_downloads" || rule.target === "torrent_downloads") {
+            dlId = direct;
+          } else if (rule.target === "indexer" || rule.target === "host") {
+            if (rule.scope !== "download") searchId = direct;
+            if (rule.scope !== "search") dlId = direct;
+          }
+        }
+        const searchQuery = applyParams(
+          [
+            ["apikey", "••••"],
+            ["cat", "5000"],
+            ["ep", "1"],
+            ["extended", "1"],
+            ["limit", "100"],
+            ["q", "Example Show"],
+            ["season", "1"],
+            ["t", "tvsearch"],
+          ],
+          searchId.params,
+        );
+        const downloadPath =
+          downloadKind === "torrent"
+            ? `/download/example.torrent${
+                dlId.params.length ? `?${applyParams([], dlId.params)}` : ""
+              }`
+            : `/api?${applyParams(
+                [
+                  ["apikey", "••••"],
+                  ["id", "example-guid"],
+                  ["t", "get"],
+                ],
+                dlId.params,
+              )}`;
+        const primary =
+          rule &&
+          (rule.target === "nzb_downloads" ||
+            rule.target === "torrent_downloads" ||
+            rule.scope === "download")
+            ? dlId
+            : searchId;
         return json({
-          profile,
-          grabProfile,
-          search: call(
-            "/api?t=tvsearch&cat=5000&extended=1&apikey=••••&offset=0&limit=100&q=Example+Show&season=00&ep=1",
-            profile,
-          ),
-          grab: call("/api?t=get&id=example-guid&apikey=••••", grabProfile),
-          profiles: Object.keys(uas).map((id) => ({
+          profile: primary.profile,
+          matchedRuleId: primary.ruleId || undefined,
+          downloadKind,
+          search: {
+            requestLine: `GET /api?${searchQuery} HTTP/1.1\nHost: ${sampleHost}`,
+            headers: applyHeaders(searchId.profile, searchId.headers),
+            profile: searchId.profile,
+            matchedRuleId: searchId.ruleId || undefined,
+          },
+          download: {
+            requestLine: `GET ${downloadPath} HTTP/1.1\nHost: ${sampleHost}`,
+            headers: applyHeaders(dlId.profile, dlId.headers),
+            profile: dlId.profile,
+            matchedRuleId: dlId.ruleId || undefined,
+          },
+          profiles: Object.entries(profiles).map(([id, hs]) => ({
             id,
-            userAgent: uas[id],
-            grabPaired: ["prowlarr", "sonarr", "radarr", "nzbhydra2"].includes(id)
-              ? "sabnzbd"
-              : undefined,
+            userAgent: hs[0]?.value ?? DEFAULT_USER_AGENT,
           })),
+        });
+      }
+      case "POST /test/indexer-identity": {
+        const payload = (body ?? {}) as {
+          indexerId?: string;
+          rules?: Array<{
+            id?: string;
+            target: string;
+            indexerId?: string;
+            host?: string;
+            scope?: string;
+            profile?: string;
+            headers?: Array<{ name: string; value?: string; remove?: boolean }> | null;
+          }>;
+        };
+        const ix = (state.config.indexers ?? []).find((x) => x.id === payload.indexerId);
+        if (!ix) return err(404, "not_found", "indexer not found");
+        const rules = payload.rules ?? state.config.clientIdentity?.rules ?? [];
+        let host = "";
+        try {
+          host = new URL(ix.url).hostname.toLowerCase();
+        } catch {
+          host = "";
+        }
+        let bestSpec = 0;
+        let matched: (typeof rules)[number] | null = null;
+        for (const r of rules) {
+          let spec = 0;
+          if (r.target === "indexer" && r.indexerId === ix.id && r.scope !== "download") spec = 4;
+          else if (r.target === "host" && r.scope !== "download") {
+            const p = (r.host ?? "").trim().toLowerCase();
+            if (p.startsWith("*.")) {
+              const suf = p.slice(1);
+              if (host.length > suf.length && host.endsWith(suf)) spec = 2;
+            } else if (p && host === p) spec = 3;
+          } else if (r.target === "all_searches") spec = 1;
+          if (spec > bestSpec) {
+            bestSpec = spec;
+            matched = r;
+          }
+        }
+        const profile = matched?.profile || "ether";
+        return json({
+          ok: true,
+          durationMs: 48 + (hash(ix.id) % 120),
+          profile,
+          ruleId: matched?.id || undefined,
+          userAgent:
+            matched?.headers?.find((h) => h.name.toLowerCase() === "user-agent" && !h.remove)
+              ?.value || DEFAULT_USER_AGENT,
         });
       }
       case "POST /test/usenet":

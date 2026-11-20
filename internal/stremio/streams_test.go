@@ -262,6 +262,40 @@ func TestFetchNZBFromAddonOriginOnly(t *testing.T) {
 	}
 }
 
+func TestFetchNZBAppliesDownloadIdentityRules(t *testing.T) {
+	var gotUA, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `<?xml version="1.0"?><nzb><file/></nzb>`)
+	}))
+	defer srv.Close()
+
+	rel := core.Release{Name: "Movie 2024 1080p", Protocol: core.ProtocolUsenet, NZBURL: srv.URL + "/get.nzb?id=1"}
+	reserve := func(context.Context, string) error { return nil }
+
+	b := backendWith(t, srv.URL+"/manifest.json", Options{
+		ClientIdentity: func() config.ClientIdentity {
+			return config.ClientIdentity{
+				Rules: []config.IdentityRule{{
+					ID:      "r-sab",
+					Target:  config.TargetNZBDownloads,
+					Profile: "sabnzbd",
+					Params:  []config.KVOverride{{Name: "dl", Value: "1"}},
+				}},
+			}
+		},
+	}, "ix-stremio")
+
+	body, err := b.FetchNZB(t.Context(), rel, reserve)
+	if err != nil || !strings.Contains(string(body), "<nzb") {
+		t.Fatalf("stremio FetchNZB with rule: %v %q", err, body)
+	}
+	if gotUA != config.ProfileUserAgent("sabnzbd") || gotQuery != "dl=1&id=1" {
+		t.Fatalf("stremio FetchNZB wire: ua=%q query=%q", gotUA, gotQuery)
+	}
+}
+
 func TestAddonFixtureQueriesCanonicalAndAliasNumbering(t *testing.T) {
 	const manifest = `{"id":"addon","resources":[{"name":"stream","types":["series","movie"],"idPrefixes":["tt"]}],"types":["series","movie"]}`
 	canonicalBody := `{"streams":[

@@ -150,11 +150,9 @@ type Client struct {
 	budgetWarnDay    map[string]string
 	budgetExhaustDay map[string]string
 
-	// Resolved identities the client presents to this indexer (search/caps
-	// and grabs), refreshed from the policy on every config reload.
+	// Resolved identity policy for this indexer, refreshed on every config reload.
 	idMu   sync.RWMutex
 	id     config.Identity
-	grabID config.Identity
 	policy config.ClientIdentity
 }
 
@@ -298,8 +296,7 @@ func (c *Client) UpdateConfig(cfg config.Indexer) {
 	c.cfg = cfg
 	c.cfgMu.Unlock()
 	c.idMu.Lock()
-	c.id = c.policy.ResolveIndexer(cfg, false)
-	c.grabID = c.policy.ResolveIndexer(cfg, true)
+	c.id = c.policy.ResolveIndexer(cfg, config.RequestSearch, cfg.URL)
 	c.idMu.Unlock()
 	if changed {
 		// A corrected URL or key deserves a fresh caps attempt, and the
@@ -323,15 +320,14 @@ func (c *Client) SetCacheTTL(d time.Duration) {
 	}
 }
 
-// SetClientIdentity resolves the owner's policy into the identities this
-// indexer presents, honoring its per-indexer request identity.
+// SetClientIdentity stores the server-wide request identity rules and
+// refreshes this indexer's resolved search/caps identity.
 func (c *Client) SetClientIdentity(p config.ClientIdentity) {
 	ix := c.Config()
 	c.idMu.Lock()
 	defer c.idMu.Unlock()
 	c.policy = p
-	c.id = p.ResolveIndexer(ix, false)
-	c.grabID = p.ResolveIndexer(ix, true)
+	c.id = p.ResolveIndexer(ix, config.RequestSearch, ix.URL)
 }
 
 // clientIdentity returns the resolved search/caps identity for this indexer.
@@ -340,19 +336,20 @@ func (c *Client) clientIdentity() config.Identity {
 	defer c.idMu.RUnlock()
 	if len(c.id.Ordered) == 0 && c.id.UserAgent == "" {
 		// Built without SetClientIdentity (tests): resolve on the fly.
-		return config.ClientIdentity{}.ResolveIndexer(c.Config(), false)
+		ix := c.Config()
+		return c.policy.ResolveIndexer(ix, config.RequestSearch, ix.URL)
 	}
 	return c.id
 }
 
-// grabIdentity returns the resolved NZB/torrent grab identity.
-func (c *Client) grabIdentity() config.Identity {
+// identityFor resolves the request identity for a specific operation and
+// destination URL (such as a feed-supplied NZB or .torrent URL on another host).
+func (c *Client) identityFor(kind config.RequestKind, rawURL string) config.Identity {
+	ix := c.Config()
 	c.idMu.RLock()
-	defer c.idMu.RUnlock()
-	if len(c.grabID.Ordered) == 0 && c.grabID.UserAgent == "" {
-		return config.ClientIdentity{}.ResolveIndexer(c.Config(), true)
-	}
-	return c.grabID
+	policy := c.policy
+	c.idMu.RUnlock()
+	return policy.ResolveIndexer(ix, kind, rawURL)
 }
 
 // Name implements core.Indexer.
@@ -421,7 +418,7 @@ func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error
 		if cfg.APIKey != "" && q.Get("apikey") == "" {
 			q.Set("apikey", cfg.APIKey)
 		}
-		return base + "?" + id.ShapeQuery(q), nil
+		return base + "?" + id.ApplyParams(q), nil
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	if !strings.HasSuffix(u.Path, "/api") {
@@ -435,17 +432,28 @@ func (c *Client) apiURLFor(params url.Values, id config.Identity) (string, error
 	if cfg.APIKey != "" && q.Get("apikey") == "" {
 		q.Set("apikey", cfg.APIKey)
 	}
-	u.RawQuery = id.ShapeQuery(q)
+	u.RawQuery = id.ApplyParams(q)
 	return u.String(), nil
 }
 
-// applyIdentity writes the resolved client identity on one request. The
-// identity's headers include the owner's custom values, which are credentials:
-// they go only to the configured indexer origin, so a feed-supplied download
-// URL on another host gets the user agent alone.
+// identityOrigin returns the origin to which non-User-Agent headers of id are
+// confined. Rules targeting a host or download type apply to the matched
+// request's own origin; indexer and search rules stay confined to the
+// configured indexer origin so a feed-supplied link on another host never
+// receives indexer credentials.
+func (c *Client) identityOrigin(reqURL string, id config.Identity) string {
+	switch id.RuleTarget {
+	case config.TargetHost, config.TargetNZBDownloads, config.TargetTorrentDownloads:
+		return reqURL
+	default:
+		return c.Config().URL
+	}
+}
+
+// applyIdentity writes the resolved client identity on one request.
 func (c *Client) applyIdentity(req *http.Request, id config.Identity) {
 	req.Header.Set("User-Agent", id.UserAgent)
-	if !safefetch.SameOrigin(c.Config().URL, req.URL.String()) {
+	if !safefetch.SameOrigin(c.identityOrigin(req.URL.String(), id), req.URL.String()) {
 		return
 	}
 	ordered := id.Ordered
@@ -456,33 +464,31 @@ func (c *Client) applyIdentity(req *http.Request, id config.Identity) {
 		return
 	}
 	for _, h := range ordered {
-		v := h.Value
 		switch {
-		case strings.EqualFold(h.Name, "traceparent") && v == "{traceparent}":
-			if tp := config.NewTraceparent(); tp != "" {
-				req.Header.Set(h.Name, tp)
-			}
+		case strings.EqualFold(h.Name, "User-Agent"):
+			req.Header.Set("User-Agent", h.Value)
 		case strings.EqualFold(h.Name, "Connection"):
-			if strings.EqualFold(v, "close") {
+			if strings.EqualFold(h.Value, "close") {
 				req.Close = true
 			}
 		default:
-			req.Header.Set(h.Name, v)
+			req.Header.Set(h.Name, h.Value)
 		}
 	}
 }
 
-// send performs req with the identity's headers confined to the configured
-// indexer origin: net/http copies non-sensitive headers onto a redirect,
-// including one that leaves the origin.
+// send performs req with non-User-Agent headers confined to the matched origin:
+// net/http copies non-sensitive headers onto a redirect, including one that
+// leaves the origin.
 func (c *Client) send(req *http.Request, id config.Identity) (*http.Response, error) {
 	if len(id.Headers) == 0 && len(id.Ordered) <= 1 {
 		return c.guarded.Do(req)
 	}
+	origin := c.identityOrigin(req.URL.String(), id)
 	hc := *c.guarded
 	inner := hc.CheckRedirect
 	hc.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		c.dropForeignIdentityHeaders(next, id)
+		c.dropForeignIdentityHeaders(next, origin, id)
 		if inner != nil {
 			return inner(next, via)
 		}
@@ -494,10 +500,10 @@ func (c *Client) send(req *http.Request, id config.Identity) (*http.Response, er
 	return hc.Do(req)
 }
 
-// dropForeignIdentityHeaders clears the identity's headers from a redirect
-// that leaves the configured indexer origin.
-func (c *Client) dropForeignIdentityHeaders(next *http.Request, id config.Identity) {
-	if safefetch.SameOrigin(c.Config().URL, next.URL.String()) {
+// dropForeignIdentityHeaders clears non-User-Agent identity headers from a
+// redirect that leaves origin.
+func (c *Client) dropForeignIdentityHeaders(next *http.Request, origin string, id config.Identity) {
+	if safefetch.SameOrigin(origin, next.URL.String()) {
 		return
 	}
 	for k := range id.Headers {
@@ -751,12 +757,9 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	// built-in site setting must not be answered from the old config's
 	// results (in memory, or persisted for a fresh client).
 	fmt.Fprintf(h, "%s|", searchIdentity(c.Config()))
-	// The client identity decides headers and parameter order, and an indexer
-	// may answer a blocked or decoy persona differently: a cached answer
-	// fetched as another identity must not serve the one switched to. The
-	// whole identity is hashed, so editing a custom user agent or header
-	// counts as a change.
-	fmt.Fprintf(h, "client-id-v1:%v|", c.clientIdentity())
+	// The client identity decides outbound headers and parameter overrides: a
+	// cached answer fetched under one identity must not serve another.
+	fmt.Fprintf(h, "client-id-v2:%s|", c.clientIdentity().Fingerprint())
 	fmt.Fprintf(h, "%s|%s|%d|%s|%d|%s|%d|%d|%d",
 		c.indexerID(), req.Type, req.IDs.TMDB, req.IDs.IMDB, req.IDs.TVDB,
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
@@ -912,8 +915,6 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []ur
 			}
 			if season > 0 {
 				v.Set("season", strconv.Itoa(season))
-			} else if episode > 0 && c.clientIdentity().Shape.PadSeasonZero {
-				v.Set("season", "00")
 			}
 			if episode > 0 {
 				v.Set("ep", strconv.Itoa(episode))
@@ -1794,32 +1795,37 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		c.keepNZB(ctx, r, body)
 		return body, reserved, nil
 	}
-	id := c.grabIdentity()
 	// r.NZBURL comes from the indexer's feed, so it is untrusted data:
 	// c.get dials it through the safefetch guard. Only a URL that stays
 	// on the owner-configured indexer origin (relative links resolve
 	// there) may reach a private address; absolute feed URLs to any
 	// other host, and redirects away from the indexer, must be public.
+	var id config.Identity
 	rawURL := r.NZBURL
 	if rawURL == "" {
 		if r.GUID == "" {
 			return nil, false, fmt.Errorf("newznab: release %q has no NZB URL or GUID: %w", r.Name, core.ErrReleaseRejected)
 		}
+		id = c.identityFor(config.RequestNZBDownload, c.Config().URL)
 		u, err := c.apiURLFor(url.Values{"t": {"get"}, "id": {r.GUID}}, id)
 		if err != nil {
 			return nil, false, err
 		}
 		rawURL = u
-	} else if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		base, err := url.Parse(strings.TrimRight(c.Config().URL, "/") + "/")
-		if err != nil {
-			return nil, false, redactURLError(err)
+	} else {
+		if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+			base, err := url.Parse(strings.TrimRight(c.Config().URL, "/") + "/")
+			if err != nil {
+				return nil, false, redactURLError(err)
+			}
+			ref, err := url.Parse(rawURL)
+			if err != nil {
+				return nil, false, redactURLError(err)
+			}
+			rawURL = base.ResolveReference(ref).String()
 		}
-		ref, err := url.Parse(rawURL)
-		if err != nil {
-			return nil, false, redactURLError(err)
-		}
-		rawURL = base.ResolveReference(ref).String()
+		id = c.identityFor(config.RequestNZBDownload, rawURL)
+		rawURL = id.ApplyToURL(rawURL)
 	}
 	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
 	if err != nil {
@@ -2016,6 +2022,31 @@ func TestWithOptions(ctx context.Context, cfg config.Indexer, opts Options) erro
 		return humanError(name, err)
 	}
 	return nil
+}
+
+// TestCaps runs a single t=caps request against cfg using the identity
+// resolved from policy, returning the resolved identity and any error.
+func TestCaps(ctx context.Context, cfg config.Indexer, policy config.ClientIdentity) (config.Identity, error) {
+	return TestCapsWithOptions(ctx, cfg, Options{ClientIdentity: policy})
+}
+
+// TestCapsWithOptions is TestCaps with injectable options (usage tracking/tests).
+func TestCapsWithOptions(ctx context.Context, cfg config.Indexer, opts Options) (config.Identity, error) {
+	if cfg.URL == "" {
+		return config.DefaultIdentity(), fmt.Errorf("indexer %q: URL is empty", cfg.Name)
+	}
+	testCfg := cfg
+	testCfg.Enabled = true
+	c := New(testCfg, nil, opts)
+	id := c.clientIdentity()
+	name := cfg.Name
+	if name == "" {
+		name = c.Name()
+	}
+	if _, err := c.Caps(ctx); err != nil {
+		return id, humanError(name, err)
+	}
+	return id, nil
 }
 
 func (c *Client) keptNZB(ctx context.Context, r core.Release) []byte {

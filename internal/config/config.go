@@ -265,13 +265,6 @@ type Indexer struct {
 	// SecretSettings are the definition's password-type settings. They are
 	// sealed at rest and redacted in API responses like API keys.
 	SecretSettings map[string]string `json:"secretSettings,omitempty"`
-	// UserAgent overrides the global client identity user agent for this
-	// indexer's searches and grabs. Empty inherits the policy. Kept as a
-	// mirror of RequestIdentity's user agent for older configs.
-	UserAgent string `json:"userAgent,omitempty"`
-	// RequestIdentity is how this indexer's requests look (client profile,
-	// header and parameter overrides). Nil uses the shared identity above.
-	RequestIdentity *IndexerRequestIdentity `json:"requestIdentity,omitempty"`
 	// ProwlarrImport is what the last Prowlarr sync wrote into the fields
 	// the owner may also edit. A later sync updates a field only while it
 	// still holds that value, so owner edits survive syncs. Nil for

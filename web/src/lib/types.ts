@@ -43,10 +43,6 @@ export interface Indexer {
   settings?: Record<string, string> | null;
   /** A built-in site's password settings; each set value is redacted to "••••". */
   secretSettings?: Record<string, string> | null;
-  /** User agent overriding the global client identity for this indexer. */
-  userAgent?: string;
-  /** How this indexer's requests look: client profile plus overrides. */
-  requestIdentity?: IndexerRequestIdentity | null;
   /**
    * The audio language of the releases this indexer returns, as a BCP 47
    * tag ("pt-BR"). It is evidence for a bare DUAL/MULTI whose name names no
@@ -56,40 +52,70 @@ export interface Indexer {
   language?: string;
 }
 
-/**
- * Input.clientIdentity: the owner's user agent and headers presented to
- * Newznab and Torznab indexers.
- */
-export interface ClientIdentityConfig {
-  userAgent?: string;
-  /** Header values are sealed server-side and arrive redacted to "••••". */
-  headers?: Record<string, string> | null;
-}
+/** What an identity rule applies to. */
+export type IdentityTargetKind =
+  "all_searches" | "indexer" | "host" | "nzb_downloads" | "torrent_downloads";
 
-/** One header or query-parameter override in a request identity. */
+/** Optional search/download narrowing on an indexer or host rule. */
+export type IdentityScope = "" | "search" | "download";
+
+/** One header or query-parameter override in an identity rule. */
 export interface KVOverride {
   name: string;
   value?: string;
   remove?: boolean;
 }
 
-/** Per-indexer request identity (config.IndexerRequestIdentity). */
-export interface IndexerRequestIdentity {
-  profile?: string;
+/** One ordered request-identity rule (config.IdentityRule). */
+export interface IdentityRule {
+  id: string;
+  target: IdentityTargetKind;
+  indexerId?: string;
+  host?: string;
+  scope?: IdentityScope;
+  profile: string;
   headers?: KVOverride[] | null;
   params?: KVOverride[] | null;
-  grabProfile?: string;
-  grabHeaders?: KVOverride[] | null;
-  grabParams?: KVOverride[] | null;
+}
+
+/**
+ * Input.clientIdentity: ordered server-wide request identity rules.
+ * The implicit last rule is always honest Ether.
+ */
+export interface ClientIdentityConfig {
+  rules?: IdentityRule[] | null;
+}
+
+/** One masked HTTP request preview (search or download). */
+export interface RequestPreviewCall {
+  requestLine: string;
+  headers: { name: string; value: string }[];
+  profile?: string;
+  matchedRuleId?: string;
 }
 
 /** Masked sample requests from POST /indexer/preview. */
 export interface RequestPreview {
   profile: string;
-  grabProfile: string;
-  search: { requestLine: string; headers: { name: string; value: string }[] };
-  grab: { requestLine: string; headers: { name: string; value: string }[] };
-  profiles: { id: string; userAgent: string; grabPaired?: string }[];
+  matchedRuleId?: string;
+  search: RequestPreviewCall;
+  download: RequestPreviewCall;
+  downloadKind: "nzb" | "torrent";
+  profiles: { id: string; userAgent: string }[];
+}
+
+/** Request payload for POST /indexer/preview. */
+export interface IndexerPreviewRequest {
+  rule?: IdentityRule;
+  rules?: IdentityRule[];
+  indexer?: Indexer;
+}
+
+/** Result from POST /test/indexer-identity. */
+export interface IdentityTestResult extends TestResult {
+  profile?: string;
+  ruleId?: string;
+  userAgent?: string;
 }
 
 export type IndexerProtocol = "usenet" | "torrent";

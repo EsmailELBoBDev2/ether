@@ -16,8 +16,18 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/flows"
+	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/notify"
 )
+
+// FlowLLM is the configured chat model backing POST /api/flows/describe.
+// *llm.Client satisfies it.
+type FlowLLM interface {
+	Enabled() bool
+	Chat(ctx context.Context, msgs []llm.Message, jsonMode bool) (string, error)
+}
+
+var _ FlowLLM = (*llm.Client)(nil)
 
 // FlowsDeps wires the Flows console API (docs/design/flows.md §7) to the
 // durable store and runtime provided by internal/flows. Every field is
@@ -52,6 +62,12 @@ type FlowsDeps struct {
 	// Nil answers that route 503.
 	NotifyChannels    func(ctx context.Context) ([]notify.Channel, error)
 	SaveNotifyChannel func(ctx context.Context, ch notify.Channel) error
+	// LLM is the configured chat model backing POST /api/flows/describe.
+	// Nil or disabled answers 409 ai_unavailable.
+	LLM FlowLLM
+	// DescribeTimeout bounds POST /api/flows/describe (including any single
+	// validation repair pass). Zero defaults to 45 seconds.
+	DescribeTimeout time.Duration
 	// WebhookHMACSecret optionally resolves a per-flow HMAC secret for
 	// incoming webhook signature checks. Nil keys HMAC by the token.
 	WebhookHMACSecret func(ctx context.Context, flowID string) (string, bool)
@@ -229,6 +245,18 @@ func (a *FlowsAPI) Handler() http.Handler {
 				return
 			}
 			a.handleValidate(w, r)
+		case segs[0] == "test" && len(segs) == 1:
+			if r.Method != http.MethodPost {
+				methodNotAllowed("POST")
+				return
+			}
+			a.handleTestDraft(w, r)
+		case segs[0] == "describe" && len(segs) == 1:
+			if r.Method != http.MethodPost {
+				methodNotAllowed("POST")
+				return
+			}
+			a.handleDescribeFlow(w, r)
 		case segs[0] == "catalogue" && len(segs) == 2 && (segs[1] == "events" || segs[1] == "actions"):
 			if r.Method != http.MethodGet {
 				methodNotAllowed("GET")
@@ -774,13 +802,25 @@ type testRunBody struct {
 	Trigger flows.NodeKind  `json:"trigger,omitempty"`
 }
 
+func (a *FlowsAPI) handleTestDraft(w http.ResponseWriter, r *http.Request) {
+	a.runTest(w, r, "", true)
+}
+
 func (a *FlowsAPI) handleTestRun(w http.ResponseWriter, r *http.Request) {
+	a.runTest(w, r, r.PathValue("id"), false)
+}
+
+func (a *FlowsAPI) runTest(w http.ResponseWriter, r *http.Request, flowID string, requireGraph bool) {
 	if !a.requireRuntime(w) {
 		return
 	}
 	var body testRunBody
 	if err := decodeOptionalJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", "request body is not valid JSON")
+		return
+	}
+	if requireGraph && body.Graph == nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "graph is required")
 		return
 	}
 	dry := true
@@ -799,7 +839,7 @@ func (a *FlowsAPI) handleTestRun(w http.ResponseWriter, r *http.Request) {
 		body.Graph = &g
 	}
 	result, err := a.deps.Runtime.TestRun(r.Context(), flows.TestRunRequest{
-		FlowID:  r.PathValue("id"),
+		FlowID:  flowID,
 		Graph:   body.Graph,
 		DryRun:  dry,
 		Event:   body.Event,
@@ -810,7 +850,7 @@ func (a *FlowsAPI) handleTestRun(w http.ResponseWriter, r *http.Request) {
 		a.writeStoreError(w, err, "test run")
 		return
 	}
-	if result != nil {
+	if result != nil && result.Run.FlowID != "" {
 		a.publishRun(r.Context(), &result.Run)
 	}
 	writeJSON(w, http.StatusOK, result)

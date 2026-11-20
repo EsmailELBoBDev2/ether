@@ -5,7 +5,6 @@ import { useState } from "react";
 import { Section } from "../../components/layout";
 import { apiFetch, errorMessage } from "../../lib/api";
 import { flowsApi } from "../../lib/flowsApi";
-import { autoLayoutGraph, LEGACY_NOTIFY_TO_CANONICAL } from "../flows/types";
 import { useRegistry } from "../../lib/extend";
 import { BrowserPush } from "./BrowserPush";
 import { ChannelDrawer } from "./ChannelDrawer";
@@ -83,9 +82,9 @@ export function Channels({
     });
 
   /**
-   * Materialize this channel's event rules as an editable Flow, then clear
-   * the legacy rules from the channel so alerts never arrive twice. If the
-   * channel update fails, the just-created flow is removed again.
+   * Atomically materialize this channel's legacy event rules as an editable
+   * Flow via the server, removing the migrated rules from the channel so
+   * alerts never arrive twice (while keeping out-of-process crash alerts).
    */
   const customizeAsFlow = async (c: Channel) => {
     const name = channelName(c, descriptors);
@@ -99,52 +98,18 @@ export function Channels({
     });
     if (!ok) return;
     setBusy(c.id);
-    let flowId: string | undefined;
     try {
-      const events = c.events.map((e) => LEGACY_NOTIFY_TO_CANONICAL[e] ?? e).filter((e) => e !== "flows.digest.scheduled");
-      const graph = autoLayoutGraph({
-        schemaVersion: 1,
-        nodes: [
-          {
-            id: "trigger",
-            kind: "trigger.event",
-            label: t("Something worth an alert happens"),
-            position: { x: 0, y: 0 },
-            config: { events: events.length ? events : ["playback.session.failed"] },
-          },
-          {
-            id: "notify",
-            kind: "action",
-            label: t("Send the alert"),
-            position: { x: 0, y: 0 },
-            config: {
-              actionType: "notify.send",
-              params: {
-                channelIds: [c.id],
-                title: "{{ payload.titleName }}{{ payload.error }}",
-                message: "{{ event.type }} — {{ payload.viewer.username }}",
-              },
-            },
-          },
-        ],
-        edges: [{ id: "e1", source: "trigger", target: "notify", sourceHandle: "next" }],
-      });
-      const flow = await flowsApi.createFlow({
-        name: t("{channel} alerts", { channel: name }),
-        description: t("Created from the “{channel}” notification channel. Add conditions on the canvas to make it smarter.", { channel: name }),
+      const res = await flowsApi.customizeNotification({
+        channelId: c.id,
         enabled: c.enabled,
-        graph,
+        removeLegacyRule: true,
       });
-      flowId = flow.id;
-      await apiFetch(`/notifications/${c.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ ...c, events: [] }),
+      toast.success(t("Flow created — “{channel}” now alerts through it", { channel: name }), {
+        description: res.notes?.length ? res.notes.join(" ") : undefined,
       });
-      toast.success(t("Flow created — “{channel}” now alerts through it", { channel: name }));
-      if (onFlowCreated) onFlowCreated(flow.id);
+      if (onFlowCreated) onFlowCreated(res.flow.id);
       else await onChanged();
     } catch (e) {
-      if (flowId) await flowsApi.deleteFlow(flowId).catch(() => undefined);
       toast.error(errorMessage(e));
       await onChanged();
     } finally {

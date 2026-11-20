@@ -1,13 +1,12 @@
-import { Button, Textarea, toast } from "@braedonsaunders/appkit-ui";
+import { Alert, AlertDescription, AlertTitle, Button, Textarea, cn, toast } from "@braedonsaunders/appkit-ui";
 import { ArrowDown, Sparkles } from "lucide-react";
 import { useState } from "react";
+import { Link, useInRouterContext } from "react-router-dom";
 import { Drawer } from "../../components/Drawer";
-import { MutationError } from "../../components/feedback";
-import { localized, t } from "../../i18n";
-import { errorMessage } from "../../lib/api";
+import { localized, t, tx } from "../../i18n";
+import { ApiError, errorMessage } from "../../lib/api";
 import { flowsApi, type DescribeFlowResult } from "../../lib/flowsApi";
 import { categoryTone, iconForNode } from "./shared";
-import { cn } from "@braedonsaunders/appkit-ui";
 import { nodeKindLabel } from "./types";
 
 const EXAMPLES = localized(() => [
@@ -34,10 +33,14 @@ export function DescribeFlowDialog({
   onDraft: (draft: DescribeFlowResult) => void;
   applyLabel?: string;
 }) {
+  const inRouter = useInRouterContext();
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [draft, setDraft] = useState<DescribeFlowResult | null>(null);
+
+  const aiUnavailable = error instanceof ApiError && error.code === "ai_unavailable";
+  const errorFields = error instanceof ApiError ? (error.fields ?? []) : [];
 
   const build = async (text: string) => {
     const clean = text.trim();
@@ -48,7 +51,9 @@ export function DescribeFlowDialog({
       setDraft(await flowsApi.describe(clean));
     } catch (e) {
       setError(e);
-      toast.error(errorMessage(e));
+      if (!(e instanceof ApiError && e.code === "ai_unavailable")) {
+        toast.error(errorMessage(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -100,7 +105,41 @@ export function DescribeFlowDialog({
                 </button>
               ))}
             </div>
-            <MutationError error={error} />
+            {aiUnavailable ? (
+              <Alert variant="info" role="alert">
+                <AlertTitle>{t("Describe it needs a language model")}</AlertTitle>
+                <AlertDescription>
+                  {tx("Configure AI in {integrations} to describe flows in plain language.", {
+                    integrations: inRouter ? (
+                      <Link to="/services" className="font-medium underline" onClick={onClose}>
+                        {t("Integrations")}
+                      </Link>
+                    ) : (
+                      <a href="/services" className="font-medium underline">
+                        {t("Integrations")}
+                      </a>
+                    ),
+                  })}
+                </AlertDescription>
+              </Alert>
+            ) : error ? (
+              <Alert variant="destructive" role="alert">
+                <AlertTitle>{t("Couldn't draft that flow")}</AlertTitle>
+                <AlertDescription>
+                  {errorFields.length ? (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                      {errorFields.map((f, i) => (
+                        <li key={`${f.field}-${i}`}>
+                          <code className="text-xs">{f.field}</code> {f.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    errorMessage(error)
+                  )}
+                </AlertDescription>
+              </Alert>
+            ) : null}
             <Button disabled={busy || !prompt.trim()} onClick={() => void build(prompt)}>
               <Sparkles size={15} /> {busy ? t("Drafting…") : t("Draft my flow")}
             </Button>

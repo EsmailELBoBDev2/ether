@@ -119,6 +119,11 @@ export const flowsApi = {
     return send<ValidationResult>("POST", "/flows/validate", body, signal);
   },
 
+  /** Test an unsaved draft graph (same payload as `/{id}/test`, no flow needed). */
+  testDraft(req: TestRunRequest, signal?: AbortSignal): Promise<TestRunResult> {
+    return send<TestRunResult>("POST", "/flows/test", req, signal);
+  },
+
   testRun(id: string, req: TestRunRequest, signal?: AbortSignal): Promise<TestRunResult> {
     return send<TestRunResult>(
       "POST",

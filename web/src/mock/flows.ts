@@ -754,6 +754,20 @@ export function createFlowsMock() {
       if (method === "GET" && seg[1] === "templates") return json({ templates });
       if (method === "POST" && seg[1] === "validate") return json(validateFlowGraph((b.graph ?? { schemaVersion: 1, nodes: [], edges: [] }) as Graph));
       if (method === "POST" && seg[1] === "describe") return json(describeFlow(String(b.prompt ?? "")));
+      if (method === "POST" && seg[1] === "test") {
+        const graph = (b.graph ?? { schemaVersion: 1, nodes: [], edges: [] }) as Graph;
+        const eventType = String((b.event as Record<string, unknown> | undefined)?.type ?? "playback.session.started");
+        const schema = FLOW_EVENTS.find((e) => e.type === eventType);
+        const payload = { ...((schema?.sample ?? PLAYBACK_SAMPLE) as Record<string, unknown>), ...(((b.event as Record<string, unknown> | undefined)?.payload ?? {}) as Record<string, unknown>) };
+        runSeq += 1;
+        const runId = `run_${runSeq.toString(16)}`;
+        const steps = simulate(graph, payload, eventType, runId);
+        const now = new Date().toISOString();
+        const run: Run = { id: runId, flowId: "draft", flowName: "Draft", flowVersion: 0, triggerKind: "trigger.event", eventType, status: "completed", attempt: 1, dryRun: true, stepCount: steps.length, startedAt: now, updatedAt: now, finishedAt: now };
+        runs.unshift(run);
+        stepsByRun.set(runId, steps);
+        return json({ run, steps });
+      }
       if (method === "POST" && seg[1] === "from-template") {
         const t = templates.find((x) => x.id === decodeURIComponent(seg[2] ?? ""));
         if (!t) return notFound();

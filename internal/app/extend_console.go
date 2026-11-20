@@ -187,6 +187,14 @@ func consolePages() []consolePage {
 				section("deliveries", T("Delivery history"), extend.Text{}),
 			},
 		}},
+		{id: "flows", label: T("Flows"), icon: "Workflow", order: 55, meta: extend.PageMeta{
+			Route: "/flows", NavGroup: extend.NavGroupServer, InNav: true, Mobile: true,
+			Keywords: T("automations automation workflows triggers actions events rules alerts"),
+			Sections: []extend.PageSection{
+				section("templates", T("Templates"), T("recipes starter tautulli kill stream newsletter")),
+				section("runs", T("Runs"), T("history trace test dry run")),
+			},
+		}},
 		{id: "cluster", label: T("Cluster"), icon: "Boxes", order: 60, meta: extend.PageMeta{
 			Route: "/cluster", NavGroup: extend.NavGroupServer, InNav: true,
 			Keywords: T("high availability ha nodes failover postgres postgresql join token weight leader"),
@@ -238,6 +246,8 @@ func consoleCommands() []extend.Descriptor {
 			Route: "/collections/new", Keywords: T("create")}},
 		{id: "new-notification-channel", label: T("New notification channel"), order: 60, meta: extend.CommandMeta{
 			Route: "/notifications/channels", Keywords: T("alert")}},
+		{id: "new-flow", label: T("New flow"), order: 65, meta: extend.CommandMeta{
+			Route: "/flows/new", Keywords: T("automation workflow create")}},
 		{id: "back-up-now", label: T("Back up now"), order: 70, meta: extend.CommandMeta{
 			Route: "/maintenance/backups", Keywords: T("backup snapshot")}},
 		// Ask Ether suggestions (WS6): the label is the suggestion text.

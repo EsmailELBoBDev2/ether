@@ -97,6 +97,22 @@
   },
   {
     "kind": "command",
+    "id": "new-flow",
+    "owner": "builtin",
+    "label": {
+      "source": "New flow"
+    },
+    "hint": {},
+    "order": 65,
+    "meta": {
+      "route": "/flows/new",
+      "keywords": {
+        "source": "automation workflow create"
+      }
+    }
+  },
+  {
+    "kind": "command",
     "id": "back-up-now",
     "owner": "builtin",
     "label": {
@@ -677,6 +693,23 @@
     "meta": {
       "route": "/notifications",
       "page": "notifications"
+    }
+  },
+  {
+    "kind": "navItem",
+    "id": "flows",
+    "owner": "builtin",
+    "label": {
+      "source": "Flows"
+    },
+    "hint": {},
+    "icon": "Workflow",
+    "group": "server",
+    "order": 55,
+    "meta": {
+      "route": "/flows",
+      "page": "flows",
+      "mobile": true
     }
   },
   {
@@ -1426,6 +1459,47 @@
             "source": "Delivery history"
           },
           "keywords": {}
+        }
+      ]
+    }
+  },
+  {
+    "kind": "page",
+    "id": "flows",
+    "owner": "builtin",
+    "label": {
+      "source": "Flows"
+    },
+    "hint": {},
+    "icon": "Workflow",
+    "group": "server",
+    "order": 55,
+    "meta": {
+      "route": "/flows",
+      "navGroup": "server",
+      "inNav": true,
+      "mobile": true,
+      "keywords": {
+        "source": "automations automation workflows triggers actions events rules alerts"
+      },
+      "sections": [
+        {
+          "key": "templates",
+          "label": {
+            "source": "Templates"
+          },
+          "keywords": {
+            "source": "recipes starter tautulli kill stream newsletter"
+          }
+        },
+        {
+          "key": "runs",
+          "label": {
+            "source": "Runs"
+          },
+          "keywords": {
+            "source": "history trace test dry run"
+          }
         }
       ]
     }

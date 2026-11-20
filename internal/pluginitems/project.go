@@ -50,6 +50,10 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		ownerCard = cardShape[0]
 	}
 	mediaType := projectMediaType(item.Level, decl, present)
+	mbItemType := ""
+	if present.MediaBrowser != nil {
+		mbItemType = present.MediaBrowser.ItemTypes[item.Level]
+	}
 
 	sortTitle := FoldSortTitle(item.SortTitle)
 	if sortTitle == "" {
@@ -64,6 +68,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 	t := core.Title{
 		Key:           item.Key,
 		Type:          mediaType,
+		MBItemType:    mbItemType,
 		KindLevel:     item.Level,
 		ItemIndex:     item.Index,
 		PluginAddedAt: item.AddedAt,

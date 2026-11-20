@@ -68,6 +68,12 @@ func (s *Service) servedItemKinds(ctx context.Context, v *core.User) map[string]
 					out["movie"] = true
 				case "series":
 					out["show"], out["series"] = true, true
+				case "musicalbum":
+					// A flat playable album kind also answers Audio
+					// queries (each album as its own track); the
+					// per-library browse decides whether this library
+					// is that shape.
+					out["audio"] = true
 				}
 			}
 		}

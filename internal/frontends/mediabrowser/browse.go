@@ -55,9 +55,65 @@ func (i *instance) userDataDTO(id string, st frontend.WatchStatus) map[string]an
 	}
 	return data
 }
+
+// mbItemType is the MediaBrowser item type for a title: the type the owning
+// plugin kind's presentation declares for its level (MusicArtist, MusicAlbum,
+// Audio, AudioBook, Book, PhotoAlbum, Photo) when it declares one, else the
+// video projection movie/show/season/episode titles have always carried.
+func mbItemType(t frontend.Title) string {
+	if t.MBItemType != "" {
+		return t.MBItemType
+	}
+	return map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
+}
+
+// mbDeclaredNonVideo reports whether the title's declared MediaBrowser type
+// sits outside the video family, so video-shaped fields (SeriesId, SeasonId,
+// a Video MediaType) must not be stamped on it.
+func mbDeclaredNonVideo(t frontend.Title) bool {
+	switch t.MBItemType {
+	case "", "Movie", "Series", "Season", "Episode":
+		return false
+	}
+	return true
+}
+
+// mbIsFolder follows the declared type's place in the MediaBrowser model:
+// artists, albums and photo albums hold children; tracks, books and photos
+// do not. Undeclared titles keep the projected show/season rule.
+func mbIsFolder(t frontend.Title) bool {
+	switch t.MBItemType {
+	case "Series", "Season", "MusicArtist", "MusicAlbum", "PhotoAlbum":
+		return true
+	case "Movie", "Episode", "Audio", "AudioBook", "Book", "Photo":
+		return false
+	}
+	return t.Type == "show" || t.Type == "season" || t.Type == "boxset"
+}
+
+// mbMediaType is the MediaBrowser MediaType a leaf item carries: Audio for
+// tracks and audiobooks, Book for books, Photo for photos, Video for the
+// movie/episode leaves that have always carried it. Containers carry none.
+func mbMediaType(t frontend.Title) (string, bool) {
+	switch t.MBItemType {
+	case "Audio", "AudioBook":
+		return "Audio", true
+	case "Book":
+		return "Book", true
+	case "Photo":
+		return "Photo", true
+	case "Series", "Season", "MusicArtist", "MusicAlbum", "PhotoAlbum":
+		return "", false
+	}
+	if t.Type == "movie" || t.Type == "episode" {
+		return "Video", true
+	}
+	return "", false
+}
+
 func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[string]any {
-	kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
-	m := map[string]any{"Id": ids.RatingKeyGUID(t.Key), "Name": t.Title, "Type": kind, "LocationType": "FileSystem", "IsFolder": t.Type == "show" || t.Type == "season" || t.Type == "boxset", "Overview": t.Summary, "ProductionYear": t.Year, "RunTimeTicks": t.Runtime.Nanoseconds() / 100, "UserData": i.userDataDTO(ids.RatingKeyGUID(t.Key), state)}
+	kind := mbItemType(t)
+	m := map[string]any{"Id": ids.RatingKeyGUID(t.Key), "Name": t.Title, "Type": kind, "LocationType": "FileSystem", "IsFolder": mbIsFolder(t), "Overview": t.Summary, "ProductionYear": t.Year, "RunTimeTicks": t.Runtime.Nanoseconds() / 100, "UserData": i.userDataDTO(ids.RatingKeyGUID(t.Key), state)}
 	if added := t.DateAdded(time.Now()); !added.IsZero() {
 		m["DateCreated"] = wireTime(added)
 	}
@@ -109,21 +165,27 @@ func (i *instance) itemDTO(t frontend.Title, state frontend.WatchStatus) map[str
 	if t.Tagline != "" {
 		m["Taglines"] = []string{t.Tagline}
 	}
-	if t.Type == "movie" || t.Type == "episode" {
-		m["MediaType"] = "Video"
+	if mediaType, ok := mbMediaType(t); ok {
+		m["MediaType"] = mediaType
 	}
 	attachParentIdentity(m, t)
 	if i.protocol == "emby" {
 		i.embyItemDTO(m, t, state)
 		// Movies and shows belong to their configured library. Episodes and
-		// seasons already name the season or series that contains them.
+		// seasons already name the season or series that contains them. A
+		// declared non-video root (a music artist, a book) names its own
+		// plugin library instead of a built-in section.
 		if _, ok := m["ParentId"]; !ok {
 			section := int64(0)
-			switch t.Type {
-			case "movie":
-				section = 1
-			case "show":
-				section = 2
+			if mbDeclaredNonVideo(t) && t.LibraryID != 0 {
+				section = int64(t.LibraryID)
+			} else {
+				switch t.Type {
+				case "movie":
+					section = 1
+				case "show":
+					section = 2
+				}
 			}
 			if section != 0 {
 				if id, err := ids.GUID(ids.View, section); err == nil {
@@ -990,19 +1052,19 @@ func (i *instance) search(w http.ResponseWriter, r *http.Request) {
 			exactPrefix++
 		}
 		id := ids.RatingKeyGUID(t.Key)
-		kind := map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
-		hint := map[string]any{"Id": id, "ItemId": id, "Name": t.Title, "Type": kind, "ProductionYear": t.Year, "IsFolder": t.Type == "show" || t.Type == "season" || t.Type == "boxset"}
+		kind := mbItemType(t)
+		hint := map[string]any{"Id": id, "ItemId": id, "Name": t.Title, "Type": kind, "ProductionYear": t.Year, "IsFolder": mbIsFolder(t)}
 		if tags, ok := images[t.Key]["ImageTags"].(map[string]string); ok && tags["Primary"] != "" {
 			hint["PrimaryImageTag"] = tags["Primary"]
 		}
 		if i.protocol == "jellyfin" {
-			if t.Type == "movie" || t.Type == "episode" {
-				hint["MediaType"] = "Video"
+			if mediaType, ok := mbMediaType(t); ok {
+				hint["MediaType"] = mediaType
 			}
 			if t.Runtime > 0 {
 				hint["RunTimeTicks"] = t.Runtime.Nanoseconds() / 100
 			}
-			if t.Type == "episode" {
+			if t.Type == "episode" && !mbDeclaredNonVideo(t) {
 				hint["IndexNumber"] = t.Episode
 				hint["ParentIndexNumber"] = t.Season
 				if t.ShowTitle != "" {

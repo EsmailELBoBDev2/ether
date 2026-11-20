@@ -2883,10 +2883,19 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	if containsMediaType(q.ExcludedTypes, t.Type) {
 		return false, nil
 	}
+	// A declared MediaBrowser type (MusicAlbum, Audio, Book, …) is a name a
+	// client can include or exclude an item by, alongside its core type.
+	if t.MBItemType != "" {
+		for _, excluded := range q.ExcludedTypes {
+			if strings.EqualFold(string(excluded), t.MBItemType) {
+				return false, nil
+			}
+		}
+	}
 	if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
 		found := containsMediaType(q.Types, t.Type)
 		for _, kind := range q.UnservedTypes {
-			if strings.EqualFold(kind, string(t.Type)) {
+			if strings.EqualFold(kind, string(t.Type)) || strings.EqualFold(kind, t.MBItemType) {
 				found = true
 			}
 		}

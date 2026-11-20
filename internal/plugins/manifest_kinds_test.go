@@ -148,6 +148,37 @@ func TestContentManifestValidates(t *testing.T) {
 	}
 }
 
+// TestContentManifestMusicAndAudiobookItemTypes proves the full declared
+// MediaBrowser type set a music/audiobook plugin needs validates, including
+// MusicArtist and AudioBook.
+func TestContentManifestMusicAndAudiobookItemTypes(t *testing.T) {
+	m := contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Present.Plex.Base = "artist"
+	m.Ether.Contributes.MediaKinds[0].Present.MediaBrowser.ItemTypes = map[string]string{
+		"collection": "MusicArtist", "album": "MusicAlbum", "track": "Audio",
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("music item types: %v", err)
+	}
+	m = contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Present.MediaBrowser.CollectionType = "audiobooks"
+	m.Ether.Contributes.MediaKinds[0].Present.MediaBrowser.ItemTypes = map[string]string{
+		"collection": "Book", "album": "AudioBook", "track": "Audio",
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("audiobook item types: %v", err)
+	}
+	// A single-level flat album kind may declare the Plex artist base: it
+	// publishes as a flat album list in a music section.
+	m = contentManifest()
+	m.Ether.Contributes.MediaKinds[0].Levels = []KindLevel{{Key: "album", Label: "Album", Playable: true}}
+	m.Ether.Contributes.MediaKinds[0].Present.Plex.Base = "artist"
+	m.Ether.Contributes.MediaKinds[0].Present.MediaBrowser.ItemTypes = map[string]string{"album": "MusicAlbum"}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("single-level plex artist kind: %v", err)
+	}
+}
+
 func TestContentManifestRules(t *testing.T) {
 	kind := func(m *Manifest) *MediaKindMeta { return &m.Ether.Contributes.MediaKinds[0] }
 	cases := []struct {
@@ -312,6 +343,9 @@ func TestContentManifestRules(t *testing.T) {
 		}, "mediaBrowser.collectionType"},
 		{"mediabrowser unknown level", func(m *Manifest) {
 			kind(m).Present.MediaBrowser.ItemTypes = map[string]string{"disc": "Audio"}
+		}, "mediaBrowser.itemTypes"},
+		{"mediabrowser unknown item type", func(m *Manifest) {
+			kind(m).Present.MediaBrowser.ItemTypes = map[string]string{"album": "Podcast"}
 		}, "mediaBrowser.itemTypes"},
 		{"ondemand sync", func(m *Manifest) {
 			kind(m).Sync = KindSyncDecl{Mode: "ondemand"}

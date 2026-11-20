@@ -16,7 +16,16 @@ import (
 var allowedSiloTypes = map[string]bool{
 	"movies": true, "tvshows": true, "music": true, "audiobooks": true, "books": true, "photos": true, "homevideos": true,
 	"movie": true, "series": true, "show": true,
-	"Movie": true, "Series": true, "Season": true, "Episode": true, "MusicAlbum": true, "Audio": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+	"Movie": true, "Series": true, "Season": true, "Episode": true, "MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+}
+
+// allowedMediaBrowserItemTypes is the closed set a presentation's per-level
+// MediaBrowser itemTypes may name; mirrors the manifest rule so a console
+// edit cannot store a type no client knows.
+var allowedMediaBrowserItemTypes = map[string]bool{
+	"Movie": true, "Series": true, "Season": true, "Episode": true,
+	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
+	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
 
 func validatePresentations(p core.Presentations) error {
@@ -39,6 +48,11 @@ func validatePresentations(p core.Presentations) error {
 		case "movies", "tvshows", "music", "audiobooks", "books", "photos", "homevideos":
 		default:
 			return fmt.Errorf("%w: mediaBrowser collectionType must be movies, tvshows, music, audiobooks, books, photos or homevideos", ErrInvalid)
+		}
+		for level, itemType := range p.MediaBrowser.ItemTypes {
+			if !allowedMediaBrowserItemTypes[itemType] {
+				return fmt.Errorf("%w: mediaBrowser itemTypes[%s] must be Movie, Series, Season, Episode, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo", ErrInvalid, level)
+			}
 		}
 	}
 	if p.Stremio != nil {

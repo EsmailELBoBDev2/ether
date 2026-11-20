@@ -60,6 +60,21 @@ type Title struct {
 	PluginAddedAt int64     `json:"-"`
 	LandscapeCard bool      `json:"-"`
 	DateDisplay   string    `json:"-"`
+	// MBItemType is the MediaBrowser (Jellyfin/Emby) item type the owning
+	// kind's presentation declares for KindLevel (MusicAlbum, Audio, Book,
+	// AudioBook, …); empty for catalogue titles and for levels the kind
+	// does not map, which keep the video projection. ParentKey/ParentTitle
+	// name the item's immediate parent in the declared hierarchy (a
+	// track's album, an album's artist) where ShowKey names only the root.
+	MBItemType  string    `json:"-"`
+	ParentKey   RatingKey `json:"-"`
+	ParentTitle string    `json:"-"`
+	// SelfChild marks the synthetic playable-leaf incarnation of a
+	// single-level playable container item (a flat MusicAlbum kind whose
+	// album is one playable item): the title is the item itself, presented
+	// once as its own child (an Audio track / Plex track, same Key) so
+	// clients that only play leaf items can play it.
+	SelfChild bool `json:"-"`
 
 	// Seasons and episodes.
 	ShowKey           RatingKey `json:"showKey,omitempty"`

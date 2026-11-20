@@ -898,11 +898,15 @@ func (s *Service) fetchRelayPlaylist(ctx context.Context, g *inputGrant, raw str
 		}
 		br = bufio.NewReaderSize(io.MultiReader(bytes.NewReader(packed), br), 32<<10)
 	}
-	head := sniffHead(br)
+	// Decide HLS from the body itself: a slice from sniffHead aliases the
+	// bufio buffer, which io.ReadAll overwrites once the playlist spans more
+	// than one read, so a large playlist read back as "not HLS" and was
+	// relayed without its URIs rewritten.
 	b, rerr := io.ReadAll(io.LimitReader(br, relayManifestLimit+1))
 	if rerr != nil || len(b) > relayManifestLimit {
 		return relayPlaylistFetch{err: errors.New("upstream manifest unavailable")}
 	}
+	head := bytes.TrimLeft(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), " \t\r\n")
 	return relayPlaylistFetch{
 		body:   b,
 		base:   res.Request.URL,

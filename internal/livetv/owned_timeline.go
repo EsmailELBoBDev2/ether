@@ -647,7 +647,17 @@ func (t *ownedTimeline) renderSnapshot(seg func(int64, string) string, res func(
 	fmt.Fprintf(&b, "#EXT-X-VERSION:%d\n", version)
 	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", int(t.target/time.Second))
 	if t.startBehind > 0 {
-		fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=NO\n", max(t.startBehind, 3*t.target).Seconds())
+		// RFC 8216: a negative TIME-OFFSET must not exceed the playlist's
+		// duration. A fresh window holds less than the desired start depth
+		// (one 1.6 s segment against a 12 s offset), and Safari/AVPlayer
+		// reject such a playlist, so clamp it to what the window holds.
+		var held time.Duration
+		for _, s := range t.window {
+			held += s.dur
+		}
+		if offset := min(max(t.startBehind, 3*t.target), held); offset > 0 {
+			fmt.Fprintf(&b, "#EXT-X-START:TIME-OFFSET=-%.3f,PRECISE=NO\n", offset.Seconds())
+		}
 	}
 	first := t.nextSeq
 	if len(t.window) > 0 {

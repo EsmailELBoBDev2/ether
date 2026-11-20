@@ -546,10 +546,11 @@ func (p *relayProducer) run(ctx context.Context) {
 		}
 		// Before the first publication no cadence is known: the target
 		// stands in for the last segment.
-		lastDur := p.tl.lastSegmentDuration()
-		if lastDur <= 0 {
-			lastDur = td
-		}
+		// A segment is cut at the first keyframe past the target, so a
+		// healthy cut can run longer than the last segment (a 1.6 s GOP
+		// with a 2 s target alternates 1.6 s and 3.2 s): never size the
+		// starvation window below the target.
+		lastDur := max(p.tl.lastSegmentDuration(), td)
 		skewSlack := time.Duration(droppedSkewed) * max(cut, 2*time.Second)
 		starveLimit := lastDur + time.Second
 		if cold {

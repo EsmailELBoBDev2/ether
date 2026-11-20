@@ -575,6 +575,19 @@ func TestPlaylistLifecycleShowSeasonExpansionAndSharing(t *testing.T) {
 	if byID[smartID]["smart"] != true || len(byID[smartID]["entryIds"].([]any)) != 0 {
 		t.Fatalf("smart playlist membership = %#v", byID[smartID])
 	}
+	// A show's membership is the entries of its episodes (a show is added as its episodes).
+	w, tpShow := h.do("tok-1", http.MethodGet, "/vela/v0/titles/"+ids.RatingKeyGUID(showS)+"/playlists", "")
+	if w.Code != 200 {
+		t.Fatalf("show playlists: %d %s", w.Code, w.Body.String())
+	}
+	for _, raw := range tpShow["items"].([]any) {
+		m := raw.(map[string]any)
+		if m["id"] == plID {
+			if eids := m["entryIds"].([]any); len(eids) < 2 {
+				t.Fatalf("show membership should include its episode entries, got %#v", eids)
+			}
+		}
+	}
 	// Hidden title lookup -> 404.
 	w, _ = h.do("tok-1", http.MethodGet, "/vela/v0/titles/"+ids.RatingKeyGUID(hiddenAdult)+"/playlists", "")
 	if w.Code != 404 {

@@ -359,6 +359,21 @@ func (s *Service) TitlePlaylists(ctx context.Context, viewer *core.Viewer, title
 	if err != nil {
 		return nil, err
 	}
+	// A show or season is added as its episodes, so membership is the
+	// entries of those episodes; a movie or episode matches itself.
+	members := map[core.RatingKey]bool{titleKey: true}
+	if !titleKey.IsPluginKey() {
+		switch titleKey.Kind() {
+		case core.KindShow, core.KindSeason:
+			expanded, err := s.expandPlaylistKeys(ctx, v, []core.RatingKey{titleKey}, frontend.MaxPlaylistEntries)
+			if err != nil && !errors.Is(err, frontend.ErrPlaylistTooLarge) {
+				return nil, err
+			}
+			for _, k := range expanded {
+				members[k] = true
+			}
+		}
+	}
 	out := make([]frontend.TitlePlaylistMembership, 0, len(lists))
 	for _, pl := range lists {
 		if pl.UserID != v.ID || pl.Key == 0 {
@@ -367,7 +382,7 @@ func (s *Service) TitlePlaylists(ctx context.Context, viewer *core.Viewer, title
 		entryIDs := playlistEntryIDs(&pl)
 		matched := []string{}
 		for idx, itemKey := range pl.Items {
-			if itemKey == titleKey {
+			if members[itemKey] {
 				matched = append(matched, entryIDs[idx])
 			}
 		}

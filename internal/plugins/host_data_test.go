@@ -21,6 +21,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 type dataRoundTripper func(*http.Request) (*http.Response, error)
@@ -362,4 +363,150 @@ func TestDataHostInvariants(t *testing.T) {
 			t.Fatalf("tight unit budget err = %v, want budget fault", err)
 		}
 	})
+}
+
+type blockingBodyReader struct {
+	ctx context.Context
+}
+
+func (b blockingBodyReader) Read([]byte) (int, error) {
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (blockingBodyReader) Close() error { return nil }
+
+func TestFetchToCacheHonorsTimeoutMS(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	rec := installContent(t, env)
+	rec.Manifest.Ether.Permissions.Network = []string{"data.example.test"}
+	var err error
+	rec.ManifestRaw, err = json.Marshal(rec.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = env.m.store.upsert(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+
+	libraryKey := core.PluginLibraryKey(rec.ID, "recording")
+	var gotDeadline time.Time
+	var hasDeadline bool
+	env.m.client = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: dataRoundTripper(func(r *http.Request) (*http.Response, error) {
+			gotDeadline, hasDeadline = r.Context().Deadline()
+			switch r.URL.Path {
+			case "/hang-headers":
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			case "/hang-body":
+				return &http.Response{
+					StatusCode: 200,
+					Body:       blockingBodyReader{ctx: r.Context()},
+					Header:     make(http.Header),
+					Request:    r,
+				}, nil
+			default:
+				return &http.Response{StatusCode: 404, Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header), Request: r}, nil
+			}
+		}),
+	}
+	committed := false
+	env.m.SetKindBackends(KindBackends{CachePut: func(_ context.Context, _, _, _ string, r io.Reader) (string, error) {
+		if _, err := io.ReadAll(r); err != nil {
+			return "", err
+		}
+		committed = true
+		return "blob:unexpected", nil
+	}})
+
+	h := env.m.HostFor(rec.ID)
+
+	// 1. Hosted JS call: timeoutMs tightens request deadline below the call
+	// deadline and throws a catchable Error with code "timeout".
+	eng := wasm.NewEngine(nil)
+	t.Cleanup(func() { _ = eng.Close() })
+	jsSrc := `
+globalThis.handle = function(req) {
+  try {
+    ether.http.fetchToCache(req.body);
+    return { status: 200, body: { timedOut: false } };
+  } catch (e) {
+    return { status: 200, body: { timedOut: true, code: e && e.code || "" } };
+  }
+};
+`
+	p, err := eng.LoadJS(rec.ID, "1.0.0", jsSrc, hostBridge{h: h}, wasm.Limits{Deadline: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	callCtx, cancelCall := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelCall()
+	callDeadline, _ := callCtx.Deadline()
+	reqJSON, _ := json.Marshal(map[string]any{
+		"url":        "https://data.example.test/hang-headers",
+		"libraryKey": libraryKey,
+		"name":       "headers.bin",
+		"timeoutMs":  25,
+	})
+	resp, err := p.Call(callCtx, wasm.Request{Method: "POST", Path: "/fetch", Body: reqJSON})
+	if err != nil {
+		t.Fatalf("hosted Call failed: %v", err)
+	}
+	var jsReply struct {
+		TimedOut bool   `json:"timedOut"`
+		Code     string `json:"code"`
+	}
+	if err := json.Unmarshal(resp.Body, &jsReply); err != nil {
+		t.Fatalf("unmarshal JS reply %s: %v", resp.Body, err)
+	}
+	if !jsReply.TimedOut || jsReply.Code != "timeout" {
+		t.Fatalf("hosted fetchToCache timeout reply = %+v, want timedOut=true code=timeout", jsReply)
+	}
+	if !hasDeadline || !gotDeadline.Before(callDeadline) {
+		t.Fatalf("header fetch deadline = %v (ok=%v), want before call deadline %v", gotDeadline, hasDeadline, callDeadline)
+	}
+
+	// 2. timeoutMs also bounds body streaming into cache and returns a timeout error.
+	bodyArgs, _ := json.Marshal([]any{map[string]any{
+		"url":        "https://data.example.test/hang-body",
+		"libraryKey": libraryKey,
+		"name":       "body.bin",
+		"timeoutMs":  25,
+	}})
+	_, err = CallDataHost(callCtx, h, "http.fetchToCache", bodyArgs)
+	if !errors.Is(err, ErrFetchFailed) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("body-copy timeout err = %v, want ErrFetchFailed wrapping DeadlineExceeded", err)
+	}
+	var fault *wasm.Fault
+	if !errors.As(mapHostError(err), &fault) || fault.Code != "timeout" {
+		t.Fatalf("mapHostError(body timeout) = %+v, want code=timeout", mapHostError(err))
+	}
+	if !hasDeadline || !gotDeadline.Before(callDeadline) {
+		t.Fatalf("body fetch deadline = %v (ok=%v), want before call deadline %v", gotDeadline, hasDeadline, callDeadline)
+	}
+
+	// 3. A timeoutMs longer than the remaining call deadline is capped by the call deadline.
+	tightCtx, cancelTight := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer cancelTight()
+	tightDeadline, _ := tightCtx.Deadline()
+	cappedArgs, _ := json.Marshal([]any{map[string]any{
+		"url":        "https://data.example.test/hang-headers",
+		"libraryKey": libraryKey,
+		"name":       "capped.bin",
+		"timeoutMs":  60000,
+	}})
+	_, err = CallDataHost(tightCtx, h, "http.fetchToCache", cappedArgs)
+	if !errors.Is(err, ErrFetchFailed) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("capped timeout err = %v, want ErrFetchFailed wrapping DeadlineExceeded", err)
+	}
+	if !hasDeadline || gotDeadline.After(tightDeadline) {
+		t.Fatalf("capped fetch deadline = %v (ok=%v), want at or before call deadline %v", gotDeadline, hasDeadline, tightDeadline)
+	}
+	if committed {
+		t.Fatal("timed-out fetchToCache unexpectedly committed a cache blob")
+	}
 }

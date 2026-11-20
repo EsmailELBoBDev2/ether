@@ -42,6 +42,7 @@ type ArchiveReadResult struct {
 	Body   []byte `json:"body"`
 }
 type FetchCacheRequest struct {
+	TimeoutMS  int64             `json:"timeoutMs,omitempty"`
 	URL        string            `json:"url"`
 	Headers    map[string]string `json:"headers,omitempty"`
 	LibraryKey string            `json:"libraryKey"`

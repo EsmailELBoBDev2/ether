@@ -458,9 +458,11 @@ work ahead of an actual request. Owner/scheduled jobs (up to 2) and playback
 resolver jobs (up to 4) have separate limits per plugin; if all four resolver
 slots are busy, Ether returns `503` with `code: "jobs_busy"` and `Retry-After`.
 
-`ether.http.fetch({url,timeoutMs:1200})` bounds a slow remote request by the
-remaining call deadline. Hosted code can catch `e.code === "timeout"`.
-Remote SDK fetches use their local request context/timeout.
+`ether.http.fetch({url,timeoutMs:1200})` and
+`ether.http.fetchToCache({url,libraryKey,name,timeoutMs:1200})` bound a slow
+remote request (including streaming into cache) by the remaining call deadline.
+Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
+request context/timeout.
 
 `ether.http.hash({url,algo:"sha256",expectSize:12345})` returns either
 `{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` is

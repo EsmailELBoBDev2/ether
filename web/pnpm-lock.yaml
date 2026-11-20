@@ -15,10 +15,10 @@ importers:
     dependencies:
       '@braedonsaunders/appkit-ai':
         specifier: ^3.0.0
-        version: 3.0.0(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)(remark-gfm@4.0.1)
+        version: 3.0.0(@braedonsaunders/appkit-ui@0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)(remark-gfm@4.0.1)
       '@braedonsaunders/appkit-dashboard':
         specifier: ^4.0.0
-        version: 4.0.0(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 4.0.0(@braedonsaunders/appkit-ui@0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@braedonsaunders/appkit-i18n':
         specifier: ^0.2.0
         version: 0.2.0
@@ -26,8 +26,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.0(tailwindcss@4.3.5)
       '@braedonsaunders/appkit-ui':
-        specifier: ^0.4.1
-        version: 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)
+        specifier: ^0.4.2
+        version: 0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)
       '@braedonsaunders/appkit-viewspec':
         specifier: ^0.2.0
         version: 0.2.0
@@ -370,8 +370,8 @@ packages:
     peerDependencies:
       tailwindcss: ^4.0.0
 
-  '@braedonsaunders/appkit-ui@0.4.1':
-    resolution: {integrity: sha512-b0JlnsJz7kvPbSQbeA63PLKap79j5Rs7+TiqBQV492qzU+lFMeK5jHJdxVcnZ9ZpXhiXHff06aQGRg6bHFNSWA==}
+  '@braedonsaunders/appkit-ui@0.4.2':
+    resolution: {integrity: sha512-vgAb+RHvsE8e1hkWZo8m8jF+sZqqMhgqIwRSJaNsEgyvuH+3DweV9Xqz3lbhIbl+tz7T30RYvAa6Cvmsxd7fDw==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^19.0.0
@@ -2252,7 +2252,7 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@braedonsaunders/appkit-ai@3.0.0(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)(remark-gfm@4.0.1)':
+  '@braedonsaunders/appkit-ai@3.0.0(@braedonsaunders/appkit-ui@0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)(remark-gfm@4.0.1)':
     dependencies:
       '@ai-sdk/anthropic': 3.0.138(zod@4.6.7)
       '@ai-sdk/google': 3.0.141(zod@4.6.7)
@@ -2262,7 +2262,7 @@ snapshots:
       ai: 6.0.322(zod@4.6.7)
       zod: 4.6.7
     optionalDependencies:
-      '@braedonsaunders/appkit-ui': 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)
+      '@braedonsaunders/appkit-ui': 0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)
       lucide-react: 1.70.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
@@ -2271,11 +2271,11 @@ snapshots:
 
   '@braedonsaunders/appkit-analytics@0.2.0': {}
 
-  '@braedonsaunders/appkit-dashboard@4.0.0(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@braedonsaunders/appkit-dashboard@4.0.0(@braedonsaunders/appkit-ui@0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5))(lucide-react@1.70.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@braedonsaunders/appkit-analytics': 0.2.0
     optionalDependencies:
-      '@braedonsaunders/appkit-ui': 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)
+      '@braedonsaunders/appkit-ui': 0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)
       lucide-react: 1.70.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
@@ -2288,7 +2288,7 @@ snapshots:
     dependencies:
       tailwindcss: 4.3.5
 
-  '@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)':
+  '@braedonsaunders/appkit-ui@0.4.2(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.5)':
     dependencies:
       '@braedonsaunders/appkit-tokens': 0.2.0(tailwindcss@4.3.5)
       class-variance-authority: 0.7.1

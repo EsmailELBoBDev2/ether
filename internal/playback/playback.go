@@ -157,7 +157,9 @@ type Options struct {
 	// ConnectionsPerStream derives the server-wide stream cap from the total
 	// Usenet connections when Server.MaxStreams is 0 (default 8).
 	ConnectionsPerStream int
-	// MaxAttempts is how many releases one Prepare or failover tries (default 4).
+	// MaxAttempts bounds how many releases one Prepare or failover tries.
+	// Zero (the default) tries candidates until one plays, the candidate pool
+	// is exhausted, or PrepareTimeout / FailoverTimeout / caller context expires.
 	MaxAttempts int
 	// MaxFailovers per session before giving up (default 6).
 	MaxFailovers int
@@ -236,9 +238,6 @@ func (o *Options) defaults() {
 	def(&o.SessionTTL, 45*time.Second)
 	if o.ConnectionsPerStream <= 0 {
 		o.ConnectionsPerStream = 8
-	}
-	if o.MaxAttempts <= 0 {
-		o.MaxAttempts = 4
 	}
 	if o.MaxFailovers <= 0 {
 		o.MaxFailovers = 6
@@ -409,6 +408,12 @@ func releaseLabel(r core.Release) string {
 		return r.Name
 	}
 	return r.Indexer
+}
+
+// attemptAllowed reports whether a zero-based candidate attempt is within
+// Options.MaxAttempts (or unrestricted when MaxAttempts <= 0).
+func (m *Manager) attemptAllowed(attempt int) bool {
+	return m.opts.MaxAttempts <= 0 || attempt < m.opts.MaxAttempts
 }
 
 // cacheTitle is the display title stored with cache metadata.

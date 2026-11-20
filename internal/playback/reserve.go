@@ -273,8 +273,12 @@ func (m *Manager) prepareSpeedAlternate(g *generation) {
 		// a fetchable alternate. Keep their bounded, sequential preparation.
 		if prepared == nil {
 			tried = append(tried, failed...)
-			for attempt := 0; attempt < min(m.opts.MaxAttempts, failoverRaceWidth) && ctx.Err() == nil; attempt++ {
-				res, err := m.nextResolution(ctx, s, tried, alts)
+			limit := failoverRaceWidth
+			if m.opts.MaxAttempts > 0 && m.opts.MaxAttempts < limit {
+				limit = m.opts.MaxAttempts
+			}
+			for attempt := 0; attempt < limit && ctx.Err() == nil; attempt++ {
+				res, err := m.nextResolutionTracking(ctx, s, &tried, alts)
 				if err != nil {
 					break
 				}

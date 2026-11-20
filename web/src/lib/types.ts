@@ -304,6 +304,7 @@ export interface EtherConfig {
     debrid: boolean;
     usenet: boolean;
     metadata: boolean;
+    extras?: boolean;
     bypass?: string[] | null;
   };
   sharedCache?: EtherConfig["cache"];

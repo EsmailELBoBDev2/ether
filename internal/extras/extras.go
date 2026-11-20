@@ -28,6 +28,9 @@ import (
 // SourceCommand marks an Extra whose TMDB video is resolved by the owner's command.
 const SourceCommand = "command"
 
+// SourcePlexDiscover marks an Extra whose direct MP4 comes from Plex Discover.
+const SourcePlexDiscover = "plex_discover"
+
 // MaxExtras caps how many extras one title advertises.
 const MaxExtras = 10
 
@@ -41,12 +44,13 @@ type Extra struct {
 	ExtraType   int    // Plex numeric extra type (1 = trailer)
 	Site        string // YouTube, Vimeo (command source)
 	SiteKey     string // site-specific video id
+	DiscoverKey string // <parentHex>/<extraID> (Plex Discover source)
 	Language    string // ISO 639-1
 	Official    bool
 	PublishedAt time.Time
 	Size        int // vertical resolution when known
 	Duration    time.Duration
-	Source      string // SourceCommand
+	Source      string // SourcePlexDiscover or SourceCommand
 
 	identity string // registry identity (collision detection)
 }
@@ -85,6 +89,7 @@ type Options struct {
 	CacheDir    string
 	CacheHTTP   *http.Client // optional injected transport for trailer downloads
 	Videos      VideoProvider
+	Discover    DiscoverProvider
 	Config      func() config.Extras
 	Logger      *slog.Logger
 	Now         func() time.Time
@@ -116,6 +121,7 @@ type Service struct {
 	cacheFlights     map[string]*trailerFill
 	downloadTrailers bool
 	videos           VideoProvider
+	discover         DiscoverProvider
 	cfgFn            func() config.Extras
 	log              *slog.Logger
 	now              func() time.Time
@@ -173,7 +179,7 @@ func New(o Options) *Service {
 	return &Service{
 		themeCtx: themeCtx, themeCancel: themeCancel, downloadTrailers: downloadTrailers,
 		themeFFmpeg: o.ThemeFFmpeg, cacheDir: o.CacheDir, cacheHTTP: o.CacheHTTP,
-		videos: o.Videos, cfgFn: o.Config,
+		videos: o.Videos, discover: o.Discover, cfgFn: o.Config,
 		log: o.Logger.With("component", "extras"), now: o.Now,
 		ttl: o.CacheTTL, runner: o.Runner, look: o.LookPath,
 		downloader: dl,
@@ -210,6 +216,11 @@ func (s *Service) effectiveCommand(c config.Extras) (string, bool) {
 	return cmd, err == nil
 }
 
+// DiscoverAvailable reports whether the Plex Discover extras source can run.
+func (s *Service) DiscoverAvailable() bool {
+	return s.discover != nil && s.discover.Available()
+}
+
 // CommandAvailable reports whether the resolver command source can run.
 func (s *Service) CommandAvailable() bool {
 	_, ok := s.effectiveCommand(s.cfg())
@@ -218,7 +229,7 @@ func (s *Service) CommandAvailable() bool {
 
 // Enabled reports whether any playable extras can be advertised.
 func (s *Service) Enabled() bool {
-	return s.cfg().Enabled && s.CommandAvailable()
+	return s.cfg().Enabled && (s.DiscoverAvailable() || s.CommandAvailable())
 }
 
 // DisabledReason explains why extras are off, for a startup log line.
@@ -257,7 +268,9 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 		return nil, nil
 	}
 	iso := ISO639(lang)
-	cacheKey := parent.Key.String() + "|" + iso
+	discoverOn := s.DiscoverAvailable()
+	cmdOn := s.CommandAvailable() && s.videos != nil
+	cacheKey := fmt.Sprintf("%s|%s|%t|%t", parent.Key.String(), iso, discoverOn, cmdOn)
 	s.mu.Lock()
 	if e, ok := s.lists[cacheKey]; ok && s.now().Before(e.expires) {
 		out := append([]Extra(nil), e.extras...)
@@ -295,11 +308,22 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 	s.mu.Unlock()
 
 	var out []Extra
-	fetchFailed := false
-	if s.CommandAvailable() && s.videos != nil {
+	sourcesTried := 0
+	sourcesFailed := 0
+	if discoverOn {
+		sourcesTried++
+		ds, err := s.discover.List(ctx, parent)
+		if err != nil {
+			sourcesFailed++
+			s.log.Debug("plex discover extras", "key", parent.Key, "err", err)
+		}
+		out = append(out, ds...)
+	}
+	if cmdOn {
+		sourcesTried++
 		vs, err := s.fetchVideos(ctx, parent, lang)
 		if err != nil {
-			fetchFailed = true
+			sourcesFailed++
 			s.log.Debug("tmdb videos", "key", parent.Key, "err", err)
 		}
 		out = append(out, videosToExtras(parent, vs)...)
@@ -314,9 +338,9 @@ func (s *Service) List(ctx context.Context, parent *core.Title, lang string) ([]
 	for i := range out {
 		out[i] = s.registerLocked(out[i])
 	}
-	// A failed TMDB lookup is not "this title has no extras": caching it
-	// would hide every trailer for the whole TTL.
-	if !fetchFailed {
+	// Do not cache an empty result when an active source failed, or a
+	// transient error would hide trailers for the whole TTL.
+	if sourcesFailed == 0 || (len(out) > 0 && sourcesFailed < sourcesTried) {
 		if len(s.lists) >= maxListEntries {
 			for k := range s.lists {
 				delete(s.lists, k)
@@ -411,13 +435,28 @@ func (s *Service) pruneLocked() {
 	}
 }
 
-// Resolve turns an extra into a playable input, caching command results
-// until the returned URL expires.
+// Resolve turns an extra into a playable input. Command results are cached
+// until the returned URL expires; Plex Discover signed URLs are resolved fresh
+// per play.
 func (s *Service) Resolve(ctx context.Context, e Extra) (Resolved, error) {
-	if e.Source == SourceCommand {
+	switch e.Source {
+	case SourcePlexDiscover:
+		return s.resolveDiscover(ctx, e)
+	case SourceCommand:
 		return s.resolveCommand(ctx, e)
+	default:
+		return Resolved{}, fmt.Errorf("extras: unknown source %q", e.Source)
 	}
-	return Resolved{}, fmt.Errorf("extras: unknown source %q", e.Source)
+}
+
+func (s *Service) resolveDiscover(ctx context.Context, e Extra) (Resolved, error) {
+	if !s.cfg().Enabled {
+		return Resolved{}, fmt.Errorf("extras disabled")
+	}
+	if !s.DiscoverAvailable() {
+		return Resolved{}, fmt.Errorf("extras: plex discover unavailable")
+	}
+	return s.discover.Resolve(ctx, e)
 }
 
 func (s *Service) resolveCommand(ctx context.Context, e Extra) (Resolved, error) {
@@ -525,7 +564,7 @@ func typeRank(sub string) int {
 		return 0
 	case "teaser":
 		return 1
-	case "clip":
+	case "clip", "sceneOrSample":
 		return 2
 	case "featurette":
 		return 3
@@ -533,6 +572,16 @@ func typeRank(sub string) int {
 		return 4
 	}
 	return 5
+}
+
+func sourceRank(src string) int {
+	switch src {
+	case SourcePlexDiscover:
+		return 0
+	case SourceCommand:
+		return 1
+	}
+	return 2
 }
 
 func langRank(e Extra, iso string) int {
@@ -547,8 +596,8 @@ func langRank(e Extra, iso string) int {
 	return 3
 }
 
-// sortExtras orders by type, official first, viewer language,
-// resolution, then newest.
+// sortExtras orders by type, official first, direct source before command,
+// viewer language, resolution, then newest.
 func sortExtras(es []Extra, iso string) {
 	sort.SliceStable(es, func(i, j int) bool {
 		a, b := es[i], es[j]
@@ -558,6 +607,9 @@ func sortExtras(es []Extra, iso string) {
 		oa, ob := a.Official, b.Official
 		if oa != ob {
 			return oa
+		}
+		if sa, sb := sourceRank(a.Source), sourceRank(b.Source); sa != sb {
+			return sa < sb
 		}
 		if la, lb := langRank(a, iso), langRank(b, iso); la != lb {
 			return la < lb

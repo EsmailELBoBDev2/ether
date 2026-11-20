@@ -31,6 +31,7 @@ interface OutboundConfig {
   debrid: boolean;
   usenet: boolean;
   metadata: boolean;
+  extras: boolean;
   bypass?: string[] | null;
 }
 
@@ -56,6 +57,7 @@ function defaults(saved: EtherConfig["outbound"]): OutboundConfig {
     debrid: saved?.debrid ?? true,
     usenet: saved?.usenet ?? true,
     metadata: saved?.metadata ?? false,
+    extras: saved?.extras ?? false,
     bypass: saved?.bypass ?? [],
   };
 }
@@ -271,6 +273,11 @@ export function OutboundInternet({ hidden = false }: { hidden?: boolean }) {
           label={t("Metadata, artwork, subtitles and the language model")}
           checked={draft.metadata}
           onChange={(metadata) => patch({ metadata })}
+        />
+        <RouteSwitch
+          label={t("Trailers and extras")}
+          checked={draft.extras}
+          onChange={(extras) => patch({ extras })}
         />
         <SettingsRow
           setting="names-that-stay-on-this-network"

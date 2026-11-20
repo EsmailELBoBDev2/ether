@@ -12,6 +12,9 @@ const MaxExtras = 10
 // ExtraSourceCommand marks an ExtraClip whose video is resolved by the owner's command.
 const ExtraSourceCommand = "command"
 
+// ExtraSourcePlexDiscover marks an ExtraClip whose direct MP4 comes from Plex Discover.
+const ExtraSourcePlexDiscover = "plex_discover"
+
 // ExtraClip is one playable clip attached to a catalogue title.
 type ExtraClip struct {
 	Key         core.RatingKey
@@ -22,6 +25,7 @@ type ExtraClip struct {
 	ExtraType   int
 	Site        string
 	SiteKey     string
+	DiscoverKey string
 	Language    string
 	Official    bool
 	PublishedAt time.Time

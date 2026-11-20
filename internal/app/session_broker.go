@@ -80,10 +80,19 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			if err != nil {
 				return sessions.PreviewSource{}, err
 			}
+			var lastErr error
 			for _, clip := range clips {
-				if clip.IsTrailer() {
-					return a.cachedTrailerSource(ctx, clip)
+				if !clip.IsTrailer() {
+					continue
 				}
+				src, err := a.cachedTrailerSource(ctx, clip)
+				if err == nil || errors.Is(err, sessions.ErrPreviewPreparing) || ctx.Err() != nil {
+					return src, err
+				}
+				lastErr = err
+			}
+			if lastErr != nil {
+				return sessions.PreviewSource{}, lastErr
 			}
 			return sessions.PreviewSource{}, core.ErrNotFound
 		},

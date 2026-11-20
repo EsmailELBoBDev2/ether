@@ -3,11 +3,12 @@ package app
 import (
 	"context"
 	"path/filepath"
-
-	"github.com/braedonsaunders/ether/internal/core"
+	"strings"
 
 	"github.com/braedonsaunders/ether/internal/config"
+	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/extras"
+	"github.com/braedonsaunders/ether/internal/plexguid"
 )
 
 // buildExtras wires the trailers/extras service. It stays off (and says
@@ -21,6 +22,48 @@ func (a *App) buildExtras() {
 	if root := a.cfg.Read().Cache.Dir; root != "" {
 		cacheDir = filepath.Join(root, "trailers")
 	}
+	plexToken := func() string {
+		cfg := a.cfg.Read()
+		if !cfg.Plex.Claimed || (cfg.Frontends != nil && !cfg.Frontends["plex"].Enabled) {
+			return ""
+		}
+		return strings.TrimSpace(cfg.Plex.Token)
+	}
+	clientID := func() string {
+		cfg := a.cfg.Read()
+		return plexguid.ClientIdentifier(cfg.Plex.ClientIdentifier, cfg.Server.MachineIdentifier)
+	}
+	discover := extras.NewPlexDiscover(extras.PlexDiscoverOptions{
+		HTTP:     a.opts.plextvHTTP,
+		Token:    plexToken,
+		ClientID: clientID,
+		GUID: func(ctx context.Context, key core.RatingKey) string {
+			if plexToken() == "" {
+				return ""
+			}
+			a.plexMetaMu.Lock()
+			pg := a.plexGUID
+			a.plexMetaMu.Unlock()
+			if pg == nil {
+				_ = a.ensurePlexAccountServices()
+				a.plexMetaMu.Lock()
+				pg = a.plexGUID
+				a.plexMetaMu.Unlock()
+			}
+			if pg == nil {
+				return ""
+			}
+			if g := pg.Cached(ctx, key); g != "" {
+				return g
+			}
+			g, err := pg.Resolve(ctx, key)
+			if err != nil {
+				return ""
+			}
+			return g
+		},
+		Logger: a.log.With("component", "extras"),
+	})
 	a.extras = extras.New(extras.Options{
 		ThemeFFmpeg: func() string {
 			if a.transcoder != nil {
@@ -29,6 +72,7 @@ func (a *App) buildExtras() {
 			return ""
 		},
 		Videos:     a.tmdb,
+		Discover:   discover,
 		CacheDir:   cacheDir,
 		Config:     func() config.Extras { return a.cfg.Read().Extras },
 		Logger:     a.log.With("component", "extras"),
@@ -39,7 +83,7 @@ func (a *App) buildExtras() {
 	if reason := a.extras.DisabledReason(); reason != "" {
 		a.log.Info("extras off", "reason", reason)
 	} else {
-		a.log.Info("extras on", "command", a.extras.CommandAvailable())
+		a.log.Info("extras on", "discover", a.extras.DiscoverAvailable(), "command", a.extras.CommandAvailable())
 	}
 }
 

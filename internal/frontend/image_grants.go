@@ -221,3 +221,13 @@ const LibraryCollagePrefix = "library-collage/"
 type LibraryCollageSource interface {
 	LibraryCollage(context.Context, *Viewer, Device, string) (Image, error)
 }
+
+// LibraryLiveThumbPrefix marks a proxied plugin-library live-item thumbnail.
+// The remainder is an opaque hash scoped to the library view in Image.Subject.
+const LibraryLiveThumbPrefix = "library-live/"
+
+// LibraryLiveThumbAuthorizer checks that viewer may access a live thumbnail in
+// viewID and returns the verified upstream URL for Ether's image proxy to fetch.
+type LibraryLiveThumbAuthorizer interface {
+	AuthorizeLibraryLiveThumb(ctx context.Context, viewer *Viewer, viewID string, path string) (string, error)
+}

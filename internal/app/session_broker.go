@@ -30,7 +30,7 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 	tc := a.activeTranscoder()
 	var live sessions.LiveBackend
 	if a.livetv != nil {
-		live = sessionLive{service: a.livetv, cached: a.catalog.CachedGet}
+		live = sessionLive{service: a.livetv, app: a, cached: a.catalog.CachedGet}
 	}
 	visibility := experienceVisibility(a.safety, a.catalog.Get, nil, nil, serverLibraries(a.cfg.Read()))
 	// Section IDs are stable even when Spike does not expose a TV library.

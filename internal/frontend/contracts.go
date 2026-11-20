@@ -61,10 +61,11 @@ type View struct {
 	// (for example, MediaBrowser CollectionType or Plex base type).
 	Native string
 	// Plugin library presentation metadata (optional; populated for plugin libraries).
-	Card   string      `json:"card,omitempty"`
-	Tabs   []ViewTab   `json:"tabs,omitempty"`
-	Sorts  []string    `json:"sorts,omitempty"`
-	Facets []ViewFacet `json:"facets,omitempty"`
+	Card        string      `json:"card,omitempty"`
+	DateDisplay string      `json:"dateDisplay,omitempty"`
+	Tabs        []ViewTab   `json:"tabs,omitempty"`
+	Sorts       []string    `json:"sorts,omitempty"`
+	Facets      []ViewFacet `json:"facets,omitempty"`
 }
 
 // ViewTab describes one sub-tab of a library view.
@@ -76,9 +77,73 @@ type ViewTab struct {
 	Order             string          `json:"order,omitempty"`
 	Sort              string          `json:"sort,omitempty"`
 	Direction         string          `json:"direction,omitempty"`
+	Card              string          `json:"card,omitempty"`
 	Search            bool            `json:"search,omitempty"`
 	SearchPlaceholder string          `json:"searchPlaceholder,omitempty"`
 	Filters           *core.TabFilter `json:"filters,omitempty"`
+}
+
+// LibraryLiveRequest asks a plugin library's live tab for currently live items.
+type LibraryLiveRequest struct {
+	Tab    string
+	Query  string
+	Filter string
+	Cursor string
+	Limit  int
+}
+
+// LibraryLiveItem is one live stream item returned by a plugin library live tab.
+// ThumbRef is an opaque Ether image reference (LibraryLiveThumbPrefix + hash),
+// never a raw upstream URL.
+type LibraryLiveItem struct {
+	ID       string
+	Title    string
+	Subtitle string
+	Badge    string
+	Viewers  *int
+	Tags     []string
+	ThumbRef string
+	Live     bool
+}
+
+// LibraryLiveFilter is one optional filter chip returned with a live tab page.
+type LibraryLiveFilter struct {
+	Key   string
+	Label string
+}
+
+// LibraryLivePage is one page of live items from a plugin library live tab.
+type LibraryLivePage struct {
+	Items      []LibraryLiveItem
+	Filters    []LibraryLiveFilter
+	NextCursor string
+}
+
+// LibraryLiveStream is the server-side resolved direct stream for one live item.
+type LibraryLiveStream struct {
+	URL     string
+	Headers map[string]string
+	MIME    string
+	Title   string
+}
+
+// LibraryLive lists and resolves live streams for plugin libraries that declare
+// a "live" tab. Nil means plugin library live tabs are not wired.
+type LibraryLive interface {
+	ListLive(ctx context.Context, viewer *core.Viewer, viewID string, req LibraryLiveRequest) (LibraryLivePage, error)
+	ResolveLive(ctx context.Context, viewer *core.Viewer, viewID string, tab string, itemID string) (LibraryLiveStream, error)
+}
+
+// DirectLiveTarget identifies an ephemeral direct-URL live stream tuned through
+// the session broker without registering a Live TV channel.
+type DirectLiveTarget struct {
+	LibraryID core.LibraryID
+	Tab       string
+	ItemID    string
+	Title     string
+	URL       string
+	Headers   map[string]string
+	MIME      string
 }
 
 // ViewFacet describes one plugin-declared filter facet on a library view.
@@ -857,11 +922,12 @@ type PlanRequest struct {
 	Device       core.Device
 	Protocol     Protocol
 	Item         core.RatingKey
-	// Channel is the stable Host.LiveTV channel ID. Exactly one of Item and
-	// Channel must be supplied.
-	Channel string
-	Caps    core.ClientCaps
-	Intent  PlayIntent
+	// Channel is the stable Host.LiveTV channel ID. Exactly one of Item,
+	// Channel, or DirectLive must be supplied.
+	Channel    string
+	DirectLive *DirectLiveTarget
+	Caps       core.ClientCaps
+	Intent     PlayIntent
 }
 type PlayPlan struct {
 	SourceChosenAt, DecisionAt time.Time

@@ -306,10 +306,12 @@ type App struct {
 	// Extensibility (docs/extend/SPEC.md). Each runtime type lives in its own
 	// file and is owned by one workstream: extend.go, console_stream.go,
 	// plugins.go and agent.go.
-	extendRT  *extendRuntime
-	streamRT  *consoleStreamRuntime
-	pluginsRT *pluginRuntime
-	agentRT   *agentRuntime
+	extendRT       *extendRuntime
+	streamRT       *consoleStreamRuntime
+	pluginsRT      *pluginRuntime
+	agentRT        *agentRuntime
+	pluginLiveOnce sync.Once
+	pluginLive     *PluginLiveService
 }
 
 // New builds every component. Nothing listens until Run.

@@ -48,6 +48,20 @@ func (a Source) Read(ctx context.Context, req frontend.ArtworkRequest, img front
 		}
 		return a.transform(ctx, img.Path, data, ct, transform)
 	}
+	if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
+		if a.LibraryLiveThumb == nil || a.URLImages == nil {
+			return nil, "", core.ErrNotAvailable
+		}
+		rawURL, err := a.LibraryLiveThumb(ctx, req.Viewer, img.Subject, img.Path)
+		if err != nil {
+			return nil, "", err
+		}
+		data, ct, err := a.URLImages.GetUntrustedURL(ctx, rawURL)
+		if err != nil {
+			return nil, "", err
+		}
+		return a.transform(ctx, img.Path, data, ct, transform)
+	}
 	if strings.HasPrefix(img.Path, frontend.LibraryCollagePrefix) {
 		data, err := a.readLibraryCollage(img.Path)
 		if err != nil {

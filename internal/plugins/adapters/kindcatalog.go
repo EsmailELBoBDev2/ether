@@ -1491,6 +1491,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Order:             tab.Order,
 				Sort:              tab.Sort,
 				Direction:         tab.Direction,
+				Card:              tab.EffectiveCard(),
 				Search:            effSearch,
 				SearchPlaceholder: placeholder,
 				Filters:           tab.Filters.Clone(),
@@ -1510,8 +1511,9 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Order:     tab.Order,
 				Sort:      tab.Sort,
 				Direction: tab.Direction,
+				Card:      tab.EffectiveCard(),
 			}
-			if tab.Kind == "collections" || tab.Kind == "people" {
+			if tab.Kind == "collections" || tab.Kind == "people" || tab.Kind == "live" {
 				vt.Search = tab.EffectiveSearch()
 				if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
 					vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
@@ -1589,10 +1591,11 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	}
 
 	return experience.PluginPresentation{
-		Card:   lib.EffectiveCardShape(decl.Library.EffectiveCard()),
-		Tabs:   tabs,
-		Sorts:  sorts,
-		Facets: facets,
+		Card:        lib.EffectiveCardShape(decl.Library.EffectiveCard()),
+		DateDisplay: decl.Library.EffectiveDateDisplay(),
+		Tabs:        tabs,
+		Sorts:       sorts,
+		Facets:      facets,
 	}, true
 }
 

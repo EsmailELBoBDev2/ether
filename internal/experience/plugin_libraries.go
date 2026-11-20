@@ -60,10 +60,11 @@ type PluginLibraries interface {
 
 // PluginPresentation carries manifest-declared Vela library presentation metadata.
 type PluginPresentation struct {
-	Card   string
-	Tabs   []frontend.ViewTab
-	Sorts  []string
-	Facets []frontend.ViewFacet
+	Card        string
+	DateDisplay string
+	Tabs        []frontend.ViewTab
+	Sorts       []string
+	Facets      []frontend.ViewFacet
 }
 
 // PluginFacetPerson is one distinct person entry for a plugin library's people tab.
@@ -209,6 +210,7 @@ func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue b
 			Order:             tab.Order,
 			Sort:              tab.Sort,
 			Direction:         tab.Direction,
+			Card:              tab.EffectiveCard(),
 			Search:            tab.EffectiveSearch(),
 			SearchPlaceholder: tab.SearchPlaceholder,
 			Filters:           tab.Filters.Clone(),
@@ -300,6 +302,7 @@ func (s *Service) storedViews(ctx context.Context, v *core.User) ([]frontend.Vie
 			if pres, hasPres := s.d.PluginLibraries.(PluginPresentationLibraries); hasPres {
 				if p, ok := pres.Presentation(ctx, lib); ok {
 					view.Card = lib.EffectiveCardShape(p.Card)
+					view.DateDisplay = p.DateDisplay
 					view.Tabs = p.Tabs
 					view.Sorts = p.Sorts
 					view.Facets = p.Facets

@@ -56,6 +56,11 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		sortTitle = SortTitle(item.Title)
 	}
 
+	dateDisplay := ""
+	if decl.Library.EffectiveDateDisplay() == core.DateDisplayDate {
+		dateDisplay = core.DateDisplayDate
+	}
+
 	t := core.Title{
 		Key:           item.Key,
 		Type:          mediaType,
@@ -63,6 +68,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		ItemIndex:     item.Index,
 		PluginAddedAt: item.AddedAt,
 		LandscapeCard: EffectiveCard(ownerCard, decl.Library) == core.CardLandscape,
+		DateDisplay:   dateDisplay,
 		Title:         item.Title,
 		SortTitle:     sortTitle,
 		Summary:       projectSummary(item, decl),

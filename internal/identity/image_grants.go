@@ -43,6 +43,7 @@ type ImageSource interface {
 type ImageGrantOptions struct {
 	Token             func(*http.Request) string
 	PublicContentTags bool
+	LibraryLiveThumbs frontend.LibraryLiveThumbAuthorizer
 }
 
 type ImageGrantService struct {
@@ -111,6 +112,15 @@ func (s *ImageGrantService) authorized(ctx context.Context, viewer *core.Viewer,
 		return rankErr
 	}
 	image = base
+	if strings.HasPrefix(image.Path, frontend.LibraryLiveThumbPrefix) {
+		if s.requestOptions.LibraryLiveThumbs == nil {
+			return core.ErrNotAvailable
+		}
+		if _, err := s.requestOptions.LibraryLiveThumbs.AuthorizeLibraryLiveThumb(core.WithLiveApp(ctx, string(s.surface)), viewer, image.Subject, image.Path); err != nil {
+			return err
+		}
+		return nil
+	}
 	if strings.HasPrefix(image.Path, frontend.LibraryCollagePrefix) {
 		experience := s.experience()
 		if experience == nil {
@@ -438,7 +448,11 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 	}
 	if etag := imageETag(img, width, height, format+strconv.Itoa(quality), blur); etag != "" {
 		w.Header().Set("ETag", etag)
-		w.Header().Set("Cache-Control", immutableImageCacheControl)
+		if strings.HasPrefix(img.Path, frontend.LibraryLiveThumbPrefix) {
+			w.Header().Set("Cache-Control", "private, max-age=60")
+		} else {
+			w.Header().Set("Cache-Control", immutableImageCacheControl)
+		}
 		if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return

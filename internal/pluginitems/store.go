@@ -242,7 +242,10 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 				}
 				purged = true
 			} else {
-				needReindex = true
+				// Only the declared fields and search fields shape the
+				// per-item index. A change to tabs, shelves, card shape or
+				// labels must not rewrite every item under the writer lock.
+				needReindex = indexShapeChanged(oldDecl, decl)
 			}
 			schemaVer++
 		}
@@ -277,6 +280,20 @@ func (s *Service) UpsertKind(ctx context.Context, pluginID string, libraryID cor
 		DeclHash:      declHash,
 		SchemaVersion: schemaVer,
 	}, nil
+}
+
+// indexShapeChanged reports whether the parts of a kind declaration that
+// extractIndexData reads (declared fields and search fields) differ.
+func indexShapeChanged(oldDecl, newDecl plugins.MediaKindMeta) bool {
+	o, err1 := json.Marshal(struct {
+		F any
+		S any
+	}{oldDecl.Fields, oldDecl.Browse.SearchFields})
+	n, err2 := json.Marshal(struct {
+		F any
+		S any
+	}{newDecl.Fields, newDecl.Browse.SearchFields})
+	return err1 != nil || err2 != nil || string(o) != string(n)
 }
 
 // GetKind returns the installed KindRecord for (pluginID, kindKey).

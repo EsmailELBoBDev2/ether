@@ -34,15 +34,20 @@ type fakeRuntime struct {
 func (f *fakeRuntime) Call(ctx context.Context, req Request) (Response, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, req)
-	fail, routes := f.fail, f.routes
+	fail := f.fail
+	var route func(Request) (Response, error)
+	for prefix, fn := range f.routes {
+		if strings.HasPrefix(req.Path, prefix) {
+			route = fn
+			break
+		}
+	}
 	f.mu.Unlock()
 	if fail != nil {
 		return Response{}, fail
 	}
-	for prefix, fn := range routes {
-		if strings.HasPrefix(req.Path, prefix) {
-			return fn(req)
-		}
+	if route != nil {
+		return route(req)
 	}
 	switch {
 	case strings.HasPrefix(req.Path, "/ether/health"):

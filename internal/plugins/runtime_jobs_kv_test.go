@@ -191,11 +191,13 @@ func TestScheduleStartsContinuationJobAndNeverBlocksPass(t *testing.T) {
 	// Verify explicit job cancellation via POST /{id}/jobs/cancel works on scheduled jobs too.
 	blockCancelJob := make(chan struct{})
 	cancelEntered := make(chan struct{})
+	env.fake.mu.Lock()
 	env.fake.routes["/ether/job/cancellable"] = func(req Request) (Response, error) {
 		close(cancelEntered)
 		<-blockCancelJob
 		return Response{Status: 200, Body: json.RawMessage(`{"continueInMs":1000}`)}, nil
 	}
+	env.fake.mu.Unlock()
 	if _, err := env.m.startResolverJob(recA.ID, json.RawMessage(`{"job":"/ether/job/cancellable"}`), nil, ""); err != nil {
 		t.Fatalf("start cancellable job: %v", err)
 	}

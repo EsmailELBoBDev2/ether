@@ -43,7 +43,12 @@ func history(ctx context.Context, path string) (map[string]historyRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs), RawQuery: "mode=ro"}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		// A Windows path (C:/…) must follow an empty authority: file:///C:/…
+		p = "/" + p
+	}
+	u := url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro"}
 	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
 		return nil, err

@@ -112,7 +112,8 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
-| notify / events | notify send/test; event subscription + acknowledgement | HTTPFetch, SecretGet, KV for deduplication |
+| notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
+| flow_actions | `contributes.flowActions` + `POST /ether/v1/flow-actions/{key}` (with `X-Ether-Idempotency-Key`) | KV (idempotency deduplication), HTTPFetch, PublishEvent |
 | ui / tools | ViewSpec page/action or declared tool | Settings, KV; grant only data the action needs |
 | livetv_channels | channels, guide, stream (kind livetv_source, or a content plugin that also has live channels) | HTTPFetch, KV |
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
@@ -178,6 +179,15 @@ overlay style, the owner can switch each set off in Metadata -> Artwork
 (`overlays.Settings.disabledBadgeSets` entries formatted as `"<pluginId>:<setKey>"`),
 and no plugin call happens while rendering posters.
 
+## Flows: custom events and actions
+
+Plugins participate in Ether Flows in two additive ways (see `sdk/examples/smart-lights/`):
+
+1. **Publish custom events** (`capabilities: ["events"]` + `ether.contributes.events.publish`):
+   Declare typed event schemas (`key`, `version`, `label`, `fields`) alongside or instead of `events.subscribe` (which accepts both the 12 legacy EPP/1 names and canonical Flows event names). Published events are namespaced as `plugin:<pluginId>/<key>` on Ether's event bus and appear in the Flows trigger picker. Call `ether.events.publish(key, payload[, correlation])` in hosted plugins or `POST /ether/plugin-host/events/publish` from remote sidecars (`ctx.PublishEvent` in Go, `ctx.ether.events.publish` in TypeScript/Python). Payloads are schema-validated (max 64 KiB) and rate-limited to 30 events/minute per plugin (`rate_limited` / HTTP 429). Events emitted from inside a Flow action automatically inherit incremented `flowDepth` and `originRunId` for loop protection.
+2. **Contribute Flow actions** (`capabilities: ["flow_actions"]` + `ether.contributes.flowActions`):
+   Declare actions (`key`, `label`, `route` under `/ether/`, optional `timeout` up to `60s`, `idempotent`, `sideEffect`, `params`, `outputs`). Actions are registered atomically as `plugin:<pluginId>/<key>` on install, update, enable/disable, grant change, and uninstall. Ether invokes the route via `POST` with `X-Ether-Idempotency-Key` and JSON body `{flowId, runId, nodeId, idempotencyKey, dryRun, params}` and expects `{output: {...}, branch?}`. Always respect `dryRun` and deduplicate side effects using `X-Ether-Idempotency-Key` in KV. In shadow mode, both `PublishEvent` and Flow action executions are journaled without external side effects.
+
 ## Per-route call limits and owner ceilings
 
 Ether enforces the same deadline it advertises in `X-Ether-Deadline`. On viewer
@@ -196,6 +206,7 @@ than billed as guest wall time):
 | `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
 | `/ether/test` | 15 s | Owner-granted ceiling |
 | Other protocol routes (`/ether/notify`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
+| `/ether/v1/flow-actions/*` | Declared action `timeout` (default 30 s, max 60 s) | Owner-granted ceiling |
 | `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/kinds/*/expand`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
 | `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
 

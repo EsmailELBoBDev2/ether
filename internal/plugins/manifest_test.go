@@ -231,6 +231,7 @@ func TestActionSlotContract(t *testing.T) {
 }
 
 func TestFlowsManifestValidationAndPermissions(t *testing.T) {
+	sideEffect := true
 	valid := func() Manifest {
 		m := baseManifest()
 		m.Ether.Capabilities = []Capability{CapEvents, CapFlowActions}
@@ -246,7 +247,7 @@ func TestFlowsManifestValidationAndPermissions(t *testing.T) {
 						{Value: "cinema", Label: "Cinema"},
 						{Value: "bright", Label: "Bright"},
 					}},
-					{Name: "brightness", Type: "number", Label: "Brightness", Unit: "percent"},
+					{Name: "brightness", Type: "int", Label: "Brightness", Unit: "percent"},
 				},
 			}},
 		}
@@ -257,12 +258,12 @@ func TestFlowsManifestValidationAndPermissions(t *testing.T) {
 			Route:       "/ether/v1/flow-actions/set_scene",
 			Timeout:     "15s",
 			Idempotent:  true,
-			SideEffect:  true,
+			SideEffect:  &sideEffect,
 			Params: []FlowActionParamMeta{
 				{Key: "scene", Type: "enum", Label: "Scene", Required: true, Enum: []EventEnumOption{
 					{Value: "cinema", Label: "Cinema"},
 				}},
-				{Key: "brightness", Type: "number", Label: "Brightness", Default: 25},
+				{Key: "brightness", Type: "int", Label: "Brightness", Default: 25},
 			},
 			Outputs: []EventFieldMeta{
 				{Name: "scene", Type: "string", Label: "Scene"},
@@ -285,7 +286,7 @@ func TestFlowsManifestValidationAndPermissions(t *testing.T) {
 	// Permission sheet & diff include published events and flow actions.
 	lines, _, _ := PermissionSheet(valid())
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"Publishes custom events to Flows", "Runs actions inside Flows"} {
+	for _, want := range []string{"Publishes custom events to Flows", "Adds actions to Flows"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("PermissionSheet missing %q in:\n%s", want, joined)
 		}
@@ -339,7 +340,7 @@ func TestFlowsManifestValidationAndPermissions(t *testing.T) {
 			mut: func(m *Manifest) {
 				m.Ether.Capabilities = []Capability{CapEvents}
 			},
-			field: "ether.contributes.flowActions",
+			field: "ether.capabilities",
 		},
 		{
 			name: "flow_actions capability without contributions",

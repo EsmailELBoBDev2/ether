@@ -601,7 +601,7 @@ export function plugin<S = Record<string, unknown>>(
           flowId: String(bodyObj.flowId ?? ""),
           runId: String(bodyObj.runId ?? ""),
           nodeId: String(bodyObj.nodeId ?? ""),
-          idempotencyKey: String(bodyObj.idempotencyKey ?? headerIdem ?? ""),
+          idempotencyKey: String(headerIdem || bodyObj.idempotencyKey || ""),
           dryRun: Boolean(bodyObj.dryRun),
           params:
             bodyObj.params && typeof bodyObj.params === "object" && !Array.isArray(bodyObj.params)

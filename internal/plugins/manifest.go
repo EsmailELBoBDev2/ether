@@ -763,8 +763,8 @@ func validateContributes(m Manifest, add func(string, string)) {
 		seenActions[fa.Key] = true
 		label(base+".label", fa.Label, 60)
 		optDesc(base+".description", fa.Description, 200)
-		if !isSafePluginRoute(fa.Route) {
-			add(base+".route", "must be a safe plugin route starting with /")
+		if !strings.HasPrefix(fa.Route, "/ether/") || !isSafePluginRoute(fa.Route) {
+			add(base+".route", "must be a safe plugin route under /ether/")
 		}
 		if fa.Timeout != "" {
 			d, err := time.ParseDuration(fa.Timeout)

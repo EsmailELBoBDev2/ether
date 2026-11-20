@@ -1474,7 +1474,7 @@ class PluginInstance:
                     "flowId": str(body_obj.get("flowId") or ""),
                     "runId": str(body_obj.get("runId") or ""),
                     "nodeId": str(body_obj.get("nodeId") or ""),
-                    "idempotencyKey": str(body_obj.get("idempotencyKey") or header_idem),
+                    "idempotencyKey": str(header_idem or body_obj.get("idempotencyKey") or ""),
                     "dryRun": bool(body_obj.get("dryRun", False)),
                     "params": params_obj,
                 }

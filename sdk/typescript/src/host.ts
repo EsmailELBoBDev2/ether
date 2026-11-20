@@ -379,7 +379,7 @@ export interface EtherHost {
     hashPoll(id: string): MaybePromise<FolderHashJob>;
     hashCancel(id: string): MaybePromise<FolderHashJob>;
   };
-  events?: {
+  events: {
     publish(
       key: string,
       payload?: Record<string, unknown>,

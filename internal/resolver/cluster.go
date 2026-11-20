@@ -23,6 +23,7 @@ import (
 //	reps               reload indexer reputations
 //	pin:<rating key>   reload that title's owner pin (pinned, unpinned or
 //	                   its last status changed)
+//	vchoice:<uid>:<rk> reload that viewer's remembered version choice
 
 // SetBus connects the cluster bus (nil disconnects). A standalone server
 // never calls it.
@@ -98,6 +99,8 @@ func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 			if k, err := strconv.ParseInt(arg, 10, 64); err == nil {
 				s.reloadPin(ctx, core.RatingKey(k))
 			}
+		case "vchoice":
+			s.reloadViewerChoice(ctx, arg)
 		case "seadex":
 			if k, err := strconv.ParseInt(arg, 10, 64); err == nil {
 				s.mu.Lock()

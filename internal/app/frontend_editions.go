@@ -111,7 +111,18 @@ func (s surfaceEditions) Available(ctx context.Context, key core.RatingKey) (boo
 }
 
 func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveRequest, max int, labels bool) ([]core.ReleaseVariant, error) {
-	if s.app == nil || s.app.resolver == nil {
+	if s.app == nil {
+		return nil, nil
+	}
+	if req.Title != nil {
+		if vs, ok := labMediaVariants(s.app.opts.DataDir, req.Title); ok {
+			for i := range vs {
+				vs[i].Availability = core.VersionInstant
+			}
+			return vs, nil
+		}
+	}
+	if s.app.resolver == nil {
 		return nil, nil
 	}
 	if labels {
@@ -122,4 +133,18 @@ func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveReque
 		versions = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, versions)
 	}
 	return versions, err
+}
+
+func (s surfaceEditions) ViewerChoiceFor(ctx context.Context, viewer *core.Viewer, title *core.Title) (*core.ViewerChoiceSummary, error) {
+	if s.app == nil || s.app.resolver == nil {
+		return nil, nil
+	}
+	return s.app.resolver.ViewerChoiceSummary(ctx, viewer, title)
+}
+
+func (s surfaceEditions) ClearViewerChoice(ctx context.Context, viewer *core.Viewer, title *core.Title, scope string) (bool, error) {
+	if s.app == nil || s.app.resolver == nil || viewer == nil {
+		return false, nil
+	}
+	return s.app.resolver.ClearViewerChoice(ctx, viewer.ID, title, scope)
 }

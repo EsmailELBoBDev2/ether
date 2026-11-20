@@ -69,24 +69,48 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 	slots := s.configuredSlots(profile, req.Client, limit)
 	var candidates []candidate
 	var auto core.Release
+	var autoRemembered bool
+	ownerPin, hasOwnerPin := s.PinFor(req.Title.Key)
+	if req.Client.Download {
+		hasOwnerPin = false
+	}
+	searchWarm := false
 	if labels {
-		if results, ok := s.peekSearchCache(searchCacheKey(searchRequestFor(req.Title))); ok {
+		titleVC := s.viewerTitleChoiceForResolve(req, nil)
+		showVC := s.viewerShowChoiceForResolve(req)
+		results, ok := s.peekSearchCache(searchCacheKey(searchRequestFor(req.Title)))
+		searchWarm = ok
+		if !ok {
+			if titleVC != nil {
+				results = withRelease(results, titleVC.Release)
+			}
+			if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
+				results = withRelease(results, ownerPin.Release)
+			}
+		}
+		if len(results) > 0 {
 			pinID := ""
-			if pin, _ := s.pinForResolve(req); pin != nil {
-				pinID = pin.Release.ID
-				results = withRelease(results, pin.Release)
+			if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
+				pinID = ownerPin.Release.ID
+				results = withRelease(results, ownerPin.Release)
+			}
+			if titleVC != nil {
+				results = withRelease(results, titleVC.Release)
 			}
 			ranked, _, err := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), profile, results, nil, pinID, true)
 			if err == nil {
-				candidates = pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
-				auto = s.slotAuto(req, candidates)
+				strictCands := pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
+				candidates = strictCands
+				matchPool := strictCands
 				if s.resolverCfg().OfferHigherVersions {
 					if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
 						if pool, _, e := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), relaxed, results, nil, pinID, false); e == nil {
-							candidates = acceptableVariantAudio(clearIdentityVariants(pool))
+							candidates = pinFirst(acceptableVariantAudio(clearIdentityVariants(pool)), pinID)
+							matchPool = candidates
 						}
 					}
 				}
+				auto, autoRemembered = s.slotAutoWithSource(req, strictCands, matchPool, titleVC, showVC)
 			}
 		}
 	}
@@ -104,8 +128,10 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 		label := slotLabel(slot)
 		r := core.Release{ID: slot.id(), Name: label, Info: core.ReleaseInfo{Height: height, VideoCodec: "h264", AudioCodec: "aac", Source: core.SourceWEBDL}}
 		info := estimateVariantInfo(req.Title, r, wanted)
+		placeholder := true
 		if i < len(picks) && picks[i].ID != "" {
 			r = picks[i]
+			placeholder = false
 			if probed, ok := s.probedMediaFor(r); ok {
 				info = probed
 			} else {
@@ -116,7 +142,13 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 				label = variantLabel(r, "auto")
 			}
 		}
-		out[i] = core.ReleaseVariant{ID: slot.id(), Label: label, Auto: i == 0, Edition: r.Info.Edition, Release: r, Info: info}
+		v := core.ReleaseVariant{ID: slot.id(), Label: label, Auto: i == 0, Edition: r.Info.Edition, Release: r, Info: info}
+		if labels {
+			v.Remembered = i == 0 && autoRemembered
+			v.Pinned = hasOwnerPin && !placeholder && r.ID == ownerPin.Release.ID
+			v.Availability, v.AvailabilityNote = s.classifyVariantAvailability(ctx, req.Title.Key, r, info, placeholder, searchWarm)
+		}
+		out[i] = v
 	}
 	return out, nil
 }
@@ -204,23 +236,50 @@ func slotLabel(v versionSlot) string {
 	}
 }
 
-// slotAuto is shared by menu labels and admission. A remembered source that
-// still passes policy wins over a newly discovered higher-ranked release.
+// slotAuto is shared by menu labels and admission. Precedence in the Auto
+// slot: viewer remembered choice (title, then show profile), then owner pin,
+// then previously played release, then owner quality rules.
 func (s *Service) slotAuto(req core.ResolveRequest, ranked []candidate) core.Release {
 	autoReq := req
 	autoReq.Prefer = ""
-	if pin, _ := s.pinForResolve(autoReq); pin != nil {
-		return pin.Release
-	}
-	for _, c := range ranked {
-		if c.rel.ID == req.PlayedRelease {
-			return c.rel
+	titleVC := s.viewerTitleChoiceForResolve(autoReq, nil)
+	showVC := s.viewerShowChoiceForResolve(autoReq)
+	auto, _ := s.slotAutoWithSource(autoReq, ranked, ranked, titleVC, showVC)
+	return auto
+}
+
+func (s *Service) slotAutoWithSource(req core.ResolveRequest, strict, pool []candidate, titleVC, showVC *ViewerChoice) (core.Release, bool) {
+	if titleVC != nil {
+		for _, c := range pool {
+			if c.rel.ID == titleVC.Release.ID {
+				return c.rel, true
+			}
+		}
+		for _, c := range strict {
+			if c.rel.ID == titleVC.Release.ID {
+				return c.rel, true
+			}
 		}
 	}
-	if len(ranked) > 0 {
-		return ranked[0].rel
+	if showVC != nil {
+		if matched := s.matchShowChoiceCandidates(showVC, pool); len(matched) > 0 {
+			return matched[0].rel, true
+		}
 	}
-	return core.Release{}
+	autoReq := req
+	autoReq.Prefer = ""
+	if pin, _ := s.pinForResolve(autoReq); pin != nil {
+		return pin.Release, false
+	}
+	for _, c := range strict {
+		if c.rel.ID == req.PlayedRelease {
+			return c.rel, false
+		}
+	}
+	if len(strict) > 0 {
+		return strict[0].rel, false
+	}
+	return core.Release{}, false
 }
 
 func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []core.Release {

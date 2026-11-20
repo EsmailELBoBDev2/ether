@@ -564,9 +564,12 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		item, release, err := h.resolveRecord(ctx, scope, req.Version)
 		if errors.Is(err, core.ErrNotFound) {
 			// An id names one release. When this viewer is no longer offered
-			// it (the release went away), the title still plays: the
-			// automatic pick, never the stale release itself.
+			// it (the release went away), Vela rejects with ErrVersionUnavailable
+			// rather than silently substituting Auto; legacy surfaces fall back.
 			if parent, _, lerr := h.lookupRow(ctx, scope, req.Version); lerr == nil && parent == req.Item {
+				if req.Protocol == "vela" {
+					return frontend.PlayPlan{}, core.ErrVersionUnavailable
+				}
 				item, release, err = parent, "", nil
 				req.Intent.ExactVersion = false
 			}
@@ -588,13 +591,16 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			return frontend.PlayPlan{}, err
 		}
 		for j := range variants {
-			if variants[j].ID == req.Version {
+			if variants[j].ID == req.Version || variants[j].Release.ID == req.Version {
 				chosen = &variants[j]
 				break
 			}
 		}
 		if chosen == nil && versionHandle != "" && len(variants) > 0 {
 			chosen = &core.ReleaseVariant{ID: req.Version, Auto: true, Info: variants[0].Info}
+		}
+		if chosen != nil && chosen.Availability == core.VersionUnavailable && req.Protocol == "vela" {
+			return frontend.PlayPlan{}, core.ErrVersionUnavailable
 		}
 		if chosen == nil {
 			return frontend.PlayPlan{}, core.ErrNotFound
@@ -627,10 +633,15 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
 	release := ""
-	if chosen != nil {
-		release = chosen.ID
-	}
 	prepareExact := req.Intent.ExactVersion
+	if chosen != nil {
+		if req.Protocol == "vela" && chosen.Auto {
+			prepareExact = false
+			req.Intent.ExactVersion = false
+		} else {
+			release = chosen.ID
+		}
+	}
 	rememberedFallback := false
 	if remembered, rememberErr := b.rememberedDeliveryRelease(ctx, v.ID, string(req.Protocol), req.Device.ID, req.Item, req.Intent.ClientSessionID); rememberErr != nil {
 		return frontend.PlayPlan{}, rememberErr
@@ -710,6 +721,9 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if req.Intent.ExactVersion && !ps.Resolution.MatchesVersion(req.Version) {
 		if !existed || previous == nil || previous.ID != ps.ID {
 			b.deps.Playback.Stop(ps.ID)
+		}
+		if req.Protocol == "vela" {
+			return frontend.PlayPlan{}, core.ErrVersionUnavailable
 		}
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
@@ -809,7 +823,11 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	b.mu.Unlock()
 	direct, remux, transcoding := b.planAlternatives(ps, req)
 	hls, hlsContainer := b.hlsPlanOutput(ps, req, dec)
-	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, ETag: etag}, nil
+	relID := ""
+	if ps.Resolution != nil {
+		relID = ps.Resolution.Release.ID
+	}
+	return frontend.PlayPlan{SourceChosenAt: sourceChosenAt, DecisionAt: decisionAt, ID: id, Media: publicMedia(ps.Info), Decision: dec, DirectPlay: direct, DirectStream: remux, Transcoding: transcoding, VideoTranscodingOff: req.Channel == "" && b.videoTranscodingOff(), HLS: hls, HLSContainer: hlsContainer, ETag: etag, VersionHandle: versionHandle, ReleaseID: relID}, nil
 }
 func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.Session, error) {
 	opened := b.deps.Now()
@@ -1039,6 +1057,9 @@ func (b *Broker) Open(ctx context.Context, req frontend.OpenRequest) (frontend.S
 			at = opened
 		}
 		noter.NotePlayRequest(ps.ID, at)
+	}
+	if noter, ok := b.deps.Playback.(interface{ NoteStartPosition(string, time.Duration) }); ok {
+		noter.NoteStartPosition(ps.ID, p.request.Intent.Position)
 	}
 	if b.deps.SourceHistory != nil && !b.policy(session.Protocol).ExternalAdmission {
 		// The epoch and the opened-file facts are durable bookkeeping. The

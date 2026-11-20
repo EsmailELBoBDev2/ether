@@ -337,6 +337,8 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		}
 	case errors.Is(err, frontend.ErrNoSources), errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, frontend.ErrSourceGone):
 		problem(w, 502, "source", "source_unavailable")
+	case errors.Is(err, frontend.ErrVersionUnavailable):
+		problem(w, 409, "source", "version_unavailable")
 	case errors.Is(err, frontend.ErrNotAvailable):
 		problem(w, 409, "source", "not_available")
 	case errors.Is(err, frontend.ErrNotFound):
@@ -567,7 +569,8 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	} else {
 		i.mux.ServeHTTP(out, r)
 		var saveErr error
-		if out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback" {
+		if (out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback") ||
+			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/commands") && out.Header().Get("Retry-After") != "") {
 			_, saveErr = i.db.ExecContext(r.Context(), `DELETE FROM vela_replays WHERE key=? AND response IS NULL`, key)
 		} else {
 			saveErr = i.save(r.Context(), key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()})
@@ -636,6 +639,8 @@ func (i *instance) routes() {
 	i.route("GET", "/titles/{id}", i.detail)
 	i.route("GET", "/titles/{id}/children", i.children)
 	i.route("GET", "/titles/{id}/extras", i.detail)
+	i.route("GET", "/titles/{id}/versions", i.versions)
+	i.route("DELETE", "/titles/{id}/versions/choice", i.clearVersionChoice)
 	i.route("POST", "/search", i.search)
 	i.route("POST", "/search/ai", i.startAISearch)
 	i.route("GET", "/search/ai/{id}", i.pollAISearch)
@@ -673,7 +678,7 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
 		auth = source.AuthenticationFeatures()
 	}
-	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "versions": f(i.versionsAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if auth.PlexAccountSignIn {
 		caps["plexAccountSignIn"] = true
 	}

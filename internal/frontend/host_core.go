@@ -90,6 +90,7 @@ var (
 	ErrPolicyUnconfirmed   = core.ErrPolicyUnconfirmed
 	ErrPrepareSlow         = core.ErrPrepareSlow
 	ErrPreparing           = core.ErrPreparing
+	ErrVersionUnavailable  = core.ErrVersionUnavailable
 	ErrJobsBusy            = core.ErrJobsBusy
 	ErrReleaseRejected     = core.ErrReleaseRejected
 	ErrSourceUnavailable   = core.ErrSourceUnavailable

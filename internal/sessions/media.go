@@ -112,6 +112,11 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if req.Format != frontend.StreamDirect && req.Format != frontend.StreamHLS && req.Format != frontend.StreamDASH {
 		return "", core.ErrNotAvailable
 	}
+	if !req.PrepareOnly && (s.format == "" || req.Position != s.streamPosition) {
+		if noter, ok := b.deps.Playback.(interface{ NoteStartPosition(string, time.Duration) }); ok {
+			noter.NoteStartPosition(s.playID, req.Position)
+		}
+	}
 	path := "/sessions/media/" + s.public.ID + "/" + s.grant + "/"
 	if s.live {
 		if req.AudioStream != nil || req.SubtitleStream != nil {

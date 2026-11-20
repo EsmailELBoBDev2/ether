@@ -100,7 +100,7 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 			return nil, nil, false
 		}
 	}
-	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
+	if res != nil && (!m.ownerPinAllows(s, res.Release.ID) || !m.rememberedChoiceAllows(s, res.Release.ID) || slices.Contains(s.caps.BroadcastExclude, res.Release.ID) || !m.channelSourceAllowed(s, res.Release) || m.titleReleaseRejected(ctx, s.ident.key, res.Release)) {
 		return nil, nil, false
 	}
 	if res != nil && (!m.rememberedReleaseMatchesTitle(ctx, res.Release, s.title) || !payloadMatchesTitle(res.NZB, s.title)) {

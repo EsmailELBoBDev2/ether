@@ -26,7 +26,7 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 	selected := pin.selected
 	if selected == 0 {
 		selected = int64(t.Key)
-		if ps == nil && !info.Estimated {
+		if ps == nil && !info.Estimated && !(len(versions) > 0 && versions[0].Remembered) {
 			if _, releaseID, ok := s.resumedTracks(ctx, pr, t); ok {
 				for _, v := range versions {
 					if v.Release.ID == releaseID {

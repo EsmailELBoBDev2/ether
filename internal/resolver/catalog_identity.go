@@ -264,10 +264,12 @@ func (f localIdentity) reject(rel core.Release, t *core.Title, req core.SearchRe
 	return ""
 }
 
-// otherEpisode rejects a single-episode release that names a different episode
-// of the requested season and not the requested one. Shows numbered one way
-// on TMDB and another by release groups (segments vs broadcast episodes) carry
-// the same SxxEyy on different content; the episode title tells them apart.
+// otherEpisode rejects a release that names a different episode of the
+// requested season and not the requested one. An episode the release itself
+// covers (one of a combined "S01E01-E02" file's episodes) is expected in
+// the name and never counts against it. Shows numbered one way on TMDB and
+// another by release groups (segments vs broadcast episodes) carry the same
+// SxxEyy on different content; the episode title tells them apart.
 func (f localIdentity) otherEpisode(rel core.Release, t *core.Title, req core.SearchRequest) string {
 	if req.Season <= 0 || rel.Info.FullSeason || len(f.Episodes) == 0 || distinctiveEpisode(rel.Name, req.EpisodeTitle) {
 		return ""
@@ -282,7 +284,7 @@ func (f localIdentity) otherEpisode(rel core.Release, t *core.Title, req core.Se
 	for _, n := range slices.Sorted(maps.Keys(f.Episodes)) {
 		title := f.Episodes[n]
 		words := identityWords(title)
-		if n == req.Episode || words == "" || words == own || len(strings.Fields(words)) < 2 || (own != "" && identityPhrase(req.EpisodeTitle, title)) {
+		if n == req.Episode || slices.Contains(rel.Info.Episodes, n) || words == "" || words == own || len(strings.Fields(words)) < 2 || (own != "" && identityPhrase(req.EpisodeTitle, title)) {
 			continue
 		}
 		inShowTitle := false

@@ -158,6 +158,7 @@ func newPool(key string, cfg config.UsenetProvider, o *Options, log *slog.Logger
 	}
 	p.sem.reserveLive = true
 	p.brk.onChange = o.OnStateChange
+	p.wireEvents()
 	if o.AuthRetryMin > 0 {
 		p.brk.authMin = o.AuthRetryMin
 	}

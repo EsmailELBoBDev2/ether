@@ -657,6 +657,9 @@ func (p *passthroughProducer) failover(ctx context.Context) bool {
 			p.log.Warn("owned passthrough source unavailable", append(Diagnose("source_failover", err).LogAttrs(), "input", src.ID)...)
 			continue
 		}
+		if src.ID != failed.ID {
+			p.s.emitSourceFailover(p.c, failed.ID, src.ID, "source failed", "passthrough")
+		}
 		p.log.Warn("owned passthrough switched source", append([]any{"from", failed.ID, "to", src.ID}, p.s.duplicateFailoverLogAttrs(p.c, failed, src)...)...)
 		return true
 	}

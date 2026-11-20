@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
@@ -179,11 +180,14 @@ type liveFrame struct {
 // Compact serializes relocation with every node's writer. Old packs are
 // unlinked only after the new pointers commit, with a second reference check.
 func (v *library) Compact(ctx context.Context) error {
+	started := v.Now()
 	base := filepath.Join(v.Dir, "packs")
 	paths, e := filepath.Glob(filepath.Join(base, "*", "*.pack"))
 	if e != nil {
 		return e
 	}
+	packsCompacted := 0
+	var bytesReclaimed int64
 	for _, path := range paths {
 		rel, e := filepath.Rel(base, path)
 		if e != nil {
@@ -191,6 +195,7 @@ func (v *library) Compact(ctx context.Context) error {
 		}
 		pack := filepath.ToSlash(rel)
 		rewrite := false
+		var reclaimed int64
 		e = v.write(ctx, func(tx *sql.Tx) error {
 			st, e := os.Stat(path)
 			if errors.Is(e, os.ErrNotExist) {
@@ -226,6 +231,9 @@ func (v *library) Compact(ctx context.Context) error {
 				return nil
 			}
 			rewrite = true
+			if st.Size() > live {
+				reclaimed = st.Size() - live
+			}
 			if filepath.ToSlash(v.writer) == pack {
 				v.writer = ""
 			}
@@ -253,6 +261,7 @@ func (v *library) Compact(ctx context.Context) error {
 			return e
 		}
 		if rewrite {
+			removed := false
 			e = v.write(ctx, func(tx *sql.Tx) error {
 				var n int
 				e := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM vault_releases WHERE pack=? AND dead=0 AND holders=?) + (SELECT count(*) FROM vault_copies c JOIN vault_releases r ON r.key=c.key AND r.crc=c.crc AND r.dead=0 WHERE c.pack=? AND c.node=?)`, pack, v.node(), pack, v.node()).Scan(&n)
@@ -263,12 +272,26 @@ func (v *library) Compact(ctx context.Context) error {
 				if errors.Is(e, os.ErrNotExist) {
 					return nil
 				}
+				if e == nil {
+					removed = true
+				}
 				return e
 			})
 			if e != nil {
 				return e
 			}
+			if removed {
+				packsCompacted++
+				bytesReclaimed += reclaimed
+			}
 		}
+	}
+	if packsCompacted > 0 && v.Events != nil {
+		v.publishEvent(events.EventVaultPackCompacted, events.VaultPackCompactedPayload{
+			PacksCompacted: packsCompacted,
+			BytesReclaimed: bytesReclaimed,
+			DurationMS:     v.Now().Sub(started).Milliseconds(),
+		})
 	}
 	return nil
 }

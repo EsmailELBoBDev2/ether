@@ -57,6 +57,12 @@ func (m *Manager) ServeRange(w http.ResponseWriter, r *http.Request, sessionID s
 			Message: "Delivery: Direct play",
 			Detail:  "Serving original container byte ranges",
 		})
+		m.emitStreamDecision(s, "", core.Decision{
+			Kind:      core.DecisionDirectPlay,
+			VideoCopy: true,
+			AudioCopy: true,
+			Reason:    "Serving original container byte ranges",
+		})
 	}
 	if !s.directRangeCompatible() {
 		// The client still holds the original file's container headers and

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/playback"
 )
 
@@ -83,38 +84,74 @@ func (p ownerPlayback) Session(id string) (*core.PlaySession, bool) {
 	return nil, false
 }
 
+const ownerStopMessage = "The server owner has ended this stream."
+
 func (a *App) stopOwnerSession(id string) error {
-	return a.stopOwnerSessionWithReason(context.Background(), id, "The server owner has ended this stream.")
+	return a.terminateSession(context.Background(), id, "owner", "owner_stopped", ownerStopMessage)
 }
 
+// stopOwnerSessionWithReason stops a session with a custom client-visible
+// message (Flows' playback.stop_session action, Plex terminate). It shares
+// terminateSession's single stop path, so playback.session.terminated fires
+// exactly once.
 func (a *App) stopOwnerSessionWithReason(ctx context.Context, id, reason string) error {
 	if strings.TrimSpace(reason) == "" {
-		reason = "The server owner has ended this stream."
+		reason = ownerStopMessage
 	}
+	return a.terminateSession(ctx, id, "owner", "owner_stopped", reason)
+}
+
+func (a *App) terminateSession(ctx context.Context, id, actor, reason, message string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var viewerID int64
+	if ps, ok := (ownerPlayback{Playback: a.playback, app: a}).Session(id); ok && ps != nil {
+		viewerID = ps.UserID
+	}
 	if a.frontends != nil {
-		a.frontends.noteOwnerStop(id, reason)
+		a.frontends.noteOwnerStop(id, message)
 		if a.frontends.broker != nil {
 			a.frontends.broker.StopPlayback(ctx, id)
 		}
 	}
+	var stopErr error
+	stoppedLive := false
 	if a.livetv != nil {
 		for _, s := range a.livetv.ViewingSessions() {
 			if s.ID == id {
-				return a.livetv.Stop(ctx, id, &core.User{IsOwner: true})
+				stopErr = a.livetv.Stop(ctx, id, &core.User{IsOwner: true})
+				stoppedLive = true
+				break
 			}
 		}
 	}
-	// Broker retirement can leave the source on the owner list. The named
-	// session still has to stop.
-	if a.brokerPlayback != nil {
-		a.brokerPlayback.Stop(id)
-	} else if a.spikeLibrary != nil {
-		a.spikeLibrary.Playback().Stop(id)
-	} else if a.playback != nil {
-		a.playback.Stop(id)
+	if !stoppedLive {
+		// Broker retirement can leave the source on the owner list. The named
+		// session still has to stop.
+		if a.brokerPlayback != nil {
+			a.brokerPlayback.Stop(id)
+		} else if a.spikeLibrary != nil {
+			a.spikeLibrary.Playback().Stop(id)
+		} else if a.playback != nil {
+			a.playback.Stop(id)
+		}
 	}
-	return nil
+	a.publishEvent(
+		events.EventPlaybackSessionTerminated,
+		events.PlaybackSessionTerminatedPayload{
+			SessionID: id,
+			PlayID:    id,
+			ViewerID:  viewerID,
+			Actor:     actor,
+			Reason:    reason,
+			Message:   message,
+		},
+		events.WithCorrelation(events.Correlation{
+			SessionID: id,
+			PlayID:    id,
+			ViewerID:  viewerID,
+		}),
+	)
+	return stopErr
 }

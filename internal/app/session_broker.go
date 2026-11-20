@@ -158,6 +158,7 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 			}
 		},
 		Events:           events,
+		DomainEvents:     a.eventBus,
 		OpenSubtitle:     a.subtitles.OpenFormat,
 		OpenSubtitleFrom: a.subtitles.OpenFormatFrom,
 		ExtractSubtitle: func(ctx context.Context, input string, index int, codec string, w io.Writer) error {

@@ -53,6 +53,14 @@ func (m *Manager) emitEvent(kind string, s *session, err error) {
 			Detail:  ev.Error,
 		})
 	}
+	switch kind {
+	case "start":
+		m.emitSessionStarted(s, ev.Session)
+	case "stop":
+		m.emitSessionStopped(s, ev.Session)
+	case "error":
+		m.emitSessionFailed(s, ev.Session, "playback", err)
+	}
 	m.events.mu.RLock()
 	fns := make([]func(Event), 0, len(m.events.subs))
 	for _, fn := range m.events.subs {

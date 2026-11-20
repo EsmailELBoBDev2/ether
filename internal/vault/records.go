@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/nzb"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 )
@@ -54,6 +55,9 @@ func (v *library) Get(ctx context.Context, k Key) (*Record, error) {
 	// the index intact while removing or replacing its packs.
 	b, e := v.read(l)
 	if e != nil {
+		if errors.Is(e, ErrPayloadMissing) {
+			v.emitPayloadMissing(ctx, k, l.pack)
+		}
 		return nil, e
 	}
 	v.cacheMu.Lock()
@@ -68,6 +72,7 @@ func (v *library) Get(ctx context.Context, k Key) (*Record, error) {
 	v.cacheMu.Unlock()
 	r, e := Decode(b[12:])
 	if e != nil || r.Key != k {
+		v.emitPayloadMissing(ctx, k, l.pack)
 		return nil, ErrPayloadMissing
 	}
 	if e = v.passwords(r, false); e != nil {
@@ -195,6 +200,11 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 	if source == "" {
 		source = p.Release.IndexerID
 	}
+	var written bool
+	var writtenLoc location
+	var quotaUsed int64
+	var quotaCount int
+	titleKey := releaseparse.NormalizeTitle(info.Title)
 	e := v.write(ctx, func(tx *sql.Tx) error {
 		l, e := v.loc(ctx, tx, k)
 		write := true
@@ -244,8 +254,10 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 			if e != nil {
 				return e
 			}
+			written = true
+			writtenLoc = l
 			now := v.Now().Unix()
-			_, e = tx.ExecContext(ctx, `INSERT INTO vault_releases(key,name,kind,title_key,tmdb,year,season,episode,size,segments,pack,off,len,crc,holders,source,added,last_used,private,profile_fp,info) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET pack=excluded.pack,off=excluded.off,len=excluded.len,crc=excluded.crc,holders=excluded.holders,dead=0`, k, r.Name, r.Kind, releaseparse.NormalizeTitle(info.Title), p.Release.TitleIDs.TMDB, info.Year, first(info.Seasons), first(info.Episodes), size, segments, l.pack, l.off, l.length, l.crc, v.node(), source, now, now, flag(p.Private || p.Release.Private), p.ProfileFP, string(metadata))
+			_, e = tx.ExecContext(ctx, `INSERT INTO vault_releases(key,name,kind,title_key,tmdb,year,season,episode,size,segments,pack,off,len,crc,holders,source,added,last_used,private,profile_fp,info) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET pack=excluded.pack,off=excluded.off,len=excluded.len,crc=excluded.crc,holders=excluded.holders,dead=0`, k, r.Name, r.Kind, titleKey, p.Release.TitleIDs.TMDB, info.Year, first(info.Seasons), first(info.Episodes), size, segments, l.pack, l.off, l.length, l.crc, v.node(), source, now, now, flag(p.Private || p.Release.Private), p.ProfileFP, string(metadata))
 			if e != nil {
 				return e
 			}
@@ -284,11 +296,46 @@ func (v *library) Put(ctx context.Context, p PutRequest) (Key, error) {
 			}
 		}
 		if write {
-			return v.evict(ctx, tx)
+			if v.Events != nil && v.capBytes.Load() > 0 {
+				_ = tx.QueryRowContext(ctx, `SELECT COALESCE(sum(len),0), count(*) FROM vault_releases WHERE dead=0`).Scan(&quotaUsed, &quotaCount)
+			}
+			if err := v.evict(ctx, tx); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
+	if e == nil && written && v.Events != nil {
+		v.publishEvent(events.EventVaultRecordStored, events.VaultRecordStoredPayload{
+			VaultKey:        string(k),
+			Kind:            string(r.Kind),
+			TitleKey:        titleKey,
+			ReleaseName:     r.Name,
+			SizeBytes:       size,
+			CompressedBytes: int64(writtenLoc.length),
+			PackID:          writtenLoc.pack,
+		}, events.WithCorrelation(events.Correlation{TitleID: titleKey}))
+		if capBytes := v.capBytes.Load(); capBytes > 0 {
+			v.checkQuotaWarning(quotaUsed, capBytes, quotaCount)
+		}
+	}
 	return k, e
+}
+
+func (v *library) emitPayloadMissing(ctx context.Context, k Key, packID string) {
+	if v == nil || v.Events == nil {
+		return
+	}
+	var titleKey string
+	if v.DB != nil {
+		_ = v.DB.QueryRowContext(ctx, `SELECT title_key FROM vault_releases WHERE key=?`, k).Scan(&titleKey)
+	}
+	v.publishEvent(events.EventVaultPayloadMissing, events.VaultPayloadMissingPayload{
+		VaultKey: string(k),
+		PackID:   packID,
+		NodeID:   v.node(),
+		TitleKey: titleKey,
+	}, events.WithCorrelation(events.Correlation{TitleID: titleKey}))
 }
 func (v *library) evict(ctx context.Context, tx *sql.Tx) error {
 	var total int64

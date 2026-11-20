@@ -61,6 +61,7 @@ type session struct {
 	inputHeaders        http.Header
 	firstMediaDelivered bool
 	firstMediaByte      bool
+	bytesServed         int64
 	tuneStartedAt       time.Time
 	startDeadline       time.Time // bounded post-probe startup window for Direct playout
 	lastMediaWarning    time.Time
@@ -273,6 +274,10 @@ func (ss *session) close(s *Service) {
 	ss.http = nil
 	reserved := ss.reserved
 	ready, requested, delivered := ss.ready, ss.consumed, ss.firstMediaDelivered
+	bytesServed := ss.bytesServed
+	mode := sessionPlayoutModeLocked(ss)
+	stopInfo := ss.info
+	stopSrc := ss.inputSource
 	ss.mu.Unlock()
 	if broadcast != nil {
 		broadcast.close()
@@ -290,7 +295,11 @@ func (ss *session) close(s *Service) {
 			limiter.EndChannel(ss.info.ID)
 		}
 	}
-	s.sessionLog(ss).Info("live session resources released", "ready", ready, "media_requested", requested, "media_delivered", delivered, "age", s.o.Now().Sub(ss.info.StartedAt), "viewer_reservation_released", reserved)
+	age := s.o.Now().Sub(stopInfo.StartedAt)
+	if ready {
+		s.emitChannelStopped(stopInfo, stopSrc, age.Milliseconds(), bytesServed, mode)
+	}
+	s.sessionLog(ss).Info("live session resources released", "ready", ready, "media_requested", requested, "media_delivered", delivered, "age", age, "viewer_reservation_released", reserved)
 }
 
 func (s *Service) Tune(ctx context.Context, u *core.User, channelID string, caps core.ClientCaps) (SessionInfo, error) {
@@ -430,8 +439,9 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 					playing[other.info.Channel.ID] = true
 				}
 			}
-			if !playing[c.ID] && len(playing)+s.inputRelay.taps.externalCount(c.SourceID) >= max {
+			if active := len(playing) + s.inputRelay.taps.externalCount(c.SourceID); !playing[c.ID] && active >= max {
 				s.mu.Unlock()
+				s.emitProviderLimitReached(c.SourceID, active, max, c.ID)
 				return SessionInfo{}, ErrProviderBusy
 			}
 		}
@@ -552,10 +562,15 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	}
 	ss.ready = true
 	info := ss.info
+	tunedSrc := ss.inputSource
+	tunedUser := ss.user
+	tunedCaps := ss.caps
+	mode := sessionPlayoutModeLocked(ss)
 	if ss.relayInfo != nil {
 		info.MediaInfo = ss.relayInfo
 	}
 	ss.mu.Unlock()
+	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
 	return info, nil
@@ -730,10 +745,15 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 	}
 	ss.ready = true
 	info := ss.info
+	tunedSrc := ss.inputSource
+	tunedUser := ss.user
+	tunedCaps := ss.caps
+	mode := sessionPlayoutModeLocked(ss)
 	if ss.relayInfo != nil {
 		info.MediaInfo = ss.relayInfo
 	}
 	ss.mu.Unlock()
+	s.emitChannelTuned(info, tunedSrc, tunedUser, tunedCaps, mode)
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
 	return info, nil

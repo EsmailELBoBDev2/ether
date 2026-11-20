@@ -146,6 +146,8 @@ type Cache struct {
 	now        func() time.Time
 	touchEvery time.Duration
 	protectTTL time.Duration
+
+	ev cacheEventState
 }
 
 var _ core.SegmentCache = (*Cache)(nil)
@@ -459,12 +461,15 @@ func (c *Cache) Put(releaseID string, segment int, data []byte) error {
 		return fmt.Errorf("segcache: put %q segment %d: rename: %w", releaseID, segment, err)
 	}
 	nowNs := c.now().UnixNano()
+	var pending pendingCacheEvents
 	c.mu.Lock()
 	c.insertLocked(r, segment, int64(len(data)), nowNs)
+	c.checkBudgetTransitionLocked(&pending)
 	overHard := c.overHardBudgetLocked()
 	wake := overHard || c.shouldWakeEvictLocked(nowNs)
 	c.mu.Unlock()
 	st.Unlock()
+	c.publishPendingEvents(pending)
 
 	if overHard {
 		c.dropOverHardBudget()
@@ -585,9 +590,12 @@ func (c *Cache) ReleaseBytes(releaseID string) int64 {
 // SetBudget changes the budget (<=0 = unlimited) and evicts immediately if
 // the cache is now over it.
 func (c *Cache) SetBudget(budget int64) {
+	var pending pendingCacheEvents
 	c.mu.Lock()
 	c.budget = max(budget, 0)
+	c.checkBudgetTransitionLocked(&pending)
 	c.mu.Unlock()
+	c.publishPendingEvents(pending)
 	c.evict()
 }
 
@@ -655,7 +663,10 @@ func (c *Cache) Remove(releaseID string) error {
 	for _, e := range victims {
 		c.dropLocked(e)
 	}
+	var pending pendingCacheEvents
+	c.checkBudgetTransitionLocked(&pending)
 	c.mu.Unlock()
+	c.publishPendingEvents(pending)
 	if err := c.deleteFiles(victims, false); err != nil {
 		return fmt.Errorf("segcache: remove %q: %w", releaseID, err)
 	}
@@ -1083,9 +1094,10 @@ func (c *Cache) dropOverHardBudget() {
 	if !ok {
 		return
 	}
+	var pending pendingCacheEvents
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed || !c.overHardBudgetLocked() || c.protGen.Load() != gen {
+		c.mu.Unlock()
 		return
 	}
 	if c.protShrank.Swap(false) {
@@ -1096,6 +1108,8 @@ func (c *Cache) dropOverHardBudget() {
 		c.parkDirty = false
 	}
 	target := c.budget
+	var evictedBytes int64
+	evictedEntries := 0
 	for c.used > target {
 		e := c.victimLocked(prot)
 		if e == nil {
@@ -1108,9 +1122,15 @@ func (c *Cache) dropOverHardBudget() {
 			continue
 		}
 		c.metrics.EvictedBytes += e.size
+		evictedBytes += e.size
+		evictedEntries++
 		c.dropLocked(e)
 		c.queueUnlinkLocked(e)
 	}
+	c.recordEvictionLocked(evictedBytes, evictedEntries, &pending)
+	c.checkBudgetTransitionLocked(&pending)
+	c.mu.Unlock()
+	c.publishPendingEvents(pending)
 }
 
 // drainPendingUnlinks unlinks any entries previously dropped in Put. Callers
@@ -1205,6 +1225,7 @@ func (c *Cache) evictLocal(watermarked bool) {
 	}
 	trigger, target, limit := c.evictThresholdsLocked(floorCap, floorOK, watermarked)
 	var victims []*entry
+	var evictedBytes int64
 	if trigger {
 		for c.used > target && !(watermarked && limit >= 0 && c.used <= limit && c.segCount <= 1) {
 			e := c.victimLocked(prot)
@@ -1218,10 +1239,14 @@ func (c *Cache) evictLocal(watermarked bool) {
 				continue
 			}
 			c.metrics.EvictedBytes += e.size
+			evictedBytes += e.size
 			c.dropLocked(e)
 			victims = append(victims, e)
 		}
 	}
+	var pending pendingCacheEvents
+	c.recordEvictionLocked(evictedBytes, len(victims), &pending)
+	c.checkBudgetTransitionLocked(&pending)
 	if c.overLimitLocked(limit) {
 		if now := c.now(); now.Sub(c.lastOverLog) >= overBudgetLogEvery {
 			c.lastOverLog = now
@@ -1236,6 +1261,7 @@ func (c *Cache) evictLocal(watermarked bool) {
 	}
 	hook := c.beforeUnlink
 	c.mu.Unlock()
+	c.publishPendingEvents(pending)
 
 	if hook != nil && len(victims) > 0 {
 		hook()

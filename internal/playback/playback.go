@@ -28,6 +28,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/vault"
 )
@@ -105,6 +106,14 @@ type Deps struct {
 	// HeaderProbeBudget bounds bytes read per low-priority container header
 	// probe (0 uses transcode.DefaultHeaderProbeBudget).
 	HeaderProbeBudget int
+	// Events receives playback domain events when non-nil.
+	Events *events.Bus
+	// EnrichEventContext optionally enriches PlaybackSessionContext with
+	// app-level metadata (library, viewer tags, transcode HW, network locality).
+	EnrichEventContext func(ps *core.PlaySession, title *core.Title, base events.PlaybackSessionContext) events.PlaybackSessionContext
+	// CachedMarkers optionally supplies cached marker spans for a title/media
+	// without performing network or blocking I/O.
+	CachedMarkers func(key core.RatingKey, info core.MediaInfo) []MarkerSpan
 }
 
 // Options tune the manager. Zero values take the defaults noted.
@@ -799,7 +808,7 @@ func ServerStreamLimit(cfg config.Config, connsPerStream int) int {
 // server-wide limits. Sessions of the same user and client count as
 // replaceable: a client plays one thing at a time. A clustered node then
 // checks the same limits against the whole cluster (see registry.admit).
-func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) error {
+func (m *Manager) reserve(ctx context.Context, user *core.User, caps core.ClientCaps, id identity) error {
 	cfg := m.config()
 	userLimit := UserStreamLimit(cfg, user)
 	serverLimit, derived := serverStreamLimit(cfg, m.opts.ConnectionsPerStream)
@@ -827,10 +836,12 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 	}
 	if userLimit > 0 && userN >= userLimit {
 		m.mu.Unlock()
+		m.emitConcurrencyExceeded(user, caps, id.key, userLimit, userN)
 		return fmt.Errorf("%w: %s is using %d of %d streams", core.ErrStreamLimit, userLabel(user), userN, userLimit)
 	}
 	if serverLimit > 0 && limited >= serverLimit {
 		m.mu.Unlock()
+		m.emitConcurrencyExceeded(user, caps, id.key, serverLimit, limited)
 		return fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 	}
 	if m.reservations == nil {
@@ -857,6 +868,13 @@ func (m *Manager) reserve(ctx context.Context, user *core.User, id identity) err
 		m.unreserveLocked(id)
 		m.mu.Unlock()
 		m.reg.poke()
+		if errors.Is(err, core.ErrStreamLimit) {
+			lim, active := userLimit, userN
+			if lim <= 0 {
+				lim, active = serverLimit, limited
+			}
+			m.emitConcurrencyExceeded(user, caps, id.key, lim, active)
+		}
 		return err
 	}
 	return nil
@@ -998,11 +1016,13 @@ func (m *Manager) prepareOwnedWithin(ctx context.Context, wait time.Duration, us
 					if userLimit > 0 && userN >= userLimit {
 						m.mu.Unlock()
 						m.stopReplaced(promotedReplaced)
+						m.emitConcurrencyExceeded(user, caps, key, userLimit, userN)
 						return nil, nil, fmt.Errorf("%w: %s is using %d of %d streams", core.ErrStreamLimit, userLabel(user), userN, userLimit)
 					}
 					if serverLimit > 0 && total >= serverLimit {
 						m.mu.Unlock()
 						m.stopReplaced(promotedReplaced)
+						m.emitConcurrencyExceeded(user, caps, key, serverLimit, total)
 						return nil, nil, fmt.Errorf("%w: server is at its limit of %d streams", core.ErrStreamLimit, serverLimit)
 					}
 				}
@@ -1233,7 +1253,7 @@ func (m *Manager) runFlight(ctx context.Context, f *flight, fk flightKey, user *
 func (m *Manager) prepare(ctx context.Context, id identity, user *core.User, caps core.ClientCaps, prefer string, exact, deferSupersession bool, kind *core.KindInput, f *flight) (*session, error) {
 	sources := f.sources
 	log := m.log.With("user", userLabel(user), "client", caps.ClientID, "key", id.key)
-	if err := m.reserve(ctx, user, id); err != nil {
+	if err := m.reserve(ctx, user, caps, id); err != nil {
 		log.Info("stream limit", "err", err)
 		return nil, err
 	}

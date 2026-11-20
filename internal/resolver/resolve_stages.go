@@ -64,7 +64,7 @@ func (s *Service) resolvePreferred(ctx context.Context, req core.ResolveRequest,
 	}
 	note := func(status PinStatus, reason, display string) {
 		if pin != nil {
-			s.notePin(ctx, req.Title.Key, pinID, status, reason)
+			s.notePinForClient(ctx, req.Title.Key, pinID, status, reason, clientDisplayName(req.Client))
 			trace.PinStatus = display
 		}
 	}

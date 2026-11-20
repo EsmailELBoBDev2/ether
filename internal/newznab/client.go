@@ -26,6 +26,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
@@ -76,6 +77,8 @@ type Options struct {
 	// without spending budgets (Manager.TestIndexer).
 	usageDB *sql.DB
 	onEvent func(Event)
+	// Events receives non-blocking indexer.* domain events when set.
+	Events *events.Bus
 }
 
 // Backend searches a site that is not a Newznab API, such as a built-in
@@ -137,9 +140,13 @@ type Client struct {
 	nzbFlightMu sync.Mutex
 	nzbFlights  map[string]*nzbFlight
 
-	cfgMu   sync.RWMutex
-	eventMu sync.RWMutex
-	onEvent func(Event)
+	cfgMu            sync.RWMutex
+	eventMu          sync.RWMutex
+	onEvent          func(Event)
+	events           *events.Bus
+	budgetEventMu    sync.Mutex
+	budgetWarnDay    map[string]string
+	budgetExhaustDay map[string]string
 
 	// Resolved identity the client presents to this indexer, refreshed from
 	// the policy on every config reload.
@@ -166,7 +173,7 @@ var _ core.Indexer = (*Client)(nil)
 // New builds a Client for one indexer. db may be nil (budgets and cache
 // then live in memory).
 func New(cfg config.Indexer, db *sql.DB, opts Options) *Client {
-	c := &Client{cfg: cfg, db: db, usageDB: opts.usageDB, onEvent: opts.onEvent, vault: opts.Vault, legacyDir: opts.LegacyNZBDir, publicIndexer: opts.PublicIndexer, backends: opts.Backend}
+	c := &Client{cfg: cfg, db: db, usageDB: opts.usageDB, onEvent: opts.onEvent, events: opts.Events, vault: opts.Vault, legacyDir: opts.LegacyNZBDir, publicIndexer: opts.PublicIndexer, backends: opts.Backend}
 	c.http = opts.HTTPClient
 	if c.http == nil {
 		c.http = egress.Client(egress.CapIndexers, defaultHTTPTimeout)
@@ -268,6 +275,9 @@ func (c *Client) emitGrab(ctx context.Context, name string, started time.Time, r
 		RateLimited:     reserved && errors.Is(err, core.ErrBudgetExhausted),
 		Duration:        dur,
 	})
+	if err != nil && !localBudget {
+		c.emitRequestFailed("grab", err, dur)
+	}
 }
 
 // Config returns the indexer's current config.

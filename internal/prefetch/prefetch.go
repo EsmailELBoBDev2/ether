@@ -22,6 +22,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/schedule"
 )
@@ -66,6 +67,8 @@ type Deps struct {
 	Markers MarkerSource
 	// PostPlayEnabled reports the owner's switch (nil = on).
 	PostPlayEnabled func() bool
+	// Events receives non-blocking cache.prefetch.* events when set.
+	Events *events.Bus
 }
 
 // Options tune the prefetcher. Zero values take the defaults noted.
@@ -180,10 +183,27 @@ type entry struct {
 	ttl   time.Duration // how long a done entry suppresses repeats
 }
 
+type jobOutcome struct {
+	titleKey    string
+	titleName   string
+	bytesWarmed int64
+}
+
+type jobOutcomeKey struct{}
+
+func outcomeFromContext(ctx context.Context) *jobOutcome {
+	if out, ok := ctx.Value(jobOutcomeKey{}).(*jobOutcome); ok {
+		return out
+	}
+	return nil
+}
+
 type job struct {
-	id  string // dedupe key
-	ttl time.Duration
-	run func(ctx context.Context) error
+	id       string // dedupe key
+	kind     string // next_episode | resume | keep_warm | postplay
+	titleKey core.RatingKey
+	ttl      time.Duration
+	run      func(ctx context.Context) error
 }
 
 // Prefetcher is the background prefetch worker pool.
@@ -303,9 +323,11 @@ func (p *Prefetcher) OnTimeline(user *core.User, key core.RatingKey, offset, dur
 	if user != nil && offset > 0 && p.deps.Hints != nil && p.config().KeepInProgressWarm && state != "playing" && state != "buffering" && (key.Kind() == core.KindMovie || key.Kind() == core.KindEpisode) {
 		u := *user
 		p.enqueue(job{
-			id:  fmt.Sprintf("resume:%d:%d:%d:%s", u.ID, key, offset/(25*time.Second), state),
-			ttl: 25 * time.Second,
-			run: func(ctx context.Context) error { return p.warmResume(ctx, u.ID, key, offset, duration) },
+			id:       fmt.Sprintf("resume:%d:%d:%d:%s", u.ID, key, offset/(25*time.Second), state),
+			kind:     "resume",
+			titleKey: key,
+			ttl:      25 * time.Second,
+			run:      func(ctx context.Context) error { return p.warmResume(ctx, u.ID, key, offset, duration) },
 		})
 	}
 	// Post-play hook queue (#30): movies and finales pre-buffer their
@@ -329,9 +351,11 @@ func (p *Prefetcher) OnTimeline(user *core.User, key core.RatingKey, offset, dur
 	}
 	u := *user
 	p.enqueue(job{
-		id:  fmt.Sprintf("next:%d:%d", u.ID, key),
-		ttl: p.opts.DoneTTL,
-		run: func(ctx context.Context) error { return p.nextEpisode(ctx, &u, key) },
+		id:       fmt.Sprintf("next:%d:%d", u.ID, key),
+		kind:     "next_episode",
+		titleKey: key,
+		ttl:      p.opts.DoneTTL,
+		run:      func(ctx context.Context) error { return p.nextEpisode(ctx, &u, key) },
 	})
 }
 
@@ -404,12 +428,20 @@ func (p *Prefetcher) runJob(j job) {
 		p.mu.Unlock()
 	}()
 
+	started := p.now()
+	outcome := &jobOutcome{}
+	if j.titleKey != 0 {
+		outcome.titleKey = j.titleKey.String()
+	}
 	ctx, cancel := context.WithTimeout(p.ctx, p.opts.JobTimeout)
 	var err error
+	ran := false
 	if cfg := p.config(); !cfg.DisableSpeculation && cfg.Mode != "off" {
-		err = j.run(core.WithUnattendedSearch(ctx))
+		ran = true
+		err = j.run(context.WithValue(core.WithUnattendedSearch(ctx), jobOutcomeKey{}, outcome))
 	}
 	cancel()
+	durMS := p.now().Sub(started).Milliseconds()
 
 	p.mu.Lock()
 	p.running--
@@ -431,8 +463,25 @@ func (p *Prefetcher) runJob(j job) {
 	p.mu.Unlock()
 	if err != nil && p.ctx.Err() == nil {
 		p.log.Warn("prefetch job failed", "job", j.id, "err", err)
+		if p.deps.Events != nil && ran && j.kind != "postplay_probe" {
+			_ = p.deps.Events.PublishTyped(events.EventCachePrefetchFailed, events.CachePrefetchFailedPayload{
+				TitleKey:  outcome.titleKey,
+				TitleName: outcome.titleName,
+				Kind:      j.kind,
+				Error:     err.Error(),
+			}, events.WithCorrelation(events.Correlation{TitleID: outcome.titleKey}))
+		}
 	} else if err == nil {
 		p.log.Debug("prefetch job done", "job", j.id)
+		if p.deps.Events != nil && ran && j.kind != "postplay_probe" && (outcome.bytesWarmed > 0 || outcome.titleName != "") {
+			_ = p.deps.Events.PublishTyped(events.EventCachePrefetchCompleted, events.CachePrefetchCompletedPayload{
+				TitleKey:    outcome.titleKey,
+				TitleName:   outcome.titleName,
+				Kind:        j.kind,
+				BytesWarmed: outcome.bytesWarmed,
+				DurationMS:  durMS,
+			}, events.WithCorrelation(events.Correlation{TitleID: outcome.titleKey}))
+		}
 	}
 }
 
@@ -450,6 +499,10 @@ func (p *Prefetcher) nextEpisode(ctx context.Context, user *core.User, key core.
 		return nil // not aired yet; don't spend indexer budget
 	}
 	p.setCurrent(episodeLabel(next), core.CacheCauseNextEpisode)
+	if out := outcomeFromContext(ctx); out != nil {
+		out.titleKey = next.Key.String()
+		out.titleName = episodeLabel(next)
+	}
 	var caps core.ClientCaps
 	if p.deps.Hints != nil {
 		caps, _, _ = p.deps.Hints.ClientCaps(user.ID, key)
@@ -463,6 +516,9 @@ func (p *Prefetcher) nextEpisode(ctx context.Context, user *core.User, key core.
 		if p.deps.Prewarmer.Prewarm(ctx, user, next.Key, caps, core.PrewarmOptions{
 			Reason: core.PrewarmNextEpisode, PrefetchBytes: length, DuringPlayback: true,
 		}) {
+			if out := outcomeFromContext(ctx); out != nil {
+				out.bytesWarmed = length
+			}
 			log.Info("preparing next episode for playback")
 		} else {
 			log.Debug("next episode preparation already present or budget unavailable")
@@ -478,9 +534,13 @@ func (p *Prefetcher) nextEpisode(ctx context.Context, user *core.User, key core.
 		if rp != nil {
 			log.Debug("warming stored release of next episode", "release", rp.Release.Name)
 			p.noteCause(rp.ReleaseID(), core.CacheCauseNextEpisode, episodeLabel(next))
-			err := p.deps.Engine.Prefetch(ctx, rp.ReleaseID(), rp.NZB, 0, clampLen(0, length, rp.Size))
+			warmed := clampLen(0, length, rp.Size)
+			err := p.deps.Engine.Prefetch(ctx, rp.ReleaseID(), rp.NZB, 0, warmed)
 			if err != nil {
 				return p.replaceWarmSource(ctx, user.ID, next.Key, rp.Release, 0, next.Runtime, err)
+			}
+			if out := outcomeFromContext(ctx); out != nil {
+				out.bytesWarmed = warmed
 			}
 			return nil
 		}
@@ -502,9 +562,13 @@ func (p *Prefetcher) nextEpisode(ctx context.Context, user *core.User, key core.
 	}
 	log.Info("prefetching next episode", "release", res.Release.Name, "bytes", length)
 	p.noteCause(res.Release.ID, core.CacheCauseNextEpisode, episodeLabel(next))
-	err = p.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, 0, clampLen(0, length, res.Release.Size))
+	warmed := clampLen(0, length, res.Release.Size)
+	err = p.deps.Engine.Prefetch(ctx, res.Release.ID, res.NZB, 0, warmed)
 	if err != nil {
 		return p.replaceWarmSource(ctx, user.ID, next.Key, res.Release, 0, next.Runtime, err)
+	}
+	if out := outcomeFromContext(ctx); out != nil {
+		out.bytesWarmed = warmed
 	}
 	return nil
 }
@@ -589,9 +653,11 @@ func (p *Prefetcher) warmPass(ctx context.Context) error {
 			st := st
 			userID := u.ID
 			p.enqueue(job{
-				id:  fmt.Sprintf("warm:%d:%d:%d", userID, st.Key, st.ViewOffset/(25*time.Second)),
-				ttl: p.opts.WarmInterval / 2,
-				run: func(ctx context.Context) error { return p.warmResume(ctx, userID, st.Key, st.ViewOffset, st.Duration) },
+				id:       fmt.Sprintf("warm:%d:%d:%d", userID, st.Key, st.ViewOffset/(25*time.Second)),
+				kind:     "keep_warm",
+				titleKey: st.Key,
+				ttl:      p.opts.WarmInterval / 2,
+				run:      func(ctx context.Context) error { return p.warmResume(ctx, userID, st.Key, st.ViewOffset, st.Duration) },
 			})
 		}
 	}
@@ -641,9 +707,16 @@ func (p *Prefetcher) warmResume(ctx context.Context, userID int64, key core.Rati
 		return nil
 	}
 	p.setCurrent(rp.Release.Name, core.CacheCauseResumeWarm)
+	if out := outcomeFromContext(ctx); out != nil {
+		out.titleKey = key.String()
+		out.titleName = rp.Release.Name
+	}
 	p.noteCause(rp.ReleaseID(), core.CacheCauseResumeWarm, rp.Release.Name)
 	err = p.deps.Engine.Prefetch(core.WithReadOrigin(ctx, "prefetch.resume", "in-progress title"), rp.ReleaseID(), rp.NZB, start, length)
 	if err == nil {
+		if out := outcomeFromContext(ctx); out != nil {
+			out.bytesWarmed = length
+		}
 		return nil
 	}
 	return p.replaceWarmSource(ctx, userID, key, rp.Release, offset, duration, err)

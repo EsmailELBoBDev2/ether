@@ -622,7 +622,7 @@ func (s *Service) openURL(ctx context.Context, raw string, h http.Header) (io.Re
 	switch {
 	case res.StatusCode == 401 || res.StatusCode == 403:
 		closeBody()
-		return nil, fmt.Errorf("source refused the credentials (HTTP %d)", res.StatusCode)
+		return nil, &providerAuthError{StatusCode: res.StatusCode}
 	case res.StatusCode != 200:
 		closeBody()
 		return nil, fmt.Errorf("source returned HTTP %d", res.StatusCode)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 )
 
 // An indexer that stops answering (hung, down, behind a challenge it cannot
@@ -49,6 +50,7 @@ type breaker struct {
 	failures  int // consecutive transient failures
 	trips     int // consecutive trips, for the pause back-off
 	openUntil time.Time
+	outageAt  time.Time
 	probing   bool // the one half-open trial request is in flight
 	rampLimit int  // >0 while ramping after a probe: max concurrent in-flight requests
 	rampOK    int  // consecutive successes completed in the current rampLimit tier
@@ -189,8 +191,28 @@ func (b *breaker) done(now time.Time, tk breakerTicket, failed bool, sample time
 	b.trips++
 	b.rampLimit, b.rampOK, b.probing = 0, 0, false
 	b.openUntil = now.Add(pause)
+	if b.outageAt.IsZero() {
+		b.outageAt = now
+	}
 	b.epoch++
 	return pause
+}
+
+func (b *breaker) outageSnapshot(now time.Time) (failures int, started time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failures, b.outageAt
+}
+
+func (b *breaker) clearOutage(now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.outageAt.IsZero() {
+		return 0
+	}
+	d := max(time.Duration(0), now.Sub(b.outageAt))
+	b.outageAt = time.Time{}
+	return d
 }
 
 // neutral releases an admitted slot whose request ended without a verdict (the
@@ -279,10 +301,29 @@ func (c *Client) guardSearch(ctx context.Context, hostURL string, adaptive bool,
 		sample = elapsed
 	}
 	settled = true
-	if pause := c.br.done(c.now(), tk, failed, sample); pause > 0 {
+	now := c.now()
+	if err != nil {
+		c.emitRequestFailed(searchEventKind(ctx), err, elapsed)
+	}
+	if pause := c.br.done(now, tk, failed, sample); pause > 0 {
 		c.log.Warn("indexer paused after repeated failures; will try again automatically", "indexer", c.Name(), "pause", pause, "err", err)
+		failures, _ := c.br.outageSnapshot(now)
+		c.publishDomainEvent(events.EventIndexerServiceOutage, events.IndexerServiceOutagePayload{
+			IndexerID:           c.indexerID(),
+			IndexerName:         c.Name(),
+			Kind:                c.indexerKind(),
+			ConsecutiveFailures: failures,
+			Error:               err.Error(),
+		})
 	} else if tk.probe && !failed {
 		c.log.Info("indexer is answering again", "indexer", c.Name())
+		outageDur := c.br.clearOutage(now)
+		c.publishDomainEvent(events.EventIndexerServiceRecovered, events.IndexerServiceRecoveredPayload{
+			IndexerID:        c.indexerID(),
+			IndexerName:      c.Name(),
+			Kind:             c.indexerKind(),
+			OutageDurationMS: outageDur.Milliseconds(),
+		})
 	}
 	return res, err
 }

@@ -193,16 +193,17 @@ func normalizePatterns(patterns []string) []string {
 
 // OutboxBridgeOptions configures a follower→leader events_outbox bridge.
 type OutboxBridgeOptions struct {
-	DB          *sql.DB
-	Bus         *events.Bus
-	ClusterBus  clusterbus.Bus
-	NodeID      string
-	IsLeader    func() bool
-	LoadSubs    func(ctx context.Context) ([]string, error)
-	Now         func() time.Time
-	Logger      *slog.Logger
-	BufferSize  int
-	OnForwarded func(ev events.Envelope)
+	DB            *sql.DB
+	Bus           *events.Bus
+	ClusterBus    clusterbus.Bus
+	NodeID        string
+	IsLeader      func() bool
+	LoadSubs      func(ctx context.Context) ([]string, error)
+	Now           func() time.Time
+	Logger        *slog.Logger
+	BufferSize    int
+	OnForwarded   func(ev events.Envelope)
+	OnSubsUpdated func(patterns []string)
 }
 
 // OutboxBridge subscribes to a node's local events.Bus and forwards only
@@ -210,10 +211,12 @@ type OutboxBridgeOptions struct {
 // events_outbox + a clusterbus wake ping when this node is not leading.
 // Events that no flow or waiter subscribes to cause zero database writes.
 type OutboxBridge struct {
-	opts     OutboxBridgeOptions
-	outbox   *OutboxStore
-	logger   *slog.Logger
-	reloadCh chan struct{}
+	opts      OutboxBridgeOptions
+	outbox    *OutboxStore
+	logger    *slog.Logger
+	reloadCh  chan struct{}
+	ready     chan struct{}
+	readyOnce sync.Once
 
 	mu       sync.RWMutex
 	patterns []string
@@ -237,7 +240,20 @@ func NewOutboxBridge(opts OutboxBridgeOptions) *OutboxBridge {
 		outbox:   NewOutboxStore(opts.DB, opts.Now),
 		logger:   opts.Logger,
 		reloadCh: make(chan struct{}, 1),
+		ready:    make(chan struct{}),
 	}
+}
+
+// Ready returns a channel closed once the bridge has subscribed to the bus and
+// loaded its initial subscription set.
+func (b *OutboxBridge) Ready() <-chan struct{} { return b.ready }
+
+// SetOnSubsUpdated installs a callback invoked after the bridge commits a new
+// subscription pattern set.
+func (b *OutboxBridge) SetOnSubsUpdated(fn func(patterns []string)) {
+	b.mu.Lock()
+	b.opts.OnSubsUpdated = fn
+	b.mu.Unlock()
 }
 
 // Patterns returns a snapshot of the bridge's currently active subscription patterns.
@@ -291,10 +307,6 @@ func (b *OutboxBridge) Run(ctx context.Context) {
 		}
 	}()
 
-	// Initial load from shared DB so a follower that boots after the leader
-	// already broadcast flows:subs starts with an accurate subscription set.
-	b.reloadSubs(ctx)
-
 	sub := b.opts.Bus.Subscribe(events.SubscriptionOptions{
 		Name:          "flows-outbox-bridge",
 		Buffer:        b.opts.BufferSize,
@@ -302,6 +314,11 @@ func (b *OutboxBridge) Run(ctx context.Context) {
 		IncludeDryRun: false,
 	})
 	defer sub.Unsubscribe()
+
+	// Initial load from shared DB so a follower that boots after the leader
+	// already broadcast flows:subs starts with an accurate subscription set.
+	b.reloadSubs(ctx)
+	b.readyOnce.Do(func() { close(b.ready) })
 
 	for {
 		select {
@@ -328,13 +345,19 @@ func (b *OutboxBridge) onSubsMessage(payload []byte) {
 		return
 	}
 	norm := normalizePatterns(msg.Patterns)
+	updated := false
 	b.mu.Lock()
 	if msg.Leader != b.leader || msg.Version == 0 || msg.Version >= b.version {
 		b.patterns = norm
 		b.leader = msg.Leader
 		b.version = msg.Version
+		updated = true
 	}
+	cb := b.opts.OnSubsUpdated
 	b.mu.Unlock()
+	if updated && cb != nil {
+		cb(slices.Clone(norm))
+	}
 }
 
 func (b *OutboxBridge) triggerReload() {
@@ -356,6 +379,12 @@ func (b *OutboxBridge) reloadSubs(ctx context.Context) {
 		return
 	}
 	b.SetPatterns(patterns)
+	b.mu.RLock()
+	cb := b.opts.OnSubsUpdated
+	b.mu.RUnlock()
+	if cb != nil {
+		cb(b.Patterns())
+	}
 }
 
 func (b *OutboxBridge) handleEvent(ctx context.Context, ev events.Envelope) {

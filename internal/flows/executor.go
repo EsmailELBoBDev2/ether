@@ -307,6 +307,7 @@ func (e *Engine) executeRun(
 	}
 
 	// 1. Resume from a durable delay or wait_event suspension.
+	var resumeStep *RunStep
 	if st.WaitingNode != "" {
 		waitNodeID := st.WaitingNode
 		waitKind := st.WaitKind
@@ -386,11 +387,8 @@ func (e *Engine) executeRun(
 		if err := checkpoint(waitStep, &run, nil); err != nil {
 			return run, memSteps, err
 		}
-	}
-
-	// 2. Crash recovery: inspect whether the last persisted step was left in StepRunning.
-	var resumeStep *RunStep
-	if mode == modeDurable && len(existingSteps) > 0 {
+	} else if mode == modeDurable && len(existingSteps) > 0 {
+		// 2. Crash recovery: inspect whether the last persisted step was left in StepRunning.
 		last := existingSteps[len(existingSteps)-1]
 		if last.Status == StepRunning {
 			node, ok := nodesByID[last.NodeID]
@@ -674,11 +672,11 @@ func (e *Engine) executeRun(
 				"wakeAt":     wakeAt.UTC().Format(time.RFC3339Nano),
 				"durationMs": delayDur.Milliseconds(),
 			})
-			if mode == modeTestDry || (mode == modeTestLive && !persist) || !wakeAt.After(now) {
+			if mode != modeDurable || !wakeAt.After(now) {
 				outMap := map[string]any{
 					"wakeAt":     wakeAt.UTC().Format(time.RFC3339Nano),
 					"durationMs": delayDur.Milliseconds(),
-					"simulated":  mode == modeTestDry || (mode == modeTestLive && !persist),
+					"simulated":  mode != modeDurable,
 				}
 				step.Status = StepCompleted
 				step.Branch = HandleNext
@@ -726,7 +724,7 @@ func (e *Engine) executeRun(
 				"matchCorrelation": cfg.MatchCorrelation,
 				"timeoutAt":        timeoutAt.Format(time.RFC3339Nano),
 			})
-			if mode == modeTestDry || (mode == modeTestLive && !persist) {
+			if mode != modeDurable {
 				outMap := map[string]any{"matched": false, "timedOut": true, "simulated": true}
 				step.Status = StepCompleted
 				step.Branch = HandleTimeout

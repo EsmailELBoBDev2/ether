@@ -63,9 +63,10 @@ type EngineOptions struct {
 	// Cluster is nil or Solo (useful in tests with simulated clusterbus.Hub).
 	EnableBridge bool
 
-	OnFlowsChanged func(flowID string)
-	OnRunUpdated   func(run Run)
-	OnAutoDisable  func(flow Flow, run Run)
+	OnFlowsChanged  func(flowID string)
+	OnRunUpdated    func(run Run)
+	OnAutoDisable   func(flow Flow, run Run)
+	OnLeaderStarted func()
 }
 
 // Engine is Ether's durable Flows Runtime implementation.
@@ -300,6 +301,9 @@ func (e *Engine) runLeader(ctx context.Context) {
 		e.logger.Warn("flows: initial flow reload failed", "err", err)
 	}
 	e.broadcastSubscriptions(ctx)
+	if e.opts.OnLeaderStarted != nil {
+		e.opts.OnLeaderStarted()
+	}
 
 	sem := make(chan struct{}, e.opts.MaxWorkers)
 	var workerWG sync.WaitGroup
@@ -1572,7 +1576,7 @@ func (e *Engine) recordFlowOutcome(ctx context.Context, flow Flow, run Run, fail
 		if e.opts.OnAutoDisable != nil {
 			e.opts.OnAutoDisable(flow, run)
 		}
-		if e.opts.OnFlowsChanged != nil {
+		if _, isSQL := e.store.(*SQLStore); !isSQL && e.opts.OnFlowsChanged != nil {
 			e.opts.OnFlowsChanged(flow.ID)
 		}
 		e.broadcastSubscriptions(ctx)

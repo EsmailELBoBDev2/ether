@@ -199,19 +199,28 @@ func (i *instance) Handler() http.Handler {
 		// Stored blurhashes and dimensions are joined on every request. This
 		// budget only covers hashing already in flight, and the page cache
 		// clears it before a fill so the cache is never held open for it.
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner := next
+		next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := frontend.WithSynchronousArtworkMetadata(r.Context(), 100*time.Millisecond)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			inner.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-	if i.protocol != "emby" {
-		return next
-	}
+	// Jellyfin and Emby both answer cross-origin requests (Jellyfin's
+	// default CorsHosts is "*"): web-based clients served from another
+	// origin, such as desktop wrappers around a web app, preflight every
+	// call and give up before connecting without these headers.
+	jellyfin := i.protocol == "jellyfin"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Jellyfin's CORS middleware only answers requests that carry an
+		// Origin (recorded server responses have no CORS headers otherwise).
+		if jellyfin && r.Header.Get("Origin") == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", "*")
 		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		h.Set("Access-Control-Allow-Headers", "Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition, Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range, Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since, Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest, X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version, X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization")
+		h.Set("Access-Control-Allow-Headers", "Accept, Accept-Language, Authorization, Cache-Control, Content-Disposition, Content-Encoding, Content-Language, Content-Length, Content-MD5, Content-Range, Content-Type, Date, Host, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since, Origin, OriginToken, Pragma, Range, Slug, Transfer-Encoding, Want-Digest, X-MediaBrowser-Token, X-Emby-Token, X-Emby-Client, X-Emby-Client-Version, X-Emby-Device-Id, X-Emby-Device-Name, X-Emby-Authorization, X-MediaBrowser-Client, X-MediaBrowser-Device-Id")
 		h.Set("Access-Control-Allow-Private-Network", "true")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)

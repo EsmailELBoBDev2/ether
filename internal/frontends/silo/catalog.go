@@ -1,11 +1,13 @@
 package silo
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/paging"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -38,6 +40,10 @@ func (i *instance) catalog(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Bad Request", 400)
 			return
 		}
+	}
+	if q.Get("source") == "section" && q.Get("section_id") != "" {
+		i.sectionBrowse(w, r, offset, limit)
+		return
 	}
 	query := frontend.ItemQuery{Offset: offset, Limit: limit}
 	if personID := q.Get("person_id"); personID != "" {
@@ -383,3 +389,78 @@ func (i *instance) pageEditions(r *http.Request, v *frontend.Viewer, keys []fron
 	}
 	return versions, true
 }
+
+// sectionBrowse serves a section's "Explore all" page: the items of that one
+// Home or library section, paged. The catalog used to ignore section_id and
+// answer with the whole catalogue (53,000 titles behind "On Now").
+func (i *instance) sectionBrowse(w http.ResponseWriter, r *http.Request, offset, limit int) {
+	q := r.URL.Query()
+	sectionID := q.Get("section_id")
+	path := "/api/v2/home/sections"
+	library := q.Get("library_id")
+	if library != "" && q.Get("scope") != "home" {
+		path = "/api/v2/library/" + library + "/sections"
+	}
+	params := url.Values{"item_limit": {"100"}}
+	for _, key := range []string{"image_size", "backdrop_width", "poster_width", "logo_width", "still_width"} {
+		if value := q.Get(key); value != "" {
+			params.Set(key, value)
+		}
+	}
+	sub := r.Clone(r.Context())
+	u := *r.URL
+	u.Path, u.RawPath, u.RawQuery = path, "", params.Encode()
+	sub.URL = &u
+	sub.RequestURI = u.RequestURI()
+	if path != "/api/v2/home/sections" {
+		sub.SetPathValue("library", library)
+	}
+	capture := &captureWriter{header: http.Header{}, status: 200}
+	i.sections(capture, sub)
+	if capture.status != 200 {
+		http.Error(w, http.StatusText(capture.status), capture.status)
+		return
+	}
+	var doc struct {
+		Sections []struct {
+			ID    string `json:"id"`
+			Items []any  `json:"items"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(capture.body.Bytes(), &doc); err != nil {
+		http.Error(w, "Unavailable", 503)
+		return
+	}
+	var items []any
+	found := false
+	for _, section := range doc.Sections {
+		if section.ID == sectionID {
+			items, found = section.Items, true
+			break
+		}
+	}
+	if !found {
+		notFound(w)
+		return
+	}
+	start := min(offset, len(items))
+	end := len(items)
+	if limit > 0 {
+		end = min(start+limit, len(items))
+	}
+	var next any
+	if end < len(items) {
+		next = strconv.Itoa(end)
+	}
+	reply(w, 200, map[string]any{"items": items[start:end], "total": len(items), "total_exact": true, "window_cursor": "", "page": map[string]any{"has_more": next != nil, "next_cursor": next}})
+}
+
+type captureWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (c *captureWriter) Header() http.Header         { return c.header }
+func (c *captureWriter) Write(b []byte) (int, error) { return c.body.Write(b) }
+func (c *captureWriter) WriteHeader(status int)      { c.status = status }

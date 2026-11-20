@@ -173,7 +173,7 @@ var tierUntouchedTables = []string{
 	// The NZB vault keeps release payloads and aliases; a removed title's
 	// releases are re-found by search, so the vault never pins a title.
 	"vault_",
-	"vela_wordmarks", // Owner branding images.
+	"vela_wordmarks",                           // Owner branding images.
 	"vela_app_icons", "vela_app_icon_variants", // Owner app icon and its generated variants.
 	// Flows automations and the event outbox hold rules and run history,
 	// not catalogue references that should keep a title.

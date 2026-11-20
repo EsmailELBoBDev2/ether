@@ -114,6 +114,16 @@ func TestSurfaceIdentityLoginQuickConnectAndRevoke(t *testing.T) {
 	if err := jf.QuickConnectApprove(ctx, viewer, code); err != nil {
 		t.Fatal(err)
 	}
+	// Re-approving an already approved code maps to frontend.ErrQuickConnectUsed.
+	if err := jf.QuickConnectApprove(ctx, viewer, code); !errors.Is(err, frontend.ErrQuickConnectUsed) {
+		t.Fatalf("expected ErrQuickConnectUsed on duplicate approve, got %v", err)
+	}
+	// Delegated viewers cannot approve quick-connect codes.
+	delegated := *viewer
+	delegated.Delegated = true
+	if err := jf.QuickConnectApprove(ctx, &delegated, code); !errors.Is(err, core.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized for delegated viewer, got %v", err)
+	}
 	if details, err := jf.QuickConnectDetails(ctx, secret); err != nil || !details.Approved || details.Code != code {
 		t.Fatal("approved details", details, err)
 	}

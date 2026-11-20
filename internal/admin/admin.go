@@ -118,6 +118,7 @@ type Deps struct {
 	Vela               *veladist.Manager
 	VelaSkins          VelaSkinAdmin
 	UploadVelaWordmark func(context.Context, io.Reader) (VelaWordmark, error)
+	UploadVelaIcon     func(context.Context, io.Reader) (VelaAppIcon, error)
 	Frontends          FrontendAdmin
 	FavoritesMirror    FavoritesMirror
 	NotInterested      NotInterestedPortal

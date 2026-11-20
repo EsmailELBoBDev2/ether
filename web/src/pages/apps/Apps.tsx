@@ -8,7 +8,7 @@ import {
   Switch,
   confirmDialog,
 } from "@braedonsaunders/appkit-ui";
-import { FileUp, X } from "lucide-react";
+import { AlertTriangle, FileUp, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApp } from "../../app-context";
@@ -50,12 +50,19 @@ export type VelaWordmark = {
   dark?: string;
 };
 export type VelaLivePreviewMode = "auto" | "on-click" | "off";
+export type VelaAppIcon = {
+  url: string;
+  width: number;
+  height: number;
+};
 type Settings = {
   port?: number;
   publicUrl?: string;
   serverName?: string;
   discovery?: boolean;
   quickConnect?: boolean;
+  passwordSignIn?: boolean;
+  plexSignIn?: boolean;
   publicViewerPicker?: boolean;
   viewerId?: number;
   defaultSkinId?: string;
@@ -63,6 +70,7 @@ type Settings = {
   appName?: string;
   wordmark?: VelaWordmark | null;
   livePreview?: VelaLivePreviewMode;
+  appIcon?: VelaAppIcon | null;
   homeRows?: boolean;
   homeRowCount?: number;
   homeRowKinds?: string[];
@@ -245,18 +253,55 @@ function VelaSurfacePreview({
 function VelaBranding({
   appName,
   wordmark,
+  appIcon,
   onAppNameChange,
   onWordmarkChange,
+  onAppIconChange,
 }: {
   appName?: string;
   wordmark?: VelaWordmark;
+  appIcon?: VelaAppIcon;
   onAppNameChange: (name: string) => void;
   onWordmarkChange: (wordmark?: VelaWordmark) => void;
+  onAppIconChange: (appIcon?: VelaAppIcon) => void;
 }) {
   const lightInputRef = useRef<HTMLInputElement>(null);
   const darkInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState<"light" | "dark" | null>(null);
+  const iconInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState<"light" | "dark" | "icon" | null>(null);
   const [uploadError, setUploadError] = useState<unknown>();
+  const [iconUploadError, setIconUploadError] = useState<unknown>();
+
+  async function handleAppIconUpload(file?: File) {
+    if (!file) return;
+    if (!isSupportedWordmarkFile(file)) {
+      setIconUploadError(new Error(t("App icon must be a square PNG, SVG, or WebP image.")));
+      return;
+    }
+    if (file.size > VELA_MAX_WORDMARK_BYTES) {
+      setIconUploadError(new Error(t("App icon must be 512 KB or smaller.")));
+      return;
+    }
+    setUploading("icon");
+    setIconUploadError(undefined);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const uploaded = await apiFetch<VelaAppIcon>("/frontends/vela/icon", {
+        method: "POST",
+        body: form,
+      });
+      onAppIconChange({
+        url: uploaded.url,
+        width: uploaded.width,
+        height: uploaded.height,
+      });
+    } catch (err) {
+      setIconUploadError(err);
+    } finally {
+      setUploading(null);
+    }
+  }
 
   async function handleWordmarkUpload(variant: "light" | "dark", file?: File) {
     if (!file) return;
@@ -479,6 +524,83 @@ function VelaBranding({
       />
       <SettingsRow
         stacked
+        title={t("App icon")}
+        description={t(
+          "Used for the browser tab, home screen, and installed web app. Square PNG, SVG, or WebP up to 512 KB and 1024×1024 px.",
+        )}
+        control={
+          <div className="space-y-3 pt-1">
+            <div className="flex flex-col justify-between gap-3 rounded-xl border border-border bg-surface/60 p-3.5 sm:flex-row sm:items-center">
+              <div className="flex items-center gap-3.5">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-[#090b0e] p-1.5">
+                  {appIcon ? (
+                    <WordmarkImage
+                      src={appIcon.url}
+                      alt={t("App icon preview")}
+                      width={appIcon.width}
+                      height={appIcon.height}
+                      className="h-full w-full rounded-lg object-contain"
+                    />
+                  ) : (
+                    <span className="text-[11px] font-medium text-[#9aa3b5]">{t("Default")}</span>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-fg">
+                    {appIcon ? t("Custom square icon") : t("Default Vela icon")}
+                  </div>
+                  <div className="text-xs text-fg-muted">
+                    {appIcon ? `${appIcon.width}×${appIcon.height} px` : t("Not set")}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={uploading != null}
+                  onClick={() => iconInputRef.current?.click()}
+                >
+                  <FileUp size={14} />
+                  {uploading === "icon" ? t("Uploading…") : appIcon ? t("Replace") : t("Upload")}
+                </Button>
+                {appIcon ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={uploading != null}
+                    aria-label={t("Remove app icon")}
+                    onClick={() => {
+                      setIconUploadError(undefined);
+                      onAppIconChange(undefined);
+                    }}
+                  >
+                    <X size={14} />
+                    {t("Remove")}
+                  </Button>
+                ) : null}
+                <input
+                  ref={iconInputRef}
+                  type="file"
+                  accept={VELA_WORDMARK_ACCEPT}
+                  className="sr-only"
+                  aria-label={t("Upload app icon")}
+                  onChange={(e) => {
+                    const file = e.currentTarget.files?.[0];
+                    e.currentTarget.value = "";
+                    void handleAppIconUpload(file);
+                  }}
+                />
+              </div>
+            </div>
+            {iconUploadError != null ? <ErrorPanel error={iconUploadError} /> : null}
+          </div>
+        }
+      />
+      <SettingsRow
+        stacked
         title={t("Live preview")}
         description={t("How your name and wordmark appear on light and dark Vela surfaces.")}
         control={
@@ -498,6 +620,82 @@ function VelaBranding({
               height={wordmark?.height}
             />
           </div>
+        }
+      />
+    </SettingsSection>
+  );
+}
+
+function VelaSignIn({
+  passwordSignIn,
+  plexSignIn,
+  quickConnect,
+  onPasswordChange,
+  onPlexChange,
+  onQuickConnectChange,
+}: {
+  passwordSignIn: boolean;
+  plexSignIn: boolean;
+  quickConnect: boolean;
+  onPasswordChange: (enabled: boolean) => void;
+  onPlexChange: (enabled: boolean) => void;
+  onQuickConnectChange: (enabled: boolean) => void;
+}) {
+  const allOff = !passwordSignIn && !plexSignIn && !quickConnect;
+
+  return (
+    <SettingsSection
+      title={t("Sign in")}
+      description={t(
+        "Choose how viewers can sign in to Vela. Your Ether console sign-in is always available.",
+      )}
+    >
+      {allOff ? (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 border-b border-warning/25 bg-warning/10 px-5 py-3 text-sm text-warning"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden />
+          <span>
+            {t(
+              "All Vela sign-in methods are off. Viewers cannot sign in to Vela until you turn at least one back on. Your Ether console sign-in is unaffected.",
+            )}
+          </span>
+        </div>
+      ) : null}
+      <SettingsRow
+        title={t("Password")}
+        description={t("Sign in with an Ether username and password.")}
+        control={
+          <Switch
+            checked={passwordSignIn}
+            aria-label={t("Password sign-in")}
+            onChange={(e) => onPasswordChange(e.currentTarget.checked)}
+          />
+        }
+      />
+      <SettingsRow
+        title={t("Plex")}
+        description={t("Sign in with a shared Plex account when Plex is connected.")}
+        control={
+          <Switch
+            checked={plexSignIn}
+            aria-label={t("Plex sign-in")}
+            onChange={(e) => onPlexChange(e.currentTarget.checked)}
+          />
+        }
+      />
+      <SettingsRow
+        title={t("Code")}
+        description={t(
+          "Approve a short code from the viewer portal or another signed-in Vela device.",
+        )}
+        control={
+          <Switch
+            checked={quickConnect}
+            aria-label={t("Code sign-in")}
+            onChange={(e) => onQuickConnectChange(e.currentTarget.checked)}
+          />
         }
       />
     </SettingsSection>
@@ -554,6 +752,7 @@ function ProtocolSettings({
       if (trimmedName) body.appName = trimmedName;
       else delete body.appName;
       if (!body.wordmark) delete body.wordmark;
+      if (!body.appIcon) delete body.appIcon;
     }
     setSaving(true);
     setError(undefined);
@@ -681,6 +880,7 @@ function ProtocolSettings({
             <VelaBranding
               appName={draft.appName}
               wordmark={draft.wordmark ?? undefined}
+              appIcon={draft.appIcon ?? undefined}
               onAppNameChange={(next) => {
                 const nextDraft = { ...draft };
                 if (next) nextDraft.appName = next;
@@ -693,6 +893,20 @@ function ProtocolSettings({
                 else delete nextDraft.wordmark;
                 setDraft(nextDraft);
               }}
+              onAppIconChange={(next) => {
+                const nextDraft = { ...draft };
+                if (next) nextDraft.appIcon = next;
+                else delete nextDraft.appIcon;
+                setDraft(nextDraft);
+              }}
+            />
+            <VelaSignIn
+              passwordSignIn={draft.passwordSignIn !== false}
+              plexSignIn={draft.plexSignIn !== false}
+              quickConnect={draft.quickConnect !== false}
+              onPasswordChange={(passwordSignIn) => setDraft({ ...draft, passwordSignIn })}
+              onPlexChange={(plexSignIn) => setDraft({ ...draft, plexSignIn })}
+              onQuickConnectChange={(quickConnect) => setDraft({ ...draft, quickConnect })}
             />
             <VelaSkins
               defaultSkinId={draft.defaultSkinId ?? "cinematic"}

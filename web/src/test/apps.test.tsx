@@ -702,4 +702,114 @@ describe("Apps connection hub", () => {
     );
     vi.restoreAllMocks();
   });
+
+  it("uploads a Vela square app icon, toggles sign-in methods, and warns when all viewer methods are off", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ documents: [] }), { status: 200 }),
+    );
+    let savedSettings: Record<string, unknown> = { defaultSkinId: "cinematic" };
+    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
+      if (path === "/frontends" && !options?.method) {
+        return [
+          row("vela", "Vela", true, {
+            status: {
+              webPlayerReady: true,
+              addresses: ["http://192.168.68.65:32550/vela"],
+              connectUrls: ["http://192.168.68.65:32550/vela"],
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+        ];
+      }
+      if (path === "/vela/skins" && !options?.method) return { skins: [] };
+      if (path === "/frontends/vela/settings" && !options?.method) return savedSettings;
+      if (path === "/frontends/vela/settings" && options?.method === "PUT") {
+        savedSettings = JSON.parse(String(options.body));
+        return { ok: true };
+      }
+      if (path === "/frontends/vela/icon" && options?.method === "POST") {
+        return { url: "/vela/v0/branding/icon-cccc.png", width: 512, height: 512 };
+      }
+      if (path === "/vela/status" || path === "/vela/check") {
+        return {
+          installed: true,
+          installedVersion: "0.4.0",
+          availableVersion: "0.4.0",
+          rollbackAvailable: false,
+          busy: false,
+          phase: "",
+          downloaded: 0,
+          total: 0,
+        };
+      }
+      if (path === "/web-player") {
+        return {
+          available: true,
+          players: [{ id: "vela", url: "http://192.168.68.65:32550/vela/" }],
+        };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderApps("/apps/vela");
+    const passwordSwitch = (await screen.findByLabelText("Password sign-in")) as HTMLInputElement;
+    const plexSwitch = screen.getByLabelText("Plex sign-in") as HTMLInputElement;
+    const codeSwitch = screen.getByLabelText("Code sign-in") as HTMLInputElement;
+
+    expect(passwordSwitch.checked).toBe(true);
+    expect(plexSwitch.checked).toBe(true);
+    expect(codeSwitch.checked).toBe(true);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    // Upload square app icon.
+    const iconFile = new File(["png"], "icon.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Upload app icon"), {
+      target: { files: [iconFile] },
+    });
+    expect(await screen.findByText("512×512 px")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "App icon preview" })).toHaveAttribute(
+      "src",
+      "/vela/v0/branding/icon-cccc.png",
+    );
+
+    // Turning off two methods does not show the all-off warning; turning off all three does.
+    fireEvent.click(passwordSwitch);
+    fireEvent.click(plexSwitch);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(codeSwitch);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "All Vela sign-in methods are off. Viewers cannot sign in to Vela until you turn at least one back on. Your Ether console sign-in is unaffected.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(savedSettings).toEqual({
+        defaultSkinId: "cinematic",
+        appIcon: {
+          url: "/vela/v0/branding/icon-cccc.png",
+          width: 512,
+          height: 512,
+        },
+        passwordSignIn: false,
+        plexSignIn: false,
+        quickConnect: false,
+      }),
+    );
+
+    // Turning one back on clears the warning, and removing the icon clears appIcon.
+    fireEvent.click(codeSwitch);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Remove app icon"));
+    expect(screen.queryByRole("img", { name: "App icon preview" })).not.toBeInTheDocument();
+    vi.restoreAllMocks();
+  });
 });

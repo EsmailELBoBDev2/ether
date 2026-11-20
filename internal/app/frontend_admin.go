@@ -68,6 +68,27 @@ func (f *frontendControl) UploadVelaWordmark(ctx context.Context, r io.Reader) (
 	}, nil
 }
 
+func (f *frontendControl) UploadVelaIcon(ctx context.Context, r io.Reader) (admin.VelaAppIcon, error) {
+	icon, err := vela.UploadAppIcon(ctx, f.db, r)
+	if err != nil {
+		var valErr *vela.AppIconValidationError
+		switch {
+		case errors.Is(err, vela.ErrAppIconTooLarge):
+			return admin.VelaAppIcon{}, admin.ErrVelaAppIconTooLarge
+		case errors.As(err, &valErr):
+			return admin.VelaAppIcon{}, &admin.VelaAppIconValidationError{Message: valErr.Message}
+		default:
+			return admin.VelaAppIcon{}, err
+		}
+	}
+	return admin.VelaAppIcon{
+		URL:    icon.URL,
+		Width:  icon.Width,
+		Height: icon.Height,
+		Digest: icon.Digest,
+	}, nil
+}
+
 func (f *frontendControl) descriptor(id frontend.Protocol) (frontend.Descriptor, bool) {
 	for _, d := range f.registry.Descriptors() {
 		if d.ID == id {
@@ -257,6 +278,12 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 			}
 			v.AppearanceRevision++
 		}
+		if id == "vela" && vela.CapabilitiesChanged(v.Settings, s) {
+			if v.CapabilitiesRevision >= 9007199254740991 {
+				return errors.New("capabilities revision exhausted")
+			}
+			v.CapabilitiesRevision++
+		}
 		// Only a present publicUrl changes the stored address; a settings
 		// save that never heard of it must not clear the owner's address.
 		// A present empty value clears it.
@@ -282,6 +309,7 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 	})
 	if err == nil && id == "vela" && f.db != nil {
 		vela.PruneWordmarks(ctx, f.db, s)
+		vela.PruneAppIcons(ctx, f.db, s)
 	}
 	return err
 }

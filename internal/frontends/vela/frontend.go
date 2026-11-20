@@ -49,6 +49,15 @@ func (Frontend) Describe() frontend.Descriptor {
 						{Key: "force", Kind: "bool"},
 						{Key: "appName", Kind: "string", Max: frontend.Int(MaxAppNameChars)},
 						{Key: "wordmark", Kind: "wordmark"},
+						{Key: "appIcon", Kind: "appIcon"},
+					},
+				},
+				{
+					Key: "signIn",
+					Fields: []frontend.SettingsField{
+						{Key: "passwordSignIn", Kind: "bool"},
+						{Key: "plexSignIn", Kind: "bool"},
+						{Key: "quickConnect", Kind: "bool"},
 					},
 				},
 				{
@@ -99,7 +108,7 @@ func (f Frontend) ValidateSettings(s frontend.Settings) error {
 			if f.Skins != nil && !IsBuiltinSkinID(id) && !f.Skins.HasInstalled(context.Background(), id) {
 				return errors.New("unknown Vela skin")
 			}
-		case "force":
+		case "force", "passwordSignIn", "plexSignIn", "quickConnect":
 			if _, ok := value.(bool); !ok {
 				return errors.New("invalid Vela setting")
 			}
@@ -127,6 +136,17 @@ func (f Frontend) ValidateSettings(s frontend.Settings) error {
 			mode, ok := value.(string)
 			if !ok || !ValidLivePreviewMode(mode) {
 				return errors.New("invalid Vela setting")
+			}
+		case "appIcon":
+			if value == nil {
+				continue
+			}
+			icon, ok := parseAppIconSetting(value)
+			if !ok {
+				return errors.New("invalid Vela setting")
+			}
+			if err := validateAppIconInDB(f.DB, icon); err != nil {
+				return err
 			}
 		default:
 			return errors.New("invalid Vela setting")
@@ -170,6 +190,8 @@ type instance struct {
 	skins           *SkinStore
 	brandingMu      sync.Mutex
 	brandingBlobs   map[string]brandingBlob
+	iconMu          sync.Mutex
+	iconBlobs       map[string]webclient.VelaIconAsset
 	bootstrapMu     sync.Mutex
 	bootstraps      map[string]*bootstrapEntry
 	db              *sql.DB
@@ -488,7 +510,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/vela/v0/") {
-		webclient.ServeVelaBrand(w, r, i.assets, i.appearanceDocument().appName)
+		webclient.ServeVelaWithBrand(w, r, i.assets, i.velaBrand())
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -609,7 +631,8 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		i.mux.ServeHTTP(out, r)
 		var saveErr error
 		if (out.Code == http.StatusAccepted && r.URL.Path == "/vela/v0/playback") ||
-			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/commands") && out.Header().Get("Retry-After") != "") {
+			(out.Code == http.StatusServiceUnavailable && strings.HasSuffix(r.URL.Path, "/commands") && out.Header().Get("Retry-After") != "") ||
+			(out.Code == http.StatusTooManyRequests && strings.HasSuffix(r.URL.Path, "/approve") && out.Header().Get("Retry-After") != "") {
 			_, saveErr = i.db.ExecContext(r.Context(), `DELETE FROM vela_replays WHERE key=? AND response IS NULL`, key)
 		} else {
 			saveErr = i.save(r.Context(), key, savedResponse{Status: out.Code, Header: out.Header(), Body: out.Body.Bytes()})
@@ -713,18 +736,41 @@ func (i *instance) routes() {
 func (*instance) unavailable(w http.ResponseWriter, r *http.Request) {
 	problem(w, 403, "policy", "feature_unavailable")
 }
-func (i *instance) velaSettings() map[string]any {
+func (i *instance) velaSettings() (map[string]any, uint64) {
 	if i.host.HostConfig != nil {
-		return i.host.HostConfig().Frontends["vela"].Settings
+		cfg := i.host.HostConfig().Frontends["vela"]
+		return cfg.Settings, cfg.CapabilitiesRevision
 	}
 	if i.host.Config != nil {
-		return i.host.Config()
+		return i.host.Config(), 0
 	}
-	return nil
+	return nil, 0
 }
 
 func (i *instance) livePreviewMode() string {
-	return livePreviewModeFromSettings(i.velaSettings())
+	settings, _ := i.velaSettings()
+	return livePreviewModeFromSettings(settings)
+}
+
+func (i *instance) signInMethods() SignInMethods {
+	settings, _ := i.velaSettings()
+	return SignInMethodsFromSettings(settings)
+}
+
+func (i *instance) capabilitiesRevision() uint64 {
+	_, rev := i.velaSettings()
+	return rev
+}
+
+func (i *instance) quickConnectApprovalAvailable(v *frontend.Viewer) bool {
+	if v == nil || v.ID <= 0 || v.Delegated {
+		return false
+	}
+	auth := frontend.AuthenticationFeatures{}
+	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
+		auth = source.AuthenticationFeatures()
+	}
+	return auth.QuickConnect && i.signInMethods().QuickConnect
 }
 
 func (i *instance) capabilities() object {
@@ -740,8 +786,12 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
 		auth = source.AuthenticationFeatures()
 	}
-	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
-	if auth.PlexAccountSignIn {
+	methods := i.signInMethods()
+	passwordAvail := auth.Password && methods.Password
+	plexAvail := auth.PlexAccountSignIn && methods.Plex
+	quickAvail := auth.QuickConnect && methods.QuickConnect
+	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	if plexAvail {
 		caps["plexAccountSignIn"] = true
 	}
 	if _, ok := i.liveGuideWindowReader(); ok {
@@ -797,6 +847,9 @@ func (i *instance) requestCapabilitiesFor(r *http.Request, v *frontend.Viewer) o
 	c := i.capabilities()
 	if v != nil {
 		c["searchKinds"], _ = i.searchKinds(r, v)
+		if features, ok := c["features"].(object); ok {
+			features["quickConnectApproval"] = object{"available": i.quickConnectApprovalAvailable(v)}
+		}
 	}
 	if i.host.SecureOrigins != nil {
 		if origins := i.host.SecureOrigins(r.Context(), r); len(origins) > 0 {

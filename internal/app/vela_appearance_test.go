@@ -122,6 +122,66 @@ func TestVelaAppearanceRevision(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected unknown wordmark digest to be rejected")
 	}
+
+	// Uploaded square app icon advances AppearanceRevision and persists; unknown digest is rejected.
+	icon, err := control.UploadVelaIcon(context.Background(), strings.NewReader(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" fill="#111"/></svg>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.PutSettings(context.Background(), "vela", frontend.Settings{
+		"defaultSkinId": "cinematic",
+		"force":         false,
+		"appName":       "Home Theatre",
+		"wordmark":      map[string]any{"url": wm.URL, "width": float64(wm.Width), "height": float64(wm.Height)},
+		"appIcon":       map[string]any{"url": icon.URL, "width": float64(icon.Width), "height": float64(icon.Height)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Read().Frontends["vela"]; got.AppearanceRevision != 6 || got.CapabilitiesRevision != 0 {
+		t.Fatalf("after appIcon save: appearance=%d caps=%d", got.AppearanceRevision, got.CapabilitiesRevision)
+	}
+	if err := control.PutSettings(context.Background(), "vela", frontend.Settings{
+		"appIcon": map[string]any{"url": "/vela/v0/branding/icon-" + strings.Repeat("e", 64) + ".svg", "width": 128.0, "height": 128.0},
+	}); err == nil {
+		t.Fatal("expected unknown app icon digest to be rejected")
+	}
+
+	// Sign-in method changes advance CapabilitiesRevision across restarts without bumping AppearanceRevision.
+	if err := control.PutSettings(context.Background(), "vela", frontend.Settings{
+		"defaultSkinId":  "cinematic",
+		"force":          false,
+		"appName":        "Home Theatre",
+		"wordmark":       map[string]any{"url": wm.URL, "width": float64(wm.Width), "height": float64(wm.Height)},
+		"appIcon":        map[string]any{"url": icon.URL, "width": float64(icon.Width), "height": float64(icon.Height)},
+		"passwordSignIn": false,
+		"plexSignIn":     false,
+		"quickConnect":   false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopenedCaps, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopenedCaps.Read().Frontends["vela"]; got.CapabilitiesRevision != 1 || got.AppearanceRevision != 6 {
+		t.Fatalf("after sign-in toggle: %#v", got)
+	}
+	// No-op re-save does not bump CapabilitiesRevision.
+	if err := control.PutSettings(context.Background(), "vela", frontend.Settings{
+		"defaultSkinId":  "cinematic",
+		"force":          false,
+		"appName":        "Home Theatre",
+		"wordmark":       map[string]any{"url": wm.URL, "width": float64(wm.Width), "height": float64(wm.Height)},
+		"appIcon":        map[string]any{"url": icon.URL, "width": float64(icon.Width), "height": float64(icon.Height)},
+		"passwordSignIn": false,
+		"plexSignIn":     false,
+		"quickConnect":   false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Read().Frontends["vela"].CapabilitiesRevision; got != 1 {
+		t.Fatalf("expected CapabilitiesRevision 1 on no-op save, got %d", got)
+	}
 }
 
 func TestVelaSkinsAdminAndSSRF(t *testing.T) {

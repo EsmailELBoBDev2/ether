@@ -144,7 +144,39 @@ func referencedWordmarkDigests(settings map[string]any) map[string]bool {
 	return out
 }
 
-// NormalizeSettings trims appName, omits unset branding keys, and clones wordmark maps.
+// SignInMethods holds the owner's enabled sign-in methods for Vela viewers.
+// Each method defaults to enabled when absent from persisted settings.
+type SignInMethods struct {
+	Password     bool
+	Plex         bool
+	QuickConnect bool
+}
+
+// SignInMethodsFromSettings returns the effective Vela sign-in method toggles.
+func SignInMethodsFromSettings(s map[string]any) SignInMethods {
+	out := SignInMethods{Password: true, Plex: true, QuickConnect: true}
+	if s == nil {
+		return out
+	}
+	if v, ok := s["passwordSignIn"].(bool); ok {
+		out.Password = v
+	}
+	if v, ok := s["plexSignIn"].(bool); ok {
+		out.Plex = v
+	}
+	if v, ok := s["quickConnect"].(bool); ok {
+		out.QuickConnect = v
+	}
+	return out
+}
+
+// CapabilitiesChanged reports whether two Vela settings maps produce different
+// advertised sign-in capabilities.
+func CapabilitiesChanged(before, after map[string]any) bool {
+	return SignInMethodsFromSettings(before) != SignInMethodsFromSettings(after)
+}
+
+// NormalizeSettings trims appName, omits unset branding keys, and clones wordmark/icon maps.
 func NormalizeSettings(s frontend.Settings) frontend.Settings {
 	out := make(frontend.Settings, len(s))
 	for k, v := range s {
@@ -170,6 +202,14 @@ func NormalizeSettings(s frontend.Settings) frontend.Settings {
 		case "livePreview":
 			if mode, ok := v.(string); ok && ValidLivePreviewMode(mode) {
 				out["livePreview"] = mode
+			}
+		case "appIcon":
+			if icon, ok := parseAppIconSetting(v); ok {
+				out["appIcon"] = map[string]any{
+					"url":    icon.URL,
+					"width":  icon.Width,
+					"height": icon.Height,
+				}
 			}
 		default:
 			out[k] = v
@@ -200,7 +240,11 @@ func canonicalAppearanceState(s map[string]any) string {
 	if wm, ok := parseWordmarkSetting(s["wordmark"]); ok {
 		wmKey = fmt.Sprintf("%s|%d|%d|%s", wm.URL, wm.Width, wm.Height, wm.Dark)
 	}
-	return fmt.Sprintf("%s\x00%t\x00%s\x00%s", skin, force, name, wmKey)
+	iconKey := ""
+	if icon, ok := parseAppIconSetting(s["appIcon"]); ok {
+		iconKey = fmt.Sprintf("%s|%d|%d", icon.URL, icon.Width, icon.Height)
+	}
+	return fmt.Sprintf("%s\x00%t\x00%s\x00%s\x00%s", skin, force, name, wmKey, iconKey)
 }
 
 func brandingFromSettings(s map[string]any) (object, string) {
@@ -319,13 +363,24 @@ func validateWordmarkInDB(db *sql.DB, wm wordmarkSetting) error {
 }
 
 func (i *instance) brandingAsset(w http.ResponseWriter, r *http.Request) {
-	m := brandingAssetPattern.FindStringSubmatch(r.PathValue("asset"))
-	if m == nil || i.db == nil {
+	if i.db == nil {
 		http.NotFound(w, r)
 		return
 	}
-	digest, ext := m[1], m[2]
-	cacheKey := digest + "." + ext
+	asset := r.PathValue("asset")
+	var digest, ext, cacheKey, query string
+	if m := brandingAssetPattern.FindStringSubmatch(asset); m != nil {
+		digest, ext = m[1], m[2]
+		cacheKey = digest + "." + ext
+		query = `SELECT mime, data FROM vela_wordmarks WHERE digest = ? AND ext = ?`
+	} else if m := appIconAssetPattern.FindStringSubmatch(asset); m != nil {
+		digest, ext = m[1], m[2]
+		cacheKey = "icon-" + digest + "." + ext
+		query = `SELECT mime, data FROM vela_app_icons WHERE digest = ? AND ext = ?`
+	} else {
+		http.NotFound(w, r)
+		return
+	}
 
 	i.brandingMu.Lock()
 	blob, ok := i.brandingBlobs[cacheKey]
@@ -333,7 +388,7 @@ func (i *instance) brandingAsset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		var mimeType string
 		var data []byte
-		err := i.db.QueryRowContext(r.Context(), `SELECT mime, data FROM vela_wordmarks WHERE digest = ? AND ext = ?`, digest, ext).Scan(&mimeType, &data)
+		err := i.db.QueryRowContext(r.Context(), query, digest, ext).Scan(&mimeType, &data)
 		if err != nil {
 			http.NotFound(w, r)
 			return

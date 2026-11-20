@@ -65,6 +65,8 @@ func TestUnknownRoutesNeverReturn401(t *testing.T) {
 		{name: "post_unknown_valid_token_with_key", method: http.MethodPost, path: "/vela/v0/unknown/route", token: "valid-token", body: `{"idempotencyKey":"k2"}`, want: http.StatusNotFound},
 		{name: "delete_unknown_no_token", method: http.MethodDelete, path: "/vela/v0/unknown/route", token: "", body: `{"idempotencyKey":"k3"}`, want: http.StatusNotFound},
 		{name: "delete_unknown_valid_token", method: http.MethodDelete, path: "/vela/v0/unknown/route", token: "valid-token", body: `{"idempotencyKey":"k4"}`, want: http.StatusNotFound},
+		{name: "patch_unknown_no_token", method: http.MethodPatch, path: "/vela/v0/unknown/route", token: "", body: `{"idempotencyKey":"k5"}`, want: http.StatusNotFound},
+		{name: "patch_unknown_valid_token", method: http.MethodPatch, path: "/vela/v0/unknown/route", token: "valid-token", body: `{"idempotencyKey":"k6"}`, want: http.StatusNotFound},
 		{name: "known_protected_route_no_token", method: http.MethodGet, path: "/vela/v0/libraries", token: "", want: http.StatusUnauthorized},
 	}
 

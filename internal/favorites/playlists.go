@@ -187,5 +187,24 @@ func (p *Playlists) Delete(ctx context.Context, uid int64, key core.RatingKey) e
 	}
 	return p.Favorites.setMirror(ctx, &core.User{ID: uid}, false, key)
 }
+func (p *Playlists) EditPlaylist(ctx context.Context, uid int64, key core.RatingKey, edit core.PlaylistEdit) (*core.Playlist, error) {
+	editor, ok := p.Base.(core.PlaylistEditor)
+	if !ok {
+		return nil, core.ErrNotAvailable
+	}
+	pl, err := editor.EditPlaylist(ctx, uid, key, edit)
+	if err != nil {
+		return nil, err
+	}
+	fav, e := p.favorite(ctx, uid)
+	if e != nil && !errors.Is(e, core.ErrNotFound) {
+		return nil, e
+	}
+	if e == nil && fav.Key == key {
+		return p.project(ctx, uid, pl)
+	}
+	return pl, nil
+}
 
 var _ core.Playlists = (*Playlists)(nil)
+var _ core.PlaylistEditor = (*Playlists)(nil)

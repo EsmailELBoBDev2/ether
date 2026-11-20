@@ -337,6 +337,14 @@ func fail(w http.ResponseWriter, err error, requests ...*http.Request) {
 		}
 	case errors.Is(err, frontend.ErrNoSources), errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, frontend.ErrSourceGone):
 		problem(w, 502, "source", "source_unavailable")
+	case errors.Is(err, frontend.ErrBadPlaylist):
+		problem(w, 400, "request", "invalid_request")
+	case errors.Is(err, frontend.ErrPlaylistReadOnly):
+		problem(w, 409, "conflict", "playlist_read_only")
+	case errors.Is(err, frontend.ErrPlaylistTooLarge):
+		problem(w, 422, "request", "playlist_too_large")
+	case errors.Is(err, frontend.ErrPlaylistUnsupportedKind):
+		problem(w, 422, "request", "unsupported_kind")
 	case errors.Is(err, frontend.ErrNotAvailable):
 		problem(w, 409, "source", "not_available")
 	case errors.Is(err, frontend.ErrNotFound):
@@ -457,7 +465,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	// and unsupported methods dispatch straight to ServeMux so they answer 404
 	// or 405 instead of 400/401.
 	_, r.Pattern = i.mux.Handler(r)
-	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "DELETE") {
+	if r.Pattern == "" || r.Pattern == "/vela/v0/" || (r.Method != "POST" && r.Method != "PATCH" && r.Method != "DELETE") {
 		i.mux.ServeHTTP(w, r)
 		return
 	}
@@ -655,6 +663,15 @@ func (i *instance) routes() {
 	i.route("GET", "/live/guide", i.guide)
 	i.route("POST", "/live/guide/window", i.guideWindow)
 	i.route("POST", "/titles/{id}/watch", i.watch)
+	i.route("GET", "/titles/{id}/playlists", i.titlePlaylists)
+	i.route("GET", "/playlists", i.listPlaylists)
+	i.route("POST", "/playlists", i.createPlaylist)
+	i.route("GET", "/playlists/{id}", i.playlistDetail)
+	i.route("PATCH", "/playlists/{id}", i.renamePlaylist)
+	i.route("DELETE", "/playlists/{id}", i.deletePlaylist)
+	i.route("POST", "/playlists/{id}/entries", i.addPlaylistEntries)
+	i.route("DELETE", "/playlists/{id}/entries/{entryId}", i.removePlaylistEntry)
+	i.route("POST", "/playlists/{id}/entries/{entryId}/move", i.movePlaylistEntry)
 	i.mux.HandleFunc("/vela/v0/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not-found", "not_found") })
 }
 func (*instance) unavailable(w http.ResponseWriter, r *http.Request) {
@@ -673,7 +690,7 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
 		auth = source.AuthenticationFeatures()
 	}
-	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable())}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if auth.PlexAccountSignIn {
 		caps["plexAccountSignIn"] = true
 	}

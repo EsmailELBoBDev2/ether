@@ -1068,13 +1068,13 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 		if err != nil || p == nil || p.UserID != v.ID || p.Key != req.Key {
 			return frontend.ItemDetail{}, core.ErrNotFound
 		}
-		copy := *p
-		copy.Items = nil
-		for _, key := range p.Items {
-			if _, err := s.item(ctx, v, key); err == nil {
-				copy.Items = append(copy.Items, key)
-			}
+		visible, _, err := s.visiblePlaylistIndexes(ctx, v, p.Items)
+		if err != nil {
+			return frontend.ItemDetail{}, err
 		}
+		copy := *p
+		copy.Items = visible
+		copy.ItemIDs = nil
 		return frontend.ItemDetail{Playlist: &copy}, nil
 	}
 	title, err := s.item(ctx, v, req.Key)
@@ -1408,7 +1408,13 @@ func (s *Service) authorizeArtwork(ctx context.Context, v *core.Viewer, device c
 		frontend.ArtworkRowsFrom(ctx).Put(piv.Title)
 		return nil
 	}
-	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart || key.Kind() == core.KindPlaylist {
+	if key.Kind() == core.KindPlaylist {
+		if _, err := s.ownedPlaylist(ctx, v, key); err != nil {
+			return err
+		}
+		return nil
+	}
+	if key.Kind() == core.KindCollection || key.Kind() == core.KindSmart {
 		if _, err := s.Item(ctx, frontend.ItemRequest{Viewer: v, Device: device, Key: key}); err != nil {
 			return err
 		}
@@ -1487,9 +1493,14 @@ func (s *Service) Children(ctx context.Context, viewer *core.Viewer, device core
 		if detail.Collection != nil {
 			items, err = s.collectionItems(ctx, v, key)
 		} else if detail.Playlist != nil {
-			for _, k := range detail.Playlist.Items {
-				if t, e := s.item(ctx, v, k); e == nil {
-					items = append(items, *t)
+			visibleMap, loadErr := s.loadVisiblePlaylistTitles(ctx, v, detail.Playlist.Items)
+			if loadErr != nil {
+				err = loadErr
+			} else {
+				for _, k := range detail.Playlist.Items {
+					if t, ok := visibleMap[k]; ok {
+						items = append(items, t)
+					}
 				}
 			}
 		}
@@ -2353,10 +2364,15 @@ func (s *Service) SetRating(ctx context.Context, v *core.Viewer, k core.RatingKe
 func (s *Service) RemoveFromContinue(ctx context.Context, v *core.Viewer, k core.RatingKey) error {
 	ctx = state.WithOrigin(ctx, state.Origin{Surface: s.d.Protocol})
 	return s.mutate(ctx, v, k, func(u *core.User) error {
-		if s.d.RemoveContinue == nil {
-			return core.ErrNotFound
+		if s.d.RemoveContinue != nil {
+			return s.d.RemoveContinue(ctx, u, k)
 		}
-		return s.d.RemoveContinue(ctx, u, k)
+		if hider, ok := s.d.State.(interface {
+			HideContinue(context.Context, int64, core.RatingKey) error
+		}); ok {
+			return hider.HideContinue(ctx, u.ID, k)
+		}
+		return core.ErrNotFound
 	})
 }
 

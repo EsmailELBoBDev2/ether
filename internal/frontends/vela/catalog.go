@@ -1102,12 +1102,22 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not-found", "not_found")
 		return
 	}
-	if _, e = i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k}); e != nil {
+	detail, e := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: requestDevice(r), Key: k})
+	if e != nil {
 		fail(w, e, r)
 		return
 	}
-	var b struct{ Played, Favorite, Watchlisted *bool }
+	var b struct {
+		Played           *bool `json:"played"`
+		Favorite         *bool `json:"favorite"`
+		Watchlisted      *bool `json:"watchlisted"`
+		ContinueWatching *bool `json:"continueWatching"`
+	}
 	if body(r, &b) != nil {
+		problem(w, 400, "request", "invalid_request")
+		return
+	}
+	if b.ContinueWatching != nil && *b.ContinueWatching {
 		problem(w, 400, "request", "invalid_request")
 		return
 	}
@@ -1123,6 +1133,21 @@ func (i *instance) watch(w http.ResponseWriter, r *http.Request) {
 	}
 	if e == nil && b.Watchlisted != nil {
 		e = i.host.Experience.SetWatchlist(r.Context(), v, k, *b.Watchlisted)
+	}
+	if e == nil && b.ContinueWatching != nil {
+		if !k.IsPluginKey() && (k.Kind() == frontend.KindPlaylist || k.Kind() == frontend.KindCollection || k.Kind() == frontend.KindSmart) {
+			problem(w, 400, "request", "invalid_request")
+			return
+		}
+		target := k
+		if detail.Title.Type == frontend.TypeEpisode || k.Kind() == frontend.KindEpisode {
+			if detail.Title.ShowKey != 0 {
+				target = detail.Title.ShowKey
+			} else if !k.IsPluginKey() && k.TMDB() > 0 {
+				target = frontend.ShowKey(k.TMDB())
+			}
+		}
+		e = i.host.Experience.RemoveFromContinue(r.Context(), v, target)
 	}
 	if e != nil {
 		fail(w, e, r)

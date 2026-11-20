@@ -157,7 +157,7 @@ func TestExamplesPackAndRunHosted(t *testing.T) {
 }
 
 func TestStudioExamplesPackAndConform(t *testing.T) {
-	for _, name := range []string{"tvmaze", "october-after-dark", "canada-live", "easydebrid", "travel-mode", "movie-night", "english-dubs"} {
+	for _, name := range []string{"tvmaze", "october-after-dark", "canada-live", "easydebrid", "travel-mode", "movie-night", "english-dubs", "smart-lights"} {
 		t.Run(name, func(t *testing.T) {
 			pkg, err := kit.LoadDir(name)
 			if err != nil {

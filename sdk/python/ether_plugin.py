@@ -37,6 +37,7 @@ TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
 MAX_KIND_VISIBLE_IDS = 500
 HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
+HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key"
 
 ALLOWED_SETTING_KINDS = frozenset(
     {
@@ -682,6 +683,106 @@ class _CollectionsClient:
         self._call("POST", "/ether/plugin-host/collections/upsert", collection)
 
 
+class EventEnumOption(TypedDict, total=False):
+    value: str
+    label: str
+
+
+class EventFieldMeta(TypedDict, total=False):
+    name: str
+    type: str
+    label: str
+    description: str
+    unit: str
+    enum: List[EventEnumOption]
+    pii: bool
+    secret: bool
+    filterable: bool
+    example: Any
+
+
+class PublishedEventMeta(TypedDict, total=False):
+    key: str
+    label: str
+    description: str
+    version: int
+    fields: List[EventFieldMeta]
+
+
+class FlowActionParamMeta(TypedDict, total=False):
+    key: str
+    type: str
+    label: str
+    description: str
+    required: bool
+    secret: bool
+    template: bool
+    default: Any
+    enum: List[EventEnumOption]
+    unit: str
+    picker: str
+
+
+class FlowActionMeta(TypedDict, total=False):
+    key: str
+    label: str
+    description: str
+    icon: str
+    route: str
+    idempotent: bool
+    sideEffect: bool
+    timeout: str
+    params: List[FlowActionParamMeta]
+    outputs: List[EventFieldMeta]
+
+
+class EventCorrelation(TypedDict, total=False):
+    key: str
+    sessionId: str
+    playId: str
+    titleId: str
+    viewerId: int
+    channelId: str
+    sourceId: str
+    pluginId: str
+    deviceId: str
+    libraryId: str
+
+
+class FlowActionRequest(TypedDict, total=False):
+    key: str
+    flowId: str
+    runId: str
+    nodeId: str
+    idempotencyKey: str
+    dryRun: bool
+    params: Dict[str, Any]
+
+
+class FlowActionResponse(TypedDict, total=False):
+    output: Dict[str, Any]
+    branch: str
+
+
+class _EventsClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def publish(
+        self,
+        key: str,
+        payload: Optional[Dict[str, Any]] = None,
+        correlation: Optional[EventCorrelation] = None,
+    ) -> None:
+        body: Dict[str, Any] = {
+            "key": str(key),
+            "payload": dict(payload) if payload is not None else {},
+        }
+        if correlation is not None:
+            body["correlation"] = dict(correlation)
+        self._call("POST", "/ether/plugin-host/events/publish", body)
+
+
 class _NotifyClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -741,6 +842,7 @@ class RemoteHostClient:
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
+        self.events = _EventsClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -1071,6 +1173,7 @@ class PluginInstance:
         )
 
         self._page_routes: Dict[str, str] = {}
+        self._flow_action_routes: Dict[str, str] = {}
         if isinstance(ether_block, dict):
             contributes = ether_block.get("contributes")
             if isinstance(contributes, dict):
@@ -1080,6 +1183,9 @@ class PluginInstance:
                 for s in contributes.get("slots") or []:
                     if isinstance(s, dict) and s.get("route") and s.get("key"):
                         self._page_routes[str(s["route"])] = str(s["key"])
+                for fa in contributes.get("flowActions") or []:
+                    if isinstance(fa, dict) and fa.get("route") and fa.get("key"):
+                        self._flow_action_routes[str(fa["route"])] = str(fa["key"])
 
     def get_settings(self) -> Dict[str, Any]:
         return dict(self._current_settings)
@@ -1347,6 +1453,32 @@ class PluginInstance:
             action_name = urllib.parse.unquote(path[len("/ether/action/") :])
             input_obj = _parse_json_body(req.get("body"))
             return _ok_response(fn({"action": action_name, "input": input_obj}, ctx))
+
+        if method == "POST":
+            flow_key = self._flow_action_routes.get(path)
+            if not flow_key and path.startswith("/ether/v1/flow-actions/"):
+                flow_key = urllib.parse.unquote(path[len("/ether/v1/flow-actions/") :])
+            if flow_key:
+                fn = self.routes.get("flow_action") or self.routes.get("flowAction")
+                if not fn:
+                    return _error_response(
+                        404, "not_found", "Flow action handler is not registered."
+                    )
+                body_obj = _parse_json_body(req.get("body"))
+                header_idem = _get_header(req.get("headers"), HEADER_IDEMPOTENCY_KEY) or ""
+                params_obj = body_obj.get("params")
+                if not isinstance(params_obj, dict):
+                    params_obj = {}
+                fa_req: FlowActionRequest = {
+                    "key": flow_key,
+                    "flowId": str(body_obj.get("flowId") or ""),
+                    "runId": str(body_obj.get("runId") or ""),
+                    "nodeId": str(body_obj.get("nodeId") or ""),
+                    "idempotencyKey": str(body_obj.get("idempotencyKey") or header_idem),
+                    "dryRun": bool(body_obj.get("dryRun", False)),
+                    "params": params_obj,
+                }
+                return _ok_response(fn(fa_req, ctx))
 
         if method == "POST" and path.startswith("/ether/tool/"):
             fn = self.routes.get("tool")
@@ -2299,6 +2431,7 @@ class MockHostClient:
         self.history_store: Dict[int, List[Dict[str, Any]]] = {}
         self.watch_state: Dict[str, bool] = {}
         self.collections_list: List[Dict[str, Any]] = []
+        self.published_events: List[Dict[str, Any]] = []
         self.notifications: List[str] = []
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
@@ -2333,6 +2466,7 @@ class MockHostClient:
         }
         self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
+        self.events = self._Events(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
@@ -2742,6 +2876,24 @@ class MockHostClient:
         def upsert(self, collection: Dict[str, Any]) -> None:
             self._p.collections_list.append(collection)
 
+    class _Events:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def publish(
+            self,
+            key: str,
+            payload: Optional[Dict[str, Any]] = None,
+            correlation: Optional[EventCorrelation] = None,
+        ) -> None:
+            entry: Dict[str, Any] = {
+                "key": str(key),
+                "payload": dict(payload) if payload is not None else {},
+            }
+            if correlation is not None:
+                entry["correlation"] = dict(correlation)
+            self._p.published_events.append(entry)
+
     class _Notify:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
@@ -2964,6 +3116,33 @@ class TestHarness:
                 "method": "POST",
                 "path": "/ether/event",
                 "body": json.dumps({"events": events}),
+            }
+        )
+
+    def flow_action(
+        self,
+        key: str,
+        req: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        body = dict(req or {})
+        route = f"/ether/v1/flow-actions/{urllib.parse.quote(key)}"
+        ether_block = self.instance.manifest.get("ether")
+        if isinstance(ether_block, dict):
+            contributes = ether_block.get("contributes")
+            if isinstance(contributes, dict):
+                for fa in contributes.get("flowActions") or []:
+                    if isinstance(fa, dict) and fa.get("key") == key and fa.get("route"):
+                        route = str(fa["route"])
+                        break
+        headers: Dict[str, str] = {}
+        if body.get("idempotencyKey"):
+            headers[HEADER_IDEMPOTENCY_KEY] = str(body["idempotencyKey"])
+        return self.instance.dispatch(
+            {
+                "method": "POST",
+                "path": route,
+                "headers": headers,
+                "body": json.dumps(body),
             }
         )
 

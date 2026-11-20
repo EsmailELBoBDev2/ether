@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
@@ -291,6 +292,8 @@ func mapHostErr(err error) error {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	case errors.Is(err, plugins.ErrQuotaExceeded):
 		return fmt.Errorf("%w: %w", ErrTooLarge, err)
+	case errors.Is(err, plugins.ErrRateLimited):
+		return fmt.Errorf("%w: %v", ErrRateLimited, err)
 	default:
 		var ve *plugins.ValidationError
 		var collectionInput *plugins.CollectionInputError
@@ -539,6 +542,14 @@ func (a HostAdapter) Settings(ctx context.Context, pluginID string) (map[string]
 	}
 	v, err := h.Settings(ctx)
 	return v, mapHostErr(err)
+}
+
+func (a HostAdapter) PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.PublishEvent(ctx, key, payload, corr))
 }
 
 func (a HostAdapter) NotifyOwner(ctx context.Context, pluginID, text string) error {

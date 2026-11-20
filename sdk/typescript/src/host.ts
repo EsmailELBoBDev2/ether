@@ -7,7 +7,7 @@
  * `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`.
  */
 
-import type { BadgeEntry, BadgeTitleRef, BadgeUsage, MaybePromise, RuntimeLimits } from "./types.ts";
+import type { BadgeEntry, BadgeTitleRef, BadgeUsage, EventCorrelation, MaybePromise, RuntimeLimits } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
 
 export type { BadgeEntry, BadgeTitleRef, BadgeUsage };
@@ -43,6 +43,7 @@ export const MaxBadgeLabelLen = 16;
 export const PosterBadgeQuotaTitles = 200_000;
 export const MAX_KIND_VISIBLE_IDS = 500;
 export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
+export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -378,6 +379,13 @@ export interface EtherHost {
     hashPoll(id: string): MaybePromise<FolderHashJob>;
     hashCancel(id: string): MaybePromise<FolderHashJob>;
   };
+  events?: {
+    publish(
+      key: string,
+      payload?: Record<string, unknown>,
+      correlation?: EventCorrelation,
+    ): MaybePromise<void>;
+  };
   notify: {
     owner(text: string): MaybePromise<void>;
   };
@@ -469,6 +477,13 @@ interface GlobalEtherBindings {
       hashStart: (root: string, path: string) => FolderHashJob;
       hashPoll: (id: string) => FolderHashJob;
       hashCancel: (id: string) => FolderHashJob;
+    };
+    events?: {
+      publish: (
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ) => void;
     };
     notify: {
       owner: (text: string) => void;
@@ -681,6 +696,27 @@ export function createHostedClient(): EtherHost {
       stat(root: string, path: string): FolderEntry {
         if (g.ether?.folders) return g.ether.folders.stat(root, path);
         return callHost<FolderEntry>("folders.stat", [root, path]);
+      },
+    },
+    events: {
+      publish(
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ): void {
+        const body = payload ?? {};
+        if (g.ether?.events?.publish) {
+          if (correlation !== undefined) {
+            g.ether.events.publish(key, body, correlation);
+          } else {
+            g.ether.events.publish(key, body);
+          }
+          return;
+        }
+        callHost(
+          "events.publish",
+          correlation !== undefined ? [key, body, correlation] : [key, body],
+        );
       },
     },
     notify: {
@@ -998,6 +1034,22 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
             "folders.stat is for hosted plugins; sidecar plugins read their local fileRoot directly",
           ),
         );
+      },
+    },
+    events: {
+      async publish(
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ): Promise<void> {
+        const body: Record<string, unknown> = {
+          key,
+          payload: payload ?? {},
+        };
+        if (correlation !== undefined) {
+          body.correlation = correlation;
+        }
+        await callJson("POST", "/ether/plugin-host/events/publish", body);
       },
     },
     notify: {

@@ -59,6 +59,7 @@
               "markers",
               "notify",
               "events",
+              "flow_actions",
               "ranking_step",
               "rule_condition",
               "tools",
@@ -122,7 +123,109 @@
               "type": "array"
             },
             "events": {
+              "description": "Event subscriptions and custom events published to Ether's event bus. At least one of subscribe or publish is required when events capability is declared.",
               "properties": {
+                "publish": {
+                  "items": {
+                    "properties": {
+                      "description": {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "items": {
+                          "properties": {
+                            "description": {
+                              "maxLength": 200,
+                              "type": "string"
+                            },
+                            "enum": {
+                              "items": {
+                                "properties": {
+                                  "label": {
+                                    "maxLength": 60,
+                                    "type": "string"
+                                  },
+                                  "value": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "value"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "example": true,
+                            "filterable": {
+                              "type": "boolean"
+                            },
+                            "label": {
+                              "maxLength": 60,
+                              "type": "string"
+                            },
+                            "name": {
+                              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$",
+                              "type": "string"
+                            },
+                            "pii": {
+                              "type": "boolean"
+                            },
+                            "secret": {
+                              "type": "boolean"
+                            },
+                            "type": {
+                              "enum": [
+                                "string",
+                                "int",
+                                "float",
+                                "bool",
+                                "duration_ms",
+                                "timestamp",
+                                "enum",
+                                "string_list",
+                                "object"
+                              ],
+                              "type": "string"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "type",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "key": {
+                        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$",
+                        "type": "string"
+                      },
+                      "label": {
+                        "maxLength": 60,
+                        "type": "string"
+                      },
+                      "version": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 64,
+                  "type": "array"
+                },
                 "subscribe": {
                   "items": {
                     "type": "string"
@@ -130,10 +233,206 @@
                   "type": "array"
                 }
               },
-              "required": [
-                "subscribe"
-              ],
               "type": "object"
+            },
+            "flowActions": {
+              "description": "Custom actions contributed to Ether Flows (requires flow_actions capability).",
+              "items": {
+                "properties": {
+                  "description": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "idempotent": {
+                    "type": "boolean"
+                  },
+                  "key": {
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                    "type": "string"
+                  },
+                  "label": {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  "outputs": {
+                    "items": {
+                      "properties": {
+                        "description": {
+                          "maxLength": 200,
+                          "type": "string"
+                        },
+                        "enum": {
+                          "items": {
+                            "properties": {
+                              "label": {
+                                "maxLength": 60,
+                                "type": "string"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "example": true,
+                        "filterable": {
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "maxLength": 60,
+                          "type": "string"
+                        },
+                        "name": {
+                          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$",
+                          "type": "string"
+                        },
+                        "pii": {
+                          "type": "boolean"
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "bool",
+                            "duration_ms",
+                            "timestamp",
+                            "enum",
+                            "string_list",
+                            "object"
+                          ],
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "type",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "params": {
+                    "items": {
+                      "properties": {
+                        "default": true,
+                        "description": {
+                          "maxLength": 200,
+                          "type": "string"
+                        },
+                        "enum": {
+                          "items": {
+                            "properties": {
+                              "label": {
+                                "maxLength": 60,
+                                "type": "string"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "key": {
+                          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                          "type": "string"
+                        },
+                        "label": {
+                          "maxLength": 60,
+                          "type": "string"
+                        },
+                        "picker": {
+                          "enum": [
+                            "channel",
+                            "viewer",
+                            "library",
+                            "source",
+                            "event",
+                            "plugin"
+                          ],
+                          "type": "string"
+                        },
+                        "required": {
+                          "type": "boolean"
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "template": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "bool",
+                            "duration_ms",
+                            "timestamp",
+                            "enum",
+                            "string_list",
+                            "object"
+                          ],
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "type",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "route": {
+                    "pattern": "^/",
+                    "type": "string"
+                  },
+                  "sideEffect": {
+                    "type": "boolean"
+                  },
+                  "timeout": {
+                    "description": "Go duration up to 60s (default 30s).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "route"
+                ],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "type": "array"
             },
             "frontendAdapters": {
               "items": {

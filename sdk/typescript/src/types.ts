@@ -22,6 +22,7 @@ export type Capability =
   | "markers"
   | "notify"
   | "events"
+  | "flow_actions"
   | "ranking_step"
   | "rule_condition"
   | "tools"
@@ -32,7 +33,7 @@ export type Capability =
   | "matcher"
   | "poster_badges";
 
-export type EtherEventName =
+export type LegacyEtherEventName =
   | "playback.started"
   | "playback.paused"
   | "playback.resumed"
@@ -45,6 +46,100 @@ export type EtherEventName =
   | "viewer.access_changed"
   | "collection.rebuilt"
   | "server.health_changed";
+
+export type EtherEventName = LegacyEtherEventName | (string & {});
+
+export type EventFieldType =
+  | "string"
+  | "int"
+  | "float"
+  | "bool"
+  | "duration_ms"
+  | "timestamp"
+  | "enum"
+  | "string_list"
+  | "object";
+
+export interface EventEnumOption {
+  value: string;
+  label?: string;
+}
+
+export interface EventFieldMeta {
+  name: string;
+  type: EventFieldType;
+  label: string;
+  description?: string;
+  unit?: string;
+  enum?: EventEnumOption[];
+  pii?: boolean;
+  secret?: boolean;
+  filterable?: boolean;
+  example?: unknown;
+}
+
+export interface PublishedEventMeta {
+  key: string;
+  label: string;
+  description?: string;
+  version?: number;
+  fields?: EventFieldMeta[];
+}
+
+export interface FlowActionParamMeta {
+  key: string;
+  type: EventFieldType;
+  label: string;
+  description?: string;
+  required?: boolean;
+  secret?: boolean;
+  template?: boolean;
+  default?: unknown;
+  enum?: EventEnumOption[];
+  unit?: string;
+  picker?: "channel" | "viewer" | "library" | "source" | "event" | "plugin";
+}
+
+export interface FlowActionMeta {
+  key: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  route: string;
+  idempotent?: boolean;
+  sideEffect?: boolean;
+  timeout?: string;
+  params?: FlowActionParamMeta[];
+  outputs?: EventFieldMeta[];
+}
+
+export interface EventCorrelation {
+  key?: string;
+  sessionId?: string;
+  playId?: string;
+  titleId?: string;
+  viewerId?: number;
+  channelId?: string;
+  sourceId?: string;
+  pluginId?: string;
+  deviceId?: string;
+  libraryId?: string;
+}
+
+export interface FlowActionRequest {
+  key: string;
+  flowId: string;
+  runId: string;
+  nodeId: string;
+  idempotencyKey: string;
+  dryRun?: boolean;
+  params: Record<string, unknown>;
+}
+
+export interface FlowActionResponse {
+  output?: Record<string, unknown>;
+  branch?: string;
+}
 
 export interface StremioCatalogDecl {
   type: string;
@@ -200,7 +295,8 @@ export interface NotificationMeta {
 }
 
 export interface EventsMeta {
-  subscribe: EtherEventName[];
+  subscribe?: EtherEventName[];
+  publish?: PublishedEventMeta[];
 }
 
 export interface IntegrationMeta {
@@ -310,6 +406,7 @@ export interface Contributes {
   markers?: MarkersMeta;
   notification?: NotificationMeta;
   events?: EventsMeta;
+  flowActions?: FlowActionMeta[];
   integration?: IntegrationMeta;
   listSources?: ListSourceMeta[];
   rankingSteps?: RankingStepMeta[];

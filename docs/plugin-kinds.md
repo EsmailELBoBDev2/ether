@@ -584,10 +584,22 @@ computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enfor
 `archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
 index with `UnsafeArchiveMemberError` and directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
-The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
+The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `CacheRasterize`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
 `RemoteHostClient` and `MockHostClient` expose `runtime.limits()` and `archive.list`,
 `archive.open`, `archive.read`, and `archive.extract`.
+
+`cache.rasterize(libraryKey, name, sourceBlob[, {width?, height?, format?}])` rasterises an
+SVG already in the plugin's own library cache into a new cached bitmap blob, for clients
+that only draw bitmaps. It returns `{blob, contentType, width, height, size}`; serve the
+result as a blob response like any other cached image. A zero `width` or `height` keeps
+the SVG aspect ratio and `format` is `"png"` (default) or `"jpeg"`. The host bounds the
+source document (512 KiB) and each output dimension (2048), applies the same SVG safety
+rules Ether uses for logos (no external resources, scripts, or unsafe constructs), and
+returns an error for documents it refuses. Rendered variants are cached by source content
+and size, and the stored blob is content-addressed, so repeat calls return the same
+reference. The existing content capability and library cache quota apply; no new
+permission is needed.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.

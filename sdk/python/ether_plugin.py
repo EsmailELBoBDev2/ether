@@ -528,6 +528,33 @@ class ArchiveExtractResult(TypedDict):
     crc32: str
 
 
+class RasterizeOptions(TypedDict, total=False):
+    width: int
+    height: int
+    format: str
+
+
+class RasterizeResult(TypedDict):
+    blob: str
+    contentType: str
+    width: int
+    height: int
+    size: int
+
+
+def _check_rasterize_options(options: Optional[RasterizeOptions]) -> Optional[Dict[str, Any]]:
+    if options is None:
+        return None
+    out: Dict[str, Any] = dict(options)
+    for dim in (out.get("width"), out.get("height")):
+        if dim is not None and (isinstance(dim, bool) or not isinstance(dim, int) or dim < 0 or dim > 2048):
+            raise ValueError("cache.rasterize width and height must be within 0..2048")
+    fmt = out.get("format")
+    if fmt is not None and fmt not in ("png", "jpeg"):
+        raise ValueError("cache.rasterize format must be png or jpeg")
+    return out
+
+
 def _check_data_range(data_range: Dict[str, Any], max_bytes: int = MAX_DATA_READ_BYTES) -> Dict[str, int]:
     offset = data_range.get("offset")
     length = data_range.get("length")
@@ -874,6 +901,20 @@ class RemoteHostClient:
             norm = _check_data_range(data_range)
             res = self._p._call_json("POST", "/ether/plugin-host/data/cache.read", [str(blob_ref), norm])
             return base64.b64decode((res or {}).get("bodyBase64") or "")
+
+        def rasterize(
+            self,
+            library_key: str,
+            name: str,
+            blob_ref: str,
+            options: Optional[RasterizeOptions] = None,
+        ) -> RasterizeResult:
+            args: List[Any] = [str(library_key), str(name), str(blob_ref)]
+            norm = _check_rasterize_options(options)
+            if norm is not None:
+                args.append(norm)
+            res = self._p._call_json("POST", "/ether/plugin-host/data/cache.rasterize", args)
+            return res if isinstance(res, dict) else {}  # type: ignore[return-value]
 
     def _call_json(
         self,
@@ -2634,6 +2675,17 @@ class MockHostClient:
             norm = _check_data_range(data_range, max_bytes=cap)
             raw = self._p.blobs[blob_ref]
             return raw[norm["offset"] : norm["offset"] + norm["length"]]
+
+        def rasterize(
+            self,
+            library_key: str,
+            name: str,
+            blob_ref: str,
+            options: Optional[RasterizeOptions] = None,
+        ) -> RasterizeResult:
+            _check_rasterize_options(options)
+            _ = self._p.blobs[blob_ref]
+            raise RuntimeError("cache.rasterize is not available in MockHostClient; use a real Ether host to rasterise SVG")
 
     class _Archive:
         def __init__(self, parent: "MockHostClient") -> None:

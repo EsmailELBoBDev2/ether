@@ -20,6 +20,7 @@ type BlobHost interface {
 	RuntimeLimits(context.Context) (RuntimeLimits, error)
 	FetchToCache(context.Context, FetchCacheRequest) (FetchCacheResult, error)
 	CacheRead(context.Context, string, DataRange) ([]byte, error)
+	CacheRasterize(context.Context, string, string, string, RasterizeOptions) (RasterizeResult, error)
 	ArchiveList(context.Context, string) ([]ArchiveMember, error)
 	ArchiveOpen(context.Context, string, int, DataRange) ([]byte, error)
 	ArchiveRead(context.Context, string, []ArchiveReadItem) ([]ArchiveReadResult, error)
@@ -73,6 +74,25 @@ type ArchiveExtractResult struct {
 	SHA1  string `json:"sha1"`
 	MD5   string `json:"md5"`
 	CRC32 string `json:"crc32"`
+}
+
+// RasterizeOptions selects the output size and format for CacheRasterize.
+// A zero Width or Height keeps the SVG aspect ratio; Format is "png"
+// (default) or "jpeg". Each dimension is bounded at 2048 by the host.
+type RasterizeOptions struct {
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+	Format string `json:"format,omitempty"`
+}
+
+// RasterizeResult is returned by CacheRasterize: the new cached bitmap
+// blob, its content type and pixel dimensions.
+type RasterizeResult struct {
+	Blob        string `json:"blob"`
+	ContentType string `json:"contentType"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Size        int64  `json:"size"`
 }
 
 func (c *RemoteHostClient) dataCall(ctx context.Context, name string, args []any, out any) error {
@@ -164,6 +184,26 @@ func (c *RemoteHostClient) ArchiveRead(ctx context.Context, blob string, reads [
 		out[i] = ArchiveReadResult{Index: w.Index, Member: w.Member, Size: w.Size, Body: body}
 	}
 	return out, nil
+}
+
+// CacheRasterize rasterises an SVG already in the plugin's blob cache into
+// a new cached bitmap blob under libraryKey/name, using Ether's bounded SVG
+// rasteriser (source and output sizes are host-bounded, unsafe documents
+// are refused, and rendered variants are cached host-side).
+func (c *RemoteHostClient) CacheRasterize(ctx context.Context, libraryKey, name, blob string, opts RasterizeOptions) (RasterizeResult, error) {
+	if opts.Width < 0 || opts.Width > 2048 || opts.Height < 0 || opts.Height > 2048 {
+		return RasterizeResult{}, fmt.Errorf("cache.rasterize width and height must be within 0..2048")
+	}
+	if opts.Format != "" && opts.Format != "png" && opts.Format != "jpeg" {
+		return RasterizeResult{}, fmt.Errorf("cache.rasterize format must be png or jpeg")
+	}
+	args := []any{libraryKey, name, blob}
+	if opts != (RasterizeOptions{}) {
+		args = append(args, opts)
+	}
+	var out RasterizeResult
+	err := c.dataCall(ctx, "cache.rasterize", args, &out)
+	return out, err
 }
 
 // ArchiveExtract streams an uncompressed ZIP, 7z or RAR member straight into

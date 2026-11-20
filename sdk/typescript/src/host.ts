@@ -52,6 +52,9 @@ export interface FetchCacheRequest { url: string; headers?: Record<string, strin
 export interface FetchCacheResult { blob: string; size: number; crc32: string; md5: string; sha1: string; status: number }
 export interface ArchiveExtractOptions { libraryKey?: string; name?: string }
 export interface ArchiveExtractResult { ref: string; size: number; sha1: string; md5: string; crc32: string }
+/** Output size/format for cache.rasterize; a zero dimension keeps the SVG aspect ratio and each dimension is host-bounded at 2048. */
+export interface RasterizeOptions { width?: number; height?: number; format?: "png" | "jpeg" }
+export interface RasterizeResult { blob: string; contentType: string; width: number; height: number; size: number }
 
 const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64_TABLE = (() => {
@@ -89,6 +92,18 @@ function checkArchiveReads(reads: ArchiveReadItem[]): void {
     if (total > MaxDataReadBytes) {
       throw new Error(`archive.read requested bytes exceed maximum readBytes ceiling (${MaxDataReadBytes})`);
     }
+  }
+}
+
+function checkRasterizeOptions(opts?: RasterizeOptions): void {
+  if (!opts) return;
+  for (const dim of [opts.width, opts.height]) {
+    if (dim !== undefined && (!Number.isSafeInteger(dim) || dim < 0 || dim > 2048)) {
+      throw new Error("cache.rasterize width and height must be within 0..2048");
+    }
+  }
+  if (opts.format !== undefined && opts.format !== "png" && opts.format !== "jpeg") {
+    throw new Error("cache.rasterize format must be png or jpeg");
   }
 }
 
@@ -404,6 +419,8 @@ export interface EtherHost {
     put(libraryKey: string, name: string, data: Uint8Array): MaybePromise<string>;
     open(blobRef: string): MaybePromise<Uint8Array>;
     read?(blobRef: string, range: DataRange): MaybePromise<Uint8Array>;
+    /** Rasterises a cached SVG blob into a new cached bitmap blob with Ether's bounded SVG rasteriser; unsafe documents are refused. */
+    rasterize?(libraryKey: string, name: string, blobRef: string, opts?: RasterizeOptions): MaybePromise<RasterizeResult>;
   };
   /** ZIP (Store/Deflate), 7z (Copy/LZMA/LZMA2), and RAR 4/5 data services.
    * Ranges bound returned bytes; solid reads restart at the block beginning.
@@ -557,6 +574,10 @@ export function createHostedClient(): EtherHost {
           return new Uint8Array(g.__ether_host_binary("cache.read", JSON.stringify([blob, range])) as ArrayBuffer);
         }
         return decodeData(callHost("cache.read", [blob, range]));
+      },
+      rasterize: (lib, name, blob, opts) => {
+        checkRasterizeOptions(opts);
+        return callHost<RasterizeResult>("cache.rasterize", opts == null ? [lib, name, blob] : [lib, name, blob, opts]);
       },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
@@ -1106,6 +1127,7 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     },
     cache: {
       read: async (blob, range) => { checkDataRange(range); return decodeData((await callJson<{bodyBase64: string}>("POST", "/ether/plugin-host/data/cache.read", [blob, range]))!); },
+      rasterize: async (lib, name, blob, opts) => { checkRasterizeOptions(opts); return (await callJson<RasterizeResult>("POST", "/ether/plugin-host/data/cache.rasterize", opts == null ? [lib, name, blob] : [lib, name, blob, opts]))!; },
       async put(libraryKey, name, data) {
         const resp = await doFetch(`${base}/ether/plugin-host/cache/${encodeURIComponent(libraryKey)}?name=${encodeURIComponent(name)}`, {
           method: "POST",

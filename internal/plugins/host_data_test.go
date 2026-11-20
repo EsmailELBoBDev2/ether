@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"github.com/braedonsaunders/ether/internal/artwork"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
@@ -362,4 +363,68 @@ func TestDataHostInvariants(t *testing.T) {
 			t.Fatalf("tight unit budget err = %v, want budget fault", err)
 		}
 	})
+}
+
+func TestCacheRasterizeHostService(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	rec := installContent(t, env)
+	libKey := core.PluginLibraryKey(rec.ID, "recording")
+
+	blobs, err := blobcache.Open(t.TempDir(), blobcache.Options{SweepPeriod: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = blobs.Close() })
+	cachePut, cacheOpen := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		return blobcache.Quota{MaxBytes: 16 << 20}
+	})
+	env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen})
+	h := env.m.HostFor(rec.ID).(*host)
+
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><rect width="20" height="10" fill="#336699"/></svg>`)
+	sourceRef, err := h.CachePut(ctx, libKey, "logo.svg", bytes.NewReader(svg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal([]any{libKey, "logo.png", sourceRef, RasterizeOptions{Width: 40, Format: "png"}})
+	raw, err := CallDataHost(ctx, h, "cache.rasterize", args)
+	if err != nil {
+		t.Fatalf("cache.rasterize: %v", err)
+	}
+	var out RasterizeResult
+	if err = json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ContentType != "image/png" || out.Width != 40 || out.Height != 20 || out.Size <= 0 || !strings.HasPrefix(out.Blob, "blob:") {
+		t.Fatalf("unexpected rasterize result: %+v", out)
+	}
+	rc, err := h.CacheOpen(ctx, out.Blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || int64(len(stored)) != out.Size {
+		t.Fatalf("stored bitmap size = %d, want %d (err=%v)", len(stored), out.Size, err)
+	}
+	// Repeat calls return the same content-addressed blob (cached result).
+	again, err := h.CacheRasterize(ctx, libKey, "logo.png", sourceRef, RasterizeOptions{Width: 40, Format: "png"})
+	if err != nil || again.Blob != out.Blob {
+		t.Fatalf("repeat rasterize = %+v err=%v, want blob %q", again, err, out.Blob)
+	}
+	// Unsafe SVG, oversize dimensions and foreign libraries are refused.
+	unsafeRef, err := h.CachePut(ctx, libKey, "bad.svg", bytes.NewReader([]byte(`<svg><image href="http://127.0.0.1/"/></svg>`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.CacheRasterize(ctx, libKey, "bad.png", unsafeRef, RasterizeOptions{Width: 40}); !errors.Is(err, artwork.ErrSVG) {
+		t.Fatalf("unsafe SVG err = %v, want ErrSVG", err)
+	}
+	if _, err = h.CacheRasterize(ctx, libKey, "logo.png", sourceRef, RasterizeOptions{Width: 2049}); !errors.Is(err, artwork.ErrSVG) {
+		t.Fatalf("oversize err = %v, want ErrSVG", err)
+	}
+	if _, err = h.CacheRasterize(ctx, "pk-other-plugin-recording", "logo.png", sourceRef, RasterizeOptions{Width: 40}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("foreign library err = %v, want ErrPermissionDenied", err)
+	}
 }

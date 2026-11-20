@@ -44,6 +44,8 @@ export {
   type HashResult,
   type ArchiveExtractOptions,
   type ArchiveExtractResult,
+  type RasterizeOptions,
+  type RasterizeResult,
   type FetchCacheRequest,
   type FetchCacheResult,
   type HostFetchRequest,

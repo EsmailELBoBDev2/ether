@@ -45,8 +45,12 @@ type HLSRequest struct {
 	Diagnostics       bool
 	// Continuous disables ramps and governor changes that introduce discontinuities.
 	Continuous bool
-	Ramp       HLSRamp    `json:",omitzero"`
-	Resume     *HLSResume `json:",omitempty"`
+	// FirstSegmentAt is the title time a full-timeline (StartOffset zero)
+	// client seeks to first, such as a Jellyfin resume point. The encoder
+	// starts at that segment instead of at zero. Zero starts at the beginning.
+	FirstSegmentAt time.Duration `json:",omitempty"`
+	Ramp           HLSRamp       `json:",omitzero"`
+	Resume         *HLSResume    `json:",omitempty"`
 	// RecoveryStart is trusted composition only; nil preserves legacy behavior.
 	RecoveryStart *RecoveryStart `json:",omitempty"`
 

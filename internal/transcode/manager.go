@@ -1107,6 +1107,13 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 			return nil, err
 		}
 	}
+	// A full-timeline playlist starts at zero while its client seeks straight
+	// to the resume point: encode from that segment first, not from zero.
+	if req.FirstSegmentAt > 0 && req.Resume == nil && proto == core.ProtocolHLS && plan != nil && base == 0 {
+		if at := plan.IndexAt(req.FirstSegmentAt); at > 0 && at < total {
+			startSeg = at
+		}
+	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()

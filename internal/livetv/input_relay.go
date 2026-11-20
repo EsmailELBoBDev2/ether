@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -658,6 +659,11 @@ func (s *Service) serveInputRelay(w http.ResponseWriter, r *http.Request) {
 	if !root && s.servePrefetched(w, r, g, raw) {
 		return
 	}
+	// Separate video/audio playlists of a demuxed HLS master align their
+	// starting windows on open before ffmpeg begins demuxing.
+	if !root && s.serveAlignedDemuxedPlaylist(w, r, g, raw) {
+		return
+	}
 	select {
 	case g.slots <- struct{}{}:
 		defer func() { <-g.slots }()
@@ -774,12 +780,18 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 				g.setManifest(newCachedManifest(raw, b, base, true))
 			}
 			b = selectedHLSMaster(b, base, g.variantCaps)
+			m := parseMasterPlaylist(b, base)
+			v, picked := pickVariant(m, g.variantCaps)
 			g.variantLogged.Do(func() {
-				m := parseMasterPlaylist(b, base)
-				if v, ok := pickVariant(m, g.variantCaps); ok && g.log != nil {
+				if picked && g.log != nil {
 					g.log.Info("live HLS input variant selected", "height", v.height, "bandwidth", v.bandwidth, "audio", variantHasAudio(v), "separate_audio", m.demuxedAudio[v.audio], "max_height", g.variantCaps.MaxHeight, "max_bitrate_kbps", g.variantCaps.MaxBitrateKbps)
 				}
 			})
+			if picked && v.audio != "" && m.demuxedAudio[v.audio] {
+				if audioURLs := m.audioGroupURIs(v.audio, v.uri); len(audioURLs) > 0 {
+					g.hlsState().noteDemuxedMaster(v.uri, audioURLs)
+				}
+			}
 		}
 		// Health, and for Steady the reserve window (reserve_hls.go).
 		var events []UpstreamEvent
@@ -787,6 +799,10 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		b, events = h.media(raw, b, base)
 		h.deliver(events)
 	}
+	s.writeRelayManifest(w, g, base, b, hls)
+}
+
+func (s *Service) writeRelayManifest(w http.ResponseWriter, g *inputGrant, base *url.URL, b []byte, hls bool) {
 	s.inputRelay.mu.Lock()
 	host := s.inputRelay.host
 	s.inputRelay.mu.Unlock()
@@ -802,6 +818,7 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 		return g.relayURL(host, raw), nil
 	}
 	var out []byte
+	var err error
 	ctype := "application/dash+xml"
 	if hls {
 		ctype = "application/vnd.apple.mpegurl"
@@ -833,6 +850,363 @@ func (s *Service) serveRelayManifest(w http.ResponseWriter, g *inputGrant, raw s
 	w.Header().Set("Content-Length", fmt.Sprint(len(out)))
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(out)
+}
+
+type relayPlaylistFetch struct {
+	body   []byte
+	base   *url.URL
+	status int
+	ctype  string
+	hls    bool
+	err    error
+}
+
+func (s *Service) fetchRelayPlaylist(ctx context.Context, g *inputGrant, raw string) relayPlaylistFetch {
+	select {
+	case g.slots <- struct{}{}:
+		defer func() { <-g.slots }()
+	case <-ctx.Done():
+		return relayPlaylistFetch{err: ctx.Err()}
+	}
+	fctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(g.ctx, cancel)()
+	res, err := s.relayFetchAs(fctx, cancel, g, raw, &http.Request{Header: http.Header{}}, false)
+	if err != nil {
+		return relayPlaylistFetch{err: err}
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent {
+		return relayPlaylistFetch{status: res.StatusCode}
+	}
+	idle := time.AfterFunc(relayIOTimeout, cancel)
+	defer idle.Stop()
+	br := bufio.NewReaderSize(&idleReader{r: res.Body, t: idle}, 32<<10)
+	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		packed, rerr := io.ReadAll(io.LimitReader(br, relayManifestLimit+1))
+		if rerr != nil || len(packed) > relayManifestLimit {
+			return relayPlaylistFetch{err: errors.New("upstream manifest unavailable")}
+		}
+		if zr, zerr := gzip.NewReader(bytes.NewReader(packed)); zerr == nil {
+			plain, perr := io.ReadAll(io.LimitReader(zr, relayManifestLimit+1))
+			zr.Close()
+			if perr == nil && len(plain) <= relayManifestLimit {
+				if t := bytes.TrimLeft(bytes.TrimPrefix(plain, []byte("\xef\xbb\xbf")), " \t\r\n"); bytes.HasPrefix(t, []byte("#EXTM3U")) {
+					return relayPlaylistFetch{body: plain, base: res.Request.URL, status: res.StatusCode, ctype: res.Header.Get("Content-Type"), hls: true}
+				}
+			}
+		}
+		br = bufio.NewReaderSize(io.MultiReader(bytes.NewReader(packed), br), 32<<10)
+	}
+	head := sniffHead(br)
+	b, rerr := io.ReadAll(io.LimitReader(br, relayManifestLimit+1))
+	if rerr != nil || len(b) > relayManifestLimit {
+		return relayPlaylistFetch{err: errors.New("upstream manifest unavailable")}
+	}
+	return relayPlaylistFetch{
+		body:   b,
+		base:   res.Request.URL,
+		status: res.StatusCode,
+		ctype:  res.Header.Get("Content-Type"),
+		hls:    bytes.HasPrefix(head, []byte("#EXTM3U")),
+	}
+}
+
+// serveAlignedDemuxedPlaylist intercepts the first video/audio playlist opens
+// following a demuxed HLS master so both playlists are fetched together and
+// trimmed to start at the same media time before ffmpeg starts demuxing.
+func (s *Service) serveAlignedDemuxedPlaylist(w http.ResponseWriter, r *http.Request, g *inputGrant, raw string) bool {
+	h := g.hlsIfAny()
+	if h == nil {
+		return false
+	}
+	var (
+		gen                 uint64
+		pairVideo, pairAudio string
+		call                *hlsAlignCall
+	)
+	for {
+		h.mu.Lock()
+		if !h.isDemuxedMemberLocked(raw) {
+			h.mu.Unlock()
+			return false
+		}
+		if snap, ok := h.demux.snap[raw]; ok {
+			delete(h.demux.snap, raw)
+			h.mu.Unlock()
+			if time.Since(snap.at) < 5*time.Second {
+				s.writeRelayManifest(w, g, snap.base, snap.body, true)
+				return true
+			}
+			return false
+		}
+		if wait := h.demux.inFlight; wait != nil {
+			h.mu.Unlock()
+			select {
+			case <-wait.done:
+				continue
+			case <-r.Context().Done():
+				return true
+			case <-g.ctx.Done():
+				http.Error(w, "input revoked", http.StatusGone)
+				return true
+			}
+		}
+		if !h.demux.pending {
+			h.mu.Unlock()
+			return false
+		}
+		gen = h.demux.gen
+		pairVideo = h.demux.videoURL
+		pairAudio = h.demux.audioURLs[0]
+		if raw != pairVideo {
+			pairAudio = raw
+		}
+		call = &hlsAlignCall{done: make(chan struct{})}
+		h.demux.inFlight = call
+		h.demux.pending = false
+		h.mu.Unlock()
+		break
+	}
+	defer func() {
+		h.mu.Lock()
+		if h.demux.inFlight == call {
+			h.demux.inFlight = nil
+		}
+		h.mu.Unlock()
+		close(call.done)
+	}()
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer context.AfterFunc(g.ctx, cancel)()
+
+	sequential := g.source != "" && s.sourceConnectionLimit(g.source) == 1
+	var vRes, aRes relayPlaylistFetch
+	if sequential {
+		vRes = s.fetchRelayPlaylist(ctx, g, pairVideo)
+		aRes = s.fetchRelayPlaylist(ctx, g, pairAudio)
+	} else {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			vRes = s.fetchRelayPlaylist(ctx, g, pairVideo)
+		}()
+		go func() {
+			defer wg.Done()
+			aRes = s.fetchRelayPlaylist(ctx, g, pairAudio)
+		}()
+		wg.Wait()
+	}
+
+	reqRes, peerURL, peerRes := vRes, pairAudio, aRes
+	if raw == pairAudio {
+		reqRes, peerURL, peerRes = aRes, pairVideo, vRes
+	}
+	if reqRes.err != nil || (reqRes.status != http.StatusOK && reqRes.status != http.StatusPartialContent) {
+		if reqRes.err == nil && isExpiredStatus(reqRes.status) {
+			g.noteExpiredManifest(reqRes.status)
+		}
+		if reqRes.err == nil && reqRes.status >= 400 || reqRes.err != nil && r.Context().Err() == nil {
+			h.deliver(h.failedFetch(raw))
+		}
+		if reqRes.err != nil {
+			code := http.StatusBadGateway
+			if errors.Is(reqRes.err, context.DeadlineExceeded) {
+				code = http.StatusGatewayTimeout
+			}
+			http.Error(w, "upstream unavailable", code)
+			return true
+		}
+		code := reqRes.status
+		if code < 400 || code > 599 {
+			code = http.StatusBadGateway
+		}
+		http.Error(w, "upstream unavailable", code)
+		return true
+	}
+
+	if reqRes.hls && peerRes.err == nil && (peerRes.status == http.StatusOK || peerRes.status == http.StatusPartialContent) && peerRes.hls {
+		vm := parseHLSMedia(vRes.body, vRes.base)
+		am := parseHLSMedia(aRes.body, aRes.base)
+		if vm.live() && am.live() {
+			vTimes, vHas, aTimes, aHas, haveTimes := hlsMediaPDTTimes(vm, am)
+			method := "pdt"
+			if !haveTimes && (len(vm.segs) > 1 || len(am.segs) > 1) {
+				vTimes, vHas, aTimes, aHas, haveTimes = s.probeDemuxedSegmentTimes(ctx, g, h, vm, am, sequential)
+				method = "segment_ts"
+			}
+			vOut, aOut, events := h.applyDemuxedPair(pairVideo, vRes.body, vm, pairAudio, aRes.body, am, vTimes, vHas, aTimes, aHas, haveTimes, method)
+			h.deliver(events)
+			reqOut, peerOut := vOut, aOut
+			if raw == pairAudio {
+				reqOut, peerOut = aOut, vOut
+			}
+			h.mu.Lock()
+			if h.demux.gen == gen {
+				if h.demux.snap == nil {
+					h.demux.snap = map[string]hlsAlignedSnap{}
+				}
+				h.demux.snap[peerURL] = hlsAlignedSnap{body: peerOut, base: peerRes.base, at: time.Now()}
+			}
+			h.mu.Unlock()
+			s.writeRelayManifest(w, g, reqRes.base, reqOut, true)
+			return true
+		}
+	}
+
+	if reqRes.hls {
+		s.serveRelayManifest(w, g, raw, reqRes.base, bytes.NewReader(reqRes.body), true)
+		return true
+	}
+	if mt, params, err := mime.ParseMediaType(reqRes.ctype); err == nil {
+		w.Header().Set("Content-Type", mime.FormatMediaType(mt, params))
+	}
+	w.Header().Set("Content-Length", fmt.Sprint(len(reqRes.body)))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(reqRes.status)
+	_, _ = w.Write(reqRes.body)
+	return true
+}
+
+// probeDemuxedSegmentTimes falls back to media timestamps (CMAF tfdt or
+// MPEG-TS PTS) when separate video and audio playlists lack usable
+// EXT-X-PROGRAM-DATE-TIME tags. Fetched init maps and segments are kept in
+// h's startup cache so the reader reuses them without downloading twice.
+func (s *Service) probeDemuxedSegmentTimes(ctx context.Context, g *inputGrant, h *hlsInput, vm, am *hlsMedia, sequential bool) ([]time.Duration, []bool, []time.Duration, []bool, bool) {
+	depth := g.joinDepth()
+	if g.reserve <= 0 {
+		fallback := max(vm.target, am.target)
+		if fallback <= 0 {
+			fallback = 2 * time.Second
+		}
+		depth = sumLastSegments(vm.segs, 3, fallback)
+	}
+	vAnchor := vm.startFor(depth)
+	aAnchor := am.startFor(depth)
+	vSeg, aSeg := vm.segs[vAnchor], am.segs[aAnchor]
+	if vSeg.encrypted || aSeg.encrypted || !validHTTP(vSeg.url) || !validHTTP(aSeg.url) {
+		return nil, nil, nil, nil, false
+	}
+	pctx, pcancel := context.WithTimeout(ctx, 2*time.Second)
+	defer pcancel()
+
+	fetchBytes := func(raw string, reusable bool) ([]byte, bool) {
+		if raw == "" || !validHTTP(raw) {
+			return nil, false
+		}
+		if cached, ok := h.getStartupCache(raw, false); ok {
+			return cached.body, true
+		}
+		select {
+		case g.slots <- struct{}{}:
+			defer func() { <-g.slots }()
+		case <-pctx.Done():
+			return nil, false
+		}
+		fctx, fcancel := context.WithCancel(pctx)
+		defer fcancel()
+		res, err := s.relayFetchAs(fctx, fcancel, g, raw, &http.Request{Header: http.Header{}}, true)
+		if err != nil {
+			return nil, false
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return nil, false
+		}
+		b, err := io.ReadAll(io.LimitReader(res.Body, hlsSegmentLimit+1))
+		if err != nil || len(b) == 0 || len(b) > hlsSegmentLimit {
+			return nil, false
+		}
+		h.putStartupCache(raw, b, res.Header.Get("Content-Type"), reusable)
+		return b, true
+	}
+
+	var vInit, aInit, vData, aData []byte
+	var vInitOK, aInitOK, vOK, aOK bool
+	needMaps := vSeg.mapURI != "" && aSeg.mapURI != ""
+	sameMap := needMaps && vSeg.mapURI == aSeg.mapURI
+
+	if sequential {
+		if needMaps {
+			vInit, vInitOK = fetchBytes(vSeg.mapURI, true)
+			if sameMap {
+				aInit, aInitOK = vInit, vInitOK
+			} else {
+				aInit, aInitOK = fetchBytes(aSeg.mapURI, true)
+			}
+		}
+		vData, vOK = fetchBytes(vSeg.url, false)
+		aData, aOK = fetchBytes(aSeg.url, false)
+	} else {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			vData, vOK = fetchBytes(vSeg.url, false)
+		}()
+		go func() {
+			defer wg.Done()
+			aData, aOK = fetchBytes(aSeg.url, false)
+		}()
+		if needMaps {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				vInit, vInitOK = fetchBytes(vSeg.mapURI, true)
+			}()
+			if !sameMap {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					aInit, aInitOK = fetchBytes(aSeg.mapURI, true)
+				}()
+			}
+		}
+		wg.Wait()
+		if sameMap {
+			aInit, aInitOK = vInit, vInitOK
+		}
+	}
+	if !vOK || !aOK {
+		return nil, nil, nil, nil, false
+	}
+
+	var aRel time.Duration
+	haveRel := false
+	if needMaps && vInitOK && aInitOK {
+		if vSec, ok1 := mp4SegmentStartSeconds(vInit, vData); ok1 {
+			if aSec, ok2 := mp4SegmentStartSeconds(aInit, aData); ok2 {
+				deltaSec := aSec - vSec
+				if math.Abs(deltaSec) <= 3600 {
+					aRel = time.Duration(math.Round(deltaSec * float64(time.Second)))
+					haveRel = true
+				}
+			}
+		}
+	}
+	if !haveRel && isTS(vData) && isTS(aData) {
+		if vPTS, ok1 := tsSegmentFirstPTS(vData); ok1 {
+			if aPTS, ok2 := tsSegmentFirstPTS(aData); ok2 {
+				diff := ptsDiff(aPTS, vPTS)
+				if absInt64(diff) <= 90000*3600 {
+					aRel = time.Duration(diff) * time.Second / 90000
+					haveRel = true
+				}
+			}
+		}
+	}
+	if !haveRel {
+		return nil, nil, nil, nil, false
+	}
+
+	vTimes, vHas := buildAnchorTimeline(vm, vAnchor, 0)
+	aTimes, aHas := buildAnchorTimeline(am, aAnchor, aRel)
+	if !timelinesOverlap(vm, vTimes, vHas, am, aTimes, aHas) {
+		return nil, nil, nil, nil, false
+	}
+	return vTimes, vHas, aTimes, aHas, true
 }
 
 // scopeInputRedirects confines authentication to the source origin while

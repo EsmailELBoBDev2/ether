@@ -109,11 +109,13 @@ type relayProducer struct {
 	longAt  time.Time // the last overlong copy segment
 	// reformat holds the source's new format when copy output stopped
 	// matching its own PMT; the producer reopens on the new format.
-	reformat  *mediaFormat
-	reopened  time.Time
-	startedAt time.Time
-	progress  time.Time
-	closed    bool
+	reformat      *mediaFormat
+	reopened      time.Time
+	startedAt     time.Time
+	progress      time.Time
+	openedMedia   bool // true once the current producer published an aligned segment
+	droppedSkewed int  // unaligned opening segments dropped for the current producer
+	closed        bool
 }
 
 // bind points the producer at the published session after a staged tune.
@@ -244,6 +246,7 @@ func (p *relayProducer) adopt(id string, hls core.HLSSession, cancel context.Can
 	p.steady = nil
 	p.hls, p.cancel, p.info, p.dec, p.cut = hls, cancel, info, dec, cut
 	p.starved, p.reformat = false, nil
+	p.openedMedia, p.droppedSkewed = false, 0
 	p.startedAt = time.Now()
 	origin := &localRelayOrigin{hls: hls, name: id}
 	if old == nil && steady == nil {
@@ -320,6 +323,53 @@ func (p *relayProducer) split(seg *ownedSegment) []*ownedSegment {
 	return out
 }
 
+const (
+	openingAVSkewLimit  = 350 * time.Millisecond
+	maxOpeningSkewDrops = 2
+)
+
+// openingSkewReason checks a producer's opening segment before publication so
+// an unaligned first segment (missing audio/video, non-keyframe start, or
+// large A/V PTS skew from staggered/demuxed inputs) is held off the playlist.
+func (p *relayProducer) openingSkewReason(seg *ownedSegment, dropped int) string {
+	var a avAlignment
+	switch seg.ext {
+	case "ts":
+		a = tsOpeningAVAlignment(seg.data)
+	case "m4s":
+		if seg.mapRes != "" && p.tl != nil {
+			if r, ok := p.tl.resource(seg.mapRes); ok {
+				a = fmp4OpeningAVAlignment(r.data, seg.data)
+			}
+		}
+	}
+	if !a.known {
+		return ""
+	}
+	if !a.hasVideo {
+		return "missing video"
+	}
+	if !a.hasAudio {
+		limit := maxOpeningSkewDrops
+		if p.s == nil {
+			limit = 1
+		} else if h, ok := p.s.inputHealth(p.sess.Load()); !ok || h.Kind != "hls" {
+			limit = 1
+		}
+		if dropped < limit {
+			return "missing audio"
+		}
+		return ""
+	}
+	if !a.videoKeyOpen {
+		return "non-keyframe opening"
+	}
+	if a.skew > openingAVSkewLimit {
+		return fmt.Sprintf("a/v skew %s", a.skew.Round(time.Millisecond))
+	}
+	return ""
+}
+
 // accept vets a relay segment before it airs. A copy segment past the
 // target means a keyframe went missing: one modestly long segment (up to
 // twice the target) airs, as a transient loss heals at the next keyframe; a
@@ -334,29 +384,54 @@ func (p *relayProducer) accept(seg *ownedSegment) bool {
 		f := seg.format
 		p.reformat = &f
 		p.mu.Unlock()
-		p.log.Warn("owned relay output no longer matches its declared codecs", "payload", seg.format.String())
+		if p.log != nil {
+			p.log.Warn("owned relay output no longer matches its declared codecs", "payload", seg.format.String())
+		}
 		return false
 	}
 	p.mu.Lock()
 	copyMode := p.dec.VideoCopy && !p.escalated
+	opened := p.openedMedia
+	dropped := p.droppedSkewed
 	p.mu.Unlock()
-	if copyMode && seg.ext == "ts" && !p.damaged.Load() && damageCheckable(seg.format) {
+	if !opened && dropped < maxOpeningSkewDrops {
+		if reason := p.openingSkewReason(seg, dropped); reason != "" {
+			p.mu.Lock()
+			p.droppedSkewed++
+			n := p.droppedSkewed
+			p.mu.Unlock()
+			if p.log != nil {
+				p.log.Warn("owned relay dropped unaligned opening segment", "reason", reason, "duration", seg.dur, "dropped", n)
+			}
+			return false
+		}
+	}
+	if copyMode && seg.ext == "ts" && !p.damaged.Load() && damageCheckable(seg.format) && p.s != nil {
 		if damaged, detail := p.s.segmentDamaged(seg.data); damaged {
 			// Copy hands damaged pictures straight to the player, which drops
 			// them (seconds of frozen picture). Keep this one off the
 			// playlist; the producer switches to a re-encode that conceals.
 			p.damaged.Store(true)
-			p.log.Warn("owned relay copy segment carries input damage", "duration", seg.dur, "detail", detail)
+			if p.log != nil {
+				p.log.Warn("owned relay copy segment carries input damage", "duration", seg.dur, "detail", detail)
+			}
 			return false
 		}
 	}
-	td := p.tl.targetDuration()
+	var td time.Duration
+	if p.tl != nil {
+		td = p.tl.targetDuration()
+	}
 	if td <= 0 || seg.dur <= td+td/4 {
+		p.mu.Lock()
+		p.openedMedia = true
+		p.mu.Unlock()
 		return true
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.dec.VideoCopy {
+		p.openedMedia = true
 		return true
 	}
 	now := time.Now()
@@ -365,8 +440,12 @@ func (p *relayProducer) accept(seg *ownedSegment) bool {
 	drop := seg.dur > 2*td || repeat
 	if drop {
 		p.starved = true
+	} else {
+		p.openedMedia = true
 	}
-	p.log.Warn("owned relay segment exceeds the target duration", "duration", seg.dur, "target", td, "dropped", drop)
+	if p.log != nil {
+		p.log.Warn("owned relay segment exceeds the target duration", "duration", seg.dur, "target", td, "dropped", drop)
+	}
 	return !drop
 }
 
@@ -442,10 +521,11 @@ func (p *relayProducer) run(ctx context.Context) {
 		p.mu.Lock()
 		last, starved, escalated, copyMode := p.progress, p.starved, p.escalated, p.dec.VideoCopy
 		reformat, reopened := p.reformat, p.reopened
+		cut, droppedSkewed := p.cut, p.droppedSkewed
 		p.mu.Unlock()
 		td := p.tl.targetDuration()
 		if td <= 0 {
-			td = relayTargetFloor(p.cut)
+			td = relayTargetFloor(cut)
 		}
 		// A new producer gets ffmpeg's start-up time before the deadline
 		// applies to it; afterwards the deadline is one target duration.
@@ -470,14 +550,16 @@ func (p *relayProducer) run(ctx context.Context) {
 		if lastDur <= 0 {
 			lastDur = td
 		}
+		skewSlack := time.Duration(droppedSkewed) * max(cut, 2*time.Second)
 		starveLimit := lastDur + time.Second
 		if cold {
 			// The hedge normally settles a slow cold start first.
-			starveLimit = 6 * time.Second
+			starveLimit = 6*time.Second + skewSlack
 		}
 		starving := copyMode && !cold && !escalated && starvedFor > lastDur+500*time.Millisecond
 		p.starving.Store(starving)
 		p.producing.Store(!cold && !flowing.IsZero() && !starving)
+		hedgeDelay := 2*time.Second + skewSlack
 		if h := p.hedgeState(); h != nil {
 			switch {
 			case !cold || escalated:
@@ -486,7 +568,7 @@ func (p *relayProducer) run(ctx context.Context) {
 				p.adoptHedge(h)
 				continue
 			}
-		} else if copyMode && cold && !escalated && !flowing.IsZero() && now.Sub(later(startedAt, flowing)) > 2*time.Second {
+		} else if copyMode && cold && !escalated && !flowing.IsZero() && now.Sub(later(startedAt, flowing)) > hedgeDelay {
 			p.startHedge(ctx)
 		}
 		ended := errors.Is(err, errOriginEnded) || failures >= 15

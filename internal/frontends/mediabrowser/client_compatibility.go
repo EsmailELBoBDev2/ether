@@ -281,7 +281,11 @@ func (i *instance) stopEncoding(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
-	if dev.ID == "" || devices[0] != dev.ID {
+	// Jellyfin answers 204 whatever deviceId names: it only kills matching
+	// jobs. Jellyfin for Android's native player sends an id that differs
+	// from its WebView's header, and its SDK crashes the app on a 403. The
+	// stop below stays scoped to the caller's own viewer and device.
+	if dev.ID == "" {
 		http.Error(w, "Forbidden", 403)
 		return
 	}

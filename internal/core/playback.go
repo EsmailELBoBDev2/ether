@@ -263,6 +263,13 @@ type PlaySession struct {
 	// and mid-play buffering (additive). Nil for a source no play request
 	// or client timeline has reached.
 	Experience *PlayExperience `json:"experience,omitempty"`
+	// SegmentStart is where the requested episode begins inside a combined
+	// multi-episode file ("S01E01-E02" played for its second episode):
+	// server-started streams add it to the client's episode-relative
+	// position. Zero for a file holding only the requested episode, and
+	// recomputed on every snapshot so a failover to another release
+	// re-derives it (additive).
+	SegmentStart time.Duration `json:"segmentStart,omitempty"`
 }
 
 // LiveChannel identifies a live session's selected channel independently of its programme.
@@ -278,6 +285,17 @@ func (s *PlaySession) SourceReleaseID() string {
 		return ""
 	}
 	return s.Resolution.Release.ID
+}
+
+// SourcePosition translates a client's episode-relative position into the
+// source file's timeline, past any earlier episodes a combined file holds
+// before the requested one (SegmentStart). Server-started streams start at
+// the translated position; client-reported positions stay episode-relative.
+func (s *PlaySession) SourcePosition(client time.Duration) time.Duration {
+	if s == nil {
+		return client
+	}
+	return client + s.SegmentStart
 }
 
 // PlayExperience measures what the viewer saw (additive).

@@ -3154,10 +3154,14 @@ func packIdentity(rel core.Release) string {
 }
 
 // sizedForEpisode hides a season pack's total size from per-runtime size
-// checks and bitrate estimates.
+// checks and bitrate estimates. A combined multi-episode file ("S01E01-E02")
+// holds every episode it names, so its per-episode size is the total divided
+// by that count, matching the combined runtime those checks compare against.
 func sizedForEpisode(rel core.Release) core.Release {
 	if rel.Info.FullSeason {
 		rel.Size = 0
+	} else if n := len(rel.Info.Episodes); n > 1 && rel.Size > 0 {
+		rel.Size /= int64(n)
 	}
 	return rel
 }

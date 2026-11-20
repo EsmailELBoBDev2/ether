@@ -3,6 +3,7 @@ package playback
 import (
 	"context"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -112,4 +113,48 @@ func releaseRuntimeMismatch(t *core.Title, r core.Release, probed time.Duration)
 	}
 	slack := math.Max((8 * time.Minute).Seconds(), 0.35*expected.Seconds())
 	return math.Abs(probed.Seconds()-expected.Seconds()) > slack
+}
+
+// segmentStart is where the requested episode begins inside a combined
+// multi-episode file: for the second episode of an "S01E01-E02" file it is
+// one segment in, so a server-started stream starts at that episode rather
+// than replaying the first. The segment length is the probed file duration
+// divided by the episodes the file names (broadcast segments run equal),
+// falling back to the catalogue runtime before a probe. It is zero when
+// the file holds only the requested episode, when the requested episode is
+// the first it names, or when it does not name the requested episode at
+// all — acceptance of such a release is the resolver's decision, never
+// widened here. A season pack's selected file is normally a single
+// episode, so packs never offset.
+func segmentStart(t *core.Title, r core.Release, probed time.Duration) time.Duration {
+	if t == nil || t.KindLevel != "" || t.Type != core.TypeEpisode || r.Info.FullSeason {
+		return 0
+	}
+	episodes := r.Info.Episodes
+	if len(episodes) < 2 {
+		episodes = releaseparse.Parse(r.Name).Episodes
+	}
+	if len(episodes) < 2 {
+		return 0
+	}
+	want := t.Episode
+	if r.Target != nil && r.Target.Episode > 0 {
+		want = r.Target.Episode
+	}
+	idx := slices.Index(episodes, want)
+	if idx <= 0 {
+		return 0
+	}
+	segment := t.Runtime
+	if probed > 0 {
+		segment = probed / time.Duration(len(episodes))
+	}
+	if segment <= 0 {
+		return 0
+	}
+	start := time.Duration(idx) * segment
+	if probed > 0 && start >= probed {
+		return 0
+	}
+	return start
 }

@@ -133,7 +133,7 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		InputURL:       s.playback().InputURL(ps.ID),
 		Info:           ps.Info,
 		Decision:       dec,
-		StartOffset:    p.offset,
+		StartOffset:    ps.SourcePosition(p.offset),
 		Protocol:       frontend.ProtocolHTTP,
 		CopyTimestamps: p.copyTimestamps,
 	})

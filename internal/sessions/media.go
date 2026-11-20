@@ -272,7 +272,15 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	if dec.Kind == core.DecisionRemux && !s.opts.DirectStream {
 		return "", &frontend.NoCompatiblePathError{RejectedPaths: []frontend.RejectedPlaybackPath{{Path: string(req.Format), Reasons: []string{outputRejection(dec, ps.Info, s.allowTranscoding)}}}}
 	}
-	request := core.HLSRequest{LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: req.Position, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	// A combined multi-episode file starts at the requested episode's
+	// segment: the client's position is episode-relative, the source's
+	// timeline is not. DASH spans the whole file whatever the offset, and
+	// a live channel's position is already in source time.
+	startAt := req.Position
+	if proto != core.ProtocolDASH && !s.live {
+		startAt = ps.SourcePosition(req.Position)
+	}
+	request := core.HLSRequest{LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
 	if req.Continuous && s.public.Protocol == "vela" {
 		variants, _, e := b.qualityPlan(ctx, s, viewer)
 		if e != nil {

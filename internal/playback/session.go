@@ -543,6 +543,7 @@ func (s *session) snapshot(now time.Time) *core.PlaySession {
 		ps.QualityFallback = res.QualityFallback
 		ps.Source = g.src
 		ps.Info = g.infoSnapshot()
+		ps.SegmentStart = segmentStart(s.title, res.Release, ps.Info.Duration)
 		ps.Origin = sourceOrigin(g.src, res.Release.Protocol)
 	}
 	return ps

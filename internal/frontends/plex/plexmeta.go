@@ -23,7 +23,10 @@ func (s *Server) plexMetaOn() bool {
 	return cfg.Plex.Claimed && cfg.Plex.UsePlexMetadata
 }
 
-func (s *Server) withPlexMeta(ctx context.Context, keys []frontend.RatingKey, guids map[frontend.RatingKey]string) context.Context {
+// withPlexMeta preloads cached Plex overlays for keys. schedule=false
+// (stored-only list pages) only reads what is cached: a section walk
+// must not mint refresh work — and its writes — for every page it passes.
+func (s *Server) withPlexMeta(ctx context.Context, keys []frontend.RatingKey, guids map[frontend.RatingKey]string, schedule ...bool) context.Context {
 	if !s.plexMetaOn() {
 		return ctx
 	}
@@ -46,7 +49,9 @@ func (s *Server) withPlexMeta(ctx context.Context, keys []frontend.RatingKey, gu
 			refresh = append(refresh, k)
 		}
 	}
-	metaSrc.Schedule(refresh...)
+	if len(schedule) == 0 || schedule[0] {
+		metaSrc.Schedule(refresh...)
+	}
 	return context.WithValue(ctx, plexMetaCtxKey{}, plexMetaBatch{rows: cached, guids: guids})
 }
 

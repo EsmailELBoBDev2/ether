@@ -48,12 +48,12 @@ func (w discoveryWatchlist) Hubs(ctx context.Context, viewer *core.User, limit i
 }
 
 func (w discoveryWatchlist) RecapsEnabled(ctx context.Context) bool {
-	cfg, _ := w.s.Settings(ctx)
+	cfg, _ := w.s.FeatureSettings(ctx)
 	return cfg.Recaps
 }
 
 func (w discoveryWatchlist) NaturalSearchEnabled(ctx context.Context) bool {
-	cfg, err := w.s.Settings(ctx)
+	cfg, err := w.s.FeatureSettings(ctx)
 	return err == nil && cfg.NaturalSearch
 }
 

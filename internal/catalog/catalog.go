@@ -434,6 +434,8 @@ type cachedBrowse struct {
 	page   core.Page
 	gen    uint64
 	minute int64
+	// at is when a key-order page cursor was stored; zero for pages.
+	at time.Time
 	// partial lists a ranking page's partial titles (rankProjection).
 	partial []core.RatingKey
 }

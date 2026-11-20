@@ -10,6 +10,23 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+// pageCursorTTL bounds how long a key-order page end is remembered for the
+// next sequential page. A client walking a whole section (Tracearr) pages
+// for far longer than one cache minute, and background catalogue writes
+// bump the generation throughout; a cursor that dies with either stamp
+// sends every later page back to an OFFSET scan over all prior rows.
+const pageCursorTTL = 10 * time.Minute
+
+func pageCursorLive(cur cachedBrowse, gen uint64, minute int64) bool {
+	if len(cur.page.Items) != 1 {
+		return false
+	}
+	if cur.gen == gen && cur.minute == minute {
+		return true
+	}
+	return !cur.at.IsZero() && time.Since(cur.at) < pageCursorTTL
+}
+
 // Key bounds for episode and season rating keys.
 var (
 	episodeKeyStart = int64(core.KindEpisode)*1_000_000_000_000_000 - 1
@@ -359,6 +376,18 @@ func (c *Catalog) CountStoredEpisodes(ctx context.Context, show core.Filter) (in
 	switch {
 	case ok && ent.gen == gen && ent.minute == minute:
 		return ent.total, nil
+	case ok && ent.total >= staleCountMin:
+		// A busy catalogue bumps the write generation constantly; serving
+		// the last large total while a recount runs behind the read keeps
+		// a page's total from recounting the whole section (as
+		// CountStoredSeasons does).
+		if time.Since(ent.counted) >= recountEvery {
+			_ = c.hydrate(ctx, "count:"+ckey, 0, func(ctx context.Context) error {
+				_, err := count(ctx)
+				return err
+			})
+		}
+		return ent.total, nil
 	}
 	return count(ctx)
 }
@@ -409,7 +438,7 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 	}
 	var afterKey core.RatingKey
 	if offset > 0 && !groupHasState(q.Filter.Group) && !q.SortLastViewed {
-		if cur, ok := c.browseCache[cursorPrefix+strconv.Itoa(offset)]; ok && cur.gen == gen && cur.minute == minBucket && len(cur.page.Items) == 1 {
+		if cur, ok := c.browseCache[cursorPrefix+strconv.Itoa(offset)]; ok && pageCursorLive(cur, gen, minBucket) {
 			afterKey = cur.page.Items[0].Key
 		}
 	}
@@ -495,20 +524,25 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 	if q.NoTotal {
 		total = offset + len(items)
 	}
-	if !groupHasState(q.Filter.Group) && !q.SortLastViewed && c.writeGen.Load() == gen {
-		cachedItems := make([]core.Title, len(items))
-		for i := range items {
-			cachedItems[i] = cloneTitle(items[i])
-		}
+	if !groupHasState(q.Filter.Group) && !q.SortLastViewed {
 		c.cacheMu.Lock()
 		if len(c.browseCache) >= 512 {
 			c.browseCache = map[string]cachedBrowse{}
 		}
-		c.browseCache[bkey] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket}
+		if c.writeGen.Load() == gen {
+			cachedItems := make([]core.Title, len(items))
+			for i := range items {
+				cachedItems[i] = cloneTitle(items[i])
+			}
+			c.browseCache[bkey] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket}
+		}
+		// The cursor is stored even when a write landed during the read:
+		// it only names where this sequential walk reached, and losing it
+		// to background writes would break the chain on a busy catalogue.
 		if keyOrder && len(items) > 0 {
 			last := items[len(items)-1].Key
 			c.browseCache[cursorPrefix+strconv.Itoa(offset+len(items))] = cachedBrowse{
-				page: core.Page{Items: []core.Title{{Key: last}}}, gen: gen, minute: minBucket,
+				page: core.Page{Items: []core.Title{{Key: last}}}, gen: gen, minute: minBucket, at: time.Now(),
 			}
 		}
 		c.cacheMu.Unlock()
@@ -706,7 +740,7 @@ func (c *Catalog) BrowseStoredSeasons(ctx context.Context, q core.BrowseQuery) (
 	}
 	var afterKey core.RatingKey
 	if offset > 0 && q.Filter.Group == nil && !q.SortLastViewed {
-		if cur, ok := c.browseCache[cursorPrefix+strconv.Itoa(offset)]; ok && cur.gen == gen && cur.minute == minBucket && len(cur.page.Items) == 1 {
+		if cur, ok := c.browseCache[cursorPrefix+strconv.Itoa(offset)]; ok && pageCursorLive(cur, gen, minBucket) {
 			afterKey = cur.page.Items[0].Key
 		}
 	}
@@ -812,20 +846,22 @@ func (c *Catalog) BrowseStoredSeasons(ctx context.Context, q core.BrowseQuery) (
 	if q.NoTotal {
 		total = offset + len(items)
 	}
-	if q.Filter.Group == nil && !q.SortLastViewed && c.writeGen.Load() == gen {
-		cachedItems := make([]core.Title, len(items))
-		for i := range items {
-			cachedItems[i] = cloneTitle(items[i])
-		}
+	if q.Filter.Group == nil && !q.SortLastViewed {
 		c.cacheMu.Lock()
 		if len(c.browseCache) >= 512 {
 			c.browseCache = map[string]cachedBrowse{}
 		}
-		c.browseCache[bkey] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket}
+		if c.writeGen.Load() == gen {
+			cachedItems := make([]core.Title, len(items))
+			for i := range items {
+				cachedItems[i] = cloneTitle(items[i])
+			}
+			c.browseCache[bkey] = cachedBrowse{page: core.Page{Items: cachedItems, Total: total}, gen: gen, minute: minBucket}
+		}
 		if keyOrder && len(items) > 0 {
 			last := items[len(items)-1].Key
 			c.browseCache[cursorPrefix+strconv.Itoa(offset+len(items))] = cachedBrowse{
-				page: core.Page{Items: []core.Title{{Key: last}}}, gen: gen, minute: minBucket,
+				page: core.Page{Items: []core.Title{{Key: last}}}, gen: gen, minute: minBucket, at: time.Now(),
 			}
 		}
 		c.cacheMu.Unlock()

@@ -325,6 +325,19 @@ func (s *Server) handleMyPlexAccount(w http.ResponseWriter, r *http.Request) {
 	s.write(w, r, &acct)
 }
 
+func (s *Server) handleRefreshReachability(w http.ResponseWriter, r *http.Request) {
+	c := s.cfg()
+	reachable := c.Plex.RemoteAccess && (c.Plex.Claimed || c.Plex.Token != "")
+	s.publishNotification(model.NotificationContainer{
+		Type: "reachability",
+		Size: 1,
+		ReachabilityNotification: []model.ReachabilityNotification{{
+			Reachability: reachable,
+		}},
+	}, 0)
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 	id := s.identity()
 	host, portS, err := net.SplitHostPort(r.Host)

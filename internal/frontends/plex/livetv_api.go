@@ -60,6 +60,8 @@ type liveDVR struct {
 	Key           string       `plex:"key"`
 	Language      string       `plex:"language"`
 	Lineup        string       `plex:"lineup"`
+	LineupTitle   string       `plex:"lineupTitle,omitempty"`
+	Country       string       `plex:"country,omitempty"`
 	UUID          string       `plex:"uuid"`
 	RefreshedAt   int64        `plex:"refreshedAt"`
 	Device        []liveDevice `plex:"Device"`
@@ -271,7 +273,7 @@ func (s *Server) handleLiveDVRs(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, r, err)
 		return
 	}
-	s.write(w, r, &liveContainer{Size: 1, Identifier: frontend.LiveTVProvider, DVR: []liveDVR{{EPGIdentifier: frontend.LiveTVProvider, Key: "1", Language: "eng", Lineup: "lineup://" + frontend.LiveTVProvider + "/dvr", UUID: s.identity().MachineIdentifier + "-livetv", RefreshedAt: s.liveLineupRefreshedAtFor(FromContext(r.Context()).User), Device: devices}}})
+	s.write(w, r, &liveContainer{Size: 1, Identifier: frontend.LiveTVProvider, DVR: []liveDVR{{EPGIdentifier: frontend.LiveTVProvider, Key: "1", Language: "eng", Lineup: "lineup://" + frontend.LiveTVProvider + "/dvr", LineupTitle: "Ether Live TV", Country: "USA", UUID: s.identity().MachineIdentifier + "-livetv", RefreshedAt: s.liveLineupRefreshedAtFor(FromContext(r.Context()).User), Device: devices}}})
 }
 
 func (s *Server) liveLineupRefreshedAtFor(u *frontend.User) int64 {

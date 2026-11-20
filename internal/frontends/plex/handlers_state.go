@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -599,7 +600,15 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 		md.SessionKey = strconv.Itoa(e.sessionKey)
 		md.ViewOffset = ms(e.offset)
-		md.User = &model.SessionUser{ID: strconv.FormatInt(e.user.PlexID, 10), Thumb: e.user.Thumb, Title: e.user.Title}
+		sessionUserID := e.user.PlexID
+		if sessionUserID == 0 {
+			if e.user.IsOwner {
+				sessionUserID = 1
+			} else if e.user.ID > 0 {
+				sessionUserID = e.user.ID
+			}
+		}
+		md.User = &model.SessionUser{ID: strconv.FormatInt(sessionUserID, 10), Thumb: e.user.Thumb, Title: e.user.Title}
 		if md.User.Title == "" {
 			md.User.Title = e.user.Username
 		}
@@ -611,20 +620,29 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if title == "" {
 			title = e.client.Device
 		}
+		var addr, remotePublic string
+		if e.client.RemoteIP.IsValid() {
+			addr = e.client.RemoteIP.Unmap().String()
+			if e.client.Remote {
+				remotePublic = addr
+			}
+		}
 		md.Player = &model.Player{
-			Address:           e.client.RemoteIP.String(),
-			Device:            e.client.Device,
-			MachineIdentifier: e.client.ClientID,
-			Model:             e.client.Model,
-			Platform:          e.client.Platform,
-			PlatformVersion:   e.client.PlatformVersion,
-			Product:           e.client.Product,
-			Profile:           resolvedPlayerProfile(&e.client),
-			State:             state,
-			Title:             title,
-			Version:           e.client.Version,
-			Local:             !e.client.Remote,
-			UserID:            e.user.PlexID,
+			Address:             addr,
+			Device:              e.client.Device,
+			MachineIdentifier:   e.client.ClientID,
+			Model:               e.client.Model,
+			Platform:            e.client.Platform,
+			PlatformVersion:     e.client.PlatformVersion,
+			Product:             e.client.Product,
+			Profile:             resolvedPlayerProfile(&e.client),
+			RemotePublicAddress: remotePublic,
+			State:               state,
+			Title:               title,
+			Version:             e.client.Version,
+			Local:               !e.client.Remote,
+			Secure:              e.client.Secure,
+			UserID:              sessionUserID,
 		}
 		loc := "lan"
 		if e.client.Remote {
@@ -708,6 +726,23 @@ func (s *Server) terminateLocal(sid, reason string) bool {
 			}
 
 			s.setOwnerTermination(e.id, reason)
+			tids := s.transcodes.forClient(e.user.ID, e.client.ClientID, e.key)
+			if e.transcodeID != "" && !slices.Contains(tids, e.transcodeID) {
+				tids = append(tids, e.transcodeID)
+			}
+			for _, id := range tids {
+				unlockEnc, encErr := s.lockEncoder(s.ctx, id)
+				if encErr != nil {
+					continue
+				}
+				if te, ok := s.transcodes.get(id); ok && te.userID == e.user.ID && te.clientID == e.client.ClientID && te.key == e.key {
+					if s.transcoder() != nil {
+						s.stopPlexHLS(id)
+					}
+					s.dropTranscode(id)
+				}
+				unlockEnc()
+			}
 			if pb := s.playback(); pb != nil {
 				if ps, ok := pb.SessionFor(e.user.ID, e.client.ClientID, e.key); ok && ps != nil {
 					if stop := s.brokerRuntime(); stop != nil {
@@ -717,6 +752,10 @@ func (s *Server) terminateLocal(sid, reason string) bool {
 						}
 					}
 				}
+			}
+			if removed, ok := s.sessions.remove(e.id); ok {
+				s.notifyPlaying(removed, "stopped")
+				s.cl.poke()
 			}
 			return true
 		}

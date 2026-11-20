@@ -34,7 +34,7 @@ func validSectionSub(sub string) bool {
 	switch sub {
 	case "all", "allLeaves", "unwatched", "newest", "recentlyAdded", "recentlyViewedShows", "search", "autocomplete",
 		"onDeck", "recentlyViewed", "collections", "collection",
-		"genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "categories",
+		"genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "categories", "label",
 		"sorts", "filters", "prefs", "refresh", "analyze", "emptyTrash":
 		return true
 	default:
@@ -44,7 +44,7 @@ func validSectionSub(sub string) bool {
 
 func validSectionSubKey(sub, rawKey string) bool {
 	switch sub {
-	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter":
+	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "label":
 		return true
 	case "query":
 		val, err := url.PathUnescape(rawKey)
@@ -111,6 +111,7 @@ func (s *Server) routes() chi.Router {
 		get("/", s.handleRoot)
 		get("/media/providers", s.handleProviders)
 		get("/myplex/account", s.handleMyPlexAccount)
+		r.Put("/myplex/refreshReachability", s.ownerOnly(s.handleRefreshReachability))
 		get("/servers", s.handleServers)
 		get("/clients/profiles", s.handleClientProfiles)
 		get("/clients/profiles/", s.handleClientProfiles)

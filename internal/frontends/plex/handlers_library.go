@@ -965,6 +965,10 @@ func (s *Server) parseBrowse(ctx context.Context, sec Section, t frontend.MediaT
 				} else {
 					f.Group = &frontend.FilterGroup{Operator: "and", Children: []frontend.FilterGroup{*f.Group, state}}
 				}
+			case "label":
+				if !isNeg && len(splitVals(v)) > 0 {
+					br.none = true
+				}
 			case "limit":
 				br.limit = atoi(v)
 			}
@@ -1231,7 +1235,7 @@ func (s *Server) handleSectionSub(w http.ResponseWriter, r *http.Request) {
 		s.sectionRecentlyViewed(w, r, sec)
 	case "collections", "collection":
 		s.sectionCollections(w, r, sec, sub)
-	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "categories":
+	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "categories", "label":
 		s.sectionFacet(w, r, sec, sub)
 	case "sorts":
 		mt := s.metaType(sec, sec.Type, r.URL.Query().Get("sort"))
@@ -1267,7 +1271,7 @@ func (s *Server) handleSectionSubKey(w http.ResponseWriter, r *http.Request) {
 		val = chi.URLParam(r, "key")
 	}
 	switch sub {
-	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter":
+	case "genre", "year", "decade", "contentRating", "country", "studio", "firstCharacter", "label":
 		r2 := r.Clone(r.Context())
 		q := r2.URL.Query()
 		q.Set(sub, val)
@@ -1453,13 +1457,15 @@ func (s *Server) sectionFacet(w http.ResponseWriter, r *http.Request, sec Sectio
 	mc.ViewMode = viewModeList
 	mc.Content = "secondary"
 	mc.ViewGroup = "secondary"
-	titles := map[string]string{"genre": "By Genre", "year": "By Year", "decade": "By Decade", "contentRating": "By Content Rating", "country": "By Country", "studio": "By Studio", "firstCharacter": "By First Letter", "categories": ""}
+	titles := map[string]string{"genre": "By Genre", "year": "By Year", "decade": "By Decade", "contentRating": "By Content Rating", "country": "By Country", "studio": "By Studio", "firstCharacter": "By First Letter", "categories": "", "label": "By Label"}
 	mc.Title2 = titles[sub]
 	var (
 		vals []frontend.FacetValue
 		err  error
 	)
-	if sub == "firstCharacter" {
+	if sub == "label" {
+		vals = nil
+	} else if sub == "firstCharacter" {
 		pr := FromContext(ctx)
 		br := s.parseBrowse(ctx, sec, t, pr.User, r.URL.Query())
 		vals, err = s.firstCharacter(ctx, br.q.Filter)
@@ -1810,6 +1816,17 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 	// apply contentDirectoryID or pinnedContentDirectoryID on this route.
 	// sectionID still selects one library. KnownAddedDate drops titles whose
 	// release or air date is missing or still in the future.
+	// personal=1 requests "Other Videos" (personal media libraries), which
+	// Ether does not host; returning empty avoids duplicating movies in tools
+	// such as Tautulli that query movie and other_video separately.
+	if rq.Get("personal") == "1" {
+		mc := libraryContainer()
+		mc.Title1 = "Recently Added"
+		mc.Mixed = model.Ptr(true)
+		mc.SetPage(max(pr.Start, 0), 0)
+		s.write(w, r, mc)
+		return
+	}
 	wantType := typeFromParam(rq.Get("type"))
 	wantSection, _ := strconv.Atoi(rq.Get("sectionID"))
 	if paged, ok := s.catalog().(frontend.RecentPageCatalog); ok && r.URL.Path == "/library/recentlyAdded" {

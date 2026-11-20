@@ -2,6 +2,7 @@ package plex
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -48,6 +49,7 @@ type Request struct {
 	excludeMedia bool
 	RemoteIP     netip.Addr
 	Remote       bool // not on a private/loopback network
+	Secure       bool // TLS directly or https via a trusted proxy
 
 	User *frontend.User
 
@@ -204,7 +206,50 @@ func ParseRequest(r *http.Request, trusted ...netip.Prefix) *Request {
 	var local bool
 	pr.RemoteIP, local = clientnet.ClientNet(r, trusted...)
 	pr.Remote = !local
+	pr.Secure = requestIsSecure(r, trusted...)
 	return pr
+}
+
+// requestIsSecure reports whether the client reached Ether over HTTPS directly
+// or via a trusted reverse proxy.
+func requestIsSecure(r *http.Request, trusted ...netip.Prefix) bool {
+	if r.TLS != nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return false
+	}
+	peer = peer.Unmap()
+	trust := peer.IsLoopback()
+	for _, p := range trusted {
+		if p.Contains(peer) {
+			trust = true
+			break
+		}
+	}
+	if !trust {
+		return false
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		first, _, _ := strings.Cut(proto, ",")
+		return strings.EqualFold(strings.TrimSpace(first), "https")
+	}
+	for _, header := range r.Header.Values("Forwarded") {
+		for _, element := range strings.Split(header, ",") {
+			for _, param := range strings.Split(element, ";") {
+				k, v, ok := strings.Cut(strings.TrimSpace(param), "=")
+				if ok && strings.EqualFold(k, "proto") {
+					return strings.EqualFold(strings.Trim(strings.TrimSpace(v), `"`), "https")
+				}
+			}
+		}
+	}
+	return false
 }
 
 // wantsJSON follows PMS's media-range grammar rather than HTTP's generic

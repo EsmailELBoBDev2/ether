@@ -2344,7 +2344,14 @@ type liveTranscodeState struct {
 	protocol          string
 	container         string
 	speed             float64
+	throttled         bool
+	complete          bool
+	progressTime      time.Duration
+	minOffset         time.Duration
+	maxOffset         time.Duration
 	hwRequested       bool
+	hwDecoding        string
+	hwEncoding        string
 	hwFullPipeline    bool
 	hasHWFullPipeline bool
 }
@@ -2425,13 +2432,28 @@ func (s *Server) liveTranscode(te *transcodeEntry) liveTranscodeState {
 				if st.Speed > 0 {
 					state.speed = math.Round(st.Speed*10) / 10
 				}
+				state.throttled = st.Phase == "paused"
+				state.complete = st.Phase == "finished"
+				state.progressTime = max(st.ReadyUntil, st.OutputTime)
+				if st.ReadyUntil > 0 {
+					state.minOffset = st.MinOffsetAvailable
+					state.maxOffset = st.ReadyUntil
+				}
 				if !state.decision.VideoCopy {
 					switch st.Processor {
 					case "gpu":
 						state.hwRequested = true
+						state.hwEncoding = st.HWEncoder
+						if state.hwEncoding == "" && s.transcoder() != nil {
+							state.hwEncoding = hwAccelEncoderToken(s.transcoder().HWAccel().Name)
+						}
+						state.hwDecoding = st.HWDecoder
 						if st.Filters == "gpu" || st.Filters == "cpu" {
 							state.hwFullPipeline = st.Filters == "gpu"
 							state.hasHWFullPipeline = true
+						}
+						if state.hwDecoding == "" && state.hwFullPipeline && state.hwEncoding != "" {
+							state.hwDecoding = hwDecoderForEncoder(state.hwEncoding)
 						}
 					case "cpu":
 						state.hwRequested = false
@@ -2442,6 +2464,9 @@ func (s *Server) liveTranscode(te *transcodeEntry) liveTranscodeState {
 		if !hasStatus && !state.decision.VideoCopy {
 			if hwSrc, ok := hs.(interface{ HWAccelerated() bool }); ok && hwSrc.HWAccelerated() {
 				state.hwRequested = true
+				if s.transcoder() != nil {
+					state.hwEncoding = hwAccelEncoderToken(s.transcoder().HWAccel().Name)
+				}
 			}
 		}
 	}
@@ -2551,6 +2576,8 @@ func buildTranscodeSessionModel(te *transcodeEntry, live liveTranscodeState) mod
 	info := live.info
 	ts := model.TranscodeSess{
 		Key:        "/transcode/sessions/" + te.id,
+		Throttled:  live.throttled,
+		Complete:   live.complete,
 		Context:    "streaming",
 		Protocol:   cmp.Or(live.protocol, "hls"),
 		Container:  "mpegts",
@@ -2560,6 +2587,19 @@ func buildTranscodeSessionModel(te *transcodeEntry, live liveTranscodeState) mod
 		TimeStamp:  float64(te.updatedAt.Unix()),
 		AudioCodec: plexCodec(dec.AudioCodec),
 		VideoCodec: plexCodec(dec.VideoCodec),
+	}
+	if live.complete {
+		ts.Progress = 100
+	} else if info.Duration > 0 && live.progressTime > 0 {
+		pct := float64(live.progressTime) / float64(info.Duration) * 100
+		if pct > 100 {
+			pct = 100
+		}
+		ts.Progress = math.Round(pct*10) / 10
+	}
+	if live.maxOffset > 0 {
+		ts.MinOffsetAvailable = math.Round(live.minOffset.Seconds()*1000) / 1000
+		ts.MaxOffsetAvailable = math.Round(live.maxOffset.Seconds()*1000) / 1000
 	}
 	if ts.Protocol == frontend.ProtocolDASH {
 		ts.Container = "mp4"
@@ -2594,6 +2634,14 @@ func buildTranscodeSessionModel(te *transcodeEntry, live liveTranscodeState) mod
 	if !dec.VideoCopy {
 		ts.VideoDecision = "transcode"
 		ts.TranscodeHwRequested = live.hwRequested
+		if live.hwDecoding != "" {
+			ts.TranscodeHwDecoding = live.hwDecoding
+			ts.TranscodeHwDecodingTitle = hwAccelTitle(live.hwDecoding)
+		}
+		if live.hwEncoding != "" {
+			ts.TranscodeHwEncoding = live.hwEncoding
+			ts.TranscodeHwEncodingTitle = hwAccelTitle(live.hwEncoding)
+		}
 		if live.hasHWFullPipeline {
 			ts.TranscodeHwFullPipeline = model.Ptr(live.hwFullPipeline)
 		}
@@ -2632,6 +2680,57 @@ func buildTranscodeSessionModel(te *transcodeEntry, live liveTranscodeState) mod
 		}
 	}
 	return ts
+}
+
+func hwAccelEncoderToken(accel string) string {
+	switch strings.ToLower(strings.TrimSpace(accel)) {
+	case "videotoolbox":
+		return "videotoolbox"
+	case "nvenc":
+		return "nvenc"
+	case "vaapi":
+		return "vaapi"
+	case "qsv":
+		return "qsv"
+	default:
+		return ""
+	}
+}
+
+func hwDecoderForEncoder(enc string) string {
+	switch enc {
+	case "videotoolbox":
+		return "videotoolbox"
+	case "nvenc":
+		return "nvdec"
+	case "vaapi":
+		return "vaapi"
+	case "qsv":
+		return "vaapi"
+	default:
+		return ""
+	}
+}
+
+func hwAccelTitle(token string) string {
+	switch strings.ToLower(token) {
+	case "videotoolbox":
+		return "Apple VideoToolbox"
+	case "nvdec":
+		return "NVIDIA NVDEC"
+	case "nvenc":
+		return "NVIDIA NVENC"
+	case "vaapi":
+		return "VAAPI"
+	case "qsv":
+		return "Intel Quick Sync Video"
+	case "d3d11va":
+		return "Direct3D 11"
+	case "dxva2":
+		return "DXVA2"
+	default:
+		return ""
+	}
 }
 
 func evenDim(n int) int {

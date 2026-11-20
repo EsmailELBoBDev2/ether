@@ -654,6 +654,7 @@ type PlaybackActivity struct {
 	Device, DeviceName, Model, Vendor, SessionID, RemoteIP string
 	ProfileName                                            string
 	Remote                                                 bool
+	Secure                                                 bool
 	Key                                                    core.RatingKey
 	State                                                  string
 	Offset, Duration                                       time.Duration

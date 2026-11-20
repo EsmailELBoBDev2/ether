@@ -192,7 +192,7 @@ func (t *sessionActivities) expire(now time.Time, ttl time.Duration) []playEntry
 
 func activityEntry(a frontend.PlaybackActivity) playEntry {
 	e := playEntry{id: a.ID, sessionKey: a.SessionKey, decisionSeen: a.DecisionSeen, playingSeen: a.PlayingSeen, user: a.User, key: a.Key, state: a.State, offset: a.Offset, duration: a.Duration, playQueueItemID: a.PlayQueueItemID, transcodeID: a.TranscodeID, startedAt: a.StartedAt, updatedAt: a.UpdatedAt}
-	e.client = Request{ClientID: a.ClientID, Product: a.Product, Version: a.Version, Platform: a.Platform, PlatformVersion: a.PlatformVersion, Device: a.Device, DeviceName: a.DeviceName, Model: a.Model, Vendor: a.Vendor, ProfileName: a.ProfileName, SessionID: a.SessionID, Remote: a.Remote}
+	e.client = Request{ClientID: a.ClientID, Product: a.Product, Version: a.Version, Platform: a.Platform, PlatformVersion: a.PlatformVersion, Device: a.Device, DeviceName: a.DeviceName, Model: a.Model, Vendor: a.Vendor, ProfileName: a.ProfileName, SessionID: a.SessionID, Remote: a.Remote, Secure: a.Secure}
 	if a.RemoteIP != "" {
 		e.client.RemoteIP = parseAddr(a.RemoteIP)
 	}
@@ -200,7 +200,7 @@ func activityEntry(a frontend.PlaybackActivity) playEntry {
 }
 
 func entryActivity(e playEntry) frontend.PlaybackActivity {
-	a := frontend.PlaybackActivity{ID: e.id, SessionKey: e.sessionKey, DecisionSeen: e.decisionSeen, PlayingSeen: e.playingSeen, User: e.user, ClientID: e.client.ClientID, Product: e.client.Product, Version: e.client.Version, Platform: e.client.Platform, PlatformVersion: e.client.PlatformVersion, Device: e.client.Device, DeviceName: e.client.DeviceName, Model: e.client.Model, Vendor: e.client.Vendor, ProfileName: e.client.ProfileName, SessionID: e.client.SessionID, Remote: e.client.Remote, Key: e.key, State: e.state, Offset: e.offset, Duration: e.duration, PlayQueueItemID: e.playQueueItemID, TranscodeID: e.transcodeID, StartedAt: e.startedAt, UpdatedAt: e.updatedAt}
+	a := frontend.PlaybackActivity{ID: e.id, SessionKey: e.sessionKey, DecisionSeen: e.decisionSeen, PlayingSeen: e.playingSeen, User: e.user, ClientID: e.client.ClientID, Product: e.client.Product, Version: e.client.Version, Platform: e.client.Platform, PlatformVersion: e.client.PlatformVersion, Device: e.client.Device, DeviceName: e.client.DeviceName, Model: e.client.Model, Vendor: e.client.Vendor, ProfileName: e.client.ProfileName, SessionID: e.client.SessionID, Remote: e.client.Remote, Secure: e.client.Secure, Key: e.key, State: e.state, Offset: e.offset, Duration: e.duration, PlayQueueItemID: e.playQueueItemID, TranscodeID: e.transcodeID, StartedAt: e.startedAt, UpdatedAt: e.updatedAt}
 	if e.client.RemoteIP.IsValid() {
 		a.RemoteIP = e.client.RemoteIP.String()
 	}

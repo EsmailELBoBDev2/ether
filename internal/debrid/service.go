@@ -15,6 +15,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 	"github.com/braedonsaunders/ether/internal/store"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -68,6 +69,8 @@ type Options struct {
 	DirectGuard *safefetch.Guard
 	// OnChange is notified when provider configuration or breaker state changes.
 	OnChange func()
+	// Events receives non-blocking provider.* domain events when set.
+	Events *events.Bus
 }
 
 // Service holds the configured debrid providers and applies priority,
@@ -131,6 +134,7 @@ type entry struct {
 	mu        sync.Mutex
 	failures  int
 	until     time.Time
+	outageAt  time.Time
 	state     string // "", "backoff", "auth_failed"
 	lastError string
 	stats     ProviderStats
@@ -305,6 +309,7 @@ func (s *Service) UpdateConfig(cfg config.Debrid) {
 			continue
 		}
 		e := &entry{cfg: pc, sem: newLimiter(s.slotsFor(providerParallel))}
+		s.wireLimiterEvents(e)
 		if pc.Enabled {
 			e.p, e.err = s.opts.NewProvider(pc, s.opts.ProviderOptions)
 		}
@@ -381,8 +386,14 @@ func (e *entry) release() { e.sem.release() }
 // success ended an earlier pause, and nil otherwise (cluster.go broadcasts
 // the events).
 func (e *entry) observe(now time.Time, err error) *backoffEvent {
+	ev, _, _ := e.observeTransition(now, err)
+	return ev
+}
+
+func (e *entry) observeTransition(now time.Time, err error) (ev *backoffEvent, prevState string, outageDur time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	prevState = e.state
 	e.stats.Requests++
 	if err == nil || errors.Is(err, core.ErrNotCached) || errors.Is(err, core.ErrWrongContent) || errors.Is(err, ErrGone) || errors.Is(err, core.ErrReleaseRejected) || errors.Is(err, core.ErrSourceUnavailable) {
 		// The provider answered; release-level outcomes and explicitly
@@ -400,12 +411,16 @@ func (e *entry) observe(now time.Time, err error) *backoffEvent {
 			e.stats.LastSuccess = &t
 		}
 		if was != "" && !now.Before(e.until) {
-			return &backoffEvent{Provider: e.cfg.ID}
+			if !e.outageAt.IsZero() {
+				outageDur = max(time.Duration(0), now.Sub(e.outageAt))
+				e.outageAt = time.Time{}
+			}
+			return &backoffEvent{Provider: e.cfg.ID}, prevState, outageDur
 		}
-		return nil
+		return nil, prevState, 0
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, core.ErrBudgetExhausted) {
-		return nil
+		return nil, prevState, 0
 	}
 	e.stats.Failures++
 	e.lastError = err.Error()
@@ -422,12 +437,15 @@ func (e *entry) observe(now time.Time, err error) *backoffEvent {
 	default:
 		e.failures++
 		if e.failures < 3 {
-			return nil
+			return nil, prevState, 0
 		}
 		d := min(maxBackoff, 30*time.Second<<min(e.failures-3, 4))
 		e.state, e.until = "backoff", now.Add(d)
 	}
-	return &backoffEvent{Provider: e.cfg.ID, State: e.state, Until: e.until.UnixMilli(), Error: shortError(e.lastError)}
+	if e.outageAt.IsZero() {
+		e.outageAt = now
+	}
+	return &backoffEvent{Provider: e.cfg.ID, State: e.state, Until: e.until.UnixMilli(), Error: shortError(e.lastError)}, prevState, 0
 }
 
 func (e *entry) count(fn func(*ProviderStats)) {
@@ -824,10 +842,12 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			notCached++
 			continue
 		}
+		started := s.now()
 		p, err := s.acquireOn(ctx, e, base, choose, false)
 		if err == nil {
 			s.savePayload(ctx, p)
 			s.log.Info("debrid release ready", "release", rel.Name, "provider", displayName(e.cfg), "file", p.Name())
+			s.emitDebridCached(e, rel, hash, p.Size, s.now().Sub(started))
 			return p.Encode(), nil
 		}
 		if ctx.Err() != nil {
@@ -838,10 +858,12 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			// The account adds nothing for now: say so, it is why this
 			// release cannot be checked or played.
 			notCached++
+			s.emitQuotaExhausted(e.cfg, "active_downloads", 1, 1)
 			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
 		case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
+			s.emitDebridFailed(e, rel, hash, err)
 			return nil, err // release-level outcome; another account cannot fix it
 		default:
 			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
@@ -856,7 +878,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 	if notCached > 0 {
 		for _, err := range errs {
 			if errors.Is(err, core.ErrDownloadLimit) {
-				return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrDownloadLimit, errors.Join(errs...))
+				finalErr := fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrDownloadLimit, errors.Join(errs...))
+				s.emitDebridFailed(nil, rel, hash, finalErr)
+				return nil, finalErr
 			}
 		}
 		if rel.Private {
@@ -864,7 +888,9 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 		}
 		return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrNotCached, errors.Join(errs...))
 	}
-	return nil, errors.Join(errs...)
+	joined := errors.Join(errs...)
+	s.emitDebridFailed(nil, rel, hash, joined)
+	return nil, joined
 }
 
 // CachedPackMatcher inspects a cached season-pack torrent once and returns a
@@ -1002,12 +1028,18 @@ func (s *Service) followQueued(ctx context.Context, rel core.Release, entries []
 	if q.torrent != "" {
 		base.TorrentID = q.torrent
 	}
+	started := s.now()
 	p, err := s.acquireOn(ctx, e, base, choose, q.torrent != "")
 	switch {
 	case err == nil:
 		s.savePayload(ctx, p)
 		s.forgetQueued(rel, q.hash)
 		s.log.Info("queued debrid download is ready", "release", rel.Name, "provider", displayName(e.cfg), "file", p.Name())
+		wait := s.now().Sub(q.at)
+		if wait <= 0 {
+			wait = s.now().Sub(started)
+		}
+		s.emitDebridCached(e, rel, base.InfoHash, p.Size, wait)
 		return p.Encode(), nil, true
 	case ctx.Err() != nil:
 		return nil, ctx.Err(), true
@@ -1081,16 +1113,21 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 			errs = append(errs, fmt.Errorf("%s refused this torrent: %w", displayName(e.cfg), ErrAddRefused))
 			continue
 		}
+		started := s.now()
 		p, err := s.acquireOn(ctx, e, base, choose, true)
 		if err == nil {
 			s.forgetQueued(rel, hash)
 			s.savePayload(ctx, p)
 			s.log.Info("debrid release ready", "release", rel.Name, "provider", displayName(e.cfg), "file", p.Name())
+			s.emitDebridCached(e, rel, hash, p.Size, s.now().Sub(started))
 			return p.Encode(), nil
 		}
 		if ctx.Err() != nil {
 			s.forgetQueued(rel, hash)
 			return nil, ctx.Err()
+		}
+		if errors.Is(err, core.ErrDownloadLimit) {
+			s.emitQuotaExhausted(e.cfg, "active_downloads", 1, 1)
 		}
 		var untracked *untrackedPending
 		confirmed := pendingTorrent(err) != "" || errors.As(err, &untracked)
@@ -1103,6 +1140,7 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 		}
 		if errors.Is(err, core.ErrReleaseRejected) {
 			s.forgetQueued(rel, hash)
+			s.emitDebridFailed(e, rel, hash, err)
 			return nil, err
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
@@ -1110,6 +1148,7 @@ func (s *Service) QueueDownload(ctx context.Context, rel core.Release) ([]byte, 
 	s.forgetQueued(rel, hash)
 	joined := errors.Join(errs...)
 	s.log.Info("uncached torrent not sent to download", "release", rel.Name, "err", joined)
+	s.emitDebridFailed(nil, rel, hash, joined)
 	for _, err := range errs {
 		if errors.Is(err, core.ErrDownloadLimit) {
 			return nil, fmt.Errorf("%q: %w (%v)", rel.Name, core.ErrDownloadLimit, joined)
@@ -1593,6 +1632,7 @@ func (s *Service) Test(ctx context.Context, cfg config.DebridProvider) error {
 		}
 		return err
 	}
+	s.emitAccountQuotaEvents(cfg, a)
 	if !a.Premium {
 		return fmt.Errorf("%s account %q has no active premium subscription", displayName(cfg), a.User)
 	}

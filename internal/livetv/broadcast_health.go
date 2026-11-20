@@ -161,7 +161,11 @@ func (b *broadcast) growLead() bool {
 	}
 	// Spend only reserve above the preset's target (plus a second): growing
 	// the lead must never leave the input short of what the preset promises.
-	if depth, target, ok := source.reserveTarget(); !ok || target <= 0 || depth < target+goal-b.lead+time.Second {
+	// Each early tick spends one picture of that surplus, so the lead grows
+	// as far as the surplus reaches and resumes when the reserve refills;
+	// requiring the whole remaining growth up front kept a reserve that sat
+	// a little above target from ever growing the lead.
+	if depth, target, ok := source.reserveTarget(); !ok || target <= 0 || depth < target+time.Second {
 		return false
 	}
 	b.mu.Lock()

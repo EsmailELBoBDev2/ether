@@ -1858,7 +1858,7 @@ func (s *Server) handleStartHLS(w http.ResponseWriter, r *http.Request) {
 		InputURL:            s.playback().InputURL(ps.ID),
 		Info:                ps.Info,
 		Decision:            dec,
-		StartOffset:         p.offset,
+		StartOffset:         ps.SourcePosition(p.offset),
 		ResumeHint:          resumeHint,
 	})
 	if err != nil {

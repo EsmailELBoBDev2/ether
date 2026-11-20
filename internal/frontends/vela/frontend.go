@@ -52,6 +52,12 @@ func (Frontend) Describe() frontend.Descriptor {
 					},
 				},
 				{
+					Key: "liveTV",
+					Fields: []frontend.SettingsField{
+						{Key: "livePreview", Kind: "string", Options: []string{LivePreviewAuto, LivePreviewOnClick, LivePreviewOff}},
+					},
+				},
+				{
 					Key: "find",
 					Fields: []frontend.SettingsField{
 						{Key: "serverName", Kind: "serverName"},
@@ -60,6 +66,25 @@ func (Frontend) Describe() frontend.Descriptor {
 			},
 		},
 	}
+}
+
+const (
+	LivePreviewAuto    = "auto"
+	LivePreviewOnClick = "on-click"
+	LivePreviewOff     = "off"
+)
+
+// ValidLivePreviewMode reports whether mode is a supported Vela Live TV
+// preview setting value.
+func ValidLivePreviewMode(mode string) bool {
+	return mode == LivePreviewAuto || mode == LivePreviewOnClick || mode == LivePreviewOff
+}
+
+func livePreviewModeFromSettings(settings map[string]any) string {
+	if mode, ok := settings["livePreview"].(string); ok && ValidLivePreviewMode(mode) {
+		return mode
+	}
+	return LivePreviewAuto
 }
 
 // ValidateSettings keeps the owner setting additive without accepting arbitrary config.
@@ -97,6 +122,11 @@ func (f Frontend) ValidateSettings(s frontend.Settings) error {
 			}
 			if err := validateWordmarkInDB(f.DB, wm); err != nil {
 				return err
+			}
+		case "livePreview":
+			mode, ok := value.(string)
+			if !ok || !ValidLivePreviewMode(mode) {
+				return errors.New("invalid Vela setting")
 			}
 		default:
 			return errors.New("invalid Vela setting")
@@ -449,8 +479,8 @@ func (i *instance) viewer(r *http.Request) (*frontend.Viewer, string, error) {
 	return v, token, nil
 }
 func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
 	if strings.HasPrefix(r.URL.Path, "/sessions/media/") {
+		w.Header().Set("Cache-Control", "no-store")
 		// Media elements cannot attach the API bearer/device headers. The
 		// surface-bound broker authenticates the URL grant, viewer and current
 		// policy on every read, including playlists, segments and subtitles.
@@ -461,6 +491,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		webclient.ServeVelaBrand(w, r, i.assets, i.appearanceDocument().appName)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	r = r.WithContext(i.identityContext(r))
 	// Authentication/idempotency can fail before ServeMux dispatches. Record
 	// only its registered route template for those warnings too. Unknown routes
@@ -682,6 +713,20 @@ func (i *instance) routes() {
 func (*instance) unavailable(w http.ResponseWriter, r *http.Request) {
 	problem(w, 403, "policy", "feature_unavailable")
 }
+func (i *instance) velaSettings() map[string]any {
+	if i.host.HostConfig != nil {
+		return i.host.HostConfig().Frontends["vela"].Settings
+	}
+	if i.host.Config != nil {
+		return i.host.Config()
+	}
+	return nil
+}
+
+func (i *instance) livePreviewMode() string {
+	return livePreviewModeFromSettings(i.velaSettings())
+}
+
 func (i *instance) capabilities() object {
 	f := func(v bool) object { return object{"available": v} }
 	s := i.host.ServerIdentity
@@ -695,7 +740,7 @@ func (i *instance) capabilities() object {
 	if source, ok := i.host.Identity.(frontend.AuthenticationFeatureSource); ok {
 		auth = source.AuthenticationFeatures()
 	}
-	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
+	caps := object{"protocolVersion": 0, "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(auth.Password), "deviceGrant": f(auth.QuickConnect && i.host.ViewerPortalURL != nil), "quickConnect": f(auth.QuickConnect), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if auth.PlexAccountSignIn {
 		caps["plexAccountSignIn"] = true
 	}

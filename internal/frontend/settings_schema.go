@@ -3,6 +3,7 @@ package frontend
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -169,6 +170,9 @@ func (f SettingsField) validateValue(v any) error {
 			return fmt.Errorf("invalid %s", f.Key)
 		}
 		if f.Max != nil && utf8.RuneCountInString(trimmed) > *f.Max {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		if len(f.Options) > 0 && !slices.Contains(f.Options, s) {
 			return fmt.Errorf("invalid %s", f.Key)
 		}
 	case "wordmark":

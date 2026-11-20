@@ -51,7 +51,7 @@ func (i *instance) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	// Credentials scope the image grants and cursor scope includes the complete
 	// viewer policy. Do not reuse wire responses between refresh families/devices.
-	scope := hashJSON([]any{v, requestDevice(r), token, r.URL.RequestURI(), i.appearanceDocument().etag})
+	scope := hashJSON([]any{v, requestDevice(r), token, r.URL.RequestURI(), i.appearanceDocument().etag, i.livePreviewMode()})
 	if local, ok := i.host.Experience.(interface {
 		NoProviderWait(context.Context) context.Context
 	}); ok {

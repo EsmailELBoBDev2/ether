@@ -49,6 +49,7 @@ export type VelaWordmark = {
   height: number;
   dark?: string;
 };
+export type VelaLivePreviewMode = "auto" | "on-click" | "off";
 type Settings = {
   port?: number;
   publicUrl?: string;
@@ -61,6 +62,7 @@ type Settings = {
   force?: boolean;
   appName?: string;
   wordmark?: VelaWordmark | null;
+  livePreview?: VelaLivePreviewMode;
   homeRows?: boolean;
   homeRowCount?: number;
   homeRowKinds?: string[];
@@ -698,6 +700,32 @@ function ProtocolSettings({
               onDefaultSkinChange={(defaultSkinId) => setDraft({ ...draft, defaultSkinId })}
               onForceChange={(force) => setDraft({ ...draft, force })}
             />
+            <SettingsSection title={t("Live TV")}>
+              <SettingsRow
+                title={t("Channel preview")}
+                description={t(
+                  "Choose when Vela starts a live preview stream while browsing Live TV.",
+                )}
+                control={
+                  <SearchSelect
+                    ariaLabel={t("Channel preview")}
+                    className="w-full sm:w-80"
+                    searchable={false}
+                    value={draft.livePreview ?? "auto"}
+                    onChange={(next) => {
+                      if (next === "auto" || next === "on-click" || next === "off") {
+                        setDraft({ ...draft, livePreview: next });
+                      }
+                    }}
+                    options={[
+                      { value: "auto", label: t("Play the channel when Live TV opens") },
+                      { value: "on-click", label: t("Only when you choose Preview") },
+                      { value: "off", label: t("Never preview; Watch live still works") },
+                    ]}
+                  />
+                }
+              />
+            </SettingsSection>
           </>
         ) : null}
         {["jellyfin", "emby", "silo"].includes(id) ? (

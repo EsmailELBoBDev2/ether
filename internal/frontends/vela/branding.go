@@ -167,6 +167,10 @@ func NormalizeSettings(s frontend.Settings) frontend.Settings {
 				}
 				out["wordmark"] = m
 			}
+		case "livePreview":
+			if mode, ok := v.(string); ok && ValidLivePreviewMode(mode) {
+				out["livePreview"] = mode
+			}
 		default:
 			out[k] = v
 		}

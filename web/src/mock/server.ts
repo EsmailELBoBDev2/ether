@@ -4149,6 +4149,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
             else delete settings.appName;
           }
           if (settings.wordmark == null) delete settings.wordmark;
+          if (
+            settings.livePreview !== undefined &&
+            settings.livePreview !== "auto" &&
+            settings.livePreview !== "on-click" &&
+            settings.livePreview !== "off"
+          ) {
+            return json({ error: { message: "invalid livePreview" } }, 400);
+          }
         }
         entry.settings = settings;
         if (typeof port === "number") {

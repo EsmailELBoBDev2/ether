@@ -505,7 +505,7 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 		return s.scanDateFieldYearBuckets(ctx, fieldKey, itemWhere, fieldDrivenWhere, itemArgs, smallLib)
 	case "duration":
 		if smallLib {
-			vals, err := s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? AND f.v_int >= 0 GROUP BY f.v_int`, args)
+			vals, err := s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int >= 0 GROUP BY f.v_int`, args)
 			if err != nil {
 				return nil, err
 			}
@@ -528,7 +528,7 @@ func (s *Service) FacetBuckets(ctx context.Context, libraryID core.LibraryID, le
 		if !smallLib {
 			return s.scanPeopleBucketsLarge(ctx, fieldKey, fieldDrivenWhere, itemArgs)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT MIN(f.v_text), COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> '' GROUP BY f.v_int`, args...)
+		rows, err := s.db.QueryContext(ctx, `SELECT MIN(f.v_text), COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? AND f.v_int <> 0 AND f.v_int > 0 AND f.v_text <> '' GROUP BY f.v_int`, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -731,12 +731,12 @@ WHERE r IS NOT NULL
 ORDER BY r ASC`, qArgs)
 }
 
-func (s *Service) scanFieldIntSpanBuckets(ctx context.Context, fieldKey, fieldDrivenWhere string, itemArgs []any, defs []intSpanDef) ([]FacetBucket, error) {
+func (s *Service) scanFieldIntSpanBuckets(ctx context.Context, fieldKey, fieldDrivenWhere string, itemArgs []any, defs []intSpanDef, includeZero bool) ([]FacetBucket, error) {
 	if len(defs) == 0 {
 		return []FacetBucket{}, nil
 	}
 	arms := make([]string, len(defs))
-	qArgs := make([]any, 0, 3*len(defs)+1+len(itemArgs))
+	qArgs := make([]any, 0, 3*len(defs)+2+2*len(itemArgs))
 	for i, d := range defs {
 		if i == 0 {
 			arms[i] = `SELECT CAST(? AS INTEGER) AS idx, CAST(? AS BIGINT) AS lo, CAST(? AS BIGINT) AS hi`
@@ -747,6 +747,26 @@ func (s *Service) scanFieldIntSpanBuckets(ctx context.Context, fieldKey, fieldDr
 	}
 	qArgs = append(qArgs, fieldKey)
 	qArgs = append(qArgs, itemArgs...)
+
+	// Drive the range scan with f.v_int <> 0 so SQLite treats the partial
+	// plugin_item_fields_lookup_int index as covering across every span arm
+	// instead of falling back to plugin_item_fields_fold. When legitimate zero
+	// values belong to a span (e.g. duration's under-10m bucket), add an exact
+	// v_int = 0 probe carrying the full partial predicate.
+	zeroTerm := ""
+	if includeZero {
+		qArgs = append(qArgs, fieldKey, int64(0))
+		qArgs = append(qArgs, itemArgs...)
+		zeroTerm = ` + CASE WHEN 0 BETWEEN spans.lo AND spans.hi THEN (
+	SELECT COUNT(*) FROM (
+		SELECT 1 FROM plugin_item_fields f
+		JOIN plugin_items i ON i.item_ref = f.item_ref
+		WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int = ? AND ` + fieldDrivenWhere + `
+		LIMIT 25001
+	) s0
+) ELSE 0 END`
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 WITH spans(idx, lo, hi) AS (
 	`+strings.Join(arms, "\n\tUNION ALL\n\t")+`
@@ -755,10 +775,10 @@ SELECT idx, (
 	SELECT COUNT(*) FROM (
 		SELECT 1 FROM plugin_item_fields f
 		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_int BETWEEN spans.lo AND spans.hi AND `+fieldDrivenWhere+`
+		WHERE f.field = ? AND f.v_int <> 0 AND f.v_int BETWEEN spans.lo AND spans.hi AND `+fieldDrivenWhere+`
 		LIMIT 25001
 	) s
-)
+)`+zeroTerm+`
 FROM spans
 ORDER BY idx ASC`, qArgs...)
 	if err != nil {
@@ -770,6 +790,9 @@ ORDER BY idx ASC`, qArgs...)
 		var idx, cnt int
 		if err := rows.Scan(&idx, &cnt); err != nil {
 			return nil, err
+		}
+		if cnt > 25001 {
+			cnt = 25001
 		}
 		if cnt > 0 && idx >= 0 && idx < len(defs) {
 			out = append(out, FacetBucket{ID: defs[idx].id, Label: defs[idx].label, Count: cnt})
@@ -807,7 +830,7 @@ func (s *Service) scanDateFieldYearBuckets(ctx context.Context, fieldKey, itemWh
 			hi:    time.Date(y+1, 1, 1, 0, 0, 0, 0, time.UTC).Unix() - 1,
 		})
 	}
-	return s.scanFieldIntSpanBuckets(ctx, fieldKey, fieldDrivenWhere, itemArgs, defs)
+	return s.scanFieldIntSpanBuckets(ctx, fieldKey, fieldDrivenWhere, itemArgs, defs, false)
 }
 
 func (s *Service) scanDateFieldDecadeBuckets(ctx context.Context, fieldKey, itemWhere, fieldDrivenWhere string, itemArgs []any, smallLib bool) ([]FacetBucket, error) {
@@ -835,7 +858,7 @@ func (s *Service) scanDateFieldDecadeBuckets(ctx context.Context, fieldKey, item
 			hi:    time.Date(d+10, 1, 1, 0, 0, 0, 0, time.UTC).Unix() - 1,
 		})
 	}
-	return s.scanFieldIntSpanBuckets(ctx, fieldKey, fieldDrivenWhere, itemArgs, defs)
+	return s.scanFieldIntSpanBuckets(ctx, fieldKey, fieldDrivenWhere, itemArgs, defs, false)
 }
 
 func (s *Service) dateFieldYearSpan(ctx context.Context, fieldKey string) (int, int, bool) {
@@ -864,22 +887,22 @@ func (s *Service) scanDurationBucketsLarge(ctx context.Context, fieldKey, fieldD
 	for i, d := range libraryfilter.DurationBucketDefs {
 		defs[i] = intSpanDef{id: d.ID, label: d.Label, lo: d.Min, hi: d.Max}
 	}
-	return s.scanFieldIntSpanBuckets(ctx, fieldKey, fieldDrivenWhere, itemArgs, defs)
+	return s.scanFieldIntSpanBuckets(ctx, fieldKey, fieldDrivenWhere, itemArgs, defs, true)
 }
 
 func (s *Service) scanFieldIntCounts(ctx context.Context, fieldKey, itemWhere, fieldDrivenWhere string, itemArgs []any, smallLib bool) ([]intFacetPair, error) {
 	if smallLib {
 		args := append(append([]any(nil), itemArgs...), fieldKey)
-		return s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? GROUP BY f.v_int ORDER BY f.v_int ASC`, args)
+		return s.scanIntFacetCounts(ctx, `SELECT f.v_int, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? AND (f.v_text = '' OR f.v_int <> 0) GROUP BY f.v_int ORDER BY f.v_int ASC`, args)
 	}
 	qArgs := make([]any, 0, 3+len(itemArgs))
 	qArgs = append(qArgs, fieldKey, fieldKey, fieldKey)
 	qArgs = append(qArgs, itemArgs...)
 	return s.scanIntFacetCounts(ctx, `
 WITH RECURSIVE distinct_ints(v) AS (
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? ORDER BY f.v_int ASC LIMIT 1)
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) ORDER BY f.v_int ASC LIMIT 1)
 	UNION ALL
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int > distinct_ints.v ORDER BY f.v_int ASC LIMIT 1)
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int > distinct_ints.v ORDER BY f.v_int ASC LIMIT 1)
 	FROM distinct_ints
 	WHERE distinct_ints.v IS NOT NULL
 	LIMIT 400
@@ -888,7 +911,7 @@ SELECT v, (
 	SELECT COUNT(*) FROM (
 		SELECT 1 FROM plugin_item_fields f
 		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_int = distinct_ints.v AND `+fieldDrivenWhere+`
+		WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int = distinct_ints.v AND `+fieldDrivenWhere+`
 		LIMIT 2001
 	) s
 )
@@ -900,16 +923,16 @@ ORDER BY v ASC`, qArgs)
 func (s *Service) scanFieldFloatCounts(ctx context.Context, fieldKey, itemWhere, fieldDrivenWhere string, itemArgs []any, smallLib bool) ([]floatFacetPair, error) {
 	if smallLib {
 		args := append(append([]any(nil), itemArgs...), fieldKey)
-		return s.scanFloatFacetCounts(ctx, `SELECT f.v_real, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? GROUP BY f.v_real ORDER BY f.v_real ASC`, args)
+		return s.scanFloatFacetCounts(ctx, `SELECT f.v_real, COUNT(*) FROM plugin_item_fields f JOIN plugin_items i ON i.item_ref = f.item_ref WHERE `+itemWhere+` AND f.field = ? AND f.v_text = '' GROUP BY f.v_real ORDER BY f.v_real ASC`, args)
 	}
 	qArgs := make([]any, 0, 3+len(itemArgs))
 	qArgs = append(qArgs, fieldKey, fieldKey, fieldKey)
 	qArgs = append(qArgs, itemArgs...)
 	return s.scanFloatFacetCounts(ctx, `
 WITH RECURSIVE distinct_reals(v) AS (
-	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? ORDER BY f.v_real ASC LIMIT 1)
+	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = '' ORDER BY f.v_real ASC LIMIT 1)
 	UNION ALL
-	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_real > distinct_reals.v ORDER BY f.v_real ASC LIMIT 1)
+	SELECT (SELECT f.v_real FROM plugin_item_fields f WHERE f.field = ? AND f.v_text = '' AND f.v_real > distinct_reals.v ORDER BY f.v_real ASC LIMIT 1)
 	FROM distinct_reals
 	WHERE distinct_reals.v IS NOT NULL
 	LIMIT 400
@@ -918,7 +941,7 @@ SELECT v, (
 	SELECT COUNT(*) FROM (
 		SELECT 1 FROM plugin_item_fields f
 		JOIN plugin_items i ON i.item_ref = f.item_ref
-		WHERE f.field = ? AND f.v_real = distinct_reals.v AND `+fieldDrivenWhere+`
+		WHERE f.field = ? AND f.v_text = '' AND f.v_real = distinct_reals.v AND `+fieldDrivenWhere+`
 		LIMIT 2001
 	) s
 )
@@ -987,9 +1010,9 @@ func (s *Service) scanPeopleCandidatesLarge(ctx context.Context, fieldKey, field
 	qArgs = append(qArgs, countCap)
 	rows, err := s.db.QueryContext(ctx, `
 WITH RECURSIVE distinct_pids(pid) AS (
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int > ? AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1)
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1)
 	UNION ALL
-	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int > distinct_pids.pid AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1)
+	SELECT (SELECT f.v_int FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int > distinct_pids.pid AND f.v_int < ? ORDER BY f.v_int ASC LIMIT 1)
 	FROM distinct_pids
 	WHERE distinct_pids.pid IS NOT NULL
 	LIMIT 400
@@ -999,7 +1022,7 @@ SELECT pid,
 		SELECT MIN(sub.v_text) FROM (
 			SELECT f.v_text FROM plugin_item_fields f
 			JOIN plugin_items i ON i.item_ref = f.item_ref
-			WHERE f.field = ? AND f.v_int = distinct_pids.pid AND f.v_text <> '' AND `+fieldDrivenWhere+`
+			WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = distinct_pids.pid AND f.v_text <> '' AND `+fieldDrivenWhere+`
 			LIMIT ?
 		) sub
 	), ''),
@@ -1007,7 +1030,7 @@ SELECT pid,
 		SELECT COUNT(*) FROM (
 			SELECT 1 FROM plugin_item_fields f
 			JOIN plugin_items i ON i.item_ref = f.item_ref
-			WHERE f.field = ? AND f.v_int = distinct_pids.pid AND f.v_text <> '' AND `+fieldDrivenWhere+`
+			WHERE f.field = ? AND f.v_int <> 0 AND f.v_int = distinct_pids.pid AND f.v_text <> '' AND `+fieldDrivenWhere+`
 			LIMIT ?
 		) sub2
 	)
@@ -1478,32 +1501,70 @@ func (s *Service) appendBrowseFacets(ctx context.Context, lib core.LibraryID, wh
 	return usedFieldIndex, nil
 }
 
+type fieldDisjunct struct {
+	sql         string
+	args        []any
+	partialPred string
+}
+
+func intRangePartialPred(lo, hi int64) string {
+	if lo > 0 || hi < 0 {
+		return `f.v_int <> 0`
+	}
+	return `(f.v_text = '' OR f.v_int <> 0)`
+}
+
+// appendBrowseFieldDisjuncts emits an item_ref IN (...) filter carrying
+// partialPred verbatim so SQLite and PostgreSQL prove the partial numeric
+// index applies. Multiple disjuncts use UNION ALL instead of a single OR so
+// SQLite seeks the partial index on every branch rather than falling back to a
+// full field scan.
+func appendBrowseFieldDisjuncts(where *strings.Builder, args *[]any, fieldKey, defaultPartialPred string, disjuncts []fieldDisjunct) {
+	predFor := func(d fieldDisjunct) string {
+		if d.partialPred != "" {
+			return d.partialPred
+		}
+		return defaultPartialPred
+	}
+	if len(disjuncts) == 1 {
+		*args = append(*args, fieldKey)
+		*args = append(*args, disjuncts[0].args...)
+		where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(disjuncts[0]) + ` AND ` + disjuncts[0].sql + `)`)
+		return
+	}
+	where.WriteString(` AND i.item_ref IN (`)
+	for idx, d := range disjuncts {
+		if idx > 0 {
+			where.WriteString(` UNION ALL `)
+		}
+		*args = append(*args, fieldKey)
+		*args = append(*args, d.args...)
+		where.WriteString(`SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + predFor(d) + ` AND ` + d.sql)
+	}
+	where.WriteString(`)`)
+}
+
 func appendBrowseDateDecadeClause(where *strings.Builder, args *[]any, baseField string, vals []string, used *bool) {
-	var disjuncts []string
-	var dargs []any
+	var disjuncts []fieldDisjunct
 	for _, v := range vals {
 		if lo, hi, ok := libraryfilter.ParseDateDecadeBucket(v); ok {
-			disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
-			dargs = append(dargs, lo, hi)
+			disjuncts = append(disjuncts, fieldDisjunct{
+				sql:         `f.v_int BETWEEN ? AND ?`,
+				args:        []any{lo, hi},
+				partialPred: intRangePartialPred(lo, hi),
+			})
 		}
 	}
 	if len(disjuncts) == 0 {
 		where.WriteString(` AND 0=1`)
 		return
 	}
-	*args = append(*args, baseField)
-	*args = append(*args, dargs...)
-	pred := disjuncts[0]
-	if len(disjuncts) > 1 {
-		pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
-	}
-	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + pred + `)`)
+	appendBrowseFieldDisjuncts(where, args, baseField, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts)
 	*used = true
 }
 
 func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key string, vals []string, used *bool) {
-	var disjuncts []string
-	var dargs []any
+	var disjuncts []fieldDisjunct
 	var exactPh []string
 	var exactArgs []any
 	for _, v := range vals {
@@ -1512,8 +1573,10 @@ func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key strin
 			lo, e1 := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
 			hi, e2 := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
 			if e1 == nil && e2 == nil && !math.IsNaN(lo) && !math.IsNaN(hi) && !math.IsInf(lo, 0) && !math.IsInf(hi, 0) && lo <= hi {
-				disjuncts = append(disjuncts, `f.v_real BETWEEN ? AND ?`)
-				dargs = append(dargs, lo, hi)
+				disjuncts = append(disjuncts, fieldDisjunct{
+					sql:  `f.v_real BETWEEN ? AND ?`,
+					args: []any{lo, hi},
+				})
 				continue
 			}
 		}
@@ -1525,20 +1588,16 @@ func appendBrowseFloatFieldClause(where *strings.Builder, args *[]any, key strin
 		exactArgs = append(exactArgs, n)
 	}
 	if len(exactPh) > 0 {
-		disjuncts = append(disjuncts, `f.v_real IN (`+strings.Join(exactPh, ", ")+`)`)
-		dargs = append(dargs, exactArgs...)
+		disjuncts = append(disjuncts, fieldDisjunct{
+			sql:  `f.v_real IN (` + strings.Join(exactPh, ", ") + `)`,
+			args: exactArgs,
+		})
 	}
 	if len(disjuncts) == 0 {
 		where.WriteString(` AND 0=1`)
 		return
 	}
-	*args = append(*args, key)
-	*args = append(*args, dargs...)
-	pred := disjuncts[0]
-	if len(disjuncts) > 1 {
-		pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
-	}
-	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + pred + `)`)
+	appendBrowseFieldDisjuncts(where, args, key, `f.v_text = ''`, disjuncts)
 	*used = true
 }
 
@@ -1561,27 +1620,36 @@ func browseAllIntRanges(vals []string) bool {
 }
 
 func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype string, vals []string, used *bool) {
-	var disjuncts []string
-	var dargs []any
+	var disjuncts []fieldDisjunct
 	var exactPh []string
 	var exactArgs []any
+	exactHasZero := false
 	for _, v := range vals {
 		if ftype == "duration" {
 			if lo, hi, ok := libraryfilter.ParseDurationBucket(v); ok {
 				if hi == math.MaxInt64 {
-					disjuncts = append(disjuncts, `f.v_int >= ?`)
-					dargs = append(dargs, lo)
+					disjuncts = append(disjuncts, fieldDisjunct{
+						sql:         `f.v_int >= ?`,
+						args:        []any{lo},
+						partialPred: intRangePartialPred(lo, hi),
+					})
 				} else {
-					disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
-					dargs = append(dargs, lo, hi)
+					disjuncts = append(disjuncts, fieldDisjunct{
+						sql:         `f.v_int BETWEEN ? AND ?`,
+						args:        []any{lo, hi},
+						partialPred: intRangePartialPred(lo, hi),
+					})
 				}
 				continue
 			}
 		}
 		if ftype == "date" {
 			if lo, hi, ok := libraryfilter.ParseDateYearBucket(v); ok {
-				disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
-				dargs = append(dargs, lo, hi)
+				disjuncts = append(disjuncts, fieldDisjunct{
+					sql:         `f.v_int BETWEEN ? AND ?`,
+					args:        []any{lo, hi},
+					partialPred: intRangePartialPred(lo, hi),
+				})
 				continue
 			}
 		}
@@ -1590,8 +1658,11 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 			lo, e1 := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
 			hi, e2 := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
 			if e1 == nil && e2 == nil && lo <= hi {
-				disjuncts = append(disjuncts, `f.v_int BETWEEN ? AND ?`)
-				dargs = append(dargs, lo, hi)
+				disjuncts = append(disjuncts, fieldDisjunct{
+					sql:         `f.v_int BETWEEN ? AND ?`,
+					args:        []any{lo, hi},
+					partialPred: intRangePartialPred(lo, hi),
+				})
 				continue
 			}
 		}
@@ -1599,24 +1670,28 @@ func appendBrowseIntFieldClause(where *strings.Builder, args *[]any, key, ftype 
 		if err != nil {
 			continue
 		}
+		if n == 0 {
+			exactHasZero = true
+		}
 		exactPh = append(exactPh, "?")
 		exactArgs = append(exactArgs, n)
 	}
 	if len(exactPh) > 0 {
-		disjuncts = append(disjuncts, `f.v_int IN (`+strings.Join(exactPh, ", ")+`)`)
-		dargs = append(dargs, exactArgs...)
+		pred := `f.v_int <> 0`
+		if exactHasZero {
+			pred = `(f.v_text = '' OR f.v_int <> 0)`
+		}
+		disjuncts = append(disjuncts, fieldDisjunct{
+			sql:         `f.v_int IN (` + strings.Join(exactPh, ", ") + `)`,
+			args:        exactArgs,
+			partialPred: pred,
+		})
 	}
 	if len(disjuncts) == 0 {
 		where.WriteString(` AND 0=1`)
 		return
 	}
-	*args = append(*args, key)
-	*args = append(*args, dargs...)
-	pred := disjuncts[0]
-	if len(disjuncts) > 1 {
-		pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
-	}
-	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND ` + pred + `)`)
+	appendBrowseFieldDisjuncts(where, args, key, `(f.v_text = '' OR f.v_int <> 0)`, disjuncts)
 	*used = true
 }
 
@@ -1641,7 +1716,7 @@ func appendBrowsePeopleFieldClause(where *strings.Builder, args *[]any, key stri
 		placeholders[idx] = "?"
 		*args = append(*args, pid)
 	}
-	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
+	where.WriteString(` AND i.item_ref IN (SELECT f.item_ref FROM plugin_item_fields f WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
 	*used = true
 }
 
@@ -1668,7 +1743,7 @@ func (s *Service) appendBrowsePersonFilter(ctx context.Context, lib core.Library
 		*args = append(*args, fk)
 	}
 	*args = append(*args, personID)
-	where.WriteString(` AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int = ?)`)
+	where.WriteString(` AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int <> 0 AND pf.v_int = ?)`)
 	return true, nil
 }
 
@@ -1695,7 +1770,7 @@ func (s *Service) appendPersonFilter(ctx context.Context, lib core.LibraryID, wh
 		*args = append(*args, fk)
 	}
 	*args = append(*args, personID)
-	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields pf WHERE pf.item_ref = i.item_ref AND pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int = ?)`)
+	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields pf WHERE pf.item_ref = i.item_ref AND pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int <> 0 AND pf.v_int = ?)`)
 	return true, nil
 }
 
@@ -1847,7 +1922,7 @@ func (s *Service) FacetCollections(ctx context.Context, q FacetCollectionsQuery)
 				`SELECT f.v_int, MIN(f.v_text) AS label, COUNT(*) AS cnt
 				 FROM plugin_item_fields f
 				 JOIN plugin_items i ON i.item_ref = f.item_ref
-				 WHERE `+itemWhere+` AND f.field = ? AND f.v_int > 0 AND f.v_text <> ''
+				 WHERE `+itemWhere+` AND f.field = ? AND f.v_int <> 0 AND f.v_int > 0 AND f.v_text <> ''
 				 GROUP BY f.v_int
 				 ORDER BY `+orderClause+`
 				 LIMIT ? OFFSET ?`, qArgs...)

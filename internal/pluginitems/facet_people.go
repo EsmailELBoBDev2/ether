@@ -142,7 +142,7 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 		appendFoldedWordPrefix(&where, &qArgs, terms)
 	} else {
 		where.WriteString(itemWhere)
-		where.WriteString(` AND f.field = ? AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
+		where.WriteString(` AND f.field = ? AND f.v_int <> 0 AND f.v_int > ? AND f.v_int < ? AND f.v_text <> ''`)
 		qArgs = append(qArgs, fieldKey, minPersonID, maxPersonID)
 	}
 	qArgs = append(qArgs, limit+1, offset)
@@ -210,7 +210,7 @@ func (s *Service) FacetPeople(ctx context.Context, q FacetPeopleQuery) (FacetPeo
 		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
 	FROM plugin_item_fields f
 	JOIN plugin_items i ON i.item_ref = f.item_ref
-	WHERE f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+	WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
 )
 SELECT r.bucket_pid, ` + prefixedItemCols("i.") + `
 FROM ranked r
@@ -350,37 +350,97 @@ func (s *Service) resolveNewestByIntBuckets(ctx context.Context, fieldKey string
 		return nil, nil
 	}
 	idxByVal := make(map[int64][]int, len(buckets))
-	placeholders := make([]string, 0, len(buckets))
-	args := make([]any, 0, 1+len(buckets)+len(itemArgs))
-	args = append(args, fieldKey)
+	nonZeroPh := make([]string, 0, len(buckets))
+	nonZeroVals := make([]any, 0, len(buckets))
+	hasZero := false
 	for i, b := range buckets {
 		v, err := strconv.ParseInt(b.ID, 10, 64)
 		if err != nil {
 			continue
 		}
 		if _, seen := idxByVal[v]; !seen {
-			placeholders = append(placeholders, "?")
-			args = append(args, v)
+			if v == 0 {
+				hasZero = true
+			} else {
+				nonZeroPh = append(nonZeroPh, "?")
+				nonZeroVals = append(nonZeroVals, v)
+			}
 		}
 		idxByVal[v] = append(idxByVal[v], i)
 	}
-	if len(placeholders) == 0 {
+	if !hasZero && len(nonZeroPh) == 0 {
 		return make([]*core.KindItem, len(buckets)), nil
 	}
-	args = append(args, itemArgs...)
 
-	querySQL := `WITH ranked AS (
+	var querySQL string
+	var args []any
+	switch {
+	case !hasZero:
+		args = make([]any, 0, 1+len(nonZeroVals)+len(itemArgs))
+		args = append(args, fieldKey)
+		args = append(args, nonZeroVals...)
+		args = append(args, itemArgs...)
+		querySQL = `WITH ranked AS (
 	SELECT f.v_int AS bucket_val,
 		i.item_ref,
 		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
 	FROM plugin_item_fields f
 	JOIN plugin_items i ON i.item_ref = f.item_ref
-	WHERE f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+	WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(nonZeroPh, ",") + `) AND ` + fieldDrivenWhere + `
 )
 SELECT r.bucket_val, ` + prefixedItemCols("i.") + `
 FROM ranked r
 JOIN plugin_items i ON i.item_ref = r.item_ref
 WHERE r.rn = 1`
+	case len(nonZeroPh) == 0:
+		args = make([]any, 0, 2+len(itemArgs))
+		args = append(args, fieldKey, int64(0))
+		args = append(args, itemArgs...)
+		querySQL = `WITH ranked AS (
+	SELECT f.v_int AS bucket_val,
+		i.item_ref,
+		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
+	FROM plugin_item_fields f
+	JOIN plugin_items i ON i.item_ref = f.item_ref
+	WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int = ? AND ` + fieldDrivenWhere + `
+)
+SELECT r.bucket_val, ` + prefixedItemCols("i.") + `
+FROM ranked r
+JOIN plugin_items i ON i.item_ref = r.item_ref
+WHERE r.rn = 1`
+	default:
+		// Split non-zero values (f.v_int <> 0 -> covering lookup_int) from 0
+		// ((f.v_text = '' OR f.v_int <> 0) AND f.v_int = ? -> lookup_int seek)
+		// so SQLite does not abandon lookup_int for plugin_item_fields_fold
+		// when a page includes 0 alongside multiple non-zero buckets.
+		args = make([]any, 0, 3+len(nonZeroVals)+2*len(itemArgs))
+		args = append(args, fieldKey)
+		args = append(args, nonZeroVals...)
+		args = append(args, itemArgs...)
+		args = append(args, fieldKey, int64(0))
+		args = append(args, itemArgs...)
+		querySQL = `WITH matched AS (
+	SELECT f.v_int AS bucket_val, i.item_ref, i.released, i.added_at, i.year
+	FROM plugin_item_fields f
+	JOIN plugin_items i ON i.item_ref = f.item_ref
+	WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(nonZeroPh, ",") + `) AND ` + fieldDrivenWhere + `
+	UNION ALL
+	SELECT f.v_int AS bucket_val, i.item_ref, i.released, i.added_at, i.year
+	FROM plugin_item_fields f
+	JOIN plugin_items i ON i.item_ref = f.item_ref
+	WHERE f.field = ? AND (f.v_text = '' OR f.v_int <> 0) AND f.v_int = ? AND ` + fieldDrivenWhere + `
+),
+ranked AS (
+	SELECT bucket_val,
+		item_ref,
+		ROW_NUMBER() OVER (PARTITION BY bucket_val ORDER BY released DESC, added_at DESC, year DESC, item_ref ASC) AS rn
+	FROM matched
+)
+SELECT r.bucket_val, ` + prefixedItemCols("i.") + `
+FROM ranked r
+JOIN plugin_items i ON i.item_ref = r.item_ref
+WHERE r.rn = 1`
+	}
 
 	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
@@ -454,7 +514,7 @@ func (s *Service) resolveNewestByFloatBuckets(ctx context.Context, fieldKey stri
 		ROW_NUMBER() OVER (PARTITION BY f.v_real ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
 	FROM plugin_item_fields f
 	JOIN plugin_items i ON i.item_ref = f.item_ref
-	WHERE f.field = ? AND f.v_real IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+	WHERE f.field = ? AND f.v_text = '' AND f.v_real IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
 )
 SELECT r.bucket_val, ` + prefixedItemCols("i.") + `
 FROM ranked r
@@ -525,7 +585,7 @@ func (s *Service) resolveNewestByPersonIDs(ctx context.Context, fieldKey string,
 		ROW_NUMBER() OVER (PARTITION BY f.v_int ORDER BY i.released DESC, i.added_at DESC, i.year DESC, i.item_ref ASC) AS rn
 	FROM plugin_item_fields f
 	JOIN plugin_items i ON i.item_ref = f.item_ref
-	WHERE f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
+	WHERE f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ",") + `) AND ` + fieldDrivenWhere + `
 )
 SELECT r.bucket_pid, ` + prefixedItemCols("i.") + `
 FROM ranked r

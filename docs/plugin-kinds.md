@@ -25,6 +25,7 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
   "library": {
     "name": "Field recordings",     // default name; the owner can rename
     "card": "landscape",            // optional: poster (default) | landscape | square
+    "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
     "tabs": [                       // optional (<= 6); defaults to Recommended + Library
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
       { "key": "library", "label": "Library", "kind": "library" }
@@ -64,17 +65,24 @@ unless the owner agrees to replace the library's contents.
 `library` and `browse` shape how Vela renders the library without per-plugin client logic:
 
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
-- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, or `"people"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+- `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
+- `library.tabs`: up to 6 entries of `{key, label, kind, facet?, order?, card?, search?, searchPlaceholder?, sort?, direction?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
   - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
-  - For example, a games library declaring `"developers"` (`type: "strings"`, `indexed: true`) and `"voiceCast"` (`type: "people"`, `indexed: true`) in `browse.facets` can expose searchable alphabetical developer collections and a voice cast directory:
+  - **`"live"` tabs**: surface ephemeral currently-live streams inside the library without registering Live TV channels or requiring Live TV setup. Accepts optional `card` (`"landscape"` default, `"poster"`, or `"square"`), `search` (`true` by default), and `searchPlaceholder` (≤60 characters when `search` is enabled); `facet`, `order`, `sort`, and `direction` are not used. Vela lists items via `GET /vela/v0/libraries/{id}/live?tab=&query=&filter=&cursor=&limit=` and starts playback via `POST /vela/v0/libraries/{id}/live/play` (returning a standard Vela `PlaybackPlan` and session). Thumbnails are proxied and signed by Ether — upstream URLs never reach clients.
+  - For example, an esports broadcasts library can combine dated VODs (`dateDisplay: "date"`) with a searchable `"live"` tab and tournament collections:
     ```json
-    "tabs": [
-      { "key": "recommended", "label": "Recommended", "kind": "recommended" },
-      { "key": "library", "label": "Library", "kind": "library" },
-      { "key": "developers", "label": "Developers", "kind": "collections", "facet": "developers", "order": "name", "searchPlaceholder": "Search developers" },
-      { "key": "cast", "label": "Voice cast", "kind": "people", "facet": "voiceCast", "order": "name", "searchPlaceholder": "Search voice cast" }
-    ]
+    "library": {
+      "name": "Esports",
+      "card": "landscape",
+      "dateDisplay": "date",
+      "tabs": [
+        { "key": "live", "label": "Live", "kind": "live", "card": "landscape", "searchPlaceholder": "Search live matches" },
+        { "key": "recommended", "label": "Recommended", "kind": "recommended" },
+        { "key": "library", "label": "VODs", "kind": "library" },
+        { "key": "tournaments", "label": "Tournaments", "kind": "collections", "facet": "tournament", "order": "name", "searchPlaceholder": "Search tournaments" }
+      ]
+    }
     ```
 - `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
 - Recommended rows (`GET /vela/v0/libraries/{id}/rows`): Ether builds up to 8 shelves (20 items each) from your stored items — Continue watching, Recently added, Newest, Top rated (when `rating` is a declared sort), and top values of your first declared facet.
@@ -106,6 +114,8 @@ query the client sent:
 | `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket or plugin person | Background only, when `browse.expand` lists that facet. Receives `{facet, value, valueId?, cursor?}` and returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. Runs on owner-granted limits; 404/501 is a clean no-op. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
+| `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
+| `/ether/v1/kinds/{kind}/live/resolve` | Viewer or owner plays a live item | `{id}` → `{url, headers?, mime?, title?}` (or 404 when offline). Never cached; 5s interactive budget. Ether tunes HLS passthrough/relay directly and reuses the sniffed master manifest across relay fallback (safe for single-use stream tokens). |
 | `/ether/v1/kinds/{kind}/resolve` | A viewer presses play | `{libraryKey, item, partIndex?, client?}` → ordered `sources`. Never called during browse. |
 | `/ether/v1/kinds/{kind}/match` | Resolve-time matching, console re-match | `{item, candidates}` → `{matches:[{candidateRef, score 0..1, reasons}]}` best first. |
 | `/ether/v1/setup/{step}/test` | The setup wizard | `{step, fields}` → `{ok, detail, fields?}`. Secrets arrive via `SecretGet`, never in this body. |
@@ -369,19 +379,19 @@ setup banner instead).
 Same contract in all three, pinned by the shared fixtures in
 `sdk/conformance/kinds` (each SDK's tests replay them):
 
-- **Go** (`sdk/go`): `Plugin.OnCatalog / OnResolve / OnMatch /
-  OnFrontend / OnSetupTest`, the `CatalogProvider`, `ExpandProvider`, `KindResolver`,
+- **Go** (`sdk/go`): `Plugin.OnCatalog / OnLive / OnResolve / OnMatch /
+  OnFrontend / OnSetupTest`, the `CatalogProvider`, `ExpandProvider`, `KindLiveProvider`, `KindResolver`,
   `KindMatcher`, `FrontendAdapter` interfaces, host kind methods on
   `Host`, and `sdk/go/kit` helpers — `scrape` (polite host-HTTP
   fetching), `archivex` (zip/cbz/epub members), `metaparse` (EPUB
   OPF, ComicInfo, ID3, FLAC), `feedparse` (RSS/Atom/JSON Feed →
   items), `hints` (typed hints/fields).
-- **Python** (`sdk/python`): `CatalogProvider` (including optional `expand`), `KindResolver`,
+- **Python** (`sdk/python`): `CatalogProvider` (including optional `expand`), `KindLiveProvider`, `KindResolver`,
   `KindMatcher`, `FrontendAdapter`, `SetupTester` base classes with
-  `on_catalog` etc., `ctx.ether.kinds` / `.cache`, `parse_feed` and
+  `on_catalog`, `on_live`, etc., `ctx.ether.kinds` / `.cache`, `parse_feed` and
   `archive_list` helpers.
-- **TypeScript** (`sdk/typescript`): `onCatalog / onResolve /
-  onMatch / onFrontend / onSetupTest` (`CatalogProvider.expand?`), `ctx.ether.kinds` / `.cache`,
+- **TypeScript** (`sdk/typescript`): `onCatalog / onLive / onResolve /
+  onMatch / onFrontend / onSetupTest` (`CatalogProvider.expand?`, `KindLiveProvider`), `ctx.ether.kinds` / `.cache`,
   `parseFeed`, `archiveList`, `scrapeText/Links`.
 
 Content plugins are usually best as `remote` (scraping wants a real
@@ -625,9 +635,10 @@ stops affected jobs so the new ceilings apply immediately.
 
 Viewer search and playback calls derive their unit budget directly from each
 route's deadline (`10,000 units/s`): `/stream/*` and `/ether/open*` get 3 s
-(30,000 units), `/subtitles/*`, `/ether/subtitles/*` and kind `/resolve` and
-`/match` get 5 s (50,000 units), and `/catalog/*`, `/meta/*`, `/ether/metadata/*`,
-`/ether/markers*` and kind `/search` and `/items/*` get 10 s (100,000 units),
+(30,000 units), `/subtitles/*`, `/ether/subtitles/*` and kind `/resolve`,
+`/live/resolve`, and `/match` get 5 s (50,000 units), and `/catalog/*`,
+`/meta/*`, `/ether/metadata/*`, `/ether/markers*`, and kind `/search`, `/live`,
+and `/items/*` get 10 s (100,000 units),
 reported live by `ether.runtime.limits()`. Ranking budgets stay unchanged.
 Background kind catalogue sync (`/browse`, `/changes`, and `/expand`), administrative setup,
 actions, tools, events and jobs use owner grants. Health/configuration/view/options/test

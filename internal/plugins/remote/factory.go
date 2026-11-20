@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -233,12 +234,20 @@ func toRequest(req plugins.Request) Request {
 	for k, v := range req.Headers {
 		headers[k] = []string{v}
 	}
+	body := []byte(req.Body)
+	if len(body) == 0 && req.BodyBase64 != "" {
+		// A non-JSON body travels only base64-encoded; remote transports
+		// carry raw bytes, so restore them here.
+		if raw, err := base64.StdEncoding.DecodeString(req.BodyBase64); err == nil {
+			body = raw
+		}
+	}
 	return Request{
 		Method:  req.Method,
 		Path:    req.Path,
 		Query:   query,
 		Headers: headers,
-		Body:    []byte(req.Body),
+		Body:    body,
 		Locale:  req.Locale,
 	}
 }

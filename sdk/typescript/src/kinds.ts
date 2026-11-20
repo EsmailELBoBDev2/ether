@@ -6,7 +6,7 @@
  * sdk/conformance/kinds/fixture.json across all three SDKs.
  */
 import type { PluginContext } from "./router.ts";
-import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS } from "./host.ts";
+import { HEADER_VIEWER_TOKEN, MAX_KIND_VISIBLE_IDS, decodeBase64, encodeText } from "./host.ts";
 import type {
   KindBrowseQuery,
   KindBrowseRequest,
@@ -194,6 +194,35 @@ function parseBody(body: unknown): Record<string, unknown> {
 }
 
 /**
+ * The exact bytes of a frontend-adapter request body. Ether sends them in
+ * `bodyBase64` on adapter routes — a non-JSON body (multipart, form-encoded,
+ * binary) arrives only there, with its Content-Type in `contentType` — so
+ * this is the way to read uploads byte-for-byte. Falls back to the string
+ * or JSON body for other routes.
+ */
+export function frontendBodyBytes(req: RawRequest): Uint8Array {
+  if (typeof req.bodyBase64 === "string") return decodeBase64(req.bodyBase64);
+  if (typeof req.body === "string") return encodeText(req.body);
+  if (req.body === undefined || req.body === null) return new Uint8Array(0);
+  return encodeText(JSON.stringify(req.body));
+}
+
+function frontendBodyString(req: RawRequest): string {
+  if (typeof req.body === "string") return req.body;
+  if (typeof req.bodyBase64 === "string") {
+    // Binary string: one char per byte, so string-based adapters still see
+    // the content; use frontendBodyBytes on the raw request for exact bytes.
+    const bytes = decodeBase64(req.bodyBase64);
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      out += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return out;
+  }
+  return "";
+}
+
+/**
  * The original query for a frontend-adapter request, from the flat `query`
  * map and the query string still attached to `path`. Repeated keys arrive
  * flattened to the first value by the server.
@@ -242,7 +271,7 @@ export async function dispatchKinds<S = Record<string, unknown>>(
     const query = frontendQuery(req);
     const qs = query.toString();
     if (qs) subPath += `?${qs}`;
-    const res = await adapter.handle(method, subPath, headers, typeof req.body === "string" ? req.body : "", ctx);
+    const res = await adapter.handle(method, subPath, headers, frontendBodyString(req), ctx);
     if (res.body.length > 10 * 1024 * 1024) return err(502, "adapter_error", "Frontend adapter response is larger than 10 MiB; serve media through Ether stream URLs.");
     // A HEAD reply carries headers only, exactly as a real server would.
     return { status: res.status, headers: res.headers ?? {}, body: method === "HEAD" ? "" : res.body };

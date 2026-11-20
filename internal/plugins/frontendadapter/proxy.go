@@ -2,6 +2,8 @@ package frontendadapter
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -72,7 +74,18 @@ func (f *Frontend) proxyHandler(inst *instance) http.Handler {
 			Path:     pluginPath(f.decl.Meta.Key, stripPrefix(r.URL.Path, f.decl.Meta.PathPrefix)),
 			Query:    firstValues(r.URL.Query()),
 			Headers:  outboundHeaders(r, auth),
-			Body:     body,
+		}
+		if len(body) > 0 {
+			// The exact bytes always ride along base64-encoded so a plugin
+			// that needs them (multipart boundaries, signatures) has them;
+			// Body carries the parsed value only when they are valid JSON.
+			// A non-JSON body must never become an invalid RawMessage: the
+			// hosted runtime cannot marshal one (#645).
+			req.BodyBase64 = base64.StdEncoding.EncodeToString(body)
+			req.ContentType = r.Header.Get("Content-Type")
+			if json.Valid(body) {
+				req.Body = body
+			}
 		}
 		resp, stream, err := f.call(r.Context(), req)
 		if err != nil {
@@ -199,6 +212,8 @@ func writePluginError(w http.ResponseWriter, err error) {
 		http.Error(w, "adapter busy", http.StatusServiceUnavailable)
 	case errors.Is(err, plugins.ErrDisabled):
 		http.Error(w, "adapter disabled", http.StatusServiceUnavailable)
+	case errors.Is(err, plugins.ErrUnsupportedBody):
+		http.Error(w, "unsupported request body", http.StatusUnsupportedMediaType)
 	default:
 		http.Error(w, "adapter unavailable", http.StatusBadGateway)
 	}

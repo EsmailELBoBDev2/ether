@@ -46,6 +46,11 @@ var ErrPoolBusy = errors.New("timed out waiting for a plugin instance")
 // runtime was closed.
 var ErrClosed = errors.New("plugin is closed")
 
+// ErrRequestEncode is wrapped by an *Error when the host cannot encode the
+// request for the guest (e.g. a body that is not valid JSON). The guest
+// never ran, so it is not a plugin crash.
+var ErrRequestEncode = errors.New("host could not encode the plugin request")
+
 // Error is the error type returned by Plugin calls. It carries the Outcome so
 // WS7's health loop can read the status, trap flag and cost from one value.
 type Error struct {
@@ -77,6 +82,11 @@ type Request struct {
 	Query   map[string][]string `json:"query,omitempty"`
 	Headers map[string]string   `json:"headers,omitempty"`
 	Body    json.RawMessage     `json:"body,omitempty"`
+	// BodyBase64 is the exact request bytes when the caller needs them
+	// byte-for-byte; ContentType is the caller's Content-Type. A non-JSON
+	// body arrives only in BodyBase64.
+	BodyBase64  string `json:"bodyBase64,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
 }
 
 // Response is the plugin's answer. Body is the raw JSON the plugin produced
@@ -833,7 +843,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
 		out.Status = StatusError
-		return Response{}, out, &Error{Status: StatusError, Message: err.Error()}
+		return Response{}, out, &Error{Status: StatusError, Message: err.Error(), Err: ErrRequestEncode}
 	}
 	lim := limitsForRequest(p.lim, req.Path)
 	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)

@@ -465,6 +465,11 @@ func (x *Indexer) FetchNZB(ctx context.Context, r core.Release) ([]byte, error) 
 			// A Usenet season pack plays as its wanted episode's files only.
 			return x.episodeNZB(ctx, r, data)
 		}
+		if r.Target.AllowNonVideo && (r.Target.FileIndex != nil || r.Target.ExactFile != "") {
+			// A plugin named one file in the NZB; narrow to it (and its
+			// archive set) like debrid's ChooseFile selects it.
+			return x.episodeNZB(ctx, r, data)
+		}
 		if len(r.Target.MovieTitles) > 0 || len(r.Target.WantedLanguages) > 0 {
 			if out, merr := EpisodeNZB(data, r.Target); merr == nil {
 				return out, nil

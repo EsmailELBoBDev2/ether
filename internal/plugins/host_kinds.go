@@ -431,6 +431,13 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 				Message: "debrid_check needs an info hash",
 			}}}
 		}
+	case "release_files":
+		if q.InfoHash == "" && q.Magnet == "" && q.Candidate == nil {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "infoHash",
+				Message: "release_files needs an info hash, magnet or candidate",
+			}}}
+		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" {

@@ -1772,10 +1772,15 @@ class PluginInstance:
                 accepts_ctx = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params) or len(params) >= 5
             except (TypeError, ValueError):
                 accepts_ctx = False
+            # Exact request bytes ride in bodyBase64 on adapter routes; a
+            # non-JSON body (multipart, form-encoded, binary) is only there.
+            req_body = req.get("body")
+            if req_body is None and isinstance(req.get("bodyBase64"), str):
+                req_body = base64.b64decode(req["bodyBase64"])
             if accepts_ctx:
-                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"", ctx)
+                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req_body or b"", ctx)
             else:
-                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req.get("body") or b"")
+                status, headers, resp_body = handle_fn(method, sub_path, dict(req.get("headers") or {}), req_body or b"")
             # A HEAD reply carries headers only, exactly as a real server would.
             if method == "HEAD":
                 resp_body = b""

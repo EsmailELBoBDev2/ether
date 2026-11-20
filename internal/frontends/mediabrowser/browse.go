@@ -1226,7 +1226,9 @@ func (i *instance) items(w http.ResponseWriter, r *http.Request) {
 	}
 	switch requestedSpecialItems(r) {
 	case specialBoxSets:
-		if q.FilterByProviderIDs {
+		if q.FilterByProviderIDs || (len(parent) == 1 && i.pluginView(r, v, parent[0])) {
+			// Catalogue collections belong to the built-in libraries; a
+			// plugin library has none of them.
 			i.replyItems(w, r, i.queryResult([]any{}, 0, q.Offset))
 			return
 		}
@@ -1610,4 +1612,23 @@ func (i *instance) logRowFailure(purpose frontend.RowPurpose, err error) {
 	if i.host.Log != nil {
 		i.host.Log.Warn("jellyfin row unavailable", "purpose", purpose, "err", err)
 	}
+}
+
+// pluginView reports whether a ParentId names a plugin-provided library view.
+func (i *instance) pluginView(r *http.Request, viewer *frontend.Viewer, parent string) bool {
+	id, err := ids.ParseGUID(ids.View, parent)
+	if err != nil || ids.PersonalView(id) {
+		return false
+	}
+	views, err := i.host.Experience.Views(r.Context(), viewer)
+	if err != nil {
+		return false
+	}
+	want := ids.Decimal(id)
+	for _, view := range views {
+		if view.ID == want {
+			return view.PluginID != "" || view.KindKey != ""
+		}
+	}
+	return false
 }

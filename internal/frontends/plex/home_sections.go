@@ -244,6 +244,11 @@ func (s *Server) buildSectionHubs(r *http.Request, sec Section, promotedOnly boo
 		mc.Size = len(mc.Hub)
 		return homeBuild{mc: mc, section: sec.ID}
 	}
+	if sec.PluginID != "" && (sec.Type == frontend.TypeMovie || sec.Type == frontend.TypeShow) {
+		mc.Hub = s.pluginSectionHubs(ctx, pr, sec, visibleCount)
+		mc.Size = len(mc.Hub)
+		return homeBuild{mc: mc, section: sec.ID}
+	}
 	if !isVideoSection(sec) {
 		return homeBuild{mc: mc, section: sec.ID}
 	}
@@ -544,4 +549,64 @@ func (s *Server) buildScopedHomeHubs(r *http.Request, promotedOnly bool) homeBui
 		buildSec = allowedSecs[0].ID
 	}
 	return homeBuild{mc: mc, served: served, section: buildSec, provisional: provisional}
+}
+
+// pluginSectionHubs renders a plugin library's own Recommended shelves, the
+// rows every other surface shows for it. Built-in recommendations rank the
+// whole movie or show catalogue and must not appear in a plugin library.
+func (s *Server) pluginSectionHubs(ctx context.Context, pr *Request, sec Section, visibleCount int) []model.Hub {
+	reader, ok := s.exp().(frontend.PluginLibraryRowsReader)
+	if !ok || visibleCount <= 0 {
+		return nil
+	}
+	rows, err := reader.PluginLibraryRows(ctx, pr.User, plexDevice(pr), sec.IDString())
+	if err != nil {
+		s.log.Warn("plugin section hubs", "section", sec.ID, "err", err)
+		return nil
+	}
+	secCopy := sec
+	vis := s.sectionVisibility(sec)
+	id := sec.IDString()
+	var hubs []model.Hub
+	for n, row := range rows {
+		items := row.Items
+		more := row.More
+		if len(items) > visibleCount {
+			items, more = items[:visibleCount], true
+		}
+		if len(items) == 0 {
+			continue
+		}
+		byKey := make(map[string]*frontend.Title, len(items))
+		for i := range items {
+			byKey[items[i].Key.String()] = &items[i]
+		}
+		md := s.renderTitles(ctx, pr, items, renderOpts{media: true, storedOnly: true, vis: &vis, section: &secCopy})
+		if len(md) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(md))
+		for i := range md {
+			md[i].Type = kindTypeForBase(string(sec.Type), md[i].Type, byKey[md[i].RatingKey])
+			keys = append(keys, md[i].RatingKey)
+		}
+		rowID := row.ID
+		if rowID == "" {
+			rowID = strconv.Itoa(n)
+		}
+		hubs = append(hubs, model.Hub{
+			HubKey:        "/library/metadata/" + strings.Join(keys, ","),
+			Key:           "/library/sections/" + id + "/all",
+			Title:         row.Title,
+			Type:          md[0].Type,
+			HubIdentifier: "plugin." + id + "." + rowID,
+			Context:       "hub.plugin.library",
+			Size:          len(md),
+			More:          more,
+			Style:         "shelf",
+			Promoted:      model.Ptr(true),
+			Metadata:      md,
+		})
+	}
+	return hubs
 }

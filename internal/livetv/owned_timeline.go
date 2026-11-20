@@ -53,27 +53,36 @@ type ownedTimeline struct {
 	// startMedia, when set, also starts the first playlist once that much
 	// media is in hand (a real-time producer's long first segment).
 	startMedia time.Duration
-	firstAt    time.Time // first ingest, bounds the startup wait
-	window     []*ownedSegment
-	history    []*ownedSegment // slid out of the playlist, still served briefly
-	pending    []*ownedSegment // ingested, not yet published: the reserve
-	resources  map[string]ownedResource
-	nextSeq    int64
-	discSeq    int64
-	lastAt     time.Time     // scheduled publication time of the newest segment
-	lastDur    time.Duration // its duration
-	elapsed    time.Duration // end of the newest published segment
-	lastPDT    time.Time
-	format     mediaFormat // newest published media format
-	mapRes     string      // newest published media init section
-	hint       slateProfile
-	needDisc   bool // the next media segment starts a new span
-	slating    int  // consecutive slate segments in the current run
-	slateCC    map[uint16]byte
-	notify     chan struct{}
-	inflight   bool // a producer is fetching a segment it has seen listed
-	closed     bool
-	err        error
+	// startMinMedia, when set, requires the first playlist to hold both
+	// startSegs segments and at least max(startMinMedia, ~2*target) of
+	// media (within startWait) so a player does not stall on a single short
+	// opening segment.
+	startMinMedia time.Duration
+	// startWait, when set, bounds how long first publication waits after
+	// firstAt for the startup threshold before publishing what exists.
+	// Zero keeps the short passthrough grace (<= ownedTick).
+	startWait time.Duration
+	firstAt   time.Time // first ingest, bounds the startup wait
+	window    []*ownedSegment
+	history   []*ownedSegment // slid out of the playlist, still served briefly
+	pending   []*ownedSegment // ingested, not yet published: the reserve
+	resources map[string]ownedResource
+	nextSeq   int64
+	discSeq   int64
+	lastAt    time.Time     // scheduled publication time of the newest segment
+	lastDur   time.Duration // its duration
+	elapsed   time.Duration // end of the newest published segment
+	lastPDT   time.Time
+	format    mediaFormat // newest published media format
+	mapRes    string      // newest published media init section
+	hint      slateProfile
+	needDisc  bool // the next media segment starts a new span
+	slating   int  // consecutive slate segments in the current run
+	slateCC   map[uint16]byte
+	notify    chan struct{}
+	inflight  bool // a producer is fetching a segment it has seen listed
+	closed    bool
+	err       error
 
 	// Evidence, reported in logs and diagnostics.
 	slateSegments int
@@ -222,6 +231,9 @@ func (t *ownedTimeline) splice(discard bool) {
 	defer t.mu.Unlock()
 	if discard {
 		t.pending = nil
+		if len(t.window) == 0 {
+			t.firstAt = time.Time{}
+		}
 	}
 	t.needDisc = true
 }
@@ -290,6 +302,46 @@ func (t *ownedTimeline) started() bool {
 	return len(t.window) > 0
 }
 
+// hasPending reports whether at least one segment has been ingested and is
+// still awaiting first publication.
+func (t *ownedTimeline) hasPending() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.window) == 0 && len(t.pending) > 0
+}
+
+// startWaitRemaining returns how much of the timeline's bounded startup wait
+// remains after firstAt, or 0 when nothing is pending.
+func (t *ownedTimeline) startWaitRemaining() time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.window) > 0 || len(t.pending) == 0 || t.firstAt.IsZero() {
+		return 0
+	}
+	if rem := t.startWaitLocked() - t.now().Sub(t.firstAt); rem > 0 {
+		return rem
+	}
+	return 0
+}
+
+func (t *ownedTimeline) projectedTargetLocked() time.Duration {
+	// The target covers the source's own target and every segment already in
+	// hand (Apple rule 7.7: no segment may exceed it). RFC 8216 compares
+	// rounded EXTINF durations with the target.
+	secs := max(math.Ceil(t.targetFloor.Seconds()-0.001), 1)
+	for _, s := range t.pending {
+		secs = max(secs, math.Round(s.dur.Seconds()))
+	}
+	return time.Duration(secs) * time.Second
+}
+
+func (t *ownedTimeline) startWaitLocked() time.Duration {
+	if t.startWait > 0 {
+		return t.startWait
+	}
+	return min(ownedTick, t.targetFloor/4)
+}
+
 func (t *ownedTimeline) fail(err error) {
 	t.mu.Lock()
 	if t.err == nil {
@@ -308,29 +360,45 @@ func (t *ownedTimeline) tickLocked(now time.Time) {
 		if len(t.pending) == 0 {
 			return
 		}
-		// Prefer the start segments, or the media they stand for (a long
-		// first segment), but release a short backlog after at most one tick.
-		// The first playlist has a half-target response deadline: AVPlayer
-		// can hang permanently if it waits a whole target. Leave room for
-		// ingest and the next publication tick, even with a one-second target.
-		enough := len(t.pending) >= t.startSegs || t.startMedia > 0 && t.depthLocked() >= t.startMedia
-		if !enough && now.Sub(t.firstAt) < min(ownedTick, t.targetFloor/4) {
+		depth := t.depthLocked()
+		projTarget := t.projectedTargetLocked()
+		var minMedia time.Duration
+		var enough bool
+		if t.startMinMedia > 0 {
+			// Hold the first client-visible publication until the timeline
+			// holds enough media to start and keep playing: at least
+			// startSegs segments AND ~2x target duration (with a 5% rounding
+			// margin for fractional frame rates), or a single long opening
+			// segment that already covers startMedia (e.g. a 4 s GOP stream).
+			minMedia = max(t.startMinMedia, 2*projTarget)
+			enough = len(t.pending) >= t.startSegs && depth >= minMedia*19/20 ||
+				t.startMedia > 0 && depth >= t.startMedia*19/20 && depth >= projTarget*19/20
+		} else {
+			// Prefer the start segments, or the media they stand for (a long
+			// first segment), but release a short backlog after at most one tick.
+			// The first playlist has a half-target response deadline: AVPlayer
+			// can hang permanently if it waits a whole target. Leave room for
+			// ingest and the next publication tick, even with a one-second target.
+			enough = len(t.pending) >= t.startSegs || t.startMedia > 0 && depth >= t.startMedia
+		}
+		if !enough && now.Sub(t.firstAt) < t.startWaitLocked() {
 			return
 		}
-		// The target covers the source's own target and every segment
-		// already in hand (Apple rule 7.7: no segment may exceed it).
-		// RFC 8216 compares rounded EXTINF durations with the target.
-		secs := max(math.Ceil(t.targetFloor.Seconds()-0.001), 1)
-		for _, s := range t.pending {
-			secs = max(secs, math.Round(s.dur.Seconds()))
-		}
-		t.target = time.Duration(secs) * time.Second
-		// The first playlist carries the oldest startSegs segments; any
-		// further backlog stays pending as the reserve.
+		t.target = projTarget
+		// The first playlist carries at least startSegs segments and enough
+		// media to cover minMedia; any further backlog stays pending as the
+		// reserve.
 		n := min(t.startSegs, len(t.pending))
 		var burst time.Duration
 		for _, s := range t.pending[:n] {
 			burst += s.dur
+		}
+		if minMedia > 0 {
+			need := minMedia * 19 / 20
+			for n < len(t.pending) && burst < need {
+				burst += t.pending[n].dur
+				n++
+			}
 		}
 		t.lastPDT = now.Add(-burst)
 		for i := 0; i < n; i++ {
@@ -339,7 +407,7 @@ func (t *ownedTimeline) tickLocked(now time.Time) {
 		}
 		t.lastAt = now
 		changed = true
-		t.log.Info("owned live timeline started", "segments", n, "target", t.target, "reserve_depth", t.depthLocked(), "reserve_target", t.reserve, "format", t.format.String())
+		t.log.Info("owned live timeline started", "segments", n, "media", burst, "start_wait", now.Sub(t.firstAt), "target", t.target, "reserve_depth", t.depthLocked(), "reserve_target", t.reserve, "format", t.format.String())
 	}
 	for len(t.pending) > 0 {
 		head := t.pending[0]

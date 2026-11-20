@@ -44,7 +44,12 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 		return nil, nil, frontend.ErrSourceGone
 	}
 	dec := s.decision
-	if dec.Reason == "original_runtime" {
+	// A DirectPlay decision carries no transcode output codecs, so the HLS
+	// ladder must be re-decided with DirectPlay disabled. This covers both the
+	// original_runtime re-pin and a plain direct-play decision (reason ""),
+	// where the empty codecs would otherwise fail profileDeliveryAllowed and
+	// yield a broken Height-0 limitation instead of the HLS rungs.
+	if dec.Kind == core.DecisionDirectPlay {
 		options := s.opts
 		options.DirectPlay = false
 		var err error

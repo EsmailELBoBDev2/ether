@@ -251,6 +251,12 @@ var ErrRateLimited = errors.New("frontend identity rate limited")
 // ErrQuickConnectPending means the code has not yet been approved.
 var ErrQuickConnectPending = errors.New("frontend quick connect pending")
 
+// ErrQuickConnectExpired means the code was real and its approval window closed.
+var ErrQuickConnectExpired = errors.New("frontend quick connect expired")
+
+// ErrQuickConnectUsed means the code was already approved or redeemed.
+var ErrQuickConnectUsed = errors.New("frontend quick connect already used")
+
 // BindIdentity alone binds resolution; app-hosted implementations additionally
 // provide credential issuance and Quick Connect operations.
 func (boundIdentity) PublicViewers(context.Context) ([]PublicViewer, error) {

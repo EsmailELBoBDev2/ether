@@ -92,6 +92,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		send(w, 200, object{"code": code, "targetOrigin": b.TargetOrigin, "expiresAt": time.Now().Add(time.Minute).UTC().Format(time.RFC3339)})
 
 	case "sign-in":
+		if !i.signInMethods().Password {
+			i.unavailable(w, r)
+			return
+		}
 		a, e := i.host.Identity.SignIn(ctx, b.Username, b.Password, d)
 		if e != nil {
 			fail(w, e, r)
@@ -99,6 +103,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		i.tokens(w, r, a, "", d)
 	case "plex":
+		if !i.signInMethods().Plex {
+			i.unavailable(w, r)
+			return
+		}
 		a, e := i.host.Identity.SignInWithPlex(ctx, b.PlexToken, d)
 		if e != nil {
 			plexAuthFail(w, e)
@@ -146,6 +154,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		i.tokens(w, r, a, "", d)
 	case "device", "quick-connect":
+		if !i.signInMethods().QuickConnect {
+			i.unavailable(w, r)
+			return
+		}
 		if path == "device" && i.host.ViewerPortalURL == nil {
 			i.unavailable(w, r)
 			return
@@ -175,6 +187,10 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 		}
 		send(w, 200, object{"deviceCode": secret, "userCode": code, "verificationUrl": url, "expiresAt": details.ExpiresAt.UTC().Format(time.RFC3339), "pollIntervalSeconds": 5})
 	case "device/poll", "quick-connect/poll":
+		if !i.signInMethods().QuickConnect {
+			i.unavailable(w, r)
+			return
+		}
 		secret := b.Secret
 		if path == "device/poll" {
 			secret = b.DeviceCode
@@ -211,15 +227,79 @@ func (i *instance) auth(w http.ResponseWriter, r *http.Request) {
 			fail(w, e, r)
 			return
 		}
-		code := b.Code
+		if v.ID <= 0 || v.Delegated {
+			problem(w, http.StatusForbidden, "policy", "approval_not_allowed")
+			return
+		}
+		if !i.signInMethods().QuickConnect {
+			i.unavailable(w, r)
+			return
+		}
+		code := strings.TrimSpace(b.Code)
 		if path == "device/approve" {
-			code = b.UserCode
+			code = strings.TrimSpace(b.UserCode)
+		}
+		if code == "" {
+			problem(w, http.StatusBadRequest, "request", "invalid_code")
+			return
 		}
 		if e = i.host.Identity.QuickConnectApprove(ctx, v, code); e != nil {
-			fail(w, e, r)
+			quickConnectApproveFail(w, e, r)
 			return
 		}
 		send(w, 200, object{"accepted": true})
+	}
+}
+
+// quickConnectApproveFail translates approval errors after the caller's bearer
+// token has already been verified. Bad, expired, or already-used codes must
+// never return 401/auth, which Vela's transport treats as an expired session.
+func quickConnectApproveFail(w http.ResponseWriter, err error, r *http.Request) {
+	switch {
+	case errors.Is(err, frontend.ErrQuickConnectExpired):
+		send(w, http.StatusGone, object{
+			"error": object{
+				"class":   "conflict",
+				"code":    "code_expired",
+				"message": "code expired",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrQuickConnectUsed):
+		send(w, http.StatusConflict, object{
+			"error": object{
+				"class":   "conflict",
+				"code":    "code_used",
+				"message": "code already used",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrUnauthorized):
+		send(w, http.StatusBadRequest, object{
+			"error": object{
+				"class":   "request",
+				"code":    "invalid_code",
+				"message": "invalid code",
+				"retry":   object{"allowed": false},
+			},
+		})
+	case errors.Is(err, frontend.ErrRateLimited):
+		seconds := 1
+		var limited *frontend.IdentityRateLimitError
+		if errors.As(err, &limited) && limited.RetryAfter > 0 {
+			seconds = max(1, min(900, int((limited.RetryAfter+time.Second-1)/time.Second)))
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		send(w, http.StatusTooManyRequests, object{
+			"error": object{
+				"class":   "capacity",
+				"code":    "rate_limited",
+				"message": "rate limited",
+				"retry":   object{"allowed": true, "afterSeconds": seconds, "maxAttempts": 2},
+			},
+		})
+	default:
+		fail(w, err, r)
 	}
 }
 

@@ -113,6 +113,7 @@ func isMutating(r *http.Request) bool {
 var binaryUploads = map[string]bool{
 	"/api/adoption/backups/restore": true,
 	"/api/frontends/vela/wordmark":  true,
+	"/api/frontends/vela/icon":      true,
 	"/api/plugins/install":          true,
 	"/api/plugins/install/preview":  true,
 	"/api/vela/skins":               true,
@@ -153,8 +154,8 @@ func csrfOK(r *http.Request) bool {
 			if csvUploads[r.URL.Path] && (strings.EqualFold(ct, "text/csv") || strings.EqualFold(ct, "application/octet-stream")) {
 				return true
 			}
-			// Plugin install and owner media, Vela skin, and wordmark uploads post files as multipart from the console.
-			if (prerollVideoUpload(r.URL.Path) || onairUpload(r.URL.Path) || r.URL.Path == "/api/plugins/install" || r.URL.Path == "/api/vela/skins" || r.URL.Path == "/api/frontends/vela/wordmark") && strings.EqualFold(ct, "multipart/form-data") {
+			// Plugin install and owner media, Vela skin, wordmark, and app icon uploads post files as multipart from the console.
+			if (prerollVideoUpload(r.URL.Path) || onairUpload(r.URL.Path) || r.URL.Path == "/api/plugins/install" || r.URL.Path == "/api/vela/skins" || r.URL.Path == "/api/frontends/vela/wordmark" || r.URL.Path == "/api/frontends/vela/icon") && strings.EqualFold(ct, "multipart/form-data") {
 				return true
 			}
 		}

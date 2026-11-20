@@ -1,6 +1,7 @@
 const MAX_WORDMARK_BYTES = 512 * 1024;
 const MAX_WIDTH = 1024;
 const MAX_HEIGHT = 256;
+const MAX_ICON_SIZE = 1024;
 
 export const VELA_SETTINGS_SCHEMA = {
   signInHelp: true,
@@ -12,6 +13,15 @@ export const VELA_SETTINGS_SCHEMA = {
         { key: "force", kind: "bool" },
         { key: "appName", kind: "string", max: 40 },
         { key: "wordmark", kind: "wordmark" },
+        { key: "appIcon", kind: "appIcon" },
+      ],
+    },
+    {
+      key: "signIn",
+      fields: [
+        { key: "passwordSignIn", kind: "bool" },
+        { key: "plexSignIn", kind: "bool" },
+        { key: "quickConnect", kind: "bool" },
       ],
     },
     {
@@ -192,6 +202,74 @@ export function createVelaBrandingMock() {
     };
   }
 
+  async function storeIconBytes(bytes: Uint8Array) {
+    if (bytes.byteLength === 0) {
+      return {
+        status: 400,
+        body: { error: { code: "invalid_app_icon", message: "App icon is empty." } },
+      };
+    }
+    if (bytes.byteLength > MAX_WORDMARK_BYTES) {
+      return {
+        status: 413,
+        body: {
+          error: { code: "too_large", message: "App icon must be 512 KB or smaller." },
+        },
+      };
+    }
+    let parsed: ReturnType<typeof parseWordmarkDimensions> = null;
+    try {
+      parsed = parseWordmarkDimensions(bytes);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      return {
+        status: 400,
+        body: {
+          error: {
+            code: "invalid_app_icon",
+            message: "App icon must be a valid square PNG, SVG, or WebP image.",
+          },
+        },
+      };
+    }
+    if (
+      parsed.width < 1 ||
+      parsed.width > MAX_ICON_SIZE ||
+      parsed.height < 1 ||
+      parsed.height > MAX_ICON_SIZE ||
+      parsed.width !== parsed.height
+    ) {
+      return {
+        status: 400,
+        body: {
+          error: {
+            code: "invalid_app_icon",
+            message: "App icon must be square between 1×1 and 1024×1024 px.",
+          },
+        },
+      };
+    }
+    const digest = await sha256Hex(bytes);
+    const name = `icon-${digest}.${parsed.ext}`;
+    assets.set(name, {
+      bytes,
+      mime: parsed.mime,
+      width: parsed.width,
+      height: parsed.height,
+    });
+    return {
+      status: 200,
+      body: {
+        url: `/vela/v0/branding/${name}`,
+        width: parsed.width,
+        height: parsed.height,
+        digest,
+      },
+    };
+  }
+
   return {
     async upload(body: unknown) {
       const file = body instanceof FormData ? body.get("file") : null;
@@ -203,6 +281,17 @@ export function createVelaBrandingMock() {
       }
       const bytes = new Uint8Array(await file.arrayBuffer());
       return storeBytes(bytes);
+    },
+    async uploadIcon(body: unknown) {
+      const file = body instanceof FormData ? body.get("file") : null;
+      if (!(file instanceof Blob)) {
+        return {
+          status: 400,
+          body: { error: { code: "invalid_app_icon", message: "Missing app icon file." } },
+        };
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      return storeIconBytes(bytes);
     },
     serveAsset(asset: string): Response {
       const entry = assets.get(asset);

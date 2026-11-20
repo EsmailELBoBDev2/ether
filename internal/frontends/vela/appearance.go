@@ -27,17 +27,19 @@ func skinEngine(id string, installedKind string) string {
 }
 
 type appearanceEntry struct {
-	revision  uint64
-	stateKey  string
-	skinID    string
-	force     bool
-	skinsGen  uint64
-	appName   string
-	branding  object
-	packs     []json.RawMessage
-	documents []SkinDocumentEntry
-	etag      string
-	payload   []byte
+	revision      uint64
+	stateKey      string
+	skinID        string
+	force         bool
+	skinsGen      uint64
+	appName       string
+	appIconDigest string
+	appIconExt    string
+	branding      object
+	packs         []json.RawMessage
+	documents     []SkinDocumentEntry
+	etag          string
+	payload       []byte
 }
 
 // Only immutable presentation data is cached. Config reads are snapshots and
@@ -73,6 +75,11 @@ func (i *instance) appearanceDocument() *appearanceEntry {
 		return c
 	}
 	branding, appName := brandingFromSettings(settings)
+	iconDigest, iconExt := "", ""
+	if icon, ok := parseAppIconSetting(settings["appIcon"]); ok {
+		iconDigest = icon.Digest
+		iconExt = icon.Ext
+	}
 	// The client merges its built-ins from /vela/skins/catalog.json itself.
 	payload, _ := json.Marshal(object{
 		"revision":        revision,
@@ -84,17 +91,19 @@ func (i *instance) appearanceDocument() *appearanceEntry {
 		"documents":       documents,
 	})
 	c := &appearanceEntry{
-		revision:  revision,
-		stateKey:  stateKey,
-		skinID:    skin,
-		force:     force,
-		skinsGen:  skinsGen,
-		appName:   appName,
-		branding:  branding,
-		packs:     packs,
-		documents: documents,
-		payload:   payload,
-		etag:      `"` + hash(string(payload)) + `"`,
+		revision:      revision,
+		stateKey:      stateKey,
+		skinID:        skin,
+		force:         force,
+		skinsGen:      skinsGen,
+		appName:       appName,
+		appIconDigest: iconDigest,
+		appIconExt:    iconExt,
+		branding:      branding,
+		packs:         packs,
+		documents:     documents,
+		payload:       payload,
+		etag:          `"` + hash(string(payload)) + `"`,
 	}
 	i.appearanceCache = c
 	return c

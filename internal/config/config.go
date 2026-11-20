@@ -84,7 +84,9 @@ type Config struct {
 type Frontend struct {
 	// AppearanceRevision survives restarts so Vela clients can reject stale looks.
 	AppearanceRevision uint64 `json:"appearanceRevision,omitempty"`
-	Enabled            bool   `json:"enabled"`
+	// CapabilitiesRevision survives restarts so Vela clients can observe sign-in method changes.
+	CapabilitiesRevision uint64 `json:"capabilitiesRevision,omitempty"`
+	Enabled              bool   `json:"enabled"`
 	// PublicURL is the optional address viewers use to reach this one app
 	// from outside the home network (e.g. https://jelly.example.com), for
 	// owners who route each app through its own host name. Empty keeps the

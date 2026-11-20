@@ -198,6 +198,28 @@ func (f SettingsField) validateValue(v any) error {
 				return fmt.Errorf("invalid %s", f.Key)
 			}
 		}
+	case "appIcon":
+		if v == nil {
+			return nil
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		for k := range m {
+			if k != "url" && k != "width" && k != "height" {
+				return fmt.Errorf("invalid %s", f.Key)
+			}
+		}
+		urlVal, ok := m["url"].(string)
+		if !ok || strings.TrimSpace(urlVal) == "" {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
+		w, okW := schemaInt(m["width"])
+		h, okH := schemaInt(m["height"])
+		if !okW || !okH || w < 1 || w > 1024 || h < 1 || h > 1024 || w != h {
+			return fmt.Errorf("invalid %s", f.Key)
+		}
 	case "bool":
 		if _, ok := v.(bool); !ok {
 			return fmt.Errorf("invalid %s", f.Key)

@@ -4140,6 +4140,10 @@ export function createFakeServer(opts: FakeOptions = {}) {
         const uploaded = await velaBranding.upload(body);
         return json(uploaded.body, uploaded.status);
       }
+      if (id === "vela" && action === "icon" && method === "POST") {
+        const uploaded = await velaBranding.uploadIcon(body);
+        return json(uploaded.body, uploaded.status);
+      }
       if (action === "settings" && method === "PUT") {
         const { port, ...settings } = body as Record<string, unknown>;
         if (id === "vela") {
@@ -4149,6 +4153,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             else delete settings.appName;
           }
           if (settings.wordmark == null) delete settings.wordmark;
+          if (settings.appIcon == null) delete settings.appIcon;
         }
         entry.settings = settings;
         if (typeof port === "number") {

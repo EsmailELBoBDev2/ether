@@ -118,4 +118,35 @@ describe("Apps mock API", () => {
       wordmark: uploaded,
     });
   });
+
+  it("uploads a square Vela app icon and rejects non-square icons", async () => {
+    const fake = createFakeServer({ velaInstalled: true });
+    const nonSquareSvg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100"><rect width="200" height="100"/></svg>';
+    const badForm = new FormData();
+    badForm.append("file", new File([nonSquareSvg], "wide.svg", { type: "image/svg+xml" }));
+    const badRes = await fake.fetch("/ether/api/frontends/vela/icon", {
+      method: "POST",
+      body: badForm,
+    });
+    expect(badRes.status).toBe(400);
+
+    const squareSvg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" fill="#111"/></svg>';
+    const okForm = new FormData();
+    okForm.append("file", new File([squareSvg], "icon.svg", { type: "image/svg+xml" }));
+    const okRes = await fake.fetch("/ether/api/frontends/vela/icon", {
+      method: "POST",
+      body: okForm,
+    });
+    expect(okRes.status).toBe(200);
+    const uploaded = (await okRes.json()) as { url: string; width: number; height: number };
+    expect(uploaded.url).toMatch(/^\/vela\/v0\/branding\/icon-[0-9a-f]{64}\.svg$/);
+    expect(uploaded.width).toBe(128);
+    expect(uploaded.height).toBe(128);
+
+    const served = fake.velaBranding.serveAsset(uploaded.url.replace("/vela/v0/branding/", ""));
+    expect(served.status).toBe(200);
+    expect(served.headers.get("Content-Type")).toBe("image/svg+xml");
+  });
 });

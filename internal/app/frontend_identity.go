@@ -361,13 +361,24 @@ func (s surfaceIdentity) QuickConnectDetails(ctx context.Context, secret string)
 	return frontend.QuickConnectDetails{Approved: details.Approved, Code: details.Code, Secret: secret, Device: details.Device, CreatedAt: details.CreatedAt, ExpiresAt: details.ExpiresAt}, nil
 }
 func (s surfaceIdentity) QuickConnectApprove(ctx context.Context, viewer *core.Viewer, code string) error {
-	if s.policy.ExternalIdentity || viewer == nil || viewer.ID <= 0 {
+	if s.policy.ExternalIdentity || s.quick == nil || s.login == nil {
+		return frontend.ErrIdentityUnavailable
+	}
+	if viewer == nil || viewer.ID <= 0 || viewer.Delegated {
 		return core.ErrUnauthorized
 	}
 	if err := s.allow(ctx, s.login, "quickconnect-approve"); err != nil {
 		return err
 	}
-	return s.quick.ApproveSurface(ctx, string(s.surface), code, viewer.ID)
+	err := s.quick.ApproveSurface(ctx, string(s.surface), code, viewer.ID)
+	switch {
+	case errors.Is(err, identity.ErrQuickConnectExpired):
+		return frontend.ErrQuickConnectExpired
+	case errors.Is(err, identity.ErrQuickConnectUsed):
+		return frontend.ErrQuickConnectUsed
+	default:
+		return err
+	}
 }
 func (s surfaceIdentity) Revoke(ctx context.Context, credential string) error {
 	if s.policy.ExternalIdentity {

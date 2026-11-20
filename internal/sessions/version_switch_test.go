@@ -38,7 +38,9 @@ func TestBrokerSwitchVersionSuccessPreparingAndUnavailable(t *testing.T) {
 	ctx := context.Background()
 	db := store.OpenTest(t)
 	viewer := &core.Viewer{ID: 1, Username: "viewer"}
-	active := func(_ context.Context, id int64) (*core.Viewer, error) { return &core.Viewer{ID: id, Username: "viewer"}, nil }
+	active := func(_ context.Context, id int64) (*core.Viewer, error) {
+		return &core.Viewer{ID: id, Username: "viewer"}, nil
+	}
 	events := NewEventBus(nil, active)
 	defer events.Close()
 

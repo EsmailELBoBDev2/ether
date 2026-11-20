@@ -263,6 +263,10 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				s.scheduleDetailWarm(ctx, pr, t)
+				// Plezy reuses this row at Play and trusts only its
+				// selected subtitle: arm (or answer) its play-time
+				// re-ask so first play sees probed tracks (#618).
+				s.plezyFirstPlay(ctx, pr, t, q)
 			}
 			// Live session intent (#32): a single-item detail open.
 			s.recordDetailIntent(ctx, pr, t)

@@ -37,10 +37,16 @@ func (c *decodeProbeCache) identifyBuild() {
 	}
 }
 
+// decodeProbeVersion is part of every stored key. Bump it whenever the probe
+// or how its output is judged changes: results recorded by older logic (for
+// example failures caused by libva banner lines before 0.3.16) must be probed
+// again rather than reused for as long as the FFmpeg binary stays the same.
+const decodeProbeVersion = 2
+
 func (c *decodeProbeCache) storeKey(k decodeKey) string {
 	// A shared cluster store must not reuse another node's device capabilities.
 	host, _ := os.Hostname()
-	b, _ := json.Marshal([]any{host, k.accel, k.device, k.codec, k.profile, k.pixel, k.depth})
+	b, _ := json.Marshal([]any{decodeProbeVersion, host, k.accel, k.device, k.codec, k.profile, k.pixel, k.depth})
 	return string(b)
 }
 

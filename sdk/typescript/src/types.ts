@@ -421,12 +421,24 @@ export interface Contributes {
   setup?: SetupMeta;
 }
 
+/** A Jellyfin/Emby item type a level can present as. */
+export type MediaBrowserItemType =
+  | "Movie" | "Series" | "Season" | "Episode"
+  | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
+  | "Book" | "PhotoAlbum" | "Photo";
+
 /** How a library is published per protocol (Ether v0.3.8 content kinds). */
 export interface Presentations {
   adapterOnly?: boolean;
   vela?: { type: "movies" | "shows" };
   plex?: { base: "movie" | "show" | "artist" | "photo" };
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
+  /**
+   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; the
+   * declared type drives the item's Type, MediaType (Audio/Book/Photo/
+   * Video), IsFolder and IncludeItemTypes filtering. Unmapped levels keep
+   * the video projection, so declare every level of a music/book kind.
+   */
+  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, MediaBrowserItemType> };
   stremio?: { type: "movie" | "series" | "channel" | "tv" };
   xtream?: { category: string };
   silo?: { type: string };

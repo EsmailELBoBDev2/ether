@@ -926,9 +926,9 @@ func (s *Service) serveAlignedDemuxedPlaylist(w http.ResponseWriter, r *http.Req
 		return false
 	}
 	var (
-		gen                 uint64
+		gen                  uint64
 		pairVideo, pairAudio string
-		call                *hlsAlignCall
+		call                 *hlsAlignCall
 	)
 	for {
 		h.mu.Lock()

@@ -999,10 +999,38 @@ defaults per library afterwards.
 - `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
+  A single-level `artist` kind is a flat album list in a music
+  section: its items present as albums, never as artists (name the
+  level `artist` or `track` to present as that instead).
 - `mediaBrowser: {collectionType, itemTypes}` — Jellyfin/Emby.
-  Item types: `Movie, Series, Season, Episode, MusicAlbum, Audio,
-  Book, PhotoAlbum, Photo`, mapped per level; unmapped levels use
-  the collection's natural container.
+  `collectionType` is one of `movies, tvshows, music, audiobooks,
+  books, photos, homevideos`. `itemTypes` maps each level key to
+  one of `Movie, Series, Season, Episode, MusicArtist, MusicAlbum,
+  Audio, AudioBook, Book, PhotoAlbum, Photo` (anything else is a
+  manifest error). The declared type drives the item's `Type`, its
+  `MediaType` (`Audio` for `Audio`/`AudioBook`, `Book` for `Book`,
+  `Photo` for `Photo`, `Video` for `Movie`/`Episode`), `IsFolder`
+  (`MusicArtist`/`MusicAlbum`/`PhotoAlbum`/`Series`/`Season` hold
+  children), parent links (a track's `Album`/`AlbumId` name its
+  album) and `IncludeItemTypes` filtering. Unmapped levels keep
+  the video projection (`Movie`/`Series`/`Season`/`Episode`), so
+  declare every level of a music, book or audiobook kind. Audio
+  items serve through the same media routes; their MediaSources
+  carry only the streams the source actually has.
+  A single-level kind whose one playable level is typed
+  `MusicAlbum` (each album is one playable item, no track items)
+  still plays: the album lists itself once as an `Audio` child
+  (same item, `Album`/`AlbumId` naming itself) and answers
+  `IncludeItemTypes=Audio` library queries with that incarnation,
+  which is what Jellyfin's album play button and Songs tab ask
+  for. Plex gets the same shape as one synthetic track under the
+  album.
+
+When a plugin update changes a kind's `present`, the new
+presentation is re-applied to the kind's existing library (owner
+edits to where a library appears are kept when the declaration
+did not change). Level and field changes follow the upgrade
+rules and reindex only when the indexed shape changed.
 - `stremio: {type}`, `xtream: {category}`, `silo: {type}`.
 - `adapterOnly: true` — no generic mapping fits; ship a
   `frontend_adapter` and serve the protocol yourself. Embed
@@ -10957,6 +10985,26 @@ func (h *host) PublishEvent(ctx context.Context, key string, payload json.RawMes
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#KindUpsertResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_kinds.go#KindUpsertResult
+
+``````
+// KindUpsertResult is what one kinds.upsert batch did (#646): Accepted
+// items were taken, of which Added were new, Updated rewrote a stored
+// item, and Unchanged matched the stored item and were skipped.
+type KindUpsertResult struct {
+	Accepted  int
+	Added     int
+	Updated   int
+	Unchanged int
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#KindBackends.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -10973,11 +11021,14 @@ func (h *host) PublishEvent(ctx context.Context, key string, payload json.RawMes
 // debrid services, blobcache); the plugin id is always the caller's,
 // so a plugin can only ever reach its own kinds and cache.
 type KindBackends struct {
-	KindUpsert    func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
-	KindDelete    func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems     func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
-	KindItemsByID func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
-	KindItemCount func(ctx context.Context, pluginID string) (int, error)
+	KindUpsert func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
+	// KindUpsertStats, when set, is preferred over KindUpsert and its
+	// counts ride the host reply.
+	KindUpsertStats func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
+	KindDelete      func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems       func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID   func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount   func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
 	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
@@ -11002,6 +11053,7 @@ type KindBackends struct {
 func (m *Manager) SetKindBackends(b KindBackends) {
 	m.mu.Lock()
 	m.deps.Backends.KindUpsert = b.KindUpsert
+	m.deps.Backends.KindUpsertStats = b.KindUpsertStats
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
 	m.deps.Backends.KindItemsByID = b.KindItemsByID
@@ -11025,19 +11077,20 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:     m.deps.Backends.KindUpsert,
-		KindDelete:     m.deps.Backends.KindDelete,
-		KindItems:      m.deps.Backends.KindItems,
-		KindItemsByID:  m.deps.Backends.KindItemsByID,
-		KindItemCount:  m.deps.Backends.KindItemCount,
-		KindVisible:    m.deps.Backends.KindVisible,
-		KindBrowse:     m.deps.Backends.KindBrowse,
-		ResolveSources: m.deps.Backends.ResolveSources,
-		CachePut:       m.deps.Backends.CachePut,
-		CacheOpen:      m.deps.Backends.CacheOpen,
-		CacheDelete:    m.deps.Backends.CacheDelete,
-		StreamURL:      m.deps.Backends.StreamURL,
-		StreamPartURL:  m.deps.Backends.StreamPartURL,
+		KindUpsert:      m.deps.Backends.KindUpsert,
+		KindUpsertStats: m.deps.Backends.KindUpsertStats,
+		KindDelete:      m.deps.Backends.KindDelete,
+		KindItems:       m.deps.Backends.KindItems,
+		KindItemsByID:   m.deps.Backends.KindItemsByID,
+		KindItemCount:   m.deps.Backends.KindItemCount,
+		KindVisible:     m.deps.Backends.KindVisible,
+		KindBrowse:      m.deps.Backends.KindBrowse,
+		ResolveSources:  m.deps.Backends.ResolveSources,
+		CachePut:        m.deps.Backends.CachePut,
+		CacheOpen:       m.deps.Backends.CacheOpen,
+		CacheDelete:     m.deps.Backends.CacheDelete,
+		StreamURL:       m.deps.Backends.StreamURL,
+		StreamPartURL:   m.deps.Backends.StreamPartURL,
 	}
 }
 ``````
@@ -11232,37 +11285,55 @@ func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []stri
 
 ``````
 func (h *host) KindUpsert(ctx context.Context, kindKey string, items []core.KindItem) (int, error) {
+	result, err := h.KindUpsertWithResult(ctx, kindKey, items)
+	return result.Accepted, err
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*host.KindUpsertWithResult
+
+``````
+// KindUpsertWithResult is KindUpsert reporting the added/updated/
+// unchanged split when the backend provides it (#646).
+func (h *host) KindUpsertWithResult(ctx context.Context, kindKey string, items []core.KindItem) (KindUpsertResult, error) {
 	if err := h.requireWritableToolContext(ctx); err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	r, decl, err := h.kindCheck(ctx, kindKey, CapCatalogProvider)
 	if err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	if decl.Sync.Mode != KindSyncPush {
-		return 0, fmt.Errorf("%w: kind %s is pull-synced by Ether and takes no pushes", ErrPermissionDenied, kindKey)
+		return KindUpsertResult{}, fmt.Errorf("%w: kind %s is pull-synced by Ether and takes no pushes", ErrPermissionDenied, kindKey)
 	}
 	if len(items) > MaxKindUpsertItems {
-		return 0, fmt.Errorf("plugins: kind upsert batch larger than %d items", MaxKindUpsertItems)
+		return KindUpsertResult{}, fmt.Errorf("plugins: kind upsert batch larger than %d items", MaxKindUpsertItems)
 	}
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
 		if msg := CheckKindItem(decl, it); msg != "" {
-			return 0, fmt.Errorf("plugins: kind item %q: %s", it.ID, msg)
+			return KindUpsertResult{}, fmt.Errorf("plugins: kind item %q: %s", it.ID, msg)
 		}
 		ids = append(ids, it.ID)
 	}
 	if r.Shadow {
-		return len(items), h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
+		return KindUpsertResult{Accepted: len(items)}, h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
 	}
-	backend := h.m.kindBackends().KindUpsert
-	if backend == nil {
-		return 0, ErrUnavailable
+	backends := h.m.kindBackends()
+	if backends.KindUpsert == nil && backends.KindUpsertStats == nil {
+		return KindUpsertResult{}, ErrUnavailable
 	}
 	prev, created := h.snapshotKindItems(ctx, kindKey, ids)
-	accepted, err := backend(ctx, h.plugin, kindKey, items)
+	var result KindUpsertResult
+	if backends.KindUpsertStats != nil {
+		result, err = backends.KindUpsertStats(ctx, h.plugin, kindKey, items)
+	} else {
+		var accepted int
+		accepted, err = backends.KindUpsert(ctx, h.plugin, kindKey, items)
+		result = KindUpsertResult{Accepted: accepted}
+	}
 	if err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	if err := h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{
 		Op:       "kinds.upsert",
@@ -11270,9 +11341,9 @@ func (h *host) KindUpsert(ctx context.Context, kindKey string, items []core.Kind
 		Items:    created,
 		Previous: prev,
 	}); err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
-	return accepted, nil
+	return result, nil
 }
 ``````
 
@@ -12504,11 +12575,24 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 				return nil, &wasm.Fault{Code: "bad_arguments", Message: "kinds.upsert takes (kind, items[])"}
 			}
 		}
-		accepted, err := b.h.KindUpsert(ctx, str(0), items)
+		var upserted KindUpsertResult
+		var err error
+		if wh, ok := b.h.(interface {
+			KindUpsertWithResult(context.Context, string, []core.KindItem) (KindUpsertResult, error)
+		}); ok {
+			upserted, err = wh.KindUpsertWithResult(ctx, str(0), items)
+		} else {
+			var accepted int
+			accepted, err = b.h.KindUpsert(ctx, str(0), items)
+			upserted.Accepted = accepted
+		}
 		if err != nil {
 			return nil, mapHostError(err)
 		}
-		return result(map[string]any{"accepted": accepted}, nil)
+		return result(map[string]any{
+			"accepted": upserted.Accepted, "added": upserted.Added,
+			"updated": upserted.Updated, "unchanged": upserted.Unchanged,
+		}, nil)
 	case "kinds.delete":
 		var ids []string
 		if len(args) > 1 {
@@ -18152,8 +18236,16 @@ var mediaBrowserCollectionTypes = map[string]bool{
 ``````
 var mediaBrowserItemTypes = map[string]bool{
 	"Movie": true, "Series": true, "Season": true, "Episode": true,
-	"MusicAlbum": true, "Audio": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
+	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
+``````
+
+## Source: internal/plugins/manifest_kinds.go#mediaBrowserItemTypeList
+
+``````
+// mediaBrowserItemTypeList names the closed itemTypes set for error messages.
+const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
 ``````
 
 ## Source: internal/plugins/manifest_kinds.go#validateMediaKinds
@@ -18626,8 +18718,11 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
-		case "movie", "photo":
-		case "show", "artist":
+		case "movie", "photo", "artist":
+			// A single-level artist kind is a flat album list: its items
+			// present as albums (a level named artist/track presents as
+			// that instead), never as artists.
+		case "show":
 			if levels < 2 {
 				add(base+".plex.base", p.Plex.Base+" needs at least two levels")
 			}
@@ -18644,7 +18739,7 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 				add(base+".mediaBrowser.itemTypes", "unknown level "+level)
 			}
 			if !mediaBrowserItemTypes[itemType] {
-				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType)
+				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType+" for level "+level+" (must be "+mediaBrowserItemTypeList+")")
 			}
 		}
 	}
@@ -20098,11 +20193,23 @@ func (h *HostHandler) kindUpsert(w http.ResponseWriter, r *http.Request) {
 		writeHostError(w, http.StatusBadRequest, "invalid", `Body must be {"items": [...]} or a JSON array of KindItem`)
 		return
 	}
-	accepted, err := h.host.KindUpsert(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+	result := plugins.KindUpsertResult{}
+	if wh, ok := h.host.(interface {
+		KindUpsertWithResult(context.Context, string, string, []core.KindItem) (plugins.KindUpsertResult, error)
+	}); ok {
+		result, err = wh.KindUpsertWithResult(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+	} else {
+		var accepted int
+		accepted, err = h.host.KindUpsert(r.Context(), pluginIDOf(r), r.PathValue("kind"), items)
+		result.Accepted = accepted
+	}
 	if !h.finishErr(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accepted": accepted})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "accepted": result.Accepted, "added": result.Added,
+		"updated": result.Updated, "unchanged": result.Unchanged,
+	})
 }
 ``````
 
@@ -45623,8 +45730,14 @@ type BadgeUsage struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	}` | may be omitted (see validation for conditions) |  |
 | `mediaBrowser` | `*struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
+		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		// ItemTypes maps each level key to its Jellyfin/Emby item type:
+		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
+		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
+		// IncludeItemTypes filtering; unmapped levels keep the video
+		// projection, so declare every level of a music/book kind.
+		ItemTypes map[string]string `json:"itemTypes,omitempty"`
 	}` | may be omitted (see validation for conditions) |  |
 | `stremio` | `*struct {
 		Type string `json:"type"`
@@ -45650,8 +45763,14 @@ type Presentations struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
+		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		// ItemTypes maps each level key to its Jellyfin/Emby item type:
+		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
+		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
+		// IncludeItemTypes filtering; unmapped levels keep the video
+		// projection, so declare every level of a music/book kind.
+		ItemTypes map[string]string `json:"itemTypes,omitempty"`
 	} `json:"mediaBrowser,omitempty"`
 	Stremio *struct {
 		Type string `json:"type"`
@@ -45748,9 +45867,9 @@ type KindLibraryDecl struct {
 ``````
 // KindLibraryTabFilter defines saved filter rules on a "view" tab.
 type KindLibraryTabFilter struct {
-	Match   string                 `json:"match,omitempty"`   // "all" (default) or "any"
-	Rules   []KindLibraryTabRule   `json:"rules,omitempty"`   // matching conditions
-	Exclude []KindLibraryTabRule   `json:"exclude,omitempty"` // excluded conditions
+	Match   string               `json:"match,omitempty"`   // "all" (default) or "any"
+	Rules   []KindLibraryTabRule `json:"rules,omitempty"`   // matching conditions
+	Exclude []KindLibraryTabRule `json:"exclude,omitempty"` // excluded conditions
 }
 ``````
 
@@ -56546,12 +56665,24 @@ export interface Contributes {
   setup?: SetupMeta;
 }
 
+/** A Jellyfin/Emby item type a level can present as. */
+export type MediaBrowserItemType =
+  | "Movie" | "Series" | "Season" | "Episode"
+  | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
+  | "Book" | "PhotoAlbum" | "Photo";
+
 /** How a library is published per protocol (Ether v0.3.8 content kinds). */
 export interface Presentations {
   adapterOnly?: boolean;
   vela?: { type: "movies" | "shows" };
   plex?: { base: "movie" | "show" | "artist" | "photo" };
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
+  /**
+   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; the
+   * declared type drives the item's Type, MediaType (Audio/Book/Photo/
+   * Video), IsFolder and IncludeItemTypes filtering. Unmapped levels keep
+   * the video projection, so declare every level of a music/book kind.
+   */
+  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, MediaBrowserItemType> };
   stremio?: { type: "movie" | "series" | "channel" | "tv" };
   xtream?: { category: string };
   silo?: { type: string };

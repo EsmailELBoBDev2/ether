@@ -1483,7 +1483,7 @@ func (s *Server) renderTitles(ctx context.Context, pr *Request, ts []frontend.Ti
 	if guidSrc != nil {
 		guids = guidSrc.CachedMany(ctx, lookup)
 	}
-	ctx = s.withPlexMeta(ctx, lookup, guids)
+	ctx = s.withPlexMeta(ctx, lookup, guids, !o.storedOnly)
 	var order episodeOrderView
 	if !o.storedOnly {
 		order = s.episodeOrderList(ctx, pr, ts, o.detail && !o.batchDetail)

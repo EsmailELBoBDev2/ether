@@ -40,13 +40,13 @@ type AuthGrantRevokedPayload struct {
 }
 
 type AuthDeviceRegisteredPayload struct {
-	DeviceID           string `json:"deviceId" event:"label=Device ID;desc=Assigned Ether device identifier;example=dev_14"`
-	ClientIdentifier   string `json:"clientIdentifier,omitempty" event:"label=Client Identifier;desc=Stable client-reported identifier;example=appletv-living-room"`
-	Name               string `json:"name,omitempty" event:"label=Device Name;desc=Human-readable device name;example=Living Room Apple TV"`
-	Platform           string `json:"platform,omitempty" event:"label=Platform;desc=Client operating system or platform;example=tvOS"`
-	ViewerID           int64  `json:"viewerId,omitempty" event:"label=Viewer ID;desc=Viewer associated with the device;example=7"`
-	Username           string `json:"username,omitempty" event:"label=Username;desc=Username associated with the device;pii;example=alex"`
-	RemoteIP           string `json:"remoteIP,omitempty" event:"label=Remote IP;desc=Network address seen during registration;pii;example=192.168.1.44"`
+	DeviceID             string `json:"deviceId" event:"label=Device ID;desc=Assigned Ether device identifier;example=dev_14"`
+	ClientIdentifier     string `json:"clientIdentifier,omitempty" event:"label=Client Identifier;desc=Stable client-reported identifier;example=appletv-living-room"`
+	Name                 string `json:"name,omitempty" event:"label=Device Name;desc=Human-readable device name;example=Living Room Apple TV"`
+	Platform             string `json:"platform,omitempty" event:"label=Platform;desc=Client operating system or platform;example=tvOS"`
+	ViewerID             int64  `json:"viewerId,omitempty" event:"label=Viewer ID;desc=Viewer associated with the device;example=7"`
+	Username             string `json:"username,omitempty" event:"label=Username;desc=Username associated with the device;pii;example=alex"`
+	RemoteIP             string `json:"remoteIP,omitempty" event:"label=Remote IP;desc=Network address seen during registration;pii;example=192.168.1.44"`
 	IsFirstSeenForViewer bool   `json:"isFirstSeenForViewer" event:"label=First Seen For Viewer;desc=True when this device was not previously seen for the viewer;example=true"`
 }
 

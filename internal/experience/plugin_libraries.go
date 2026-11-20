@@ -540,31 +540,120 @@ func (s *Service) sanitizePluginLibraryQuery(ctx context.Context, lib core.Libra
 	return q
 }
 
-func simplePluginBrowse(v *core.User, q frontend.ItemQuery, policy AccessPolicy) bool {
-	if v == nil || q.AdjacentTo != 0 || q.StartAt != 0 || q.Watched != nil || q.Favorite != nil || q.Season != nil {
+// pluginQuerySQLReady reports whether every predicate in q's shape is one
+// the plugin item store applies itself in SQL: sort and keyset order, the
+// type-to-level mapping, genres/studio/facets, person, tab and library
+// policy, watched state, the content-rating cap and excluded keys. Viewer
+// predicates are handled separately by pluginBrowseQuery, which folds them
+// into the query that reaches the store.
+func pluginQuerySQLReady(q frontend.ItemQuery) bool {
+	if q.AdjacentTo != 0 || q.StartAt != 0 || q.Season != nil {
 		return false
 	}
-	if v.MaxContentRating != "" || policy != nil {
+	if q.Favorite != nil && *q.Favorite {
+		// Plugin titles are never favourites; the walk answers empty.
+		return false
+	}
+	if len(q.ExcludedTypes) > 0 || len(q.UnservedTypes) > 0 {
 		return false
 	}
 	f := q.Filter
-	return len(f.ExcludeKeys) == 0 && len(f.IncludeKeys) == 0 &&
-		f.YearFrom == 0 && f.YearTo == 0 && len(f.ExcludeYears) == 0 &&
-		len(f.ReleasedFilters) == 0 && f.MinRating == 0 &&
-		f.MinRuntime == 0 && f.MaxRuntime == 0 &&
-		len(f.Languages) == 0 && f.Countries == nil &&
-		len(f.ContentRatings) == 0 && f.MaxContentRating == "" &&
-		f.Collection == 0 && f.Person == 0 && f.FirstCharacter == "" &&
+	return len(f.IncludeKeys) == 0 &&
+		f.Type == "" &&
+		f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 &&
+		len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRating == 0 && len(f.ExcludeRatings) == 0 &&
+		f.MinRuntime == 0 && f.MaxRuntime == 0 && len(f.ExcludeRuntimes) == 0 &&
+		len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ExcludeCountries) == 0 &&
+		len(f.ContentRatings) == 0 && len(f.ExcludeContentRatings) == 0 && f.MinContentRating == "" &&
+		len(f.IncludeCollectionNames) == 0 && len(f.ExcludeCollectionNames) == 0 &&
+		f.Collection == 0 && len(f.Collections) == 0 && len(f.ExcludeCollections) == 0 &&
+		len(f.Credits) == 0 && len(f.StudioFilters) == 0 && len(f.TitleFilters) == 0 &&
+		f.FirstCharacter == "" &&
 		f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" &&
 		f.Query == ""
+}
+
+// pluginPolicyPassive reports whether the access policy provably admits
+// every plugin title for v: no viewer restriction the policy can state,
+// and no catalogue viewer rules that judge titles on their facts. Projected
+// plugin titles are never Adult, so the mandatory guard adds nothing here.
+// With no ViewerRules source a non-nil policy is treated as judging, so a
+// partially wired service keeps the in-process check.
+func (s *Service) pluginPolicyPassive(v *core.User) bool {
+	if s.d.Visibility.Policy == nil {
+		return true
+	}
+	if ViewerRestricted(s.d.Visibility.Policy, v) {
+		return false
+	}
+	if s.d.ViewerRules == nil {
+		return false
+	}
+	_, judged := s.d.ViewerRules(v)
+	return !judged
+}
+
+// pluginShareCap folds plex.tv share filters to the one clause the plugin
+// store can apply: a content-rating cap, and only when the movie and
+// television caps agree (one library page can hold either projected type).
+func pluginShareCap(movie, television core.Filter) (string, bool) {
+	for _, f := range []core.Filter{movie, television} {
+		if len(f.ContentRatings) > 0 || len(f.ExcludeContentRatings) > 0 || f.MinContentRating != "" ||
+			len(f.IncludeCollectionNames) > 0 || len(f.ExcludeCollectionNames) > 0 {
+			return "", false
+		}
+	}
+	if movie.MaxContentRating != television.MaxContentRating {
+		return "", false
+	}
+	return movie.MaxContentRating, true
+}
+
+// pluginBrowseQuery folds the viewer's predicates into q so the store
+// applies them in SQL before counting and paging: the content-rating cap
+// (the viewer's own plus any share cap) via Filter.MaxContentRating,
+// policy-blocked genres via Filter.ExcludeGenres, and hidden keys via
+// Filter.ExcludeKeys. ok is false when a predicate has no SQL form
+// (fact-judging viewer rules, share rating/label clauses), leaving the
+// caller on the in-process walk. Blocked keywords need no push: projected
+// plugin titles never carry Keywords, so they can never match.
+func (s *Service) pluginBrowseQuery(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (frontend.ItemQuery, bool) {
+	if v == nil || !pluginQuerySQLReady(q) {
+		return q, false
+	}
+	out := q
+	out.Filter.MaxContentRating = tightenRating(q.Filter.MaxContentRating, v.MaxContentRating)
+	if s.d.PageExclusions == nil {
+		if s.pluginPolicyPassive(v) {
+			return out, true
+		}
+		return q, false
+	}
+	if s.d.ViewerRules != nil {
+		if _, judged := s.d.ViewerRules(v); judged {
+			return q, false
+		}
+	} else if s.d.Visibility.Policy != nil && ViewerRestricted(s.d.Visibility.Policy, v) {
+		return q, false
+	}
+	ex := s.d.PageExclusions(ctx, v, s.d.PluginLibraries.RootMediaType(ctx, lib))
+	if ex.Err != nil || len(ex.Keys) > maxIndexedExclusionSet || len(ex.ExcludeGenres) > 64 {
+		return q, false
+	}
+	shareCap, pushable := pluginShareCap(ex.Movie, ex.Television)
+	if !pushable {
+		return q, false
+	}
+	out.Filter.MaxContentRating = tightenRating(out.Filter.MaxContentRating, shareCap)
+	out.Filter.ExcludeGenres = append(append([]string{}, ex.ExcludeGenres...), q.Filter.ExcludeGenres...)
+	out.Filter.ExcludeKeys = append(append([]core.RatingKey{}, q.Filter.ExcludeKeys...), ex.Keys...)
+	return out, true
 }
 
 func pluginCursorPrefix(scope string, q frontend.ItemQuery) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%v|%v|%v|%+v", scope, q.Sort, q.Desc, q.Recursive, q.Types, q.Filter)))
 	return hex.EncodeToString(sum[:16]) + "|"
 }
-
-const maxPluginBrowseWalkPages = 40
 
 func (s *Service) pluginLibraryItems(ctx context.Context, v *core.User, lib core.Library, q frontend.ItemQuery) (core.Page, error) {
 	// A studio or performer opened for the first time fills its catalogue
@@ -671,8 +760,10 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 		limit = 200
 	}
 
-	// Fast O(limit) keyset path when no post-SQL viewer predicates apply.
-	if simplePluginBrowse(v, q, s.d.Visibility.Policy) && q.Limit > 0 {
+	// Fast O(limit) keyset path when the store applies every predicate in
+	// SQL, viewer predicates included (pluginBrowseQuery folded them in).
+	if sqlQ, ok := s.pluginBrowseQuery(ctx, v, lib, q); ok && q.Limit > 0 {
+		q = sqlQ
 		viewerID := int64(0)
 		if v != nil {
 			viewerID = v.ID
@@ -715,14 +806,17 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 		return core.Page{Items: page.Items, Total: page.Total}, nil
 	}
 
-	// Bounded keyset scan when viewer state (watched/favorite), anchors, or
-	// fine-grained policy filters are active.
+	// In-process keyset scan for the predicates with no SQL form (anchors,
+	// fact-judging viewer rules, share rating/label clauses). It runs to
+	// exhaustion so the total is the true filtered count, never a capped
+	// count presented as the total; NoTotal callers still stop once the
+	// page is filled.
 	var permitted []core.Title
 	cursor := ""
 	needAll := q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0
 	wantEnd := offset + limit
 	totalMatched := 0
-	for pageIdx := 0; pageIdx < maxPluginBrowseWalkPages; pageIdx++ {
+	for {
 		page, err := s.d.PluginLibraries.Browse(ctx, lib, q, cursor, 200)
 		if err != nil {
 			return core.Page{}, err
@@ -737,7 +831,7 @@ func (s *Service) readPluginLibraryItems(ctx context.Context, v *core.User, lib 
 			}
 			totalMatched++
 		}
-		if page.NextCursor == "" || len(page.Items) == 0 {
+		if page.NextCursor == "" || len(page.Items) == 0 || page.NextCursor == cursor {
 			break
 		}
 		if !needAll && totalMatched >= wantEnd && q.NoTotal {
@@ -764,7 +858,10 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 		limit = 200
 	}
 
-	if simplePluginBrowse(v, q, s.d.Visibility.Policy) && q.Sort == "" && q.Limit > 0 {
+	// Children carries no ItemQuery to the store, so its SQL page can only
+	// be trusted when no viewer predicate would filter it in process.
+	if v != nil && pluginQuerySQLReady(q) && q.Watched == nil && v.MaxContentRating == "" && q.Filter.MaxContentRating == "" &&
+		len(q.Filter.ExcludeKeys) == 0 && len(q.Filter.ExcludeGenres) == 0 && s.pluginPolicyPassive(v) && q.Sort == "" && q.Limit > 0 {
 		prefix := pluginCursorPrefix("child:"+parent.String(), q)
 		cursor := ""
 		curOffset := 0
@@ -804,7 +901,7 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 
 	var all []core.Title
 	cursor := ""
-	for pageIdx := 0; pageIdx < maxPluginBrowseWalkPages; pageIdx++ {
+	for {
 		page, err := s.d.PluginLibraries.Children(ctx, parent, q.Recursive, cursor, 200)
 		if err != nil {
 			return core.Page{}, err
@@ -814,7 +911,7 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 			return core.Page{}, err
 		}
 		all = append(all, batch...)
-		if page.NextCursor == "" || len(page.Items) == 0 {
+		if page.NextCursor == "" || len(page.Items) == 0 || page.NextCursor == cursor {
 			break
 		}
 		cursor = page.NextCursor

@@ -503,12 +503,12 @@ func encodeExport(items []ExportItem, q ExportQuery, format string, now time.Tim
 		return json.MarshalIndent(envelope, "", "  ")
 	case "xml":
 		type xmlDoc struct {
-			XMLName        xml.Name     `xml:"LibraryExport"`
-			ExportedAt     string       `xml:"exportedAt,attr"`
-			Scope          string       `xml:"scope,attr"`
-			TargetID       string       `xml:"targetId,attr,omitempty"`
-			ItemCount      int          `xml:"itemCount,attr"`
-			Items          []ExportItem `xml:"Items>Item"`
+			XMLName    xml.Name     `xml:"LibraryExport"`
+			ExportedAt string       `xml:"exportedAt,attr"`
+			Scope      string       `xml:"scope,attr"`
+			TargetID   string       `xml:"targetId,attr,omitempty"`
+			ItemCount  int          `xml:"itemCount,attr"`
+			Items      []ExportItem `xml:"Items>Item"`
 		}
 		doc := xmlDoc{
 			ExportedAt: now.Format(time.RFC3339),

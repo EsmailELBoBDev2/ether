@@ -513,7 +513,7 @@ type Presentations struct {
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct { // Jellyfin + Emby share internal/frontends/mediabrowser
 		CollectionType string            `json:"collectionType"`      // movies|tvshows|music|audiobooks|books|photos|homevideos
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"` // level -> Movie|Series|Season|Episode|MusicAlbum|Audio|Book|PhotoAlbum|Photo
+		ItemTypes      map[string]string `json:"itemTypes,omitempty"` // level -> Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|AudioBook|Book|PhotoAlbum|Photo
 	} `json:"mediaBrowser,omitempty"`
 	Stremio *struct {
 		Type string `json:"type"` // movie|series|channel|tv — closed Stremio set; other kinds use their own add-on surface instead

@@ -228,11 +228,11 @@ type Service struct {
 	watchlist      func(ctx context.Context, userID int64) ([]core.RatingKey, error)
 	continued      func(ctx context.Context, userID int64, key core.RatingKey, removed bool) error
 	onTokenExpired func(userID int64, reason string)
-	node      string
-	log       *slog.Logger
-	now       func() time.Time
-	claimFor  time.Duration
-	pace      time.Duration
+	node           string
+	log            *slog.Logger
+	now            func() time.Time
+	claimFor       time.Duration
+	pace           time.Duration
 	// importBudget caps the Plex reads of one import pass.
 	importBudget int
 	mu           sync.Mutex
@@ -265,7 +265,7 @@ func New(opts Options) (*Service, error) {
 		db: opts.DB, state: opts.State, sealer: opts.Sealer, guid: opts.GUID,
 		client: c, watchlist: opts.Watchlist, continued: opts.Continue,
 		onTokenExpired: opts.OnTokenExpired,
-		node: node, log: log, now: now, claimFor: 2 * time.Minute,
+		node:           node, log: log, now: now, claimFor: 2 * time.Minute,
 		pace: 250 * time.Millisecond, importBudget: importRequests, closed: make(chan struct{}),
 	}, nil
 }

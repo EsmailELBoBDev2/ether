@@ -915,6 +915,17 @@ func plainItemFilter(f core.Filter) bool {
 	return f.Group == nil && !f.KnownAddedDate && len(f.ExcludeKeys) == 0 && f.Type == "" && len(f.Genres) == 0 && f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 && len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRuntime == 0 && f.MinRuntime == 0 && len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ContentRatings) == 0 && f.MaxContentRating == "" && f.Collection == 0 && f.Person == 0 && f.Studio == "" && f.FirstCharacter == "" && f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" && f.Query == ""
 }
 
+// plainRecursiveFilter is plainItemFilter for a recursive library listing:
+// libraryBrowseFilter stamps a custom library's own type on the request
+// filter, and the indexed page overwrites Type per child type it reads, so
+// that stamp alone must not send the listing into the whole-library walk.
+func plainRecursiveFilter(f core.Filter, libraryType core.MediaType) bool {
+	if f.Type == libraryType {
+		f.Type = ""
+	}
+	return plainItemFilter(f)
+}
+
 func (s *Service) Rows(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 	tv, err := s.viewer(ctx, req.Viewer)
 	if err != nil {
@@ -2232,7 +2243,7 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 		if !piv.Playable {
 			keys = nil
 			cursor := ""
-			for pageIdx := 0; pageIdx < maxPluginBrowseWalkPages; pageIdx++ {
+			for {
 				page, err := s.d.PluginLibraries.Children(ctx, k, true, cursor, 500)
 				if err != nil {
 					return err
@@ -2256,7 +2267,7 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 						}
 					}
 				}
-				if page.NextCursor == "" || len(page.Items) == 0 {
+				if page.NextCursor == "" || len(page.Items) == 0 || page.NextCursor == cursor {
 					break
 				}
 				cursor = page.NextCursor
@@ -2883,10 +2894,19 @@ func (s *Service) matchesUserQuery(ctx context.Context, v *core.User, t core.Tit
 	if containsMediaType(q.ExcludedTypes, t.Type) {
 		return false, nil
 	}
+	// A declared MediaBrowser type (MusicAlbum, Audio, Book, …) is a name a
+	// client can include or exclude an item by, alongside its core type.
+	if t.MBItemType != "" {
+		for _, excluded := range q.ExcludedTypes {
+			if strings.EqualFold(string(excluded), t.MBItemType) {
+				return false, nil
+			}
+		}
+	}
 	if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
 		found := containsMediaType(q.Types, t.Type)
 		for _, kind := range q.UnservedTypes {
-			if strings.EqualFold(kind, string(t.Type)) {
+			if strings.EqualFold(kind, string(t.Type)) || strings.EqualFold(kind, t.MBItemType) {
 				found = true
 			}
 		}

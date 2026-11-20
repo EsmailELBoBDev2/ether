@@ -53,7 +53,7 @@ func TestVaultEmitsAllEvents(t *testing.T) {
 	}
 
 	// Set cap just above twice one record's compressed size so adding the second crosses 80% without evicting k2.
-	lib.SetCapBytes(stored.CompressedBytes * 2 + stored.CompressedBytes/4)
+	lib.SetCapBytes(stored.CompressedBytes*2 + stored.CompressedBytes/4)
 
 	// Store a second record so usage crosses 80% of cap.
 	const fixture2 = `<nzb><file subject="Second.Movie.2021.mkv" poster="A"><groups><group>test</group></groups><segments><segment bytes="600" number="1">cc@a</segment><segment bytes="600" number="2">dd@b</segment></segments></file></nzb>`

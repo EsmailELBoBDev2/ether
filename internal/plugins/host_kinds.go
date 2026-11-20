@@ -16,6 +16,16 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 )
 
+// KindUpsertResult is what one kinds.upsert batch did (#646): Accepted
+// items were taken, of which Added were new, Updated rewrote a stored
+// item, and Unchanged matched the stored item and were skipped.
+type KindUpsertResult struct {
+	Accepted  int
+	Added     int
+	Updated   int
+	Unchanged int
+}
+
 // KindBackends are the Ether services the kind host calls end in: the
 // plugin-item store, the source resolver and the blob cache. Any field
 // may be nil, in which case the matching host call returns
@@ -23,11 +33,14 @@ import (
 // debrid services, blobcache); the plugin id is always the caller's,
 // so a plugin can only ever reach its own kinds and cache.
 type KindBackends struct {
-	KindUpsert    func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
-	KindDelete    func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
-	KindItems     func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
-	KindItemsByID func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
-	KindItemCount func(ctx context.Context, pluginID string) (int, error)
+	KindUpsert func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (accepted int, err error)
+	// KindUpsertStats, when set, is preferred over KindUpsert and its
+	// counts ride the host reply.
+	KindUpsertStats func(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (KindUpsertResult, error)
+	KindDelete      func(ctx context.Context, pluginID, kindKey string, externalIDs []string) error
+	KindItems       func(ctx context.Context, pluginID, kindKey, cursor string, limit int) (core.KindPage, error)
+	KindItemsByID   func(ctx context.Context, pluginID, kindKey string, externalIDs []string) ([]core.KindItem, error)
+	KindItemCount   func(ctx context.Context, pluginID string) (int, error)
 	// KindVisible and KindBrowse evaluate a plugin library's Rules and viewer
 	// access policy for the requesting frontend-adapter viewer (#615).
 	KindVisible    func(ctx context.Context, pluginID string, viewerID int64, kindKey string, ids []string) ([]string, error)
@@ -48,6 +61,7 @@ type KindBackends struct {
 func (m *Manager) SetKindBackends(b KindBackends) {
 	m.mu.Lock()
 	m.deps.Backends.KindUpsert = b.KindUpsert
+	m.deps.Backends.KindUpsertStats = b.KindUpsertStats
 	m.deps.Backends.KindDelete = b.KindDelete
 	m.deps.Backends.KindItems = b.KindItems
 	m.deps.Backends.KindItemsByID = b.KindItemsByID
@@ -67,19 +81,20 @@ func (m *Manager) kindBackends() KindBackends {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return KindBackends{
-		KindUpsert:     m.deps.Backends.KindUpsert,
-		KindDelete:     m.deps.Backends.KindDelete,
-		KindItems:      m.deps.Backends.KindItems,
-		KindItemsByID:  m.deps.Backends.KindItemsByID,
-		KindItemCount:  m.deps.Backends.KindItemCount,
-		KindVisible:    m.deps.Backends.KindVisible,
-		KindBrowse:     m.deps.Backends.KindBrowse,
-		ResolveSources: m.deps.Backends.ResolveSources,
-		CachePut:       m.deps.Backends.CachePut,
-		CacheOpen:      m.deps.Backends.CacheOpen,
-		CacheDelete:    m.deps.Backends.CacheDelete,
-		StreamURL:      m.deps.Backends.StreamURL,
-		StreamPartURL:  m.deps.Backends.StreamPartURL,
+		KindUpsert:      m.deps.Backends.KindUpsert,
+		KindUpsertStats: m.deps.Backends.KindUpsertStats,
+		KindDelete:      m.deps.Backends.KindDelete,
+		KindItems:       m.deps.Backends.KindItems,
+		KindItemsByID:   m.deps.Backends.KindItemsByID,
+		KindItemCount:   m.deps.Backends.KindItemCount,
+		KindVisible:     m.deps.Backends.KindVisible,
+		KindBrowse:      m.deps.Backends.KindBrowse,
+		ResolveSources:  m.deps.Backends.ResolveSources,
+		CachePut:        m.deps.Backends.CachePut,
+		CacheOpen:       m.deps.Backends.CacheOpen,
+		CacheDelete:     m.deps.Backends.CacheDelete,
+		StreamURL:       m.deps.Backends.StreamURL,
+		StreamPartURL:   m.deps.Backends.StreamPartURL,
 	}
 }
 
@@ -232,37 +247,51 @@ func (h *host) snapshotKindItems(ctx context.Context, kindKey string, ids []stri
 }
 
 func (h *host) KindUpsert(ctx context.Context, kindKey string, items []core.KindItem) (int, error) {
+	result, err := h.KindUpsertWithResult(ctx, kindKey, items)
+	return result.Accepted, err
+}
+
+// KindUpsertWithResult is KindUpsert reporting the added/updated/
+// unchanged split when the backend provides it (#646).
+func (h *host) KindUpsertWithResult(ctx context.Context, kindKey string, items []core.KindItem) (KindUpsertResult, error) {
 	if err := h.requireWritableToolContext(ctx); err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	r, decl, err := h.kindCheck(ctx, kindKey, CapCatalogProvider)
 	if err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	if decl.Sync.Mode != KindSyncPush {
-		return 0, fmt.Errorf("%w: kind %s is pull-synced by Ether and takes no pushes", ErrPermissionDenied, kindKey)
+		return KindUpsertResult{}, fmt.Errorf("%w: kind %s is pull-synced by Ether and takes no pushes", ErrPermissionDenied, kindKey)
 	}
 	if len(items) > MaxKindUpsertItems {
-		return 0, fmt.Errorf("plugins: kind upsert batch larger than %d items", MaxKindUpsertItems)
+		return KindUpsertResult{}, fmt.Errorf("plugins: kind upsert batch larger than %d items", MaxKindUpsertItems)
 	}
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
 		if msg := CheckKindItem(decl, it); msg != "" {
-			return 0, fmt.Errorf("plugins: kind item %q: %s", it.ID, msg)
+			return KindUpsertResult{}, fmt.Errorf("plugins: kind item %q: %s", it.ID, msg)
 		}
 		ids = append(ids, it.ID)
 	}
 	if r.Shadow {
-		return len(items), h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
+		return KindUpsertResult{Accepted: len(items)}, h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{Op: "kinds.upsert", Kind: kindKey, Items: ids})
 	}
-	backend := h.m.kindBackends().KindUpsert
-	if backend == nil {
-		return 0, ErrUnavailable
+	backends := h.m.kindBackends()
+	if backends.KindUpsert == nil && backends.KindUpsertStats == nil {
+		return KindUpsertResult{}, ErrUnavailable
 	}
 	prev, created := h.snapshotKindItems(ctx, kindKey, ids)
-	accepted, err := backend(ctx, h.plugin, kindKey, items)
+	var result KindUpsertResult
+	if backends.KindUpsertStats != nil {
+		result, err = backends.KindUpsertStats(ctx, h.plugin, kindKey, items)
+	} else {
+		var accepted int
+		accepted, err = backends.KindUpsert(ctx, h.plugin, kindKey, items)
+		result = KindUpsertResult{Accepted: accepted}
+	}
 	if err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
 	if err := h.journal(ctx, r, "kinds.upsert", kindKey, kindInverse{
 		Op:       "kinds.upsert",
@@ -270,9 +299,9 @@ func (h *host) KindUpsert(ctx context.Context, kindKey string, items []core.Kind
 		Items:    created,
 		Previous: prev,
 	}); err != nil {
-		return 0, err
+		return KindUpsertResult{}, err
 	}
-	return accepted, nil
+	return result, nil
 }
 
 func (h *host) KindDelete(ctx context.Context, kindKey string, externalIDs []string) error {

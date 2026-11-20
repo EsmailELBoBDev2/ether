@@ -71,6 +71,7 @@ func (v *library) checkQuotaWarning(usedBytes, budgetBytes int64, recordCount in
 		v.quotaWarned.Store(false)
 	}
 }
+
 type cached struct {
 	key Key
 	loc location

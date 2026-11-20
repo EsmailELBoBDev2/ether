@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/libraryfilter"
 )
@@ -39,8 +40,19 @@ type BrowseQuery struct {
 	// using AND and the same per-type value handling.
 	AllFacets     map[string][]string
 	ExcludeFacets map[string][]string
-	Cursor        string // opaque keyset cursor
-	Limit         int
+	// Watched filters on the viewer's watch state in SQL (ViewerID):
+	// true keeps items with a state_watch view_count > 0, false keeps
+	// items without one. Nil applies no watched predicate.
+	Watched *bool
+	// MaxContentRating caps items at this content-rating enforcement
+	// level in SQL (persisted rating_level). Unrated items never pass a
+	// cap, matching contentrating.EnforceExceeds. Empty is uncapped.
+	MaxContentRating string
+	// ExcludeKeys drops these plugin items by RatingKey. Callers bound
+	// the list; non-plugin keys are ignored.
+	ExcludeKeys []core.RatingKey
+	Cursor      string // opaque keyset cursor
+	Limit       int
 }
 
 // BrowsePage is a keyset page of plugin items.
@@ -122,7 +134,8 @@ func normalizeSortField(sortName string) (col string, kind string, defaultDesc b
 
 // Browse returns a keyset-paged slice of items in a library (spec §2.3, §3.4).
 // Unfiltered totals are read from plugin_item_tally in O(1); filtered or
-// child-scoped totals execute a bounded COUNT(*) with the same WHERE clauses.
+// child-scoped totals execute an exact COUNT(*) with the same WHERE clauses,
+// so a filtered total is never a capped count presented as the total.
 func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error) {
 	if s == nil || s.db == nil {
 		return BrowsePage{}, fmt.Errorf("pluginitems: nil service")
@@ -156,7 +169,7 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	if err := checkFacetValueBound(q.Facets, q.AllFacets, q.ExcludeFacets); err != nil {
 		return BrowsePage{}, err
 	}
-	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel
+	hasFacets := hasActiveFacets(q.Facets) || hasActiveFacets(q.AllFacets) || hasActiveFacets(q.ExcludeFacets) || !q.Policy.Passive() || !q.TabPolicy.Passive() || q.Hidden || q.PersonID > 0 || len(q.Levels) > 0 || q.AnyLevel || q.Watched != nil || q.MaxContentRating != "" || len(q.ExcludeKeys) > 0
 
 	// Build person + facet predicates first so we know whether to drive the
 	// query from plugin_item_fields_lookup / plugin_item_fields_lookup_int.
@@ -231,6 +244,39 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		baseWhere.WriteString(filterWhere.String())
 		baseArgs = append(baseArgs, filterArgs...)
 	}
+	if q.MaxContentRating != "" {
+		if lvl := contentrating.EnforceLevelOf(q.MaxContentRating); lvl == contentrating.Unrated {
+			baseWhere.WriteString(` AND 0=1`)
+		} else {
+			baseWhere.WriteString(` AND i.rating_level > 0 AND i.rating_level <= ?`)
+			baseArgs = append(baseArgs, int(lvl))
+		}
+	}
+	if len(q.ExcludeKeys) > 0 {
+		var placeholders []string
+		for _, k := range q.ExcludeKeys {
+			if !k.IsPluginKey() {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			baseArgs = append(baseArgs, int64(k)-core.PluginKeyOffset)
+		}
+		if len(placeholders) > 0 {
+			baseWhere.WriteString(` AND i.seq NOT IN (` + strings.Join(placeholders, ",") + `)`)
+		}
+	}
+	if q.Watched != nil {
+		switch {
+		case viewerID <= 0 && *q.Watched:
+			baseWhere.WriteString(` AND 0=1`)
+		case viewerID > 0 && *q.Watched:
+			baseWhere.WriteString(fmt.Sprintf(` AND EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id = ? AND w.rating_key = %d + i.seq AND w.view_count > 0)`, core.PluginKeyOffset))
+			baseArgs = append(baseArgs, viewerID)
+		case viewerID > 0:
+			baseWhere.WriteString(fmt.Sprintf(` AND NOT EXISTS (SELECT 1 FROM state_watch w WHERE w.user_id = ? AND w.rating_key = %d + i.seq AND w.view_count > 0)`, core.PluginKeyOffset))
+			baseArgs = append(baseArgs, viewerID)
+		}
+	}
 	if err := s.appendVisibilityForViewer(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
 		return BrowsePage{}, err
 	}
@@ -259,14 +305,14 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 				int64(q.LibraryID), k.Decl.Levels[0].Key).Scan(&total)
 		} else {
 			if err := s.db.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items i WHERE `+baseWhere.String()+` LIMIT 25001)`,
+				`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere.String(),
 				baseArgs...).Scan(&total); err != nil {
 				return BrowsePage{}, err
 			}
 		}
 	} else {
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items i WHERE `+baseWhere.String()+` LIMIT 25001)`,
+			`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere.String(),
 			baseArgs...).Scan(&total); err != nil {
 			return BrowsePage{}, err
 		}

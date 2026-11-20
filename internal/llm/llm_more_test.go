@@ -301,6 +301,36 @@ func TestCacheBounded(t *testing.T) {
 	}
 }
 
+// TestChatSendsDefaultBudget pins #649: a plain Chat with no caller
+// budget still sends a bounded reply size, under the field name the
+// endpoint takes, so routers never size it at the model's full limit.
+func TestChatSendsDefaultBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, key string
+	}{
+		{"custom", "deepseek/deepseek-v4-flash", "max_tokens"},
+		{"reasoning", "gpt-5-fixture", "max_completion_tokens"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var b map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&b)
+				if b[tc.key] != float64(defaultChatMaxTokens) {
+					t.Errorf("missing default reply budget %s: %v", tc.key, b)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+			}))
+			defer server.Close()
+			cfg := config.LLM{Enabled: true, Provider: "custom", BaseURL: server.URL, Model: tc.model}
+			c := NewClient(ClientOptions{Config: cfg, HTTPClient: server.Client()})
+			if _, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, false); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestGuideChatBudget(t *testing.T) {
 	for _, provider := range []string{"custom", "openai"} {
 		t.Run(provider, func(t *testing.T) {

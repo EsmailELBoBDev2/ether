@@ -172,6 +172,8 @@ describe("Notification setup", () => {
       "smtp",
       "ntfy",
       "gotify",
+      "pushover",
+      "mqtt",
     ]);
     expect(events).toHaveLength(22);
 

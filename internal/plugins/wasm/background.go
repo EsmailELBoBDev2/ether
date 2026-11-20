@@ -113,6 +113,8 @@ func DeadlineFor(path string) time.Duration {
 		return 5 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/setup/"):
 		return 20 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/flow-actions/"):
+		return 60 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/kinds/"):
 		if strings.HasSuffix(p, "/resolve") || strings.HasSuffix(p, "/match") {
 			return 5 * time.Second

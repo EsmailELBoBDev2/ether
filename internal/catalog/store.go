@@ -866,7 +866,11 @@ func (c *Catalog) UpsertCollectionTitles(ctx context.Context, titles []core.Titl
 // need to insert known titles). Browsable/added_at are preserved once set.
 // The row is not a fresh detail record, so a later Get may refresh it.
 func (c *Catalog) UpsertTitle(ctx context.Context, t core.Title, browsable bool) error {
-	return c.upsert(ctx, t, upsertOpts{browsable: browsable})
+	err := c.upsert(ctx, t, upsertOpts{browsable: browsable})
+	if err == nil && browsable && c.onTitlesAdded != nil {
+		c.onTitlesAdded([]core.Title{t})
+	}
+	return err
 }
 
 // UpsertDetailedTitle stores a title as a fresh detail record. A later Get

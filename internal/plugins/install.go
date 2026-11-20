@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/braedonsaunders/ether/internal/artwork"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
@@ -699,6 +700,24 @@ func (m *Manager) Install(ctx context.Context, p *Preview, opts InstallOptions) 
 		for _, fn := range hooks {
 			fn(ctx, saved)
 		}
+	}
+	if !existing {
+		m.emitBusEvent(events.EventPluginPackageInstalled, saved.ID, events.PluginPackageInstalledPayload{
+			PluginID:    saved.ID,
+			Name:        saved.Name,
+			Version:     saved.Version,
+			Kind:        saved.Kind,
+			RuntimeKind: saved.Manifest.RuntimeKind(),
+			Verified:    saved.Verified,
+		}, false)
+	} else if cur.Version != saved.Version {
+		m.emitBusEvent(events.EventPluginPackageUpdated, saved.ID, events.PluginPackageUpdatedPayload{
+			PluginID:    saved.ID,
+			Name:        saved.Name,
+			FromVersion: cur.Version,
+			ToVersion:   saved.Version,
+			Auto:        saved.AutoUpdate,
+		}, false)
 	}
 	return saved, nil
 }

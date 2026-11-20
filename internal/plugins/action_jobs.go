@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 	"net/http"
 	"runtime"
@@ -191,6 +192,17 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 			reason := m.store.redactKnown(context.Background(), pluginID, err.Error())
 			j.finish(state, reason)
 			m.log.Warn("plugins: expand job", "plugin", pluginID, "job", routePath, "err", reason)
+			if state == "error" {
+				durMS := max(time.Since(started).Milliseconds(), int64(0))
+				m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+					PluginID:   pluginID,
+					Name:       m.pluginDisplayName(context.Background(), pluginID),
+					Job:        routePath,
+					Kind:       "expand",
+					Error:      reason,
+					DurationMS: durMS,
+				}, false)
+			}
 		} else {
 			j.finish("done", "")
 		}
@@ -319,6 +331,21 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 			reason := m.store.redactKnown(context.Background(), pluginID, err.Error())
 			j.finish(state, reason)
 			m.log.Warn("plugins: action job", "plugin", pluginID, "job", path, "err", reason)
+			if state == "error" {
+				kind := "action"
+				if isResolver {
+					kind = "resolver"
+				}
+				durMS := max(time.Since(j.snapshot().Started).Milliseconds(), int64(0))
+				m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+					PluginID:   pluginID,
+					Name:       m.pluginDisplayName(context.Background(), pluginID),
+					Job:        path,
+					Kind:       kind,
+					Error:      reason,
+					DurationMS: durMS,
+				}, false)
+			}
 		} else {
 			j.finish("done", "")
 		}

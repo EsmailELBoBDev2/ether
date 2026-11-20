@@ -51,6 +51,9 @@ const (
 	// frontend adapter calls so remote plugins can invoke viewer-scoped host
 	// services (kinds.visible, kinds.browse) without supplying viewer IDs.
 	HeaderViewerToken = "X-Ether-Viewer-Token"
+	// HeaderIdempotencyKey carries the Flow step idempotency key on plugin
+	// flow action calls.
+	HeaderIdempotencyKey = "X-Ether-Idempotency-Key"
 )
 
 // TunnelProtocol is the tunnel wire protocol version. It is sent as
@@ -79,6 +82,8 @@ var (
 	ErrNotFound = errors.New("remote: not found")
 	// ErrInvalid is returned by Host implementations for bad input.
 	ErrInvalid = errors.New("remote: invalid request")
+	// ErrRateLimited reports a host service rate limit exceeded.
+	ErrRateLimited = errors.New("remote: rate limit exceeded")
 	// ErrUnavailable is returned when a service is not wired yet.
 	ErrUnavailable = errors.New("remote: unavailable")
 	// ErrClosed reports use of a closed runtime.

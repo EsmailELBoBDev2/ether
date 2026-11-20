@@ -103,6 +103,11 @@ func (a *App) initUpdates() {
 		InstallID:      installID,
 		OnStatusChange: a.publishDashboard,
 		OnAvailable: func(version string) error {
+			channel := ""
+			if a.cfg != nil {
+				channel = a.cfg.Get().Updates.Channel
+			}
+			a.emitUpdateAvailable(a.opts.Version, version, channel, false)
 			if a.notifications == nil {
 				return nil
 			}
@@ -114,6 +119,14 @@ func (a *App) initUpdates() {
 		},
 		// Once per version across restarts and cluster nodes, like OnAvailable.
 		OnInstalled: func(u updater.InstalledUpdate) error {
+			channel := ""
+			auto := false
+			if a.cfg != nil {
+				uc := a.cfg.Get().Updates
+				channel = uc.Channel
+				auto = uc.AutoUpdate
+			}
+			a.emitUpdateInstalled(u.From, u.To, channel, auto)
 			if a.notifications == nil {
 				return nil
 			}
@@ -122,6 +135,7 @@ func (a *App) initUpdates() {
 			return a.notifications.UpdateInstalled(ctx, u.From, u.To)
 		},
 		OnRolledBack: func(f updater.FailedUpdate) error {
+			a.emitUpdateRolledBack(f.Version, f.From, f.Reason)
 			if a.notifications == nil {
 				return nil
 			}

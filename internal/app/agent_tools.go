@@ -43,6 +43,7 @@ func (a *App) registerBuiltinTools(c *tools.Catalogue) error {
 		Profiles:    &appProfileService{a: a},
 		Frontends:   &appFrontendService{a: a},
 		Server:      &appServerService{a: a},
+		Flows:       &appFlowsService{a: a},
 		OwnerUser: func(ctx context.Context) (*core.User, error) {
 			if a.users == nil {
 				return nil, errors.New("no owner")
@@ -135,6 +136,18 @@ func builtinToolLabel(name, fallback string) extend.Text {
 		return extend.T("Turn a plugin on or off")
 	case "server_restart":
 		return extend.T("Restart the server")
+	case "flows_list":
+		return extend.T("Flows")
+	case "flow_get":
+		return extend.T("Flow details")
+	case "flow_create_from_template":
+		return extend.T("Create a flow from a template")
+	case "flow_enable":
+		return extend.T("Turn a flow on or off")
+	case "flow_test_run":
+		return extend.T("Test-run a flow")
+	case "flow_runs":
+		return extend.T("Flow runs")
 	default:
 		return extend.Text{Source: fallback}
 	}
@@ -825,6 +838,7 @@ func (a *App) consoleRoutes() []builtin.RouteInfo {
 		{Route: "/apps", Label: "Apps"},
 		{Route: "/integrations", Label: "Integrations"},
 		{Route: "/plugins", Label: "Plugins"},
+		{Route: "/flows", Label: "Flows"},
 		{Route: "/notifications", Label: "Notifications"},
 		{Route: "/logs", Label: "Logs"},
 		{Route: "/settings", Label: "Settings"},

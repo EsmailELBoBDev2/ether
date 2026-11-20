@@ -36,6 +36,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/veladist"
 )
@@ -154,6 +155,8 @@ type Deps struct {
 	Config *config.Store
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// EventBus receives structured auth events (sign-in success/failure).
+	EventBus *events.Bus
 	// Logs is the in-memory log ring served at /ether/api/logs. A fresh
 	// 2000-entry buffer is created when nil (retrieve it via
 	// Handler.Logs()); pass a shared one to tail server logs.
@@ -306,6 +309,11 @@ type Deps struct {
 	// SharePlexViewer grants library access on plex.tv to the given username,
 	// email or user ID for this server. Nil ignores cloud library sharing.
 	SharePlexViewer func(ctx context.Context, usernameOrEmail string, userID int64) error
+
+	// Flows backs /api/flows/* (owner-authenticated) and /api/flows/hooks/{token}
+	// (incoming webhook ingress outside console auth). Nil hides the routes
+	// unless mounted explicitly via Extensions / PublicExtensions.
+	Flows *FlowsDeps
 }
 
 // Handler is the admin HTTP handler. Use NewHandler when you need access
@@ -545,6 +553,7 @@ func (h *Handler) routes() *http.ServeMux {
 	h.prerollRoutes(api)
 	h.plexServerRoutes(api)
 	h.viewersPlexImportRoutes(api)
+	h.flowsRoutes(mux)
 
 	mux.HandleFunc("/api/", h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such API endpoint")

@@ -37,6 +37,7 @@ import {
   Tags,
   Tv,
   Users,
+  Workflow,
 } from "lucide-react";
 import {
   forwardRef,
@@ -107,6 +108,7 @@ const ClusterPage = settingsPage("ClusterPage");
 const Setup = lazy(() => import("./pages/Setup"));
 const Activity = lazy(() => import("./pages/activity/Activity"));
 const Notifications = lazy(() => import("./pages/notifications/Notifications"));
+const Flows = lazy(() => import("./pages/flows/Flows"));
 const LiveTV = lazy(() => import("./pages/livetv/LiveTV"));
 const Calendar = lazy(() => import("./pages/calendar/Calendar"));
 const Libraries = lazy(() => import("./pages/libraries/Libraries"));
@@ -157,6 +159,7 @@ const NAV_ICONS = {
   Bell,
   Boxes,
   LifeBuoy,
+  Workflow,
 } as const;
 
 function navIcon(icon: string | undefined): ReactNode {
@@ -431,6 +434,7 @@ const BUILTIN_PAGES: Record<
   cache: { element: <Cache />, suffix: "/:tab?" },
   playback: { element: <Playback />, suffix: "/:tab?/:section?" },
   notifications: { element: <Notifications />, suffix: "/:tab?" },
+  flows: { element: <Flows />, suffix: "/*" },
   general: { element: <GeneralPage /> },
   apps: { element: <Apps />, suffix: "/:tab?/:section?" },
   integrations: { element: <ServicesPage />, suffix: "/:tab?" },

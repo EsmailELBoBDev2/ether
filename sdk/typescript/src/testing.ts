@@ -8,8 +8,11 @@ import type {
   CatalogResponse,
   ConfigureResponse,
   EtherEvent,
+  EventCorrelation,
   EventResponse,
   FieldOption,
+  FlowActionRequest,
+  FlowActionResponse,
   Manifest,
   MaybePromise,
   MarkersResponse,
@@ -26,6 +29,7 @@ import type {
 } from "./types.ts";
 import {
   encodeText,
+  HEADER_IDEMPOTENCY_KEY,
   MAX_KIND_VISIBLE_IDS,
   MaxBadgeEntriesPerCall,
   MaxBadgeLabelLen,
@@ -131,6 +135,12 @@ function countDistinctBadgeTitles(badges: Map<string, Map<string, string[]>>): n
   return seen.size;
 }
 
+export interface RecordedPublishedEvent {
+  key: string;
+  payload: Record<string, unknown>;
+  correlation?: EventCorrelation;
+}
+
 export interface MockHostState {
   kv: Map<string, string>;
   badges: Map<string, Map<string, string[]>>;
@@ -149,6 +159,7 @@ export interface MockHostState {
   blobs: Map<string, Uint8Array>;
   limits: import("./types.ts").RuntimeLimits;
   folders: Map<string, FolderEntry[]>;
+  publishedEvents: RecordedPublishedEvent[];
   notifications: string[];
   logs: RecordedLog[];
   httpHandler: (req: HostFetchRequest) => HostFetchResponse | Promise<HostFetchResponse>;
@@ -188,6 +199,7 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
       poolSize: 2,
     },
     folders: initial?.folders ?? new Map<string, FolderEntry[]>(),
+    publishedEvents: initial?.publishedEvents ?? [],
     notifications: initial?.notifications ?? [],
     logs: initial?.logs ?? [],
     httpHandler:
@@ -454,6 +466,19 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         return partIndex === undefined ? base : `${base}?part=${partIndex}`;
       },
     },
+    events: {
+      publish: (
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ) => {
+        state.publishedEvents.push({
+          key,
+          payload: payload ? { ...payload } : {},
+          ...(correlation !== undefined ? { correlation: { ...correlation } } : {}),
+        });
+      },
+    },
     log: (level: string, message: string, attrs?: Record<string, unknown>) => {
       state.logs.push({ level, message, attrs });
     },
@@ -599,6 +624,10 @@ export interface TestHarness<S = Record<string, unknown>> {
   ): Promise<{ status: number; body: SubtitlesResponse }>;
   markers(type: string, id: string): Promise<{ status: number; body: MarkersResponse }>;
   event(events: EtherEvent[]): Promise<{ status: number; body: EventResponse }>;
+  flowAction(
+    key: string,
+    req: Omit<FlowActionRequest, "key">,
+  ): Promise<{ status: number; body: FlowActionResponse }>;
   view(page?: string, query?: Record<string, string>): Promise<{ status: number; body: ViewResponse }>;
   action(action: string, input?: Record<string, unknown>): Promise<{ status: number; body: ActionResponse }>;
   tool(name: string, input?: Record<string, unknown>): Promise<{ status: number; body: ToolResponse }>;
@@ -710,6 +739,21 @@ export function createTestHarness<S = Record<string, unknown>>(
         body: JSON.stringify({ events }),
       });
       return { status: res.status, body: res.body as EventResponse };
+    },
+    async flowAction(key, req) {
+      const decl = instance.manifest.ether?.contributes?.flowActions?.find((a) => a.key === key);
+      const path = decl?.route ?? `/ether/v1/flow-actions/${encodeURIComponent(key)}`;
+      const headers: Record<string, string> = {};
+      if (req.idempotencyKey) {
+        headers[HEADER_IDEMPOTENCY_KEY] = req.idempotencyKey;
+      }
+      const res = await instance.dispatch({
+        method: "POST",
+        path,
+        headers,
+        body: JSON.stringify(req),
+      });
+      return { status: res.status, body: res.body as FlowActionResponse };
     },
     async view(page = "home", query) {
       const cleanPage = page.replace(/^\/+/, "") || "home";

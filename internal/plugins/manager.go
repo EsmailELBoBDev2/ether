@@ -20,7 +20,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/extend"
+	"github.com/braedonsaunders/ether/internal/flows"
 	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/notify"
 	"github.com/braedonsaunders/ether/internal/onair"
@@ -78,7 +80,14 @@ type Deps struct {
 	Registry          *extend.Registry
 	Tools             *tools.Catalogue
 	Notifications     *notify.Service
-	Logger            *slog.Logger
+	// EventBus, EventRegistry, and FlowActions wire structured plugin lifecycle
+	// events and Flows integration (F6): plugins publish schema-validated events
+	// to EventBus, register event schemas in EventRegistry, and contribute Flow
+	// actions to FlowActions.
+	EventBus      *events.Bus
+	EventRegistry *events.Registry
+	FlowActions   flows.ActionRegistry
+	Logger        *slog.Logger
 	// IsLeader reports cluster leadership; nil means always leader.
 	IsLeader func() bool
 	// Bus broadcasts invalidate:plugins; nil disables it.
@@ -126,15 +135,23 @@ type Manager struct {
 	scheduleInFlight map[string]*scheduleFlight
 	scheduleJobs     map[string]*actionJob
 	scheduleWG       sync.WaitGroup
-	// rate-limit bookkeeping for host log and notify
-	notifyTimes map[string][]time.Time
-	logTimes    map[string][]time.Time
+	// rate-limit bookkeeping for host log, notify, and custom event publish
+	notifyTimes       map[string][]time.Time
+	logTimes          map[string][]time.Time
+	eventPublishTimes map[string][]time.Time
+	eventPublishLimit int
+	// eventBridgeMu guards the single events.Bus bridge subscription for plugins.
+	eventBridgeMu  sync.Mutex
+	eventBridgeSub *events.Subscription
 	// healthMu serializes health read-modify-writes so concurrent calls
 	// (resolves on the hot path, scheduled jobs) never lose an update.
 	healthMu sync.Mutex
 	// failing caches which plugins last recorded an error, so a successful
 	// call clears it without a health read on every call (nil = not loaded).
 	failing map[string]bool
+	// degradedSince tracks when a plugin entered an error/attention state
+	// (guarded by healthMu) so recovery reports accurate downtimeMs.
+	degradedSince map[string]time.Time
 	// rankingSkipping caches whether a plugin's ranking step is currently
 	// being left out (Health.RankingSkipped > 0), so a resolve whose
 	// plugins all ranked in time writes nothing (nil = not loaded).
@@ -200,7 +217,9 @@ func New(deps Deps) (*Manager, error) {
 		nextRun:          map[string]time.Time{},
 		scheduleInFlight: map[string]*scheduleFlight{},
 		scheduleJobs:     map[string]*actionJob{},
-		notifyTimes:      map[string][]time.Time{}, logTimes: map[string][]time.Time{},
+		notifyTimes:       map[string][]time.Time{},
+		logTimes:          map[string][]time.Time{},
+		eventPublishTimes: map[string][]time.Time{},
 	}
 	return m, nil
 }
@@ -324,6 +343,21 @@ func (m *Manager) SubscribeInvalidations() func() {
 				}
 			}
 		}
+		reg, actions := m.flowsRegistries()
+		if reg != nil {
+			for _, s := range reg.List() {
+				if s.Owner != "" && s.Owner != events.OwnerBuiltin && !seen[s.Owner] {
+					reg.RemovePlugin(s.Owner)
+				}
+			}
+		}
+		if actions != nil {
+			for _, spec := range actions.List() {
+				if spec.Owner != "" && spec.Owner != events.OwnerBuiltin && !seen[spec.Owner] {
+					actions.RemovePlugin(spec.Owner)
+				}
+			}
+		}
 	})
 }
 
@@ -383,6 +417,7 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 	m.pruneBlockedLocalHosts(id, g.LocalHosts)
 	m.pruneBlockedOperatorHosts(id, g.OperatorHosts)
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncFlowsPlugin(ctx, r)
 	m.closeRuntime(id)
 	m.broadcast(ctx)
 	return nil
@@ -802,7 +837,10 @@ func (m *Manager) recordFailure(ctx context.Context, pluginID, reason string, re
 		m.failing = map[string]bool{}
 	}
 	m.failing[pluginID] = true
+	m.markDegradedSinceLocked(pluginID, now)
 	_ = m.store.putHealth(ctx, pluginID, h)
+	pluginName := m.pluginDisplayName(ctx, pluginID)
+	autoDisabled := false
 	if len(kept) >= 5 {
 		// A Stremio add-on is one of the owner's sources, edited in Studio
 		// or not: an outage backs it off and shows on its health, but never
@@ -816,12 +854,29 @@ func (m *Manager) recordFailure(ctx context.Context, pluginID, reason string, re
 			m.closeRuntime(pluginID)
 			m.syncDescriptors(ctx, r)
 			m.broadcast(ctx)
+			pluginName = r.Name
+			autoDisabled = true
 			msg := "Plugin " + r.Name + " was disabled after repeated failures."
 			m.log.Warn(msg, "plugin", pluginID, "reason", reason)
 			if m.deps.Backends.Notice != nil {
 				m.deps.Backends.Notice(msg)
 			}
 		}
+	}
+	m.emitBusEvent(events.EventPluginHealthDegraded, pluginID, events.PluginHealthDegradedPayload{
+		PluginID:            pluginID,
+		Name:                pluginName,
+		Status:              h.Status,
+		Restarts:            h.Restarts,
+		ConsecutiveFailures: len(kept),
+		LastError:           reason,
+	}, true)
+	if autoDisabled {
+		m.emitBusEvent(events.EventPluginStateDisabled, pluginID, events.PluginStateDisabledPayload{
+			PluginID: pluginID,
+			Name:     pluginName,
+			Reason:   "auto_disabled: " + reason,
+		}, true)
 	}
 }
 
@@ -839,11 +894,23 @@ func (m *Manager) RecordSlow(ctx context.Context, pluginID string, n int) {
 		return
 	}
 	h.Slow += int64(n)
+	becameDegraded := false
 	if h.Status == "ok" {
 		h.Status = "attention"
 		h.Reason = "Recent calls were slow."
+		m.markDegradedSinceLocked(pluginID, m.now())
+		becameDegraded = true
 	}
 	_ = m.store.putHealth(ctx, pluginID, h)
+	if becameDegraded {
+		m.emitBusEvent(events.EventPluginHealthDegraded, pluginID, events.PluginHealthDegradedPayload{
+			PluginID:  pluginID,
+			Name:      m.pluginDisplayName(ctx, pluginID),
+			Status:    h.Status,
+			Restarts:  h.Restarts,
+			LastError: h.Reason,
+		}, false)
+	}
 }
 
 // RankingReport is what one resolve saw of a plugin on the hot path.
@@ -961,13 +1028,23 @@ func (m *Manager) recordOK(ctx context.Context, pluginID string) {
 	if err != nil {
 		return
 	}
+	wasDegraded := h.Status == "error" || h.Status == "attention"
+	now := m.now()
 	okUnlessSkipping(&h)
-	h.LastOK = m.now()
+	h.LastOK = now
 	_ = m.store.putHealth(ctx, pluginID, h)
 	if m.failing == nil {
 		m.failing = map[string]bool{}
 	}
 	m.failing[pluginID] = false
+	if wasDegraded && h.Status == "ok" {
+		downtimeMS := m.clearDegradedSinceLocked(pluginID, now)
+		m.emitBusEvent(events.EventPluginHealthRecovered, pluginID, events.PluginHealthRecoveredPayload{
+			PluginID:   pluginID,
+			Name:       m.pluginDisplayName(ctx, pluginID),
+			DowntimeMS: downtimeMS,
+		}, false)
+	}
 }
 
 // Revoke disables an installed plugin that was marked revoked in the
@@ -1007,6 +1084,11 @@ func (m *Manager) Revoke(ctx context.Context, id, reason string) (bool, error) {
 	if m.deps.Backends.Notice != nil {
 		m.deps.Backends.Notice(msg)
 	}
+	m.emitBusEvent(events.EventPluginStateDisabled, id, events.PluginStateDisabledPayload{
+		PluginID: id,
+		Name:     r.Name,
+		Reason:   "revoked: " + reason,
+	}, true)
 	return true, nil
 }
 
@@ -1039,6 +1121,19 @@ func (m *Manager) SetEnabled(ctx context.Context, id string, enabled bool) error
 	}
 	m.syncDescriptors(ctx, r)
 	m.broadcast(ctx)
+	if enabled {
+		m.emitBusEvent(events.EventPluginStateEnabled, id, events.PluginStateEnabledPayload{
+			PluginID: id,
+			Name:     r.Name,
+			Shadow:   r.Shadow,
+		}, false)
+	} else {
+		m.emitBusEvent(events.EventPluginStateDisabled, id, events.PluginStateDisabledPayload{
+			PluginID: id,
+			Name:     r.Name,
+			Reason:   "owner",
+		}, false)
+	}
 	return nil
 }
 
@@ -1134,6 +1229,13 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	if m.deps.Notifications != nil {
 		m.deps.Notifications.Kinds().RemovePlugin(extend.PluginID(id, "notify"), id)
 	}
+	reg, actions := m.flowsRegistries()
+	if reg != nil {
+		reg.RemovePlugin(id)
+	}
+	if actions != nil {
+		actions.RemovePlugin(id)
+	}
 	m.jobs.Range(func(key, value any) bool {
 		if strings.HasPrefix(key.(string), id+"|") {
 			m.jobs.Delete(key)
@@ -1146,6 +1248,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	m.clearBlockedLocalHosts(id)
 	m.clearBlockedOperatorHosts(id)
 	m.mu.Lock()
+	delete(m.eventPublishTimes, id)
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {
 			delete(m.nextRun, key)
@@ -1167,6 +1270,11 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 		fn(ctx, id)
 	}
 	m.broadcast(ctx)
+	m.emitBusEvent(events.EventPluginPackageRemoved, id, events.PluginPackageRemovedPayload{
+		PluginID: id,
+		Name:     r.Name,
+		Version:  r.Version,
+	}, false)
 	return nil
 }
 

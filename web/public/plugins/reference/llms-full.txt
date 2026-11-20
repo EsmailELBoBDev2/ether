@@ -109,7 +109,8 @@ Capabilities describe what a plugin does; permissions describe which host data i
 | subtitles | Stremio subtitles resource; declared languages and formats |
 | markers | Declared intro, credits, recap or preview marker kinds |
 | notify | Notification metadata; send and send-test handlers |
-| events | Explicit event subscriptions and `/ether/events` |
+| events | Event subscriptions (`POST /ether/event`) and custom published events (`contributes.events.publish`, `ether.events.publish`) |
+| flow_actions | Declared Flow actions (`contributes.flowActions`) invoked via `POST /ether/v1/flow-actions/{key}` with `X-Ether-Idempotency-Key` |
 | ranking_step | Deterministic `rank_key(candidate, config)` |
 | rule_condition | Deterministic `cond_match(candidate, operator, value)` |
 | tools | Declared tool input schema and tool handlers |
@@ -213,15 +214,21 @@ return { status: 200, body: { errors: {} } };
 
 Use `$t:key` labels with `ether.strings` and English fallback strings. Dynamic option fields should answer the SDK's options route. `contributes.setup.steps` groups settings fields and optional test routes. `/ether/v1/setup/{step}/test` receives `{step, fields}` and returns `{ok, detail, fields?}`; secrets stay out of that body. Required steps gate content-library sync and visibility until passed or owner-skipped. See the generated SetupStep and settings accessors for exact shapes.
 
-## Events
+## Events & Flows
 
-Subscribe explicitly with capability `events` and `contributes.events.subscribe`. Handle deliveries at `/ether/events`. The generated event constants below are the supported names; unknown names are rejected, not wildcard subscriptions.
+Subscribe explicitly with capability `events` and `contributes.events.subscribe`, and handle deliveries at `POST /ether/event`. Both the 12 legacy EPP/1 event names and canonical Flows event names are supported; unknown names are rejected.
 
 ```json
-{"capabilities":["events"],"contributes":{"events":{"subscribe":["playback.started"]}}}
+{"capabilities":["events","flow_actions"],"contributes":{"events":{"subscribe":["playback.session.started"],"publish":[{"key":"scene.changed","label":"Scene changed","fields":[{"name":"scene","type":"string","label":"Scene"}]}]},"flowActions":[{"key":"set_scene","label":"Set scene","route":"/ether/v1/flow-actions/set_scene","idempotent":true,"params":[{"key":"scene","type":"string","label":"Scene","required":true}]}]}}
 ```
 
-Keep handlers bounded and idempotent using the event ID. A delivery contains the event name, timestamp, optional viewer identity, and payload. Viewer identity is removed unless the live grants allow it. Enabled subscriptions are indexed; nobody subscribing means no plugin event-log work. Avoid polling playback or scanning the library in response to progress events. Use the generated queue and dispatch code to inspect retry behavior and exact envelopes.
+## Publishing custom events
+Declare schemas under `contributes.events.publish` and emit events via `ether.events.publish(key, payload[, correlation])` (hosted) or `POST /ether/plugin-host/events/publish` (remote). Ether registers each published event as `plugin:<pluginId>/<key>`, validates payloads against the declared schema (max 64 KiB), and rate-limits publishing to 30 events/minute per plugin.
+
+## Contributing Flow actions
+Declare capability `flow_actions` and actions under `contributes.flowActions` with a route under `/ether/` and optional timeout (default 30 s, max 60 s). Ether registers each action as `plugin:<pluginId>/<key>` atomically across install, update, grant changes, and uninstall, and invokes it via `POST` with `X-Ether-Idempotency-Key` and body `{flowId, runId, nodeId, idempotencyKey, dryRun, params}`. Deduplicate side effects with `X-Ether-Idempotency-Key`, honor `dryRun`, and return `{output: {...}, branch?}`.
+
+Keep event and action handlers bounded and idempotent. Viewer identity and secret fields are redacted per live grants. Enabled subscriptions are indexed; nobody subscribing means no plugin outbox work. See the Smart Lights example below.
 
 ## Testing & conformance
 
@@ -2513,6 +2520,17 @@ func (m *Manager) StartExpandJob(pluginID, routePath, dedupKey string, fn func(c
 			reason := m.store.redactKnown(context.Background(), pluginID, err.Error())
 			j.finish(state, reason)
 			m.log.Warn("plugins: expand job", "plugin", pluginID, "job", routePath, "err", reason)
+			if state == "error" {
+				durMS := max(time.Since(started).Milliseconds(), int64(0))
+				m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+					PluginID:   pluginID,
+					Name:       m.pluginDisplayName(context.Background(), pluginID),
+					Job:        routePath,
+					Kind:       "expand",
+					Error:      reason,
+					DurationMS: durMS,
+				}, false)
+			}
 		} else {
 			j.finish("done", "")
 		}
@@ -2649,6 +2667,21 @@ func (m *Manager) startResolverJob(pluginID string, body, initial json.RawMessag
 			reason := m.store.redactKnown(context.Background(), pluginID, err.Error())
 			j.finish(state, reason)
 			m.log.Warn("plugins: action job", "plugin", pluginID, "job", path, "err", reason)
+			if state == "error" {
+				kind := "action"
+				if isResolver {
+					kind = "resolver"
+				}
+				durMS := max(time.Since(j.snapshot().Started).Milliseconds(), int64(0))
+				m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+					PluginID:   pluginID,
+					Name:       m.pluginDisplayName(context.Background(), pluginID),
+					Job:        path,
+					Kind:       kind,
+					Error:      reason,
+					DurationMS: durMS,
+				}, false)
+			}
 		} else {
 			j.finish("done", "")
 		}
@@ -2866,6 +2899,7 @@ const (
 	CapMarkers         Capability = "markers"
 	CapNotify          Capability = "notify"
 	CapEvents          Capability = "events"
+	CapFlowActions     Capability = "flow_actions"
 	CapRankingStep     Capability = "ranking_step"
 	CapRuleCondition   Capability = "rule_condition"
 	CapTools           Capability = "tools"
@@ -3302,6 +3336,7 @@ type PackStyle struct {
 | `markers` | `*MarkersMeta` | may be omitted (see validation for conditions) |  |
 | `notification` | `*NotificationMeta` | may be omitted (see validation for conditions) |  |
 | `events` | `*EventsMeta` | may be omitted (see validation for conditions) |  |
+| `flowActions` | `[]FlowActionMeta` | may be omitted (see validation for conditions) |  |
 | `integration` | `*IntegrationMeta` | may be omitted (see validation for conditions) |  |
 | `listSources` | `[]ListSourceMeta` | may be omitted (see validation for conditions) |  |
 | `rankingSteps` | `[]RankingStepMeta` | may be omitted (see validation for conditions) |  |
@@ -3331,6 +3366,7 @@ type Contributes struct {
 	Markers        *MarkersMeta         `json:"markers,omitempty"`
 	Notification   *NotificationMeta    `json:"notification,omitempty"`
 	Events         *EventsMeta          `json:"events,omitempty"`
+	FlowActions    []FlowActionMeta     `json:"flowActions,omitempty"`
 	Integration    *IntegrationMeta     `json:"integration,omitempty"`
 	ListSources    []ListSourceMeta     `json:"listSources,omitempty"`
 	RankingSteps   []RankingStepMeta    `json:"rankingSteps,omitempty"`
@@ -3469,15 +3505,170 @@ type NotificationMeta struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `subscribe` | `[]string` | emitted (validation may require a value) |  |
+| `subscribe` | `[]string` | may be omitted (see validation for conditions) |  |
+| `publish` | `[]PublishedEventMeta` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: internal/plugins/contract.go#EventsMeta
 
 ``````
-// EventsMeta is mandatory for events.
+// EventsMeta is mandatory for events. Subscribe lists built-in or plugin event
+// names delivered to POST /ether/event; Publish declares custom event schemas
+// the plugin may emit onto Ether's event bus as "plugin:<pluginId>/<key>".
 type EventsMeta struct {
-	Subscribe []string `json:"subscribe"`
+	Subscribe []string             `json:"subscribe,omitempty"`
+	Publish   []PublishedEventMeta `json:"publish,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#EventEnumOption.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `value` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#EventEnumOption
+
+``````
+// EventEnumOption describes one allowed option for an enum event field or flow
+// action parameter.
+type EventEnumOption struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#EventFieldMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `name` | `string` | emitted (validation may require a value) |  |
+| `type` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `unit` | `string` | may be omitted (see validation for conditions) |  |
+| `enum` | `[]EventEnumOption` | may be omitted (see validation for conditions) |  |
+| `pii` | `bool` | may be omitted (see validation for conditions) |  |
+| `secret` | `bool` | may be omitted (see validation for conditions) |  |
+| `filterable` | `bool` | may be omitted (see validation for conditions) |  |
+| `example` | `any` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#EventFieldMeta
+
+``````
+// EventFieldMeta describes one typed field in a published plugin event payload
+// or a flow action output object.
+type EventFieldMeta struct {
+	Name        string            `json:"name"`
+	Type        string            `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	PII         bool              `json:"pii,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Filterable  bool              `json:"filterable,omitempty"`
+	Example     any               `json:"example,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#PublishedEventMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `version` | `int` | may be omitted (see validation for conditions) |  |
+| `fields` | `[]EventFieldMeta` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#PublishedEventMeta
+
+``````
+// PublishedEventMeta declares one custom event type a plugin emits through
+// Host.PublishEvent ("plugin:<pluginId>/<key>").
+type PublishedEventMeta struct {
+	Key         string           `json:"key"`
+	Label       string           `json:"label"`
+	Description string           `json:"description,omitempty"`
+	Version     int              `json:"version,omitempty"`
+	Fields      []EventFieldMeta `json:"fields,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#FlowActionParamMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `type` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `required` | `bool` | may be omitted (see validation for conditions) |  |
+| `secret` | `bool` | may be omitted (see validation for conditions) |  |
+| `template` | `bool` | may be omitted (see validation for conditions) |  |
+| `default` | `any` | may be omitted (see validation for conditions) |  |
+| `enum` | `[]EventEnumOption` | may be omitted (see validation for conditions) |  |
+| `unit` | `string` | may be omitted (see validation for conditions) |  |
+| `picker` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FlowActionParamMeta
+
+``````
+// FlowActionParamMeta describes one configurable parameter of a plugin flow action.
+type FlowActionParamMeta struct {
+	Key         string            `json:"key"`
+	Type        string            `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Required    bool              `json:"required,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Template    bool              `json:"template,omitempty"`
+	Default     any               `json:"default,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Picker      string            `json:"picker,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#FlowActionMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `icon` | `string` | may be omitted (see validation for conditions) |  |
+| `route` | `string` | emitted (validation may require a value) |  |
+| `idempotent` | `bool` | may be omitted (see validation for conditions) |  |
+| `sideEffect` | `*bool` | may be omitted (see validation for conditions) |  |
+| `timeout` | `string` | may be omitted (see validation for conditions) |  |
+| `params` | `[]FlowActionParamMeta` | may be omitted (see validation for conditions) |  |
+| `outputs` | `[]EventFieldMeta` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/contract.go#FlowActionMeta
+
+``````
+// FlowActionMeta declares one Flow action contributed by a plugin
+// ("plugin:<pluginId>/<key>"). Ether invokes Route with HTTP POST and an
+// X-Ether-Idempotency-Key header.
+type FlowActionMeta struct {
+	Key         string                `json:"key"`
+	Label       string                `json:"label"`
+	Description string                `json:"description,omitempty"`
+	Icon        string                `json:"icon,omitempty"`
+	Route       string                `json:"route"`
+	Idempotent  bool                  `json:"idempotent,omitempty"`
+	SideEffect  *bool                 `json:"sideEffect,omitempty"`
+	Timeout     string                `json:"timeout,omitempty"`
+	Params      []FlowActionParamMeta `json:"params,omitempty"`
+	Outputs     []EventFieldMeta      `json:"outputs,omitempty"`
 }
 ``````
 
@@ -4755,6 +4946,12 @@ type Host interface {
 	// Secrets stay behind SecretGet.
 	Settings(ctx context.Context) (map[string]any, error)
 
+	// PublishEvent emits one manifest-declared plugin event onto Ether's event
+	// bus as "plugin:<pluginId>/<key>". Requires the events capability and a
+	// matching entry in contributes.events.publish; payload is schema-validated
+	// and rate-limited.
+	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
+
 	// NotifyOwner posts a console notice (rate-limited).
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
@@ -5053,6 +5250,7 @@ var (
 
 	ErrPermissionDenied = errors.New("plugins: permission denied")
 	ErrQuotaExceeded    = errors.New("plugins: storage quota exceeded")
+	ErrRateLimited      = errors.New("plugins: rate limit exceeded")
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
@@ -5373,6 +5571,7 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncFlowsPlugin(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor
 		if r.Enabled {
@@ -5559,7 +5758,16 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Stores an access token")
 	}
 	if man.HasCapability(CapEvents) {
-		lines = append(lines, "Gets play and new-release events")
+		ev := man.Ether.Contributes.Events
+		if ev == nil || len(ev.Subscribe) > 0 || len(ev.Publish) == 0 {
+			lines = append(lines, "Gets play and new-release events")
+		}
+		if ev != nil && len(ev.Publish) > 0 {
+			lines = append(lines, "Publishes custom events to Flows")
+		}
+	}
+	if man.HasCapability(CapFlowActions) {
+		lines = append(lines, "Adds actions to Flows")
 	}
 	if man.HasCapability(CapPosterBadges) {
 		lines = append(lines, "Adds badges to library posters")
@@ -5659,12 +5867,81 @@ func PermissionDiff(cur, next Manifest) []string {
 		}
 	}
 	if !cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
-		added = append(added, "Gets play and new-release events")
+		ev := next.Ether.Contributes.Events
+		if ev == nil || len(ev.Subscribe) > 0 || len(ev.Publish) == 0 {
+			added = append(added, "Gets play and new-release events")
+		}
+		if ev != nil && len(ev.Publish) > 0 {
+			added = append(added, "Publishes custom events to Flows")
+		}
+	} else if cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
+		curPub := cur.Ether.Contributes.Events != nil && len(cur.Ether.Contributes.Events.Publish) > 0
+		nextPub := next.Ether.Contributes.Events != nil && len(next.Ether.Contributes.Events.Publish) > 0
+		if !curPub && nextPub {
+			added = append(added, "Publishes custom events to Flows")
+		}
+	}
+	if !cur.HasCapability(CapFlowActions) && next.HasCapability(CapFlowActions) {
+		added = append(added, "Adds actions to Flows")
 	}
 	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
 		added = append(added, "Adds badges to library posters")
 	}
 	return added
+}
+``````
+
+## Source: internal/plugins/events.go#LegacyToCanonicalEvent
+
+``````
+// LegacyToCanonicalEvent maps the 12 EPP/1 plugin event names to their
+// canonical domain.noun.verb event types on Ether's event bus.
+var LegacyToCanonicalEvent = map[string]string{
+	EventPlaybackStarted:   "playback.session.started",
+	EventPlaybackPaused:    "playback.session.paused",
+	EventPlaybackResumed:   "playback.session.resumed",
+	EventPlaybackStopped:   "playback.session.stopped",
+	EventPlaybackCompleted: "playback.session.completed",
+	EventPlaybackError:     "playback.session.failed",
+	EventPlaybackFailover:  "playback.source.failover",
+	EventTitleAvailable:    "library.title.available",
+	EventViewerAdded:       "viewer.account.joined",
+	EventViewerAccess:      "viewer.access.changed",
+	EventCollectionRebuilt: "library.collection.rebuilt",
+	EventServerHealth:      "system.health.changed",
+}
+``````
+
+## Source: internal/plugins/events.go#CanonicalToLegacyEvent
+
+``````
+// CanonicalToLegacyEvent maps canonical event types back to the 12 legacy
+// EPP/1 plugin event names so existing plugin subscriptions keep working
+// unchanged through the event bus.
+var CanonicalToLegacyEvent = map[string]string{
+	"playback.session.started":   EventPlaybackStarted,
+	"playback.session.paused":    EventPlaybackPaused,
+	"playback.session.resumed":   EventPlaybackResumed,
+	"playback.session.stopped":   EventPlaybackStopped,
+	"playback.session.completed": EventPlaybackCompleted,
+	"playback.session.failed":    EventPlaybackError,
+	"playback.source.failover":   EventPlaybackFailover,
+	"library.title.available":    EventTitleAvailable,
+	"viewer.account.joined":      EventViewerAdded,
+	"viewer.access.changed":      EventViewerAccess,
+	"library.collection.rebuilt": EventCollectionRebuilt,
+	"system.health.changed":      EventServerHealth,
+}
+``````
+
+## Source: internal/plugins/events.go#IsSubscribableEvent
+
+``````
+// IsSubscribableEvent reports whether name is either one of the 12 legacy
+// EPP/1 event names or a valid canonical event type ("domain.noun.verb" or
+// "plugin:<pluginId>/<key>").
+func IsSubscribableEvent(name string) bool {
+	return KnownEvents[name] || events.ValidateType(name) == nil
 }
 ``````
 
@@ -5684,19 +5961,17 @@ func newEventID() string {
 // Publish normalizes and fans out one Ether event: it is written to the
 // 7-day event log and queued for every enabled plugin that subscribed to
 // it (and was not revoked). Viewer identity is stripped per plugin unless
-// the plugin's grants allow it.
+// the plugin's grants allow it. Both legacy EPP/1 names and canonical
+// domain.noun.verb names are accepted and bridged to matching subscribers.
 func (m *Manager) Publish(ctx context.Context, ev Event) {
-	if !KnownEvents[ev.Name] {
+	if !IsSubscribableEvent(ev.Name) {
 		return
 	}
-	m.mu.Lock()
-	recs := make([]Record, 0, len(m.eventSubs[ev.Name]))
-	for _, r := range m.eventSubs[ev.Name] {
-		recs = append(recs, r)
-	}
-	m.mu.Unlock()
-	if len(recs) == 0 {
-		return
+	names := []string{ev.Name}
+	if canonical, ok := LegacyToCanonicalEvent[ev.Name]; ok {
+		names = append(names, canonical)
+	} else if legacy, ok := CanonicalToLegacyEvent[ev.Name]; ok {
+		names = append(names, legacy)
 	}
 	if ev.ID == "" {
 		ev.ID = newEventID()
@@ -5704,16 +5979,138 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 	if ev.At.IsZero() {
 		ev.At = m.now()
 	}
+	canonicalType := ev.Name
+	if c, ok := LegacyToCanonicalEvent[ev.Name]; ok {
+		canonicalType = c
+	}
+	m.fanOutEvent(ctx, canonicalType, names, ev)
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.StartEventBridge
+
+``````
+// StartEventBridge subscribes the plugin host to Ether's events.Bus so plugins
+// receive both canonical event types and translated legacy 12 event names
+// without blocking publishers. Safe to call multiple times; returns a function
+// that detaches the bridge subscription.
+func (m *Manager) StartEventBridge(ctx context.Context) func() {
+	bus := m.flowsEventBus()
+	if bus == nil {
+		return func() {}
+	}
+	m.eventBridgeMu.Lock()
+	if m.eventBridgeSub != nil {
+		m.eventBridgeMu.Unlock()
+		return func() {}
+	}
+	sub := bus.SubscribeFunc(ctx, events.SubscriptionOptions{
+		Name:   "plugins.bridge",
+		Buffer: events.DefaultSubscriberBuffer,
+	}, m.HandleBusEvent)
+	m.eventBridgeSub = sub
+	m.eventBridgeMu.Unlock()
+	return func() {
+		m.eventBridgeMu.Lock()
+		if m.eventBridgeSub == sub {
+			m.eventBridgeSub = nil
+		}
+		m.eventBridgeMu.Unlock()
+		sub.Unsubscribe()
+	}
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.HandleBusEvent
+
+``````
+// HandleBusEvent delivers one events.Bus envelope to any enabled plugin
+// subscribed to its canonical type or mapped legacy EPP/1 event name.
+// When no plugin subscribes to either name it does zero database work.
+func (m *Manager) HandleBusEvent(ctx context.Context, env events.Envelope) {
+	if env.Meta.DryRun || env.Type == "" {
+		return
+	}
+	names := []string{env.Type}
+	if legacy, ok := CanonicalToLegacyEvent[env.Type]; ok {
+		names = append(names, legacy)
+	}
+	viewerID := env.Correlation.ViewerID
+	if viewerID == 0 {
+		viewerID = viewerIDFromPayload(env.Payload)
+	}
+	at := env.OccurredAt
+	if at.IsZero() {
+		at = m.now()
+	}
+	id := env.ID
+	if id == "" {
+		id = newEventID()
+	}
+	payload := env.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	m.fanOutEvent(ctx, env.Type, names, Event{
+		ID:       id,
+		Name:     env.Type,
+		At:       at,
+		ViewerID: viewerID,
+		Payload:  payload,
+	})
+}
+``````
+
+## Source: internal/plugins/events.go#eventDeliveryTarget.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/events.go#eventDeliveryTarget
+
+``````
+type eventDeliveryTarget struct {
+	rec  Record
+	name string
+}
+``````
+
+## Source: internal/plugins/events.go#*Manager.fanOutEvent
+
+``````
+func (m *Manager) fanOutEvent(ctx context.Context, canonicalType string, names []string, base Event) {
+	m.mu.Lock()
+	var targets []eventDeliveryTarget
+	for _, name := range names {
+		for _, r := range m.eventSubs[name] {
+			targets = append(targets, eventDeliveryTarget{rec: r, name: name})
+		}
+	}
+	m.mu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+
+	reg, _ := m.flowsRegistries()
+	var schema events.EventSchema
+	hasSchema := false
+	if reg != nil && canonicalType != "" {
+		schema, hasSchema = reg.Get(canonicalType)
+	}
+
 	logged := false
-	for _, r := range recs {
+	for _, target := range targets {
+		r := target.rec
 		if !r.Enabled || r.Manifest.Ether == nil || !r.Manifest.HasCapability(CapEvents) {
 			continue
 		}
 		sub := false
 		if evMeta := r.Manifest.Ether.Contributes.Events; evMeta != nil {
 			for _, n := range evMeta.Subscribe {
-				if n == ev.Name {
+				if n == target.name {
 					sub = true
+					break
 				}
 			}
 		}
@@ -5724,15 +6121,17 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 		if err != nil || g.revoked("events") {
 			continue
 		}
+		out := base
+		out.Name = target.name
 		if !logged {
-			m.store.logEvent(ctx, ev)
+			m.store.logEvent(ctx, out)
 			logged = true
 		}
-		out := ev
-		if !viewerOK(g, normLevel(r.Manifest.Ether.Permissions.Viewers.Identity), ev.ViewerID) {
+		allowViewer := viewerOK(g, normLevel(r.Manifest.Ether.Permissions.Viewers.Identity), base.ViewerID)
+		if !allowViewer {
 			out.ViewerID = 0
-			out.Payload = stripViewer(out.Payload)
 		}
+		out.Payload = sanitizePluginEventPayload(out.Payload, schema, hasSchema, allowViewer)
 		dropped, err := m.store.enqueue(ctx, r.ID, out)
 		if err == nil && dropped > 0 {
 			m.healthMu.Lock()
@@ -5741,8 +6140,62 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 				_ = m.store.putHealth(ctx, r.ID, h)
 			}
 			m.healthMu.Unlock()
+			m.emitBusEvent(events.EventPluginQuotaExceeded, r.ID, events.PluginQuotaExceededPayload{
+				PluginID:  r.ID,
+				Name:      r.Name,
+				QuotaKind: "events_outbox",
+				Used:      int64(OutboxCap),
+				Limit:     int64(OutboxCap),
+				Drops:     int64(dropped),
+			}, false)
 		}
 	}
+}
+``````
+
+## Source: internal/plugins/events.go#sanitizePluginEventPayload
+
+``````
+func sanitizePluginEventPayload(raw json.RawMessage, schema events.EventSchema, hasSchema, allowViewer bool) json.RawMessage {
+	payload := raw
+	if hasSchema && len(payload) > 0 {
+		if m, err := (events.Envelope{Payload: payload}).PayloadMap(); err == nil {
+			redacted := schema.Redact(m, events.RedactOptions{StripPII: !allowViewer})
+			if b, err := json.Marshal(redacted); err == nil {
+				payload = b
+			}
+		}
+	}
+	if !allowViewer {
+		payload = stripViewer(payload)
+	}
+	return payload
+}
+``````
+
+## Source: internal/plugins/events.go#viewerIDFromPayload
+
+``````
+func viewerIDFromPayload(raw json.RawMessage) int64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var doc struct {
+		ViewerID int64 `json:"viewerId"`
+		Viewer   *struct {
+			ID int64 `json:"id"`
+		} `json:"viewer"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return 0
+	}
+	if doc.ViewerID > 0 {
+		return doc.ViewerID
+	}
+	if doc.Viewer != nil && doc.Viewer.ID > 0 {
+		return doc.Viewer.ID
+	}
+	return 0
 }
 ``````
 
@@ -5760,7 +6213,7 @@ func (m *Manager) indexEventSubscriptions(r Record) {
 		return
 	}
 	for _, name := range r.Manifest.Ether.Contributes.Events.Subscribe {
-		if !KnownEvents[name] {
+		if !IsSubscribableEvent(name) {
 			continue
 		}
 		if m.eventSubs[name] == nil {
@@ -5965,6 +6418,7 @@ func (m *Manager) scheduleBusyLocked(pluginID, callPath string) bool {
 func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, pluginID, callPath, key string) {
 	defer m.scheduleWG.Done()
 	defer flight.cancel()
+	startedAt := m.now()
 	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
 	var started *actionJob
 	var startErr error
@@ -5995,6 +6449,26 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	if startErr != nil {
 		m.log.Warn("plugin schedule: start job", "plugin", pluginID, "call", callPath, "err", startErr)
 	}
+	var jobErr string
+	switch {
+	case err != nil && ctx.Err() == nil:
+		jobErr = err.Error()
+	case startErr != nil:
+		jobErr = startErr.Error()
+	case err == nil && resp.Status >= 400:
+		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+	}
+	if jobErr != "" {
+		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))
+		m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+			PluginID:   pluginID,
+			Name:       m.pluginDisplayName(context.Background(), pluginID),
+			Job:        callPath,
+			Kind:       "scheduled",
+			Error:      jobErr,
+			DurationMS: durMS,
+		}, false)
+	}
 }
 ``````
 
@@ -6002,6 +6476,8 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 
 ``````
 func (m *Manager) Run(ctx context.Context) {
+	stopBridge := m.StartEventBridge(ctx)
+	defer stopBridge()
 	defer m.scheduleWG.Wait()
 	defer m.cancelActionJobs("")
 	defer m.cancelRemoteHashes("")
@@ -6473,10 +6949,22 @@ func (h *host) KVGet(ctx context.Context, key string) ([]byte, bool, error) {
 
 ``````
 func (h *host) KVPut(ctx context.Context, key string, value []byte) error {
-	if _, _, err := h.record(ctx); err != nil {
+	r, _, err := h.record(ctx)
+	if err != nil {
 		return err
 	}
-	return h.m.store.kvPut(ctx, h.plugin, key, value)
+	err = h.m.store.kvPut(ctx, h.plugin, key, value)
+	if errors.Is(err, ErrQuotaExceeded) {
+		usage, _ := h.m.store.kvUsage(ctx, h.plugin)
+		h.m.emitBusEvent(events.EventPluginQuotaExceeded, h.plugin, events.PluginQuotaExceededPayload{
+			PluginID:  h.plugin,
+			Name:      r.Name,
+			QuotaKind: "kv",
+			Used:      usage.Bytes,
+			Limit:     KVQuotaBytes,
+		}, false)
+	}
+	return err
 }
 ``````
 
@@ -8338,7 +8826,19 @@ func (h *host) BadgesSet(ctx context.Context, setKey string, entries []BadgeEntr
 		}
 	}
 
-	return h.m.store.badgesSet(ctx, h.plugin, setKey, writes, hasUpsert, h.m.badgeTitleQuota())
+	quota := h.m.badgeTitleQuota()
+	err = h.m.store.badgesSet(ctx, h.plugin, setKey, writes, hasUpsert, quota)
+	if errors.Is(err, ErrQuotaExceeded) {
+		used, _ := h.m.store.badgesTitleCount(ctx, h.plugin)
+		h.m.emitBusEvent(events.EventPluginQuotaExceeded, h.plugin, events.PluginQuotaExceededPayload{
+			PluginID:  h.plugin,
+			Name:      r.Name,
+			QuotaKind: "badges",
+			Used:      used,
+			Limit:     quota,
+		}, false)
+	}
+	return err
 }
 ``````
 
@@ -9489,6 +9989,785 @@ func defaultDataLimits() RuntimeLimits {
 		Deadline:             "12h",
 		PoolSize:             wasm.DefaultPoolSize,
 	}
+}
+``````
+
+## Source: internal/plugins/host_flows.go#DefaultEventPublishPerMin
+
+``````
+const (
+	// DefaultEventPublishPerMin bounds custom events published per plugin per minute.
+	DefaultEventPublishPerMin = 30
+	// MaxPublishedEventPayloadBytes caps the JSON payload size of a plugin-published event.
+	MaxPublishedEventPayloadBytes = 64 * 1024
+	// DefaultPluginFlowActionTimeout is applied when a flow action omits timeout.
+	DefaultPluginFlowActionTimeout = 30 * time.Second
+	// MaxPluginFlowActionTimeout is the hard ceiling for any plugin flow action.
+	MaxPluginFlowActionTimeout = 60 * time.Second
+	// MaxPluginFlowActionResponseBytes caps a plugin flow action JSON response body.
+	MaxPluginFlowActionResponseBytes = 64 * 1024
+	// MaxPluginPublishedEvents caps how many published event schemas a plugin may declare.
+	MaxPluginPublishedEvents = 64
+	// MaxPluginFlowActions caps how many flow actions a plugin may declare.
+	MaxPluginFlowActions = 64
+	// MaxEventFields caps how many fields an event schema or action output may declare.
+	MaxEventFields = 64
+	// MaxFlowActionParams caps how many parameters a flow action may declare.
+	MaxFlowActionParams = 64
+	// HeaderIdempotencyKey carries the Flow step idempotency key on plugin action calls.
+	HeaderIdempotencyKey = "X-Ether-Idempotency-Key"
+)
+``````
+
+## Source: internal/plugins/host_flows.go#flowActionOrigin.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_flows.go#flowActionOrigin
+
+``````
+type flowActionOrigin struct {
+	depth       int
+	originRunID string
+}
+``````
+
+## Source: internal/plugins/host_flows.go#flowActionOriginKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_flows.go#flowActionOriginKey
+
+``````
+type flowActionOriginKey struct{}
+``````
+
+## Source: internal/plugins/host_flows.go#withFlowActionOrigin
+
+``````
+func withFlowActionOrigin(ctx context.Context, depth int, originRunID string) context.Context {
+	return context.WithValue(ctx, flowActionOriginKey{}, flowActionOrigin{
+		depth:       depth,
+		originRunID: originRunID,
+	})
+}
+``````
+
+## Source: internal/plugins/host_flows.go#flowActionOriginFromContext
+
+``````
+func flowActionOriginFromContext(ctx context.Context) (flowActionOrigin, bool) {
+	if ctx == nil {
+		return flowActionOrigin{}, false
+	}
+	v, ok := ctx.Value(flowActionOriginKey{}).(flowActionOrigin)
+	return v, ok
+}
+``````
+
+## Source: internal/plugins/host_flows.go#isSafePluginRoute
+
+``````
+func isSafePluginRoute(p string) bool {
+	if p == "" || len(p) > 256 {
+		return false
+	}
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
+		return false
+	}
+	if strings.ContainsAny(p, "\r\n\\") || strings.Contains(p, "://") {
+		return false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.SetFlowsBackends
+
+``````
+// SetFlowsBackends wires the Events bus, Events schema registry, and Flows
+// action registry after Manager construction and immediately registers all
+// currently installed enabled plugins' events and actions.
+func (m *Manager) SetFlowsBackends(bus *events.Bus, reg *events.Registry, actions flows.ActionRegistry) {
+	m.mu.Lock()
+	m.deps.EventBus = bus
+	m.deps.EventRegistry = reg
+	m.deps.FlowActions = actions
+	m.mu.Unlock()
+
+	if reg == nil && actions == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if recs, err := m.store.list(ctx); err == nil {
+		for _, r := range recs {
+			m.syncFlowsPlugin(ctx, r)
+		}
+	}
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.flowsEventBus
+
+``````
+func (m *Manager) flowsEventBus() *events.Bus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deps.EventBus
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.flowsRegistries
+
+``````
+func (m *Manager) flowsRegistries() (*events.Registry, flows.ActionRegistry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deps.EventRegistry, m.deps.FlowActions
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.resolvePluginCopy
+
+``````
+func (m *Manager) resolvePluginCopy(ctx context.Context, pluginID, raw, fallback string) string {
+	if strings.HasPrefix(raw, "$t:") {
+		if resolved, ok := m.ResolveText(ctx, pluginID, strings.TrimPrefix(raw, "$t:"), "en"); ok && strings.TrimSpace(resolved) != "" {
+			return resolved
+		}
+		if fallback != "" {
+			return fallback
+		}
+		return strings.TrimPrefix(raw, "$t:")
+	}
+	if strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	return raw
+}
+``````
+
+## Source: internal/plugins/host_flows.go#defaultCopyResolver
+
+``````
+func defaultCopyResolver(raw, fallback string) string {
+	if strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	return raw
+}
+``````
+
+## Source: internal/plugins/host_flows.go#convertEventEnums
+
+``````
+func convertEventEnums(opts []EventEnumOption, resolve func(raw, fallback string) string) []events.EnumOption {
+	if len(opts) == 0 {
+		return nil
+	}
+	if resolve == nil {
+		resolve = defaultCopyResolver
+	}
+	out := make([]events.EnumOption, len(opts))
+	for i, opt := range opts {
+		lbl := opt.Label
+		if lbl != "" {
+			lbl = resolve(lbl, opt.Value)
+		}
+		out[i] = events.EnumOption{
+			Value: opt.Value,
+			Label: lbl,
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/host_flows.go#convertEventFields
+
+``````
+func convertEventFields(fields []EventFieldMeta, resolve func(raw, fallback string) string) []events.FieldSchema {
+	if len(fields) == 0 {
+		return nil
+	}
+	if resolve == nil {
+		resolve = defaultCopyResolver
+	}
+	out := make([]events.FieldSchema, len(fields))
+	for i, f := range fields {
+		out[i] = events.FieldSchema{
+			Name:        f.Name,
+			Type:        events.FieldType(f.Type),
+			Label:       resolve(f.Label, f.Name),
+			Description: resolve(f.Description, ""),
+			Unit:        f.Unit,
+			Enum:        convertEventEnums(f.Enum, resolve),
+			PII:         f.PII,
+			Secret:      f.Secret,
+			Filterable:  f.Filterable,
+			Example:     f.Example,
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/host_flows.go#BuildPluginEventSchemas
+
+``````
+// BuildPluginEventSchemas builds the events.EventSchema entries contributed by
+// man for pluginID. resolve may be nil to keep literal labels.
+func BuildPluginEventSchemas(pluginID string, man Manifest, resolve func(raw, fallback string) string) []events.EventSchema {
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || !man.HasCapability(CapEvents) || man.Ether.Contributes.Events == nil {
+		return nil
+	}
+	decls := man.Ether.Contributes.Events.Publish
+	if len(decls) == 0 {
+		return nil
+	}
+	if resolve == nil {
+		resolve = func(raw, fallback string) string {
+			if strings.TrimSpace(raw) == "" {
+				return fallback
+			}
+			return raw
+		}
+	}
+	out := make([]events.EventSchema, 0, len(decls))
+	for _, pe := range decls {
+		ver := pe.Version
+		if ver <= 0 {
+			ver = 1
+		}
+		out = append(out, events.EventSchema{
+			Type:        events.PluginEventType(pluginID, pe.Key),
+			Version:     ver,
+			Domain:      events.PluginPrefix + pluginID,
+			Label:       resolve(pe.Label, pe.Key),
+			Description: resolve(pe.Description, ""),
+			Owner:       pluginID,
+			Fields:      convertEventFields(pe.Fields, resolve),
+		})
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/host_flows.go#BuildPluginActionSpec
+
+``````
+// BuildPluginActionSpec builds the flows.ActionSpec for one manifest-declared
+// plugin flow action.
+func BuildPluginActionSpec(pluginID, group string, act FlowActionMeta, resolve func(raw, fallback string) string) flows.ActionSpec {
+	if resolve == nil {
+		resolve = func(raw, fallback string) string {
+			if strings.TrimSpace(raw) == "" {
+				return fallback
+			}
+			return raw
+		}
+	}
+	params := make([]flows.ParamSchema, len(act.Params))
+	for i, p := range act.Params {
+		params[i] = flows.ParamSchema{
+			Key:         p.Key,
+			Type:        events.FieldType(p.Type),
+			Label:       resolve(p.Label, p.Key),
+			Description: resolve(p.Description, ""),
+			Required:    p.Required,
+			Secret:      p.Secret,
+			Template:    p.Template,
+			Default:     p.Default,
+			Enum:        convertEventEnums(p.Enum, resolve),
+			Unit:        p.Unit,
+			Picker:      p.Picker,
+		}
+	}
+	sideEffect := true
+	if act.SideEffect != nil {
+		sideEffect = *act.SideEffect
+	}
+	if group == "" {
+		group = pluginID
+	}
+	return flows.ActionSpec{
+		Type:        flows.PluginActionType(pluginID, act.Key),
+		Owner:       pluginID,
+		Group:       group,
+		Label:       resolve(act.Label, act.Key),
+		Description: resolve(act.Description, ""),
+		Icon:        act.Icon,
+		Idempotent:  act.Idempotent,
+		SideEffect:  sideEffect,
+		Params:      params,
+		Outputs:     convertEventFields(act.Outputs, resolve),
+	}
+}
+``````
+
+## Source: internal/plugins/host_flows.go#ValidatePublishEventCall
+
+``````
+// ValidatePublishEventCall verifies capability, declared key, payload size,
+// and payload schema against man. Exported for conformance kit and Studio sandboxes.
+func ValidatePublishEventCall(man Manifest, key string, payload json.RawMessage) (PublishedEventMeta, events.EventSchema, error) {
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || !man.HasCapability(CapEvents) {
+		return PublishedEventMeta{}, events.EventSchema{}, fmt.Errorf("%w: %s", ErrPermissionDenied, CapEvents)
+	}
+	if !pluginEventKeyRe.MatchString(key) {
+		return PublishedEventMeta{}, events.EventSchema{}, &ValidationError{Fields: []FieldError{{
+			Field:   "key",
+			Message: "must match ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$",
+		}}}
+	}
+	var decl *PublishedEventMeta
+	if man.Ether.Contributes.Events != nil {
+		for i := range man.Ether.Contributes.Events.Publish {
+			if man.Ether.Contributes.Events.Publish[i].Key == key {
+				decl = &man.Ether.Contributes.Events.Publish[i]
+				break
+			}
+		}
+	}
+	if decl == nil {
+		return PublishedEventMeta{}, events.EventSchema{}, &ValidationError{Fields: []FieldError{{
+			Field:   "key",
+			Message: fmt.Sprintf("event %q is not declared in ether.contributes.events.publish", key),
+		}}}
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		trimmed = json.RawMessage(`{}`)
+	}
+	if len(trimmed) > MaxPublishedEventPayloadBytes {
+		return PublishedEventMeta{}, events.EventSchema{}, &ValidationError{Fields: []FieldError{{
+			Field:   "payload",
+			Message: fmt.Sprintf("exceeds %d byte limit", MaxPublishedEventPayloadBytes),
+		}}}
+	}
+	pid := man.ID
+	if !idRe.MatchString(pid) {
+		pid = "dev.example.plugin"
+	}
+	ver := decl.Version
+	if ver <= 0 {
+		ver = 1
+	}
+	schema := events.EventSchema{
+		Type:        events.PluginEventType(pid, decl.Key),
+		Version:     ver,
+		Domain:      events.PluginPrefix + pid,
+		Label:       decl.Label,
+		Description: decl.Description,
+		Owner:       pid,
+		Fields:      convertEventFields(decl.Fields, nil),
+	}
+	if strings.TrimSpace(schema.Label) == "" {
+		schema.Label = decl.Key
+	}
+	reg := events.NewRegistry()
+	if err := reg.Register(schema); err != nil {
+		return PublishedEventMeta{}, events.EventSchema{}, &ValidationError{Fields: []FieldError{{
+			Field:   "schema",
+			Message: err.Error(),
+		}}}
+	}
+	if err := reg.ValidatePayload(schema.Type, trimmed); err != nil {
+		return PublishedEventMeta{}, events.EventSchema{}, &ValidationError{Fields: []FieldError{{
+			Field:   "payload",
+			Message: err.Error(),
+		}}}
+	}
+	return *decl, schema, nil
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.syncFlowsPlugin
+
+``````
+// syncFlowsPlugin atomically replaces or removes a plugin's published event
+// schemas and flow action handlers in the wired registries.
+func (m *Manager) syncFlowsPlugin(ctx context.Context, r Record) {
+	reg, actions := m.flowsRegistries()
+	if reg == nil && actions == nil {
+		return
+	}
+	man := r.Manifest
+	man.Ether = man.EffectiveEther()
+	var g Grants
+	if m.store != nil {
+		if loaded, err := m.store.grants(ctx, r.ID); err == nil {
+			g = loaded
+		}
+	}
+	resolve := func(raw, fallback string) string {
+		return m.resolvePluginCopy(ctx, r.ID, raw, fallback)
+	}
+
+	if reg != nil {
+		if !r.Enabled || man.Ether == nil || !man.HasCapability(CapEvents) || g.revoked(string(CapEvents)) {
+			reg.RemovePlugin(r.ID)
+		} else {
+			schemas := BuildPluginEventSchemas(r.ID, man, resolve)
+			if len(schemas) == 0 {
+				reg.RemovePlugin(r.ID)
+			} else if err := reg.ReplacePlugin(r.ID, schemas); err != nil {
+				m.log.Warn("plugins: event schema sync", "plugin", r.ID, "err", err)
+			}
+		}
+	}
+
+	if actions != nil {
+		if !r.Enabled || man.Ether == nil || !man.HasCapability(CapFlowActions) || g.revoked(string(CapFlowActions)) {
+			actions.RemovePlugin(r.ID)
+		} else if len(man.Ether.Contributes.FlowActions) == 0 {
+			actions.RemovePlugin(r.ID)
+		} else {
+			handlers := make([]flows.ActionHandler, 0, len(man.Ether.Contributes.FlowActions))
+			for _, act := range man.Ether.Contributes.FlowActions {
+				handlers = append(handlers, m.pluginFlowActionHandler(r, act, resolve))
+			}
+			if err := actions.ReplacePlugin(r.ID, handlers); err != nil {
+				m.log.Warn("plugins: flow action sync", "plugin", r.ID, "err", err)
+			}
+		}
+	}
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.pluginFlowActionHandler
+
+``````
+func (m *Manager) pluginFlowActionHandler(r Record, act FlowActionMeta, resolve func(raw, fallback string) string) flows.ActionHandler {
+	pluginID := r.ID
+	spec := BuildPluginActionSpec(pluginID, r.Name, act, resolve)
+	timeout := DefaultPluginFlowActionTimeout
+	if act.Timeout != "" {
+		if d, err := time.ParseDuration(act.Timeout); err == nil && d > 0 {
+			timeout = d
+		}
+	}
+	if timeout > MaxPluginFlowActionTimeout {
+		timeout = MaxPluginFlowActionTimeout
+	}
+	secretOutputs := map[string]bool{}
+	for _, out := range act.Outputs {
+		if out.Secret {
+			secretOutputs[out.Name] = true
+		}
+	}
+
+	return flows.ActionFunc{
+		ActionSpec: spec,
+		Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+			live, err := m.store.record(ctx, pluginID)
+			if err != nil {
+				return flows.ActionResult{}, err
+			}
+			if !live.Enabled {
+				return flows.ActionResult{}, ErrDisabled
+			}
+			man := live.Manifest
+			man.Ether = man.EffectiveEther()
+			g, err := m.store.grants(ctx, pluginID)
+			if err != nil {
+				return flows.ActionResult{}, err
+			}
+			if g.revoked(string(CapFlowActions)) || man.Ether == nil || !man.HasCapability(CapFlowActions) {
+				(&host{m: m, plugin: pluginID}).noteDenied(string(CapFlowActions))
+				return flows.ActionResult{}, fmt.Errorf("%w: %s", ErrPermissionDenied, CapFlowActions)
+			}
+
+			route := ""
+			for _, declared := range man.Ether.Contributes.FlowActions {
+				if declared.Key == act.Key {
+					route = declared.Route
+					break
+				}
+			}
+			if route == "" {
+				return flows.ActionResult{}, fmt.Errorf("%w: flow action %q is no longer declared", ErrNotFound, act.Key)
+			}
+
+			if params == nil {
+				params = map[string]any{}
+			}
+			reqPayload := map[string]any{
+				"flowId":         actx.FlowID,
+				"runId":          actx.RunID,
+				"nodeId":         actx.NodeID,
+				"idempotencyKey": actx.IdempotencyKey,
+				"dryRun":         actx.DryRun,
+				"params":         params,
+			}
+
+			if live.Shadow {
+				inv, _ := json.Marshal(reqPayload)
+				invRedacted := m.store.redactKnown(ctx, pluginID, redactJSON(inv))
+				_, _ = m.store.journal(ctx, JournalEntry{
+					Plugin:  pluginID,
+					Op:      "flow_action",
+					Detail:  act.Key,
+					Shadow:  true,
+					Inverse: json.RawMessage(invRedacted),
+				})
+				return flows.ActionResult{
+					Output: map[string]any{
+						"shadow": true,
+						"action": spec.Type,
+					},
+				}, nil
+			}
+
+			body, err := json.Marshal(reqPayload)
+			if err != nil {
+				return flows.ActionResult{}, fmt.Errorf("plugins: marshal flow action request: %w", err)
+			}
+			headers := map[string]string{}
+			if actx.IdempotencyKey != "" {
+				headers[HeaderIdempotencyKey] = actx.IdempotencyKey
+			}
+
+			callCtx, cancel := context.WithTimeout(withFlowActionOrigin(ctx, actx.FlowDepth+1, actx.RunID), timeout)
+			defer cancel()
+
+			resp, err := m.Call(callCtx, pluginID, Request{
+				Method:  http.MethodPost,
+				Path:    route,
+				Headers: headers,
+				Body:    body,
+			})
+			if err != nil {
+				return flows.ActionResult{}, err
+			}
+			if resp.Status < 200 || resp.Status >= 300 {
+				return flows.ActionResult{}, m.formatActionError(ctx, pluginID, act.Key, resp)
+			}
+			if len(resp.Body) > MaxPluginFlowActionResponseBytes {
+				return flows.ActionResult{}, fmt.Errorf("plugins: flow action %s response exceeds %d byte limit", spec.Type, MaxPluginFlowActionResponseBytes)
+			}
+			return m.decodeActionResult(ctx, pluginID, resp.Body, secretOutputs)
+		},
+	}
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.formatActionError
+
+``````
+func (m *Manager) formatActionError(ctx context.Context, pluginID, actionKey string, resp Response) error {
+	msg := ""
+	raw := unwrapJSONStringBody(resp.Body)
+	if len(raw) > 0 {
+		var env struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(raw, &env) == nil {
+			switch {
+			case env.Error.Message != "":
+				msg = env.Error.Message
+			case env.Message != "":
+				msg = env.Message
+			}
+		}
+	}
+	if msg != "" {
+		msg = logredact.String(m.store.redactKnown(ctx, pluginID, msg))
+		return fmt.Errorf("plugins: flow action %s/%s failed with status %d: %s", pluginID, actionKey, resp.Status, truncate(msg, 240))
+	}
+	return fmt.Errorf("plugins: flow action %s/%s failed with status %d", pluginID, actionKey, resp.Status)
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*Manager.decodeActionResult
+
+``````
+func (m *Manager) decodeActionResult(ctx context.Context, pluginID string, raw json.RawMessage, secretOutputs map[string]bool) (flows.ActionResult, error) {
+	body := unwrapJSONStringBody(raw)
+	if len(body) == 0 {
+		return flows.ActionResult{Output: map[string]any{}}, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return flows.ActionResult{}, fmt.Errorf("plugins: flow action returned invalid JSON object: %w", err)
+	}
+	if doc == nil {
+		return flows.ActionResult{Output: map[string]any{}}, nil
+	}
+
+	var res flows.ActionResult
+	if branch, ok := doc["branch"].(string); ok {
+		res.Branch = branch
+	}
+	if inner, ok := doc["output"].(map[string]any); ok {
+		res.Output = inner
+	} else {
+		res.Output = doc
+	}
+	if res.Output == nil {
+		res.Output = map[string]any{}
+	}
+
+	encoded, err := json.Marshal(res.Output)
+	if err != nil {
+		return flows.ActionResult{}, fmt.Errorf("plugins: flow action output could not be encoded: %w", err)
+	}
+	clean := m.store.redactKnown(ctx, pluginID, string(encoded))
+	if err := json.Unmarshal([]byte(clean), &res.Output); err != nil {
+		return flows.ActionResult{}, fmt.Errorf("plugins: flow action output could not be safely decoded: %w", err)
+	}
+	redactValue(res.Output)
+	for field := range secretOutputs {
+		maskNestedField(res.Output, field)
+	}
+	return res, nil
+}
+``````
+
+## Source: internal/plugins/host_flows.go#unwrapJSONStringBody
+
+``````
+func unwrapJSONStringBody(raw json.RawMessage) []byte {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if json.Unmarshal(trimmed, &s) == nil {
+			return bytes.TrimSpace([]byte(s))
+		}
+	}
+	return trimmed
+}
+``````
+
+## Source: internal/plugins/host_flows.go#maskNestedField
+
+``````
+func maskNestedField(doc map[string]any, path string) {
+	if doc == nil || path == "" {
+		return
+	}
+	parts := strings.Split(path, ".")
+	cur := doc
+	for i := 0; i < len(parts)-1; i++ {
+		next, ok := cur[parts[i]].(map[string]any)
+		if !ok {
+			return
+		}
+		cur = next
+	}
+	last := parts[len(parts)-1]
+	if _, exists := cur[last]; exists {
+		cur[last] = events.RedactedValue
+	}
+}
+``````
+
+## Source: internal/plugins/host_flows.go#*host.PublishEvent
+
+``````
+// PublishEvent emits a declared plugin event onto Ether's event bus.
+func (h *host) PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	r, g, err := h.record(ctx)
+	if err != nil {
+		return err
+	}
+	man := r.Manifest
+	man.Ether = man.EffectiveEther()
+	if g.revoked(string(CapEvents)) || man.Ether == nil || !man.HasCapability(CapEvents) {
+		h.noteDenied(string(CapEvents))
+		return fmt.Errorf("%w: %s", ErrPermissionDenied, CapEvents)
+	}
+
+	_, schema, err := ValidatePublishEventCall(man, key, payload)
+	if err != nil {
+		if errors.Is(err, ErrPermissionDenied) {
+			h.noteDenied(string(CapEvents))
+		}
+		return err
+	}
+
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		trimmed = json.RawMessage(`{}`)
+	}
+
+	h.m.mu.Lock()
+	limit := h.m.eventPublishLimit
+	h.m.mu.Unlock()
+	if limit <= 0 {
+		limit = DefaultEventPublishPerMin
+	}
+	if !h.m.rateOK(h.m.eventPublishTimes, h.plugin, limit, time.Minute) {
+		return fmt.Errorf("%w: event publishing is limited to %d per minute", ErrRateLimited, limit)
+	}
+
+	if corr.PluginID == "" {
+		corr.PluginID = h.plugin
+	}
+
+	if r.Shadow {
+		inv, _ := json.Marshal(map[string]any{
+			"key":         key,
+			"type":        schema.Type,
+			"payload":     json.RawMessage(trimmed),
+			"correlation": corr,
+		})
+		invRedacted := h.m.store.redactKnown(ctx, h.plugin, redactJSON(inv))
+		_, _ = h.m.store.journal(ctx, JournalEntry{
+			Plugin:  h.plugin,
+			Op:      "events.publish",
+			Detail:  key,
+			Shadow:  true,
+			Inverse: json.RawMessage(invRedacted),
+		})
+		return nil
+	}
+
+	bus := h.m.flowsEventBus()
+	if bus == nil {
+		return ErrUnavailable
+	}
+
+	var meta events.EnvelopeMeta
+	if origin, ok := flowActionOriginFromContext(ctx); ok {
+		meta.FlowDepth = origin.depth
+		meta.OriginRunID = origin.originRunID
+	}
+
+	env := events.Envelope{
+		ID:          events.NewID(),
+		Type:        events.PluginEventType(h.plugin, key),
+		Version:     schema.Version,
+		OccurredAt:  h.m.now().UTC(),
+		Source:      events.PluginPrefix + h.plugin,
+		Correlation: corr,
+		Meta:        meta,
+		Payload:     append(json.RawMessage(nil), trimmed...),
+	}
+	bus.Publish(env)
+	return nil
 }
 ``````
 
@@ -11131,6 +12410,19 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "folders.stat":
 		v, err := b.h.FoldersStat(ctx, str(0), str(1))
 		return result(v, err)
+	case "events.publish":
+		key := str(0)
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		var corr events.Correlation
+		if len(args) > 2 && len(bytes.TrimSpace(args[2])) > 0 && string(bytes.TrimSpace(args[2])) != "null" {
+			if err := json.Unmarshal(args[2], &corr); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "events.publish correlation must be an object"}
+			}
+		}
+		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
 	case "log":
@@ -11173,6 +12465,8 @@ func mapHostError(err error) error {
 		return wasm.Forbidden(err.Error())
 	case errors.Is(err, ErrQuotaExceeded):
 		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
+	case errors.Is(err, ErrRateLimited):
+		return &wasm.Fault{Code: "rate_limited", Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
 	default:
@@ -11375,6 +12669,33 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 	for i, rc := range c.RuleConditions {
 		base := fmt.Sprintf("ether.contributes.ruleConditions[%d]", i)
 		recordRef(base+".label", rc.Label, 40, false)
+	}
+	if c.Events != nil {
+		for i, pe := range c.Events.Publish {
+			base := fmt.Sprintf("ether.contributes.events.publish[%d]", i)
+			recordRef(base+".label", pe.Label, 60, false)
+			recordRef(base+".description", pe.Description, 200, false)
+			for j, fld := range pe.Fields {
+				fbase := fmt.Sprintf("%s.fields[%d]", base, j)
+				recordRef(fbase+".label", fld.Label, 60, false)
+				recordRef(fbase+".description", fld.Description, 200, false)
+			}
+		}
+	}
+	for i, fa := range c.FlowActions {
+		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
+		recordRef(base+".label", fa.Label, 60, false)
+		recordRef(base+".description", fa.Description, 200, false)
+		for j, p := range fa.Params {
+			pbase := fmt.Sprintf("%s.params[%d]", base, j)
+			recordRef(pbase+".label", p.Label, 60, false)
+			recordRef(pbase+".description", p.Description, 200, false)
+		}
+		for j, o := range fa.Outputs {
+			obase := fmt.Sprintf("%s.outputs[%d]", base, j)
+			recordRef(obase+".label", o.Label, 60, false)
+			recordRef(obase+".description", o.Description, 200, false)
+		}
 	}
 	for i, tl := range c.Tools {
 		base := fmt.Sprintf("ether.contributes.tools[%d]", i)
@@ -11874,6 +13195,18 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		b, _ := json.Marshal(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
 		return b, nil
+	case "events.publish":
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		if _, _, err := plugins.ValidatePublishEventCall(h.man, str(0), payload); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return json.RawMessage("null"), nil
 	case "secret.get":
 		sec := str(0)
 		for _, allowed := range h.man.Ether.Permissions.Secrets {
@@ -12154,7 +13487,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 		man.HasCapability(plugins.CapSubtitles) ||
 		man.HasCapability(plugins.CapMarkers) ||
 		man.HasCapability(plugins.CapNotify) ||
-		man.HasCapability(plugins.CapEvents)
+		man.HasCapability(plugins.CapEvents) ||
+		man.HasCapability(plugins.CapFlowActions)
 
 	if !plug.HasHandle() {
 		if needsHandle {
@@ -12361,11 +13695,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 	}
 
 	// Events.
-	if man.HasCapability(plugins.CapEvents) {
-		evName := plugins.EventPlaybackStarted
-		if man.Ether.Contributes.Events != nil && len(man.Ether.Contributes.Events.Subscribe) > 0 {
-			evName = man.Ether.Contributes.Events.Subscribe[0]
-		}
+	if man.HasCapability(plugins.CapEvents) && man.Ether.Contributes.Events != nil && len(man.Ether.Contributes.Events.Subscribe) > 0 {
+		evName := man.Ether.Contributes.Events.Subscribe[0]
 		evBody, _ := json.Marshal(map[string]any{
 			"events": []map[string]any{
 				{"id": "ev-1", "name": evName, "at": "2026-01-01T00:00:00Z", "payload": map[string]any{"ratingKey": 1}},
@@ -12388,6 +13719,56 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 				return ""
 			},
 		})
+	}
+
+	// Flow actions.
+	if man.HasCapability(plugins.CapFlowActions) {
+		for _, fa := range man.Ether.Contributes.FlowActions {
+			sampleParams := map[string]any{}
+			for _, p := range fa.Params {
+				switch {
+				case p.Default != nil:
+					sampleParams[p.Key] = p.Default
+				case p.Type == "enum" && len(p.Enum) > 0:
+					sampleParams[p.Key] = p.Enum[0].Value
+				case p.Type == "string":
+					sampleParams[p.Key] = "sample"
+				case p.Type == "int", p.Type == "duration_ms":
+					sampleParams[p.Key] = 1
+				case p.Type == "float":
+					sampleParams[p.Key] = 1.0
+				case p.Type == "bool":
+					sampleParams[p.Key] = true
+				case p.Type == "timestamp":
+					sampleParams[p.Key] = "2026-01-01T00:00:00Z"
+				case p.Type == "string_list":
+					sampleParams[p.Key] = []string{"sample"}
+				case p.Type == "object":
+					sampleParams[p.Key] = map[string]any{}
+				}
+			}
+			actBody, _ := json.Marshal(map[string]any{
+				"flowId":         "kit-flow",
+				"runId":          "kit-run",
+				"nodeId":         "kit-node",
+				"idempotencyKey": "idem_kit_" + fa.Key,
+				"dryRun":         true,
+				"params":         sampleParams,
+			})
+			fixtures = append(fixtures, routeFixture{
+				method:  "POST",
+				path:    fa.Route,
+				headers: map[string]string{plugins.HeaderIdempotencyKey: "idem_kit_" + fa.Key},
+				body:    actBody,
+				validate: func(resp wasm.Response) string {
+					var doc map[string]any
+					if err := decodeResponseBody(resp.Body, &doc); err != nil {
+						return "flow action response must be a JSON object: " + err.Error()
+					}
+					return ""
+				},
+			})
+		}
 	}
 
 	// Pages & Slots (ViewSpec validation + literal string rejection).
@@ -15295,6 +16676,10 @@ var (
 	idRe             = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$`)
 	keyRe            = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	posterBadgeKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	pluginEventKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,2}$`)
+	flowActionKeyRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	eventFieldNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
+	flowParamKeyRe   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 	toolNameRe       = regexp.MustCompile(`^[a-z][a-z0-9_]{1,63}$`)
 	hostRe           = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	bannedRe         = regexp.MustCompile(`(?i)\b(simply|easily|just)\b`)
@@ -15373,7 +16758,7 @@ var capabilityKinds = map[Capability]map[Kind]bool{
 	CapKindResolver:    {KindContent: true},
 	CapMatcher:         {KindContent: true},
 	CapFrontendAdapter: {KindContent: true, KindExtension: true},
-	CapEvents:          nil, CapTools: nil, CapUI: nil,
+	CapEvents:          nil, CapFlowActions: nil, CapTools: nil, CapUI: nil,
 }
 ``````
 
@@ -15609,7 +16994,7 @@ func (m Manifest) Validate() error {
 
 ``````
 func isAnyKindCap(c Capability) bool {
-	return c == CapEvents || c == CapTools || c == CapUI
+	return c == CapEvents || c == CapFlowActions || c == CapTools || c == CapUI
 }
 ``````
 
@@ -15819,6 +17204,37 @@ func contributesUseT(c Contributes) bool {
 		check(x.Label)
 		check(x.Description)
 	}
+	if c.Events != nil {
+		for _, pe := range c.Events.Publish {
+			check(pe.Label)
+			check(pe.Description)
+			for _, fld := range pe.Fields {
+				check(fld.Label)
+				check(fld.Description)
+				for _, opt := range fld.Enum {
+					check(opt.Label)
+				}
+			}
+		}
+	}
+	for _, fa := range c.FlowActions {
+		check(fa.Label)
+		check(fa.Description)
+		for _, p := range fa.Params {
+			check(p.Label)
+			check(p.Description)
+			for _, opt := range p.Enum {
+				check(opt.Label)
+			}
+		}
+		for _, out := range fa.Outputs {
+			check(out.Label)
+			check(out.Description)
+			for _, opt := range out.Enum {
+				check(opt.Label)
+			}
+		}
+	}
 	for _, x := range c.Tools {
 		check(x.Title)
 	}
@@ -15948,16 +17364,153 @@ func validateContributes(m Manifest, add func(string, string)) {
 			add("ether.contributes.notification", "is required for notify, with sendTest set")
 		}
 	}
-	if m.HasCapability(CapEvents) {
-		if c.Events == nil || len(c.Events.Subscribe) == 0 {
-			add("ether.contributes.events.subscribe", "is required for events")
-		} else {
-			for _, n := range c.Events.Subscribe {
-				if !KnownEvents[n] {
-					add("ether.contributes.events.subscribe", "unknown event "+strconv.Quote(n))
+	optDesc := func(field, s string, max int) {
+		if s == "" {
+			return
+		}
+		if strings.HasPrefix(s, "$t:") {
+			if !keyRe.MatchString(strings.TrimPrefix(s, "$t:")) {
+				add(field, "must name a string key after $t:")
+			}
+			return
+		}
+		if msg := LintCopy(s, max); msg != "" && !e.Stremio {
+			add(field, msg)
+		}
+	}
+	validateEventFields := func(prefix string, fields []EventFieldMeta) {
+		if len(fields) > MaxEventFields {
+			add(prefix, fmt.Sprintf("must declare at most %d fields", MaxEventFields))
+		}
+		seenFields := map[string]bool{}
+		for j, fld := range fields {
+			fbase := fmt.Sprintf("%s[%d]", prefix, j)
+			if !eventFieldNameRe.MatchString(fld.Name) || seenFields[fld.Name] {
+				add(fbase+".name", "must be a unique field name")
+			}
+			seenFields[fld.Name] = true
+			ft := events.FieldType(fld.Type)
+			if !ft.Valid() {
+				add(fbase+".type", "unknown field type "+strconv.Quote(fld.Type))
+			}
+			label(fbase+".label", fld.Label, 60)
+			optDesc(fbase+".description", fld.Description, 200)
+			if ft == events.FieldEnum {
+				if len(fld.Enum) == 0 {
+					add(fbase+".enum", "is required for enum fields")
 				}
 			}
+			seenEnum := map[string]bool{}
+			for k, opt := range fld.Enum {
+				ebase := fmt.Sprintf("%s.enum[%d]", fbase, k)
+				if strings.TrimSpace(opt.Value) == "" || seenEnum[opt.Value] {
+					add(ebase+".value", "must be a unique non-empty enum value")
+				}
+				seenEnum[opt.Value] = true
+				optDesc(ebase+".label", opt.Label, 60)
+			}
 		}
+	}
+	if m.HasCapability(CapEvents) {
+		if c.Events == nil || (len(c.Events.Subscribe) == 0 && len(c.Events.Publish) == 0) {
+			add("ether.contributes.events", "must declare subscribe or publish for events")
+		}
+	}
+	if c.Events != nil {
+		if !m.HasCapability(CapEvents) && (len(c.Events.Subscribe) > 0 || len(c.Events.Publish) > 0) {
+			add("ether.capabilities", "events is required for contributes.events")
+		}
+		for _, n := range c.Events.Subscribe {
+			if !IsSubscribableEvent(n) {
+				add("ether.contributes.events.subscribe", "unknown event "+strconv.Quote(n))
+			}
+		}
+		if len(c.Events.Publish) > MaxPluginPublishedEvents {
+			add("ether.contributes.events.publish", fmt.Sprintf("must declare at most %d published events", MaxPluginPublishedEvents))
+		}
+		seenPublished := map[string]bool{}
+		for i, pe := range c.Events.Publish {
+			base := fmt.Sprintf("ether.contributes.events.publish[%d]", i)
+			if !pluginEventKeyRe.MatchString(pe.Key) || seenPublished[pe.Key] {
+				add(base+".key", "must be a unique key matching ^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$")
+			} else if len(events.PluginEventType(m.ID, pe.Key)) > 128 {
+				add(base+".key", "event type exceeds 128 characters")
+			}
+			seenPublished[pe.Key] = true
+			label(base+".label", pe.Label, 60)
+			optDesc(base+".description", pe.Description, 200)
+			if pe.Version < 0 {
+				add(base+".version", "must be >= 1")
+			}
+			validateEventFields(base+".fields", pe.Fields)
+		}
+	}
+	if m.HasCapability(CapFlowActions) && len(c.FlowActions) == 0 {
+		add("ether.contributes.flowActions", "is required for flow_actions")
+	}
+	if len(c.FlowActions) > 0 && !m.HasCapability(CapFlowActions) {
+		add("ether.capabilities", "flow_actions is required for flowActions")
+	}
+	if len(c.FlowActions) > MaxPluginFlowActions {
+		add("ether.contributes.flowActions", fmt.Sprintf("must declare at most %d flow actions", MaxPluginFlowActions))
+	}
+	validPickers := map[string]bool{
+		"": true, "channel": true, "viewer": true, "library": true,
+		"source": true, "event": true, "plugin": true,
+	}
+	seenActions := map[string]bool{}
+	for i, fa := range c.FlowActions {
+		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
+		if !flowActionKeyRe.MatchString(fa.Key) || seenActions[fa.Key] {
+			add(base+".key", "must be a unique key matching ^[a-z][a-z0-9_]{0,63}$")
+		} else if len(flows.PluginActionType(m.ID, fa.Key)) > 128 {
+			add(base+".key", "action type exceeds 128 characters")
+		}
+		seenActions[fa.Key] = true
+		label(base+".label", fa.Label, 60)
+		optDesc(base+".description", fa.Description, 200)
+		if !strings.HasPrefix(fa.Route, "/ether/") || !isSafePluginRoute(fa.Route) {
+			add(base+".route", "must be a safe plugin route under /ether/")
+		}
+		if fa.Timeout != "" {
+			d, err := time.ParseDuration(fa.Timeout)
+			if err != nil || d <= 0 || d > MaxPluginFlowActionTimeout {
+				add(base+".timeout", fmt.Sprintf("must be a positive duration of at most %s", MaxPluginFlowActionTimeout))
+			}
+		}
+		if len(fa.Params) > MaxFlowActionParams {
+			add(base+".params", fmt.Sprintf("must declare at most %d params", MaxFlowActionParams))
+		}
+		seenParams := map[string]bool{}
+		for j, p := range fa.Params {
+			pbase := fmt.Sprintf("%s.params[%d]", base, j)
+			if !flowParamKeyRe.MatchString(p.Key) || seenParams[p.Key] {
+				add(pbase+".key", "must be a unique param key")
+			}
+			seenParams[p.Key] = true
+			pt := events.FieldType(p.Type)
+			if !pt.Valid() {
+				add(pbase+".type", "unknown param type "+strconv.Quote(p.Type))
+			}
+			label(pbase+".label", p.Label, 60)
+			optDesc(pbase+".description", p.Description, 200)
+			if pt == events.FieldEnum && len(p.Enum) == 0 {
+				add(pbase+".enum", "is required for enum params")
+			}
+			seenEnum := map[string]bool{}
+			for k, opt := range p.Enum {
+				ebase := fmt.Sprintf("%s.enum[%d]", pbase, k)
+				if strings.TrimSpace(opt.Value) == "" || seenEnum[opt.Value] {
+					add(ebase+".value", "must be a unique non-empty enum value")
+				}
+				seenEnum[opt.Value] = true
+				optDesc(ebase+".label", opt.Label, 60)
+			}
+			if !validPickers[p.Picker] {
+				add(pbase+".picker", "unknown picker "+strconv.Quote(p.Picker))
+			}
+		}
+		validateEventFields(base+".outputs", fa.Outputs)
 	}
 	if m.HasCapability(CapListSource) && len(c.ListSources) == 0 {
 		add("ether.contributes.listSources", "is required for list_source")
@@ -17839,6 +19392,8 @@ type Host interface {
 
 	Settings(ctx context.Context, pluginID string) (map[string]any, error)
 
+	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
+
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
 }
@@ -17940,6 +19495,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
+	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -18540,6 +20096,32 @@ func (h *HostHandler) runtimeLimits(w http.ResponseWriter, r *http.Request) {
 }
 ``````
 
+## Source: internal/plugins/remote/host.go#*HostHandler.eventsPublish
+
+``````
+func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key         string             `json:"key"`
+		Payload     json.RawMessage    `json:"payload"`
+		Correlation events.Correlation `json:"correlation"`
+	}
+	if !h.decode(w, r, maxHostBodyBytes, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Key) == "" {
+		writeHostError(w, http.StatusBadRequest, "invalid", "key is required")
+		return
+	}
+	if len(body.Payload) == 0 || string(body.Payload) == "null" {
+		body.Payload = json.RawMessage(`{}`)
+	}
+	if !h.finishErr(w, h.host.PublishEvent(r.Context(), pluginIDOf(r), body.Key, body.Payload, body.Correlation)) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+``````
+
 ## Source: internal/plugins/remote/host.go#*HostHandler.notify
 
 ``````
@@ -18650,6 +20232,8 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 		writeHostError(w, http.StatusRequestEntityTooLarge, "too_large", "Request body is too large")
 	case errors.Is(err, ErrInvalid):
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
+	case errors.Is(err, ErrRateLimited):
+		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
 	case errors.Is(err, ErrUnavailable):
 		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service is not available")
 	case errors.Is(err, ErrUnauthorized):
@@ -20434,6 +22018,17 @@ func Scaffold(req ScaffoldRequest) (ScaffoldResult, error) {
 			needHandle = true
 			m.Ether.Contributes.Events = &plugins.EventsMeta{
 				Subscribe: []string{plugins.EventPlaybackCompleted},
+			}
+		case plugins.CapFlowActions:
+			needHandle = true
+			m.Ether.Contributes.FlowActions = []plugins.FlowActionMeta{
+				{
+					Key:        "run_action",
+					Label:      "Run custom action",
+					Route:      "/ether/v1/flow-actions/run_action",
+					Idempotent: true,
+					Timeout:    "15s",
+				},
 			}
 		case plugins.CapRankingStep:
 			m.Ether.Contributes.RankingSteps = []plugins.RankingStepMeta{
@@ -22561,6 +24156,8 @@ func DeadlineFor(path string) time.Duration {
 		return 5 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/setup/"):
 		return 20 * time.Second
+	case strings.HasPrefix(p, "/ether/v1/flow-actions/"):
+		return 60 * time.Second
 	case strings.HasPrefix(p, "/ether/v1/kinds/"):
 		if strings.HasSuffix(p, "/resolve") || strings.HasSuffix(p, "/match") {
 			return 5 * time.Second
@@ -22926,6 +24523,7 @@ globalThis.ether = (() => {
                hashCancel: (id) => call("folders.hashCancel", [id]),
                hash: (root, path) => call("folders.hash", [root, path]),
                stat: (root, path) => call("folders.stat", [root, path]) },
+    events: { publish: (key, payload, correlation) => call("events.publish", correlation == null ? [key, payload == null ? {} : payload] : [key, payload == null ? {} : payload, correlation]) },
     notify: { owner: (text) => call("notify.owner", [text]) },
   };
   return ether;
@@ -24062,7 +25660,7 @@ type Response struct {
 // http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
 // kinds.items, sources.resolve, cache.put, cache.open, cache.read, frontend.streamURL,
-// folders.list, folders.stat, notify.owner, log. Args is a JSON array of positional
+// folders.list, folders.stat, events.publish, notify.owner, log. Args is a JSON array of positional
 // arguments; the result is any JSON value. Return a *Fault to classify the
 // failure (forbidden for a missing or revoked grant).
 type Host interface {
@@ -24090,7 +25688,7 @@ var DefaultCosts = map[string]int64{
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
-	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "notify.owner": 20, "settings.get": 5,
+	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
 }
 ``````
 
@@ -25166,8 +26764,59 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.commands[].action` | `string` | true | {} |
 | `ether.contributes.commands[].key` | `string` | true | {} |
 | `ether.contributes.commands[].label` | `string` | true | {"maxLength":40} |
-| `ether.contributes.events` | `object` | false | {"required":["subscribe"]} |
-| `ether.contributes.events.subscribe` | `array` | true | {} |
+| `ether.contributes.events` | `object` | false | {"description":"Event subscriptions and custom events published to Ether's event bus. At least one of subscribe or publish is required when events capability is declared."} |
+| `ether.contributes.events.publish` | `array` | false | {"maxItems":64} |
+| `ether.contributes.events.publish[].description` | `string` | false | {"maxLength":200} |
+| `ether.contributes.events.publish[].fields` | `array` | false | {"maxItems":64} |
+| `ether.contributes.events.publish[].fields[].description` | `string` | false | {"maxLength":200} |
+| `ether.contributes.events.publish[].fields[].enum` | `array` | false | {} |
+| `ether.contributes.events.publish[].fields[].enum[].label` | `string` | false | {"maxLength":60} |
+| `ether.contributes.events.publish[].fields[].enum[].value` | `string` | true | {"minLength":1} |
+| `ether.contributes.events.publish[].fields[].filterable` | `boolean` | false | {} |
+| `ether.contributes.events.publish[].fields[].label` | `string` | true | {"maxLength":60} |
+| `ether.contributes.events.publish[].fields[].name` | `string` | true | {"pattern":"^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$"} |
+| `ether.contributes.events.publish[].fields[].pii` | `boolean` | false | {} |
+| `ether.contributes.events.publish[].fields[].secret` | `boolean` | false | {} |
+| `ether.contributes.events.publish[].fields[].type` | `string` | true | {"enum":["string","int","float","bool","duration_ms","timestamp","enum","string_list","object"]} |
+| `ether.contributes.events.publish[].fields[].unit` | `string` | false | {} |
+| `ether.contributes.events.publish[].key` | `string` | true | {"pattern":"^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$"} |
+| `ether.contributes.events.publish[].label` | `string` | true | {"maxLength":60} |
+| `ether.contributes.events.publish[].version` | `integer` | false | {"minimum":1} |
+| `ether.contributes.events.subscribe` | `array` | false | {} |
+| `ether.contributes.flowActions` | `array` | false | {"description":"Custom actions contributed to Ether Flows (requires flow_actions capability).","maxItems":64} |
+| `ether.contributes.flowActions[].description` | `string` | false | {"maxLength":200} |
+| `ether.contributes.flowActions[].icon` | `string` | false | {} |
+| `ether.contributes.flowActions[].idempotent` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].key` | `string` | true | {"pattern":"^[a-z][a-z0-9_]{0,63}$"} |
+| `ether.contributes.flowActions[].label` | `string` | true | {"maxLength":60} |
+| `ether.contributes.flowActions[].outputs` | `array` | false | {"maxItems":64} |
+| `ether.contributes.flowActions[].outputs[].description` | `string` | false | {"maxLength":200} |
+| `ether.contributes.flowActions[].outputs[].enum` | `array` | false | {} |
+| `ether.contributes.flowActions[].outputs[].enum[].label` | `string` | false | {"maxLength":60} |
+| `ether.contributes.flowActions[].outputs[].enum[].value` | `string` | true | {"minLength":1} |
+| `ether.contributes.flowActions[].outputs[].filterable` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].outputs[].label` | `string` | true | {"maxLength":60} |
+| `ether.contributes.flowActions[].outputs[].name` | `string` | true | {"pattern":"^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$"} |
+| `ether.contributes.flowActions[].outputs[].pii` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].outputs[].secret` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].outputs[].type` | `string` | true | {"enum":["string","int","float","bool","duration_ms","timestamp","enum","string_list","object"]} |
+| `ether.contributes.flowActions[].outputs[].unit` | `string` | false | {} |
+| `ether.contributes.flowActions[].params` | `array` | false | {"maxItems":64} |
+| `ether.contributes.flowActions[].params[].description` | `string` | false | {"maxLength":200} |
+| `ether.contributes.flowActions[].params[].enum` | `array` | false | {} |
+| `ether.contributes.flowActions[].params[].enum[].label` | `string` | false | {"maxLength":60} |
+| `ether.contributes.flowActions[].params[].enum[].value` | `string` | true | {"minLength":1} |
+| `ether.contributes.flowActions[].params[].key` | `string` | true | {"pattern":"^[a-zA-Z_][a-zA-Z0-9_]*$"} |
+| `ether.contributes.flowActions[].params[].label` | `string` | true | {"maxLength":60} |
+| `ether.contributes.flowActions[].params[].picker` | `string` | false | {"enum":["channel","viewer","library","source","event","plugin"]} |
+| `ether.contributes.flowActions[].params[].required` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].params[].secret` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].params[].template` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].params[].type` | `string` | true | {"enum":["string","int","float","bool","duration_ms","timestamp","enum","string_list","object"]} |
+| `ether.contributes.flowActions[].params[].unit` | `string` | false | {} |
+| `ether.contributes.flowActions[].route` | `string` | true | {"pattern":"^/"} |
+| `ether.contributes.flowActions[].sideEffect` | `boolean` | false | {} |
+| `ether.contributes.flowActions[].timeout` | `string` | false | {"description":"Go duration up to 60s (default 30s)."} |
 | `ether.contributes.frontendAdapters` | `array` | false | {} |
 | `ether.contributes.frontendAdapters[].auth` | `string` | false | {} |
 | `ether.contributes.frontendAdapters[].clients` | `array` | false | {} |
@@ -25223,7 +26872,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].levels[].playable` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].library` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].library.card` | `any` | false | {"enum":["poster","landscape","square"]} |
-| `ether.contributes.mediaKinds[].library.dateDisplay` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.dateDisplay` | `any` | false | {"enum":["year","date"]} |
 | `ether.contributes.mediaKinds[].library.icon` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.name` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves` | `array` | false | {} |
@@ -25454,6 +27103,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
               "markers",
               "notify",
               "events",
+              "flow_actions",
               "ranking_step",
               "rule_condition",
               "tools",
@@ -25517,7 +27167,109 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
               "type": "array"
             },
             "events": {
+              "description": "Event subscriptions and custom events published to Ether's event bus. At least one of subscribe or publish is required when events capability is declared.",
               "properties": {
+                "publish": {
+                  "items": {
+                    "properties": {
+                      "description": {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      "fields": {
+                        "items": {
+                          "properties": {
+                            "description": {
+                              "maxLength": 200,
+                              "type": "string"
+                            },
+                            "enum": {
+                              "items": {
+                                "properties": {
+                                  "label": {
+                                    "maxLength": 60,
+                                    "type": "string"
+                                  },
+                                  "value": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "value"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "example": true,
+                            "filterable": {
+                              "type": "boolean"
+                            },
+                            "label": {
+                              "maxLength": 60,
+                              "type": "string"
+                            },
+                            "name": {
+                              "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$",
+                              "type": "string"
+                            },
+                            "pii": {
+                              "type": "boolean"
+                            },
+                            "secret": {
+                              "type": "boolean"
+                            },
+                            "type": {
+                              "enum": [
+                                "string",
+                                "int",
+                                "float",
+                                "bool",
+                                "duration_ms",
+                                "timestamp",
+                                "enum",
+                                "string_list",
+                                "object"
+                              ],
+                              "type": "string"
+                            },
+                            "unit": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "type",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "key": {
+                        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*){0,2}$",
+                        "type": "string"
+                      },
+                      "label": {
+                        "maxLength": 60,
+                        "type": "string"
+                      },
+                      "version": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 64,
+                  "type": "array"
+                },
                 "subscribe": {
                   "items": {
                     "type": "string"
@@ -25525,10 +27277,206 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                   "type": "array"
                 }
               },
-              "required": [
-                "subscribe"
-              ],
               "type": "object"
+            },
+            "flowActions": {
+              "description": "Custom actions contributed to Ether Flows (requires flow_actions capability).",
+              "items": {
+                "properties": {
+                  "description": {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  "icon": {
+                    "type": "string"
+                  },
+                  "idempotent": {
+                    "type": "boolean"
+                  },
+                  "key": {
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                    "type": "string"
+                  },
+                  "label": {
+                    "maxLength": 60,
+                    "type": "string"
+                  },
+                  "outputs": {
+                    "items": {
+                      "properties": {
+                        "description": {
+                          "maxLength": 200,
+                          "type": "string"
+                        },
+                        "enum": {
+                          "items": {
+                            "properties": {
+                              "label": {
+                                "maxLength": 60,
+                                "type": "string"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "example": true,
+                        "filterable": {
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "maxLength": 60,
+                          "type": "string"
+                        },
+                        "name": {
+                          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*$",
+                          "type": "string"
+                        },
+                        "pii": {
+                          "type": "boolean"
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "bool",
+                            "duration_ms",
+                            "timestamp",
+                            "enum",
+                            "string_list",
+                            "object"
+                          ],
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "type",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "params": {
+                    "items": {
+                      "properties": {
+                        "default": true,
+                        "description": {
+                          "maxLength": 200,
+                          "type": "string"
+                        },
+                        "enum": {
+                          "items": {
+                            "properties": {
+                              "label": {
+                                "maxLength": 60,
+                                "type": "string"
+                              },
+                              "value": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "key": {
+                          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$",
+                          "type": "string"
+                        },
+                        "label": {
+                          "maxLength": 60,
+                          "type": "string"
+                        },
+                        "picker": {
+                          "enum": [
+                            "channel",
+                            "viewer",
+                            "library",
+                            "source",
+                            "event",
+                            "plugin"
+                          ],
+                          "type": "string"
+                        },
+                        "required": {
+                          "type": "boolean"
+                        },
+                        "secret": {
+                          "type": "boolean"
+                        },
+                        "template": {
+                          "type": "boolean"
+                        },
+                        "type": {
+                          "enum": [
+                            "string",
+                            "int",
+                            "float",
+                            "bool",
+                            "duration_ms",
+                            "timestamp",
+                            "enum",
+                            "string_list",
+                            "object"
+                          ],
+                          "type": "string"
+                        },
+                        "unit": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "type",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "route": {
+                    "pattern": "^/",
+                    "type": "string"
+                  },
+                  "sideEffect": {
+                    "type": "boolean"
+                  },
+                  "timeout": {
+                    "description": "Go duration up to 60s (default 30s).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "route"
+                ],
+                "type": "object"
+              },
+              "maxItems": 64,
+              "type": "array"
             },
             "frontendAdapters": {
               "items": {
@@ -25800,7 +27748,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         ]
                       },
                       "dateDisplay": {
-                        "type": "string"
+                        "enum": [
+                          "year",
+                          "date"
+                        ]
                       },
                       "icon": {
                         "type": "string"
@@ -26979,7 +28930,8 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
-| notify / events | notify send/test; event subscription + acknowledgement | HTTPFetch, SecretGet, KV for deduplication |
+| notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
+| flow_actions | `contributes.flowActions` + `POST /ether/v1/flow-actions/{key}` (with `X-Ether-Idempotency-Key`) | KV (idempotency deduplication), HTTPFetch, PublishEvent |
 | ui / tools | ViewSpec page/action or declared tool | Settings, KV; grant only data the action needs |
 | livetv_channels | channels, guide, stream (kind livetv_source, or a content plugin that also has live channels) | HTTPFetch, KV |
 | subtitles / markers | subtitle or marker routes and descriptors | HTTPFetch; download only after viewer picks |
@@ -27045,6 +28997,15 @@ overlay style, the owner can switch each set off in Metadata -> Artwork
 (`overlays.Settings.disabledBadgeSets` entries formatted as `"<pluginId>:<setKey>"`),
 and no plugin call happens while rendering posters.
 
+## Flows: custom events and actions
+
+Plugins participate in Ether Flows in two additive ways (see `sdk/examples/smart-lights/`):
+
+1. **Publish custom events** (`capabilities: ["events"]` + `ether.contributes.events.publish`):
+   Declare typed event schemas (`key`, `version`, `label`, `fields`) alongside or instead of `events.subscribe` (which accepts both the 12 legacy EPP/1 names and canonical Flows event names). Published events are namespaced as `plugin:<pluginId>/<key>` on Ether's event bus and appear in the Flows trigger picker. Call `ether.events.publish(key, payload[, correlation])` in hosted plugins or `POST /ether/plugin-host/events/publish` from remote sidecars (`ctx.PublishEvent` in Go, `ctx.ether.events.publish` in TypeScript/Python). Payloads are schema-validated (max 64 KiB) and rate-limited to 30 events/minute per plugin (`rate_limited` / HTTP 429). Events emitted from inside a Flow action automatically inherit incremented `flowDepth` and `originRunId` for loop protection.
+2. **Contribute Flow actions** (`capabilities: ["flow_actions"]` + `ether.contributes.flowActions`):
+   Declare actions (`key`, `label`, `route` under `/ether/`, optional `timeout` up to `60s`, `idempotent`, `sideEffect`, `params`, `outputs`). Actions are registered atomically as `plugin:<pluginId>/<key>` on install, update, enable/disable, grant change, and uninstall. Ether invokes the route via `POST` with `X-Ether-Idempotency-Key` and JSON body `{flowId, runId, nodeId, idempotencyKey, dryRun, params}` and expects `{output: {...}, branch?}`. Always respect `dryRun` and deduplicate side effects using `X-Ether-Idempotency-Key` in KV. In shadow mode, both `PublishEvent` and Flow action executions are journaled without external side effects.
+
 ## Per-route call limits and owner ceilings
 
 Ether enforces the same deadline it advertises in `X-Ether-Deadline`. On viewer
@@ -27063,6 +29024,7 @@ than billed as guest wall time):
 | `/ether/configure`, `/ether/health` | 5 s | Owner-granted ceiling |
 | `/ether/test` | 15 s | Owner-granted ceiling |
 | Other protocol routes (`/ether/notify`, `/ether/v1/frontend/*`) | 30 s | Owner-granted ceiling |
+| `/ether/v1/flow-actions/*` | Declared action `timeout` (default 30 s, max 60 s) | Owner-granted ceiling |
 | `/ether/v1/kinds/*/browse`, `/ether/v1/kinds/*/changes`, `/ether/v1/kinds/*/expand`, `/ether/channels.json`, `/ether/guide/*`, `/ether/v1/setup/*`, `/ether/action/*`, `/ether/tool/*`, `/ether/event`, `/ether/job/*` | Owner-granted ceiling (default 12 h) | Owner-granted ceiling (default `2^60` units) |
 | `rank_key`, `cond_match` | 2 ms per candidate, 50 ms per batch | Hot-path deterministic budget (log/abort only) |
 
@@ -35093,6 +37055,443 @@ export const handle = createPlugin().handle;
 
 ``````
 
+## Source: sdk/examples/smart-lights/README.md
+
+# Smart lights (Ether Flows example plugin)
+
+A minimal hosted TypeScript plugin demonstrating Ether Flows integration:
+
+- **Published event (`contributes.events.publish`):** emits `plugin:org.ether.smart-lights/scene.changed` with typed, filterable fields (`room`, `scene`, `brightness`, `previousScene`) via `ether.events.publish(...)`.
+- **Canonical event subscription (`contributes.events.subscribe`):** listens to `playback.session.started` and `playback.session.stopped`.
+- **Flow action (`contributes.flowActions`):** contributes `plugin:org.ether.smart-lights/set_scene` at `POST /ether/v1/flow-actions/set_scene`, honoring `X-Ether-Idempotency-Key` deduplication and `dryRun`.
+
+## Example Flow
+
+1. **Trigger:** `playback.session.started` (or `plugin:org.ether.smart-lights/scene.changed`)
+2. **Action:** `plugin:org.ether.smart-lights/set_scene` with `room: "Living room"`, `scene: "cinema"`, `brightness: 20`
+3. **Downstream:** Any subsequent flow subscribed to `plugin:org.ether.smart-lights/scene.changed` receives the validated payload.
+
+
+## Source: sdk/examples/smart-lights/manifest.json
+
+``````
+{
+  "id": "org.ether.smart-lights",
+  "name": "Smart lights",
+  "version": "1.0.0",
+  "description": "Control room lighting scenes from Ether Flows and emit scene change events.",
+  "ether": {
+    "protocol": 1,
+    "kind": "extension",
+    "capabilities": [
+      "events",
+      "flow_actions"
+    ],
+    "summary": "$t:summary",
+    "author": {
+      "name": "Ether",
+      "url": "https://github.com/braedonsaunders/ether"
+    },
+    "license": "MIT",
+    "runtime": {
+      "kind": "hosted",
+      "entry": "src/plugin.ts"
+    },
+    "settings": {
+      "fields": [
+        {
+          "key": "defaultRoom",
+          "kind": "text",
+          "label": "$t:setting_room_label",
+          "default": "Living room"
+        },
+        {
+          "key": "defaultBrightness",
+          "kind": "number",
+          "label": "$t:setting_brightness_label",
+          "default": 25,
+          "min": 0,
+          "max": 100
+        }
+      ]
+    },
+    "strings": {
+      "en": "i18n/en.json"
+    },
+    "contributes": {
+      "events": {
+        "subscribe": [
+          "playback.session.started",
+          "playback.session.stopped"
+        ],
+        "publish": [
+          {
+            "key": "scene.changed",
+            "label": "$t:event_scene_changed_label",
+            "description": "$t:event_scene_changed_desc",
+            "fields": [
+              {
+                "name": "room",
+                "type": "string",
+                "label": "$t:field_room_label",
+                "filterable": true,
+                "example": "Living room"
+              },
+              {
+                "name": "scene",
+                "type": "enum",
+                "label": "$t:field_scene_label",
+                "filterable": true,
+                "enum": [
+                  { "value": "cinema", "label": "$t:scene_cinema" },
+                  { "value": "warm", "label": "$t:scene_warm" },
+                  { "value": "bright", "label": "$t:scene_bright" },
+                  { "value": "off", "label": "$t:scene_off" }
+                ],
+                "example": "cinema"
+              },
+              {
+                "name": "brightness",
+                "type": "int",
+                "label": "$t:field_brightness_label",
+                "unit": "%",
+                "filterable": true,
+                "example": 25
+              },
+              {
+                "name": "previousScene",
+                "type": "string",
+                "label": "$t:field_previous_scene_label",
+                "filterable": true,
+                "example": "bright"
+              }
+            ]
+          }
+        ]
+      },
+      "flowActions": [
+        {
+          "key": "set_scene",
+          "label": "$t:action_set_scene_label",
+          "description": "$t:action_set_scene_desc",
+          "route": "/ether/v1/flow-actions/set_scene",
+          "idempotent": true,
+          "timeout": "10s",
+          "params": [
+            {
+              "key": "room",
+              "type": "string",
+              "label": "$t:field_room_label",
+              "required": true,
+              "template": true,
+              "default": "Living room"
+            },
+            {
+              "key": "scene",
+              "type": "enum",
+              "label": "$t:field_scene_label",
+              "required": true,
+              "enum": [
+                { "value": "cinema", "label": "$t:scene_cinema" },
+                { "value": "warm", "label": "$t:scene_warm" },
+                { "value": "bright", "label": "$t:scene_bright" },
+                { "value": "off", "label": "$t:scene_off" }
+              ]
+            },
+            {
+              "key": "brightness",
+              "type": "int",
+              "label": "$t:field_brightness_label",
+              "unit": "%",
+              "default": 25
+            }
+          ],
+          "outputs": [
+            {
+              "name": "room",
+              "type": "string",
+              "label": "$t:field_room_label"
+            },
+            {
+              "name": "scene",
+              "type": "string",
+              "label": "$t:field_scene_label"
+            },
+            {
+              "name": "previousScene",
+              "type": "string",
+              "label": "$t:field_previous_scene_label"
+            },
+            {
+              "name": "brightness",
+              "type": "int",
+              "label": "$t:field_brightness_label",
+              "unit": "%"
+            },
+            {
+              "name": "applied",
+              "type": "bool",
+              "label": "$t:field_applied_label"
+            },
+            {
+              "name": "deduplicated",
+              "type": "bool",
+              "label": "$t:field_deduplicated_label"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+
+``````
+
+## Source: sdk/examples/smart-lights/src/plugin.ts
+
+``````
+// Smart lights example plugin for Ether Flows.
+//
+// Demonstrates:
+//   - Subscribing to canonical Ether events (playback.session.started / stopped)
+//   - Publishing schema-validated custom events (scene.changed) via ether.events.publish
+//   - Contributing an idempotent Flow action (set_scene) that respects X-Ether-Idempotency-Key and dryRun
+
+interface PluginRequest {
+  method?: string;
+  path: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+interface PluginResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body: unknown;
+}
+
+interface FlowActionBody {
+  flowId?: string;
+  runId?: string;
+  nodeId?: string;
+  idempotencyKey?: string;
+  dryRun?: boolean;
+  params?: Record<string, unknown>;
+}
+
+interface RoomState {
+  room: string;
+  scene: string;
+  brightness: number;
+}
+
+interface HostedEther {
+  kv: {
+    get(key: string): string | null;
+    put(key: string, value: string): void;
+  };
+  settings: {
+    get(): Record<string, unknown> | null | undefined;
+  };
+  events: {
+    publish(
+      key: string,
+      payload?: Record<string, unknown>,
+      correlation?: Record<string, unknown>,
+    ): void;
+  };
+}
+
+declare const ether: HostedEther;
+
+const VALID_SCENES: Record<string, boolean> = {
+  cinema: true,
+  warm: true,
+  bright: true,
+  off: true,
+};
+
+function parseBody(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+}
+
+function getHeader(headers: Record<string, string> | undefined, name: string): string {
+  if (!headers) return "";
+  const target = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === target) {
+      return String(headers[key] ?? "");
+    }
+  }
+  return "";
+}
+
+function readSettings(): { defaultRoom: string; defaultBrightness: number } {
+  const s = ether.settings.get() ?? {};
+  const room = typeof s.defaultRoom === "string" && s.defaultRoom.trim() ? s.defaultRoom.trim() : "Living room";
+  const rawBrightness = Number(s.defaultBrightness);
+  const brightness = Number.isFinite(rawBrightness) ? Math.max(0, Math.min(100, Math.round(rawBrightness))) : 25;
+  return { defaultRoom: room, defaultBrightness: brightness };
+}
+
+function readRoomState(room: string): RoomState {
+  const saved = ether.kv.get("room:" + room.toLowerCase());
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved) as Partial<RoomState>;
+      if (parsed && typeof parsed.scene === "string") {
+        return {
+          room,
+          scene: parsed.scene,
+          brightness: typeof parsed.brightness === "number" ? parsed.brightness : 100,
+        };
+      }
+    } catch {
+      // Ignore corrupt KV value and fall back to default.
+    }
+  }
+  return { room, scene: "bright", brightness: 100 };
+}
+
+function applyScene(
+  room: string,
+  scene: string,
+  brightness: number,
+  dryRun: boolean,
+  emitEvent: boolean,
+  correlation?: Record<string, unknown>,
+): Record<string, unknown> {
+  const prev = readRoomState(room);
+  const clamped = scene === "off" ? 0 : Math.max(0, Math.min(100, Math.round(brightness)));
+  if (!dryRun) {
+    ether.kv.put(
+      "room:" + room.toLowerCase(),
+      JSON.stringify({ room, scene, brightness: clamped }),
+    );
+    if (emitEvent) {
+      ether.events.publish(
+        "scene.changed",
+        {
+          room,
+          scene,
+          brightness: clamped,
+          previousScene: prev.scene,
+        },
+        correlation,
+      );
+    }
+  }
+  return {
+    room,
+    scene,
+    previousScene: prev.scene,
+    brightness: clamped,
+    applied: !dryRun,
+    deduplicated: false,
+  };
+}
+
+function handleSetScene(req: PluginRequest): PluginResponse {
+  const body = parseBody(req.body) as FlowActionBody;
+  const params = body.params && typeof body.params === "object" ? body.params : {};
+  const defaults = readSettings();
+
+  const room =
+    typeof params.room === "string" && params.room.trim()
+      ? params.room.trim()
+      : defaults.defaultRoom;
+  const scene = typeof params.scene === "string" ? params.scene.trim().toLowerCase() : "";
+  if (!VALID_SCENES[scene]) {
+    return {
+      status: 400,
+      body: { error: { code: "invalid_scene", message: "Scene must be cinema, warm, bright, or off." } },
+    };
+  }
+  const brightness =
+    params.brightness !== undefined && Number.isFinite(Number(params.brightness))
+      ? Number(params.brightness)
+      : defaults.defaultBrightness;
+  const dryRun = Boolean(body.dryRun);
+  const idemKey = (getHeader(req.headers, "X-Ether-Idempotency-Key") || String(body.idempotencyKey ?? "")).trim();
+
+  if (!dryRun && idemKey) {
+    const cached = ether.kv.get("idem:" + idemKey);
+    if (cached) {
+      try {
+        const prevOutput = JSON.parse(cached) as Record<string, unknown>;
+        return {
+          status: 200,
+          body: { output: { ...prevOutput, deduplicated: true } },
+        };
+      } catch {
+        // Re-execute if cached value cannot be parsed.
+      }
+    }
+  }
+
+  const output = applyScene(room, scene, brightness, dryRun, true, { key: "room:" + room.toLowerCase() });
+  if (!dryRun && idemKey) {
+    ether.kv.put("idem:" + idemKey, JSON.stringify(output));
+  }
+  return {
+    status: 200,
+    body: { output },
+  };
+}
+
+function handleEventBatch(req: PluginRequest): PluginResponse {
+  const body = parseBody(req.body);
+  const events = Array.isArray(body.events) ? (body.events as Array<Record<string, unknown>>) : [];
+  const defaults = readSettings();
+  const ack: string[] = [];
+
+  for (const ev of events) {
+    const id = typeof ev.id === "string" ? ev.id : "";
+    if (id) ack.push(id);
+    const name = typeof ev.name === "string" ? ev.name : "";
+    if (name === "playback.session.started") {
+      applyScene(defaults.defaultRoom, "cinema", defaults.defaultBrightness, false, true);
+    } else if (name === "playback.session.stopped") {
+      applyScene(defaults.defaultRoom, "warm", 70, false, true);
+    }
+  }
+
+  return { status: 200, body: { ack } };
+}
+
+function handle(req: PluginRequest): PluginResponse {
+  const method = (req.method ?? "GET").toUpperCase();
+  if (method === "GET" && req.path === "/ether/health") {
+    return { status: 200, body: { status: "ok" } };
+  }
+  if (method === "POST" && req.path === "/ether/configure") {
+    return { status: 200, body: { errors: {} } };
+  }
+  if (method === "POST" && req.path === "/ether/event") {
+    return handleEventBatch(req);
+  }
+  if (method === "POST" && req.path === "/ether/v1/flow-actions/set_scene") {
+    return handleSetScene(req);
+  }
+  return {
+    status: 404,
+    body: { error: { code: "not_found", message: "Route not found." } },
+  };
+}
+
+(globalThis as unknown as { handle: typeof handle }).handle = handle;
+
+``````
+
 ## Source: sdk/examples/subdl/README.md
 
 # SubDL subtitles
@@ -35601,6 +38000,10 @@ func main() {
 	_ = p.Serve(ctx, etherplugin.ServeOptions{})
 }
 ```
+
+## Flows: events and actions
+
+Declare `CapEvents` with `Contributes.Events.Publish` to emit schema-validated custom events to Ether Flows via `ctx.PublishEvent(key, payload, correlation)` (remote `POST /ether/plugin-host/events/publish`, rate-limited to 30/min). Declare `CapFlowActions` with `Contributes.FlowActions` and implement `Routes.FlowAction` to handle `POST /ether/v1/flow-actions/{key}` (or a custom declared `/ether/...` route); `FlowActionRequest.IdempotencyKey` carries `X-Ether-Idempotency-Key` for safe deduplication and `FlowActionRequest.DryRun` indicates a test/dry run.
 
 ## WS8b interoperability test
 
@@ -36341,6 +38744,16 @@ type BadgesHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#EventsHost
+
+``````
+// EventsHost emits declared plugin events onto Ether's event bus.
+// RemoteHostClient and MockHost implement it; Context.PublishEvent uses it automatically.
+type EventsHost interface {
+	PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error
+}
+``````
+
 ## Source: sdk/go/host.go#PartStreamHost
 
 ``````
@@ -36868,6 +39281,34 @@ func (c *RemoteHostClient) FoldersList(_ context.Context, _, _ string) ([]Folder
 // FoldersStat is only supported in hosted mode; sidecars access local folders directly.
 func (c *RemoteHostClient) FoldersStat(_ context.Context, _, _ string) (FolderEntry, error) {
 	return FolderEntry{}, fmt.Errorf("folders.stat is for hosted plugins; sidecar plugins read their local fileRoot directly")
+}
+``````
+
+## Source: sdk/go/host.go#HeaderIdempotencyKey
+
+``````
+// HeaderIdempotencyKey carries the Flow step idempotency key on plugin flow action calls.
+const HeaderIdempotencyKey = "X-Ether-Idempotency-Key"
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.PublishEvent
+
+``````
+// PublishEvent emits a declared plugin event ("plugin:<id>/<key>") onto Ether's
+// event bus through POST /ether/plugin-host/events/publish.
+func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	body := map[string]any{
+		"key":     key,
+		"payload": payload,
+	}
+	if corr != nil {
+		body["correlation"] = corr
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/events/publish", body, nil, false)
+	return err
 }
 ``````
 
@@ -40033,6 +42474,18 @@ func (c *Context) T(key string, params map[string]any) string {
 }
 ``````
 
+## Source: sdk/go/plugin.go#*Context.PublishEvent
+
+``````
+// PublishEvent emits a manifest-declared plugin event onto Ether's event bus.
+func (c *Context) PublishEvent(key string, payload any, corr *EventCorrelation) error {
+	if eh, ok := c.Ether.(EventsHost); ok {
+		return eh.PublishEvent(c.Context, key, payload, corr)
+	}
+	return fmt.Errorf("events.publish is not supported by this host")
+}
+``````
+
 ## Source: sdk/go/plugin.go#Routes.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -40059,6 +42512,7 @@ type Routes struct {
 	Health           func(ctx *Context) (HealthResponse, error)
 	Notify           func(ctx *Context, req NotifyRequest) (NotifyResponse, error)
 	Event            func(ctx *Context, events []EtherEvent) (EventResponse, error)
+	FlowAction       func(ctx *Context, req FlowActionRequest) (FlowActionResponse, error)
 	View             func(ctx *Context, req ViewRequest) (ViewResponse, error)
 	Action           func(ctx *Context, req ActionRequest) (ActionResponse, error)
 	Tool             func(ctx *Context, req ToolRequest) (ToolResponse, error)
@@ -40109,6 +42563,7 @@ type Plugin struct {
 	host            Host
 	remoteOpts      RemoteHostOptions
 	pageRoutes      map[string]string
+	flowRoutes      map[string]string
 	kindHandlers    *kindHandlers
 
 	mu              sync.RWMutex
@@ -40172,6 +42627,14 @@ func New(def Definition) *Plugin {
 			}
 		}
 	}
+	flowRoutes := map[string]string{}
+	if def.Manifest.Ether != nil && def.Manifest.Ether.Contributes != nil {
+		for _, fa := range def.Manifest.Ether.Contributes.FlowActions {
+			if fa.Route != "" && fa.Key != "" {
+				flowRoutes[fa.Route] = fa.Key
+			}
+		}
+	}
 	initialSettings, _ := DecodeSettings(schema, nil, def.DefaultSettings)
 
 	return &Plugin{
@@ -40183,6 +42646,7 @@ func New(def Definition) *Plugin {
 		host:            def.Host,
 		remoteOpts:      def.RemoteHostOptions,
 		pageRoutes:      pageRoutes,
+		flowRoutes:      flowRoutes,
 		settings:        initialSettings,
 	}
 }
@@ -40753,6 +43217,45 @@ func (p *Plugin) Dispatch(ctx context.Context, req RawRequest) RawResponse {
 			res, err := p.routes.View(pctx, ViewRequest{Page: pageKey, Query: query})
 			if err != nil {
 				return toRouteErrorResponse(err)
+			}
+			return okJSON(res, http.StatusOK)
+		}
+	}
+
+	if method == http.MethodPost {
+		flowKey, matchedFlow := p.flowRoutes[path]
+		if !matchedFlow && strings.HasPrefix(path, "/ether/v1/flow-actions/") {
+			flowKey, _ = url.PathUnescape(strings.TrimPrefix(path, "/ether/v1/flow-actions/"))
+			matchedFlow = flowKey != ""
+		}
+		if matchedFlow {
+			if p.routes.FlowAction == nil {
+				return errorJSON(http.StatusNotFound, "not_found", "Flow action handler is not registered.")
+			}
+			var faReq FlowActionRequest
+			if len(req.Body) > 0 {
+				if err := json.Unmarshal(req.Body, &faReq); err != nil {
+					return errorJSON(http.StatusBadRequest, "invalid_json", "Flow action request body must be valid JSON.")
+				}
+			}
+			faReq.Key = flowKey
+			if faReq.IdempotencyKey == "" {
+				for hk, hv := range pctx.Headers {
+					if strings.EqualFold(hk, HeaderIdempotencyKey) && strings.TrimSpace(hv) != "" {
+						faReq.IdempotencyKey = strings.TrimSpace(hv)
+						break
+					}
+				}
+			}
+			if faReq.Params == nil {
+				faReq.Params = map[string]any{}
+			}
+			res, err := p.routes.FlowAction(pctx, faReq)
+			if err != nil {
+				return toRouteErrorResponse(err)
+			}
+			if res.Output == nil {
+				res.Output = map[string]any{}
 			}
 			return okJSON(res, http.StatusOK)
 		}
@@ -42174,6 +44677,7 @@ const (
 	CapMarkers         Capability = "markers"
 	CapNotify          Capability = "notify"
 	CapEvents          Capability = "events"
+	CapFlowActions     Capability = "flow_actions"
 	CapRankingStep     Capability = "ranking_step"
 	CapRuleCondition   Capability = "rule_condition"
 	CapTools           Capability = "tools"
@@ -42604,6 +45108,7 @@ type FieldOption struct {
 | `markers` | `*MarkersMeta` | may be omitted (see validation for conditions) |  |
 | `notification` | `*NotificationMeta` | may be omitted (see validation for conditions) |  |
 | `events` | `*EventsMeta` | may be omitted (see validation for conditions) |  |
+| `flowActions` | `[]FlowActionMeta` | may be omitted (see validation for conditions) |  |
 | `integration` | `*IntegrationMeta` | may be omitted (see validation for conditions) |  |
 | `listSources` | `[]ListSourceMeta` | may be omitted (see validation for conditions) |  |
 | `rankingSteps` | `[]RankingStepMeta` | may be omitted (see validation for conditions) |  |
@@ -42629,6 +45134,7 @@ type Contributes struct {
 	Markers          *MarkersMeta          `json:"markers,omitempty"`
 	Notification     *NotificationMeta     `json:"notification,omitempty"`
 	Events           *EventsMeta           `json:"events,omitempty"`
+	FlowActions      []FlowActionMeta      `json:"flowActions,omitempty"`
 	Integration      *IntegrationMeta      `json:"integration,omitempty"`
 	ListSources      []ListSourceMeta      `json:"listSources,omitempty"`
 	RankingSteps     []RankingStepMeta     `json:"rankingSteps,omitempty"`
@@ -43325,15 +45831,269 @@ type NotificationMeta struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `subscribe` | `[]string` | emitted (validation may require a value) |  |
+| `subscribe` | `[]string` | may be omitted (see validation for conditions) |  |
+| `publish` | `[]PublishedEventMeta` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/types.go#EventsMeta
 
 ``````
-// EventsMeta lists subscribed event names.
+// EventsMeta declares subscribed event names and custom published event schemas.
 type EventsMeta struct {
-	Subscribe []string `json:"subscribe"`
+	Subscribe []string             `json:"subscribe,omitempty"`
+	Publish   []PublishedEventMeta `json:"publish,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#EventFieldType
+
+``````
+// EventFieldType classifies a typed field in a published event payload or
+// flow action parameter/output schema.
+type EventFieldType string
+``````
+
+## Source: sdk/go/types.go#EventFieldString
+
+``````
+const (
+	EventFieldString     EventFieldType = "string"
+	EventFieldInt        EventFieldType = "int"
+	EventFieldFloat      EventFieldType = "float"
+	EventFieldBool       EventFieldType = "bool"
+	EventFieldDurationMS EventFieldType = "duration_ms"
+	EventFieldTimestamp  EventFieldType = "timestamp"
+	EventFieldEnum       EventFieldType = "enum"
+	EventFieldStringList EventFieldType = "string_list"
+	EventFieldObject     EventFieldType = "object"
+)
+``````
+
+## Source: sdk/go/types.go#EventEnumOption.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `value` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#EventEnumOption
+
+``````
+// EventEnumOption describes one allowed option for an enum field or parameter.
+type EventEnumOption struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#EventFieldMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `name` | `string` | emitted (validation may require a value) |  |
+| `type` | `EventFieldType` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `unit` | `string` | may be omitted (see validation for conditions) |  |
+| `enum` | `[]EventEnumOption` | may be omitted (see validation for conditions) |  |
+| `pii` | `bool` | may be omitted (see validation for conditions) |  |
+| `secret` | `bool` | may be omitted (see validation for conditions) |  |
+| `filterable` | `bool` | may be omitted (see validation for conditions) |  |
+| `example` | `any` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#EventFieldMeta
+
+``````
+// EventFieldMeta describes one typed field in a published plugin event payload
+// or flow action output object.
+type EventFieldMeta struct {
+	Name        string            `json:"name"`
+	Type        EventFieldType    `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	PII         bool              `json:"pii,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Filterable  bool              `json:"filterable,omitempty"`
+	Example     any               `json:"example,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#PublishedEventMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `version` | `int` | may be omitted (see validation for conditions) |  |
+| `fields` | `[]EventFieldMeta` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#PublishedEventMeta
+
+``````
+// PublishedEventMeta declares one custom event emitted via PublishEvent
+// ("plugin:<pluginId>/<key>").
+type PublishedEventMeta struct {
+	Key         string           `json:"key"`
+	Label       string           `json:"label"`
+	Description string           `json:"description,omitempty"`
+	Version     int              `json:"version,omitempty"`
+	Fields      []EventFieldMeta `json:"fields,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#FlowActionParamMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `type` | `EventFieldType` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `required` | `bool` | may be omitted (see validation for conditions) |  |
+| `secret` | `bool` | may be omitted (see validation for conditions) |  |
+| `template` | `bool` | may be omitted (see validation for conditions) |  |
+| `default` | `any` | may be omitted (see validation for conditions) |  |
+| `enum` | `[]EventEnumOption` | may be omitted (see validation for conditions) |  |
+| `unit` | `string` | may be omitted (see validation for conditions) |  |
+| `picker` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#FlowActionParamMeta
+
+``````
+// FlowActionParamMeta describes one configurable parameter of a plugin flow action.
+type FlowActionParamMeta struct {
+	Key         string            `json:"key"`
+	Type        EventFieldType    `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Required    bool              `json:"required,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Template    bool              `json:"template,omitempty"`
+	Default     any               `json:"default,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Picker      string            `json:"picker,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#FlowActionMeta.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `description` | `string` | may be omitted (see validation for conditions) |  |
+| `icon` | `string` | may be omitted (see validation for conditions) |  |
+| `route` | `string` | emitted (validation may require a value) |  |
+| `idempotent` | `bool` | may be omitted (see validation for conditions) |  |
+| `sideEffect` | `*bool` | may be omitted (see validation for conditions) |  |
+| `timeout` | `string` | may be omitted (see validation for conditions) |  |
+| `params` | `[]FlowActionParamMeta` | may be omitted (see validation for conditions) |  |
+| `outputs` | `[]EventFieldMeta` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#FlowActionMeta
+
+``````
+// FlowActionMeta declares one custom Flow action contributed by a plugin.
+type FlowActionMeta struct {
+	Key         string                `json:"key"`
+	Label       string                `json:"label"`
+	Description string                `json:"description,omitempty"`
+	Icon        string                `json:"icon,omitempty"`
+	Route       string                `json:"route"`
+	Idempotent  bool                  `json:"idempotent,omitempty"`
+	SideEffect  *bool                 `json:"sideEffect,omitempty"`
+	Timeout     string                `json:"timeout,omitempty"`
+	Params      []FlowActionParamMeta `json:"params,omitempty"`
+	Outputs     []EventFieldMeta      `json:"outputs,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#EventCorrelation.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | may be omitted (see validation for conditions) |  |
+| `sessionId` | `string` | may be omitted (see validation for conditions) |  |
+| `playId` | `string` | may be omitted (see validation for conditions) |  |
+| `titleId` | `string` | may be omitted (see validation for conditions) |  |
+| `viewerId` | `int64` | may be omitted (see validation for conditions) |  |
+| `channelId` | `string` | may be omitted (see validation for conditions) |  |
+| `sourceId` | `string` | may be omitted (see validation for conditions) |  |
+| `pluginId` | `string` | may be omitted (see validation for conditions) |  |
+| `deviceId` | `string` | may be omitted (see validation for conditions) |  |
+| `libraryId` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#EventCorrelation
+
+``````
+// EventCorrelation links a published plugin event to related Ether entities.
+type EventCorrelation struct {
+	Key       string `json:"key,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	PlayID    string `json:"playId,omitempty"`
+	TitleID   string `json:"titleId,omitempty"`
+	ViewerID  int64  `json:"viewerId,omitempty"`
+	ChannelID string `json:"channelId,omitempty"`
+	SourceID  string `json:"sourceId,omitempty"`
+	PluginID  string `json:"pluginId,omitempty"`
+	DeviceID  string `json:"deviceId,omitempty"`
+	LibraryID string `json:"libraryId,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#FlowActionRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | may be omitted (see validation for conditions) |  |
+| `flowId` | `string` | emitted (validation may require a value) |  |
+| `runId` | `string` | emitted (validation may require a value) |  |
+| `nodeId` | `string` | emitted (validation may require a value) |  |
+| `idempotencyKey` | `string` | emitted (validation may require a value) |  |
+| `dryRun` | `bool` | may be omitted (see validation for conditions) |  |
+| `params` | `map[string]any` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#FlowActionRequest
+
+``````
+// FlowActionRequest is passed to a FlowAction route handler.
+type FlowActionRequest struct {
+	Key            string         `json:"key,omitempty"`
+	FlowID         string         `json:"flowId"`
+	RunID          string         `json:"runId"`
+	NodeID         string         `json:"nodeId"`
+	IdempotencyKey string         `json:"idempotencyKey"`
+	DryRun         bool           `json:"dryRun,omitempty"`
+	Params         map[string]any `json:"params,omitempty"`
+}
+``````
+
+## Source: sdk/go/types.go#FlowActionResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `output` | `map[string]any` | may be omitted (see validation for conditions) |  |
+| `branch` | `string` | may be omitted (see validation for conditions) |  |
+
+
+## Source: sdk/go/types.go#FlowActionResponse
+
+``````
+// FlowActionResponse is returned by a FlowAction route handler.
+type FlowActionResponse struct {
+	Output map[string]any `json:"output,omitempty"`
+	Branch string         `json:"branch,omitempty"`
 }
 ``````
 
@@ -44663,6 +47423,7 @@ Single-file, standard-library-only Python 3.9+ SDK for Ether Plugin Protocol v1 
 - Zero external pip dependencies (`http.server`, `urllib.request`, `json`, `socket`, `base64`).
 - Same declarative `plugin(manifest=..., routes=...)` router shape as `@ether/plugin-sdk` and `sdk/go`.
 - Runs as an HTTP sidecar (`serve(p, mode="http")`) or an outbound WebSocket tunnel sidecar (`serve(p, mode="tunnel")`).
+- Supports Ether Flows custom events (`ctx.ether.events.publish(key, payload, correlation)` -> `POST /ether/plugin-host/events/publish`) and Flow actions (`routes={"flow_action": ...}` with `X-Ether-Idempotency-Key` and `dryRun`).
 - Includes `RemoteHostClient` for `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`, plus `create_test_harness`, `create_mock_host_client`, `fixtures`, and starter capability templates.
 
 ## Usage
@@ -44838,6 +47599,7 @@ TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
 MAX_KIND_VISIBLE_IDS = 500
 HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token"
+HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key"
 
 ALLOWED_SETTING_KINDS = frozenset(
     {
@@ -45483,6 +48245,106 @@ class _CollectionsClient:
         self._call("POST", "/ether/plugin-host/collections/upsert", collection)
 
 
+class EventEnumOption(TypedDict, total=False):
+    value: str
+    label: str
+
+
+class EventFieldMeta(TypedDict, total=False):
+    name: str
+    type: str
+    label: str
+    description: str
+    unit: str
+    enum: List[EventEnumOption]
+    pii: bool
+    secret: bool
+    filterable: bool
+    example: Any
+
+
+class PublishedEventMeta(TypedDict, total=False):
+    key: str
+    label: str
+    description: str
+    version: int
+    fields: List[EventFieldMeta]
+
+
+class FlowActionParamMeta(TypedDict, total=False):
+    key: str
+    type: str
+    label: str
+    description: str
+    required: bool
+    secret: bool
+    template: bool
+    default: Any
+    enum: List[EventEnumOption]
+    unit: str
+    picker: str
+
+
+class FlowActionMeta(TypedDict, total=False):
+    key: str
+    label: str
+    description: str
+    icon: str
+    route: str
+    idempotent: bool
+    sideEffect: bool
+    timeout: str
+    params: List[FlowActionParamMeta]
+    outputs: List[EventFieldMeta]
+
+
+class EventCorrelation(TypedDict, total=False):
+    key: str
+    sessionId: str
+    playId: str
+    titleId: str
+    viewerId: int
+    channelId: str
+    sourceId: str
+    pluginId: str
+    deviceId: str
+    libraryId: str
+
+
+class FlowActionRequest(TypedDict, total=False):
+    key: str
+    flowId: str
+    runId: str
+    nodeId: str
+    idempotencyKey: str
+    dryRun: bool
+    params: Dict[str, Any]
+
+
+class FlowActionResponse(TypedDict, total=False):
+    output: Dict[str, Any]
+    branch: str
+
+
+class _EventsClient:
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def publish(
+        self,
+        key: str,
+        payload: Optional[Dict[str, Any]] = None,
+        correlation: Optional[EventCorrelation] = None,
+    ) -> None:
+        body: Dict[str, Any] = {
+            "key": str(key),
+            "payload": dict(payload) if payload is not None else {},
+        }
+        if correlation is not None:
+            body["correlation"] = dict(correlation)
+        self._call("POST", "/ether/plugin-host/events/publish", body)
+
+
 class _NotifyClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -45542,6 +48404,7 @@ class RemoteHostClient:
         self.catalog = _CatalogClient(self._call_json)
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
+        self.events = _EventsClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -45872,6 +48735,7 @@ class PluginInstance:
         )
 
         self._page_routes: Dict[str, str] = {}
+        self._flow_action_routes: Dict[str, str] = {}
         if isinstance(ether_block, dict):
             contributes = ether_block.get("contributes")
             if isinstance(contributes, dict):
@@ -45881,6 +48745,9 @@ class PluginInstance:
                 for s in contributes.get("slots") or []:
                     if isinstance(s, dict) and s.get("route") and s.get("key"):
                         self._page_routes[str(s["route"])] = str(s["key"])
+                for fa in contributes.get("flowActions") or []:
+                    if isinstance(fa, dict) and fa.get("route") and fa.get("key"):
+                        self._flow_action_routes[str(fa["route"])] = str(fa["key"])
 
     def get_settings(self) -> Dict[str, Any]:
         return dict(self._current_settings)
@@ -46148,6 +49015,32 @@ class PluginInstance:
             action_name = urllib.parse.unquote(path[len("/ether/action/") :])
             input_obj = _parse_json_body(req.get("body"))
             return _ok_response(fn({"action": action_name, "input": input_obj}, ctx))
+
+        if method == "POST":
+            flow_key = self._flow_action_routes.get(path)
+            if not flow_key and path.startswith("/ether/v1/flow-actions/"):
+                flow_key = urllib.parse.unquote(path[len("/ether/v1/flow-actions/") :])
+            if flow_key:
+                fn = self.routes.get("flow_action") or self.routes.get("flowAction")
+                if not fn:
+                    return _error_response(
+                        404, "not_found", "Flow action handler is not registered."
+                    )
+                body_obj = _parse_json_body(req.get("body"))
+                header_idem = _get_header(req.get("headers"), HEADER_IDEMPOTENCY_KEY) or ""
+                params_obj = body_obj.get("params")
+                if not isinstance(params_obj, dict):
+                    params_obj = {}
+                fa_req: FlowActionRequest = {
+                    "key": flow_key,
+                    "flowId": str(body_obj.get("flowId") or ""),
+                    "runId": str(body_obj.get("runId") or ""),
+                    "nodeId": str(body_obj.get("nodeId") or ""),
+                    "idempotencyKey": str(header_idem or body_obj.get("idempotencyKey") or ""),
+                    "dryRun": bool(body_obj.get("dryRun", False)),
+                    "params": params_obj,
+                }
+                return _ok_response(fn(fa_req, ctx))
 
         if method == "POST" and path.startswith("/ether/tool/"):
             fn = self.routes.get("tool")
@@ -47100,6 +49993,7 @@ class MockHostClient:
         self.history_store: Dict[int, List[Dict[str, Any]]] = {}
         self.watch_state: Dict[str, bool] = {}
         self.collections_list: List[Dict[str, Any]] = []
+        self.published_events: List[Dict[str, Any]] = []
         self.notifications: List[str] = []
         self.logs: List[Dict[str, Any]] = []
         self.last_stream_url: Optional[Tuple[int, str]] = None
@@ -47134,6 +50028,7 @@ class MockHostClient:
         }
         self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
+        self.events = self._Events(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
@@ -47543,6 +50438,24 @@ class MockHostClient:
         def upsert(self, collection: Dict[str, Any]) -> None:
             self._p.collections_list.append(collection)
 
+    class _Events:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def publish(
+            self,
+            key: str,
+            payload: Optional[Dict[str, Any]] = None,
+            correlation: Optional[EventCorrelation] = None,
+        ) -> None:
+            entry: Dict[str, Any] = {
+                "key": str(key),
+                "payload": dict(payload) if payload is not None else {},
+            }
+            if correlation is not None:
+                entry["correlation"] = dict(correlation)
+            self._p.published_events.append(entry)
+
     class _Notify:
         def __init__(self, parent: "MockHostClient") -> None:
             self._p = parent
@@ -47765,6 +50678,33 @@ class TestHarness:
                 "method": "POST",
                 "path": "/ether/event",
                 "body": json.dumps({"events": events}),
+            }
+        )
+
+    def flow_action(
+        self,
+        key: str,
+        req: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        body = dict(req or {})
+        route = f"/ether/v1/flow-actions/{urllib.parse.quote(key)}"
+        ether_block = self.instance.manifest.get("ether")
+        if isinstance(ether_block, dict):
+            contributes = ether_block.get("contributes")
+            if isinstance(contributes, dict):
+                for fa in contributes.get("flowActions") or []:
+                    if isinstance(fa, dict) and fa.get("key") == key and fa.get("route"):
+                        route = str(fa["route"])
+                        break
+        headers: Dict[str, str] = {}
+        if body.get("idempotencyKey"):
+            headers[HEADER_IDEMPOTENCY_KEY] = str(body["idempotencyKey"])
+        return self.instance.dispatch(
+            {
+                "method": "POST",
+                "path": route,
+                "headers": headers,
+                "body": json.dumps(body),
             }
         )
 
@@ -48535,7 +51475,8 @@ export default hello;
 - `markers` (`GET /ether/markers/{type}/{id}.json`)
 - `channels` (`GET /ether/channels.json`) and `guide` (`GET /ether/guide/{channelId}.json`)
 - `notify` (`POST /ether/notify`)
-- `event` (`POST /ether/event`)
+- `event` (`POST /ether/event`) and `ctx.ether.events.publish(key, payload, correlation?)` (`contributes.events.publish`)
+- `flowAction` (`POST /ether/v1/flow-actions/{key}` or declared `/ether/...` route, `X-Ether-Idempotency-Key`, `contributes.flowActions`)
 - `view` (`GET /ether/view/{page}`) and `action` (`POST /ether/action/{action}`)
 - `tool` (`POST /ether/tool/{name}`) and `job` (`POST /ether/job/{name}`)
 - `file` (`GET /ether/file/{path...}`)
@@ -48722,7 +51663,7 @@ bound; traversal, encryption, special files and 1000:1 expansion checks remain.
  * `/ether/plugin-host/*` authenticated with `X-Ether-Plugin-Credential`.
  */
 
-import type { BadgeEntry, BadgeTitleRef, BadgeUsage, MaybePromise, RuntimeLimits } from "./types.ts";
+import type { BadgeEntry, BadgeTitleRef, BadgeUsage, EventCorrelation, MaybePromise, RuntimeLimits } from "./types.ts";
 import type { ArchiveMember } from "./kit.ts";
 
 export type { BadgeEntry, BadgeTitleRef, BadgeUsage };
@@ -48758,6 +51699,7 @@ export const MaxBadgeLabelLen = 16;
 export const PosterBadgeQuotaTitles = 200_000;
 export const MAX_KIND_VISIBLE_IDS = 500;
 export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
+export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -49093,6 +52035,13 @@ export interface EtherHost {
     hashPoll(id: string): MaybePromise<FolderHashJob>;
     hashCancel(id: string): MaybePromise<FolderHashJob>;
   };
+  events: {
+    publish(
+      key: string,
+      payload?: Record<string, unknown>,
+      correlation?: EventCorrelation,
+    ): MaybePromise<void>;
+  };
   notify: {
     owner(text: string): MaybePromise<void>;
   };
@@ -49184,6 +52133,13 @@ interface GlobalEtherBindings {
       hashStart: (root: string, path: string) => FolderHashJob;
       hashPoll: (id: string) => FolderHashJob;
       hashCancel: (id: string) => FolderHashJob;
+    };
+    events?: {
+      publish: (
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ) => void;
     };
     notify: {
       owner: (text: string) => void;
@@ -49396,6 +52352,27 @@ export function createHostedClient(): EtherHost {
       stat(root: string, path: string): FolderEntry {
         if (g.ether?.folders) return g.ether.folders.stat(root, path);
         return callHost<FolderEntry>("folders.stat", [root, path]);
+      },
+    },
+    events: {
+      publish(
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ): void {
+        const body = payload ?? {};
+        if (g.ether?.events?.publish) {
+          if (correlation !== undefined) {
+            g.ether.events.publish(key, body, correlation);
+          } else {
+            g.ether.events.publish(key, body);
+          }
+          return;
+        }
+        callHost(
+          "events.publish",
+          correlation !== undefined ? [key, body, correlation] : [key, body],
+        );
       },
     },
     notify: {
@@ -49715,6 +52692,22 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         );
       },
     },
+    events: {
+      async publish(
+        key: string,
+        payload?: Record<string, unknown>,
+        correlation?: EventCorrelation,
+      ): Promise<void> {
+        const body: Record<string, unknown> = {
+          key,
+          payload: payload ?? {},
+        };
+        if (correlation !== undefined) {
+          body.correlation = correlation;
+        }
+        await callJson("POST", "/ether/plugin-host/events/publish", body);
+      },
+    },
     notify: {
       async owner(text: string): Promise<void> {
         await callJson("POST", "/ether/plugin-host/notify", { text });
@@ -49957,6 +52950,7 @@ export {
   PosterBadgeQuotaTitles,
   MAX_KIND_VISIBLE_IDS,
   HEADER_VIEWER_TOKEN,
+  HEADER_IDEMPOTENCY_KEY,
   type BadgeEntry,
   type BadgeTitleRef,
   type BadgeUsage,
@@ -50025,6 +53019,7 @@ export {
   type MockHostClient,
   type MockHostState,
   type RecordedLog,
+  type RecordedPublishedEvent,
   type TestHarness,
 } from "./testing.ts";
 export {
@@ -50742,6 +53737,8 @@ import type {
   EtherEvent,
   EventResponse,
   FieldOption,
+  FlowActionRequest,
+  FlowActionResponse,
   GuideRequest,
   GuideResponse,
   HealthResponse,
@@ -50784,6 +53781,7 @@ import {
 import {
   createHostedClient,
   createRemoteHostClient,
+  HEADER_IDEMPOTENCY_KEY,
   HEADER_VIEWER_TOKEN,
   isHostedRuntime,
   type EtherHost,
@@ -50838,6 +53836,10 @@ export interface PluginRoutes<S = Record<string, unknown>> {
   health?: (ctx: PluginContext<S>) => MaybePromise<HealthResponse>;
   notify?: (req: NotifyRequest, ctx: PluginContext<S>) => MaybePromise<NotifyResponse>;
   event?: (events: EtherEvent[], ctx: PluginContext<S>) => MaybePromise<EventResponse | void>;
+  flowAction?: (
+    req: FlowActionRequest,
+    ctx: PluginContext<S>,
+  ) => MaybePromise<FlowActionResponse>;
   view?: (req: ViewRequest, ctx: PluginContext<S>) => MaybePromise<ViewResponse>;
   action?: (req: ActionRequest, ctx: PluginContext<S>) => MaybePromise<ActionResponse>;
   tool?: (req: ToolRequest, ctx: PluginContext<S>) => MaybePromise<ToolResponse>;
@@ -51074,6 +54076,15 @@ export function plugin<S = Record<string, unknown>>(
     }
   }
 
+  const flowActionRoutes = new Map<string, string>();
+  if (manifest.ether?.contributes?.flowActions) {
+    for (const fa of manifest.ether.contributes.flowActions) {
+      if (fa.route && fa.key) {
+        flowActionRoutes.set(fa.route, fa.key);
+      }
+    }
+  }
+
   let settingsFailureLogged = false;
   function buildContext(req: RawRequest): MaybePromise<PluginContext<S>> {
     const { query } = parseUrlPathAndQuery(req.path, req.query);
@@ -51299,6 +54310,33 @@ export function plugin<S = Record<string, unknown>>(
           path === "/ether/view" ? "home" : decodeURIComponent(path.slice("/ether/view/".length));
       }
       return mapResult(routes.view({ page, query }, ctx));
+    }
+
+    if (method === "POST") {
+      let flowKey = flowActionRoutes.get(path);
+      if (!flowKey && path.startsWith("/ether/v1/flow-actions/")) {
+        flowKey = decodeURIComponent(path.slice("/ether/v1/flow-actions/".length));
+      }
+      if (flowKey) {
+        if (!routes.flowAction) {
+          return errorResponse(404, "not_found", "Flow action handler is not registered.");
+        }
+        const bodyObj = parseJsonBody(req.body);
+        const headerIdem = getHeader(req.headers, HEADER_IDEMPOTENCY_KEY);
+        const faReq: FlowActionRequest = {
+          key: flowKey,
+          flowId: String(bodyObj.flowId ?? ""),
+          runId: String(bodyObj.runId ?? ""),
+          nodeId: String(bodyObj.nodeId ?? ""),
+          idempotencyKey: String(headerIdem || bodyObj.idempotencyKey || ""),
+          dryRun: Boolean(bodyObj.dryRun),
+          params:
+            bodyObj.params && typeof bodyObj.params === "object" && !Array.isArray(bodyObj.params)
+              ? (bodyObj.params as Record<string, unknown>)
+              : {},
+        };
+        return mapResult(routes.flowAction(faReq, ctx));
+      }
     }
 
     if (method === "POST" && path.startsWith("/ether/action/")) {
@@ -52637,6 +55675,7 @@ export type Capability =
   | "markers"
   | "notify"
   | "events"
+  | "flow_actions"
   | "ranking_step"
   | "rule_condition"
   | "tools"
@@ -52647,7 +55686,7 @@ export type Capability =
   | "matcher"
   | "poster_badges";
 
-export type EtherEventName =
+export type LegacyEtherEventName =
   | "playback.started"
   | "playback.paused"
   | "playback.resumed"
@@ -52660,6 +55699,100 @@ export type EtherEventName =
   | "viewer.access_changed"
   | "collection.rebuilt"
   | "server.health_changed";
+
+export type EtherEventName = LegacyEtherEventName | (string & {});
+
+export type EventFieldType =
+  | "string"
+  | "int"
+  | "float"
+  | "bool"
+  | "duration_ms"
+  | "timestamp"
+  | "enum"
+  | "string_list"
+  | "object";
+
+export interface EventEnumOption {
+  value: string;
+  label?: string;
+}
+
+export interface EventFieldMeta {
+  name: string;
+  type: EventFieldType;
+  label: string;
+  description?: string;
+  unit?: string;
+  enum?: EventEnumOption[];
+  pii?: boolean;
+  secret?: boolean;
+  filterable?: boolean;
+  example?: unknown;
+}
+
+export interface PublishedEventMeta {
+  key: string;
+  label: string;
+  description?: string;
+  version?: number;
+  fields?: EventFieldMeta[];
+}
+
+export interface FlowActionParamMeta {
+  key: string;
+  type: EventFieldType;
+  label: string;
+  description?: string;
+  required?: boolean;
+  secret?: boolean;
+  template?: boolean;
+  default?: unknown;
+  enum?: EventEnumOption[];
+  unit?: string;
+  picker?: "channel" | "viewer" | "library" | "source" | "event" | "plugin";
+}
+
+export interface FlowActionMeta {
+  key: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  route: string;
+  idempotent?: boolean;
+  sideEffect?: boolean;
+  timeout?: string;
+  params?: FlowActionParamMeta[];
+  outputs?: EventFieldMeta[];
+}
+
+export interface EventCorrelation {
+  key?: string;
+  sessionId?: string;
+  playId?: string;
+  titleId?: string;
+  viewerId?: number;
+  channelId?: string;
+  sourceId?: string;
+  pluginId?: string;
+  deviceId?: string;
+  libraryId?: string;
+}
+
+export interface FlowActionRequest {
+  key: string;
+  flowId: string;
+  runId: string;
+  nodeId: string;
+  idempotencyKey: string;
+  dryRun?: boolean;
+  params: Record<string, unknown>;
+}
+
+export interface FlowActionResponse {
+  output?: Record<string, unknown>;
+  branch?: string;
+}
 
 export interface StremioCatalogDecl {
   type: string;
@@ -52815,7 +55948,8 @@ export interface NotificationMeta {
 }
 
 export interface EventsMeta {
-  subscribe: EtherEventName[];
+  subscribe?: EtherEventName[];
+  publish?: PublishedEventMeta[];
 }
 
 export interface IntegrationMeta {
@@ -52925,6 +56059,7 @@ export interface Contributes {
   markers?: MarkersMeta;
   notification?: NotificationMeta;
   events?: EventsMeta;
+  flowActions?: FlowActionMeta[];
   integration?: IntegrationMeta;
   listSources?: ListSourceMeta[];
   rankingSteps?: RankingStepMeta[];

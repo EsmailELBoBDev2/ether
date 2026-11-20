@@ -96,10 +96,27 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		return SyncResult{}, err
 	}
 
-	nowStart := s.now().Unix()
+	startedAt := s.now()
+	nowStart := startedAt.Unix()
 	_, _ = s.db.ExecContext(ctx,
 		`UPDATE plugin_sync_state SET last_started = ? WHERE plugin_id = ? AND kind_key = ?`,
 		nowStart, pluginID, kindKey)
+	libName := rec.Decl.Label
+	if libName == "" {
+		libName = kindKey
+	}
+	trigger := "scheduled"
+	if opts.FullWalk || opts.Force {
+		trigger = "manual"
+	}
+	s.emitSyncEvent(SyncEvent{
+		Phase:       "started",
+		PluginID:    pluginID,
+		KindKey:     kindKey,
+		LibraryID:   int64(rec.LibraryID),
+		LibraryName: libName,
+		Trigger:     trigger,
+	})
 
 	var (
 		res     SyncResult
@@ -119,6 +136,7 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	}
 
 	nowEnd := s.now().Unix()
+	durMS := max(s.now().Sub(startedAt).Milliseconds(), int64(0))
 	if syncErr != nil {
 		_, _ = s.db.ExecContext(ctx,
 			`UPDATE plugin_sync_state SET last_error = ? WHERE plugin_id = ? AND kind_key = ?`,
@@ -126,6 +144,16 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 		if !errors.Is(syncErr, plugins.ErrBusy) {
 			s.noteAttention(ctx, pluginID, syncErr.Error())
 		}
+		s.emitSyncEvent(SyncEvent{
+			Phase:       "failed",
+			PluginID:    pluginID,
+			KindKey:     kindKey,
+			LibraryID:   int64(rec.LibraryID),
+			LibraryName: libName,
+			Trigger:     trigger,
+			DurationMS:  durMS,
+			Error:       syncErr.Error(),
+		})
 		return res, syncErr
 	}
 
@@ -143,6 +171,17 @@ func (s *Service) SyncKind(ctx context.Context, pluginID, kindKey string, opts S
 	)
 	firstSync := state.LastOK.IsZero() || storedCount == 0
 	s.noteLibraryItems(rec.LibraryID, int64(totalAfter), firstSync)
+	s.emitSyncEvent(SyncEvent{
+		Phase:       "completed",
+		PluginID:    pluginID,
+		KindKey:     kindKey,
+		LibraryID:   int64(rec.LibraryID),
+		LibraryName: libName,
+		Trigger:     trigger,
+		Added:       res.Upserted,
+		Removed:     res.Deleted,
+		DurationMS:  durMS,
+	})
 	return res, nil
 }
 

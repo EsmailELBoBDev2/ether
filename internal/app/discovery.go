@@ -67,6 +67,7 @@ func (a *App) buildDiscovery() {
 				a.log.Warn("queue watchlist warm intent", "err", err)
 			}
 			a.cachefill.Wake()
+			a.onWatchlistAvailable(ctx, userID, key)
 			if a.sessionEvents == nil {
 				return
 			}
@@ -74,6 +75,8 @@ func (a *App) buildDiscovery() {
 				a.log.Warn("watchlist available event", "err", err)
 			}
 		},
+		OnUnavailable: a.onWatchlistUnavailable,
+		OnSynced:      a.onWatchlistSynced,
 		OnFriendsRSSChanged: func(ctx context.Context) {
 			if a.collections != nil {
 				if err := a.collections.SyncFriendsWatchlist(ctx); err != nil && a.log != nil {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -72,6 +73,9 @@ func (h *memHost) FoldersList(context.Context, string, string) ([]FolderEntry, e
 }
 func (h *memHost) FoldersStat(context.Context, string, string) (FolderEntry, error) {
 	return FolderEntry{}, ErrPermissionDenied
+}
+func (h *memHost) PublishEvent(context.Context, string, json.RawMessage, events.Correlation) error {
+	return ErrPermissionDenied
 }
 func (h *memHost) NotifyOwner(context.Context, string) error { return nil }
 func (h *memHost) Settings(context.Context) (map[string]any, error) {

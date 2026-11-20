@@ -1,6 +1,7 @@
 package studio
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -1384,6 +1385,27 @@ func (h *devHost) CallHost(ctx context.Context, name string, raw json.RawMessage
 		h.s.mu.Unlock()
 		out, _ := json.Marshal(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
 		return out, nil
+
+	case "events.publish":
+		man, err := plugins.ParseManifest([]byte(p.Files["manifest.json"]))
+		if err != nil {
+			h.s.mu.Unlock()
+			return nil, wasm.Forbidden("a valid manifest is required")
+		}
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		if _, _, verr := plugins.ValidatePublishEventCall(man, str(0), payload); verr != nil {
+			h.s.mu.Unlock()
+			if errors.Is(verr, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(verr.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: verr.Error()}
+		}
+		recordJournal("events.publish", str(0), map[string]any{"op": "events.publish", "key": str(0), "payload": payload})
+		h.s.mu.Unlock()
+		return json.RawMessage("null"), nil
 
 	case "collections.upsert":
 		var colDoc map[string]any

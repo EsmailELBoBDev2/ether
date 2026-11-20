@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/stremio"
 	"io"
 	"net/http"
@@ -56,6 +57,7 @@ const (
 	CapMarkers         Capability = "markers"
 	CapNotify          Capability = "notify"
 	CapEvents          Capability = "events"
+	CapFlowActions     Capability = "flow_actions"
 	CapRankingStep     Capability = "ranking_step"
 	CapRuleCondition   Capability = "rule_condition"
 	CapTools           Capability = "tools"
@@ -276,6 +278,7 @@ type Contributes struct {
 	Markers        *MarkersMeta         `json:"markers,omitempty"`
 	Notification   *NotificationMeta    `json:"notification,omitempty"`
 	Events         *EventsMeta          `json:"events,omitempty"`
+	FlowActions    []FlowActionMeta     `json:"flowActions,omitempty"`
 	Integration    *IntegrationMeta     `json:"integration,omitempty"`
 	ListSources    []ListSourceMeta     `json:"listSources,omitempty"`
 	RankingSteps   []RankingStepMeta    `json:"rankingSteps,omitempty"`
@@ -334,9 +337,75 @@ type NotificationMeta struct {
 	MaxLength int             `json:"maxLength,omitempty"`
 }
 
-// EventsMeta is mandatory for events.
+// EventsMeta is mandatory for events. Subscribe lists built-in or plugin event
+// names delivered to POST /ether/event; Publish declares custom event schemas
+// the plugin may emit onto Ether's event bus as "plugin:<pluginId>/<key>".
 type EventsMeta struct {
-	Subscribe []string `json:"subscribe"`
+	Subscribe []string             `json:"subscribe,omitempty"`
+	Publish   []PublishedEventMeta `json:"publish,omitempty"`
+}
+
+// EventEnumOption describes one allowed option for an enum event field or flow
+// action parameter.
+type EventEnumOption struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+}
+
+// EventFieldMeta describes one typed field in a published plugin event payload
+// or a flow action output object.
+type EventFieldMeta struct {
+	Name        string            `json:"name"`
+	Type        string            `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	PII         bool              `json:"pii,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Filterable  bool              `json:"filterable,omitempty"`
+	Example     any               `json:"example,omitempty"`
+}
+
+// PublishedEventMeta declares one custom event type a plugin emits through
+// Host.PublishEvent ("plugin:<pluginId>/<key>").
+type PublishedEventMeta struct {
+	Key         string           `json:"key"`
+	Label       string           `json:"label"`
+	Description string           `json:"description,omitempty"`
+	Version     int              `json:"version,omitempty"`
+	Fields      []EventFieldMeta `json:"fields,omitempty"`
+}
+
+// FlowActionParamMeta describes one configurable parameter of a plugin flow action.
+type FlowActionParamMeta struct {
+	Key         string            `json:"key"`
+	Type        string            `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Required    bool              `json:"required,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Template    bool              `json:"template,omitempty"`
+	Default     any               `json:"default,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Picker      string            `json:"picker,omitempty"`
+}
+
+// FlowActionMeta declares one Flow action contributed by a plugin
+// ("plugin:<pluginId>/<key>"). Ether invokes Route with HTTP POST and an
+// X-Ether-Idempotency-Key header.
+type FlowActionMeta struct {
+	Key         string                `json:"key"`
+	Label       string                `json:"label"`
+	Description string                `json:"description,omitempty"`
+	Icon        string                `json:"icon,omitempty"`
+	Route       string                `json:"route"`
+	Idempotent  bool                  `json:"idempotent,omitempty"`
+	SideEffect  *bool                 `json:"sideEffect,omitempty"`
+	Timeout     string                `json:"timeout,omitempty"`
+	Params      []FlowActionParamMeta `json:"params,omitempty"`
+	Outputs     []EventFieldMeta      `json:"outputs,omitempty"`
 }
 
 // IntegrationMeta is mandatory for the integration kind.
@@ -985,6 +1054,12 @@ type Host interface {
 	// Secrets stay behind SecretGet.
 	Settings(ctx context.Context) (map[string]any, error)
 
+	// PublishEvent emits one manifest-declared plugin event onto Ether's event
+	// bus as "plugin:<pluginId>/<key>". Requires the events capability and a
+	// matching entry in contributes.events.publish; payload is schema-validated
+	// and rate-limited.
+	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
+
 	// NotifyOwner posts a console notice (rate-limited).
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
@@ -1128,6 +1203,7 @@ var (
 
 	ErrPermissionDenied = errors.New("plugins: permission denied")
 	ErrQuotaExceeded    = errors.New("plugins: storage quota exceeded")
+	ErrRateLimited      = errors.New("plugins: rate limit exceeded")
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")

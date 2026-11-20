@@ -39,5 +39,6 @@ func (a *App) collectionOptions(cfg config.Config) []collections.Option {
 		collections.WithSealer(a.cfg),
 		collections.WithLLM(chat),
 		collections.WithUserAgent(httpclient.FormatUserAgent(a.opts.Version)),
+		collections.WithOnRebuilt(a.onCollectionRebuilt),
 	}, parityCollectionOptions()...)
 }

@@ -1,6 +1,7 @@
 package studio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -592,6 +593,22 @@ func (h *dryRunHost) CallHost(ctx context.Context, name string, raw json.RawMess
 		}
 		h.mu.Unlock()
 		return marshalResult(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
+
+	case "events.publish":
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		if _, _, err := plugins.ValidatePublishEventCall(h.manifest, str(0), payload); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.mu.Lock()
+		h.writes = append(h.writes, RecordedWrite{Op: "events.publish", Target: str(0), Value: payload})
+		h.mu.Unlock()
+		return json.RawMessage("null"), nil
 
 	case "secret.get":
 		secName := str(0)

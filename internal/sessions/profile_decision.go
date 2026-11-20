@@ -768,7 +768,8 @@ func profileDeliveryAllowed(p *core.ClientCapabilityProfiles, d core.Decision, i
 		if s.Type == "video" {
 			s.Codec = d.VideoCodec
 			if !d.VideoCopy {
-				s.Width, s.Height = transcode.OutputGeometry(s.Width, s.Height, d.MaxHeight)
+				s.Width, s.Height = transcode.OutputGeometry(s, d.MaxHeight)
+				s.SampleAspectRatio = "1:1" // encodes are square-pixel
 				s.Level = d.H264Level
 				s.Profile = ""
 				s.BitDepth = 0
@@ -877,7 +878,7 @@ func constrainedH264(d core.Decision, info core.MediaInfo, caps core.ClientCaps,
 	if v.AverageFrameRate != nil && *v.AverageFrameRate > fps {
 		fps = *v.AverageFrameRate
 	}
-	w, h := transcode.OutputGeometry(v.Width, v.Height, d.MaxHeight)
+	w, h := transcode.OutputGeometry(v, d.MaxHeight)
 	if w == 0 || h == 0 || fps <= 0 || d.BitrateKbps <= 0 {
 		return d, caps.VideoLevels["h264"] <= 0 && len(caps.VideoProfiles["h264"]) == 0
 	}

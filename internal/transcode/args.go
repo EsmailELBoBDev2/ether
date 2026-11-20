@@ -1170,6 +1170,24 @@ type videoPlan struct {
 	err        error // the graph cannot be built; do not start ffmpeg
 }
 
+// displaySize is v's display size in square pixels: the coded size with
+// the sample aspect ratio applied (720x480 at SAR 32:27 displays 854x480).
+func displaySize(v *core.StreamInfo) (int, int) {
+	if v == nil || v.Width <= 0 || v.Height <= 0 {
+		return 0, 0
+	}
+	p := pictureOf(v)
+	return (v.Width*p.sarNum + p.sarDen/2) / p.sarDen, v.Height
+}
+
+// displayOutputSize is the encoded picture size for v at a height cap, in
+// square pixels. Encodes are made square-pixel (planPicture), so this is
+// both the coded and the displayed size of the output.
+func displayOutputSize(v *core.StreamInfo, maxH int) (int, int) {
+	w, h := displaySize(v)
+	return outputSize(w, h, maxH)
+}
+
 // outputSize scales (w,h) to height maxH, keeping aspect and even sizes.
 func outputSize(w, h, maxH int) (int, int) {
 	if w <= 0 || h <= 0 {
@@ -1354,13 +1372,13 @@ type picturePlan struct {
 // with a contract, its depth/range/colour conversion/padding/SAR.
 func planPicture(s runSpec, v *core.StreamInfo, codec string) picturePlan {
 	d := s.Decision
-	w, h := outputSize(v.Width, v.Height, d.MaxHeight)
+	w, h := displayOutputSize(v, d.MaxHeight)
 	// Keep HDR only where HEVC can carry the decoded picture's HDR10/HLG;
 	// any other HDR picture is tone mapped (8-bit SDR output), and an SDR
 	// picture (a Dolby Vision SDR base layer) never is.
 	keepHDR := keepsHDR(v) && !d.ToneMap && codec == "hevc"
 	pic := picturePlan{
-		w: w, h: h, scaling: v.Height > 0 && h < v.Height,
+		w: w, h: h, scaling: w > 0 && h > 0 && (w != v.Width || h != v.Height),
 		tonemap: encodedRange(v) != rangeSDR && !keepHDR,
 		// tenBit and outRange describe the encoded picture; without a
 		// contract they follow keepHDR.
@@ -1368,6 +1386,19 @@ func planPicture(s runSpec, v *core.StreamInfo, codec string) picturePlan {
 	}
 	if keepHDR {
 		pic.outRange = encodedRange(v)
+	}
+	if s.Target == nil && pic.scaling && v.Width > 0 && v.Height > 0 {
+		// Encodes are square-pixel: the scale above sized the picture by
+		// its display aspect, and setsar=1 makes the stream say so. The
+		// scale filter would otherwise keep the source's sample aspect
+		// (or a near-1 rounding of it) on a display-sized picture, and
+		// TV players that size the picture from the manifest or track
+		// header instead of the SAR then stretch it. A contract session
+		// keeps its header's SAR instead (below).
+		src := pictureOf(v)
+		if n, dd := reduce(src.sarNum*v.Width*pic.h, src.sarDen*v.Height*pic.w); n != dd {
+			pic.setSAR = "setsar=1/1"
+		}
 	}
 	if t := s.Target; t != nil {
 		// A static-header session: encode the contract's picture
@@ -1441,6 +1472,9 @@ func planFilterChain(s runSpec, v *core.StreamInfo, pic picturePlan, accel strin
 		// Decode, tone-map and scale on the GPU.
 		inputArgs = append(inputArgs, "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld")
 		chain = append(chain, fmt.Sprintf("scale_vt=w=%d:h=%d:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709", pic.w, pic.h))
+		if pic.setSAR != "" {
+			chain = append(chain, pic.setSAR)
+		}
 		hwFrames = true
 	case accel == AccelVAAPI && !burn && !gpuOff && !s.Accel.NoGPUScale && (!pic.tonemap || (s.Features.hasFilter("tonemap_vaapi") && !s.Accel.NoGPUTonemap)):
 		dev := s.Accel.Device

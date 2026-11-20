@@ -93,3 +93,9 @@ func HLSCopyPeakKbps(info MediaInfo, segDur time.Duration) int {
 func HLSVariantAttributes(info MediaInfo, d Decision) string {
 	return transcode.HLSVariantAttributes(info, d)
 }
+
+// TranscodeOutputSize is the encoded (square-pixel) picture size a
+// decision produces from v; see transcode.DecisionOutputSize.
+func TranscodeOutputSize(v *StreamInfo, d Decision) (int, int) {
+	return transcode.DecisionOutputSize(v, d)
+}

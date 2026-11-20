@@ -44,7 +44,7 @@ func (s *Server) timelineBandwidths(pr *Request, key frontend.RatingKey, ids []s
 	w, h, srcH := 0, 0, 0
 	if v := info.Video(); v != nil {
 		srcH = v.Height
-		w, h = transcodeOutputSize(v.Width, v.Height, dec)
+		w, h = transcodeOutputSize(v, dec)
 	}
 
 	return []model.TimelineBandwidths{{Bandwidth: []model.TimelineBandwidth{{Time: 0, Bandwidth: plannedBandwidth(info, dec), Resolution: transcodeResolutionLabel(w, h, srcH, dec)}}}}

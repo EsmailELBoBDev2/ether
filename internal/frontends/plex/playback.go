@@ -1398,7 +1398,7 @@ func (s *Server) decisionMedia(t *frontend.Title, ps *frontend.PlaySession, dec 
 	if dec.Kind == frontend.DecisionDirectPlay {
 		return directPlayMedia(m, streams, selectedAudioOnly, selectedSubtitleOnly, p.subtitles)
 	}
-	applyTranscodeMedia(&m, dec, p.protocol, selectedAudioStream(info, dec))
+	applyTranscodeMedia(&m, dec, p.protocol, selectedAudioStream(info, dec), info.Video())
 	var kept []model.Stream
 	for _, st := range streams {
 		binding, rerr := s.resolveIssuedStream(context.Background(), u, p.caps.ClientID, st.ID)
@@ -1490,7 +1490,7 @@ func textSidecarCodec(codec string) bool {
 }
 
 // applyTranscodeMedia describes the output container and media dimensions.
-func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string, srcAudio *frontend.StreamInfo) {
+func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string, srcAudio, srcVideo *frontend.StreamInfo) {
 	part := &m.Part[0]
 	// Describe the actual HLS segment container so native MDE does not see
 	// HEVC paired with the MPEG-TS container it cannot use.
@@ -1528,7 +1528,7 @@ func applyTranscodeMedia(m *model.Media, dec frontend.Decision, protocol string,
 		if dec.VideoCodec != "" {
 			m.VideoCodec = plexCodec(dec.VideoCodec)
 		}
-		m.Width, m.Height = transcodeOutputSize(m.Width, m.Height, dec)
+		m.Width, m.Height = transcodeOutputSize(srcVideo, dec)
 		m.VideoResolution = transcodeVideoResolution(m.Width, m.Height, srcH, dec)
 		if dec.BitrateKbps > 0 {
 			m.Bitrate = dec.BitrateKbps
@@ -1586,7 +1586,10 @@ func applyStreamDecision(st model.Stream, src frontend.StreamInfo, dec frontend.
 			if dec.VideoCodec != "" {
 				st.Codec = plexCodec(dec.VideoCodec)
 			}
-			st.Width, st.Height = transcodeOutputSize(st.Width, st.Height, dec)
+			st.Width, st.Height = transcodeOutputSize(&src, dec)
+			// The encode is square-pixel; the source's pixel aspect
+			// must not be reported on it.
+			st.PixelAspectRatio, st.Anamorphic = "", nil
 			if dec.BitrateKbps > 0 {
 				st.Bitrate = dec.BitrateKbps
 			}
@@ -1981,10 +1984,7 @@ func (s *Server) writeMasterPlaylist(w http.ResponseWriter, r *http.Request, ses
 	}
 	line := fmt.Sprintf("#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=%d", bw*1000)
 	if v := info.Video(); v != nil && v.Width > 0 && v.Height > 0 {
-		wd, ht := v.Width, v.Height
-		if !dec.VideoCopy && dec.MaxHeight > 0 && ht > dec.MaxHeight {
-			wd, ht = wd*dec.MaxHeight/ht, dec.MaxHeight
-		}
+		wd, ht := transcodeOutputSize(v, dec)
 		line += fmt.Sprintf(",RESOLUTION=%dx%d", wd, ht)
 		if v.FrameRate > 0 {
 			line += fmt.Sprintf(",FRAME-RATE=%.3f", v.FrameRate)
@@ -2685,7 +2685,7 @@ func buildTranscodeSessionModel(te *transcodeEntry, live liveTranscodeState) mod
 	if v != nil {
 		ts.SourceVideoCodec = plexCodec(v.Codec)
 		if v.Width > 0 && v.Height > 0 {
-			ts.Width, ts.Height = transcodeOutputSize(v.Width, v.Height, dec)
+			ts.Width, ts.Height = transcodeOutputSize(v, dec)
 		}
 	}
 	a := selectedAudioStream(info, dec)
@@ -2805,24 +2805,21 @@ func evenDim(n int) int {
 	return n
 }
 
-func transcodeOutputSize(w, h int, dec frontend.Decision) (int, int) {
-	if dec.VideoCopy {
-		return w, h
-	}
-	if dec.Enhancement.Width > 0 && dec.Enhancement.Height > 0 {
-		return dec.Enhancement.Width, dec.Enhancement.Height
-	}
-	if w <= 0 || h <= 0 {
+// transcodeOutputSize is the picture size a decision delivers from v: the
+// source's coded size for a copy, and the encoder's square-pixel size
+// (sized by display aspect, so an anamorphic source reports its display
+// dimensions) for an encode.
+func transcodeOutputSize(v *frontend.StreamInfo, dec frontend.Decision) (int, int) {
+	if v == nil {
 		if dec.MaxHeight > 0 {
 			return evenDim(dec.MaxHeight * 16 / 9), evenDim(dec.MaxHeight)
 		}
-		return w, h
+		return 0, 0
 	}
-	if dec.MaxHeight <= 0 || dec.MaxHeight >= h {
-		return evenDim(w), evenDim(h)
+	if dec.VideoCopy {
+		return v.Width, v.Height
 	}
-	nw := int(float64(w)*float64(dec.MaxHeight)/float64(h) + 0.5)
-	return evenDim(nw), evenDim(dec.MaxHeight)
+	return frontend.TranscodeOutputSize(v, dec)
 }
 
 func transcodeVideoResolution(w, h, srcH int, dec frontend.Decision) string {

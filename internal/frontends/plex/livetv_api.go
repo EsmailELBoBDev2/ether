@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -370,13 +368,7 @@ func (s *Server) requestOrigin(r *http.Request) (string, string) {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	peerHost, _, _ := net.SplitHostPort(r.RemoteAddr)
-	peer, _ := netip.ParseAddr(peerHost)
-	trusted := peer.IsLoopback()
-	for _, prefix := range clientnet.ProxyPrefixes(s.cfg().Server.TrustedProxyCIDRs) {
-		trusted = trusted || prefix.Contains(peer.Unmap())
-	}
-	if trusted {
+	if clientnet.TrustedPeer(r, clientnet.ProxyPrefixes(s.cfg().Server.TrustedProxyCIDRs)...) {
 		if proto := r.Header.Get("X-Forwarded-Proto"); proto == "http" || proto == "https" {
 			scheme = proto
 		}

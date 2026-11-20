@@ -2,7 +2,6 @@ package plex
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -152,7 +151,7 @@ func pagingParam(r *http.Request, name string) (string, bool) {
 }
 
 // ParseRequest builds the request context from an HTTP request. Forwarded
-// addresses are considered only for a loopback peer (a local reverse proxy).
+// headers are considered only for loopback peers and configured trusted proxies.
 func ParseRequest(r *http.Request, trusted ...netip.Prefix) *Request {
 	pr := &Request{
 		Token:           plexParam(r, "X-Plex-Token"),
@@ -216,23 +215,7 @@ func requestIsSecure(r *http.Request, trusted ...netip.Prefix) bool {
 	if r.TLS != nil {
 		return true
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	if err != nil {
-		return false
-	}
-	peer = peer.Unmap()
-	trust := peer.IsLoopback()
-	for _, p := range trusted {
-		if p.Contains(peer) {
-			trust = true
-			break
-		}
-	}
-	if !trust {
+	if !clientnet.TrustedPeer(r, trusted...) {
 		return false
 	}
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {

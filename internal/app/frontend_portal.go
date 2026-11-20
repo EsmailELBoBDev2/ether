@@ -434,27 +434,7 @@ func usableRequestHost(host string, fromProxyOrConfig bool) bool {
 }
 
 func portalProxyTrusted(r *http.Request, trusted []netip.Prefix) bool {
-	if r == nil {
-		return false
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer, err := netip.ParseAddr(strings.Trim(host, "[]"))
-	if err != nil {
-		return false
-	}
-	peer = peer.Unmap()
-	if peer.IsLoopback() {
-		return true
-	}
-	for _, p := range trusted {
-		if p.Contains(peer) {
-			return true
-		}
-	}
-	return false
+	return identity.TrustedPeer(r, trusted...)
 }
 
 func portalForwardedHost(r *http.Request) string {

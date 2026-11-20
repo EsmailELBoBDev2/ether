@@ -62,13 +62,6 @@ export const SERVER: FieldGroup[] = localized(() => [
         placeholder: "https://home.example.com",
         help: t("Exact addresses allowed to frame the owner page. Empty means nowhere."),
       },
-      {
-        key: "trustedProxyCIDRs",
-        label: t("Trusted proxy networks"),
-        kind: "list",
-        placeholder: "10.0.0.0/8",
-        help: t("Networks whose forwarding headers Ether trusts. Empty trusts none."),
-      },
     ],
   },
 ]);
@@ -239,7 +232,7 @@ export const PLEX: FieldGroup[] = localized(() => [
   },
 ]);
 
-/** plex.* addresses and certificate every app uses (Apps › Overview › Away from home). */
+/** plex.* addresses, certificate, and server.trustedProxyCIDRs (Apps › Overview › Away from home). */
 export const AWAY: FieldGroup[] = localized(() => [
   {
     id: "address",
@@ -270,6 +263,21 @@ export const AWAY: FieldGroup[] = localized(() => [
         kind: "list",
         placeholder: "https://ether.example.com:443",
         help: t("Extra addresses apps should try, comma-separated."),
+      },
+    ],
+  },
+  {
+    id: "proxy",
+    fields: [],
+    more: [
+      {
+        key: "trustedProxyCIDRs",
+        label: t("Trusted reverse proxies"),
+        kind: "list",
+        placeholder: "192.168.1.5, 10.0.0.0/8",
+        help: t(
+          "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
+        ),
       },
     ],
   },

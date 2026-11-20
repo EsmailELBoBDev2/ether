@@ -259,15 +259,21 @@ for remote access outside your LAN:
   port 443 with *Secure connections* set to *Required*) at your `https://`
   domain; Ether publishes that HTTPS endpoint directly to plex.tv without
   requiring a `plex.direct` certificate.
-  A proxy on the Ether host must set `X-Forwarded-For` to the connecting
-  client's address (or append it to the existing chain). If using
-  `X-Real-IP` instead, overwrite it and remove incoming `X-Forwarded-For`.
-  Never pass client-supplied forwarding headers unchanged.
-  Ether considers forwarded addresses only from loopback peers and treats
-  any public hop in the trusted suffix as remote for playback restrictions.
+  A reverse proxy must set `X-Forwarded-For` to the connecting client's
+  address (or append it to the existing chain) and set `X-Forwarded-Proto`.
+  If using `X-Real-IP` instead, overwrite it and remove incoming
+  `X-Forwarded-For`. Never pass client-supplied forwarding headers unchanged.
+  Ether trusts forwarding headers from loopback peers (`127.0.0.1`, `::1`)
+  by default. If your reverse proxy runs on another host or container
+  network (for example Caddy, Nginx, or Traefik on another LAN machine),
+  add its IP address or CIDR range under **Apps › Overview › Away from home ›
+  Reverse proxy** (`server.trustedProxyCIDRs` in `config.json`); Ether then
+  resolves the real client IP and treats public hops in the trusted suffix
+  as remote for sessions, activity, quality profiles, and playback
+  restrictions.
   The owner console at `/ether/` answers only your home network and VPN
   (including Tailscale) by default, wherever the proxy runs. To reach it
-  through your domain, turn on **Server › General › How apps connect ›
+  through your domain, turn on **Apps › Overview › Server address ›
   Open this console from outside your network**; only the Plex account
   that owns the server can sign in. Complete initial setup before exposing
   the server.

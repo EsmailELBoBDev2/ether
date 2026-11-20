@@ -29,13 +29,9 @@ const (
 
 // BuiltinHTTPClient constructs the default SSRF-safe outbound HTTP client used
 // by http.webhook, layered over Ether's egress transport and safefetch guard.
-func BuiltinHTTPClient(trustedHosts []string) *http.Client {
+func BuiltinHTTPClient() *http.Client {
 	base := egress.Client(egress.CapDirect, webhookDefaultWait)
-	var opts []safefetch.Option
-	if len(trustedHosts) > 0 {
-		opts = append(opts, safefetch.WithTrustedHosts(trustedHosts...))
-	}
-	client := (&safefetch.Guard{}).Client(base, opts...)
+	client := (&safefetch.Guard{}).Client(base)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
@@ -76,7 +72,7 @@ func NewHTTPWebhook(deps Deps) flows.ActionHandler {
 			{Key: "bearerToken", Type: events.FieldString, Label: "Bearer token", Description: "Optional token sent in Authorization: Bearer <token>.", Secret: true},
 			{Key: "failOnNon2xx", Type: events.FieldBool, Label: "Fail on non-2xx", Description: "Treat HTTP responses outside 200–299 as step errors.", Default: true},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "statusCode", Type: events.FieldInt, Label: "HTTP status code"},
 			{Name: "ok", Type: events.FieldBool, Label: "2xx status"},
 			{Name: "body", Type: events.FieldString, Label: "Response body (truncated to 4 KiB)"},
@@ -85,7 +81,7 @@ func NewHTTPWebhook(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		rawURL := strings.TrimSpace(paramString(params, "url", ""))
 		if err := validateWebhookURL(rawURL); err != nil {
 			return flows.ActionResult{}, fmt.Errorf("http.webhook: %w", err)
@@ -148,11 +144,15 @@ func NewHTTPWebhook(deps Deps) flows.ActionHandler {
 			}, nil
 		}
 
+		reqCtx := ctx
+		if len(deps.TrustedHosts) > 0 {
+			reqCtx = safefetch.WithTrustedHosts(reqCtx, deps.TrustedHosts)
+		}
 		var bodyReader io.Reader
 		if len(bodyBytes) > 0 && method != http.MethodGet {
 			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
+		req, err := http.NewRequestWithContext(reqCtx, method, rawURL, bodyReader)
 		if err != nil {
 			return flows.ActionResult{}, errors.New("http.webhook: could not construct request")
 		}
@@ -185,7 +185,7 @@ func NewHTTPWebhook(deps Deps) flows.ActionHandler {
 
 		client := deps.HTTPClient
 		if client == nil {
-			client = BuiltinHTTPClient(deps.TrustedHosts)
+			client = BuiltinHTTPClient()
 		}
 
 		start := deps.now()
@@ -221,7 +221,7 @@ func NewHTTPWebhook(deps Deps) flows.ActionHandler {
 			return res, fmt.Errorf("http.webhook: endpoint returned HTTP %d", resp.StatusCode)
 		}
 		return res, nil
-	})
+	}}
 }
 
 func validateWebhookURL(raw string) error {

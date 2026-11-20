@@ -302,6 +302,13 @@ func NewRegistry(deps Deps) (*flows.InMemoryActionRegistry, error) {
 
 // --- shared parameter extraction helpers ---
 
+func correlationViewerID(actx flows.ActionContext) string {
+	if actx.Event.Correlation.ViewerID <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(actx.Event.Correlation.ViewerID, 10)
+}
+
 func paramString(params map[string]any, key, def string) string {
 	v, ok := params[key]
 	if !ok || v == nil {

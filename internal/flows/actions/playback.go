@@ -49,7 +49,7 @@ func NewPlaybackStopSession(deps Deps) flows.ActionHandler {
 			{Key: "excludeViewerTags", Type: events.FieldStringList, Label: "Protected viewer tags", Description: "Skip sessions belonging to viewers carrying any of these tags (for example vip or owner).", Template: true},
 			{Key: "minPausedMs", Type: events.FieldDurationMS, Label: "Minimum paused duration", Description: "Only consider streams paused for at least this many milliseconds (oldest_paused selector).", Unit: "ms"},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "stopped", Type: events.FieldBool, Label: "Session stopped"},
 			{Name: "sessionId", Type: events.FieldString, Label: "Stopped session ID"},
 			{Name: "viewerId", Type: events.FieldString, Label: "Viewer ID"},
@@ -59,10 +59,10 @@ func NewPlaybackStopSession(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		selector := strings.TrimSpace(paramString(params, "selector", "explicit"))
 		sessionID := strings.TrimSpace(paramString(params, "sessionId", ""))
-		viewerID := strings.TrimSpace(paramString(params, "viewerId", actx.Event.Correlation.ViewerID))
+		viewerID := strings.TrimSpace(paramString(params, "viewerId", correlationViewerID(actx)))
 		message := strings.TrimSpace(paramString(params, "message", defaultStopSessionMessage))
 		if len(message) > 500 {
 			message = string([]rune(message)[:500])
@@ -151,7 +151,7 @@ func NewPlaybackStopSession(deps Deps) flows.ActionHandler {
 				"reason":    message,
 			},
 		}, nil
-	})
+	}}
 }
 
 type sessionSelection struct {

@@ -305,7 +305,7 @@ func NewViewerRestrict(deps Deps) flows.ActionHandler {
 			{Key: "revertAfter", Type: events.FieldString, Label: "Revert after", Description: "Optional duration after which restrictions revert automatically (for example 30m, 2h, 1d; max 30d).", Template: true},
 			{Key: "reason", Type: events.FieldString, Label: "Reason", Description: "Optional note describing why the restriction was applied.", Template: true},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "viewerId", Type: events.FieldString, Label: "Viewer ID"},
 			{Name: "restricted", Type: events.FieldBool, Label: "Restriction applied"},
 			{Name: "revertAt", Type: events.FieldTimestamp, Label: "Auto-revert time"},
@@ -314,8 +314,8 @@ func NewViewerRestrict(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
-		viewerID := strings.TrimSpace(paramString(params, "viewerId", actx.Event.Correlation.ViewerID))
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+		viewerID := strings.TrimSpace(paramString(params, "viewerId", correlationViewerID(actx)))
 		if viewerID == "" {
 			return flows.ActionResult{}, errors.New("viewer.restrict: viewerId is required")
 		}
@@ -420,7 +420,7 @@ func NewViewerRestrict(deps Deps) flows.ActionHandler {
 				"changes":    changes,
 			},
 		}, nil
-	})
+	}}
 }
 
 // NewViewerUnrestrict constructs the built-in viewer.unrestrict action handler.
@@ -438,7 +438,7 @@ func NewViewerUnrestrict(deps Deps) flows.ActionHandler {
 			{Key: "viewerId", Type: events.FieldString, Label: "Viewer", Description: "Viewer ID to unrestrict.", Required: true, Template: true, Picker: "viewer"},
 			{Key: "resetStreamLimit", Type: events.FieldBool, Label: "Reset stream limit", Description: "Also reset the viewer's stream limit to server default when no saved baseline exists.", Default: false},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "viewerId", Type: events.FieldString, Label: "Viewer ID"},
 			{Name: "unrestricted", Type: events.FieldBool, Label: "Restrictions lifted"},
 			{Name: "restoredFromSnapshot", Type: events.FieldBool, Label: "Restored saved baseline"},
@@ -446,8 +446,8 @@ func NewViewerUnrestrict(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
-		viewerID := strings.TrimSpace(paramString(params, "viewerId", actx.Event.Correlation.ViewerID))
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+		viewerID := strings.TrimSpace(paramString(params, "viewerId", correlationViewerID(actx)))
 		if viewerID == "" {
 			return flows.ActionResult{}, errors.New("viewer.unrestrict: viewerId is required")
 		}
@@ -508,10 +508,10 @@ func NewViewerUnrestrict(deps Deps) flows.ActionHandler {
 		return flows.ActionResult{
 			Output: map[string]any{
 				"dryRun":               false,
-				"viewerId":             viewerID,
 				"unrestricted":         true,
+				"viewerId":             viewerID,
 				"restoredFromSnapshot": restoredFromSnapshot,
 			},
 		}, nil
-	})
+	}}
 }

@@ -36,7 +36,7 @@ func NewNotifySend(deps Deps) flows.ActionHandler {
 			{Key: "footer", Type: events.FieldString, Label: "Footer", Description: "Optional footer text for rich embeds.", Template: true},
 			{Key: "bypassDigest", Type: events.FieldBool, Label: "Bypass digest", Description: "Deliver immediately even when a channel uses digest batching.", Default: false},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "sent", Type: events.FieldInt, Label: "Sent immediately"},
 			{Name: "queued", Type: events.FieldInt, Label: "Queued for delivery"},
 			{Name: "failed", Type: events.FieldInt, Label: "Failed deliveries"},
@@ -45,7 +45,7 @@ func NewNotifySend(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		channelIDs := paramStringList(params, "channelIds")
 		if len(channelIDs) == 0 {
 			return flows.ActionResult{}, errors.New("notify.send: channelIds requires at least one channel ID or \"*\"")
@@ -140,7 +140,7 @@ func NewNotifySend(deps Deps) flows.ActionHandler {
 			return out, fmt.Errorf("notify.send: %w", err)
 		}
 		return out, nil
-	})
+	}}
 }
 
 func parseEmbedFields(raw any) []notify.EmbedField {
@@ -220,7 +220,7 @@ func NewMQTTPublish(deps Deps) flows.ActionHandler {
 			{Key: "qos", Type: events.FieldInt, Label: "QoS", Description: "MQTT QoS level (0, 1, or 2).", Default: 0},
 			{Key: "retain", Type: events.FieldBool, Label: "Retain", Description: "Ask the broker to retain the last published value on this topic.", Default: false},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "published", Type: events.FieldBool, Label: "Published"},
 			{Name: "brokerId", Type: events.FieldString, Label: "Broker ID"},
 			{Name: "topic", Type: events.FieldString, Label: "Topic"},
@@ -229,7 +229,7 @@ func NewMQTTPublish(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		brokerID := strings.TrimSpace(paramString(params, "brokerId", ""))
 		if brokerID == "" {
 			return flows.ActionResult{}, errors.New("mqtt.publish: brokerId is required")
@@ -281,5 +281,5 @@ func NewMQTTPublish(deps Deps) flows.ActionHandler {
 				"bytes":     len(payload),
 			},
 		}, nil
-	})
+	}}
 }

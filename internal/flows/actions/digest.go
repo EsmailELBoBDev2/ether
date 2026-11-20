@@ -58,7 +58,7 @@ func NewDigestGenerate(deps Deps) flows.ActionHandler {
 			{Key: "maxItems", Type: events.FieldInt, Label: "Max items", Description: "Maximum recently added items to include (1–200).", Default: defaultDigestMaxItems},
 			{Key: "saveShareable", Type: events.FieldBool, Label: "Save shareable HTML", Description: "Persist rendered HTML via the export store and output shareUrl.", Default: false},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "subject", Type: events.FieldString, Label: "Subject / title"},
 			{Name: "text", Type: events.FieldString, Label: "Plain text digest"},
 			{Name: "html", Type: events.FieldString, Label: "HTML newsletter"},
@@ -73,7 +73,7 @@ func NewDigestGenerate(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		windowRaw := strings.TrimSpace(paramString(params, "window", "7d"))
 		windowDur, err := parseHumanDuration(windowRaw)
 		if err != nil {
@@ -179,7 +179,7 @@ func NewDigestGenerate(deps Deps) flows.ActionHandler {
 				"dryRun":       actx.DryRun,
 			},
 		}, nil
-	})
+	}}
 }
 
 type digestSeasonGroup struct {

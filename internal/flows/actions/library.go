@@ -167,7 +167,7 @@ func NewLibraryRefresh(deps Deps) flows.ActionHandler {
 			{Key: "collectionId", Type: events.FieldString, Label: "Collection ID", Description: "Collection ID to rebuild instead of refreshing a library.", Template: true},
 			{Key: "fullSync", Type: events.FieldBool, Label: "Full sync", Description: "Force a full scan/walk when the library source supports incremental sync.", Default: false},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "refreshed", Type: events.FieldBool, Label: "Refreshed"},
 			{Name: "target", Type: events.FieldString, Label: "Target"},
 			{Name: "kind", Type: events.FieldString, Label: "Target kind"},
@@ -177,7 +177,7 @@ func NewLibraryRefresh(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		libraryID := strings.TrimSpace(paramString(params, "libraryId", ""))
 		collectionID := strings.TrimSpace(paramString(params, "collectionId", ""))
 		fullSync, _, err := paramBool(params, "fullSync", false)
@@ -242,7 +242,7 @@ func NewLibraryRefresh(deps Deps) flows.ActionHandler {
 				"durationMs": res.DurationMS,
 			},
 		}, nil
-	})
+	}}
 }
 
 // NewLibraryExport constructs the built-in library.export action handler.
@@ -289,7 +289,7 @@ func NewLibraryExport(deps Deps) flows.ActionHandler {
 			{Key: "maxItems", Type: events.FieldInt, Label: "Max items", Description: "Upper bound on exported items (1–50000).", Default: defaultExportMaxItems},
 			{Key: "filename", Type: events.FieldString, Label: "Filename stem", Description: "Optional custom filename stem (extension added automatically).", Template: true},
 		},
-		Outputs: []flows.FieldSchema{
+		Outputs: []events.FieldSchema{
 			{Name: "exportPath", Type: events.FieldString, Label: "Export file path"},
 			{Name: "downloadUrl", Type: events.FieldString, Label: "Download URL"},
 			{Name: "filename", Type: events.FieldString, Label: "Filename"},
@@ -300,7 +300,7 @@ func NewLibraryExport(deps Deps) flows.ActionHandler {
 		},
 	}
 
-	return flows.NewAction(spec, func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
+	return flows.ActionFunc{ActionSpec: spec, Run: func(ctx context.Context, actx flows.ActionContext, params map[string]any) (flows.ActionResult, error) {
 		scope := strings.ToLower(strings.TrimSpace(paramString(params, "scope", "library")))
 		switch scope {
 		case "server", "library", "collection", "playlist", "item":
@@ -421,7 +421,7 @@ func NewLibraryExport(deps Deps) flows.ActionHandler {
 				"sizeBytes":   artifact.SizeBytes,
 			},
 		}, nil
-	})
+	}}
 }
 
 func projectExportItems(items []ExportItem, metaLevel, mediaLevel, artLevel int) []ExportItem {

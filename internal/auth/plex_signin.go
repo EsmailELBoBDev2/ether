@@ -107,6 +107,31 @@ func (s *Service) AuthenticatePlexAccount(ctx context.Context, token string) (*c
 	return nil, 0, ErrPlexUnreachable
 }
 
+// ActivePlexUserByPlexID returns the active Ether viewer mapped to a
+// plex.tv account id, or nil when none is active. DLNA guests never match.
+func (s *Service) ActivePlexUserByPlexID(plexID int64) *core.User {
+	if s == nil || plexID <= 0 {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.byPlex[plexID]
+	if !ok {
+		return nil
+	}
+	return s.activePlexUser(id)
+}
+
+// OwnerPlexID returns the server owner's plex.tv account id, or 0.
+func (s *Service) OwnerPlexID() int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ownerPlexID
+}
+
 // PlexLinkID returns the verified identity_links id for a viewer's Plex account,
 // or nil when none is recorded.
 func (s *Service) PlexLinkID(ctx context.Context, viewerID, plexID int64) *int64 {

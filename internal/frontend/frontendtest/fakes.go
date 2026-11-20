@@ -597,6 +597,43 @@ func (f Identity) Users(context.Context) ([]core.User, error) {
 
 var _ frontend.SurfaceIdentity = Identity{}
 
+// PlexHomeIdentity opts a fake identity into the optional Plex Home
+// profile selection API.
+type PlexHomeIdentity struct {
+	Identity
+	HouseholdProfilesFunc          func(context.Context, string) ([]frontend.HouseholdProfile, error)
+	HouseholdProfilesForViewerFunc func(context.Context, *core.Viewer) ([]frontend.HouseholdProfile, error)
+	SignInWithHouseholdProfileFunc func(context.Context, frontend.HouseholdProfileSignIn) (string, error)
+	FetchHouseholdAvatarFunc       func(context.Context, frontend.HouseholdAvatarRequest) ([]byte, string, error)
+}
+
+func (f PlexHomeIdentity) HouseholdProfiles(ctx context.Context, token string) ([]frontend.HouseholdProfile, error) {
+	if f.HouseholdProfilesFunc != nil {
+		return f.HouseholdProfilesFunc(ctx, token)
+	}
+	return nil, frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) HouseholdProfilesForViewer(ctx context.Context, v *core.Viewer) ([]frontend.HouseholdProfile, error) {
+	if f.HouseholdProfilesForViewerFunc != nil {
+		return f.HouseholdProfilesForViewerFunc(ctx, v)
+	}
+	return nil, frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) SignInWithHouseholdProfile(ctx context.Context, req frontend.HouseholdProfileSignIn) (string, error) {
+	if f.SignInWithHouseholdProfileFunc != nil {
+		return f.SignInWithHouseholdProfileFunc(ctx, req)
+	}
+	return "", frontend.ErrIdentityUnavailable
+}
+func (f PlexHomeIdentity) FetchHouseholdAvatar(ctx context.Context, req frontend.HouseholdAvatarRequest) ([]byte, string, error) {
+	if f.FetchHouseholdAvatarFunc != nil {
+		return f.FetchHouseholdAvatarFunc(ctx, req)
+	}
+	return nil, "", frontend.ErrIdentityUnavailable
+}
+
+var _ frontend.HouseholdProfileAuth = PlexHomeIdentity{}
+
 // Capabilities is a configurable fake for the host capability provider.
 type Capabilities struct {
 	BuildFunc            func(context.Context, frontend.CapabilityRequest) (frontend.CapabilityResult, error)

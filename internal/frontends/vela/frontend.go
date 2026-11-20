@@ -217,6 +217,8 @@ type instance struct {
 	sessions        map[string]*playSession
 	replayMu        sync.Mutex
 	replays         map[string]*replay
+	plexSelMu       sync.Mutex
+	plexSels        map[string]*plexSelection
 	aiMu            sync.Mutex
 	aiJobs          map[string]*aiSearchJob
 	aiActive        int
@@ -555,7 +557,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "request", "idempotency_key_required")
 		return
 	}
-	public := strings.HasPrefix(r.URL.Path, "/vela/v0/auth/") && !strings.HasSuffix(r.URL.Path, "/approve") && !strings.HasSuffix(r.URL.Path, "/revoke") && r.URL.Path != "/vela/v0/auth/web-code"
+	public := strings.HasPrefix(r.URL.Path, "/vela/v0/auth/") && !strings.HasSuffix(r.URL.Path, "/approve") && !strings.HasSuffix(r.URL.Path, "/revoke") && r.URL.Path != "/vela/v0/auth/web-code" && r.URL.Path != "/vela/v0/auth/plex/profiles/challenge"
 	public = public || r.URL.Path == "/vela/v0/negotiate"
 	scope := ""
 	if !public {
@@ -690,7 +692,7 @@ func (i *instance) routes() {
 	i.route("GET", "/people/{id}/titles", i.personTitles)
 	i.route("GET", "/capabilities", func(w http.ResponseWriter, r *http.Request) { cache(w, r, i.requestCapabilities(r)) })
 	i.route("POST", "/negotiate", i.negotiate)
-	for _, p := range []string{"sign-in", "plex", "refresh", "revoke", "web-code", "web-code/redeem", "device", "device/poll", "device/approve", "quick-connect", "quick-connect/poll", "quick-connect/approve"} {
+	for _, p := range []string{"sign-in", "plex", "plex/profile", "plex/profiles/challenge", "refresh", "revoke", "web-code", "web-code/redeem", "device", "device/poll", "device/approve", "quick-connect", "quick-connect/poll", "quick-connect/approve"} {
 		i.route("POST", "/auth/"+p, i.auth)
 	}
 	i.route("GET", "/bootstrap", i.bootstrap)
@@ -793,6 +795,11 @@ func (i *instance) capabilities() object {
 	caps := object{"protocolVersion": 0, "revision": i.capabilitiesRevision(), "compatibleClientBuilds": object{"minInclusive": "0.1.0", "maxExclusive": "0.3.0"}, "server": object{"id": s.MachineID, "name": s.FriendlyName, "version": s.Version}, "features": object{"versions": f(i.versionsAvailable()), "passwordSignIn": f(passwordAvail), "deviceGrant": f(quickAvail && i.host.ViewerPortalURL != nil), "quickConnect": f(quickAvail), "descriptiveSearch": f(descriptive), "aiSearch": f(i.aiSearchAvailable()), "proactiveFallback": f(i.proactiveFallbackAvailable()), "liveTV": f(live), "livePreview": object{"available": true, "mode": i.livePreviewMode()}, "libraryLive": f(i.host.LibraryLive != nil && i.host.Sessions != nil), "extras": f(false), "initialTrackSelection": f(true), "audioFallback": f(i.audioFallbackAvailable()), "sessionTrackChanges": f(trackChanges), "extraPlayback": f(i.extraPlaybackAvailable()), "trailerPreview": f(i.previewAvailable()), "themeMusic": f(i.themeAvailable()), "playlists": object{"available": i.playlistsAvailable(), "maxEntries": frontend.MaxPlaylistEntries}, "removeFromContinue": f(true)}, "searchSorts": []object{{"id": "relevance", "directions": []string{"asc"}}, {"id": "title", "directions": []string{"asc", "desc"}}, {"id": "released", "directions": []string{"asc", "desc"}}, {"id": "added", "directions": []string{"asc", "desc"}}, {"id": "rating", "directions": []string{"asc", "desc"}}, {"id": "popularity", "directions": []string{"asc", "desc"}}}, "searchKinds": []object{{"id": "movie", "label": "Movies"}, {"id": "show", "label": "Shows"}}, "searchLibraries": true, "skins": []object{{"id": "cinematic", "name": "Cinematic"}}, "defaultSkinId": i.appearanceDocument().skinID}
 	if plexAvail {
 		caps["plexAccountSignIn"] = true
+	}
+	if plexAvail && auth.HouseholdProfiles {
+		if _, ok := i.host.Identity.(frontend.HouseholdProfileAuth); ok {
+			caps["plexHomeProfiles"] = true
+		}
 	}
 	if _, ok := i.liveGuideWindowReader(); ok {
 		caps["liveGuideWindow"] = object{

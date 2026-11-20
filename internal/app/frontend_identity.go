@@ -480,6 +480,7 @@ func (s surfaceIdentity) AuthenticationFeatures() frontend.AuthenticationFeature
 		Password:          native && s.local != nil,
 		QuickConnect:      native && s.quick != nil && s.poll != nil,
 		PlexAccountSignIn: native && s.plexConfigured(),
+		HouseholdProfiles: native && s.plexHomeProfilesSupported(),
 	}
 }
 

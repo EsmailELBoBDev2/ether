@@ -2233,7 +2233,7 @@ func liveSessionDecision(hs frontend.HLSSession, fallback frontend.Decision) fro
 	if hs == nil {
 		return fallback
 	}
-	if src, ok := hs.(interface{ Decision() frontend.Decision }); ok {
+	if src, ok := hs.(frontend.DecisionSession); ok {
 		if actual := src.Decision(); actual.Kind != "" {
 			return mergeLiveDecision(fallback, actual)
 		}
@@ -2399,20 +2399,20 @@ func (s *Server) liveTranscode(te *transcodeEntry) liveTranscodeState {
 	}
 	hs, ok := s.plexHLSSession(te.id)
 	if ok && hs != nil {
-		if src, ok := hs.(interface{ Info() frontend.MediaInfo }); ok {
+		if src, ok := hs.(frontend.DeliveryInfoSession); ok {
 			if info := src.Info(); len(info.Streams) > 0 || info.Duration > 0 || info.BitrateKbps > 0 {
 				state.info = info
 			}
 		}
-		if src, ok := hs.(interface{ Decision() frontend.Decision }); ok {
+		if src, ok := hs.(frontend.DecisionSession); ok {
 			state.decision = mergeLiveDecision(state.decision, src.Decision())
 		}
-		if src, ok := hs.(interface{ Protocol() string }); ok {
+		if src, ok := hs.(frontend.ProtocolSession); ok {
 			if p := src.Protocol(); p != "" {
 				state.protocol = p
 			}
 		}
-		if src, ok := hs.(interface{ Container() string }); ok {
+		if src, ok := hs.(frontend.ContainerSession); ok {
 			if c := src.Container(); c != "" {
 				state.container = c
 			}
@@ -2440,7 +2440,7 @@ func (s *Server) liveTranscode(te *transcodeEntry) liveTranscodeState {
 			}
 		}
 		if !hasStatus && !state.decision.VideoCopy {
-			if hwSrc, ok := hs.(interface{ HWAccelerated() bool }); ok && hwSrc.HWAccelerated() {
+			if hwSrc, ok := hs.(frontend.HWAcceleratedSession); ok && hwSrc.HWAccelerated() {
 				state.hwRequested = true
 			}
 		}

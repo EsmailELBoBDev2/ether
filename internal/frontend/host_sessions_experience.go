@@ -1093,6 +1093,16 @@ type EncoderStatusSession interface {
 	EncoderStatus() *core.EncoderStatus
 }
 
+// Optional live-delivery views of an HLS session: a frontend that reports
+// what a session is actually sending (Plex /status/sessions) reads them.
+type (
+	DecisionSession      interface{ Decision() Decision }
+	DeliveryInfoSession  interface{ Info() MediaInfo }
+	ProtocolSession      interface{ Protocol() string }
+	ContainerSession     interface{ Container() string }
+	HWAcceleratedSession interface{ HWAccelerated() bool }
+)
+
 // ProtocolStopper stops all active sessions for a frontend protocol.
 type ProtocolStopper interface {
 	StopProtocol(ctx context.Context, protocol Protocol) error

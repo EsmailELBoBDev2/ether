@@ -36,7 +36,7 @@ func (b *Broker) DetailPlan(ctx context.Context, req frontend.PlanRequest) (fron
 	}
 	// Explicit source tracks require a generation pin through Open. Detail
 	// planning does not create an openable session, so it cannot promise them.
-	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil {
+	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil {
 		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
 	}
 	viewer, err := b.viewer(ctx, req.Viewer)

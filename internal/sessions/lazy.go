@@ -144,7 +144,7 @@ func (s *lazyStreams) issueOutput(ctx context.Context, credential string, req fr
 		// Track positions can only be validated against the opened source.
 		// The original request is retained for the later playback admission.
 		estimate.Intent.AudioOrdinal = nil
-		estimate.Intent.SubtitleStreamIndex = nil
+		estimate.Intent.SubtitleOrdinal = nil
 		estimate.Intent.Estimate = true
 		if _, err = s.broker.Plan(ctx, estimate); err != nil {
 			return "", err

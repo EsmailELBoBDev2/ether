@@ -266,7 +266,18 @@ func (i *instance) childItems(w http.ResponseWriter, r *http.Request) {
 			// The series page labels its next-up episode "Resume S4·E2" and
 			// draws watched/progress state from each episode's user_data.
 			st := states[t.Key]
-			data := map[string]any{"played": st.ViewCount > 0, "is_in_progress": st.ViewOffset > 0 && st.ViewCount == 0}
+			// The app decodes this as the watch rollup: the three counts are
+			// required, and a missing one fails the whole episode list.
+			played := st.ViewCount > 0
+			inProgress := st.ViewOffset > 0 && !played
+			watched, unplayed, progressing := 0, 1, 0
+			if played {
+				watched, unplayed = 1, 0
+			}
+			if inProgress {
+				progressing = 1
+			}
+			data := map[string]any{"played": played, "is_in_progress": inProgress, "watched_count": watched, "unplayed_count": unplayed, "in_progress_count": progressing}
 			if st.ViewOffset > 0 {
 				data["position_seconds"] = st.ViewOffset.Seconds()
 			}

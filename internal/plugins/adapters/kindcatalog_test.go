@@ -1209,3 +1209,127 @@ func TestKindCatalogPresentationShelvesAndIndexedBrowse(t *testing.T) {
 		t.Fatalf("AND shelf browse = %+v, err=%v", andPage.Items, err)
 	}
 }
+
+func TestKindCatalogManifestViewHistoryTab(t *testing.T) {
+	ctx := context.Background()
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	if _, err := h.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS state_watch (
+		user_id INTEGER NOT NULL,
+		rating_key INTEGER NOT NULL,
+		view_offset_ns INTEGER NOT NULL DEFAULT 0,
+		duration_ns INTEGER NOT NULL DEFAULT 0,
+		view_count INTEGER NOT NULL DEFAULT 0,
+		counted INTEGER NOT NULL DEFAULT 0,
+		last_viewed_at INTEGER NOT NULL DEFAULT 0,
+		user_rating REAL NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (user_id, rating_key)
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	const pluginID = "community.example.history-docs"
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "History Docs",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Documentaries with a manifest History view tab",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"contributes": map[string]any{
+				"mediaKinds": []any{map[string]any{
+					"key":   "doc",
+					"label": "Documentaries",
+					"library": map[string]any{
+						"name": "Documentaries",
+						"tabs": []any{
+							map[string]any{"key": "recommended", "label": "Recommended", "kind": "recommended"},
+							map[string]any{"key": "library", "label": "Library", "kind": "library"},
+							map[string]any{
+								"key":               "history",
+								"label":             "History",
+								"kind":              "view",
+								"layout":            "timeline",
+								"sort":              "lastViewed",
+								"direction":         "desc",
+								"searchPlaceholder": "Search watch history",
+								"filters": map[string]any{
+									"match": "all",
+									"rules": []any{
+										map[string]any{"field": "viewer", "op": "is", "value": map[string]any{"history": true}},
+									},
+								},
+							},
+						},
+					},
+					"levels":  []any{map[string]any{"key": "film", "label": "Film", "playable": true}},
+					"present": map[string]any{"vela": map[string]any{"type": "movies"}},
+					"browse":  map[string]any{"sorts": []string{"title", "released"}},
+					"sync":    map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, nil)
+
+	var docLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			docLib = lib
+		}
+	}
+	if docLib.ID == 0 {
+		t.Fatal("expected plugin library")
+	}
+
+	pres, ok := h.catalog.Presentation(ctx, docLib)
+	if !ok || len(pres.Tabs) != 3 {
+		t.Fatalf("Presentation tabs = %+v (ok=%v)", pres.Tabs, ok)
+	}
+	hist := pres.Tabs[2]
+	if hist.ID != "history" || hist.Kind != core.TabView || hist.Layout != core.TabLayoutTimeline || hist.Sort != "lastViewed" || hist.Direction != "desc" || !hist.Search || hist.SearchPlaceholder != "Search watch history" || hist.Filters == nil {
+		t.Fatalf("manifest history ViewTab = %+v", hist)
+	}
+
+	if _, err := h.items.KindUpsert(ctx, pluginID, "doc", []core.KindItem{
+		{ID: "d1", Level: "film", Title: "Alpha", Playable: true},
+		{ID: "d2", Level: "film", Title: "Beta", Playable: true},
+		{ID: "d3", Level: "film", Title: "Gamma", Playable: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	k1, _, _ := h.items.GetByRef(ctx, core.NewItemRef(pluginID, "doc", "d1"))
+	k2, _, _ := h.items.GetByRef(ctx, core.NewItemRef(pluginID, "doc", "d2"))
+	k3, _, _ := h.items.GetByRef(ctx, core.NewItemRef(pluginID, "doc", "d3"))
+	// Viewer 1 watched d1 earlier and d3 later; Viewer 2 watched d2 only.
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO state_watch(user_id,rating_key,view_count,last_viewed_at) VALUES (1,?,1,1000),(1,?,1,3000),(2,?,1,2000)`, int64(k1.Key), int64(k3.Key), int64(k2.Key)); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, fallback := hist.Filters.ToPolicy("")
+	q := frontend.ItemQuery{
+		Sort: core.SortLastViewed,
+		Desc: true,
+		Filter: core.Filter{
+			TabRules:    rules,
+			TabFallback: fallback,
+		},
+	}
+
+	v1Page, err := h.catalog.Browse(core.WithCatalogViewer(ctx, &core.User{ID: 1}), docLib, q, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v1Page.Items) != 2 || v1Page.Items[0].Title != "Gamma" || v1Page.Items[1].Title != "Alpha" {
+		t.Fatalf("viewer 1 history = %+v, want [Gamma, Alpha]", v1Page.Items)
+	}
+
+	v2Page, err := h.catalog.Browse(core.WithCatalogViewer(ctx, &core.User{ID: 2}), docLib, q, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v2Page.Items) != 1 || v2Page.Items[0].Title != "Beta" {
+		t.Fatalf("viewer 2 history = %+v, want [Beta]", v2Page.Items)
+	}
+}

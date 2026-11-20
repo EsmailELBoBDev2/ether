@@ -484,6 +484,23 @@ export function isRuleComplete(rule: Rule): boolean {
       rule.value.length > 0 &&
       rule.value.every((child: Rule) => isRuleComplete(child))
     );
+  if (rule.field === "viewer") {
+    if (typeof rule.value !== "object" || rule.value === null || Array.isArray(rule.value))
+      return false;
+    const g = rule.value as Record<string, unknown>;
+    return (
+      typeof g.watched === "boolean" ||
+      typeof g.unwatched === "boolean" ||
+      typeof g.inProgress === "boolean" ||
+      typeof g.history === "boolean" ||
+      typeof g.favorite === "boolean" ||
+      typeof g.watchlist === "boolean" ||
+      typeof g.onWatchlist === "boolean" ||
+      (typeof g.lastViewedAfter === "number" && g.lastViewedAfter > 0) ||
+      (typeof g.lastViewedBefore === "number" && g.lastViewedBefore > 0) ||
+      (typeof g.stateField === "string" && g.stateField.trim() !== "")
+    );
+  }
   if (rule.op === "unknown" || rule.op === "known") return true;
   const meta = fieldMeta(rule.field);
   const v = rule.value;

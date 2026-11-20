@@ -3,6 +3,8 @@ package pluginitems
 import (
 	"context"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []string, limit int) (BrowsePage, error) {
@@ -38,10 +40,14 @@ func (s *Service) searchPostgres(ctx context.Context, q SearchQuery, tokens []st
 	if err := s.appendFacets(ctx, q.LibraryID, &where, &args, q.Facets); err != nil {
 		return BrowsePage{}, err
 	}
-	if err := s.appendVisibility(ctx, &where, &args, q.LibraryID, q.Policy, q.Hidden); err != nil {
+	viewerID := q.ViewerID
+	if viewerID <= 0 {
+		viewerID = core.CatalogViewerID(ctx)
+	}
+	if err := s.appendVisibilityForViewer(ctx, &where, &args, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
 		return BrowsePage{}, err
 	}
-	if err := s.appendVisibility(ctx, &where, &args, q.LibraryID, q.TabPolicy, false); err != nil {
+	if err := s.appendVisibilityForViewer(ctx, &where, &args, q.LibraryID, q.TabPolicy, false, viewerID); err != nil {
 		return BrowsePage{}, err
 	}
 

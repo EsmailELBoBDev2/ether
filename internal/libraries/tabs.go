@@ -18,7 +18,7 @@ func init() {
 }
 
 // MaxLibraryTabs bounds how many tabs an owner may configure on a single library.
-const MaxLibraryTabs = 12
+const MaxLibraryTabs = 50
 
 // PluginTabSchema describes the declared facets and sorts of a plugin library
 // kind when validating owner-defined tabs. Nil skips manifest-specific checks
@@ -30,17 +30,20 @@ type PluginTabSchema struct {
 }
 
 var allowedCatalogueTabSorts = map[string]string{
-	"popularity": "popularity",
-	"addedat":    "added",
-	"added_at":   "added",
-	"added":      "added",
-	"released":   "released",
-	"year":       "year",
-	"rating":     "rating",
-	"duration":   "duration",
-	"runtime":    "duration",
-	"title":      "title",
-	"server":     "server",
+	"popularity":  "popularity",
+	"addedat":     "added",
+	"added_at":    "added",
+	"added":       "added",
+	"released":    "released",
+	"year":        "year",
+	"rating":      "rating",
+	"duration":    "duration",
+	"runtime":     "duration",
+	"title":       "title",
+	"server":      "server",
+	"lastviewed":  "lastViewed",
+	"last_viewed": "lastViewed",
+	"played":      "lastViewed",
 }
 
 func validTabKey(s string) bool {
@@ -153,6 +156,16 @@ func (s *Service) ValidateTabs(ctx context.Context, lib core.Library, tabs []cor
 			return nil, fmt.Errorf("%w: tab %q of kind %s cannot set card", ErrInvalid, t.Key, t.Kind)
 		}
 
+		// Layout validation (view tabs only).
+		t.Layout = strings.ToLower(strings.TrimSpace(t.Layout))
+		if t.Kind == core.TabView {
+			if !core.ValidTabLayout(t.Layout) {
+				return nil, fmt.Errorf("%w: view tab %q layout must be grid, list or timeline", ErrInvalid, t.Key)
+			}
+		} else if t.Layout != "" {
+			return nil, fmt.Errorf("%w: tab %q of kind %s cannot set layout", ErrInvalid, t.Key, t.Kind)
+		}
+
 		// Facet validation.
 		t.Facet = strings.TrimSpace(t.Facet)
 		switch t.Kind {
@@ -215,7 +228,9 @@ func (s *Service) ValidateTabs(ctx context.Context, lib core.Library, tabs []cor
 		} else {
 			if t.Sort != "" {
 				if lib.Source == core.LibraryPlugin {
-					if !validIdent(t.Sort) || (pluginSchema != nil && !pluginSchema.Sorts[t.Sort]) {
+					if core.IsLastViewedSort(t.Sort) {
+						t.Sort = string(core.SortLastViewed)
+					} else if !validIdent(t.Sort) || (pluginSchema != nil && !pluginSchema.Sorts[t.Sort]) {
 						return nil, fmt.Errorf("%w: tab %q has unsupported sort %q", ErrInvalid, t.Key, t.Sort)
 					}
 				} else {

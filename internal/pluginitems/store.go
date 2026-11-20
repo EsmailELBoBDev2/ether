@@ -52,6 +52,10 @@ type rowScanner interface {
 }
 
 func scanItemRow(sc rowScanner) (core.KindItem, core.LibraryID, int64, error) {
+	return scanItemRowExtra(sc)
+}
+
+func scanItemRowExtra(sc rowScanner, extra ...any) (core.KindItem, core.LibraryID, int64, error) {
 	var (
 		it             core.KindItem
 		refStr         string
@@ -69,11 +73,14 @@ func scanItemRow(sc rowScanner) (core.KindItem, core.LibraryID, int64, error) {
 		fieldsRaw      string
 		unavailableRaw string
 	)
-	if err := sc.Scan(
+	dest := make([]any, 0, 23+len(extra))
+	dest = append(dest,
 		&refStr, &seq, &pluginID, &kindKey, &libID, &it.ID, &parentRef, &it.Level, &idx,
 		&it.Title, &it.SortTitle, &it.Summary, &year, &it.Released, &it.Rating,
 		&playable, &childCount, &leafCount, &hintsRaw, &fieldsRaw, &it.ETag, &unavailableRaw, &it.AddedAt,
-	); err != nil {
+	)
+	dest = append(dest, extra...)
+	if err := sc.Scan(dest...); err != nil {
 		return core.KindItem{}, 0, 0, err
 	}
 	it.Ref = core.ItemRef(refStr)

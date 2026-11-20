@@ -569,7 +569,7 @@ func (c *Catalog) tallyTotal(ctx context.Context, f core.Filter, where string, a
 // unwatchedOnly reports whether g is a viewer's "unwatched" state filter
 // and nothing else.
 func unwatchedOnly(g core.FilterGroup) bool {
-	return g.Unwatched != nil && *g.Unwatched && g.UserID > 0 && g.InProgress == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
+	return g.Unwatched != nil && *g.Unwatched && g.UserID > 0 && g.Watched == nil && g.InProgress == nil && g.History == nil && g.Favorite == nil && g.Watchlist == nil && g.LastViewedAfter == 0 && g.LastViewedBefore == 0 &&
 		g.OnWatchlist == nil && g.StateField == "" && !g.ParentOnly && g.Operator == "" && g.Filter == nil && len(g.Children) == 0
 }
 

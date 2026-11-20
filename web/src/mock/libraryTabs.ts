@@ -28,6 +28,7 @@ const CATALOGUE_SORTS = [
   "rating",
   "duration",
   "title",
+  "lastViewed",
   "server",
 ];
 
@@ -283,8 +284,9 @@ export function createLibraryTabsMock({
   function availableSortsFor(lib: Record<string, unknown>): string[] {
     if (lib.source === "plugin") {
       const kind = lib.kind as { browse?: { sorts?: string[] } } | undefined;
-      const sorts = kind?.browse?.sorts ?? [];
-      return sorts.length > 0 ? [...sorts] : ["server"];
+      const base = kind?.browse?.sorts?.length ? [...kind.browse.sorts] : ["server"];
+      if (!base.includes("lastViewed")) base.push("lastViewed");
+      return base;
     }
     return [...CATALOGUE_SORTS];
   }
@@ -371,8 +373,8 @@ export function createLibraryTabsMock({
     if (rawTabs.length === 0) {
       return { ok: false, message: "invalid: library must have at least one tab" };
     }
-    if (rawTabs.length > 16) {
-      return { ok: false, message: "invalid: library may have at most 16 tabs" };
+    if (rawTabs.length > 50) {
+      return { ok: false, message: "invalid: library may have at most 50 tabs" };
     }
 
     const isPlugin = lib.source === "plugin";
@@ -497,6 +499,9 @@ export function createLibraryTabsMock({
       }
       if (kind === "live") {
         tab.card = raw.card === "poster" || raw.card === "square" ? raw.card : "landscape";
+      }
+      if (kind === "view") {
+        tab.layout = raw.layout === "list" || raw.layout === "timeline" ? raw.layout : "grid";
       }
       if (raw.filters && raw.filters.rules?.length) {
         tab.filters = structuredClone(raw.filters);

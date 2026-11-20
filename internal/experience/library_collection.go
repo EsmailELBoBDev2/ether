@@ -52,7 +52,7 @@ func (s *Service) collectionLibraryScan(ctx context.Context, v *core.User, libra
 	total := 0
 	for offset := 0; ; {
 		bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500}
-		if q.Sort == core.SortPlayed {
+		if q.Sort.IsLastViewed() {
 			bq.Sort = core.SortTitle
 			bq.SortLastViewed = true
 			bq.SortViewerID = v.ID

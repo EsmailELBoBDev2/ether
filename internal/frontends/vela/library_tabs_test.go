@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/frontend"
@@ -223,5 +224,142 @@ func TestVelaCustomLibraryTabsWireBrowseAndCollections(t *testing.T) {
 	}
 	if code, _ := callSub("1", "/vela/v0/libraries/1/items?facet.studio=A24&facet.studio=Neon", inst.libraryItems); code != 400 {
 		t.Fatalf("multi studio facet status = %d, want 400", code)
+	}
+}
+
+func TestVelaSmartViewLayoutLastViewedSortAndWatchTimestamp(t *testing.T) {
+	viewedAt := time.Date(2026, 11, 18, 20, 15, 30, 0, time.UTC)
+	histFilter := &core.TabFilter{
+		Match: "all",
+		Rules: []core.CollectionRule{{Field: "viewer", Op: "is", Value: json.RawMessage(`{"history":true}`)}},
+	}
+
+	exp := &customTabsExp{
+		views: []frontend.View{
+			{
+				ID:       "7",
+				Name:     "Documentaries",
+				Type:     frontend.TypeMovie,
+				PluginID: "docs.plugin",
+				KindKey:  "doc",
+				Sorts:    []string{"released", "title"},
+				Tabs: []frontend.ViewTab{
+					{ID: "recommended", Label: "Recommended", Kind: core.TabRecommended},
+					{ID: "library", Label: "Library", Kind: core.TabLibrary, Search: true},
+					{ID: "history", Label: "History", Kind: core.TabView, Layout: core.TabLayoutTimeline, Sort: "lastViewed", Direction: "desc", Search: true, Filters: histFilter},
+					{ID: "picks", Label: "Picks", Kind: core.TabView, Search: true},
+				},
+			},
+		},
+	}
+	exp.ViewsFunc = func(_ context.Context, _ *frontend.Viewer) ([]frontend.View, error) {
+		return exp.views, nil
+	}
+	exp.LibraryItemsFunc = func(_ context.Context, _ *frontend.Viewer, _ frontend.Device, _ string, q frontend.ItemQuery) (frontend.Page, error) {
+		exp.lastItemQuery = q
+		return frontend.Page{Items: []frontend.Title{
+			{Key: core.MovieKey(101), Type: core.TypeMovie, Title: "Viewed Doc"},
+			{Key: core.MovieKey(102), Type: core.TypeMovie, Title: "Unviewed Doc"},
+		}}, nil
+	}
+	exp.UserDataFunc = func(_ context.Context, _ *frontend.Viewer, _ []frontend.RatingKey) (map[frontend.RatingKey]frontend.WatchStatus, error) {
+		return map[frontend.RatingKey]frontend.WatchStatus{
+			core.MovieKey(101): {Key: core.MovieKey(101), ViewCount: 1, LastViewedAt: viewedAt},
+			core.MovieKey(102): {Key: core.MovieKey(102)},
+		}, nil
+	}
+
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &instance{seal: seal, host: frontend.Host{Identity: identityFake{}, Experience: exp}}
+
+	// 1. GET /vela/v0/libraries emits tab.layout on view tabs (timeline / default grid), omits on non-view tabs, and includes lastViewed sort.
+	req := httptest.NewRequest("GET", "/vela/v0/libraries", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("X-Vela-Device-Id", "device")
+	rec := httptest.NewRecorder()
+	inst.libraries(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("libraries status = %d body = %s", rec.Code, rec.Body)
+	}
+	var libsOut map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &libsOut); err != nil {
+		t.Fatal(err)
+	}
+	lib := libsOut["items"].([]any)[0].(map[string]any)
+	tabs := lib["tabs"].([]any)
+	if _, has := tabs[0].(map[string]any)["layout"]; has {
+		t.Fatalf("recommended tab must not carry layout: %+v", tabs[0])
+	}
+	if _, has := tabs[1].(map[string]any)["layout"]; has {
+		t.Fatalf("library tab must not carry layout: %+v", tabs[1])
+	}
+	histWire := tabs[2].(map[string]any)
+	if histWire["layout"] != "timeline" || histWire["sort"] != "lastViewed" || histWire["direction"] != "desc" {
+		t.Fatalf("history view tab wire = %+v", histWire)
+	}
+	picksWire := tabs[3].(map[string]any)
+	if picksWire["layout"] != "grid" {
+		t.Fatalf("default view tab layout = %+v, want grid", picksWire["layout"])
+	}
+	browse := lib["browse"].(map[string]any)
+	if browse["defaultSort"] != "released" {
+		t.Fatalf("plugin defaultSort = %v, want released", browse["defaultSort"])
+	}
+	foundLastViewed := false
+	for _, s := range browse["sorts"].([]any) {
+		if s.(map[string]any)["id"] == "lastViewed" {
+			foundLastViewed = true
+		}
+	}
+	if !foundLastViewed {
+		t.Fatalf("browse.sorts missing lastViewed: %+v", browse["sorts"])
+	}
+
+	// 2. GET /vela/v0/libraries/7/items?tab=history uses lastViewed desc and emits title.watch.lastViewedAt (RFC3339) only when non-zero.
+	itemReq := httptest.NewRequest("GET", "/vela/v0/libraries/7/items?tab=history", nil)
+	itemReq.SetPathValue("id", "7")
+	itemReq.Header.Set("Authorization", "Bearer token")
+	itemReq.Header.Set("X-Vela-Device-Id", "device")
+	itemRec := httptest.NewRecorder()
+	inst.libraryItems(itemRec, itemReq)
+	if itemRec.Code != 200 {
+		t.Fatalf("history items status = %d body = %s", itemRec.Code, itemRec.Body)
+	}
+	if exp.lastItemQuery.Sort != frontend.SortLastViewed || !exp.lastItemQuery.Desc || len(exp.lastItemQuery.Filter.TabRules) == 0 {
+		t.Fatalf("history query = %+v", exp.lastItemQuery)
+	}
+	var itemsOut map[string]any
+	if err := json.Unmarshal(itemRec.Body.Bytes(), &itemsOut); err != nil {
+		t.Fatal(err)
+	}
+	entries := itemsOut["items"].([]any)
+	w0 := entries[0].(map[string]any)["title"].(map[string]any)["watch"].(map[string]any)
+	if w0["lastViewedAt"] != viewedAt.Format(time.RFC3339) {
+		t.Fatalf("viewed title watch.lastViewedAt = %v, want %s", w0["lastViewedAt"], viewedAt.Format(time.RFC3339))
+	}
+	w1 := entries[1].(map[string]any)["title"].(map[string]any)["watch"].(map[string]any)
+	if _, exists := w1["lastViewedAt"]; exists {
+		t.Fatalf("unviewed title must omit watch.lastViewedAt: %+v", w1)
+	}
+
+	// 3. Alias sort=played and sort=last_viewed normalize to lastViewed with default direction desc.
+	for _, alias := range []string{"played", "last_viewed"} {
+		aReq := httptest.NewRequest("GET", "/vela/v0/libraries/7/items?sort="+alias, nil)
+		aReq.SetPathValue("id", "7")
+		aReq.Header.Set("Authorization", "Bearer token")
+		aReq.Header.Set("X-Vela-Device-Id", "device")
+		aRec := httptest.NewRecorder()
+		inst.libraryItems(aRec, aReq)
+		if aRec.Code != 200 {
+			t.Fatalf("alias %s status = %d body = %s", alias, aRec.Code, aRec.Body)
+		}
+		var out map[string]any
+		_ = json.Unmarshal(aRec.Body.Bytes(), &out)
+		if out["sort"] != "lastViewed" || out["direction"] != "desc" || exp.lastItemQuery.Sort != frontend.SortLastViewed || !exp.lastItemQuery.Desc {
+			t.Fatalf("alias %s normalized to sort=%v dir=%v query=%+v", alias, out["sort"], out["direction"], exp.lastItemQuery)
+		}
 	}
 }

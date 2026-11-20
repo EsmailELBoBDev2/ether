@@ -44,7 +44,7 @@ func (s *Service) playedEpisodePage(ctx context.Context, v *core.User, library *
 	// Only the order this path serves correctly: the viewer's last-played
 	// time (Jellyfin/Emby "DatePlayed"). Any other order keeps today's path,
 	// which never becomes a last-played scan.
-	if q.Sort != core.SortPlayed {
+	if !q.Sort.IsLastViewed() {
 		return core.Page{}, false, nil
 	}
 	// A viewer's own episode-group or hidden-specials setting changes which

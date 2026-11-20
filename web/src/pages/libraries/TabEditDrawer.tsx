@@ -90,6 +90,7 @@ const FALLBACK_CATALOG_SORTS = [
   "rating",
   "duration",
   "title",
+  "lastViewed",
   "server",
 ] as const;
 
@@ -148,6 +149,8 @@ export function sortFieldLabel(sort: string): string {
       return t("Runtime");
     case "index":
       return t("Order");
+    case "lastViewed":
+      return t("Recently watched");
     case "server":
       return t("Default order");
     default:
@@ -284,6 +287,12 @@ function directionOptions(sort: string): { value: "asc" | "desc"; label: string 
     return [
       { value: "asc", label: t("First to last") },
       { value: "desc", label: t("Last to first") },
+    ];
+  }
+  if (sort === "lastViewed") {
+    return [
+      { value: "desc", label: t("Recent first") },
+      { value: "asc", label: t("Oldest first") },
     ];
   }
   if (sort === "added" || sort === "released" || sort === "year") {
@@ -492,14 +501,12 @@ export function createSeedTab(
     };
   }
   const label = t("Unwatched");
-  const seedRule: Rule =
-    library.source === "plugin"
-      ? newBrowseCondition("year", library.kind)
-      : { field: "viewer", op: "is", value: { userId: 0, unwatched: true } };
+  const seedRule: Rule = { field: "viewer", op: "is", value: { unwatched: true } };
   return {
     key: slugTabKey("unwatched", kind, existingKeys),
     label,
     kind: "view",
+    layout: "grid",
     sort: defaultSort,
     direction: defaultDir,
     search: true,
@@ -1073,6 +1080,9 @@ function TabEditDrawerInner({
     if (draft.kind === "live") {
       cleaned.card = draft.card ?? "landscape";
     }
+    if (draft.kind === "view") {
+      cleaned.layout = draft.layout ?? "grid";
+    }
     if (supportsSearch) {
       cleaned.search = searchEnabled;
       if (searchEnabled && draft.searchPlaceholder?.trim()) {
@@ -1633,6 +1643,29 @@ function TabEditDrawerInner({
                   ))}
                 </div>
               ) : null}
+            </div>
+          </section>
+        ) : null}
+
+        {/* View tab layout */}
+        {draft.kind === "view" ? (
+          <section className="space-y-3 rounded-xl border border-border bg-surface p-4">
+            <div className="space-y-1.5">
+              <span className="block text-sm font-medium text-fg">{t("Layout")}</span>
+              <p className="text-xs text-fg-muted">
+                {t("Choose how matching titles are arranged in Vela.")}
+              </p>
+              <Segmented
+                ariaLabel={t("Layout")}
+                size="sm"
+                value={draft.layout ?? "grid"}
+                onChange={(layout) => setDraft({ ...draft, layout })}
+                options={[
+                  { value: "grid", label: t("Grid") },
+                  { value: "list", label: t("List") },
+                  { value: "timeline", label: t("Timeline") },
+                ]}
+              />
             </div>
           </section>
         ) : null}

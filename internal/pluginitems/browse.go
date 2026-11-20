@@ -23,6 +23,7 @@ type BrowseQuery struct {
 	NoTotal   bool
 	Policy    *libraryfilter.Filter
 	TabPolicy *libraryfilter.Filter
+	ViewerID  int64
 	Hidden    bool
 	LibraryID core.LibraryID
 	ParentRef core.ItemRef
@@ -30,7 +31,7 @@ type BrowseQuery struct {
 	Levels    []string
 	AnyLevel  bool
 	PersonID  int64
-	Sort      string              // title (default), added, released, year, rating, index
+	Sort      string              // title (default), added, released, year, rating, index, lastViewed
 	Desc      bool                // false = default direction for Sort; true = reverse
 	Facets    map[string][]string // field key -> required values (OR within key, AND across keys)
 	Cursor    string              // opaque keyset cursor
@@ -58,12 +59,14 @@ type FacetBucket struct {
 }
 
 type browseCursor struct {
-	Sort     string  `json:"s"`
-	Desc     bool    `json:"d,omitempty"`
-	StrVal   string  `json:"sv,omitempty"`
-	IntVal   int64   `json:"iv,omitempty"`
-	FloatVal float64 `json:"fv,omitempty"`
-	ItemRef  string  `json:"r"`
+	Sort       string  `json:"s"`
+	Desc       bool    `json:"d,omitempty"`
+	Phase      int     `json:"p,omitempty"`
+	StartPhase bool    `json:"sp,omitempty"`
+	StrVal     string  `json:"sv,omitempty"`
+	IntVal     int64   `json:"iv,omitempty"`
+	FloatVal   float64 `json:"fv,omitempty"`
+	ItemRef    string  `json:"r"`
 }
 
 func encodeBrowseCursor(c browseCursor) string {
@@ -83,13 +86,13 @@ func decodeBrowseCursor(raw string) (browseCursor, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("pluginitems: invalid cursor payload: %w", err)
 	}
-	if c.ItemRef == "" {
+	if c.ItemRef == "" && !c.StartPhase {
 		return c, fmt.Errorf("pluginitems: cursor missing item_ref")
 	}
 	return c, nil
 }
 
-// normalizeSortField returns the canonical column name, value kind ("str", "int", "float"),
+// normalizeSortField returns the canonical column name, value kind ("str", "int", "float", "last_viewed"),
 // and default descending flag for a browse sort name.
 func normalizeSortField(sortName string) (col string, kind string, defaultDesc bool) {
 	switch strings.ToLower(strings.TrimSpace(sortName)) {
@@ -105,6 +108,8 @@ func normalizeSortField(sortName string) (col string, kind string, defaultDesc b
 		return "rating", "float", true
 	case "index", "idx":
 		return "idx", "int", false
+	case "lastviewed", "last_viewed", "played":
+		return "last_viewed_at", "last_viewed", true
 	default:
 		return "sort_title", "str", false
 	}
@@ -168,6 +173,14 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	if usedFacetIndex {
 		driveFromFields = true
 	}
+	if !q.Hidden && (q.TabPolicy.HasPositiveViewerFilter() || q.Policy.HasPositiveViewerFilter()) {
+		driveFromFields = true
+	}
+
+	viewerID := q.ViewerID
+	if viewerID <= 0 {
+		viewerID = core.CatalogViewerID(ctx)
+	}
 
 	// Base filter predicate.
 	var baseWhere strings.Builder
@@ -198,11 +211,15 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 		baseWhere.WriteString(filterWhere.String())
 		baseArgs = append(baseArgs, filterArgs...)
 	}
-	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden); err != nil {
+	if err := s.appendVisibilityForViewer(ctx, &baseWhere, &baseArgs, q.LibraryID, q.Policy, q.Hidden, viewerID); err != nil {
 		return BrowsePage{}, err
 	}
-	if err := s.appendVisibility(ctx, &baseWhere, &baseArgs, q.LibraryID, q.TabPolicy, false); err != nil {
+	if err := s.appendVisibilityForViewer(ctx, &baseWhere, &baseArgs, q.LibraryID, q.TabPolicy, false, viewerID); err != nil {
 		return BrowsePage{}, err
+	}
+
+	if kind == "last_viewed" {
+		return s.browseLastViewed(ctx, q, viewerID, baseWhere.String(), baseArgs, hasFacets, parentRef, level, desc, limit)
 	}
 
 	// Compute total count.

@@ -293,28 +293,51 @@ type MediaKindMeta struct {
 	Match   *KindMatchDecl  `json:"match,omitempty"`
 }
 
+// MaxKindLibraryTabs is the maximum number of declared sub-tabs per kind library.
+const MaxKindLibraryTabs = 50
+
 // KindLibraryDecl is the library created for a kind on install.
 type KindLibraryDecl struct {
 	Name        string             `json:"name"`
 	Icon        string             `json:"icon,omitempty"`
 	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
 	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
-	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
+	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 50; defaults to Recommended + Library
 	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
+}
+
+// KindLibraryTabFilter defines saved filter rules on a "view" tab.
+type KindLibraryTabFilter struct {
+	Match   string                 `json:"match,omitempty"`   // "all" (default) or "any"
+	Rules   []KindLibraryTabRule   `json:"rules,omitempty"`   // matching conditions
+	Exclude []KindLibraryTabRule   `json:"exclude,omitempty"` // excluded conditions
+}
+
+// KindLibraryTabRule is one filter condition inside a "view" tab's filters.
+// Field may be "browse:<indexedField>", "viewer" (with value such as
+// {"history":true}, {"watched":true}, {"unwatched":true}, {"inProgress":true},
+// {"favorite":true}, {"watchlist":true}, {"lastViewedAfter":unix},
+// {"lastViewedBefore":unix}), "year", "rating", or a mapped indexed field.
+type KindLibraryTabRule struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value any    `json:"value,omitempty"`
 }
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
-	Key               string `json:"key"`
-	Label             string `json:"label"`
-	Kind              string `json:"kind"`                        // recommended|library|collections|people|live
-	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
-	Order             string `json:"order,omitempty"`             // count|name (default count on collections, name on people)
-	Card              string `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
-	Search            *bool  `json:"search,omitempty"`            // collections/people/live only; default true
-	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/live when search is enabled)
-	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
-	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
+	Key               string                `json:"key"`
+	Label             string                `json:"label"`
+	Kind              string                `json:"kind"`                        // recommended|library|collections|people|view|live
+	Facet             string                `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
+	Order             string                `json:"order,omitempty"`             // count|name (default count on collections, name on people)
+	Card              string                `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Layout            string                `json:"layout,omitempty"`            // grid (default)|list|timeline (view tabs only)
+	Search            *bool                 `json:"search,omitempty"`            // collections/people/view/live only; default true
+	SearchPlaceholder string                `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people/view/live when search is enabled)
+	Sort              string                `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
+	Direction         string                `json:"direction,omitempty"`         // asc|desc (facet collections or view)
+	Filters           *KindLibraryTabFilter `json:"filters,omitempty"`           // saved filter rules (view tabs only)
 }
 
 // MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/libraryfilter"
 	"github.com/braedonsaunders/ether/internal/store"
 )
 
@@ -65,7 +66,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	minBucket := c.minuteBucket()
 	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s|tab:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback, q.Filter.TabRules, q.Filter.TabFallback)
 	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal)
-	cacheable := !groupHasState(q.Filter.Group)
+	cacheable := !filterHasViewerState(q.Filter)
 	// An export page holds partial titles (ListRows) and is read once per
 	// export: it neither serves from nor fills the page cache.
 	listRows := q.ListRows != nil && q.Sort == core.SortKey
@@ -488,7 +489,7 @@ func (c *Catalog) LibraryPosters(ctx context.Context, typ core.MediaType, limit 
 // rules, so every such viewer's identical filter shares one cached page and
 // total. A viewer with rules of their own keeps their id and revision.
 func (c *Catalog) policyKeyFilter(f core.Filter) core.Filter {
-	if f.CatalogViewerID == 0 {
+	if f.CatalogViewerID == 0 || filterHasViewerState(f) {
 		return f
 	}
 	c.viewerRules.RLock()
@@ -528,7 +529,7 @@ func browseFilterKey(f core.Filter) string {
 			return ""
 		}
 		if groupHasOwnState(g) {
-			return fmt.Sprintf("state:%d:%v:%v:%d:%d:%v:%s:%s:%d", g.UserID, boolValue(g.Unwatched), boolValue(g.InProgress), g.LastViewedAfter, g.LastViewedBefore, g.ParentOnly, g.StateField, g.StateOperator, g.StateValue) + fmt.Sprintf("|watchlist:%s", boolValue(g.OnWatchlist))
+			return fmt.Sprintf("state:%d:%v:%v:%v:%v:%v:%v:%d:%d:%v:%s:%s:%d", g.UserID, boolValue(g.Watched), boolValue(g.Unwatched), boolValue(g.InProgress), boolValue(g.History), boolValue(g.Favorite), boolValue(g.Watchlist), g.LastViewedAfter, g.LastViewedBefore, g.ParentOnly, g.StateField, g.StateOperator, g.StateValue) + fmt.Sprintf("|watchlist:%s", boolValue(g.OnWatchlist))
 		}
 		if g.Filter != nil {
 			return fmt.Sprintf("leaf:%v(", g.ParentOnly) + browseFilterKey(*g.Filter) + ")"
@@ -557,7 +558,16 @@ func boolValue(v *bool) string {
 }
 
 func groupHasOwnState(g *core.FilterGroup) bool {
-	return g.OnWatchlist != nil || g.StateField != "" || g.Unwatched != nil || g.InProgress != nil || g.LastViewedAfter != 0 || g.LastViewedBefore != 0
+	return g.OnWatchlist != nil || g.Watchlist != nil || g.Favorite != nil || g.StateField != "" ||
+		g.Watched != nil || g.Unwatched != nil || g.InProgress != nil || g.History != nil ||
+		g.LastViewedAfter != 0 || g.LastViewedBefore != 0
+}
+
+func filterHasViewerState(f core.Filter) bool {
+	return groupHasState(f.Group) ||
+		libraryfilter.RulesHaveViewerState(f.TabRules) ||
+		libraryfilter.RulesHaveViewerState(f.ExtraRules) ||
+		libraryfilter.RulesHaveViewerState(f.PreviewRules)
 }
 
 func groupHasState(g *core.FilterGroup) bool {
@@ -639,7 +649,9 @@ func (c *Catalog) titlesInFilterChunk(ctx context.Context, f core.Filter, keys [
 	}
 	f.IncludeKeys = keys
 	f.ExcludeKeys = nil
-	f.CatalogViewerID = 0
+	if !libraryfilter.RulesHaveViewerState(f.TabRules) && !libraryfilter.RulesHaveViewerState(f.ExtraRules) {
+		f.CatalogViewerID = 0
+	}
 	f.RuleVisibility = ""
 	f.PreviewRules = nil
 	f.PreviewFallback = ""
@@ -769,7 +781,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			}
 		}
 		if f.RuleVisibility != "all" {
-			policy, err := c.compileLibraryRules(f.PreviewRules, f.PreviewFallback)
+			policy, err := c.compileLibraryRulesModeForViewer(f.PreviewRules, f.PreviewFallback, false, f.CatalogViewerID)
 			if err != nil {
 				return "", nil, err
 			}
@@ -795,7 +807,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		}
 	}
 	if len(f.ExtraRules) > 0 || f.ExtraFallback != "" {
-		extra, err := c.compileLibraryRulesMode(f.ExtraRules, f.ExtraFallback, membershipOnly)
+		extra, err := c.compileLibraryRulesModeForViewer(f.ExtraRules, f.ExtraFallback, membershipOnly, f.CatalogViewerID)
 		if err != nil {
 			return "", nil, err
 		}
@@ -806,7 +818,7 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 		}
 	}
 	if len(f.TabRules) > 0 || f.TabFallback != "" {
-		tabPolicy, err := c.compileLibraryRulesMode(f.TabRules, f.TabFallback, membershipOnly)
+		tabPolicy, err := c.compileLibraryRulesModeForViewer(f.TabRules, f.TabFallback, membershipOnly, f.CatalogViewerID)
 		if err != nil {
 			return "", nil, err
 		}

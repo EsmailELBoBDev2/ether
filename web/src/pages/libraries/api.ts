@@ -18,6 +18,8 @@ export interface Presentations {
 
 export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view" | "live";
 
+export type LibraryTabLayout = "grid" | "list" | "timeline";
+
 export type LibraryFacetCategory = "essentials" | "people" | "technical" | "plugin";
 
 export interface LibraryFacetOption {
@@ -45,6 +47,7 @@ export interface LibraryTab {
   sort?: string;
   direction?: "asc" | "desc";
   card?: LibraryCardShape;
+  layout?: LibraryTabLayout;
   search?: boolean;
   searchPlaceholder?: string;
   filters?: LibraryTabFilter;

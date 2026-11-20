@@ -3066,13 +3066,31 @@ class KindLibraryShelf(TypedDict, total=False):
     filters: Dict[str, List[str]]
 
 
+class KindLibraryTab(TypedDict, total=False):
+    """One sub-tab declared on a kind library (up to 50)."""
+
+    key: str
+    label: str
+    kind: Literal["recommended", "library", "collections", "people", "view", "live"]
+    facet: str
+    order: Literal["count", "name"]
+    card: Literal["poster", "landscape", "square"]
+    layout: Literal["grid", "list", "timeline"]
+    search: bool
+    searchPlaceholder: str
+    sort: Literal["title", "added", "released", "year", "rating", "index", "lastViewed"]
+    direction: Literal["asc", "desc"]
+    filters: Dict[str, Any]
+
+
 class KindLibraryDecl(TypedDict, total=False):
     """Library presentation declaration on a contributed content kind."""
 
     name: str
     icon: str
     card: Literal["poster", "landscape", "square"]
-    tabs: List[Dict[str, Any]]
+    dateDisplay: Literal["year", "date"]
+    tabs: List[KindLibraryTab]
     shelves: List[KindLibraryShelf]
 
 

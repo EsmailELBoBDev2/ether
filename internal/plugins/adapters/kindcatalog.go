@@ -457,6 +457,7 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 		NoTotal:   q.NoTotal,
 		Policy:    policy,
 		LibraryID: lib.ID,
+		ViewerID:  core.CatalogViewerID(ctx),
 		Level:     level,
 		Levels:    levels,
 		AnyLevel:  anyLevel,
@@ -827,6 +828,7 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	sq := pluginitems.SearchQuery{
 		Policy:    policy,
 		LibraryID: lib.ID,
+		ViewerID:  core.CatalogViewerID(ctx),
 		Query:     query,
 		Levels:    searchLevels,
 		PersonID:  q.Filter.Person,
@@ -1330,6 +1332,8 @@ func mapBrowseSort(sortBy core.SortOrder, desc bool) string {
 		col = "rating"
 	case core.SortIndex:
 		col = "index"
+	case core.SortLastViewed, core.SortPlayed:
+		col = "last_viewed"
 	default:
 		col = "title"
 	}
@@ -1427,7 +1431,11 @@ func parseKindDuration(raw string, fallback time.Duration) time.Duration {
 }
 
 func fillPluginTabDefaults(vt *frontend.ViewTab, sorts []string) {
-	if vt.Kind == "collections" && vt.Facet != "" {
+	if vt.Sort != "" && core.IsLastViewedSort(vt.Sort) {
+		vt.Sort = string(core.SortLastViewed)
+	}
+	switch {
+	case vt.Kind == "collections" && vt.Facet != "":
 		if vt.Order == "" {
 			vt.Order = "count"
 		}
@@ -1452,9 +1460,21 @@ func fillPluginTabDefaults(vt *frontend.ViewTab, sorts []string) {
 		}
 		vt.Sort = effSort
 		vt.Direction = effDir
-	} else if vt.Kind == "people" && vt.Facet != "" {
+	case vt.Kind == "people" && vt.Facet != "":
 		if vt.Order == "" {
 			vt.Order = "name"
+		}
+	case vt.Kind == "view":
+		if vt.Layout == "" {
+			vt.Layout = core.TabLayoutGrid
+		}
+		if vt.Sort != "" && vt.Direction == "" {
+			switch vt.Sort {
+			case "server", "title", "index":
+				vt.Direction = "asc"
+			default:
+				vt.Direction = "desc"
+			}
 		}
 	}
 }
@@ -1492,6 +1512,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Sort:              tab.Sort,
 				Direction:         tab.Direction,
 				Card:              tab.EffectiveCard(),
+				Layout:            tab.EffectiveLayout(),
 				Search:            effSearch,
 				SearchPlaceholder: placeholder,
 				Filters:           tab.Filters.Clone(),
@@ -1512,8 +1533,10 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 				Sort:      tab.Sort,
 				Direction: tab.Direction,
 				Card:      tab.EffectiveCard(),
+				Layout:    tab.EffectiveLayout(),
+				Filters:   tab.Filters.Clone(),
 			}
-			if tab.Kind == "collections" || tab.Kind == "people" || tab.Kind == "live" {
+			if tab.Kind == "collections" || tab.Kind == "people" || tab.Kind == "view" || tab.Kind == "live" {
 				vt.Search = tab.EffectiveSearch()
 				if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
 					vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)

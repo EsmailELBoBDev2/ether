@@ -733,7 +733,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 			filter.MaxContentRating = v.MaxContentRating
 		}
 		bq := core.BrowseQuery{Filter: filter, Sort: q.Sort, Desc: q.Desc, Offset: offset, Limit: 500}
-		if q.Sort == core.SortPlayed {
+		if q.Sort.IsLastViewed() {
 			bq.Sort = core.SortTitle
 			bq.SortLastViewed = true
 			bq.SortViewerID = v.ID
@@ -2407,7 +2407,7 @@ func (s *Service) sortTitles(ctx context.Context, items []core.Title, q frontend
 	}
 	switch q.Sort {
 	case core.SortTitle, core.SortReleased, core.SortAdded, core.SortYear, core.SortRating, core.SortPopularity, core.SortDuration, core.SortIndex:
-	case core.SortPlayed, core.SortUpdated:
+	case core.SortPlayed, core.SortLastViewed, core.SortUpdated:
 		// Played and updated orders come from catalogue/watch rows that
 		// projected titles do not carry; preserve the listing's order.
 		return nil

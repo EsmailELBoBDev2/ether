@@ -27,6 +27,7 @@ var catalogueTabSortOptions = []string{
 	"rating",
 	"duration",
 	"title",
+	"lastViewed",
 	"server",
 }
 
@@ -123,6 +124,7 @@ func (c *librariesConsole) pluginTabSchema(ctx context.Context, lib core.Library
 	if len(schema.Sorts) == 0 {
 		schema.Sorts["server"] = true
 	}
+	schema.Sorts[string(core.SortLastViewed)] = true
 	return schema
 }
 
@@ -133,7 +135,7 @@ func (c *librariesConsole) defaultTabsForLibrary(ctx context.Context, lib core.L
 			out := make([]core.LibraryTab, 0, len(rawTabs))
 			for _, t := range rawTabs {
 				search := t.Kind != core.TabRecommended
-				if t.Kind == core.TabCollections || t.Kind == core.TabPeople || t.Kind == core.TabLive {
+				if t.Kind == core.TabCollections || t.Kind == core.TabPeople || t.Kind == core.TabView || t.Kind == core.TabLive {
 					search = t.EffectiveSearch()
 				}
 				label := c.catalogueLabel(ctx, lib.PluginID, t.Label, t.Key)
@@ -141,17 +143,23 @@ func (c *librariesConsole) defaultTabsForLibrary(ctx context.Context, lib core.L
 				if search && strings.TrimSpace(t.SearchPlaceholder) != "" {
 					placeholder = c.catalogueLabel(ctx, lib.PluginID, t.SearchPlaceholder, "")
 				}
+				sortID := t.Sort
+				if sortID != "" && core.IsLastViewedSort(sortID) {
+					sortID = string(core.SortLastViewed)
+				}
 				tab := core.LibraryTab{
 					Key:               t.Key,
 					Label:             label,
 					Kind:              t.Kind,
 					Facet:             t.Facet,
 					Order:             t.Order,
-					Sort:              t.Sort,
+					Sort:              sortID,
 					Direction:         t.Direction,
 					Card:              t.EffectiveCard(),
+					Layout:            t.EffectiveLayout(),
 					Search:            &search,
 					SearchPlaceholder: placeholder,
+					Filters:           t.Filters.Clone(),
 				}
 				if tab.Kind == core.TabCollections && tab.Facet != "" && tab.Order == "" {
 					tab.Order = "count"
@@ -274,6 +282,9 @@ func (c *librariesConsole) buildLibraryTabsDTO(ctx context.Context, lib core.Lib
 		}
 		if len(sorts) == 0 {
 			sorts = []string{"server"}
+		}
+		if !slices.Contains(sorts, string(core.SortLastViewed)) {
+			sorts = append(sorts, string(core.SortLastViewed))
 		}
 	} else {
 		hasStudios := c.app != nil && c.app.catalog != nil && c.app.catalog.HasStudioData(ctx, libraryScopeFilter(lib, core.Filter{}))
@@ -523,6 +534,12 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 		})
 
 	case core.TabLibrary, core.TabView:
+		owner := c.consoleOwner(r)
+		ownerID := int64(0)
+		if owner != nil {
+			ownerID = owner.ID
+			ctx = core.WithCatalogViewer(ctx, owner)
+		}
 		if lib.Source == core.LibraryPlugin {
 			items, _, err := c.services()
 			if err != nil || items == nil {
@@ -560,6 +577,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 					Policy:    policy.ForSearch(),
 					TabPolicy: tabPolicy.ForSearch(),
 					LibraryID: lib.ID,
+					ViewerID:  ownerID,
 					Query:     query,
 					Level:     rootLevel,
 					Limit:     limit,
@@ -578,17 +596,17 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 				})
 				return
 			}
-			browseSort := effSort
-			if browseSort == "server" {
-				browseSort = ""
+			browseSort := ""
+			if effSort != "server" && effSort != "" {
+				browseSort = effSort + ":" + effDir
 			}
 			page, err := items.Browse(ctx, pluginitems.BrowseQuery{
 				Policy:    policy,
 				TabPolicy: tabPolicy,
 				LibraryID: lib.ID,
+				ViewerID:  ownerID,
 				Level:     rootLevel,
 				Sort:      browseSort,
-				Desc:      effDir == "desc",
 				Limit:     limit,
 			})
 			if err != nil {
@@ -612,6 +630,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 		effSort, effDir := effectivePreviewSortDir(tab, "popularity")
 		var reqFilter core.Filter
 		reqFilter.Query = query
+		reqFilter.CatalogViewerID = ownerID
 		if tab.Filters != nil {
 			reqFilter.TabRules, reqFilter.TabFallback = tab.Filters.ToPolicy(lib.MediaType)
 		}
@@ -621,11 +640,17 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 		} else {
 			browseSort = core.SortTitle
 		}
-		page, err := c.browseTitles(ctx, lib, reqFilter, core.BrowseQuery{
+		bq := core.BrowseQuery{
 			Sort:  browseSort,
 			Desc:  effDir == "desc",
 			Limit: limit,
-		})
+		}
+		if browseSort.IsLastViewed() {
+			bq.Sort = core.SortTitle
+			bq.SortLastViewed = true
+			bq.SortViewerID = ownerID
+		}
+		page, err := c.browseTitles(ctx, lib, reqFilter, bq)
 		if err != nil {
 			libError(w, http.StatusInternalServerError, "Could not preview tab")
 			return
@@ -853,6 +878,9 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 }
 
 func isValidPluginTabSort(decl plugins.MediaKindMeta, sort string) bool {
+	if core.IsLastViewedSort(sort) {
+		return true
+	}
 	if len(decl.Browse.Sorts) == 0 {
 		return sort == "server"
 	}

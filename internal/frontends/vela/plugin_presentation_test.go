@@ -514,7 +514,7 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 		t.Fatalf("unexpected search:false publishers tab: %v", pubTab)
 	}
 	plugBrowse := plugLib["browse"].(map[string]any)
-	if plugBrowse["defaultSort"] != "released" || plugBrowse["defaultDirection"] != "desc" || len(plugBrowse["sorts"].([]any)) != 6 {
+	if plugBrowse["defaultSort"] != "released" || plugBrowse["defaultDirection"] != "desc" || len(plugBrowse["sorts"].([]any)) != 7 {
 		t.Fatalf("unexpected plugin browse sorts: %v", plugBrowse)
 	}
 	plugFilters := plugBrowse["filters"].(map[string]any)

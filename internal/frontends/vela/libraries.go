@@ -75,7 +75,7 @@ func libraryWire(view frontend.View) object {
 	}
 	if !isPlugin {
 		defaultSort = "title"
-		for _, sort := range []string{"title", "added", "released", "year", "rating", "duration", "popularity"} {
+		for _, sort := range []string{"title", "added", "released", "year", "rating", "duration", "popularity", "lastViewed"} {
 			sorts = append(sorts, object{"id": sort, "directions": []string{"asc", "desc"}})
 		}
 		filters["genre"], filters["year"], filters["favorite"], filters["collectionId"] = true, true, true, true
@@ -84,7 +84,7 @@ func libraryWire(view frontend.View) object {
 		}
 	} else {
 		if len(view.Sorts) > 0 {
-			sorts = make([]object, 0, len(view.Sorts))
+			sorts = make([]object, 0, len(view.Sorts)+1)
 			for _, s := range view.Sorts {
 				sorts = append(sorts, object{"id": s, "directions": []string{"asc", "desc"}})
 			}
@@ -94,6 +94,9 @@ func libraryWire(view frontend.View) object {
 			} else {
 				defaultDirection = "desc"
 			}
+		}
+		if !hasOfferedSort(sorts, "lastViewed") {
+			sorts = append(sorts, object{"id": "lastViewed", "directions": []string{"asc", "desc"}})
 		}
 		if len(view.Facets) > 0 {
 			facetWires := make([]object, 0, len(view.Facets))
@@ -170,6 +173,13 @@ func libraryWire(view frontend.View) object {
 				}
 				tab["order"] = effOrder
 			case t.Kind == "view" || t.Kind == "library":
+				if t.Kind == "view" {
+					tabLayout := "grid"
+					if t.Layout == "list" || t.Layout == "timeline" || t.Layout == "grid" {
+						tabLayout = t.Layout
+					}
+					tab["layout"] = tabLayout
+				}
 				if t.Sort != "" && hasOfferedSort(sorts, t.Sort) {
 					effSort := t.Sort
 					effDir := defaultDirectionForSort(sorts, effSort, t.Direction)
@@ -318,12 +328,18 @@ func libraryQuery(r *http.Request, view frontend.View, library object) (frontend
 	sort, direction := values.Get("sort"), values.Get("direction")
 	if sort == "" {
 		sort = defSort
+	} else if frontend.IsLastViewedSort(sort) {
+		sort = string(frontend.SortLastViewed)
 	}
 	if direction == "" {
 		if values.Get("sort") != "" {
-			direction = options["defaultDirection"].(string)
-			if !allowedSortDirection(sorts, sort, direction) {
+			if sort == string(frontend.SortLastViewed) {
 				direction = defaultDirectionForSort(sorts, sort, "")
+			} else {
+				direction = options["defaultDirection"].(string)
+				if !allowedSortDirection(sorts, sort, direction) {
+					direction = defaultDirectionForSort(sorts, sort, "")
+				}
 			}
 		} else {
 			direction = defDir

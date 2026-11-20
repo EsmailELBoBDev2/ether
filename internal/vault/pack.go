@@ -16,7 +16,13 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/store"
+)
+
+const (
+	vaultQuotaWarnPercent    = 80.0
+	vaultQuotaRecoverPercent = 70.0
 )
 
 type trackKey struct {
@@ -30,13 +36,40 @@ const maxVaultTrackCache = 4096
 type library struct {
 	Options
 	capBytes     atomic.Int64 // 0 = no limit
-	mu           sync.Mutex   // writer name and transaction ordering on standalone SQLite
+	quotaWarned  atomic.Bool
+	mu           sync.Mutex // writer name and transaction ordering on standalone SQLite
 	writer       string
 	cacheMu      sync.Mutex
 	cache        []cached
 	trackMu      sync.RWMutex
 	tracks       map[trackKey]core.MediaInfo
 	tracksLoaded bool
+}
+
+func (v *library) publishEvent(eventType string, payload any, opts ...events.EnvelopeOption) {
+	if v == nil || v.Events == nil {
+		return
+	}
+	_ = v.Events.PublishTyped(eventType, payload, opts...)
+}
+
+func (v *library) checkQuotaWarning(usedBytes, budgetBytes int64, recordCount int) {
+	if v == nil || v.Events == nil || budgetBytes <= 0 {
+		return
+	}
+	pct := float64(usedBytes) * 100 / float64(budgetBytes)
+	if pct >= vaultQuotaWarnPercent {
+		if v.quotaWarned.CompareAndSwap(false, true) {
+			v.publishEvent(events.EventVaultQuotaWarning, events.VaultQuotaWarningPayload{
+				UsedBytes:   usedBytes,
+				BudgetBytes: budgetBytes,
+				PercentUsed: pct,
+				RecordCount: recordCount,
+			})
+		}
+	} else if pct < vaultQuotaRecoverPercent {
+		v.quotaWarned.Store(false)
+	}
 }
 type cached struct {
 	key Key

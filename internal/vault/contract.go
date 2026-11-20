@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/nzb"
 )
 
@@ -258,6 +259,7 @@ type Options struct {
 	CapBytes int64  // payload cap; 0 = no limit (config Cache.LibraryBudgetBytes)
 	Logger   *slog.Logger
 	Now      func() time.Time
+	Events   *events.Bus
 }
 
 // Capper changes the payload cap at run time (0 = no limit).

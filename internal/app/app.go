@@ -26,6 +26,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/discovery"
 	"github.com/braedonsaunders/ether/internal/episodeorder"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/favorites"
@@ -310,6 +311,8 @@ type App struct {
 	streamRT       *consoleStreamRuntime
 	pluginsRT      *pluginRuntime
 	agentRT        *agentRuntime
+	eventBus       *events.Bus
+	eventRegistry  *events.Registry
 	pluginLiveOnce sync.Once
 	pluginLive     *PluginLiveService
 }
@@ -513,6 +516,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close()
 		return nil, fmt.Errorf("cluster: %w", err)
 	}
+	a.initEventBus()
 	// A restored PostgreSQL-style bundle leaves a logical dump to import.
 	if err := a.importRestoredDump(ctx); err != nil {
 		a.Close()

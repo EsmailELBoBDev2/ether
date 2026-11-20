@@ -88,7 +88,7 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		entry.decision = dec
 	}
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
-	entry.playbackID = pr.SessionID
+	preserveStartIdentity(entry, pr, priorEntry)
 	s.transcodes.put(entry)
 
 	dec := frontend.HLSDecision(entry.decision, p.opts.DirectPlay, func() frontend.Decision {
@@ -113,6 +113,7 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "progressive transcode failed; start a new session", http.StatusBadGateway)
 					return
 				}
+				s.rebindSessionTranscode(entry)
 				s.notePlexEncoder(p.sessionID, frontend.StreamHTTP, dec, p.offset)
 				unlockEncoder()
 				unlockOwner()
@@ -143,6 +144,7 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 		writePlaybackStatus(w, http.StatusInternalServerError)
 		return
 	}
+	dec = liveSessionDecision(hs, dec)
 	s.bindTranscodeStarted(entry, dec, p.offset)
 	s.progressiveStops.clear(pr.User.ID, pr.ClientID, pr.SessionID, p.key)
 	s.notePlexEncoder(p.sessionID, frontend.StreamHTTP, dec, p.offset)

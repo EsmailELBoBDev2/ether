@@ -223,11 +223,12 @@ func (s *Server) toShared(e playEntry) sharedEntry {
 	if e.client.RemoteIP.IsValid() {
 		se.Client.RemoteIP = e.client.RemoteIP.String()
 	}
-	if e.transcodeID != "" {
-		if te, ok := s.transcodes.get(e.transcodeID); ok {
-			ts := s.servedTranscodeSessionModel(te)
-			se.Transcode = &ts
-		}
+	if te, ok := s.activeTranscodeForSession(e); ok {
+		se.TranscodeID = te.id
+		ts := s.servedTranscodeSessionModel(te)
+		se.Transcode = &ts
+	} else {
+		se.TranscodeID = ""
 	}
 	return se
 }

@@ -121,7 +121,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		startPR = mergeSessionProfile(pr, entry)
 	}
 	s.playbackOwners.Bind(pr.User.ID, pr.ClientID, p.key, pr.SessionID, ps.ID, true, s.now())
-	entry.playbackID = pr.SessionID
+	preserveStartIdentity(entry, pr, priorEntry)
 	s.transcodes.put(entry)
 
 	dec := entry.decision
@@ -140,6 +140,8 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		// start for the same decision keeps the session (and its finished
 		// segments); a new decision request starts afresh.
 		if ds, isDASH := existing.(frontend.DASHSession); isDASH && entry.started {
+			dec = liveSessionDecision(existing, dec)
+			s.rebindSessionTranscode(entry)
 			s.notePlexEncoder(p.sessionID, frontend.StreamDASH, dec, p.offset)
 			s.noteManifestServed(p.sessionID, pr)
 			unlockEncoder()
@@ -172,6 +174,7 @@ func (s *Server) handleStartDASH(w http.ResponseWriter, r *http.Request) {
 		writePlaybackStatus(w, http.StatusInternalServerError)
 		return
 	}
+	dec = liveSessionDecision(hs, dec)
 	s.bindTranscodeStarted(entry, dec, p.offset)
 	s.notePlexEncoder(p.sessionID, frontend.StreamDASH, dec, p.offset)
 	s.noteManifestServed(p.sessionID, pr)

@@ -146,6 +146,11 @@ func (s *Service) startOwnedRelay(ctx context.Context, ss *session, info core.Me
 	return s.runRelay(ss, p), nil
 }
 
+// relayStartWait bounds how long an owned relay timeline holds its first
+// playlist while gathering enough startup depth (at least two segments and
+// ~2x target) so a player does not stall on a single short opening segment.
+const relayStartWait = 6 * time.Second
+
 func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.ClientCaps, dec core.Decision, cut time.Duration) *relayProducer {
 	c := ss.info.Channel
 	log := s.sessionLog(ss).With("owned", "relay")
@@ -164,7 +169,9 @@ func (s *Service) newRelayProducer(ss *session, info core.MediaInfo, caps core.C
 	}
 	tl.setHint(slateProfileFromInfo(c.ID, &output, container))
 	tl.expectStart(2, relayTargetFloor(cut))
-	tl.startMedia = 2 * cut
+	tl.startMinMedia = 2 * cut
+	tl.startMedia = max(2*cut, 4*time.Second)
+	tl.startWait = relayStartWait
 	p := &relayProducer{s: s, tl: tl, log: log, caps: caps, info: info, dec: dec, cut: cut}
 	p.bind(ss)
 	// The timeline reads only these flags under its lock; input health is
@@ -468,10 +475,10 @@ func (p *relayProducer) run(ctx context.Context) {
 			p.mu.Lock()
 			p.progress = now
 			p.mu.Unlock()
-			if !warmed && p.tl.started() {
-				warmed = true
-				p.tl.warmSlate()
-			}
+		}
+		if !warmed && p.tl.started() {
+			warmed = true
+			p.tl.warmSlate()
 		}
 		if err != nil {
 			failures++
@@ -527,11 +534,17 @@ func (p *relayProducer) run(ctx context.Context) {
 		if td <= 0 {
 			td = relayTargetFloor(cut)
 		}
+		started := p.tl.started()
 		// A new producer gets ffmpeg's start-up time before the deadline
 		// applies to it; afterwards the deadline is one target duration.
+		// While the first playlist is still held for startup depth, allow
+		// the startup wait budget before treating a slow second segment as
+		// keyframe starvation or a stalled producer.
 		limit, from, cold := td, last, last.Before(startedAt)
 		if cold {
 			from, limit = startedAt, 12*time.Second
+		} else if !started {
+			limit = max(limit, relayStartWait)
 		}
 		since := now.Sub(from)
 		// Keyframe starvation: input has kept arriving for this long
@@ -556,8 +569,10 @@ func (p *relayProducer) run(ctx context.Context) {
 		if cold {
 			// The hedge normally settles a slow cold start first.
 			starveLimit = 6*time.Second + skewSlack
+		} else if !started {
+			starveLimit = max(starveLimit, relayStartWait)
 		}
-		starving := copyMode && !cold && !escalated && starvedFor > lastDur+500*time.Millisecond
+		starving := copyMode && !cold && started && !escalated && starvedFor > lastDur+500*time.Millisecond
 		p.starving.Store(starving)
 		p.producing.Store(!cold && !flowing.IsZero() && !starving)
 		hedgeDelay := 2*time.Second + skewSlack

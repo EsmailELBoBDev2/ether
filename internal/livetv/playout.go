@@ -1161,13 +1161,26 @@ func (s *Service) takeEarlyProbe(ctx context.Context, ss *session, ch <-chan pro
 	}
 }
 
+// waitOwnedRelayStart waits for a relay timeline's first playlist. If the
+// outer budget expires while at least one segment is already pending, it lets
+// the timeline's bounded startup depth wait finish rather than failing a
+// live stream that is about to publish.
+func waitOwnedRelayStart(parent, deadlineCtx context.Context, lease *ownedLease) error {
+	err := lease.tl.waitStarted(deadlineCtx)
+	if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil && lease.tl.hasPending() {
+		gctx, cancel := context.WithTimeout(parent, lease.tl.startWaitRemaining()+2*ownedTick)
+		defer cancel()
+		err = lease.tl.waitStarted(gctx)
+	}
+	return err
+}
+
 // awaitOwnedStart holds the tune until a Direct session's owned timeline has
 // its first playlist. An Apple player hangs a live item for good when the
 // first playlist response takes a target duration, so the wait for the
 // first segments belongs to the tune, never to that response. Silo's
-// playback start keeps its sub-second budget: it waits at most 700 ms
-// (passthrough is usually ready by then) and leaves the rest to the
-// playlist request.
+// passthrough start keeps its sub-second budget (700 ms); relay sessions
+// wait for their startup depth so the first playlist request returns ready.
 func (s *Service) awaitOwnedStart(ctx context.Context, ss *session) error {
 	ss.mu.Lock()
 	lease := ss.owned
@@ -1176,25 +1189,30 @@ func (s *Service) awaitOwnedStart(ctx context.Context, ss *session) error {
 	if lease == nil {
 		return nil
 	}
+	parentCtx := ctx
 	if !deadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
-	wait := ctx
-	if ss.caps.BestEffortLiveStart {
-		var cancel context.CancelFunc
-		wait, cancel = context.WithTimeout(ctx, 700*time.Millisecond)
-		defer cancel()
-	}
-	err := lease.tl.waitStarted(wait)
-	if errors.Is(err, errNeedsRelay) {
-		if lease, err = s.passthroughToRelay(ctx, ss); err == nil {
-			err = lease.tl.waitStarted(wait)
+	var err error
+	if lease.relay != nil {
+		err = waitOwnedRelayStart(parentCtx, ctx, lease)
+	} else {
+		wait := ctx
+		if ss.caps.BestEffortLiveStart {
+			var cancel context.CancelFunc
+			wait, cancel = context.WithTimeout(ctx, 700*time.Millisecond)
+			defer cancel()
 		}
-	}
-	if err != nil && wait.Err() != nil && ctx.Err() == nil {
-		return nil // The playlist request waits for the rest
+		err = lease.tl.waitStarted(wait)
+		if errors.Is(err, errNeedsRelay) {
+			if lease, err = s.passthroughToRelay(ctx, ss); err == nil {
+				err = waitOwnedRelayStart(parentCtx, ctx, lease)
+			}
+		} else if err != nil && wait.Err() != nil && ctx.Err() == nil {
+			return nil // The playlist request waits for the rest
+		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		// The tune budget passed without one segment from the source.
@@ -1222,11 +1240,18 @@ func (s *Service) serveOwnedPlaylist(w http.ResponseWriter, r *http.Request, ss 
 	lease.tl.mu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), target/2)
 	defer cancel()
-	err := lease.tl.waitStarted(ctx)
-	if errors.Is(err, errNeedsRelay) {
-		lease, err = s.passthroughToRelay(ctx, ss)
-		if err == nil {
-			err = lease.tl.waitStarted(ctx)
+	var err error
+	if lease.relay != nil {
+		err = waitOwnedRelayStart(r.Context(), ctx, lease)
+	} else {
+		err = lease.tl.waitStarted(ctx)
+		if errors.Is(err, errNeedsRelay) {
+			rctx, rcancel := context.WithTimeout(r.Context(), iptvStartFloor)
+			defer rcancel()
+			lease, err = s.passthroughToRelay(rctx, ss)
+			if err == nil {
+				err = waitOwnedRelayStart(r.Context(), rctx, lease)
+			}
 		}
 	}
 	if err != nil {

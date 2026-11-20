@@ -1292,7 +1292,9 @@ func (s *Server) sectionCollections(w http.ResponseWriter, r *http.Request, sec 
 	_, mc.Title2 = sectionTypeTitle(sec)
 	mc.ViewGroup = string(sec.Type)
 	var all []frontend.Collection
-	if s.collections() != nil {
+	// Catalogue collections are typed by movie or show and belong to the
+	// built-in libraries. A plugin library has none of them.
+	if s.collections() != nil && sec.PluginID == "" {
 		cs, err := s.collections().List(ctx, pr.User, sec.Type)
 		if err != nil {
 			s.writeErr(w, r, err)
@@ -1316,6 +1318,9 @@ func (s *Server) handleCollections(w http.ResponseWriter, r *http.Request) {
 	mc := libraryContainer()
 	if s.collections() != nil {
 		for _, sec := range s.userSections(pr.User) {
+			if sec.PluginID != "" {
+				continue
+			}
 			cs, err := s.collections().List(ctx, pr.User, sec.Type)
 			if err != nil {
 				s.writeErr(w, r, err)

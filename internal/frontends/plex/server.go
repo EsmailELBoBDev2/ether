@@ -184,6 +184,7 @@ type Server struct {
 	playIDs           *playIdentities
 	versionFlows      *versionFlowStore
 	variantWatch      variantWatches
+	plezyReasks       plezyReaskStore
 	downloads         frontend.DownloadQueueStore
 	queues            frontend.PlayQueues
 	sessions          *sessionActivities

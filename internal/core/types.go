@@ -195,6 +195,7 @@ func (t *Title) IsFutureRelease(now time.Time) bool {
 var (
 	ErrNotFound            = errors.New("not found")
 	ErrNotAvailable        = errors.New("not available yet") // no acceptable release exists
+	ErrMoreCandidates      = errors.New("more candidates remain") // per-call validation budget hit with untried candidates left
 	ErrVersionUnavailable  = errors.New("version unavailable")
 	ErrPreparing           = errors.New("item is still being prepared")
 	ErrJobsBusy            = errors.New("playback preparation jobs are all busy")

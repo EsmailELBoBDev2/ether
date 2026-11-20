@@ -59,7 +59,7 @@ const (
 	candidateBudget  = 8 * time.Second
 )
 
-var errHealthBudget = errors.New("source validation limit reached; more releases remain to try")
+var errHealthBudget = fmt.Errorf("source validation limit reached; %w", core.ErrMoreCandidates)
 
 // Close cancels and joins optimistic checks and search refills.
 // Owners should close before the DB.

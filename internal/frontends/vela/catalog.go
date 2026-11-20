@@ -62,6 +62,12 @@ func titleWire(t frontend.Title) object {
 	if t.Year > 0 {
 		out["year"] = t.Year
 	}
+	if !t.Released.IsZero() {
+		out["airDate"] = t.Released.UTC().Format("2006-01-02")
+	}
+	if t.DateDisplay == "date" {
+		out["dateDisplay"] = "date"
+	}
 	if t.Runtime > 0 {
 		out["durationSeconds"] = t.Runtime.Seconds()
 	}

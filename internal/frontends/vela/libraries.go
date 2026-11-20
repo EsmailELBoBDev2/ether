@@ -129,7 +129,7 @@ func libraryWire(view frontend.View) object {
 		appliedLibrarySort := false
 		for _, t := range srcTabs {
 			tab := object{"id": t.ID, "label": t.Label, "kind": t.Kind}
-			if t.Kind == "collections" || t.Kind == "people" || t.Kind == "view" {
+			if t.Kind == "collections" || t.Kind == "people" || t.Kind == "view" || t.Kind == "live" {
 				tab["search"] = t.Search
 				if t.Search && t.SearchPlaceholder != "" {
 					tab["searchPlaceholder"] = t.SearchPlaceholder
@@ -138,6 +138,12 @@ func libraryWire(view frontend.View) object {
 				tab["searchPlaceholder"] = t.SearchPlaceholder
 			}
 			switch {
+			case t.Kind == "live":
+				tabCard := "landscape"
+				if t.Card == "poster" || t.Card == "square" || t.Card == "landscape" {
+					tabCard = t.Card
+				}
+				tab["card"] = tabCard
 			case t.Kind == "collections" && t.Facet != "":
 				tab["facet"] = t.Facet
 				effOrder := t.Order
@@ -179,11 +185,16 @@ func libraryWire(view frontend.View) object {
 			tabs = append(tabs, tab)
 		}
 	}
+	dateDisplay := "year"
+	if view.DateDisplay == "date" {
+		dateDisplay = "date"
+	}
 	return object{
 		"id":           view.ID,
 		"name":         view.Name,
 		"kind":         kind,
 		"artwork":      []object{},
+		"dateDisplay":  dateDisplay,
 		"presentation": object{"card": card},
 		"tabs":         tabs,
 		"browse":       object{"sorts": sorts, "defaultSort": defaultSort, "defaultDirection": defaultDirection, "filters": filters},

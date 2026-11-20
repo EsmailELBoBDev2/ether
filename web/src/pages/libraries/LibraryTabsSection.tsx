@@ -46,6 +46,7 @@ const VALID_NEW_KINDS = new Set<LibraryTabKind>([
   "collections",
   "people",
   "view",
+  "live",
 ]);
 
 const EMPTY_FACETS: LibraryAvailableFacets = { collections: [], people: [] };
@@ -59,6 +60,7 @@ function canonicalTab(tab: LibraryTab): LibraryTab {
     ...(tab.order ? { order: tab.order } : {}),
     ...(tab.sort ? { sort: tab.sort } : {}),
     ...(tab.direction ? { direction: tab.direction } : {}),
+    ...(tab.kind === "live" ? { card: tab.card ?? "landscape" } : {}),
     ...(tab.kind !== "recommended" ? { search: tab.search !== false } : {}),
     ...(tab.kind !== "recommended" && tab.search !== false && tab.searchPlaceholder
       ? { searchPlaceholder: tab.searchPlaceholder }
@@ -79,7 +81,17 @@ function summarizeTab(
       : t("Personalized rows");
   }
   const parts: string[] = [];
-  if (tab.kind === "library") {
+  if (tab.kind === "live") {
+    parts.push(t("Live streams"));
+    const card = tab.card ?? "landscape";
+    parts.push(
+      card === "poster"
+        ? t("Poster cards")
+        : card === "square"
+          ? t("Square cards")
+          : t("Landscape cards"),
+    );
+  } else if (tab.kind === "library") {
     parts.push(t("Everything"));
     const ruleCount = tab.filters?.rules.length ?? 0;
     if (ruleCount > 0) {
@@ -122,7 +134,13 @@ type DrawerMode =
   | { type: "new"; kind: LibraryTabKind }
   | { type: "edit"; key: string };
 
-export function LibraryTabsSection({ library }: { library: Library }) {
+export function LibraryTabsSection({
+  library,
+  onChanged,
+}: {
+  library: Library;
+  onChanged?: () => void;
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = useAsync((signal) => librariesApi.tabs(library.id, signal), [library.id]);
   const supportsRecommendedRows = supportsLibraryRecommendedRows(library);
@@ -166,7 +184,9 @@ export function LibraryTabsSection({ library }: { library: Library }) {
       ? localDrawer
       : urlEditKey
         ? { type: "edit", key: urlEditKey }
-        : urlNewKind && VALID_NEW_KINDS.has(urlNewKind)
+        : urlNewKind &&
+            VALID_NEW_KINDS.has(urlNewKind) &&
+            (urlNewKind !== "live" || library.source === "plugin")
           ? { type: "new", kind: urlNewKind }
           : urlAdd
             ? { type: "pick" }
@@ -194,6 +214,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
     try {
       const updated = await librariesApi.putTabs(library.id, nextTabs);
       state.setData(updated);
+      onChanged?.();
       toast.success(message);
       return true;
     } catch (e) {
@@ -246,6 +267,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
         }
         const updatedTabs = await librariesApi.putTabs(library.id, nextTabs);
         state.setData(updatedTabs);
+        onChanged?.();
       }
 
       toast.success(
@@ -270,6 +292,7 @@ export function LibraryTabsSection({ library }: { library: Library }) {
     try {
       const updated = await librariesApi.resetTabs(library.id);
       state.setData(updated);
+      onChanged?.();
       closeDrawers();
       toast.success(
         library.source === "plugin"

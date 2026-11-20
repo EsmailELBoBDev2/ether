@@ -20,11 +20,50 @@ var liveTagURI = regexp.MustCompile(`URI="([^"]+)"`)
 
 type sessionLive struct {
 	service *livetv.Service
+	app     *App
 	cached  func(context.Context, core.RatingKey) (*core.Title, error)
 }
 
 func (l sessionLive) Allowed(ctx context.Context, viewer *core.Viewer, id string) error {
 	return l.service.AllowedChannelCached(ctx, viewer, id, l.cached)
+}
+func (l sessionLive) DirectAllowed(ctx context.Context, viewer *core.Viewer, target *frontend.DirectLiveTarget) error {
+	if target == nil || target.LibraryID <= 0 || l.app == nil {
+		return core.ErrNotAvailable
+	}
+	svc := l.app.pluginLiveService()
+	if svc == nil {
+		return core.ErrNotAvailable
+	}
+	_, _, err := svc.AllowViewer(ctx, viewer, target.LibraryID, target.Tab)
+	return err
+}
+func (l sessionLive) TuneDirect(ctx context.Context, viewer *core.Viewer, target *frontend.DirectLiveTarget, caps core.ClientCaps, clientSession string) (string, *core.MediaInfo, error) {
+	if target == nil || target.URL == "" || l.service == nil {
+		return "", nil, core.ErrNotAvailable
+	}
+	surface := core.LiveApp(ctx)
+	libID := target.LibraryID
+	tab := target.Tab
+	var allowCheck func(context.Context, *core.User) error
+	if l.app != nil {
+		allowCheck = func(checkCtx context.Context, u *core.User) error {
+			svc := l.app.pluginLiveService()
+			if svc == nil {
+				return core.ErrNotAvailable
+			}
+			_, _, err := svc.AllowViewer(core.WithLiveApp(checkCtx, surface), u, libID, tab)
+			return err
+		}
+	}
+	info, err := l.service.TuneDirectStream(ctx, viewer, livetv.DirectStream{
+		ID:         target.ItemID,
+		Title:      target.Title,
+		URL:        target.URL,
+		Headers:    target.Headers,
+		AllowCheck: allowCheck,
+	}, liveTVClientCaps(caps), clientSession)
+	return info.ID, info.MediaInfo, err
 }
 func (l sessionLive) Tune(ctx context.Context, viewer *core.Viewer, id string, caps core.ClientCaps, clientSession string) (string, error) {
 	info, err := l.service.TuneWithSession(ctx, viewer, id, liveTVClientCaps(caps), clientSession)

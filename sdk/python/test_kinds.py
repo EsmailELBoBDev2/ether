@@ -445,6 +445,59 @@ class ArchiveExtractSdkTest(unittest.TestCase):
         self.assertEqual(seen[1], ("POST", "/ether/plugin-host/kinds/comic/browse", {"query": "alp", "desc": True}, {HEADER_VIEWER_TOKEN: "tok-r"}))
         self.assertNotIn("viewerId", seen[1][2])
 
+    def test_kind_live_dispatch(self):
+        app = plugin(
+            manifest={
+                "id": "org.example.games",
+                "name": "Games",
+                "version": "1.0.0",
+                "ether": {"protocol": 1, "kind": "content"},
+            },
+            routes={},
+        )
+        seen = {}
+
+        class LiveProv:
+            def live(self, ctx, req):
+                seen["live"] = req
+                return {
+                    "items": [{"id": "ch-1", "title": "Finals", "badge": "LIVE", "viewers": 420}],
+                    "filters": [{"key": "featured", "label": "Featured"}],
+                    "nextCursor": "cur-2",
+                }
+
+            def resolve_live(self, ctx, req):
+                seen["resolve"] = req
+                return {
+                    "url": "https://stream.example/live/ch-1/master.m3u8?token=once",
+                    "mime": "application/vnd.apple.mpegurl",
+                    "title": "Finals",
+                }
+
+        app.on_live("esports", LiveProv())
+        res = app.dispatch(
+            {
+                "method": "POST",
+                "path": "/ether/v1/kinds/esports/live",
+                "body": json.dumps({"tab": "live", "q": "finals", "filter": "featured", "limit": 10}),
+            }
+        )
+        self.assertEqual(res["status"], 200)
+        self.assertEqual(seen["live"]["kind"], "esports")
+        self.assertEqual(seen["live"]["q"], "finals")
+        self.assertEqual(res["body"]["nextCursor"], "cur-2")
+
+        res2 = app.dispatch(
+            {
+                "method": "POST",
+                "path": "/ether/v1/kinds/esports/live/resolve",
+                "body": json.dumps({"id": "ch-1"}),
+            }
+        )
+        self.assertEqual(res2["status"], 200)
+        self.assertEqual(seen["resolve"], {"kind": "esports", "id": "ch-1"})
+        self.assertEqual(res2["body"]["url"], "https://stream.example/live/ch-1/master.m3u8?token=once")
+
 
 if __name__ == "__main__":
     unittest.main()

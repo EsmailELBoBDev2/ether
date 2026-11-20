@@ -26,7 +26,7 @@ func (i *instance) audioFallback(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.commandActive = true
 	defer func() { s.commandActive = false; s.mu.Unlock() }()
-	if !s.ended.IsZero() || s.plan["channelId"] != nil || s.plan["purpose"] == "preview" {
+	if !s.ended.IsZero() || s.plan["channelId"] != nil || s.plan["live"] != nil || s.plan["purpose"] == "preview" {
 		problem(w, 409, "conflict", "session_ended")
 		return
 	}

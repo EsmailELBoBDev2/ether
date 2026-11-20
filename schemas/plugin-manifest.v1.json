@@ -404,6 +404,12 @@
                           "square"
                         ]
                       },
+                      "dateDisplay": {
+                        "enum": [
+                          "year",
+                          "date"
+                        ]
+                      },
                       "icon": {
                         "type": "string"
                       },
@@ -413,6 +419,13 @@
                       "tabs": {
                         "items": {
                           "properties": {
+                            "card": {
+                              "enum": [
+                                "poster",
+                                "landscape",
+                                "square"
+                              ]
+                            },
                             "direction": {
                               "enum": [
                                 "asc",
@@ -430,7 +443,8 @@
                                 "recommended",
                                 "library",
                                 "collections",
-                                "people"
+                                "people",
+                                "live"
                               ]
                             },
                             "label": {

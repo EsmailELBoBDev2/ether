@@ -15,6 +15,7 @@ import {
   Folders,
   Library as LibraryIcon,
   Plus,
+  Radio,
   RotateCcw,
   Search,
   Sparkles,
@@ -315,6 +316,8 @@ export function tabKindIcon(kind: LibraryTabKind, size = 16) {
       return <Users size={size} />;
     case "view":
       return <Filter size={size} />;
+    case "live":
+      return <Radio size={size} />;
   }
 }
 
@@ -330,6 +333,8 @@ export function tabKindTitle(kind: LibraryTabKind): string {
       return t("People in…");
     case "view":
       return t("Saved view");
+    case "live":
+      return t("Live");
   }
 }
 
@@ -477,6 +482,15 @@ export function createSeedTab(
       search: true,
     };
   }
+  if (kind === "live") {
+    return {
+      key: slugTabKey("live", kind, existingKeys),
+      label: t("Live"),
+      kind: "live",
+      card: "landscape",
+      search: true,
+    };
+  }
   const label = t("Unwatched");
   const seedRule: Rule =
     library.source === "plugin"
@@ -552,8 +566,20 @@ export function AddTabPickerDrawer({
         description: t("A filtered slice of this library — such as Unwatched, 4K or 90s Classics."),
         disabled: false,
       },
+      ...(library.source === "plugin"
+        ? [
+            {
+              kind: "live" as const,
+              title: t("Live"),
+              description: t(
+                "Currently live streams supplied by this plugin with search and direct playback.",
+              ),
+              disabled: false,
+            },
+          ]
+        : []),
     ],
-    [hasCollectionsFacet, hasPeopleFacet, hasRecommended, library.name, locale],
+    [hasCollectionsFacet, hasPeopleFacet, hasRecommended, library.name, library.source, locale],
   );
 
   return (
@@ -873,7 +899,7 @@ function TabEditDrawerInner({
 
   // i18n: memo holds no copy
   const previewTabPayload = useMemo<LibraryTab | null>(() => {
-    if (draft.kind === "recommended") return null;
+    if (draft.kind === "recommended" || draft.kind === "live") return null;
     if (supportsFacet && !facetValid) return null;
     const cleaned: LibraryTab = {
       key: draft.key || "preview",
@@ -1043,6 +1069,9 @@ function TabEditDrawerInner({
     if (supportsSort) {
       cleaned.sort = currentSort;
       cleaned.direction = currentDirection;
+    }
+    if (draft.kind === "live") {
+      cleaned.card = draft.card ?? "landscape";
     }
     if (supportsSearch) {
       cleaned.search = searchEnabled;
@@ -1604,6 +1633,29 @@ function TabEditDrawerInner({
                   ))}
                 </div>
               ) : null}
+            </div>
+          </section>
+        ) : null}
+
+        {/* Live tab card shape */}
+        {draft.kind === "live" ? (
+          <section className="space-y-3 rounded-xl border border-border bg-surface p-4">
+            <div className="space-y-1.5">
+              <span className="block text-sm font-medium text-fg">{t("Card shape")}</span>
+              <p className="text-xs text-fg-muted">
+                {t("Choose how live stream thumbnails appear in this tab.")}
+              </p>
+              <Segmented
+                ariaLabel={t("Card shape")}
+                size="sm"
+                value={draft.card ?? "landscape"}
+                onChange={(card) => setDraft({ ...draft, card })}
+                options={[
+                  { value: "landscape", label: t("Landscape") },
+                  { value: "poster", label: t("Poster") },
+                  { value: "square", label: t("Square") },
+                ]}
+              />
             </div>
           </section>
         ) : null}

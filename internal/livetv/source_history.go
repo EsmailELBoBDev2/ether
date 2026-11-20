@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -160,7 +161,7 @@ func (s *Service) SourceHistories() []SourceHistory {
 
 // noteSourceEvidence adds observations to a source's counters.
 func (s *Service) noteSourceEvidence(channelID string, src StreamSource, ev SourceEvidence) {
-	if src.ID == "" || ev.empty() {
+	if src.ID == "" || strings.HasPrefix(channelID, directChannelPrefix) || ev.empty() {
 		return
 	}
 	s.history.update(channelID, src, func(h *SourceHistory) { h.add(ev) })
@@ -170,7 +171,7 @@ func (s *Service) noteSourceEvidence(channelID string, src StreamSource, ev Sour
 // ended: mode "steady", "copy", "transcode", "passthrough"; outcome "ok",
 // "escalated" (switched mid-session), "failed".
 func (s *Service) noteSourceMode(channelID string, src StreamSource, mode, outcome string) {
-	if src.ID == "" {
+	if src.ID == "" || strings.HasPrefix(channelID, directChannelPrefix) {
 		return
 	}
 	now := s.o.Now()

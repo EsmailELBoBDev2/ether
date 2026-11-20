@@ -42,9 +42,10 @@ type Source struct {
 	Variants      func(*core.Title, string) (*frontend.ArtworkImages, bool)
 	Metadata      func(context.Context, frontend.ArtworkRequest, frontend.Image) frontend.Image
 	meta          *MetadataQueue
-	VirtualSeason func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
-	PluginItem    func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)
-	URLImages     interface {
+	VirtualSeason    func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
+	PluginItem       func(context.Context, *core.User, core.Device, core.RatingKey) (*core.Title, []frontend.Image, error)
+	LibraryLiveThumb func(context.Context, *core.Viewer, string, string) (string, error)
+	URLImages        interface {
 		GetUntrustedURL(context.Context, string) ([]byte, string, error)
 	}
 	Raster   frontend.SVGRasterizer

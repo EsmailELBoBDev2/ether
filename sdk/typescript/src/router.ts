@@ -44,6 +44,7 @@ import {
   dispatchKinds,
   type CatalogProvider,
   type FrontendAdapter,
+  type KindLiveProvider,
   type KindMatcher,
   type KindResolver,
   type SetupTester,
@@ -136,6 +137,7 @@ export interface PluginInstance<S = Record<string, unknown>> {
   onCatalog(kind: string, provider: CatalogProvider<S>): void;
   onResolve(kind: string, resolver: KindResolver<S>): void;
   onMatch(kind: string, matcher: KindMatcher<S>): void;
+  onLive(kind: string, provider: KindLiveProvider<S>): void;
   onFrontend(key: string, adapter: FrontendAdapter<S>): void;
   onSetupTest(tester: SetupTester<S>): void;
 }
@@ -786,6 +788,7 @@ export function plugin<S = Record<string, unknown>>(
     onCatalog: (kind, provider) => { kindHandlers.catalog.set(kind, provider); },
     onResolve: (kind, resolver) => { kindHandlers.resolve.set(kind, resolver); },
     onMatch: (kind, matcher) => { kindHandlers.match.set(kind, matcher); },
+    onLive: (kind, provider) => { kindHandlers.live.set(kind, provider); },
     onFrontend: (key, adapter) => { kindHandlers.frontend.set(key, adapter); },
     onSetupTest: (tester) => { kindHandlers.setup = tester; },
   };

@@ -94,7 +94,14 @@ func (s *ImageGrantService) grantKeys() ([]byte, cipher.Block, error) {
 }
 
 func validateImageClaims(c imageClaims) bool {
-	if c.Viewer <= 0 || c.Item < 0 || (c.Item == 0) == (c.Channel == "") {
+	if c.Viewer <= 0 || c.Item < 0 {
+		return false
+	}
+	if strings.HasPrefix(c.Path, frontend.LibraryLiveThumbPrefix) {
+		if c.Item != 0 || c.Channel != "" || c.Subject == "" || c.Kind == frontend.ImagePerson {
+			return false
+		}
+	} else if (c.Item == 0) == (c.Channel == "") {
 		return false
 	}
 	if len(c.Channel) > 512 || (c.Channel != "" && c.Kind == frontend.ImagePerson) {

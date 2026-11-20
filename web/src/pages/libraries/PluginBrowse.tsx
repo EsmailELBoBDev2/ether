@@ -1,5 +1,5 @@
-import { Button, EmptyState } from "@braedonsaunders/appkit-ui";
-import { ChevronRight, Library as LibraryIcon, Search } from "lucide-react";
+import { Button, EmptyState, cn } from "@braedonsaunders/appkit-ui";
+import { ChevronRight, Library as LibraryIcon, Radio, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ErrorPanel, LoadingRows } from "../../components/feedback";
@@ -7,8 +7,9 @@ import { ToolbarPicker } from "../../components/ToolbarPicker";
 import { t, tn } from "../../i18n";
 import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
-import { artUrl, librariesApi, type KindItem, type Library } from "./api";
+import { artUrl, formatItemDate, librariesApi, type KindItem, type Library } from "./api";
 import { PluginItemDrawer } from "./PluginItemDrawer";
+import { PluginLiveTab } from "./PluginLiveTab";
 
 const SORT_LABELS: Record<string, () => string> = {
   title: () => t("Title A–Z"),
@@ -39,6 +40,13 @@ export function PluginBrowse({
   const params = controlledParams ?? urlParams;
   const setParams = onParams ?? setUrlParams;
   const kind = library.kind;
+  const liveTabs = useMemo(
+    () => (library.effectiveTabs ?? []).filter((tab) => tab.kind === "live" && !tab.hidden),
+    [library.effectiveTabs],
+  );
+  const activeLiveKey = params.get("liveTab") ?? "";
+  const activeLiveTab = liveTabs.find((tab) => tab.key === activeLiveKey) ?? null;
+  const dateDisplay = kind?.library.dateDisplay;
   const query = params.get("q") ?? "";
   const debouncedQuery = useDebouncedValue(query, 300);
   const parent = params.get("parent") ?? "";
@@ -60,13 +68,14 @@ export function PluginBrowse({
   const requestKey = JSON.stringify([debouncedQuery, parent, sort, facetValues, ruleFilter]);
   const page = useAsync(
     (signal) => {
+      if (activeLiveTab) return Promise.resolve(null);
       const p: Record<string, string> = { sort, limit: "48", ...ruleFilter };
       if (debouncedQuery) p.q = debouncedQuery;
       if (parent) p.parent = parent;
       for (const [k, v] of Object.entries(facetValues)) if (v) p[`facet.${k}`] = v;
       return librariesApi.items(library.id, p, signal);
     },
-    [library.id, requestKey],
+    [library.id, requestKey, activeLiveTab?.key ?? ""],
   );
 
   const update = (patch: Record<string, string>) => {
@@ -121,7 +130,55 @@ export function PluginBrowse({
 
   return (
     <div className="plugin-browse">
-      <div className="plugin-browse-bar">
+      {liveTabs.length > 0 ? (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-1.5"
+          role="tablist"
+          aria-label={t("Browse views")}
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!activeLiveTab}
+            onClick={() => update({ liveTab: "" })}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+              !activeLiveTab
+                ? "border-primary bg-primary-subtle text-primary"
+                : "border-border bg-surface text-fg-muted hover:text-fg",
+            )}
+          >
+            <LibraryIcon size={14} aria-hidden />
+            {t("Library")}
+          </button>
+          {liveTabs.map((liveTab) => {
+            const selectedTab = activeLiveTab?.key === liveTab.key;
+            return (
+              <button
+                key={liveTab.key}
+                type="button"
+                role="tab"
+                aria-selected={selectedTab}
+                onClick={() => update({ liveTab: liveTab.key })}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
+                  selectedTab
+                    ? "border-primary bg-primary-subtle text-primary"
+                    : "border-border bg-surface text-fg-muted hover:text-fg",
+                )}
+              >
+                <Radio size={14} aria-hidden />
+                {liveTab.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {activeLiveTab ? (
+        <PluginLiveTab library={library} tab={activeLiveTab} />
+      ) : (
+        <>
+          <div className="plugin-browse-bar">
         <nav aria-label={t("Inside this library")} className="plugin-crumbs">
           <button type="button" onClick={() => update({ parent: "", parentTitle: "", item: "" })}>
             {library.name}
@@ -199,7 +256,9 @@ export function PluginBrowse({
                 <span className="plugin-card-title">{item.title}</span>
                 <span className="plugin-card-meta">
                   {kind?.levels.find((l) => l.key === item.level)?.label ?? item.level}
-                  {item.year ? ` · ${item.year}` : ""}
+                  {formatItemDate(item, dateDisplay)
+                    ? ` · ${formatItemDate(item, dateDisplay)}`
+                    : ""}
                   {(item.childCount ?? 0) > 0
                     ? ` · ${tn(item.childCount ?? 0, "{count} inside", "{count} inside")}`
                     : ""}
@@ -224,6 +283,8 @@ export function PluginBrowse({
           onOpenItem={(ref) => update({ item: ref })}
         />
       ) : null}
+        </>
+      )}
     </div>
   );
 }

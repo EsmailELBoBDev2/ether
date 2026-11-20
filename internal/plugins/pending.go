@@ -35,7 +35,7 @@ func pendingBudgetBody(retryInMS int64) json.RawMessage {
 
 // Call applies the total pending budget to kind resolvers and matchers.
 func (m *Manager) Call(ctx context.Context, pluginID string, req Request) (Response, error) {
-	if !strings.HasPrefix(req.Path, "/ether/v1/kinds/") || (!strings.HasSuffix(req.Path, "/resolve") && !strings.HasSuffix(req.Path, "/match")) {
+	if !strings.HasPrefix(req.Path, "/ether/v1/kinds/") || strings.HasSuffix(req.Path, "/live/resolve") || (!strings.HasSuffix(req.Path, "/resolve") && !strings.HasSuffix(req.Path, "/match")) {
 		return m.callOnce(ctx, pluginID, req)
 	}
 	parent := ctx

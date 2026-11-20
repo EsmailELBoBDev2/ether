@@ -73,6 +73,9 @@ func (a *App) newSharedArtwork(ctx context.Context) (*artworkservice.Source, fun
 		source.URLImages = a.images
 	}
 	source.PluginItem = a.sharedPluginArtworkItem
+	source.LibraryLiveThumb = func(ctx context.Context, viewer *core.Viewer, viewID string, path string) (string, error) {
+		return surfaceLibraryLive{app: a}.AuthorizeLibraryLiveThumb(ctx, viewer, viewID, path)
+	}
 	variants := artworkservice.NewVariantsQueue(ctx, a.tmdb.CachedArtworkVariants, a.tmdb.ArtworkVariants)
 	source.Variants = variants.Get
 	source.Generated = a.titlePosters()

@@ -36,8 +36,12 @@ var kindLibraryCards = map[string]bool{
 	"poster": true, "landscape": true, "square": true,
 }
 
+var kindLibraryDateDisplays = map[string]bool{
+	"year": true, "date": true,
+}
+
 var kindLibraryTabKinds = map[string]bool{
-	"recommended": true, "library": true, "collections": true, "people": true,
+	"recommended": true, "library": true, "collections": true, "people": true, "live": true,
 }
 
 var mediaBrowserCollectionTypes = map[string]bool{
@@ -88,6 +92,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		if k.Library.Card != "" && !kindLibraryCards[k.Library.Card] {
 			add(base+".library.card", "must be poster, landscape or square")
 		}
+		if k.Library.DateDisplay != "" && !kindLibraryDateDisplays[k.Library.DateDisplay] {
+			add(base+".library.dateDisplay", "must be year or date")
+		}
 		if len(k.Library.Tabs) > 6 {
 			add(base+".library.tabs", "at most six tabs may be declared")
 		}
@@ -103,7 +110,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			seenTab[tab.Key] = true
 			label(tbase+".label", tab.Label, 40)
 			if !kindLibraryTabKinds[tab.Kind] {
-				add(tbase+".kind", "must be recommended, library, collections or people")
+				add(tbase+".kind", "must be recommended, library, collections, people or live")
 			}
 		}
 	}
@@ -262,6 +269,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						add(tbase+".searchPlaceholder", "requires search to be enabled")
 					}
 				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live tabs may set card")
+				}
 			case "people":
 				if tab.Facet == "" || !seenFacet[tab.Facet] {
 					add(tbase+".facet", "must name a declared browse facet")
@@ -283,6 +293,31 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 						add(tbase+".searchPlaceholder", "requires search to be enabled")
 					}
 				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live tabs may set card")
+				}
+			case "live":
+				if tab.Facet != "" {
+					add(tbase+".facet", "only collections or people tabs may set facet")
+				}
+				if tab.Sort != "" {
+					add(tbase+".sort", "only collections tabs may set sort")
+				}
+				if tab.Direction != "" {
+					add(tbase+".direction", "only collections tabs may set direction")
+				}
+				if tab.Order != "" {
+					add(tbase+".order", "only collections or people tabs may set order")
+				}
+				if tab.Card != "" && !kindLibraryCards[tab.Card] {
+					add(tbase+".card", "must be poster, landscape or square")
+				}
+				if tab.SearchPlaceholder != "" {
+					label(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60)
+					if tab.Search != nil && !*tab.Search {
+						add(tbase+".searchPlaceholder", "requires search to be enabled")
+					}
+				}
 			default:
 				if tab.Facet != "" {
 					add(tbase+".facet", "only collections or people tabs may set facet")
@@ -296,11 +331,14 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 				if tab.Order != "" {
 					add(tbase+".order", "only collections or people tabs may set order")
 				}
+				if tab.Card != "" {
+					add(tbase+".card", "only live tabs may set card")
+				}
 				if tab.Search != nil {
-					add(tbase+".search", "only collections or people tabs may set search")
+					add(tbase+".search", "only collections, people or live tabs may set search")
 				}
 				if tab.SearchPlaceholder != "" {
-					add(tbase+".searchPlaceholder", "only collections or people tabs may set searchPlaceholder")
+					add(tbase+".searchPlaceholder", "only collections, people or live tabs may set searchPlaceholder")
 				}
 			}
 		}

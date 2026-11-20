@@ -179,4 +179,33 @@ func TestPluginLibraryTabsValidation(t *testing.T) {
 	}, schema); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for undeclared plugin facet, got %v", err)
 	}
+
+	// Live tab allowed on plugin library (with optional card and search).
+	withLive := append(valid, core.LibraryTab{
+		Key: "live", Label: "Live", Kind: core.TabLive, Card: core.CardLandscape, SearchPlaceholder: "Search live channels",
+	})
+	savedLive, err := s.SetTabs(ctx, plugin.ID, withLive, schema)
+	if err != nil {
+		t.Fatalf("valid plugin live tab rejected: %v", err)
+	}
+	if savedLive[len(savedLive)-1].Kind != core.TabLive || savedLive[len(savedLive)-1].Card != core.CardLandscape {
+		t.Fatalf("saved live tab = %+v", savedLive[len(savedLive)-1])
+	}
+
+	// Live tab rejected on non-plugin libraries and when given invalid card/facet/sort/filters.
+	if _, err := s.SetTabs(ctx, core.LibraryMovies, []core.LibraryTab{
+		{Key: "live", Label: "Live", Kind: core.TabLive},
+	}, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for live tab on builtin library, got %v", err)
+	}
+	if _, err := s.SetTabs(ctx, plugin.ID, []core.LibraryTab{
+		{Key: "live", Label: "Live", Kind: core.TabLive, Card: "banner"},
+	}, schema); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for bad card on live tab, got %v", err)
+	}
+	if _, err := s.SetTabs(ctx, plugin.ID, []core.LibraryTab{
+		{Key: "live", Label: "Live", Kind: core.TabLive, Sort: "title"},
+	}, schema); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for sort on live tab, got %v", err)
+	}
 }

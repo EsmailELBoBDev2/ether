@@ -16,7 +16,7 @@ export interface Presentations {
   silo?: { type: string };
 }
 
-export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view";
+export type LibraryTabKind = "recommended" | "library" | "collections" | "people" | "view" | "live";
 
 export type LibraryFacetCategory = "essentials" | "people" | "technical" | "plugin";
 
@@ -44,6 +44,7 @@ export interface LibraryTab {
   order?: "count" | "name";
   sort?: string;
   direction?: "asc" | "desc";
+  card?: LibraryCardShape;
   search?: boolean;
   searchPlaceholder?: string;
   filters?: LibraryTabFilter;
@@ -110,7 +111,40 @@ export type LibraryTabPreviewResponse =
       order: string;
       people: LibraryTabPreviewPerson[];
       more: boolean;
+    }
+  | {
+      kind: "live";
+      card: LibraryCardShape;
+      scopeNote: string;
     };
+
+export interface LibraryLiveItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  badge?: string;
+  viewers?: number;
+  tags?: string[];
+  thumb?: string;
+  live: boolean;
+}
+
+export interface LibraryLiveFilter {
+  key: string;
+  label: string;
+}
+
+export interface LibraryLivePage {
+  items: LibraryLiveItem[];
+  filters?: LibraryLiveFilter[];
+  nextCursor?: string;
+}
+
+export interface LibraryLiveSession {
+  id: string;
+  title?: string;
+  playlist: string;
+}
 
 export interface KindLevel {
   key: string;
@@ -128,7 +162,12 @@ export interface KindField {
 export interface MediaKind {
   key: string;
   label: string;
-  library: { name: string; icon?: string; card?: LibraryCardShape };
+  library: {
+    name: string;
+    icon?: string;
+    card?: LibraryCardShape;
+    dateDisplay?: "year" | "date";
+  };
   levels: KindLevel[];
   fields?: KindField[];
   art?: { role: string; label: string }[];
@@ -360,6 +399,22 @@ export const librariesApi = {
       `/libraries/${id}/items?${new URLSearchParams(params)}`,
       { signal },
     ),
+  live: (id: number, params: Record<string, string>, signal?: AbortSignal) =>
+    apiFetch<LibraryLivePage>(`/libraries/${id}/live?${new URLSearchParams(params)}`, { signal }),
+  playLive: (id: number, itemId: string, tab?: string, hevc = false, hevc10 = false) => {
+    const q = new URLSearchParams();
+    if (hevc) q.set("hevc", "1");
+    if (hevc10) q.set("hevc10", "1");
+    const suffix = q.size ? `?${q}` : "";
+    return apiFetch<LibraryLiveSession>(`/libraries/${id}/live/play${suffix}`, {
+      method: "POST",
+      body: JSON.stringify({ itemId, ...(tab ? { tab } : {}) }),
+    });
+  },
+  stopLive: (id: number, sessionId: string) =>
+    apiFetch<{ ok: boolean }>(`/libraries/${id}/live/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    }),
   facets: (id: number, field: string, level = "", signal?: AbortSignal) =>
     apiFetch<{ field: string; values: { value?: string; title?: string; count: number }[] }>(
       `/libraries/${id}/facets/${encodeURIComponent(field)}${level ? `?level=${encodeURIComponent(level)}` : ""}`,
@@ -454,4 +509,19 @@ export function publishedTo(lib: Library): string[] {
 export function artUrl(item: KindItem, role = "poster"): string {
   const hit = item.art?.find((a) => a.role === role) ?? item.art?.[0];
   return hit && /^https?:\/\//.test(hit.url) ? hit.url : "";
+}
+
+/**
+ * Format a plugin item's date according to the kind's dateDisplay preference:
+ * full UTC YYYY-MM-DD when dateDisplay === "date" and released is set,
+ * otherwise year only.
+ */
+export function formatItemDate(
+  item: Pick<KindItem, "year" | "released">,
+  dateDisplay?: "year" | "date",
+): string {
+  if (dateDisplay === "date" && typeof item.released === "number" && item.released > 0) {
+    return new Date(item.released * 1000).toISOString().slice(0, 10);
+  }
+  return item.year ? String(item.year) : "";
 }

@@ -453,3 +453,108 @@ func TestContentPermissionSheet(t *testing.T) {
 		t.Fatalf("adding library declaration must appear in PermissionDiff, got %v", diff)
 	}
 }
+
+func TestManifestLiveTabAndDateDisplay(t *testing.T) {
+	searchOff := false
+	searchOn := true
+
+	ok := contentManifest()
+	ok.Ether.Contributes.MediaKinds[0].Library.DateDisplay = "date"
+	ok.Ether.Contributes.MediaKinds[0].Library.Tabs = []KindLibraryTab{
+		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
+		{Key: "library", Label: "Library", Kind: "library"},
+		{Key: "live", Label: "Live", Kind: "live", Card: "landscape", Search: &searchOn, SearchPlaceholder: "Search streams"},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid live tab + dateDisplay manifest rejected: %v", err)
+	}
+	if got := ok.Ether.Contributes.MediaKinds[0].Library.EffectiveDateDisplay(); got != "date" {
+		t.Fatalf("EffectiveDateDisplay = %q, want date", got)
+	}
+	if got := ok.Ether.Contributes.MediaKinds[0].Library.Tabs[2].EffectiveCard(); got != "landscape" {
+		t.Fatalf("EffectiveCard = %q, want landscape", got)
+	}
+	if !ok.Ether.Contributes.MediaKinds[0].Library.Tabs[2].EffectiveSearch() {
+		t.Fatal("EffectiveSearch on live tab should be true")
+	}
+
+	// Default card & search on live tab when omitted.
+	defLive := KindLibraryTab{Key: "live", Label: "Live", Kind: "live"}
+	if defLive.EffectiveCard() != "landscape" || !defLive.EffectiveSearch() {
+		t.Fatalf("live tab defaults: card=%q search=%v", defLive.EffectiveCard(), defLive.EffectiveSearch())
+	}
+
+	// Additive upgrade adding dateDisplay and a live tab must succeed.
+	prev := []MediaKindMeta{validMediaKind()}
+	next := []MediaKindMeta{ok.Ether.Contributes.MediaKinds[0]}
+	if err := ValidateMediaKindsUpgrade(prev, next); err != nil {
+		t.Fatalf("upgrade adding live tab and dateDisplay failed: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		field string
+		mut   func(*MediaKindMeta)
+	}{
+		{
+			name:  "invalid dateDisplay",
+			field: ".library.dateDisplay",
+			mut:   func(k *MediaKindMeta) { k.Library.DateDisplay = "month" },
+		},
+		{
+			name:  "invalid live card",
+			field: ".library.tabs[0].card",
+			mut: func(k *MediaKindMeta) {
+				k.Library.Tabs = []KindLibraryTab{{Key: "live", Label: "Live", Kind: "live", Card: "wide"}}
+			},
+		},
+		{
+			name:  "live tab with facet",
+			field: ".library.tabs[0].facet",
+			mut: func(k *MediaKindMeta) {
+				k.Library.Tabs = []KindLibraryTab{{Key: "live", Label: "Live", Kind: "live", Facet: "habitat"}}
+			},
+		},
+		{
+			name:  "live tab with sort",
+			field: ".library.tabs[0].sort",
+			mut: func(k *MediaKindMeta) {
+				k.Library.Tabs = []KindLibraryTab{{Key: "live", Label: "Live", Kind: "live", Sort: "title"}}
+			},
+		},
+		{
+			name:  "live tab searchPlaceholder when search disabled",
+			field: ".library.tabs[0].searchPlaceholder",
+			mut: func(k *MediaKindMeta) {
+				k.Library.Tabs = []KindLibraryTab{{Key: "live", Label: "Live", Kind: "live", Search: &searchOff, SearchPlaceholder: "Find"}}
+			},
+		},
+		{
+			name:  "non-live tab with card",
+			field: ".library.tabs[0].card",
+			mut: func(k *MediaKindMeta) {
+				k.Library.Tabs = []KindLibraryTab{{Key: "lib", Label: "Library", Kind: "library", Card: "landscape"}}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := contentManifest()
+			tc.mut(&m.Ether.Contributes.MediaKinds[0])
+			err := m.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for %s", tc.name)
+			}
+			verr := err.(*ValidationError)
+			found := false
+			for _, f := range verr.Fields {
+				if strings.Contains(f.Field, tc.field) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("want field containing %s in %v", tc.field, verr.Fields)
+			}
+		})
+	}
+}

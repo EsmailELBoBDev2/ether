@@ -76,7 +76,7 @@ var errNeedsRelay = errors.New("livetv: provider variants need the relay")
 
 func (s *Service) acquirePassthrough(ss *session) *ownedLease {
 	c := ss.info.Channel
-	capped := c.SourceID != "" && s.sourceConnectionLimit(c.SourceID) > 0
+	capped := ss.ephemeral || (c.SourceID != "" && s.sourceConnectionLimit(c.SourceID) > 0)
 	key := c.ID
 	if !capped {
 		// A capped provider account gets one timeline per channel, whatever
@@ -102,7 +102,9 @@ func (s *Service) acquirePassthrough(ss *session) *ownedLease {
 		tl.windowSpan, tl.startBehind = policy.PlaylistWindow(), policy.TargetLatency()
 		tl.setHint(slateProfileFromInfo(c.ID, ss.info.MediaInfo, "ts"))
 		p := &passthroughProducer{s: s, tl: tl, c: c, caps: ss.caps, log: log,
-			src: ss.inputSource, raw: ss.inputURL, headers: ss.inputHeaders.Clone(), suggest: make(chan sourceChoice, 1)}
+			src: ss.inputSource, raw: ss.inputURL, headers: ss.inputHeaders.Clone(),
+			ephemeral: ss.ephemeral, initialManifest: ss.sniffedManifestFor(ss.inputURL),
+			suggest: make(chan sourceChoice, 1)}
 		sh = &ownedShared{key: key, tl: tl, p: p, ctx: ctx, cancel: cancel}
 		st.channels[key] = sh
 		p.viewer = func() *session {
@@ -236,6 +238,9 @@ type passthroughProducer struct {
 	raw     string // resolved source URL
 	headers http.Header
 
+	ephemeral       bool
+	initialManifest *cachedManifest
+
 	suggest chan sourceChoice
 	playing atomic.Pointer[string] // source ID, read by sessions
 
@@ -268,9 +273,20 @@ type passthroughProducer struct {
 // position when the source is the same stream (a re-resolution).
 func (p *passthroughProducer) open(ctx context.Context, src StreamSource, raw string, headers http.Header, keep bool) error {
 	o := &providerOrigin{s: p.s, mediaURL: raw, source: raw, headers: headers, public: redirectMediaHeaders(src.Headers), name: "provider:" + src.ID}
-	body, base, err := o.media(ctx)
-	if err != nil {
-		return err
+	var (
+		body []byte
+		base *url.URL
+		err  error
+	)
+	if cm := p.initialManifest; cm != nil && cm.raw == raw && cm.hls {
+		p.initialManifest = nil
+		body, base = cm.body, cm.base
+	} else {
+		p.initialManifest = nil
+		body, base, err = o.media(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	if isMasterPlaylist(body) {
 		m := parseMasterPlaylist(body, base)
@@ -488,6 +504,9 @@ func (p *passthroughProducer) reresolve(ctx context.Context) error {
 // failover tries every other enabled source in health order, then the
 // current one again. It reports whether a source opened.
 func (p *passthroughProducer) failover(ctx context.Context) bool {
+	if p.ephemeral {
+		return false
+	}
 	failed := p.src
 	candidates := append(p.s.orderedSourceCandidates(p.c, failed.ID), failed)
 	for _, src := range candidates {

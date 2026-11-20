@@ -143,6 +143,7 @@ type brokerSession struct {
 	streamPosition        time.Duration
 	segmentDuration       time.Duration
 	live                  bool
+	directLive            *frontend.DirectLiveTarget
 	sequence              uint64
 	historyEpoch          int64
 	historySequence       int64
@@ -373,6 +374,11 @@ func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
 		allowed := *r.Intent.AllowTranscoding
 		r.Intent.AllowTranscoding = &allowed
 	}
+	if r.DirectLive != nil {
+		d := *r.DirectLive
+		d.Headers = maps.Clone(d.Headers)
+		r.DirectLive = &d
+	}
 	r.Caps.VideoCodecs = slices.Clone(r.Caps.VideoCodecs)
 	r.Caps.AudioCodecs = slices.Clone(r.Caps.AudioCodecs)
 	r.Caps.TranscodeAudioCodecs = slices.Clone(r.Caps.TranscodeAudioCodecs)
@@ -437,7 +443,17 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	if req.Protocol == "" || req.Device.ID == "" || (req.Item == 0) == (req.Channel == "") {
+	targets := 0
+	if req.Item != 0 {
+		targets++
+	}
+	if req.Channel != "" {
+		targets++
+	}
+	if req.DirectLive != nil {
+		targets++
+	}
+	if req.Protocol == "" || req.Device.ID == "" || targets != 1 {
 		return frontend.PlayPlan{}, core.ErrUnauthorized
 	}
 	if req.Protocol == "silo" && req.Intent.ClientSessionID != "" && !canonicalUUID(req.Intent.ClientSessionID) {
@@ -475,7 +491,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 			req.Intent.Options.MaxBitrateKbps = limit
 		}
 	}
-	if req.Channel != "" {
+	if req.Channel != "" || req.DirectLive != nil {
 		if req.Version != "" || req.Intent.ExactVersion || req.ExpectedSourceETag != "" || req.DetailSource != "" {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}

@@ -428,29 +428,32 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the optional library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string           `json:"name"` // default name; the owner may rename it after
-	Icon string           `json:"icon,omitempty"`
-	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
-	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+	Name        string           `json:"name"` // default name; the owner may rename it after
+	Icon        string           `json:"icon,omitempty"`
+	Card        string           `json:"card,omitempty"`        // poster (default)|landscape|square
+	DateDisplay string           `json:"dateDisplay,omitempty"` // year (default)|date
+	Tabs        []KindLibraryTab `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
 }
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
 type KindLibraryTab struct {
 	Key               string `json:"key"`
 	Label             string `json:"label"`
-	Kind              string `json:"kind"`                        // recommended|library|collections|people
+	Kind              string `json:"kind"`                        // recommended|library|collections|people|live
 	Facet             string `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
 	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
 	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
 	Order             string `json:"order,omitempty"`             // count|name (facet collections or people)
-	Search            *bool  `json:"search,omitempty"`            // collections or people (default true)
+	Card              string `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
+	Search            *bool  `json:"search,omitempty"`            // collections, people or live (default true)
 	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder, <= 60 chars
 }
 
 // EffectiveSearch reports whether tab search is enabled. Search defaults to
-// true on collections and people tabs and is never enabled on other tab kinds.
+// true on collections, people and live tabs and is never enabled on other
+// manifest tab kinds.
 func (t KindLibraryTab) EffectiveSearch() bool {
-	if t.Kind != "collections" && t.Kind != "people" {
+	if t.Kind != "collections" && t.Kind != "people" && t.Kind != "live" {
 		return false
 	}
 	if t.Search != nil {
@@ -459,9 +462,23 @@ func (t KindLibraryTab) EffectiveSearch() bool {
 	return true
 }
 
+// EffectiveCard returns the tab's card shape ("landscape" by default for live
+// tabs, empty for other tab kinds).
+func (t KindLibraryTab) EffectiveCard() string {
+	if t.Kind != "live" {
+		return ""
+	}
+	switch t.Card {
+	case "poster", "landscape", "square":
+		return t.Card
+	default:
+		return "landscape"
+	}
+}
+
 // IsZero reports whether every field of the library declaration is empty.
 func (d KindLibraryDecl) IsZero() bool {
-	return d.Name == "" && d.Icon == "" && d.Card == "" && len(d.Tabs) == 0
+	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && len(d.Tabs) == 0
 }
 
 // EffectiveCard returns the library's card aspect ("poster" by default).
@@ -472,6 +489,68 @@ func (d KindLibraryDecl) EffectiveCard() string {
 	default:
 		return "poster"
 	}
+}
+
+// EffectiveDateDisplay returns how dates are shown on cards and detail headers
+// ("year" by default, or "date" for full YYYY-MM-DD display).
+func (d KindLibraryDecl) EffectiveDateDisplay() string {
+	if d.DateDisplay == "date" {
+		return "date"
+	}
+	return "year"
+}
+
+// KindLiveRequest is the request body sent to POST /ether/v1/kinds/{kind}/live.
+type KindLiveRequest struct {
+	Tab    string `json:"tab,omitempty"`
+	Q      string `json:"q,omitempty"`
+	Filter string `json:"filter,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// KindLiveItem is one currently live stream returned by a plugin live tab.
+type KindLiveItem struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Subtitle string   `json:"subtitle,omitempty"`
+	Badge    string   `json:"badge,omitempty"`
+	Viewers  *int     `json:"viewers,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Thumb    string   `json:"thumb,omitempty"`
+	Live     *bool    `json:"live,omitempty"`
+}
+
+// IsLive reports whether the item is live (defaults to true when omitted).
+func (i KindLiveItem) IsLive() bool {
+	return i.Live == nil || *i.Live
+}
+
+// KindLiveFilter is one optional filter chip returned alongside live items.
+type KindLiveFilter struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// KindLivePage is the response returned by POST /ether/v1/kinds/{kind}/live.
+type KindLivePage struct {
+	Items      []KindLiveItem   `json:"items"`
+	Filters    []KindLiveFilter `json:"filters,omitempty"`
+	NextCursor string           `json:"nextCursor,omitempty"`
+}
+
+// KindLiveResolveRequest is the request body sent to POST /ether/v1/kinds/{kind}/live/resolve.
+type KindLiveResolveRequest struct {
+	ID string `json:"id"`
+}
+
+// KindLiveResolveResponse is the direct playable stream returned by
+// POST /ether/v1/kinds/{kind}/live/resolve.
+type KindLiveResolveResponse struct {
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+	MIME    string            `json:"mime,omitempty"`
+	Title   string            `json:"title,omitempty"`
 }
 
 // EffectiveTabs returns the declared tabs, or the default Recommended and Library tabs.

@@ -568,3 +568,73 @@ func TestKindVisibleAndBrowseSDK(t *testing.T) {
 type frontendFunc http.HandlerFunc
 
 func (f frontendFunc) Handler() http.Handler { return http.HandlerFunc(f) }
+
+type stubLiveProvider struct {
+	lastReq etherplugin.KindLiveRequest
+	lastID  string
+}
+
+func (s *stubLiveProvider) Live(_ *etherplugin.Context, req etherplugin.KindLiveRequest) (etherplugin.KindLivePage, error) {
+	s.lastReq = req
+	viewers := 420
+	return etherplugin.KindLivePage{
+		Items: []etherplugin.KindLiveItem{
+			{ID: "ch-1", Title: "Finals", Subtitle: "Main Stage", Badge: "LIVE", Viewers: &viewers, Tags: []string{"Esports"}, Thumb: "https://cdn.example/ch1.jpg"},
+		},
+		Filters:    []etherplugin.KindLiveFilter{{Key: "featured", Label: "Featured"}},
+		NextCursor: "cur-2",
+	}, nil
+}
+
+func (s *stubLiveProvider) ResolveLive(_ *etherplugin.Context, req etherplugin.KindLiveResolveRequest) (etherplugin.KindLiveResolveResponse, error) {
+	s.lastID = req.ID
+	return etherplugin.KindLiveResolveResponse{
+		URL:     "https://stream.example/live/ch-1/master.m3u8?token=once",
+		Headers: map[string]string{"Referer": "https://stream.example/"},
+		MIME:    "application/vnd.apple.mpegurl",
+		Title:   "Finals",
+	}, nil
+}
+
+func TestKindLiveDispatch(t *testing.T) {
+	p := etherplugin.New(etherplugin.Definition{Manifest: etherplugin.Manifest{ID: "org.example.games", Name: "Games", Version: "1.0.0"}})
+	lp := &stubLiveProvider{}
+	p.OnLive("esports", lp)
+
+	resp := p.Dispatch(context.Background(), etherplugin.RawRequest{
+		Method: http.MethodPost,
+		Path:   "/ether/v1/kinds/esports/live",
+		Body:   []byte(`{"tab":"live","q":"finals","filter":"featured","limit":10}`),
+	})
+	if resp.Status != http.StatusOK {
+		t.Fatalf("live status=%d body=%v", resp.Status, resp.Body)
+	}
+	if lp.lastReq.Kind != "esports" || lp.lastReq.Tab != "live" || lp.lastReq.Q != "finals" || lp.lastReq.Filter != "featured" || lp.lastReq.Limit != 10 {
+		t.Fatalf("unexpected live request: %+v", lp.lastReq)
+	}
+	raw, _ := json.Marshal(resp.Body)
+	var page etherplugin.KindLivePage
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatalf("decode page: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "ch-1" || page.NextCursor != "cur-2" || len(page.Filters) != 1 {
+		t.Fatalf("unexpected page: %+v", page)
+	}
+
+	resResp := p.Dispatch(context.Background(), etherplugin.RawRequest{
+		Method: http.MethodPost,
+		Path:   "/ether/v1/kinds/esports/live/resolve",
+		Body:   []byte(`{"id":"ch-1"}`),
+	})
+	if resResp.Status != http.StatusOK || lp.lastID != "ch-1" {
+		t.Fatalf("live resolve status=%d lastID=%q body=%v", resResp.Status, lp.lastID, resResp.Body)
+	}
+	rawRes, _ := json.Marshal(resResp.Body)
+	var resolved etherplugin.KindLiveResolveResponse
+	if err := json.Unmarshal(rawRes, &resolved); err != nil {
+		t.Fatalf("decode resolve: %v", err)
+	}
+	if resolved.URL != "https://stream.example/live/ch-1/master.m3u8?token=once" || resolved.Headers["Referer"] != "https://stream.example/" {
+		t.Fatalf("unexpected resolved: %+v", resolved)
+	}
+}

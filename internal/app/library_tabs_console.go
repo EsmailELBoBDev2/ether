@@ -133,7 +133,7 @@ func (c *librariesConsole) defaultTabsForLibrary(ctx context.Context, lib core.L
 			out := make([]core.LibraryTab, 0, len(rawTabs))
 			for _, t := range rawTabs {
 				search := t.Kind != core.TabRecommended
-				if t.Kind == core.TabCollections || t.Kind == core.TabPeople {
+				if t.Kind == core.TabCollections || t.Kind == core.TabPeople || t.Kind == core.TabLive {
 					search = t.EffectiveSearch()
 				}
 				label := c.catalogueLabel(ctx, lib.PluginID, t.Label, t.Key)
@@ -149,6 +149,7 @@ func (c *librariesConsole) defaultTabsForLibrary(ctx context.Context, lib core.L
 					Order:             t.Order,
 					Sort:              t.Sort,
 					Direction:         t.Direction,
+					Card:              t.EffectiveCard(),
 					Search:            &search,
 					SearchPlaceholder: placeholder,
 				}
@@ -511,6 +512,13 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 	case core.TabRecommended:
 		libJSON(w, http.StatusOK, map[string]any{
 			"kind":      core.TabRecommended,
+			"scopeNote": libraryTabsScopeNote,
+		})
+
+	case core.TabLive:
+		libJSON(w, http.StatusOK, map[string]any{
+			"kind":      core.TabLive,
+			"card":      tab.EffectiveCard(),
 			"scopeNote": libraryTabsScopeNote,
 		})
 

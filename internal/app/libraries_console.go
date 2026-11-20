@@ -34,6 +34,9 @@ type librariesConsole struct {
 	items *pluginitems.Service
 	blobs *blobcache.Cache
 	err   error
+
+	liveMu       sync.Mutex
+	liveSessions map[string]consoleLiveSession
 }
 
 // libraryHandlers registers the /api/libraries and /api/plugins-setup
@@ -537,6 +540,13 @@ func (c *librariesConsole) handler() http.Handler {
 	mux.HandleFunc("PUT /{id}/tabs", c.handleTabsPut)
 	mux.HandleFunc("DELETE /{id}/tabs", c.handleTabsReset)
 	mux.HandleFunc("POST /{id}/tabs/preview", c.handleTabsPreview)
+	mux.HandleFunc("GET /{id}/live", c.handleLiveList)
+	mux.HandleFunc("GET /{id}/live/thumb/{hash}", c.handleLiveThumb)
+	mux.HandleFunc("POST /{id}/live/play", c.handleLivePlay)
+	mux.HandleFunc("GET /{id}/live/sessions/{session}/index.m3u8", c.handleLiveSessionPlaylist)
+	mux.HandleFunc("GET /{id}/live/sessions/{session}/relay/{segment}", c.handleLiveSessionRelay)
+	mux.HandleFunc("GET /{id}/live/sessions/{session}/resource/{resource}", c.handleLiveSessionResource)
+	mux.HandleFunc("DELETE /{id}/live/sessions/{session}", c.handleLiveSessionStop)
 	mux.HandleFunc("GET /{id}/items", c.handleItems)
 	mux.HandleFunc("GET /collection-sources", c.handleCollectionSources)
 	mux.HandleFunc("GET /catalogue-sources", c.handleCatalogueSources)

@@ -776,7 +776,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		req.Intent.Options = selected
 	}
 	sourceChosenAt := b.deps.Now()
-	dec, err := b.decideProfile(ps, req)
+	dec, err := b.decideTracks(ps, &req)
 	decisionAt := b.deps.Now()
 	if err != nil {
 		return frontend.PlayPlan{}, err

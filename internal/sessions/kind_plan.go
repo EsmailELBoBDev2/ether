@@ -77,7 +77,7 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 		}
 		req.Intent.Options = selected
 	}
-	dec, err := b.decideProfile(ps, req)
+	dec, err := b.decideTracks(ps, &req)
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}

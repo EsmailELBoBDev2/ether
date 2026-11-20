@@ -82,3 +82,33 @@ func (b *Broker) pinOriginalRuntime(ctx context.Context, req *frontend.PlanReque
 	}
 	return b.pinRequestedTracks(ctx, req, ps)
 }
+
+// decideTracks decides delivery. When a subtitle the viewer's rules chose
+// (not one the client named) is what makes the start impossible, such as an
+// image subtitle whose burn-in needs a video encode this server or request
+// does not allow, it decides again without that subtitle and playback starts.
+// A subtitle the client named keeps the clear refusal.
+func (b *Broker) decideTracks(ps *core.PlaySession, req *frontend.PlanRequest) (core.Decision, error) {
+	dec, err := b.decideProfile(ps, *req)
+	named := req.Intent.SubtitleSet || (req.Intent.Hints != nil && req.Intent.Hints.ManualSubtitle)
+	if named || req.Intent.Options.SubtitleStream < 0 {
+		return dec, err
+	}
+	noEncode := (req.Channel == "" && b.videoTranscodingOff()) || (req.Intent.AllowTranscoding != nil && !*req.Intent.AllowTranscoding)
+	var incompatible *frontend.NoCompatiblePathError
+	switch {
+	case err == nil && !(noEncode && dec.BurnSubtitles && decisionEncodesVideo(dec, ps.Info)):
+		return dec, nil
+	case err != nil && !errors.Is(err, core.ErrVideoTranscodingDisabled) && !errors.As(err, &incompatible):
+		return dec, err
+	}
+	retry := *req
+	retry.Intent.Options.SubtitleStream = -1
+	retry.Intent.Options.BurnSubtitles = false
+	without, retryErr := b.decideProfile(ps, retry)
+	if retryErr != nil {
+		return dec, err
+	}
+	*req = retry
+	return without, nil
+}

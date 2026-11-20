@@ -158,19 +158,23 @@ func profileConditions(cs []core.ClientProfileCondition, info core.MediaInfo, st
 // compares. Eight-bit untagged 4:2:0 is SDR once Dolby Vision is known to be
 // absent, the same evidence as frontend.KnownSDR. A picture whose range cannot
 // be classified stays empty so a required condition fails closed and playback
-// can fall back to an encode. Equals and NotEquals against the single token
-// DOVI still treat every Dolby Vision profile as DOVI, which is how clients
-// reject profile 5 and every other profile together.
+// can fall back to an encode. As in Jellyfin, Equals and NotEquals DOVI match
+// only a picture with no usable base layer (profile 5, or a profile whose
+// compatibility is unknown). Profiles 7, 8 and 10 with an HDR10, SDR or HLG
+// base layer report their own range type, so `NotEquals DOVI` still direct
+// plays their base layer (Streamyfin, Findroid and Jellyfin's own clients rely
+// on that).
 func profileVideoRangeValue(stream *core.StreamInfo, c core.ClientProfileCondition) string {
 	if stream == nil || (stream.Type != "" && stream.Type != "video") {
 		return ""
 	}
 	dv, known := dolbyVisionEvidence(stream)
 	if dv {
-		if dolbyVisionEquality(c) {
+		value := dolbyVisionRangeType(stream)
+		if value == "DOVIInvalid" && dolbyVisionEquality(c) {
 			return "DOVI"
 		}
-		return dolbyVisionRangeType(stream)
+		return value
 	}
 	if !known {
 		return ""

@@ -174,3 +174,45 @@ func TestStaleTrackIDFallsBackAndStarts(t *testing.T) {
 		t.Fatalf("open %+v: %v", session, err)
 	}
 }
+
+type burnInTranscoder struct{ fakeBrokerTranscoder }
+
+func (burnInTranscoder) Decide(_ core.MediaInfo, _ core.ClientCaps, opts core.DecideOptions) core.Decision {
+	if opts.SubtitleStream >= 0 {
+		return core.Decision{Kind: core.DecisionTranscode, AudioCopy: true, BurnSubtitles: true, AudioStream: opts.AudioStream, SubtitleStream: opts.SubtitleStream, Container: "mpegts"}
+	}
+	return core.Decision{Kind: core.DecisionDirectPlay, VideoCopy: true, AudioCopy: true, AudioStream: opts.AudioStream, SubtitleStream: -1, Container: "mkv"}
+}
+
+// With video transcoding off, an image subtitle the viewer's rules chose must
+// not turn the start into a refused burn-in transcode; it plays without it.
+// A subtitle the client named keeps the clear refusal.
+func TestRuleChosenBurnInNeverFailsStart(t *testing.T) {
+	ctx := context.Background()
+	pb := &sourceTrackPlayback{fakePlayback: &fakePlayback{sessions: map[string]*core.PlaySession{}, limit: 2}, source: &revisionSource{Reader: bytes.NewReader(nil), id: "release", name: "video.mkv", size: 100}, info: core.MediaInfo{Container: "mkv", Streams: []core.StreamInfo{{Type: "video", Index: 0, Codec: "h264"}, {Type: "audio", Index: 1, Codec: "aac"}, {Type: "subtitle", Index: 2, Codec: "hdmv_pgs_subtitle"}}}}
+	active := func(_ context.Context, id int64) (*core.Viewer, error) { return &core.Viewer{ID: id}, nil }
+	bus := NewEventBus(nil, active)
+	defer bus.Close()
+	b, err := NewBroker(BrokerDeps{SurfacePolicy: testSessionPolicy, Events: bus, Playback: pb, Transcoder: burnInTranscoder{}, Progress: &fakeProgress{}, ActiveViewer: active, CanPlay: func(*core.Viewer, bool, time.Time) bool { return true }, BitrateLimit: func(*core.Viewer) int { return 0 }, OnTimeline: func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string) {}, VideoTranscodingOff: func() bool { return true }, Lookup: func(_ context.Context, _ *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
+		return &core.Title{Key: key}, nil
+	}, SelectScopedTracks: func(_ context.Context, _ *core.Viewer, _ core.Device, _ *core.Title, _ core.MediaInfo, opts core.DecideOptions, _, subtitleSet bool) (core.DecideOptions, error) {
+		if !subtitleSet {
+			opts.SubtitleStream = 2 // the viewer's "always English" rule
+		}
+		return opts, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(ctx)
+	request := frontend.PlanRequest{Viewer: &core.Viewer{ID: 1}, Device: core.Device{ID: "tv"}, Protocol: "silo", Item: core.MovieKey(1), Intent: frontend.PlayIntent{Options: core.DecideOptions{DirectPlay: true, DirectStream: true, AudioStream: -1, SubtitleStream: -1}}}
+	plan, err := b.Plan(ctx, request)
+	if err != nil || plan.Decision.Kind != core.DecisionDirectPlay || plan.Decision.SubtitleStream != -1 {
+		t.Fatalf("rule-chosen burn-in: decision %+v err %v", plan.Decision, err)
+	}
+	request.Device.ID = "named"
+	request.Intent.SubtitleOrdinal = intPtr(0)
+	if _, err := b.Plan(ctx, request); !errors.Is(err, core.ErrVideoTranscodingDisabled) {
+		t.Fatalf("named image subtitle with transcoding off: %v", err)
+	}
+}

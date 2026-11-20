@@ -80,7 +80,11 @@ func (c *Client) getSearchStream(ctx context.Context, rawURL string, emit func([
 		return nil, c.recordRateLimit(hctx, resp.Header.Get("Retry-After"), apiError(429, "too many requests"))
 	}
 	const limit = 20 << 20
-	lr := &io.LimitedReader{R: resp.Body, N: limit + 1}
+	decoded, derr := decodeBody(resp)
+	if derr != nil {
+		return nil, derr
+	}
+	lr := &io.LimitedReader{R: decoded, N: limit + 1}
 	br := bufio.NewReader(lr)
 	// Sniff without waiting for EOF (XML is the usual Newznab format).
 	for {

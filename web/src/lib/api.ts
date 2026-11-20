@@ -54,6 +54,7 @@ import type {
   QualityAnswer,
   QualityClient,
   QualityQuestion,
+  RequestPreview,
   SiteDefinition,
   SiteTestResult,
   SiteTestStatus,
@@ -366,6 +367,7 @@ export const api = {
   // ---- Integration tests ----------------------------------------------------
   testUsenet: (p: UsenetProvider) => post<TestResult>("/test/usenet", p),
   testIndexer: (ix: Indexer) => post<TestResult>("/test/indexer", ix),
+  previewIndexer: (ix: Indexer) => post<RequestPreview>("/indexer/preview", ix),
   testDebrid: (p: DebridProvider) => post<TestResult>("/test/debrid", p),
   testTMDB: (key: string) => post<TestResult>("/test/tmdb", { key }),
   testIntroDB: (apiKey: string) => post<TestResult>("/test/introdb", { apiKey }),

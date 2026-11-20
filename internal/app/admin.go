@@ -116,6 +116,9 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return newznab.Test(ctx, ix, a.cfg.Get().ClientIdentity)
 		},
+		IndexerPreview: func(ix config.Indexer) (any, error) {
+			return newznab.PreviewRequestIdentity(ix, a.cfg.Get().ClientIdentity)
+		},
 		TestDebrid: func(ctx context.Context, p config.DebridProvider) error {
 			return a.debrid.Test(ctx, p)
 		},

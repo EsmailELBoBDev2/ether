@@ -4365,6 +4365,52 @@ export function createFakeServer(opts: FakeOptions = {}) {
           proxyEnabled: false,
         });
       }
+      case "POST /indexer/preview": {
+        const ix = (body ?? {}) as {
+          url?: string;
+          requestIdentity?: { profile?: string; grabProfile?: string };
+        };
+        const profile = ix.requestIdentity?.profile || "ether";
+        const uas: Record<string, string> = {
+          ether: "Ether/dev (+https://github.com/braedonsaunders/ether)",
+          prowlarr: "Prowlarr/2.7.0.5723 (alpine 3.24.4)",
+          sonarr: "Sonarr/4.0.20.3014 (alpine 3.24.4)",
+          radarr: "Radarr/7.0.3.10918 (alpine 3.24.4)",
+          nzbhydra2: "NZBHydra2 9.3.1",
+          sabnzbd: "SABnzbd/5.1.3",
+          nzbget: "nzbget/26.3",
+          browser:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36",
+          custom: "Ether/dev (+https://github.com/braedonsaunders/ether)",
+        };
+        const grabProfile = ix.requestIdentity?.grabProfile || "sabnzbd";
+        let host = "indexer.example.com";
+        try {
+          host = new URL(ix.url || "").host || host;
+        } catch {
+          /* keep example host */
+        }
+        const call = (line: string, uaProfile: string) => ({
+          requestLine: `GET ${line} HTTP/1.1\nHost: ${host}`,
+          headers: [{ name: "User-Agent", value: uas[uaProfile] ?? uas.ether }],
+        });
+        return json({
+          profile,
+          grabProfile,
+          search: call(
+            "/api?t=tvsearch&cat=5000&extended=1&apikey=••••&offset=0&limit=100&q=Example+Show&season=00&ep=1",
+            profile,
+          ),
+          grab: call("/api?t=get&id=example-guid&apikey=••••", grabProfile),
+          profiles: Object.keys(uas).map((id) => ({
+            id,
+            userAgent: uas[id],
+            grabPaired: ["prowlarr", "sonarr", "radarr", "nzbhydra2"].includes(id)
+              ? "sabnzbd"
+              : undefined,
+          })),
+        });
+      }
       case "POST /test/usenet":
       case "POST /test/indexer":
       case "POST /test/debrid":

@@ -166,12 +166,17 @@ func (s *Service) Block(ctx context.Context, req BlockRequest, reason string) (B
 		s.con.mu.Lock()
 		s.con.blocks[req.ReleaseID] = e
 		s.con.mu.Unlock()
+		s.emitReleaseBlocklisted(e, BlockOwner)
 		return e, nil
 	}
 	if err := s.persistBad(ctx, e); err != nil {
 		return BlockEntry{}, err
 	}
-	return s.blockEntry(ctx, req.ReleaseID)
+	saved, err := s.blockEntry(ctx, req.ReleaseID)
+	if err == nil {
+		s.emitReleaseBlocklisted(saved, BlockOwner)
+	}
+	return saved, err
 }
 
 func (s *Service) blockEntry(ctx context.Context, id string) (BlockEntry, error) {

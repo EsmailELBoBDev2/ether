@@ -21,6 +21,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
 	"github.com/braedonsaunders/ether/internal/releasepolicy"
 	"github.com/braedonsaunders/ether/internal/vault"
@@ -130,6 +131,8 @@ type Options struct {
 	// rows); HistoryMaxAge drops older rows (default 60 days).
 	HistoryMax    int
 	HistoryMaxAge time.Duration
+	// Events receives non-blocking resolver.* domain events when set.
+	Events *events.Bus
 }
 
 // CandidateTrace explains one candidate's fate in a resolution.
@@ -355,6 +358,8 @@ type Service struct {
 
 	invalMu sync.Mutex
 	inval   *clusterbus.Invalidator // nil on a standalone server
+
+	events *events.Bus
 }
 
 var _ core.Resolver = (*Service)(nil)
@@ -374,6 +379,7 @@ func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config
 		maxTraces:     opts.MaxTraces,
 		verified:      map[string]time.Time{},
 		healthTTL:     opts.HealthTTL,
+		events:        opts.Events,
 	}
 	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
 	if s.healthTTL == 0 {
@@ -633,7 +639,11 @@ func (s *Service) MarkBad(ctx context.Context, releaseID string, reason string) 
 	if e.ContentID == "" {
 		e.ContentID = preferredContentKey(contentKeys)
 	}
-	return s.persistBad(ctx, e)
+	if err := s.persistBad(ctx, e); err != nil {
+		return err
+	}
+	s.emitReleaseBlocklisted(e, BlockAuto)
+	return nil
 }
 
 func (s *Service) isBad(id string) bool {
@@ -902,6 +912,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		s.addTrace(trace)
 		history := compactTrace(trace)
 		s.persistBookkeeping(ctx, func(ctx context.Context) { s.recordHistory(ctx, history) })
+		s.emitResolveOutcome(req, profile, trace, resolved, resolveErr)
 	}()
 
 	// The owner's pin for this title, when it applies to this request
@@ -1186,7 +1197,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 
 	if len(cands) == 0 {
 		if pin != nil {
-			s.notePin(ctx, t.Key, pinID, PinRejected, candidateReason(&trace, pinID))
+			s.notePinForClient(ctx, t.Key, pinID, PinRejected, candidateReason(&trace, pinID), clientDisplayName(req.Client))
 			trace.PinStatus = "rejected: " + candidateReason(&trace, pinID)
 		}
 		// Client/profile restrictions and temporary source skips do not prove

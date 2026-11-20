@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -451,5 +452,192 @@ func TestContentPermissionSheet(t *testing.T) {
 	diff := PermissionDiff(noLib, m)
 	if !strings.Contains(strings.Join(diff, "\n"), "Adds a library: Field recordings") {
 		t.Fatalf("adding library declaration must appear in PermissionDiff, got %v", diff)
+	}
+}
+
+func TestValidateKindLibraryShelves(t *testing.T) {
+	docManifest := func(shelves []KindLibraryShelf) Manifest {
+		m := contentManifest()
+		m.Ether.Strings = map[string]json.RawMessage{"en": json.RawMessage(`{"shelf_science":"Science documentaries"}`)}
+		k := &m.Ether.Contributes.MediaKinds[0]
+		k.Key = "documentary"
+		k.Label = "Documentaries"
+		k.Library = KindLibraryDecl{
+			Name:    "Documentaries",
+			Shelves: shelves,
+		}
+		k.Fields = []KindField{
+			{Key: "topic", Type: "strings", Label: "Topic", Indexed: true},
+			{Key: "format", Type: "enum", Label: "Format", Indexed: true, Enum: []string{"feature", "miniseries", "short"}},
+			{Key: "narrator", Type: "people", Label: "Narrator"},
+			{Key: "notes", Type: "string", Label: "Editorial notes", Indexed: false},
+		}
+		k.Browse = KindBrowseDecl{
+			Sorts:  []string{"title", "released"},
+			Facets: []string{"topic"},
+		}
+		return m
+	}
+
+	// Valid shelves covering defaults, literal + $t: labels, single value, OR values,
+	// multi-facet AND filters, people field, and envelope facets.
+	validShelves := []KindLibraryShelf{
+		{Key: "latest", Label: "Latest releases"},
+		{Key: "science", Label: "$t:shelf_science", Sort: "rating", Direction: "desc", Facet: "topic", Value: "science"},
+		{Key: "earth-space", Label: "Earth and space", Sort: "title", Direction: "asc", Facet: "topic", Values: []string{"earth", "space"}},
+		{Key: "feature-history", Label: "Feature history", Filters: map[string][]string{"topic": {"history"}, "format": {"feature", "miniseries"}}},
+		{Key: "narrated", Label: "Narrated picks", Facet: "narrator", Value: "Elena Vance"},
+		{Key: "recent-years", Label: "Recent years", Facet: "year", Values: []string{"2024", "2025"}},
+	}
+	if err := docManifest(validShelves).Validate(); err != nil {
+		t.Fatalf("valid shelves failed validation: %v", err)
+	}
+	if validShelves[0].EffectiveSort() != "released" || validShelves[0].EffectiveDirection() != "desc" || validShelves[0].EffectiveFilters() != nil {
+		t.Fatalf("shelf defaults = (%q, %q, %v)", validShelves[0].EffectiveSort(), validShelves[0].EffectiveDirection(), validShelves[0].EffectiveFilters())
+	}
+	if got := validShelves[1].EffectiveFilters(); len(got["topic"]) != 1 || got["topic"][0] != "science" {
+		t.Fatalf("single-value filter = %v", got)
+	}
+	if got := validShelves[2].EffectiveFilters(); len(got["topic"]) != 2 || validShelves[2].EffectiveDirection() != "asc" {
+		t.Fatalf("multi-value filter = %v, dir=%q", got, validShelves[2].EffectiveDirection())
+	}
+
+	// Up to MaxKindLibraryShelves (40) is valid.
+	forty := make([]KindLibraryShelf, MaxKindLibraryShelves)
+	for i := range forty {
+		forty[i] = KindLibraryShelf{Key: fmt.Sprintf("shelf-%d", i+1), Label: fmt.Sprintf("Shelf %d", i+1)}
+	}
+	if err := docManifest(forty).Validate(); err != nil {
+		t.Fatalf("40 shelves must be valid: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		shelves []KindLibraryShelf
+		want    string
+	}{
+		{
+			name:    "more than 40 shelves",
+			shelves: append(append([]KindLibraryShelf(nil), forty...), KindLibraryShelf{Key: "shelf-41", Label: "Shelf 41"}),
+			want:    ".library.shelves",
+		},
+		{
+			name:    "invalid key uppercase",
+			shelves: []KindLibraryShelf{{Key: "BadKey", Label: "Latest"}},
+			want:    ".library.shelves[0].key",
+		},
+		{
+			name:    "key too long",
+			shelves: []KindLibraryShelf{{Key: "a" + strings.Repeat("b", 40), Label: "Latest"}},
+			want:    ".library.shelves[0].key",
+		},
+		{
+			name:    "duplicate key",
+			shelves: []KindLibraryShelf{{Key: "latest", Label: "Latest"}, {Key: "latest", Label: "Also latest"}},
+			want:    ".library.shelves[1].key",
+		},
+		{
+			name:    "label over 60 chars",
+			shelves: []KindLibraryShelf{{Key: "long", Label: strings.Repeat("a", 61)}},
+			want:    ".library.shelves[0].label",
+		},
+		{
+			name:    "empty label",
+			shelves: []KindLibraryShelf{{Key: "empty", Label: ""}},
+			want:    ".library.shelves[0].label",
+		},
+		{
+			name:    "bad $t label key",
+			shelves: []KindLibraryShelf{{Key: "badt", Label: "$t:Bad Key"}},
+			want:    ".library.shelves[0].label",
+		},
+		{
+			name:    "unknown sort",
+			shelves: []KindLibraryShelf{{Key: "bad-sort", Label: "Bad sort", Sort: "views"}},
+			want:    ".library.shelves[0].sort",
+		},
+		{
+			name:    "unknown direction",
+			shelves: []KindLibraryShelf{{Key: "bad-dir", Label: "Bad direction", Direction: "up"}},
+			want:    ".library.shelves[0].direction",
+		},
+		{
+			name:    "facet without value or values",
+			shelves: []KindLibraryShelf{{Key: "no-val", Label: "Science", Facet: "topic"}},
+			want:    ".library.shelves[0].value",
+		},
+		{
+			name:    "facet with both value and values",
+			shelves: []KindLibraryShelf{{Key: "both", Label: "Science", Facet: "topic", Value: "science", Values: []string{"nature"}}},
+			want:    ".library.shelves[0].values",
+		},
+		{
+			name:    "value without facet",
+			shelves: []KindLibraryShelf{{Key: "orphan-val", Label: "Science", Value: "science"}},
+			want:    ".library.shelves[0].value",
+		},
+		{
+			name:    "values without facet",
+			shelves: []KindLibraryShelf{{Key: "orphan-vals", Label: "Science", Values: []string{"science"}}},
+			want:    ".library.shelves[0].values",
+		},
+		{
+			name:    "facet combined with filters",
+			shelves: []KindLibraryShelf{{Key: "mixed", Label: "Mixed", Facet: "topic", Value: "science", Filters: map[string][]string{"format": {"feature"}}}},
+			want:    ".library.shelves[0].filters",
+		},
+		{
+			name:    "undeclared facet",
+			shelves: []KindLibraryShelf{{Key: "unknown-facet", Label: "Unknown", Facet: "missing", Value: "x"}},
+			want:    ".library.shelves[0].facet",
+		},
+		{
+			name:    "unindexed facet",
+			shelves: []KindLibraryShelf{{Key: "unindexed", Label: "Notes", Facet: "notes", Value: "x"}},
+			want:    ".library.shelves[0].facet",
+		},
+		{
+			name:    "unindexed filters facet",
+			shelves: []KindLibraryShelf{{Key: "unindexed-filter", Label: "Notes", Filters: map[string][]string{"notes": {"x"}}}},
+			want:    ".library.shelves[0].filters.notes",
+		},
+		{
+			name:    "empty filters slice",
+			shelves: []KindLibraryShelf{{Key: "empty-slice", Label: "Topic", Filters: map[string][]string{"topic": {}}}},
+			want:    ".library.shelves[0].filters.topic",
+		},
+		{
+			name:    "blank value in filters",
+			shelves: []KindLibraryShelf{{Key: "blank-val", Label: "Topic", Filters: map[string][]string{"topic": {"  "}}}},
+			want:    ".library.shelves[0].filters.topic[0]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := docManifest(tc.shelves).Validate()
+			if err == nil {
+				t.Fatalf("expected validation error containing %s, got nil", tc.want)
+			}
+			ve, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+			}
+			found := false
+			for _, f := range ve.Fields {
+				if strings.Contains(f.Field, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected field containing %s in %+v", tc.want, ve.Fields)
+			}
+		})
+	}
+
+	// Using $t: in shelf label requires strings.en.
+	noStrings := docManifest([]KindLibraryShelf{{Key: "science", Label: "$t:shelf_science"}})
+	noStrings.Ether.Strings = nil
+	if err := noStrings.Validate(); err == nil {
+		t.Fatal("expected missing strings.en error when shelf label uses $t:")
 	}
 }

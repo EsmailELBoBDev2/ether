@@ -90,7 +90,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, up to 6 `library.tabs` of `recommended\|library\|collections\|people` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, up to 6 `library.tabs` of `recommended\|library\|collections\|people` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, up to 40 optional `library.shelves` with `key`/`label`/`sort`/`direction` and optional `facet`+`value`/`values` or `filters` for default Recommended rows, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -249,6 +249,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`),
 `library.tabs` (`recommended|library|collections|people`, such as `{key:"developers",label:"Developers",kind:"collections",facet:"developers",order:"name",searchPlaceholder:"Search developers"}` or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
+optional `library.shelves` (up to 40 default Recommended shelves such as `{key:"science-docs",label:"Science documentaries",facet:"topic",values:["Science","Nature"],sort:"released",direction:"desc"}` or multi-facet `filters`),
 and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["developers","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/resolve
 handlers in `src/plugin.ts`. Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.

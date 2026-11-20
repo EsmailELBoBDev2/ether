@@ -371,11 +371,32 @@ export interface KindLibraryTab {
   direction?: "asc" | "desc";
 }
 
+export interface KindLibraryShelf {
+  /** Unique shelf key in this library, matching ^[a-z][a-z0-9-]{0,39}$. Stable row ID: "plugin:<viewID>:shelf:<key>". */
+  key: string;
+  /** Localizable shelf title (literal or "$t:<key>", at most 60 characters). */
+  label: string;
+  /** Optional sort field (defaults to "released"). */
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  /** Sort direction (defaults to "desc"). */
+  direction?: "asc" | "desc";
+  /** Single-facet filter shorthand; must name a declared and indexed field (or year/released/rating). */
+  facet?: string;
+  /** Single value for `facet`. */
+  value?: string;
+  /** OR values for `facet`. */
+  values?: string[];
+  /** Multi-facet filter (AND across facets, OR within each facet); cannot be combined with `facet`. */
+  filters?: Record<string, string[]>;
+}
+
 export interface KindLibraryDecl {
   name: string;
   icon?: string;
   card?: "poster" | "landscape" | "square";
   tabs?: KindLibraryTab[];
+  /** Up to 40 default Recommended shelves evaluated in order when present. */
+  shelves?: KindLibraryShelf[];
 }
 
 /** On-demand background expansion settings for declared browse facets. */

@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -17,6 +18,8 @@ type fakePresentationPluginLibraries struct {
 	fakePluginLibraries
 	pres        PluginPresentation
 	items       []core.Title
+	itemFacets  map[core.RatingKey]map[string][]string
+	browseLog   []frontend.ItemQuery
 	buckets     map[string][]frontend.FacetBucket
 	colPages    map[string]frontend.FacetCollectionPage
 	peoplePages map[string][]PluginFacetPerson
@@ -161,6 +164,7 @@ func (f *fakePresentationPluginLibraries) FindPersonID(_ context.Context, _ core
 }
 
 func (f *fakePresentationPluginLibraries) Browse(_ context.Context, _ core.Library, q frontend.ItemQuery, _ string, limit int) (PluginBrowsePage, error) {
+	f.browseLog = append(f.browseLog, q)
 	var matched []core.Title
 	for _, it := range f.items {
 		if devs := q.Filter.Facets["developers"]; len(devs) > 0 {
@@ -172,6 +176,30 @@ func (f *fakePresentationPluginLibraries) Browse(_ context.Context, _ core.Libra
 				}
 			}
 			if !ok {
+				continue
+			}
+		}
+		if len(f.itemFacets) > 0 && len(q.Filter.Facets) > 0 {
+			itemF := f.itemFacets[it.Key]
+			allMatch := true
+			for fk, wantVals := range q.Filter.Facets {
+				if fk == "developers" || len(wantVals) == 0 {
+					continue
+				}
+				have := itemF[fk]
+				hit := false
+				for _, w := range wantVals {
+					if slices.Contains(have, w) {
+						hit = true
+						break
+					}
+				}
+				if !hit {
+					allMatch = false
+					break
+				}
+			}
+			if !allMatch {
 				continue
 			}
 		}
@@ -491,5 +519,132 @@ func TestPluginLibraryPeopleTabResolvesThroughPerson(t *testing.T) {
 		if detail.ID != fp.Person.ID || detail.Name != w.name || detail.TMDB != w.person {
 			t.Fatalf("Person(%q) = %+v, want Name=%q TMDB=%d", fp.Person.ID, detail, w.name, w.person)
 		}
+	}
+}
+
+type recordingNeutralLayout struct {
+	lastSituation core.HomeSituation
+	maxRows       int
+}
+
+func (r *recordingNeutralLayout) FinalizeNeutralHome(_ context.Context, _ *core.User, sit core.HomeSituation, _ string, rows []core.NeutralHomeRow) ([]core.NeutralHomeRow, error) {
+	r.lastSituation = sit
+	limit := r.maxRows
+	if limit <= 0 {
+		limit = sit.DefaultMaxRows
+	}
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+func TestPluginLibraryDeclaredShelvesEvaluationAndUncappedRows(t *testing.T) {
+	ctx := context.Background()
+	d1 := core.Title{
+		Key: core.PluginKey(401), LibraryID: 12, Type: core.TypeMovie, Title: "Alpine Glaciers",
+		Released: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC), Rating: 9.2,
+	}
+	d2 := core.Title{
+		Key: core.PluginKey(402), LibraryID: 12, Type: core.TypeMovie, Title: "Deep Trench",
+		Released: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), Rating: 8.1,
+	}
+	d3 := core.Title{
+		Key: core.PluginKey(403), LibraryID: 12, Type: core.TypeMovie, Title: "Ancient Harbors",
+		Released: time.Date(2023, 9, 1, 0, 0, 0, 0, time.UTC), Rating: 8.9,
+	}
+
+	// Build 22 declared shelves plus 1 empty shelf to verify:
+	// - Continue Watching prepended when viewer has in-progress items
+	// - empty shelves skipped
+	// - OR values, multi-facet AND filters, sort & direction respected
+	// - NoTotal & SuppressExpand set on every shelf query
+	// - > 16 shelves NOT clamped by auto candidate cap or default 8-row cap
+	shelves := []PluginShelf{
+		{Key: "latest", Label: "Latest documentaries"},
+		{Key: "nature-science", Label: "Nature and science", Sort: core.SortTitle, Direction: "asc", Filters: map[string][]string{"topic": {"nature", "science"}}},
+		{Key: "empty-topic", Label: "Empty shelf", Filters: map[string][]string{"topic": {"astronomy"}}},
+		{Key: "history-feature", Label: "Feature history", Sort: core.SortRating, Direction: "desc", Filters: map[string][]string{"topic": {"history"}, "format": {"feature"}}},
+	}
+	for i := 1; i <= 20; i++ {
+		shelves = append(shelves, PluginShelf{
+			Key:   fmt.Sprintf("curated-%02d", i),
+			Label: fmt.Sprintf("Curated %02d", i),
+		})
+	}
+
+	plug := &fakePresentationPluginLibraries{
+		fakePluginLibraries: fakePluginLibraries{
+			libs: []core.Library{{
+				ID: 12, Key: "plugin:community.docs:documentary", Name: "Documentaries",
+				Source: core.LibraryPlugin, PluginID: "community.docs", KindKey: "documentary", MediaType: core.TypeMovie,
+			}},
+		},
+		pres: PluginPresentation{
+			Card:    "landscape",
+			Sorts:   []string{"released", "title"},
+			Shelves: shelves,
+		},
+		items: []core.Title{d1, d2, d3},
+		itemFacets: map[core.RatingKey]map[string][]string{
+			d1.Key: {"topic": {"nature"}, "format": {"feature"}},
+			d2.Key: {"topic": {"science"}, "format": {"short"}},
+			d3.Key: {"topic": {"history"}, "format": {"feature"}},
+		},
+	}
+
+	layout := &recordingNeutralLayout{}
+	svc, _ := peopleFixture()
+	svc.d.PluginLibraries = plug
+	svc.d.State = fakeInProgressState{inProgress: []core.WatchStatus{{Key: d2.Key, ViewOffset: 30_000}}}
+	svc.d.Layout = layout
+	svc.d.Now = func() time.Time { return time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC) }
+	svc.d.LibraryPresentation = func(_ core.Presentations, mt core.MediaType) (core.MediaType, string, bool) {
+		return mt, "movies", true
+	}
+
+	owner := &core.User{ID: 1, IsOwner: true}
+	rows, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	if err != nil {
+		t.Fatalf("PluginLibraryRows: %v", err)
+	}
+	// 1 Continue Watching + 23 non-empty declared shelves (empty-topic skipped) = 24 rows (>16 and >8).
+	if len(rows) != 24 {
+		t.Fatalf("expected 24 uncapped rows (continue + 23 non-empty shelves), got %d", len(rows))
+	}
+	if layout.lastSituation.DefaultMaxRows != 24 {
+		t.Fatalf("expected DefaultMaxRows=24 passed to layout, got %d", layout.lastSituation.DefaultMaxRows)
+	}
+	if rows[0].ID != "plugin:12:continue" || len(rows[0].Items) != 1 || rows[0].Items[0].Key != d2.Key {
+		t.Fatalf("row[0] = %+v, want Continue Watching with d2", rows[0])
+	}
+	if rows[1].ID != "plugin:12:shelf:latest" || rows[1].Title != "Latest documentaries" || rows[1].Items[0].Key != d1.Key {
+		t.Fatalf("row[1] = %+v, want latest shelf sorted by released desc", rows[1])
+	}
+	if rows[2].ID != "plugin:12:shelf:nature-science" || len(rows[2].Items) != 2 || rows[2].Items[0].Title != "Alpine Glaciers" || rows[2].Items[1].Title != "Deep Trench" {
+		t.Fatalf("row[2] = %+v, want OR topic shelf sorted by title asc", rows[2])
+	}
+	if rows[3].ID != "plugin:12:shelf:history-feature" || len(rows[3].Items) != 1 || rows[3].Items[0].Key != d3.Key {
+		t.Fatalf("row[3] = %+v, want AND topic+format shelf (and empty-topic skipped)", rows[3])
+	}
+	for _, r := range rows {
+		if r.ID == "plugin:12:shelf:empty-topic" {
+			t.Fatal("empty shelf must be skipped")
+		}
+		if r.ID == "plugin:12:released" || r.ID == "plugin:12:added" {
+			t.Fatalf("auto row %q must not appear when library.shelves is declared", r.ID)
+		}
+	}
+	for i, q := range plug.browseLog {
+		if !q.NoTotal || !q.SuppressExpand || q.Limit != 20 {
+			t.Fatalf("shelf browse[%d] = %+v, want NoTotal=true SuppressExpand=true Limit=20", i, q)
+		}
+	}
+
+	// With Layout == nil, declared shelves are still not clamped to 8.
+	svc.d.Layout = nil
+	rowsNoLayout, err := svc.PluginLibraryRows(ctx, owner, core.Device{Product: "Vela"}, "12")
+	if err != nil || len(rowsNoLayout) != 24 {
+		t.Fatalf("PluginLibraryRows(Layout=nil) len=%d err=%v, want 24", len(rowsNoLayout), err)
 	}
 }

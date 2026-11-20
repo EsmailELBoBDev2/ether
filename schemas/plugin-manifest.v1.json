@@ -410,6 +410,57 @@
                       "name": {
                         "type": "string"
                       },
+                      "shelves": {
+                        "items": {
+                          "properties": {
+                            "direction": {
+                              "enum": [
+                                "asc",
+                                "desc"
+                              ]
+                            },
+                            "facet": {
+                              "type": "string"
+                            },
+                            "filters": {
+                              "additionalProperties": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "type": "object"
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "sort": {
+                              "enum": [
+                                "title",
+                                "added",
+                                "released",
+                                "year",
+                                "rating",
+                                "index"
+                              ]
+                            },
+                            "value": {
+                              "type": "string"
+                            },
+                            "values": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
                       "tabs": {
                         "items": {
                           "properties": {

@@ -197,6 +197,12 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 				recordRef(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60, false)
 			}
 		}
+		for j, shelf := range k.Library.Shelves {
+			sbase := fmt.Sprintf("ether.contributes.mediaKinds[%d].library.shelves[%d]", i, j)
+			if strings.HasPrefix(shelf.Label, "$t:") {
+				recordRef(sbase+".label", shelf.Label, 60, false)
+			}
+		}
 	}
 
 	// Lint every string in every locale.

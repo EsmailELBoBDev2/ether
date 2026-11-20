@@ -295,10 +295,11 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string           `json:"name"`
-	Icon string           `json:"icon,omitempty"`
-	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
-	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+	Name    string             `json:"name"`
+	Icon    string             `json:"icon,omitempty"`
+	Card    string             `json:"card,omitempty"`    // poster (default)|landscape|square
+	Tabs    []KindLibraryTab   `json:"tabs,omitempty"`    // up to 6; defaults to Recommended + Library
+	Shelves []KindLibraryShelf `json:"shelves,omitempty"` // up to 40; default Recommended shelves
 }
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
@@ -312,6 +313,22 @@ type KindLibraryTab struct {
 	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people when search is enabled)
 	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
 	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
+}
+
+// MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.
+const MaxKindLibraryShelves = 40
+
+// KindLibraryShelf declares one default Recommended shelf for a plugin library.
+// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>".
+type KindLibraryShelf struct {
+	Key       string              `json:"key"`
+	Label     string              `json:"label"`
+	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
+	Direction string              `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string              `json:"value,omitempty"`     // single value for facet
+	Values    []string            `json:"values,omitempty"`    // OR values for facet
+	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
 }
 
 // KindLevel is one hierarchy level of a kind.

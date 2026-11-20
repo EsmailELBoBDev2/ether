@@ -3,6 +3,7 @@ package personalize
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -446,5 +447,72 @@ func TestPreviewLayoutPinnedProbePopulatesLibraryRows(t *testing.T) {
 	}
 	if row := probe(typical, "library:1", KindPopular); row == nil || len(row.Items) == 0 {
 		t.Fatalf("typical viewer popular = %+v, want populated row", row)
+	}
+}
+
+func TestDeclaredPluginShelvesUncappedByDefaultAndHonorOwnerOverrides(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	u := &core.User{ID: 1, IsOwner: true}
+
+	candidates := make([]core.NeutralHomeRow, 0, 26)
+	candidates = append(candidates, core.NeutralHomeRow{
+		ID: "plugin:9:continue", Title: "Continue Watching", Kind: "continue",
+		Items: []core.Title{{Key: core.PluginKey(1), Title: "Episode 1"}},
+	})
+	for i := 1; i <= 25; i++ {
+		candidates = append(candidates, core.NeutralHomeRow{
+			ID: fmt.Sprintf("plugin:9:shelf:topic-%02d", i), Title: fmt.Sprintf("Topic %02d", i), Kind: "shelf",
+			Items: []core.Title{{Key: core.PluginKey(int64(100 + i)), Title: fmt.Sprintf("Doc %02d", i)}},
+		})
+	}
+
+	sit := core.HomeSituation{
+		LibraryID:      9,
+		Device:         core.DeviceWeb,
+		Now:            testNow,
+		DefaultMaxRows: len(candidates),
+	}
+
+	// Uncustomized layout preserves all 26 rows in declared order (not clamped to MaxSectionRows=16).
+	all, err := h.e.FinalizeNeutralHome(ctx, u, sit, "library:9", candidates)
+	if err != nil {
+		t.Fatalf("FinalizeNeutralHome: %v", err)
+	}
+	if len(all) != len(candidates) {
+		t.Fatalf("uncustomized declared shelves returned %d rows, want %d", len(all), len(candidates))
+	}
+	if all[0].ID != "plugin:9:continue" || all[1].ID != "plugin:9:shelf:topic-01" || all[25].ID != "plugin:9:shelf:topic-25" {
+		t.Fatalf("unexpected row order: first=%s second=%s last=%s", all[0].ID, all[1].ID, all[25].ID)
+	}
+
+	// Owner overrides (MaxRows, hide, pin/reorder) still win.
+	_, err = h.e.SetHomeLayout(ctx, core.HomeLayout{
+		Global: []core.LayoutPage{{
+			Section: "library:9",
+			MaxRows: 5,
+			Rows: []core.RowPolicy{
+				{Row: "plugin:9:shelf:topic-20", Status: "always", Slot: 2},
+				{Row: "plugin:9:shelf:topic-01", Status: "off"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SetHomeLayout: %v", err)
+	}
+	overridden, err := h.e.FinalizeNeutralHome(ctx, u, sit, "library:9", candidates)
+	if err != nil {
+		t.Fatalf("FinalizeNeutralHome with overrides: %v", err)
+	}
+	if len(overridden) != 5 {
+		t.Fatalf("owner MaxRows=5 returned %d rows, want 5", len(overridden))
+	}
+	if overridden[0].ID != "plugin:9:continue" || overridden[1].ID != "plugin:9:shelf:topic-20" {
+		t.Fatalf("owner pin/order not honored: %+v", []string{overridden[0].ID, overridden[1].ID})
+	}
+	for _, r := range overridden {
+		if r.ID == "plugin:9:shelf:topic-01" {
+			t.Fatal("hidden shelf topic-01 must not appear")
+		}
 	}
 }

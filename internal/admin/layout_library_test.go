@@ -218,3 +218,73 @@ func TestPerLibraryLayoutEndpointsAndPreviewOverlay(t *testing.T) {
 		t.Fatalf("bad library id = %d, want 400", r400.Code)
 	}
 }
+
+func TestPluginLibraryDeclaredShelvesDefaultMaxRows(t *testing.T) {
+	base := &fakeEngine{
+		doc: core.HomeLayout{
+			Global: []core.LayoutPage{{Section: "home", MaxRows: 8}},
+		},
+	}
+	var gotPreviewDefault int
+	eng := &declaredShelfPreviewEngine{
+		libraryAwareEngine: &libraryAwareEngine{fakeEngine: base},
+		onPreview:          func(def int) { gotPreviewDefault = def },
+	}
+	cfg := newStore(t, nil)
+	h := admin.NewHandler(admin.Deps{
+		Config:          cfg,
+		IsOwnerToken:    storedOwner(cfg),
+		Personalization: eng,
+		Users:           &fakeUsers{users: []core.User{{ID: 1, IsOwner: true}}},
+		LayoutLibraries: func(context.Context) ([]admin.LayoutLibrary, error) {
+			return []admin.LayoutLibrary{
+				{ID: 7, Name: "Podcasts", Slug: "podcasts", Type: "plugin"},
+			}, nil
+		},
+		PluginLibraryRows: func(_ context.Context, _ *core.User, libraryID int) ([]core.RowDescriptor, []core.HomeRow, error) {
+			if libraryID != 7 {
+				return nil, nil, core.ErrNotFound
+			}
+			descs := make([]core.RowDescriptor, 0, 15)
+			rows := make([]core.HomeRow, 0, 15)
+			for i := 1; i <= 15; i++ {
+				id := "plugin:7:shelf:s" + string(rune('a'+i-1))
+				descs = append(descs, core.RowDescriptor{HubID: id, Title: "Shelf", Kind: "shelf", Sections: []string{"library:7"}})
+				rows = append(rows, core.HomeRow{HubID: id, Title: "Shelf", Kind: "shelf", Items: []core.Title{{Key: core.PluginKey(int64(i)), Title: "Ep"}}})
+			}
+			return descs, rows, nil
+		},
+	})
+
+	rec := serve(h, req(http.MethodGet, "/ether/api/layout/libraries/7", ""))
+	if rec.Code != 200 {
+		t.Fatalf("GET /ether/api/layout/libraries/7: %d %s", rec.Code, rec.Body)
+	}
+	var resp libraryLayoutResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Defaults.MaxRows != 15 {
+		t.Fatalf("declared shelves defaults.maxRows = %d, want 15", resp.Defaults.MaxRows)
+	}
+
+	rec = serve(h, req(http.MethodPost, "/ether/api/layout/preview", `{"section": "library:7"}`))
+	if rec.Code != 200 {
+		t.Fatalf("POST /ether/api/layout/preview: %d %s", rec.Code, rec.Body)
+	}
+	if gotPreviewDefault != 15 {
+		t.Fatalf("PreviewCandidateRows defaultMaxRows = %d, want 15", gotPreviewDefault)
+	}
+}
+
+type declaredShelfPreviewEngine struct {
+	*libraryAwareEngine
+	onPreview func(int)
+}
+
+func (e *declaredShelfPreviewEngine) PreviewCandidateRows(ctx context.Context, u *core.User, hc core.HubContext, section string, def int, d core.HomeLayout, rows []core.HomeRow) (*core.HomePreview, error) {
+	if e.onPreview != nil {
+		e.onPreview(def)
+	}
+	return e.libraryAwareEngine.PreviewCandidateRows(ctx, u, hc, section, def, d, rows)
+}

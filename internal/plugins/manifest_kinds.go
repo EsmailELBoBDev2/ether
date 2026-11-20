@@ -6,14 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
 var (
-	kindKeyRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	kindFieldRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,39}$`)
-	kindArtRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindKeyRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindFieldRe    = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,39}$`)
+	kindArtRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindShelfKeyRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 )
 
 // Envelope keys a declared field may not shadow (spec §2.1).
@@ -305,6 +307,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			}
 		}
 	}
+	validateKindLibraryShelves(base, k.Library.Shelves, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -602,4 +605,95 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 		return &ValidationError{f}
 	}
 	return nil
+}
+
+func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+	if len(shelves) == 0 {
+		return
+	}
+	if len(shelves) > MaxKindLibraryShelves {
+		add(base+".library.shelves", fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
+	}
+	checkFacet := func(fieldPath, fk string) {
+		if fk == "year" || fk == "released" || fk == "rating" {
+			return
+		}
+		field, ok := fields[fk]
+		if !ok {
+			add(fieldPath, "must name a declared field")
+		} else if !field.Indexed && field.Type != "people" {
+			add(fieldPath, "a shelf facet field must be indexed")
+		}
+	}
+	seenKey := map[string]bool{}
+	for j, sh := range shelves {
+		sbase := fmt.Sprintf("%s.library.shelves[%d]", base, j)
+		if !kindShelfKeyRe.MatchString(sh.Key) {
+			add(sbase+".key", "must match ^[a-z][a-z0-9-]{0,39}$")
+		} else if seenKey[sh.Key] {
+			add(sbase+".key", "is listed twice")
+		}
+		seenKey[sh.Key] = true
+		label(sbase+".label", sh.Label, 60)
+		if sh.Sort != "" && !kindSorts[sh.Sort] {
+			add(sbase+".sort", "must be title, added, released, year, rating or index")
+		}
+		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
+			add(sbase+".direction", "must be asc or desc")
+		}
+		if sh.Facet != "" && len(sh.Filters) > 0 {
+			add(sbase+".filters", "cannot be combined with facet")
+		}
+		if sh.Facet != "" {
+			checkFacet(sbase+".facet", sh.Facet)
+			switch {
+			case sh.Value != "" && len(sh.Values) > 0:
+				add(sbase+".values", "cannot be combined with value")
+			case sh.Value != "":
+				if strings.TrimSpace(sh.Value) == "" {
+					add(sbase+".value", "must not be empty")
+				}
+			case len(sh.Values) > 0:
+				for vi, v := range sh.Values {
+					if strings.TrimSpace(v) == "" {
+						add(fmt.Sprintf("%s.values[%d]", sbase, vi), "must not be empty")
+					}
+				}
+			default:
+				add(sbase+".value", "facet requires value or values")
+			}
+		} else {
+			if sh.Value != "" {
+				add(sbase+".value", "requires facet to be set")
+			}
+			if len(sh.Values) > 0 {
+				add(sbase+".values", "requires facet to be set")
+			}
+		}
+		if len(sh.Filters) > 0 {
+			fkeys := make([]string, 0, len(sh.Filters))
+			for fk := range sh.Filters {
+				fkeys = append(fkeys, fk)
+			}
+			sort.Strings(fkeys)
+			for _, fk := range fkeys {
+				if strings.TrimSpace(fk) == "" {
+					add(sbase+".filters", "filter facet key must not be empty")
+					continue
+				}
+				fbase := sbase + ".filters." + fk
+				checkFacet(fbase, fk)
+				vals := sh.Filters[fk]
+				if len(vals) == 0 {
+					add(fbase, "must list at least one value")
+					continue
+				}
+				for vi, v := range vals {
+					if strings.TrimSpace(v) == "" {
+						add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+					}
+				}
+			}
+		}
+	}
 }

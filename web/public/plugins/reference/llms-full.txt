@@ -719,7 +719,22 @@ unless the owner agrees to replace the library's contents.
     ]
     ```
 - `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
-- Recommended rows (`GET /vela/v0/libraries/{id}/rows`): Ether builds up to 8 shelves (20 items each) from your stored items — Continue watching, Recently added, Newest, Top rated (when `rating` is a declared sort), and top values of your first declared facet.
+- Recommended rows (`GET /vela/v0/libraries/{id}/rows`):
+  - When `library.shelves` is omitted, Ether builds auto-generated shelves (up to 8 by default, 20 items each) from your stored items — Continue watching, Newest, Recently added, Top rated (when `rating` is a declared sort), and daily-rotating values from your declared facets.
+  - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
+    ```json
+    "shelves": [
+      { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
+      { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
+      { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
+    ]
+    ```
+    Each shelf accepts:
+    - `key` (required): unique in the library, matching `^[a-z][a-z0-9-]{0,39}$`.
+    - `label` (required): literal or `$t:<key>`, at most 60 characters.
+    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`.
+    - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
+    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters: { "<facet>": ["..."] }` (AND across facets, OR within each facet). Every referenced facet must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`).
 
 ## The item envelope
 
@@ -3677,6 +3692,7 @@ type MediaKindMeta struct {
 | `icon` | `string` | may be omitted (see validation for conditions) |  |
 | `card` | `string` | may be omitted (see validation for conditions) | poster (default)\|landscape\|square |
 | `tabs` | `[]KindLibraryTab` | may be omitted (see validation for conditions) | up to 6; defaults to Recommended + Library |
+| `shelves` | `[]KindLibraryShelf` | may be omitted (see validation for conditions) | up to 40; default Recommended shelves |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryDecl
@@ -3684,10 +3700,11 @@ type MediaKindMeta struct {
 ``````
 // KindLibraryDecl is the optional library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string           `json:"name"` // default name; the owner may rename it after
-	Icon string           `json:"icon,omitempty"`
-	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
-	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+	Name    string             `json:"name"` // default name; the owner may rename it after
+	Icon    string             `json:"icon,omitempty"`
+	Card    string             `json:"card,omitempty"`    // poster (default)|landscape|square
+	Tabs    []KindLibraryTab   `json:"tabs,omitempty"`    // up to 6; defaults to Recommended + Library
+	Shelves []KindLibraryShelf `json:"shelves,omitempty"` // up to 40; default Recommended shelves
 }
 ``````
 
@@ -3744,7 +3761,7 @@ func (t KindLibraryTab) EffectiveSearch() bool {
 ``````
 // IsZero reports whether every field of the library declaration is empty.
 func (d KindLibraryDecl) IsZero() bool {
-	return d.Name == "" && d.Icon == "" && d.Card == "" && len(d.Tabs) == 0
+	return d.Name == "" && d.Icon == "" && d.Card == "" && len(d.Tabs) == 0 && len(d.Shelves) == 0
 }
 ``````
 
@@ -3776,6 +3793,115 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
 	}
+}
+``````
+
+## Source: internal/plugins/contract.go#MaxKindLibraryShelves
+
+``````
+// MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.
+const MaxKindLibraryShelves = 40
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryShelf.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `sort` | `string` | may be omitted (see validation for conditions) | released (default)\|title\|added\|year\|rating\|index |
+| `direction` | `string` | may be omitted (see validation for conditions) | desc (default)\|asc |
+| `facet` | `string` | may be omitted (see validation for conditions) | single-facet shorthand (declared and indexed) |
+| `value` | `string` | may be omitted (see validation for conditions) | single value for facet |
+| `values` | `[]string` | may be omitted (see validation for conditions) | OR values for facet |
+| `filters` | `map[string][]string` | may be omitted (see validation for conditions) | AND across facets, OR within each facet |
+
+
+## Source: internal/plugins/contract.go#KindLibraryShelf
+
+``````
+// KindLibraryShelf declares one default Recommended shelf for a plugin library.
+// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>" so the
+// library's Recommended row editor can reorder, hide, pin, or cap it.
+type KindLibraryShelf struct {
+	Key       string              `json:"key"`
+	Label     string              `json:"label"`
+	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
+	Direction string              `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string              `json:"value,omitempty"`     // single value for facet
+	Values    []string            `json:"values,omitempty"`    // OR values for facet
+	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
+}
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryShelf.EffectiveSort
+
+``````
+// EffectiveSort returns the shelf's sort field ("released" by default).
+func (s KindLibraryShelf) EffectiveSort() string {
+	if s.Sort != "" {
+		return s.Sort
+	}
+	return "released"
+}
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryShelf.EffectiveDirection
+
+``````
+// EffectiveDirection returns the shelf's sort direction ("desc" by default).
+func (s KindLibraryShelf) EffectiveDirection() string {
+	if s.Direction == "asc" {
+		return "asc"
+	}
+	return "desc"
+}
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryShelf.EffectiveFilters
+
+``````
+// EffectiveFilters returns the shelf's facet filter map (AND across facets,
+// OR within each facet), or nil when the shelf is unfiltered.
+func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
+	if s.Facet != "" {
+		if len(s.Values) > 0 {
+			vals := make([]string, 0, len(s.Values))
+			for _, v := range s.Values {
+				if v = strings.TrimSpace(v); v != "" {
+					vals = append(vals, v)
+				}
+			}
+			if len(vals) == 0 {
+				return nil
+			}
+			return map[string][]string{s.Facet: vals}
+		}
+		if v := strings.TrimSpace(s.Value); v != "" {
+			return map[string][]string{s.Facet: {v}}
+		}
+		return nil
+	}
+	if len(s.Filters) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(s.Filters))
+	for k, raw := range s.Filters {
+		var vals []string
+		for _, v := range raw {
+			if v = strings.TrimSpace(v); v != "" {
+				vals = append(vals, v)
+			}
+		}
+		if len(vals) > 0 {
+			out[k] = vals
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 ``````
 
@@ -11049,6 +11175,12 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 				recordRef(tbase+".searchPlaceholder", tab.SearchPlaceholder, 60, false)
 			}
 		}
+		for j, shelf := range k.Library.Shelves {
+			sbase := fmt.Sprintf("ether.contributes.mediaKinds[%d].library.shelves[%d]", i, j)
+			if strings.HasPrefix(shelf.Label, "$t:") {
+				recordRef(sbase+".label", shelf.Label, 60, false)
+			}
+		}
 	}
 
 	// Lint every string in every locale.
@@ -15479,6 +15611,9 @@ func contributesUseT(c Contributes) bool {
 			check(t.Label)
 			check(t.SearchPlaceholder)
 		}
+		for _, sh := range k.Library.Shelves {
+			check(sh.Label)
+		}
 		for _, lv := range k.Levels {
 			check(lv.Label)
 		}
@@ -15880,9 +16015,10 @@ func CompareSemVer(a, b string) int {
 
 ``````
 var (
-	kindKeyRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	kindFieldRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,39}$`)
-	kindArtRe   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindKeyRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindFieldRe    = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,39}$`)
+	kindArtRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	kindShelfKeyRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 )
 ``````
 
@@ -16210,6 +16346,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			}
 		}
 	}
+	validateKindLibraryShelves(base, k.Library.Shelves, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -16535,6 +16672,101 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 		return &ValidationError{f}
 	}
 	return nil
+}
+``````
+
+## Source: internal/plugins/manifest_kinds.go#validateKindLibraryShelves
+
+``````
+func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+	if len(shelves) == 0 {
+		return
+	}
+	if len(shelves) > MaxKindLibraryShelves {
+		add(base+".library.shelves", fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
+	}
+	checkFacet := func(fieldPath, fk string) {
+		if fk == "year" || fk == "released" || fk == "rating" {
+			return
+		}
+		field, ok := fields[fk]
+		if !ok {
+			add(fieldPath, "must name a declared field")
+		} else if !field.Indexed && field.Type != "people" {
+			add(fieldPath, "a shelf facet field must be indexed")
+		}
+	}
+	seenKey := map[string]bool{}
+	for j, sh := range shelves {
+		sbase := fmt.Sprintf("%s.library.shelves[%d]", base, j)
+		if !kindShelfKeyRe.MatchString(sh.Key) {
+			add(sbase+".key", "must match ^[a-z][a-z0-9-]{0,39}$")
+		} else if seenKey[sh.Key] {
+			add(sbase+".key", "is listed twice")
+		}
+		seenKey[sh.Key] = true
+		label(sbase+".label", sh.Label, 60)
+		if sh.Sort != "" && !kindSorts[sh.Sort] {
+			add(sbase+".sort", "must be title, added, released, year, rating or index")
+		}
+		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
+			add(sbase+".direction", "must be asc or desc")
+		}
+		if sh.Facet != "" && len(sh.Filters) > 0 {
+			add(sbase+".filters", "cannot be combined with facet")
+		}
+		if sh.Facet != "" {
+			checkFacet(sbase+".facet", sh.Facet)
+			switch {
+			case sh.Value != "" && len(sh.Values) > 0:
+				add(sbase+".values", "cannot be combined with value")
+			case sh.Value != "":
+				if strings.TrimSpace(sh.Value) == "" {
+					add(sbase+".value", "must not be empty")
+				}
+			case len(sh.Values) > 0:
+				for vi, v := range sh.Values {
+					if strings.TrimSpace(v) == "" {
+						add(fmt.Sprintf("%s.values[%d]", sbase, vi), "must not be empty")
+					}
+				}
+			default:
+				add(sbase+".value", "facet requires value or values")
+			}
+		} else {
+			if sh.Value != "" {
+				add(sbase+".value", "requires facet to be set")
+			}
+			if len(sh.Values) > 0 {
+				add(sbase+".values", "requires facet to be set")
+			}
+		}
+		if len(sh.Filters) > 0 {
+			fkeys := make([]string, 0, len(sh.Filters))
+			for fk := range sh.Filters {
+				fkeys = append(fkeys, fk)
+			}
+			sort.Strings(fkeys)
+			for _, fk := range fkeys {
+				if strings.TrimSpace(fk) == "" {
+					add(sbase+".filters", "filter facet key must not be empty")
+					continue
+				}
+				fbase := sbase + ".filters." + fk
+				checkFacet(fbase, fk)
+				vals := sh.Filters[fk]
+				if len(vals) == 0 {
+					add(fbase, "must list at least one value")
+					continue
+				}
+				for vi, v := range vals {
+					if strings.TrimSpace(v) == "" {
+						add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+					}
+				}
+			}
+		}
+	}
 }
 ``````
 
@@ -24603,6 +24835,15 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.card` | `any` | false | {"enum":["poster","landscape","square"]} |
 | `ether.contributes.mediaKinds[].library.icon` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.name` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves` | `array` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].direction` | `any` | false | {"enum":["asc","desc"]} |
+| `ether.contributes.mediaKinds[].library.shelves[].facet` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].filters` | `object` | false | {"additionalProperties":{"items":{"type":"string"},"type":"array"}} |
+| `ether.contributes.mediaKinds[].library.shelves[].key` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].label` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index"]} |
+| `ether.contributes.mediaKinds[].library.shelves[].value` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].values` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].direction` | `any` | false | {"enum":["asc","desc"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].facet` | `string` | false | {} |
@@ -25143,6 +25384,57 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                       },
                       "name": {
                         "type": "string"
+                      },
+                      "shelves": {
+                        "items": {
+                          "properties": {
+                            "direction": {
+                              "enum": [
+                                "asc",
+                                "desc"
+                              ]
+                            },
+                            "facet": {
+                              "type": "string"
+                            },
+                            "filters": {
+                              "additionalProperties": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "type": "object"
+                            },
+                            "key": {
+                              "type": "string"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "sort": {
+                              "enum": [
+                                "title",
+                                "added",
+                                "released",
+                                "year",
+                                "rating",
+                                "index"
+                              ]
+                            },
+                            "value": {
+                              "type": "string"
+                            },
+                            "values": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
                       },
                       "tabs": {
                         "items": {
@@ -26119,7 +26411,7 @@ signing the updated index.
 | ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
-| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, up to 6 `library.tabs` of `recommended\|library\|collections\|people` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
+| ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, up to 6 `library.tabs` of `recommended\|library\|collections\|people` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs and required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, up to 40 optional `library.shelves` with `key`/`label`/`sort`/`direction` and optional `facet`+`value`/`values` or `filters` for default Recommended rows, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
 | ether.schedule | `[{every:"1h",call:"/ether/refresh"}]`; intervals ≥15 minutes, bounded idempotent work |
 | ether.cluster | `leader` (default), or `every_node` only when each node must run it |
 | ether.health | Optional interval ≥15 seconds |
@@ -26278,6 +26570,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`),
 `library.tabs` (`recommended|library|collections|people`, such as `{key:"developers",label:"Developers",kind:"collections",facet:"developers",order:"name",searchPlaceholder:"Search developers"}` or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
+optional `library.shelves` (up to 40 default Recommended shelves such as `{key:"science-docs",label:"Science documentaries",facet:"topic",values:["Science","Nature"],sort:"released",direction:"desc"}` or multi-facet `filters`),
 and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["developers","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/resolve
 handlers in `src/plugin.ts`. Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.
@@ -39586,6 +39879,7 @@ type MediaKindMeta struct {
 | `icon` | `string` | may be omitted (see validation for conditions) |  |
 | `card` | `string` | may be omitted (see validation for conditions) | poster (default)\|landscape\|square |
 | `tabs` | `[]KindLibraryTab` | may be omitted (see validation for conditions) | up to 6; defaults to Recommended + Library |
+| `shelves` | `[]KindLibraryShelf` | may be omitted (see validation for conditions) | up to 40; default Recommended shelves |
 
 
 ## Source: sdk/go/types.go#KindLibraryDecl
@@ -39593,10 +39887,11 @@ type MediaKindMeta struct {
 ``````
 // KindLibraryDecl is the library created for a kind on install.
 type KindLibraryDecl struct {
-	Name string           `json:"name"`
-	Icon string           `json:"icon,omitempty"`
-	Card string           `json:"card,omitempty"` // poster (default)|landscape|square
-	Tabs []KindLibraryTab `json:"tabs,omitempty"` // up to 6; defaults to Recommended + Library
+	Name    string             `json:"name"`
+	Icon    string             `json:"icon,omitempty"`
+	Card    string             `json:"card,omitempty"`    // poster (default)|landscape|square
+	Tabs    []KindLibraryTab   `json:"tabs,omitempty"`    // up to 6; defaults to Recommended + Library
+	Shelves []KindLibraryShelf `json:"shelves,omitempty"` // up to 40; default Recommended shelves
 }
 ``````
 
@@ -39629,6 +39924,44 @@ type KindLibraryTab struct {
 	SearchPlaceholder string `json:"searchPlaceholder,omitempty"` // localizable placeholder (<=60 chars; collections/people when search is enabled)
 	Sort              string `json:"sort,omitempty"`              // one of browse.sorts (facet collections only)
 	Direction         string `json:"direction,omitempty"`         // asc|desc (facet collections only)
+}
+``````
+
+## Source: sdk/go/types.go#MaxKindLibraryShelves
+
+``````
+// MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.
+const MaxKindLibraryShelves = 40
+``````
+
+## Source: sdk/go/types.go#KindLibraryShelf.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `key` | `string` | emitted (validation may require a value) |  |
+| `label` | `string` | emitted (validation may require a value) |  |
+| `sort` | `string` | may be omitted (see validation for conditions) | released (default)\|title\|added\|year\|rating\|index |
+| `direction` | `string` | may be omitted (see validation for conditions) | desc (default)\|asc |
+| `facet` | `string` | may be omitted (see validation for conditions) | single-facet shorthand (declared and indexed) |
+| `value` | `string` | may be omitted (see validation for conditions) | single value for facet |
+| `values` | `[]string` | may be omitted (see validation for conditions) | OR values for facet |
+| `filters` | `map[string][]string` | may be omitted (see validation for conditions) | AND across facets, OR within each facet |
+
+
+## Source: sdk/go/types.go#KindLibraryShelf
+
+``````
+// KindLibraryShelf declares one default Recommended shelf for a plugin library.
+// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>".
+type KindLibraryShelf struct {
+	Key       string              `json:"key"`
+	Label     string              `json:"label"`
+	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
+	Direction string              `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string              `json:"value,omitempty"`     // single value for facet
+	Values    []string            `json:"values,omitempty"`    // OR values for facet
+	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
 }
 ``````
 
@@ -41488,7 +41821,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypedDict, Union
 
 TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
@@ -44475,6 +44808,34 @@ def create_test_harness(
 # ---------------------------------------------------------------------------
 # Content kinds: base classes, host services, kit helpers (Ether v0.3.8)
 # ---------------------------------------------------------------------------
+
+MAX_KIND_LIBRARY_SHELVES = 40
+
+
+class KindLibraryShelf(TypedDict, total=False):
+    """One default Recommended shelf declared under ``library.shelves`` (max 40).
+
+    Each shelf gets the stable row ID ``plugin:<viewID>:shelf:<key>``.
+    """
+
+    key: str
+    label: str
+    sort: Literal["title", "added", "released", "year", "rating", "index"]
+    direction: Literal["asc", "desc"]
+    facet: str
+    value: str
+    values: List[str]
+    filters: Dict[str, List[str]]
+
+
+class KindLibraryDecl(TypedDict, total=False):
+    """Library presentation declaration on a contributed content kind."""
+
+    name: str
+    icon: str
+    card: Literal["poster", "landscape", "square"]
+    tabs: List[Dict[str, Any]]
+    shelves: List[KindLibraryShelf]
 
 
 class CatalogProvider:
@@ -49528,11 +49889,32 @@ export interface KindLibraryTab {
   direction?: "asc" | "desc";
 }
 
+export interface KindLibraryShelf {
+  /** Unique shelf key in this library, matching ^[a-z][a-z0-9-]{0,39}$. Stable row ID: "plugin:<viewID>:shelf:<key>". */
+  key: string;
+  /** Localizable shelf title (literal or "$t:<key>", at most 60 characters). */
+  label: string;
+  /** Optional sort field (defaults to "released"). */
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  /** Sort direction (defaults to "desc"). */
+  direction?: "asc" | "desc";
+  /** Single-facet filter shorthand; must name a declared and indexed field (or year/released/rating). */
+  facet?: string;
+  /** Single value for `facet`. */
+  value?: string;
+  /** OR values for `facet`. */
+  values?: string[];
+  /** Multi-facet filter (AND across facets, OR within each facet); cannot be combined with `facet`. */
+  filters?: Record<string, string[]>;
+}
+
 export interface KindLibraryDecl {
   name: string;
   icon?: string;
   card?: "poster" | "landscape" | "square";
   tabs?: KindLibraryTab[];
+  /** Up to 40 default Recommended shelves evaluated in order when present. */
+  shelves?: KindLibraryShelf[];
 }
 
 /** On-demand background expansion settings for declared browse facets. */

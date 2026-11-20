@@ -1093,3 +1093,119 @@ func TestKindCatalogPresentationTabSearchAndPlaceholder(t *testing.T) {
 		t.Fatalf("KindCatalog.FacetPeople(query=zoe) = %+v, err=%v", fp, err)
 	}
 }
+
+func TestKindCatalogPresentationShelvesAndIndexedBrowse(t *testing.T) {
+	h := newKindTestHarness(t, 250*time.Millisecond, nil)
+	ctx := context.Background()
+
+	pluginID := "community.docs.archive"
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Documentary Archive",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Adds a curated documentary library",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes": map[string]any{
+				"mediaKinds": []any{map[string]any{
+					"key":   "documentary",
+					"label": "Documentaries",
+					"library": map[string]any{
+						"name": "Documentaries",
+						"card": "landscape",
+						"shelves": []any{
+							map[string]any{"key": "latest", "label": "Latest releases"},
+							map[string]any{"key": "earth-science", "label": "$t:shelf_earth_science", "sort": "rating", "direction": "desc", "facet": "topic", "values": []string{"Science", "Nature"}},
+							map[string]any{"key": "feature-history", "label": "Feature history", "sort": "title", "direction": "asc", "filters": map[string]any{"topic": []string{"History"}, "format": []string{"Feature"}}},
+						},
+					},
+					"levels": []any{map[string]any{"key": "film", "label": "Film", "playable": true}},
+					"fields": []any{
+						map[string]any{"key": "topic", "type": "strings", "label": "Topic", "indexed": true},
+						map[string]any{"key": "format", "type": "enum", "label": "Format", "indexed": true, "enum": []string{"Feature", "Short"}},
+					},
+					"present": map[string]any{"vela": map[string]any{"type": "movies"}},
+					"browse": map[string]any{
+						"sorts":  []string{"title", "released"},
+						"facets": []string{"topic"},
+					},
+					"sync": map[string]any{"mode": "push"},
+				}},
+			},
+		},
+	}, map[string][]byte{
+		"i18n/en.json": []byte(`{"shelf_earth_science":"Earth and science"}`),
+	})
+
+	var docLib core.Library
+	for _, lib := range mustListLibs(t, h.libs) {
+		if lib.PluginID == pluginID {
+			docLib = lib
+		}
+	}
+	if docLib.ID == 0 {
+		t.Fatal("expected documentary plugin library")
+	}
+
+	pres, ok := h.catalog.Presentation(ctx, docLib)
+	if !ok || len(pres.Shelves) != 3 {
+		t.Fatalf("Presentation = (%+v, %v), want 3 shelves", pres, ok)
+	}
+	if pres.Shelves[0].Key != "latest" || pres.Shelves[0].Sort != core.SortReleased || pres.Shelves[0].Direction != "desc" || pres.Shelves[0].Filters != nil {
+		t.Fatalf("shelf[0] = %+v", pres.Shelves[0])
+	}
+	if pres.Shelves[1].Label != "Earth and science" || pres.Shelves[1].Sort != core.SortRating || len(pres.Shelves[1].Filters["topic"]) != 2 {
+		t.Fatalf("shelf[1] = %+v", pres.Shelves[1])
+	}
+	if pres.Shelves[2].Sort != core.SortTitle || pres.Shelves[2].Direction != "asc" || len(pres.Shelves[2].Filters) != 2 {
+		t.Fatalf("shelf[2] = %+v", pres.Shelves[2])
+	}
+
+	_, err := h.items.KindUpsert(ctx, pluginID, "documentary", []core.KindItem{
+		{
+			ID: "d1", Level: "film", Title: "Deep Ocean", Playable: true, Rating: 9.1,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["Nature"]`), "format": json.RawMessage(`"Feature"`)},
+		},
+		{
+			ID: "d2", Level: "film", Title: "Quantum Fields", Playable: true, Rating: 8.4,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["Science"]`), "format": json.RawMessage(`"Short"`)},
+		},
+		{
+			ID: "d3", Level: "film", Title: "Ancient Roads", Playable: true, Rating: 8.8,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["History"]`), "format": json.RawMessage(`"Feature"`)},
+		},
+		{
+			ID: "d4", Level: "film", Title: "Brief History", Playable: true, Rating: 7.5,
+			Fields: map[string]json.RawMessage{"topic": json.RawMessage(`["History"]`), "format": json.RawMessage(`"Short"`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// OR within a facet ("Science" OR "Nature") ordered by rating desc, NoTotal: true.
+	orPage, err := h.catalog.Browse(ctx, docLib, frontend.ItemQuery{
+		Sort:    pres.Shelves[1].Sort,
+		Desc:    pres.Shelves[1].Direction != "asc",
+		NoTotal: true,
+		Filter:  core.Filter{Facets: pres.Shelves[1].Filters},
+	}, "", 20)
+	if err != nil || len(orPage.Items) != 2 || orPage.Items[0].Title != "Deep Ocean" || orPage.Items[1].Title != "Quantum Fields" {
+		t.Fatalf("OR shelf browse = %+v, err=%v", orPage.Items, err)
+	}
+
+	// AND across facets (topic="History" AND format="Feature"), even though "format" is indexed but not in browse.facets.
+	andPage, err := h.catalog.Browse(ctx, docLib, frontend.ItemQuery{
+		Sort:    pres.Shelves[2].Sort,
+		Desc:    pres.Shelves[2].Direction != "asc",
+		NoTotal: true,
+		Filter:  core.Filter{Facets: pres.Shelves[2].Filters},
+	}, "", 20)
+	if err != nil || len(andPage.Items) != 1 || andPage.Items[0].Title != "Ancient Roads" {
+		t.Fatalf("AND shelf browse = %+v, err=%v", andPage.Items, err)
+	}
+}

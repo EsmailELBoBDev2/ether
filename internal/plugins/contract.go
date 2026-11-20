@@ -878,6 +878,12 @@ type Request struct {
 	Query    map[string]string `json:"query,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
 	Body     json.RawMessage   `json:"body,omitempty"`
+	// BodyBase64 carries the exact request bytes, base64-encoded, when the
+	// caller needs them byte-for-byte (frontend adapter routes). Body holds
+	// the parsed JSON value when the bytes are valid JSON; a non-JSON body
+	// arrives only here, never as an invalid RawMessage.
+	BodyBase64  string `json:"bodyBase64,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
 	// Locale is the console locale for calls that return copy.
 	Locale string `json:"locale,omitempty"`
 }
@@ -1210,7 +1216,10 @@ var (
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
 	ErrBusy             = errors.New("plugins: plugin is busy")
-	ErrJobsBusy         = core.ErrJobsBusy
+	// ErrUnsupportedBody reports a request body Ether could not encode for
+	// the plugin at all: the guest never ran, so it is never a plugin crash.
+	ErrUnsupportedBody = errors.New("plugins: request body cannot be delivered to the plugin")
+	ErrJobsBusy        = core.ErrJobsBusy
 
 	ErrDigestMismatch = errors.New("plugins: artifact digest does not match")
 	ErrRevoked        = errors.New("plugins: plugin was revoked")

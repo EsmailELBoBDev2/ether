@@ -330,7 +330,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -341,6 +341,20 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
+	// Candidate carries a candidate previously returned by indexer_search
+	// back for release_files, so an NZB is fetched through its indexer.
+	Candidate *SourceCandidate `json:"candidate,omitempty"`
+}
+
+// ReleaseFile is one file inside a candidate release, as returned by a
+// release_files source query. Index is the position Ether's own file
+// selection counts: the debrid provider's file-list order for torrents,
+// NZB document order for Usenet. Hand it back as ReleaseHint.FileIndex,
+// or match Path with ReleaseHint.File.
+type ReleaseFile struct {
+	Index int    `json:"index"`
+	Path  string `json:"path"`
+	Size  int64  `json:"size"`
 }
 
 // SourceCandidate is one Ether-found release for a resolver to rank,
@@ -368,6 +382,9 @@ type SourceCandidate struct {
 	Resolution int    `json:"resolution,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Codec      string `json:"codec,omitempty"`
+	// Files is populated only by a release_files query: the files inside
+	// this candidate release.
+	Files []ReleaseFile `json:"files,omitempty"`
 }
 
 // PluginLibraryKey is the library key a plugin kind owns
@@ -411,10 +428,16 @@ type PlayableSource struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 	BlobRef     string            `json:"blobRef,omitempty"`
 	SHA256      string            `json:"sha256,omitempty"`
-	MaxBytes    int64             `json:"maxBytes,omitempty"`
-	ExpiresAt   int64             `json:"expiresAt,omitempty"`
-	Container   *ContainerRef     `json:"container,omitempty"`
-	Release     *ReleaseHint      `json:"release,omitempty"`
+	// SHA1 and CRC32 are the digests content catalogues actually publish
+	// (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared
+	// digest — and Size, when set — is checked against the bytes actually
+	// served, including a release's selected file or container member.
+	SHA1      string        `json:"sha1,omitempty"`
+	CRC32     string        `json:"crc32,omitempty"`
+	MaxBytes  int64         `json:"maxBytes,omitempty"`
+	ExpiresAt int64         `json:"expiresAt,omitempty"`
+	Container *ContainerRef `json:"container,omitempty"`
+	Release   *ReleaseHint  `json:"release,omitempty"`
 }
 
 // ContainerRef describes an archive member inside one or more volume streams

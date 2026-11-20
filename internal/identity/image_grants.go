@@ -416,6 +416,11 @@ func (s *ImageGrantService) writeGrantedImage(w http.ResponseWriter, r *http.Req
 			format = ""
 		}
 	}
+	if s.surface == "silo" && channel != "" && format == "" {
+		// Channel artwork is often a generated SVG tile, which the Silo apps
+		// cannot draw: every live card was blank. Rasterize it for Silo.
+		format = "png"
+	}
 	blur := r.URL.Query().Get("blur") == "1"
 	if s.artwork != nil {
 		if height < 0 || height > 4000 {

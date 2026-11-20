@@ -1086,7 +1086,9 @@ func (c *Catalog) LocalExternalKey(ctx context.Context, imdbID string, tvdbID in
 
 // KeysByProviderID resolves one external provider id ("tmdb", "imdb", "tvdb",
 // case-insensitive) to candidate rating keys through the catalogue's external-id
-// indexes, falling back to TMDB only when no local row matches. types restricts
+// indexes only. It never calls TMDB: a request path (a watch-sync sweep can ask
+// for hundreds of ids) must not wait on the network, and a title with no local
+// row is not on this server anyway. types restricts
 // the media types considered; empty allows movie, show, season, and episode.
 // Unknown providers or malformed ids return nil, nil.
 func (c *Catalog) KeysByProviderID(ctx context.Context, source, id string, types []core.MediaType) ([]core.RatingKey, error) {
@@ -1102,9 +1104,6 @@ func (c *Catalog) KeysByProviderID(ctx context.Context, source, id string, types
 	if len(allowed) == 0 {
 		return nil, nil
 	}
-	allowType := func(mt core.MediaType) bool {
-		return slices.Contains(allowed, mt)
-	}
 	switch source {
 	case "tmdb":
 		n, ok := parseProviderInt(id)
@@ -1117,29 +1116,13 @@ func (c *Catalog) KeysByProviderID(ctx context.Context, source, id string, types
 		if !validProviderIMDbID(id) {
 			return nil, nil
 		}
-		keys, err := c.localKeysByProviderCol(ctx, "imdb", id, allowed)
-		if err != nil || len(keys) > 0 || c.tmdb() == nil || core.LocalResponse(ctx) {
-			return keys, err
-		}
-		found, err := c.tmdb().FindByExternalID(ctx, "imdb", id)
-		if err != nil {
-			return nil, nil
-		}
-		return c.externalFindKeys(ctx, found, allowType, id, 0)
+		return c.localKeysByProviderCol(ctx, "imdb", id, allowed)
 	case "tvdb":
 		n, ok := parseProviderInt(id)
 		if !ok {
 			return nil, nil
 		}
-		keys, err := c.localKeysByProviderCol(ctx, "tvdb", n, allowed)
-		if err != nil || len(keys) > 0 || c.tmdb() == nil || core.LocalResponse(ctx) {
-			return keys, err
-		}
-		found, err := c.tmdb().FindByExternalID(ctx, "tvdb", id)
-		if err != nil {
-			return nil, nil
-		}
-		return c.externalFindKeys(ctx, found, allowType, "", n)
+		return c.localKeysByProviderCol(ctx, "tvdb", n, allowed)
 	default:
 		return nil, nil
 	}
@@ -1203,63 +1186,6 @@ func (c *Catalog) localKeysByProviderCol(ctx context.Context, col string, val an
 		}
 	}
 	return keys, rows.Err()
-}
-
-func (c *Catalog) externalFindKeys(ctx context.Context, found *tmdb.FindResult, allowType func(core.MediaType) bool, imdbID string, tvdbID int64) ([]core.RatingKey, error) {
-	if found == nil {
-		return nil, nil
-	}
-	var keys []core.RatingKey
-	seen := make(map[core.RatingKey]bool)
-	var toUpsert []core.Title
-	addKey := func(k core.RatingKey) {
-		if k != 0 && !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
-		}
-	}
-	addTitle := func(t core.Title) {
-		if t.Key == 0 {
-			return
-		}
-		if imdbID != "" && t.IDs.IMDB == "" {
-			t.IDs.IMDB = imdbID
-		}
-		if tvdbID > 0 && t.IDs.TVDB == 0 {
-			t.IDs.TVDB = tvdbID
-		}
-		addKey(t.Key)
-		if existing, err := c.CachedGet(ctx, t.Key); err != nil || existing == nil {
-			toUpsert = append(toUpsert, t)
-		}
-	}
-	if allowType(core.TypeMovie) {
-		for _, m := range found.MovieResults {
-			if m.ID > 0 {
-				addTitle(c.movieToTitle(ctx, m))
-			}
-		}
-	}
-	if allowType(core.TypeShow) {
-		for _, tv := range found.TVResults {
-			if tv.ID > 0 {
-				addTitle(c.tvToTitle(ctx, tv))
-			}
-		}
-	}
-	if allowType(core.TypeEpisode) {
-		for _, e := range found.TVEpisodeResults {
-			if e.ShowID > 0 && episodeKeyFits(e.SeasonNumber, e.EpisodeNumber) {
-				addKey(core.EpisodeKey(e.ShowID, e.SeasonNumber, e.EpisodeNumber))
-			}
-		}
-	}
-	if len(toUpsert) > 0 {
-		if err := c.upsertSummaryBatch(ctx, toUpsert, false, true); err != nil {
-			return nil, err
-		}
-	}
-	return keys, nil
 }
 
 // ByExternalID looks up by imdb ("tt123") or tvdb id.

@@ -1102,6 +1102,9 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 		var err error
 		t, created, err = s.inputRelay.taps.acquire(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g)
 		if err != nil {
+			if errors.Is(err, ErrProviderBusy) && limit > 0 {
+				s.emitProviderLimitReached(source, limit, limit, g.histChannel)
+			}
 			w.Header().Set(tapBusyHeader, "1")
 			http.Error(w, "provider connections in use", http.StatusServiceUnavailable)
 			return true
@@ -1268,6 +1271,18 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 		closer.Close()
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			s.failedLogin(g.login)
+			providerID := g.source
+			accountID := ""
+			if g.login != nil {
+				if providerID == "" {
+					providerID = g.login.source
+				}
+				accountID = g.login.accountID
+			}
+			if providerID == "" {
+				providerID = g.histSrc.AuthSourceID
+			}
+			s.emitProviderAuthFailed(providerID, "", accountID, res.StatusCode, providerResponseError(res.StatusCode))
 		}
 		close(t.ready)
 		t.close(nil)
@@ -2381,6 +2396,9 @@ func (s *Service) sniffInputAttempt(ctx context.Context, ss *session, n int, ref
 	_, headers, mediaHeaders := g.requestScope()
 	t, created, err := r.taps.acquire(tapKey(raw+"\x00"+tapKey("", mediaHeaders), headers), source, limit, g)
 	if err != nil {
+		if errors.Is(err, ErrProviderBusy) && limit > 0 {
+			s.emitProviderLimitReached(source, limit, limit, g.histChannel)
+		}
 		return nil, "", err
 	}
 	if created {

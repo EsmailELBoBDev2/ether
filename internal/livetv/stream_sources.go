@@ -295,7 +295,6 @@ func (s *Service) recordSourceHealth(channelID string, src StreamSource, err err
 		return
 	}
 	s.sourceMu.Lock()
-	defer s.sourceMu.Unlock()
 	if s.sourceHealth == nil {
 		s.sourceHealth = map[string]streamSourceHealth{}
 	}
@@ -342,6 +341,11 @@ func (s *Service) recordSourceHealth(channelID string, src StreamSource, err err
 	}
 	s.sourceHealth[key] = h
 	s.noteSourceOpen(channelID, src, err, played, h.RetryAfter)
+	failures, retryAfter := h.Failures, h.RetryAfter
+	s.sourceMu.Unlock()
+	if err != nil {
+		s.emitSourceCooldown(channelID, src.ID, failures, historyErrorClass(err), retryAfter)
+	}
 }
 
 // ResolveStreamSource resolves a channel's stream input at tune time. HTTP(S)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/livetv/guideprovider"
 	"github.com/braedonsaunders/ether/internal/markers"
 )
@@ -430,6 +431,8 @@ type Options struct {
 	Now                func() time.Time
 	// Logger receives credential-safe import, playback and delivery diagnostics.
 	Logger *slog.Logger
+	// Events receives Live TV domain events when non-nil.
+	Events *events.Bus
 	// Allowed applies additional owner title/genre policies to every surface.
 	Allowed func(*core.User, *core.Title) bool
 	// Warm resolves/primes a title without opening a viewer stream.

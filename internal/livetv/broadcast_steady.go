@@ -332,6 +332,7 @@ func (s *Service) admitSteadySeed(ctx context.Context, c Channel, direct *direct
 	}
 	if probed.link != nil && len(candidates) > 0 && probed.link.src.ID != candidates[0].ID {
 		s.logger().Info("live admission switched source", append([]any{"channel", c.ID, "from", candidates[0].ID, "to", probed.link.src.ID}, s.duplicateFailoverLogAttrs(c, candidates[0], probed.link.src)...)...)
+		s.emitSourceFailover(c, candidates[0].ID, probed.link.src.ID, "admission failover", "broadcast")
 	}
 	return probed, "", "", nil
 }

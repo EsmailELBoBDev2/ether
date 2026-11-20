@@ -2227,15 +2227,32 @@ func (s *Service) ImportSource(ctx context.Context, src Source) (Source, error) 
 
 // importSourceLogged is called only while the source refresh lease is held.
 func (s *Service) importSourceLogged(ctx context.Context, src Source) (Source, error) {
+	started := s.o.Now()
 	v, err := s.importSource(ctx, src)
 	if err != nil {
 		s.o.Logger.Warn("Live TV source import failed",
 			"sourceId", v.ID, "source", v.Name, "url", sourceOrigin(v), "error", err)
+		eventSrc := v
+		if eventSrc.ID == "" {
+			eventSrc.ID = src.ID
+		}
+		if eventSrc.Name == "" {
+			eventSrc.Name = src.Name
+		}
+		if eventSrc.UpdatedAt.IsZero() {
+			eventSrc.UpdatedAt = src.UpdatedAt
+		}
+		var authErr *providerAuthError
+		if errors.As(err, &authErr) {
+			s.emitProviderAuthFailed(eventSrc.ID, eventSrc.Name, "", authErr.StatusCode, err)
+		}
+		s.emitGuideFailed(eventSrc, err)
 		return v, err
 	}
 	s.o.Logger.Info("Live TV source imported",
 		"sourceId", v.ID, "source", v.Name, "url", sourceOrigin(v),
 		"channels", v.ChannelCount, "guideChannels", v.GuideChannelCount)
+	s.emitGuideRefreshed(v, s.o.Now().Sub(started))
 	return v, nil
 }
 

@@ -65,6 +65,17 @@ type inputRelay struct {
 	health sync.Map // *session -> *inputGrant
 }
 
+// cachedManifest holds the bytes of a manifest fetched during input sniff so
+// subsequent readers (ffprobe, passthrough open, or ffmpeg relay failover) can
+// consume it without issuing a second GET against single-use token master URLs.
+type cachedManifest struct {
+	raw      string
+	body     []byte
+	base     *url.URL
+	hls      bool
+	isMaster bool
+}
+
 type inputGrant struct {
 	variantCaps   core.ClientCaps // immutable input quality ceilings
 	variantLogged sync.Once
@@ -94,8 +105,9 @@ type inputGrant struct {
 	service     *Service
 
 	mu               sync.Mutex
-	tap              *upstreamTap // the shared connection the root input reads through
-	hls              *hlsInput    // provider playlist state when the root input is HLS
+	tap              *upstreamTap    // the shared connection the root input reads through
+	manifest         *cachedManifest // cached root manifest (master kept for grant lifetime; media consumed once)
+	hls              *hlsInput       // provider playlist state when the root input is HLS
 	watchers         map[*func(UpstreamEvent)]struct{}
 	snap             atomic.Pointer[healthSnap] // published health; see inputHealth
 	resources        map[string]*relayResource
@@ -228,6 +240,7 @@ func (s *Service) grantInputFor(ss *session, src StreamSource, headers http.Head
 		log:   s.sessionLog(ss).With("input", src.ID),
 		token: base64.RawURLEncoding.EncodeToString(b[:]), origin: relayOrigin(u), headers: headers.Clone(), mediaHeaders: redirectMediaHeaders(src.Headers),
 		ctx: ctx, cancel: cancel, slots: make(chan struct{}, relayConcurrency), source: source,
+		manifest:  ss.sniffedManifestFor(src.URL),
 		resources: map[string]*relayResource{"0": {name: relayName("stream", u.Path), url: src.URL}},
 		byKey:     map[string]string{},
 	}

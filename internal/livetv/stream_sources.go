@@ -291,7 +291,7 @@ func (s *Service) StreamSourceStatuses(ctx context.Context, channelID string) ([
 }
 
 func (s *Service) recordSourceHealth(channelID string, src StreamSource, err error, played bool) {
-	if src.ID == "" || errors.Is(err, context.Canceled) {
+	if src.ID == "" || strings.HasPrefix(channelID, directChannelPrefix) || errors.Is(err, context.Canceled) {
 		return
 	}
 	s.sourceMu.Lock()
@@ -487,6 +487,7 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		grantSrc.URL = resolvedURL
 		ss.inputURL, ss.inputSource = resolvedURL, src
 		ss.inputHeaders = headers.Clone()
+		ss.setSniffedManifest(nil)
 		ss.info.MediaInfo, ss.relayInfo = nil, nil
 		ss.startDeadline = time.Time{}
 		// ffmpeg and ffprobe read this input through a loopback grant, never

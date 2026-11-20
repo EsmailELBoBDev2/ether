@@ -35,9 +35,25 @@ type channelLimiter interface {
 	EndChannel(string)
 }
 
+const directChannelPrefix = "direct:"
+
+// DirectStream describes an ephemeral direct-URL live stream (such as a
+// plugin library live tab item) tuned through the HLS passthrough/relay
+// pipeline without registering a Live TV channel.
+type DirectStream struct {
+	ID         string
+	Title      string
+	URL        string
+	Headers    map[string]string
+	AllowCheck func(context.Context, *core.User) error
+}
+
 type session struct {
 	broadcastPolicy     broadcastViewerPolicy
 	broadcast           *broadcastLease
+	ephemeral           bool
+	allowCheck          func(context.Context, *core.User) error
+	sniffedManifest     *cachedManifest
 	inputURL            string // selected upstream, immutable once the tune is ready
 	inputSource         StreamSource
 	inputHeaders        http.Header
@@ -94,6 +110,27 @@ type session struct {
 	caps        core.ClientCaps
 	last        time.Time
 	closed      bool
+}
+
+func (ss *session) setSniffedManifest(cm *cachedManifest) {
+	if ss == nil {
+		return
+	}
+	ss.mu.Lock()
+	ss.sniffedManifest = cm
+	ss.mu.Unlock()
+}
+
+func (ss *session) sniffedManifestFor(raw string) *cachedManifest {
+	if ss == nil || raw == "" {
+		return nil
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.sniffedManifest != nil && ss.sniffedManifest.raw == raw {
+		return ss.sniffedManifest
+	}
+	return nil
 }
 
 // bindContext derives a context cancelled when parent ends or when the
@@ -497,6 +534,184 @@ func (s *Service) TuneWithSession(ctx context.Context, u *core.User, channelID s
 	info.Channel.StreamSources = nil
 	return info, nil
 }
+
+// TuneDirectStream tunes an ephemeral direct-URL live stream (such as a plugin
+// library live tab item) through Ether's HLS passthrough and relay pipeline
+// without requiring Live TV channels to exist or registering one in Live TV.
+func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectStream, caps core.ClientCaps, clientSessionID string) (result SessionInfo, resultErr error) {
+	if !validHTTP(ds.URL) {
+		return SessionInfo{}, core.ErrNotAvailable
+	}
+	started := time.Now()
+	attemptID := liveSessionID()
+	title := strings.TrimSpace(ds.Title)
+	if title == "" {
+		title = "Live stream"
+	}
+	log := s.logger().With("session", attemptID, "direct_live", ds.ID, "client", caps.ClientID, "product", caps.Product)
+	log.Info("direct live tune started")
+	defer func() {
+		attrs := []any{"elapsed", time.Since(started)}
+		if resultErr != nil {
+			detail := Diagnose("tune", resultErr)
+			attrs = append(attrs, detail.LogAttrs()...)
+			if detail.Code == "cancelled" {
+				log.Debug("direct live tune cancelled", attrs...)
+			} else {
+				log.Info("direct live tune failed", attrs...)
+			}
+		} else {
+			log.Info("direct live tune ready", append(attrs, "analyzed", result.MediaInfo != nil)...)
+		}
+	}()
+
+	if clientSessionID == "" {
+		clientSessionID = caps.ClientID
+	}
+	if u == nil || (s.o.CanPlay != nil && !s.o.CanPlay(u, caps.Remote, s.o.Now())) {
+		return SessionInfo{}, core.ErrUnauthorized
+	}
+	if s.o.ConfirmAdmission != nil {
+		confirmed, err := s.o.ConfirmAdmission(ctx, u, caps.Remote, s.o.Now())
+		if err != nil {
+			return SessionInfo{}, err
+		}
+		u = confirmed
+	}
+	if ds.AllowCheck != nil {
+		if err := ds.AllowCheck(ctx, u); err != nil {
+			return SessionInfo{}, err
+		}
+	}
+
+	c := Channel{
+		ID:      directChannelPrefix + attemptID,
+		Name:    title,
+		Kind:    "iptv",
+		Enabled: true,
+		StreamSources: []StreamSource{{
+			ID:      "direct",
+			Name:    title,
+			URL:     ds.URL,
+			Headers: CleanInputHeaders(ds.Headers),
+			Enabled: true,
+		}},
+	}
+
+	if caps.ClientID != "" {
+		var superseded []*session
+		s.mu.Lock()
+		for id, old := range s.sessions {
+			if old.info.UserID == u.ID && old.caps.ClientID == caps.ClientID {
+				delete(s.sessions, id)
+				superseded = append(superseded, old)
+			}
+		}
+		s.mu.Unlock()
+		for _, old := range superseded {
+			s.sessionLog(old).Info("live session superseded", "replacement_session", attemptID)
+			old.close(s)
+		}
+		if len(superseded) > 0 {
+			s.notifySessionsChanged()
+		}
+	}
+	var playbackSessions []*core.PlaySession
+	if s.o.Playback != nil {
+		playbackSessions = s.o.Playback.Sessions()
+	}
+	s.mu.Lock()
+	count := 0
+	for _, ss := range s.sessions {
+		if ss.info.UserID == u.ID {
+			count++
+		}
+	}
+	limit := u.StreamLimit
+	if s.o.StreamLimit != nil {
+		limit = s.o.StreamLimit(u)
+	}
+	if s.o.Playback != nil {
+		for _, ps := range playbackSessions {
+			if ps.UserID == u.ID && ps.PlaybackGroup == "" {
+				count++
+			}
+		}
+	}
+	if limit > 0 && count >= limit {
+		s.mu.Unlock()
+		return SessionInfo{}, core.ErrStreamLimit
+	}
+	s.nextSubscription++
+	ss := &session{
+		tuneStartedAt: started,
+		ephemeral:     true,
+		allowCheck:    ds.AllowCheck,
+		info: SessionInfo{
+			ID: attemptID, SubscriptionID: s.nextSubscription,
+			ActivityID: liveSessionID(), ClientSessionID: clientSessionID,
+			UserID: u.ID, Channel: c, StartedAt: s.o.Now(),
+		},
+		streamGrant: randomID(), user: *u, caps: caps, last: s.o.Now(),
+	}
+	base := s.serviceContext()
+	if base == nil {
+		base = context.Background()
+	}
+	ss.ctx, ss.cancel = context.WithCancel(base)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ss.startupCancel = cancel
+	ss.view = core.PlaySession{
+		ID: ss.info.ID, PlaybackGroup: ss.info.ID,
+		UserID: u.ID, Username: u.Username,
+		ClientID: caps.ClientID, Client: caps,
+		TitleName: title, StartedAt: ss.info.StartedAt,
+		Decision: core.DecisionRemux, DecisionReason: "Plugin live stream",
+	}
+	s.sessions[ss.info.ID] = ss
+	s.mu.Unlock()
+	s.notifySessionsChanged()
+
+	if limiter, ok := s.o.Playback.(channelLimiter); ok {
+		if err := limiter.BeginChannel(u, caps, ss.info.ID); err != nil {
+			s.Stop(ctx, ss.info.ID, u)
+			return SessionInfo{}, err
+		}
+		ss.mu.Lock()
+		if ss.closed {
+			ss.mu.Unlock()
+			limiter.EndChannel(ss.info.ID)
+			return SessionInfo{}, core.ErrNotFound
+		}
+		ss.reserved = true
+		ss.mu.Unlock()
+	}
+
+	err := s.startIPTVSession(ctx, ss)
+	if err == nil {
+		err = s.awaitOwnedStart(ctx, ss)
+	}
+	if err != nil {
+		s.Stop(ctx, ss.info.ID, u)
+		return SessionInfo{}, err
+	}
+	ss.mu.Lock()
+	if ss.closed {
+		ss.mu.Unlock()
+		return SessionInfo{}, core.ErrNotFound
+	}
+	ss.ready = true
+	info := ss.info
+	if ss.relayInfo != nil {
+		info.MediaInfo = ss.relayInfo
+	}
+	ss.mu.Unlock()
+	info.Channel.StreamURL = ""
+	info.Channel.StreamSources = nil
+	return info, nil
+}
+
 func (s *Service) getSession(ctx context.Context, id string, u *core.User) (*session, error) {
 	s.mu.Lock()
 	ss := s.sessions[id]
@@ -511,8 +726,16 @@ func (s *Service) getSession(ctx context.Context, id string, u *core.User) (*ses
 	}
 	ss.mu.Lock()
 	shared := ss.broadcast != nil
+	ephemeral := ss.ephemeral
+	allowCheck := ss.allowCheck
 	ss.mu.Unlock()
-	if shared {
+	if ephemeral {
+		if allowCheck != nil {
+			if err := allowCheck(ctx, u); err != nil {
+				return nil, err
+			}
+		}
+	} else if shared {
 		ctx, err := s.broadcastPolicyContext(ctx, ss, u)
 		if err != nil {
 			return nil, err
@@ -594,9 +817,13 @@ func (s *Service) Session(ctx context.Context, id string, u *core.User) (Session
 		}
 	}
 	channel := ss.info.Channel
+	ephemeral := ss.ephemeral
 	ss.mu.Unlock()
 	info.Channel.StreamURL = ""
 	info.Channel.StreamSources = nil
+	if ephemeral {
+		return info, nil
+	}
 	lookupCtx, cancel := ss.bindContext(ctx)
 	defer cancel()
 	ps, err := s.programmes(lookupCtx, channel, s.o.Now(), s.o.Now().Add(time.Second))
@@ -659,7 +886,7 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 		return core.ErrNotFound
 	}
 	gen := ss.generation
-	stage := &session{info: ss.info, user: ss.user, caps: ss.caps, ctx: ss.ctx, steadyRefused: ss.steadyRefused}
+	stage := &session{info: ss.info, user: ss.user, caps: ss.caps, ctx: ss.ctx, steadyRefused: ss.steadyRefused, ephemeral: ss.ephemeral}
 	ss.mu.Unlock()
 
 	ctx, cancel := ss.bindContext(ctx)
@@ -681,6 +908,7 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 		return core.ErrNotFound
 	}
 	ss.inputURL, ss.inputSource, ss.inputHeaders = stage.inputURL, stage.inputSource, stage.inputHeaders
+	ss.sniffedManifest = stage.sniffedManifest
 	ss.info.MediaInfo, ss.info.ActiveSourceID = stage.info.MediaInfo, stage.info.ActiveSourceID
 	ss.relayInfo, ss.owned = stage.relayInfo, stage.owned
 	ss.startDeadline = stage.startDeadline

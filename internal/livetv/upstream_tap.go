@@ -966,9 +966,54 @@ func (g *inputGrant) setTap(t *upstreamTap) {
 	t.mu.Unlock()
 }
 
+func (g *inputGrant) setManifest(cm *cachedManifest) {
+	if g == nil || cm == nil || !cm.isMaster {
+		return
+	}
+	g.mu.Lock()
+	g.manifest = cm
+	g.mu.Unlock()
+}
+
+func (g *inputGrant) peekManifest(raw string) *cachedManifest {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.manifest != nil && g.manifest.raw == raw {
+		return g.manifest
+	}
+	return nil
+}
+
+// consumeManifest returns a cached root manifest for raw. Master playlists stay
+// cached for the grant's lifetime (they are static variant lists, often behind
+// single-use tokens); media playlists and MPDs are consumed once so live
+// reloads continue fetching fresh segments.
+func (g *inputGrant) consumeManifest(raw string) *cachedManifest {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.manifest == nil || g.manifest.raw != raw {
+		return nil
+	}
+	cm := g.manifest
+	if !cm.isMaster {
+		g.manifest = nil
+	}
+	return cm
+}
+
 // serveTapped serves a media input through its tap. It reports false when
 // the input turned out to be a manifest this reader must fetch itself.
 func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGrant, raw string) bool {
+	if cm := g.consumeManifest(raw); cm != nil {
+		s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
+		return true
+	}
 	// A byte range is a seek into a file input, not a live read; an active
 	// Steady transport-stream tap ignores ffmpeg reconnect Range headers so
 	// the decoder rejoins at resumeLocked instead of opening a raw upstream GET.
@@ -1014,7 +1059,11 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 		return true
 	}
 	if t.isManifest {
-		if body := t.takeManifest(); body != nil {
+		if cm := g.consumeManifest(raw); cm != nil {
+			s.serveRelayManifest(w, g, raw, cm.base, bytes.NewReader(cm.body), cm.hls)
+			return true
+		}
+		if body := t.manifestCopy(); body != nil {
 			s.serveRelayManifest(w, g, raw, t.base, bytes.NewReader(body), t.hls)
 			return true
 		}
@@ -1067,12 +1116,10 @@ func (s *Service) serveTapped(w http.ResponseWriter, r *http.Request, g *inputGr
 	}
 }
 
-func (t *upstreamTap) takeManifest() []byte {
+func (t *upstreamTap) manifestCopy() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	b := t.manifest
-	t.manifest = nil
-	return b
+	return bytes.Clone(t.manifest)
 }
 
 // openContext is the tap's own context with the opening reader's deadline:
@@ -1154,6 +1201,13 @@ func (s *Service) openTap(t *upstreamTap, g *inputGrant, raw string, hdr http.He
 			t.openErr = errRelayUnsupported
 		} else {
 			t.manifest = b
+			g.setManifest(&cachedManifest{
+				raw:      raw,
+				body:     bytes.Clone(b),
+				base:     t.base,
+				hls:      t.hls,
+				isMaster: t.hls && isMasterPlaylist(b),
+			})
 		}
 		t.header = nil
 		close(t.ready)
@@ -2181,6 +2235,13 @@ func (s *Service) sniffInput(ctx context.Context, ss *session, n int) ([]byte, s
 	g.mu.Lock()
 	raw := g.resources["0"].url
 	g.mu.Unlock()
+	if cm := g.peekManifest(raw); cm != nil {
+		ss.setSniffedManifest(cm)
+		if cm.hls {
+			return []byte("#EXTM3U"), "application/vnd.apple.mpegurl", nil
+		}
+		return []byte("<?xml"), "application/dash+xml", nil
+	}
 	source, limit := s.tapSource(g)
 	t, created, err := r.taps.acquire(tapKey(raw+"\x00"+tapKey("", g.mediaHeaders), g.headers), source, limit, g)
 	if err != nil {
@@ -2213,7 +2274,17 @@ func (s *Service) sniffInput(ctx context.Context, ss *session, n int) ([]byte, s
 		return nil, "", providerResponseError(t.status)
 	}
 	if t.isManifest {
-		t.takeManifest()
+		if body := t.manifestCopy(); body != nil {
+			cm := &cachedManifest{
+				raw:      raw,
+				body:     body,
+				base:     t.base,
+				hls:      t.hls,
+				isMaster: t.hls && isMasterPlaylist(body),
+			}
+			g.setManifest(cm)
+			ss.setSniffedManifest(cm)
+		}
 		if t.hls {
 			return []byte("#EXTM3U"), t.ctype, nil
 		}

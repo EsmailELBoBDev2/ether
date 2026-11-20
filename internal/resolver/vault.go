@@ -58,7 +58,7 @@ func (s *Service) libraryCandidates(ctx context.Context, req core.ResolveRequest
 		return releases, nil, false
 	}
 	local := Trace{}
-	ranked, _, err := s.rankCandidates(ctx, req, search, p, releases, &local, "")
+	ranked, _, err := s.rankCandidatesLocal(ctx, req, search, p, releases, &local, "", false)
 	if err != nil || len(ranked) == 0 {
 		return releases, nil, false
 	}

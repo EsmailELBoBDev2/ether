@@ -43,7 +43,7 @@ func (s *Service) RememberedReleaseAllowed(ctx context.Context, t *core.Title, r
 		return false
 	}
 	s.prepareSeriesYears(ctx, t, req, []core.Release{rel})
-	if rejectIdentityYears(rel, t, req, s.catalogLanguage(), func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }) != "" {
+	if rejectIdentityMetadata(rel, t, req, s.catalogLanguage(), func(y int) bool { return s.seriesYearAccepted(t.ShowKey, y) }, s.metadataTitleMatches(rel, req)) != "" {
 		return false
 	}
 	if req.Type == core.TypeEpisode && (identity.shared(req) || s.hasSeriesNamesake(ctx, t, req)) {

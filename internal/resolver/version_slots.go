@@ -76,13 +76,13 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 				pinID = pin.Release.ID
 				results = withRelease(results, pin.Release)
 			}
-			ranked, _, err := s.rankCandidates(ctx, req, searchRequestFor(req.Title), profile, results, nil, pinID)
+			ranked, _, err := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), profile, results, nil, pinID, true)
 			if err == nil {
 				candidates = pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
 				auto = s.slotAuto(req, candidates)
 				if s.resolverCfg().OfferHigherVersions {
 					if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
-						if pool, _, e := s.rankCandidates(ctx, req, searchRequestFor(req.Title), relaxed, results, nil, pinID); e == nil {
+						if pool, _, e := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), relaxed, results, nil, pinID, false); e == nil {
 							candidates = acceptableVariantAudio(clearIdentityVariants(pool))
 						}
 					}

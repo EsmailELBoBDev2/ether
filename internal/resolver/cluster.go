@@ -66,6 +66,7 @@ func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 		clear(s.seaDexKeys)
 		clear(s.seaDexKeyMiss)
 		s.mu.Unlock()
+		s.clearReleaseTitlesMem()
 		s.loadPersisted(ctx)
 		return
 	}
@@ -104,6 +105,8 @@ func (s *Service) applyRemote(ctx context.Context, hints []string, all bool) {
 				delete(s.seaDexDBMiss, k)
 				s.mu.Unlock()
 			}
+		case "reltitle":
+			s.loadReleaseTitles(ctx)
 		}
 	}
 	if reps {

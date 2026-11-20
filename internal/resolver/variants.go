@@ -63,7 +63,7 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 		results = withRelease(results, pin.Release)
 	}
 	// Auto uses the same preferences and hard rules as normal resolution.
-	strict, _, err := s.rankCandidates(ctx, req, sreq, profile, results, nil, pinID)
+	strict, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, results, nil, pinID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	allowTaller := s.resolverCfg().OfferHigherVersions
 	if allowTaller {
 		if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
-			pool, _, err = s.rankCandidates(ctx, req, sreq, relaxed, results, nil, pinID)
+			pool, _, err = s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, nil, pinID, false)
 			if err != nil {
 				return nil, err
 			}

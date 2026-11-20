@@ -125,6 +125,7 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 		}
 	}
 	s.mu.Unlock()
+	s.pruneReleaseTitlesMem(now)
 	if s.db == nil {
 		return 0, nil
 	}
@@ -145,6 +146,7 @@ func (s *Service) Prune(ctx context.Context) (int64, error) {
 		{`DELETE FROM resolver_seadex_keys WHERE updated_at<?`, []any{seaDexCutoff}},
 		{`DELETE FROM resolver_failed_grabs WHERE updated_at<?`, []any{now.Add(-failedGrabRetention).Unix()}},
 		{`DELETE FROM resolver_content_links WHERE updated_at<?`, []any{now.Add(-badRetention).Unix()}},
+		{`DELETE FROM resolver_release_titles WHERE expires_at<=?`, []any{now.Unix()}},
 	} {
 		res, err := s.db.ExecContext(ctx, q.sql, q.args...)
 		if err != nil {

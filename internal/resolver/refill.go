@@ -114,7 +114,11 @@ func (s *Service) refillSearchCache(title *core.Title, unattended bool) <-chan s
 		}()
 		// Recheck the cache: a foreground search may have filled it since
 		// admission. No admin-console discovery/observation side effects.
-		_, _, err = s.searchCached(ctx, req, false)
+		var results []core.Release
+		results, _, err = s.searchCached(ctx, req, false)
+		if !unattended && err == nil && len(results) > 0 {
+			s.warmReleaseTitlesForSearch(title, req, results)
+		}
 	}()
 	return done
 }

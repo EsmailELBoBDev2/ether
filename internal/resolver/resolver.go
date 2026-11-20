@@ -96,6 +96,8 @@ type Options struct {
 	// SeriesYearConflict reports whether the catalogue holds a different
 	// show titled title that first aired in year (see series_year.go).
 	SeriesYearConflict func(ctx context.Context, show core.RatingKey, title string, year int) (bool, error)
+	// ReleaseTitleIDs independently resolves unmatched names; ambiguity returns no IDs.
+	ReleaseTitleIDs func(context.Context, core.MediaType, string) (core.IDs, error)
 	// AnimeCour maps multi-cour TMDB anime season episodes to their cour
 	// and cour-relative episode number; nil disables cour mapping.
 	AnimeCour AnimeCour
@@ -244,6 +246,8 @@ type inflight struct {
 type Service struct {
 	vault                     vault.Store
 	verifier                  vault.Verifier
+	releaseTitles             releaseTitleCache
+	releaseTitleIDs           func(context.Context, core.MediaType, string) (core.IDs, error)
 	episodeNumbering          func(context.Context, core.SearchRequest, bool) (core.ReleaseNumbering, error)
 	episodeIdentity           func(context.Context, core.RatingKey, int, int, []string) (core.EpisodeIdentity, error)
 	specialTitles             func(context.Context, int64) []string
@@ -316,20 +320,27 @@ type Service struct {
 	bgMu     sync.Mutex
 	// availPersistMu orders a queued availability write against forgetAvailability's
 	// delete, so a revoked verdict is never written back after it was cleared.
-	availPersistMu       sync.Mutex
-	bgClosed             bool
-	bookkeeping          []func(context.Context)
-	bookkeepingRunning   bool
-	bookkeepingIdle      chan struct{}
-	bgWG                 sync.WaitGroup
-	detailVariants       map[[32]byte]*detailVariantSnapshot // bgMu; lazy detail labels
-	detailVariantWorkers int                                 // bgMu
-	refills              map[string]chan struct{}            // episode search key -> completion; guarded by bgMu
-	refillRetryAfter     map[string]refillMark               // next detail discovery allowed; guarded by bgMu
-	seaDexQueue          []seaDexJob                         // guarded by bgMu
-	seaDexPending        map[string]bool                     // guarded by bgMu
-	seaDexRunning        bool                                // guarded by bgMu
-	seaDexIdle           chan struct{}                       // guarded by bgMu
+	availPersistMu           sync.Mutex
+	bgClosed                 bool
+	bookkeeping              []func(context.Context)
+	bookkeepingRunning       bool
+	bookkeepingIdle          chan struct{}
+	bgWG                     sync.WaitGroup
+	detailVariants           map[[32]byte]*detailVariantSnapshot        // bgMu; lazy detail labels
+	detailVariantWorkers     int                                        // bgMu
+	refills                  map[string]chan struct{}                   // episode search key -> completion; guarded by bgMu
+	refillRetryAfter         map[string]refillMark                      // next detail discovery allowed; guarded by bgMu
+	seaDexQueue              []seaDexJob                                // guarded by bgMu
+	seaDexPending            map[string]bool                            // guarded by bgMu
+	seaDexRunning            bool                                       // guarded by bgMu
+	seaDexIdle               chan struct{}                              // guarded by bgMu
+	releaseTitleQueue        []releaseTitleWarmJob                      // guarded by bgMu
+	releaseTitlePending      map[releaseTitleKey]bool                   // guarded by bgMu
+	releaseTitleRunning      bool                                       // guarded by bgMu
+	releaseTitleIdle         chan struct{}                              // guarded by bgMu
+	releaseTitleWarmInterval time.Duration                              // 0 = defaultReleaseTitleWarmInterval
+	releaseTitleWarmWait     func(context.Context, time.Duration) error // nil = timer wait
+	releaseTitleMaxEntries   int                                        // 0 = maxReleaseTitleEntries
 
 	flightMu sync.Mutex
 	flights  map[string]*inflight
@@ -352,7 +363,7 @@ var _ core.Resolver = (*Service)(nil)
 // (typically *newznab.Manager); health may be nil (health checks are
 // then skipped); db may be nil (state then lives in memory).
 func New(indexer core.Indexer, health core.HealthChecker, db *sql.DB, cfg config.Config, opts Options) *Service {
-	s := &Service{vault: opts.Vault, verifier: opts.Verifier, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing, probedMedia: opts.ProbedMedia,
+	s := &Service{vault: opts.Vault, verifier: opts.Verifier, releaseTitleIDs: opts.ReleaseTitleIDs, episodeNumbering: opts.EpisodeNumbering, episodeIdentity: opts.EpisodeIdentity, specialTitles: opts.SpecialTitles, seriesNamesake: opts.SeriesNamesake, seriesYearConflict: opts.SeriesYearConflict, animeCour: opts.AnimeCour, libProfiles: opts.LibraryProfiles, searchObserved: opts.SearchObserved, discovered: opts.Discovered, observed: opts.Observed, invalidated: opts.Invalidated, usenetServing: opts.UsenetServing, probedMedia: opts.ProbedMedia,
 		indexer: indexer, health: health, db: db,
 		bad: map[string]badMark{}, badContent: map[string]badMark{},
 		contentByRelease: map[string]contentLink{}, failedGrabs: map[string]failedGrabMark{},
@@ -905,7 +916,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		// race other releases or return alternates for automatic failover.
 		sreq := s.numberedRequest(ctx, s.searchRequest(ctx, t), true)
 		results := withRelease(nil, pin.Release)
-		cands, _, err := s.rankCandidates(ctx, req, sreq, profile, results, &trace, pinID)
+		cands, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, results, &trace, pinID, false)
 		if err != nil {
 			trace.Err = err.Error()
 			return nil, err
@@ -964,7 +975,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		feedWait:
 			for {
 				if ready := early.readyResultsAfter(0); len(ready) > 0 {
-					candidates, _, rankErr := s.rankCandidates(ctx, req, sreq, profile, ready, &trace, "")
+					candidates, _, rankErr := s.rankCandidatesLocal(ctx, req, sreq, profile, ready, &trace, "", false)
 					if rankErr == nil && len(candidates) > 0 && !candidates[0].fallback && !candidates[0].belowScore {
 						early.attach(candidates)
 						candidates = groupRepostCandidates(candidates)
@@ -1112,7 +1123,7 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		auto := s.slotAuto(req, cands)
 		if s.resolverCfg().OfferHigherVersions && slot.Kind != "auto" && slot.Kind != "alternative" {
 			if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
-				if ranked, _, e := s.rankCandidates(ctx, req, sreq, relaxed, results, &trace, pinID); e == nil {
+				if ranked, _, e := s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, &trace, pinID, false); e == nil {
 					pool = acceptableVariantAudio(clearIdentityVariants(ranked))
 				}
 			}
@@ -1739,11 +1750,23 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 // instead of the profile and identity rules, and is otherwise scored and
 // traced like every other result. Interactive search reads the same trace.
 func (s *Service) rankCandidates(ctx context.Context, req core.ResolveRequest, sreq core.SearchRequest, profile core.QualityProfile, results []core.Release, trace *Trace, pinID string) ([]candidate, bool, error) {
+	return s.rankCandidatesWith(ctx, req, sreq, profile, results, trace, pinID, releaseTitleLastResortAllowed(ctx, req), releaseTitleWarmAllowed(ctx, req))
+}
+
+// rankCandidatesLocal ranks without synchronous last-resort metadata waits
+// (for pre-search fast paths, incremental search arrival, detail UI and batch
+// views). When allowWarm is true, releases rejected only on title mismatch may
+// still queue async background verification.
+func (s *Service) rankCandidatesLocal(ctx context.Context, req core.ResolveRequest, sreq core.SearchRequest, profile core.QualityProfile, results []core.Release, trace *Trace, pinID string, allowWarm bool) ([]candidate, bool, error) {
+	return s.rankCandidatesWith(ctx, req, sreq, profile, results, trace, pinID, false, allowWarm && releaseTitleWarmAllowed(ctx, req))
+}
+
+func (s *Service) rankCandidatesWith(ctx context.Context, req core.ResolveRequest, sreq core.SearchRequest, profile core.QualityProfile, results []core.Release, trace *Trace, pinID string, allowSync, allowWarm bool) ([]candidate, bool, error) {
 	policy, err := s.compileRules(profile.ReleaseRules)
 	if err != nil {
 		return nil, true, err
 	}
-	env := rankEnv{policy: policy}
+	env := rankEnv{policy: policy, allowReleaseTitleSync: allowSync, allowReleaseTitleWarm: allowWarm}
 	if usesPluginRanking(profile) {
 		env.hot = s.rankingSession(ctx, req.Client)
 		if env.hot != nil {
@@ -1765,13 +1788,15 @@ func (s *Service) rankCandidates(ctx context.Context, req core.ResolveRequest, s
 // the hosted ranking session, resolver settings and audio languages. The
 // feed evidence pass prepares it once and reuses it for every release.
 type rankEnv struct {
-	policy           *releasepolicy.Policy
-	hot              RankingSession
-	seaDex           *seaDexEntry
-	exclude          map[string]bool
-	rcfg             config.Resolver
-	lang             string
-	wanted, accepted []string
+	policy                *releasepolicy.Policy
+	hot                   RankingSession
+	seaDex                *seaDexEntry
+	exclude               map[string]bool
+	rcfg                  config.Resolver
+	lang                  string
+	wanted, accepted      []string
+	allowReleaseTitleSync bool
+	allowReleaseTitleWarm bool
 }
 
 // audio fills the request's wanted and accepted audio languages.
@@ -1786,7 +1811,34 @@ func (s *Service) rankWith(ctx context.Context, env rankEnv, req core.ResolveReq
 		s.loadRejectionsFor(ctx, req.Title.Key)
 	}
 	s.prepareSeriesYears(ctx, req.Title, sreq, results)
-	return s.rankPass(ctx, env, req, sreq, profile, results, trace, pinID)
+	traceBase, traceRouting := 0, ""
+	if trace != nil {
+		traceBase = len(trace.Candidates)
+		traceRouting = trace.Routing
+	}
+	cands, clientRejected, titleRej, err := s.rankPass(ctx, env, req, sreq, profile, results, trace, pinID)
+	if err != nil {
+		return nil, clientRejected, err
+	}
+	// Last resort only: run bounded independent TMDB verification when normal
+	// ranking found nothing playable and candidates were rejected for title
+	// mismatch alone. Plays with any acceptable candidate pay zero TMDB cost.
+	if len(cands) == 0 && len(titleRej.playable) > 0 && env.allowReleaseTitleSync {
+		if s.prepareReleaseTitlesLastResort(ctx, req.Title, sreq, titleRej.playable) {
+			if trace != nil {
+				trace.Candidates = trace.Candidates[:traceBase]
+				trace.Routing = traceRouting
+			}
+			cands, clientRejected, titleRej, err = s.rankPass(ctx, env, req, sreq, profile, results, trace, pinID)
+			if err != nil {
+				return nil, clientRejected, err
+			}
+		}
+	}
+	if len(titleRej.identity) > 0 && env.allowReleaseTitleWarm {
+		s.queueReleaseTitleWarm(req.Title, sreq, titleRej.identity)
+	}
+	return cands, clientRejected, nil
 }
 
 func onlyUncachedOrDead(cands []candidate, tr *Trace) bool {
@@ -1810,7 +1862,8 @@ func onlyUncachedOrDead(cands []candidate, tr *Trace) bool {
 	return sawUncached
 }
 
-func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveRequest, sreq core.SearchRequest, profile core.QualityProfile, results []core.Release, trace *Trace, pinID string) ([]candidate, bool, error) {
+func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveRequest, sreq core.SearchRequest, profile core.QualityProfile, results []core.Release, trace *Trace, pinID string) ([]candidate, bool, releaseTitleRejections, error) {
+	var titleRej releaseTitleRejections
 	t := req.Title
 	policy, hot, exclude, rcfg, wanted, accepted := env.policy, env.hot, env.exclude, env.rcfg, env.wanted, env.accepted
 	upscales := presumedUpscales(results, isAnime(t))
@@ -1963,6 +2016,14 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 		}
 		if reason != "" {
+			if strings.HasPrefix(reason, "title mismatch") && s.releaseTitleIDs != nil && t != nil && sreq.IDs != (core.IDs{}) && (sreq.Type == core.TypeEpisode || sreq.Type == core.TypeMovie) {
+				if s.titleMismatchIdentityOnly(rel, t, sreq, env.lang) {
+					titleRej.identity = append(titleRej.identity, rel)
+					if s.titleMismatchPolicyOK(rel, t, profile, rcfg, req, preferred) {
+						titleRej.playable = append(titleRej.playable, rel)
+					}
+				}
+			}
 			if strings.HasPrefix(reason, "release preference:") || strings.HasPrefix(reason, "audio language absent:") || strings.HasPrefix(reason, "audio language unverified:") {
 				clientRejected = true
 			}
@@ -2008,7 +2069,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			continue
 		}
 		if err != nil {
-			return nil, clientRejected, err
+			return nil, clientRejected, titleRej, err
 		}
 		ct.CustomFormats = sc.matches
 		// Imported packs use -10000 (TRaSH) or -999999 (Dictionarry)
@@ -2098,7 +2159,7 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 	if capped {
 		clientRejected = true
 	}
-	return ordered, clientRejected, nil
+	return ordered, clientRejected, titleRej, nil
 }
 
 func (s *Service) orderCandidates(cands []candidate, title *core.Title, trace *Trace) []candidate {
@@ -2320,7 +2381,7 @@ func (s *Service) rejectReason(rel core.Release, t *core.Title, sreq core.Search
 		}
 	}
 	acceptYear := func(y int) bool { return t != nil && s.seriesYearAccepted(t.ShowKey, y) }
-	if reason := rejectIdentityYears(rel, t, sreq, s.catalogLanguage(), acceptYear); reason != "" {
+	if reason := rejectIdentityMetadata(rel, t, sreq, s.catalogLanguage(), acceptYear, s.metadataTitleMatches(rel, sreq)); reason != "" {
 		return reason
 	}
 	videoOff, remoteCap := s.transcodeSettings()
@@ -2336,6 +2397,11 @@ func rejectIdentity(rel core.Release, t *core.Title, sreq core.SearchRequest, ca
 // rejectIdentityYears is rejectIdentity where acceptYear may accept a series
 // year that differs from the show's (one that names no other show).
 func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool) string {
+	return rejectIdentityMetadata(rel, t, sreq, catalogLang, acceptYear, false)
+}
+
+// metadataMatch is independent metadata evidence, separate from reported IDs.
+func rejectIdentityMetadata(rel core.Release, t *core.Title, sreq core.SearchRequest, catalogLang string, acceptYear func(int) bool, metadataMatch bool) string {
 	if releaseparse.IsPlaceholderResult(rel.Name) {
 		return "indexer placeholder"
 	}
@@ -2370,7 +2436,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 			}
 		}
 	}
-	titleOK := miniseriesPart > 0 ||
+	titleOK := metadataMatch || miniseriesPart > 0 ||
 		releaseparse.TitleMatches(rel.Info, wantTitle) ||
 		(sreq.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, sreq.OriginalTitle)) ||
 		(!isEpisode && t.OriginalTitle != "" && releaseparse.TitleMatches(rel.Info, t.OriginalTitle)) ||
@@ -2410,8 +2476,8 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 			return "obfuscated, no usable info"
 		}
 		// Querying by ID does not prove that the indexer honored it.
-		// Only identifiers actually reported on this result can establish
-		// an otherwise unreadable or alternate title's identity.
+		// Independent metadata or reported identifiers are needed to
+		// establish an otherwise alternate title's identity.
 		return formatTitleMismatch(rel.Info.Title, expectedTitlesFor(t, sreq))
 	}
 	if isEpisode {
@@ -2419,7 +2485,7 @@ func rejectIdentityYears(rel core.Release, t *core.Title, sreq core.SearchReques
 		if !releaseparse.SeriesYearMatches(releaseYear, sreq.Year) && (acceptYear == nil || !acceptYear(releaseYear)) {
 			return "series year mismatch"
 		}
-		if sreq.Season != 0 && releaseYear == 0 && !idMatch && !localizedEpisodeTitle(rel.Info, t, catalogLang) && !episodeTitleMatchesRelease(rel, sreq.EpisodeTitle) && !releaseparse.EpisodeTitleEvidence(rel.Name, sreq.EpisodeTitle) {
+		if sreq.Season != 0 && releaseYear == 0 && !idMatch && !metadataMatch && !localizedEpisodeTitle(rel.Info, t, catalogLang) && !episodeTitleMatchesRelease(rel, sreq.EpisodeTitle) && !releaseparse.EpisodeTitleEvidence(rel.Name, sreq.EpisodeTitle) {
 			return "episode title mismatch"
 		}
 		if rel.Info.FullSeason {

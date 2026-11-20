@@ -398,21 +398,22 @@ func (s *Service) artworkFor(ctx context.Context, row *specRow, keys []core.Rati
 	return data, ct, stamp, nil
 }
 
+// subtitleFor is the small caps line on a generated collection poster.
+// It names the kind, never a count: the poster is shared by every viewer,
+// and each sees a different number of titles after their own access and
+// rating rules, so a baked-in count ("100 FILMS") disagreed with the count
+// their app shows.
 func subtitleFor(sp core.CollectionSpec, n int) string {
-	kind := "TITLES"
 	switch sp.MediaType {
 	case MediaMovie:
-		kind = "FILMS"
 		if n == 1 {
-			kind = "FILM"
+			return "FILM"
 		}
+		return "FILMS"
 	case MediaShow:
-		kind = "SERIES"
+		return "SERIES"
 	}
-	if n <= 0 {
-		return "COLLECTION"
-	}
-	return fmt.Sprintf("%d %s", n, kind)
+	return "COLLECTION"
 }
 
 // tmdbCollectionPoster finds the poster of the spec's TMDB collection.

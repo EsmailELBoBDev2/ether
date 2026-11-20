@@ -38,7 +38,8 @@ func TestEstimate(t *testing.T) {
 			t.Fatalf("video = %+v", v)
 		}
 		a := info.Streams[1]
-		if a.Codec != "eac3" || a.Channels != 6 || a.Language != "en" {
+		// Pre-probe placeholder audio does not claim an unverified language (#624).
+		if a.Codec != "eac3" || a.Channels != 6 || a.Language != "" {
 			t.Fatalf("audio = %+v", a)
 		}
 		if info.BitrateKbps != 8000+640 {

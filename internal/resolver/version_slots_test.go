@@ -207,3 +207,33 @@ func TestVersionSlotSourceAgreement(t *testing.T) {
 		})
 	}
 }
+
+func TestColdVersionSlotsPlaceholderHasNoPresumedAudioLanguage(t *testing.T) {
+	cfg := testCfg()
+	svc := New(&fakeIndexer{}, fakeHealth{}, nil, cfg, Options{})
+	defer svc.Close()
+	title := matrixTitle()
+	title.Language = "en"
+	slots, err := svc.VersionSlots(context.Background(), core.ResolveRequest{Title: title, Client: appleTVCaps()}, core.MaxVariants, false)
+	if err != nil || len(slots) == 0 {
+		t.Fatalf("cold VersionSlots = %d, %v", len(slots), err)
+	}
+	for i, slot := range slots {
+		if !slot.Info.Estimated {
+			t.Fatalf("slot %d not estimated: %+v", i, slot.Info)
+		}
+		var audio *core.StreamInfo
+		for j := range slot.Info.Streams {
+			if slot.Info.Streams[j].Type == "audio" {
+				audio = &slot.Info.Streams[j]
+				break
+			}
+		}
+		if audio == nil {
+			t.Fatalf("slot %d missing placeholder audio stream: %+v", i, slot.Info.Streams)
+		}
+		if audio.Language != "" {
+			t.Fatalf("slot %d cold placeholder claimed audio language %q, want empty", i, audio.Language)
+		}
+	}
+}

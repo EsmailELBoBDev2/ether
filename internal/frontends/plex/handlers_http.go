@@ -71,7 +71,11 @@ func (s *Server) handleStartHTTP(w http.ResponseWriter, r *http.Request) {
 	if ok && entry.key == p.key && entry.userID == pr.User.ID {
 		ps, ok = s.playback().Session(entry.playID)
 		if ok && ps != nil {
-			ps = sessionWithInfo(ps, entry.info)
+			if entry.info.Estimated && !ps.Info.Estimated {
+				ok = false
+			} else {
+				ps = sessionWithInfo(ps, entry.info)
+			}
 		}
 	}
 	if !ok || ps == nil || !p.sameSettings(entryExpectedStart(entry)) {

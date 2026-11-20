@@ -109,6 +109,11 @@ func (s *Server) rememberStreamRequest(r *http.Request, user *frontend.Viewer, k
 			if binding.Key != key || binding.Info.Type != kind {
 				continue
 			}
+			if kind == "audio" && binding.Estimated {
+				// Pre-probe placeholder audio IDs carry no real track identity
+				// and must not persist as a manual preference.
+				continue
+			}
 			track = &binding.Info
 		}
 		// Timeline telemetry repeats the server-selected stream. Persisting

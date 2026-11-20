@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -577,16 +578,17 @@ func (s *Service) upsertItemsWithAddedLocked(ctx context.Context, pluginID, kind
 		if it.Playable {
 			playableInt = 1
 		}
+		ratingLevel := contentRatingLevel(it.Fields)
 
 		if isPG {
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO plugin_items(
 	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
-	title, sort_title, summary, year, released, rating, playable, child_count, leaf_count,
+	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
 	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks, search_tsv
 ) VALUES(
 	?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, 0,
 	setweight(to_tsvector('simple', ?), 'A') || setweight(to_tsvector('simple', ?), 'B') || setweight(to_tsvector('simple', ?), 'C')
 ) ON CONFLICT(item_ref) DO UPDATE SET
@@ -599,6 +601,7 @@ INSERT INTO plugin_items(
 	year         = excluded.year,
 	released     = excluded.released,
 	rating       = excluded.rating,
+	rating_level = excluded.rating_level,
 	playable     = excluded.playable,
 	child_count  = excluded.child_count,
 	leaf_count   = excluded.leaf_count,
@@ -611,7 +614,7 @@ INSERT INTO plugin_items(
 	missed_walks = 0,
 	search_tsv   = excluded.search_tsv`,
 				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, parentRef, it.Level, it.Index,
-				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, playableInt, it.ChildCount, it.LeafCount,
+				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, ratingLevel, playableInt, it.ChildCount, it.LeafCount,
 				unavailableStr, hintsStr, fieldsStr, it.ETag, addedAt, nowUnix, seenAt,
 				it.Title, v.SearchFields, v.SearchPeople,
 			); err != nil {
@@ -621,11 +624,11 @@ INSERT INTO plugin_items(
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO plugin_items(
 	item_ref, seq, plugin_id, kind_key, library_id, external_id, parent_ref, level, idx,
-	title, sort_title, summary, year, released, rating, playable, child_count, leaf_count,
+	title, sort_title, summary, year, released, rating, rating_level, playable, child_count, leaf_count,
 	unavailable, hints, fields, etag, added_at, updated_at, seen_at, missed_walks
 ) VALUES(
 	?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, 0
 ) ON CONFLICT(item_ref) DO UPDATE SET
 	parent_ref   = excluded.parent_ref,
@@ -637,6 +640,7 @@ INSERT INTO plugin_items(
 	year         = excluded.year,
 	released     = excluded.released,
 	rating       = excluded.rating,
+	rating_level = excluded.rating_level,
 	playable     = excluded.playable,
 	child_count  = excluded.child_count,
 	leaf_count   = excluded.leaf_count,
@@ -648,7 +652,7 @@ INSERT INTO plugin_items(
 	seen_at      = excluded.seen_at,
 	missed_walks = 0`,
 				string(it.Ref), seq, pluginID, kindKey, int64(kind.LibraryID), it.ID, parentRef, it.Level, it.Index,
-				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, playableInt, it.ChildCount, it.LeafCount,
+				it.Title, it.SortTitle, it.Summary, it.Year, it.Released, it.Rating, ratingLevel, playableInt, it.ChildCount, it.LeafCount,
 				unavailableStr, hintsStr, fieldsStr, it.ETag, addedAt, nowUnix, seenAt,
 			); err != nil {
 				return 0, 0, err
@@ -733,6 +737,80 @@ func applyMigration3Postgres(ctx context.Context, tx *sql.Tx) error {
 }
 
 var migration4FoldBatchSize = 500
+
+// contentRatingLevel is the persisted rating_level for one item's fields:
+// the contentrating enforcement level of its contentRating / certification /
+// mpaa field, or 0 (unrated) when it carries none. Projected titles read the
+// same fields, so the stored level and the in-process check agree.
+func contentRatingLevel(fields map[string]json.RawMessage) int {
+	for _, key := range []string{"contentRating", "certification", "mpaa"} {
+		raw, ok := fields[key]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			if s = strings.TrimSpace(s); s != "" {
+				return int(contentrating.EnforceLevelOf(s))
+			}
+		}
+	}
+	return 0
+}
+
+func applyMigration9(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_items ADD COLUMN rating_level INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	const batchSize = 500
+	cursor := ""
+	for {
+		rows, err := tx.QueryContext(ctx, `
+SELECT item_ref, fields FROM plugin_items
+WHERE item_ref > ?
+ORDER BY item_ref ASC
+LIMIT ?`, cursor, batchSize)
+		if err != nil {
+			return err
+		}
+		type itemFields struct {
+			ref    string
+			fields string
+		}
+		var batch []itemFields
+		for rows.Next() {
+			var it itemFields
+			if err := rows.Scan(&it.ref, &it.fields); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, it)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, it := range batch {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal([]byte(it.fields), &fields) != nil {
+				continue
+			}
+			if lvl := contentRatingLevel(fields); lvl != 0 {
+				if _, err := tx.ExecContext(ctx, `UPDATE plugin_items SET rating_level = ? WHERE item_ref = ?`, lvl, it.ref); err != nil {
+					return err
+				}
+			}
+		}
+		cursor = batch[len(batch)-1].ref
+		if len(batch) < batchSize {
+			return nil
+		}
+	}
+}
 
 func applyMigration4(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_item_fields ADD COLUMN v_fold TEXT NOT NULL DEFAULT ''`); err != nil {

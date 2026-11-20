@@ -2232,7 +2232,7 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 		if !piv.Playable {
 			keys = nil
 			cursor := ""
-			for pageIdx := 0; pageIdx < maxPluginBrowseWalkPages; pageIdx++ {
+			for {
 				page, err := s.d.PluginLibraries.Children(ctx, k, true, cursor, 500)
 				if err != nil {
 					return err
@@ -2256,7 +2256,7 @@ func (s *Service) setPlayed(ctx context.Context, v *core.Viewer, k core.RatingKe
 						}
 					}
 				}
-				if page.NextCursor == "" || len(page.Items) == 0 {
+				if page.NextCursor == "" || len(page.Items) == 0 || page.NextCursor == cursor {
 					break
 				}
 				cursor = page.NextCursor

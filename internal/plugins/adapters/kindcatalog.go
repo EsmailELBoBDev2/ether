@@ -454,18 +454,22 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 		return experience.PluginBrowsePage{}, err
 	}
 	bq := pluginitems.BrowseQuery{
-		NoTotal:   q.NoTotal,
-		Policy:    policy,
-		LibraryID: lib.ID,
-		ViewerID:  core.CatalogViewerID(ctx),
-		Level:     level,
-		Levels:    levels,
-		AnyLevel:  anyLevel,
-		PersonID:  q.Filter.Person,
-		Sort:      mapBrowseSort(q.Sort, q.Desc),
-		Facets:    mapFilterToFacets(rec.Decl, q.Filter),
-		Cursor:    cursor,
-		Limit:     limit,
+		NoTotal:          q.NoTotal,
+		Policy:           policy,
+		LibraryID:        lib.ID,
+		ViewerID:         core.CatalogViewerID(ctx),
+		Level:            level,
+		Levels:           levels,
+		AnyLevel:         anyLevel,
+		PersonID:         q.Filter.Person,
+		Sort:             mapBrowseSort(q.Sort, q.Desc),
+		Facets:           mapFilterToFacets(rec.Decl, q.Filter),
+		ExcludeFacets:    mapExcludeGenresToFacets(rec.Decl, q.Filter.ExcludeGenres),
+		Watched:          q.Watched,
+		MaxContentRating: q.Filter.MaxContentRating,
+		ExcludeKeys:      q.Filter.ExcludeKeys,
+		Cursor:           cursor,
+		Limit:            limit,
 	}
 	if len(q.Filter.TabRules) > 0 || q.Filter.TabFallback != "" {
 		tp, tpErr := c.items.CompilePolicy(ctx, lib.ID, q.Filter.TabRules, q.Filter.TabFallback)
@@ -1368,6 +1372,29 @@ func resolveFacetFields(decl plugins.MediaKindMeta, facet string) []string {
 		}
 	}
 	return nil
+}
+
+// mapExcludeGenresToFacets turns viewer-blocked genres into ExcludeFacets
+// over the declared genre-bearing fields (the fields Project reads into
+// Title.Genres), so the store drops them in SQL before counting or paging.
+func mapExcludeGenresToFacets(decl plugins.MediaKindMeta, genres []string) map[string][]string {
+	if len(genres) == 0 {
+		return nil
+	}
+	declared := make(map[string]bool, len(decl.Fields))
+	for _, fd := range decl.Fields {
+		declared[fd.Key] = true
+	}
+	out := make(map[string][]string)
+	for _, key := range []string{"genre", "genres", "tags", "tag"} {
+		if declared[key] {
+			out[key] = append([]string(nil), genres...)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func mapFilterToFacets(decl plugins.MediaKindMeta, f core.Filter) map[string][]string {

@@ -25,6 +25,12 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	// Migration 9: persist each item's content-rating enforcement level
+	// (contentrating.Level, 0 = unrated) so a viewer's MaxContentRating is
+	// applied in SQL by Browse instead of by walking the library in memory.
+	store.Register("pluginitems", 9, `ALTER TABLE plugin_items ADD COLUMN rating_level INTEGER NOT NULL DEFAULT 0;`)
+	store.RegisterApply("pluginitems", 9, applyMigration9)
+
 	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
 	// their queries read so text-heavy libraries do not store and maintain
 	// (field, 0, item_ref) entries for every text value. Both SQLite and

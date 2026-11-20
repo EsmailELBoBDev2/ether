@@ -38,13 +38,13 @@ func (s *Service) browseLastViewed(
 				`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
 				int64(q.LibraryID), k.Decl.Levels[0].Key).Scan(&total)
 		} else if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items i WHERE `+baseWhere+` LIMIT 25001)`,
+			`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere,
 			baseArgs...).Scan(&total); err != nil {
 			return BrowsePage{}, err
 		}
 	} else {
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM (SELECT 1 FROM plugin_items i WHERE `+baseWhere+` LIMIT 25001)`,
+			`SELECT COUNT(*) FROM plugin_items i WHERE `+baseWhere,
 			baseArgs...).Scan(&total); err != nil {
 			return BrowsePage{}, err
 		}

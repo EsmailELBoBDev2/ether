@@ -15,6 +15,10 @@ export const VELA_SETTINGS_SCHEMA = {
       ],
     },
     {
+      key: "liveTV",
+      fields: [{ key: "livePreview", kind: "string", options: ["auto", "on-click", "off"] }],
+    },
+    {
       key: "find",
       fields: [{ key: "serverName", kind: "serverName" }],
     },

@@ -607,4 +607,99 @@ describe("Apps connection hub", () => {
     );
     vi.restoreAllMocks();
   });
+
+  it("renders and saves the Vela Live TV channel preview mode with plain-word labels", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ documents: [] }), { status: 200 }),
+    );
+    let savedSettings: Record<string, unknown> | undefined;
+    let currentSettings: Record<string, unknown> = { defaultSkinId: "cinematic" };
+    apiFetch.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/config") return defaultConfig();
+      if (path === "/frontends" && !options?.method) {
+        return [
+          row("vela", "Vela", true, {
+            status: {
+              webPlayerReady: true,
+              addresses: ["http://192.168.68.65:32550/vela"],
+              connectUrls: ["http://192.168.68.65:32550/vela"],
+              lan: "reachable",
+              wan: "unknown",
+              clients24h: 0,
+              clients24hKnown: true,
+              liveStreams: 0,
+              liveStreamsKnown: true,
+              targetVersion: "1",
+              conformance: "passing",
+            },
+          }),
+        ];
+      }
+      if (path === "/frontends/vela/settings" && options?.method === "PUT") {
+        savedSettings = JSON.parse(String(options.body)) as Record<string, unknown>;
+        currentSettings = { ...savedSettings };
+        return { ok: true };
+      }
+      if (path === "/frontends/vela/settings") {
+        return currentSettings;
+      }
+      if (path === "/vela/skins") {
+        return { skins: [] };
+      }
+      if (path === "/vela/install") {
+        return {
+          installed: true,
+          version: "0.2.0",
+          channel: "https://example.invalid/channel.json",
+          canRollback: false,
+          state: "idle",
+        };
+      }
+      if (path === "/web-player") {
+        return {
+          available: true,
+          players: [{ id: "vela", url: "http://192.168.68.65:32550/vela/" }],
+        };
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    renderApps("/apps/vela");
+    expect(await screen.findByRole("heading", { name: "Live TV" })).toBeInTheDocument();
+    const trigger = screen.getByRole("button", { name: "Channel preview" });
+    expect(trigger).toHaveTextContent("Play the channel when Live TV opens");
+
+    fireEvent.click(trigger);
+    expect(
+      await screen.findByRole("option", { name: "Play the channel when Live TV opens" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "Only when you choose Preview" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "Never preview; Watch live still works" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("option", { name: "Only when you choose Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(savedSettings).toEqual({
+        defaultSkinId: "cinematic",
+        livePreview: "on-click",
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Channel preview" }));
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Never preview; Watch live still works" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(savedSettings).toEqual({
+        defaultSkinId: "cinematic",
+        livePreview: "off",
+      }),
+    );
+    vi.restoreAllMocks();
+  });
 });

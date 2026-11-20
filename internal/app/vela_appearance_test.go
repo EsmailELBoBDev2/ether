@@ -266,3 +266,113 @@ func TestVelaSkinsAdminAndSSRF(t *testing.T) {
 		t.Fatalf("lan=true local URL=%d: %s", allowedLAN.Code, allowedLAN.Body.String())
 	}
 }
+
+func TestVelaLivePreviewAdminPersistenceAndPolicyBump(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := store.OpenTest(t)
+	a := &App{
+		opts: Options{DataDir: dir, Version: "0.3.17-test"},
+		cfg:  cfg,
+		db:   db,
+	}
+	cfg.SetPolicyEpoch(a.publishPolicyConfig)
+
+	registry := frontend.NewRegistry(func(frontend.Protocol) frontend.Host { return frontend.Host{} })
+	if err := registry.Register(vela.Frontend{DB: db, Skins: a.velaSkinsStore()}); err != nil {
+		t.Fatal(err)
+	}
+	control := newFrontendControl(registry, cfg)
+	control.db = db
+	h := admin.NewHandler(admin.Deps{
+		Config:    cfg,
+		Frontends: control,
+		IsOwnerToken: func(_ context.Context, tok string) bool {
+			return tok == "owner-token"
+		},
+	})
+
+	readPolicyEpoch := func() int64 {
+		t.Helper()
+		var gen int64
+		if err := db.QueryRow(`SELECT generation FROM viewer_policy_epoch WHERE id=1`).Scan(&gen); err != nil {
+			t.Fatal(err)
+		}
+		return gen
+	}
+	putSettings := func(payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/frontends/vela/settings", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Ether-Request", "1")
+		req.Header.Set("X-Plex-Token", "owner-token")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	epoch0 := readPolicyEpoch()
+
+	// Invalid mode is rejected with 400 and does not bump policy epoch.
+	if bad := putSettings(`{"livePreview":"invalid"}`); bad.Code != http.StatusBadRequest {
+		t.Fatalf("PUT invalid livePreview = %d: %s", bad.Code, bad.Body.String())
+	}
+	if readPolicyEpoch() != epoch0 {
+		t.Fatalf("invalid livePreview bumped policy epoch")
+	}
+
+	// Saving on-click persists across restart, bumps viewer_policy_epoch, and does not bump AppearanceRevision.
+	if ok := putSettings(`{"defaultSkinId":"cinematic","livePreview":"on-click"}`); ok.Code != http.StatusOK {
+		t.Fatalf("PUT on-click = %d: %s", ok.Code, ok.Body.String())
+	}
+	epoch1 := readPolicyEpoch()
+	if epoch1 != epoch0+1 {
+		t.Fatalf("policy epoch after on-click = %d, want %d", epoch1, epoch0+1)
+	}
+	if got := cfg.Read().Frontends["vela"]; got.AppearanceRevision != 0 || got.Settings["livePreview"] != "on-click" {
+		t.Fatalf("after on-click save: %#v", got)
+	}
+
+	// Reopening config from disk preserves livePreview.
+	reopened, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Read().Frontends["vela"].Settings["livePreview"] != "on-click" {
+		t.Fatalf("reopened config lost livePreview: %#v", reopened.Read().Frontends["vela"])
+	}
+
+	// GET /api/frontends/vela/settings returns the persisted livePreview value.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/frontends/vela/settings", nil)
+	getReq.Header.Set("X-Plex-Token", "owner-token")
+	getRec := httptest.NewRecorder()
+	h.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET settings = %d: %s", getRec.Code, getRec.Body.String())
+	}
+	var gotSettings map[string]any
+	if err := json.Unmarshal(getRec.Body.Bytes(), &gotSettings); err != nil {
+		t.Fatal(err)
+	}
+	if gotSettings["livePreview"] != "on-click" {
+		t.Fatalf("GET /api/frontends/vela/settings = %#v, want livePreview=on-click", gotSettings)
+	}
+
+	// Switching to off bumps viewer_policy_epoch again; repeating off does not.
+	if ok := putSettings(`{"defaultSkinId":"cinematic","livePreview":"off"}`); ok.Code != http.StatusOK {
+		t.Fatalf("PUT off = %d: %s", ok.Code, ok.Body.String())
+	}
+	epoch2 := readPolicyEpoch()
+	if epoch2 != epoch1+1 {
+		t.Fatalf("policy epoch after off = %d, want %d", epoch2, epoch1+1)
+	}
+	if ok := putSettings(`{"defaultSkinId":"cinematic","livePreview":"off"}`); ok.Code != http.StatusOK {
+		t.Fatalf("PUT repeat off = %d: %s", ok.Code, ok.Body.String())
+	}
+	if readPolicyEpoch() != epoch2 {
+		t.Fatalf("repeat off save unexpectedly bumped policy epoch")
+	}
+}

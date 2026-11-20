@@ -1,9 +1,11 @@
 package webclient
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
@@ -14,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/braedonsaunders/ether/internal/veladist"
 )
 
 var htmlTitlePattern = regexp.MustCompile(`(?is)<title>.*?</title>`)
@@ -60,6 +64,7 @@ func ServeVelaBrand(w http.ResponseWriter, r *http.Request, dir, appName string)
 		return
 	}
 	if r.URL.Path == "/vela/" {
+		w.Header().Set("Cache-Control", veladist.CacheControlRevalidate)
 		target := url.URL{Path: "/vela", RawQuery: r.URL.RawQuery, Fragment: r.URL.Fragment, RawFragment: r.URL.RawFragment}
 		// Browsers retain an incoming fragment across a redirect whose Location
 		// omits one; ordinary HTTP requests never transmit that fragment.
@@ -70,9 +75,9 @@ func ServeVelaBrand(w http.ResponseWriter, r *http.Request, dir, appName string)
 		http.Error(w, "Vela client is not installed", 503)
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/vela/")
+	rel := strings.TrimPrefix(r.URL.Path, "/vela/")
 	if r.URL.Path == "/vela" {
-		path = ""
+		rel = ""
 	}
 	f, e := os.OpenRoot(dir)
 	if e != nil {
@@ -80,17 +85,27 @@ func ServeVelaBrand(w http.ResponseWriter, r *http.Request, dir, appName string)
 		return
 	}
 	defer f.Close()
-	s, e := f.Stat(path)
-	if path == "sw.js" {
+	if rel == "" || rel == "index.html" {
+		if info, err := f.Stat("index.html"); err == nil && info.Mode().IsRegular() {
+			serveBrandedVelaDoc(w, r, f, dir, "index.html", info, appName)
+			return
+		}
+		http.Error(w, "Vela client is unavailable", 503)
+		return
+	}
+	s, e := f.Stat(rel)
+	if rel == "sw.js" {
 		// The worker's directory is /vela/, but the canonical home and worker
 		// scope are /vela. Never serve the SPA as a missing worker script.
 		if e != nil || !s.Mode().IsRegular() {
+			w.Header().Set("Cache-Control", veladist.CacheControlRevalidate)
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Service-Worker-Allowed", "/vela")
+		serveStaticVelaFile(w, r, f, rel, s)
+		return
 	}
 	// Native installer pages are ordinary nested index documents. FileServer
 	// redirects their explicit index.html URL to a directory; a SPA fallback
@@ -98,42 +113,85 @@ func ServeVelaBrand(w http.ResponseWriter, r *http.Request, dir, appName string)
 	// documents, without changing the canonical /vela home redirect.
 	indexPath := ""
 	if e == nil && s.IsDir() {
-		indexPath = strings.TrimSuffix(path, "/") + "/index.html"
-	} else if e == nil && strings.HasSuffix(path, "/index.html") {
-		indexPath = path
+		indexPath = strings.TrimSuffix(rel, "/") + "/index.html"
+	} else if e == nil && strings.HasSuffix(rel, "/index.html") {
+		indexPath = rel
 	}
 	if indexPath != "" {
 		if info, err := f.Stat(indexPath); err == nil && info.Mode().IsRegular() {
-			file, err := f.Open(indexPath)
-			if err != nil {
-				http.Error(w, "Vela client is unavailable", 503)
-				return
-			}
-			defer file.Close()
-			http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+			serveStaticVelaFile(w, r, f, indexPath, info)
 			return
 		}
 	}
-	if (path == "manifest.webmanifest" || path == "manifest.json") && e == nil && s.Mode().IsRegular() {
-		serveBrandedVelaDoc(w, r, f, dir, path, s, appName)
+	if (rel == "manifest.webmanifest" || rel == "manifest.json") && e == nil && s.Mode().IsRegular() {
+		serveBrandedVelaDoc(w, r, f, dir, rel, s, appName)
 		return
 	}
-	if e != nil || s.IsDir() {
-		if info, err := f.Stat("index.html"); err == nil && info.Mode().IsRegular() {
-			serveBrandedVelaDoc(w, r, f, dir, "index.html", info, appName)
+	if e == nil && s.Mode().IsRegular() {
+		serveStaticVelaFile(w, r, f, rel, s)
+		return
+	}
+	if info, err := f.Stat("index.html"); err == nil && info.Mode().IsRegular() {
+		serveBrandedVelaDoc(w, r, f, dir, "index.html", info, appName)
+		return
+	}
+	http.Error(w, "Vela client is unavailable", 503)
+}
+
+const maxVelaContentETagBytes = 2 << 20
+
+func serveStaticVelaFile(w http.ResponseWriter, r *http.Request, root *os.Root, rel string, info os.FileInfo) {
+	file, err := root.Open(rel)
+	if err != nil {
+		http.Error(w, "Vela client is unavailable", 503)
+		return
+	}
+	defer file.Close()
+
+	cc := veladist.StaticCacheControl(rel)
+	w.Header().Set("Cache-Control", cc)
+	if w.Header().Get("Content-Type") == "" {
+		if ct := velaStaticContentType(rel); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+	}
+
+	var content io.ReadSeeker = file
+	if cc == veladist.CacheControlRevalidate && info.Size() <= maxVelaContentETagBytes {
+		raw, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Vela client is unavailable", 503)
 			return
 		}
-		r = r.Clone(r.Context())
-		u := *r.URL
-		u.Path = "/"
-		r.URL = &u
+		sum := sha256.Sum256(raw)
+		w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:16])+`"`)
+		content = bytes.NewReader(raw)
 	} else {
-		r = r.Clone(r.Context())
-		u := *r.URL
-		u.Path = "/" + path
-		r.URL = &u
+		w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano()))
 	}
-	http.FileServer(http.FS(f.FS())).ServeHTTP(w, r)
+	http.ServeContent(w, r, info.Name(), info.ModTime(), content)
+}
+
+func velaStaticContentType(rel string) string {
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".webmanifest":
+		return "application/manifest+json; charset=utf-8"
+	case ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".wasm":
+		return "application/wasm"
+	case ".woff2":
+		return "font/woff2"
+	case ".woff":
+		return "font/woff"
+	case ".svg":
+		return "image/svg+xml"
+	case ".webp":
+		return "image/webp"
+	case ".ico":
+		return "image/x-icon"
+	}
+	return ""
 }
 
 func serveBrandedVelaDoc(w http.ResponseWriter, r *http.Request, root *os.Root, dir, file string, info os.FileInfo, appName string) {
@@ -188,8 +246,11 @@ func serveBrandedVelaDoc(w http.ResponseWriter, r *http.Request, root *os.Root, 
 	}
 
 	w.Header().Set("Content-Type", doc.contentType)
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", veladist.CacheControlRevalidate)
 	w.Header().Set("ETag", doc.etag)
+	if !info.ModTime().IsZero() {
+		w.Header().Set("Last-Modified", info.ModTime().UTC().Format(http.TimeFormat))
+	}
 	for _, candidate := range strings.Split(r.Header.Get("If-None-Match"), ",") {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == doc.etag {

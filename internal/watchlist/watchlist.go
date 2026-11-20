@@ -311,14 +311,36 @@ func (s *Service) MigrateSecrets(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// FeatureSettings is Settings without the friend/feed status reads: the
+// stored switches alone, memoized per request by settings. Per-item
+// feature gates (recaps, natural search, language features) read this so
+// rendering a page never re-reads the community status rows per item.
+func (s *Service) FeatureSettings(ctx context.Context) (Settings, error) {
+	return s.settings(ctx)
+}
+
 func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	v, err := s.settings(ctx)
 	if err != nil {
 		return v, err
 	}
-	v.PlexFriendsStatus = s.friendStatuses(ctx)
-	v.PlexFriendsRSSStatus = s.feedStatus(ctx, v.PlexFriendsRSSURL, metaKeyFriendsRSS)
-	v.PlexOwnerRSSStatus = s.feedStatus(ctx, v.PlexOwnerRSSURL, metaKeyOwnerRSS)
+	// Status rows change only on a sync, never within one read request:
+	// read them once per request however many items ask.
+	type statuses struct {
+		friends []FriendFeedStatus
+		feed    *RSSFeedStatus
+		owner   *RSSFeedStatus
+	}
+	st, _ := reqmemo.Do(ctx, s.memoKey()+":status", func() (statuses, error) {
+		return statuses{
+			friends: s.friendStatuses(ctx),
+			feed:    s.feedStatus(ctx, v.PlexFriendsRSSURL, metaKeyFriendsRSS),
+			owner:   s.feedStatus(ctx, v.PlexOwnerRSSURL, metaKeyOwnerRSS),
+		}, nil
+	})
+	v.PlexFriendsStatus = st.friends
+	v.PlexFriendsRSSStatus = st.feed
+	v.PlexOwnerRSSStatus = st.owner
 	if v.PlexFriendsRSSURL != "" {
 		v.PlexFriendsRSSURL = Redacted
 	}

@@ -13,7 +13,7 @@ import (
 // availability in SQL; only the returned page needs host authorization.
 func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, library *Library, q frontend.ItemQuery) (core.Page, bool, error) {
 	if library == nil || library.Type != core.TypeShow || !q.Recursive || q.Limit <= 0 || q.Season != nil || q.StartAt != 0 || q.AdjacentTo != 0 ||
-		!plainItemFilter(q.Filter) || s.d.Browse == nil || s.d.PageExclusions == nil || s.d.ParentTitles == nil || !s.d.StoredEpisodes.complete() || (q.Favorite != nil && *q.Favorite) {
+		!plainRecursiveFilter(q.Filter, library.Type) || s.d.Browse == nil || s.d.PageExclusions == nil || s.d.ParentTitles == nil || !s.d.StoredEpisodes.complete() || (q.Favorite != nil && *q.Favorite) {
 		return core.Page{}, false, nil
 	}
 	// Custom episode groups have synthetic children not in the stored index.
@@ -79,6 +79,10 @@ func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, librar
 		kept := page.Items
 		check := q
 		check.Types = []core.MediaType{typ}
+		// The request filter may carry the library's own type stamp
+		// (libraryBrowseFilter); the child type travels in Types, and a
+		// show-stamped filter would fail every episode's match check.
+		check.Filter.Type = ""
 		if typ == core.TypeEpisode || typ == core.TypeSeason {
 			kept, err = s.visibleEpisodes(ctx, v, page.Items, check, ex.AvailabilityInSQL)
 			if err != nil {

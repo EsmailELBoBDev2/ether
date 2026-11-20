@@ -915,6 +915,17 @@ func plainItemFilter(f core.Filter) bool {
 	return f.Group == nil && !f.KnownAddedDate && len(f.ExcludeKeys) == 0 && f.Type == "" && len(f.Genres) == 0 && f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 && len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRuntime == 0 && f.MinRuntime == 0 && len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ContentRatings) == 0 && f.MaxContentRating == "" && f.Collection == 0 && f.Person == 0 && f.Studio == "" && f.FirstCharacter == "" && f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" && f.Query == ""
 }
 
+// plainRecursiveFilter is plainItemFilter for a recursive library listing:
+// libraryBrowseFilter stamps a custom library's own type on the request
+// filter, and the indexed page overwrites Type per child type it reads, so
+// that stamp alone must not send the listing into the whole-library walk.
+func plainRecursiveFilter(f core.Filter, libraryType core.MediaType) bool {
+	if f.Type == libraryType {
+		f.Type = ""
+	}
+	return plainItemFilter(f)
+}
+
 func (s *Service) Rows(ctx context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
 	tv, err := s.viewer(ctx, req.Viewer)
 	if err != nil {

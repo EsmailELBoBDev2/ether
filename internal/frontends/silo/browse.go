@@ -271,6 +271,7 @@ func (i *instance) views(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, 200, map[string]any{"items": items})
 }
+
 // pluginLibraryRows serves a plugin library's own rows (as Vela's library
 // page does). The shared library placement does not know plugin views, so
 // without this a plugin library's tab answered 503 and the app showed it as

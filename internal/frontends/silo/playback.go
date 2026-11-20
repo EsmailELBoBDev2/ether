@@ -1146,7 +1146,10 @@ func (i *instance) playbackRoutes() error {
 	}
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		if err := i.router.Handle(method, "/api/v2/playback/transcode/{session}/{path...}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			i.serveSessionMedia(w, r, r.PathValue("session"), r.PathValue("path"))
+			session := r.PathValue("session")
+			serveSiloHLS(w, r, r.PathValue("path"), func(w http.ResponseWriter, r *http.Request, resource string) {
+				i.serveSessionMedia(w, r, session, resource)
+			})
 		})); err != nil {
 			return err
 		}

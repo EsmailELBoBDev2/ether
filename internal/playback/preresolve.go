@@ -489,6 +489,27 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 			lastRel            core.Release
 			lastErr            error
 		)
+		rt := newRuntimeTracker(func(g *generation, res *core.Resolution) bool {
+			info := g.infoSnapshot()
+			if m.knownHardSubbed(ctx, g) && m.hardSubtitleBlocked(ctx, res.Release) {
+				return false
+			}
+			if probedRequiredAudioRejection(profile, title, res.Release, info, false) != "" {
+				return false
+			}
+			if caps.BroadcastBitrateKbps > 0 {
+				file := res.Release
+				file.Size, file.Info.FullSeason = info.Size, false
+				if video := info.Video(); video != nil && video.Height > file.Info.Height {
+					file.Info.Height = video.Height
+				}
+				if !m.channelSourceAllowed(session, file) {
+					return false
+				}
+			}
+			return true
+		})
+		defer rt.close(m)
 		defer func() {
 			if fallbackGen != nil {
 				m.dropGeneration(fallbackGen)
@@ -582,7 +603,11 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 				continue
 			}
 			m.noteWarmCause(res, src, reason, cacheTitle(*title))
-			generation, err := m.probeGeneration(ctx, session, res, src, finish, fallbackInfo, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
+			probeCtx := withDeferredGenerationFills(ctx)
+			if !cachedMetadata && !detailOnly {
+				probeCtx = withRuntimeTracker(probeCtx, rt)
+			}
+			generation, err := m.probeGeneration(probeCtx, session, res, src, finish, fallbackInfo, m.persistedProbe(ctx, u.ID, key, res.Release.ID, res.NZB))
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -677,12 +702,30 @@ func (m *Manager) prewarm(requestCtx context.Context, user *core.User, key core.
 			chosenGen, chosenRes = fallbackGen, fallbackRes
 			fallbackGen = nil
 		}
+		if chosenGen == nil && !cachedMetadata && !detailOnly && ctx.Err() == nil {
+			if g, fRes, med, disagree, ok := rt.takeFallback(); ok {
+				m.recordConsensusRuntime(m.ctx, title, med)
+				for _, r := range disagree {
+					if err := m.RejectRelease(m.ctx, title.Key, r); err != nil {
+						m.log.Debug("persist runtime rejection failed", "key", title.Key, "release", r.ID, "err", err)
+					}
+					m.rememberOpenFailure(session, r, core.ErrReleaseRejected)
+				}
+				m.log.Info("probed runtime consensus overrides catalogue runtime",
+					"key", key, "release", fRes.Release.Name, "consensus", med, "catalogue", title.Runtime, "fallback", true)
+				chosenGen, chosenRes = g, fRes
+			}
+		}
+		if ctx.Err() == nil {
+			rt.commitPendingRejections(m.ctx, m, session)
+		}
 		if chosenGen == nil {
 			if reason == core.PrewarmNextEpisode && lastRel.ID != "" && lastErr != nil {
 				_ = m.ReplaceWarmSource(ctx, &u, key, caps, lastRel, opts.StartOffset, title.Runtime, lastErr)
 			}
 			return
 		}
+		m.startGenerationFills(chosenGen)
 		generation, res := chosenGen, chosenRes
 		defer m.dropGeneration(generation)
 		facts := &probeCache{releaseID: res.Release.ID, info: generation.infoSnapshot(), warmReads: generation.warmReads, points: generation.timeMapSnapshot().Points}

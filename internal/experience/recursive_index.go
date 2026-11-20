@@ -41,10 +41,6 @@ func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, librar
 			continue
 		}
 		seen[typ] = true
-		// Series played state is derived from episodes, unlike child watch rows.
-		if typ == core.TypeShow && q.Watched != nil {
-			return core.Page{}, false, nil
-		}
 		ex := s.d.PageExclusions(ctx, v, typ)
 		if ex.Err != nil {
 			return core.Page{}, true, ex.Err

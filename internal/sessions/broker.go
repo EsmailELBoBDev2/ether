@@ -373,9 +373,9 @@ func copyRequest(r frontend.PlanRequest) frontend.PlanRequest {
 		ordinal := *r.Intent.AudioOrdinal
 		r.Intent.AudioOrdinal = &ordinal
 	}
-	if r.Intent.SubtitleStreamIndex != nil {
-		index := *r.Intent.SubtitleStreamIndex
-		r.Intent.SubtitleStreamIndex = &index
+	if r.Intent.SubtitleOrdinal != nil {
+		index := *r.Intent.SubtitleOrdinal
+		r.Intent.SubtitleOrdinal = &index
 	}
 	if r.Intent.AllowTranscoding != nil {
 		allowed := *r.Intent.AllowTranscoding
@@ -540,7 +540,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 		req.ExpectedSourceETag = record.revision
 		detail = &record
 	}
-	if req.Intent.Estimate && (req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil) {
+	if req.Intent.Estimate && (req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil) {
 		return frontend.PlayPlan{}, frontend.ErrTrackSourceUnavailable
 	}
 	if req.Intent.Estimate && req.Intent.ExactVersion {

@@ -172,7 +172,9 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 		b.candidateReady(cands[0].files)
 	}
 	var firstErr error
-	for i, c := range cands {
+	regrouped := false
+	for i := 0; i < len(cands); i++ {
+		c := cands[i]
 		b.memberISOs = nil
 		p, err := b.planFor(ctx, c)
 		if err == nil && isISOName(p.name) {
@@ -192,6 +194,17 @@ func (b *builder) build(ctx context.Context) (*plan, error) {
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if !regrouped && c.kind == nzb.KindRAR && len(c.files) == 1 && errors.Is(err, archive.ErrMissingVolume) {
+			if ok, rerr := b.regroupSingleRARs(ctx, cands); rerr != nil {
+				return nil, rerr
+			} else if ok {
+				regrouped = true
+				cands = b.candidates(b.rel.files)
+				firstErr = nil
+				i = -1
+				continue
+			}
 		}
 		// Only fall through to smaller candidates when this one simply had
 		// no video; a broken or protected main archive rejects the release.
@@ -233,7 +246,7 @@ func (b *builder) candidates(files []*postedFile) []candidate {
 	for _, s := range nzb.GroupSets(vols) {
 		if s.Kind == nzb.KindSplit && len(s.Volumes) > 0 {
 			switch nzb.Classify("x." + s.Volumes[0].Info.Ext).Kind {
-			case nzb.KindVideo, nzb.KindISO, nzb.KindUnknown, nzb.KindSplit:
+			case nzb.KindVideo, nzb.KindISO, nzb.KindUnknown, nzb.KindSplit, nzb.KindRAR:
 			default:
 				continue // e.g. a split .iso; "name.2024.001" stays (sniffed)
 			}

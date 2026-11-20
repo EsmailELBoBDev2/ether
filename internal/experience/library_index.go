@@ -340,12 +340,6 @@ func indexedBrowseQuery(library *Library, q frontend.ItemQuery) bool {
 	if library == nil || q.Season != nil || q.AdjacentTo != 0 || q.StartAt != 0 || q.Limit <= 0 {
 		return false
 	}
-	// A movie's played state is its own watch row. A series' is derived
-	// from its episodes, which the predicate cannot see. Favorites are the
-	// title's own either way.
-	if q.Watched != nil && library.Type != core.TypeMovie {
-		return false
-	}
 	// A Movie+Series ask within one library still names only its root rows.
 	mixedRoots := containsMediaType(q.Types, library.Type) && (library.Type == core.TypeMovie || library.Type == core.TypeShow)
 	for _, typ := range q.Types {

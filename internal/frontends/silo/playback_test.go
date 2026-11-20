@@ -294,7 +294,7 @@ func TestPlaybackUsesScopedBroker(t *testing.T) {
 	if w.Code != 201 || strings.Contains(w.Body.String(), "account-secret") || planned.Version != "handle" || !planned.Intent.ExactVersion || planned.Item != 1000000000000001 || streamed.Format != frontend.StreamHLS {
 		t.Fatalf("play %d %s %+v %+v", w.Code, w.Body.String(), planned, streamed)
 	}
-	if planned.Intent.AudioOrdinal != nil || planned.Intent.SubtitleStreamIndex != nil {
+	if planned.Intent.AudioOrdinal != nil || planned.Intent.SubtitleOrdinal != nil {
 		t.Fatalf("omitted tracks must preserve preferences: %+v", planned.Intent)
 	}
 	if !strings.Contains(w.Body.String(), `"hdr10_plus":true`) {
@@ -324,11 +324,11 @@ func TestPlaybackUsesScopedBroker(t *testing.T) {
 		t.Fatal("media request missing device binding", w.Body.String())
 	}
 	w = call("POST", "/api/v2/playback/start", `{"protocol_version":3,"file_id":"101","profile_id":"7","installation_id":"install","playback_attempt_id":"attempt","audio_track_index":0,"subtitle_track_index":5}`)
-	if w.Code != 201 || planned.Intent.AudioOrdinal == nil || *planned.Intent.AudioOrdinal != 0 || planned.Intent.SubtitleStreamIndex == nil || *planned.Intent.SubtitleStreamIndex != 5 || planned.Intent.AudioSet || planned.Intent.SubtitleSet {
+	if w.Code != 201 || planned.Intent.AudioOrdinal == nil || *planned.Intent.AudioOrdinal != 0 || planned.Intent.SubtitleOrdinal == nil || *planned.Intent.SubtitleOrdinal != 5 || planned.Intent.AudioSet || planned.Intent.SubtitleSet {
 		t.Fatalf("source-bound track selection: %d %+v", w.Code, planned.Intent)
 	}
 	w = call("POST", "/api/v2/playback/start", `{"protocol_version":3,"file_id":"101","profile_id":"7","installation_id":"install","playback_attempt_id":"attempt","subtitle_track_index":-1}`)
-	if w.Code != 201 || planned.Intent.AudioOrdinal != nil || planned.Intent.SubtitleStreamIndex == nil || *planned.Intent.SubtitleStreamIndex != -1 {
+	if w.Code != 201 || planned.Intent.AudioOrdinal != nil || planned.Intent.SubtitleOrdinal == nil || *planned.Intent.SubtitleOrdinal != -1 {
 		t.Fatalf("subtitle off: %d %+v", w.Code, planned.Intent)
 	}
 	for _, tc := range []struct {
@@ -1026,6 +1026,14 @@ func TestPlaybackASSSidecarAndFontBundle(t *testing.T) {
 	if compatRes.Code != http.StatusCreated || strings.Contains(compatRes.Body.String(), `"ass_styling_preserved":true`) {
 		t.Fatalf("expected ass_styling_preserved=false when authored ASS unavailable, got %d %s", compatRes.Code, compatRes.Body.String())
 	}
+	// The app sends "preserve" on every start. A plain-text track chosen by the
+	// viewer's rules converts to WebVTT without loss and must never refuse the
+	// start ("Selected track unavailable" stopped every Silo start, W182).
+	mediaInfo.Streams[2].Codec = "subrip"
+	if textRes := call("POST", "/api/v2/playback/start", preserveBody, "account-secret", "tv"); textRes.Code != http.StatusCreated || !strings.Contains(textRes.Body.String(), `"mode":"convert"`) || !strings.Contains(textRes.Body.String(), `"subtitle_fidelity_policy":"require_authored_fidelity"`) {
+		t.Fatalf("preserve with a text subtitle: %d %s", textRes.Code, textRes.Body.String())
+	}
+	mediaInfo.Streams[2].Codec = "ass"
 	authoredAvailable = true
 
 	// Unauthorized device or token must be rejected on both .ass and /fonts.

@@ -63,7 +63,7 @@ func TestIndexerEmitsAllEvents(t *testing.T) {
 
 	// 1. Trigger 3 consecutive 503 failures -> indexer.request.failed & indexer.service.outage.
 	for i := range breakerThreshold {
-		_, err := cl.Search(ctx, core.SearchRequest{Query: "matrix " + string(rune('a'+i))})
+		_, err := cl.Search(ctx, core.SearchRequest{Type: core.TypeMovie, Title: "matrix " + string(rune('a'+i))})
 		if err == nil {
 			t.Fatalf("expected failure on attempt %d", i+1)
 		}
@@ -87,7 +87,7 @@ func TestIndexerEmitsAllEvents(t *testing.T) {
 	// 2. Advance clock past breaker pause and succeed on probe -> indexer.service.recovered.
 	clock.Store(now.Add(breakerBasePause + time.Minute).UnixNano())
 	status.Store(http.StatusOK)
-	if _, err := cl.Search(ctx, core.SearchRequest{Query: "probe"}); err != nil {
+	if _, err := cl.Search(ctx, core.SearchRequest{Type: core.TypeMovie, Title: "probe"}); err != nil {
 		t.Fatalf("probe search failed: %v", err)
 	}
 	evRecovered := rec.WaitFor(t, events.EventIndexerServiceRecovered, time.Second)
@@ -140,7 +140,7 @@ func TestIndexerEmitsAllEvents(t *testing.T) {
 	clock.Store(now.Add(25 * time.Hour).UnixNano())
 	status.Store(http.StatusTooManyRequests)
 	retryAfter.Store("60")
-	_, _ = cl.Search(ctx, core.SearchRequest{Query: "rate-limited"})
+	_, _ = cl.Search(ctx, core.SearchRequest{Type: core.TypeMovie, Title: "rate-limited"})
 	evRL := rec.WaitFor(t, events.EventIndexerRateLimited, time.Second)
 	if err := reg.ValidatePayload(evRL.Type, evRL.Payload); err != nil {
 		t.Fatalf("rate limited payload invalid: %v", err)

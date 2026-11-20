@@ -42,6 +42,10 @@ func Forbidden(message string) *Fault { return &Fault{Code: string(StatusForbidd
 // WASM instance in the pool. Pool contention is not a plugin crash.
 var ErrPoolBusy = errors.New("timed out waiting for a plugin instance")
 
+// ErrClosed is wrapped by an *Error when a call cannot run because the plugin
+// runtime was closed.
+var ErrClosed = errors.New("plugin is closed")
+
 // Error is the error type returned by Plugin calls. It carries the Outcome so
 // WS7's health loop can read the status, trap flag and cost from one value.
 type Error struct {
@@ -582,7 +586,7 @@ func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool
 
 func (p *pool) get(ctx context.Context) (instance, error) {
 	if p.done.Load() {
-		return nil, &Error{Status: StatusError, Message: "plugin is closed"}
+		return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
 	select {
 	case in := <-p.idle:
@@ -596,7 +600,7 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 		case in := <-p.idle:
 			return in, nil
 		case <-p.doneCh:
-			return nil, &Error{Status: StatusError, Message: "plugin is closed"}
+			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-ctx.Done():
 			return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 		}
@@ -605,14 +609,23 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 	case in := <-p.idle:
 		return in, nil
 	case p.slots <- struct{}{}:
+		if p.done.Load() {
+			<-p.slots
+			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
 		in, err := p.makeFn(ctx)
 		if err != nil {
 			<-p.slots
 			return nil, err
 		}
+		if p.done.Load() {
+			in.closeInstance()
+			<-p.slots
+			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
 		return in, nil
 	case <-p.doneCh:
-		return nil, &Error{Status: StatusError, Message: "plugin is closed"}
+		return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	case <-ctx.Done():
 		return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
@@ -811,7 +824,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	}()
 	if p.closed.Load() {
 		out.Status = StatusError
-		return Response{}, out, &Error{Status: StatusError, Message: "plugin is closed"}
+		return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
 	if !p.caps.Handle {
 		out.Status = StatusError
@@ -834,7 +847,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 			defer func() { <-p.jobSlots }()
 		case <-p.closeCh:
 			out.Status = StatusError
-			return Response{}, out, &Error{Status: StatusError, Message: "plugin is closed"}
+			return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-callCtx.Done():
 			out.Status = StatusTimeout
 			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
@@ -858,7 +871,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	respJSON, callErr := in.handle(callCtx, cs, reqJSON)
 	out.Units = cs.finishUnits()
 	healthy := callErr == nil || !callErr.Trap
-	if callErr != nil && callErr.Status == StatusTimeout {
+	if (callErr != nil && callErr.Status == StatusTimeout) || callCtx.Err() != nil {
 		healthy = false
 	}
 	p.svc.put(in, healthy)

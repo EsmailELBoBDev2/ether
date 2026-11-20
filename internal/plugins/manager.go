@@ -455,16 +455,21 @@ func (m *Manager) ResolveText(ctx context.Context, plugin, key, locale string) (
 // --- runtime plumbing ---
 
 func (m *Manager) runtimeFor(ctx context.Context, r Record) (Runtime, error) {
+	rt, _, err := m.runtimeForWithEpoch(ctx, r)
+	return rt, err
+}
+
+func (m *Manager) runtimeForWithEpoch(ctx context.Context, r Record) (Runtime, uint64, error) {
 	m.mu.Lock()
 	rt, ok := m.runtimes[r.ID]
 	epoch := m.runtimeEpoch[r.ID]
 	f, hasFactory := m.fatories[r.Manifest.RuntimeKind()]
 	m.mu.Unlock()
 	if ok {
-		return rt, nil
+		return rt, epoch, nil
 	}
 	if !hasFactory {
-		return nil, ErrNoRuntime
+		return nil, 0, ErrNoRuntime
 	}
 	inst := Installed{
 		RuntimeLimits: m.grantedRuntimeLimits(r.Manifest), Busy: m.deps.Busy,
@@ -477,23 +482,23 @@ func (m *Manager) runtimeFor(ctx context.Context, r Record) (Runtime, error) {
 	}
 	rt, err := f(inst)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	m.mu.Lock()
 	if epoch != m.runtimeEpoch[r.ID] {
 		m.mu.Unlock()
 		_ = rt.Close()
-		return nil, ErrUnavailable
+		return nil, 0, ErrUnavailable
 	}
 	if existing, ok := m.runtimes[r.ID]; ok {
 		m.mu.Unlock()
 		_ = rt.Close()
-		return existing, nil
+		return existing, epoch, nil
 	}
 	m.runtimes[r.ID] = rt
 	m.mu.Unlock()
 	m.deliverSettings(ctx, r.ID, rt)
-	return rt, nil
+	return rt, epoch, nil
 }
 
 // deliverSettings sends a newly opened runtime the plugin's stored
@@ -581,9 +586,13 @@ func (m *Manager) CallStream(ctx context.Context, pluginID string, req Request) 
 	return resp, &streamBody{ReadCloser: body, cancel: cleanup}, nil
 }
 
+func (m *Manager) runtimeEpochMatches(id string, epoch uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runtimeEpoch[id] == epoch
+}
+
 func (m *Manager) closeRuntime(id string) {
-	m.cancelActionJobs(id)
-	m.cancelRemoteHashes(id)
 	m.mu.Lock()
 	if m.runtimeEpoch == nil {
 		m.runtimeEpoch = map[string]uint64{}
@@ -594,11 +603,46 @@ func (m *Manager) closeRuntime(id string) {
 	delete(m.runtimes, id)
 	delete(m.runtimes, id+addonRuntimeSuffix)
 	m.mu.Unlock()
+	m.cancelActionJobs(id)
+	m.cancelRemoteHashes(id)
 	for _, r := range []Runtime{rt, addon} {
 		if r != nil {
 			_ = r.Close()
 		}
 	}
+}
+
+func (m *Manager) closeRuntimeAtEpoch(id string, epoch uint64) bool {
+	m.mu.Lock()
+	if m.runtimeEpoch[id] != epoch {
+		m.mu.Unlock()
+		return false
+	}
+	if m.runtimeEpoch == nil {
+		m.runtimeEpoch = map[string]uint64{}
+	}
+	m.runtimeEpoch[id]++
+	rt := m.runtimes[id]
+	addon := m.runtimes[id+addonRuntimeSuffix]
+	delete(m.runtimes, id)
+	delete(m.runtimes, id+addonRuntimeSuffix)
+	m.mu.Unlock()
+	m.cancelActionJobs(id)
+	m.cancelRemoteHashes(id)
+	for _, r := range []Runtime{rt, addon} {
+		if r != nil {
+			_ = r.Close()
+		}
+	}
+	return true
+}
+
+func isCallTimeout(err error, callCtx context.Context) bool {
+	var we *wasm.Error
+	if errors.As(err, &we) && we.Status == wasm.StatusTimeout {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded)
 }
 
 func stremioDeadline(path string) time.Duration {
@@ -656,7 +700,7 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 	if req.Locale != "" {
 		req.Headers["X-Ether-Locale"] = req.Locale
 	}
-	rt, err := m.runtimeFor(ctx, r)
+	rt, epoch, err := m.runtimeForWithEpoch(ctx, r)
 	if err != nil {
 		message := m.store.redactKnown(ctx, pluginID, err.Error())
 		m.recordFailure(ctx, pluginID, "runtime unavailable: "+message, false)
@@ -688,14 +732,45 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		m.store.addCall(ctx, rec)
 		return Response{}, fmt.Errorf("%w: %w", ErrBusy, err)
 	}
+	if err != nil && (errors.Is(err, wasm.ErrClosed) || !m.runtimeEpochMatches(pluginID, epoch)) {
+		// Ether closed or replaced this runtime while the call was in flight
+		// (a settings change, update, or another call's crash). Leave any
+		// replacement runtime intact and do not count this collateral error
+		// as a separate plugin crash.
+		if req.Path == "/ether/notify" || req.Path == "/ether/configure" {
+			err = errors.New("notification delivery failed")
+		}
+		rec.Error = m.store.redactKnown(ctx, pluginID, err.Error())
+		m.store.addCall(ctx, rec)
+		if rec.Error != err.Error() {
+			err = errors.New(rec.Error)
+		}
+		return Response{}, err
+	}
+	if err != nil && isCallTimeout(err, cctx) {
+		// A single timed-out call cancels only that call (and its instance
+		// when torn down by the runtime), not the pool or other in-flight
+		// work. Record it as slow rather than as a runtime crash.
+		if req.Path == "/ether/notify" || req.Path == "/ether/configure" {
+			err = errors.New("notification delivery failed")
+		}
+		rec.Error = m.store.redactKnown(ctx, pluginID, err.Error())
+		m.store.addCall(ctx, rec)
+		m.recordTimeout(ctx, pluginID, rec.Error)
+		if rec.Error != err.Error() {
+			err = errors.New(rec.Error)
+		}
+		return Response{}, err
+	}
 	if err != nil {
 		if req.Path == "/ether/notify" || req.Path == "/ether/configure" {
 			err = errors.New("notification delivery failed")
 		}
 		rec.Error = m.store.redactKnown(ctx, pluginID, err.Error())
 		m.store.addCall(ctx, rec)
-		// Crash policy: drop the instance so the next call restarts it.
-		m.closeRuntime(pluginID)
+		// Crash policy: drop the runtime for this epoch so the next call
+		// restarts it without disturbing a newer runtime.
+		m.closeRuntimeAtEpoch(pluginID, epoch)
 		m.recordFailure(ctx, pluginID, rec.Error, true)
 		if rec.Error != err.Error() {
 			err = errors.New(rec.Error)
@@ -877,6 +952,39 @@ func (m *Manager) recordFailure(ctx context.Context, pluginID, reason string, re
 			Name:     pluginName,
 			Reason:   "auto_disabled: " + reason,
 		}, true)
+	}
+}
+
+// recordTimeout records a call that exceeded its deadline as slow rather
+// than as a runtime crash. The plugin stays enabled, Failures and Restarts
+// are not incremented, and LastError retains the timeout reason.
+func (m *Manager) recordTimeout(ctx context.Context, pluginID, reason string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	m.healthMu.Lock()
+	defer m.healthMu.Unlock()
+	h, err := m.store.health(ctx, pluginID)
+	if err != nil {
+		return
+	}
+	h.Slow++
+	h.LastError = reason
+	becameDegraded := false
+	if h.Status == "ok" {
+		h.Status = "attention"
+		h.Reason = "Recent calls were slow."
+		m.markDegradedSinceLocked(pluginID, m.now())
+		becameDegraded = true
+	}
+	_ = m.store.putHealth(ctx, pluginID, h)
+	if becameDegraded {
+		m.emitBusEvent(events.EventPluginHealthDegraded, pluginID, events.PluginHealthDegradedPayload{
+			PluginID:  pluginID,
+			Name:      m.pluginDisplayName(ctx, pluginID),
+			Status:    h.Status,
+			Restarts:  h.Restarts,
+			LastError: reason,
+		}, false)
 	}
 }
 

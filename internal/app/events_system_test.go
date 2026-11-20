@@ -106,7 +106,15 @@ func TestSystemEventsLibraryDomainAndBatcher(t *testing.T) {
 		validateEnvelope(t, reg, ev)
 	}
 
-	batches := rec.OfType(events.EventLibraryBatchAdded)
+	deadline := time.Now().Add(2 * time.Second)
+	var batches []events.Envelope
+	for time.Now().Before(deadline) {
+		batches = rec.OfType(events.EventLibraryBatchAdded)
+		if len(batches) >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if len(batches) < 2 {
 		t.Fatalf("expected at least 2 library.batch.added groups (episode batch + movie batch), got %d", len(batches))
 	}

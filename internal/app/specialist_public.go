@@ -125,6 +125,7 @@ func (a *App) startServerWorkers(ctx context.Context, g *backgroundGroup) {
 	g.start(func() { a.cluster.RunAsLeader(ctx, "collection refresh", a.collections.Run) })
 	g.start(func() { a.trakt.Start(ctx) })
 	g.start(func() { a.cluster.RunAsLeader(ctx, "database maintenance", a.maintainDB) })
+	g.start(func() { a.runFlows(ctx) })
 	if a.plexWatch != nil {
 		g.start(func() { a.plexWatch.Run(ctx) })
 		g.start(func() { a.cluster.RunAsLeader(ctx, "plex watch imports", a.plexWatch.RunImports) })

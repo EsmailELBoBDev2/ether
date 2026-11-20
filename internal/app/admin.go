@@ -43,6 +43,7 @@ func (a *App) buildAdmin() http.Handler {
 	a.wireIdentityInvite(invites)
 	deps := admin.Deps{
 		EventBus:         a.eventBus,
+		Flows:            a.flowsAdminDeps(),
 		FavoritesMirror:  a.favorites,
 		NotInterested:    notInterestedPortal{a},
 		ViewerAlerts:     &notify.ViewerAlerts{DB: a.db, Active: a.users.ActiveUser},

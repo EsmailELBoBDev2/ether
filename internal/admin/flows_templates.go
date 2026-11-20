@@ -1021,6 +1021,17 @@ type fromTemplateRequest struct {
 
 var templateParamPlaceholderRe = regexp.MustCompile(`\{\{\s*param\.([A-Za-z0-9_.-]+)\s*\}\}`)
 
+// InstantiateFlowTemplate validates params against tmpl.Params and materializes
+// a concrete Flow ready for validation and persistence.
+func InstantiateFlowTemplate(tmpl flows.Template, name, description string, enabled *bool, params map[string]any) (flows.Flow, []FieldError) {
+	return instantiateFlowTemplate(tmpl, fromTemplateRequest{
+		Name:        name,
+		Description: description,
+		Enabled:     enabled,
+		Params:      params,
+	})
+}
+
 // instantiateFlowTemplate validates params against tmpl.Params and materializes
 // a concrete Flow ready for validation and persistence.
 func instantiateFlowTemplate(tmpl flows.Template, req fromTemplateRequest) (flows.Flow, []FieldError) {

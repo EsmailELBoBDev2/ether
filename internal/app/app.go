@@ -30,6 +30,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/favorites"
+	"github.com/braedonsaunders/ether/internal/flows"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontends/vela"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
@@ -129,6 +130,9 @@ type Options struct {
 	// CatalogNow, when set, is the catalog clock from construction. Tests
 	// pin it so a minute snapshot cannot expire while a background browse runs.
 	CatalogNow func() time.Time
+	// FlowActions optionally injects a Flows action registry; nil creates an
+	// empty registry ready for dynamic built-in and plugin action registration.
+	FlowActions flows.ActionRegistry
 	// plextvHTTP, when set, is the HTTP client used by the plex.tv client in tests.
 	plextvHTTP *http.Client
 	// urlImages, when set, replaces the untrusted remote image fetcher in tests.
@@ -314,6 +318,7 @@ type App struct {
 	eventBus       *events.Bus
 	eventRegistry  *events.Registry
 	systemEvents   *systemEventHooks
+	flowsRT        *flowsRuntime
 	pluginLiveOnce sync.Once
 	pluginLive     *PluginLiveService
 }
@@ -907,6 +912,7 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.cluster.RunAsLeader(ctx, "prowlarr indexer sync", a.runProwlarrSync) })
 	background.start(func() { a.runEgress(ctx) })
 	background.start(func() { a.runSystemEvents(ctx) })
+	background.start(func() { a.runFlows(ctx) })
 
 	if next := startupNextStep(cfg, uiURL); next != "" {
 		a.log.Info(next)

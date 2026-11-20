@@ -84,14 +84,26 @@ func (p ownerPlayback) Session(id string) (*core.PlaySession, bool) {
 }
 
 func (a *App) stopOwnerSession(id string) error {
-	a.frontends.noteOwnerStop(id, "The server owner has ended this stream.")
-	if a.frontends != nil && a.frontends.broker != nil {
-		a.frontends.broker.StopPlayback(context.Background(), id)
+	return a.stopOwnerSessionWithReason(context.Background(), id, "The server owner has ended this stream.")
+}
+
+func (a *App) stopOwnerSessionWithReason(ctx context.Context, id, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "The server owner has ended this stream."
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if a.frontends != nil {
+		a.frontends.noteOwnerStop(id, reason)
+		if a.frontends.broker != nil {
+			a.frontends.broker.StopPlayback(ctx, id)
+		}
 	}
 	if a.livetv != nil {
 		for _, s := range a.livetv.ViewingSessions() {
 			if s.ID == id {
-				return a.livetv.Stop(context.Background(), id, &core.User{IsOwner: true})
+				return a.livetv.Stop(ctx, id, &core.User{IsOwner: true})
 			}
 		}
 	}

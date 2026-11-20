@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,15 @@ CREATE TABLE flows_actions_viewer_restrictions (
 );
 CREATE INDEX flows_actions_viewer_restrictions_revert ON flows_actions_viewer_restrictions(revert_at_ms) WHERE revert_at_ms > 0;
 `)
-	store.RegisterViewerTable("flows_actions", "flows_actions_viewer_restrictions", "viewer_id", store.ViewerMergeDrop)
+	// Restriction snapshots use text keys so string viewer IDs and numeric IDs work uniformly.
+	drop := func(ctx context.Context, tx *sql.Tx, viewerID int64) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM flows_actions_viewer_restrictions WHERE viewer_id=?`, strconv.FormatInt(viewerID, 10))
+		return err
+	}
+	store.RegisterViewerPurge("flows_actions", []string{"flows_actions_viewer_restrictions"}, drop)
+	store.RegisterViewerMerge("flows_actions", []string{"flows_actions_viewer_restrictions"}, func(ctx context.Context, tx *sql.Tx, fromID, _ int64) error {
+		return drop(ctx, tx, fromID)
+	})
 }
 
 // ViewerRestrictionRecord stores the pre-restriction snapshot for a viewer so

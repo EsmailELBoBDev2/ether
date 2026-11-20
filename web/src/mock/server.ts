@@ -92,6 +92,7 @@ import { createSitesMock } from "./sites";
 import { createTrashMock } from "./trash";
 import { createCacheMock } from "./cache";
 import { createCalendarMock } from "./calendar";
+import { createFlowsMock } from "./flows";
 import { createLiveTVMock } from "./livetv";
 import { createExtendMock } from "./extend";
 import { TEMPLATE_BUNDLES, TEMPLATES } from "./templates";
@@ -689,6 +690,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
   const liveTV = createLiveTVMock(catalog, opts.liveTVEmpty);
   const onAir = createOnAirMock(liveTV, opts.onAirLayout);
   const calendar = createCalendarMock();
+  const flowsMock = createFlowsMock();
   const qualityMock = createQualityMock();
   const safetyPolicies = new Map<number, Record<string, unknown>>();
   const simklAccounts = new Map<number, { connected: boolean; lastSync?: string }>();
@@ -3788,6 +3790,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
     const cal = calendar.handle(method, seg, q);
     if (cal) return json(cal.body, cal.status);
+
+    const flw = flowsMock.handle(method, seg, q, body);
+    if (flw) return json(flw.body, flw.status);
 
     const oar = onAir.handle(method, seg, q, body);
     if (oar) return json(oar.body, oar.status);

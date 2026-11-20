@@ -50,6 +50,14 @@ export interface RunDetailResponse {
   steps: RunStep[];
 }
 
+/** A draft flow built from a plain-language description (Describe-it). */
+export interface DescribeFlowResult {
+  name: string;
+  description: string;
+  graph: Graph;
+  explanation: string;
+}
+
 export interface FlowSummaryStats {
   totalFlows: number;
   enabledFlows: number;
@@ -199,6 +207,10 @@ export const flowsApi = {
     );
     if (Array.isArray(raw)) return raw;
     return raw?.templates ?? [];
+  },
+
+  describe(prompt: string, signal?: AbortSignal): Promise<DescribeFlowResult> {
+    return send<DescribeFlowResult>("POST", "/flows/describe", { prompt }, signal);
   },
 
   async createFromTemplate(

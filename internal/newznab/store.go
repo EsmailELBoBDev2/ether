@@ -152,7 +152,6 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 	day := c.today()
 	if c.db == nil {
 		c.budgetMu.Lock()
-		defer c.budgetMu.Unlock()
 		if c.mem.day != day {
 			c.mem = memBudget{day: day}
 		}
@@ -161,14 +160,22 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 			used = c.mem.grabs
 		}
 		if limit > 0 && used >= limit {
+			c.budgetMu.Unlock()
+			c.emitBudgetExhausted(day, kind, used, limit)
 			return fmt.Errorf("indexer %q %s budget: %w: %w", c.Name(), kind, errLocalBudget, core.ErrBudgetExhausted)
 		}
 		if kind == "hit" {
 			c.mem.hits++
+			used = c.mem.hits
 		} else {
 			c.mem.grabs++
+			used = c.mem.grabs
 		}
+		c.budgetMu.Unlock()
 		c.recordUsage(ctx, kind)
+		if limit > 0 {
+			c.emitBudgetWarning(day, kind, used, limit)
+		}
 		return nil
 	}
 	col := "hits"
@@ -197,9 +204,16 @@ func (c *Client) reserve(ctx context.Context, kind string) error {
 		return err
 	}
 	if n == 0 {
+		c.emitBudgetExhausted(day, kind, limit, limit)
 		return fmt.Errorf("indexer %q %s budget: %w: %w", c.Name(), kind, errLocalBudget, core.ErrBudgetExhausted)
 	}
 	c.recordUsage(ctx, kind)
+	if limit > 0 && c.events != nil {
+		var used int
+		if err := c.db.QueryRowContext(ctx, `SELECT `+col+` FROM newznab_budget WHERE indexer_id=? AND day=?`, c.indexerID(), day).Scan(&used); err == nil {
+			c.emitBudgetWarning(day, kind, used, limit)
+		}
+	}
 	return nil
 }
 

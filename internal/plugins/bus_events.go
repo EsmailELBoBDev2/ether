@@ -8,7 +8,11 @@ import (
 )
 
 func (m *Manager) emitBusEvent(eventType, pluginID string, payload any, durable bool) {
-	if m == nil || m.deps.EventBus == nil {
+	if m == nil {
+		return
+	}
+	bus := m.flowsEventBus()
+	if bus == nil {
 		return
 	}
 	opts := []events.EnvelopeOption{
@@ -18,7 +22,7 @@ func (m *Manager) emitBusEvent(eventType, pluginID string, payload any, durable 
 	if durable {
 		opts = append(opts, events.WithDurable())
 	}
-	if err := m.deps.EventBus.PublishTyped(eventType, payload, opts...); err != nil && m.log != nil {
+	if err := bus.PublishTyped(eventType, payload, opts...); err != nil && m.log != nil {
 		m.log.Debug("plugins: emit bus event", "type", eventType, "plugin", pluginID, "err", err)
 	}
 }

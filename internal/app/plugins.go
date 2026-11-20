@@ -62,7 +62,9 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 	var busyAt time.Time
 	var busyValue bool
 	mgr, err := plugins.New(plugins.Deps{
-		EventBus:          a.eventBus,
+		EventBus:          a.EventBus(),
+		EventRegistry:     a.EventRegistry(),
+		FlowActions:       a.FlowsActions(),
 		ReadRuntimeConfig: func() config.Plugins { return a.cfg.Read().Plugins },
 		SaveRuntimeConfig: func(id string, limits config.PluginRuntimeLimits) error {
 			return a.cfg.Update(func(c *config.Config) error {

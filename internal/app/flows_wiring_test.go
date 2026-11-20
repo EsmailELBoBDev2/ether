@@ -310,3 +310,65 @@ func TestFlowsAppWiringEndToEnd(t *testing.T) {
 		t.Fatalf("expected 2 stored flows after template apply, got err=%v len=%d", err, len(allFlows))
 	}
 }
+
+func TestFlowsDefaultBuiltinActionsAndPluginsWiring(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dir := t.TempDir()
+	cfg, err := config.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Update(func(c *config.Config) error {
+		c.SetupComplete = true
+		c.Frontends = map[string]config.Frontend{"plex": {Enabled: false}}
+		c.Transcode.FFmpegPath = "/not-installed/ffmpeg"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := New(ctx, Options{
+		DataDir: dir,
+		Version: "0.3.17-test",
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+
+	// Default App wiring registers all 13 built-in Flow actions.
+	if got := len(a.FlowsActions().List()); got < 13 {
+		t.Fatalf("expected >= 13 built-in Flow actions registered by default, got %d", got)
+	}
+	for _, want := range []string{"notify.send", "http.webhook", "mqtt.publish", "playback.stop_session", "viewer.restrict", "library.refresh"} {
+		if _, ok := a.FlowsActions().Get(want); !ok {
+			t.Fatalf("expected built-in Flow action %q registered", want)
+		}
+	}
+
+	// Plugin Manager receives EventBus/EventRegistry/FlowActions and Manager.Run
+	// subscribes the plugins.bridge listener on the shared EventBus.
+	if a.pluginsRT == nil || a.pluginsRT.mgr == nil {
+		t.Fatal("expected plugins runtime initialized")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var foundBridge bool
+	for time.Now().Before(deadline) {
+		for _, sub := range a.EventBus().Stats().Subscribers {
+			if sub.Name == "plugins.bridge" {
+				foundBridge = true
+				break
+			}
+		}
+		if foundBridge {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !foundBridge {
+		t.Fatalf("expected plugins.bridge subscriber on EventBus, got %+v", a.EventBus().Stats().Subscribers)
+	}
+}

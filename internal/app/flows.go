@@ -6,21 +6,24 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/admin"
 	"github.com/braedonsaunders/ether/internal/agent/builtin"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/flows"
+	"github.com/braedonsaunders/ether/internal/flows/actions"
 )
 
 // flowsRuntime owns Ether's durable Flows store, action/trigger registries,
 // and leader-elected execution engine.
 type flowsRuntime struct {
-	store    *flows.SQLStore
-	actions  flows.ActionRegistry
-	triggers flows.TriggerRegistry
-	engine   *flows.Engine
+	store        *flows.SQLStore
+	actions      flows.ActionRegistry
+	triggers     flows.TriggerRegistry
+	engine       *flows.Engine
+	restrictions *actions.RestrictionStore
 }
 
 // FlowsStore returns the durable Flows SQL store.
@@ -57,9 +60,15 @@ func (a *App) buildFlows() {
 	}
 	a.initEventBus()
 
-	actions := a.opts.FlowActions
-	if actions == nil {
-		actions = flows.NewActionRegistry()
+	actionReg := a.opts.FlowActions
+	var rstore *actions.RestrictionStore
+	if actionReg == nil {
+		actionReg = flows.NewActionRegistry()
+		deps := a.flowActionDeps()
+		rstore = deps.Restrictions
+		if err := actions.RegisterAll(actionReg, deps); err != nil && a.log != nil {
+			a.log.Warn("flows: register built-in actions failed", "err", err)
+		}
 	}
 	triggers := flows.NewTriggerRegistry()
 	st := flows.NewSQLStore(a.db)
@@ -78,7 +87,7 @@ func (a *App) buildFlows() {
 		DB:         a.db,
 		Bus:        a.eventBus,
 		Events:     a.eventRegistry,
-		Actions:    actions,
+		Actions:    actionReg,
 		Triggers:   triggers,
 		Cluster:    a.cluster,
 		ClusterBus: cbus,
@@ -124,10 +133,11 @@ func (a *App) buildFlows() {
 	})
 
 	a.flowsRT = &flowsRuntime{
-		store:    st,
-		actions:  actions,
-		triggers: triggers,
-		engine:   eng,
+		store:        st,
+		actions:      actionReg,
+		triggers:     triggers,
+		engine:       eng,
+		restrictions: rstore,
 	}
 }
 
@@ -138,9 +148,26 @@ func (a *App) runFlows(ctx context.Context) {
 	if a == nil || a.flowsRT == nil || a.flowsRT.engine == nil {
 		return
 	}
+	var wg sync.WaitGroup
+	if a.flowsRT.restrictions != nil && a.users != nil {
+		rstore := a.flowsRT.restrictions
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runReverter := func(leadCtx context.Context) {
+				rstore.RunReverter(leadCtx, appFlowViewers{app: a}, time.Minute)
+			}
+			if a.cluster != nil {
+				a.cluster.RunAsLeader(ctx, "flow restriction reverter", runReverter)
+			} else {
+				runReverter(ctx)
+			}
+		}()
+	}
 	if err := a.flowsRT.engine.Start(ctx); err != nil && ctx.Err() == nil && a.log != nil {
 		a.log.Warn("flows engine exited", "err", err)
 	}
+	wg.Wait()
 }
 
 // flowsAdminDeps builds the FlowsDeps injected into admin.Deps so

@@ -68,6 +68,8 @@ func (a *App) buildInsights() {
 		e := a.media.Stats()
 		return stats.StreamSample{MemoryHits: e.MemoryHits, DiskHits: e.DiskHits, BlocksFetched: e.BlocksFetched, BytesFetched: e.BytesFetched, Hedges: e.Hedges, HedgeWins: e.HedgeWins, LinkRefreshes: e.LinkRefreshes, Errors: e.Errors}, true
 	}, Newsletter: func(ctx context.Context, html string) error {
+		now := time.Now().UTC()
+		a.emitDigestScheduled("weekly", now.Add(-7*24*time.Hour), now, 0, 0)
 		return a.notifications.Emit(ctx, notify.Event{Kind: "newsletter.weekly", Title: "Your week on Ether", Message: "Weekly viewing summary", HTML: html})
 	}})
 	if a.playLogs != nil {

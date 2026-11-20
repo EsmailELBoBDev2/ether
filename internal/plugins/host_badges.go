@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/events"
 )
 
 // ActivePosterBadgeSet describes one enabled, non-shadow plugin's declared
@@ -374,7 +376,19 @@ func (h *host) BadgesSet(ctx context.Context, setKey string, entries []BadgeEntr
 		}
 	}
 
-	return h.m.store.badgesSet(ctx, h.plugin, setKey, writes, hasUpsert, h.m.badgeTitleQuota())
+	quota := h.m.badgeTitleQuota()
+	err = h.m.store.badgesSet(ctx, h.plugin, setKey, writes, hasUpsert, quota)
+	if errors.Is(err, ErrQuotaExceeded) {
+		used, _ := h.m.store.badgesTitleCount(ctx, h.plugin)
+		h.m.emitBusEvent(events.EventPluginQuotaExceeded, h.plugin, events.PluginQuotaExceededPayload{
+			PluginID:  h.plugin,
+			Name:      r.Name,
+			QuotaKind: "badges",
+			Used:      used,
+			Limit:     quota,
+		}, false)
+	}
+	return err
 }
 
 // BadgesClear removes every badge in one declared set for the calling plugin.

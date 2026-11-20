@@ -375,8 +375,48 @@ type Service struct {
 	refreshMu   sync.RWMutex
 	refreshFunc func(context.Context) error
 
+	onViewerEvent atomic.Pointer[func(ViewerEvent)]
+
 	invalMu sync.Mutex
 	inval   *clusterbus.Invalidator // nil on a standalone server
+}
+
+// ViewerEvent describes a viewer membership, access, or session lifecycle change.
+type ViewerEvent struct {
+	Kind             string // "joined", "deactivated", "merged", "access_changed", "grant_revoked"
+	ViewerID         int64
+	Username         string
+	Role             string
+	Source           string
+	Reason           string
+	Actor            string
+	FromViewerID     int64
+	IntoViewerID     int64
+	StreamLimit      int
+	MaxContentRating string
+	AllowedLibraries []core.LibraryID
+	GrantKind        string
+}
+
+// SetOnViewerEvent installs an optional non-blocking observer for viewer lifecycle events.
+func (s *Service) SetOnViewerEvent(fn func(ViewerEvent)) {
+	if s == nil {
+		return
+	}
+	if fn == nil {
+		s.onViewerEvent.Store(nil)
+		return
+	}
+	s.onViewerEvent.Store(&fn)
+}
+
+func (s *Service) emitViewerEvent(ev ViewerEvent) {
+	if s == nil {
+		return
+	}
+	if fn := s.onViewerEvent.Load(); fn != nil && *fn != nil {
+		(*fn)(ev)
+	}
 }
 
 // SetUnknownTokenRefresher installs or replaces the callback invoked when an
@@ -1296,11 +1336,30 @@ func (s *Service) SyncFriends(ctx context.Context, friends []plextv.Friend) erro
 	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tokens WHERE source=?`, sourceFriend); err != nil {
 		return err
 	}
+	// Snapshot existing friends so newly joined and deactivated viewers can be
+	// reported after the transaction commits.
+	priorUsers := map[int64]string{}
+	s.mu.RLock()
+	for id, r := range s.users {
+		name := r.Username
+		if name == "" {
+			name = r.Title
+		}
+		priorUsers[id] = name
+	}
+	s.mu.RUnlock()
+
 	// Upsert in plex id order so concurrent syncs on different nodes take
 	// row locks in the same order.
 	friends = append([]plextv.Friend(nil), friends...)
 	sort.SliceStable(friends, func(i, j int) bool { return friends[i].PlexID < friends[j].PlexID })
 	keep := map[int64]bool{}
+	type joinedFriend struct {
+		id   int64
+		name string
+		role string
+	}
+	var joined []joinedFriend
 	for _, f := range friends {
 		var uid int64
 		switch {
@@ -1336,6 +1395,17 @@ RETURNING id`,
 			if !f.Pending {
 				if err := upsertPlexLink(ctx, tx, f.PlexID, f.DisplayName(), now); err != nil {
 					return err
+				}
+				if _, existed := priorUsers[uid]; !existed {
+					role := "friend"
+					if f.Home {
+						role = "home"
+					}
+					name := f.Username
+					if name == "" {
+						name = f.DisplayName()
+					}
+					joined = append(joined, joinedFriend{id: uid, name: name, role: role})
 				}
 			}
 			if f.Pending {
@@ -1402,6 +1472,26 @@ RETURNING id`,
 	}
 	err = s.reload(ctx)
 	s.notify("")
+	if err == nil {
+		for _, jf := range joined {
+			s.emitViewerEvent(ViewerEvent{
+				Kind:     "joined",
+				ViewerID: jf.id,
+				Username: jf.name,
+				Role:     jf.role,
+				Source:   "plex",
+			})
+		}
+		for _, id := range gone {
+			s.emitViewerEvent(ViewerEvent{
+				Kind:     "deactivated",
+				ViewerID: id,
+				Username: priorUsers[id],
+				Reason:   "plex_unshared",
+				Actor:    "plex",
+			})
+		}
+	}
 	return err
 }
 
@@ -1605,5 +1695,24 @@ func (s *Service) UpdateUser(ctx context.Context, u core.User) error {
 	s.gen.Add(1)
 	err = s.reload(ctx)
 	s.notify("")
+	if err == nil {
+		name := u.Username
+		if cur, e := s.User(ctx, u.ID); e == nil && cur != nil {
+			if cur.Username != "" {
+				name = cur.Username
+			} else if cur.Title != "" {
+				name = cur.Title
+			}
+		}
+		s.emitViewerEvent(ViewerEvent{
+			Kind:             "access_changed",
+			ViewerID:         u.ID,
+			Username:         name,
+			StreamLimit:      u.StreamLimit,
+			MaxContentRating: strings.TrimSpace(u.MaxContentRating),
+			AllowedLibraries: append([]core.LibraryID(nil), secs...),
+			Actor:            "owner",
+		})
+	}
 	return err
 }

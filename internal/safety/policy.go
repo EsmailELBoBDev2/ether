@@ -62,6 +62,21 @@ type Service struct {
 
 	playbackMu    sync.Mutex
 	playbackEpoch map[int64]playbackConfirm
+
+	onPut atomic.Pointer[func(int64, Policy)]
+}
+
+// SetOnPut installs an optional non-blocking observer notified when a viewer's
+// safety policy is saved.
+func (s *Service) SetOnPut(fn func(viewerID int64, p Policy)) {
+	if s == nil {
+		return
+	}
+	if fn == nil {
+		s.onPut.Store(nil)
+		return
+	}
+	s.onPut.Store(&fn)
 }
 
 // Generation changes when a viewer's safety policy is saved.
@@ -213,6 +228,9 @@ func (s *Service) Put(ctx context.Context, id int64, p Policy) error {
 	iv := s.inval
 	s.invalMu.Unlock()
 	iv.Notify(strconv.FormatInt(id, 10))
+	if fn := s.onPut.Load(); fn != nil && *fn != nil {
+		(*fn)(id, p)
+	}
 	return nil
 }
 

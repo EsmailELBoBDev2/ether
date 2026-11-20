@@ -366,6 +366,45 @@ type Catalog struct {
 	// (titleidx.go).
 	titleIndexesSwapped atomic.Bool
 	onStatusChange      func(progressOnly bool)
+	onSyncEvent         func(SyncEvent)
+	onTitlesAdded       func([]core.Title)
+	onMetadataError     func(MetadataErrorEvent)
+}
+
+// SyncEvent describes a catalogue sync lifecycle transition.
+type SyncEvent struct {
+	Phase      string // "started", "completed", "failed"
+	Trigger    string // "scheduled", "manual", "startup"
+	Added      int
+	Updated    int
+	Removed    int
+	DurationMS int64
+	Error      string
+}
+
+// MetadataErrorEvent describes a failed upstream metadata fetch for a title.
+type MetadataErrorEvent struct {
+	Provider  string
+	TitleKey  core.RatingKey
+	MediaType core.MediaType
+	Error     string
+}
+
+// WithOnSyncEvent registers an optional non-blocking observer for sync lifecycle events.
+func WithOnSyncEvent(fn func(SyncEvent)) Option {
+	return func(c *Catalog) { c.onSyncEvent = fn }
+}
+
+// WithOnTitlesAdded registers an optional non-blocking observer invoked when
+// newly added browsable titles are stored.
+func WithOnTitlesAdded(fn func([]core.Title)) Option {
+	return func(c *Catalog) { c.onTitlesAdded = fn }
+}
+
+// WithOnMetadataError registers an optional non-blocking observer invoked when
+// a metadata fetch fails with an upstream error.
+func WithOnMetadataError(fn func(MetadataErrorEvent)) Option {
+	return func(c *Catalog) { c.onMetadataError = fn }
 }
 
 // SaferRatingSQL is the optional Plex overlay predicate for viewer limits.

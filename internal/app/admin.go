@@ -35,7 +35,15 @@ func (a *App) buildAdmin() http.Handler {
 	pollLimiter, _ := identity.NewPollLimiter(a.db, time.Minute, 120, 60, nil)
 	quick, _ := identity.NewQuickConnect(a.db, 10*time.Minute, 30*24*time.Hour, nil)
 	invites, _ := identity.NewInvite(a.db, 24*time.Hour, 30*24*time.Hour, nil)
+	a.wireIdentityLocal(local)
+	a.wireIdentityGrants(grants)
+	a.wireIdentityLimiter(limiter, "login")
+	a.wireIdentityLimiter(pollLimiter, "poll")
+	a.wireIdentityQuickConnect(quick)
+	a.wireIdentityInvite(invites)
 	deps := admin.Deps{
+		EventBus:         a.eventBus,
+		Flows:            a.flowsAdminDeps(),
 		FavoritesMirror:  a.favorites,
 		NotInterested:    notInterestedPortal{a},
 		ViewerAlerts:     &notify.ViewerAlerts{DB: a.db, Active: a.users.ActiveUser},

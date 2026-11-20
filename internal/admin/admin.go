@@ -36,6 +36,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/diagnostics"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/veladist"
 )
@@ -154,6 +155,8 @@ type Deps struct {
 	Config *config.Store
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// EventBus receives structured auth events (sign-in success/failure).
+	EventBus *events.Bus
 	// Logs is the in-memory log ring served at /ether/api/logs. A fresh
 	// 2000-entry buffer is created when nil (retrieve it via
 	// Handler.Logs()); pass a shared one to tail server logs.

@@ -363,6 +363,10 @@ func (w *syncWriter) flush(ctx context.Context) error {
 		}
 		w.c.syncBatch.Store(int64(nextSyncBatch(w.limit(), n, time.Since(started))))
 		added := len(w.show)
+		var addedTitles []core.Title
+		if w.c.onTitlesAdded != nil && added > 0 {
+			addedTitles = append([]core.Title(nil), w.show...)
+		}
 		if w.onStored != nil {
 			for _, t := range w.show {
 				w.onStored(t)
@@ -374,6 +378,9 @@ func (w *syncWriter) flush(ctx context.Context) error {
 		w.show, w.hide = w.show[:0], w.hide[:0]
 		w.c.setProgress(func(p *SyncProgress) { p.TitlesAdded += added })
 		w.c.clearSyncError(ctx)
+		if len(addedTitles) > 0 && w.c.onTitlesAdded != nil {
+			w.c.onTitlesAdded(addedTitles)
+		}
 	}
 	if w.onFlush != nil {
 		return w.onFlush(ctx)

@@ -74,6 +74,41 @@ type Service struct {
 	restart func(reason string, whenIdle bool) error
 	// media lists and locates On Air asset files (SetOnAirMedia).
 	media atomic.Pointer[OnAirMedia]
+	// onEvent is an optional non-blocking observer for backup completions and failures.
+	onEvent atomic.Pointer[func(BackupEvent)]
+}
+
+// BackupEvent describes a completed or failed backup run.
+type BackupEvent struct {
+	Kind                string // "manual" or "scheduled"
+	SizeBytes           int64
+	DurationMS          int64
+	Destination         string
+	Encrypted           bool
+	Err                 error
+	ConsecutiveFailures int
+}
+
+// SetOnEvent installs an optional non-blocking observer notified when manual
+// or scheduled backups complete or fail.
+func (s *Service) SetOnEvent(fn func(BackupEvent)) {
+	if s == nil {
+		return
+	}
+	if fn == nil {
+		s.onEvent.Store(nil)
+		return
+	}
+	s.onEvent.Store(&fn)
+}
+
+func (s *Service) emitEvent(ev BackupEvent) {
+	if s == nil {
+		return
+	}
+	if fn := s.onEvent.Load(); fn != nil && *fn != nil {
+		(*fn)(ev)
+	}
 }
 
 // OnAirMedia is how a bundle finds the On Air asset files whose bytes are
@@ -318,18 +353,59 @@ func hashFile(path string) (string, error) {
 }
 
 // Create takes a snapshot with everything, On Air media included.
-func (s *Service) Create(ctx context.Context) (Snapshot, error) { return s.create(ctx, true) }
+func (s *Service) Create(ctx context.Context) (Snapshot, error) {
+	started := time.Now()
+	snap, dest, encrypted, err := s.createDetailed(ctx, true)
+	durMS := max(time.Since(started).Milliseconds(), int64(0))
+	if err != nil {
+		s.emitEvent(BackupEvent{
+			Kind:                "manual",
+			DurationMS:          durMS,
+			Destination:         dest,
+			Encrypted:           encrypted,
+			Err:                 err,
+			ConsecutiveFailures: 1,
+		})
+		return snap, err
+	}
+	s.emitEvent(BackupEvent{
+		Kind:        "manual",
+		SizeBytes:   snap.Size,
+		DurationMS:  durMS,
+		Destination: dest,
+		Encrypted:   encrypted,
+	})
+	return snap, nil
+}
 
 func (s *Service) create(ctx context.Context, withMedia bool) (Snapshot, error) {
+	snap, _, _, err := s.createDetailed(ctx, withMedia)
+	return snap, err
+}
+
+func (s *Service) createDetailed(ctx context.Context, withMedia bool) (Snapshot, string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out Snapshot
 	settings, se := s.Settings(ctx)
 	dir, shared := s.dir, false
 	node := s.clusterNode()
 	if node != nil && se == nil && settings.SharedDir != "" {
 		dir, shared = settings.SharedDir, true
 	}
+	encrypted := false
+	if _, keyErr := os.Stat(filepath.Join(filepath.Dir(s.configPath), config.CredentialKeyFile)); keyErr == nil {
+		encrypted = true
+	}
+	snap, err := s.createLocked(ctx, withMedia, settings, se, dir, shared, node)
+	dest := dir
+	if err == nil && snap.Name != "" {
+		dest = filepath.Join(dir, snap.Name)
+	}
+	return snap, dest, encrypted, err
+}
+
+func (s *Service) createLocked(ctx context.Context, withMedia bool, settings Settings, se error, dir string, shared bool, node *Node) (Snapshot, error) {
+	var out Snapshot
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return out, e
 	}
@@ -877,6 +953,12 @@ func (s *Service) runScheduled(ctx context.Context, now time.Time, r *retryState
 		return false, nil
 	}
 	limit := 24 * time.Hour
+	started := time.Now()
+	var (
+		snap      Snapshot
+		dest      string
+		encrypted bool
+	)
 	v, e := s.Settings(ctx)
 	if e == nil {
 		interval := time.Duration(v.IntervalHours) * time.Hour
@@ -884,10 +966,18 @@ func (s *Service) runScheduled(ctx context.Context, now time.Time, r *retryState
 			return false, nil
 		}
 		limit = interval
-		_, e = s.create(ctx, !v.SkipOnAirMedia)
+		snap, dest, encrypted, e = s.createDetailed(ctx, !v.SkipOnAirMedia)
 	}
+	durMS := max(time.Since(started).Milliseconds(), int64(0))
 	if e == nil {
 		*r = retryState{}
+		s.emitEvent(BackupEvent{
+			Kind:        "scheduled",
+			SizeBytes:   snap.Size,
+			DurationMS:  durMS,
+			Destination: dest,
+			Encrypted:   encrypted,
+		})
 		return true, nil
 	}
 	wait := firstBackupRetry << min(r.failures, 8)
@@ -896,6 +986,14 @@ func (s *Service) runScheduled(ctx context.Context, now time.Time, r *retryState
 	}
 	r.failures++
 	r.next = now.Add(wait)
+	s.emitEvent(BackupEvent{
+		Kind:                "scheduled",
+		DurationMS:          durMS,
+		Destination:         dest,
+		Encrypted:           encrypted,
+		Err:                 e,
+		ConsecutiveFailures: r.failures,
+	})
 	return true, e
 }
 

@@ -375,6 +375,23 @@ type Options struct {
 	// contract error flags a plugin for owner attention (e.g. 50%-delete
 	// guard, unknown fields dropped, auth required).
 	OnAttention func(ctx context.Context, pluginID, reason string)
+	// OnSyncEvent is an optional non-blocking observer for plugin library sync lifecycle.
+	OnSyncEvent func(SyncEvent)
+}
+
+// SyncEvent describes a plugin library sync lifecycle transition.
+type SyncEvent struct {
+	Phase       string // "started", "completed", "failed"
+	PluginID    string
+	KindKey     string
+	LibraryID   int64
+	LibraryName string
+	Trigger     string
+	Added       int
+	Updated     int
+	Removed     int
+	DurationMS  int64
+	Error       string
 }
 
 // Service manages plugin kinds, items, browse, search, sync, projections,
@@ -387,6 +404,7 @@ type Service struct {
 	health            HealthReporter
 	isLeader          func() bool
 	onAttention       func(ctx context.Context, pluginID, reason string)
+	onSyncEvent       func(SyncEvent)
 	maxPluginItems    int
 	maxPluginItemsFor func(pluginID string) int
 
@@ -423,6 +441,7 @@ func New(ctx context.Context, db *sql.DB, o Options) (*Service, error) {
 		health:            o.Health,
 		isLeader:          o.IsLeader,
 		onAttention:       o.OnAttention,
+		onSyncEvent:       o.OnSyncEvent,
 		maxPluginItems:    o.MaxPluginItems,
 		maxPluginItemsFor: o.MaxPluginItemsFor,
 		kindLocks:         map[string]*sync.Mutex{},
@@ -467,6 +486,22 @@ func (s *Service) SetHealth(h HealthReporter) {
 	s.workersMu.Lock()
 	s.health = h
 	s.workersMu.Unlock()
+}
+
+// SetOnSyncEvent installs an optional observer for plugin library sync lifecycle.
+func (s *Service) SetOnSyncEvent(fn func(SyncEvent)) {
+	s.workersMu.Lock()
+	s.onSyncEvent = fn
+	s.workersMu.Unlock()
+}
+
+func (s *Service) emitSyncEvent(ev SyncEvent) {
+	s.workersMu.Lock()
+	fn := s.onSyncEvent
+	s.workersMu.Unlock()
+	if fn != nil {
+		fn(ev)
+	}
 }
 
 // Generation returns the monotonic sync generation across all plugin kinds

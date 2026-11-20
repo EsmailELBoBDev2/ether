@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
@@ -87,10 +88,22 @@ func (h *host) KVGet(ctx context.Context, key string) ([]byte, bool, error) {
 }
 
 func (h *host) KVPut(ctx context.Context, key string, value []byte) error {
-	if _, _, err := h.record(ctx); err != nil {
+	r, _, err := h.record(ctx)
+	if err != nil {
 		return err
 	}
-	return h.m.store.kvPut(ctx, h.plugin, key, value)
+	err = h.m.store.kvPut(ctx, h.plugin, key, value)
+	if errors.Is(err, ErrQuotaExceeded) {
+		usage, _ := h.m.store.kvUsage(ctx, h.plugin)
+		h.m.emitBusEvent(events.EventPluginQuotaExceeded, h.plugin, events.PluginQuotaExceededPayload{
+			PluginID:  h.plugin,
+			Name:      r.Name,
+			QuotaKind: "kv",
+			Used:      usage.Bytes,
+			Limit:     KVQuotaBytes,
+		}, false)
+	}
+	return err
 }
 
 func (h *host) KVDelete(ctx context.Context, key string) error {

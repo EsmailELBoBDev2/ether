@@ -26,6 +26,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/diagnostics"
 	"github.com/braedonsaunders/ether/internal/discovery"
 	"github.com/braedonsaunders/ether/internal/episodeorder"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/experience"
 	"github.com/braedonsaunders/ether/internal/extras"
 	"github.com/braedonsaunders/ether/internal/favorites"
@@ -310,6 +311,9 @@ type App struct {
 	streamRT       *consoleStreamRuntime
 	pluginsRT      *pluginRuntime
 	agentRT        *agentRuntime
+	eventBus       *events.Bus
+	eventRegistry  *events.Registry
+	systemEvents   *systemEventHooks
 	pluginLiveOnce sync.Once
 	pluginLive     *PluginLiveService
 }
@@ -513,6 +517,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 		a.Close()
 		return nil, fmt.Errorf("cluster: %w", err)
 	}
+	a.initEventBus()
 	// A restored PostgreSQL-style bundle leaves a logical dump to import.
 	if err := a.importRestoredDump(ctx); err != nil {
 		a.Close()
@@ -578,6 +583,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 			}
 			a.connectServerHooks()
 			a.initUpdates()
+			a.wireSystemEvents()
 			a.syncOwnerRecovery(ctx)
 			started = true
 			return a, nil
@@ -617,6 +623,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	phase("service construction")
 	a.connectClusterHooks()
 	a.initUpdates()
+	a.wireSystemEvents()
 	// Keep the owner's recovery sign-in in step with the database.
 	a.syncOwnerRecovery(ctx)
 	phase("hooks and recovery")
@@ -899,6 +906,7 @@ func (a *App) Run(ctx context.Context) error {
 	background.start(func() { a.runBudgets(ctx) })
 	background.start(func() { a.cluster.RunAsLeader(ctx, "prowlarr indexer sync", a.runProwlarrSync) })
 	background.start(func() { a.runEgress(ctx) })
+	background.start(func() { a.runSystemEvents(ctx) })
 
 	if next := startupNextStep(cfg, uiURL); next != "" {
 		a.log.Info(next)
@@ -919,6 +927,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.registrar.ListenerReady()
 	}
 	background.start(func() { a.checkIntegrityLater(ctx) })
+	a.emitServerStarted()
 	a.notifyLifecycle("server.started", "Ether is online", cfg.Server.FriendlyName+" is ready for connections.")
 	// Hang watchdog: restart via the supervisor if we stop answering.
 	watchdogErr := make(chan error, 1)
@@ -957,7 +966,10 @@ func (a *App) Run(ctx context.Context) error {
 		a.drainPrivate()
 	}
 	if runErr == nil {
+		a.emitServerStopping("shutdown")
 		a.notifyLifecycle("server.stopping", "Ether is stopping", "The server is shutting down or restarting.")
+	} else if !errors.Is(runErr, errClusterSetup) {
+		a.emitServerCrashed(runErr.Error(), "runtime")
 	}
 	// Hand leadership over first: another node takes over singleton work
 	// and plex.tv publication while this one finishes shutting down.

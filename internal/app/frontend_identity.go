@@ -16,6 +16,7 @@ import (
 )
 
 type surfaceIdentity struct {
+	app         *App
 	policy      core.FrontendHostPolicy
 	settings    func() frontend.Settings
 	hostConfig  func() frontend.HostConfig
@@ -143,22 +144,55 @@ func (s surfaceIdentity) SignIn(ctx context.Context, username, password string, 
 	if s.policy.ExternalIdentity {
 		return "", core.ErrUnauthorized
 	}
+	remoteIP := ""
+	if ip, ok := frontend.ClientIP(ctx); ok && ip.IsValid() {
+		remoteIP = ip.String()
+	}
+	clientName := device.Product
+	if clientName == "" {
+		clientName = device.Client
+		if clientName == "" {
+			clientName = device.DeviceName
+		}
+	}
 	if err := s.allow(ctx, s.login, username); err != nil {
+		s.app.emitLoginFailed(username, "password", "rate_limited", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
 	if core.IsGrantCredential(password) {
 		if s.grants == nil {
+			s.app.emitLoginFailed(username, "grant", "unavailable", clientName, string(s.surface), remoteIP)
 			return "", core.ErrUnauthorized
 		}
-		return s.grants.SignInWithGrant(ctx, string(s.surface), username, password, device)
+		tok, err := s.grants.SignInWithGrant(ctx, string(s.surface), username, password, device)
+		if err != nil {
+			s.app.emitLoginFailed(username, "grant", "invalid_credentials", clientName, string(s.surface), remoteIP)
+			return "", err
+		}
+		var viewerID int64
+		if v, rerr := s.Resolve(ctx, tok); rerr == nil && v != nil {
+			viewerID = v.ID
+			if v.Username != "" {
+				username = v.Username
+			}
+		}
+		s.app.emitLoginSucceeded(viewerID, username, "grant", clientName, string(s.surface), remoteIP)
+		return tok, nil
 	}
 	viewer, link, err := s.local.Authenticate(ctx, username, password)
 	if err != nil {
+		s.app.emitLoginFailed(username, "password", "invalid_credentials", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
 	// The grant is the sign-in. Login timestamps are recorded after the
 	// response so a large catalogue database cannot hold the client open.
-	return s.grants.Issue(ctx, viewer, &link, string(s.surface), device)
+	tok, err := s.grants.Issue(ctx, viewer, &link, string(s.surface), device)
+	if err != nil {
+		s.app.emitLoginFailed(username, "password", "grant_issue_failed", clientName, string(s.surface), remoteIP)
+		return "", err
+	}
+	s.app.emitLoginSucceeded(viewer, username, "password", clientName, string(s.surface), remoteIP)
+	return tok, nil
 }
 func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, device core.Device) (string, error) {
 	if s.policy.ExternalIdentity || s.grants == nil || s.login == nil || s.users == nil {
@@ -168,18 +202,29 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 	if !ok || ip.IsUnspecified() || ip.IsMulticast() {
 		return "", core.ErrUnauthorized
 	}
+	remoteIP := ip.String()
+	clientName := device.Product
+	if clientName == "" {
+		clientName = device.Client
+		if clientName == "" {
+			clientName = device.DeviceName
+		}
+	}
 	exceeded, err := s.login.IPExceeded(ctx, ip)
 	if err != nil {
 		return "", err
 	}
 	if exceeded {
+		s.app.emitLoginFailed("", "plex", "rate_limited", clientName, string(s.surface), remoteIP)
 		return "", s.allow(ctx, s.login, ip.String())
 	}
 	if s.hostConfig != nil {
 		if cfgTok := strings.TrimSpace(s.hostConfig().Plex.Token); cfgTok != "" && subtle.ConstantTimeCompare([]byte(strings.TrimSpace(plexToken)), []byte(cfgTok)) == 1 {
 			if err := s.allow(ctx, s.login, ip.String()); err != nil {
+				s.app.emitLoginFailed("", "plex", "rate_limited", clientName, string(s.surface), remoteIP)
 				return "", err
 			}
+			s.app.emitLoginFailed("", "plex", "invalid_credentials", clientName, string(s.surface), remoteIP)
 			return "", core.ErrUnauthorized
 		}
 	}
@@ -188,6 +233,7 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 		if err := s.allow(ctx, s.login, ip.String()); err != nil {
 			return "", err
 		}
+		s.app.emitLoginFailed("", "plex", "unavailable", clientName, string(s.surface), remoteIP)
 		return "", core.ErrUnauthorized
 	}
 	user, plexID, authErr := plexAuth.AuthenticatePlexAccount(ctx, plexToken)
@@ -196,21 +242,26 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 		key = "plex:" + strconv.FormatInt(plexID, 10)
 	}
 	if err := s.allow(ctx, s.login, key); err != nil {
+		s.app.emitLoginFailed("", "plex", "rate_limited", clientName, string(s.surface), remoteIP)
 		return "", err
 	}
 	if authErr != nil {
 		if errors.Is(authErr, frontend.ErrPlexNotShared) {
+			s.app.emitLoginFailed("", "plex", "not_shared", clientName, string(s.surface), remoteIP)
 			return "", frontend.ErrPlexNotShared
 		}
 		if errors.Is(authErr, frontend.ErrPlexUnreachable) {
+			s.app.emitLoginFailed("", "plex", "plex_unreachable", clientName, string(s.surface), remoteIP)
 			return "", frontend.ErrPlexUnreachable
 		}
 		if errors.Is(authErr, context.Canceled) {
 			return "", authErr
 		}
+		s.app.emitLoginFailed("", "plex", "invalid_credentials", clientName, string(s.surface), remoteIP)
 		return "", core.ErrUnauthorized
 	}
 	if user == nil || user.ID <= 0 {
+		s.app.emitLoginFailed("", "plex", "invalid_credentials", clientName, string(s.surface), remoteIP)
 		return "", core.ErrUnauthorized
 	}
 	var linkID *int64
@@ -219,7 +270,13 @@ func (s surfaceIdentity) SignInWithPlex(ctx context.Context, plexToken string, d
 	}); ok {
 		linkID = linker.PlexLinkID(ctx, user.ID, plexID)
 	}
-	return s.grants.Issue(ctx, user.ID, linkID, string(s.surface), device)
+	tok, err := s.grants.Issue(ctx, user.ID, linkID, string(s.surface), device)
+	if err != nil {
+		s.app.emitLoginFailed(user.Username, "plex", "grant_issue_failed", clientName, string(s.surface), remoteIP)
+		return "", err
+	}
+	s.app.emitLoginSucceeded(user.ID, user.Username, "plex", clientName, string(s.surface), remoteIP)
+	return tok, nil
 }
 func (s surfaceIdentity) IssueRefresh(ctx context.Context, access string, device core.Device) (string, error) {
 	return s.grants.IssueRefresh(ctx, string(s.surface), access, device)

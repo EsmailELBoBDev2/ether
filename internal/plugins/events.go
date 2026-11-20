@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/braedonsaunders/ether/internal/events"
 )
 
 func newEventID() string {
@@ -76,6 +78,14 @@ func (m *Manager) Publish(ctx context.Context, ev Event) {
 				_ = m.store.putHealth(ctx, r.ID, h)
 			}
 			m.healthMu.Unlock()
+			m.emitBusEvent(events.EventPluginQuotaExceeded, r.ID, events.PluginQuotaExceededPayload{
+				PluginID:  r.ID,
+				Name:      r.Name,
+				QuotaKind: "events_outbox",
+				Used:      int64(OutboxCap),
+				Limit:     int64(OutboxCap),
+				Drops:     int64(dropped),
+			}, false)
 		}
 	}
 }
@@ -258,6 +268,7 @@ func (m *Manager) scheduleBusyLocked(pluginID, callPath string) bool {
 func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, pluginID, callPath, key string) {
 	defer m.scheduleWG.Done()
 	defer flight.cancel()
+	startedAt := m.now()
 	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
 	var started *actionJob
 	var startErr error
@@ -287,6 +298,26 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	}
 	if startErr != nil {
 		m.log.Warn("plugin schedule: start job", "plugin", pluginID, "call", callPath, "err", startErr)
+	}
+	var jobErr string
+	switch {
+	case err != nil && ctx.Err() == nil:
+		jobErr = err.Error()
+	case startErr != nil:
+		jobErr = startErr.Error()
+	case err == nil && resp.Status >= 400:
+		jobErr = fmt.Sprintf("HTTP %d", resp.Status)
+	}
+	if jobErr != "" {
+		durMS := max(m.now().Sub(startedAt).Milliseconds(), int64(0))
+		m.emitBusEvent(events.EventPluginJobFailed, pluginID, events.PluginJobFailedPayload{
+			PluginID:   pluginID,
+			Name:       m.pluginDisplayName(context.Background(), pluginID),
+			Job:        callPath,
+			Kind:       "scheduled",
+			Error:      jobErr,
+			DurationMS: durMS,
+		}, false)
 	}
 }
 

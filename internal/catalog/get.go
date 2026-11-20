@@ -196,6 +196,7 @@ func (c *Catalog) getMovie(ctx context.Context, id int64) (*core.Title, error) {
 	fetch := func(ctx context.Context) error {
 		d, err := c.tmdb().MovieDetails(ctx, id)
 		if err != nil {
+			c.emitMetadataError(key, core.TypeMovie, err)
 			return err
 		}
 		t := c.movieDetailsToTitle(ctx, d)
@@ -222,10 +223,26 @@ func (c *Catalog) getMovie(ctx context.Context, id int64) (*core.Title, error) {
 	return &st2.t, nil
 }
 
+func (c *Catalog) emitMetadataError(key core.RatingKey, mediaType core.MediaType, err error) {
+	if c == nil || c.onMetadataError == nil || err == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, tmdb.ErrNoKey) || errors.Is(err, core.ErrNotFound) {
+		return
+	}
+	c.onMetadataError(MetadataErrorEvent{
+		Provider:  "tmdb",
+		TitleKey:  key,
+		MediaType: mediaType,
+		Error:     err.Error(),
+	})
+}
+
 // fetchMovieDetails fetches and stores a movie's full details.
 func (c *Catalog) fetchMovieDetails(ctx context.Context, id int64) error {
 	d, err := c.tmdb().MovieDetails(ctx, id)
 	if err != nil {
+		c.emitMetadataError(core.MovieKey(id), core.TypeMovie, err)
 		return err
 	}
 	t := c.movieDetailsToTitle(ctx, d)
@@ -240,6 +257,7 @@ func (c *Catalog) fetchMovieDetails(ctx context.Context, id int64) error {
 func (c *Catalog) fetchShowDetails(ctx context.Context, id int64) error {
 	d, err := c.tmdb().TVDetails(ctx, id)
 	if err != nil {
+		c.emitMetadataError(core.ShowKey(id), core.TypeShow, err)
 		return err
 	}
 	t := c.tvDetailsToTitle(ctx, d)
@@ -324,6 +342,7 @@ func (c *Catalog) getShow(ctx context.Context, id int64) (*core.Title, error) {
 	fetch := func(ctx context.Context) error {
 		d, err := c.tmdb().TVDetails(ctx, id)
 		if err != nil {
+			c.emitMetadataError(key, core.TypeShow, err)
 			return err
 		}
 		t := c.tvDetailsToTitle(ctx, d)

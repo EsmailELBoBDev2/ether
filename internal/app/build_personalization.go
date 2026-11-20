@@ -83,7 +83,17 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 			a.log.Warn("state: watch progress lost at shutdown", "err", err)
 		}
 	})
-	a.trakt = trakt.New(trakt.Options{Config: cfg.Trakt, DB: a.db, Sealer: a.cfg, Catalog: a.catalog, NodeID: a.clusterNodeID(), Logger: log.With("component", "trakt")})
+	a.trakt = trakt.New(trakt.Options{
+		Config:  cfg.Trakt,
+		DB:      a.db,
+		Sealer:  a.cfg,
+		Catalog: a.catalog,
+		NodeID:  a.clusterNodeID(),
+		Logger:  log.With("component", "trakt"),
+		OnTokenExpired: func(userID int64, username, errMsg string) {
+			a.emitTokenExpired("trakt", "watch_sync", username, userID, errMsg)
+		},
+	})
 	a.trakt.SubscribeTo(a.state)
 	a.simklDevice = &simkl.DeviceManager{AuthConfig: a.simklAuth, Tokens: simkl.TokenStore{DB: a.db, Sealer: a.cfg}}
 	unsubSimkl := a.state.Subscribe(func(ev state.Event) {

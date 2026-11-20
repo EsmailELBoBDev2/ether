@@ -81,6 +81,7 @@ type Service struct {
 	vibeMax        int
 	scorer         atomic.Pointer[scorerBox]
 	onBuilt        atomic.Pointer[func()]
+	onRebuilt      atomic.Pointer[func(RebuildEvent)]
 	art            *artwork.Renderer
 	images         *artwork.Images
 	catCfg         func() config.Catalog
@@ -209,6 +210,31 @@ func New(db *sql.DB, cat core.Catalog, log *slog.Logger, opts ...Option) (*Servi
 // SetScorer installs (or replaces) the personal scorer after construction,
 // for when the personalization engine is built after the collections.
 func (s *Service) SetScorer(sc core.PersonalScorer) { s.scorer.Store(&scorerBox{sc}) }
+
+// RebuildEvent describes a completed collection rebuild.
+type RebuildEvent struct {
+	CollectionID   string
+	CollectionName string
+	SourceKind     string
+	ItemCount      int
+	Added          int
+	Removed        int
+	DurationMS     int64
+}
+
+// WithOnRebuilt registers a non-blocking observer notified when any collection finishes rebuilding.
+func WithOnRebuilt(fn func(RebuildEvent)) Option {
+	return func(s *Service) { s.SetOnRebuilt(fn) }
+}
+
+// SetOnRebuilt installs or clears the rebuild observer after construction.
+func (s *Service) SetOnRebuilt(fn func(RebuildEvent)) {
+	if fn == nil {
+		s.onRebuilt.Store(nil)
+		return
+	}
+	s.onRebuilt.Store(&fn)
+}
 
 // SetOnBuilt registers a callback invoked whenever a collection build changes
 // stored membership, so downstream Home/section row caches invalidate as soon
@@ -559,13 +585,31 @@ func (s *Service) buildNow(ctx context.Context, row *specRow) (*memberSet, error
 			resolved = js
 		}
 	}
+	s.mu.Lock()
+	var prevKeys []core.RatingKey
+	if existing := s.members[row.id]; existing != nil {
+		prevKeys = existing.keys
+	}
+	s.mu.Unlock()
+	if prevKeys == nil && !row.lastBuilt.IsZero() {
+		if loaded, _, err := s.loadMembers(ctx, row.id); err == nil {
+			prevKeys = loaded
+		}
+	}
+	addedCount, removedCount := diffCollectionKeys(prevKeys, res.keys)
+	sourceKind := ""
+	if len(row.spec.Sources) > 0 {
+		sourceKind = row.spec.Sources[0].Kind
+	}
+
 	at := s.now().UTC().Truncate(time.Second)
 	if err := s.saveBuild(ctx, row.id, row.rawSpec, resolved, res.keys, res.unshared, res.itemCount(), res.warnings, res.hash, at); err != nil {
 		return nil, err
 	}
 	s.promoteMembers(ctx, res.keys)
+	took := time.Since(started)
 	s.log.Debug("collections: built", "id", row.publicID(), "name", row.spec.Name, "items", res.itemCount(),
-		"warnings", len(res.warnings), "took", time.Since(started).Round(time.Millisecond))
+		"warnings", len(res.warnings), "took", took.Round(time.Millisecond))
 	ms := &memberSet{keys: res.keys, personal: res.personal, personalX: res.personalX, unshared: res.unshared, spec: row.spec,
 		builtAt: at, hash: res.hash, loadedAt: s.now()}
 	changed := row.buildHash != res.hash
@@ -576,7 +620,41 @@ func (s *Service) buildNow(ctx context.Context, row *specRow) (*memberSet, error
 	if changed {
 		s.notifyBuilt()
 	}
+	if fn := s.onRebuilt.Load(); fn != nil && *fn != nil {
+		(*fn)(RebuildEvent{
+			CollectionID:   row.publicID(),
+			CollectionName: row.spec.Name,
+			SourceKind:     sourceKind,
+			ItemCount:      res.itemCount(),
+			Added:          addedCount,
+			Removed:        removedCount,
+			DurationMS:     took.Milliseconds(),
+		})
+	}
 	return ms, nil
+}
+
+func diffCollectionKeys(prev, next []core.RatingKey) (added, removed int) {
+	if len(prev) == 0 {
+		return len(next), 0
+	}
+	prevSet := make(map[core.RatingKey]struct{}, len(prev))
+	for _, k := range prev {
+		prevSet[k] = struct{}{}
+	}
+	nextSet := make(map[core.RatingKey]struct{}, len(next))
+	for _, k := range next {
+		nextSet[k] = struct{}{}
+		if _, ok := prevSet[k]; !ok {
+			added++
+		}
+	}
+	for k := range prevSet {
+		if _, ok := nextSet[k]; !ok {
+			removed++
+		}
+	}
+	return added, removed
 }
 
 func resolvedChanged(a, b core.CollectionSpec) bool {

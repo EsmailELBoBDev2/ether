@@ -55,13 +55,49 @@ type ActiveViewer interface {
 // passwords are also sealed for owner recovery. Each grant is scoped to one
 // surface and expires after a sliding period of inactivity.
 type Grants struct {
-	sealer  config.FieldSealer
-	db      *sql.DB
-	viewers ActiveViewer
-	times   *ViewerTimes
-	ttl     time.Duration
-	now     func() time.Time
-	gen     atomic.Uint64
+	sealer         config.FieldSealer
+	db             *sql.DB
+	viewers        ActiveViewer
+	times          *ViewerTimes
+	ttl            time.Duration
+	now            func() time.Time
+	gen            atomic.Uint64
+	onRevoked      atomic.Pointer[func(viewerID int64, grantKind, reason string)]
+	onDeviceIssued atomic.Pointer[func(viewerID int64, surface string, device core.Device, isFirstSeen bool)]
+}
+
+// SetOnRevoked installs an optional non-blocking observer for grant revocations.
+func (g *Grants) SetOnRevoked(fn func(viewerID int64, grantKind, reason string)) {
+	if g == nil {
+		return
+	}
+	if fn == nil {
+		g.onRevoked.Store(nil)
+		return
+	}
+	g.onRevoked.Store(&fn)
+}
+
+func (g *Grants) emitRevoked(viewerID int64, grantKind, reason string) {
+	if g == nil {
+		return
+	}
+	if fn := g.onRevoked.Load(); fn != nil && *fn != nil {
+		(*fn)(viewerID, grantKind, reason)
+	}
+}
+
+// SetOnDeviceIssued installs an optional non-blocking observer notified when
+// a grant is issued for a device.
+func (g *Grants) SetOnDeviceIssued(fn func(viewerID int64, surface string, device core.Device, isFirstSeen bool)) {
+	if g == nil {
+		return
+	}
+	if fn == nil {
+		g.onDeviceIssued.Store(nil)
+		return
+	}
+	g.onDeviceIssued.Store(&fn)
 }
 
 // Generation changes when a credential is revoked.
@@ -179,6 +215,11 @@ func (g *Grants) issue(ctx context.Context, viewerID int64, identityID *int64, s
 		if err := tx.Commit(); err != nil {
 			return "", err
 		}
+	}
+	if fn := g.onDeviceIssued.Load(); fn != nil && *fn != nil && strings.TrimSpace(device.ID) != "" {
+		var prior int
+		_ = g.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identity_grants WHERE viewer_id=? AND device_id=? AND hash<>?`, viewerID, device.ID, hash).Scan(&prior)
+		(*fn)(viewerID, surface, device, prior == 0)
 	}
 	return token, nil
 }
@@ -369,9 +410,12 @@ func (g *Grants) RevokeGrant(ctx context.Context, viewerID int64, hash string) e
 	if len(hash) != 64 {
 		return fmt.Errorf("identity: invalid grant hash")
 	}
-	_, err := g.db.ExecContext(ctx, `UPDATE identity_grants SET revoked=1 WHERE viewer_id=? AND hash=?`, viewerID, hash)
+	res, err := g.db.ExecContext(ctx, `UPDATE identity_grants SET revoked=1 WHERE viewer_id=? AND hash=?`, viewerID, hash)
 	if err == nil {
 		g.gen.Add(1)
+		if n, _ := res.RowsAffected(); n > 0 {
+			g.emitRevoked(viewerID, "grant", "revoked")
+		}
 	}
 	return err
 }
@@ -379,16 +423,22 @@ func (g *Grants) RevokeDevice(ctx context.Context, viewerID int64, deviceID stri
 	if deviceID == "" {
 		return errors.New("identity: device required")
 	}
-	_, err := g.db.ExecContext(ctx, `UPDATE identity_grants SET revoked=1 WHERE viewer_id=? AND device_id=?`, viewerID, deviceID)
+	res, err := g.db.ExecContext(ctx, `UPDATE identity_grants SET revoked=1 WHERE viewer_id=? AND device_id=?`, viewerID, deviceID)
 	if err == nil {
 		g.gen.Add(1)
+		if n, _ := res.RowsAffected(); n > 0 {
+			g.emitRevoked(viewerID, "device", "revoked")
+		}
 	}
 	return err
 }
 func (g *Grants) RevokeViewer(ctx context.Context, viewerID int64) error {
-	_, err := g.db.ExecContext(ctx, `UPDATE identity_grants SET revoked=1 WHERE viewer_id=?`, viewerID)
+	res, err := g.db.ExecContext(ctx, `UPDATE identity_grants SET revoked=1 WHERE viewer_id=?`, viewerID)
 	if err == nil {
 		g.gen.Add(1)
+		if n, _ := res.RowsAffected(); n > 0 {
+			g.emitRevoked(viewerID, "viewer", "revoked")
+		}
 	}
 	return err
 }
@@ -414,6 +464,7 @@ func (g *Grants) SignOutViewer(ctx context.Context, viewerID int64) (int, error)
 	}
 	if total > 0 {
 		g.gen.Add(1)
+		g.emitRevoked(viewerID, "viewer", "sign_out")
 	}
 	return int(total), nil
 }

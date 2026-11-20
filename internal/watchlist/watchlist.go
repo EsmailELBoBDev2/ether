@@ -109,8 +109,22 @@ type Options struct {
 	// OnAvailable runs when a watchlist title first becomes playable.
 	// The key is the movie, show, or newly released episode.
 	OnAvailable func(context.Context, int64, core.RatingKey)
+	// OnUnavailable runs when a previously playable watchlist title loses playability.
+	OnUnavailable func(context.Context, int64, core.Title, string)
+	// OnSynced runs after a viewer's watchlist finishes syncing from a provider.
+	OnSynced func(SyncEvent)
 	// OnFriendsRSSChanged runs when the household "Friends' watchlists" set changes.
 	OnFriendsRSSChanged func(context.Context)
+}
+
+// SyncEvent describes a completed external watchlist sync for a viewer.
+type SyncEvent struct {
+	Provider   string
+	ViewerID   int64
+	Added      int
+	Removed    int
+	TotalItems int
+	DurationMS int64
 }
 type Service struct {
 	db                 *sql.DB
@@ -510,15 +524,40 @@ func (s *Service) upsert(ctx context.Context, uid int64, source string, t core.T
 	return err
 }
 func (s *Service) replace(ctx context.Context, u *core.User, source string, ts []core.Title) error {
+	started := s.o.Now()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	existing := map[core.RatingKey]bool{}
+	if s.o.OnSynced != nil {
+		erows, err := tx.QueryContext(ctx, `SELECT item_key FROM watchlist_items WHERE user_id=? AND source=?`, u.ID, source)
+		if err != nil {
+			return err
+		}
+		for erows.Next() {
+			var k core.RatingKey
+			if err = erows.Scan(&k); err != nil {
+				erows.Close()
+				return err
+			}
+			existing[k] = true
+		}
+		if err = erows.Err(); err != nil {
+			erows.Close()
+			return err
+		}
+		erows.Close()
+	}
 	keys := map[core.RatingKey]bool{}
+	addedCount := 0
 	for _, t := range ts {
 		if !s.allowed(u, &t) {
 			continue
+		}
+		if !keys[t.Key] && !existing[t.Key] {
+			addedCount++
 		}
 		keys[t.Key] = true
 		raw, err := json.Marshal(t)
@@ -566,6 +605,17 @@ func (s *Service) replace(ctx context.Context, u *core.User, source string, ts [
 	s.gen.Add(1)
 	if s.o.OnAdded != nil {
 		s.o.OnAdded()
+	}
+	if s.o.OnSynced != nil {
+		durMS := max(s.o.Now().Sub(started).Milliseconds(), int64(0))
+		s.o.OnSynced(SyncEvent{
+			Provider:   source,
+			ViewerID:   u.ID,
+			Added:      addedCount,
+			Removed:    len(removed),
+			TotalItems: len(keys),
+			DurationMS: durMS,
+		})
 	}
 	return nil
 }
@@ -825,6 +875,13 @@ func (s *Service) checkSet(ctx context.Context, cfg Settings, userID int64, poli
 		if errors.Is(e, core.ErrNotAvailable) || (e == nil && res == nil) {
 			if _, err := s.db.ExecContext(ctx, `UPDATE watchlist_items SET available=0,notified=0,warmed=0 WHERE user_id=? AND item_key=?`, userID, t.Key); err != nil {
 				return err
+			}
+			if wasAvailable && s.o.OnUnavailable != nil {
+				reason := "no playable release"
+				if e != nil {
+					reason = e.Error()
+				}
+				s.o.OnUnavailable(ctx, userID, t, reason)
 			}
 		}
 		if e != nil || res == nil {

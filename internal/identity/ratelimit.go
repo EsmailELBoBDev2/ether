@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/store"
@@ -31,6 +32,20 @@ type LoginLimiter struct {
 	window               time.Duration
 	perIP, perIdentityIP int
 	namespace            string
+	onLimited            atomic.Pointer[func(scope, remoteIP string, attempts, windowSec int)]
+}
+
+// SetOnLimited installs an optional non-blocking observer notified whenever
+// AllowWithRetry rejects an attempt due to rate limiting.
+func (l *LoginLimiter) SetOnLimited(fn func(scope, remoteIP string, attempts, windowSec int)) {
+	if l == nil {
+		return
+	}
+	if fn == nil {
+		l.onLimited.Store(nil)
+		return
+	}
+	l.onLimited.Store(&fn)
 }
 
 func NewLoginLimiter(db *sql.DB, window time.Duration, perIP, perIdentityIP int, now func() time.Time) (*LoginLimiter, error) {
@@ -135,7 +150,21 @@ RETURNING attempts,window_start`, key, now, l.namespace, cutoff, cutoff, now).Sc
 	if pairCount > l.perIdentityIP {
 		retry = max(retry, time.Duration(pairStart+l.window.Milliseconds()-now)*time.Millisecond)
 	}
-	return ipCount <= l.perIP && pairCount <= l.perIdentityIP, retry, nil
+	allowed := ipCount <= l.perIP && pairCount <= l.perIdentityIP
+	if !allowed {
+		if fn := l.onLimited.Load(); fn != nil && *fn != nil {
+			attempts := ipCount
+			if pairCount > attempts {
+				attempts = pairCount
+			}
+			winSec := int(l.window / time.Second)
+			if winSec <= 0 {
+				winSec = 1
+			}
+			(*fn)(l.namespace, addr, attempts, winSec)
+		}
+	}
+	return allowed, retry, nil
 }
 
 // Cleanup removes at most limit expired buckets. The predicate is repeated

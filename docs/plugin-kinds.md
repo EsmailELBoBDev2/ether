@@ -391,8 +391,12 @@ batch-capped at 500 IDs) and `KindBrowse` (`kinds.browse`) for
 viewer-authenticated `frontend_adapter` requests to apply the library's
 Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
-`CachePut` / `CacheOpen` for the per-library blob cache
+`CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
+`cache.delete(blobRef)` removes a blob from the calling plugin's own cache
+namespaces and frees its quota immediately (deleting an absent or already
+evicted ref succeeds), so large temporary downloads or extracts do not evict
+smaller kept files.
 Default cache quota is 2 GiB per library under a shared cap of
 min(10 GiB, 5% of the cache disk); your `cache.maxBytes` and the
 owner can override it.

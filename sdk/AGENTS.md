@@ -109,7 +109,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | list_source | contributes.listSources + `/catalog/{type}/{id}.json` | HTTPFetch, CatalogSearch/Get, KV |
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
 | catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
-| kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
+| kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open/Delete; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
 | notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |

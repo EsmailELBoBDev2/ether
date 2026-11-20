@@ -35,6 +35,7 @@ type KindBackends struct {
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete    func(ctx context.Context, pluginID, blobRef string) error
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
@@ -56,6 +57,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
+	m.deps.Backends.CacheDelete = b.CacheDelete
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.mu.Unlock()
@@ -75,6 +77,7 @@ func (m *Manager) kindBackends() KindBackends {
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
+		CacheDelete:    m.deps.Backends.CacheDelete,
 		StreamURL:      m.deps.Backends.StreamURL,
 		StreamPartURL:  m.deps.Backends.StreamPartURL,
 	}
@@ -639,6 +642,17 @@ func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int
 	return u + sep + "part=" + strconv.Itoa(*partIndex), nil
 }
 
+func validateBlobRef(blobRef string) error {
+	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
+	if !ok || len(hexPart) != 64 {
+		return &ValidationError{Fields: []FieldError{{Field: "blobRef", Message: "cache reference must be blob:<sha256>"}}}
+	}
+	if _, err := hex.DecodeString(hexPart); err != nil {
+		return &ValidationError{Fields: []FieldError{{Field: "blobRef", Message: "cache reference must be blob:<sha256>"}}}
+	}
+	return nil
+}
+
 func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error) {
 	r, err := h.callRecord(ctx)
 	if err != nil {
@@ -647,16 +661,39 @@ func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser
 	if !r.Enabled {
 		return nil, ErrDisabled
 	}
-	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
-	if !ok || len(hexPart) != 64 {
-		return nil, fmt.Errorf("plugins: cache reference must be blob:<sha256>")
-	}
-	if _, err := hex.DecodeString(hexPart); err != nil {
-		return nil, fmt.Errorf("plugins: cache reference must be blob:<sha256>")
+	if err := validateBlobRef(blobRef); err != nil {
+		return nil, err
 	}
 	backend := h.m.kindBackends().CacheOpen
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	return backend(ctx, h.plugin, blobRef)
+}
+
+// CacheDelete removes one cached blob from this plugin's own library cache
+// namespaces, freeing its quota immediately. Deleting a ref that is absent or
+// already evicted succeeds.
+func (h *host) CacheDelete(ctx context.Context, blobRef string) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	rec, _, err := h.record(ctx)
+	if err != nil {
+		return err
+	}
+	man := rec.Manifest
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 || !(man.HasCapability(CapCatalogProvider) || man.HasCapability(CapKindResolver)) {
+		h.noteDenied("cache")
+		return fmt.Errorf("%w: cache", ErrPermissionDenied)
+	}
+	if err := validateBlobRef(blobRef); err != nil {
+		return err
+	}
+	backend := h.m.kindBackends().CacheDelete
+	if backend == nil {
+		return ErrUnavailable
 	}
 	return backend(ctx, h.plugin, blobRef)
 }

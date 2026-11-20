@@ -221,10 +221,10 @@ func TestDataHostInvariants(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = blobs.Close() })
 		quotaBytes := int64(16 << 20)
-		cachePut, cacheOpen := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		cachePut, cacheOpen, cacheDelete := blobs.HostBackends(func(_, _ string) blobcache.Quota {
 			return blobcache.Quota{MaxBytes: quotaBytes}
 		})
-		env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen})
+		env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen, CacheDelete: cacheDelete})
 
 		body := bytes.Repeat([]byte("3DO-track-sector-payload-01234567"), (2<<20)/33+4096)
 		var archiveBuf bytes.Buffer

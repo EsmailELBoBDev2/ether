@@ -55,6 +55,7 @@ type Host interface {
 	ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error)
 	CacheOpen(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete(ctx context.Context, pluginID, blobRef string) error
 
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for viewerID and returns the Ether stream URL (spec §6.5).
@@ -134,6 +135,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("PUT /ether/plugin-host/cache/{libraryKey}/{name...}", h.cachePut)
 	mux.HandleFunc("POST /ether/plugin-host/cache/{libraryKey}", h.cachePut)
 	mux.HandleFunc("GET /ether/plugin-host/cache/{blobRef...}", h.cacheOpen)
+	mux.HandleFunc("DELETE /ether/plugin-host/cache/{blobRef...}", h.cacheDelete)
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
@@ -551,6 +553,13 @@ func (h *HostHandler) cacheOpen(w http.ResponseWriter, r *http.Request) {
 	defer rc.Close()
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, "", time.Time{}, rc)
+}
+
+func (h *HostHandler) cacheDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.finishErr(w, h.host.CacheDelete(r.Context(), pluginIDOf(r), r.PathValue("blobRef"))) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // frontendStreamURL mints a scoped stream ticket for one of the plugin's

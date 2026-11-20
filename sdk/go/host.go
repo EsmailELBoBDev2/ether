@@ -149,6 +149,12 @@ type PartStreamHost interface {
 	StreamPartURL(ctx context.Context, viewerID int64, itemRef string, partIndex int) (string, error)
 }
 
+// CacheDeleteHost deletes cached blobs from this plugin's own library cache
+// namespaces. RemoteHostClient and MockHost implement it.
+type CacheDeleteHost interface {
+	CacheDelete(ctx context.Context, blobRef string) error
+}
+
 const (
 	// MaxKindVisibleIDs is the per-call batch cap for kinds.visible (#615).
 	MaxKindVisibleIDs = 500
@@ -733,6 +739,14 @@ func (c *RemoteHostClient) CacheOpen(ctx context.Context, blobRef string) ([]byt
 		return nil, fmt.Errorf("plugin-host cache open: status %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// CacheDelete removes one cached blob from this plugin's own library cache
+// namespaces, freeing its quota immediately. Deleting an absent or already
+// evicted ref succeeds.
+func (c *RemoteHostClient) CacheDelete(ctx context.Context, blobRef string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/cache/"+url.PathEscape(blobRef), nil, nil, false)
+	return err
 }
 
 // StreamURL mints a scoped stream ticket and returns the Ether stream URL

@@ -60,6 +60,7 @@ type Backends struct {
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete    func(ctx context.Context, pluginID, blobRef string) error
 	// StreamURL mints a scoped stream ticket for one of a plugin's own kind
 	// items for one viewer and returns the Ether stream URL (spec §6.5).
 	StreamURL     func(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error)

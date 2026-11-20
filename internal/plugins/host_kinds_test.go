@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
@@ -410,6 +411,9 @@ func (h *memHost) CachePut(context.Context, string, string, io.Reader) (string, 
 func (h *memHost) CacheOpen(context.Context, string) (io.ReadSeekCloser, error) {
 	return nil, ErrUnavailable
 }
+func (h *memHost) CacheDelete(context.Context, string) error {
+	return ErrUnavailable
+}
 func (h *memHost) StreamURL(context.Context, string) (string, error) { return "", ErrUnavailable }
 func (h *memHost) StreamPartURL(context.Context, string, *int) (string, error) {
 	return "", ErrUnavailable
@@ -651,5 +655,178 @@ func TestKindVisibleAndBrowseGuardsAndHostedBridge(t *testing.T) {
 		Headers: map[string]string{"X-Ether-Viewer": "42"},
 	}); err == nil {
 		t.Fatal("non-adapter kinds.visible succeeded")
+	}
+}
+
+func TestCacheDelete(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	eng := wasm.NewEngine(nil)
+	t.Cleanup(func() { _ = eng.Close() })
+	env.m.RegisterRuntime("hosted", HostedRuntimeFactory(eng))
+
+	blobs, err := blobcache.Open(t.TempDir(), blobcache.Options{SweepPeriod: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = blobs.Close() })
+
+	const quotaBytes = 1024
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		return blobcache.Quota{MaxBytes: quotaBytes}
+	})
+	env.m.SetKindBackends(KindBackends{
+		CachePut:    cachePut,
+		CacheOpen:   cacheOpen,
+		CacheDelete: cacheDelete,
+	})
+
+	// Install content plugin A with a hosted JS handler that exercises ether.cache.delete.
+	manA := contentManifest()
+	manA.Ether.Contributes.MediaKinds[0].Sync = KindSyncDecl{Mode: KindSyncPush}
+	rawA, err := json.Marshal(manA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestJS := `function handle(req) {
+		if (req.path === "/ether/health") return { status: 200, body: { status: "ok" } };
+		var body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+		ether.cache.delete(body.ref);
+		return { status: 200, body: { ok: true } };
+	}`
+	prevA, err := env.m.PreviewInstall(ctx, Source{
+		Kind:     "studio",
+		Manifest: rawA,
+		Files:    map[string][]byte{"dist/plugin.js": []byte(guestJS)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recA, err := env.m.Install(ctx, prevA, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	libA := core.PluginLibraryKey(recA.ID, "recording")
+	hA := env.m.HostFor(recA.ID)
+
+	// Install a second content plugin B to verify cross-plugin isolation on identical content.
+	manB := contentManifest()
+	manB.ID = "community.example.other-library"
+	manB.Name = "Other Library"
+	manB.Ether.Contributes.MediaKinds[0].Sync = KindSyncDecl{Mode: KindSyncPush}
+	rawB, err := json.Marshal(manB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevB, err := env.m.PreviewInstall(ctx, Source{
+		Kind:     "studio",
+		Manifest: rawB,
+		Files:    map[string][]byte{"dist/plugin.js": []byte("// other")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recB, err := env.m.Install(ctx, prevB, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	libB := core.PluginLibraryKey(recB.ID, "recording")
+	hB := env.m.HostFor(recB.ID)
+
+	// Store a small kept blob (128 B) and a large temporary blob (768 B) under a 1024 B quota.
+	keptData := bytes.Repeat([]byte("k"), 128)
+	temp1Data := bytes.Repeat([]byte("a"), 768)
+	temp2Data := bytes.Repeat([]byte("b"), 768)
+
+	keptRef, err := hA.CachePut(ctx, libA, "kept.rom", bytes.NewReader(keptData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp1Ref, err := hA.CachePut(ctx, libA, "temp1.xml", bytes.NewReader(temp1Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete temp1 through hosted ether.cache.delete; its quota is reclaimed immediately.
+	delBody, _ := json.Marshal(map[string]string{"ref": temp1Ref})
+	resp, err := env.m.Call(ctx, recA.ID, Request{Method: "POST", Path: "/ether/job/run", Body: delBody})
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("hosted cache.delete: resp=%+v err=%v", resp, err)
+	}
+	if _, err := hA.CacheOpen(ctx, temp1Ref); !errors.Is(err, blobcache.ErrNotFound) {
+		t.Fatalf("CacheOpen after delete = %v, want ErrNotFound", err)
+	}
+
+	// Writing a second large temporary blob fits without evicting the older small kept blob.
+	if _, err := hA.CachePut(ctx, libA, "temp2.xml", bytes.NewReader(temp2Data)); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := hA.CacheOpen(ctx, keptRef)
+	if err != nil {
+		t.Fatalf("kept blob was evicted despite deleting temp1: %v", err)
+	}
+	gotKept, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if !bytes.Equal(gotKept, keptData) {
+		t.Fatalf("kept blob content mismatch")
+	}
+
+	// Deleting an absent/already-deleted ref succeeds idempotently.
+	if err := hA.CacheDelete(ctx, temp1Ref); err != nil {
+		t.Fatalf("idempotent delete failed: %v", err)
+	}
+
+	// Cross-plugin isolation: deleting a ref with identical content never deletes plugin B's copy.
+	keptRefB, err := hB.CachePut(ctx, libB, "kept.rom", bytes.NewReader(keptData))
+	if err != nil || keptRefB != keptRef {
+		t.Fatalf("plugin B CachePut = %q %v (want %q)", keptRefB, err, keptRef)
+	}
+	if err := hA.CacheDelete(ctx, keptRef); err != nil {
+		t.Fatalf("plugin A delete: %v", err)
+	}
+	if _, err := hA.CacheOpen(ctx, keptRef); !errors.Is(err, blobcache.ErrNotFound) {
+		t.Fatalf("plugin A blob still present after delete: %v", err)
+	}
+	rcB, err := hB.CacheOpen(ctx, keptRefB)
+	if err != nil {
+		t.Fatalf("plugin A deleted plugin B's blob: %v", err)
+	}
+	_ = rcB.Close()
+
+	// Validation, read-only tool, capability, and role checks match cache write services.
+	var ve *ValidationError
+	if err := hA.CacheDelete(ctx, "blob:not-a-hash"); !errors.As(err, &ve) {
+		t.Fatalf("malformed ref err = %v, want *ValidationError", err)
+	}
+	roCtx := context.WithValue(ctx, readOnlyToolContextKey{}, true)
+	if err := hA.CacheDelete(roCtx, keptRef); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("read-only tool CacheDelete = %v, want ErrPermissionDenied", err)
+	}
+	// Non-content plugin (no media kinds or cache capabilities) is denied.
+	plainMan := baseManifest()
+	plainMan.ID = "community.example.plain"
+	plainMan.Name = "Plain"
+	rawPlain, _ := json.Marshal(plainMan)
+	prevPlain, err := env.m.PreviewInstall(ctx, Source{
+		Kind:     "studio",
+		Manifest: rawPlain,
+		Files:    map[string][]byte{"dist/plugin.js": []byte("// plain")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recPlain, err := env.m.Install(ctx, prevPlain, InstallOptions{AcceptAddedPermissions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.m.HostFor(recPlain.ID).CacheDelete(ctx, keptRef); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("non-content plugin CacheDelete = %v, want ErrPermissionDenied", err)
+	}
+	// Switching off both content capabilities denies CacheDelete.
+	if _, err := env.m.SetRoles(ctx, recA.ID, []Capability{CapCatalogProvider, CapKindResolver}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hA.CacheDelete(ctx, keptRef); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("disabled roles CacheDelete = %v, want ErrPermissionDenied", err)
 	}
 }

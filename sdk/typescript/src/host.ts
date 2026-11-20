@@ -404,6 +404,7 @@ export interface EtherHost {
     put(libraryKey: string, name: string, data: Uint8Array): MaybePromise<string>;
     open(blobRef: string): MaybePromise<Uint8Array>;
     read?(blobRef: string, range: DataRange): MaybePromise<Uint8Array>;
+    delete?(blobRef: string): MaybePromise<void>;
   };
   /** ZIP (Store/Deflate), 7z (Copy/LZMA/LZMA2), and RAR 4/5 data services.
    * Ranges bound returned bytes; solid reads restart at the block beginning.
@@ -557,6 +558,9 @@ export function createHostedClient(): EtherHost {
           return new Uint8Array(g.__ether_host_binary("cache.read", JSON.stringify([blob, range])) as ArrayBuffer);
         }
         return decodeData(callHost("cache.read", [blob, range]));
+      },
+      delete: (blob) => {
+        callHost("cache.delete", [blob]);
       },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
@@ -1121,6 +1125,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         });
         if (!resp.ok) throw new Error(`plugin-host cache open: status ${resp.status}`);
         return new Uint8Array(await resp.arrayBuffer());
+      },
+      async delete(blobRef) {
+        await callJson("DELETE", `/ether/plugin-host/cache/${encodeURIComponent(blobRef)}`);
       },
     },
     frontend: {

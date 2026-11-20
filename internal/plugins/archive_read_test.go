@@ -186,10 +186,10 @@ func TestArchiveReadBatchAndLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = blobs.Close() })
-		cachePut, cacheOpen := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		cachePut, cacheOpen, cacheDelete := blobs.HostBackends(func(_, _ string) blobcache.Quota {
 			return blobcache.Quota{MaxBytes: 512 << 20}
 		})
-		env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen})
+		env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen, CacheDelete: cacheDelete})
 
 		h := env.m.HostFor(rec.ID).(*host)
 		rawLimits, err := CallDataHost(ctx, h, "runtime.limits", json.RawMessage("[]"))

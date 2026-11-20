@@ -1026,9 +1026,11 @@ type Host interface {
 	// (search to look, acquire to open debrid content, §4.5).
 	ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error)
 	// CachePut stores one blob in a kind library's cache namespace and
-	// returns its "blob:<sha256>" reference; CacheOpen reads one back.
+	// returns its "blob:<sha256>" reference; CacheOpen reads one back;
+	// CacheDelete removes one from this plugin's own namespaces.
 	CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete(ctx context.Context, blobRef string) error
 
 	// StreamURL mints a short-lived, scoped ticket for one of this
 	// plugin's own kind items and returns the Ether stream URL a frontend

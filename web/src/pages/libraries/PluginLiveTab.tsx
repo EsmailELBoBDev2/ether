@@ -6,21 +6,10 @@ import { ErrorPanel, LoadingRows } from "../../components/feedback";
 import { t, tn } from "../../i18n";
 import { formatNumber } from "../../lib/format";
 import { useAsync, useDebouncedValue } from "../../lib/hooks";
-import {
-  librariesApi,
-  type Library,
-  type LibraryLiveItem,
-  type LibraryTab,
-} from "./api";
+import { librariesApi, type Library, type LibraryLiveItem, type LibraryTab } from "./api";
 import { PluginLivePreview } from "./PluginLivePreview";
 
-export function PluginLiveTab({
-  library,
-  tab,
-}: {
-  library: Library;
-  tab: LibraryTab;
-}) {
+export function PluginLiveTab({ library, tab }: { library: Library; tab: LibraryTab }) {
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query, 300);
   const [filter, setFilter] = useState("");
@@ -91,7 +80,11 @@ export function PluginLiveTab({
           </label>
         ) : null}
         {filters.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={t("Filter streams")}>
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label={t("Filter streams")}
+          >
             <button
               type="button"
               onClick={() => setFilter("")}
@@ -152,7 +145,9 @@ export function PluginLiveTab({
       {!page.loading && page.data && items.length === 0 ? (
         <EmptyState
           icon={<Radio size={22} aria-hidden />}
-          title={debouncedQuery || filter ? t("No matching live streams") : t("Nothing live right now")}
+          title={
+            debouncedQuery || filter ? t("No matching live streams") : t("Nothing live right now")
+          }
           description={
             debouncedQuery || filter
               ? t("Try clearing your search or filter.")
@@ -188,11 +183,7 @@ export function PluginLiveTab({
                   )}
                 >
                   {item.thumb ? (
-                    <Artwork
-                      src={item.thumb}
-                      alt=""
-                      className="size-full object-cover"
-                    />
+                    <Artwork src={item.thumb} alt="" className="size-full object-cover" />
                   ) : (
                     <span className="grid size-full place-items-center bg-surface-hover text-fg-muted">
                       <Radio size={24} aria-hidden />
@@ -203,7 +194,9 @@ export function PluginLiveTab({
                       <span className="inline-flex items-center gap-1 rounded bg-danger px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow">
                         <span className="size-1.5 rounded-full bg-white" /> {t("Live")}
                       </span>
-                    ) : <span />}
+                    ) : (
+                      <span />
+                    )}
                     {item.badge ? (
                       <span className="rounded bg-black/75 px-1.5 py-0.5 text-[10px] font-medium text-white">
                         {item.badge}

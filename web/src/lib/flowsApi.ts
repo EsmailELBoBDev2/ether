@@ -103,7 +103,10 @@ export const flowsApi = {
     return unwrapFlow(raw);
   },
 
-  async updateFlow(id: string, flow: Partial<Flow> & { name: string; graph: Graph }): Promise<Flow> {
+  async updateFlow(
+    id: string,
+    flow: Partial<Flow> & { name: string; graph: Graph },
+  ): Promise<Flow> {
     const raw = await send<Flow | { flow: Flow }>("PUT", `/flows/${encodeURIComponent(id)}`, flow);
     return unwrapFlow(raw);
   },
@@ -143,12 +146,7 @@ export const flowsApi = {
   },
 
   testRun(id: string, req: TestRunRequest, signal?: AbortSignal): Promise<TestRunResult> {
-    return send<TestRunResult>(
-      "POST",
-      `/flows/${encodeURIComponent(id)}/test`,
-      req,
-      signal,
-    );
+    return send<TestRunResult>("POST", `/flows/${encodeURIComponent(id)}/test`, req, signal);
   },
 
   async runManual(id: string, inputs?: Record<string, unknown>): Promise<Run> {
@@ -176,9 +174,10 @@ export const flowsApi = {
     },
     signal?: AbortSignal,
   ): Promise<RunListResponse> {
-    const raw = await apiFetch<
-      Run[] | { runs: Run[] | null; nextCursor?: string }
-    >(`/flows/runs${qs(params ?? {})}`, { signal });
+    const raw = await apiFetch<Run[] | { runs: Run[] | null; nextCursor?: string }>(
+      `/flows/runs${qs(params ?? {})}`,
+      { signal },
+    );
     if (Array.isArray(raw)) return { runs: raw };
     return { runs: raw?.runs ?? [], nextCursor: raw?.nextCursor };
   },
@@ -188,9 +187,10 @@ export const flowsApi = {
     params?: { status?: RunStatus | ""; cursor?: string; limit?: number },
     signal?: AbortSignal,
   ): Promise<RunListResponse> {
-    const raw = await apiFetch<
-      Run[] | { runs: Run[] | null; nextCursor?: string }
-    >(`/flows/${encodeURIComponent(flowId)}/runs${qs(params ?? {})}`, { signal });
+    const raw = await apiFetch<Run[] | { runs: Run[] | null; nextCursor?: string }>(
+      `/flows/${encodeURIComponent(flowId)}/runs${qs(params ?? {})}`,
+      { signal },
+    );
     if (Array.isArray(raw)) return { runs: raw };
     return { runs: raw?.runs ?? [], nextCursor: raw?.nextCursor };
   },

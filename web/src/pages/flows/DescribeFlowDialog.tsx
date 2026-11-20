@@ -1,4 +1,12 @@
-import { Alert, AlertDescription, AlertTitle, Button, Textarea, cn, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Button,
+  Textarea,
+  cn,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import { ArrowDown, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { Link, useInRouterContext } from "react-router-dom";
@@ -11,7 +19,9 @@ import { nodeKindLabel } from "./types";
 
 const EXAMPLES = localized(() => [
   t("Stop video transcodes for viewers away from home"),
-  t("Tell me when a viewer can't play something, but not more than once an hour for the same title"),
+  t(
+    "Tell me when a viewer can't play something, but not more than once an hour for the same title",
+  ),
   t("Send a weekly 'new this week' newsletter on Fridays"),
   t("Dim the cinema lights when a movie starts on the living-room TV"),
   t("Stop streams that have been paused for ages"),
@@ -68,8 +78,15 @@ export function DescribeFlowDialog({
       footer={
         draft ? (
           <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="ghost" onClick={() => setDraft(null)}>{t("Describe something else")}</Button>
-            <Button onClick={() => { onDraft(draft); onClose(); }}>
+            <Button variant="ghost" onClick={() => setDraft(null)}>
+              {t("Describe something else")}
+            </Button>
+            <Button
+              onClick={() => {
+                onDraft(draft);
+                onClose();
+              }}
+            >
               {applyLabel ?? t("Open in editor")}
             </Button>
           </div>
@@ -80,7 +97,9 @@ export function DescribeFlowDialog({
         {!draft ? (
           <>
             <p className="text-sm text-fg-muted">
-              {t("Say what should happen, in your own words. Ether drafts the flow — trigger, checks and actions — and you review it on the canvas before anything runs.")}
+              {t(
+                "Say what should happen, in your own words. Ether drafts the flow — trigger, checks and actions — and you review it on the canvas before anything runs.",
+              )}
             </p>
             <Textarea
               aria-label={t("What should happen?")}
@@ -157,7 +176,9 @@ export function DescribeFlowDialog({
               <p className="mt-1.5 text-sm text-fg">{draft.explanation}</p>
             </div>
             <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">{t("The draft, step by step")}</p>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
+                {t("The draft, step by step")}
+              </p>
               <ol className="space-y-1">
                 {draft.graph.nodes.map((n, i) => {
                   const Icon = iconForNode(n.kind, String(n.config?.actionType ?? "") || undefined);
@@ -165,21 +186,38 @@ export function DescribeFlowDialog({
                   return (
                     <li key={n.id}>
                       <div className="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2">
-                        <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", tone.chip)}><Icon size={15} /></span>
+                        <span
+                          className={cn(
+                            "grid size-8 shrink-0 place-items-center rounded-lg",
+                            tone.chip,
+                          )}
+                        >
+                          <Icon size={15} />
+                        </span>
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium text-fg">{n.label || nodeKindLabel(n.kind)}</span>
-                          <span className="block text-xs text-fg-subtle">{nodeKindLabel(n.kind)}</span>
+                          <span className="block truncate text-sm font-medium text-fg">
+                            {n.label || nodeKindLabel(n.kind)}
+                          </span>
+                          <span className="block text-xs text-fg-subtle">
+                            {nodeKindLabel(n.kind)}
+                          </span>
                         </span>
                       </div>
                       {i < draft.graph.nodes.length - 1 ? (
-                        <span className="flex justify-center py-0.5 text-fg-subtle"><ArrowDown size={13} /></span>
+                        <span className="flex justify-center py-0.5 text-fg-subtle">
+                          <ArrowDown size={13} />
+                        </span>
                       ) : null}
                     </li>
                   );
                 })}
               </ol>
             </div>
-            <p className="text-sm text-fg-muted">{t("Nothing is saved yet — open it in the editor to adjust the details, test it, and save.")}</p>
+            <p className="text-sm text-fg-muted">
+              {t(
+                "Nothing is saved yet — open it in the editor to adjust the details, test it, and save.",
+              )}
+            </p>
           </>
         )}
       </div>

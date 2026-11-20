@@ -123,9 +123,17 @@ describe("PluginBrowse dateDisplay and live tab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Main Stage Broadcast/i }));
     await waitFor(() =>
-      expect(playSpy).toHaveBeenCalledWith(42, "live-1", "live", expect.any(Boolean), expect.any(Boolean)),
+      expect(playSpy).toHaveBeenCalledWith(
+        42,
+        "live-1",
+        "live",
+        expect.any(Boolean),
+        expect.any(Boolean),
+      ),
     );
-    expect(screen.getByRole("dialog", { name: "Watching Main Stage Broadcast" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Watching Main Stage Broadcast" }),
+    ).toBeInTheDocument();
   });
 });
 

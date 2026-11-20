@@ -70,31 +70,56 @@ export function iconForNode(kind: NodeKind, actionType?: string): LucideIcon {
 export function categoryTone(kind: NodeKind): { chip: string; ring: string; dot: string } {
   switch (nodeCategory(kind)) {
     case "trigger":
-      return { chip: "bg-primary-subtle text-primary", ring: "border-primary/40", dot: "bg-primary" };
+      return {
+        chip: "bg-primary-subtle text-primary",
+        ring: "border-primary/40",
+        dot: "bg-primary",
+      };
     case "condition":
-      return { chip: "bg-warning-subtle text-warning", ring: "border-warning/40", dot: "bg-warning" };
+      return {
+        chip: "bg-warning-subtle text-warning",
+        ring: "border-warning/40",
+        dot: "bg-warning",
+      };
     case "logic":
       return { chip: "bg-info-subtle text-info", ring: "border-info/40", dot: "bg-info" };
     case "action":
-      return { chip: "bg-success-subtle text-success", ring: "border-success/40", dot: "bg-success" };
+      return {
+        chip: "bg-success-subtle text-success",
+        ring: "border-success/40",
+        dot: "bg-success",
+      };
   }
 }
 
 export function runStatusLabel(status: RunStatus): string {
   switch (status) {
-    case "pending": return t("Queued");
-    case "running": return t("Running");
-    case "waiting": return t("Waiting");
-    case "completed": return t("Completed");
-    case "failed": return t("Failed");
-    case "cancelled": return t("Cancelled");
-    case "throttled": return t("Throttled");
+    case "pending":
+      return t("Queued");
+    case "running":
+      return t("Running");
+    case "waiting":
+      return t("Waiting");
+    case "completed":
+      return t("Completed");
+    case "failed":
+      return t("Failed");
+    case "cancelled":
+      return t("Cancelled");
+    case "throttled":
+      return t("Throttled");
   }
 }
 
 export function RunStatusBadge({ status }: { status: RunStatus }) {
   const variant =
-    status === "completed" ? "success" : status === "failed" ? "destructive" : status === "running" || status === "waiting" ? "default" : "outline";
+    status === "completed"
+      ? "success"
+      : status === "failed"
+        ? "destructive"
+        : status === "running" || status === "waiting"
+          ? "default"
+          : "outline";
   return (
     <Badge variant={variant as never} className={cn(status === "running" && "animate-pulse")}>
       {runStatusLabel(status)}
@@ -115,7 +140,10 @@ let catalogueCache: Catalogue | null = null;
 export function useCatalogue() {
   return useAsync<Catalogue>(async () => {
     if (catalogueCache) return catalogueCache;
-    const [events, actions] = await Promise.all([flowsApi.eventCatalogue(), flowsApi.actionCatalogue()]);
+    const [events, actions] = await Promise.all([
+      flowsApi.eventCatalogue(),
+      flowsApi.actionCatalogue(),
+    ]);
     catalogueCache = {
       events,
       actions,

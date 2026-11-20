@@ -1,4 +1,12 @@
-import { Button, Input, Switch, Textarea, cn, confirmDialog, toast } from "@braedonsaunders/appkit-ui";
+import {
+  Button,
+  Input,
+  Switch,
+  Textarea,
+  cn,
+  confirmDialog,
+  toast,
+} from "@braedonsaunders/appkit-ui";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -63,8 +71,20 @@ interface Anchor {
   y: number;
 }
 
-const PALETTE_TRIGGERS: NodeKind[] = ["trigger.event", "trigger.schedule", "trigger.webhook", "trigger.manual"];
-const PALETTE_LOGIC: NodeKind[] = ["condition", "logic.switch", "logic.delay", "logic.wait_event", "logic.window", "logic.dedupe"];
+const PALETTE_TRIGGERS: NodeKind[] = [
+  "trigger.event",
+  "trigger.schedule",
+  "trigger.webhook",
+  "trigger.manual",
+];
+const PALETTE_LOGIC: NodeKind[] = [
+  "condition",
+  "logic.switch",
+  "logic.delay",
+  "logic.wait_event",
+  "logic.window",
+  "logic.dedupe",
+];
 
 export function FlowEditor({ flowId }: { flowId?: string }) {
   const { locale } = useLocale();
@@ -93,8 +113,16 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
   const [paletteQuery, setPaletteQuery] = useState("");
   const [testOpen, setTestOpen] = useState(false);
   const [describeOpen, setDescribeOpen] = useState(false);
-  const [connecting, setConnecting] = useState<{ source: string; handle: string; x: number; y: number } | null>(null);
-  const [anchors, setAnchors] = useState<{ out: Map<string, Anchor>; inn: Map<string, Anchor> }>({ out: new Map(), inn: new Map() });
+  const [connecting, setConnecting] = useState<{
+    source: string;
+    handle: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [anchors, setAnchors] = useState<{ out: Map<string, Anchor>; inn: Map<string, Anchor> }>({
+    out: new Map(),
+    inn: new Map(),
+  });
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<
@@ -124,7 +152,13 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
         setDirty(true);
       } else {
         setName(t("Untitled flow"));
-        const trig: FlowNode = { id: newNodeId(), kind: "trigger.event", label: nodeKindLabel("trigger.event"), position: { x: 64, y: 160 }, config: defaultConfigForNode("trigger.event") };
+        const trig: FlowNode = {
+          id: newNodeId(),
+          kind: "trigger.event",
+          label: nodeKindLabel("trigger.event"),
+          position: { x: 64, y: 160 },
+          config: defaultConfigForNode("trigger.event"),
+        };
         setGraph({ schemaVersion: 1, nodes: [trig], edges: [] });
       }
     }
@@ -155,8 +189,18 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
 
   const issuesByNode = useMemo(() => {
     const map = new Map<string, { errors: string[]; warnings: string[] }>();
-    for (const i of validation?.errors ?? []) if (i.nodeId) map.set(i.nodeId, { errors: [...(map.get(i.nodeId)?.errors ?? []), i.message], warnings: map.get(i.nodeId)?.warnings ?? [] });
-    for (const i of validation?.warnings ?? []) if (i.nodeId) map.set(i.nodeId, { errors: map.get(i.nodeId)?.errors ?? [], warnings: [...(map.get(i.nodeId)?.warnings ?? []), i.message] });
+    for (const i of validation?.errors ?? [])
+      if (i.nodeId)
+        map.set(i.nodeId, {
+          errors: [...(map.get(i.nodeId)?.errors ?? []), i.message],
+          warnings: map.get(i.nodeId)?.warnings ?? [],
+        });
+    for (const i of validation?.warnings ?? [])
+      if (i.nodeId)
+        map.set(i.nodeId, {
+          errors: map.get(i.nodeId)?.errors ?? [],
+          warnings: [...(map.get(i.nodeId)?.warnings ?? []), i.message],
+        });
     return map;
   }, [validation]);
 
@@ -164,7 +208,10 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     (clientX: number, clientY: number) => {
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return { x: 0, y: 0 };
-      return { x: (clientX - rect.left - view.x) / view.k, y: (clientY - rect.top - view.y) / view.k };
+      return {
+        x: (clientX - rect.left - view.x) / view.k,
+        y: (clientY - rect.top - view.y) / view.k,
+      };
     },
     [view],
   );
@@ -178,17 +225,26 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     const inn = new Map<string, Anchor>();
     canvas.querySelectorAll<HTMLElement>("[data-port-out]").forEach((el) => {
       const r = el.getBoundingClientRect();
-      out.set(el.dataset.portOut!, { x: (r.left + r.width / 2 - rect.left - view.x) / view.k, y: (r.top + r.height / 2 - rect.top - view.y) / view.k });
+      out.set(el.dataset.portOut!, {
+        x: (r.left + r.width / 2 - rect.left - view.x) / view.k,
+        y: (r.top + r.height / 2 - rect.top - view.y) / view.k,
+      });
     });
     canvas.querySelectorAll<HTMLElement>("[data-port-in]").forEach((el) => {
       const r = el.getBoundingClientRect();
-      inn.set(el.dataset.portIn!, { x: (r.left + r.width / 2 - rect.left - view.x) / view.k, y: (r.top + r.height / 2 - rect.top - view.y) / view.k });
+      inn.set(el.dataset.portIn!, {
+        x: (r.left + r.width / 2 - rect.left - view.x) / view.k,
+        y: (r.top + r.height / 2 - rect.top - view.y) / view.k,
+      });
     });
     setAnchors((prev) => {
-      const same = prev.out.size === out.size && prev.inn.size === inn.size && [...out.entries()].every(([k, v]) => {
-        const p = prev.out.get(k);
-        return p && Math.abs(p.x - v.x) < 0.5 && Math.abs(p.y - v.y) < 0.5;
-      });
+      const same =
+        prev.out.size === out.size &&
+        prev.inn.size === inn.size &&
+        [...out.entries()].every(([k, v]) => {
+          const p = prev.out.get(k);
+          return p && Math.abs(p.x - v.x) < 0.5 && Math.abs(p.y - v.y) < 0.5;
+        });
       return same ? prev : { out, inn };
     });
   }, [view]);
@@ -246,13 +302,27 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
       const drag = dragRef.current;
       if (!drag) return;
       if (drag.mode === "pan") {
-        setView((v) => ({ ...v, x: drag.viewX + e.clientX - drag.startX, y: drag.viewY + e.clientY - drag.startY }));
+        setView((v) => ({
+          ...v,
+          x: drag.viewX + e.clientX - drag.startX,
+          y: drag.viewY + e.clientY - drag.startY,
+        }));
       } else if (drag.mode === "node") {
         const dx = (e.clientX - drag.startX) / view.k;
         const dy = (e.clientY - drag.startY) / view.k;
         setGraph((g) => ({
           ...g,
-          nodes: g.nodes.map((n) => (n.id === drag.id ? { ...n, position: { x: Math.round((drag.nodeX + dx) / 4) * 4, y: Math.round((drag.nodeY + dy) / 4) * 4 } } : n)),
+          nodes: g.nodes.map((n) =>
+            n.id === drag.id
+              ? {
+                  ...n,
+                  position: {
+                    x: Math.round((drag.nodeX + dx) / 4) * 4,
+                    y: Math.round((drag.nodeY + dy) / 4) * 4,
+                  },
+                }
+              : n,
+          ),
         }));
         setDirty(true);
       } else if (drag.mode === "connect") {
@@ -265,7 +335,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
       dragRef.current = null;
       if (drag?.mode === "connect") {
         setConnecting(null);
-        const el = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-node-id]");
+        const el = document
+          .elementFromPoint(e.clientX, e.clientY)
+          ?.closest<HTMLElement>("[data-node-id]");
         const targetId = el?.dataset.nodeId;
         if (targetId && targetId !== drag.source) {
           const target = graph.nodes.find((n) => n.id === targetId);
@@ -273,10 +345,22 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
             toast.error(t("Triggers start a flow — nothing connects into one."));
           } else if (wouldCreateCycle(graph, drag.source, targetId)) {
             toast.error(t("That connection would loop the flow back on itself."));
-          } else if (graph.edges.some((edge) => edge.source === drag.source && edge.target === targetId && (edge.sourceHandle ?? "next") === drag.handle)) {
+          } else if (
+            graph.edges.some(
+              (edge) =>
+                edge.source === drag.source &&
+                edge.target === targetId &&
+                (edge.sourceHandle ?? "next") === drag.handle,
+            )
+          ) {
             // Already wired.
           } else {
-            const edge: FlowEdge = { id: newNodeId("e"), source: drag.source, target: targetId, sourceHandle: drag.handle };
+            const edge: FlowEdge = {
+              id: newNodeId("e"),
+              source: drag.source,
+              target: targetId,
+              sourceHandle: drag.handle,
+            };
             touch({ ...graph, edges: [...graph.edges, edge] });
           }
         }
@@ -300,7 +384,10 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     const minY = Math.min(...ys);
     const maxX = Math.max(...xs) + NODE_W;
     const maxY = Math.max(...ys) + 160;
-    const k = Math.max(0.35, Math.min(1.15, Math.min(rect.width / (maxX - minX + 80), rect.height / (maxY - minY + 80))));
+    const k = Math.max(
+      0.35,
+      Math.min(1.15, Math.min(rect.width / (maxX - minX + 80), rect.height / (maxY - minY + 80))),
+    );
     setView({ k, x: 40 - minX * k, y: 40 - minY * k });
   }, [graph.nodes]);
 
@@ -321,8 +408,16 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     }
     setSaving(true);
     try {
-      const payload = { name: name.trim() || t("Untitled flow"), description, enabled, graph, limits };
-      const saved = savedId ? await flowsApi.updateFlow(savedId, payload) : await flowsApi.createFlow(payload);
+      const payload = {
+        name: name.trim() || t("Untitled flow"),
+        description,
+        enabled,
+        graph,
+        limits,
+      };
+      const saved = savedId
+        ? await flowsApi.updateFlow(savedId, payload)
+        : await flowsApi.createFlow(payload);
       setSavedId(saved.id);
       setDirty(false);
       toast.success(t("Flow saved"));
@@ -348,7 +443,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     if (!savedId) return;
     const ok = await confirmDialog({
       title: t("Delete this flow?"),
-      message: t("“{name}” and its run history will be removed. Active runs are cancelled.", { name }),
+      message: t("“{name}” and its run history will be removed. Active runs are cancelled.", {
+        name,
+      }),
       confirmLabel: t("Delete"),
       tone: "danger",
     });
@@ -367,7 +464,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     try {
       const res = await flowsApi.rotateWebhookToken(savedId);
       setWebhookUrl(res.webhookUrl);
-      toast.success(t("New webhook URL issued — the old one stops working."), { description: res.webhookUrl });
+      toast.success(t("New webhook URL issued — the old one stops working."), {
+        description: res.webhookUrl,
+      });
     } catch (e) {
       toast.error(errorMessage(e));
     }
@@ -376,7 +475,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
   const selected = graph.nodes.find((n) => n.id === selectedNode) ?? null;
   const fieldGroups = useMemo(() => {
     if (!catalogue || !selected) return [];
-    return buildFieldGroups(graph, selected.id, catalogue.events, catalogue.actions, { filterableOnly: false });
+    return buildFieldGroups(graph, selected.id, catalogue.events, catalogue.actions, {
+      filterableOnly: false,
+    });
     // `locale` re-runs the memo so picker group labels follow a language switch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogue, graph, selected, locale]);
@@ -390,8 +491,18 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
   const hasManual = graph.nodes.some((n) => n.kind === "trigger.manual");
   const hasWebhook = graph.nodes.some((n) => n.kind === "trigger.webhook");
 
-  if (loaded.error && flowId) return <div className="p-6"><ErrorPanel error={loaded.error} onRetry={() => void loaded.reload()} /></div>;
-  if (!ready || !catalogue) return <div className="p-6"><LoadingRows rows={5} /></div>;
+  if (loaded.error && flowId)
+    return (
+      <div className="p-6">
+        <ErrorPanel error={loaded.error} onRetry={() => void loaded.reload()} />
+      </div>
+    );
+  if (!ready || !catalogue)
+    return (
+      <div className="p-6">
+        <LoadingRows rows={5} />
+      </div>
+    );
 
   const paletteActions = (() => {
     const q = paletteQuery.trim().toLowerCase();
@@ -404,7 +515,8 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     }
     return [...groups.entries()];
   })();
-  const matchesQuery = (label: string) => !paletteQuery.trim() || label.toLowerCase().includes(paletteQuery.trim().toLowerCase());
+  const matchesQuery = (label: string) =>
+    !paletteQuery.trim() || label.toLowerCase().includes(paletteQuery.trim().toLowerCase());
 
   const edgePath = (x1: number, y1: number, x2: number, y2: number) => {
     const dx = Math.max(48, Math.abs(x2 - x1) / 2);
@@ -415,17 +527,30 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
     <div className="flex h-[calc(100dvh-8.5rem)] min-h-[34rem] flex-col">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2 pb-3">
-        <Link to="/flows" className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-fg-muted transition-colors hover:text-fg">
+        <Link
+          to="/flows"
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-fg-muted transition-colors hover:text-fg"
+        >
           <ArrowLeft size={15} /> {t("Flows")}
         </Link>
         <Input
           aria-label={t("Flow name")}
           value={name}
-          onChange={(e) => { setName(e.target.value); setDirty(true); }}
+          onChange={(e) => {
+            setName(e.target.value);
+            setDirty(true);
+          }}
           className="h-9 w-64 max-w-[50vw] border-transparent bg-transparent text-base font-semibold shadow-none hover:border-border focus:border-border"
         />
         <label className="flex items-center gap-2 text-sm text-fg-muted">
-          <Switch aria-label={t("Flow enabled")} checked={enabled} onChange={(e) => { setEnabled(e.target.checked); setDirty(true); }} />
+          <Switch
+            aria-label={t("Flow enabled")}
+            checked={enabled}
+            onChange={(e) => {
+              setEnabled(e.target.checked);
+              setDirty(true);
+            }}
+          />
           {enabled ? t("On") : t("Off")}
         </label>
         <button
@@ -462,7 +587,11 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
           <Button variant="outline" size="sm" onClick={() => setTestOpen(true)}>
             <FlaskConical size={14} /> {t("Test run")}
           </Button>
-          <Button size="sm" disabled={saving || (!dirty && Boolean(savedId))} onClick={() => void save()}>
+          <Button
+            size="sm"
+            disabled={saving || (!dirty && Boolean(savedId))}
+            onClick={() => void save()}
+          >
             <Save size={14} /> {saving ? t("Saving…") : savedId ? t("Save") : t("Save flow")}
           </Button>
         </div>
@@ -470,32 +599,60 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
 
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-surface">
         {/* Palette */}
-        <aside className="hidden w-60 shrink-0 flex-col border-r border-border md:flex" aria-label={t("Step palette")}>
+        <aside
+          className="hidden w-60 shrink-0 flex-col border-r border-border md:flex"
+          aria-label={t("Step palette")}
+        >
           <label className="flex items-center gap-2 border-b border-border px-3 py-2.5">
             <Search size={14} className="shrink-0 text-fg-subtle" />
-            <input value={paletteQuery} onChange={(e) => setPaletteQuery(e.target.value)} placeholder={t("Search steps…")} aria-label={t("Search steps")} className="min-w-0 flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-subtle" />
+            <input
+              value={paletteQuery}
+              onChange={(e) => setPaletteQuery(e.target.value)}
+              placeholder={t("Search steps…")}
+              aria-label={t("Search steps")}
+              className="min-w-0 flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-subtle"
+            />
           </label>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             <PaletteGroup title={t("Start with")}>
               {PALETTE_TRIGGERS.filter((k) => matchesQuery(nodeKindLabel(k))).map((kind) => (
-                <PaletteItem key={kind} kind={kind} label={nodeKindLabel(kind)} onAdd={() => addNode(kind)} />
+                <PaletteItem
+                  key={kind}
+                  kind={kind}
+                  label={nodeKindLabel(kind)}
+                  onAdd={() => addNode(kind)}
+                />
               ))}
             </PaletteGroup>
             <PaletteGroup title={t("Check & steer")}>
               {PALETTE_LOGIC.filter((k) => matchesQuery(nodeKindLabel(k))).map((kind) => (
-                <PaletteItem key={kind} kind={kind} label={nodeKindLabel(kind)} onAdd={() => addNode(kind)} />
+                <PaletteItem
+                  key={kind}
+                  kind={kind}
+                  label={nodeKindLabel(kind)}
+                  onAdd={() => addNode(kind)}
+                />
               ))}
             </PaletteGroup>
             {paletteActions.map(([group, actions]) => (
               <PaletteGroup key={group} title={actionGroupLabel(group)}>
                 {actions.map((a) => (
-                  <PaletteItem key={a.type} kind="action" actionType={a.type} label={a.label} hint={a.description} onAdd={() => addNode("action", a.type)} />
+                  <PaletteItem
+                    key={a.type}
+                    kind="action"
+                    actionType={a.type}
+                    label={a.label}
+                    hint={a.description}
+                    onAdd={() => addNode("action", a.type)}
+                  />
                 ))}
               </PaletteGroup>
             ))}
           </div>
           <p className="border-t border-border px-3 py-2 text-[11px] leading-snug text-fg-subtle">
-            {t("Click or drag a step onto the canvas. Drag from a step's right-hand dot to connect it.")}
+            {t(
+              "Click or drag a step onto the canvas. Drag from a step's right-hand dot to connect it.",
+            )}
           </p>
         </aside>
 
@@ -505,8 +662,17 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
           data-flow-canvas
           className="flow-canvas relative min-w-0 flex-1 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
           onPointerDown={(e) => {
-            if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.canvasBg === "1") {
-              dragRef.current = { mode: "pan", startX: e.clientX, startY: e.clientY, viewX: view.x, viewY: view.y };
+            if (
+              e.target === e.currentTarget ||
+              (e.target as HTMLElement).dataset.canvasBg === "1"
+            ) {
+              dragRef.current = {
+                mode: "pan",
+                startX: e.clientX,
+                startY: e.clientY,
+                viewX: view.x,
+                viewY: view.y,
+              };
               setSelectedNode(null);
               setSelectedEdge(null);
             }
@@ -529,16 +695,27 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
           onDrop={(e) => {
             e.preventDefault();
             try {
-              const data = JSON.parse(e.dataTransfer.getData("application/x-flow-node") || "{}") as { kind?: NodeKind; actionType?: string };
-              if (data.kind) addNode(data.kind, data.actionType, toGraphCoords(e.clientX, e.clientY));
+              const data = JSON.parse(
+                e.dataTransfer.getData("application/x-flow-node") || "{}",
+              ) as { kind?: NodeKind; actionType?: string };
+              if (data.kind)
+                addNode(data.kind, data.actionType, toGraphCoords(e.clientX, e.clientY));
             } catch {
               // Not one of ours.
             }
           }}
         >
           <div data-canvas-bg="1" className="absolute inset-0" />
-          <div className="absolute left-0 top-0 origin-top-left" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
-            <svg className="pointer-events-none absolute left-0 top-0 overflow-visible" width="1" height="1" aria-hidden>
+          <div
+            className="absolute left-0 top-0 origin-top-left"
+            style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
+          >
+            <svg
+              className="pointer-events-none absolute left-0 top-0 overflow-visible"
+              width="1"
+              height="1"
+              aria-hidden
+            >
               {graph.edges.map((edge) => {
                 const from = anchors.out.get(`${edge.source}:${edge.sourceHandle ?? "next"}`);
                 const to = anchors.inn.get(edge.target);
@@ -549,7 +726,9 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
                 const y1 = from?.y ?? src.position.y + 40;
                 const x2 = to?.x ?? tgt.position.x;
                 const y2 = to?.y ?? tgt.position.y + 40;
-                const handle = outputHandlesForNode(src).find((h) => h.id === (edge.sourceHandle ?? "next"));
+                const handle = outputHandlesForNode(src).find(
+                  (h) => h.id === (edge.sourceHandle ?? "next"),
+                );
                 const color = handle ? handleToneColor(handle.tone) : "var(--color-fg-subtle)";
                 const isSel = selectedEdge === edge.id;
                 return (
@@ -566,7 +745,15 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
                         setSelectedNode(null);
                       }}
                     />
-                    <path d={edgePath(x1, y1, x2, y2)} fill="none" stroke={color} strokeWidth={(isSel ? 3 : 2) / view.k + 0.6} strokeOpacity={isSel ? 1 : 0.75} markerEnd={`url(#flow-arrow)`} className="flow-wire" />
+                    <path
+                      d={edgePath(x1, y1, x2, y2)}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth={(isSel ? 3 : 2) / view.k + 0.6}
+                      strokeOpacity={isSel ? 1 : 0.75}
+                      markerEnd={`url(#flow-arrow)`}
+                      className="flow-wire"
+                    />
                   </g>
                 );
               })}
@@ -575,18 +762,43 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
                     const from = anchors.out.get(`${connecting.source}:${connecting.handle}`);
                     const src = graph.nodes.find((n) => n.id === connecting.source);
                     if (!src) return null;
-                    return <path d={edgePath(from?.x ?? src.position.x + NODE_W, from?.y ?? src.position.y + 40, connecting.x, connecting.y)} fill="none" stroke="var(--color-primary)" strokeWidth={2} strokeDasharray="6 5" className="flow-wire-live" />;
+                    return (
+                      <path
+                        d={edgePath(
+                          from?.x ?? src.position.x + NODE_W,
+                          from?.y ?? src.position.y + 40,
+                          connecting.x,
+                          connecting.y,
+                        )}
+                        fill="none"
+                        stroke="var(--color-primary)"
+                        strokeWidth={2}
+                        strokeDasharray="6 5"
+                        className="flow-wire-live"
+                      />
+                    );
                   })()
                 : null}
               <defs>
-                <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <marker
+                  id="flow-arrow"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto-start-reverse"
+                >
                   <path d="M 0 1 L 10 5 L 0 9 z" fill="context-stroke" opacity="0.8" />
                 </marker>
               </defs>
             </svg>
 
             {graph.nodes.map((node) => {
-              const Icon = iconForNode(node.kind, String(node.config?.actionType ?? "") || undefined);
+              const Icon = iconForNode(
+                node.kind,
+                String(node.config?.actionType ?? "") || undefined,
+              );
               const tone = categoryTone(node.kind);
               const issues = issuesByNode.get(node.id);
               const handles = outputHandlesForNode(node);
@@ -598,7 +810,11 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
                   aria-label={node.label || nodeKindLabel(node.kind)}
                   className={cn(
                     "flow-node absolute rounded-xl border bg-surface shadow-sm transition-shadow",
-                    isSel ? "border-primary shadow-md ring-2 ring-primary/30" : issues?.errors.length ? "border-danger/60" : "border-border hover:shadow",
+                    isSel
+                      ? "border-primary shadow-md ring-2 ring-primary/30"
+                      : issues?.errors.length
+                        ? "border-danger/60"
+                        : "border-border hover:shadow",
                     node.disabled && "opacity-55",
                   )}
                   style={{ left: node.position.x, top: node.position.y, width: NODE_W }}
@@ -607,32 +823,65 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
                     e.stopPropagation();
                     setSelectedNode(node.id);
                     setSelectedEdge(null);
-                    dragRef.current = { mode: "node", id: node.id, startX: e.clientX, startY: e.clientY, nodeX: node.position.x, nodeY: node.position.y };
+                    dragRef.current = {
+                      mode: "node",
+                      id: node.id,
+                      startX: e.clientX,
+                      startY: e.clientY,
+                      nodeX: node.position.x,
+                      nodeY: node.position.y,
+                    };
                   }}
                 >
-                  <span data-port-in={node.id} aria-hidden className="absolute -left-[7px] top-9 size-3.5 rounded-full border-2 border-surface bg-fg-subtle shadow" />
+                  <span
+                    data-port-in={node.id}
+                    aria-hidden
+                    className="absolute -left-[7px] top-9 size-3.5 rounded-full border-2 border-surface bg-fg-subtle shadow"
+                  />
                   <header className="flex cursor-grab items-center gap-2 px-3 pb-1 pt-2.5 active:cursor-grabbing">
-                    <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg", tone.chip)}>
+                    <span
+                      className={cn(
+                        "grid size-8 shrink-0 place-items-center rounded-lg",
+                        tone.chip,
+                      )}
+                    >
                       <Icon size={15} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-semibold text-fg">{node.label || nodeKindLabel(node.kind)}</span>
-                      <span className="block text-[11px] text-fg-subtle">{nodeKindLabel(node.kind)}{node.disabled ? ` · ${t("skipped")}` : ""}</span>
+                      <span className="block truncate text-[13px] font-semibold text-fg">
+                        {node.label || nodeKindLabel(node.kind)}
+                      </span>
+                      <span className="block text-[11px] text-fg-subtle">
+                        {nodeKindLabel(node.kind)}
+                        {node.disabled ? ` · ${t("skipped")}` : ""}
+                      </span>
                     </span>
                     {issues?.errors.length ? (
-                      <span className="grid size-5 shrink-0 place-items-center rounded-full bg-danger-subtle text-danger" title={issues.errors.join("\n")}>
+                      <span
+                        className="grid size-5 shrink-0 place-items-center rounded-full bg-danger-subtle text-danger"
+                        title={issues.errors.join("\n")}
+                      >
                         <AlertTriangle size={12} />
                       </span>
                     ) : issues?.warnings.length ? (
-                      <span className="size-2 shrink-0 rounded-full bg-warning" title={issues.warnings.join("\n")} />
+                      <span
+                        className="size-2 shrink-0 rounded-full bg-warning"
+                        title={issues.warnings.join("\n")}
+                      />
                     ) : null}
                   </header>
-                  <p className="truncate px-3 pb-2 text-xs text-fg-muted" title={summarizeNode(node, catalogue.eventsByType, catalogue.actionsByType)}>
+                  <p
+                    className="truncate px-3 pb-2 text-xs text-fg-muted"
+                    title={summarizeNode(node, catalogue.eventsByType, catalogue.actionsByType)}
+                  >
                     {summarizeNode(node, catalogue.eventsByType, catalogue.actionsByType)}
                   </p>
                   <footer className="space-y-0.5 border-t border-border-subtle px-3 py-1.5">
                     {handles.map((h) => (
-                      <div key={h.id} className="relative flex items-center justify-end gap-1.5 py-0.5 text-[11px] font-medium text-fg-muted">
+                      <div
+                        key={h.id}
+                        className="relative flex items-center justify-end gap-1.5 py-0.5 text-[11px] font-medium text-fg-muted"
+                      >
                         {h.label}
                         <button
                           type="button"
@@ -660,11 +909,25 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
           {graph.nodes.length === 0 ? (
             <div className="absolute inset-0 grid place-items-center p-6">
               <div className="max-w-sm text-center">
-                <p className="text-base font-semibold text-fg">{t("Start with what should happen")}</p>
-                <p className="mt-1 text-sm text-fg-muted">{t("Describe it in your own words, start from a template, or add a trigger from the palette.")}</p>
+                <p className="text-base font-semibold text-fg">
+                  {t("Start with what should happen")}
+                </p>
+                <p className="mt-1 text-sm text-fg-muted">
+                  {t(
+                    "Describe it in your own words, start from a template, or add a trigger from the palette.",
+                  )}
+                </p>
                 <div className="mt-4 flex flex-wrap justify-center gap-2">
-                  <Button size="sm" onClick={() => setDescribeOpen(true)}><Sparkles size={14} /> {t("Describe it")}</Button>
-                  <Button size="sm" variant="outline" onClick={() => addNode("trigger.event", undefined, { x: 120, y: 160 })}><Plus size={14} /> {t("Add an event trigger")}</Button>
+                  <Button size="sm" onClick={() => setDescribeOpen(true)}>
+                    <Sparkles size={14} /> {t("Describe it")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => addNode("trigger.event", undefined, { x: 120, y: 160 })}
+                  >
+                    <Plus size={14} /> {t("Add an event trigger")}
+                  </Button>
                 </div>
               </div>
             </div>
@@ -672,18 +935,39 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
 
           {/* Canvas controls */}
           <div className="absolute bottom-3 left-3 flex items-center gap-1 rounded-lg border border-border bg-surface/95 p-1 shadow-sm backdrop-blur">
-            <Button variant="ghost" size="sm" aria-label={t("Zoom out")} onClick={() => setView((v) => ({ ...v, k: Math.max(0.3, v.k / 1.15) }))}><Minus size={14} /></Button>
-            <span className="w-11 text-center text-xs tabular-nums text-fg-muted">{Math.round(view.k * 100)}%</span>
-            <Button variant="ghost" size="sm" aria-label={t("Zoom in")} onClick={() => setView((v) => ({ ...v, k: Math.min(1.6, v.k * 1.15) }))}><Plus size={14} /></Button>
-            <Button variant="ghost" size="sm" aria-label={t("Fit to view")} onClick={fitView}><Maximize size={14} /></Button>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => { touch(autoLayoutGraph(graph)); requestAnimationFrame(fitView); }}
+              aria-label={t("Zoom out")}
+              onClick={() => setView((v) => ({ ...v, k: Math.max(0.3, v.k / 1.15) }))}
+            >
+              <Minus size={14} />
+            </Button>
+            <span className="w-11 text-center text-xs tabular-nums text-fg-muted">
+              {Math.round(view.k * 100)}%
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={t("Zoom in")}
+              onClick={() => setView((v) => ({ ...v, k: Math.min(1.6, v.k * 1.15) }))}
+            >
+              <Plus size={14} />
+            </Button>
+            <Button variant="ghost" size="sm" aria-label={t("Fit to view")} onClick={fitView}>
+              <Maximize size={14} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                touch(autoLayoutGraph(graph));
+                requestAnimationFrame(fitView);
+              }}
             >
               <LayoutGrid size={14} /> {t("Tidy up")}
             </Button>
-            {(selectedNode || selectedEdge) ? (
+            {selectedNode || selectedEdge ? (
               <Button variant="ghost" size="sm" onClick={deleteSelected} className="text-danger">
                 <Trash2 size={14} /> {t("Delete")}
               </Button>
@@ -692,50 +976,132 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
 
           {/* Mobile add-step (palette is hidden on small screens) */}
           <div className="absolute bottom-3 right-3 md:hidden">
-            <Button size="sm" onClick={() => addNode("action", "notify.send")}><Plus size={14} /> {t("Add step")}</Button>
+            <Button size="sm" onClick={() => addNode("action", "notify.send")}>
+              <Plus size={14} /> {t("Add step")}
+            </Button>
           </div>
         </div>
 
         {/* Inspector */}
-        <aside className={cn("w-[22rem] max-w-[88vw] shrink-0 flex-col border-l border-border md:flex", selected ? "flex max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-20 max-md:bg-surface max-md:shadow-xl" : "max-md:hidden")} aria-label={t("Step settings")}>
+        <aside
+          className={cn(
+            "w-[22rem] max-w-[88vw] shrink-0 flex-col border-l border-border md:flex",
+            selected
+              ? "flex max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-20 max-md:bg-surface max-md:shadow-xl"
+              : "max-md:hidden",
+          )}
+          aria-label={t("Step settings")}
+        >
           <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
             <h2 className="truncate text-sm font-semibold text-fg">
-              {selected ? selected.label || nodeKindLabel(selected.kind) : showIssues ? t("Checks") : t("Flow settings")}
+              {selected
+                ? selected.label || nodeKindLabel(selected.kind)
+                : showIssues
+                  ? t("Checks")
+                  : t("Flow settings")}
             </h2>
             {selected ? (
-              <Button variant="ghost" size="sm" aria-label={t("Back to flow settings")} onClick={() => setSelectedNode(null)}><X size={15} /></Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={t("Back to flow settings")}
+                onClick={() => setSelectedNode(null)}
+              >
+                <X size={15} />
+              </Button>
             ) : null}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             {showIssues && !selected ? (
-              <IssuesPanel validation={validation} onPick={(nodeId) => { setSelectedNode(nodeId); setShowIssues(false); }} />
+              <IssuesPanel
+                validation={validation}
+                onPick={(nodeId) => {
+                  setSelectedNode(nodeId);
+                  setShowIssues(false);
+                }}
+              />
             ) : selected ? (
               <NodeInspector
                 node={selected}
                 catalogue={catalogue}
                 fieldGroups={fieldGroups}
                 sample={sample}
-                onChange={(next) => touch({ ...graph, nodes: graph.nodes.map((n) => (n.id === next.id ? next : n)) })}
+                onChange={(next) =>
+                  touch({ ...graph, nodes: graph.nodes.map((n) => (n.id === next.id ? next : n)) })
+                }
               />
             ) : (
               <div className="space-y-4">
                 <Field label={t("What this flow does")}>
-                  <Textarea aria-label={t("Flow description")} value={description} rows={3} placeholder={t("A sentence future-you will thank you for.")} onChange={(e) => { setDescription(e.target.value); setDirty(true); }} />
+                  <Textarea
+                    aria-label={t("Flow description")}
+                    value={description}
+                    rows={3}
+                    placeholder={t("A sentence future-you will thank you for.")}
+                    onChange={(e) => {
+                      setDescription(e.target.value);
+                      setDirty(true);
+                    }}
+                  />
                 </Field>
                 <div className="space-y-3 border-t border-border pt-3">
                   <p className="text-sm font-semibold text-fg">{t("Guardrails")}</p>
-                  <Field label={t("At most this many runs a minute")} hint={t("Extra triggers are recorded as throttled, never queued forever.")}>
-                    <NumberInput aria-label={t("Runs per minute")} value={limits?.rateLimitPerMin ?? 60} min={1} max={600} step={1} onChange={(n) => { setLimits({ ...limits, rateLimitPerMin: n }); setDirty(true); }} className="w-28" />
+                  <Field
+                    label={t("At most this many runs a minute")}
+                    hint={t("Extra triggers are recorded as throttled, never queued forever.")}
+                  >
+                    <NumberInput
+                      aria-label={t("Runs per minute")}
+                      value={limits?.rateLimitPerMin ?? 60}
+                      min={1}
+                      max={600}
+                      step={1}
+                      onChange={(n) => {
+                        setLimits({ ...limits, rateLimitPerMin: n });
+                        setDirty(true);
+                      }}
+                      className="w-28"
+                    />
                   </Field>
                   <Field label={t("Stop a run after this many steps")}>
-                    <NumberInput aria-label={t("Max steps")} value={limits?.maxSteps ?? 100} min={1} max={250} step={1} onChange={(n) => { setLimits({ ...limits, maxSteps: n }); setDirty(true); }} className="w-28" />
+                    <NumberInput
+                      aria-label={t("Max steps")}
+                      value={limits?.maxSteps ?? 100}
+                      min={1}
+                      max={250}
+                      step={1}
+                      onChange={(n) => {
+                        setLimits({ ...limits, maxSteps: n });
+                        setDirty(true);
+                      }}
+                      className="w-28"
+                    />
                   </Field>
                   <Field label={t("Turn the flow off after this many failures in a row")}>
-                    <NumberInput aria-label={t("Auto-disable after")} value={limits?.autoDisableAfter ?? 10} min={1} step={1} onChange={(n) => { setLimits({ ...limits, autoDisableAfter: n }); setDirty(true); }} className="w-28" />
+                    <NumberInput
+                      aria-label={t("Auto-disable after")}
+                      value={limits?.autoDisableAfter ?? 10}
+                      min={1}
+                      step={1}
+                      onChange={(n) => {
+                        setLimits({ ...limits, autoDisableAfter: n });
+                        setDirty(true);
+                      }}
+                      className="w-28"
+                    />
                   </Field>
                   <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm text-fg">{t("Run events for the same session in order")}</span>
-                    <Switch aria-label={t("Ordered by correlation key")} checked={Boolean(limits?.orderedByKey)} onChange={(e) => { setLimits({ ...limits, orderedByKey: e.target.checked }); setDirty(true); }} />
+                    <span className="text-sm text-fg">
+                      {t("Run events for the same session in order")}
+                    </span>
+                    <Switch
+                      aria-label={t("Ordered by correlation key")}
+                      checked={Boolean(limits?.orderedByKey)}
+                      onChange={(e) => {
+                        setLimits({ ...limits, orderedByKey: e.target.checked });
+                        setDirty(true);
+                      }}
+                    />
                   </label>
                 </div>
                 {hasWebhook ? (
@@ -743,22 +1109,36 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
                     <p className="text-sm font-semibold text-fg">{t("Incoming webhook")}</p>
                     {savedId ? (
                       <>
-                        <p className="break-all rounded-md bg-bg-subtle px-2.5 py-2 font-mono text-xs text-fg">{webhookUrl ?? `/ether/api/flows/hooks/${savedId}`}</p>
-                        <Button variant="outline" size="sm" onClick={() => void rotateWebhook()}><RotateCw size={13} /> {t("Rotate URL")}</Button>
+                        <p className="break-all rounded-md bg-bg-subtle px-2.5 py-2 font-mono text-xs text-fg">
+                          {webhookUrl ?? `/ether/api/flows/hooks/${savedId}`}
+                        </p>
+                        <Button variant="outline" size="sm" onClick={() => void rotateWebhook()}>
+                          <RotateCw size={13} /> {t("Rotate URL")}
+                        </Button>
                       </>
                     ) : (
-                      <p className="text-sm text-fg-muted">{t("Save the flow to get its private webhook URL.")}</p>
+                      <p className="text-sm text-fg-muted">
+                        {t("Save the flow to get its private webhook URL.")}
+                      </p>
                     )}
                   </div>
                 ) : null}
-                {(validation?.errors?.length || validation?.warnings?.length) ? (
+                {validation?.errors?.length || validation?.warnings?.length ? (
                   <div className="border-t border-border pt-3">
-                    <IssuesPanel validation={validation} onPick={(nodeId) => setSelectedNode(nodeId)} />
+                    <IssuesPanel
+                      validation={validation}
+                      onPick={(nodeId) => setSelectedNode(nodeId)}
+                    />
                   </div>
                 ) : null}
                 {savedId ? (
                   <div className="border-t border-border pt-3">
-                    <Button variant="ghost" size="sm" className="text-danger" onClick={() => void removeFlow()}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-danger"
+                      onClick={() => void removeFlow()}
+                    >
                       <Trash2 size={14} /> {t("Delete this flow")}
                     </Button>
                   </div>
@@ -769,7 +1149,13 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
         </aside>
       </div>
 
-      <TestRunDrawer open={testOpen} onClose={() => setTestOpen(false)} flowId={savedId} graph={graph} catalogue={catalogue} />
+      <TestRunDrawer
+        open={testOpen}
+        onClose={() => setTestOpen(false)}
+        flowId={savedId}
+        graph={graph}
+        catalogue={catalogue}
+      />
       <DescribeFlowDialog
         open={describeOpen}
         onClose={() => setDescribeOpen(false)}
@@ -789,13 +1175,27 @@ export function FlowEditor({ flowId }: { flowId?: string }) {
 function PaletteGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mb-3">
-      <p className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">{title}</p>
+      <p className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+        {title}
+      </p>
       <div className="space-y-0.5">{children}</div>
     </div>
   );
 }
 
-function PaletteItem({ kind, actionType, label, hint, onAdd }: { kind: NodeKind; actionType?: string; label: string; hint?: string; onAdd: () => void }) {
+function PaletteItem({
+  kind,
+  actionType,
+  label,
+  hint,
+  onAdd,
+}: {
+  kind: NodeKind;
+  actionType?: string;
+  label: string;
+  hint?: string;
+  onAdd: () => void;
+}) {
   const Icon = iconForNode(kind, actionType);
   const tone = categoryTone(kind);
   return (
@@ -803,7 +1203,9 @@ function PaletteItem({ kind, actionType, label, hint, onAdd }: { kind: NodeKind;
       type="button"
       draggable
       title={hint ?? label}
-      onDragStart={(e) => e.dataTransfer.setData("application/x-flow-node", JSON.stringify({ kind, actionType }))}
+      onDragStart={(e) =>
+        e.dataTransfer.setData("application/x-flow-node", JSON.stringify({ kind, actionType }))
+      }
       onClick={onAdd}
       className="flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-surface-hover"
     >
@@ -816,7 +1218,13 @@ function PaletteItem({ kind, actionType, label, hint, onAdd }: { kind: NodeKind;
   );
 }
 
-function IssuesPanel({ validation, onPick }: { validation: ValidationResult | null; onPick: (nodeId: string) => void }) {
+function IssuesPanel({
+  validation,
+  onPick,
+}: {
+  validation: ValidationResult | null;
+  onPick: (nodeId: string) => void;
+}) {
   if (!validation) return <p className="text-sm text-fg-muted">{t("Checking the flow…")}</p>;
   const all = [
     ...(validation.errors ?? []).map((i) => ({ ...i, tone: "error" as const })),
@@ -838,7 +1246,9 @@ function IssuesPanel({ validation, onPick }: { validation: ValidationResult | nu
             onClick={() => issue.nodeId && onPick(issue.nodeId)}
             className={cn(
               "flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left text-sm",
-              issue.tone === "error" ? "bg-danger-subtle/70 text-danger" : "bg-warning-subtle/70 text-warning",
+              issue.tone === "error"
+                ? "bg-danger-subtle/70 text-danger"
+                : "bg-warning-subtle/70 text-warning",
               issue.nodeId && "hover:brightness-105",
             )}
           >

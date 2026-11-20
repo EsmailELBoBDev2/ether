@@ -11,16 +11,17 @@ describe("DescribeFlowDialog", () => {
   it("shows Configure AI in Integrations with a link on 409 ai_unavailable", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              code: "ai_unavailable",
-              message: "Configure AI in Integrations to describe flows in plain language.",
-            },
-          }),
-          { status: 409 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "ai_unavailable",
+                message: "Configure AI in Integrations to describe flows in plain language.",
+              },
+            }),
+            { status: 409 },
+          ),
       ),
     );
 
@@ -44,17 +45,20 @@ describe("DescribeFlowDialog", () => {
   it("shows readable validation errors on 422 responses", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              code: "validation_failed",
-              message: "Could not produce a valid flow: a1: unknown action",
-              fields: [{ field: "a1 (nodes[1].config.actionType)", message: 'unknown action "bad.act"' }],
-            },
-          }),
-          { status: 422 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "validation_failed",
+                message: "Could not produce a valid flow: a1: unknown action",
+                fields: [
+                  { field: "a1 (nodes[1].config.actionType)", message: 'unknown action "bad.act"' },
+                ],
+              },
+            }),
+            { status: 422 },
+          ),
       ),
     );
 
@@ -91,7 +95,10 @@ describe("DescribeFlowDialog", () => {
             kind: "action" as const,
             label: "Notify",
             position: { x: 380, y: 120 },
-            config: { actionType: "notify.send", params: { channelIds: ["*"], title: "Failed", message: "Oops" } },
+            config: {
+              actionType: "notify.send",
+              params: { channelIds: ["*"], title: "Failed", message: "Oops" },
+            },
           },
         ],
         edges: [{ id: "e1", source: "t1", sourceHandle: "next", target: "a1" }],

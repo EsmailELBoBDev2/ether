@@ -22,7 +22,11 @@ type SearchQuery struct {
 	Levels    []string
 	PersonID  int64
 	Facets    map[string][]string
-	Limit     int
+	// AllFacets requires every listed value per field; ExcludeFacets
+	// drops items having any listed value (see BrowseQuery).
+	AllFacets     map[string][]string
+	ExcludeFacets map[string][]string
+	Limit         int
 }
 
 // Search executes a library-scoped full-text search over plugin items

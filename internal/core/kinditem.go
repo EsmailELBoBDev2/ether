@@ -253,14 +253,21 @@ type KindPage struct {
 // browse or search route (spec §3.1, §3.2) and passed to the
 // viewer-scoped kinds.browse host service (#615).
 type KindBrowseRequest struct {
-	ParentID string              `json:"parentId,omitempty"`
-	Level    string              `json:"level,omitempty"`
-	Cursor   string              `json:"cursor,omitempty"`
-	Limit    int                 `json:"limit,omitempty"`
-	Sort     string              `json:"sort,omitempty"`
-	Desc     bool                `json:"desc,omitempty"`
-	Facets   map[string][]string `json:"facets,omitempty"`
-	Query    string              `json:"query,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
+	Limit    int    `json:"limit,omitempty"`
+	Sort     string `json:"sort,omitempty"`
+	Desc     bool   `json:"desc,omitempty"`
+	// Facets requires any of the listed values per field (OR within a
+	// field, AND across fields). AllFacets requires every listed value
+	// per field and ExcludeFacets drops items having any listed value;
+	// all three maps combine with AND and accept the same per-type
+	// values (including lo..hi ranges and people names).
+	Facets        map[string][]string `json:"facets,omitempty"`
+	AllFacets     map[string][]string `json:"allFacets,omitempty"`
+	ExcludeFacets map[string][]string `json:"excludeFacets,omitempty"`
+	Query         string              `json:"query,omitempty"`
 }
 
 // KindExpandRequest is the request body sent to POST /ether/v1/kinds/{kind}/expand

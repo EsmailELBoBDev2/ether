@@ -26,9 +26,13 @@ const (
 	MaxFTSTextBytes       = 8 << 10
 	DefaultBrowseLimit    = 200
 	MaxBrowseLimit        = 1000
-	MaxBrowseBodyBytes    = 8 << 20
-	MaxSyncConcurrency    = 4
-	DeleteGuardRatio      = 0.5
+	// MaxBrowseFacetValues bounds the total facet values across the
+	// any/all/none facet maps of one browse or search query, so the
+	// generated indexed predicates stay bounded.
+	MaxBrowseFacetValues = 256
+	MaxBrowseBodyBytes   = 8 << 20
+	MaxSyncConcurrency   = 4
+	DeleteGuardRatio     = 0.5
 )
 
 var (

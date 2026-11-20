@@ -393,6 +393,14 @@ Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
 `CachePut` / `CacheOpen` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
+A `kinds.browse` query filters with three facet maps that combine with
+AND: `facets` (any of the listed values per field), `allFacets` (every
+listed value per field, for "tagged both X and Y"), and `excludeFacets`
+(none of the listed values, for "without X"). All three accept the same
+per-type values as `facets`, including `lo..hi` ranges for numbers and
+dates and people names, and are evaluated inside the browse query so
+paging and `total` stay correct. The total number of facet values
+across the three maps is bounded (256 per query).
 Default cache quota is 2 GiB per library under a shared cap of
 min(10 GiB, 5% of the cache disk); your `cache.maxBytes` and the
 owner can override it.

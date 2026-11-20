@@ -2612,6 +2612,8 @@ class MockHostClient:
             level = str(q.get("level") or "")
             needle = str(q.get("query") or "").strip().lower()
             facets = q.get("facets") if isinstance(q.get("facets"), dict) else {}
+            all_facets = q.get("allFacets") if isinstance(q.get("allFacets"), dict) else {}
+            exclude_facets = q.get("excludeFacets") if isinstance(q.get("excludeFacets"), dict) else {}
             matched: List[Dict[str, Any]] = []
             for it in self._p.kind_store.get(kind, []):
                 if not self._allowed(kind, it):
@@ -2624,22 +2626,32 @@ class MockHostClient:
                     hay = f"{it.get('title', '')} {it.get('summary', '')}".lower()
                     if needle not in hay:
                         continue
-                if facets:
+                if facets or all_facets or exclude_facets:
                     item_fields = it.get("fields") if isinstance(it.get("fields"), dict) else {}
-                    ok = True
-                    for fk, want in facets.items():
-                        if not want:
-                            continue
+
+                    def _have(fk: str) -> List[str]:
                         raw = item_fields.get(fk)
                         if isinstance(raw, list):
-                            have = [str(v).lower() for v in raw]
-                        elif raw is not None:
-                            have = [str(raw).lower()]
-                        else:
-                            have = []
-                        if not any(str(w).lower() in have for w in want):
+                            return [str(v).lower() for v in raw]
+                        if raw is not None:
+                            return [str(raw).lower()]
+                        return []
+
+                    ok = True
+                    for fk, want in facets.items():
+                        if want and not any(str(w).lower() in _have(fk) for w in want):
                             ok = False
                             break
+                    if ok:
+                        for fk, want in all_facets.items():
+                            if want and not all(str(w).lower() in _have(fk) for w in want):
+                                ok = False
+                                break
+                    if ok:
+                        for fk, want in exclude_facets.items():
+                            if want and any(str(w).lower() in _have(fk) for w in want):
+                                ok = False
+                                break
                     if not ok:
                         continue
                 matched.append(it)

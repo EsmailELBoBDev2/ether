@@ -17,27 +17,27 @@ import (
 // legacyNotifyToCanonical maps legacy internal/notify event kinds to their
 // canonical v0.3.17 event bus types (docs/design/flows.md §3.2).
 var legacyNotifyToCanonical = map[string]string{
-	notify.EventServerStarted:    "system.server.started",
-	notify.EventServerStopping:   "system.server.stopping",
-	notify.EventServerCrash:      "system.server.crashed",
-	notify.EventProviderOutage:   "provider.service.outage",
-	notify.EventProviderRecov:    "provider.service.recovered",
-	notify.EventIndexerOutage:    "indexer.service.outage",
-	notify.EventIndexerRecov:     "indexer.service.recovered",
-	notify.EventIndexerBudget:    "indexer.budget.exhausted",
-	notify.EventCacheFull:        "cache.budget.full",
-	notify.EventCacheRecovered:   "cache.budget.recovered",
-	notify.EventPlaybackStart:    "playback.session.started",
-	notify.EventPlaybackStop:     "playback.session.stopped",
-	notify.EventPlaybackError:    "playback.session.failed",
-	notify.EventPlaybackFailover: "playback.source.failover",
-	notify.EventCertRenewed:      "auth.certificate.renewed",
-	notify.EventUpdateAvailable:  "system.update.available",
-	notify.EventUpdateInstalled:  "system.update.installed",
-	notify.EventUpdateRolledBack: "system.update.rolled_back",
-	notify.EventBackupFailed:     "system.backup.failed",
-	notify.EventUserJoined:       "viewer.account.joined",
-	notify.EventTitleAvailable:   "library.title.available",
+	"server.started":     "system.server.started",
+	"server.stopping":    "system.server.stopping",
+	"server.crash":       "system.server.crashed",
+	"provider.outage":    "provider.service.outage",
+	"provider.recovered": "provider.service.recovered",
+	"indexer.outage":     "indexer.service.outage",
+	"indexer.recovered":  "indexer.service.recovered",
+	"indexer.budget":     "indexer.budget.exhausted",
+	"cache.full":         "cache.budget.full",
+	"cache.recovered":    "cache.budget.recovered",
+	"playback.start":     "playback.session.started",
+	"playback.stop":      "playback.session.stopped",
+	"playback.error":     "playback.session.failed",
+	"playback.failover":  "playback.source.failover",
+	"cert.renewed":       "auth.certificate.renewed",
+	"update.available":   "system.update.available",
+	"update.installed":   "system.update.installed",
+	"update.rolledback":  "system.update.rolled_back",
+	"backup.failed":      "system.backup.failed",
+	"user.joined":        "viewer.account.joined",
+	"title.available":    "library.title.available",
 }
 
 // DefaultFlowTemplates returns Ether's curated starter flow templates, covering
@@ -51,7 +51,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description:  "Notify immediately on provider/indexer outages, cache exhaustion, backup failures, update rollbacks, and playback errors.",
 			Category:     "notifications",
 			Icon:         "alert-triangle",
-			Tags:         []string{"notifications", "alerts", "ops"},
 			NotifyPreset: "critical",
 			Params: []flows.ParamSchema{
 				{
@@ -126,7 +125,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description:  "Alert when playback sessions fail or fall back to another source repeatedly within a sliding window.",
 			Category:     "notifications",
 			Icon:         "play-circle",
-			Tags:         []string{"notifications", "playback"},
 			NotifyPreset: "playback_issues",
 			Params: []flows.ParamSchema{
 				{
@@ -203,7 +201,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description:  "Notify whenever a Usenet, debrid, or indexer service enters an outage or recovers.",
 			Category:     "notifications",
 			Icon:         "cloud-off",
-			Tags:         []string{"notifications", "providers", "indexers"},
 			NotifyPreset: "provider_outages",
 			Params: []flows.ParamSchema{
 				{
@@ -258,7 +255,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description:  "Notify when a new Ether release is available, installed, or rolled back.",
 			Category:     "notifications",
 			Icon:         "download",
-			Tags:         []string{"notifications", "updates"},
 			NotifyPreset: "updates",
 			Params: []flows.ParamSchema{
 				{
@@ -312,7 +308,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description:  "Build and send a weekly digest of titles added over the last 7 days.",
 			Category:     "notifications",
 			Icon:         "mail",
-			Tags:         []string{"notifications", "digest", "schedule"},
 			NotifyPreset: "weekly_newsletter",
 			Params: []flows.ParamSchema{
 				{
@@ -385,7 +380,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Stop remote 4K video transcodes automatically and show the viewer a clear playback message.",
 			Category:    "playback",
 			Icon:        "shield-alert",
-			Tags:        []string{"playback", "transcode", "policy"},
 			Params: []flows.ParamSchema{
 				{
 					Key:     "minHeight",
@@ -422,7 +416,7 @@ func DefaultFlowTemplates() []flows.Template {
 						Position: flows.Position{X: 380, Y: 120},
 						Config: flows.MustMarshalConfig(flows.ConditionNodeConfig{
 							Condition: flows.ConditionGroup{
-								All: []flows.ConditionRule{
+								Rules: []flows.ConditionRule{
 									{Field: "payload.transcode", Op: flows.OpIsTrue},
 									{Field: "payload.isRemote", Op: flows.OpIsTrue},
 									{Field: "payload.videoHeight", Op: flows.OpGte, Value: 2160},
@@ -456,7 +450,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Wait after a session pauses; if it is not resumed or stopped within the timeout, terminate it.",
 			Category:    "playback",
 			Icon:        "pause-circle",
-			Tags:        []string{"playback", "idle", "cleanup"},
 			Params: []flows.ParamSchema{
 				{
 					Key:     "timeout",
@@ -489,9 +482,9 @@ func DefaultFlowTemplates() []flows.Template {
 						Label:    "Wait for resume or stop",
 						Position: flows.Position{X: 380, Y: 120},
 						Config: flows.MustMarshalConfig(flows.WaitEventNodeConfig{
-							EventTypes:     []string{"playback.session.resumed", "playback.session.stopped"},
-							CorrelateField: "sessionId",
-							Timeout:        "15m",
+							EventTypes:       []string{"playback.session.resumed", "playback.session.stopped"},
+							MatchCorrelation: true,
+							Timeout:          "15m",
 						}),
 					},
 					{
@@ -520,7 +513,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "When a session stalls repeatedly within a short window, notify the owner or stop the stalled stream.",
 			Category:    "playback",
 			Icon:        "activity",
-			Tags:        []string{"playback", "buffering"},
 			Params: []flows.ParamSchema{
 				{
 					Key:     "threshold",
@@ -593,7 +585,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Alert with deduplication when a viewer exceeds stream limits or signs in from a new IP address.",
 			Category:    "security",
 			Icon:        "shield",
-			Tags:        []string{"security", "playback", "auth"},
 			Params: []flows.ParamSchema{
 				{
 					Key:      "channelIds",
@@ -662,7 +653,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Publish lighting scene transitions over MQTT when playback starts, pauses, or reaches end credits.",
 			Category:    "smart-home",
 			Icon:        "lightbulb",
-			Tags:        []string{"mqtt", "home-assistant", "playback"},
 			Params: []flows.ParamSchema{
 				{
 					Key:      "brokerId",
@@ -708,19 +698,19 @@ func DefaultFlowTemplates() []flows.Template {
 						Config: flows.MustMarshalConfig(flows.SwitchNodeConfig{
 							Cases: []flows.SwitchCase{
 								{
-									Handle: "playing",
-									Label:  "Started",
+									Key:   "playing",
+									Label: "Started",
 									Condition: flows.ConditionGroup{
-										All: []flows.ConditionRule{
+										Rules: []flows.ConditionRule{
 											{Field: "event.type", Op: flows.OpEq, Value: "playback.session.started"},
 										},
 									},
 								},
 								{
-									Handle: "paused",
-									Label:  "Paused",
+									Key:   "paused",
+									Label: "Paused",
 									Condition: flows.ConditionGroup{
-										All: []flows.ConditionRule{
+										Rules: []flows.ConditionRule{
 											{Field: "event.type", Op: flows.OpEq, Value: "playback.session.paused"},
 										},
 									},
@@ -771,7 +761,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Export library metadata on a schedule to JSON or CSV and optionally notify when complete.",
 			Category:    "library",
 			Icon:        "file-output",
-			Tags:        []string{"library", "export", "schedule"},
 			Params: []flows.ParamSchema{
 				{
 					Key:     "cron",
@@ -833,7 +822,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Automatically unpin a pinned release when it becomes unhealthy and notify the owner.",
 			Category:    "resolver",
 			Icon:        "pin-off",
-			Tags:        []string{"resolver", "pins", "automation"},
 			Params: []flows.ParamSchema{
 				{
 					Key:      "channelIds",
@@ -895,7 +883,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Notify when a viewer signs in on a brand-new device for the first time.",
 			Category:    "security",
 			Icon:        "smartphone",
-			Tags:        []string{"auth", "devices", "security"},
 			Params: []flows.ParamSchema{
 				{
 					Key:      "channelIds",
@@ -924,7 +911,7 @@ func DefaultFlowTemplates() []flows.Template {
 						Position: flows.Position{X: 380, Y: 120},
 						Config: flows.MustMarshalConfig(flows.ConditionNodeConfig{
 							Condition: flows.ConditionGroup{
-								All: []flows.ConditionRule{
+								Rules: []flows.ConditionRule{
 									{Field: "payload.isFirstSeenForViewer", Op: flows.OpIsTrue},
 								},
 							},
@@ -958,7 +945,6 @@ func DefaultFlowTemplates() []flows.Template {
 			Description: "Alert when a Live TV channel loses its input or fails over to a backup source.",
 			Category:    "livetv",
 			Icon:        "tv",
-			Tags:        []string{"livetv", "failover", "alerts"},
 			Params: []flows.ParamSchema{
 				{
 					Key:      "channelIds",
@@ -1025,12 +1011,12 @@ func DefaultFlowTemplates() []flows.Template {
 }
 
 type fromTemplateRequest struct {
-	Name        string         `json:"name,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Enabled     *bool          `json:"enabled,omitempty"`
-	Tags        []string       `json:"tags,omitempty"`
+	Name        string           `json:"name,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Enabled     *bool            `json:"enabled,omitempty"`
+	Tags        []string         `json:"tags,omitempty"`
 	Limits      flows.FlowLimits `json:"limits,omitempty"`
-	Params      map[string]any `json:"params,omitempty"`
+	Params      map[string]any   `json:"params,omitempty"`
 }
 
 var templateParamPlaceholderRe = regexp.MustCompile(`\{\{\s*param\.([A-Za-z0-9_.-]+)\s*\}\}`)
@@ -1104,9 +1090,6 @@ func instantiateFlowTemplate(tmpl flows.Template, req fromTemplateRequest) (flow
 		enabled = *req.Enabled
 	}
 	tags := req.Tags
-	if len(tags) == 0 && len(tmpl.Tags) > 0 {
-		tags = append([]string(nil), tmpl.Tags...)
-	}
 
 	return flows.Flow{
 		Name:        name,
@@ -1166,7 +1149,7 @@ func coerceTemplateParam(p flows.ParamSchema, v any) (any, error) {
 			return nil, fmt.Errorf("parameter %q must be a boolean", p.Key)
 		}
 		return b, nil
-	case events.FieldInt, events.FieldDurationMs:
+	case events.FieldInt, events.FieldDurationMS:
 		switch n := v.(type) {
 		case int:
 			return n, nil
@@ -1315,7 +1298,7 @@ func applyTypedTemplateOverrides(kind flows.NodeKind, cfgAny any, params map[str
 	case flows.NodeCondition:
 		if n, ok := params["minHeight"].(int); ok && n > 0 {
 			if cond, ok := m["condition"].(map[string]any); ok {
-				if rules, ok := cond["all"].([]any); ok {
+				if rules, ok := cond["rules"].([]any); ok {
 					for _, r := range rules {
 						if rm, ok := r.(map[string]any); ok && rm["field"] == "payload.videoHeight" {
 							rm["value"] = n
@@ -1370,11 +1353,7 @@ func resolveLegacyNotifyEvent(legacyKind string, reg *events.Registry) (string, 
 }
 
 func allLegacyNotifyKinds() []string {
-	kinds := make([]string, 0, len(notify.EventKinds))
-	for _, k := range notify.EventKinds {
-		kinds = append(kinds, k.Kind)
-	}
-	return kinds
+	return append([]string(nil), notify.Kinds...)
 }
 
 // buildFlowFromNotification converts one or more legacy rules on ch into a
@@ -1426,12 +1405,12 @@ func buildFlowFromNotification(
 	isNewsletter := false
 	hasCrash := false
 	for _, k := range expandedRequested {
-		if k == notify.EventServerCrash {
+		if k == "server.crash" {
 			hasCrash = true
 			notes = append(notes, "server.crash remains on the notification channel because it is delivered by the out-of-process crash watcher.")
 			continue
 		}
-		if k == notify.EventNewsletterWeekly {
+		if k == "newsletter.weekly" {
 			isNewsletter = true
 			migrated = append(migrated, k)
 			continue
@@ -1531,9 +1510,9 @@ func buildFlowFromNotification(
 	} else {
 		if isNewsletter {
 			notes = append(notes, "newsletter.weekly uses a weekly schedule and can be customized separately via the Weekly Recently Added template.")
-			migrated = slices.DeleteFunc(migrated, func(s string) bool { return s == notify.EventNewsletterWeekly })
-			if removeLegacy && !slices.Contains(kept, notify.EventNewsletterWeekly) {
-				kept = append(kept, notify.EventNewsletterWeekly)
+			migrated = slices.DeleteFunc(migrated, func(s string) bool { return s == "newsletter.weekly" })
+			if removeLegacy && !slices.Contains(kept, "newsletter.weekly") {
+				kept = append(kept, "newsletter.weekly")
 				updated.Events = kept
 			}
 		}
@@ -1599,7 +1578,6 @@ func buildFlowFromNotification(
 		Enabled:     enabled,
 		Graph:       graph,
 		Limits:      limits,
-		Tags:        []string{"notifications", "customized"},
 	}
 	return flow, updated, migrated, kept, notes, nil
 }

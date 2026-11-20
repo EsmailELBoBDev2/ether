@@ -210,7 +210,10 @@ func (a *FlowsAPI) handleIncomingWebhook(w http.ResponseWriter, r *http.Request)
 		}
 		matchedFlow = f
 
-		if lim := f.Limits.Effective().RateLimitPerMin; lim > 0 {
+		// An explicitly configured per-flow limit wins; the zero value
+		// keeps the API-wide per-token default (Effective() would always
+		// substitute the package default and mask it).
+		if lim := f.Limits.RateLimitPerMin; lim > 0 {
 			tokenLimit = lim
 		}
 		if ok, retry := a.tokenLimiter.allow(tokenHash, tokenLimit, now); !ok {

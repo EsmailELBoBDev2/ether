@@ -371,6 +371,7 @@ var personImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/person/(actor|d
 var metadataImageRe = regexp.MustCompile(`^/library/(?:metadata|collections)/(\d+)/(thumb|art|poster|banner|clearLogo|composite|squareArt)(?:/\d+)?$`)
 var playlistImageRe = regexp.MustCompile(`^/playlists/(\d+)/(composite|thumb|art)(?:/\d+)?$`)
 var discoveryImageRe = regexp.MustCompile(`^/library/metadata/(\d+)/discoveryPoster/[^/]+$`)
+var partIndexFrameRe = regexp.MustCompile(`^/library/parts/(\d+)/indexes/([^/]+)/(\d+)$`)
 
 // handlePhotoTranscode serves /photo/:/transcode. The url parameter may be
 // one of our own artwork paths (relative, or absolute on this server) or an
@@ -502,6 +503,16 @@ func (s *Server) handlePhotoTranscode(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.serveItemImage(w, r, key, m[2], width)
+			return
+		}
+		if m := partIndexFrameRe.FindStringSubmatch(path); m != nil {
+			partID, err1 := strconv.ParseInt(m[1], 10, 64)
+			offsetMS, err2 := strconv.ParseInt(m[3], 10, 64)
+			if err1 != nil || err2 != nil {
+				writeHTTPError(w, http.StatusNotFound)
+				return
+			}
+			s.serveIndexFrame(w, r, partID, m[2], offsetMS)
 			return
 		}
 		writeHTTPError(w, http.StatusNotFound)

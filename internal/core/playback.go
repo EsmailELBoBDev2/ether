@@ -320,9 +320,12 @@ type EncoderStatus struct {
 	Reason     string        `json:"reason,omitempty"`
 	StartedAt  time.Time     `json:"startedAt"`
 	UpdatedAt  time.Time     `json:"updatedAt"`
-	Speed      float64       `json:"speed"`
-	OutputTime time.Duration `json:"outputTime"`
-	ReadyUntil time.Duration `json:"readyUntil"`
+	Speed              float64       `json:"speed"`
+	OutputTime         time.Duration `json:"outputTime"`
+	ReadyUntil         time.Duration `json:"readyUntil"`
+	MinOffsetAvailable time.Duration `json:"minOffsetAvailable,omitempty"`
+	HWDecoder          string        `json:"hwDecoder,omitempty"`
+	HWEncoder          string        `json:"hwEncoder,omitempty"`
 }
 
 type Playback interface {

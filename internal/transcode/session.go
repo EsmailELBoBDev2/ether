@@ -6,6 +6,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/core"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -358,21 +359,30 @@ func (s *Session) EncoderStatus() *core.EncoderStatus {
 		phase = "running"
 	}
 	processor, filters := "none", "none"
+	var hwDecoder, hwEncoder string
 	if !r.spec.Decision.VideoCopy {
 		processor, filters = "cpu", "cpu"
 		if r.hw {
 			processor = "gpu"
+			hwEncoder = plexHWEncoderName(r.spec.Accel.Name)
 		}
 		v := r.spec.Info.Video()
-		graph := planVideo(r.spec, v).graph
+		vp := planVideo(r.spec, v)
 		for _, f := range []string{"tonemap_cuda", "scale_cuda", "scale_vt", "tonemap_vaapi", "scale_vaapi", "vpp_qsv"} {
-			if strings.Contains(graph, f+"=") {
+			if strings.Contains(vp.graph, f+"=") {
 				filters = "gpu"
 				break
 			}
 		}
+		if r.hw && !r.spec.SoftwareDecode {
+			hwDecoder = plexHWDecoderName(vp.inputArgs)
+		}
 	}
 	b := s.recoveryBufferLocked()
+	var minOffset time.Duration
+	if b.ReadyUntil > 0 {
+		minOffset = b.Position
+	}
 	rung, i := "", r.track
 	if s.isDASH() {
 		i = rungForDashTrack(i) // DASH track 1 is audio: rung 0
@@ -380,7 +390,63 @@ func (s *Session) EncoderStatus() *core.EncoderStatus {
 	if i > 0 && i < len(s.rungs) {
 		rung = s.rungs[i].id
 	}
-	return &core.EncoderStatus{Decision: r.spec.Decision, Rung: rung, Processor: processor, Filters: filters, Phase: phase, Reason: r.reason, StartedAt: r.started, UpdatedAt: p.Updated, Speed: p.Speed, OutputTime: p.OutTime, ReadyUntil: b.ReadyUntil}
+	return &core.EncoderStatus{
+		Decision:           r.spec.Decision,
+		Rung:               rung,
+		Processor:          processor,
+		Filters:            filters,
+		Phase:              phase,
+		Reason:             r.reason,
+		StartedAt:          r.started,
+		UpdatedAt:          p.Updated,
+		Speed:              p.Speed,
+		OutputTime:         p.OutTime,
+		ReadyUntil:         b.ReadyUntil,
+		MinOffsetAvailable: minOffset,
+		HWDecoder:          hwDecoder,
+		HWEncoder:          hwEncoder,
+	}
+}
+
+func plexHWEncoderName(accel string) string {
+	switch accel {
+	case AccelVideoToolbox:
+		return "videotoolbox"
+	case AccelNVENC:
+		return "nvenc"
+	case AccelVAAPI:
+		return "vaapi"
+	case AccelQSV:
+		return "qsv"
+	default:
+		return ""
+	}
+}
+
+func plexHWDecoderName(inputArgs []string) string {
+	for i := 0; i+1 < len(inputArgs); i++ {
+		if inputArgs[i] != "-hwaccel" {
+			continue
+		}
+		switch strings.ToLower(inputArgs[i+1]) {
+		case "cuda", "nvdec":
+			return "nvdec"
+		case "videotoolbox":
+			return "videotoolbox"
+		case "vaapi":
+			return "vaapi"
+		case "qsv":
+			if runtime.GOOS == "windows" {
+				return "d3d11va"
+			}
+			return "vaapi"
+		case "d3d11va":
+			return "d3d11va"
+		case "dxva2":
+			return "dxva2"
+		}
+	}
+	return ""
 }
 
 // HWAccelerated reports whether the current run encodes on hardware.

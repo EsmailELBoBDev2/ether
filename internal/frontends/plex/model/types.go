@@ -827,11 +827,17 @@ type TranscodeSess struct {
 	VideoCodec              string  `plex:"videoCodec,omitempty"`
 	AudioCodec              string  `plex:"audioCodec,omitempty"`
 	AudioChannels           int     `plex:"audioChannels,omitempty"`
-	Width                   int     `plex:"width,omitempty"`
-	Height                  int     `plex:"height,omitempty"`
-	TranscodeHwRequested    bool    `plex:"transcodeHwRequested"`
-	TranscodeHwFullPipeline *bool   `plex:"transcodeHwFullPipeline"`
-	TimeStamp               float64 `plex:"timeStamp,omitempty"`
+	Width                    int     `plex:"width,omitempty"`
+	Height                   int     `plex:"height,omitempty"`
+	TranscodeHwRequested     bool    `plex:"transcodeHwRequested"`
+	TranscodeHwDecoding      string  `plex:"transcodeHwDecoding,omitempty"`
+	TranscodeHwDecodingTitle string  `plex:"transcodeHwDecodingTitle,omitempty"`
+	TranscodeHwEncoding      string  `plex:"transcodeHwEncoding,omitempty"`
+	TranscodeHwEncodingTitle string  `plex:"transcodeHwEncodingTitle,omitempty"`
+	TranscodeHwFullPipeline  *bool   `plex:"transcodeHwFullPipeline"`
+	MinOffsetAvailable       float64 `plex:"minOffsetAvailable,omitempty"`
+	MaxOffsetAvailable       float64 `plex:"maxOffsetAvailable,omitempty"`
+	TimeStamp                float64 `plex:"timeStamp,omitempty"`
 }
 
 type SessionControl struct {
@@ -874,6 +880,7 @@ type NotificationContainer struct {
 	ActivityNotification         []ActivityNotification         `plex:"ActivityNotification"`
 	AutoUpdateNotification       []AutoUpdateNotification       `plex:"AutoUpdateNotification"`
 	StatusNotification           []StatusNotification           `plex:"StatusNotification"`
+	ReachabilityNotification     []ReachabilityNotification     `plex:"ReachabilityNotification"`
 	TranscodeSession             []TranscodeSess                `plex:"TranscodeSession"`
 }
 
@@ -916,6 +923,10 @@ type StatusNotification struct {
 	Title            string `plex:"title"`
 	Description      string `plex:"description"`
 	NotificationName string `plex:"notificationName"`
+}
+
+type ReachabilityNotification struct {
+	Reachability bool `plex:"reachability"`
 }
 
 // A builds an Attr.

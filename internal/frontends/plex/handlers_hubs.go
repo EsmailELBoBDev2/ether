@@ -1851,6 +1851,50 @@ func (s *Server) collectionDirectory(ctx context.Context, c *frontend.Collection
 	}
 }
 
+func (s *Server) searchCollections(ctx context.Context, pr *Request, query string, sectionID, limit int) ([]model.Directory, float64, bool) {
+	if s.collections() == nil || strings.TrimSpace(query) == "" {
+		return nil, 0, false
+	}
+	type scored struct {
+		col   frontend.Collection
+		score float64
+	}
+	var matches []scored
+	for _, sec := range s.userSections(pr.User) {
+		if sectionID > 0 && sec.ID != sectionID {
+			continue
+		}
+		cs, err := s.collections().List(ctx, pr.User, sec.Type)
+		if err != nil {
+			continue
+		}
+		cs = s.scopedCollectionCounts(ctx, pr.User, cs)
+		for _, c := range cs {
+			if sc := playlistSearchScore(c.Title, query); sc > 0 {
+				matches = append(matches, scored{col: c, score: sc})
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return nil, 0, false
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return strings.ToLower(matches[i].col.Title) < strings.ToLower(matches[j].col.Title)
+	})
+	more := false
+	if limit > 0 && len(matches) > limit {
+		matches, more = matches[:limit], true
+	}
+	dirs := make([]model.Directory, 0, len(matches))
+	for i := range matches {
+		dirs = append(dirs, s.collectionDirectory(ctx, &matches[i].col))
+	}
+	return dirs, matches[0].score, more
+}
+
 // searchLimit follows the search endpoints' two distinct refusal classes.
 func searchLimit(w http.ResponseWriter, r *http.Request, fallback, ceiling int) (int, bool) {
 	raw, present := firstQuery(r.URL.Query(), "limit")
@@ -2036,6 +2080,12 @@ func (s *Server) handleHubSearch(w http.ResponseWriter, r *http.Request) {
 				} else {
 					top = searchPersonExactScore
 				}
+			} else if q.Get("includeCollections") == "1" {
+				dirs, best, more := s.searchCollections(ctx, pr, query, sectionID, limit)
+				mh.Directory = dirs
+				mh.Size = len(dirs)
+				mh.More = more
+				top = best
 			}
 			mc.Hub = append(mc.Hub, mh)
 		case hd.id == "playlist":

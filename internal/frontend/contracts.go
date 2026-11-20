@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -716,6 +717,63 @@ type PlaylistPage struct {
 
 // ErrBadPlaylist is an invalid playlist name, index, or empty change.
 var ErrBadPlaylist = errors.New("invalid playlist request")
+
+// MaxPlaylistEntries is the maximum number of entries permitted in a viewer
+// playlist created or extended through the ViewerPlaylists contract.
+const MaxPlaylistEntries = 5000
+
+var (
+	// ErrPlaylistReadOnly marks mutations on read-only playlists (such as smart
+	// playlists or protected system playlists). It wraps ErrUnauthorized so
+	// existing surfaces that reject protected mutations as unauthorized keep
+	// their behavior while newer surfaces can report a read-only conflict.
+	ErrPlaylistReadOnly = fmt.Errorf("%w: playlist read only", ErrUnauthorized)
+	// ErrPlaylistTooLarge rejects playlist creation or additions that would
+	// exceed MaxPlaylistEntries.
+	ErrPlaylistTooLarge = errors.New("playlist exceeds maximum entry count")
+	// ErrPlaylistUnsupportedKind rejects playlist entries whose title kind is
+	// neither playable nor expandable to playable episodes.
+	ErrPlaylistUnsupportedKind = errors.New("unsupported playlist entry kind")
+)
+
+// PlaylistEntry pairs a stable entry identifier with a visible playlist title.
+type PlaylistEntry struct {
+	EntryID string
+	Title   core.Title
+}
+
+// PlaylistContents is a viewer's playlist metadata paired with its visible
+// entries in playlist order.
+type PlaylistContents struct {
+	Playlist core.Playlist
+	Entries  []PlaylistEntry
+}
+
+// TitlePlaylistMembership reports one viewer playlist and every visible entry
+// identifier within it that references the queried title.
+type TitlePlaylistMembership struct {
+	Playlist core.Playlist
+	EntryIDs []string
+}
+
+// PlaylistAvailability reports whether viewer playlists are backed by storage.
+type PlaylistAvailability interface {
+	PlaylistsAvailable() bool
+}
+
+// ViewerPlaylists exposes viewer-owned playlists with stable entry identities,
+// show/season expansion, rename, and per-title membership lookup. All reads
+// and mutations enforce viewer visibility policy before counting or indexing.
+type ViewerPlaylists interface {
+	PlaylistLibrary
+	ViewerPlaylistContents(ctx context.Context, viewer *core.Viewer, key core.RatingKey) (PlaylistContents, error)
+	CreateViewerPlaylist(ctx context.Context, viewer *core.Viewer, name string, items []core.RatingKey) (*core.Playlist, error)
+	RenameViewerPlaylist(ctx context.Context, viewer *core.Viewer, key core.RatingKey, name string) (*core.Playlist, error)
+	AddViewerPlaylistEntries(ctx context.Context, viewer *core.Viewer, key core.RatingKey, items []core.RatingKey) (int, error)
+	RemoveViewerPlaylistEntry(ctx context.Context, viewer *core.Viewer, key core.RatingKey, entryID string) error
+	MoveViewerPlaylistEntry(ctx context.Context, viewer *core.Viewer, key core.RatingKey, entryID, afterEntryID string) error
+	TitlePlaylists(ctx context.Context, viewer *core.Viewer, titleKey core.RatingKey) ([]TitlePlaylistMembership, error)
+}
 
 // PlaylistLibrary is the viewer's playlists. Remove and move indexes are
 // positions in the visible item list, never raw storage positions that

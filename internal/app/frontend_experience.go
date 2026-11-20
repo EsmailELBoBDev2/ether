@@ -538,12 +538,20 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		}
 		return err
 	}, RemoveContinue: func(ctx context.Context, u *core.User, k core.RatingKey) error {
-		if a.discoveryPersonal != nil {
-			if err := a.discoveryPersonal.RemoveContinue(ctx, u.ID, k); err != nil {
+		if err := a.state.HideContinue(ctx, u.ID, k); err != nil {
+			return err
+		}
+		if a.discoveryPersonal != nil && !k.IsPluginKey() {
+			if err := a.discoveryPersonal.RemoveContinue(ctx, u.ID, k); err != nil && !errors.Is(err, core.ErrNotFound) {
 				return err
 			}
 		}
-		return a.state.Progress(ctx, u.ID, k, 0, 0, "stopped")
+		if a.sessionEvents != nil {
+			if e := a.sessionEvents.Publish(ctx, frontend.Event{Type: "UserDataChanged", ViewerID: u.ID, Item: k, OriginProtocol: protocol}); e != nil && a.log != nil {
+				a.log.Warn("remove continue event publication failed", "err", e)
+			}
+		}
+		return nil
 	}, CanFavoriteEntity: func(ctx context.Context, u *core.User, r frontend.FavoriteRef) bool {
 		return a.favoriteAllowed(ctx, u, favorites.Subject{Kind: favorites.Kind(r.Kind), ID: r.ID}, vis)
 	}, SetEntityFavoriteSource: func(ctx context.Context, u *core.User, r frontend.FavoriteRef, on bool) error {

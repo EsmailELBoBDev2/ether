@@ -957,7 +957,12 @@ type StreamRequest struct {
 	// LazyStart leaves the encoder idle until a rendition is requested.
 	LazyStart bool
 	// Continuous uses one uniform segment clock, without adaptive discontinuities.
-	Continuous      bool
+	Continuous bool
+	// FullTimeline publishes an HLS playlist that spans the whole title from
+	// zero, as Jellyfin does, even when Position is a resume point. The client
+	// seeks its player to Position; the encoder starts at the segment it asks
+	// for. Position still records where the viewer starts.
+	FullTimeline    bool
 	Format          StreamFormat
 	Position        time.Duration
 	SegmentDuration time.Duration

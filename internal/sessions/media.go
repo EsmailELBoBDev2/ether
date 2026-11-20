@@ -277,10 +277,17 @@ func (b *Broker) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	// timeline is not. DASH spans the whole file whatever the offset, and
 	// a live channel's position is already in source time.
 	startAt := req.Position
-	if proto != core.ProtocolDASH && !s.live {
-		startAt = ps.SourcePosition(req.Position)
+	lazy := req.LazyStart
+	if req.FullTimeline && proto == core.ProtocolHLS && !s.live {
+		// The playlist starts at the title's (or episode's) beginning. Start
+		// no encoder until the client requests its first segment, which is
+		// the resume point, not zero.
+		startAt, lazy = 0, lazy || req.Position > 0
 	}
-	request := core.HLSRequest{LazyStart: req.LazyStart, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
+	if proto != core.ProtocolDASH && !s.live {
+		startAt = ps.SourcePosition(startAt)
+	}
+	request := core.HLSRequest{LazyStart: lazy, Diagnostics: req.Continuous, Continuous: req.Continuous, RequireIndependentProof: b.policy(s.public.Protocol).DistributedBindings, SessionID: id, ReleaseID: ps.SourceReleaseID(), InputURL: b.deps.Playback.InputURL(s.playID), Info: ps.Info, Decision: dec, StartOffset: startAt, SegmentDuration: req.SegmentDuration, Protocol: proto}
 	if req.Continuous && s.public.Protocol == "vela" {
 		variants, _, e := b.qualityPlan(ctx, s, viewer)
 		if e != nil {

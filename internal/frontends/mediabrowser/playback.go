@@ -557,7 +557,12 @@ func (i *instance) playbackInfo(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			url, err := i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: format, Position: intent.Position})
+			// Jellyfin never offsets an HLS playlist by StartTimeTicks: the
+			// playlist spans the whole title and every client seeks its player
+			// to the resume point. An offset playlist puts Streamyfin, Jellyfin
+			// for Android TV and others an offset away from where they think.
+			fullTimeline := i.protocol == "jellyfin" && channel == "" && format == frontend.StreamHLS
+			url, err := i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: format, Position: intent.Position, FullTimeline: fullTimeline})
 			if err != nil && format == frontend.StreamHLS && staticPlayable {
 				url, err = i.host.Sessions.StartStream(r.Context(), frontend.SessionAccess{Viewer: v, Device: dev, Protocol: i.protocol}, session.ID, frontend.StreamRequest{Format: frontend.StreamDirect, Position: intent.Position})
 				if err == nil {

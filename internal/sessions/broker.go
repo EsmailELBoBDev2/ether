@@ -19,6 +19,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/auth"
 	"github.com/braedonsaunders/ether/internal/clusterbus"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/handles/capability"
 	"github.com/braedonsaunders/ether/internal/state"
@@ -85,6 +86,7 @@ type BrokerDeps struct {
 	VideoTranscodingOff func() bool
 	OnTimeline          func(*core.Viewer, core.RatingKey, time.Duration, time.Duration, string)
 	Events              *EventBus
+	DomainEvents        *events.Bus
 	OnEventError        func(error)
 	// OnProfileDiagnostic is an optional fixture hook. Values are closed enums
 	// only; the callback receives no media, identity or client-supplied data.
@@ -342,7 +344,12 @@ func (b *Broker) confirmPolicy(ctx context.Context, v *core.Viewer, caps core.Cl
 // planPlexAdmission already calls confirm with the request caps. This is
 // the same check when the caller has only the remote bit.
 func (b *Broker) ConfirmAdmission(ctx context.Context, v *core.Viewer, remote bool) (*core.Viewer, error) {
-	return b.confirm(ctx, v, core.ClientCaps{Remote: remote})
+	caps := core.ClientCaps{Remote: remote}
+	confirmed, err := b.confirm(ctx, v, caps)
+	if err != nil {
+		b.emitAdmissionDenied(v, 0, "", caps, core.Device{}, "plex", false, err)
+	}
+	return confirmed, err
 }
 
 func (b *Broker) publish(ctx context.Context, event frontend.Event) {
@@ -477,6 +484,7 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	confirmed, err := b.confirm(ctx, v, req.Caps)
 	if err != nil {
+		b.emitAdmissionDenied(v, req.Item, "", req.Caps, req.Device, string(req.Protocol), false, err)
 		return frontend.PlayPlan{}, err
 	}
 	v = confirmed
@@ -505,12 +513,16 @@ func (b *Broker) Plan(ctx context.Context, req frontend.PlanRequest) (planned fr
 	}
 	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(req.Protocol)), v, req.Device, req.Item)
 	if err != nil {
+		if errors.Is(err, core.ErrUnauthorized) {
+			b.emitAdmissionDenied(v, req.Item, "", req.Caps, req.Device, string(req.Protocol), true, err)
+		}
 		return frontend.PlayPlan{}, err
 	}
 	if title == nil || title.Key != req.Item {
 		return frontend.PlayPlan{}, core.ErrNotFound
 	}
 	if !title.Released.IsZero() && title.Released.After(b.deps.Now()) {
+		b.emitAdmissionDenied(v, req.Item, title.Title, req.Caps, req.Device, string(req.Protocol), false, core.ErrUnreleased)
 		return frontend.PlayPlan{}, core.ErrUnreleased
 	}
 	var detail *detailSourceRecord

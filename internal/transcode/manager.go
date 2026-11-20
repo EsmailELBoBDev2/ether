@@ -23,6 +23,7 @@ import (
 
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 )
 
 // ErrTooManyTranscodes is returned by StartHLS when config MaxTranscodes
@@ -62,6 +63,7 @@ type options struct {
 	onRunStart      func(inputURL string, from, to time.Duration)
 	onEncoder       func(sessionID string, started bool, excerpt string)
 	onChange        func()
+	events          *events.Bus
 	openSubtitle    func(id, format, source string) (io.ReadCloser, string, error)
 	tracePlayback   bool
 	// rungDwell is how long a run keeps producing its rung before a
@@ -235,6 +237,7 @@ type Manager struct {
 	// Avoid immediately reusing a failed progressive hardware encoder on a
 	// client retry, including a retry that creates a new session.
 	httpHWFailedUntil atomic.Int64
+	activeTranscodes  atomic.Int32
 	feat              features
 	tempDir           string
 	// graphErr is the latest owner-visible reason a graph could not be built.
@@ -1260,7 +1263,13 @@ func (m *Manager) startHLS(ctx context.Context, req core.HLSRequest, life *encod
 		life.mu.Unlock()
 		return nil, errors.New("transcode: manager closed or start canceled")
 	}
+	if prev := m.sessions[id]; prev != nil && !prev.decision.VideoCopy {
+		m.activeTranscodes.Add(-1)
+	}
 	m.sessions[id] = s
+	if !s.decision.VideoCopy {
+		m.activeTranscodes.Add(1)
+	}
 	m.mu.Unlock()
 	life.mu.Unlock()
 	s.startResumeWarm(ctx, req)
@@ -1311,6 +1320,9 @@ func (m *Manager) forget(s *Session) {
 	m.mu.Lock()
 	if m.sessions[s.id] == s {
 		delete(m.sessions, s.id)
+		if !s.decision.VideoCopy {
+			m.activeTranscodes.Add(-1)
+		}
 	}
 	m.mu.Unlock()
 }

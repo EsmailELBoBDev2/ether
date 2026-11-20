@@ -1259,7 +1259,6 @@
   },
   "m_03e87ee2b55e59": "Alla typer",
   "m_03e9675d097dd9": "Installera Ether",
-  "m_03eb58dffdc05a": "Lämna tomt för att använda kortet Klientidentitet på sidan Indexerare.",
   "m_03ebeb5bd72d43": "Uppspelning",
   "m_03ec648bbbf58b": "Leverantören tog för lång tid på sig att svara. Försök igen om en stund.",
   "m_03ecc601d0d959": "Säsong och högtider",
@@ -5855,7 +5854,6 @@
     "one": "{used} av {count} API-förfrågan använd i dag",
     "other": "{used} av {count} API-förfrågningar använda i dag"
   },
-  "m_1258cfc611553a": "Vad den här indexeraren ser Ether som.",
   "m_125952708f2adf": "{service} (standardregion)",
   "m_125a3da17154a8": "{indexer} söks inte längre.",
   "m_125a82d7760449": "Ljud: {choice}",
@@ -8316,7 +8314,6 @@
   "m_1a11b4c96916aa": "Det tas bort från den här servern, med inställningar och lagring. Utkastet i Studio tas också bort.",
   "m_1a13bd3413b35f": "Anslutningstokens",
   "m_1a143a79f9f54f": "I kbit/s. 0 använder serverns standard.",
-  "m_1a15dd27526d8a": "User agent (valfritt)",
   "m_1a166bcd4dc588": "Slutför",
   "m_1a17cde9dd4908": "Skapa ett applösenord under Anslut appar i ditt konto.",
   "m_1a19ae5f5f47d8": "Tillbaka från paus",

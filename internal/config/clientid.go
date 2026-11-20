@@ -12,6 +12,12 @@ import (
 type Identity struct {
 	UserAgent string
 	Headers   map[string]string
+	// Ordered is the full header set in profile order (User-Agent included).
+	Ordered []HeaderKV
+	// Params are query-parameter overrides, applied last by ShapeQuery.
+	Params  []KVOverride
+	Shape   QueryShape
+	Profile string
 }
 
 // ClientIdentity is the owner's policy for the client Ether presents to
@@ -163,6 +169,23 @@ func upgradeClientIdentity(doc map[string]any) bool {
 			ix, ok := item.(map[string]any)
 			if !ok {
 				continue
+			}
+			// One-time migration: a saved per-indexer user agent becomes a
+			// request identity (the matching profile, or custom with that
+			// exact user agent). userAgent stays as a mirror.
+			if _, has := ix["requestIdentity"]; !has {
+				if ua, _ := ix["userAgent"].(string); strings.TrimSpace(ua) != "" {
+					if profile, ok := ProfileForUserAgent(ua); ok {
+						ix["requestIdentity"] = map[string]any{"profile": profile}
+					} else {
+						custom := map[string]any{
+							"profile": "custom",
+							"headers": []any{map[string]any{"name": "User-Agent", "value": strings.TrimSpace(ua)}},
+						}
+						ix["requestIdentity"] = custom
+					}
+					changed = true
+				}
 			}
 			raw, exists := ix["clientIdentity"]
 			if !exists {

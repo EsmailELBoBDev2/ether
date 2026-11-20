@@ -377,6 +377,26 @@ func (h *Handler) handleTestIndexer(w http.ResponseWriter, r *http.Request) {
 	h.runTest(w, r, func(ctx context.Context) error { return h.deps.TestIndexer(ctx, ix) })
 }
 
+func (h *Handler) handleIndexerPreview(w http.ResponseWriter, r *http.Request) {
+	if h.deps.IndexerPreview == nil {
+		writeError(w, http.StatusNotImplemented, "unavailable", "request preview is unavailable")
+		return
+	}
+	var ix config.Indexer
+	if err := decodeJSONLenient(r, &ix); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	// The preview masks the key itself; redacted placeholders in the draft
+	// are passed through untouched.
+	out, err := h.deps.IndexerPreview(ix)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "preview_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (h *Handler) handleTestDebrid(w http.ResponseWriter, r *http.Request) {
 	var p config.DebridProvider
 	if err := decodeJSONLenient(r, &p); err != nil {

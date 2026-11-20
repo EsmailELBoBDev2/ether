@@ -48,7 +48,9 @@ export function ClientIdentity({
   // Only the Newznab/Torznab client resolves this policy; built-in sites and
   // Stremio addons have their own request paths.
   const capable = indexers.filter((ix) => !ix.kind || ix.kind === "newznab");
-  const inherited = capable.filter((ix) => !ix.userAgent?.trim()).length;
+  const inherited = capable.filter(
+    (ix) => !ix.userAgent?.trim() && !ix.requestIdentity?.profile,
+  ).length;
   const overrides = capable.length - inherited;
   const backend = indexers.length - capable.length;
 

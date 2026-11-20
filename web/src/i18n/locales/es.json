@@ -1288,7 +1288,6 @@
   },
   "m_03e87ee2b55e59": "Todos los tipos",
   "m_03e9675d097dd9": "Configurar Ether",
-  "m_03eb58dffdc05a": "Déjalo vacío para usar la tarjeta Identidad del cliente de la página Indexadores.",
   "m_03ebeb5bd72d43": "Reproducción",
   "m_03ec648bbbf58b": "El proveedor tardó demasiado en responder. Inténtalo de nuevo en breve.",
   "m_03ecc601d0d959": "Temporadas y festividades",
@@ -6003,7 +6002,6 @@
     "one": "{used} de {count} solicitud de API usada hoy",
     "other": "{used} de {count} solicitudes de API usadas hoy"
   },
-  "m_1258cfc611553a": "Cómo ve este indexador a Ether.",
   "m_125952708f2adf": "{service} (región predeterminada)",
   "m_125a3da17154a8": "Ya no se buscará en {indexer}.",
   "m_125a82d7760449": "Audio: {choice}",
@@ -8526,7 +8524,6 @@
   "m_1a11b4c96916aa": "Se elimina de este servidor, con sus ajustes y su almacenamiento. Su borrador en Studio también se elimina.",
   "m_1a13bd3413b35f": "Tokens de unión",
   "m_1a143a79f9f54f": "En kbps. 0 usa el valor predeterminado del servidor.",
-  "m_1a15dd27526d8a": "User agent (opcional)",
   "m_1a166bcd4dc588": "Terminar",
   "m_1a17cde9dd4908": "Crea una contraseña de aplicación en Conectar aplicaciones, dentro de tu cuenta.",
   "m_1a19ae5f5f47d8": "Vuelta de la pausa",

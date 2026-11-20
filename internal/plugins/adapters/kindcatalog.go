@@ -178,6 +178,10 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 	}
 
 	active := c.recordAllowsCatalogSync(ctx, r)
+	oldByKey := make(map[string]pluginitems.KindRecord, len(existing))
+	for _, old := range existing {
+		oldByKey[old.KindKey] = old
+	}
 	keep := make(map[string]bool, len(declared))
 	for _, k := range declared {
 		keep[k.Key] = true
@@ -196,6 +200,24 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 		if err != nil {
 			c.log.Warn("upsert plugin library failed", "plugin", r.ID, "kind", k.Key, "err", err)
 			continue
+		}
+		// A plugin update that changes the declared presentation re-applies
+		// it to the kind's existing library; an unchanged declaration leaves
+		// the stored presentation (and any owner edit of it) alone. Levels
+		// and fields already flow through UpsertKind below, which stores the
+		// new declaration and reindexes only when the index shape changed.
+		if old, ok := oldByKey[k.Key]; ok && !presentationsEqual(old.Decl.Present, k.Present) {
+			next := k.Present
+			if next.Vela == nil {
+				// Keep the Vela publication chosen (or inferred) at
+				// install when the manifest stays silent about it.
+				next.Vela = lib.Present.Vela
+			}
+			if err := c.libs.SetPresent(ctx, lib.ID, next); err != nil {
+				c.log.Warn("re-apply plugin library presentation failed", "plugin", r.ID, "kind", k.Key, "err", err)
+			} else {
+				lib.Present = next
+			}
 		}
 		q := c.setQuota(r.ID, lib.Key, k.Cache)
 		if c.blobs != nil {
@@ -242,6 +264,14 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 			c.purgeBlobNamespace(oldKey)
 		}
 	}
+}
+
+// presentationsEqual compares two declared presentations by their JSON
+// shape, the form both the manifest and the library store use.
+func presentationsEqual(a, b core.Presentations) bool {
+	aj, err1 := json.Marshal(a)
+	bj, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && string(aj) == string(bj)
 }
 
 func (c *KindCatalog) removePlugin(ctx context.Context, pluginID string) {
@@ -483,6 +513,13 @@ func (c *KindCatalog) Browse(ctx context.Context, lib core.Library, q frontend.I
 		return experience.PluginBrowsePage{}, err
 	}
 	titles := c.projectItems(ctx, rec, lib, page.Items)
+	if flatAudioQuery(rec.Decl, lib.Present, q) {
+		for i, item := range page.Items {
+			if item.Playable && item.Unavailable == nil {
+				titles[i] = flatAlbumIncarnation(titles[i])
+			}
+		}
+	}
 	return experience.PluginBrowsePage{
 		Items:      titles,
 		Total:      page.Total,
@@ -593,6 +630,66 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 	return out, nil
 }
 
+// flatPlayableAlbum reports whether a kind is the single-level playable
+// album shape a flat music plugin declares: one playable level typed as a
+// container (MediaBrowser MusicAlbum, or Plex base artist). Clients of
+// those protocols only ever play leaf items, so such an album is also
+// presented once as its own Audio/track child (see flatAlbumIncarnation);
+// Jellyfin's album play button and Songs tab, and Plex's album track list,
+// all reach the playable item that way.
+func flatPlayableAlbum(decl plugins.MediaKindMeta, present core.Presentations) bool {
+	if len(decl.Levels) != 1 || !decl.Levels[0].Playable {
+		return false
+	}
+	if present.MediaBrowser != nil && present.MediaBrowser.ItemTypes[decl.Levels[0].Key] == "MusicAlbum" {
+		return true
+	}
+	return present.Plex != nil && present.Plex.Base == "artist"
+}
+
+// flatAlbumIncarnation is a flat playable album presented as its own single
+// playable child: same item and Key, typed as the leaf (Audio), naming
+// itself as its album.
+func flatAlbumIncarnation(t core.Title) core.Title {
+	t.SelfChild = true
+	t.MBItemType = "Audio"
+	t.ParentKey = t.Key
+	t.ParentTitle = t.Title
+	t.ChildCount = 0
+	t.LeafCount = 0
+	return t
+}
+
+// wantsMBType reports whether the query's IncludeItemTypes named the given
+// MediaBrowser type (carried lowercased in UnservedTypes).
+func wantsMBType(q frontend.ItemQuery, name string) bool {
+	for _, kind := range q.UnservedTypes {
+		if strings.EqualFold(kind, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// excludesMBType reports whether the query excluded the given MediaBrowser
+// type by name.
+func excludesMBType(q frontend.ItemQuery, name string) bool {
+	for _, excluded := range q.ExcludedTypes {
+		if strings.EqualFold(string(excluded), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// flatAudioQuery reports whether q asks for Audio items a flat playable
+// album kind answers with its albums' Audio incarnations (Jellyfin's Songs
+// tab), without also asking for the albums themselves.
+func flatAudioQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) bool {
+	return flatPlayableAlbum(decl, present) && wantsMBType(q, "Audio") &&
+		!wantsMBType(q, "MusicAlbum") && !excludesMBType(q, "Audio")
+}
+
 // Children implements experience.PluginLibraries.
 func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recursive bool, cursor string, limit int) (experience.PluginBrowsePage, error) {
 	if c == nil || c.items == nil || c.libs == nil || !parent.IsPluginKey() {
@@ -619,6 +716,13 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		page, err := c.items.Browse(ctx, pluginitems.BrowseQuery{LibraryID: lib.ID, ParentRef: parentItem.Ref, Cursor: cursor, Limit: limit, Policy: policy, Sort: "index"})
 		if err != nil {
 			return experience.PluginBrowsePage{}, err
+		}
+		if len(page.Items) == 0 && page.Total == 0 && cursor == "" && limit != 0 &&
+			parentItem.Playable && parentItem.Unavailable == nil && flatPlayableAlbum(rec.Decl, lib.Present) {
+			// A flat playable album has no track items to list; present
+			// the album itself once as its playable child.
+			self := c.projectItems(ctx, rec, lib, []core.KindItem{parentItem})
+			return experience.PluginBrowsePage{Items: []core.Title{flatAlbumIncarnation(self[0])}, Total: 1}, nil
 		}
 		return experience.PluginBrowsePage{
 			Items:      c.projectItems(ctx, rec, lib, page.Items),
@@ -816,7 +920,7 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 	if err != nil {
 		return nil, err
 	}
-	searchLevels, ok := searchLevelsForQuery(rec.Decl, lib.Present, q.Types)
+	searchLevels, ok := searchLevelsForQuery(rec.Decl, lib.Present, q)
 	if !ok {
 		return nil, nil
 	}
@@ -892,6 +996,13 @@ func (c *KindCatalog) Search(ctx context.Context, lib core.Library, query string
 		}
 	}
 	projected := c.projectItems(ctx, rec, lib, allowed)
+	if flatAudioQuery(rec.Decl, lib.Present, q) {
+		for i, item := range allowed {
+			if item.Playable && item.Unavailable == nil {
+				projected[i] = flatAlbumIncarnation(projected[i])
+			}
+		}
+	}
 	for i := range projected {
 		projected[i].SearchScore = scorePluginSearchHit(projected[i], query)
 	}
@@ -907,7 +1018,7 @@ func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query 
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := searchLevelsForQuery(rec.Decl, lib.Present, q.Types); !ok {
+	if _, ok := searchLevelsForQuery(rec.Decl, lib.Present, q); !ok {
 		return nil, nil
 	}
 	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
@@ -924,10 +1035,10 @@ func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query 
 	out := make([]experience.PluginPersonMatch, 0, len(matches))
 	for _, m := range matches {
 		titles := c.projectItems(ctx, rec, lib, m.Items)
-		if len(q.Types) > 0 {
+		if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
 			filtered := titles[:0]
 			for _, t := range titles {
-				if slices.Contains(q.Types, t.Type) {
+				if levelMatchesQueryTypes(t, q) {
 					filtered = append(filtered, t)
 				}
 			}
@@ -1133,12 +1244,47 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 		return rt, true
 	}
 
+	parentCache := make(map[string]core.Title)
+	resolveParent := func(parentID string) (core.Title, bool) {
+		if t, ok := parentCache[parentID]; ok {
+			return t, t.Key != 0
+		}
+		p, pLib, err := c.items.GetByExternal(ctx, rec.PluginID, rec.KindKey, parentID)
+		if err != nil || pLib != lib.ID {
+			parentCache[parentID] = core.Title{}
+			return core.Title{}, false
+		}
+		pt := pluginitems.Project(p, rec.Decl, lib.Present, lib.CardShape)
+		pt.LibraryID = lib.ID
+		parentCache[parentID] = pt
+		return pt, true
+	}
+
+	flatAlbum := flatPlayableAlbum(rec.Decl, lib.Present)
 	out := make([]core.Title, len(items))
 	for i, it := range items {
 		t := pluginitems.Project(it, rec.Decl, lib.Present, lib.CardShape)
 		t.LibraryID = lib.ID
+		if flatAlbum && it.Playable && it.Unavailable == nil {
+			// The album lists its one synthetic playable child.
+			if t.ChildCount == 0 {
+				t.ChildCount = 1
+			}
+			if t.LeafCount == 0 {
+				t.LeafCount = 1
+			}
+		}
 		if t.ContentRating == "" {
 			t.ContentRating = extractContentRating(it.Fields)
+		}
+		if it.ParentID != "" {
+			// Immediate parent for every hierarchy (track -> album,
+			// album -> artist); the root naming below is the video
+			// projection's show identity.
+			if parent, ok := resolveParent(it.ParentID); ok {
+				t.ParentKey = parent.Key
+				t.ParentTitle = parent.Title
+			}
 		}
 		if (t.Type == core.TypeSeason || t.Type == core.TypeEpisode) && it.ParentID != "" {
 			if root, ok := resolveRoot(it.ParentID); ok {
@@ -1214,23 +1360,57 @@ func levelIsPlayable(decl plugins.MediaKindMeta, levelKey string) bool {
 	return ok && lv.Playable
 }
 
+// levelMatchesQueryTypes reports whether a level's projected title answers
+// the query's type filter: by its core media type (movie/show/season/episode)
+// or by the MediaBrowser item type the presentation declares for it
+// (MusicAlbum, Audio, Book, …), which clients name in IncludeItemTypes and
+// the query carries in UnservedTypes. A level the client excluded by either
+// name never matches.
+func levelMatchesQueryTypes(projected core.Title, q frontend.ItemQuery) bool {
+	for _, excluded := range q.ExcludedTypes {
+		if excluded == projected.Type || strings.EqualFold(string(excluded), projected.MBItemType) {
+			return false
+		}
+	}
+	if slices.Contains(q.Types, projected.Type) {
+		return true
+	}
+	for _, kind := range q.UnservedTypes {
+		if strings.EqualFold(kind, projected.MBItemType) {
+			return true
+		}
+	}
+	return false
+}
+
 func browseLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) (level string, levels []string, anyLevel bool, ok bool) {
 	if len(decl.Levels) == 0 {
 		return "", nil, true, true
 	}
-	if len(q.Types) == 0 {
+	if len(q.Types) == 0 && len(q.UnservedTypes) == 0 {
 		if q.Filter.Person > 0 {
 			return "", nil, true, true
 		}
+		// An exclusion alone still narrows the root listing.
+		if len(q.ExcludedTypes) == 0 {
+			return decl.Levels[0].Key, nil, false, true
+		}
+		root := pluginitems.Project(core.KindItem{Level: decl.Levels[0].Key}, decl, present)
+		for _, excluded := range q.ExcludedTypes {
+			if excluded == root.Type || strings.EqualFold(string(excluded), root.MBItemType) {
+				return "", nil, false, false
+			}
+		}
 		return decl.Levels[0].Key, nil, false, true
 	}
+	flatAudio := flatAudioQuery(decl, present, q)
 	var matched []string
 	for _, lv := range decl.Levels {
 		if !q.Recursive && lv.Key != decl.Levels[0].Key {
 			continue
 		}
-		pt := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present).Type
-		if slices.Contains(q.Types, pt) {
+		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+		if levelMatchesQueryTypes(projected, q) || flatAudio {
 			matched = append(matched, lv.Key)
 		}
 	}
@@ -1243,14 +1423,15 @@ func browseLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations
 	return "", matched, false, true
 }
 
-func searchLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, types []core.MediaType) ([]string, bool) {
-	if len(types) == 0 || len(decl.Levels) == 0 {
+func searchLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) ([]string, bool) {
+	if (len(q.Types) == 0 && len(q.UnservedTypes) == 0) || len(decl.Levels) == 0 {
 		return nil, true
 	}
+	flatAudio := flatAudioQuery(decl, present, q)
 	var matched []string
 	for _, lv := range decl.Levels {
-		pt := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present).Type
-		if slices.Contains(types, pt) {
+		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+		if levelMatchesQueryTypes(projected, q) || flatAudio {
 			matched = append(matched, lv.Key)
 		}
 	}

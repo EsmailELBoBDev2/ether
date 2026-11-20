@@ -344,10 +344,38 @@ defaults per library afterwards.
 - `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
+  A single-level `artist` kind is a flat album list in a music
+  section: its items present as albums, never as artists (name the
+  level `artist` or `track` to present as that instead).
 - `mediaBrowser: {collectionType, itemTypes}` — Jellyfin/Emby.
-  Item types: `Movie, Series, Season, Episode, MusicAlbum, Audio,
-  Book, PhotoAlbum, Photo`, mapped per level; unmapped levels use
-  the collection's natural container.
+  `collectionType` is one of `movies, tvshows, music, audiobooks,
+  books, photos, homevideos`. `itemTypes` maps each level key to
+  one of `Movie, Series, Season, Episode, MusicArtist, MusicAlbum,
+  Audio, AudioBook, Book, PhotoAlbum, Photo` (anything else is a
+  manifest error). The declared type drives the item's `Type`, its
+  `MediaType` (`Audio` for `Audio`/`AudioBook`, `Book` for `Book`,
+  `Photo` for `Photo`, `Video` for `Movie`/`Episode`), `IsFolder`
+  (`MusicArtist`/`MusicAlbum`/`PhotoAlbum`/`Series`/`Season` hold
+  children), parent links (a track's `Album`/`AlbumId` name its
+  album) and `IncludeItemTypes` filtering. Unmapped levels keep
+  the video projection (`Movie`/`Series`/`Season`/`Episode`), so
+  declare every level of a music, book or audiobook kind. Audio
+  items serve through the same media routes; their MediaSources
+  carry only the streams the source actually has.
+  A single-level kind whose one playable level is typed
+  `MusicAlbum` (each album is one playable item, no track items)
+  still plays: the album lists itself once as an `Audio` child
+  (same item, `Album`/`AlbumId` naming itself) and answers
+  `IncludeItemTypes=Audio` library queries with that incarnation,
+  which is what Jellyfin's album play button and Songs tab ask
+  for. Plex gets the same shape as one synthetic track under the
+  album.
+
+When a plugin update changes a kind's `present`, the new
+presentation is re-applied to the kind's existing library (owner
+edits to where a library appears are kept when the declaration
+did not change). Level and field changes follow the upgrade
+rules and reindex only when the indexed shape changed.
 - `stremio: {type}`, `xtream: {category}`, `silo: {type}`.
 - `adapterOnly: true` — no generic mapping fits; ship a
   `frontend_adapter` and serve the protocol yourself. Embed

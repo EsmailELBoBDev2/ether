@@ -94,8 +94,12 @@ var mediaBrowserCollectionTypes = map[string]bool{
 
 var mediaBrowserItemTypes = map[string]bool{
 	"Movie": true, "Series": true, "Season": true, "Episode": true,
-	"MusicAlbum": true, "Audio": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
+	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
+
+// mediaBrowserItemTypeList names the closed itemTypes set for error messages.
+const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
 
 func validateMediaKinds(m Manifest, add func(string, string), label func(string, string, int)) {
 	e := m.Ether
@@ -556,8 +560,11 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
-		case "movie", "photo":
-		case "show", "artist":
+		case "movie", "photo", "artist":
+			// A single-level artist kind is a flat album list: its items
+			// present as albums (a level named artist/track presents as
+			// that instead), never as artists.
+		case "show":
 			if levels < 2 {
 				add(base+".plex.base", p.Plex.Base+" needs at least two levels")
 			}
@@ -574,7 +581,7 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 				add(base+".mediaBrowser.itemTypes", "unknown level "+level)
 			}
 			if !mediaBrowserItemTypes[itemType] {
-				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType)
+				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType+" for level "+level+" (must be "+mediaBrowserItemTypeList+")")
 			}
 		}
 	}

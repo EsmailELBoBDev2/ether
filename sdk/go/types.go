@@ -266,8 +266,14 @@ type Presentations struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
+		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		// ItemTypes maps each level key to its Jellyfin/Emby item type:
+		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
+		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
+		// IncludeItemTypes filtering; unmapped levels keep the video
+		// projection, so declare every level of a music/book kind.
+		ItemTypes map[string]string `json:"itemTypes,omitempty"`
 	} `json:"mediaBrowser,omitempty"`
 	Stremio *struct {
 		Type string `json:"type"`
@@ -310,9 +316,9 @@ type KindLibraryDecl struct {
 
 // KindLibraryTabFilter defines saved filter rules on a "view" tab.
 type KindLibraryTabFilter struct {
-	Match   string                 `json:"match,omitempty"`   // "all" (default) or "any"
-	Rules   []KindLibraryTabRule   `json:"rules,omitempty"`   // matching conditions
-	Exclude []KindLibraryTabRule   `json:"exclude,omitempty"` // excluded conditions
+	Match   string               `json:"match,omitempty"`   // "all" (default) or "any"
+	Rules   []KindLibraryTabRule `json:"rules,omitempty"`   // matching conditions
+	Exclude []KindLibraryTabRule `json:"exclude,omitempty"` // excluded conditions
 }
 
 // KindLibraryTabRule is one filter condition inside a "view" tab's filters.

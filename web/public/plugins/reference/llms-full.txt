@@ -999,10 +999,38 @@ defaults per library afterwards.
 - `plex: {base: "movie"|"show"|"artist"|"photo"}` — root→show/artist,
   middle→season/album, leaf→episode/track. More than three levels
   are flattened with indexes kept (the Studio preview shows this).
+  A single-level `artist` kind is a flat album list in a music
+  section: its items present as albums, never as artists (name the
+  level `artist` or `track` to present as that instead).
 - `mediaBrowser: {collectionType, itemTypes}` — Jellyfin/Emby.
-  Item types: `Movie, Series, Season, Episode, MusicAlbum, Audio,
-  Book, PhotoAlbum, Photo`, mapped per level; unmapped levels use
-  the collection's natural container.
+  `collectionType` is one of `movies, tvshows, music, audiobooks,
+  books, photos, homevideos`. `itemTypes` maps each level key to
+  one of `Movie, Series, Season, Episode, MusicArtist, MusicAlbum,
+  Audio, AudioBook, Book, PhotoAlbum, Photo` (anything else is a
+  manifest error). The declared type drives the item's `Type`, its
+  `MediaType` (`Audio` for `Audio`/`AudioBook`, `Book` for `Book`,
+  `Photo` for `Photo`, `Video` for `Movie`/`Episode`), `IsFolder`
+  (`MusicArtist`/`MusicAlbum`/`PhotoAlbum`/`Series`/`Season` hold
+  children), parent links (a track's `Album`/`AlbumId` name its
+  album) and `IncludeItemTypes` filtering. Unmapped levels keep
+  the video projection (`Movie`/`Series`/`Season`/`Episode`), so
+  declare every level of a music, book or audiobook kind. Audio
+  items serve through the same media routes; their MediaSources
+  carry only the streams the source actually has.
+  A single-level kind whose one playable level is typed
+  `MusicAlbum` (each album is one playable item, no track items)
+  still plays: the album lists itself once as an `Audio` child
+  (same item, `Album`/`AlbumId` naming itself) and answers
+  `IncludeItemTypes=Audio` library queries with that incarnation,
+  which is what Jellyfin's album play button and Songs tab ask
+  for. Plex gets the same shape as one synthetic track under the
+  album.
+
+When a plugin update changes a kind's `present`, the new
+presentation is re-applied to the kind's existing library (owner
+edits to where a library appears are kept when the declaration
+did not change). Level and field changes follow the upgrade
+rules and reindex only when the indexed shape changed.
 - `stremio: {type}`, `xtream: {category}`, `silo: {type}`.
 - `adapterOnly: true` — no generic mapping fits; ship a
   `frontend_adapter` and serve the protocol yourself. Embed
@@ -18152,8 +18180,16 @@ var mediaBrowserCollectionTypes = map[string]bool{
 ``````
 var mediaBrowserItemTypes = map[string]bool{
 	"Movie": true, "Series": true, "Season": true, "Episode": true,
-	"MusicAlbum": true, "Audio": true, "Book": true, "PhotoAlbum": true, "Photo": true,
+	"MusicArtist": true, "MusicAlbum": true, "Audio": true, "AudioBook": true,
+	"Book": true, "PhotoAlbum": true, "Photo": true,
 }
+``````
+
+## Source: internal/plugins/manifest_kinds.go#mediaBrowserItemTypeList
+
+``````
+// mediaBrowserItemTypeList names the closed itemTypes set for error messages.
+const mediaBrowserItemTypeList = "Movie, Series, Season, Episode, MusicArtist, MusicAlbum, Audio, AudioBook, Book, PhotoAlbum or Photo"
 ``````
 
 ## Source: internal/plugins/manifest_kinds.go#validateMediaKinds
@@ -18626,8 +18662,11 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 	}
 	if p.Plex != nil {
 		switch p.Plex.Base {
-		case "movie", "photo":
-		case "show", "artist":
+		case "movie", "photo", "artist":
+			// A single-level artist kind is a flat album list: its items
+			// present as albums (a level named artist/track presents as
+			// that instead), never as artists.
+		case "show":
 			if levels < 2 {
 				add(base+".plex.base", p.Plex.Base+" needs at least two levels")
 			}
@@ -18644,7 +18683,7 @@ func validatePresentations(m Manifest, k MediaKindMeta, base string, levelKeys m
 				add(base+".mediaBrowser.itemTypes", "unknown level "+level)
 			}
 			if !mediaBrowserItemTypes[itemType] {
-				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType)
+				add(base+".mediaBrowser.itemTypes", "unknown item type "+itemType+" for level "+level+" (must be "+mediaBrowserItemTypeList+")")
 			}
 		}
 	}
@@ -45623,8 +45662,14 @@ type BadgeUsage struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	}` | may be omitted (see validation for conditions) |  |
 | `mediaBrowser` | `*struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
+		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		// ItemTypes maps each level key to its Jellyfin/Emby item type:
+		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
+		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
+		// IncludeItemTypes filtering; unmapped levels keep the video
+		// projection, so declare every level of a music/book kind.
+		ItemTypes map[string]string `json:"itemTypes,omitempty"`
 	}` | may be omitted (see validation for conditions) |  |
 | `stremio` | `*struct {
 		Type string `json:"type"`
@@ -45650,8 +45695,14 @@ type Presentations struct {
 		Base string `json:"base"` // movie|show|artist|photo
 	} `json:"plex,omitempty"`
 	MediaBrowser *struct {
-		CollectionType string            `json:"collectionType"`
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"`
+		CollectionType string `json:"collectionType"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+		// ItemTypes maps each level key to its Jellyfin/Emby item type:
+		// Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|
+		// AudioBook|Book|PhotoAlbum|Photo. The declared type drives the
+		// item's Type, MediaType (Audio/Book/Photo/Video), IsFolder and
+		// IncludeItemTypes filtering; unmapped levels keep the video
+		// projection, so declare every level of a music/book kind.
+		ItemTypes map[string]string `json:"itemTypes,omitempty"`
 	} `json:"mediaBrowser,omitempty"`
 	Stremio *struct {
 		Type string `json:"type"`
@@ -56546,12 +56597,24 @@ export interface Contributes {
   setup?: SetupMeta;
 }
 
+/** A Jellyfin/Emby item type a level can present as. */
+export type MediaBrowserItemType =
+  | "Movie" | "Series" | "Season" | "Episode"
+  | "MusicArtist" | "MusicAlbum" | "Audio" | "AudioBook"
+  | "Book" | "PhotoAlbum" | "Photo";
+
 /** How a library is published per protocol (Ether v0.3.8 content kinds). */
 export interface Presentations {
   adapterOnly?: boolean;
   vela?: { type: "movies" | "shows" };
   plex?: { base: "movie" | "show" | "artist" | "photo" };
-  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, string> };
+  /**
+   * Jellyfin/Emby. `itemTypes` maps each level key to its item type; the
+   * declared type drives the item's Type, MediaType (Audio/Book/Photo/
+   * Video), IsFolder and IncludeItemTypes filtering. Unmapped levels keep
+   * the video projection, so declare every level of a music/book kind.
+   */
+  mediaBrowser?: { collectionType: string; itemTypes?: Record<string, MediaBrowserItemType> };
   stremio?: { type: "movie" | "series" | "channel" | "tv" };
   xtream?: { category: string };
   silo?: { type: string };

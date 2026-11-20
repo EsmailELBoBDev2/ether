@@ -510,6 +510,10 @@ func (s *Server) kindSectionBaseForTitle(t *frontend.Title) (string, bool) {
 func kindTypeForBase(base, projected string, t *frontend.Title) string {
 	switch base {
 	case plexBaseArtist:
+		if t != nil && t.SelfChild {
+			// A flat playable album's own playable incarnation.
+			return plexBaseTrack
+		}
 		if t != nil && t.KindLevel != "" {
 			switch t.KindLevel {
 			case "artist", "album", "track":
@@ -523,6 +527,10 @@ func kindTypeForBase(base, projected string, t *frontend.Title) string {
 			return plexBaseAlbum
 		case string(frontend.TypeEpisode):
 			return plexBaseTrack
+		case string(frontend.TypeMovie):
+			// A flat single-level music kind lists its items as albums,
+			// never as artists.
+			return plexBaseAlbum
 		}
 		return plexBaseArtist
 	case plexBasePhoto:

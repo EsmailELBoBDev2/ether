@@ -188,7 +188,10 @@ func jellyfinListFile(r *http.Request) bool {
 // WebDAV uses. Probed streams stay; a row with none still names a video and
 // an audio track so the source is a file rather than an empty remote.
 func (i *instance) presentJellyfinFile(item, source map[string]any, title frontend.Title) {
-	if i == nil || item == nil || source == nil || (title.Type != "movie" && title.Type != "episode") {
+	// A declared audio/book/photo item keeps its own probed streams: this
+	// helper would otherwise stamp it as a video file and invent a video
+	// stream for a source that has none yet.
+	if i == nil || item == nil || source == nil || mbDeclaredNonVideo(title) || (title.Type != "movie" && title.Type != "episode") {
 		return
 	}
 	container, _ := source["Container"].(string)
@@ -258,7 +261,18 @@ func jellyfinMediaSourceShape(source map[string]any, name string) {
 	if name != "" {
 		setMissing(source, "Name", name)
 	}
-	setMissing(source, "VideoType", "VideoFile")
+	// A source whose probed streams hold no video (a music track, an
+	// audiobook) is not a video file; an unprobed source keeps the stamp.
+	if streams, ok := source["MediaStreams"].([]any); !ok || len(streams) == 0 {
+		setMissing(source, "VideoType", "VideoFile")
+	} else {
+		for _, stream := range streams {
+			if dto, ok := stream.(map[string]any); ok && dto["Type"] == "Video" {
+				setMissing(source, "VideoType", "VideoFile")
+				break
+			}
+		}
+	}
 	setMissing(source, "UseMostCompatibleTranscodingProfile", false)
 	if id, _ := source["Id"].(string); id != "" {
 		setMissing(source, "ETag", itemEtag(id))
@@ -276,14 +290,23 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 	setMissing(item, "BackdropImageTags", []string{})
 	setMissing(item, "ImageTags", map[string]string{})
 	setMissing(item, "ImageBlurHashes", map[string]any{})
+	// The type switches below describe the video hierarchy; a declared
+	// music/book/photo item keeps only the generic shell around them.
+	nonVideo := mbDeclaredNonVideo(title)
 	switch title.Type {
 	case "movie", "episode":
+		if nonVideo {
+			break
+		}
 		setMissing(item, "VideoType", "VideoFile")
 		setMissing(item, "Container", "")
 		if title.Type == "movie" {
 			i.attachLibraryParent(r, viewer, item, "movie")
 		}
 	case "show":
+		if nonVideo {
+			break
+		}
 		setMissing(item, "AirDays", []string{})
 		setMissing(item, "MediaType", "Unknown")
 		i.attachLibraryParent(r, viewer, item, "show")
@@ -295,9 +318,12 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 			setMissing(item, "DateLastMediaAdded", wireTime(title.LastAirDate))
 		}
 	case "season":
+		if nonVideo {
+			break
+		}
 		setMissing(item, "MediaType", "Unknown")
 	}
-	if title.Type == "episode" || title.Type == "season" {
+	if !nonVideo && (title.Type == "episode" || title.Type == "season") {
 		setMissing(item, "ParentBackdropImageTags", []string{})
 		for _, key := range []string{"ParentBackdropItemId", "ParentLogoImageTag", "ParentLogoItemId", "ParentPrimaryImageItemId", "ParentPrimaryImageTag", "SeriesPrimaryImageTag"} {
 			setMissing(item, key, nil)
@@ -730,6 +756,25 @@ func (i *instance) nameChildSeries(r *http.Request, viewer *frontend.Viewer, par
 // empty. A show key plus a season number encodes the season when the item
 // key does not.
 func attachParentIdentity(m map[string]any, t frontend.Title) {
+	if mbDeclaredNonVideo(t) {
+		// A declared music/book/photo item names its immediate parent in
+		// the kind's hierarchy (track -> album -> artist), never a series
+		// or season. Jellyfin reads a track's album from Album/AlbumId.
+		if t.ParentKey != 0 {
+			parentID := ids.RatingKeyGUID(t.ParentKey)
+			m["ParentId"] = parentID
+			if t.MBItemType == "Audio" {
+				m["AlbumId"] = parentID
+				if t.ParentTitle != "" {
+					m["Album"] = t.ParentTitle
+				}
+			}
+		}
+		if t.ItemIndex > 0 {
+			m["IndexNumber"] = t.ItemIndex
+		}
+		return
+	}
 	show := t.ShowKey
 	if show == 0 && (t.Key.Kind() == frontend.KindEpisode || t.Key.Kind() == frontend.KindSeason) {
 		show = frontend.ShowKey(t.Key.TMDB())

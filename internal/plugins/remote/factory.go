@@ -515,6 +515,14 @@ func (a HostAdapter) CacheOpen(ctx context.Context, pluginID, blobRef string) (i
 	return rc, mapHostErr(err)
 }
 
+func (a HostAdapter) CacheDelete(ctx context.Context, pluginID, blobRef string) error {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return err
+	}
+	return mapHostErr(h.CacheDelete(ctx, blobRef))
+}
+
 func (a HostAdapter) StreamURL(ctx context.Context, pluginID string, viewerID int64, itemRef string) (string, error) {
 	return a.StreamPartURL(ctx, pluginID, viewerID, itemRef, nil)
 }

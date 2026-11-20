@@ -58,8 +58,9 @@ func archiveMemory(l RuntimeLimits) int64 {
 	return int64(min(l.MemoryBytes, 2<<30))
 }
 
-// UnsafeArchiveMemberError refuses a single member without hiding its directory.
-// Name is an archive identifier only, never an extraction path.
+// UnsafeArchiveMemberError describes an archive member whose stored name is
+// unsafe to use as a filesystem path. By-index archive reads no longer refuse
+// members for their name; Name is an identifier only.
 type UnsafeArchiveMemberError struct {
 	Index  int
 	Name   string
@@ -191,7 +192,8 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 					if e != nil {
 						return nil, e
 					}
-					if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
+					normName := strings.ReplaceAll(h.Name, `\`, "/")
+					if (normName != v.Files[j].Name && normName != strings.ReplaceAll(v.Files[j].StoredName, `\`, "/")) || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
 						return nil, fmt.Errorf("plugins: inconsistent RAR member")
 					}
 					if j == i {
@@ -269,17 +271,6 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	a.bytes = 1024 + int64(cap(a.members))*(int64(unsafe.Sizeof(ArchiveMember{}))+archiveFormatEntryBytes) + names
 	if a.bytes > archiveDirectoryCap(l) {
 		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
-	}
-	bind := a.bind
-	a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
-		open := bind(ctx, ra, l)
-		return func(i int) (io.ReadCloser, error) {
-			m := a.members[i]
-			if m.Unsafe {
-				return nil, &UnsafeArchiveMemberError{Index: m.Index, Name: m.Name, Reason: m.UnsafeReason}
-			}
-			return open(i)
-		}
 	}
 	return a, nil
 }

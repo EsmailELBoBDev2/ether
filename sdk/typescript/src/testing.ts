@@ -468,6 +468,9 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         if (!b) throw new Error(`blob ${blobRef} not found`);
         return b.slice(range.offset, range.offset + range.length);
       },
+      delete: (blobRef) => {
+        state.blobs.delete(blobRef);
+      },
     },
     frontend: {
       streamUrl: (viewerId: number, itemRef: string, partIndex?: number) => {

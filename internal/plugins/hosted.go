@@ -624,6 +624,8 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			out["bodyBase64"] = base64.StdEncoding.EncodeToString(data)
 		}
 		return result(out, nil)
+	case "cache.delete":
+		return result(nil, b.h.CacheDelete(ctx, str(0)))
 	case "folders.list":
 		v, err := b.h.FoldersList(ctx, str(0), str(1))
 		return result(v, err)

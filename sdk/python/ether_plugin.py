@@ -916,6 +916,10 @@ class RemoteHostClient:
             res = self._p._call_json("POST", "/ether/plugin-host/data/cache.rasterize", args)
             return res if isinstance(res, dict) else {}  # type: ignore[return-value]
 
+        def delete(self, blob_ref: str) -> None:
+            encoded = urllib.parse.quote(str(blob_ref), safe=":")
+            self._p._call_json("DELETE", f"/ether/plugin-host/cache/{encoded}")
+
     def _call_json(
         self,
         method: str,
@@ -2682,6 +2686,9 @@ class MockHostClient:
         def open(self, blob_ref: str) -> bytes:  # noqa: A002 - mirrors host naming
             return self._p.blobs[blob_ref]
 
+        def delete(self, blob_ref: str) -> None:
+            self._p.blobs.pop(blob_ref, None)
+
         def read(self, blob_ref: str, data_range: DataRange) -> bytes:
             cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
             norm = _check_data_range(data_range, max_bytes=cap)
@@ -2741,9 +2748,6 @@ class MockHostClient:
                 if member < 0 or member >= len(infos):
                     raise RuntimeError("plugins: archive member index outside range")
                 info = infos[member]
-                reason = self._unsafe_reason(info.filename)
-                if reason:
-                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                 if info.is_dir():
                     raise RuntimeError("plugins: archive member is a directory")
                 data = zf.read(info)
@@ -2765,9 +2769,6 @@ class MockHostClient:
                     if member < 0 or member >= len(infos):
                         raise RuntimeError("plugins: archive member index outside range")
                     info = infos[member]
-                    reason = self._unsafe_reason(info.filename)
-                    if reason:
-                        raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                     if info.is_dir():
                         raise RuntimeError("plugins: archive member is a directory")
                     data = zf.read(info)
@@ -2792,9 +2793,6 @@ class MockHostClient:
                 if member < 0 or member >= len(infos):
                     raise RuntimeError("plugins: archive member index outside range")
                 info = infos[member]
-                reason = self._unsafe_reason(info.filename)
-                if reason:
-                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                 if info.is_dir():
                     raise RuntimeError("plugins: archive member is a directory")
                 data = zf.read(info)

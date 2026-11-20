@@ -722,6 +722,14 @@ func (m *MockHost) CacheOpen(_ context.Context, blobRef string) ([]byte, error) 
 	return append([]byte{}, b...), nil
 }
 
+// CacheDelete removes a stored blob from memory; deleting an absent ref succeeds.
+func (m *MockHost) CacheDelete(_ context.Context, blobRef string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.Blobs, blobRef)
+	return nil
+}
+
 // StreamURL mints a deterministic stand-in URL and records the last call, so
 // a plugin's frontend adapter can be tested without a real ticket issuer.
 func (m *MockHost) StreamURL(_ context.Context, viewerID int64, itemRef string) (string, error) {

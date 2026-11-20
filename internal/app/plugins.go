@@ -469,7 +469,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		},
 		Logger: a.log,
 	})
-	cachePut, cacheOpen := blobs.HostBackends(kindCatalog.QuotaFor)
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kindCatalog.QuotaFor)
 	adapterTickets := frontendadapter.NewTicketIssuer()
 	mgr.SetKindBackends(plugins.KindBackends{
 		KindUpsert:     itemsSvc.KindUpsert,
@@ -482,6 +482,7 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 		ResolveSources: kindResolver.ResolveSources,
 		CachePut:       cachePut,
 		CacheOpen:      cacheOpen,
+		CacheDelete:    cacheDelete,
 		StreamURL:      a.adapterStreamURL(adapterTickets),
 		StreamPartURL:  a.adapterStreamPartURL(adapterTickets),
 	})

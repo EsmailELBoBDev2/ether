@@ -428,6 +428,7 @@ export interface EtherHost {
     read?(blobRef: string, range: DataRange): MaybePromise<Uint8Array>;
     /** Rasterises a cached SVG blob into a new cached bitmap blob with Ether's bounded SVG rasteriser; unsafe documents are refused. */
     rasterize?(libraryKey: string, name: string, blobRef: string, opts?: RasterizeOptions): MaybePromise<RasterizeResult>;
+    delete?(blobRef: string): MaybePromise<void>;
   };
   /** ZIP (Store/Deflate), 7z (Copy/LZMA/LZMA2), and RAR 4/5 data services.
    * Ranges bound returned bytes; solid reads restart at the block beginning.
@@ -585,6 +586,9 @@ export function createHostedClient(): EtherHost {
       rasterize: (lib, name, blob, opts) => {
         checkRasterizeOptions(opts);
         return callHost<RasterizeResult>("cache.rasterize", opts == null ? [lib, name, blob] : [lib, name, blob, opts]);
+      },
+      delete: (blob) => {
+        callHost("cache.delete", [blob]);
       },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
@@ -1150,6 +1154,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         });
         if (!resp.ok) throw new Error(`plugin-host cache open: status ${resp.status}`);
         return new Uint8Array(await resp.arrayBuffer());
+      },
+      async delete(blobRef) {
+        await callJson("DELETE", `/ether/plugin-host/cache/${encodeURIComponent(blobRef)}`);
       },
     },
     frontend: {

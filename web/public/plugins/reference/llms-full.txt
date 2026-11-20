@@ -419,11 +419,12 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## Library blob cache
 
-Cache refs are content addressed blob:<sha256>, never filesystem paths. A library defaults to 2 GiB under a shared min(10 GiB, 5% of cache disk) cap; manifest and owner settings can override it. Remote blob uploads cap at 256 MiB. Use kinds for metadata and cache for bytes.
+Cache refs are content addressed blob:<sha256>, never filesystem paths. A library defaults to 2 GiB under a shared min(10 GiB, 5% of cache disk) cap; manifest and owner settings can override it. Remote blob uploads cap at 256 MiB. Call `cache.delete(blobRef)` to remove a temporary blob from your own cache namespaces and free its quota immediately so large temporaries do not evict smaller kept files; deleting an absent or already evicted ref succeeds. Use kinds for metadata and cache for bytes.
 
 ```ts
 const ref = ether.cache.put("library-key", "cover.txt", "hello");
 const data = ether.cache.open(ref);
+ether.cache.delete(ref);
 ```
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
@@ -557,8 +558,9 @@ namespace and closes every member stream and blob handle before returning.
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
 computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
-`archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
-index with `UnsafeArchiveMemberError` and directories, observes cancellation and
+`archiveMemberBytes` and the target library's cache quota, falls back to
+`member-<index>` as the cache entry name when `options.name` is omitted for an unsafe
+member name, refuses directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
 The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
@@ -571,7 +573,11 @@ Member names are limited to 1024 bytes. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-unsafe paths, links and other special files are refused. Directories may appear
+links and other special files are refused. `archive.list` flags unsafe member
+names with `unsafe: true` and `unsafeReason` as informational warnings (never
+use stored names as filesystem paths), while `archive.open`, `archive.read`,
+`archive.extract`, and frontend blob streaming open any non-directory member by
+index. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -1040,7 +1046,7 @@ batch-capped at 500 IDs) and `KindBrowse` (`kinds.browse`) for
 viewer-authenticated `frontend_adapter` requests to apply the library's
 Rules, library grants, and viewer safety policy using the request's
 authenticated viewer (never guest-supplied input), `ResolveSources`, and
-`CachePut` / `CacheOpen` for the per-library blob cache
+`CachePut` / `CacheOpen` / `CacheDelete` for the per-library blob cache
 (content-addressed `blob:<sha256>` refs; you never name paths).
 A `kinds.browse` query filters with three facet maps that combine with
 AND: `facets` (any of the listed values per field), `allFacets` (every
@@ -1050,6 +1056,11 @@ per-type values as `facets`, including `lo..hi` ranges for numbers and
 dates and people names, and are evaluated inside the browse query so
 paging and `total` stay correct. The total number of facet values
 across the three maps is bounded (256 per query).
+
+`cache.delete(blobRef)` removes a blob from the calling plugin's own cache
+namespaces and frees its quota immediately (deleting an absent or already
+evicted ref succeeds), so large temporary downloads or extracts do not evict
+smaller kept files.
 Default cache quota is 2 GiB per library under a shared cap of
 min(10 GiB, 5% of the cache disk); your `cache.maxBytes` and the
 owner can override it.
@@ -1238,8 +1249,9 @@ closes every member stream and blob handle before returning.
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
 computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
-`archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
-index with `UnsafeArchiveMemberError` and directories, observes cancellation and
+`archiveMemberBytes` and the target library's cache quota, falls back to
+`member-<index>` as the cache entry name when `options.name` is omitted for an unsafe
+member name, refuses directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
 The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `CacheRasterize`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
@@ -1260,19 +1272,19 @@ permission is needed.
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`.
-Their stored names are identifiers only: opening one returns a typed
-`UnsafeArchiveMemberError` (a descriptive error through hosted/remote calls),
-while other members remain readable. Empty names, names over 1024 bytes, NUL,
-backslashes, absolute paths (including drive-rooted paths), and traversal or
-noncanonical path segments are unsafe. Colons in ordinary member names are
-allowed: reads use member indexes and never write stored names to disk.
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`
+as informational warnings so callers never use stored names as filesystem paths.
+Empty names, names over 1024 bytes, NUL, backslashes, absolute paths (including
+drive-rooted paths), and traversal or noncanonical path segments are flagged.
+Because `archive.open`, `archive.read`, `archive.extract`, and frontend blob
+streaming address members by index and never write stored names to disk, any
+non-directory member (including flagged names such as Windows-style backslash
+paths) can be read and extracted by index.
 These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-links and other special files are refused. Unsafe paths are listed but cannot
-be opened. Directories may appear
+links and other special files are refused. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -4947,9 +4959,11 @@ type Host interface {
 	// (search to look, acquire to open debrid content, §4.5).
 	ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error)
 	// CachePut stores one blob in a kind library's cache namespace and
-	// returns its "blob:<sha256>" reference; CacheOpen reads one back.
+	// returns its "blob:<sha256>" reference; CacheOpen reads one back;
+	// CacheDelete removes one from this plugin's own namespaces.
 	CachePut(ctx context.Context, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete(ctx context.Context, blobRef string) error
 
 	// StreamURL mints a short-lived, scoped ticket for one of this
 	// plugin's own kind items and returns the Ether stream URL a frontend
@@ -8024,8 +8038,9 @@ func archiveMemory(l RuntimeLimits) int64 {
 ## Source: internal/plugins/host_archive.go#UnsafeArchiveMemberError
 
 ``````
-// UnsafeArchiveMemberError refuses a single member without hiding its directory.
-// Name is an archive identifier only, never an extraction path.
+// UnsafeArchiveMemberError describes an archive member whose stored name is
+// unsafe to use as a filesystem path. By-index archive reads no longer refuse
+// members for their name; Name is an identifier only.
 type UnsafeArchiveMemberError struct {
 	Index  int
 	Name   string
@@ -8183,7 +8198,8 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 					if e != nil {
 						return nil, e
 					}
-					if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
+					normName := strings.ReplaceAll(h.Name, `\`, "/")
+					if (normName != v.Files[j].Name && normName != strings.ReplaceAll(v.Files[j].StoredName, `\`, "/")) || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
 						return nil, fmt.Errorf("plugins: inconsistent RAR member")
 					}
 					if j == i {
@@ -8261,17 +8277,6 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	a.bytes = 1024 + int64(cap(a.members))*(int64(unsafe.Sizeof(ArchiveMember{}))+archiveFormatEntryBytes) + names
 	if a.bytes > archiveDirectoryCap(l) {
 		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
-	}
-	bind := a.bind
-	a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
-		open := bind(ctx, ra, l)
-		return func(i int) (io.ReadCloser, error) {
-			m := a.members[i]
-			if m.Unsafe {
-				return nil, &UnsafeArchiveMemberError{Index: m.Index, Name: m.Name, Reason: m.UnsafeReason}
-			}
-			return open(i)
-		}
 	}
 	return a, nil
 }
@@ -9614,9 +9619,6 @@ func readArchiveMemberRange(ctx context.Context, archive *dataArchive, member in
 		return nil, fmt.Errorf("plugins: archive member index outside range")
 	}
 	f := archive.members[member]
-	if f.Unsafe {
-		return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
-	}
 	if uint64(opt.Offset) > f.Size {
 		return nil, fmt.Errorf("plugins: archive member offset outside range")
 	}
@@ -10091,11 +10093,8 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
-				if f.Unsafe {
-					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
-				}
 				entryName := strings.TrimSpace(extractOpt.Name)
-				if entryName == "" {
+				if entryName == "" && !f.Unsafe {
 					entryName = path.Base(strings.TrimSuffix(f.Name, "/"))
 				}
 				if entryName == "" || entryName == "." || entryName == "/" {
@@ -10986,6 +10985,7 @@ type KindBackends struct {
 	ResolveSources func(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut       func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (blobRef string, err error)
 	CacheOpen      func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete    func(ctx context.Context, pluginID, blobRef string) error
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for one viewer and returns the Ether stream URL (spec
 	// §6.5). The backend re-checks item ownership and library visibility.
@@ -11011,6 +11011,7 @@ func (m *Manager) SetKindBackends(b KindBackends) {
 	m.deps.Backends.ResolveSources = b.ResolveSources
 	m.deps.Backends.CachePut = b.CachePut
 	m.deps.Backends.CacheOpen = b.CacheOpen
+	m.deps.Backends.CacheDelete = b.CacheDelete
 	m.deps.Backends.StreamURL = b.StreamURL
 	m.deps.Backends.StreamPartURL = b.StreamPartURL
 	m.mu.Unlock()
@@ -11034,6 +11035,7 @@ func (m *Manager) kindBackends() KindBackends {
 		ResolveSources: m.deps.Backends.ResolveSources,
 		CachePut:       m.deps.Backends.CachePut,
 		CacheOpen:      m.deps.Backends.CacheOpen,
+		CacheDelete:    m.deps.Backends.CacheDelete,
 		StreamURL:      m.deps.Backends.StreamURL,
 		StreamPartURL:  m.deps.Backends.StreamPartURL,
 	}
@@ -11717,6 +11719,21 @@ func (h *host) StreamPartURL(ctx context.Context, itemRef string, partIndex *int
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#validateBlobRef
+
+``````
+func validateBlobRef(blobRef string) error {
+	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
+	if !ok || len(hexPart) != 64 {
+		return &ValidationError{Fields: []FieldError{{Field: "blobRef", Message: "cache reference must be blob:<sha256>"}}}
+	}
+	if _, err := hex.DecodeString(hexPart); err != nil {
+		return &ValidationError{Fields: []FieldError{{Field: "blobRef", Message: "cache reference must be blob:<sha256>"}}}
+	}
+	return nil
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.CacheOpen
 
 ``````
@@ -11728,16 +11745,43 @@ func (h *host) CacheOpen(ctx context.Context, blobRef string) (io.ReadSeekCloser
 	if !r.Enabled {
 		return nil, ErrDisabled
 	}
-	hexPart, ok := strings.CutPrefix(blobRef, "blob:")
-	if !ok || len(hexPart) != 64 {
-		return nil, fmt.Errorf("plugins: cache reference must be blob:<sha256>")
-	}
-	if _, err := hex.DecodeString(hexPart); err != nil {
-		return nil, fmt.Errorf("plugins: cache reference must be blob:<sha256>")
+	if err := validateBlobRef(blobRef); err != nil {
+		return nil, err
 	}
 	backend := h.m.kindBackends().CacheOpen
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	return backend(ctx, h.plugin, blobRef)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#*host.CacheDelete
+
+``````
+// CacheDelete removes one cached blob from this plugin's own library cache
+// namespaces, freeing its quota immediately. Deleting a ref that is absent or
+// already evicted succeeds.
+func (h *host) CacheDelete(ctx context.Context, blobRef string) error {
+	if err := h.requireWritableToolContext(ctx); err != nil {
+		return err
+	}
+	rec, _, err := h.record(ctx)
+	if err != nil {
+		return err
+	}
+	man := rec.Manifest
+	man.Ether = man.EffectiveEther()
+	if man.Ether == nil || len(man.Ether.Contributes.MediaKinds) == 0 || !(man.HasCapability(CapCatalogProvider) || man.HasCapability(CapKindResolver)) {
+		h.noteDenied("cache")
+		return fmt.Errorf("%w: cache", ErrPermissionDenied)
+	}
+	if err := validateBlobRef(blobRef); err != nil {
+		return err
+	}
+	backend := h.m.kindBackends().CacheDelete
+	if backend == nil {
+		return ErrUnavailable
 	}
 	return backend(ctx, h.plugin, blobRef)
 }
@@ -12579,6 +12623,8 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			out["bodyBase64"] = base64.StdEncoding.EncodeToString(data)
 		}
 		return result(out, nil)
+	case "cache.delete":
+		return result(nil, b.h.CacheDelete(ctx, str(0)))
 	case "folders.list":
 		v, err := b.h.FoldersList(ctx, str(0), str(1))
 		return result(v, err)
@@ -19572,6 +19618,7 @@ type Host interface {
 	ResolveSources(ctx context.Context, pluginID string, q core.SourceQuery) ([]core.SourceCandidate, error)
 	CachePut(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error)
 	CacheOpen(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error)
+	CacheDelete(ctx context.Context, pluginID, blobRef string) error
 
 	// StreamURL mints a scoped stream ticket for one of the plugin's own
 	// kind items for viewerID and returns the Ether stream URL (spec §6.5).
@@ -19679,6 +19726,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("PUT /ether/plugin-host/cache/{libraryKey}/{name...}", h.cachePut)
 	mux.HandleFunc("POST /ether/plugin-host/cache/{libraryKey}", h.cachePut)
 	mux.HandleFunc("GET /ether/plugin-host/cache/{blobRef...}", h.cacheOpen)
+	mux.HandleFunc("DELETE /ether/plugin-host/cache/{blobRef...}", h.cacheDelete)
 	mux.HandleFunc("POST /ether/plugin-host/frontend/stream-url", h.frontendStreamURL)
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
@@ -20204,6 +20252,17 @@ func (h *HostHandler) cacheOpen(w http.ResponseWriter, r *http.Request) {
 	defer rc.Close()
 	w.Header().Set("Cache-Control", "no-store")
 	http.ServeContent(w, r, "", time.Time{}, rc)
+}
+``````
+
+## Source: internal/plugins/remote/host.go#*HostHandler.cacheDelete
+
+``````
+func (h *HostHandler) cacheDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.finishErr(w, h.host.CacheDelete(r.Context(), pluginIDOf(r), r.PathValue("blobRef"))) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 ``````
 
@@ -24702,7 +24761,8 @@ globalThis.ether = (() => {
     sources: { resolve: (q) => call("sources.resolve", [q == null ? {} : q]) },
     cache: { put: (lib, name, data) => call("cache.put", [lib, name == null ? "" : name, data == null ? "" : data]),
              open: (blobRef) => call("cache.open", [blobRef]), read: (blobRef, range) => call("cache.read", [blobRef, range]),
-             rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]) },
+             rasterize: (lib, name, blobRef, opts) => call("cache.rasterize", opts == null ? [lib, name, blobRef] : [lib, name, blobRef, opts]),
+             delete: (blobRef) => call("cache.delete", [blobRef]) },
     archive: { list: (blobRef) => call("archive.list", [blobRef]), open: (blobRef, member, range) => call("archive.open", [blobRef, member, range]), read: (blobRef, reads) => call("archive.read", [blobRef, reads]), extract: (blobRef, member, opts) => call("archive.extract", opts == null ? [blobRef, member] : [blobRef, member, opts]) },
     frontend: { streamURL: (itemRef, partIndex) => call("frontend.streamURL", partIndex == null ? [itemRef] : [itemRef, partIndex]) },
     folders: { list: (root, path) => call("folders.list", [root, path == null ? "" : path]),
@@ -25855,7 +25915,7 @@ type Response struct {
 // service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get,
 // http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
-// kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, frontend.streamURL,
+// kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, cache.delete, frontend.streamURL,
 // folders.list, folders.stat, events.publish, notify.owner, log. Args is a JSON array of positional
 // arguments; the result is any JSON value. Return a *Fault to classify the
 // failure (forbidden for a missing or revoked grant).
@@ -25883,7 +25943,7 @@ var DefaultCosts = map[string]int64{
 	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
-	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
+	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
 }
 ``````
@@ -29132,7 +29192,7 @@ Ether; read with SecretGet only where needed, never echo them into views/logs.
 | list_source | contributes.listSources + `/catalog/{type}/{id}.json` | HTTPFetch, CatalogSearch/Get, KV |
 | poster_badges | contributes.posterBadges (up to 4 sets) | BadgesSet/Clear/Usage, HTTPFetch, KV |
 | catalog_provider | mediaKinds; paged browse/changes/expand or push | KindUpsert/Delete/Items, KV |
-| kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open; sources permission |
+| kind_resolver / matcher | kind resolve/match handlers | ResolveSources, CachePut/Open/Delete; sources permission |
 | stream_source / debrid_provider | Stremio stream; lazy open / debrid routes | HTTPFetch, SecretGet |
 | metadata | `/meta/{type}/{id}.json`, contributes.metadata | HTTPFetch, CatalogGet |
 | notify / events | notify send/test; event subscribe (`POST /ether/event`) + custom `events.publish` | HTTPFetch, SecretGet, KV, PublishEvent (`ether.events.publish`) |
@@ -29162,8 +29222,10 @@ the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}]
 streams an uncompressed member into the plugin's library blob cache in one pass and returns
 {ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
-metadata, dictionaries and decoding. Split archives, encryption, unsafe names
-and special files are refused. Other 7z coder chains are unsupported.
+metadata, dictionaries and decoding. Split archives, encryption,
+and special files are refused; `archive.list` flags unsafe member names as
+informational warnings while by-index reads and extracts accept any
+non-directory member. Other 7z coder chains are unsupported.
 
 FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they return
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
@@ -39046,6 +39108,16 @@ type PartStreamHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#CacheDeleteHost
+
+``````
+// CacheDeleteHost deletes cached blobs from this plugin's own library cache
+// namespaces. RemoteHostClient and MockHost implement it.
+type CacheDeleteHost interface {
+	CacheDelete(ctx context.Context, blobRef string) error
+}
+``````
+
 ## Source: sdk/go/host.go#MaxKindVisibleIDs
 
 ``````
@@ -39807,6 +39879,18 @@ func (c *RemoteHostClient) CacheOpen(ctx context.Context, blobRef string) ([]byt
 		return nil, fmt.Errorf("plugin-host cache open: status %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.CacheDelete
+
+``````
+// CacheDelete removes one cached blob from this plugin's own library cache
+// namespaces, freeing its quota immediately. Deleting an absent or already
+// evicted ref succeeds.
+func (c *RemoteHostClient) CacheDelete(ctx context.Context, blobRef string) error {
+	_, err := c.callJSON(ctx, http.MethodDelete, "/ether/plugin-host/cache/"+url.PathEscape(blobRef), nil, nil, false)
+	return err
 }
 ``````
 
@@ -48766,6 +48850,10 @@ class RemoteHostClient:
             res = self._p._call_json("POST", "/ether/plugin-host/data/cache.rasterize", args)
             return res if isinstance(res, dict) else {}  # type: ignore[return-value]
 
+        def delete(self, blob_ref: str) -> None:
+            encoded = urllib.parse.quote(str(blob_ref), safe=":")
+            self._p._call_json("DELETE", f"/ether/plugin-host/cache/{encoded}")
+
     def _call_json(
         self,
         method: str,
@@ -50532,6 +50620,9 @@ class MockHostClient:
         def open(self, blob_ref: str) -> bytes:  # noqa: A002 - mirrors host naming
             return self._p.blobs[blob_ref]
 
+        def delete(self, blob_ref: str) -> None:
+            self._p.blobs.pop(blob_ref, None)
+
         def read(self, blob_ref: str, data_range: DataRange) -> bytes:
             cap = int(self._p.limits.get("readBytes") or MIN_DATA_READ_BYTES)
             norm = _check_data_range(data_range, max_bytes=cap)
@@ -50591,9 +50682,6 @@ class MockHostClient:
                 if member < 0 or member >= len(infos):
                     raise RuntimeError("plugins: archive member index outside range")
                 info = infos[member]
-                reason = self._unsafe_reason(info.filename)
-                if reason:
-                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                 if info.is_dir():
                     raise RuntimeError("plugins: archive member is a directory")
                 data = zf.read(info)
@@ -50615,9 +50703,6 @@ class MockHostClient:
                     if member < 0 or member >= len(infos):
                         raise RuntimeError("plugins: archive member index outside range")
                     info = infos[member]
-                    reason = self._unsafe_reason(info.filename)
-                    if reason:
-                        raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                     if info.is_dir():
                         raise RuntimeError("plugins: archive member is a directory")
                     data = zf.read(info)
@@ -50642,9 +50727,6 @@ class MockHostClient:
                 if member < 0 or member >= len(infos):
                     raise RuntimeError("plugins: archive member index outside range")
                 info = infos[member]
-                reason = self._unsafe_reason(info.filename)
-                if reason:
-                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                 if info.is_dir():
                     raise RuntimeError("plugins: archive member is a directory")
                 data = zf.read(info)
@@ -52436,6 +52518,7 @@ export interface EtherHost {
     read?(blobRef: string, range: DataRange): MaybePromise<Uint8Array>;
     /** Rasterises a cached SVG blob into a new cached bitmap blob with Ether's bounded SVG rasteriser; unsafe documents are refused. */
     rasterize?(libraryKey: string, name: string, blobRef: string, opts?: RasterizeOptions): MaybePromise<RasterizeResult>;
+    delete?(blobRef: string): MaybePromise<void>;
   };
   /** ZIP (Store/Deflate), 7z (Copy/LZMA/LZMA2), and RAR 4/5 data services.
    * Ranges bound returned bytes; solid reads restart at the block beginning.
@@ -52593,6 +52676,9 @@ export function createHostedClient(): EtherHost {
       rasterize: (lib, name, blob, opts) => {
         checkRasterizeOptions(opts);
         return callHost<RasterizeResult>("cache.rasterize", opts == null ? [lib, name, blob] : [lib, name, blob, opts]);
+      },
+      delete: (blob) => {
+        callHost("cache.delete", [blob]);
       },
     },
     settings: { get: () => callHost<Record<string, unknown>>("settings.get", []) },
@@ -53158,6 +53244,9 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         });
         if (!resp.ok) throw new Error(`plugin-host cache open: status ${resp.status}`);
         return new Uint8Array(await resp.arrayBuffer());
+      },
+      async delete(blobRef) {
+        await callJson("DELETE", `/ether/plugin-host/cache/${encodeURIComponent(blobRef)}`);
       },
     },
     frontend: {
@@ -53864,9 +53953,9 @@ export interface ArchiveMember {
   index: number;
   name: string;
   size: number;
-  /** Host listing: this member cannot be opened; name is an identifier only. */
+  /** Informational warning: name is unsafe as a filesystem path; member remains readable by index. */
   unsafe?: boolean;
-  /** Present with unsafe=true; explains why archive.open and archive.extract refuse the member. */
+  /** Present with unsafe=true; explains why name must not be used as an output path. */
   unsafeReason?: string;
 }
 

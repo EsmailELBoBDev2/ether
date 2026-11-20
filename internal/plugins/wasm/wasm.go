@@ -92,7 +92,7 @@ type Response struct {
 // service method: runtime.limits, kv.get, kv.put, kv.delete, kv.list, kv.usage, badges.set, badges.clear, badges.usage, secret.get,
 // http.fetch, http.fetchToCache, archive.list, archive.open, archive.read, archive.extract, catalog.search, catalog.get, viewers.history,
 // viewers.setWatchState, collections.upsert, kinds.upsert, kinds.delete,
-// kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, frontend.streamURL,
+// kinds.items, sources.resolve, cache.put, cache.open, cache.read, cache.rasterize, cache.delete, frontend.streamURL,
 // folders.list, folders.stat, events.publish, notify.owner, log. Args is a JSON array of positional
 // arguments; the result is any JSON value. Return a *Fault to classify the
 // failure (forbidden for a missing or revoked grant).
@@ -112,7 +112,7 @@ var DefaultCosts = map[string]int64{
 	"secret.get": 5, "http.fetch": 100, "http.fetchToCache": 100, "http.hash": 100, "cache.read": 20, "cache.rasterize": 50, "archive.list": 50, "archive.open": 50, "archive.read": 50, "archive.extract": 50, "addon.get": 100, "catalog.search": 50, "catalog.get": 20,
 	"viewers.history": 50, "viewers.setWatchState": 50, "collections.upsert": 50,
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
-	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "frontend.streamURL": 5,
+	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
 }
 

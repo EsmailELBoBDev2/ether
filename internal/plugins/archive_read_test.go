@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -139,16 +138,24 @@ func TestArchiveReadBatchAndLimits(t *testing.T) {
 			t.Fatalf("invalid archive.read opened cache (%d -> %d)", beforeOpens, h.opens)
 		}
 
-		// Directory, unsafe member, out-of-range member, and offset past end fail cleanly and close handles.
+		// Directory, out-of-range member, and offset past end fail cleanly and close handles;
+		// flagged non-directory members are readable by index without failing the batch.
 		dirArgs, _ := json.Marshal([]any{"blob:test", []ArchiveReadItem{{Member: 60, Offset: 0, Length: 1}}})
 		if _, err := CallDataHost(ctx, h, "archive.read", dirArgs); err == nil {
 			t.Fatal("directory member accepted")
 		}
 		unsafeArgs, _ := json.Marshal([]any{"blob:test", []ArchiveReadItem{{Member: 0, Offset: 0, Length: 16}, {Member: 61, Offset: 0, Length: 6}}})
-		_, err = CallDataHost(ctx, h, "archive.read", unsafeArgs)
-		var unsafeErr *UnsafeArchiveMemberError
-		if !errors.As(err, &unsafeErr) {
-			t.Fatalf("expected UnsafeArchiveMemberError, got %v", err)
+		rawUnsafeBatch, err := CallDataHost(ctx, h, "archive.read", unsafeArgs)
+		if err != nil {
+			t.Fatalf("batch with flagged member failed: %v", err)
+		}
+		var unsafeBatch []ArchiveReadResult
+		if err := json.Unmarshal(rawUnsafeBatch, &unsafeBatch); err != nil || len(unsafeBatch) != 2 {
+			t.Fatalf("batch with flagged member results = %s, %v", rawUnsafeBatch, err)
+		}
+		gotUnsafe, err := base64.StdEncoding.DecodeString(unsafeBatch[1].BodyBase64)
+		if err != nil || string(gotUnsafe) != "unsafe" {
+			t.Fatalf("flagged member body = %q, %v", gotUnsafe, err)
 		}
 		badIdxArgs, _ := json.Marshal([]any{"blob:test", []ArchiveReadItem{{Member: 999, Offset: 0, Length: 1}}})
 		if _, err := CallDataHost(ctx, h, "archive.read", badIdxArgs); err == nil {
@@ -186,10 +193,10 @@ func TestArchiveReadBatchAndLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = blobs.Close() })
-		cachePut, cacheOpen := blobs.HostBackends(func(_, _ string) blobcache.Quota {
+		cachePut, cacheOpen, cacheDelete := blobs.HostBackends(func(_, _ string) blobcache.Quota {
 			return blobcache.Quota{MaxBytes: 512 << 20}
 		})
-		env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen})
+		env.m.SetKindBackends(KindBackends{CachePut: cachePut, CacheOpen: cacheOpen, CacheDelete: cacheDelete})
 
 		h := env.m.HostFor(rec.ID).(*host)
 		rawLimits, err := CallDataHost(ctx, h, "runtime.limits", json.RawMessage("[]"))

@@ -271,8 +271,8 @@ class ArchiveExtractSdkTest(unittest.TestCase):
         self.assertEqual(extracted["crc32"], f"{zlib.crc32(payload) & 0xFFFFFFFF:08x}")
         self.assertEqual(mock.cache.open(extracted["ref"]), payload)
 
-        with self.assertRaises(RuntimeError):
-            mock.archive.extract(archive_ref, 1)
+        unsafe_extracted = mock.archive.extract(archive_ref, 1)
+        self.assertEqual(mock.cache.open(unsafe_extracted["ref"]), b"bad")
 
         seen = []
         client = RemoteHostClient(base_url="http://ether.local", credential="cred")
@@ -322,8 +322,8 @@ class ArchiveExtractSdkTest(unittest.TestCase):
                     {"member": 1, "offset": 0, "length": 4 * 1024 * 1024},
                 ],
             )
-        with self.assertRaises(RuntimeError):
-            mock.archive.read(archive_ref, [{"member": 2, "offset": 0, "length": 4}])
+        flagged = mock.archive.read(archive_ref, [{"member": 2, "offset": 0, "length": 6}])
+        self.assertEqual(flagged, [{"index": 0, "member": 2, "size": 6, "body": b"unsafe"}])
 
         seen = []
         client = RemoteHostClient(base_url="http://ether.local", credential="cred")

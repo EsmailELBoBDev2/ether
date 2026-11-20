@@ -169,7 +169,7 @@ func newKindTestHarness(t *testing.T, liveTimeout time.Duration, httpClient *htt
 		Logger:    log,
 	})
 
-	cachePut, cacheOpen := blobs.HostBackends(kc.QuotaFor)
+	cachePut, cacheOpen, cacheDelete := blobs.HostBackends(kc.QuotaFor)
 	mgr.SetKindBackends(plugins.KindBackends{
 		KindUpsert:     items.KindUpsert,
 		KindDelete:     items.KindDelete,
@@ -178,6 +178,7 @@ func newKindTestHarness(t *testing.T, liveTimeout time.Duration, httpClient *htt
 		ResolveSources: kr.ResolveSources,
 		CachePut:       cachePut,
 		CacheOpen:      cacheOpen,
+		CacheDelete:    cacheDelete,
 	})
 	if err := mgr.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -880,7 +881,7 @@ func TestSetupGatingOfflineBrowseRolesAndRemovePurge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cachePut, _ := h.blobs.HostBackends(h.catalog.QuotaFor)
+	cachePut, _, _ := h.blobs.HostBackends(h.catalog.QuotaFor)
 	if _, err := cachePut(ctx, pluginID, libRow.Key, "cover-1", bytes.NewReader([]byte("cached-blob"))); err != nil {
 		t.Fatal(err)
 	}

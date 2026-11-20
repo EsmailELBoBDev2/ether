@@ -1021,6 +1021,16 @@ func (f *fakeHost) CacheOpen(_ context.Context, _, blobRef string) (io.ReadSeekC
 	}{Reader: bytes.NewReader(data), Closer: io.NopCloser(nil)}, nil
 }
 
+func (f *fakeHost) CacheDelete(_ context.Context, _, blobRef string) error {
+	if f.denyCache {
+		return ErrPermissionDenied
+	}
+	f.mu.Lock()
+	delete(f.blobs, blobRef)
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeHost) Settings(_ context.Context, pluginID string) (map[string]any, error) {
 	return map[string]any{"plugin": pluginID}, nil
 }
@@ -1198,6 +1208,14 @@ func TestPluginHostAPIEndpointsAuthAndGrants(t *testing.T) {
 	_ = cacheResp.Body.Close()
 	if cacheResp.StatusCode != http.StatusOK || string(cacheBody) != "ROMDATA" {
 		t.Fatalf("cache open = %d %q", cacheResp.StatusCode, cacheBody)
+	}
+	status, delOut := doHost(http.MethodDelete, "/ether/plugin-host/cache/blob:plugin.one:pk-plugin-one-rom", "cred-one", "")
+	if status != http.StatusOK || delOut["ok"] != true {
+		t.Fatalf("cache delete = %d %+v", status, delOut)
+	}
+	status, _ = doHost(http.MethodGet, "/ether/plugin-host/cache/blob:plugin.one:pk-plugin-one-rom", "cred-one", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("cache open after delete = %d, want 404", status)
 	}
 }
 

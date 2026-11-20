@@ -398,15 +398,16 @@ func (c *Cache) enforceGlobalLimit() {
 	}
 }
 
-// HostBackends returns CachePut and CacheOpen functions suitable for wiring
-// into plugins.KindBackends (spec §3.6, §5.4).
+// HostBackends returns CachePut, CacheOpen, and CacheDelete functions suitable
+// for wiring into plugins.KindBackends (spec §3.6, §5.4).
 //
 // quotaFor may be nil, in which case the namespace's existing or default quota
-// is used. CacheOpen searches namespaces owned by pluginID (or any namespace
-// whose libraryKey starts with "pk-" + slug(pluginID) + "-").
+// is used. CacheOpen and CacheDelete search only namespaces owned by pluginID
+// (or any namespace whose libraryKey starts with "pk-" + slug(pluginID) + "-").
 func (c *Cache) HostBackends(quotaFor func(pluginID, libraryKey string) Quota) (
 	cachePut func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error),
 	cacheOpen func(ctx context.Context, pluginID, blobRef string) (io.ReadSeekCloser, error),
+	cacheDelete func(ctx context.Context, pluginID, blobRef string) error,
 ) {
 	cachePut = func(ctx context.Context, pluginID, libraryKey, name string, r io.Reader) (string, error) {
 		c.BindPluginLibrary(pluginID, libraryKey)
@@ -440,7 +441,24 @@ func (c *Cache) HostBackends(quotaFor func(pluginID, libraryKey string) Quota) (
 		}
 		return nil, ErrNotFound
 	}
-	return cachePut, cacheOpen
+	cacheDelete = func(ctx context.Context, pluginID, blobRef string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := ParseRef(blobRef); err != nil {
+			return err
+		}
+		if strings.TrimSpace(pluginID) == "" {
+			return nil
+		}
+		for _, ns := range c.namespacesForPlugin(pluginID) {
+			if _, err := ns.Delete(Ref(blobRef)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return cachePut, cacheOpen, cacheDelete
 }
 
 func (c *Cache) namespacesForPlugin(pluginID string) []*Namespace {
@@ -461,7 +479,7 @@ func (c *Cache) namespacesForPlugin(pluginID string) []*Namespace {
 	slug := slugify(pluginID)
 	prefix := "pk-" + slug + "-"
 	for key, ns := range c.namespaces {
-		if !seen[ns] && (strings.HasPrefix(key, prefix) || pluginID == "") {
+		if !seen[ns] && ((slug != "" && strings.HasPrefix(key, prefix)) || pluginID == "") {
 			seen[ns] = true
 			out = append(out, ns)
 		}
@@ -1039,6 +1057,33 @@ func (n *Namespace) evictHash(hash string) int64 {
 		_ = os.Remove(path)
 	}
 	return freed
+}
+
+// Delete removes one cached blob by its reference ("blob:<sha256>") from this
+// namespace, freeing its disk file and quota accounting immediately. Deleting
+// an absent or already-evicted blob returns (false, nil).
+func (n *Namespace) Delete(ref Ref) (bool, error) {
+	n.cache.mu.Lock()
+	closed := n.cache.closed
+	n.cache.mu.Unlock()
+	if closed {
+		return false, ErrClosed
+	}
+	hash, err := ref.Hash()
+	if err != nil {
+		return false, err
+	}
+	n.mu.Lock()
+	if _, exists := n.blobs[hash]; !exists {
+		n.mu.Unlock()
+		return false, nil
+	}
+	n.dropEntryLocked(hash)
+	n.dirty = true
+	_ = os.Remove(n.blobPath(hash))
+	n.mu.Unlock()
+	n.flushIndex()
+	return true, nil
 }
 
 // Sweep evicts TTL-expired blobs and then LRU-evicts by last-open time until

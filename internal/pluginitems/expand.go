@@ -192,7 +192,7 @@ func (s *Service) LookupPersonFacetsByID(ctx context.Context, libraryID core.Lib
 SELECT f.field, MIN(f.v_text)
 FROM plugin_item_fields f
 JOIN plugin_items i ON i.item_ref = f.item_ref
-WHERE i.library_id = ? AND f.v_int = ? AND f.field IN (`+strings.Join(placeholders, ",")+`) AND f.v_text <> ''
+WHERE i.library_id = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (`+strings.Join(placeholders, ",")+`) AND f.v_text <> ''
 GROUP BY f.field
 ORDER BY f.field ASC`, args...)
 	if err != nil {

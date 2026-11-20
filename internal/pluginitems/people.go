@@ -90,7 +90,7 @@ func (s *Service) SearchPeople(ctx context.Context, libraryID core.LibraryID, po
 	}
 
 	var where strings.Builder
-	where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int > 0 AND f.v_text <> ''`)
+	where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int <> 0 AND f.v_int > 0 AND f.v_text <> ''`)
 	for _, tok := range tokens {
 		where.WriteString(` AND LOWER(f.v_text) LIKE ? ESCAPE '\'`)
 		args = append(args, "%"+escapeLike(tok)+"%")
@@ -198,7 +198,7 @@ func (s *Service) PersonByID(ctx context.Context, libraryID core.LibraryID, poli
 		args = append(args, fk)
 	}
 	var where strings.Builder
-	where.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
+	where.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
 	if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
 		return PersonMatch{}, false, err
 	}
@@ -238,7 +238,7 @@ func (s *Service) loadPersonMatch(ctx context.Context, rec KindRecord, policy *l
 	args = append(args, personID)
 
 	var where strings.Builder
-	where.WriteString(`i.library_id + 0 = ? AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int = ?)`)
+	where.WriteString(`i.library_id + 0 = ? AND i.item_ref IN (SELECT pf.item_ref FROM plugin_item_fields pf WHERE pf.field IN (` + strings.Join(placeholders, ",") + `) AND pf.v_int <> 0 AND pf.v_int = ?)`)
 	if err := s.appendVisibility(ctx, &where, &args, rec.LibraryID, policy, false); err != nil {
 		return PersonMatch{}, false, err
 	}
@@ -264,7 +264,7 @@ LIMIT ?`
 	for _, fk := range pFields {
 		roleArgs = append(roleArgs, fk)
 	}
-	roleWhere.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
+	roleWhere.WriteString(`i.library_id + 0 = ? AND f.v_int = ? AND f.v_int <> 0 AND f.field IN (` + strings.Join(placeholders, ",") + `)`)
 	if s.appendVisibility(ctx, &roleWhere, &roleArgs, rec.LibraryID, policy, false) == nil {
 		roleRows, err := s.db.QueryContext(ctx, `
 SELECT f.field, COUNT(DISTINCT f.item_ref)
@@ -339,7 +339,7 @@ func (s *Service) FindPersonID(ctx context.Context, libraryID core.LibraryID, po
 		args = append(args, fk)
 	}
 	var where strings.Builder
-	where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int > 0`)
+	where.WriteString(`i.library_id = ? AND f.field IN (` + strings.Join(placeholders, ",") + `) AND f.v_int <> 0 AND f.v_int > 0`)
 	if err := s.appendVisibility(ctx, &where, &args, libraryID, policy, false); err != nil {
 		return 0, false, err
 	}

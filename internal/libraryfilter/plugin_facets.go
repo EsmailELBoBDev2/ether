@@ -199,7 +199,7 @@ func AppendPluginFacetClauses(where *strings.Builder, args *[]any, facets map[st
 			if len(disjuncts) > 1 {
 				pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
 			}
-			where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + pred + `)`)
+			where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = '' AND ` + pred + `)`)
 			continue
 		}
 
@@ -335,7 +335,7 @@ func appendIntFieldClause(where *strings.Builder, args *[]any, key, ftype string
 	if len(disjuncts) > 1 {
 		pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
 	}
-	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + pred + `)`)
+	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = '' AND ` + pred + `)`)
 }
 
 func appendFloatFieldClause(where *strings.Builder, args *[]any, key string, vals []string) {
@@ -370,7 +370,7 @@ func appendFloatFieldClause(where *strings.Builder, args *[]any, key string, val
 	if len(disjuncts) > 1 {
 		pred = `(` + strings.Join(disjuncts, ` OR `) + `)`
 	}
-	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND ` + pred + `)`)
+	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_text = '' AND ` + pred + `)`)
 }
 
 func appendPeopleFieldClause(where *strings.Builder, args *[]any, key string, vals []string) {
@@ -394,5 +394,5 @@ func appendPeopleFieldClause(where *strings.Builder, args *[]any, key string, va
 		placeholders[idx] = "?"
 		*args = append(*args, pid)
 	}
-	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
+	where.WriteString(` AND EXISTS (SELECT 1 FROM plugin_item_fields f WHERE f.item_ref = i.item_ref AND f.field = ? AND f.v_int <> 0 AND f.v_int IN (` + strings.Join(placeholders, ", ") + `))`)
 }

@@ -25,6 +25,17 @@ import (
 const currentFTSVersion int64 = 1
 
 func init() {
+	// Migration 8 (#623): restrict the numeric field lookup indexes to rows
+	// their queries read so text-heavy libraries do not store and maintain
+	// (field, 0, item_ref) entries for every text value. Both SQLite and
+	// PostgreSQL support these partial index predicates verbatim.
+	store.Register("pluginitems", 8, `
+DROP INDEX IF EXISTS plugin_item_fields_lookup_real;
+CREATE INDEX plugin_item_fields_lookup_real ON plugin_item_fields(field, v_real, item_ref) WHERE v_text = '';
+DROP INDEX IF EXISTS plugin_item_fields_lookup_int;
+CREATE INDEX plugin_item_fields_lookup_int ON plugin_item_fields(field, v_int, item_ref) WHERE v_text = '' OR v_int <> 0;
+`)
+
 	store.Register("pluginitems", 7, `
 CREATE TABLE plugin_item_field_tally (
 	library_id INTEGER NOT NULL,

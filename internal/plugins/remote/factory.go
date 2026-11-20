@@ -434,6 +434,23 @@ func (a HostAdapter) KindUpsert(ctx context.Context, pluginID, kindKey string, i
 	return n, mapHostErr(err)
 }
 
+// KindUpsertWithResult additionally reports the added/updated/unchanged
+// split when the plugin host provides it (#646).
+func (a HostAdapter) KindUpsertWithResult(ctx context.Context, pluginID, kindKey string, items []core.KindItem) (plugins.KindUpsertResult, error) {
+	h, err := a.host(pluginID)
+	if err != nil {
+		return plugins.KindUpsertResult{}, err
+	}
+	if wh, ok := h.(interface {
+		KindUpsertWithResult(context.Context, string, []core.KindItem) (plugins.KindUpsertResult, error)
+	}); ok {
+		result, err := wh.KindUpsertWithResult(ctx, kindKey, items)
+		return result, mapHostErr(err)
+	}
+	n, err := h.KindUpsert(ctx, kindKey, items)
+	return plugins.KindUpsertResult{Accepted: n}, mapHostErr(err)
+}
+
 func (a HostAdapter) KindDelete(ctx context.Context, pluginID, kindKey string, externalIDs []string) error {
 	h, err := a.host(pluginID)
 	if err != nil {

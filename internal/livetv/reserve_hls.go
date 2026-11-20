@@ -508,6 +508,9 @@ func (h *hlsInput) poll(raw string) {
 			}
 		} else {
 			if res != nil {
+				if isExpiredStatus(res.StatusCode) {
+					h.g.noteExpiredManifest(res.StatusCode)
+				}
 				res.Body.Close()
 			}
 			if h.g.ctx.Err() != nil {

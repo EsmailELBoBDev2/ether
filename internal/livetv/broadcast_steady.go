@@ -276,6 +276,10 @@ type steadyAdmission struct {
 // bytes the probe already read on the same provider connection. It returns
 // a refusal reason when the tune must take a direct path.
 func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission, string, string, error) {
+	return s.admitSteadySeed(ctx, c, nil, nil)
+}
+
+func (s *Service) admitSteadySeed(ctx context.Context, c Channel, direct *directStreamState, manifest *cachedManifest) (*steadyAdmission, string, string, error) {
 	if _, ok := s.transcoder().(continuousBudget); !ok {
 		return nil, steadyRefusedNoTranscoder, "transcoder runs no continuous outputs", nil
 	}
@@ -290,7 +294,7 @@ func (s *Service) admitSteady(ctx context.Context, c Channel) (*steadyAdmission,
 		return nil, steadyRefusedCapacity, "encode capacity in use (" + formatCores(load) + " of " + formatCores(budget) + " cores)", nil
 	}
 	candidates := s.orderedSourceCandidates(c)
-	probed, failures, silent, radio, last := s.raceSteadyInputs(ctx, c, candidates)
+	probed, failures, silent, radio, last := s.raceSteadyInputsSeed(ctx, c, candidates, direct, manifest)
 	if radio && probed == nil {
 		return nil, steadyRefusedAudioOnly, "audio-only source plays direct", nil
 	}
@@ -343,10 +347,27 @@ func formatCores(v float64) string {
 // near the live edge, instead of at the stability reserve. A transport
 // stream's probe still shares the link's one provider connection (the tap).
 func (s *Service) probeSteadyLink(ctx context.Context, sniffBudget time.Duration, c Channel, link *steadyLink) (*core.MediaInfo, error) {
-	probe := &session{ctx: link.ss.ctx, cancel: func() {}, info: SessionInfo{ID: "probe-" + c.ID, Channel: c}, inputSource: link.ss.inputSource, inputURL: link.ss.inputURL, inputHeaders: link.ss.inputHeaders}
+	link.ss.mu.Lock()
+	ephemeral := link.ss.ephemeral
+	direct := link.ss.direct
+	inputSrc := link.ss.inputSource
+	inputURL := link.ss.inputURL
+	inputHeaders := link.ss.inputHeaders
+	link.ss.mu.Unlock()
+	probe := &session{
+		ctx:             link.ss.ctx,
+		cancel:          func() {},
+		info:            SessionInfo{ID: "probe-" + c.ID, Channel: c},
+		ephemeral:       ephemeral,
+		direct:          direct,
+		sniffedManifest: link.ss.cachedMasterFor(inputURL),
+		inputSource:     inputSrc,
+		inputURL:        inputURL,
+		inputHeaders:    inputHeaders,
+	}
 	grant := link.src
-	grant.URL = link.ss.inputURL
-	if err := s.grantInput(probe, grant, link.ss.inputHeaders); err != nil {
+	grant.URL = inputURL
+	if err := s.grantInput(probe, grant, inputHeaders); err != nil {
 		return nil, err
 	}
 	defer s.revokeInput(probe)
@@ -364,6 +385,26 @@ func (s *Service) probeSteadyLink(ctx context.Context, sniffBudget time.Duration
 	}
 	if _, _, err := s.sniffInput(sniffCtx, probe, 1); err != nil {
 		return nil, err
+	}
+	if direct != nil {
+		dURL, dRawHdrs, dHdrs, _, dGen, _, _ := direct.current()
+		if dGen > link.directGen && dURL != "" {
+			link.ss.mu.Lock()
+			link.ss.inputURL = dURL
+			link.ss.inputHeaders = dHdrs
+			link.ss.inputSource.URL = dURL
+			link.ss.inputSource.Headers = dRawHdrs
+			link.ss.mu.Unlock()
+			link.src.URL = dURL
+			link.src.Headers = dRawHdrs
+			link.directGen = dGen
+			s.inputRelay.mu.Lock()
+			ig := s.inputRelay.bySess[link.ss]
+			s.inputRelay.mu.Unlock()
+			if ig != nil {
+				ig.syncDirect()
+			}
+		}
 	}
 	// Attach the link's grant to the open stream tap before probe's deferred
 	// revokeInput runs, so revoking the probe does not close the provider
@@ -386,7 +427,12 @@ func (s *Service) retainProbedTap(from, into *session) {
 	}
 	fg.mu.Lock()
 	t := fg.tap
+	cm := fg.manifest
 	fg.mu.Unlock()
+	if cm != nil && cm.isMaster && ig.rootURL() == cm.raw {
+		ig.setManifest(cm)
+		into.setSniffedManifest(cm)
+	}
 	if t == nil {
 		return
 	}

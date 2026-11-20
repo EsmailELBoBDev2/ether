@@ -462,7 +462,7 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		connectBudget := remaining / time.Duration(len(candidates)-index)
 		resolveCtx, stopResolve := context.WithTimeout(ctx, connectBudget)
 		resolveStarted := time.Now()
-		resolvedURL, headers, err := s.ResolveStreamSource(resolveCtx, c, src)
+		resolvedURL, resolvedRawHdrs, headers, err := s.resolveSessionSource(resolveCtx, ss, c, src)
 		resolveElapsed := time.Since(resolveStarted)
 		stopResolve()
 		if err != nil {
@@ -485,7 +485,8 @@ func (s *Service) startIPTV(ctx context.Context, ss *session) error {
 		}
 		grantSrc := src
 		grantSrc.URL = resolvedURL
-		ss.inputURL, ss.inputSource = resolvedURL, src
+		grantSrc.Headers = resolvedRawHdrs
+		ss.inputURL, ss.inputSource = resolvedURL, grantSrc
 		ss.inputHeaders = headers.Clone()
 		ss.setSniffedManifest(nil)
 		ss.info.MediaInfo, ss.relayInfo = nil, nil

@@ -46,6 +46,7 @@ type DirectStream struct {
 	URL        string
 	Headers    map[string]string
 	AllowCheck func(context.Context, *core.User) error
+	Resolve    func(context.Context) (DirectStreamResult, error)
 }
 
 type session struct {
@@ -53,6 +54,7 @@ type session struct {
 	broadcast           *broadcastLease
 	ephemeral           bool
 	allowCheck          func(context.Context, *core.User) error
+	direct              *directStreamState
 	sniffedManifest     *cachedManifest
 	inputURL            string // selected upstream, immutable once the tune is ready
 	inputSource         StreamSource
@@ -118,7 +120,11 @@ func (ss *session) setSniffedManifest(cm *cachedManifest) {
 	}
 	ss.mu.Lock()
 	ss.sniffedManifest = cm
+	direct := ss.direct
 	ss.mu.Unlock()
+	if direct != nil && cm != nil && cm.isMaster {
+		direct.setManifest(cm)
+	}
 }
 
 func (ss *session) sniffedManifestFor(raw string) *cachedManifest {
@@ -126,9 +132,29 @@ func (ss *session) sniffedManifestFor(raw string) *cachedManifest {
 		return nil
 	}
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	if ss.sniffedManifest != nil && ss.sniffedManifest.raw == raw {
-		return ss.sniffedManifest
+	cm := ss.sniffedManifest
+	direct := ss.direct
+	ss.mu.Unlock()
+	if direct != nil {
+		if dm := direct.manifestFor(raw); dm != nil {
+			return dm
+		}
+		// Never hand back a stale session copy if the direct stream was
+		// invalidated on 403/410.
+		if _, _, _, _, _, invalidated, _ := direct.current(); invalidated {
+			return nil
+		}
+	}
+	if cm != nil && cm.raw == raw {
+		return cm
+	}
+	return nil
+}
+
+func (ss *session) cachedMasterFor(raw string) *cachedManifest {
+	cm := ss.sniffedManifestFor(raw)
+	if cm != nil && cm.isMaster {
+		return cm
 	}
 	return nil
 }
@@ -643,20 +669,21 @@ func (s *Service) TuneDirectStream(ctx context.Context, u *core.User, ds DirectS
 		return SessionInfo{}, core.ErrStreamLimit
 	}
 	s.nextSubscription++
+	base := s.serviceContext()
+	if base == nil {
+		base = context.Background()
+	}
 	ss := &session{
 		tuneStartedAt: started,
 		ephemeral:     true,
 		allowCheck:    ds.AllowCheck,
+		direct:        newDirectStreamState(base, ds.URL, ds.Headers, ds.Resolve),
 		info: SessionInfo{
 			ID: attemptID, SubscriptionID: s.nextSubscription,
 			ActivityID: liveSessionID(), ClientSessionID: clientSessionID,
 			UserID: u.ID, Channel: c, StartedAt: s.o.Now(),
 		},
 		streamGrant: randomID(), user: *u, caps: caps, last: s.o.Now(),
-	}
-	base := s.serviceContext()
-	if base == nil {
-		base = context.Background()
 	}
 	ss.ctx, ss.cancel = context.WithCancel(base)
 	ctx, cancel := context.WithCancel(ctx)
@@ -886,7 +913,7 @@ func (s *Service) startIPTVSession(ctx context.Context, ss *session) error {
 		return core.ErrNotFound
 	}
 	gen := ss.generation
-	stage := &session{info: ss.info, user: ss.user, caps: ss.caps, ctx: ss.ctx, steadyRefused: ss.steadyRefused, ephemeral: ss.ephemeral}
+	stage := &session{info: ss.info, user: ss.user, caps: ss.caps, ctx: ss.ctx, steadyRefused: ss.steadyRefused, ephemeral: ss.ephemeral, direct: ss.direct}
 	ss.mu.Unlock()
 
 	ctx, cancel := ss.bindContext(ctx)

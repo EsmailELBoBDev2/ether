@@ -340,13 +340,15 @@ func (p *relayProducer) accept(seg *ownedSegment) bool {
 	p.mu.Lock()
 	copyMode := p.dec.VideoCopy && !p.escalated
 	p.mu.Unlock()
-	if copyMode && seg.ext == "ts" && !p.damaged.Load() && damageCheckable(seg.format) && p.s.segmentDamaged(seg.data) {
-		// Copy hands damaged pictures straight to the player, which drops
-		// them (seconds of frozen picture). Keep this one off the
-		// playlist; the producer switches to a re-encode that conceals.
-		p.damaged.Store(true)
-		p.log.Warn("owned relay copy segment carries input damage", "duration", seg.dur)
-		return false
+	if copyMode && seg.ext == "ts" && !p.damaged.Load() && damageCheckable(seg.format) {
+		if damaged, detail := p.s.segmentDamaged(seg.data); damaged {
+			// Copy hands damaged pictures straight to the player, which drops
+			// them (seconds of frozen picture). Keep this one off the
+			// playlist; the producer switches to a re-encode that conceals.
+			p.damaged.Store(true)
+			p.log.Warn("owned relay copy segment carries input damage", "duration", seg.dur, "detail", detail)
+			return false
+		}
 	}
 	td := p.tl.targetDuration()
 	if td <= 0 || seg.dur <= td+td/4 {
@@ -826,31 +828,115 @@ func damageCheckable(f mediaFormat) bool {
 }
 
 // segmentDamaged decodes one segment (one thread, errors only, bounded) and
-// reports decoder errors: corrupt or missing transport packets that a copy
-// relay would otherwise pass to the player. A check that cannot finish in
-// time reports no damage.
-func (s *Service) segmentDamaged(data []byte) bool {
+// reports decoder or transport damage: corrupt or missing packets that a copy
+// relay would otherwise pass to the player. Known benign demuxer/muxer
+// diagnostics (such as repeated CMAF MOOV atoms) are ignored so healthy copy
+// relays are not unnecessarily escalated to re-encode. A check that cannot
+// finish in time reports no damage.
+func (s *Service) segmentDamaged(data []byte) (bool, string) {
 	ffmpeg := s.ffmpegPath()
 	if ffmpeg == "" {
-		return false
+		return false, ""
 	}
 	ctx, cancel := context.WithTimeout(s.serviceContext(), 700*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-v", "error", "-threads", "1", "-f", "mpegts", "-i", "pipe:0", "-f", "null", "-")
 	cmd.Stdin = bytes.NewReader(data)
-	var errs lineCounter
-	cmd.Stderr = &errs
+	var scan segmentDamageScanner
+	cmd.Stderr = &scan
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
-		return false
+		return false, ""
 	}
-	return errs.n >= 2
+	return scan.result()
 }
 
-type lineCounter struct{ n int }
+const segmentDamageSampleLimit = 200
 
-func (c *lineCounter) Write(p []byte) (int, error) {
-	c.n += bytes.Count(p, []byte{'\n'})
+type segmentDamageScanner struct {
+	partial     []byte
+	damageLines int
+	prevIgnored bool
+	firstSample string
+}
+
+func (s *segmentDamageScanner) Write(p []byte) (int, error) {
+	rest := p
+	for len(rest) > 0 {
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line := string(append(s.partial, rest[:i]...))
+			s.partial = s.partial[:0]
+			s.consumeLine(line)
+			rest = rest[i+1:]
+			continue
+		}
+		if len(s.partial) < 4<<10 {
+			need := min(len(rest), (4<<10)-len(s.partial))
+			s.partial = append(s.partial, rest[:need]...)
+		}
+		break
+	}
 	return len(p), nil
+}
+
+func (s *segmentDamageScanner) consumeLine(raw string) {
+	line := strings.TrimSpace(raw)
+	if line == "" {
+		return
+	}
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "last message repeated ") {
+		if s.prevIgnored || s.damageLines == 0 {
+			return
+		}
+		s.damageLines++
+		return
+	}
+	if isBenignSegmentStderrLine(lower) {
+		s.prevIgnored = true
+		return
+	}
+	s.prevIgnored = false
+	s.damageLines++
+	if s.firstSample == "" {
+		if len(line) > segmentDamageSampleLimit {
+			line = line[:segmentDamageSampleLimit]
+		}
+		s.firstSample = line
+	}
+}
+
+func (s *segmentDamageScanner) result() (bool, string) {
+	if len(s.partial) > 0 {
+		line := string(s.partial)
+		s.partial = s.partial[:0]
+		s.consumeLine(line)
+	}
+	return s.damageLines >= 2, s.firstSample
+}
+
+func classifySegmentDamageStderr(stderr string) (bool, string) {
+	var scan segmentDamageScanner
+	_, _ = scan.Write([]byte(stderr))
+	return scan.result()
+}
+
+// isBenignSegmentStderrLine matches ffmpeg error-level diagnostics that appear
+// on healthy live inputs rather than corrupt or dropped media packets.
+func isBenignSegmentStderrLine(lower string) bool {
+	switch {
+	case strings.Contains(lower, "found duplicated moov atom"):
+		// Repeated CMAF/fMP4 init boxes occur at normal live boundaries and
+		// ffmpeg skips them cleanly without damaging decoded video.
+		return true
+	case strings.HasPrefix(lower, "libva info:"):
+		return true
+	case strings.Contains(lower, "timestamp discontinuity"):
+		return true
+	case strings.HasPrefix(lower, "[null @") && strings.Contains(lower, "non monotonically increasing dts"):
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *relayProducer) hasBackup() bool {
@@ -917,20 +1003,39 @@ func (p *relayProducer) recover(ctx context.Context, why string) {
 	p.mu.Unlock()
 }
 
+func (s *Service) resolveSessionSource(ctx context.Context, ss *session, c Channel, src StreamSource) (raw string, rawHdrs map[string]string, hdrs http.Header, err error) {
+	ss.mu.Lock()
+	direct := ss.direct
+	ss.mu.Unlock()
+	if direct != nil {
+		dURL, dRawHdrs, dHdrs, _, dGen, dInvalid, _ := direct.current()
+		if dInvalid || dURL == "" {
+			dURL, dRawHdrs, dHdrs, _, err = direct.refresh(ctx, dGen)
+			if err != nil {
+				return "", nil, nil, err
+			}
+		}
+		return dURL, dRawHdrs, dHdrs, nil
+	}
+	raw, hdrs, err = s.ResolveStreamSource(ctx, c, src)
+	return raw, src.Headers, hdrs, err
+}
+
 func (p *relayProducer) switchSource(ctx context.Context, ss *session, c Channel, src StreamSource, probe bool) error {
 	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	raw, headers, err := p.s.ResolveStreamSource(sctx, c, src)
+	raw, rawHdrs, headers, err := p.s.resolveSessionSource(sctx, ss, c, src)
 	if err != nil {
 		return err
 	}
 	grantSrc := src
 	grantSrc.URL = raw
+	grantSrc.Headers = rawHdrs
 	if err := p.s.grantDirectInput(ss, grantSrc, headers); err != nil {
 		return err
 	}
 	ss.mu.Lock()
-	ss.inputURL, ss.inputSource, ss.inputHeaders = raw, src, headers.Clone()
+	ss.inputURL, ss.inputSource, ss.inputHeaders = raw, grantSrc, headers.Clone()
 	ss.info.ActiveSourceID = src.ID
 	ss.mu.Unlock()
 	p.mu.Lock()

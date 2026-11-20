@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -220,11 +221,34 @@ func (c *librariesConsole) handleLivePlay(w http.ResponseWriter, r *http.Request
 	_, _ = rand.Read(rnd[:])
 	caps.ClientID = "ether-preview-lib-" + hex.EncodeToString(rnd[:])
 
+	libID := lib.ID
+	tab := body.Tab
+	itemID := body.ItemID
+	resolve := func(resolveCtx context.Context) (livetv.DirectStreamResult, error) {
+		svc := c.app.pluginLiveService()
+		if svc == nil {
+			return livetv.DirectStreamResult{}, core.ErrNotAvailable
+		}
+		freshLib, err := c.app.libraries.Get(resolveCtx, libID)
+		if err != nil {
+			return livetv.DirectStreamResult{}, err
+		}
+		if _, hasTab := svc.HasVisibleLiveTab(resolveCtx, freshLib, tab); !hasTab {
+			return livetv.DirectStreamResult{}, core.ErrNotFound
+		}
+		freshStream, err := svc.Resolve(resolveCtx, freshLib, itemID)
+		if err != nil {
+			return livetv.DirectStreamResult{}, err
+		}
+		return livetv.DirectStreamResult{URL: freshStream.URL, Headers: freshStream.Headers}, nil
+	}
+
 	info, err := c.app.livetv.TuneDirectStream(r.Context(), owner, livetv.DirectStream{
 		ID:      "lib-" + strconv.FormatInt(int64(lib.ID), 10) + "-" + body.ItemID,
 		Title:   stream.Title,
 		URL:     stream.URL,
 		Headers: stream.Headers,
+		Resolve: resolve,
 	}, caps, caps.ClientID)
 	if err != nil {
 		libError(w, http.StatusBadGateway, err.Error())

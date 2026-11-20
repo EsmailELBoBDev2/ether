@@ -29,6 +29,7 @@ const (
 	CapMarkers         Capability = "markers"
 	CapNotify          Capability = "notify"
 	CapEvents          Capability = "events"
+	CapFlowActions     Capability = "flow_actions"
 	CapRankingStep     Capability = "ranking_step"
 	CapRuleCondition   Capability = "rule_condition"
 	CapTools           Capability = "tools"
@@ -205,6 +206,7 @@ type Contributes struct {
 	Markers          *MarkersMeta          `json:"markers,omitempty"`
 	Notification     *NotificationMeta     `json:"notification,omitempty"`
 	Events           *EventsMeta           `json:"events,omitempty"`
+	FlowActions      []FlowActionMeta      `json:"flowActions,omitempty"`
 	Integration      *IntegrationMeta      `json:"integration,omitempty"`
 	ListSources      []ListSourceMeta      `json:"listSources,omitempty"`
 	RankingSteps     []RankingStepMeta     `json:"rankingSteps,omitempty"`
@@ -460,9 +462,117 @@ type NotificationMeta struct {
 	MaxLength int      `json:"maxLength,omitempty"`
 }
 
-// EventsMeta lists subscribed event names.
+// EventsMeta declares subscribed event names and custom published event schemas.
 type EventsMeta struct {
-	Subscribe []string `json:"subscribe"`
+	Subscribe []string             `json:"subscribe,omitempty"`
+	Publish   []PublishedEventMeta `json:"publish,omitempty"`
+}
+
+// EventFieldType classifies a typed field in a published event payload or
+// flow action parameter/output schema.
+type EventFieldType string
+
+const (
+	EventFieldString     EventFieldType = "string"
+	EventFieldInt        EventFieldType = "int"
+	EventFieldFloat      EventFieldType = "float"
+	EventFieldBool       EventFieldType = "bool"
+	EventFieldDurationMS EventFieldType = "duration_ms"
+	EventFieldTimestamp  EventFieldType = "timestamp"
+	EventFieldEnum       EventFieldType = "enum"
+	EventFieldStringList EventFieldType = "string_list"
+	EventFieldObject     EventFieldType = "object"
+)
+
+// EventEnumOption describes one allowed option for an enum field or parameter.
+type EventEnumOption struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+}
+
+// EventFieldMeta describes one typed field in a published plugin event payload
+// or flow action output object.
+type EventFieldMeta struct {
+	Name        string            `json:"name"`
+	Type        EventFieldType    `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	PII         bool              `json:"pii,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Filterable  bool              `json:"filterable,omitempty"`
+	Example     any               `json:"example,omitempty"`
+}
+
+// PublishedEventMeta declares one custom event emitted via PublishEvent
+// ("plugin:<pluginId>/<key>").
+type PublishedEventMeta struct {
+	Key         string           `json:"key"`
+	Label       string           `json:"label"`
+	Description string           `json:"description,omitempty"`
+	Version     int              `json:"version,omitempty"`
+	Fields      []EventFieldMeta `json:"fields,omitempty"`
+}
+
+// FlowActionParamMeta describes one configurable parameter of a plugin flow action.
+type FlowActionParamMeta struct {
+	Key         string            `json:"key"`
+	Type        EventFieldType    `json:"type"`
+	Label       string            `json:"label"`
+	Description string            `json:"description,omitempty"`
+	Required    bool              `json:"required,omitempty"`
+	Secret      bool              `json:"secret,omitempty"`
+	Template    bool              `json:"template,omitempty"`
+	Default     any               `json:"default,omitempty"`
+	Enum        []EventEnumOption `json:"enum,omitempty"`
+	Unit        string            `json:"unit,omitempty"`
+	Picker      string            `json:"picker,omitempty"`
+}
+
+// FlowActionMeta declares one custom Flow action contributed by a plugin.
+type FlowActionMeta struct {
+	Key         string                `json:"key"`
+	Label       string                `json:"label"`
+	Description string                `json:"description,omitempty"`
+	Icon        string                `json:"icon,omitempty"`
+	Route       string                `json:"route"`
+	Idempotent  bool                  `json:"idempotent,omitempty"`
+	SideEffect  *bool                 `json:"sideEffect,omitempty"`
+	Timeout     string                `json:"timeout,omitempty"`
+	Params      []FlowActionParamMeta `json:"params,omitempty"`
+	Outputs     []EventFieldMeta      `json:"outputs,omitempty"`
+}
+
+// EventCorrelation links a published plugin event to related Ether entities.
+type EventCorrelation struct {
+	Key       string `json:"key,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+	PlayID    string `json:"playId,omitempty"`
+	TitleID   string `json:"titleId,omitempty"`
+	ViewerID  int64  `json:"viewerId,omitempty"`
+	ChannelID string `json:"channelId,omitempty"`
+	SourceID  string `json:"sourceId,omitempty"`
+	PluginID  string `json:"pluginId,omitempty"`
+	DeviceID  string `json:"deviceId,omitempty"`
+	LibraryID string `json:"libraryId,omitempty"`
+}
+
+// FlowActionRequest is passed to a FlowAction route handler.
+type FlowActionRequest struct {
+	Key            string         `json:"key,omitempty"`
+	FlowID         string         `json:"flowId"`
+	RunID          string         `json:"runId"`
+	NodeID         string         `json:"nodeId"`
+	IdempotencyKey string         `json:"idempotencyKey"`
+	DryRun         bool           `json:"dryRun,omitempty"`
+	Params         map[string]any `json:"params,omitempty"`
+}
+
+// FlowActionResponse is returned by a FlowAction route handler.
+type FlowActionResponse struct {
+	Output map[string]any `json:"output,omitempty"`
+	Branch string         `json:"branch,omitempty"`
 }
 
 // IntegrationMeta describes an external service integration.

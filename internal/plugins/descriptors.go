@@ -177,6 +177,7 @@ func (m *Manager) syncDescriptors(ctx context.Context, r Record) {
 	m.shadow[r.ID] = r.Shadow
 	m.mu.Unlock()
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncFlowsPlugin(ctx, r)
 	if m.deps.Registry != nil {
 		var ds []extend.Descriptor
 		if r.Enabled {
@@ -355,7 +356,16 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 		lines = append(lines, "Stores an access token")
 	}
 	if man.HasCapability(CapEvents) {
-		lines = append(lines, "Gets play and new-release events")
+		ev := man.Ether.Contributes.Events
+		if ev == nil || len(ev.Subscribe) > 0 || len(ev.Publish) == 0 {
+			lines = append(lines, "Gets play and new-release events")
+		}
+		if ev != nil && len(ev.Publish) > 0 {
+			lines = append(lines, "Publishes custom events to Flows")
+		}
+	}
+	if man.HasCapability(CapFlowActions) {
+		lines = append(lines, "Adds actions to Flows")
 	}
 	if man.HasCapability(CapPosterBadges) {
 		lines = append(lines, "Adds badges to library posters")
@@ -451,7 +461,22 @@ func PermissionDiff(cur, next Manifest) []string {
 		}
 	}
 	if !cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
-		added = append(added, "Gets play and new-release events")
+		ev := next.Ether.Contributes.Events
+		if ev == nil || len(ev.Subscribe) > 0 || len(ev.Publish) == 0 {
+			added = append(added, "Gets play and new-release events")
+		}
+		if ev != nil && len(ev.Publish) > 0 {
+			added = append(added, "Publishes custom events to Flows")
+		}
+	} else if cur.HasCapability(CapEvents) && next.HasCapability(CapEvents) {
+		curPub := cur.Ether.Contributes.Events != nil && len(cur.Ether.Contributes.Events.Publish) > 0
+		nextPub := next.Ether.Contributes.Events != nil && len(next.Ether.Contributes.Events.Publish) > 0
+		if !curPub && nextPub {
+			added = append(added, "Publishes custom events to Flows")
+		}
+	}
+	if !cur.HasCapability(CapFlowActions) && next.HasCapability(CapFlowActions) {
+		added = append(added, "Adds actions to Flows")
 	}
 	if !cur.HasCapability(CapPosterBadges) && next.HasCapability(CapPosterBadges) {
 		added = append(added, "Adds badges to library posters")

@@ -136,6 +136,12 @@ type BadgesHost interface {
 	BadgesUsage(ctx context.Context) (BadgeUsage, error)
 }
 
+// EventsHost emits declared plugin events onto Ether's event bus.
+// RemoteHostClient and MockHost implement it; Context.PublishEvent uses it automatically.
+type EventsHost interface {
+	PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error
+}
+
 // PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
 // part of a multi-file kind item (#576). RemoteHostClient and MockHost
 // implement it; Context.StreamPartURL uses it automatically.
@@ -530,6 +536,26 @@ func (c *RemoteHostClient) FoldersList(_ context.Context, _, _ string) ([]Folder
 // FoldersStat is only supported in hosted mode; sidecars access local folders directly.
 func (c *RemoteHostClient) FoldersStat(_ context.Context, _, _ string) (FolderEntry, error) {
 	return FolderEntry{}, fmt.Errorf("folders.stat is for hosted plugins; sidecar plugins read their local fileRoot directly")
+}
+
+// HeaderIdempotencyKey carries the Flow step idempotency key on plugin flow action calls.
+const HeaderIdempotencyKey = "X-Ether-Idempotency-Key"
+
+// PublishEvent emits a declared plugin event ("plugin:<id>/<key>") onto Ether's
+// event bus through POST /ether/plugin-host/events/publish.
+func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	body := map[string]any{
+		"key":     key,
+		"payload": payload,
+	}
+	if corr != nil {
+		body["correlation"] = corr
+	}
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/events/publish", body, nil, false)
+	return err
 }
 
 // NotifyOwner sends an owner notification through Ether.

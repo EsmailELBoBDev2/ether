@@ -20,7 +20,9 @@ import (
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/egress"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/extend"
+	"github.com/braedonsaunders/ether/internal/flows"
 	"github.com/braedonsaunders/ether/internal/logredact"
 	"github.com/braedonsaunders/ether/internal/notify"
 	"github.com/braedonsaunders/ether/internal/onair"
@@ -78,7 +80,13 @@ type Deps struct {
 	Registry          *extend.Registry
 	Tools             *tools.Catalogue
 	Notifications     *notify.Service
-	Logger            *slog.Logger
+	// EventBus, EventRegistry, and FlowActions wire Flows integration (F6):
+	// plugins publish schema-validated events to EventBus, register event
+	// schemas in EventRegistry, and contribute Flow actions to FlowActions.
+	EventBus      *events.Bus
+	EventRegistry *events.Registry
+	FlowActions   flows.ActionRegistry
+	Logger        *slog.Logger
 	// IsLeader reports cluster leadership; nil means always leader.
 	IsLeader func() bool
 	// Bus broadcasts invalidate:plugins; nil disables it.
@@ -126,9 +134,14 @@ type Manager struct {
 	scheduleInFlight map[string]*scheduleFlight
 	scheduleJobs     map[string]*actionJob
 	scheduleWG       sync.WaitGroup
-	// rate-limit bookkeeping for host log and notify
-	notifyTimes map[string][]time.Time
-	logTimes    map[string][]time.Time
+	// rate-limit bookkeeping for host log, notify, and custom event publish
+	notifyTimes       map[string][]time.Time
+	logTimes          map[string][]time.Time
+	eventPublishTimes map[string][]time.Time
+	eventPublishLimit int
+	// eventBridgeMu guards the single events.Bus bridge subscription for plugins.
+	eventBridgeMu  sync.Mutex
+	eventBridgeSub *events.Subscription
 	// healthMu serializes health read-modify-writes so concurrent calls
 	// (resolves on the hot path, scheduled jobs) never lose an update.
 	healthMu sync.Mutex
@@ -200,7 +213,9 @@ func New(deps Deps) (*Manager, error) {
 		nextRun:          map[string]time.Time{},
 		scheduleInFlight: map[string]*scheduleFlight{},
 		scheduleJobs:     map[string]*actionJob{},
-		notifyTimes:      map[string][]time.Time{}, logTimes: map[string][]time.Time{},
+		notifyTimes:       map[string][]time.Time{},
+		logTimes:          map[string][]time.Time{},
+		eventPublishTimes: map[string][]time.Time{},
 	}
 	return m, nil
 }
@@ -324,6 +339,21 @@ func (m *Manager) SubscribeInvalidations() func() {
 				}
 			}
 		}
+		reg, actions := m.flowsRegistries()
+		if reg != nil {
+			for _, s := range reg.List() {
+				if s.Owner != "" && s.Owner != events.OwnerBuiltin && !seen[s.Owner] {
+					reg.RemovePlugin(s.Owner)
+				}
+			}
+		}
+		if actions != nil {
+			for _, spec := range actions.List() {
+				if spec.Owner != "" && spec.Owner != events.OwnerBuiltin && !seen[spec.Owner] {
+					actions.RemovePlugin(spec.Owner)
+				}
+			}
+		}
 	})
 }
 
@@ -383,6 +413,7 @@ func (m *Manager) SetGrants(ctx context.Context, id string, g Grants) error {
 	m.pruneBlockedLocalHosts(id, g.LocalHosts)
 	m.pruneBlockedOperatorHosts(id, g.OperatorHosts)
 	m.syncPosterBadgeSets(ctx, r)
+	m.syncFlowsPlugin(ctx, r)
 	m.closeRuntime(id)
 	m.broadcast(ctx)
 	return nil
@@ -1134,6 +1165,13 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	if m.deps.Notifications != nil {
 		m.deps.Notifications.Kinds().RemovePlugin(extend.PluginID(id, "notify"), id)
 	}
+	reg, actions := m.flowsRegistries()
+	if reg != nil {
+		reg.RemovePlugin(id)
+	}
+	if actions != nil {
+		actions.RemovePlugin(id)
+	}
 	m.jobs.Range(func(key, value any) bool {
 		if strings.HasPrefix(key.(string), id+"|") {
 			m.jobs.Delete(key)
@@ -1146,6 +1184,7 @@ func (m *Manager) Remove(ctx context.Context, id string, undoFirst bool) error {
 	m.clearBlockedLocalHosts(id)
 	m.clearBlockedOperatorHosts(id)
 	m.mu.Lock()
+	delete(m.eventPublishTimes, id)
 	for key := range m.nextRun {
 		if strings.HasPrefix(key, id+"|") {
 			delete(m.nextRun, key)

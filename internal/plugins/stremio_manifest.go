@@ -112,6 +112,12 @@ func withoutRoles(e *EtherBlock, off []Capability) *EtherBlock {
 	if isOff[CapPosterBadges] {
 		c.PosterBadges = nil
 	}
+	if isOff[CapEvents] {
+		c.Events = nil
+	}
+	if isOff[CapFlowActions] {
+		c.FlowActions = nil
+	}
 	cp.Contributes = c
 	return &cp
 }

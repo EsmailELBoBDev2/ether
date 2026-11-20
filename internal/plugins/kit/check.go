@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -165,6 +166,33 @@ func checkStringsAndCopy(rep *Report, man plugins.Manifest, files map[string][]b
 	for i, rc := range c.RuleConditions {
 		base := fmt.Sprintf("ether.contributes.ruleConditions[%d]", i)
 		recordRef(base+".label", rc.Label, 40, false)
+	}
+	if c.Events != nil {
+		for i, pe := range c.Events.Publish {
+			base := fmt.Sprintf("ether.contributes.events.publish[%d]", i)
+			recordRef(base+".label", pe.Label, 60, false)
+			recordRef(base+".description", pe.Description, 200, false)
+			for j, fld := range pe.Fields {
+				fbase := fmt.Sprintf("%s.fields[%d]", base, j)
+				recordRef(fbase+".label", fld.Label, 60, false)
+				recordRef(fbase+".description", fld.Description, 200, false)
+			}
+		}
+	}
+	for i, fa := range c.FlowActions {
+		base := fmt.Sprintf("ether.contributes.flowActions[%d]", i)
+		recordRef(base+".label", fa.Label, 60, false)
+		recordRef(base+".description", fa.Description, 200, false)
+		for j, p := range fa.Params {
+			pbase := fmt.Sprintf("%s.params[%d]", base, j)
+			recordRef(pbase+".label", p.Label, 60, false)
+			recordRef(pbase+".description", p.Description, 200, false)
+		}
+		for j, o := range fa.Outputs {
+			obase := fmt.Sprintf("%s.outputs[%d]", base, j)
+			recordRef(obase+".label", o.Label, 60, false)
+			recordRef(obase+".description", o.Description, 200, false)
+		}
 	}
 	for i, tl := range c.Tools {
 		base := fmt.Sprintf("ether.contributes.tools[%d]", i)
@@ -610,6 +638,18 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		}
 		b, _ := json.Marshal(plugins.BadgeUsage{Titles: int64(len(distinct)), QuotaTitles: plugins.PosterBadgeQuotaTitles})
 		return b, nil
+	case "events.publish":
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		if _, _, err := plugins.ValidatePublishEventCall(h.man, str(0), payload); err != nil {
+			if errors.Is(err, plugins.ErrPermissionDenied) {
+				return nil, wasm.Forbidden(err.Error())
+			}
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		return json.RawMessage("null"), nil
 	case "secret.get":
 		sec := str(0)
 		for _, allowed := range h.man.Ether.Permissions.Secrets {
@@ -864,7 +904,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 		man.HasCapability(plugins.CapSubtitles) ||
 		man.HasCapability(plugins.CapMarkers) ||
 		man.HasCapability(plugins.CapNotify) ||
-		man.HasCapability(plugins.CapEvents)
+		man.HasCapability(plugins.CapEvents) ||
+		man.HasCapability(plugins.CapFlowActions)
 
 	if !plug.HasHandle() {
 		if needsHandle {
@@ -1071,11 +1112,8 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 	}
 
 	// Events.
-	if man.HasCapability(plugins.CapEvents) {
-		evName := plugins.EventPlaybackStarted
-		if man.Ether.Contributes.Events != nil && len(man.Ether.Contributes.Events.Subscribe) > 0 {
-			evName = man.Ether.Contributes.Events.Subscribe[0]
-		}
+	if man.HasCapability(plugins.CapEvents) && man.Ether.Contributes.Events != nil && len(man.Ether.Contributes.Events.Subscribe) > 0 {
+		evName := man.Ether.Contributes.Events.Subscribe[0]
 		evBody, _ := json.Marshal(map[string]any{
 			"events": []map[string]any{
 				{"id": "ev-1", "name": evName, "at": "2026-01-01T00:00:00Z", "payload": map[string]any{"ratingKey": 1}},
@@ -1098,6 +1136,56 @@ func checkRoutes(ctx context.Context, rep *Report, man plugins.Manifest, plug *w
 				return ""
 			},
 		})
+	}
+
+	// Flow actions.
+	if man.HasCapability(plugins.CapFlowActions) {
+		for _, fa := range man.Ether.Contributes.FlowActions {
+			sampleParams := map[string]any{}
+			for _, p := range fa.Params {
+				switch {
+				case p.Default != nil:
+					sampleParams[p.Key] = p.Default
+				case p.Type == "enum" && len(p.Enum) > 0:
+					sampleParams[p.Key] = p.Enum[0].Value
+				case p.Type == "string":
+					sampleParams[p.Key] = "sample"
+				case p.Type == "int", p.Type == "duration_ms":
+					sampleParams[p.Key] = 1
+				case p.Type == "float":
+					sampleParams[p.Key] = 1.0
+				case p.Type == "bool":
+					sampleParams[p.Key] = true
+				case p.Type == "timestamp":
+					sampleParams[p.Key] = "2026-01-01T00:00:00Z"
+				case p.Type == "string_list":
+					sampleParams[p.Key] = []string{"sample"}
+				case p.Type == "object":
+					sampleParams[p.Key] = map[string]any{}
+				}
+			}
+			actBody, _ := json.Marshal(map[string]any{
+				"flowId":         "kit-flow",
+				"runId":          "kit-run",
+				"nodeId":         "kit-node",
+				"idempotencyKey": "idem_kit_" + fa.Key,
+				"dryRun":         true,
+				"params":         sampleParams,
+			})
+			fixtures = append(fixtures, routeFixture{
+				method:  "POST",
+				path:    fa.Route,
+				headers: map[string]string{plugins.HeaderIdempotencyKey: "idem_kit_" + fa.Key},
+				body:    actBody,
+				validate: func(resp wasm.Response) string {
+					var doc map[string]any
+					if err := decodeResponseBody(resp.Body, &doc); err != nil {
+						return "flow action response must be a JSON object: " + err.Error()
+					}
+					return ""
+				},
+			})
+		}
 	}
 
 	// Pages & Slots (ViewSpec validation + literal string rejection).

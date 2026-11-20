@@ -99,6 +99,13 @@ type RecordedLog struct {
 	Attrs   map[string]any
 }
 
+// RecordedPublishedEvent is one plugin event recorded by MockHost.PublishEvent.
+type RecordedPublishedEvent struct {
+	Key         string
+	Payload     map[string]any
+	Correlation *EventCorrelation
+}
+
 // MockHost is an in-memory Host implementation for unit tests.
 type MockHost struct {
 	mu               sync.RWMutex
@@ -116,6 +123,7 @@ type MockHost struct {
 	Sources          []SourceCandidate // returned by ResolveSources
 	Blobs            map[string][]byte // cache blob ref -> bytes
 	Folders          map[string][]FolderEntry
+	PublishedEvents  []RecordedPublishedEvent
 	Notifications    []string
 	Logs             []RecordedLog
 	FetchHandler     func(ctx context.Context, req HostFetchRequest) (HostFetchResponse, error)
@@ -398,6 +406,36 @@ func (m *MockHost) FoldersStat(_ context.Context, root, path string) (FolderEntr
 		}
 	}
 	return FolderEntry{Name: path, Path: path}, nil
+}
+
+// PublishEvent records one published plugin event on MockHost.
+func (m *MockHost) PublishEvent(_ context.Context, key string, payload any, corr *EventCorrelation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var doc map[string]any
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(b, &doc); err != nil {
+			return fmt.Errorf("event payload must be a JSON object: %w", err)
+		}
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	var corrCopy *EventCorrelation
+	if corr != nil {
+		cp := *corr
+		corrCopy = &cp
+	}
+	m.PublishedEvents = append(m.PublishedEvents, RecordedPublishedEvent{
+		Key:         key,
+		Payload:     doc,
+		Correlation: corrCopy,
+	})
+	return nil
 }
 
 // NotifyOwner appends text to Notifications.
@@ -960,6 +998,33 @@ func (h *TestHarness) Action(action string, input map[string]any) (int, ActionRe
 		Body:   b,
 	})
 	var out ActionResponse
+	err := json.Unmarshal(res.Body, &out)
+	return res.Status, out, err
+}
+
+// FlowAction calls a plugin flow action route with X-Ether-Idempotency-Key.
+func (h *TestHarness) FlowAction(key string, req FlowActionRequest) (int, FlowActionResponse, error) {
+	route := "/ether/v1/flow-actions/" + url.PathEscape(key)
+	if m := h.Plugin.Manifest(); m.Ether != nil && m.Ether.Contributes != nil {
+		for _, fa := range m.Ether.Contributes.FlowActions {
+			if fa.Key == key && fa.Route != "" {
+				route = fa.Route
+				break
+			}
+		}
+	}
+	b, _ := json.Marshal(req)
+	hdrs := map[string]string{}
+	if req.IdempotencyKey != "" {
+		hdrs[HeaderIdempotencyKey] = req.IdempotencyKey
+	}
+	res := h.Request(RawRequest{
+		Method:  http.MethodPost,
+		Path:    route,
+		Headers: hdrs,
+		Body:    b,
+	})
+	var out FlowActionResponse
 	err := json.Unmarshal(res.Body, &out)
 	return res.Status, out, err
 }

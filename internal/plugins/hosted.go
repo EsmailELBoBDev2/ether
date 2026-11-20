@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/events"
 	"github.com/braedonsaunders/ether/internal/plugins/wasm"
 )
 
@@ -641,6 +642,19 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 	case "folders.stat":
 		v, err := b.h.FoldersStat(ctx, str(0), str(1))
 		return result(v, err)
+	case "events.publish":
+		key := str(0)
+		payload := json.RawMessage(`{}`)
+		if len(args) > 1 && len(bytes.TrimSpace(args[1])) > 0 && string(bytes.TrimSpace(args[1])) != "null" {
+			payload = args[1]
+		}
+		var corr events.Correlation
+		if len(args) > 2 && len(bytes.TrimSpace(args[2])) > 0 && string(bytes.TrimSpace(args[2])) != "null" {
+			if err := json.Unmarshal(args[2], &corr); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "events.publish correlation must be an object"}
+			}
+		}
+		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
 	case "log":
@@ -679,6 +693,8 @@ func mapHostError(err error) error {
 		return wasm.Forbidden(err.Error())
 	case errors.Is(err, ErrQuotaExceeded):
 		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
+	case errors.Is(err, ErrRateLimited):
+		return &wasm.Fault{Code: "rate_limited", Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &wasm.Fault{Code: string(wasm.StatusTimeout), Message: "host call timed out"}
 	default:

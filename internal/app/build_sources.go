@@ -33,7 +33,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	var err error
 	// Usenet, cache, stream engine. The dialer reads the live proxy policy.
 	a.applyOutbound(cfg)
-	a.fetcher = usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log.With("component", "usenet"), MinIdle: cfg.Usenet.MinIdle, DialContext: egress.Dial, OnStateChange: a.publishDashboard})
+	a.fetcher = usenet.New(cfg.Usenet.Providers, usenet.Options{Logger: log.With("component", "usenet"), MinIdle: cfg.Usenet.MinIdle, DialContext: egress.Dial, OnStateChange: a.publishDashboard, Events: a.eventBus})
 	a.closers = append(a.closers, func() { a.fetcher.Close() })
 	if cfg.Cache.Storage == "shared" {
 		if cfg.SharedCache == nil {
@@ -54,12 +54,13 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		diskUsage = func() (int64, int64, error) { return admin.DiskUsage(cacheDir) }
 	}
 	a.cache.SetDiskUsage(diskUsage)
+	a.cache.SetEventBus(a.eventBus)
 	a.configureCache(cfg.Cache)
 	a.engine = stream.New(a.fetcher, a.cache, a.vaultStreamOptions(cfg), log.With("component", "stream"))
 	a.closers = append(a.closers, func() { a.engine.Close() })
 
 	shared := cfg.Cache.Storage == "shared"
-	local, err := vault.Open(ctx, vault.Options{Dir: filepath.Join(cacheDir, "vault"), DB: a.db, Sealer: a.cfg, NodeID: a.cacheNodeID(), Shared: shared, CapBytes: cfg.Cache.LibraryBudgetBytes, Logger: log.With("component", "vault")})
+	local, err := vault.Open(ctx, vault.Options{Dir: filepath.Join(cacheDir, "vault"), DB: a.db, Sealer: a.cfg, NodeID: a.cacheNodeID(), Shared: shared, CapBytes: cfg.Cache.LibraryBudgetBytes, Logger: log.With("component", "vault"), Events: a.eventBus})
 	if err != nil {
 		return fmt.Errorf("open vault: %w", err)
 	}
@@ -110,6 +111,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 	a.addons = stremio.NewServiceWithOptions(stremio.Options{Anime: animeMap, Specials: specials})
 	a.indexers = newznab.NewManager(a.db, a.addonIndexers(context.Background(), cfg.Indexers), newznab.Options{
 		Logger:         log.With("component", "newznab"),
+		Events:         a.eventBus,
 		SearchCacheTTL: cfg.Resolver.SearchCacheTTL.D(),
 		Vault:          a.vault,
 		LegacyNZBDir: func() string {
@@ -152,7 +154,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 			return nil, core.ErrSourceUnavailable
 		}
 		return a.livetv.AcquireProvider(ctx, id)
-	}, DB: a.db, Logger: log.With("component", "debrid"), OnChange: a.publishDashboard})
+	}, DB: a.db, Logger: log.With("component", "debrid"), OnChange: a.publishDashboard, Events: a.eventBus})
 	a.debrid.SetVault(a.vault)
 	ss := a.initStreamSources(a.indexers)
 	ss.SetAnimeIDs(a.addons.AnimeIDs())
@@ -193,7 +195,7 @@ func (a *App) buildSources(ctx context.Context, cfg config.Config) error {
 		usenetServing = nil
 	}
 	sceneNumbers := scenenumbering.New(scenenumbering.Options{})
-	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{Vault: a.vault, Verifier: a.vaultVerifier(), EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
+	a.resolver = resolver.New(indexer, health, a.db, cfg, resolver.Options{Vault: a.vault, Events: a.eventBus, Verifier: a.vaultVerifier(), EpisodeNumbering: func(ctx context.Context, req core.SearchRequest, cachedOnly bool) (core.ReleaseNumbering, error) {
 		if a.episodeorder == nil {
 			return core.ReleaseNumbering{}, nil
 		}

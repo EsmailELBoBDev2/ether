@@ -33,8 +33,13 @@ type CachedTrailer struct {
 }
 
 func (s *Service) trailerGeneration(e Extra) string {
-	c := s.cfg()
-	identity, _ := json.Marshal([]any{"split-mux-v1", e.ParentKey, e.Site, e.SiteKey, e.PublishedAt, c.ResolverCommand, c.ResolverArgs})
+	var identity []byte
+	if e.Source == SourcePlexDiscover {
+		identity, _ = json.Marshal([]any{"plex-discover-v1", e.ParentKey, e.DiscoverKey, e.PublishedAt})
+	} else {
+		c := s.cfg()
+		identity, _ = json.Marshal([]any{"split-mux-v1", e.ParentKey, e.Site, e.SiteKey, e.PublishedAt, c.ResolverCommand, c.ResolverArgs})
+	}
 	h := sha256.Sum256(identity)
 	return hex.EncodeToString(h[:])
 }
@@ -107,7 +112,7 @@ func (s *Service) cachedExtra(ctx context.Context, e Extra, wait bool) (CachedTr
 	s.cacheFlightsMu.Lock()
 	if f.err != nil && !errors.Is(f.err, ErrCachePreparing) && !errors.Is(f.err, ErrCacheUnsupported) && !errors.Is(f.err, context.Canceled) {
 		f.retry = s.now().Add(time.Minute)
-		s.log.Info("extra cache fill failed", "key", e.Key, "site", e.Site, "siteKey", e.SiteKey, "error", f.err)
+		s.log.Info("extra cache fill failed", "key", e.Key, "source", e.Source, "site", e.Site, "siteKey", e.SiteKey, "error", f.err)
 	} else {
 		delete(s.cacheFlights, generation)
 	}
@@ -188,7 +193,7 @@ func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error
 	if statErr != nil || hit.Size() <= 0 || hit.Size() > cap {
 		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
-		direct = s.downloadTrailers && len(s.cfg().ResolverArgs) == 0
+		direct = e.Source == SourceCommand && s.downloadTrailers && len(s.cfg().ResolverArgs) == 0
 		if direct {
 			reserve = min(cap, int64(128<<20))
 		} else {

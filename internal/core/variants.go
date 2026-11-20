@@ -127,3 +127,8 @@ type DecisionTraceSource interface {
 // VersionSelectorPrefix identifies a configured menu choice rather than a
 // concrete release. Only the resolver interprets or authorizes its payload.
 const VersionSelectorPrefix = "ether-slot:v1:"
+
+// KindAutoVersionID is the synthetic Auto slot identity of a plugin kind
+// item's version menu (index 0). Picked, the client omits versionId, so this id
+// never addresses a source; it only marks the Auto slot as "Auto".
+const KindAutoVersionID = VersionSelectorPrefix + "auto-plugin"

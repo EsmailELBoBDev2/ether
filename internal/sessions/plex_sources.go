@@ -23,7 +23,9 @@ type PartSources struct {
 }
 
 // prepareKind opens a plugin kind key through the shared KindPlayback pipeline.
-func (s PartSources) prepareKind(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps) (*core.PlaySession, error) {
+// A non-empty release names a specific /resolve source (a Play Version pick);
+// empty or the Auto slot opens the default winner.
+func (s PartSources) prepareKind(ctx context.Context, viewer *core.User, key core.RatingKey, caps core.ClientCaps, release string) (*core.PlaySession, error) {
 	kp, ok := s.Playback.(core.KindPlayback)
 	if !ok || s.KindSource == nil {
 		return nil, core.ErrNotAvailable
@@ -34,6 +36,9 @@ func (s PartSources) prepareKind(ctx context.Context, viewer *core.User, key cor
 	}
 	if in.Title == nil || in.Title.Key != key {
 		return nil, core.ErrNotFound
+	}
+	if release != "" && release != core.KindAutoVersionID {
+		in.PreferSourceID = release
 	}
 	return kp.PrepareKind(ctx, viewer, *in, caps)
 }
@@ -46,12 +51,10 @@ func (s PartSources) Prepare(ctx context.Context, viewer *core.User, key core.Ra
 		return nil, core.ErrNotAvailable
 	}
 	// A plugin kind key opens through the shared KindPlayback pipeline, never
-	// the catalogue Prepare path (spec §15.1).
+	// the catalogue Prepare path (spec §15.1). A release names one /resolve
+	// source; empty (or the Auto slot) opens the default winner.
 	if key.IsPluginKey() && s.KindSource != nil {
-		if release != "" {
-			return nil, core.ErrNotAvailable
-		}
-		return s.prepareKind(ctx, viewer, key, caps)
+		return s.prepareKind(ctx, viewer, key, caps, release)
 	}
 	if p, ok := s.Playback.(core.PlaybackPrepareWithin); ok {
 		if _, err := p.PrepareWithin(ctx, wait, viewer, key, caps, release, false); err != nil {

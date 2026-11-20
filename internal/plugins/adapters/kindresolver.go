@@ -163,6 +163,119 @@ func (r *KindResolver) OpenKind(ctx context.Context, viewer *core.Viewer, key co
 	return r.OpenKindExcluding(ctx, viewer, key, accept, nil)
 }
 
+// OpenKindSource opens exactly one plugin kind source by its stable candidate
+// release id (a version-slot pick). It resolves the item's candidate list once
+// (reusing the in-memory and persisted resolution caches so a warm list does
+// not re-run the plugin) and opens only the matching candidate. A source id
+// that is not among the current candidates is refused with ErrNotAvailable.
+func (r *KindResolver) OpenKindSource(ctx context.Context, viewer *core.Viewer, key core.RatingKey, sourceID string, accept []string) (*frontend.KindMedia, error) {
+	if r == nil || r.items == nil || r.libs == nil || !key.IsPluginKey() || sourceID == "" {
+		return nil, core.ErrNotFound
+	}
+	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok || !lv.Playable || !item.Playable {
+		// Layered / multi-part kinds expose a single composite stream, not
+		// individually selectable release versions.
+		return nil, core.ErrNotAvailable
+	}
+	sources, err := r.resolveItemSources(ctx, rec, lib, item, nil, accept)
+	if err != nil {
+		return nil, err
+	}
+	exclude := make([]string, 0, len(sources))
+	found := false
+	for _, src := range sources {
+		id := playableSourceRelease(src, item.Title).ID
+		if id != sourceID {
+			exclude = append(exclude, id)
+		} else {
+			found = true
+		}
+	}
+	if !found {
+		return nil, core.ErrNotAvailable
+	}
+	return r.openPlayableItemMediaExcluding(ctx, rec, lib, item, accept, exclude)
+}
+
+// KindVersions lists the playable version menu of a plugin kind item exactly
+// like a catalogue title's VersionSlots: index 0 is the synthetic Auto slot,
+// followed by one entry per /resolve source. It reuses the resolver candidate
+// cache, so a warm or freshly-resolved list never re-runs the plugin beyond
+// the existing resolution caching. The menu has no owner pin or remembered
+// choice: the plugin's own source ordering is authoritative.
+func (r *KindResolver) KindVersions(ctx context.Context, viewer *core.Viewer, key core.RatingKey) ([]core.ReleaseVariant, error) {
+	if r == nil || r.items == nil || r.libs == nil || viewer == nil || !key.IsPluginKey() {
+		return nil, core.ErrNotFound
+	}
+	item, lib, rec, err := r.loadAuthorized(ctx, viewer, key)
+	if err != nil {
+		return nil, err
+	}
+	if item.Unavailable != nil {
+		return nil, core.ErrNotAvailable
+	}
+	lv, _, ok := rec.Decl.Level(item.Level)
+	if !ok || !lv.Playable || !item.Playable {
+		return nil, core.ErrNotAvailable
+	}
+	sources, err := r.resolveItemSources(ctx, rec, lib, item, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]core.ReleaseVariant, 0, 1+len(sources))
+	any := false
+	for _, src := range sources {
+		if any && len(out) >= core.MaxVariants {
+			break
+		}
+		rel := playableSourceRelease(src, item.Title)
+		if rel.ID == "" {
+			continue
+		}
+		any = true
+		out = append(out, r.kindVariantFor(src, rel, item.Title))
+	}
+	variants := make([]core.ReleaseVariant, 0, len(out)+1)
+	variants = append(variants, core.ReleaseVariant{
+		ID:    core.KindAutoVersionID,
+		Label: "Auto",
+		Auto:  true,
+	})
+	variants = append(variants, out...)
+	return variants, nil
+}
+
+// kindVariantFor projects one plugin /resolve source into a ReleaseVariant
+// whose ID is the source's stable release id (the version selector used by
+// playback and the Vela/Plex surfaces), carrying what the source declares.
+func (r *KindResolver) kindVariantFor(src core.PlayableSource, rel core.Release, title string) core.ReleaseVariant {
+	info := core.MediaInfo{Size: src.Size, Container: src.MIME}
+	if cand := src.Release; cand != nil && cand.Candidate != nil {
+		if cand.Candidate.Resolution > 0 {
+			info.Streams = append(info.Streams, core.StreamInfo{Index: 0, Type: "video", Codec: cand.Candidate.Codec, Height: cand.Candidate.Resolution})
+			rel.Info.Height = cand.Candidate.Resolution
+		}
+		if rel.Name == "" && cand.Candidate.Title != "" {
+			rel.Name = cand.Candidate.Title
+		}
+	}
+	return core.ReleaseVariant{
+		ID:      rel.ID,
+		Label:   firstNonEmpty(src.Label, rel.Name, title),
+		Release: rel,
+		Info:    info,
+		Availability: core.VersionFetch,
+	}
+}
+
 // OpenKindExcluding opens a plugin kind item while excluding already-tried
 // candidate release IDs (for mid-stream playback failover). Replacement
 // candidates come from the stored candidate list of the same kind resolve,

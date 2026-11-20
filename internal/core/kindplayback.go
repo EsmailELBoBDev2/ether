@@ -21,6 +21,10 @@ type KindInput struct {
 	// SourceID is a stable identity for the underlying source, used as the
 	// synthetic release id when OpenCandidate is not provided.
 	SourceID string
+	// PreferSourceID, when non-empty, requests opening exactly the version
+	// whose candidate source id matches, instead of the default winner. The
+	// id is the stable release id of one of the item's /resolve sources.
+	PreferSourceID string
 }
 
 // KindPlayback opens a non-catalogue (plugin kind) item through the session

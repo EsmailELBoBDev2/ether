@@ -36,9 +36,10 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	if s.live || s.restored || s.public.Item == 0 || s.public.Item.IsPluginKey() {
+	if s.live || s.restored || s.public.Item == 0 || (s.public.Item.IsPluginKey() && b.deps.KindSource == nil) {
 		return frontend.PlayPlan{}, core.ErrNotAvailable
 	}
+	isPlugin := s.public.Item.IsPluginKey()
 	unlock, err := b.gates.Acquire(ctx, fmt.Sprintf("broker/owner/%d/%s", s.public.ViewerID, s.clientID))
 	if err != nil {
 		return frontend.PlayPlan{}, err
@@ -62,9 +63,18 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	if err != nil {
 		return frontend.PlayPlan{}, err
 	}
-	title, err := b.deps.Lookup(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
-	if err != nil {
-		return frontend.PlayPlan{}, err
+	var title *core.Title
+	if isPlugin {
+		if in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item); ierr == nil && in != nil && in.Title != nil && in.Title.Key == s.public.Item {
+			title = in.Title
+		} else {
+			return frontend.PlayPlan{}, core.ErrNotFound
+		}
+	} else {
+		title, err = b.deps.Lookup(core.WithLiveApp(ctx, string(s.public.Protocol)), viewer, s.public.Device, s.public.Item)
+		if err != nil {
+			return frontend.PlayPlan{}, err
+		}
 	}
 	if title == nil || title.Key != s.public.Item || (!title.Released.IsZero() && title.Released.After(b.deps.Now())) {
 		return frontend.PlayPlan{}, core.ErrNotFound
@@ -89,7 +99,18 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	}
 
 	var chosen *core.ReleaseVariant
-	if b.deps.Variants != nil {
+	if isPlugin {
+		if b.deps.KindVersions != nil {
+			if variants, verr := b.deps.KindVersions(ctx, viewer, s.public.Item); verr == nil {
+				for j := range variants {
+					if variants[j].ID == targetSelector || variants[j].Release.ID == targetSelector {
+						chosen = &variants[j]
+						break
+					}
+				}
+			}
+		}
+	} else if b.deps.Variants != nil {
 		if variants, verr := b.deps.Variants(ctx, viewer, title, caps); verr == nil {
 			for j := range variants {
 				if variants[j].ID == targetSelector || variants[j].Release.ID == targetSelector {
@@ -102,32 +123,49 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 	if chosen != nil && chosen.Availability == core.VersionUnavailable {
 		return frontend.PlayPlan{}, core.ErrVersionUnavailable
 	}
-	isAuto := chosen != nil && chosen.Auto
+	isAuto := (chosen != nil && chosen.Auto) || targetSelector == core.KindAutoVersionID
 	exact := !isAuto
 	if isAuto {
 		targetSelector = ""
 	}
 
-	playback, ok := b.deps.Playback.(core.SurfaceScopedPlayback)
-	if !ok {
-		return frontend.PlayPlan{}, core.ErrNotAvailable
-	}
-
-	previous, existed := playback.SessionForSurface(string(s.public.Protocol), viewer.ID, caps.ClientID, s.public.Item, targetSelector, exact)
+	var previous *core.PlaySession
+	var existed bool
 	var ps *core.PlaySession
-	if within, ok := b.deps.Playback.(interface {
-		PrepareWithin(context.Context, time.Duration, *core.User, core.RatingKey, core.ClientCaps, string, bool) (*core.PlaySession, error)
-	}); ok {
-		wait := versionSwitchWait
-		if chosen != nil && chosen.Availability == core.VersionFetch && chosen.Release.Protocol == core.ProtocolTorrent {
-			wait = versionSwitchFastWait
+	if isPlugin {
+		kp, ok := b.deps.Playback.(core.KindPlayback)
+		if !ok {
+			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
-		ps, err = within.PrepareWithin(ctx, wait, viewer, s.public.Item, caps, targetSelector, exact)
+		previous, existed = kp.SessionForKind(viewer.ID, caps.ClientID, s.public.Item)
+		in, ierr := b.deps.KindSource(ctx, viewer, s.public.Item)
+		if ierr != nil || in == nil {
+			return frontend.PlayPlan{}, core.ErrNotAvailable
+		}
+		if targetSelector != "" && targetSelector != core.KindAutoVersionID {
+			in.PreferSourceID = targetSelector
+		}
+		ps, err = kp.PrepareKind(ctx, viewer, *in, caps)
 	} else {
-		if chosen != nil && chosen.Availability == core.VersionFetch {
-			return frontend.PlayPlan{}, &core.PreparingError{RetryAfter: versionSwitchRetryAfter}
+		playback, ok := b.deps.Playback.(core.SurfaceScopedPlayback)
+		if !ok {
+			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
-		ps, err = playback.PrepareSurface(ctx, viewer, s.public.Item, caps, targetSelector, exact)
+		previous, existed = playback.SessionForSurface(string(s.public.Protocol), viewer.ID, caps.ClientID, s.public.Item, targetSelector, exact)
+		if within, ok := b.deps.Playback.(interface {
+			PrepareWithin(context.Context, time.Duration, *core.User, core.RatingKey, core.ClientCaps, string, bool) (*core.PlaySession, error)
+		}); ok {
+			wait := versionSwitchWait
+			if chosen != nil && chosen.Availability == core.VersionFetch && chosen.Release.Protocol == core.ProtocolTorrent {
+				wait = versionSwitchFastWait
+			}
+			ps, err = within.PrepareWithin(ctx, wait, viewer, s.public.Item, caps, targetSelector, exact)
+		} else {
+			if chosen != nil && chosen.Availability == core.VersionFetch {
+				return frontend.PlayPlan{}, &core.PreparingError{RetryAfter: versionSwitchRetryAfter}
+			}
+			ps, err = playback.PrepareSurface(ctx, viewer, s.public.Item, caps, targetSelector, exact)
+		}
 	}
 	if err != nil {
 		switch {
@@ -240,7 +278,7 @@ func (b *Broker) SwitchVersion(ctx context.Context, a frontend.SessionAccess, se
 		if b.deps.Transcoder != nil {
 			b.transcodeStop(sessionID)
 		}
-		if !playback.MarkSurfaceOpened(ps.ID) {
+		if scoped, ok := b.deps.Playback.(core.SurfaceScopedPlayback); !ok || !scoped.MarkSurfaceOpened(ps.ID) {
 			return frontend.PlayPlan{}, core.ErrNotAvailable
 		}
 		if binding, ok := b.deps.Playback.(interface {

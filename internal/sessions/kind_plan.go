@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -34,6 +35,29 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 	}
 	if in.Title == nil || in.Title.Key != req.Item {
 		return frontend.PlayPlan{}, core.ErrNotFound
+	}
+	// Resolve a picked version to its /resolve source id. The synthetic Auto
+	// slot and an absent version both open the default winner; any other
+	// selector names one specific source to open exactly.
+	if req.Version != "" {
+		h := &versionHandles{db: b.deps.DB, broker: b, protocol: req.Protocol}
+		scope := frontend.VersionScope{Viewer: v, Device: req.Device, Protocol: req.Protocol, Caps: req.Caps}
+		item, release, verr := h.resolveRecord(ctx, scope, req.Version)
+		if errors.Is(verr, core.ErrNotFound) {
+			if parent, _, lerr := h.lookupRow(ctx, scope, req.Version); lerr == nil && parent == req.Item {
+				return frontend.PlayPlan{}, core.ErrVersionUnavailable
+			}
+			return frontend.PlayPlan{}, core.ErrNotFound
+		}
+		if verr != nil {
+			return frontend.PlayPlan{}, verr
+		}
+		if item != req.Item {
+			return frontend.PlayPlan{}, core.ErrNotFound
+		}
+		if release != "" && release != core.KindAutoVersionID {
+			in.PreferSourceID = release
+		}
 	}
 	requested := b.deps.Now()
 	ps, err := kindPlayback.PrepareKind(ctx, v, *in, req.Caps)

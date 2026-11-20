@@ -85,7 +85,20 @@ func (s surfaceEditions) EditionsMany(ctx context.Context, _ *core.Viewer, _ cor
 }
 
 func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
-	if s.app == nil || s.app.resolver == nil {
+	if s.app == nil {
+		return nil, nil
+	}
+	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
+		variants, err := s.app.pluginKindVersions(ctx, req.User, req.Title.Key)
+		if err != nil || len(variants) == 0 {
+			return nil, err
+		}
+		if max > 0 && len(variants) > max {
+			variants = variants[:max]
+		}
+		return variants, nil
+	}
+	if s.app.resolver == nil {
 		return nil, nil
 	}
 	req.User = s.app.withEffectiveAudioLanguages(ctx, req.User)
@@ -113,6 +126,18 @@ func (s surfaceEditions) Available(ctx context.Context, key core.RatingKey) (boo
 func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveRequest, max int, labels bool) ([]core.ReleaseVariant, error) {
 	if s.app == nil {
 		return nil, nil
+	}
+	// A plugin kind item's version menu is its /resolve sources (Auto + one
+	// per release), listed through the KindResolver cache.
+	if req.Title != nil && req.Title.Key != 0 && req.Title.Key.IsPluginKey() {
+		variants, err := s.app.pluginKindVersions(ctx, req.User, req.Title.Key)
+		if err != nil || len(variants) == 0 {
+			return nil, err
+		}
+		if max > 0 && len(variants) > max {
+			variants = variants[:max]
+		}
+		return variants, nil
 	}
 	if req.Title != nil {
 		if vs, ok := labMediaVariants(s.app.opts.DataDir, req.Title); ok {

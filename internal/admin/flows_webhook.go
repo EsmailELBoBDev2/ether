@@ -354,7 +354,7 @@ func (a *FlowsAPI) webhookClientIP(r *http.Request) string {
 	if a.deps.TrustedProxyCIDRs != nil {
 		trusted = a.deps.TrustedProxyCIDRs()
 	}
-	if addr, ok := identity.ClientNet(r, identity.ProxyPrefixes(trusted)...); ok && addr.IsValid() {
+	if addr, _ := identity.ClientNet(r, identity.ProxyPrefixes(trusted)...); addr.IsValid() {
 		return addr.String()
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

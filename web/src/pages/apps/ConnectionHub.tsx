@@ -17,7 +17,7 @@ import { SaveBar, useDraft } from "../../components/SaveBar";
 import { SettingsRow } from "../../components/SettingsRow";
 import { WatchButton } from "../../components/WatchButton";
 import { t, tx } from "../../i18n";
-import { API_BASE, apiBlob, apiFetch, errorMessage } from "../../lib/api";
+import { API_BASE, ApiError, apiBlob, apiFetch, errorMessage } from "../../lib/api";
 import { useAsync } from "../../lib/hooks";
 import type { EtherConfig } from "../../lib/types";
 import { SchemaField } from "../settings/SchemaForm";
@@ -507,6 +507,7 @@ export function ServerAddressPanel({
   const [savingSwitch, setSavingSwitch] = useState(false);
   const [savingMore, setSavingMore] = useState(false);
   const [remoteOverride, setRemoteOverride] = useState<boolean>();
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<unknown>();
 
   const moreFields = (SERVER.find((group) => group.id === "connect")?.more ?? []).filter(
@@ -603,14 +604,19 @@ export function ServerAddressPanel({
             }
           />
           {moreFields.length > 0 && draft ? (
-            <MoreOptions setting="connect" label={t("More options: Server address")}>
+            <MoreOptions
+              setting="connect"
+              label={t("More options: Server address")}
+              hasError={moreFields.some((f) => Boolean(errors[`server.${f.key}`]))}
+            >
               {moreFields.map((field) => (
                 <SchemaField
                   key={field.key}
                   def={field}
                   value={(draft as unknown as Record<string, unknown>)[field.key]}
                   path={`server.${field.key}`}
-                  errors={{}}
+                  error={errors[`server.${field.key}`]}
+                  errors={errors}
                   onChange={(value) => setDraft({ ...draft, [field.key]: value })}
                 />
               ))}
@@ -620,11 +626,13 @@ export function ServerAddressPanel({
                 error={error}
                 onDiscard={() => {
                   reset();
+                  setErrors({});
                   setError(undefined);
                 }}
                 onSave={async () => {
                   if (!draft) return;
                   setSavingMore(true);
+                  setErrors({});
                   setError(undefined);
                   try {
                     const values = draft as unknown as Record<string, unknown>;
@@ -636,6 +644,9 @@ export function ServerAddressPanel({
                     });
                     await reloadConfig();
                   } catch (e) {
+                    if (e instanceof ApiError && e.fields) {
+                      setErrors(Object.fromEntries(e.fields.map((f) => [f.field, f.message])));
+                    }
                     setError(e);
                   } finally {
                     setSavingMore(false);

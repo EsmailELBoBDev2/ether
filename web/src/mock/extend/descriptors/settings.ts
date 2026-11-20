@@ -96,13 +96,14 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
               {
                 key: "trustedProxyCIDRs",
                 label: {
-                  source: "Trusted proxy networks",
+                  source: "Trusted reverse proxies",
                 },
                 help: {
-                  source: "Networks whose forwarding headers Ether trusts. Empty trusts none.",
+                  source:
+                    "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
                 },
                 kind: "list",
-                placeholder: "10.0.0.0/8",
+                placeholder: "192.168.1.5, 10.0.0.0/8",
               },
               {
                 key: "logLevel",
@@ -2034,13 +2035,14 @@ export const descriptors: Descriptor<SettingsSchemaMeta>[] = [
               {
                 key: "trustedProxyCIDRs",
                 label: {
-                  source: "Trusted proxy networks",
+                  source: "Trusted reverse proxies",
                 },
                 help: {
-                  source: "Networks whose forwarding headers Ether trusts. Empty trusts none.",
+                  source:
+                    "IP addresses or CIDR ranges of reverse proxies on other machines (such as Caddy or Nginx) whose forwarded client IP headers Ether should trust. Proxies on this computer are already trusted.",
                 },
                 kind: "list",
-                placeholder: "10.0.0.0/8",
+                placeholder: "192.168.1.5, 10.0.0.0/8",
               },
               {
                 key: "logLevel",

@@ -14,5 +14,13 @@ func ClientNet(r *http.Request, trusted ...netip.Prefix) (netip.Addr, bool) {
 	return clientnet.ClientNet(r, trusted...)
 }
 
-// ProxyPrefixes parses configured peer networks; invalid entries grant no trust.
+// TrustedPeer reports whether r's connecting peer is loopback or a trusted proxy.
+func TrustedPeer(r *http.Request, trusted ...netip.Prefix) bool {
+	return clientnet.TrustedPeer(r, trusted...)
+}
+
+// ParseProxyEntry parses one trusted proxy IP address or CIDR prefix.
+func ParseProxyEntry(raw string) (netip.Prefix, error) { return clientnet.ParseProxyEntry(raw) }
+
+// ProxyPrefixes parses configured peer IPs and networks; invalid entries grant no trust.
 func ProxyPrefixes(cidrs []string) []netip.Prefix { return clientnet.ProxyPrefixes(cidrs) }

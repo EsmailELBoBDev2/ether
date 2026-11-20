@@ -558,8 +558,9 @@ namespace and closes every member stream and blob handle before returning.
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
 computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
-`archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
-index with `UnsafeArchiveMemberError` and directories, observes cancellation and
+`archiveMemberBytes` and the target library's cache quota, falls back to
+`member-<index>` as the cache entry name when `options.name` is omitted for an unsafe
+member name, refuses directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
 The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
@@ -572,7 +573,11 @@ Member names are limited to 1024 bytes. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-unsafe paths, links and other special files are refused. Directories may appear
+links and other special files are refused. `archive.list` flags unsafe member
+names with `unsafe: true` and `unsafeReason` as informational warnings (never
+use stored names as filesystem paths), while `archive.open`, `archive.read`,
+`archive.extract`, and frontend blob streaming open any non-directory member by
+index. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -1235,8 +1240,9 @@ closes every member stream and blob handle before returning.
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
 computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
-`archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
-index with `UnsafeArchiveMemberError` and directories, observes cancellation and
+`archiveMemberBytes` and the target library's cache quota, falls back to
+`member-<index>` as the cache entry name when `options.name` is omitted for an unsafe
+member name, refuses directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
 The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
@@ -1245,19 +1251,19 @@ The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`,
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`.
-Their stored names are identifiers only: opening one returns a typed
-`UnsafeArchiveMemberError` (a descriptive error through hosted/remote calls),
-while other members remain readable. Empty names, names over 1024 bytes, NUL,
-backslashes, absolute paths (including drive-rooted paths), and traversal or
-noncanonical path segments are unsafe. Colons in ordinary member names are
-allowed: reads use member indexes and never write stored names to disk.
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`
+as informational warnings so callers never use stored names as filesystem paths.
+Empty names, names over 1024 bytes, NUL, backslashes, absolute paths (including
+drive-rooted paths), and traversal or noncanonical path segments are flagged.
+Because `archive.open`, `archive.read`, `archive.extract`, and frontend blob
+streaming address members by index and never write stored names to disk, any
+non-directory member (including flagged names such as Windows-style backslash
+paths) can be read and extracted by index.
 These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-links and other special files are refused. Unsafe paths are listed but cannot
-be opened. Directories may appear
+links and other special files are refused. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 
@@ -7998,8 +8004,9 @@ func archiveMemory(l RuntimeLimits) int64 {
 ## Source: internal/plugins/host_archive.go#UnsafeArchiveMemberError
 
 ``````
-// UnsafeArchiveMemberError refuses a single member without hiding its directory.
-// Name is an archive identifier only, never an extraction path.
+// UnsafeArchiveMemberError describes an archive member whose stored name is
+// unsafe to use as a filesystem path. By-index archive reads no longer refuse
+// members for their name; Name is an identifier only.
 type UnsafeArchiveMemberError struct {
 	Index  int
 	Name   string
@@ -8157,7 +8164,8 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 					if e != nil {
 						return nil, e
 					}
-					if h.Name != v.Files[j].Name || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
+					normName := strings.ReplaceAll(h.Name, `\`, "/")
+					if (normName != v.Files[j].Name && normName != strings.ReplaceAll(v.Files[j].StoredName, `\`, "/")) || h.UnPackedSize != v.Files[j].UnpackedSize || h.Encrypted || h.HeaderEncrypted {
 						return nil, fmt.Errorf("plugins: inconsistent RAR member")
 					}
 					if j == i {
@@ -8235,17 +8243,6 @@ func parseDataArchive(ctx context.Context, rc io.ReadSeeker, ra *archiveIOBudget
 	a.bytes = 1024 + int64(cap(a.members))*(int64(unsafe.Sizeof(ArchiveMember{}))+archiveFormatEntryBytes) + names
 	if a.bytes > archiveDirectoryCap(l) {
 		return nil, fmt.Errorf("plugins: archive directory exceeds limit")
-	}
-	bind := a.bind
-	a.bind = func(ctx context.Context, ra *archiveIOBudget, l RuntimeLimits) func(int) (io.ReadCloser, error) {
-		open := bind(ctx, ra, l)
-		return func(i int) (io.ReadCloser, error) {
-			m := a.members[i]
-			if m.Unsafe {
-				return nil, &UnsafeArchiveMemberError{Index: m.Index, Name: m.Name, Reason: m.UnsafeReason}
-			}
-			return open(i)
-		}
 	}
 	return a, nil
 }
@@ -9464,9 +9461,6 @@ func readArchiveMemberRange(ctx context.Context, archive *dataArchive, member in
 		return nil, fmt.Errorf("plugins: archive member index outside range")
 	}
 	f := archive.members[member]
-	if f.Unsafe {
-		return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
-	}
 	if uint64(opt.Offset) > f.Size {
 		return nil, fmt.Errorf("plugins: archive member offset outside range")
 	}
@@ -9911,11 +9905,8 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
-				if f.Unsafe {
-					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
-				}
 				entryName := strings.TrimSpace(extractOpt.Name)
-				if entryName == "" {
+				if entryName == "" && !f.Unsafe {
 					entryName = path.Base(strings.TrimSuffix(f.Name, "/"))
 				}
 				if entryName == "" || entryName == "." || entryName == "/" {
@@ -29025,8 +29016,10 @@ the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}]
 streams an uncompressed member into the plugin's library blob cache in one pass and returns
 {ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
-metadata, dictionaries and decoding. Split archives, encryption, unsafe names
-and special files are refused. Other 7z coder chains are unsupported.
+metadata, dictionaries and decoding. Split archives, encryption,
+and special files are refused; `archive.list` flags unsafe member names as
+informational warnings while by-index reads and extracts accept any
+non-directory member. Other 7z coder chains are unsupported.
 
 FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they return
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
@@ -50336,9 +50329,6 @@ class MockHostClient:
                 if member < 0 or member >= len(infos):
                     raise RuntimeError("plugins: archive member index outside range")
                 info = infos[member]
-                reason = self._unsafe_reason(info.filename)
-                if reason:
-                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                 if info.is_dir():
                     raise RuntimeError("plugins: archive member is a directory")
                 data = zf.read(info)
@@ -50360,9 +50350,6 @@ class MockHostClient:
                     if member < 0 or member >= len(infos):
                         raise RuntimeError("plugins: archive member index outside range")
                     info = infos[member]
-                    reason = self._unsafe_reason(info.filename)
-                    if reason:
-                        raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                     if info.is_dir():
                         raise RuntimeError("plugins: archive member is a directory")
                     data = zf.read(info)
@@ -50387,9 +50374,6 @@ class MockHostClient:
                 if member < 0 or member >= len(infos):
                     raise RuntimeError("plugins: archive member index outside range")
                 info = infos[member]
-                reason = self._unsafe_reason(info.filename)
-                if reason:
-                    raise RuntimeError(f'plugins: unsafe archive member {member} "{info.filename}": {reason}')
                 if info.is_dir():
                     raise RuntimeError("plugins: archive member is a directory")
                 data = zf.read(info)
@@ -53585,9 +53569,9 @@ export interface ArchiveMember {
   index: number;
   name: string;
   size: number;
-  /** Host listing: this member cannot be opened; name is an identifier only. */
+  /** Informational warning: name is unsafe as a filesystem path; member remains readable by index. */
   unsafe?: boolean;
-  /** Present with unsafe=true; explains why archive.open and archive.extract refuse the member. */
+  /** Present with unsafe=true; explains why name must not be used as an output path. */
   unsafeReason?: string;
 }
 

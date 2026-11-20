@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -293,5 +294,109 @@ func TestOpenRARMemberCompressedSolidMultiAndEncrypted(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("corrupted compressed.rar = %v, want ErrCorrupt", err)
+	}
+}
+
+func TestArchiveBackslashMemberLookupAgrees(t *testing.T) {
+	ctx := context.Background()
+	const (
+		storedName = `PlayStation\Game (123).json`
+		payload    = `{"id":123,"title":"Game"}`
+	)
+
+	checkOpen := func(t *testing.T, label string, open func(match func(int, Member) bool) (io.ReadCloser, Member, error), wantName string, wantIdx int) {
+		t.Helper()
+		for _, tc := range []struct {
+			mode  string
+			match func(int, Member) bool
+		}{
+			{"by-name", matchByName(wantName)},
+			{"by-index", func(idx int, _ Member) bool { return idx == wantIdx }},
+		} {
+			rc, m, err := open(tc.match)
+			if err != nil {
+				t.Fatalf("%s %s open: %v", label, tc.mode, err)
+			}
+			got, err := io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil {
+				t.Fatalf("%s %s read: %v", label, tc.mode, err)
+			}
+			if m.Name != wantName || string(got) != payload {
+				t.Fatalf("%s %s = name=%q body=%q, want name=%q body=%q", label, tc.mode, m.Name, got, wantName, payload)
+			}
+		}
+	}
+
+	t.Run("zip", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w0, err := zw.CreateHeader(&zip.FileHeader{Name: "readme.txt", Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w0, "lead")
+		w1, err := zw.CreateHeader(&zip.FileHeader{Name: storedName, Method: zip.Deflate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w1, payload)
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		vols := memVols(buf.Bytes())
+		members, err := ListZIP(vols)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkOpen(t, "zip", func(m func(int, Member) bool) (io.ReadCloser, Member, error) {
+			return OpenZIPMember(vols, m)
+		}, members[1].Name, 1)
+	})
+
+	t.Run("7z", func(t *testing.T) {
+		raw := at.Build7zCopy([]at.SevenZipFile{
+			{Name: "readme.txt", Data: []byte("lead")},
+			{Name: storedName, Data: []byte(payload)},
+		}, false)
+		vols := memVols(raw)
+		members, err := List7z(bytes.NewReader(raw), int64(len(raw)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkOpen(t, "7z", func(m func(int, Member) bool) (io.ReadCloser, Member, error) {
+			return Open7zMember(ctx, vols, m, 64<<20, 16<<20)
+		}, members[1].Name, 1)
+	})
+
+	for _, version := range []int{4, 5} {
+		label := "rar4"
+		if version == 5 {
+			label = "rar5"
+		}
+		t.Run(label, func(t *testing.T) {
+			rawVols, err := at.BuildRAR([]at.RARFile{
+				{Name: "readme.txt", Data: []byte("lead")},
+				{Name: storedName, Data: []byte(payload)},
+			}, at.RAROptions{Version: version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err := ReadRARVolume(bytes.NewReader(rawVols[0]), int64(len(rawVols[0])), &RAROptions{Context: ctx})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v.Files[1].StoredName != storedName || !v.Files[1].UnsafeName {
+				t.Fatalf("%s StoredName=%q UnsafeName=%v", label, v.Files[1].StoredName, v.Files[1].UnsafeName)
+			}
+			members, err := ComposeRAR([]*RARVolume{v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			vols := memVols(rawVols[0])
+			checkOpen(t, label, func(m func(int, Member) bool) (io.ReadCloser, Member, error) {
+				return OpenRARMember(ctx, vols, m, 64<<20, 16<<20)
+			}, members[1].Name, 1)
+		})
 	}
 }

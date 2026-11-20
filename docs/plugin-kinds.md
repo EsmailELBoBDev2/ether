@@ -585,8 +585,9 @@ closes every member stream and blob handle before returning.
 uncompressed member directly into the plugin's own library blob cache (defaulting to
 the source archive's library namespace) in one pass with no full in-memory buffer,
 computing `{ref, size, sha1, md5, crc32}` (`ref` is `"blob:<sha256>"`). It enforces
-`archiveMemberBytes` and the target library's cache quota, refuses unsafe members by
-index with `UnsafeArchiveMemberError` and directories, observes cancellation and
+`archiveMemberBytes` and the target library's cache quota, falls back to
+`member-<index>` as the cache entry name when `options.name` is omitted for an unsafe
+member name, refuses directories, observes cancellation and
 deadlines, and charges governance units per started MiB (`ArchiveExtractUnitsPerMiB`).
 The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`, `ArchiveList`,
 `ArchiveOpen`, `ArchiveRead`, and `ArchiveExtract` through `BlobHost`; the Python
@@ -595,19 +596,19 @@ The Go `RemoteHostClient` provides `RuntimeLimits`, `FetchToCache`, `CacheRead`,
 
 Archive sizes and member counts use owner global/per-plugin ceilings: defaults
 are 8 GiB compressed archive/member, 32 GiB total expansion and 65,535 members.
-Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`.
-Their stored names are identifiers only: opening one returns a typed
-`UnsafeArchiveMemberError` (a descriptive error through hosted/remote calls),
-while other members remain readable. Empty names, names over 1024 bytes, NUL,
-backslashes, absolute paths (including drive-rooted paths), and traversal or
-noncanonical path segments are unsafe. Colons in ordinary member names are
-allowed: reads use member indexes and never write stored names to disk.
+Unsafe member names remain in listings with `unsafe: true` and `unsafeReason`
+as informational warnings so callers never use stored names as filesystem paths.
+Empty names, names over 1024 bytes, NUL, backslashes, absolute paths (including
+drive-rooted paths), and traversal or noncanonical path segments are flagged.
+Because `archive.open`, `archive.read`, `archive.extract`, and frontend blob
+streaming address members by index and never write stored names to disk, any
+non-directory member (including flagged names such as Windows-style backslash
+paths) can be read and extracted by index.
 These flags are retained in the cached directory. ZIP supports Store/Deflate and ZIP64;
 7z supports Copy, LZMA and LZMA2 (including solid blocks); RAR supports stored
 and compressed 4.x/5.x members. Other 7z coder chains are refused, including
 BCJ filters and PPMd. Split/multi-volume input, encrypted headers or members,
-links and other special files are refused. Unsafe paths are listed but cannot
-be opened. Directories may appear
+links and other special files are refused. Directories may appear
 in listings but cannot be opened. A 1000:1 expansion ceiling applies per ZIP
 member and per 7z/RAR compression block. Nothing is extracted to a filesystem.
 

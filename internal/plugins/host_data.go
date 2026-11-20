@@ -272,9 +272,6 @@ func readArchiveMemberRange(ctx context.Context, archive *dataArchive, member in
 		return nil, fmt.Errorf("plugins: archive member index outside range")
 	}
 	f := archive.members[member]
-	if f.Unsafe {
-		return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
-	}
 	if uint64(opt.Offset) > f.Size {
 		return nil, fmt.Errorf("plugins: archive member offset outside range")
 	}
@@ -678,11 +675,8 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 					return nil, fmt.Errorf("plugins: archive member index outside range")
 				}
 				f := archive.members[member]
-				if f.Unsafe {
-					return nil, &UnsafeArchiveMemberError{Index: f.Index, Name: f.Name, Reason: f.UnsafeReason}
-				}
 				entryName := strings.TrimSpace(extractOpt.Name)
-				if entryName == "" {
+				if entryName == "" && !f.Unsafe {
 					entryName = path.Base(strings.TrimSuffix(f.Name, "/"))
 				}
 				if entryName == "" || entryName == "." || entryName == "/" {

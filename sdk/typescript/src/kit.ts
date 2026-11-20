@@ -84,9 +84,9 @@ export interface ArchiveMember {
   index: number;
   name: string;
   size: number;
-  /** Host listing: this member cannot be opened; name is an identifier only. */
+  /** Informational warning: name is unsafe as a filesystem path; member remains readable by index. */
   unsafe?: boolean;
-  /** Present with unsafe=true; explains why archive.open and archive.extract refuse the member. */
+  /** Present with unsafe=true; explains why name must not be used as an output path. */
   unsafeReason?: string;
 }
 

@@ -190,8 +190,10 @@ the plugin must parse. `ArchiveExtract(blob, memberIndex[, {libraryKey?, name?}]
 streams an uncompressed member into the plugin's library blob cache in one pass and returns
 {ref, size, sha1, md5, crc32} without guest memory buffering. Solid ranges restart at the block beginning
 per call; prefer large sequential chunks. Host memory/byte grants apply to
-metadata, dictionaries and decoding. Split archives, encryption, unsafe names
-and special files are refused. Other 7z coder chains are unsupported.
+metadata, dictionaries and decoding. Split archives, encryption,
+and special files are refused; `archive.list` flags unsafe member names as
+informational warnings while by-index reads and extracts accept any
+non-directory member. Other 7z coder chains are unsupported.
 
 FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they return
 metadata/digests, not bytes. Viewer access requires that viewer's grant.

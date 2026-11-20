@@ -283,12 +283,28 @@ func TestDataHostInvariants(t *testing.T) {
 			t.Fatalf("stored blob mismatch (len=%d want=%d err=%v)", len(stored), len(body), err)
 		}
 
-		// Unsafe member refused by index with UnsafeArchiveMemberError.
+		// Flagged member extracts by index and falls back to member-<index> as cache name.
 		unsafeArgs, _ := json.Marshal([]any{archiveRef, 1})
-		_, err = CallDataHost(ctx, h, "archive.extract", unsafeArgs)
-		var unsafeErr *UnsafeArchiveMemberError
-		if !errors.As(err, &unsafeErr) || unsafeErr.Index != 1 || unsafeErr.Name != "../escape.bin" {
+		rawUnsafe, err := CallDataHost(ctx, h, "archive.extract", unsafeArgs)
+		if err != nil {
 			t.Fatalf("unsafe extract err = %v", err)
+		}
+		var unsafeOut ArchiveExtractResult
+		if err = json.Unmarshal(rawUnsafe, &unsafeOut); err != nil {
+			t.Fatal(err)
+		}
+		if unsafeOut.Size != 4 || unsafeOut.Ref != fmt.Sprintf("blob:%x", sha256.Sum256([]byte("nope"))) {
+			t.Fatalf("unexpected unsafe extract result: %+v", unsafeOut)
+		}
+		rcUnsafe, err := h.CacheOpen(ctx, unsafeOut.Ref)
+		if err != nil {
+			t.Fatalf("open extracted unsafe ref: %v", err)
+		}
+		named, _ := rcUnsafe.(interface{ Name() string })
+		unsafeStored, err := io.ReadAll(rcUnsafe)
+		_ = rcUnsafe.Close()
+		if err != nil || string(unsafeStored) != "nope" || (named != nil && named.Name() != "member-1") {
+			t.Fatalf("unsafe extracted blob: data=%q name=%v err=%v", unsafeStored, named, err)
 		}
 
 		// Directory member refused.

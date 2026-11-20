@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -204,8 +203,9 @@ func TestDataArchiveFormats(t *testing.T) {
 	}
 }
 
-// Unsafe identifiers survive directory caching, but only safe members can be
-// opened. Exercise the same boundary for ZIP, solid 7z, and RAR4/5.
+// Unsafe name flags survive directory caching as informational warnings, and
+// every listed non-directory member (including backslash and traversal names)
+// remains readable by index across ZIP, solid 7z, and RAR4/5.
 func TestDataArchiveMemberNames(t *testing.T) {
 	names := []string{"normal.txt", "../escape", "Some Game (Europe: Special Edition).txt", "after.txt", "..", "/absolute", `dir\escape`, "dir/../escape", "C:/absolute"}
 	for _, format := range []string{"zip", "7z", "rar4", "rar5"} {
@@ -260,6 +260,7 @@ func TestDataArchiveMemberNames(t *testing.T) {
 				if err = json.Unmarshal(raw, &members); err != nil || len(members) != len(names) {
 					t.Fatalf("list: %s, %v", raw, err)
 				}
+				batch := make([]ArchiveReadItem, 0, len(members))
 				for i, m := range members {
 					unsafe := i == 1 || i >= 4
 					if m.Index != i || m.Name != names[i] || m.Unsafe != unsafe || (m.UnsafeReason != "") != unsafe {
@@ -267,15 +268,8 @@ func TestDataArchiveMemberNames(t *testing.T) {
 					}
 					args, _ := json.Marshal([]any{"blob:test", i, DataRange{Offset: 0, Length: 100}})
 					raw, err = CallDataHost(ctx, h, "archive.open", args)
-					if unsafe {
-						var refusal *UnsafeArchiveMemberError
-						if !errors.As(err, &refusal) || refusal.Index != i || refusal.Name != names[i] || refusal.Reason != m.UnsafeReason {
-							t.Fatalf("unsafe open: %v", err)
-						}
-						continue
-					}
 					if err != nil {
-						t.Fatal(err)
+						t.Fatalf("archive.open(%d %q): %v", i, names[i], err)
 					}
 					var out struct{ BodyBase64 string }
 					if err = json.Unmarshal(raw, &out); err != nil {
@@ -283,8 +277,34 @@ func TestDataArchiveMemberNames(t *testing.T) {
 					}
 					got, err := base64.StdEncoding.DecodeString(out.BodyBase64)
 					if err != nil || string(got) != "contents" {
-						t.Fatalf("open: %q, %v", got, err)
+						t.Fatalf("open(%d %q): %q, %v", i, names[i], got, err)
 					}
+					batch = append(batch, ArchiveReadItem{Member: i, Offset: 0, Length: 100})
+				}
+				batchArgs, _ := json.Marshal([]any{"blob:test", batch})
+				rawBatch, err := CallDataHost(ctx, h, "archive.read", batchArgs)
+				if err != nil {
+					t.Fatalf("archive.read batch: %v", err)
+				}
+				var results []ArchiveReadResult
+				if err = json.Unmarshal(rawBatch, &results); err != nil || len(results) != len(names) {
+					t.Fatalf("archive.read results: %s, %v", rawBatch, err)
+				}
+				for i, r := range results {
+					got, err := base64.StdEncoding.DecodeString(r.BodyBase64)
+					if err != nil || r.Member != i || string(got) != "contents" {
+						t.Fatalf("batch[%d]: %+v (%q, %v)", i, r, got, err)
+					}
+				}
+				// Frontend streaming by index also accepts backslash-named members.
+				fr, fsize, err := OpenFrontendArchiveMember(ctx, bytes.NewReader(data), 6, defaultDataLimits())
+				if err != nil {
+					t.Fatalf("OpenFrontendArchiveMember(6): %v", err)
+				}
+				fdata, err := io.ReadAll(fr)
+				_ = fr.Close()
+				if err != nil || fsize != int64(len("contents")) || string(fdata) != "contents" {
+					t.Fatalf("frontend member 6: size=%d data=%q err=%v", fsize, fdata, err)
 				}
 			}
 			if h.cache.lru.Len() != 1 {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"strings"
 )
 
 // RAR 5.0 header types and flags.
@@ -290,8 +291,9 @@ func parseRAR5File(p *rar5Buf, extra []byte, hflags uint64, crypto ...*rarCrypto
 	if p.err != nil {
 		return f, p.err
 	}
-	f.Name = string(name)
-	f.StoredName = f.Name
+	f.StoredName = string(name)
+	f.Name = strings.ReplaceAll(f.StoredName, `\`, "/")
+	f.UnsafeName = strings.Contains(f.StoredName, `\`)
 	f.NonRegular = (hostOS == 1 && attr&0xf000 != 0 && attr&0xf000 != 0x8000 && attr&0xf000 != 0x4000) || (hostOS == 0 && attr&0x400 != 0)
 	f.UnpackedSize = unp
 	if ff&rar5FileUnknownSize != 0 {

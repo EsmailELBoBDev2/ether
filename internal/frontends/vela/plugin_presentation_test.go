@@ -780,4 +780,72 @@ func TestVelaPluginLibraryPresentationFacetsCollectionsRowsAndScopedSearch(t *te
 	if code != 400 || !strings.Contains(errCode, "invalid_library") {
 		t.Fatalf("invalid library search = %d %v, want 400 invalid_library", code, sBad)
 	}
+
+	// 8. GET /vela/v0/libraries/{id}/rows cursor pagination across 30+ plugin rows.
+	manyRows := make([]frontend.Row, 0, 32)
+	for n := 1; n <= 32; n++ {
+		manyRows = append(manyRows, frontend.Row{
+			ID:      fmt.Sprintf("plugin:77:shelf:topic-%02d", n),
+			Title:   fmt.Sprintf("Topic %02d", n),
+			Purpose: frontend.RowRecommendation,
+			Kind:    "shelf",
+			Style:   "shelf",
+			Items:   []frontend.Title{game1},
+		})
+	}
+	exp.pluginRows["77"] = manyRows
+
+	var gotRowIDs []string
+	cursor := ""
+	pages := 0
+	for {
+		path := "/vela/v0/libraries/77/rows?limit=10"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		code, page := doReq(http.MethodGet, path, nil)
+		if code != 200 {
+			t.Fatalf("plugin rows page %d status=%d body=%v", pages+1, code, page)
+		}
+		pages++
+		items := page["items"].([]any)
+		for _, raw := range items {
+			gotRowIDs = append(gotRowIDs, raw.(map[string]any)["id"].(string))
+		}
+		if pages == 1 {
+			if page["continuation"] != "more" {
+				t.Fatalf("page 1 continuation=%v, want more", page["continuation"])
+			}
+			firstCursor, _ := page["nextCursor"].(string)
+			if firstCursor == "" {
+				t.Fatalf("page 1 missing nextCursor: %v", page)
+			}
+			// Changing limit invalidates the cursor (409 cursor_expired).
+			if badLimitCode, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/rows?limit=5&cursor="+url.QueryEscape(firstCursor), nil); badLimitCode != 409 {
+				t.Fatalf("rows cursor with altered limit status=%d, want 409", badLimitCode)
+			}
+		}
+		if page["continuation"] == "exhausted" {
+			if _, hasCursor := page["nextCursor"]; hasCursor {
+				t.Fatalf("exhausted rows page must omit nextCursor: %v", page)
+			}
+			break
+		}
+		if page["continuation"] != "more" {
+			t.Fatalf("unexpected continuation %v on page %d", page["continuation"], pages)
+		}
+		cursor, _ = page["nextCursor"].(string)
+		if cursor == "" || pages > 10 {
+			t.Fatalf("bad pagination progress at page %d: cursor=%q", pages, cursor)
+		}
+	}
+	if pages != 4 || len(gotRowIDs) != 32 || gotRowIDs[0] != "plugin:77:shelf:topic-01" || gotRowIDs[31] != "plugin:77:shelf:topic-32" {
+		t.Fatalf("paged 32 rows: pages=%d count=%d first=%q last=%q", pages, len(gotRowIDs), gotRowIDs[0], gotRowIDs[len(gotRowIDs)-1])
+	}
+	if badCurCode, _ := doReq(http.MethodGet, "/vela/v0/libraries/77/rows?cursor=not-a-valid-cursor", nil); badCurCode != 409 {
+		t.Fatalf("bogus plugin rows cursor status=%d, want 409", badCurCode)
+	}
+	if catCurCode, _ := doReq(http.MethodGet, "/vela/v0/libraries/23/rows?cursor=anything", nil); catCurCode != 409 {
+		t.Fatalf("catalogue rows cursor status=%d, want 409", catCurCode)
+	}
 }

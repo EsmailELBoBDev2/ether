@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypedDict, Union
 
 TUNNEL_PROTOCOL = "ether-tunnel-v1"
 DEFAULT_MAX_CHUNK_BYTES = 64 * 1024
@@ -3046,6 +3046,34 @@ def create_test_harness(
 # ---------------------------------------------------------------------------
 # Content kinds: base classes, host services, kit helpers (Ether v0.3.8)
 # ---------------------------------------------------------------------------
+
+MAX_KIND_LIBRARY_SHELVES = 40
+
+
+class KindLibraryShelf(TypedDict, total=False):
+    """One default Recommended shelf declared under ``library.shelves`` (max 40).
+
+    Each shelf gets the stable row ID ``plugin:<viewID>:shelf:<key>``.
+    """
+
+    key: str
+    label: str
+    sort: Literal["title", "added", "released", "year", "rating", "index"]
+    direction: Literal["asc", "desc"]
+    facet: str
+    value: str
+    values: List[str]
+    filters: Dict[str, List[str]]
+
+
+class KindLibraryDecl(TypedDict, total=False):
+    """Library presentation declaration on a contributed content kind."""
+
+    name: str
+    icon: str
+    card: Literal["poster", "landscape", "square"]
+    tabs: List[Dict[str, Any]]
+    shelves: List[KindLibraryShelf]
 
 
 class CatalogProvider:

@@ -1590,13 +1590,51 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		}
 	}
 
+	var shelves []experience.PluginShelf
+	if len(decl.Library.Shelves) > 0 {
+		shelves = make([]experience.PluginShelf, 0, len(decl.Library.Shelves))
+		for _, sh := range decl.Library.Shelves {
+			lbl := c.resolvePluginText(ctx, rec.PluginID, sh.Label)
+			if strings.TrimSpace(lbl) == "" {
+				lbl = sh.Key
+			}
+			shelves = append(shelves, experience.PluginShelf{
+				Key:       sh.Key,
+				Label:     lbl,
+				Sort:      mapPluginShelfSort(sh.EffectiveSort()),
+				Direction: sh.EffectiveDirection(),
+				Filters:   sh.EffectiveFilters(),
+			})
+		}
+	}
+
 	return experience.PluginPresentation{
 		Card:        lib.EffectiveCardShape(decl.Library.EffectiveCard()),
 		DateDisplay: decl.Library.EffectiveDateDisplay(),
 		Tabs:        tabs,
 		Sorts:       sorts,
 		Facets:      facets,
+		Shelves:     shelves,
 	}, true
+}
+
+func mapPluginShelfSort(raw string) core.SortOrder {
+	switch raw {
+	case "title":
+		return core.SortTitle
+	case "added":
+		return core.SortAdded
+	case "released", "":
+		return core.SortReleased
+	case "year":
+		return core.SortYear
+	case "rating":
+		return core.SortRating
+	case "index":
+		return core.SortIndex
+	default:
+		return core.SortReleased
+	}
 }
 
 func mapVelaFacetType(raw string) string {

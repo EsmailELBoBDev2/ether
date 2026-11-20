@@ -21,6 +21,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/stremio"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -428,11 +429,12 @@ type MediaKindMeta struct {
 
 // KindLibraryDecl is the optional library created for a kind on install.
 type KindLibraryDecl struct {
-	Name        string           `json:"name"` // default name; the owner may rename it after
-	Icon        string           `json:"icon,omitempty"`
-	Card        string           `json:"card,omitempty"`        // poster (default)|landscape|square
-	DateDisplay string           `json:"dateDisplay,omitempty"` // year (default)|date
-	Tabs        []KindLibraryTab `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
+	Name        string             `json:"name"` // default name; the owner may rename it after
+	Icon        string             `json:"icon,omitempty"`
+	Card        string             `json:"card,omitempty"`        // poster (default)|landscape|square
+	DateDisplay string             `json:"dateDisplay,omitempty"` // year (default)|date
+	Tabs        []KindLibraryTab   `json:"tabs,omitempty"`        // up to 6; defaults to Recommended + Library
+	Shelves     []KindLibraryShelf `json:"shelves,omitempty"`     // up to 40; default Recommended shelves
 }
 
 // KindLibraryTab declares one sub-tab shown inside a plugin library.
@@ -478,7 +480,7 @@ func (t KindLibraryTab) EffectiveCard() string {
 
 // IsZero reports whether every field of the library declaration is empty.
 func (d KindLibraryDecl) IsZero() bool {
-	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && len(d.Tabs) == 0
+	return d.Name == "" && d.Icon == "" && d.Card == "" && d.DateDisplay == "" && len(d.Tabs) == 0 && len(d.Shelves) == 0
 }
 
 // EffectiveCard returns the library's card aspect ("poster" by default).
@@ -564,6 +566,81 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 		{Key: "recommended", Label: "Recommended", Kind: "recommended"},
 		{Key: "library", Label: "Library", Kind: "library"},
 	}
+}
+
+// MaxKindLibraryShelves is the maximum number of declared Recommended shelves per kind library.
+const MaxKindLibraryShelves = 40
+
+// KindLibraryShelf declares one default Recommended shelf for a plugin library.
+// Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>" so the
+// library's Recommended row editor can reorder, hide, pin, or cap it.
+type KindLibraryShelf struct {
+	Key       string              `json:"key"`
+	Label     string              `json:"label"`
+	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
+	Direction string              `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string              `json:"value,omitempty"`     // single value for facet
+	Values    []string            `json:"values,omitempty"`    // OR values for facet
+	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
+}
+
+// EffectiveSort returns the shelf's sort field ("released" by default).
+func (s KindLibraryShelf) EffectiveSort() string {
+	if s.Sort != "" {
+		return s.Sort
+	}
+	return "released"
+}
+
+// EffectiveDirection returns the shelf's sort direction ("desc" by default).
+func (s KindLibraryShelf) EffectiveDirection() string {
+	if s.Direction == "asc" {
+		return "asc"
+	}
+	return "desc"
+}
+
+// EffectiveFilters returns the shelf's facet filter map (AND across facets,
+// OR within each facet), or nil when the shelf is unfiltered.
+func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
+	if s.Facet != "" {
+		if len(s.Values) > 0 {
+			vals := make([]string, 0, len(s.Values))
+			for _, v := range s.Values {
+				if v = strings.TrimSpace(v); v != "" {
+					vals = append(vals, v)
+				}
+			}
+			if len(vals) == 0 {
+				return nil
+			}
+			return map[string][]string{s.Facet: vals}
+		}
+		if v := strings.TrimSpace(s.Value); v != "" {
+			return map[string][]string{s.Facet: {v}}
+		}
+		return nil
+	}
+	if len(s.Filters) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(s.Filters))
+	for k, raw := range s.Filters {
+		var vals []string
+		for _, v := range raw {
+			if v = strings.TrimSpace(v); v != "" {
+				vals = append(vals, v)
+			}
+		}
+		if len(vals) > 0 {
+			out[k] = vals
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // KindLevel is one hierarchy level of a kind.

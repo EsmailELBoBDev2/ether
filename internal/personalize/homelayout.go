@@ -926,6 +926,10 @@ func (e *Engine) FinalizeHome(ctx context.Context, user *core.User, hc core.HubC
 
 // finalizeHomeRows is shared by both wire-shaped and neutral adapters.
 func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.HubContext, section string, rows []core.HomeRow) []core.HomeRow {
+	return e.finalizeHomeRowsWithDefault(ctx, user, hc, section, rows, 0)
+}
+
+func (e *Engine) finalizeHomeRowsWithDefault(ctx context.Context, user *core.User, hc core.HubContext, section string, rows []core.HomeRow, defaultMaxRows int) []core.HomeRow {
 	ctx = core.WithCatalogViewer(ctx, user)
 	if user == nil {
 		user = &core.User{}
@@ -938,6 +942,9 @@ func (e *Engine) finalizeHomeRows(ctx context.Context, user *core.User, hc core.
 	def := e.opts.MaxHomeRows
 	if target != "" && target != "home" {
 		def = e.opts.MaxSectionRows
+	}
+	if defaultMaxRows > 0 {
+		def = defaultMaxRows
 	}
 	for i := range rows {
 		e.hubMu.RLock()
@@ -1066,7 +1073,7 @@ func (e *Engine) finalizeNeutralHome(ctx context.Context, user *core.User, situa
 			}
 		}
 	} else {
-		arranged = e.finalizeHomeRows(ctx, user, hc, section, rows)
+		arranged = e.finalizeHomeRowsWithDefault(ctx, user, hc, section, rows, situation.DefaultMaxRows)
 	}
 	out := make([]core.NeutralHomeRow, 0, len(arranged))
 	for _, row := range arranged {

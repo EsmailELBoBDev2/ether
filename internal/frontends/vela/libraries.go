@@ -688,9 +688,6 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 		fail(w, err, r)
 		return
 	}
-	if !noCursor(w, r) {
-		return
-	}
 	for name, entries := range r.URL.Query() {
 		switch name {
 		case "cursor", "limit":
@@ -725,7 +722,26 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 	if view.PluginID != "" || view.KindKey != "" {
 		reader, ok := i.host.Experience.(frontend.PluginLibraryRowsReader)
 		if !ok {
+			if !noCursor(w, r) {
+				return
+			}
 			cache(w, r, object{"items": []object{}, "continuation": "exhausted"})
+			return
+		}
+		pageLimit := limit(r)
+		scope, err := i.livePageScope(r, v, token)
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		c, err := i.readLiveCursor(r, scope, hashJSON([]any{"library-rows", id, pageLimit}))
+		if err != nil {
+			fail(w, err, r)
+			return
+		}
+		snapshot := hashJSON(views)
+		if c.Offset > 10000 || (c.Snapshot != "" && c.Snapshot != snapshot) {
+			fail(w, frontend.ErrLiveGuideStale)
 			return
 		}
 		srcRows, err := reader.PluginLibraryRows(r.Context(), v, requestDevice(r), id)
@@ -733,21 +749,28 @@ func (i *instance) libraryRows(w http.ResponseWriter, r *http.Request) {
 			fail(w, err, r)
 			return
 		}
-		more := len(srcRows) > limit(r)
-		if more {
-			srcRows = srcRows[:limit(r)]
-		}
-		markLandscapeRows(srcRows, view)
-		rows, err := i.rowsToWire(r, v, token, srcRows, nil, false, defaultRowItemLimit)
+		start := min(c.Offset, len(srcRows))
+		end := min(start+pageLimit, len(srcRows))
+		pageRows := srcRows[start:end]
+		markLandscapeRows(pageRows, view)
+		rows, err := i.rowsToWire(r, v, token, pageRows, nil, false, defaultRowItemLimit)
 		if err != nil {
 			fail(w, err, r)
 			return
 		}
-		continuation := "exhausted"
-		if more {
-			continuation = "unknown"
+		out := object{"items": rows, "continuation": "exhausted"}
+		if end < len(srcRows) {
+			next, e := i.nextLiveCursor(c, end, snapshot)
+			if e != nil {
+				fail(w, e, r)
+				return
+			}
+			out["continuation"], out["nextCursor"] = "more", next
 		}
-		cache(w, r, object{"items": rows, "continuation": continuation})
+		cache(w, r, out)
+		return
+	}
+	if !noCursor(w, r) {
 		return
 	}
 	sub := r.Clone(r.Context())

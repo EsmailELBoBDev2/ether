@@ -300,6 +300,7 @@ cp -R sdk/examples/kind-library sdk/examples/my-library
 
 Edit mediaKinds levels, fields, presentation, `library.card` (`poster|landscape|square`), `library.dateDisplay` (`year|date`),
 `library.tabs` (`recommended|library|collections|people|live`, such as `{key:"live",label:"Live",kind:"live",card:"landscape",searchPlaceholder:"Search live matches"}`, `{key:"tournaments",label:"Tournaments",kind:"collections",facet:"tournament",order:"name",searchPlaceholder:"Search tournaments"}`, or `{key:"cast",label:"Voice cast",kind:"people",facet:"voiceCast",order:"name",searchPlaceholder:"Search voice cast"}`),
+optional `library.shelves` (up to 40 default Recommended shelves such as `{key:"science-docs",label:"Science documentaries",facet:"topic",values:["Science","Nature"],sort:"released",direction:"desc"}` or multi-facet `filters`),
 and `browse.sorts`/`browse.facets` (plus optional `browse.expand: {facets:["tournaments","voiceCast"],ttlHours:168}` for background on-demand `/ether/v1/kinds/{kind}/expand` slices), then the browse/changes/expand/live/resolve
 handlers in `src/plugin.ts` (`onLive` / `OnLive` / `on_live` for live tabs). Keep cursor pages bounded and item IDs stable. Read
 [Content kinds](../docs/plugin-kinds.md) before changing resolve or container semantics.

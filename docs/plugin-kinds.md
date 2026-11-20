@@ -85,7 +85,22 @@ unless the owner agrees to replace the library's contents.
     }
     ```
 - `browse.sorts` and `browse.facets`: surfaced directly on `GET /vela/v0/libraries` under `browse.sorts` and `browse.filters.facets`. Facet values are paged at `GET /vela/v0/libraries/{id}/facets/{field}` (`int`, `date`, and `duration` fields are served as discrete buckets — years for `date`, duration ranges for `duration`, and distinct integers up to 50 or ranges above 50) and filtered with repeatable `facet.<field>=<bucketId>` on `GET /vela/v0/libraries/{id}/items` alongside in-library `query=`.
-- Recommended rows (`GET /vela/v0/libraries/{id}/rows`): Ether builds up to 8 shelves (20 items each) from your stored items — Continue watching, Recently added, Newest, Top rated (when `rating` is a declared sort), and top values of your first declared facet.
+- Recommended rows (`GET /vela/v0/libraries/{id}/rows`):
+  - When `library.shelves` is omitted, Ether builds auto-generated shelves (up to 8 by default, 20 items each) from your stored items — Continue watching, Newest, Recently added, Top rated (when `rating` is a declared sort), and daily-rotating values from your declared facets.
+  - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
+    ```json
+    "shelves": [
+      { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
+      { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
+      { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
+    ]
+    ```
+    Each shelf accepts:
+    - `key` (required): unique in the library, matching `^[a-z][a-z0-9-]{0,39}$`.
+    - `label` (required): literal or `$t:<key>`, at most 60 characters.
+    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`.
+    - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
+    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters: { "<facet>": ["..."] }` (AND across facets, OR within each facet). Every referenced facet must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`).
 
 ## The item envelope
 

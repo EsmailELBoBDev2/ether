@@ -204,6 +204,9 @@ func (h *Handler) writeLibraryLayout(w http.ResponseWriter, r *http.Request, lib
 		if candidates == nil {
 			candidates = []core.RowDescriptor{}
 		}
+		if pluginDescriptorsHaveDeclaredShelves(candidates) && len(candidates) > maxRows {
+			maxRows = len(candidates)
+		}
 	} else {
 		avail, err := h.deps.Personalization.AvailableRows(r.Context())
 		if err != nil {
@@ -583,13 +586,35 @@ func (h *Handler) previewSectionLayout(ctx context.Context, e Personalization, u
 								}
 							}
 						}
-						return cp.PreviewCandidateRows(ctx, u, hc, sec, 8, d, rows)
+						defaultMaxRows := 8
+						if pluginHomeRowsHaveDeclaredShelves(rows) && len(rows) > defaultMaxRows {
+							defaultMaxRows = len(rows)
+						}
+						return cp.PreviewCandidateRows(ctx, u, hc, sec, defaultMaxRows, d, rows)
 					}
 				}
 			}
 		}
 	}
 	return e.PreviewLayout(ctx, u, hc, section, count, d)
+}
+
+func pluginDescriptorsHaveDeclaredShelves(rows []core.RowDescriptor) bool {
+	for _, r := range rows {
+		if r.Kind == "shelf" || strings.Contains(r.HubID, ":shelf:") {
+			return true
+		}
+	}
+	return false
+}
+
+func pluginHomeRowsHaveDeclaredShelves(rows []core.HomeRow) bool {
+	for _, r := range rows {
+		if r.Kind == "shelf" || strings.Contains(r.HubID, ":shelf:") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) decodeLayoutPreview(w http.ResponseWriter, r *http.Request) (layoutPreviewBody, core.HubContext, Personalization, bool) {

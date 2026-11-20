@@ -70,6 +70,8 @@ func (s *Service) explainCeiling(tr *Trace, profile core.QualityProfile, req cor
 			reasons["faster than recent Usenet provider reads"]++
 		case strings.Contains(c.CompatibilityReason, "debrid account recently delivered"), strings.Contains(c.CompatibilityReason, "recent reads from this source"):
 			reasons["faster than recent source reads"]++
+		case strings.Contains(c.Route, "add-on order"):
+			reasons["ranked lower in the add-on's order"]++
 		default:
 			reasons["ranked lower by the owner's release preferences"]++
 		}

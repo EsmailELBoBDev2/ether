@@ -260,6 +260,9 @@ func ValidateConfig(cfg config.Config) []FieldError {
 		if ix.IsStremio() && ix.Protocol != "" && ix.Protocol != "torrent" {
 			v.add(f+".protocol", "must be torrent for a Stremio addon")
 		}
+		if ix.UseAddonOrder && !ix.IsStremio() {
+			v.add(f+".useAddonOrder", "is only supported for a Stremio addon")
+		}
 		if ix.IsZilean() && ix.Protocol != "" && ix.Protocol != "torrent" {
 			v.add(f+".protocol", "must be torrent for a Zilean instance")
 		}

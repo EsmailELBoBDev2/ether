@@ -577,7 +577,12 @@ export function IndexerList({
                           ) : null}
                         </>
                       ) : isStremio(ix) ? (
-                        <Badge variant="outline">{t("Stremio addon")}</Badge>
+                        <>
+                          <Badge variant="outline">{t("Stremio addon")}</Badge>
+                          {ix.useAddonOrder ? (
+                            <Badge variant="outline">{t("Add-on order")}</Badge>
+                          ) : null}
+                        </>
                       ) : isZilean(ix) ? (
                         <Badge variant="outline">{t("Zilean")}</Badge>
                       ) : (
@@ -801,6 +806,14 @@ export function IndexerList({
                   )}
                   error={errors.url}
                   onChange={(v) => set({ url: v })}
+                />
+                <BoolRow
+                  label={t("Use the add-on's order")}
+                  help={t(
+                    "Keep this add-on's result order instead of re-ranking with the quality profile. Compatibility, language, reject and health rules still apply, and indexer order places this source among other indexers.",
+                  )}
+                  value={Boolean(draft.useAddonOrder)}
+                  onChange={(v) => set({ useAddonOrder: v || undefined })}
                 />
                 {draft.url.includes("torrentio.strem.fun") ? (
                   <p className="px-5 text-sm text-fg-muted">

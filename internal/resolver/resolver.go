@@ -292,7 +292,10 @@ type Service struct {
 	probedMedia          func(core.Release) (core.MediaInfo, bool)
 	localCacheHas        func(releaseID string) bool
 	scorer               *FormatScorer
-	indexerPriority      map[string]int // indexer id → Priority (lower ranks first)
+	indexerPriority      map[string]int  // indexer id → Priority (lower ranks first)
+	indexerAddonOrder    map[string]bool // indexer id → keep Stremio add-on's own result order
+	indexerSourceBand    map[string]int  // indexer id → priority band when any add-on keeps its own order
+	defaultSourceBand    int             // band for sources not listed in cfg.Indexers
 	scorerErr            error
 	sources              string // sourcesKey of the applied config
 
@@ -491,9 +494,11 @@ func (s *Service) UpdateConfig(cfg config.Config) {
 	for _, ix := range cfg.Indexers {
 		s.indexerPriority[ix.ID] = ix.Priority
 	}
+	s.indexerAddonOrder, s.indexerSourceBand, s.defaultSourceBand = computeSourceBands(cfg.Indexers)
 	changed := s.sources != "" && s.sources != key
 	s.sources = key
 	s.cfgMu.Unlock()
+	s.InvalidateDetailVariants()
 	if changed {
 		s.forgetSourceResults(context.Background())
 	}
@@ -504,7 +509,7 @@ func (s *Service) UpdateConfig(cfg config.Config) {
 func sourcesKey(cfg config.Config) string {
 	var b strings.Builder
 	for _, ix := range cfg.Indexers {
-		fmt.Fprintf(&b, "i|%s|%t|%s|%s|%s\n", ix.ID, ix.Enabled, ix.URL, ix.Kind, ix.Protocol)
+		fmt.Fprintf(&b, "i|%s|%t|%s|%s|%s|%t\n", ix.ID, ix.Enabled, ix.URL, ix.Kind, ix.Protocol, ix.UseAddonOrder)
 	}
 	for _, p := range cfg.Usenet.Providers {
 		fmt.Fprintf(&b, "u|%s|%t\n", p.ID, p.Enabled)
@@ -2164,8 +2169,16 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			}
 			continue
 		}
-		belowScore := profile.MinCustomFormatScore != nil && sc.counted < *profile.MinCustomFormatScore
-		belowQuality := belowPreferredQuality(rel.Info, profile)
+		addonOrdered := rc.addonOrder[rel.IndexerID]
+		addonPos := 0
+		if addonOrdered {
+			addonPos = rel.SourceOrder
+			if addonPos <= 0 {
+				addonPos = ri + 1
+			}
+		}
+		belowScore := !addonOrdered && profile.MinCustomFormatScore != nil && sc.counted < *profile.MinCustomFormatScore
+		belowQuality := !addonOrdered && belowPreferredQuality(rel.Info, profile)
 		if belowScore {
 			ct.MinimumFormatScore = profile.MinCustomFormatScore
 			ct.Reason = fmt.Sprintf("Best available — below this profile's minimum (score %d of %d)", sc.counted, *profile.MinCustomFormatScore)
@@ -2173,8 +2186,19 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			ct.Reason = "Best available — below this profile's preferred quality"
 		}
 		ct.CompatibilityReason = sc.compat
-		rel.Score = float64(sc.total)
-		ct.Score = rel.Score
+		if addonOrdered {
+			ct.CustomFormats = nil
+			rel.Score = 0
+			ct.Score = 0
+			if rel.Indexer != "" {
+				ct.Route = fmt.Sprintf("add-on order #%d from %s", addonPos, rel.Indexer)
+			} else {
+				ct.Route = fmt.Sprintf("add-on order #%d", addonPos)
+			}
+		} else {
+			rel.Score = float64(sc.total)
+			ct.Score = rel.Score
+		}
 		verified := verifiedIDs[rel.ID]
 		if verified {
 			ct.CompatibilityReason = strings.TrimSpace(sc.compat + "; source recently verified playable")
@@ -2190,16 +2214,18 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 			note := func(n string) {
 				trace.Candidates[tr].CompatibilityReason = strings.TrimPrefix(trace.Candidates[tr].CompatibilityReason+"; "+n, "; ")
 			}
-			switch {
-			case upscales[ri]:
-				note("presumed upscale: ranked one resolution lower")
-			case lowBitrate:
-				note("too little bitrate for its resolution: ranked one resolution lower")
+			if !addonOrdered {
+				switch {
+				case upscales[ri]:
+					note("presumed upscale: ranked one resolution lower")
+				case lowBitrate:
+					note("too little bitrate for its resolution: ranked one resolution lower")
+				}
 			}
 			if bandwidth < 0 && bandwidthReason != "" {
 				note(bandwidthReason)
 			}
-			if yearGuessed {
+			if !addonOrdered && yearGuessed {
 				note("series year differs but names no other show: ranked after correctly-labelled releases")
 			}
 			if !langOK {
@@ -2214,7 +2240,15 @@ func (s *Service) rankPass(ctx context.Context, env rankEnv, req core.ResolveReq
 				note(audioUnverifiedCompatNote(unverifiedLangs))
 			}
 		}
-		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, t, sreq), identityConflict: namesake && identityEv == "" && episodeRegionConflict(rel, t), audioUnverified: audioUnverified, unverifiedLangs: unverifiedLangs, fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, delivery: delivery, yearGuessed: yearGuessed, cf: sc.total, keys: keysFor(rel, starved, rc)})
+		keys := keysFor(rel, starved, rc)
+		if addonOrdered && keys.addonOrder <= 0 {
+			keys.addonOrder = addonPos
+		}
+		cf := sc.total
+		if addonOrdered {
+			cf = 0
+		}
+		cands = append(cands, candidate{identityWeak: !pinned && identity.ambiguous(rel, t, sreq), identityConflict: namesake && identityEv == "" && episodeRegionConflict(rel, t), audioUnverified: audioUnverified, unverifiedLangs: unverifiedLangs, fallback: belowQuality, belowScore: belowScore, counted: sc.counted, policy: policyResult, rel: rel, trace: tr, verified: verified, langOK: langOK, langWanted: langWanted, starved: starved, bandwidth: bandwidth, delivery: delivery, yearGuessed: yearGuessed, cf: cf, keys: keys})
 	}
 	if env.seaDex != nil && len(cands) > 0 {
 		s.addSeaDexScores(env.seaDex, cands, trace)
@@ -2286,14 +2320,18 @@ func (s *Service) orderPreferenceCandidates(cands []candidate, title *core.Title
 func (s *Service) rankContext(profile core.QualityProfile, t *core.Title, rcfg config.Resolver, now time.Time) rankContext {
 	s.cfgMu.RLock()
 	scorer, priority := s.scorer, s.indexerPriority
+	addonOrder, sourceBand, defaultBand := s.indexerAddonOrder, s.indexerSourceBand, s.defaultSourceBand
 	s.cfgMu.RUnlock()
 	return rankContext{
-		profile:        profile,
-		title:          t,
-		now:            now,
-		preferSource:   preferredSource(rcfg.SourcePreference),
-		preferRevision: !scorer.scoresRevision(profile.CustomFormatScores),
-		priority:       priority,
+		profile:           profile,
+		title:             t,
+		now:               now,
+		preferSource:      preferredSource(rcfg.SourcePreference),
+		preferRevision:    !scorer.scoresRevision(profile.CustomFormatScores),
+		priority:          priority,
+		addonOrder:        addonOrder,
+		sourceBand:        sourceBand,
+		defaultSourceBand: defaultBand,
 		reliability: func(indexer string) float64 {
 			s.mu.RLock()
 			defer s.mu.RUnlock()
@@ -2332,6 +2370,9 @@ func (s *Service) addPluginScores(hot RankingSession, profile core.QualityProfil
 			continue
 		}
 		for i, key := range keys {
+			if cands[i].keys.addonOrder > 0 {
+				continue
+			}
 			points := int(max(min(key, maxPluginPoints), -maxPluginPoints))
 			if cands[i].pluginKeys == nil {
 				cands[i].pluginKeys = map[string]int64{}

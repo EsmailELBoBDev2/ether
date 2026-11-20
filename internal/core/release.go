@@ -95,6 +95,10 @@ type Release struct {
 
 	// IndexerID binds a result to its configured origin; Indexer is a display label.
 	IndexerID string `json:"indexerId,omitempty"`
+	// SourceOrder is the 1-based position of this result in the source's own
+	// response (set for Stremio add-on results so later cache sorting or
+	// batching cannot lose it). Zero means unset.
+	SourceOrder int `json:"sourceOrder,omitempty"`
 	// TitleIDs are movie/series identifiers reported by the indexer. They
 	// must never be inferred from the search request's identifiers.
 	TitleIDs IDs `json:"titleIds,omitempty"`

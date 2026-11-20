@@ -35,6 +35,8 @@ export interface Indexer {
    * empty or "newznab" for a Newznab/Torznab URL.
    */
   kind?: IndexerKind | "";
+  /** Keep a Stremio add-on's own result order instead of profile re-ranking. */
+  useAddonOrder?: boolean;
   /** Installed definition id of a built-in site. */
   definition?: string;
   /** A built-in site's setting values by name. */

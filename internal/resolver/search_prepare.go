@@ -296,6 +296,8 @@ func (p *searchPreparation) readyResultsAfter(window time.Duration) []core.Relea
 				continue
 			}
 			leadUncachedTorrent := lead >= 0 &&
+				p.ranked[lead].keys.addonOrder == 0 &&
+				c.keys.sourceBand == p.ranked[lead].keys.sourceBand &&
 				protocolOf(p.ranked[lead].rel) == core.ProtocolTorrent &&
 				!p.svc.knownCached(p.ranked[lead].rel)
 			if lead >= 0 && !(leadUncachedTorrent && p.svc.knownCached(c.rel)) && (!equivalentHedge(p.ranked[lead], c, margin) || time.Since(p.first) < rankedSourceGrace) {

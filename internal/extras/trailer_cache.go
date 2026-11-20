@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/egress"
 	"github.com/braedonsaunders/ether/internal/mediaproc"
 )
 
@@ -139,8 +141,10 @@ func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error
 	if err := os.RemoveAll(filepath.Join(s.cacheDir, "source.part")); err != nil {
 		return CachedTrailer{}, err
 	}
-	if err := os.Remove(filepath.Join(s.cacheDir, "download.part")); err != nil && !os.IsNotExist(err) {
-		return CachedTrailer{}, err
+	for _, stale := range []string{"download.part", "mux-video.part", "mux-audio.part"} {
+		if err := os.Remove(filepath.Join(s.cacheDir, stale)); err != nil && !os.IsNotExist(err) {
+			return CachedTrailer{}, err
+		}
 	}
 	entries, err := os.ReadDir(s.cacheDir)
 	if err != nil {
@@ -218,13 +222,10 @@ func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error
 				for name, value := range resolved.Headers {
 					req.Header.Set(name, value)
 				}
-				client := s.cacheHTTP
-				if client == nil {
-					client = &http.Client{Timeout: 90 * time.Second}
-				}
+				client := s.httpClient(90 * time.Second)
 				response, err = client.Do(req)
 				if err != nil {
-					return CachedTrailer{}, err
+					return CachedTrailer{}, scrubProxyErr(err, egress.Current().Proxy)
 				}
 				defer response.Body.Close()
 				reserve = min(cap, int64(64<<20))
@@ -342,30 +343,109 @@ func (s *Service) muxExtra(ctx context.Context, r Resolved, output *os.File, lim
 	if ff == "" {
 		return errors.New("extra muxer unavailable")
 	}
-	args := []string{"-nostdin", "-v", "error", "-y", "-threads", "1"}
-	for _, input := range []string{r.URL, r.AudioURL} {
-		args = append(args, "-protocol_whitelist", "http,https,tcp,tls,crypto", "-rw_timeout", "15000000")
-		if len(r.Headers) > 0 {
-			var headers strings.Builder
-			names := make([]string, 0, len(r.Headers))
-			for name := range r.Headers {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				value := r.Headers[name]
-				if strings.ContainsAny(name+value, "\r\n") {
-					return errors.New("invalid extra input header")
-				}
-				fmt.Fprintf(&headers, "%s: %s\r\n", name, value)
-			}
-			args = append(args, "-headers", headers.String())
-		}
-		args = append(args, "-i", input)
+	pVideo, policyEnabled, _, err := extrasProxyFor(r.URL)
+	if err != nil {
+		return err
+	}
+	pAudio, _, _, err := extrasProxyFor(r.AudioURL)
+	if err != nil {
+		return err
+	}
+	// FFmpeg only honors http:// in -http_proxy and silently dials direct for
+	// https:// or socks5://. Fetch those schemes through Go's egress client so
+	// proxied trailers never leak direct.
+	if (pVideo != nil && pVideo.Scheme != "http") || (pAudio != nil && pAudio.Scheme != "http") {
+		return s.muxExtraViaHTTP(ctx, ff, r, output, limit, pVideo, pAudio)
+	}
+	inputArgs, err := muxInputArgs([]string{r.URL, r.AudioURL}, r.Headers, []*url.URL{pVideo, pAudio})
+	if err != nil {
+		return err
 	}
 	softLimit := max(int64(1), limit-(64<<10))
+	args := []string{"-nostdin", "-v", "error", "-y", "-threads", "1"}
+	args = append(args, inputArgs...)
 	args = append(args, "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-fs", fmt.Sprint(softLimit), "-f", "mp4", output.Name())
 	proc := mediaproc.CommandContext(ctx, 90*time.Second, ff, args...)
+	if env := subprocessEnv(nil, nil, policyEnabled, nil, false); env != nil {
+		proc.Env = env
+	}
+	serr := &cappedBuffer{max: maxResolverStderr}
+	proc.Stderr = serr
+	if err := proc.Run(); err != nil {
+		return scrubProxyErr(fmt.Errorf("extra mux failed: %w", err), pVideo, pAudio)
+	}
+	info, err := output.Stat()
+	if err != nil {
+		return err
+	}
+	// -fs can finish successfully after truncating: reject at the bound.
+	if info.Size() >= softLimit {
+		return errors.New("muxed extra exceeds cache entry bound")
+	}
+	return nil
+}
+
+func (s *Service) muxExtraViaHTTP(ctx context.Context, ff string, r Resolved, output *os.File, limit int64, pVideo, pAudio *url.URL) error {
+	videoPath := filepath.Join(s.cacheDir, "mux-video.part")
+	audioPath := filepath.Join(s.cacheDir, "mux-audio.part")
+	defer os.Remove(videoPath)
+	defer os.Remove(audioPath)
+	client := s.httpClient(90 * time.Second)
+	remaining := limit
+	for _, part := range []struct {
+		raw  string
+		path string
+	}{{r.URL, videoPath}, {r.AudioURL, audioPath}} {
+		if remaining <= 0 {
+			return errors.New("muxed extra exceeds cache entry bound")
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, part.raw, nil)
+		if err != nil {
+			return err
+		}
+		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+			return errors.New("unsupported trailer URL")
+		}
+		for k, v := range r.Headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return scrubProxyErr(err, pVideo, pAudio)
+		}
+		if resp.StatusCode != http.StatusOK || resp.ContentLength > remaining {
+			resp.Body.Close()
+			return errors.New("trailer unavailable or exceeds cache entry bound")
+		}
+		f, err := os.OpenFile(part.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+		n, copyErr := io.Copy(f, io.LimitReader(resp.Body, remaining+1))
+		closeErr := f.Close()
+		resp.Body.Close()
+		if copyErr != nil {
+			return scrubProxyErr(copyErr, pVideo, pAudio)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if n == 0 || n > remaining {
+			return errors.New("muxed extra exceeds cache entry bound")
+		}
+		remaining -= n
+	}
+	softLimit := max(int64(1), limit-(64<<10))
+	args := []string{
+		"-nostdin", "-v", "error", "-y", "-threads", "1",
+		"-protocol_whitelist", "file,pipe", "-i", videoPath,
+		"-protocol_whitelist", "file,pipe", "-i", audioPath,
+		"-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-fs", fmt.Sprint(softLimit), "-f", "mp4", output.Name(),
+	}
+	proc := mediaproc.CommandContext(ctx, 90*time.Second, ff, args...)
+	serr := &cappedBuffer{max: maxResolverStderr}
+	proc.Stderr = serr
 	if err := proc.Run(); err != nil {
 		return fmt.Errorf("extra mux failed: %w", err)
 	}
@@ -373,7 +453,6 @@ func (s *Service) muxExtra(ctx context.Context, r Resolved, output *os.File, lim
 	if err != nil {
 		return err
 	}
-	// -fs can finish successfully after truncating: reject at the bound.
 	if info.Size() >= softLimit {
 		return errors.New("muxed extra exceeds cache entry bound")
 	}
@@ -387,6 +466,10 @@ func (s *Service) downloadExtra(ctx context.Context, e Extra, stage string, limi
 	page, ok := PageURL(e.Site, e.SiteKey)
 	if !ok {
 		return errors.New("invalid extra site/key")
+	}
+	proxy, policyEnabled, bypass, err := extrasProxyFor(page)
+	if err != nil {
+		return err
 	}
 	cfg := s.cfg()
 	cmd, ok := s.effectiveCommand(cfg)
@@ -409,9 +492,14 @@ func (s *Service) downloadExtra(ctx context.Context, e Extra, stage string, limi
 		return errors.New("extra muxer unavailable")
 	}
 	softLimit := max(int64(1), limit-(64<<10))
-	args := []string{"--no-playlist", "--no-cache-dir", "--no-progress", "--no-warnings", "-f", defaultTrailerFormat, "-N", "8", "--http-chunk-size", "10M", "--merge-output-format", "mp4", "--remux-video", "mp4", "--ffmpeg-location", ff, "--postprocessor-args", fmt.Sprintf("ffmpeg_o:-movflags +faststart -fs %d", softLimit), "--max-filesize", fmt.Sprint(max(int64(1), softLimit/2)), "-o", filepath.Join(dir, "media.%(ext)s"), "--", page}
-	if _, err := s.runner(ctx, cmd, args); err != nil {
-		return err
+	args := make([]string, 0, 26)
+	if proxy != nil {
+		args = append(args, "--proxy", proxy.String())
+	}
+	args = append(args, "--no-playlist", "--no-cache-dir", "--no-progress", "--no-warnings", "-f", defaultTrailerFormat, "-N", "8", "--http-chunk-size", "10M", "--merge-output-format", "mp4", "--remux-video", "mp4", "--ffmpeg-location", ff, "--postprocessor-args", fmt.Sprintf("ffmpeg_o:-movflags +faststart -fs %d", softLimit), "--max-filesize", fmt.Sprint(max(int64(1), softLimit/2)), "-o", filepath.Join(dir, "media.%(ext)s"), "--", page)
+	runCtx := withRunnerProxy(ctx, runnerProxyConfig{proxy: proxy, policyEnabled: policyEnabled, bypass: bypass})
+	if _, err := s.runner(runCtx, cmd, args); err != nil {
+		return scrubProxyErr(err, proxy)
 	}
 	path := filepath.Join(dir, "media.mp4")
 	info, err := os.Stat(path)

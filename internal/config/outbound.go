@@ -32,6 +32,9 @@ type Outbound struct {
 	Debrid   bool `json:"debrid"`
 	Usenet   bool `json:"usenet"`
 	Metadata bool `json:"metadata"`
+	// Extras is trailers, extras and theme music (yt-dlp, ffmpeg and
+	// trailer fetches). Off by default, like Metadata.
+	Extras bool `json:"extras"`
 	// Bypass are extra hostnames that stay on the normal route.
 	// Loopback and literal private addresses always do.
 	Bypass []string `json:"bypass,omitempty"`

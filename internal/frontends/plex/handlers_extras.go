@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -433,7 +434,15 @@ func (s *Server) prepareExtra(ctx context.Context, pr *Request, p *playRequest, 
 	if resolved.Container != "" {
 		info.Container = resolved.Container
 	}
-	if s.transcoder() != nil {
+	var remoteProxy *url.URL
+	if resolved.LocalPath == "" && resolved.URL != "" {
+		var perr error
+		remoteProxy, perr = s.extraRemoteProxy(resolved.URL)
+		if perr != nil {
+			return nil, perr
+		}
+	}
+	if s.transcoder() != nil && remoteProxy == nil {
 		if pi, perr := s.transcoder().Probe(ctx, resolved.Input()); perr == nil && pi != nil && pi.Video() != nil {
 			info = *pi
 		}
@@ -465,6 +474,36 @@ func (s *Server) prepareExtra(ctx context.Context, pr *Request, p *playRequest, 
 		caps: p.caps, opts: p.opts, offset: p.offset, updatedAt: s.now(),
 	})
 	return sess, nil
+}
+
+func (s *Server) extraRemoteProxy(rawURL string) (*url.URL, error) {
+	if s.host.DirectProxy == nil || rawURL == "" {
+		return nil, nil
+	}
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.host.DirectProxy(req)
+}
+
+func redactProxyError(err error, proxy *url.URL) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if proxy == nil {
+		return msg
+	}
+	if full, redacted := proxy.String(), proxy.Redacted(); full != "" && full != redacted {
+		msg = strings.ReplaceAll(msg, full, redacted)
+	}
+	if proxy.User != nil {
+		if pass, ok := proxy.User.Password(); ok && pass != "" {
+			msg = strings.ReplaceAll(msg, pass, "xxxxx")
+		}
+	}
+	return msg
 }
 
 // resolveExtra returns an extra's playable input; a pre-roll is its
@@ -597,6 +636,12 @@ func (s *Server) extraStart(w http.ResponseWriter, r *http.Request, pr *Request,
 		proto = frontend.ProtocolHTTP
 		dec.Container = frontend.ContainerMatroska
 	}
+	if sess.resolved.LocalPath == "" && sess.resolved.URL != "" {
+		if remoteProxy, perr := s.extraRemoteProxy(sess.resolved.URL); perr != nil || remoteProxy != nil {
+			writeHTTPError(w, http.StatusBadGateway)
+			return
+		}
+	}
 	hs, err := s.transcoder().StartHLS(context.WithoutCancel(ctx), frontend.HLSRequest{
 		SessionID: p.sessionID, InputURL: sess.resolved.Input(),
 		InputHeaders: sess.resolved.Headers, Info: sess.info,
@@ -710,7 +755,8 @@ func (s *Server) handleExtraPart(w http.ResponseWriter, r *http.Request) bool {
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() == nil {
-			s.log.Info("extra part proxy failed", "key", e.Key, "err", err)
+			proxyURL, _ := s.extraRemoteProxy(resolved.URL)
+			s.log.Info("extra part proxy failed", "key", e.Key, "err", redactProxyError(err, proxyURL))
 			writeHTTPError(w, http.StatusBadGateway)
 		}
 		return true

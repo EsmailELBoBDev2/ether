@@ -92,19 +92,28 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 // execRunner runs the resolver without a shell, bounding both streams.
 func execRunner(ctx context.Context, name string, args []string) ([]byte, error) {
 	cmd := mediaproc.CommandContext(ctx, 90*time.Second, name, args...)
+	rc, hasProxy := runnerProxyFrom(ctx)
+	if hasProxy {
+		if env := subprocessEnv(nil, rc.proxy, rc.policyEnabled, rc.bypass, true); env != nil {
+			cmd.Env = env
+		}
+	}
 	out := &cappedBuffer{max: maxResolverOutput}
 	serr := &cappedBuffer{max: maxResolverStderr}
 	cmd.Stdout = out
 	cmd.Stderr = serr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(serr.buf.String())
+		if rc.proxy != nil {
+			msg = strings.TrimSpace(scrubProxyText(msg, rc.proxy))
+		}
 		if len(msg) > 256 {
 			msg = msg[:256]
 		}
 		if msg != "" {
-			return nil, fmt.Errorf("extras resolver: %w: %s", err, msg)
+			return nil, scrubProxyErr(fmt.Errorf("extras resolver: %w: %s", err, msg), rc.proxy)
 		}
-		return nil, fmt.Errorf("extras resolver: %w", err)
+		return nil, scrubProxyErr(fmt.Errorf("extras resolver: %w", err), rc.proxy)
 	}
 	if out.overflow {
 		return nil, fmt.Errorf("extras resolver: output exceeds %d bytes", maxResolverOutput)
@@ -121,23 +130,32 @@ func runResolver(ctx context.Context, cfg config.Extras, e Extra, runner Command
 	if !ok {
 		return Resolved{}, fmt.Errorf("extras: invalid %s key %q", e.Site, e.SiteKey)
 	}
+	proxy, policyEnabled, bypass, err := extrasProxyFor(page)
+	if err != nil {
+		return Resolved{}, err
+	}
 	args := cfg.ResolverArgs
-	if len(args) == 0 {
+	customArgs := len(args) > 0
+	if !customArgs {
 		args = DefaultResolverArgs
 	}
 	sub := strings.NewReplacer(
 		"{url}", page, "{site}", strings.ToLower(e.Site),
 		"{key}", e.SiteKey, "{id}", e.SiteKey)
-	out := make([]string, len(args))
-	for i, a := range args {
-		out[i] = sub.Replace(a)
+	out := make([]string, 0, len(args)+2)
+	if proxy != nil && !customArgs {
+		out = append(out, "--proxy", proxy.String())
+	}
+	for _, a := range args {
+		out = append(out, sub.Replace(a))
 	}
 	timeout := cfg.ResolverTimeoutOr(20 * time.Second)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	ctx = withRunnerProxy(ctx, runnerProxyConfig{proxy: proxy, policyEnabled: policyEnabled, bypass: bypass})
 	raw, err := runner(ctx, cfg.ResolverCommand, out)
 	if err != nil {
-		return Resolved{}, err
+		return Resolved{}, scrubProxyErr(err, proxy)
 	}
 	if len(raw) > maxResolverOutput {
 		return Resolved{}, fmt.Errorf("extras resolver: output exceeds %d bytes", maxResolverOutput)

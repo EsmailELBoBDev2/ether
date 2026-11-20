@@ -174,6 +174,11 @@ var tierUntouchedTables = []string{
 	// releases are re-found by search, so the vault never pins a title.
 	"vault_",
 	"vela_wordmarks", // Owner branding images.
+	// Flows automations and the event outbox hold rules and run history,
+	// not catalogue references that should keep a title.
+	"flows_", "events_outbox",
+	// A viewer's remembered version choice is re-made if the title returns.
+	"resolver_viewer_choices",
 	// The catalogue (the job's own tables, and its caches).
 	"catalog_",
 	// Startup upgrade markers (credential conversion progress).

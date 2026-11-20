@@ -401,8 +401,16 @@ func (c *Client) streamOpenAI(ctx context.Context, base string, cfg config.LLM, 
 	if req.Temperature != 0 {
 		body["temperature"] = req.Temperature
 	}
-	if req.MaxTokens > 0 {
-		body["max_tokens"] = req.MaxTokens
+	// Always bound the reply, as in chatOnce (#649): an unbounded request
+	// makes some routers drop every provider.
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = defaultChatMaxTokens
+	}
+	if useMaxCompletionTokens(cfg) {
+		body["max_completion_tokens"] = maxTokens
+	} else {
+		body["max_tokens"] = maxTokens
 	}
 	rc, err := c.openStream(ctx, base+"/chat/completions", openAIHeaders(cfg.APIKey), body)
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "stream_options") {

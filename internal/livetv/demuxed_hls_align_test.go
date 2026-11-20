@@ -579,7 +579,7 @@ func TestOpeningAVAlignmentProbeAndAccept(t *testing.T) {
 
 	// 3. Large A/V skew (1.5s) is dropped.
 	skewed := join(pat, pmt,
-		makeSyntheticPES(aPID, 0xc0, 90000, nil, false),      // 1.0s
+		makeSyntheticPES(aPID, 0xc0, 90000, nil, false),       // 1.0s
 		makeSyntheticPES(vPID, 0xe0, 90000+135000, nil, true), // 2.5s
 	)
 	p2 := newProd()
@@ -753,10 +753,10 @@ func TestDemuxedCMAFOwnedRelayAlignedFirstSegment(t *testing.T) {
 			// Classic demuxed LL-HLS failure: audio playlist starts 1 segment
 			// earlier than video playlist, with EXT-X-PROGRAM-DATE-TIME and a
 			// single-use master URL (as served by a public live-stream directory plugin).
-			name:            "offset_with_pdt_audio_earlier_single_use_master",
-			audioTrack:      audioAligned,
-			vStart:          1, vCnt: 6,
-			aStart:          0, aCnt: 6,
+			name:       "offset_with_pdt_audio_earlier_single_use_master",
+			audioTrack: audioAligned,
+			vStart:     1, vCnt: 6,
+			aStart: 0, aCnt: 6,
 			includePDT:      true,
 			singleUseMaster: true,
 			wantMethod:      "pdt",
@@ -768,7 +768,7 @@ func TestDemuxedCMAFOwnedRelayAlignedFirstSegment(t *testing.T) {
 			name:       "offset_without_pdt_segment_timestamps",
 			audioTrack: audioAligned,
 			vStart:     0, vCnt: 6,
-			aStart:     1, aCnt: 6,
+			aStart: 1, aCnt: 6,
 			includePDT: false,
 			wantMethod: "segment_ts",
 			wantDrop:   false,
@@ -780,7 +780,7 @@ func TestDemuxedCMAFOwnedRelayAlignedFirstSegment(t *testing.T) {
 			name:       "staggered_half_segment_defense_in_depth",
 			audioTrack: audioStaggered,
 			vStart:     0, vCnt: 7,
-			aStart:     0, aCnt: 7,
+			aStart: 0, aCnt: 7,
 			aPDTShift:  time.Second,
 			includePDT: true,
 			wantMethod: "pdt",

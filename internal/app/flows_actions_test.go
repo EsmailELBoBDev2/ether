@@ -171,7 +171,7 @@ func TestAppFlowExportItemAndOwnerStopHelpers(t *testing.T) {
 	if item.Studio != "20th Century Fox" || len(item.Directors) != 1 || item.Directors[0] != "David Fincher" {
 		t.Fatalf("unexpected metadata mapping: %+v", item)
 	}
-	if item.DurationMS != (139 * time.Minute).Milliseconds() || len(item.ExternalIDs) != 2 {
+	if item.DurationMS != (139*time.Minute).Milliseconds() || len(item.ExternalIDs) != 2 {
 		t.Fatalf("unexpected duration/externalIds: %+v", item)
 	}
 

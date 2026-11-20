@@ -810,23 +810,23 @@ type Session struct {
 }
 
 type TranscodeSess struct {
-	Key                     string  `plex:"key"`
-	Throttled               bool    `plex:"throttled"`
-	Complete                bool    `plex:"complete"`
-	Progress                float64 `plex:"progress"`
-	Speed                   float64 `plex:"speed,omitempty"`
-	Duration                int64   `plex:"duration,omitempty"`
-	Context                 string  `plex:"context"`
-	SourceVideoCodec        string  `plex:"sourceVideoCodec,omitempty"`
-	SourceAudioCodec        string  `plex:"sourceAudioCodec,omitempty"`
-	VideoDecision           string  `plex:"videoDecision,omitempty"`
-	AudioDecision           string  `plex:"audioDecision,omitempty"`
-	SubtitleDecision        string  `plex:"subtitleDecision,omitempty"`
-	Protocol                string  `plex:"protocol"`
-	Container               string  `plex:"container"`
-	VideoCodec              string  `plex:"videoCodec,omitempty"`
-	AudioCodec              string  `plex:"audioCodec,omitempty"`
-	AudioChannels           int     `plex:"audioChannels,omitempty"`
+	Key                      string  `plex:"key"`
+	Throttled                bool    `plex:"throttled"`
+	Complete                 bool    `plex:"complete"`
+	Progress                 float64 `plex:"progress"`
+	Speed                    float64 `plex:"speed,omitempty"`
+	Duration                 int64   `plex:"duration,omitempty"`
+	Context                  string  `plex:"context"`
+	SourceVideoCodec         string  `plex:"sourceVideoCodec,omitempty"`
+	SourceAudioCodec         string  `plex:"sourceAudioCodec,omitempty"`
+	VideoDecision            string  `plex:"videoDecision,omitempty"`
+	AudioDecision            string  `plex:"audioDecision,omitempty"`
+	SubtitleDecision         string  `plex:"subtitleDecision,omitempty"`
+	Protocol                 string  `plex:"protocol"`
+	Container                string  `plex:"container"`
+	VideoCodec               string  `plex:"videoCodec,omitempty"`
+	AudioCodec               string  `plex:"audioCodec,omitempty"`
+	AudioChannels            int     `plex:"audioChannels,omitempty"`
 	Width                    int     `plex:"width,omitempty"`
 	Height                   int     `plex:"height,omitempty"`
 	TranscodeHwRequested     bool    `plex:"transcodeHwRequested"`

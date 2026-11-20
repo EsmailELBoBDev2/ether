@@ -127,12 +127,12 @@ type singleUseRelayTranscoder struct {
 	core.Transcoder
 	client *http.Client
 
-	mu             sync.Mutex
-	probeManifest  string
-	relayManifest  string
-	probeErr       error
-	relayErr       error
-	startHLSCount  int
+	mu            sync.Mutex
+	probeManifest string
+	relayManifest string
+	probeErr      error
+	relayErr      error
+	startHLSCount int
 }
 
 func (f *singleUseRelayTranscoder) Decide(_ core.MediaInfo, _ core.ClientCaps, opts core.DecideOptions) core.Decision {

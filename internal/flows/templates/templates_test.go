@@ -146,11 +146,11 @@ func TestAllStarterTemplatesValidateAndRenderCleanly(t *testing.T) {
 			"node":       "primary",
 		},
 		Payload: map[string]any{
-			"sessionId": "sess_1",
-			"titleKey":  "movie:tmdb:550",
-			"titleName": "Fight Club",
-			"mediaType": "movie",
-			"posterUrl": "https://img.example.test/poster.jpg",
+			"sessionId":  "sess_1",
+			"titleKey":   "movie:tmdb:550",
+			"titleName":  "Fight Club",
+			"mediaType":  "movie",
+			"posterUrl":  "https://img.example.test/poster.jpg",
 			"markerKind": "credits",
 			"source": map[string]any{
 				"videoHeight":       2160,

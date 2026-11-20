@@ -216,13 +216,13 @@ func TestSystemEventsViewerAndAuthDomains(t *testing.T) {
 }
 
 type fakeCluster struct {
-	mu      sync.Mutex
-	self    cluster.Node
-	nodes   []cluster.Node
-	all     []cluster.Node
-	epoch   int64
-	leader  bool
-	onLead  []func(bool)
+	mu     sync.Mutex
+	self   cluster.Node
+	nodes  []cluster.Node
+	all    []cluster.Node
+	epoch  int64
+	leader bool
+	onLead []func(bool)
 }
 
 func (f *fakeCluster) Mode() string { return cluster.ModePostgres }

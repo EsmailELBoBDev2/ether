@@ -331,13 +331,13 @@ type EncoderStatus struct {
 	Decision       Decision       `json:"decision"`
 	// Rung is the ABR rung the active run encodes ("" or "base" for the
 	// session's primary decision).
-	Rung       string        `json:"rung,omitempty"`
-	Processor  string        `json:"processor"`
-	Filters    string        `json:"filters"`
-	Phase      string        `json:"phase"`
-	Reason     string        `json:"reason,omitempty"`
-	StartedAt  time.Time     `json:"startedAt"`
-	UpdatedAt  time.Time     `json:"updatedAt"`
+	Rung               string        `json:"rung,omitempty"`
+	Processor          string        `json:"processor"`
+	Filters            string        `json:"filters"`
+	Phase              string        `json:"phase"`
+	Reason             string        `json:"reason,omitempty"`
+	StartedAt          time.Time     `json:"startedAt"`
+	UpdatedAt          time.Time     `json:"updatedAt"`
 	Speed              float64       `json:"speed"`
 	OutputTime         time.Duration `json:"outputTime"`
 	ReadyUntil         time.Duration `json:"readyUntil"`

@@ -243,10 +243,10 @@ func TestSmartViewViewerFiltersHistoryPaginationAndIsolation(t *testing.T) {
 
 	// 4. All 7 viewer-state predicates on viewer 1.
 	filterCases := []struct {
-		name     string
-		raw      string
-		wantIDs  []string
-		wantTot  int
+		name    string
+		raw     string
+		wantIDs []string
+		wantTot int
 	}{
 		{"watched", `{"match":"all","rules":[{"field":"viewer","op":"is","value":{"watched":true}}]}`, []string{"d001", "d003", "d004"}, 3},
 		{"inProgress", `{"match":"all","rules":[{"field":"viewer","op":"is","value":{"inProgress":true}}]}`, []string{"d002"}, 1},

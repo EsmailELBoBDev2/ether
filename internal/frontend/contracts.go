@@ -897,14 +897,16 @@ type PlayIntent struct {
 	// an explicit subtitle-off choice (SubtitleStream == -1).
 	AudioSet    bool
 	SubtitleSet bool
-	// AudioOrdinal selects a zero-based audio-only position from the opened,
-	// probed source. SubtitleStreamIndex is an absolute source stream index;
-	// -1 explicitly disables subtitles. Nil preserves normal preferences.
-	AudioOrdinal        *int
-	SubtitleStreamIndex *int
-	Position            time.Duration
-	ClientSessionID     string
-	PlaybackID          string
+	// AudioOrdinal and SubtitleOrdinal select a zero-based position among the
+	// opened, probed source's audio or subtitle streams, in source order (the
+	// order a client's track inventory lists them). SubtitleOrdinal -1
+	// explicitly disables subtitles. Nil preserves normal preferences. A
+	// position the source cannot honour is no choice: viewer rules pick.
+	AudioOrdinal    *int
+	SubtitleOrdinal *int
+	Position        time.Duration
+	ClientSessionID string
+	PlaybackID      string
 	// AllowTranscoding is nil for the existing default; false forbids video
 	// or audio transcoding while retaining any allowed direct-stream remux.
 	AllowTranscoding *bool

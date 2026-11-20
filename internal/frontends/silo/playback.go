@@ -145,7 +145,7 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 		pos = i.skipIntroAtStart(r, v, scope, key, versionHandle, pos)
 		b.Position = float64(pos) / float64(time.Second)
 	}
-	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleStreamIndex: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(b.Capabilities.Video) > 0}})
+	plan, err := i.host.Sessions.Plan(r.Context(), frontend.PlanRequest{Viewer: v, Device: d, Protocol: "silo", Item: key, Channel: channel, Version: versionHandle, DetailSource: offer.Target.DetailSource, ExpectedSourceETag: offer.Target.ETag, Caps: cap.Client, Intent: frontend.PlayIntent{ExactVersion: versionHandle != "", Options: options, AllowTranscoding: &hls, AudioOrdinal: b.Audio, SubtitleOrdinal: b.Subtitle, Position: pos, PlaybackID: b.Attempt, ClientSessionID: b.InstallationID, DeclaredCaps: channel == "" && len(b.Capabilities.Video) > 0}})
 	if err != nil {
 		if !errors.Is(err, frontend.ErrSessionBusy) && !errors.Is(err, frontend.ErrTranscodeCapacity) && !errors.Is(err, frontend.ErrTrackNotFound) && !errors.Is(err, frontend.ErrTrackSourceUnavailable) && !errors.Is(err, frontend.ErrVideoTranscodingDisabled) {
 			i.versionUnavailable(w, err, "plan")
@@ -391,19 +391,23 @@ func (i *instance) playbackStart(w http.ResponseWriter, r *http.Request) {
 					subtitle["artifact"] = map[string]any{"url": url, "format": "ass", "mime_type": "text/x-ssa", "timing_origin_seconds": 0}
 					// The artifact endpoint must still validate completeness; startup
 					// cannot claim that authored bytes have already been delivered.
-				} else if requireAuthoredFidelity {
-					i.stopFailedAdmission(r.Context(), access, session.ID)
-					http.Error(w, "Selected track unavailable", http.StatusUnprocessableEntity)
-					return
 				} else {
+					// "preserve" is the app's default preference, sent on every
+					// start. Plain text (SubRip, WebVTT, mov_text) converts to
+					// WebVTT without losing anything. Only authored ASS styling
+					// can be simplified, and then the plan says so instead of
+					// refusing to play.
+					if isEmbeddedASS {
+						fidelityPolicy = "allow_simplified_rendering"
+					}
 					subtitle["mode"] = "convert"
 					subtitle["track_id"] = trackID
 					subtitle["artifact"] = map[string]any{"url": url, "format": "vtt", "mime_type": "text/vtt", "timing_origin_seconds": 0}
 				}
 			} else {
-				i.stopFailedAdmission(r.Context(), access, session.ID)
-				http.Error(w, "Subtitle unavailable", 503)
-				return
+				// No deliverable artifact for the chosen track: start without
+				// subtitles rather than fail the start.
+				delete(selected, "subtitle")
 			}
 		}
 		ordinal++

@@ -13,7 +13,8 @@ import (
 // revision so the source cannot silently fail over under the client's track
 // choice. It is shared by the catalogue plan and the plugin kind plan so both
 // honour explicit stream-index selection with identical ETag and pinning
-// semantics (spec §15.1).
+// semantics (spec §15.1). Requested positions the source cannot honour are
+// dropped first (dropStaleTracks), so a stale id never pins or fails a start.
 //
 // It returns the current session snapshot (which may have been re-read under
 // the pin) and whether a pin was taken; the caller must release it with
@@ -24,7 +25,8 @@ func (b *Broker) pinRequestedTracks(ctx context.Context, req *frontend.PlanReque
 	if req.Protocol == "vela" && ps.Info.Estimated {
 		return ps, false, frontend.ErrTrackSourceUnavailable
 	}
-	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil {
+	dropStaleTracks(&req.Intent, ps.Info)
+	if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil {
 		if ps.Info.Estimated {
 			return ps, false, frontend.ErrTrackSourceUnavailable
 		}
@@ -40,7 +42,7 @@ func (b *Broker) pinRequestedTracks(ctx context.Context, req *frontend.PlanReque
 	}
 	pins, ok := b.deps.Playback.(core.PlaybackRevisionPin)
 	if !ok {
-		if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleStreamIndex != nil {
+		if req.Intent.AudioOrdinal != nil || req.Intent.SubtitleOrdinal != nil {
 			return ps, false, frontend.ErrTrackSourceUnavailable
 		}
 		return ps, false, frontend.ErrSourceGone

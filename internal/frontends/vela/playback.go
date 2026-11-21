@@ -41,17 +41,20 @@ type playSession struct {
 	declaredCaps        frontend.ClientCaps
 	activeVersionHandle string
 	activeReleaseID     string
-	qualityRungs        map[string]string
-	scope               string
-	media               frontend.MediaInfo
-	subtitleFormats     []string
-	canBurn             bool
-	mse                 bool
-	preparation         []frontend.HLSPreparationEvent
-	diagnostics         any
-	observedRecords     []object
-	diagnosticHistory   []object
-	clientErrors        []object
+	// versionsCold: the version menu was built before the title's search
+	// finished; snapshots rebuild it from the cached results until it is not.
+	versionsCold      bool
+	qualityRungs      map[string]string
+	scope             string
+	media             frontend.MediaInfo
+	subtitleFormats   []string
+	canBurn           bool
+	mse               bool
+	preparation       []frontend.HLSPreparationEvent
+	diagnostics       any
+	observedRecords   []object
+	diagnosticHistory []object
+	clientErrors      []object
 	// observedState and observedAt are the client's last reported player
 	// state, logged on change so a rebuffer shows beside the server's log.
 	observedState string
@@ -366,7 +369,7 @@ func (i *instance) playback(w http.ResponseWriter, r *http.Request) {
 	i.addQualityPaths(r.Context(), i.access(r, v), s.ID, ps)
 	i.refreshOutput(r.Context(), s.ID, ps)
 	if b.TitleID != "" && i.versionsAvailable() {
-		i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, plan.VersionHandle, plan.ReleaseID, p)
+		ps.versionsCold = i.attachPlaybackVersions(r.Context(), v, dev, item, declared.Client, plan.VersionHandle, plan.ReleaseID, p)
 	}
 	i.mu.Lock()
 	for id, old := range i.sessions {
@@ -454,13 +457,41 @@ func (s *playSession) publish(kind string) {
 	s.signal = make(chan struct{})
 }
 func (i *instance) snapshot(w http.ResponseWriter, r *http.Request) {
-	_, s := i.session(w, r)
+	v, s := i.session(w, r)
 	if s == nil {
+		return
+	}
+	i.refreshColdVersions(r, v, s)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	send(w, 200, s.snapshot())
+}
+
+// refreshColdVersions rebuilds a version menu that was built before the
+// title's search finished. It reads the cached search only; it never starts
+// one.
+func (i *instance) refreshColdVersions(r *http.Request, v *frontend.Viewer, s *playSession) {
+	s.mu.Lock()
+	cold, item, caps, handle, rel := s.versionsCold, s.item, s.declaredCaps, s.activeVersionHandle, s.activeReleaseID
+	s.mu.Unlock()
+	if !cold || item == 0 || v == nil {
+		return
+	}
+	versionPlan := object{}
+	stillCold := i.attachPlaybackVersions(r.Context(), v, requestDevice(r), item, caps, handle, rel, versionPlan)
+	if _, ok := versionPlan["versions"]; !ok {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	send(w, 200, s.snapshot())
+	for _, field := range []string{"selectedVersionId", "versions", "rememberedChoice"} {
+		if val, exists := versionPlan[field]; exists {
+			s.plan[field] = val
+		} else if field == "rememberedChoice" {
+			delete(s.plan, field)
+		}
+	}
+	s.versionsCold = stillCold
 }
 func stale(w http.ResponseWriter, s *playSession, source, seek uint64) bool {
 	if source == s.source && seek == s.seek {
@@ -971,8 +1002,9 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 			item, caps, dev := s.item, s.declaredCaps, requestDevice(r)
 			activeHandle, activeRel := plan.VersionHandle, plan.ReleaseID
 			versionPlan := object{}
+			cold := false
 			if !s.port(w, func() {
-				i.attachPlaybackVersions(r.Context(), v, dev, item, caps, activeHandle, activeRel, versionPlan)
+				cold = i.attachPlaybackVersions(r.Context(), v, dev, item, caps, activeHandle, activeRel, versionPlan)
 			}) {
 				return
 			}
@@ -983,6 +1015,7 @@ func (i *instance) command(w http.ResponseWriter, r *http.Request) {
 					delete(s.plan, field)
 				}
 			}
+			s.versionsCold = cold
 		}
 	case "pause", "resume":
 		state := "paused"

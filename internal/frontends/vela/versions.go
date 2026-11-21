@@ -168,19 +168,24 @@ type versionsProjection struct {
 	selectedVersionID any
 	versions          []object
 	rememberedChoice  object
+	// cold is true while any slot is still a placeholder (the title's
+	// search had not finished when the list was built).
+	cold bool
 }
 
-func (i *instance) attachPlaybackVersions(ctx context.Context, v *frontend.Viewer, dev frontend.Device, item frontend.RatingKey, caps frontend.ClientCaps, activeHandle, activeReleaseID string, plan object) {
+// attachPlaybackVersions sets the plan's version menu and reports whether it
+// is still cold (placeholder slots), so the session can refresh it.
+func (i *instance) attachPlaybackVersions(ctx context.Context, v *frontend.Viewer, dev frontend.Device, item frontend.RatingKey, caps frontend.ClientCaps, activeHandle, activeReleaseID string, plan object) bool {
 	if !i.versionsAvailable() || item == 0 || item.Kind() == frontend.KindShow || item.Kind() == frontend.KindSeason {
-		return
+		return false
 	}
 	d, err := i.host.Experience.Item(frontend.WithColdDetail(ctx, item), frontend.ItemRequest{Viewer: v, Device: dev, Key: item})
 	if err != nil {
-		return
+		return false
 	}
 	proj, err := i.titleVersionsProjection(ctx, v, dev, d.Title, caps, activeHandle, activeReleaseID)
 	if err != nil {
-		return
+		return false
 	}
 	plan["selectedVersionId"] = proj.selectedVersionID
 	plan["versions"] = proj.versions
@@ -189,6 +194,7 @@ func (i *instance) attachPlaybackVersions(ctx context.Context, v *frontend.Viewe
 	} else {
 		delete(plan, "rememberedChoice")
 	}
+	return proj.cold
 }
 
 func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.Viewer, dev frontend.Device, title frontend.Title, caps frontend.ClientCaps, activeHandle, activeReleaseID string) (versionsProjection, error) {
@@ -210,6 +216,7 @@ func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.View
 	var selectedID any
 	autoID := ""
 	anyRemembered := false
+	cold := false
 	for _, variant := range variants {
 		selector := variantSelectorID(variant)
 		if selector == "" {
@@ -218,6 +225,9 @@ func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.View
 		handle := handles[selector]
 		if handle == "" {
 			continue
+		}
+		if variant.Release.ID == "" || strings.HasPrefix(variant.Release.ID, frontend.VersionSelectorPrefix) {
+			cold = true
 		}
 		item := formatVersionItem(handle, variant)
 		items = append(items, item)
@@ -267,6 +277,7 @@ func (i *instance) titleVersionsProjection(ctx context.Context, v *frontend.View
 		selectedVersionID: selectedID,
 		versions:          items,
 		rememberedChoice:  rememberedChoice,
+		cold:              cold,
 	}, nil
 }
 

@@ -344,7 +344,7 @@ The declarations and implementations below specify arguments, return types, defa
 
 ## HTTP requests
 
-Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too, and credentials or origin-confined headers are stripped on cross-origin redirects. `http.hash` accepts optional `headers` with `{secret:<name>}` expansion (same rules: origin-confined, no hop-by-hop/framing headers, never logged or cached). Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
+Hosted fetch requires the destination in permissions.network or in the owner's per-plugin local network grants. Redirect destinations are checked too, and credentials or caller headers follow redirects only within the same origin, to a strict same-site subdomain (verified via the Public Suffix List, no port change or HTTPS→HTTP downgrade), or to hosts explicitly listed in `keepHeadersOnRedirect` (still within granted network hosts, never across HTTPS→HTTP downgrades, and sticky once an untrusted hop is reached). The same redirect policy applies to `http.fetchToCache`, `http.hash`, and playable sources (`range`, `download`, `direct`, `container`). `http.hash` accepts optional `headers` with `{secret:<name>}` expansion (no hop-by-hop/framing headers, never logged or cached). Read the generated MaxFetchBytes and transport limits; private LAN destinations fail unless the owner allows the exact host or host:port under On your network in the plugin's settings (exact local names in permissions.network are pre-granted at install, while loopback requires an explicit localhost or 127.0.0.1 grant). Handle upstream non-2xx status explicitly.
 
 ```ts
 const r = ether.http.fetch({url: "https://api.example.org/status", method: "GET"});
@@ -1005,7 +1005,13 @@ URLs may carry `{itemIndex}`, `{pageNumber}` (= itemIndex + 1),
 `{byteStart}`, `{byteEnd}` and `{byteRange}` placeholders; Ether
 substitutes integers only. Resolver `headers` may use
 `{secret:name}` placeholders, substituted host-side — never put a
-raw secret in a response (responses are logged). Returning zero
+raw secret in a response (responses are logged). Redirects on playable
+sources (`range`, `download`, `direct`, and `container` volumes) recheck
+network permissions on every hop and keep credentials/headers only within
+the same origin, strict same-site subdomains (verified via the Public Suffix
+List, with no port change or HTTPS→HTTP downgrade), or hosts listed in
+optional `keepHeadersOnRedirect` (still within granted network hosts and
+never across HTTPS→HTTP downgrades). Returning zero
 sources means "not available right now" and is cached briefly.
 
 With `permissions.sources: "search"` (or `"acquire"` to open debrid
@@ -1397,14 +1403,17 @@ const extracted = await ctx.ether.archive!.extract(cached.blob, xmlMembers[0]!.i
 // {ref: "blob:<sha256>", size, sha1, md5, crc32} streamed directly into the library cache
 ```
 
-`http.fetchToCache({url, headers?, libraryKey, name})` performs a GET, streams
+`http.fetchToCache({url, headers?, keepHeadersOnRedirect?, libraryKey, name})` performs a GET, streams
 up to the owner download ceiling (8 GiB by default), further bounded by the library cache quota, into the plugin's own library cache, and returns
 `{blob, size, crc32, md5, sha1, status}`. SHA-256 is the blob reference.
 Digests cover the stored response bytes in one pass. Compare the digest with
 trusted catalogue metadata before serving a verified download. Non-2xx responses,
 network failures, size overflow and quota failures return errors; they do not
 publish a truncated blob. Redirects recheck the live network grant and the
-existing SSRF policy. The existing content capability, network host declaration
+existing SSRF policy, and follow the same redirect credential policy as
+`http.fetch` (keep credentials/headers on same origin, strict same-site
+subdomains, or explicit `keepHeadersOnRedirect` hosts within granted network
+permissions; never across HTTPS→HTTP downgrades). The existing content capability, network host declaration
 and library cache quota apply; no new permission is needed. The operation is
 synchronous and bounded by the current call's deadline; there is no background
 prefetch. Cache eviction still applies to returned refs.
@@ -1561,12 +1570,14 @@ resolving a multi-part item and `source` when opening a source-scoped stream tic
 and is deduplicated per plugin/kind/item (and `partIndex` / `source`). Job completion wakes
 the next resolve.
 
-For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers})`.
+For remote verification call `ether.http.hash({url,algo:"sha256",expectSize,headers,keepHeadersOnRedirect})`.
 A miss returns pending while a bounded host worker streams digests without
-storing bytes; the next resolve reads the cached result. Optional `headers` are
-origin-confined (stripped on cross-origin redirects), reject hop-by-hop and
-framing headers, expand `{secret:<name>}` placeholders via `permissions.secrets`
-just like playable sources, and are never logged or persisted in the hash cache.
+storing bytes; the next resolve reads the cached result. Optional `headers`
+reject hop-by-hop and framing headers, expand `{secret:<name>}` placeholders via
+`permissions.secrets` just like playable sources, follow redirects only under
+Ether's redirect credential policy (same origin, strict same-site subdomains, or
+explicit `keepHeadersOnRedirect` hosts within granted network permissions; never
+across HTTPS→HTTP downgrades), and are never logged or persisted in the hash cache.
 Plugins that derive temporary session credentials can store them sealed with
 `ether.secret.set(name, value, ttlSec?)` (and clear them with `ether.secret.delete(name)`)
 under a declared non-owner name in `permissions.secrets`, then reference them as
@@ -2595,6 +2606,7 @@ func libraryKeySlug(s string) string {
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) | KeepHeadersOnRedirect lists optional host or wildcard (*.example.org) patterns (within permissions.network / granted hosts) that may keep credentials and caller headers across redirects when the target is not already the same origin or a strict same-site subdomain. Never applies across HTTPS -> HTTP downgrades. |
 | `blobRef` | `string` | may be omitted (see validation for conditions) |  |
 | `sha256` | `string` | may be omitted (see validation for conditions) |  |
 | `sha1` | `string` | may be omitted (see validation for conditions) | SHA1 and CRC32 are the digests content catalogues actually publish (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared digest — and Size, when set — is checked against the bytes actually served, including a release's selected file or container member. |
@@ -2626,8 +2638,14 @@ type PlayableSource struct {
 	DurationSec     float64           `json:"durationSec,omitempty"`
 	URL             string            `json:"url,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
-	BlobRef         string            `json:"blobRef,omitempty"`
-	SHA256          string            `json:"sha256,omitempty"`
+	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
+	// patterns (within permissions.network / granted hosts) that may keep
+	// credentials and caller headers across redirects when the target is not
+	// already the same origin or a strict same-site subdomain. Never applies
+	// across HTTPS -> HTTP downgrades.
+	KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string   `json:"blobRef,omitempty"`
+	SHA256                string   `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are the digests content catalogues actually publish
 	// (hex; CRC32 is the IEEE polynomial as 8 hex digits). Any declared
 	// digest — and Size, when set — is checked against the bytes actually
@@ -2673,6 +2691,7 @@ type ContainerRef struct {
 |---|---|---|---|
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 | `blobRef` | `string` | may be omitted (see validation for conditions) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
 
@@ -2682,10 +2701,11 @@ type ContainerRef struct {
 ``````
 // VolumeRef locates one archive volume by URL or blobcache reference (spec §4.1).
 type VolumeRef struct {
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	BlobRef string            `json:"blobRef,omitempty"`
-	Size    int64             `json:"size"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	Size                  int64             `json:"size"`
 }
 ``````
 
@@ -5880,6 +5900,7 @@ type StreamURLOptions struct {
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `[]byte` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) | KeepHeadersOnRedirect lists optional host or wildcard (*.example.org) patterns (within permissions.network / granted hosts) that may keep credentials and caller headers across redirects when the target is not already the same origin or a strict same-site subdomain. Never applies across HTTPS -> HTTP downgrades. |
 
 
 ## Source: internal/plugins/contract.go#FetchRequest
@@ -5892,6 +5913,12 @@ type FetchRequest struct {
 	URL       string            `json:"url"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Body      []byte            `json:"body,omitempty"`
+	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
+	// patterns (within permissions.network / granted hosts) that may keep
+	// credentials and caller headers across redirects when the target is not
+	// already the same origin or a strict same-site subdomain. Never applies
+	// across HTTPS -> HTTP downgrades.
+	KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect,omitempty"`
 }
 ``````
 
@@ -8187,17 +8214,69 @@ func fetchError(host string, err error) error {
 ``````
 type fetchOptions struct {
 	stripCrossOriginHeaders []string
+	stripAllCallerHeaders   bool
 }
 ``````
 
-## Source: internal/plugins/host.go#sameOriginURL
+## Source: internal/plugins/host.go#validateKeepHeadersOnRedirect
 
 ``````
-func sameOriginURL(a, b *url.URL) bool {
-	if a == nil || b == nil {
+func validateKeepHeadersOnRedirect(man Manifest, g Grants, raw []string) ([]safefetch.RedirectHeaderPattern, error) {
+	patterns, err := safefetch.ParseRedirectHeaderPatterns(raw)
+	if err != nil {
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "keepHeadersOnRedirect",
+			Message: err.Error(),
+		}}}
+	}
+	var network []string
+	if man.Ether != nil {
+		network = man.Ether.Permissions.Network
+	}
+	for _, p := range patterns {
+		if !networkCoversRedirectPattern(network, g, man, p) {
+			return nil, fmt.Errorf("%w: keepHeadersOnRedirect %q is not in granted network hosts", ErrPermissionDenied, p.Raw)
+		}
+	}
+	return patterns, nil
+}
+``````
+
+## Source: internal/plugins/host.go#networkCoversRedirectPattern
+
+``````
+func networkCoversRedirectPattern(network []string, g Grants, man Manifest, p safefetch.RedirectHeaderPattern) bool {
+	if p.Wildcard {
+		return hostPatternCoveredByNetwork(network, p.Host)
+	}
+	u := p.SyntheticURL()
+	if u == nil {
 		return false
 	}
-	return strings.EqualFold(a.Scheme, b.Scheme) && safefetch.SameOrigin(a.String(), b.String())
+	return networkAllowedURL(network, u) ||
+		g.allowsLocalURL(u) ||
+		(DeclaresOperatorHosts(man) && g.allowsOperatorURL(u))
+}
+``````
+
+## Source: internal/plugins/host.go#hostPatternCoveredByNetwork
+
+``````
+func hostPatternCoveredByNetwork(network []string, wildcardSuffix string) bool {
+	for _, raw := range network {
+		p := strings.ToLower(strings.TrimSpace(raw))
+		if !strings.HasPrefix(p, "*.") {
+			continue
+		}
+		netSuffix := strings.TrimSuffix(p[2:], ".")
+		if netSuffix == "" {
+			continue
+		}
+		if wildcardSuffix == netSuffix || strings.HasSuffix(wildcardSuffix, "."+netSuffix) {
+			return true
+		}
+	}
+	return false
 }
 ``````
 
@@ -8241,6 +8320,13 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
+	redirectPatterns, err := validateKeepHeadersOnRedirect(r.Manifest, g, req.KeepHeadersOnRedirect)
+	if err != nil {
+		if errors.Is(err, ErrPermissionDenied) {
+			h.noteDenied("network")
+		}
+		return nil, err
+	}
 	if trusted := trustedFetchHosts(r.Manifest, g); len(trusted) > 0 {
 		ctx = safefetch.WithTrustedHosts(ctx, trusted)
 	}
@@ -8257,8 +8343,11 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	}
 	// Recheck the current grant before every redirect, as well as the SSRF
 	// guard's own redirect policy. A redirect is another network request.
-	// Credentials and caller-supplied origin-confined headers never follow a
-	// redirect off the initial origin (even if a later hop returns to it).
+	// Credentials and caller-supplied headers follow redirects only within the
+	// same origin, to a strict same-site subdomain (no scheme downgrade or port
+	// change, verified via the Public Suffix List), or to a host explicitly
+	// listed in KeepHeadersOnRedirect (still within live network grants and
+	// never across HTTPS -> HTTP downgrades). Confinement is sticky across hops.
 	// When ctx already has a deadline, let Request.Context govern both headers
 	// and body reads so timeouts always surface context.DeadlineExceeded rather
 	// than net/http's non-unwrapping Client.Timeout error.
@@ -8267,21 +8356,16 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 		client.Timeout = 0
 	}
 	lastURL := u
-	leftOrigin := false
+	redirectHeaders := safefetch.NewRedirectHeaderState(u, safefetch.RedirectHeaderOptions{
+		Patterns:              redirectPatterns,
+		InitialHeaders:        hr.Header,
+		StripAllCallerHeaders: opts.stripAllCallerHeaders,
+		StripHeaders:          opts.stripCrossOriginHeaders,
+	})
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
-		if !sameOriginURL(u, next.URL) {
-			leftOrigin = true
-		}
-		if leftOrigin {
-			for _, k := range []string{"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Referer"} {
-				next.Header.Del(k)
-			}
-			for _, k := range opts.stripCrossOriginHeaders {
-				next.Header.Del(k)
-			}
-		}
+		redirectHeaders.Apply(next)
 		current, grants, err := h.record(next.Context())
 		if err != nil {
 			return err
@@ -11432,12 +11516,13 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 		value, err = service.HTTPHash(ctx, req)
 	} else if name == "http.fetchToCache" {
 		var req struct {
-			TimeoutMS  int64             `json:"timeoutMs"`
-			Method     string            `json:"method"`
-			URL        string            `json:"url"`
-			Headers    map[string]string `json:"headers"`
-			LibraryKey string            `json:"libraryKey"`
-			Name       string            `json:"name"`
+			TimeoutMS             int64             `json:"timeoutMs"`
+			Method                string            `json:"method"`
+			URL                   string            `json:"url"`
+			Headers               map[string]string `json:"headers"`
+			KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect"`
+			LibraryKey            string            `json:"libraryKey"`
+			Name                  string            `json:"name"`
 		}
 		if len(args) != 1 {
 			return nil, fmt.Errorf("plugins: fetchToCache takes one request")
@@ -11455,9 +11540,15 @@ func CallDataHost(ctx context.Context, h Host, name string, raw json.RawMessage)
 			return nil, ErrUnavailable
 		}
 		value, err = service.HTTPFetchToCache(ctx, FetchCacheRequest{
-			FetchRequest: FetchRequest{TimeoutMS: req.TimeoutMS, Method: req.Method, URL: req.URL, Headers: req.Headers},
-			LibraryKey:   req.LibraryKey,
-			Name:         req.Name,
+			FetchRequest: FetchRequest{
+				TimeoutMS:             req.TimeoutMS,
+				Method:                req.Method,
+				URL:                   req.URL,
+				Headers:               req.Headers,
+				KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+			},
+			LibraryKey: req.LibraryKey,
+			Name:       req.Name,
 		})
 	} else if name == "cache.rasterize" {
 		if len(args) < 3 || len(args) > 4 {
@@ -14166,8 +14257,9 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			Headers map[string]string `json:"headers"`
 			Body    string            `json:"body"`
 			// BodyBase64 carries a binary request body; it wins over Body.
-			BodyBase64 string `json:"bodyBase64"`
-			TimeoutMS  int64  `json:"timeoutMs"`
+			BodyBase64            string   `json:"bodyBase64"`
+			TimeoutMS             int64    `json:"timeoutMs"`
+			KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect"`
 		}
 		if len(args) > 0 {
 			if err := json.Unmarshal(args[0], &req); err != nil {
@@ -14185,7 +14277,14 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 			body = decoded
 		}
-		resp, err := b.h.HTTPFetch(ctx, FetchRequest{Method: req.Method, URL: req.URL, Headers: req.Headers, Body: body, TimeoutMS: req.TimeoutMS})
+		resp, err := b.h.HTTPFetch(ctx, FetchRequest{
+			Method:                req.Method,
+			URL:                   req.URL,
+			Headers:               req.Headers,
+			Body:                  body,
+			TimeoutMS:             req.TimeoutMS,
+			KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+		})
 		if err != nil {
 			return nil, mapHostError(err)
 		}
@@ -22655,7 +22754,8 @@ CREATE TABLE plugins_remote_hash_budget(plugin TEXT PRIMARY KEY,day TEXT NOT NUL
 | `url` | `string` | emitted (validation may require a value) |  |
 | `algo` | `string` | emitted (validation may require a value) |  |
 | `expectSize` | `*int64` | may be omitted (see validation for conditions) |  |
-| `headers` | `map[string]string` | may be omitted (see validation for conditions) | Headers sends optional origin-confined request headers with the hash fetch. Values may use {secret:<name>} placeholders expanded via permissions.secrets; hop-by-hop and framing headers are rejected, headers are stripped on cross-origin redirects, and values are never logged or persisted in the hash cache. |
+| `headers` | `map[string]string` | may be omitted (see validation for conditions) | Headers sends optional request headers with the hash fetch. Values may use {secret:<name>} placeholders expanded via permissions.secrets; hop-by-hop and framing headers are rejected, headers follow redirects only under Ether's redirect credential policy (same origin, strict same-site subdomain, or KeepHeadersOnRedirect within granted hosts), and values are never logged or persisted in the hash cache. |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) | KeepHeadersOnRedirect lists optional host or wildcard (*.example.org) patterns (within permissions.network / granted hosts) that may keep credentials and caller headers across redirects. Never applies across HTTPS -> HTTP downgrades. |
 
 
 ## Source: internal/plugins/remote_hash.go#HashRequest
@@ -22665,12 +22765,18 @@ type HashRequest struct {
 	URL        string `json:"url"`
 	Algo       string `json:"algo"`
 	ExpectSize *int64 `json:"expectSize,omitempty"`
-	// Headers sends optional origin-confined request headers with the hash
-	// fetch. Values may use {secret:<name>} placeholders expanded via
-	// permissions.secrets; hop-by-hop and framing headers are rejected, headers
-	// are stripped on cross-origin redirects, and values are never logged or
-	// persisted in the hash cache.
+	// Headers sends optional request headers with the hash fetch. Values may
+	// use {secret:<name>} placeholders expanded via permissions.secrets;
+	// hop-by-hop and framing headers are rejected, headers follow redirects
+	// only under Ether's redirect credential policy (same origin, strict
+	// same-site subdomain, or KeepHeadersOnRedirect within granted hosts), and
+	// values are never logged or persisted in the hash cache.
 	Headers map[string]string `json:"headers,omitempty"`
+	// KeepHeadersOnRedirect lists optional host or wildcard (*.example.org)
+	// patterns (within permissions.network / granted hosts) that may keep
+	// credentials and caller headers across redirects. Never applies across
+	// HTTPS -> HTTP downgrades.
+	KeepHeadersOnRedirect []string `json:"keepHeadersOnRedirect,omitempty"`
 }
 ``````
 
@@ -22830,6 +22936,18 @@ func (h *host) hashPermission(ctx context.Context, req HashRequest) error {
 	if err := h.allowNetworkURL(ctx, u); err != nil {
 		return err
 	}
+	if len(req.KeepHeadersOnRedirect) > 0 {
+		r, g, err := h.record(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := validateKeepHeadersOnRedirect(r.Manifest, g, req.KeepHeadersOnRedirect); err != nil {
+			if errors.Is(err, ErrPermissionDenied) {
+				h.noteDenied("network")
+			}
+			return err
+		}
+	}
 	if _, err := h.expandHashHeaders(ctx, req.Headers); err != nil {
 		return err
 	}
@@ -22970,7 +23088,14 @@ func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key strin
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	resp, err := h.openFetchWithOptions(fetchCtx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
+	resp, err := h.openFetchWithOptions(fetchCtx, FetchRequest{
+		URL:                   req.URL,
+		Headers:               headers,
+		KeepHeadersOnRedirect: req.KeepHeadersOnRedirect,
+	}, fetchOptions{
+		stripCrossOriginHeaders: stripCrossOrigin,
+		stripAllCallerHeaders:   true,
+	})
 	if err != nil {
 		return err
 	}
@@ -32560,15 +32685,24 @@ remote request (including streaming into cache) by the remaining call deadline.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 
-`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"}})` returns either
-`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` and
-`headers` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
+Across all host HTTP paths (`http.fetch`, `http.fetchToCache`, `http.hash`, and
+playable `range`/`download`/`direct`/`container` sources), redirects recheck
+live network permissions on every hop and keep credentials/caller headers only
+on the same origin, a strict same-site subdomain (verified via the Public Suffix
+List with no port change or HTTPS→HTTP downgrade), or an explicit
+`keepHeadersOnRedirect: ["cdn.example.net", "*.storage.example.org"]` host
+pattern within granted network permissions (never `*`, never a public suffix,
+never across HTTPS→HTTP downgrades, and sticky once any hop leaves trusted hosts).
+
+`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"},keepHeadersOnRedirect:["*.storage.example.org"]})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize`,
+`headers`, and `keepHeadersOnRedirect` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
 on the host, without a blob or guest bytes, through the same network permissions
 and safe fetch rules as fetch. Optional `headers` expand `{secret:<name>}`
 placeholders using the plugin's `permissions.secrets` grant (including derived
 secrets stored via `secret.set`), reject hop-by-hop/framing headers (`Connection`,
-`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), stay
-origin-confined (stripped on cross-origin redirects), are never logged, and are
+`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), follow
+the same redirect credential policy (stripped on untrusted redirects), are never logged, and are
 not part of the hash cache key. It starts only when called. One worker per plugin and
 two globally run below playback priority and yield during playback contention.
 Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per
@@ -41533,6 +41667,7 @@ type ArchiveReadResult struct {
 | `timeoutMs` | `int64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 | `libraryKey` | `string` | emitted (validation may require a value) |  |
 | `name` | `string` | emitted (validation may require a value) |  |
 
@@ -41541,11 +41676,12 @@ type ArchiveReadResult struct {
 
 ``````
 type FetchCacheRequest struct {
-	TimeoutMS  int64             `json:"timeoutMs,omitempty"`
-	URL        string            `json:"url"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	LibraryKey string            `json:"libraryKey"`
-	Name       string            `json:"name"`
+	TimeoutMS             int64             `json:"timeoutMs,omitempty"`
+	URL                   string            `json:"url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	LibraryKey            string            `json:"libraryKey"`
+	Name                  string            `json:"name"`
 }
 ``````
 
@@ -41866,18 +42002,22 @@ func (c *RemoteHostClient) ArchiveExtract(ctx context.Context, blob string, memb
 | `algo` | `string` | emitted (validation may require a value) |  |
 | `expectSize` | `*int64` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/data_host.go#HashRequest
 
 ``````
 // HashRequest requests an on-demand host-side remote digest without storing bytes.
-// Optional Headers are origin-confined and expand {secret:<name>} placeholders.
+// Optional Headers expand {secret:<name>} placeholders and follow redirects
+// only within the same origin, strict same-site subdomains, or
+// KeepHeadersOnRedirect (within granted network hosts, never across HTTPS->HTTP).
 type HashRequest struct {
-	URL        string            `json:"url"`
-	Algo       string            `json:"algo"`
-	ExpectSize *int64            `json:"expectSize,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
+	URL                   string            `json:"url"`
+	Algo                  string            `json:"algo"`
+	ExpectSize            *int64            `json:"expectSize,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 ``````
 
@@ -41925,6 +42065,7 @@ func (c *RemoteHostClient) Hash(ctx context.Context, r HashRequest) (HashResult,
 | `url` | `string` | emitted (validation may require a value) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
 | `body` | `string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/host.go#HostFetchRequest
@@ -41932,11 +42073,12 @@ func (c *RemoteHostClient) Hash(ctx context.Context, r HashRequest) (HashResult,
 ``````
 // HostFetchRequest describes an outbound HTTP call via the host service.
 type HostFetchRequest struct {
-	TimeoutMS int64             `json:"timeoutMs,omitempty"`
-	Method    string            `json:"method,omitempty"`
-	URL       string            `json:"url"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Body      string            `json:"body,omitempty"`
+	TimeoutMS             int64             `json:"timeoutMs,omitempty"`
+	Method                string            `json:"method,omitempty"`
+	URL                   string            `json:"url"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	Body                  string            `json:"body,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
 }
 ``````
 
@@ -43974,6 +44116,7 @@ type KindMatchResponse struct {
 | `durationSec` | `float64` | may be omitted (see validation for conditions) |  |
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 | `blobRef` | `string` | may be omitted (see validation for conditions) |  |
 | `sha256` | `string` | may be omitted (see validation for conditions) |  |
 | `sha1` | `string` | may be omitted (see validation for conditions) | SHA1 and CRC32 are hex digests checked against the served bytes, including a release's selected file or container member; Size too. |
@@ -44000,12 +44143,13 @@ type PlayableSource struct {
 	Size    int64  `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count.
-	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
-	DurationSec     float64           `json:"durationSec,omitempty"`
-	URL             string            `json:"url,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	BlobRef         string            `json:"blobRef,omitempty"`
-	SHA256          string            `json:"sha256,omitempty"`
+	SizeApproximate       bool              `json:"sizeApproximate,omitempty"`
+	DurationSec           float64           `json:"durationSec,omitempty"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	SHA256                string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are hex digests checked against the served bytes,
 	// including a release's selected file or container member; Size too.
 	SHA1      string         `json:"sha1,omitempty"`
@@ -44048,6 +44192,7 @@ type ContainerRef struct {
 |---|---|---|---|
 | `url` | `string` | may be omitted (see validation for conditions) |  |
 | `headers` | `map[string]string` | may be omitted (see validation for conditions) |  |
+| `keepHeadersOnRedirect` | `[]string` | may be omitted (see validation for conditions) |  |
 | `blobRef` | `string` | may be omitted (see validation for conditions) |  |
 | `size` | `int64` | emitted (validation may require a value) |  |
 
@@ -44057,10 +44202,11 @@ type ContainerRef struct {
 ``````
 // VolumeRef locates one archive volume by URL or blob cache reference.
 type VolumeRef struct {
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	BlobRef string            `json:"blobRef,omitempty"`
-	Size    int64             `json:"size"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	Size                  int64             `json:"size"`
 }
 ``````
 
@@ -52136,10 +52282,11 @@ class _HttpClient:
         self._call = call_json
 
     def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Request a host-side digest (`{url, algo, expectSize?, headers?}`)."""
+        """Request a host-side digest (`{url, algo, expectSize?, headers?, keepHeadersOnRedirect?}`)."""
         return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
 
     def fetch_to_cache(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Stream a remote GET into the plugin's library cache (`{url, headers?, keepHeadersOnRedirect?, libraryKey, name, timeoutMs?}`)."""
         return self._call("POST", "/ether/plugin-host/data/http.fetchToCache", [req])
 
     fetchToCache = fetch_to_cache
@@ -55842,6 +55989,8 @@ export interface HostFetchRequest {
   headers?: Record<string, string>;
   body?: string;
   bodyBase64?: string;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
 }
 
 export interface HostFetchResponse {
@@ -55855,8 +56004,10 @@ export interface HashRequest {
   url: string;
   algo: "sha256" | "sha1" | "md5";
   expectSize?: number;
-  /** Optional origin-confined request headers; values may include `{secret:<name>}` placeholders. */
+  /** Optional request headers; values may include `{secret:<name>}` placeholders. Follow redirects only within the same origin, strict same-site subdomains, or `keepHeadersOnRedirect`. */
   headers?: Record<string, string>;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
 }
 export interface HashResult { pending?: boolean; retryInMs?: number; size?: number; sha256?: string; sha1?: string; md5?: string }
 
@@ -55915,6 +56066,8 @@ export interface FetchCacheRequest {
   timeoutMs?: number;
   url: string;
   headers?: Record<string, string>;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
   libraryKey: string;
   name: string;
 }
@@ -56599,6 +56752,7 @@ export function createHostedClient(): EtherHost {
           method: req.method ?? "GET",
           url: req.url,
           headers: req.headers ?? {},
+          ...(req.keepHeadersOnRedirect !== undefined ? { keepHeadersOnRedirect: req.keepHeadersOnRedirect } : {}),
           ...(req.bodyBase64 !== undefined ? { bodyBase64: req.bodyBase64 } : { body: req.body ?? "" }),
         };
         if (g.ether?.http) return g.ether.http.fetch(normalized);
@@ -60852,6 +61006,8 @@ export interface PlayableSource {
   durationSec?: number;
   url?: string;
   headers?: Record<string, string>;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
   blobRef?: string;
   sha256?: string;
   /** Hex digests checked against the served bytes (including a release file or container member); size is checked too. */
@@ -60861,7 +61017,7 @@ export interface PlayableSource {
   expiresAt?: number;
   container?: {
     format?: string;
-    volumes: Array<{ url?: string; headers?: Record<string, string>; blobRef?: string; size: number }>;
+    volumes: Array<{ url?: string; headers?: Record<string, string>; keepHeadersOnRedirect?: string[]; blobRef?: string; size: number }>;
     member?: string;
     memberIndex?: number;
     passwordSecret?: string;

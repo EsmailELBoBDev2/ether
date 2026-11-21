@@ -323,6 +323,10 @@ func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (B
 	if err != nil {
 		return nil, err
 	}
+	redirectPatterns, err := validateRedirectHeaderPatterns(src.KeepHeadersOnRedirect, deps.AllowHost)
+	if err != nil {
+		return nil, err
+	}
 	hdrs, err := ExpandHeaders(ctx, src.Headers, deps.Secret)
 	if err != nil {
 		return nil, err
@@ -332,14 +336,16 @@ func openRangeSource(ctx context.Context, src core.PlayableSource, deps Deps) (B
 		knownSize = 0
 	}
 	hr, err := newHTTPReaderAt(ctx, httpReaderConfig{
-		Template:  tmpl,
-		Headers:   hdrs,
-		ItemIndex: deps.ItemIndex,
-		KnownSize: knownSize,
-		MIME:      src.MIME,
-		Client:    deps.HTTP,
-		AllowHost: deps.AllowHost,
-		Backoff:   deps.Backoff,
+		Template:              tmpl,
+		Headers:               hdrs,
+		SecretHeaderKeys:      secretHeaderNames(src.Headers),
+		KeepHeadersOnRedirect: redirectPatterns,
+		ItemIndex:             deps.ItemIndex,
+		KnownSize:             knownSize,
+		MIME:                  src.MIME,
+		Client:                deps.HTTP,
+		AllowHost:             deps.AllowHost,
+		Backoff:               deps.Backoff,
 	})
 	if err == nil {
 		if derr := digestsOf(src).checkSize(hr.Size()); derr != nil {
@@ -424,6 +430,10 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 	if err != nil {
 		return nil, err
 	}
+	redirectPatterns, err := validateRedirectHeaderPatterns(src.KeepHeadersOnRedirect, deps.AllowHost)
+	if err != nil {
+		return nil, err
+	}
 	targetURL, err := tmpl.Expand(TemplateVars{ItemIndex: deps.ItemIndex}, deps.AllowHost)
 	if err != nil {
 		return nil, err
@@ -432,14 +442,15 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 	if err != nil {
 		return nil, err
 	}
+	secretKeys := secretHeaderNames(src.Headers)
 
 	cacheKey := downloadCacheKey(targetURL, deps.ItemIndex)
 	name := defaultNameFromURL(targetURL)
 
 	fetchStream := func(ctx context.Context) (*http.Response, error) {
-		client := deps.HTTP
-		if client == nil {
-			client = defaultStreamingHTTPClient()
+		baseClient := deps.HTTP
+		if baseClient == nil {
+			baseClient = defaultStreamingHTTPClient()
 		}
 		backoff := deps.Backoff
 		if backoff == nil {
@@ -455,6 +466,7 @@ func openDownloadSource(ctx context.Context, src core.PlayableSource, deps Deps)
 		for k, v := range hdrs {
 			req.Header.Set(k, v)
 		}
+		client := wrapRedirectClient(baseClient, req.URL, req.Header, secretKeys, redirectPatterns, deps.AllowHost)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, err
@@ -565,6 +577,9 @@ func AsDirectSource(bs ByteSource) (*DirectSource, bool) {
 func openDirectSource(ctx context.Context, src core.PlayableSource, deps Deps) (ByteSource, error) {
 	tmpl, err := ParseURLTemplate(src.URL, deps.AllowHost)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := validateRedirectHeaderPatterns(src.KeepHeadersOnRedirect, deps.AllowHost); err != nil {
 		return nil, err
 	}
 	expandedURL, err := tmpl.Expand(TemplateVars{ItemIndex: deps.ItemIndex}, deps.AllowHost)

@@ -342,13 +342,57 @@ func fetchError(host string, err error) error {
 
 type fetchOptions struct {
 	stripCrossOriginHeaders []string
+	stripAllCallerHeaders   bool
 }
 
-func sameOriginURL(a, b *url.URL) bool {
-	if a == nil || b == nil {
+func validateKeepHeadersOnRedirect(man Manifest, g Grants, raw []string) ([]safefetch.RedirectHeaderPattern, error) {
+	patterns, err := safefetch.ParseRedirectHeaderPatterns(raw)
+	if err != nil {
+		return nil, &ValidationError{Fields: []FieldError{{
+			Field:   "keepHeadersOnRedirect",
+			Message: err.Error(),
+		}}}
+	}
+	var network []string
+	if man.Ether != nil {
+		network = man.Ether.Permissions.Network
+	}
+	for _, p := range patterns {
+		if !networkCoversRedirectPattern(network, g, man, p) {
+			return nil, fmt.Errorf("%w: keepHeadersOnRedirect %q is not in granted network hosts", ErrPermissionDenied, p.Raw)
+		}
+	}
+	return patterns, nil
+}
+
+func networkCoversRedirectPattern(network []string, g Grants, man Manifest, p safefetch.RedirectHeaderPattern) bool {
+	if p.Wildcard {
+		return hostPatternCoveredByNetwork(network, p.Host)
+	}
+	u := p.SyntheticURL()
+	if u == nil {
 		return false
 	}
-	return strings.EqualFold(a.Scheme, b.Scheme) && safefetch.SameOrigin(a.String(), b.String())
+	return networkAllowedURL(network, u) ||
+		g.allowsLocalURL(u) ||
+		(DeclaresOperatorHosts(man) && g.allowsOperatorURL(u))
+}
+
+func hostPatternCoveredByNetwork(network []string, wildcardSuffix string) bool {
+	for _, raw := range network {
+		p := strings.ToLower(strings.TrimSpace(raw))
+		if !strings.HasPrefix(p, "*.") {
+			continue
+		}
+		netSuffix := strings.TrimSuffix(p[2:], ".")
+		if netSuffix == "" {
+			continue
+		}
+		if wildcardSuffix == netSuffix || strings.HasSuffix(wildcardSuffix, "."+netSuffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *host) openFetch(ctx context.Context, req FetchRequest) (*http.Response, error) {
@@ -384,6 +428,13 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 		h.noteDenied("network")
 		return nil, fmt.Errorf("%w: network", ErrPermissionDenied)
 	}
+	redirectPatterns, err := validateKeepHeadersOnRedirect(r.Manifest, g, req.KeepHeadersOnRedirect)
+	if err != nil {
+		if errors.Is(err, ErrPermissionDenied) {
+			h.noteDenied("network")
+		}
+		return nil, err
+	}
 	if trusted := trustedFetchHosts(r.Manifest, g); len(trusted) > 0 {
 		ctx = safefetch.WithTrustedHosts(ctx, trusted)
 	}
@@ -400,8 +451,11 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	}
 	// Recheck the current grant before every redirect, as well as the SSRF
 	// guard's own redirect policy. A redirect is another network request.
-	// Credentials and caller-supplied origin-confined headers never follow a
-	// redirect off the initial origin (even if a later hop returns to it).
+	// Credentials and caller-supplied headers follow redirects only within the
+	// same origin, to a strict same-site subdomain (no scheme downgrade or port
+	// change, verified via the Public Suffix List), or to a host explicitly
+	// listed in KeepHeadersOnRedirect (still within live network grants and
+	// never across HTTPS -> HTTP downgrades). Confinement is sticky across hops.
 	// When ctx already has a deadline, let Request.Context govern both headers
 	// and body reads so timeouts always surface context.DeadlineExceeded rather
 	// than net/http's non-unwrapping Client.Timeout error.
@@ -410,21 +464,16 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 		client.Timeout = 0
 	}
 	lastURL := u
-	leftOrigin := false
+	redirectHeaders := safefetch.NewRedirectHeaderState(u, safefetch.RedirectHeaderOptions{
+		Patterns:              redirectPatterns,
+		InitialHeaders:        hr.Header,
+		StripAllCallerHeaders: opts.stripAllCallerHeaders,
+		StripHeaders:          opts.stripCrossOriginHeaders,
+	})
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		lastURL = next.URL
-		if !sameOriginURL(u, next.URL) {
-			leftOrigin = true
-		}
-		if leftOrigin {
-			for _, k := range []string{"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Referer"} {
-				next.Header.Del(k)
-			}
-			for _, k := range opts.stripCrossOriginHeaders {
-				next.Header.Del(k)
-			}
-		}
+		redirectHeaders.Apply(next)
 		current, grants, err := h.record(next.Context())
 		if err != nil {
 			return err

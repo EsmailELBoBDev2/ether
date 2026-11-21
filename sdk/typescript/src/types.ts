@@ -804,6 +804,8 @@ export interface PlayableSource {
   durationSec?: number;
   url?: string;
   headers?: Record<string, string>;
+  /** Optional host or wildcard (`*.example.org`) patterns (within granted network hosts) that may keep credentials and headers across redirects. Never applies across HTTPS -> HTTP downgrades. */
+  keepHeadersOnRedirect?: string[];
   blobRef?: string;
   sha256?: string;
   /** Hex digests checked against the served bytes (including a release file or container member); size is checked too. */
@@ -813,7 +815,7 @@ export interface PlayableSource {
   expiresAt?: number;
   container?: {
     format?: string;
-    volumes: Array<{ url?: string; headers?: Record<string, string>; blobRef?: string; size: number }>;
+    volumes: Array<{ url?: string; headers?: Record<string, string>; keepHeadersOnRedirect?: string[]; blobRef?: string; size: number }>;
     member?: string;
     memberIndex?: number;
     passwordSecret?: string;

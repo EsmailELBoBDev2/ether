@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/safefetch"
 )
 
 const (
@@ -178,29 +179,33 @@ func extractHost(rawURL string) string {
 }
 
 type httpReaderConfig struct {
-	Template  *URLTemplate
-	Headers   map[string]string
-	ItemIndex int
-	KnownSize int64
-	Name      string
-	MIME      string
-	Client    *http.Client
-	AllowHost func(host string) bool
-	Backoff   *HostBackoff
+	Template              *URLTemplate
+	Headers               map[string]string
+	SecretHeaderKeys      []string
+	KeepHeadersOnRedirect []safefetch.RedirectHeaderPattern
+	ItemIndex             int
+	KnownSize             int64
+	Name                  string
+	MIME                  string
+	Client                *http.Client
+	AllowHost             func(host string) bool
+	Backoff               *HostBackoff
 }
 
 // HTTPReaderAt implements ByteSource (and io.ReaderAt) over an HTTP Range or
 // range-templated URL source.
 type HTTPReaderAt struct {
-	tmpl      *URLTemplate
-	headers   map[string]string
-	itemIndex int
-	size      int64
-	name      string
-	mime      string
-	client    *http.Client
-	allowHost func(host string) bool
-	backoff   *HostBackoff
+	tmpl                  *URLTemplate
+	headers               map[string]string
+	secretHeaderKeys      []string
+	keepHeadersOnRedirect []safefetch.RedirectHeaderPattern
+	itemIndex             int
+	size                  int64
+	name                  string
+	mime                  string
+	client                *http.Client
+	allowHost             func(host string) bool
+	backoff               *HostBackoff
 
 	head []byte // first <=512 bytes captured during initial probe
 }
@@ -215,15 +220,17 @@ func newHTTPReaderAt(ctx context.Context, cfg httpReaderConfig) (*HTTPReaderAt, 
 		backoff = defaultBackoff
 	}
 	r := &HTTPReaderAt{
-		tmpl:      cfg.Template,
-		headers:   cfg.Headers,
-		itemIndex: cfg.ItemIndex,
-		size:      cfg.KnownSize,
-		name:      cfg.Name,
-		mime:      cfg.MIME,
-		client:    client,
-		allowHost: cfg.AllowHost,
-		backoff:   backoff,
+		tmpl:                  cfg.Template,
+		headers:               cfg.Headers,
+		secretHeaderKeys:      cfg.SecretHeaderKeys,
+		keepHeadersOnRedirect: cfg.KeepHeadersOnRedirect,
+		itemIndex:             cfg.ItemIndex,
+		size:                  cfg.KnownSize,
+		name:                  cfg.Name,
+		mime:                  cfg.MIME,
+		client:                client,
+		allowHost:             cfg.AllowHost,
+		backoff:               backoff,
 	}
 	if err := r.probe(ctx); err != nil {
 		return nil, err
@@ -345,11 +352,25 @@ func (r *HTTPReaderAt) doRangeRequest(ctx context.Context, start, end int64) (*h
 		for k, v := range r.headers {
 			req.Header.Set(k, v)
 		}
+		stripKeys := r.secretHeaderKeys
 		if !r.tmpl.HasByteStartOnly() && !r.tmpl.HasByteRange() {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+			if len(stripKeys) > 0 {
+				filtered := make([]string, 0, len(stripKeys))
+				for _, k := range stripKeys {
+					if k != "Range" {
+						filtered = append(filtered, k)
+					}
+				}
+				stripKeys = filtered
+			}
 		}
-		resp, err := r.client.Do(req)
+		client := wrapRedirectClient(r.client, req.URL, req.Header, stripKeys, r.keepHeadersOnRedirect, r.allowHost)
+		resp, err := client.Do(req)
 		if err != nil {
+			if errors.Is(err, ErrHostNotAllowed) || errors.Is(err, ErrInvalidTemplate) {
+				return nil, targetURL, err
+			}
 			lastErr = err
 			continue
 		}

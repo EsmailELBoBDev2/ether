@@ -286,12 +286,13 @@ type PlayableSource struct {
 	Size    int64  `json:"size,omitempty"`
 	// SizeApproximate marks Size as an approximate hint (for example from a
 	// Usenet release_files estimate) rather than an exact byte count.
-	SizeApproximate bool              `json:"sizeApproximate,omitempty"`
-	DurationSec     float64           `json:"durationSec,omitempty"`
-	URL             string            `json:"url,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	BlobRef         string            `json:"blobRef,omitempty"`
-	SHA256          string            `json:"sha256,omitempty"`
+	SizeApproximate       bool              `json:"sizeApproximate,omitempty"`
+	DurationSec           float64           `json:"durationSec,omitempty"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	SHA256                string            `json:"sha256,omitempty"`
 	// SHA1 and CRC32 are hex digests checked against the served bytes,
 	// including a release's selected file or container member; Size too.
 	SHA1      string         `json:"sha1,omitempty"`
@@ -314,10 +315,11 @@ type ContainerRef struct {
 
 // VolumeRef locates one archive volume by URL or blob cache reference.
 type VolumeRef struct {
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	BlobRef string            `json:"blobRef,omitempty"`
-	Size    int64             `json:"size"`
+	URL                   string            `json:"url,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	KeepHeadersOnRedirect []string          `json:"keepHeadersOnRedirect,omitempty"`
+	BlobRef               string            `json:"blobRef,omitempty"`
+	Size                  int64             `json:"size"`
 }
 
 // TrackHint identifies one track inside a multi-track audio release or archive

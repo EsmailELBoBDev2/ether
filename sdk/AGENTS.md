@@ -450,15 +450,24 @@ remote request (including streaming into cache) by the remaining call deadline.
 Hosted code can catch `e.code === "timeout"`. Remote SDK fetches use their local
 request context/timeout.
 
-`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"}})` returns either
-`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize` and
-`headers` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
+Across all host HTTP paths (`http.fetch`, `http.fetchToCache`, `http.hash`, and
+playable `range`/`download`/`direct`/`container` sources), redirects recheck
+live network permissions on every hop and keep credentials/caller headers only
+on the same origin, a strict same-site subdomain (verified via the Public Suffix
+List with no port change or HTTPS→HTTP downgrade), or an explicit
+`keepHeadersOnRedirect: ["cdn.example.net", "*.storage.example.org"]` host
+pattern within granted network permissions (never `*`, never a public suffix,
+never across HTTPS→HTTP downgrades, and sticky once any hop leaves trusted hosts).
+
+`ether.http.hash({url,algo:"sha256",expectSize:12345,headers:{Cookie:"{secret:session}"},keepHeadersOnRedirect:["*.storage.example.org"]})` returns either
+`{pending:true,retryInMs:1000}` or `{size,sha256,sha1,md5}`. `expectSize`,
+`headers`, and `keepHeadersOnRedirect` are optional; algorithms are `sha256`, `sha1`, `md5`. Hashing streams
 on the host, without a blob or guest bytes, through the same network permissions
 and safe fetch rules as fetch. Optional `headers` expand `{secret:<name>}`
 placeholders using the plugin's `permissions.secrets` grant (including derived
 secrets stored via `secret.set`), reject hop-by-hop/framing headers (`Connection`,
-`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), stay
-origin-confined (stripped on cross-origin redirects), are never logged, and are
+`Host`, `Content-Length`, `Range`, `Transfer-Encoding`, `Proxy-*`, etc.), follow
+the same redirect credential policy (stripped on untrusted redirects), are never logged, and are
 not part of the hash cache key. It starts only when called. One worker per plugin and
 two globally run below playback priority and yield during playback contention.
 Disable/uninstall cancels work. Limits: 64 GiB per file, 50 GiB per plugin per

@@ -657,10 +657,11 @@ class _HttpClient:
         self._call = call_json
 
     def hash(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Request a host-side digest (`{url, algo, expectSize?, headers?}`)."""
+        """Request a host-side digest (`{url, algo, expectSize?, headers?, keepHeadersOnRedirect?}`)."""
         return self._call("POST", "/ether/plugin-host/data/http.hash", [req])
 
     def fetch_to_cache(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Stream a remote GET into the plugin's library cache (`{url, headers?, keepHeadersOnRedirect?, libraryKey, name, timeoutMs?}`)."""
         return self._call("POST", "/ether/plugin-host/data/http.fetchToCache", [req])
 
     fetchToCache = fetch_to_cache

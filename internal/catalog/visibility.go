@@ -2,6 +2,8 @@ package catalog
 
 import (
 	"context"
+	"maps"
+
 	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/contentrating"
 	"github.com/braedonsaunders/ether/internal/store"
@@ -78,20 +80,24 @@ func (c *Catalog) loadStoredRatings(ctx context.Context, out []core.Title, idx m
 	enfCol := `CASE WHEN enforcement_rating<>'' THEN enforcement_rating WHEN content_rating='' AND (` + adultKeywordsExistsSQL("catalog_titles.key") + `) THEN '` + contentrating.UncertifiedAdult + `' ELSE '' END`
 	for chunk := range store.Chunks(out, batch) {
 		part := chunk
-		rows, err := c.db.QueryContext(ctx, `SELECT key, content_rating, `+enfCol+` FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, keyArgs(part)...)
+		rows, err := c.db.QueryContext(ctx, `SELECT key, content_rating, `+enfCol+`, certifications FROM catalog_titles WHERE key IN (`+placeholders(len(part))+`)`, keyArgs(part)...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var k int64
-			var cr, er string
-			if err := rows.Scan(&k, &cr, &er); err != nil {
+			var cr, er, certsRaw string
+			if err := rows.Scan(&k, &cr, &er, &certsRaw); err != nil {
 				rows.Close()
 				return err
 			}
+			certs := decodeCertifications(certsRaw)
 			for _, i := range idx[core.RatingKey(k)] {
 				if cr != "" {
 					out[i].ContentRating = cr
+				}
+				if len(out[i].ContentRatings) == 0 && len(certs) > 0 {
+					out[i].ContentRatings = maps.Clone(certs)
 				}
 				if enf := contentrating.EffectiveEnforcement(er, out[i].ContentRating, out[i].Adult, out[i].Keywords); enf != "" {
 					out[i].EnforcementRating = enf

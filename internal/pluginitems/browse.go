@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -396,16 +397,22 @@ func (s *Service) browseTotal(ctx context.Context, q BrowseQuery, baseWhere stri
 	}
 	var total int
 	if !hasFacets && parentRef == "" && level != "" {
-		_ = s.db.QueryRowContext(ctx,
+		err := s.db.QueryRowContext(ctx,
 			`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
 			int64(q.LibraryID), level).Scan(&total)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, err
+		}
 		return total, true, nil
 	}
 	if !hasFacets && parentRef == "" && level == "" {
 		if k, err := s.GetKindByLibrary(ctx, q.LibraryID); err == nil && len(k.Decl.Levels) > 0 {
-			_ = s.db.QueryRowContext(ctx,
+			err = s.db.QueryRowContext(ctx,
 				`SELECT COALESCE(n, 0) FROM plugin_item_tally WHERE library_id = ? AND level = ?`,
 				int64(q.LibraryID), k.Decl.Levels[0].Key).Scan(&total)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, false, err
+			}
 			return total, true, nil
 		}
 		if q.NoTotal && q.CheapTotal {

@@ -97,7 +97,7 @@ func (s *Service) browsePageEnd(ctx context.Context, v *core.User, q core.Browse
 	if s.cursors != nil && q.Limit > 0 && core.BrowseSeekable(q) {
 		cf := q.Filter
 		cf.MovieGateCutoff, cf.ShowGateCutoff, cf.EpisodeGateCutoff, cf.GateNow, cf.GateRev = cf.MovieGateCutoff/60, cf.ShowGateCutoff/60, cf.EpisodeGateCutoff/60, cf.GateNow/60, 0
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%+v|%s|%v|%v|%v", v.ID, cf, q.Sort, q.Desc, q.NoTotal, q.CheapTotal)))
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%+v|%s|%v|%v", v.ID, cf, q.Sort, q.Desc, q.NoTotal)))
 		key = "page|" + hex.EncodeToString(sum[:16]) + "|"
 		if after, ok := s.cursors.get(key + strconv.Itoa(q.Offset)); ok && q.Offset > 0 {
 			seek := q

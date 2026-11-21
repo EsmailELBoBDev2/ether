@@ -88,9 +88,17 @@ func TestVelaLibrarySortTotalAndCertificateCountry(t *testing.T) {
 		}
 	}
 
-	exp := experience.New(experience.Deps{
-		Browse: cat.Browse,
-		Get:    cat.CachedGet,
+	exp := detailColdService(t, experience.ServiceDeps{
+		Browse:       cat.Browse,
+		CountWatched: cat.CountWatched,
+		Get: func(ctx context.Context, _ *core.User, k core.RatingKey) (*core.Title, error) {
+			return cat.CachedGet(ctx, k)
+		},
+		CachedGet: cat.CachedGet,
+		Children: func(context.Context, *core.User, core.RatingKey) ([]core.Title, error) {
+			return nil, nil
+		},
+		Libraries: []experience.Library{{ID: 1, Name: "Movies", Type: core.TypeMovie}},
 		PageExclusions: func(context.Context, *core.User, core.MediaType) experience.LibraryPageExclusions {
 			return experience.LibraryPageExclusions{AvailabilityInSQL: true}
 		},
@@ -206,6 +214,14 @@ func TestVelaLibrarySortTotalAndCertificateCountry(t *testing.T) {
 	}
 }
 
+type cachedBootstrapExperience struct {
+	frontendtest.Experience
+}
+
+func (cachedBootstrapExperience) HomeRevision(context.Context, *frontend.Viewer) (frontend.HomeRevision, bool, error) {
+	return frontend.HomeRevision{Viewer: "v1"}, true, nil
+}
+
 func TestVelaBootstrapIsolatesAcceptLanguage(t *testing.T) {
 	movie := frontend.Title{
 		Key:            core.MovieKey(9),
@@ -214,12 +230,14 @@ func TestVelaBootstrapIsolatesAcceptLanguage(t *testing.T) {
 		ContentRating:  "PG-13",
 		ContentRatings: map[string]string{"US": "PG-13", "GB": "12A"},
 	}
-	exp := frontendtest.Experience{
-		ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
-			return []frontend.View{{ID: "1", Name: "Movies", Type: frontend.TypeMovie}}, nil
-		},
-		HomeFunc: func(context.Context, *frontend.Viewer, frontend.Device, frontend.HomeRequest) ([]frontend.Row, bool, error) {
-			return []frontend.Row{{ID: "r1", Title: "Featured", Kind: "editorial", Items: []frontend.Title{movie}}}, false, nil
+	exp := cachedBootstrapExperience{
+		Experience: frontendtest.Experience{
+			ViewsFunc: func(context.Context, *frontend.Viewer) ([]frontend.View, error) {
+				return []frontend.View{{ID: "1", Name: "Movies", Type: frontend.TypeMovie}}, nil
+			},
+			RowsFunc: func(context.Context, frontend.RowRequest) ([]frontend.Row, error) {
+				return []frontend.Row{{ID: "r1", Title: "Featured", Kind: "editorial", Items: []frontend.Title{movie}}}, nil
+			},
 		},
 	}
 	seal, err := encryption(make([]byte, 32))
@@ -252,8 +270,8 @@ func TestVelaBootstrapIsolatesAcceptLanguage(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		home := body["home"].(map[string]any)
-		row := home["items"].([]any)[0].(map[string]any)
+		rows := body["rows"].([]any)
+		row := rows[0].(map[string]any)
 		entry := row["items"].([]any)[0].(map[string]any)
 		title := entry["title"].(map[string]any)
 		return title["rating"].(string), title["ratingCountry"].(string)
@@ -266,5 +284,10 @@ func TestVelaBootstrapIsolatesAcceptLanguage(t *testing.T) {
 	rUS, cUS := fetch("en-US")
 	if rUS != "PG-13" || cUS != "US" {
 		t.Fatalf("US bootstrap = (%q, %q), want (PG-13, US)", rUS, cUS)
+	}
+	// Cached GB response remains isolated after US build.
+	rGB2, cGB2 := fetch("en-GB")
+	if rGB2 != "12A" || cGB2 != "GB" {
+		t.Fatalf("cached GB bootstrap = (%q, %q), want (12A, GB)", rGB2, cGB2)
 	}
 }

@@ -1454,25 +1454,14 @@ func searchWords(s string) []string {
 }
 
 func normalizeArticleSort(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	for _, prefix := range []string{"the ", "an ", "a "} {
-		if rest, ok := strings.CutPrefix(s, prefix); ok {
-			if rest = strings.TrimSpace(rest); rest != "" {
-				return rest
-			}
-		}
-	}
-	return s
+	return core.TitleSortKey(s)
 }
 
 func scorePluginSearchHit(t core.Title, query string) float64 {
 	qNorm := strings.ToLower(strings.TrimSpace(query))
 	qSort := normalizeArticleSort(query)
 	tNorm := strings.ToLower(strings.TrimSpace(t.Title))
-	tSort := strings.ToLower(strings.TrimSpace(t.SortTitle))
-	if tSort == "" {
-		tSort = normalizeArticleSort(t.Title)
-	}
+	tSort := core.EffectiveSortTitle(t.Title, t.SortTitle)
 	if qNorm != "" && (tNorm == qNorm || (qSort != "" && tSort == qSort)) {
 		return 1.0
 	}

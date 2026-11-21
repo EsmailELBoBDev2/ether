@@ -170,17 +170,8 @@ func (s *Server) handleLibraryPersonMedia(w http.ResponseWriter, r *http.Request
 	// the request's library filters and the viewer's own policy exactly
 	// as a section listing is (parseBrowse + browse), then merged in
 	// PMS's titleSort order. PMS ignores sort= for the ordering here
-	// (measured) and accepts every sort the clients send (Plex web, for
-	// example, requests the person's filmography with
-	// sort=X-Plex-Search-Result-Score and expects a 200). Ordering is
-	// decided below in titleSort order, so the sort param must never
-	// fail the browse; drop it rather than let an unknown but ignored
-	// sort key reject the whole person page.
-	browseQ := q
-	if q.Has("sort") {
-		browseQ = q.Clone()
-		browseQ.Del("sort")
-	}
+	// (measured) but still refuses an unknown sort key, which browse
+	// reproduces.
 	fetchPr := *pr
 	fetchPr.HasPage = true
 	fetchPr.Start = 0
@@ -196,7 +187,7 @@ func (s *Server) handleLibraryPersonMedia(w http.ResponseWriter, r *http.Request
 				continue
 			}
 			seenTypes[sec.Type] = true
-			br := s.parseBrowse(ctx, sec, sec.Type, pr.User, browseQ)
+			br := s.parseBrowse(ctx, sec, sec.Type, pr.User, q)
 			if limit == 0 {
 				limit = br.limit
 			}

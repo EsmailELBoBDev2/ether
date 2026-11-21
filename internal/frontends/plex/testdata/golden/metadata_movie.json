@@ -194,16 +194,14 @@
           {
             "id": 7467,
             "filter": "director=7467",
-            "tag": "Mara Ellison",
-            "tagKey": "tmdb-person-7467"
+            "tag": "Mara Ellison"
           }
         ],
         "Writer": [
           {
             "id": 7468,
             "filter": "writer=7468",
-            "tag": "Sasha Petrov",
-            "tagKey": "tmdb-person-7468"
+            "tag": "Sasha Petrov"
           }
         ],
         "Role": [
@@ -211,7 +209,6 @@
             "id": 287,
             "filter": "actor=287",
             "tag": "Theo Varga",
-            "tagKey": "tmdb-person-287",
             "role": "Alex Mercer",
             "thumb": "/library/metadata/1000000000000550/person/actor/L2JyYWQuanBn"
           },
@@ -219,7 +216,6 @@
             "id": 819,
             "filter": "actor=819",
             "tag": "Lucas Brandt",
-            "tagKey": "tmdb-person-819",
             "role": "The Narrator"
           }
         ],

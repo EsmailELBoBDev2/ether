@@ -204,28 +204,6 @@ func TestLibraryPersonMedia(t *testing.T) {
 	}
 }
 
-// Plex web requests a person's filmography with sort=X-Plex-Search-Result-Score
-// and expects a 200; order stays PMS titleSort (the sort is ignored here, as on
-// a real PMS). Issue #653: rejecting the sort made the whole person page 500.
-func TestLibraryPersonMediaAcceptsClientSort(t *testing.T) {
-	f := peopleFixture(t)
-	defer f.srv.Close()
-	for _, path := range []string{
-		"/library/people/287/media?sort=X-Plex-Search-Result-Score",
-		"/library/people/tmdb-person-287/media?sort=X-Plex-Search-Result-Score",
-	} {
-		mc, rows := personMediaTitles(t, f, path, nil)
-		if len(rows) == 0 {
-			t.Fatalf("%s returned no rows: %#v", path, mc)
-		}
-	}
-	// The ignored sort must not change titleSort ordering.
-	_, rows := personMediaTitles(t, f, "/library/people/287/media?sort=X-Plex-Search-Result-Score", nil)
-	if got := strings.Join(rowTitles(rows), ","); got != "Boundary Bay,Fjord Harbor" {
-		t.Errorf("sorted media titles = %s, want Boundary Bay,Fjord Harbor", got)
-	}
-}
-
 func TestLibraryPersonUnknownAndRestricted(t *testing.T) {
 	f := peopleFixture(t)
 	defer f.srv.Close()

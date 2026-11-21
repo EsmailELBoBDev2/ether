@@ -549,7 +549,11 @@ func (s *Server) personTags(key frontend.RatingKey, ps []frontend.Person, kind s
 			if p.TMDB > 0 {
 				tag.ID = p.TMDB
 				tag.Filter = kind + "=" + strconv.FormatInt(p.TMDB, 10)
-				tag.TagKey = "tmdb-person-" + strconv.FormatInt(p.TMDB, 10)
+				// Omit tagKey unless we hold a real 24-hex plex://person id:
+				// Plex Web with Discover Credits routes any non-empty tagKey to
+				// discover.provider.plex.tv/library/people/<tagKey>, so a
+				// fabricated tmdb-person-<id> errors instead of filtering the
+				// local library by filter="actor=<id>" (#653).
 			} else {
 				tag.ID = tagID(kind, p.Name)
 			}

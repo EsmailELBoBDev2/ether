@@ -940,6 +940,9 @@ func (s *Service) Rows(ctx context.Context, req frontend.RowRequest) ([]frontend
 		return nil, err
 	}
 	req.Viewer = tv
+	if req.Placement == frontend.PlacementDetail && req.Item.IsPluginKey() {
+		return s.pluginDetailRows(ctx, tv, req)
+	}
 	return s.d.Rows.Rows(ctx, req, s.d.Protocol)
 }
 
@@ -952,6 +955,9 @@ func (s *Service) SnapshotRows(ctx context.Context, req frontend.RowRequest) ([]
 		return nil, err
 	}
 	req.Viewer = tv
+	if req.Placement == frontend.PlacementDetail && req.Item.IsPluginKey() {
+		return s.pluginDetailRows(ctx, tv, req)
+	}
 	return s.d.Rows.SnapshotRows(ctx, req, s.d.Protocol)
 }
 

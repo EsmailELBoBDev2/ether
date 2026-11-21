@@ -802,3 +802,122 @@ func TestVelaAudiobookDetailProbedChaptersAndMultiPartChildren(t *testing.T) {
 		t.Fatalf("unexpected first part child: %v", firstPart)
 	}
 }
+
+type rowViewsRejectingExperience struct {
+	frontendtest.Experience
+	t *testing.T
+}
+
+func (r rowViewsRejectingExperience) ListRowViews(context.Context, frontend.RowViewRequest) ([]frontend.RowView, error) {
+	r.t.Helper()
+	r.t.Fatalf("ListRowViews must not be called for plugin PlacementDetail requests")
+	return nil, nil
+}
+
+func (r rowViewsRejectingExperience) ResolveRowView(context.Context, frontend.RowViewPageRequest) (frontend.RowViewPage, error) {
+	return frontend.RowViewPage{}, core.ErrNotFound
+}
+
+func TestVelaMusicArtistDetailTopTracksRow(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(db, castMembers{}, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer, err := grants.Issue(ctx, 1, nil, "vela", core.Device{ID: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	artistKey := core.PluginKey(7100)
+	track1Key := core.PluginKey(7101)
+	track2Key := core.PluginKey(7102)
+	track1 := core.Title{
+		Key:        track1Key,
+		Type:       core.TypeEpisode,
+		LibraryID:  38,
+		Title:      "One More Time",
+		Runtime:    320 * time.Second,
+		MediaClass: core.MediaClassMusic,
+		MediaRole:  core.MediaRoleTrack,
+	}
+	track2 := core.Title{
+		Key:        track2Key,
+		Type:       core.TypeEpisode,
+		LibraryID:  38,
+		Title:      "Digital Love",
+		Runtime:    301 * time.Second,
+		MediaClass: core.MediaClassMusic,
+		MediaRole:  core.MediaRoleTrack,
+	}
+
+	exp := rowViewsRejectingExperience{
+		t: t,
+		Experience: frontendtest.Experience{
+			RowsFunc: func(_ context.Context, req frontend.RowRequest) ([]frontend.Row, error) {
+				if req.Placement != frontend.PlacementDetail || req.Item != artistKey {
+					t.Fatalf("unexpected RowRequest: %+v", req)
+				}
+				return []frontend.Row{{
+					ID:      "plugin:38:detail:top",
+					Title:   "Top Tracks",
+					Purpose: frontend.RowRecommendation,
+					Kind:    "detail",
+					Style:   "shelf",
+					Items:   []core.Title{track1, track2},
+				}}, nil
+			},
+		},
+	}
+
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &instance{
+		ctx:     ctx,
+		db:      db,
+		seal:    seal,
+		replays: make(map[string]*replay),
+		mux:     http.NewServeMux(),
+		host: frontend.Host{
+			Identity:       identityFake{},
+			Experience:     exp,
+			ServerIdentity: frontend.ServerIdentity{MachineID: "srv-1", FriendlyName: "Ether", Version: "0.3.17"},
+		},
+	}
+	inst.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/vela/v0/rows?placement=detail&titleId="+url.QueryEscape(ids.RatingKeyGUID(artistKey)), nil)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("X-Vela-Device-Id", "web")
+	rec := httptest.NewRecorder()
+	inst.serve(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("GET /vela/v0/rows?placement=detail status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	rows, _ := out["items"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v, want 1 Top Tracks row", out)
+	}
+	row := rows[0].(map[string]any)
+	if row["id"] != "plugin:38:detail:top" || row["name"] != "Top Tracks" || row["purpose"] != "recommendation" || row["continuation"] != "exhausted" {
+		t.Fatalf("unexpected row wire: %v", row)
+	}
+	entries := row["items"].([]any)
+	if len(entries) != 2 {
+		t.Fatalf("row items len = %d, want 2", len(entries))
+	}
+	firstTitle := entries[0].(map[string]any)["title"].(map[string]any)
+	if firstTitle["name"] != "One More Time" || firstTitle["media"].(map[string]any)["role"] != "track" {
+		t.Fatalf("unexpected first track item: %v", firstTitle)
+	}
+}

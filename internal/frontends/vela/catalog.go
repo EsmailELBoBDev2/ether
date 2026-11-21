@@ -424,7 +424,8 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	var excludedHeroes []string
 	outerMore := false
 	views, hasViews := i.host.Experience.(frontend.RowViews)
-	if id := r.PathValue("id"); id != "" && hasViews {
+	useRowViews := hasViews && !(placement == frontend.PlacementDetail && item.IsPluginKey())
+	if id := r.PathValue("id"); id != "" && useRowViews {
 		offset := 0
 		if token := r.URL.Query().Get("cursor"); token != "" {
 			c, e := i.readRowToken(r, v, token)
@@ -452,7 +453,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 		row.PreviewOnFocus = meta.Layout.PreviewOnFocus
 		row.RankedTop10 = row.RankedTop10 || meta.Layout.RankedTop10
 		rows = append(rows, row)
-	} else if hasViews {
+	} else if useRowViews {
 		vv, e := views.ListRowViews(r.Context(), frontend.RowViewRequest{Viewer: v, Device: requestDevice(r), Protocol: "vela", Placement: placement, ViewID: libraryID, Item: item, Refresh: refresh})
 		if e != nil {
 			return nil, false, e
@@ -518,7 +519,7 @@ func (i *instance) homeVisit(r *http.Request, v *frontend.Viewer, token string, 
 	if matched != nil {
 		markLandscapeRows(rows, *matched)
 	}
-	out, err := i.rowsToWire(r, v, token, rows, excludedHeroes, hasViews, rowItemLimit(r), sources...)
+	out, err := i.rowsToWire(r, v, token, rows, excludedHeroes, useRowViews, rowItemLimit(r), sources...)
 	if err != nil {
 		return nil, false, err
 	}

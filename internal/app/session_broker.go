@@ -144,6 +144,15 @@ func (a *App) newSessionBroker(events *sessions.EventBus) (*sessions.Broker, err
 		},
 		KindSource:   a.kindSourceFunc(),
 		KindVersions: a.pluginKindVersions,
+		KindRememberedRelease: func(userID int64, key core.RatingKey) string {
+			if a.resolver == nil {
+				return ""
+			}
+			if vc, ok := a.resolver.ViewerChoiceFor(userID, key); ok && vc.Scope == "title" && vc.Release.ID != core.KindAutoVersionID {
+				return vc.Release.ID
+			}
+			return ""
+		},
 		MediaLookup: func(ctx context.Context, v *core.Viewer, _ core.Device, key core.RatingKey) (*core.Title, error) {
 			return a.admissionSessionTitle(ctx, v, key, visibility, true)
 		},

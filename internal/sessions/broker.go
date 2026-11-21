@@ -63,6 +63,10 @@ type BrokerDeps struct {
 	// plugin kind item (Auto slot + one entry per /resolve source) so plugin
 	// keys get the same version surface as catalogue titles.
 	KindVersions func(context.Context, *core.Viewer, core.RatingKey) ([]core.ReleaseVariant, error)
+	// KindRememberedRelease returns the release ID of the viewer's remembered
+	// version for a plugin kind item ("" for none). A plain start (no
+	// version requested) prefers it, as catalogue titles do in the resolver.
+	KindRememberedRelease func(userID int64, key core.RatingKey) string
 	// CurrentMediaLookup checks already admitted playback using local facts.
 	// When nil, MediaLookup retains its historical behavior. MediaLookup checks
 	// admission policy, including lazy issuance. Neither lookup may resolve a

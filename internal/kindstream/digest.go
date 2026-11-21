@@ -58,11 +58,19 @@ func digestsOf(src core.PlayableSource) expectedDigests {
 			approx = true
 		}
 	}
+	size := src.Size
+	if src.Release != nil && !approx {
+		// Plugins copy the indexer's listed size (the whole release, rounded
+		// or encoded) into a release source's size, so an exact-looking size
+		// never rejects the file Ether picks inside it. An approximate hint
+		// keeps its tolerance band and a declared hash still verifies bytes.
+		size = 0
+	}
 	return expectedDigests{
 		sha256:          strings.ToLower(strings.TrimSpace(src.SHA256)),
 		sha1:            strings.ToLower(strings.TrimSpace(src.SHA1)),
 		crc32:           strings.ToLower(strings.TrimSpace(src.CRC32)),
-		size:            src.Size,
+		size:            size,
 		sizeApproximate: approx,
 	}
 }

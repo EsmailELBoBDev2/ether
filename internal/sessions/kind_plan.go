@@ -123,6 +123,11 @@ func (b *Broker) planKind(ctx context.Context, req frontend.PlanRequest, v *core
 			release = req.Version
 		}
 	}
+	if release == "" && req.Version == "" && b.deps.KindRememberedRelease != nil {
+		// Play/resume without a version: the viewer's remembered version,
+		// as a preference (an unavailable source still falls back).
+		release = b.deps.KindRememberedRelease(v.ID, req.Item)
+	}
 	if release != "" {
 		in.PreferSourceID = release
 	}

@@ -117,6 +117,20 @@ func (s surface) StartStream(ctx context.Context, a frontend.SessionAccess, id s
 	}
 	return s.broker.StartStream(ctx, a, id, r)
 }
+
+// SwitchVersion forwards a version switch on this surface's own session to
+// the broker; without it every app's quality menu answered
+// feature_unavailable.
+func (s surface) SwitchVersion(ctx context.Context, a frontend.SessionAccess, sessionID, versionHandle string, position time.Duration) (frontend.PlayPlan, error) {
+	if a.Protocol != s.protocol {
+		return frontend.PlayPlan{}, core.ErrUnauthorized
+	}
+	if switcher, ok := s.broker.(frontend.VersionSwitcher); ok {
+		return switcher.SwitchVersion(ctx, a, sessionID, versionHandle, position)
+	}
+	return frontend.PlayPlan{}, core.ErrNotAvailable
+}
+
 func (s surface) StreamDecision(ctx context.Context, a frontend.SessionAccess, id string) (core.Decision, error) {
 	if a.Protocol != s.protocol {
 		return core.Decision{}, core.ErrUnauthorized

@@ -51,7 +51,6 @@ func TestReleaseSourceDigestMismatchFailsOpen(t *testing.T) {
 			sum := sha256.Sum256([]byte("other"))
 			s.SHA256 = hex.EncodeToString(sum[:])
 		}},
-		{"size", func(s *core.PlayableSource) { s.Size = int64(len(payload)) + 1 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,12 +161,13 @@ func TestApproximateSizeHintVsStrictSize(t *testing.T) {
 	// ~3.1% larger yEnc-encoded sum / segment estimate within tolerance.
 	yencHint := int64(len(payload)) * 1031 / 1000
 
-	// Strict (default SizeApproximate=false): rejects 3% difference.
+	// A release source's exact-looking size is the indexer's listing, so
+	// it never rejects the file.
 	strict := releaseSource(func(s *core.PlayableSource) {
 		s.Size = yencHint
 	})
-	if _, err := Open(context.Background(), strict, releaseDeps(payload)); !errors.Is(err, ErrDigestMismatch) || !errors.Is(err, ErrPluginAnswer) {
-		t.Fatalf("strict size mismatch err = %v, want ErrDigestMismatch wrapping ErrPluginAnswer", err)
+	if _, err := Open(context.Background(), strict, releaseDeps(payload)); err != nil {
+		t.Fatalf("release size listing rejected the file: %v", err)
 	}
 
 	// Explicit SizeApproximate=true: accepts 3% difference.

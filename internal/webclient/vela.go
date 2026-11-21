@@ -258,7 +258,8 @@ func velaStaticContentType(rel string) string {
 	switch strings.ToLower(filepath.Ext(rel)) {
 	case ".webmanifest":
 		return "application/manifest+json; charset=utf-8"
-	case ".mjs":
+	case ".js", ".mjs":
+		// Windows maps .js to application/javascript in the registry.
 		return "text/javascript; charset=utf-8"
 	case ".wasm":
 		return "application/wasm"

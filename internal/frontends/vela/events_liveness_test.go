@@ -225,11 +225,16 @@ func TestVelaEventsDisconnectEndsSessionUnlessReconnectedOrActive(t *testing.T) 
 		case <-time.After(500 * time.Millisecond):
 			t.Fatal("session did not stop after activity ceased")
 		}
-		s.mu.Lock()
-		ended := !s.ended.IsZero() && s.plan["state"] == "ended"
-		s.mu.Unlock()
-		if !ended {
-			t.Fatal("playSession was not marked ended")
+		// The stop callback fires before the session records its end.
+		for range 200 {
+			s.mu.Lock()
+			ended := !s.ended.IsZero() && s.plan["state"] == "ended"
+			s.mu.Unlock()
+			if ended {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
+		t.Fatal("playSession was not marked ended")
 	})
 }

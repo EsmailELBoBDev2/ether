@@ -3,8 +3,10 @@
 # configures the router with UPnP — both need the host network namespace.
 # Bridge mode works for Plex Web / claimed remote access if you remove
 # `network_mode: host` and uncomment the ports mapping. Docker Desktop on
-# Mac and Windows does not provide host networking. Do not publish 8096;
-# other apps are on the console port at /jellyfin, /emby, and /silo.
+# Mac and Windows does not provide host networking. By default /vela, /jellyfin,
+# /emby, /silo, and /ether share the main port; optionally publish dedicated
+# ports (e.g. 8098 for Vela, 8099 for the owner console) if your reverse proxy
+# gives them their own HTTPS subdomains.
 services:
   ether:
     image: ghcr.io/braedonsaunders/ether:latest
@@ -14,6 +16,7 @@ services:
     environment:
       TZ: Etc/UTC
       # ETHER_DATA_DIR: /config   # default in the image
+      # ETHER_CONSOLE_PORT: "8099" # optional dedicated owner console (/ether) port
     volumes:
       - ./config:/config          # config.json, database, identity
       - ./cache:/cache            # used automatically on a fresh install (otherwise /config/cache)
@@ -36,4 +39,6 @@ services:
     #   - "32800:32800"
     # ports:                      # bridge-mode only; drop network_mode above
     #   - "32400:32400/tcp"
+    #   - "8098:8098/tcp"         # optional: Vela dedicated port (Apps > Vela > Port)
+    #   - "8099:8099/tcp"         # optional: owner console dedicated port (Server > General)
     #   - "32410-32414:32410-32414/udp"

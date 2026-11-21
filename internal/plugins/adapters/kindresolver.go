@@ -1354,8 +1354,14 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 	var allowHost func(string) bool
 	var secretFn func(context.Context, string) (string, error)
 	if r.mgr != nil {
+		// The byte source outlives the prepare request (the client fetches
+		// the media later), so the allowlist check must not use the
+		// request's cancellable context.
+		allowCtx := context.WithoutCancel(ctx)
 		allowHost = func(host string) bool {
-			return r.mgr.AllowNetworkHost(ctx, rec.PluginID, host)
+			hctx, cancel := context.WithTimeout(allowCtx, 5*time.Second)
+			defer cancel()
+			return r.mgr.AllowNetworkHost(hctx, rec.PluginID, host)
 		}
 		host := r.mgr.HostFor(rec.PluginID)
 		secretFn = func(sctx context.Context, name string) (string, error) {

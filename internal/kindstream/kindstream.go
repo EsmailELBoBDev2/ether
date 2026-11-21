@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mimepkg "mime"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -544,6 +546,16 @@ func openDirectSource(ctx context.Context, src core.PlayableSource, deps Deps) (
 		return nil, err
 	}
 	mime := strings.TrimSpace(src.MIME)
+	if mime == "" || mime == "application/octet-stream" {
+		// A direct link without a declared type gets one from its file
+		// extension (audio/mpeg for .mp3, application/epub+zip for .epub)
+		// so clients receive a usable Content-Type.
+		if u, perr := url.Parse(expandedURL); perr == nil {
+			if t := mimepkg.TypeByExtension(strings.ToLower(path.Ext(u.Path))); t != "" {
+				mime = strings.TrimSpace(strings.SplitN(t, ";", 2)[0])
+			}
+		}
+	}
 	if mime == "" {
 		mime = "application/octet-stream"
 	}

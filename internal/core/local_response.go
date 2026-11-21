@@ -14,6 +14,12 @@ func WithLocalResponse(ctx context.Context) context.Context {
 	return context.WithValue(ctx, localResponseKey{}, true)
 }
 
+// WithoutLocalResponse clears LocalResponse on ctx while preserving deadlines,
+// cancellation and other request values.
+func WithoutLocalResponse(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localResponseKey{}, false)
+}
+
 // LocalResponse reports whether this read must avoid enrichment waits.
 func LocalResponse(ctx context.Context) bool {
 	v, _ := ctx.Value(localResponseKey{}).(bool)

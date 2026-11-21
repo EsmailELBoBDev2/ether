@@ -24,8 +24,19 @@ import (
 // on save. There is no separate TTL; when the resume row stops being the
 // next Prepare, the tracks stop too.
 func (m *Manager) ResumedTracks(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) (core.MediaInfo, string, bool) {
-	if user == nil || user.ID <= 0 {
+	info, rel, _, ok := m.ResumedVersion(ctx, user, key, caps)
+	if !ok {
 		return core.MediaInfo{}, "", false
+	}
+	return info, rel.ID, true
+}
+
+// ResumedVersion returns the persisted probe, release record, and version
+// selector ("" for Auto, non-empty for an explicit non-Auto version slot) of
+// the viewer's stored resume row for key.
+func (m *Manager) ResumedVersion(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) (core.MediaInfo, core.Release, string, bool) {
+	if user == nil || user.ID <= 0 {
+		return core.MediaInfo{}, core.Release{}, "", false
 	}
 	rp, err := m.resumeFor(ctx, user, key, caps, false)
 	if rp == nil && err == nil && !caps.Remote && m.deps.SelectProfile != nil {
@@ -41,7 +52,7 @@ func (m *Manager) ResumedTracks(ctx context.Context, user *core.User, key core.R
 		}
 	}
 	if err != nil || rp == nil || rp.Release.ID == "" || rp.payloadHash() == "" {
-		return core.MediaInfo{}, "", false
+		return core.MediaInfo{}, core.Release{}, "", false
 	}
 	facts := m.persistedProbeInfoHash(ctx, user.ID, key, rp.Release.ID, rp.payloadHash())
 	if facts == nil || facts.releaseID != rp.Release.ID || facts.info.Estimated || !facts.info.HasPlayableMedia() || len(facts.info.Streams) == 0 {
@@ -56,20 +67,20 @@ func (m *Manager) ResumedTracks(ctx context.Context, user *core.User, key core.R
 					m.mu.Unlock()
 					sanitized.Keyframes = nil
 					sanitized.Chapters = nil
-					return sanitized, rp.Release.ID, true
+					return sanitized, rp.Release, rp.VersionSelector, true
 				}
 			}
 		}
 		m.mu.Unlock()
-		return core.MediaInfo{}, "", false
+		return core.MediaInfo{}, core.Release{}, "", false
 	}
 	if !rememberedInfoCodecCurrent(facts.info, caps) {
-		return core.MediaInfo{}, "", false
+		return core.MediaInfo{}, core.Release{}, "", false
 	}
 	info := facts.info
 	info.Keyframes = nil
 	info.Chapters = nil
-	return info, rp.Release.ID, true
+	return info, rp.Release, rp.VersionSelector, true
 }
 
 type preloadedBlocksKey struct{}

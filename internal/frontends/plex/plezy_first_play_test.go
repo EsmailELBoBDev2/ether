@@ -1,9 +1,13 @@
 package plex
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -585,5 +589,339 @@ func TestPlezyFirstPlaySeasonRowPlaybackShape(t *testing.T) {
 	selected := selectedTag(subtitleTags(resp.Body.String()))
 	if resp.Code != 200 || !strings.Contains(selected, `index="2"`) {
 		t.Fatalf("season-row play did not select the English subtitle: %d %q", resp.Code, selected)
+	}
+}
+
+type plezyMultiReleaseIndexer struct {
+	releases []core.Release
+}
+
+func (*plezyMultiReleaseIndexer) Name() string { return "offline-plezy-multi" }
+func (i *plezyMultiReleaseIndexer) Search(_ context.Context, _ core.SearchRequest) ([]core.Release, error) {
+	return append([]core.Release(nil), i.releases...), nil
+}
+func (*plezyMultiReleaseIndexer) FetchNZB(_ context.Context, r core.Release) ([]byte, error) {
+	return []byte("nzb-" + r.ID), nil
+}
+
+type plezyBytesSource struct {
+	id   string
+	name string
+	data []byte
+}
+
+func (s *plezyBytesSource) ReadAt(p []byte, off int64) (int, error) {
+	return bytes.NewReader(s.data).ReadAt(p, off)
+}
+func (s *plezyBytesSource) Size() int64       { return int64(len(s.data)) }
+func (s *plezyBytesSource) Name() string      { return s.name }
+func (s *plezyBytesSource) ReleaseID() string { return s.id }
+func (s *plezyBytesSource) Close() error      { return nil }
+
+type plezySlotVariants struct {
+	rs  *resolver.Service
+	mgr *playback.Manager
+}
+
+func (v plezySlotVariants) Variants(ctx context.Context, req core.ResolveRequest, max int) ([]core.ReleaseVariant, error) {
+	out, err := v.rs.Variants(ctx, req, max)
+	if err == nil && v.mgr != nil {
+		out = v.mgr.WithCachedVariantInfo(ctx, req.User, req.Title, out)
+	}
+	return out, err
+}
+
+func (v plezySlotVariants) VersionSlots(ctx context.Context, req core.ResolveRequest, max int, labels bool) ([]core.ReleaseVariant, error) {
+	out, err := v.rs.VersionSlots(ctx, req, max, labels)
+	if err == nil && labels && v.mgr != nil {
+		out = v.mgr.WithCachedVariantInfo(ctx, req.User, req.Title, out)
+	}
+	return out, err
+}
+
+// TestPlezyPlayVersionProbesNonAutoAndKeepsPlayedVersionInOwnSlot verifies #678
+// end to end:
+//  1. A Plezy Play Version fetch (includeMarkers before includeChapters) probes
+//     free-source non-Auto versions so the 4K Media entry carries real streams,
+//     a viewer rule-selected English subtitle, exists/accessible flags, and a
+//     descriptive title on first play.
+//  2. After playing that 4K version (<5% watch) and stopping, the played 4K
+//     release stays behind the 4K Media entry with its stored probe (real
+//     streams, selected subtitle, descriptive title) instead of being promoted
+//     to Auto and refilling 4K with another unprobed 4K release.
+func TestPlezyPlayVersionProbesNonAutoAndKeepsPlayedVersionInOwnSlot(t *testing.T) {
+	mkvBytes, err := os.ReadFile(filepath.Join("..", "..", "transcode", "testdata", "nativeprobe", "h264_aac_srt_chapters.mkv"))
+	if err != nil {
+		t.Fatalf("read mkv fixture: %v", err)
+	}
+	mkvBytes = bytes.Replace(mkvBytes, []byte("jpn"), []byte("eng"), 1)
+	dir := t.TempDir()
+	cfg := config.Defaults(dir)
+	cfg.Quality.Default = "lab1080"
+	cfg.Quality.Remote = ""
+	cfg.Quality.Rules = nil
+	cfg.Quality.Profiles = []core.QualityProfile{{Name: "lab1080", MaxHeight: 1080}}
+	cfg.Resolver.SameQualityAlternatives = 0
+	cfg.Resolver.OfferHigherVersions = true
+	cfg.Resolver.AlternativesPerResolution = true
+	cfg.Cache.DisableSpeculation = true
+	cfg.Cache.DetailWarmup = "off"
+
+	rel1080Name := "Fjord.Harbor.1999.1080p.WEB-DL.DDP5.1.H.264-AUTOGRP"
+	rel4K1Name := "Fjord.Harbor.1999.2160p.WEB-DL.HDR10.DDP5.1.HEVC-FOURK1"
+	rel4K2Name := "Fjord.Harbor.1999.2160p.WEB-DL.HDR10.DDP5.1.HEVC-FOURK2"
+	rel1080 := core.Release{
+		ID: "rel-1080", GUID: "rel-1080", Indexer: "offline-plezy-multi",
+		Name: rel1080Name, Size: int64(3) << 30, PubDate: fixedNow.Add(-24 * time.Hour),
+		Protocol: core.ProtocolUsenet, NZBURL: "offline", Info: releaseparse.Parse(rel1080Name),
+	}
+	rel4K1 := core.Release{
+		ID: "rel-4k-1", GUID: "rel-4k-1", Indexer: "offline-plezy-multi",
+		Name: rel4K1Name, Size: int64(10) << 30, PubDate: fixedNow.Add(-24 * time.Hour),
+		Protocol: core.ProtocolTorrent, InfoHash: "1111111111111111111111111111111111111111",
+		NZBURL: "offline", Info: releaseparse.Parse(rel4K1Name),
+	}
+	rel4K2 := core.Release{
+		ID: "rel-4k-2", GUID: "rel-4k-2", Indexer: "offline-plezy-multi",
+		Name: rel4K2Name, Size: int64(7) << 30, PubDate: fixedNow.Add(-24 * time.Hour),
+		Protocol: core.ProtocolUsenet, NZBURL: "offline", Info: releaseparse.Parse(rel4K2Name),
+	}
+	idx := &plezyMultiReleaseIndexer{releases: []core.Release{rel1080, rel4K1, rel4K2}}
+	engine := &shieldLocalEngine{size: int64(8) << 30}
+	nowFn := func() time.Time { return fixedNow }
+
+	f := newFixture(func(d *testServerDeps) {
+		setDepsConfig(d, func() config.Config { return cfg })
+		setDepsNow(d, nowFn)
+		d.DisableEnrichment = true
+		d.HomeCache = &testHomeCache{NoProviderWait: func(ctx context.Context) context.Context {
+			return core.WithLocalResponse(catalog.WithReadWaitBudget(ctx, 0))
+		}}
+	})
+	defer f.srv.Close()
+
+	prefs := trackprefs.New(store.OpenTest(t))
+	f.srv.setTrackPreferences(prefs)
+	rules := trackprefs.Default()
+	rules.SubtitleLanguages = []string{"en"}
+	rules.SubtitleMode = "always"
+	if err := prefs.PutRules(context.Background(), ownerUser.ID, rules); err != nil {
+		t.Fatal(err)
+	}
+
+	rs := resolver.New(idx, nil, nil, cfg, resolver.Options{Now: nowFn})
+	defer rs.Close()
+
+	db, err := store.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	autoProbed := core.MediaInfo{
+		Container: "mkv", Duration: fightClub.Runtime, Size: rel1080.Size, BitrateKbps: 6000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080, Default: true},
+			{Index: 1, Type: "audio", Codec: "eac3", Language: "en", Channels: 6, Default: true},
+			{Index: 2, Type: "subtitle", Codec: "subrip", Language: "en"},
+		},
+	}
+	fourKProbed := core.MediaInfo{
+		Container: "mkv", Duration: fightClub.Runtime, Size: rel4K1.Size, BitrateKbps: 18000,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "hevc", Width: 3840, Height: 2160, DolbyVision: true, Default: true},
+			{Index: 1, Type: "audio", Codec: "eac3", Language: "en", Channels: 6, Default: true},
+			{Index: 2, Type: "subtitle", Codec: "ass", Language: "en"},
+		},
+	}
+
+	mgr, err := playback.New(playback.Deps{
+		Catalog:       f.catalog,
+		State:         f.state,
+		Resolver:      rs,
+		Engine:        engine,
+		Transcoder:    f.trans,
+		SelectProfile: func(c core.ClientCaps, u *core.User, _ string) core.QualityProfile { return rs.ProfileFor(c, u) },
+		DB:            db,
+		OnVersionProbed: func(_ core.RatingKey, _ core.Release) {
+			rs.RefreshDetailVariants()
+		},
+		OpenCachedDebrid: func(_ context.Context, rel core.Release) (core.MediaSource, error) {
+			if rel.ID != rel4K1.ID {
+				return nil, core.ErrNotFound
+			}
+			return &plezyBytesSource{id: rel.ID, name: rel.Name + ".mkv", data: mkvBytes}, nil
+		},
+		NativeProbe: func(_ context.Context, s core.MediaSource) (*core.MediaInfo, error) {
+			if s.ReleaseID() == rel4K1.ID {
+				cp := core.CloneMediaInfo(fourKProbed)
+				return &cp, nil
+			}
+			cp := core.CloneMediaInfo(autoProbed)
+			return &cp, nil
+		},
+	}, cfg, playback.Options{
+		SessionSurface: func(surface string) string {
+			if surface == "plex" {
+				return ""
+			}
+			return surface
+		},
+		DataDir: dir,
+		Now:     nowFn,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	rs.SetProbedMedia(mgr.CachedReleaseProbe)
+
+	f.srv.setPlayback(mgr)
+	f.srv.setVariants(plezySlotVariants{rs: rs, mgr: mgr})
+
+	key := fightClub.Key.String()
+	hdr := []string{
+		"X-Plex-Product", "Plezy",
+		"X-Plex-Version", "2.26.0",
+		"X-Plex-Platform", "tvOS",
+		"X-Plex-Device", "Apple TV",
+		"X-Plex-Client-Identifier", "plezy-678",
+		"X-Plex-Session-Identifier", "plezy-678-sess",
+	}
+
+	type xmlStream struct {
+		StreamType int `xml:"streamType,attr"`
+		Selected   int `xml:"selected,attr"`
+	}
+	type xmlPart struct {
+		Exists     *int        `xml:"exists,attr"`
+		Accessible *int        `xml:"accessible,attr"`
+		Stream     []xmlStream `xml:"Stream"`
+	}
+	type xmlMedia struct {
+		ID              int64     `xml:"id,attr"`
+		Title           string    `xml:"title,attr"`
+		VideoResolution string    `xml:"videoResolution,attr"`
+		VideoCodec      string    `xml:"videoCodec,attr"`
+		Part            []xmlPart `xml:"Part"`
+	}
+	type xmlContainer struct {
+		Video []struct {
+			Media []xmlMedia `xml:"Media"`
+		} `xml:"Video"`
+	}
+	hasSelectedSubtitle := func(m xmlMedia) bool {
+		if len(m.Part) == 0 {
+			return false
+		}
+		for _, st := range m.Part[0].Stream {
+			if st.StreamType == 3 && st.Selected == 1 {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Step 1: Plezy Play Version fetch on a cold title probes Auto and the
+	// free-source 4K version so 4K has real streams, selected subtitle,
+	// exists/accessible, and a descriptive title before first play.
+	playFetch := "/library/metadata/" + key + "?includeMarkers=1&includeChapters=1&checkFiles=1&includeStreams=1"
+	r1 := f.get(t, playFetch, hdr...)
+	if r1.Code != http.StatusOK {
+		t.Fatalf("first play fetch %d: %s", r1.Code, r1.Body.String())
+	}
+	var mc1 xmlContainer
+	if err := xml.Unmarshal(r1.Body.Bytes(), &mc1); err != nil {
+		t.Fatalf("unmarshal first response: %v\n%s", err, r1.Body.String())
+	}
+	if len(mc1.Video) != 1 || len(mc1.Video[0].Media) < 2 {
+		t.Fatalf("expected Auto + 4K Media entries, got: %s", r1.Body.String())
+	}
+
+	var media4K *xmlMedia
+	for i := range mc1.Video[0].Media {
+		m := &mc1.Video[0].Media[i]
+		if m.ID != int64(fightClub.Key) && strings.Contains(m.Title, "FOURK1") {
+			media4K = m
+			break
+		}
+	}
+	if media4K == nil {
+		t.Fatalf("4K Media entry missing after Play Version fetch:\n%s", r1.Body.String())
+	}
+	if !hasSelectedSubtitle(*media4K) {
+		t.Fatalf("4K Media entry missing rule-selected subtitle on first play:\n%s", r1.Body.String())
+	}
+	if media4K.Part[0].Exists == nil || *media4K.Part[0].Exists != 1 || media4K.Part[0].Accessible == nil || *media4K.Part[0].Accessible != 1 {
+		t.Fatalf("probed 4K Part missing exists/accessible flags:\n%s", r1.Body.String())
+	}
+	if media4K.Title == "" || media4K.Title == "4K" || !strings.Contains(media4K.Title, " · ") {
+		t.Fatalf("4K Media title = %q, want descriptive probed title", media4K.Title)
+	}
+
+	// Step 2: Play the explicit 4K version (<5% watch) and stop.
+	slot4K := ""
+	caps := (&Request{User: &ownerUser, Product: "Plezy", Platform: "tvOS", Device: "Apple TV", ClientID: "plezy-678"}).ClientCaps(0)
+	slots, err := rs.VersionSlots(context.Background(), core.ResolveRequest{Title: &fightClub, Client: caps, User: &ownerUser}, core.MaxVariants, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sl := range slots {
+		if sl.Release.ID == rel4K1.ID {
+			slot4K = sl.ID
+			break
+		}
+	}
+	if slot4K == "" {
+		t.Fatalf("could not locate slot selector for %s in %+v", rel4K1.ID, slots)
+	}
+	sess, err := mgr.PrepareVariant(context.Background(), &ownerUser, fightClub.Key, caps, slot4K)
+	if err != nil {
+		t.Fatalf("PrepareVariant(slot4K): %v", err)
+	}
+	if sess.Resolution.Release.ID != rel4K1.ID {
+		t.Fatalf("PrepareVariant(slot4K) opened %s, want %s", sess.Resolution.Release.ID, rel4K1.ID)
+	}
+	mgr.Stop(sess.ID)
+
+	// Step 3: Re-fetch metadata after stop. Auto must stay 1080p (not promoted
+	// to 4K), and 4K must stay on rel4K1 with its stored probe (hevc, 4k,
+	// rule-selected subtitle, descriptive title) instead of refilling with rel4K2.
+	r2 := f.get(t, playFetch, hdr...)
+	if r2.Code != http.StatusOK {
+		t.Fatalf("post-stop play fetch %d: %s", r2.Code, r2.Body.String())
+	}
+	var mc2 xmlContainer
+	if err := xml.Unmarshal(r2.Body.Bytes(), &mc2); err != nil {
+		t.Fatalf("unmarshal post-stop response: %v\n%s", err, r2.Body.String())
+	}
+	if len(mc2.Video) != 1 || len(mc2.Video[0].Media) < 2 {
+		t.Fatalf("expected Auto + 4K Media after stop, got:\n%s", r2.Body.String())
+	}
+	autoMedia := mc2.Video[0].Media[0]
+	if autoMedia.ID != int64(fightClub.Key) || autoMedia.VideoResolution != "1080" || autoMedia.VideoCodec != "h264" {
+		t.Fatalf("Auto was promoted/overwritten by explicit 4K play: id=%d res=%s codec=%s title=%q\n%s",
+			autoMedia.ID, autoMedia.VideoResolution, autoMedia.VideoCodec, autoMedia.Title, r2.Body.String())
+	}
+	if !hasSelectedSubtitle(autoMedia) {
+		t.Fatalf("Auto lost its own probed subtitle after explicit 4K play:\n%s", r2.Body.String())
+	}
+	var post4K *xmlMedia
+	for i := range mc2.Video[0].Media[1:] {
+		m := &mc2.Video[0].Media[i+1]
+		if m.ID == media4K.ID {
+			post4K = m
+			break
+		}
+	}
+	if post4K == nil {
+		t.Fatalf("4K Media entry (id=%d) missing after stop:\n%s", media4K.ID, r2.Body.String())
+	}
+	if post4K.VideoCodec != "hevc" || post4K.VideoResolution != "4k" || !hasSelectedSubtitle(*post4K) {
+		t.Fatalf("4K Media lost stored probe after stop: codec=%s res=%s title=%q\n%s",
+			post4K.VideoCodec, post4K.VideoResolution, post4K.Title, r2.Body.String())
+	}
+	if !strings.Contains(post4K.Title, "FOURK1") || strings.Contains(post4K.Title, "FOURK2") {
+		t.Fatalf("4K Media was refilled with another release: title=%q", post4K.Title)
 	}
 }

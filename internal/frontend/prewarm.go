@@ -45,6 +45,12 @@ type PlayMetadataProber interface {
 	ProbePlayMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
 
+// VersionHeaderProber runs bounded header probes on unprobed free-source
+// offered versions (cached debrid / vaulted Usenet) ahead of play.
+type VersionHeaderProber interface {
+	ProbeVersionHeaders(context.Context, *User, RatingKey, ClientCaps) error
+}
+
 // DetailRevealer schedules a background season-drop check when a viewer opens
 // a show, season, or episode detail page, subject to detail-burst gating.
 type DetailRevealer interface {

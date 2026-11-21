@@ -109,6 +109,14 @@ func (s surfaceEditions) Variants(ctx context.Context, req core.ResolveRequest, 
 		return nil, nil
 	}
 	req.User = s.app.withEffectiveAudioLanguages(ctx, req.User)
+	if req.PlayedRelease == "" && s.app.playback != nil && req.User != nil && req.User.ID > 0 && req.Title != nil {
+		if _, played, sel, ok := s.app.playback.ResumedVersion(ctx, req.User, req.Title.Key, req.Client); ok {
+			req.PlayedRelease = played.ID
+			req.PlayedSelector = sel
+			relCopy := played
+			req.PlayedReleaseRecord = &relCopy
+		}
+	}
 	variants, err := s.app.resolver.Variants(ctx, req, max)
 	if err == nil && s.app.playback != nil {
 		variants = s.app.playback.WithCachedVariantInfo(ctx, req.User, req.Title, variants)
@@ -171,6 +179,14 @@ func (s surfaceEditions) VersionSlots(ctx context.Context, req core.ResolveReque
 	}
 	if labels {
 		req.User = s.app.withEffectiveAudioLanguages(ctx, req.User)
+		if req.PlayedRelease == "" && s.app.playback != nil && req.User != nil && req.User.ID > 0 && req.Title != nil {
+			if _, played, sel, ok := s.app.playback.ResumedVersion(ctx, req.User, req.Title.Key, req.Client); ok {
+				req.PlayedRelease = played.ID
+				req.PlayedSelector = sel
+				relCopy := played
+				req.PlayedReleaseRecord = &relCopy
+			}
+		}
 	}
 	versions, err := s.app.resolver.VersionSlots(ctx, req, max, labels)
 	if err == nil && labels && s.app.playback != nil {

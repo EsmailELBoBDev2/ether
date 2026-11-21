@@ -44,6 +44,9 @@ const (
 	// first frame because the following file.mkv joins the same flight.
 	// The wait stays bounded by the request context.
 	plezyPlayProbeWait = 12 * time.Second
+	// plezyVersionProbeWait bounds parallel header probes on free-source
+	// non-Auto versions during a Plezy play-time metadata read (#678).
+	plezyVersionProbeWait = 4 * time.Second
 	// plezyReaskMinAge separates Plezy's detail-open burst (three
 	// /library/metadata/<id> fetches within ~1 s while browsing) from
 	// the later play-time re-ask. Burst fetches inside this window are
@@ -114,6 +117,47 @@ func (st *plezyReaskStore) checkOrArm(k plezyReaskKey, now time.Time) bool {
 	return false
 }
 
+func (st *plezyReaskStore) isArmedReady(k plezyReaskKey, now time.Time) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	at, ok := st.rows[k]
+	if !ok {
+		return false
+	}
+	age := now.Sub(at)
+	if age < 0 || age > plezyReaskTTL {
+		delete(st.rows, k)
+		return false
+	}
+	return age >= plezyReaskMinAge
+}
+
+func (st *plezyReaskStore) armIfIdle(k plezyReaskKey, now time.Time) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.rows == nil {
+		st.rows = map[plezyReaskKey]time.Time{}
+	}
+	if at, ok := st.rows[k]; ok {
+		age := now.Sub(at)
+		if age >= 0 && age <= plezyReaskTTL {
+			return
+		}
+		delete(st.rows, k)
+	}
+	if len(st.rows) >= plezyReaskMaxRows {
+		for row, at := range st.rows {
+			if age := now.Sub(at); age < 0 || age > plezyReaskTTL {
+				delete(st.rows, row)
+			}
+		}
+		if len(st.rows) >= plezyReaskMaxRows {
+			return
+		}
+	}
+	st.rows[k] = now
+}
+
 func (st *plezyReaskStore) forget(k plezyReaskKey) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -122,12 +166,11 @@ func (st *plezyReaskStore) forget(k plezyReaskKey) {
 
 // plezyFirstPlay runs on a single-item metadata read for a playable
 // title. Nothing happens unless the client is Plezy asking with file
-// checks (its detail and playback fetches both do) for a title with no
-// exact tracks yet. The first fetch arms the title and follow-up burst
-// fetches inside plezyReaskMinAge return immediately without waiting or
-// disarming; once at least plezyReaskMinAge has elapsed, the re-ask is
-// the play tap and waits (bounded by reqCtx and plezyPlayProbeWait) on
-// the shared foreground resolve+probe flight.
+// checks (its detail and playback fetches both do). On browsing reads it
+// never waits; on a play-intent fetch (Plezy's getVideoPlaybackData query
+// shape or an armed re-ask after plezyReaskMinAge) it waits, bounded, for
+// Auto's resolve+probe flight when needed and for parallel header probes
+// on unprobed free-source non-Auto versions (#618, #678).
 func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *frontend.Title, q url.Values, rawQuery string) {
 	if pr == nil || pr.User == nil || t == nil || !plezyClient(pr) || libraryToolClient(pr) {
 		return
@@ -136,10 +179,7 @@ func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *fro
 		return
 	}
 	k := plezyReaskKey{userID: pr.User.ID, clientID: pr.ClientID, key: t.Key}
-	if _, _, exact := s.mediaInfoWithSource(ctx, pr, t); exact {
-		s.plezyReasks.forget(k)
-		return
-	}
+	_, _, exact := s.mediaInfoWithSource(ctx, pr, t)
 	// Plezy's playback fetch (getVideoPlaybackData) is the only Plezy read
 	// that puts includeMarkers before includeChapters; every browsing read
 	// (detail screen, season-row focus header, shared row, extras) puts
@@ -148,6 +188,12 @@ func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *fro
 	// play-time fetch is that title's first. That shape is play intent on
 	// its own, with no arming fetch before it.
 	play := plezyPlaybackFetch(rawQuery)
+	if exact && !play {
+		if !s.plezyReasks.isArmedReady(k, s.now()) {
+			return
+		}
+		play = true
+	}
 	if !play && !s.plezyReasks.checkOrArm(k, s.now()) {
 		// Initial detail open or follow-up burst fetch inside
 		// plezyReaskMinAge: never wait; this response goes out
@@ -155,6 +201,7 @@ func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *fro
 		// the arm intact for the play-time re-ask.
 		return
 	}
+	pr.playIntentVersions = true
 	if reqCtx == nil {
 		reqCtx = ctx
 	}
@@ -167,8 +214,15 @@ func (s *Server) plezyFirstPlay(ctx, reqCtx context.Context, pr *Request, t *fro
 	// warm entry the following file.mkv request adopts directly.
 	probeCtx, cancel := context.WithTimeout(reqCtx, plezyPlayProbeWait)
 	defer cancel()
-	_ = s.probePlezyPlay(probeCtx, pr, t)
-	if _, _, exact := s.mediaInfoWithSource(ctx, pr, t); exact {
+	if !exact {
+		_ = s.probePlezyPlay(probeCtx, pr, t)
+	}
+	if prober, ok := s.playback().(frontend.VersionHeaderProber); ok {
+		vCtx, vCancel := context.WithTimeout(probeCtx, plezyVersionProbeWait)
+		_ = prober.ProbeVersionHeaders(vCtx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key))
+		vCancel()
+	}
+	if _, _, exactNow := s.mediaInfoWithSource(ctx, pr, t); exactNow {
 		s.plezyReasks.forget(k)
 	}
 }

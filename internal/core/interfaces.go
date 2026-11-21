@@ -677,6 +677,14 @@ type ResolveRequest struct {
 	// PlayedRelease is the release this viewer last played of the title
 	// (the one a resume opens); Variants names Auto after it (additive).
 	PlayedRelease string
+	// PlayedSelector is the version slot selector PlayedRelease fulfilled
+	// (empty or Auto when played via Auto). When set to a non-Auto slot,
+	// PlayedRelease stays behind that slot instead of replacing Auto.
+	PlayedSelector string
+	// PlayedReleaseRecord carries the persisted release record for
+	// PlayedRelease when available (e.g. from playback_resume) so the slot
+	// keeps its release metadata even after the search cache expires.
+	PlayedReleaseRecord *Release
 	// Exclude releases already tried (failover).
 	Exclude []string
 	// ExcludeReleases excludes every copy/repost matching these releases

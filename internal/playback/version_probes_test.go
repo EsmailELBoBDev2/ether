@@ -536,3 +536,89 @@ func TestCachedItemProbePersistsPluginChaptersAcrossRestart(t *testing.T) {
 		t.Fatalf("m2.CachedItemProbe after restart = (%+v, %v), want 3 persisted chapters", got2, ok)
 	}
 }
+
+func TestProbeVersionHeadersProbesFreeSourceNonAutoVersions(t *testing.T) {
+	ctx := context.Background()
+	mkvBytes := loadMKVFixture(t)
+	h := newHarness(t, nil, nil)
+	db := store.OpenTest(t)
+	dir := t.TempDir()
+	cfg := config.Defaults(dir)
+
+	autoRel := core.Release{
+		ID: "rel-auto", Name: "The.Signal.1999.1080p.WEB-DL.H264-GRP",
+		Protocol: core.ProtocolTorrent, InfoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Size: int64(len(mkvBytes)),
+	}
+	rel4K := core.Release{
+		ID: "rel-4k", Name: "The.Signal.1999.2160p.WEB-DL.HEVC-GRP",
+		Protocol: core.ProtocolTorrent, InfoHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Size: int64(len(mkvBytes)),
+	}
+	vr := &variantProbeResolver{
+		fakeResolver: h.resolver,
+		variants: []core.ReleaseVariant{
+			{ID: core.KindAutoVersionID, Label: "Auto", Auto: true, Release: autoRel, Info: core.MediaInfo{Estimated: true}},
+			{ID: core.VersionSelectorPrefix + "eyJrIjoidGllciIsImgiOjIxNjB9", Label: "4K", Release: rel4K, Info: core.MediaInfo{Estimated: true}},
+		},
+	}
+
+	var opened []string
+	var openMu sync.Mutex
+	m, err := New(Deps{
+		Resolver:   vr,
+		Engine:     h.engine,
+		Transcoder: h.tr,
+		Catalog:    h.catalog,
+		SelectProfile: func(core.ClientCaps, *core.User, string) core.QualityProfile {
+			return config.DefaultQuality().Profiles[1]
+		},
+		DB: db,
+		OpenCachedDebrid: func(_ context.Context, rel core.Release) (core.MediaSource, error) {
+			openMu.Lock()
+			opened = append(opened, rel.ID)
+			openMu.Unlock()
+			return &fixtureMediaSource{id: rel.ID, name: rel.Name + ".mkv", data: mkvBytes}, nil
+		},
+	}, cfg, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	// Pre-populate Auto's probe so only the non-Auto 4K version still needs probing.
+	m.RecordReleaseProbe(ctx, autoRel, nil, core.MediaInfo{
+		Container: "mkv", Size: autoRel.Size, Duration: time.Minute,
+		Streams: []core.StreamInfo{
+			{Index: 0, Type: "video", Codec: "h264", Width: 1920, Height: 1080},
+			{Index: 1, Type: "audio", Codec: "aac", Language: "en", Channels: 2},
+		},
+	})
+
+	if err := m.ProbeVersionHeaders(ctx, owner, movieKey, defaultCaps("plezy-hdr")); err != nil {
+		t.Fatalf("ProbeVersionHeaders: %v", err)
+	}
+	if vr.searchHits.Load() != 0 {
+		t.Fatalf("ProbeVersionHeaders invoked Resolve (%d times)", vr.searchHits.Load())
+	}
+	openMu.Lock()
+	gotOpened := append([]string(nil), opened...)
+	openMu.Unlock()
+	if len(gotOpened) != 1 || gotOpened[0] != "rel-4k" {
+		t.Fatalf("opened releases = %v, want only unprobed [rel-4k]", gotOpened)
+	}
+
+	enriched := m.WithCachedVariantInfo(ctx, owner, h.catalog.titles[movieKey], vr.variants)
+	if len(enriched) != 2 || enriched[1].Info.Estimated || len(enriched[1].Info.Streams) < 3 {
+		t.Fatalf("4K variant not enriched with probed streams: %+v", enriched)
+	}
+	hasSub := false
+	for _, st := range enriched[1].Info.Streams {
+		if st.Type == "subtitle" {
+			hasSub = true
+		}
+	}
+	if !hasSub {
+		t.Fatalf("4K probed streams missing subtitle track: %+v", enriched[1].Info.Streams)
+	}
+}

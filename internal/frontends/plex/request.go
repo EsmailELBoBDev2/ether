@@ -57,6 +57,9 @@ type Request struct {
 	detailRefillRequested bool
 	detailRefill          <-chan struct{}
 	detailWaitUntil       time.Time // shared Android TV detail probe/version wait budget
+	// Set on Plezy play-intent metadata reads so VersionSlots reads concrete
+	// search-cache/probe state instead of falling back to cold placeholders.
+	playIntentVersions bool
 
 	// Capability is set when authentication used a stream grant or other
 	// session-scoped credential, not a user token. Only transcode

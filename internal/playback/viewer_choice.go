@@ -2,9 +2,6 @@ package playback
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -32,20 +29,7 @@ type viewerChoiceReader interface {
 }
 
 func isAutoVersionSelector(prefer string) bool {
-	if prefer == "" || prefer == core.KindAutoVersionID {
-		return true
-	}
-	if !strings.HasPrefix(prefer, core.VersionSelectorPrefix) || len(prefer) > 256 {
-		return false
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(prefer, core.VersionSelectorPrefix))
-	if err != nil {
-		return false
-	}
-	var slot struct {
-		Kind string `json:"k"`
-	}
-	return json.Unmarshal(raw, &slot) == nil && slot.Kind == "auto"
+	return core.IsAutoVersionSelector(prefer)
 }
 
 // NoteStartPosition anchors explicit-version real-play tracking at pos (used

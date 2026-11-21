@@ -277,6 +277,38 @@ func (m *Manager) CachedVariantInfo(ctx context.Context, userID int64, key core.
 	return persistedProbeFacts(info)
 }
 
+// cachedVariantProbes loads the bounded per-viewer playback_probe set (up to 4
+// releases per title) in a single request-memoized query.
+func (m *Manager) cachedVariantProbes(ctx context.Context, userID int64, key core.RatingKey) map[string]core.MediaInfo {
+	if m.resume == nil || userID <= 0 || key == 0 {
+		return nil
+	}
+	got, err := reqmemo.Do(ctx, resumeMemoKey(userID, key)+":probe:all", func() (map[string]core.MediaInfo, error) {
+		rows, err := m.resume.db.QueryContext(ctx, `SELECT release_id, info_json FROM playback_probe WHERE user_id=? AND rating_key=?`, userID, int64(key))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := map[string]core.MediaInfo{}
+		for rows.Next() {
+			var relID, raw string
+			if err := rows.Scan(&relID, &raw); err != nil || relID == "" || len(raw) > maxPersistedProbeBytes {
+				continue
+			}
+			if info, ok := decodePersistedProbe(raw); ok {
+				if facts, ok := persistedProbeFacts(info); ok {
+					out[relID] = facts
+				}
+			}
+		}
+		return out, rows.Err()
+	})
+	if err != nil {
+		return nil
+	}
+	return got
+}
+
 // WithCachedVariantInfo enriches only the bounded list of offered versions.
 // It checks what Ether already knows first (durable content-ID probes, NZB
 // vault tracks, per-viewer playback probes, and already-fetched debrid file
@@ -286,21 +318,39 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 		return variants
 	}
 	out := append([]core.ReleaseVariant(nil), variants...)
+	var viewerProbes map[string]core.MediaInfo
+	viewerProbesLoaded := false
 	for i := range out {
-		// Content-ID probe cache and vault tracks work across viewers and
-		// indexers in O(1) memory without touching the database.
-		if info, ok := m.CachedReleaseProbe(out[i].Release); ok {
-			out[i].Info = info
-		} else {
-			// Menu identity may be a logical slot; probes belong to its concrete source.
-			release := out[i].Release.ID
-			if release == "" {
-				release = out[i].ID
-			}
-			if user != nil {
-				if info, ok := m.CachedVariantInfo(ctx, user.ID, title.Key, release); ok {
-					out[i].Info = info
-				} else if m.deps.DebridFileMeta != nil {
+		// Menu identity may be a logical slot; probes belong to its concrete source.
+		release := out[i].Release.ID
+		if release == "" {
+			release = out[i].ID
+		}
+		placeholder := release == "" || strings.HasPrefix(release, core.VersionSelectorPrefix)
+		if !placeholder {
+			// Content-ID probe cache and vault tracks work across viewers and
+			// indexers in O(1) memory without touching the database.
+			if info, ok := m.CachedReleaseProbe(out[i].Release); ok {
+				out[i].Info = info
+			} else if user != nil && user.ID > 0 {
+				var found bool
+				if m.resume != nil {
+					if live := m.resume.liveProbeHash(user.ID, title.Key, release, ""); live != nil {
+						out[i].Info = core.CloneMediaInfo(live.info)
+						found = true
+					}
+				}
+				if !found {
+					if !viewerProbesLoaded {
+						viewerProbes = m.cachedVariantProbes(ctx, user.ID, title.Key)
+						viewerProbesLoaded = true
+					}
+					if info, ok := viewerProbes[release]; ok {
+						out[i].Info = core.CloneMediaInfo(info)
+						found = true
+					}
+				}
+				if !found && m.deps.DebridFileMeta != nil {
 					if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
 						enrichEstimatedFromDebridMeta(&out[i], filePath, size)
 					}
@@ -309,6 +359,9 @@ func (m *Manager) WithCachedVariantInfo(ctx context.Context, user *core.User, ti
 				if filePath, size, ok := m.deps.DebridFileMeta(out[i].Release); ok {
 					enrichEstimatedFromDebridMeta(&out[i], filePath, size)
 				}
+			}
+			if !out[i].Info.Estimated && out[i].Info.Size > 0 && out[i].Release.Size <= 0 {
+				out[i].Release.Size = out[i].Info.Size
 			}
 		}
 		if out[i].Availability != core.VersionUnavailable {

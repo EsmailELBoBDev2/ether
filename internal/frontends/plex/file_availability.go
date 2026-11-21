@@ -104,19 +104,24 @@ dispatch:
 		if verdicts[i] != nil {
 			live = *verdicts[i]
 		}
+		anyUnprobed := false
 		for _, part := range parts[t] {
 			// Plezy treats exists+accessible (with Stream) as proof
 			// its cached row is complete and reuses it at Play. A
 			// part rendered from the pre-probe estimate is not
 			// complete, so leave the flags unset — PMS's shape
 			// without a file check — and Plezy re-fetches at Play,
-			// where plezyFirstPlay waits on the probe (#618). A
+			// where plezyFirstPlay waits on the probe (#618, #678). A
 			// missing verdict still stamps, so Play stays hidden
 			// for a Part proven gone.
 			if live && plezyClient(pr) && !s.plezyPartProbed(ctx, pr, part) {
+				anyUnprobed = true
 				continue
 			}
 			part.Exists, part.Accessible = model.Ptr(live), model.Ptr(live)
+		}
+		if anyUnprobed && pr != nil && pr.User != nil && t.key != 0 {
+			s.plezyReasks.armIfIdle(plezyReaskKey{userID: pr.User.ID, clientID: pr.ClientID, key: t.key}, s.now())
 		}
 	}
 }

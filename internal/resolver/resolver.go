@@ -830,7 +830,7 @@ func flightKey(req core.ResolveRequest, profile core.QualityProfile) string {
 		audio = req.User.AudioLanguages
 		preferOriginal = req.User.PreferOriginal
 	}
-	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%t|%t|%s|%t", req.Title.Key, profile.Name, strings.Join(ex, ","), strings.Join(exRel, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec+"|"+req.PlayedRelease, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","), preferOriginal)
+	return fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%t|%t|%s|%t", req.Title.Key, profile.Name, strings.Join(ex, ","), strings.Join(exRel, ","), capsJSON, profileJSON, req.Prefer+"|"+req.PreferVideoCodec+"|"+req.PlayedRelease+"|"+req.PlayedSelector, req.PreferredOnly, req.ExactHEVCTranscode, strings.Join(audio, ","), preferOriginal)
 }
 
 // Resolve implements core.Resolver. Concurrent calls for the same
@@ -1221,15 +1221,19 @@ func (s *Service) resolve(ctx context.Context, req core.ResolveRequest, profile 
 		}
 		cands = pinFirst(acceptableVariantAudio(clearIdentityVariants(cands)), pinID)
 		pool := cands
-		auto := s.slotAuto(req, cands)
+		autoReq := req
+		autoReq.Prefer = ""
+		titleVC := s.viewerTitleChoiceForResolve(autoReq, nil)
+		showVC := s.viewerShowChoiceForResolve(autoReq)
 		if s.resolverCfg().OfferHigherVersions && slot.Kind != "auto" && slot.Kind != "alternative" {
 			if relaxed, ok := relaxedVariantProfile(profile, req.Client); ok {
 				if ranked, _, e := s.rankCandidatesLocal(ctx, req, sreq, relaxed, results, &trace, pinID, false); e == nil {
-					pool = acceptableVariantAudio(clearIdentityVariants(ranked))
+					pool = pinFirst(acceptableVariantAudio(clearIdentityVariants(ranked)), pinID)
 				}
 			}
 		}
-		picks := slotChoices(plan, pool, auto)
+		auto, _ := s.slotAutoWithSource(autoReq, cands, pool, titleVC, showVC)
+		picks := slotPicks(plan, pool, auto, req, titleVC)
 		if selected >= 0 && selected < len(picks) && picks[selected].ID != "" {
 			selector, slotRelease = req.Prefer, picks[selected].ID
 			found := false
@@ -1650,6 +1654,7 @@ func (s *Service) searchRescue(ctx context.Context, req core.SearchRequest) ([]c
 		}
 	}
 	s.mu.Unlock()
+	s.InvalidateDetailVariants()
 	return results, "live-complete"
 }
 
@@ -1685,6 +1690,7 @@ func (s *Service) searchSeasonPacks(ctx context.Context, req core.SearchRequest,
 		boundMap(s.searchCache, maxSearchCache, func(e searchCacheEntry) bool { return !now.Before(e.expires) })
 		s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: s.now().Add(s.searchTTL()), refreshed: s.now()}
 		s.mu.Unlock()
+		s.InvalidateDetailVariants()
 	}
 	return results
 }
@@ -1850,6 +1856,7 @@ func (s *Service) storeSearchCache(req core.SearchRequest, results []core.Releas
 	}
 	s.searchCache[key] = searchCacheEntry{results: append([]core.Release(nil), results...), expires: now.Add(ttl), refreshed: now}
 	s.mu.Unlock()
+	s.InvalidateDetailVariants()
 }
 
 // rankCandidates is scoreCandidates with the owner's pinned release id

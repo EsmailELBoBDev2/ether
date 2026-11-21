@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -199,6 +200,9 @@ ON CONFLICT(content_key) DO UPDATE SET info_json=excluded.info_json, updated_at=
 // content identity (and into the NZB vault's TrackStore when vaulted).
 func (m *Manager) RecordReleaseProbe(ctx context.Context, rel core.Release, rawPayload []byte, info core.MediaInfo) {
 	m.persistReleaseProbe(ctx, rel, rawPayload, info)
+	if m.deps.OnVersionProbed != nil {
+		m.deps.OnVersionProbed(0, rel)
+	}
 }
 
 func itemProbeContentKey(key core.RatingKey) string {
@@ -568,6 +572,122 @@ func (m *Manager) scheduleVersionProbes(user *core.User, key core.RatingKey, cap
 	}()
 }
 
+type versionSlotResolver interface {
+	VersionSlots(context.Context, core.ResolveRequest, int, bool) ([]core.ReleaseVariant, error)
+}
+
+func (m *Manager) offeredVariantsForProbing(ctx context.Context, user *core.User, title *core.Title, caps core.ClientCaps) []core.ReleaseVariant {
+	req := core.ResolveRequest{
+		Title:  title,
+		User:   user,
+		Client: caps,
+	}
+	if _, rel, sel, ok := m.ResumedVersion(ctx, user, title.Key, caps); ok {
+		req.PlayedRelease = rel.ID
+		req.PlayedSelector = sel
+		relCopy := rel
+		req.PlayedReleaseRecord = &relCopy
+	}
+	var variants []core.ReleaseVariant
+	var err error
+	if slots, ok := m.deps.Resolver.(versionSlotResolver); ok {
+		variants, err = slots.VersionSlots(ctx, req, core.MaxVariants, true)
+	} else if vr, ok := m.deps.Resolver.(core.VariantResolver); ok {
+		variants, err = vr.Variants(ctx, req, core.MaxVariants)
+	} else {
+		return nil
+	}
+	if err != nil || len(variants) == 0 {
+		return nil
+	}
+	if len(variants) > core.MaxVariants {
+		variants = variants[:core.MaxVariants]
+	}
+	return variants
+}
+
+var _ core.VersionHeaderProber = (*Manager)(nil)
+
+// ProbeVersionHeaders runs bounded, parallel container header probes on any
+// unprobed offered versions of key that can be opened without indexer searches
+// or NZB grabs (already-cached debrid torrents, direct HTTP streams, or
+// vaulted Usenet NZBs). Used by play-time metadata reads (such as Plezy's
+// Play Version picker) so non-Auto versions carry real streams and viewer
+// rule-selected subtitles on first play without spending indexer budget.
+func (m *Manager) ProbeVersionHeaders(ctx context.Context, user *core.User, key core.RatingKey, caps core.ClientCaps) error {
+	if m == nil || user == nil || key == 0 {
+		return nil
+	}
+	if m.deps.OpenVaulted == nil && m.deps.OpenCachedDebrid == nil {
+		return nil
+	}
+	if m.deps.Catalog == nil || m.deps.Resolver == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	title, err := m.deps.Catalog.Get(core.WithLocalResponse(ctx), key)
+	if err != nil || title == nil {
+		return nil
+	}
+	variants := m.offeredVariantsForProbing(core.WithoutLocalResponse(ctx), user, title, caps)
+	if len(variants) == 0 {
+		return nil
+	}
+	var todo []core.Release
+	seen := make(map[string]bool, len(variants))
+	for _, v := range variants {
+		rel := v.Release
+		if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) || seen[rel.ID] {
+			continue
+		}
+		seen[rel.ID] = true
+		if _, hit := m.CachedReleaseProbe(rel); hit {
+			continue
+		}
+		if _, hit := m.CachedVariantInfo(ctx, user.ID, key, rel.ID); hit {
+			continue
+		}
+		todo = append(todo, rel)
+	}
+	if len(todo) == 0 {
+		return nil
+	}
+	budget := m.deps.HeaderProbeBudget
+	if budget <= 0 {
+		budget = transcode.DefaultHeaderProbeBudget
+	}
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, rel := range todo {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return ctx.Err()
+		}
+		if ctx.Err() != nil {
+			<-sem
+			break
+		}
+		wg.Add(1)
+		go func(r core.Release) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			m.probeOneVersionHeaderWithYield(ctx, key, r, budget, m.isShuttingDown)
+		}(rel)
+	}
+	wg.Wait()
+	return ctx.Err()
+}
+
+func (m *Manager) isShuttingDown() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed || m.draining
+}
+
 func (m *Manager) runVersionProbes(user *core.User, key core.RatingKey, caps core.ClientCaps) bool {
 	// Acquire the single global background header-probe slot, yielding if
 	// playback starts or the manager closes while waiting.
@@ -607,22 +727,9 @@ func (m *Manager) runVersionProbes(user *core.User, key core.RatingKey, caps cor
 	if err != nil || title == nil {
 		return false
 	}
-	vr, ok := m.deps.Resolver.(core.VariantResolver)
-	if !ok {
+	variants := m.offeredVariantsForProbing(runCtx, user, title, caps)
+	if len(variants) == 0 {
 		return false
-	}
-	// Variants reads only the resolver's search cache (never queries indexers)
-	// and returns concrete releases rather than logical placeholder slots.
-	variants, err := vr.Variants(runCtx, core.ResolveRequest{
-		Title:  title,
-		User:   user,
-		Client: caps,
-	}, core.MaxVariants)
-	if err != nil || len(variants) == 0 {
-		return false
-	}
-	if len(variants) > core.MaxVariants {
-		variants = variants[:core.MaxVariants]
 	}
 
 	budget := m.deps.HeaderProbeBudget
@@ -635,7 +742,7 @@ func (m *Manager) runVersionProbes(user *core.User, key core.RatingKey, caps cor
 			return false
 		}
 		rel := v.Release
-		if rel.ID == "" {
+		if rel.ID == "" || strings.HasPrefix(rel.ID, core.VersionSelectorPrefix) {
 			continue
 		}
 		if _, hit := m.CachedReleaseProbe(rel); hit {
@@ -654,6 +761,10 @@ func (m *Manager) runVersionProbes(user *core.User, key core.RatingKey, caps cor
 }
 
 func (m *Manager) probeOneVersionHeader(ctx context.Context, key core.RatingKey, rel core.Release, budget int) bool {
+	return m.probeOneVersionHeaderWithYield(ctx, key, rel, budget, m.isBackgroundBusy)
+}
+
+func (m *Manager) probeOneVersionHeaderWithYield(ctx context.Context, key core.RatingKey, rel core.Release, budget int, yield func() bool) bool {
 	bgCtx := ctx
 	if !core.IsBackgroundCheck(bgCtx) {
 		bgCtx = core.WithBackgroundBudget(bgCtx, func(context.Context, string, string, int64) error { return nil })
@@ -685,7 +796,7 @@ func (m *Manager) probeOneVersionHeader(ctx context.Context, key core.RatingKey,
 	}
 	defer func() { _ = src.Close() }()
 
-	if probeCtx.Err() != nil || m.isBackgroundBusy() {
+	if probeCtx.Err() != nil || (yield != nil && yield()) {
 		return false
 	}
 	size := src.Size()
@@ -694,12 +805,12 @@ func (m *Manager) probeOneVersionHeader(ctx context.Context, key core.RatingKey,
 	}
 	reader := &budgetedHeaderReader{
 		src:   src,
-		yield: m.isBackgroundBusy,
+		yield: yield,
 	}
 	reader.remaining.Store(int64(budget))
 
 	info, err := transcode.ProbeHeader(probeCtx, reader, size, budget)
-	if err != nil || info == nil || probeCtx.Err() != nil || m.isBackgroundBusy() {
+	if err != nil || info == nil || probeCtx.Err() != nil || (yield != nil && yield()) {
 		return false
 	}
 	mi := core.CloneMediaInfo(*info)

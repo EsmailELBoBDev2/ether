@@ -108,7 +108,7 @@ func (a *App) buildPlayback(ctx context.Context, cfg config.Config) error {
 		},
 		OnVersionProbed: func(_ core.RatingKey, _ core.Release) {
 			if a.resolver != nil {
-				a.resolver.InvalidateDetailVariants()
+				a.resolver.RefreshDetailVariants()
 			}
 		},
 		Events:             a.eventBus,

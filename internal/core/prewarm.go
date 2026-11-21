@@ -96,3 +96,11 @@ type MetadataProber interface {
 type PlayMetadataProber interface {
 	ProbePlayMetadata(context.Context, *User, RatingKey, ClientCaps) error
 }
+
+// VersionHeaderProber runs bounded header probes on unprobed offered versions
+// that can be opened without indexer searches or NZB grabs (already-cached
+// debrid torrents, direct HTTP streams, or vaulted Usenet NZBs) so play-time
+// metadata reads can return real container tracks for non-Auto picks too.
+type VersionHeaderProber interface {
+	ProbeVersionHeaders(context.Context, *User, RatingKey, ClientCaps) error
+}

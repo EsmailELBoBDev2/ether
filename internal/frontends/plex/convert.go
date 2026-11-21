@@ -629,19 +629,39 @@ type resumedTrackSource interface {
 	ResumedTracks(context.Context, *frontend.User, frontend.RatingKey, frontend.ClientCaps) (frontend.MediaInfo, string, bool)
 }
 
+type resumedVersionSource interface {
+	ResumedVersion(context.Context, *frontend.User, frontend.RatingKey, frontend.ClientCaps) (frontend.MediaInfo, frontend.Release, string, bool)
+}
+
 func (s *Server) resumedTracks(ctx context.Context, pr *Request, t *frontend.Title) (frontend.MediaInfo, string, bool) {
-	if pr == nil || pr.User == nil || pr.User.ID <= 0 || t == nil || s.playback() == nil || !s.playableTitle(ctx, pr.User, t) {
-		return frontend.MediaInfo{}, "", false
-	}
-	src, ok := s.playback().(resumedTrackSource)
+	info, rel, _, ok := s.resumedVersion(ctx, pr, t)
 	if !ok {
 		return frontend.MediaInfo{}, "", false
 	}
-	info, releaseID, ok := src.ResumedTracks(ctx, pr.User, t.Key, s.clientCapsForKey(pr, t.Key))
-	if !ok || releaseID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
-		return frontend.MediaInfo{}, "", false
+	return info, rel.ID, true
+}
+
+func (s *Server) resumedVersion(ctx context.Context, pr *Request, t *frontend.Title) (frontend.MediaInfo, frontend.Release, string, bool) {
+	if pr == nil || pr.User == nil || pr.User.ID <= 0 || t == nil || s.playback() == nil || !s.playableTitle(ctx, pr.User, t) {
+		return frontend.MediaInfo{}, frontend.Release{}, "", false
 	}
-	return info, releaseID, true
+	caps := s.clientCapsForKey(pr, t.Key)
+	if src, ok := s.playback().(resumedVersionSource); ok {
+		info, rel, sel, ok := src.ResumedVersion(ctx, pr.User, t.Key, caps)
+		if !ok || rel.ID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
+			return frontend.MediaInfo{}, frontend.Release{}, "", false
+		}
+		return info, rel, sel, true
+	}
+	src, ok := s.playback().(resumedTrackSource)
+	if !ok {
+		return frontend.MediaInfo{}, frontend.Release{}, "", false
+	}
+	info, releaseID, ok := src.ResumedTracks(ctx, pr.User, t.Key, caps)
+	if !ok || releaseID == "" || info.Estimated || len(info.Streams) == 0 || info.Video() == nil {
+		return frontend.MediaInfo{}, frontend.Release{}, "", false
+	}
+	return info, frontend.Release{ID: releaseID}, "", true
 }
 
 // mediaFor renders the configured menu on every playable Media surface.
@@ -665,10 +685,20 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 		req := frontend.ResolveRequest{Title: t, Client: caps, User: pr.User}
 		if ps != nil && ps.Resolution != nil {
 			req.PlayedRelease = ps.Resolution.Release.ID
-		} else if !info.Estimated {
-			_, req.PlayedRelease, _ = s.resumedTracks(ctx, pr, t)
+			req.PlayedSelector = ps.Resolution.VersionSelector
+			relCopy := ps.Resolution.Release
+			req.PlayedReleaseRecord = &relCopy
+		} else if _, rel, sel, ok := s.resumedVersion(ctx, pr, t); ok {
+			req.PlayedRelease = rel.ID
+			req.PlayedSelector = sel
+			relCopy := rel
+			req.PlayedReleaseRecord = &relCopy
 		}
-		versions, err := source.VersionSlots(ctx, req, frontend.MaxVariants, withVariants && withStreams)
+		vctx := ctx
+		if pr != nil && pr.playIntentVersions {
+			vctx = frontend.WithoutLocalResponse(vctx)
+		}
+		versions, err := source.VersionSlots(vctx, req, frontend.MaxVariants, withVariants && withStreams)
 		if err != nil {
 			pr.versionErr = err
 			return nil, ""
@@ -679,7 +709,8 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 		}
 	}
 	if withVariants && withStreams && !sessionMedia {
-		probed, probedRelease := frontend.MediaInfo{Estimated: true}, ""
+		probed, probedRelease, playedSelector := frontend.MediaInfo{Estimated: true}, "", ""
+		var playedRec *frontend.Release
 		if ps != nil {
 			// A client keeps the Media index it chose before playback
 			// and reads Media[index] when the item is re-fetched during
@@ -690,16 +721,21 @@ func (s *Server) mediaFor(ctx context.Context, pr *Request, t *frontend.Title, w
 			// the session's probe on the version actually playing.
 			if ps.Resolution != nil {
 				probedRelease = ps.Resolution.Release.ID
+				playedSelector = ps.Resolution.VersionSelector
+				relCopy := ps.Resolution.Release
+				playedRec = &relCopy
 			}
 			if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
 				probed = info
 			}
-		} else if facts, rel, ok := s.resumedTracks(ctx, pr, t); ok {
-			probed, probedRelease, info = facts, rel, facts
+		} else if facts, rel, sel, ok := s.resumedVersion(ctx, pr, t); ok {
+			probed, probedRelease, playedSelector, info = facts, rel.ID, sel, facts
+			relCopy := rel
+			playedRec = &relCopy
 		} else if !info.Estimated && len(info.Streams) > 0 && info.Video() != nil {
 			probed = info
 		}
-		if media, edition := s.mediaForVariants(ctx, pr, t, stamp, probed, probedRelease, ps); len(media) > 0 {
+		if media, edition := s.mediaForVariants(ctx, pr, t, stamp, probed, probedRelease, playedSelector, playedRec, ps); len(media) > 0 {
 			return media, edition
 		}
 	}

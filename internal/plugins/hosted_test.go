@@ -81,6 +81,9 @@ func (h *memHost) FoldersStat(context.Context, string, string) (FolderEntry, err
 func (h *memHost) PublishEvent(context.Context, string, json.RawMessage, events.Correlation) error {
 	return ErrPermissionDenied
 }
+func (h *memHost) AIComplete(context.Context, AICompleteRequest) (AICompleteResponse, error) {
+	return AICompleteResponse{}, ErrNotConfigured
+}
 func (h *memHost) NotifyOwner(context.Context, string) error { return nil }
 func (h *memHost) Settings(context.Context) (map[string]any, error) {
 	return map[string]any{"greeting": "Hi"}, nil

@@ -20,7 +20,7 @@ import (
 // the caller must list the library.
 func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, library *Library, showKey core.RatingKey, q frontend.ItemQuery) (core.Page, bool, error) {
 	if library == nil || library.Type != core.TypeShow || !q.Recursive || q.Favorite == nil || !*q.Favorite ||
-		q.AdjacentTo != 0 || q.StartAt != 0 || s.d.FavoriteTitleKeys == nil || s.d.CachedGetMany == nil {
+		q.AdjacentTo != 0 || q.StartAt != 0 || q.Filter.IncludeKeys != nil || s.d.FavoriteTitleKeys == nil || s.d.CachedGetMany == nil {
 		return core.Page{}, false, nil
 	}
 	keys, all, err := s.d.FavoriteTitleKeys(ctx, v, maxIndexedExclusions)
@@ -48,15 +48,68 @@ func (s *Service) favoriteRecursivePage(ctx context.Context, v *core.User, libra
 	}
 	permitted := []core.Title{}
 	if len(tree) > 0 {
+		var admittedShows map[core.RatingKey]bool
+		if showKey == 0 && filterHasLibraryScope(q.Filter) {
+			if s.d.Browse == nil {
+				return core.Page{}, false, nil
+			}
+			var uniqueShows []core.RatingKey
+			seenShow := map[core.RatingKey]bool{}
+			for _, k := range tree {
+				sk := k
+				if k.Kind() != core.KindShow {
+					sk = core.ShowKey(k.TMDB())
+				}
+				if !seenShow[sk] {
+					seenShow[sk] = true
+					uniqueShows = append(uniqueShows, sk)
+				}
+			}
+			admittedShows = make(map[core.RatingKey]bool, len(uniqueShows))
+			sf := scopedShowFilter(q.Filter, v)
+			sf.CatalogViewerID = v.ID
+			for i := 0; i < len(uniqueShows); i += 400 {
+				chunk := uniqueShows[i:min(i+400, len(uniqueShows))]
+				f := sf
+				f.IncludeKeys = chunk
+				page, err := s.d.Browse(ctx, core.BrowseQuery{Filter: f, Limit: len(chunk), NoTotal: true})
+				if err != nil {
+					return core.Page{}, false, err
+				}
+				for _, t := range page.Items {
+					admittedShows[t.Key] = true
+				}
+			}
+		}
 		titles, err := s.d.CachedGetMany(ctx, tree)
 		if err != nil {
 			return core.Page{}, false, err
 		}
 		query := q
 		query.Favorite = nil
+		if query.Filter.Type == library.Type {
+			query.Filter.Type = ""
+		}
+		virtualVis := withoutSectionCheck(s.d.Visibility)
 		for _, k := range tree {
+			if admittedShows != nil {
+				sk := k
+				if k.Kind() != core.KindShow {
+					sk = core.ShowKey(k.TMDB())
+				}
+				if !admittedShows[sk] {
+					continue
+				}
+			}
 			title, found := titles[k]
-			if !found || !s.visible(ctx, v, &title) {
+			if !found {
+				continue
+			}
+			if library.Virtual {
+				if !virtualVis.Visible(ctx, v, &title) {
+					continue
+				}
+			} else if !s.visible(ctx, v, &title) {
 				continue
 			}
 			ok, err := s.matchesUserQuery(ctx, v, title, query)

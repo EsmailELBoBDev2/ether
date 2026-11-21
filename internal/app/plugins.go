@@ -23,6 +23,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/extend"
 	"github.com/braedonsaunders/ether/internal/identity"
 	"github.com/braedonsaunders/ether/internal/livetv"
+	"github.com/braedonsaunders/ether/internal/llm"
 	"github.com/braedonsaunders/ether/internal/notify"
 	"github.com/braedonsaunders/ether/internal/playback"
 	"github.com/braedonsaunders/ether/internal/pluginitems"
@@ -275,6 +276,25 @@ func (a *App) buildPlugins(ctx context.Context, cfg config.Config) (*pluginRunti
 				if a.streamRT != nil {
 					_ = a.streamRT.Publish(context.Background(), admin.StreamNotice, map[string]any{"text": text})
 				}
+			},
+			AIComplete: func(ctx context.Context, req plugins.AICompleteBackendRequest) (string, error) {
+				if a.llm == nil || a.llm.Client() == nil || !a.llm.Client().Enabled() {
+					return "", plugins.ErrNotConfigured
+				}
+				msgs := make([]llm.Message, len(req.Messages))
+				for i, m := range req.Messages {
+					msgs[i] = llm.Message{Role: m.Role, Content: m.Content}
+				}
+				out, err := a.llm.Client().Complete(ctx, llm.CompleteOptions{
+					Messages:    msgs,
+					JSONMode:    req.JSONMode,
+					MaxTokens:   req.MaxTokens,
+					Temperature: req.Temperature,
+				})
+				if errors.Is(err, llm.ErrNotConfigured) {
+					return "", plugins.ErrNotConfigured
+				}
+				return out, err
 			},
 		},
 	})

@@ -80,10 +80,7 @@ func isUnscopedBuiltinLibrary(lib core.Library, f core.Filter) bool {
 	return (lib.ID == core.LibraryMovies || lib.ID == core.LibraryShows) &&
 		lib.Source != core.LibraryCollection &&
 		lib.Source != core.LibraryPlugin &&
-		f.CollectionMembers == 0 &&
-		len(f.CatalogueSources) == 0 &&
-		len(f.ExtraRules) == 0 &&
-		f.ExtraFallback == ""
+		!filterHasLibraryScope(f)
 }
 
 func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID string, limit int, group bool) ([]frontend.LatestItem, error) {
@@ -253,7 +250,7 @@ func (s *Service) latestScopedEpisodes(ctx context.Context, v *core.User, baseFi
 					check := req
 					check.Watched = nil
 					if s.d.ParentTitles != nil {
-						kept, err := s.visibleEpisodesWith(ctx, v, page.Items, check, ex.AvailabilityInSQL, true)
+						kept, err := s.visibleEpisodes(ctx, v, page.Items, check, ex.AvailabilityInSQL, true)
 						if err != nil {
 							return nil, err
 						}

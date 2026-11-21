@@ -72,6 +72,7 @@ export interface DeclaredPermissions {
   collections?: string;
   folders?: string;
   sources?: string;
+  ai?: string;
   secrets?: string[];
 }
 
@@ -417,6 +418,13 @@ export function buildGrantItems(detail: PluginDetail): GrantItem[] {
     items.push({
       key: "folders",
       label: t("Reads folders you choose"),
+      revocable: true,
+    });
+  }
+  if (d.ai === "complete") {
+    items.push({
+      key: "ai",
+      label: t("Uses your configured language model"),
       revocable: true,
     });
   }

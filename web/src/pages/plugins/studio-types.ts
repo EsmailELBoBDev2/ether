@@ -145,6 +145,7 @@ export interface StudioInstallPreview {
         catalog?: string;
         collections?: string;
         folders?: string;
+        ai?: string;
         secrets?: string[];
       };
     };

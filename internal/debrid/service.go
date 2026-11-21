@@ -870,6 +870,11 @@ func (s *Service) Acquire(ctx context.Context, rel core.Release) ([]byte, error)
 			notCached++
 			s.emitQuotaExhausted(e.cfg, "active_downloads", 1, 1)
 			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
+		case errors.Is(err, ErrTooLarge), errors.Is(err, errProviderZipped):
+			// Provider-level rejection (plan size limit or server-side zip):
+			// try remaining providers, and keep the reason if none can serve it.
+			notCached++
+			errs = append(errs, fmt.Errorf("%s: %w", displayName(e.cfg), err))
 		case errors.Is(err, core.ErrNotCached):
 			notCached++
 		case errors.Is(err, core.ErrWrongContent), errors.Is(err, core.ErrReleaseRejected):
@@ -972,7 +977,7 @@ func (s *Service) ListReleaseFiles(ctx context.Context, rel core.Release) ([]cor
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if err != nil && !errors.Is(err, core.ErrNotCached) {
+		if err != nil && (!errors.Is(err, core.ErrNotCached) || errors.Is(err, ErrTooLarge) || errors.Is(err, errProviderZipped)) {
 			errs = append(errs, err)
 		}
 	}
@@ -1677,7 +1682,7 @@ func (s *Service) blockedFile(ctx context.Context, e *entry, hash, torrentID str
 // refusal reports an outcome that left nothing downloading on the
 // provider: it refused the torrent or its file, or its adds are paused.
 func refusal(err error) bool {
-	return errors.Is(err, ErrAddRefused) || errors.Is(err, ErrBlocked) || errors.Is(err, errAddsPaused)
+	return errors.Is(err, ErrAddRefused) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrTooLarge) || errors.Is(err, errProviderZipped) || errors.Is(err, errAddsPaused)
 }
 
 // markRefused remembers, in memory, that the provider refused this hash.

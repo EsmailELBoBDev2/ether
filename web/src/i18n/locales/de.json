@@ -3661,6 +3661,7 @@
   "m_0b55ba7601fc22": "OMDb verbunden",
   "m_0b55c237cebf50": "Speicher-Backend",
   "m_0b55c5e1d23824": "Wiederherstellen und starten",
+  "m_0b56fb040956c5": "Verwendet Ihr konfiguriertes Sprachmodell",
   "m_0b571527985d9c": "Position des Farbstopps",
   "m_0b590594d9dacc": {
     "one": "{count} Anbieter in Ordnung · {active}/{configured} Verbindungen belegt",

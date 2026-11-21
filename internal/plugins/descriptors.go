@@ -342,6 +342,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	case "acquire":
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
 	}
+	if normLevel(p.AI) == "complete" {
+		lines = append(lines, "Uses your configured language model")
+	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
 			continue
@@ -408,7 +411,7 @@ func PermissionDiff(cur, next Manifest) []string {
 	if len(addedLocal) > 0 {
 		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
 	}
-	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "all": 2}
+	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }
 	if raised(a.Catalog, b.Catalog) {
 		added = append(added, "Reads your catalogue")
@@ -427,6 +430,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
+	}
+	if raised(a.AI, b.AI) {
+		added = append(added, "Uses your configured language model")
 	}
 	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
 	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {

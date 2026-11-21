@@ -456,6 +456,47 @@ const status = ether.folders.hashPoll(job.id);
 
 The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
 
+## Language model (AI)
+
+Uses the owner's configured language model from Settings -> Integrations -> Language model (one AI, one connection place; never ask for a second API key). Requires `permissions.ai: "complete"`, shown on the install sheet and revocable live in plugin permissions. No model credentials, endpoint URLs, or raw provider errors ever reach the plugin.
+
+```ts
+try {
+  const res = ether.ai.complete({
+    messages: [
+      { role: "system", content: "Extract structured search filters." },
+      { role: "user", content: "90s sci-fi films without horror" },
+    ],
+    schema: {
+      type: "object",
+      required: ["genres"],
+      properties: {
+        decade: { type: "integer" },
+        genres: { type: "array", items: { type: "string" } },
+        excludeGenres: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: false,
+    },
+    maxTokens: 256,
+  });
+  // res.json is already parsed and validated against schema; res.text holds canonical JSON.
+} catch (err) {
+  if ((err as { code?: string }).code === "not_configured") {
+    // Owner has not configured a language model: fall back cleanly.
+  }
+}
+```
+
+## Route policy (never on viewer/client paths)
+`ai.complete` is refused on interactive viewer and client request paths (`/stream/*`, `/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`, `/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|search|items|live`, `/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`, `/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot-path `rank_key`/`cond_match`). Call it only from owner actions (`/ether/action/*`), background jobs (`/ether/job/*`), Flow actions (`/ether/v1/flow-actions/*`), tools (`/ether/tool/*`), event handlers (`/ether/event`), setup/test routes (`/ether/v1/setup/*`, `/ether/test`), background kind/Live TV sync, or declared `ether.schedule` routes. Precompute or cache structured results in `ether.kv` so viewer requests never wait on the model. Remote plugins call `POST /ether/plugin-host/ai/complete` and must follow the same rule (requests carrying `X-Ether-Viewer-Token` are rejected).
+
+## Bounds & error codes
+Safe per-plugin defaults apply with no extra owner settings: at most 20 calls/minute per plugin, 1..20 messages (`system`, `user`, `assistant`, with at least one `user`), 32 KiB total prompt bytes, 32 KiB JSON Schema (external `$ref` URLs are rejected), `maxTokens` default 1024 / max 4096, `temperature` in `[0, 2]`, `timeoutMs` default/max 30 s, and 64 KiB response cap.
+
+Error codes (`err.code` in JS/TS/Python, `HostError.Code` in Go): `not_configured` (HTTP 501 — no language model configured; does not consume rate limit), `forbidden` (hosted) / `permission_denied` (HTTP 403 remote — missing/revoked grant or disallowed client route), `rate_limited` (HTTP 429), `invalid_input` (hosted) / `invalid` (HTTP 400 remote), `invalid_output` (HTTP 502 — reply was not valid JSON, oversized, or failed `schema`), `timeout` (hosted) / `deadline` (HTTP 504 remote), `unavailable` (HTTP 503 — provider call failed, sanitized).
+
+The declarations and implementations below specify arguments, return types, defaults, permission checks, limits, and errors. SDK adapters translate raw hosted calls to portable clients. See [SDKs](/plugins/reference/sdk-typescript) and [Errors](/plugins/reference/troubleshooting).
+
 ## Owner notices
 
 Posts a console notice, limited to five per hour. It does not send through a notification-channel plugin. Read errors and avoid repeated notices on a playback or progress path.
@@ -3753,6 +3794,7 @@ type ScheduleEntry struct {
 | `collections` | `string` | may be omitted (see validation for conditions) | ""\|none\|write |
 | `folders` | `string` | may be omitted (see validation for conditions) | ""\|none\|read |
 | `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes through the owner's indexers and debrid accounts (spec §4.5). ""\|none\|search\|acquire |
+| `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin send bounded completion requests to the owner's configured language model (actions/jobs/sync only, never viewer paths). ""\|none\|complete |
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
 
 
@@ -3769,7 +3811,10 @@ type Permissions struct {
 	Folders     string      `json:"folders,omitempty" yaml:"folders,omitempty"`         // ""|none|read
 	// Sources lets a kind resolver ask Ether to find bytes through the
 	// owner's indexers and debrid accounts (spec §4.5).
-	Sources string   `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
+	Sources string `json:"sources,omitempty" yaml:"sources,omitempty"` // ""|none|search|acquire
+	// AI lets a plugin send bounded completion requests to the owner's
+	// configured language model (actions/jobs/sync only, never viewer paths).
+	AI      string   `json:"ai,omitempty" yaml:"ai,omitempty"` // ""|none|complete
 	Secrets []string `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 }
 ``````
@@ -5697,10 +5742,109 @@ type Host interface {
 	// and rate-limited.
 	PublishEvent(ctx context.Context, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// AIComplete runs a bounded text or JSON-Schema-validated completion against
+	// the owner's configured language model (Settings -> Integrations -> Language
+	// model). Requires permissions.ai: "complete" and is refused on viewer/client
+	// request paths (actions, jobs, sync, tools, events, setup, and scheduled
+	// routes only). Returns ErrNotConfigured when no model is configured.
+	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+
 	// NotifyOwner posts a console notice (rate-limited).
 	NotifyOwner(ctx context.Context, text string) error
 	// Log appends to the plugin's log ring (redacted, rate-limited).
 	Log(ctx context.Context, level, msg string, attrs map[string]any) error
+}
+``````
+
+## Source: internal/plugins/contract.go#AIMessage.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `role` | `string` | emitted (validation may require a value) |  |
+| `content` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/contract.go#AIMessage
+
+``````
+// AIMessage is one chat turn sent to Host.AIComplete.
+type AIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+``````
+
+## Source: internal/plugins/contract.go#AICompleteRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `messages` | `[]AIMessage` | emitted (validation may require a value) |  |
+| `schema` | `json.RawMessage` | may be omitted (see validation for conditions) | Schema is an optional JSON Schema object. When set, the host extracts JSON from the reply, validates it against Schema, and populates JSON (returning ErrInvalidOutput if validation fails). External $ref URLs are rejected. |
+| `maxTokens` | `int` | may be omitted (see validation for conditions) | MaxTokens bounds output tokens (default DefaultAIMaxTokens, max MaxAIMaxTokens). |
+| `temperature` | `*float64` | may be omitted (see validation for conditions) | Temperature optionally adjusts sampling in [0, 2]. Providers or models that disallow explicit temperature ignore it safely. |
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) | TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout and the enclosing call deadline). |
+
+
+## Source: internal/plugins/contract.go#AICompleteRequest
+
+``````
+// AICompleteRequest configures one completion on the owner's configured
+// language model (#669).
+type AICompleteRequest struct {
+	Messages []AIMessage `json:"messages"`
+	// Schema is an optional JSON Schema object. When set, the host extracts
+	// JSON from the reply, validates it against Schema, and populates JSON
+	// (returning ErrInvalidOutput if validation fails). External $ref URLs
+	// are rejected.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// MaxTokens bounds output tokens (default DefaultAIMaxTokens, max MaxAIMaxTokens).
+	MaxTokens int `json:"maxTokens,omitempty"`
+	// Temperature optionally adjusts sampling in [0, 2]. Providers or models
+	// that disallow explicit temperature ignore it safely.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// TimeoutMS optionally tightens the call timeout (clamped to MaxAITimeout
+	// and the enclosing call deadline).
+	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#AICompleteResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `text` | `string` | emitted (validation may require a value) | Text is the assistant reply (with reasoning blocks stripped). When Schema was provided, Text holds the compact canonical JSON of JSON. |
+| `json` | `json.RawMessage` | may be omitted (see validation for conditions) | JSON holds the validated JSON value when Schema was provided. |
+
+
+## Source: internal/plugins/contract.go#AICompleteResponse
+
+``````
+// AICompleteResponse is the completion returned by Host.AIComplete.
+type AICompleteResponse struct {
+	// Text is the assistant reply (with reasoning blocks stripped). When
+	// Schema was provided, Text holds the compact canonical JSON of JSON.
+	Text string `json:"text"`
+	// JSON holds the validated JSON value when Schema was provided.
+	JSON json.RawMessage `json:"json,omitempty"`
+}
+``````
+
+## Source: internal/plugins/contract.go#AICompleteBackendRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/contract.go#AICompleteBackendRequest
+
+``````
+// AICompleteBackendRequest is passed from the plugin host to Backends.AIComplete
+// after permissions, route policy, input bounds, and rate limits have been checked.
+type AICompleteBackendRequest struct {
+	Messages    []AIMessage
+	JSONMode    bool
+	MaxTokens   int
+	Temperature *float64
 }
 ``````
 
@@ -6018,6 +6162,8 @@ var (
 	ErrDisabled         = errors.New("plugins: plugin is disabled")
 	ErrNoRuntime        = errors.New("plugins: no runtime registered for this plugin")
 	ErrUnavailable      = errors.New("plugins: host service unavailable")
+	ErrNotConfigured    = errors.New("plugins: language model is not configured")
+	ErrInvalidOutput    = errors.New("plugins: invalid language model output")
 	ErrBusy             = errors.New("plugins: plugin is busy")
 	// ErrUnsupportedBody reports a request body Ether could not encode for
 	// the plugin at all: the guest never ran, so it is never a plugin crash.
@@ -6511,6 +6657,9 @@ func PermissionSheet(man Manifest) (lines []string, needsViewers, needsFolders b
 	case "acquire":
 		lines = append(lines, "Searches your indexers and opens sources through your debrid accounts")
 	}
+	if normLevel(p.AI) == "complete" {
+		lines = append(lines, "Uses your configured language model")
+	}
 	for _, k := range man.Ether.Contributes.MediaKinds {
 		if !k.HasLibrary() {
 			continue
@@ -6581,7 +6730,7 @@ func PermissionDiff(cur, next Manifest) []string {
 	if len(addedLocal) > 0 {
 		added = append(added, "May reach on your network: "+strings.Join(addedLocal, ", "))
 	}
-	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "all": 2}
+	level := map[string]int{"none": 0, "granted_viewers": 1, "read": 1, "write": 1, "complete": 1, "all": 2}
 	raised := func(x, y string) bool { return level[normLevel(y)] > level[normLevel(x)] }
 	if raised(a.Catalog, b.Catalog) {
 		added = append(added, "Reads your catalogue")
@@ -6600,6 +6749,9 @@ func PermissionDiff(cur, next Manifest) []string {
 	}
 	if raised(a.Folders, b.Folders) {
 		added = append(added, "Reads folders you choose")
+	}
+	if raised(a.AI, b.AI) {
+		added = append(added, "Uses your configured language model")
 	}
 	sourcesLevel := map[string]int{"none": 0, "search": 1, "acquire": 2}
 	if sourcesLevel[normLevel(b.Sources)] > sourcesLevel[normLevel(a.Sources)] {
@@ -8837,6 +8989,497 @@ func (h *host) noteFetchTraffic(ctx context.Context, req FetchRequest, size int6
 		hh.EgressBytes += size + int64(len(req.Body))
 		_ = h.m.store.putHealth(ctx, h.plugin, hh)
 	}
+}
+``````
+
+## Source: internal/plugins/host_ai.go#DefaultAICompletePerMin
+
+``````
+// Safe per-plugin bounds for Host.AIComplete (#669). No owner settings are
+// exposed for these bounds; they protect the owner's configured language model
+// and memory budget with predictable defaults.
+const (
+	// DefaultAICompletePerMin caps completions per plugin in a sliding minute.
+	DefaultAICompletePerMin = 20
+	// MaxAIMessages caps the chat message count in a single completion request.
+	MaxAIMessages = 20
+	// MaxAIInputBytes caps total UTF-8 message content bytes per request.
+	MaxAIInputBytes = 32 * 1024
+	// MaxAISchemaBytes caps the optional JSON Schema document size.
+	MaxAISchemaBytes = 32 * 1024
+	// DefaultAIMaxTokens is the reply token budget when maxTokens is omitted.
+	DefaultAIMaxTokens = 1024
+	// MaxAIMaxTokens is the hard ceiling on maxTokens per completion.
+	MaxAIMaxTokens = 4096
+	// DefaultAITimeout bounds one completion when timeoutMs is omitted.
+	DefaultAITimeout = 30 * time.Second
+	// MaxAITimeout is the hard ceiling on timeoutMs per completion.
+	MaxAITimeout = 30 * time.Second
+	// MaxAIResponseBytes caps the model reply text / validated JSON returned
+	// to the plugin.
+	MaxAIResponseBytes = 64 * 1024
+)
+``````
+
+## Source: internal/plugins/host_ai.go#callPathKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_ai.go#callPathKey
+
+``````
+type callPathKey struct{}
+``````
+
+## Source: internal/plugins/host_ai.go#withCallPath
+
+``````
+// withCallPath records the active plugin route path on ctx so host calls can
+// enforce route-class policies (for example blocking ai.complete on client
+// request paths).
+func withCallPath(ctx context.Context, path string) context.Context {
+	if path == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, callPathKey{}, path)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#callPathFromContext
+
+``````
+func callPathFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if p, _ := ctx.Value(callPathKey{}).(string); p != "" {
+		return p
+	}
+	return wasm.CallPath(ctx)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#isClientRequestPath
+
+``````
+// isClientRequestPath reports whether p is an interactive viewer, client
+// protocol adapter, or console UI/lifecycle path that must never wait on a
+// language model call.
+func isClientRequestPath(p string) bool {
+	return wasm.ViewerRequestPath(p) ||
+		strings.HasPrefix(p, "/ether/stream/") ||
+		strings.HasPrefix(p, "/ether/v1/frontend/") ||
+		strings.HasPrefix(p, "/ether/view/") || p == "/ether/view" ||
+		strings.HasPrefix(p, "/ether/options/") || p == "/ether/options" ||
+		p == "/ether/health" ||
+		p == "/ether/configure" ||
+		strings.HasPrefix(p, "/ether/file/") ||
+		strings.HasPrefix(p, "/ether/directory/")
+}
+``````
+
+## Source: internal/plugins/host_ai.go#AICompleteAllowedPath
+
+``````
+// AICompleteAllowedPath reports whether a plugin route may call ai.complete.
+// Interactive viewer/client request paths are always refused so playback,
+// browsing, metadata, frontend adapters, and console views never wait on an
+// LLM. Actions, jobs, Flow actions, tools, event deliveries, setup/test,
+// background sync, and declared scheduled routes are allowed.
+func AICompleteAllowedPath(man Manifest, path string, background bool) bool {
+	p, _, _ := strings.Cut(strings.TrimSpace(path), "?")
+	if p == "" {
+		return false
+	}
+	if isClientRequestPath(p) {
+		return false
+	}
+	if background {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(p, "/ether/action/"),
+		strings.HasPrefix(p, "/ether/job/"),
+		strings.HasPrefix(p, "/ether/v1/flow-actions/"),
+		p == "/ether/event",
+		strings.HasPrefix(p, "/ether/tool/"),
+		strings.HasPrefix(p, "/ether/v1/setup/"),
+		p == "/ether/test",
+		strings.HasPrefix(p, "/ether/feed/"),
+		wasm.KindSyncPath(p),
+		wasm.LiveTVSyncPath(p):
+		return true
+	}
+	man.Ether = man.EffectiveEther()
+	if man.Ether != nil {
+		for _, s := range man.Ether.Schedule {
+			callPath, _, _ := strings.Cut(strings.TrimSpace(s.Call), "?")
+			if callPath == p {
+				return true
+			}
+		}
+		for _, fa := range man.Ether.Contributes.FlowActions {
+			route, _, _ := strings.Cut(strings.TrimSpace(fa.Route), "?")
+			if route == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/host_ai.go#denyExternalSchemaLoader.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_ai.go#denyExternalSchemaLoader
+
+``````
+// denyExternalSchemaLoader refuses every external $ref load so plugin-supplied
+// JSON Schemas can never trigger outbound network calls or local file reads.
+type denyExternalSchemaLoader struct{}
+``````
+
+## Source: internal/plugins/host_ai.go#denyExternalSchemaLoader.Load
+
+``````
+func (denyExternalSchemaLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("external schema $ref is not allowed (%s)", url)
+}
+``````
+
+## Source: internal/plugins/host_ai.go#compiledAIRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_ai.go#compiledAIRequest
+
+``````
+type compiledAIRequest struct {
+	messages        []AIMessage
+	maxTokens       int
+	temperature     *float64
+	timeout         time.Duration
+	schema          *jsonschema.Schema
+	canonicalSchema []byte
+	jsonObjectMode  bool
+}
+``````
+
+## Source: internal/plugins/host_ai.go#ValidateAICompleteRequest
+
+``````
+// ValidateAICompleteRequest validates messages, size/token/temperature/timeout
+// bounds, and compiles any optional JSON Schema. Exported for Studio and the
+// conformance kit so offline checks enforce the same contract as the host.
+func ValidateAICompleteRequest(req AICompleteRequest) (*compiledAIRequest, error) {
+	var errs []FieldError
+	if len(req.Messages) == 0 {
+		errs = append(errs, FieldError{Field: "messages", Message: "at least one message is required"})
+	} else if len(req.Messages) > MaxAIMessages {
+		errs = append(errs, FieldError{Field: "messages", Message: fmt.Sprintf("at most %d messages are allowed", MaxAIMessages)})
+	}
+
+	var totalBytes int
+	hasUser := false
+	msgs := make([]AIMessage, 0, len(req.Messages))
+	for i, m := range req.Messages {
+		role := strings.TrimSpace(m.Role)
+		switch role {
+		case "system", "user", "assistant":
+			if role == "user" {
+				hasUser = true
+			}
+		default:
+			errs = append(errs, FieldError{
+				Field:   fmt.Sprintf("messages[%d].role", i),
+				Message: "must be one of system, user, assistant",
+			})
+		}
+		if strings.TrimSpace(m.Content) == "" {
+			errs = append(errs, FieldError{
+				Field:   fmt.Sprintf("messages[%d].content", i),
+				Message: "must not be empty",
+			})
+		}
+		totalBytes += len(m.Content)
+		msgs = append(msgs, AIMessage{Role: role, Content: m.Content})
+	}
+	if len(req.Messages) > 0 && !hasUser {
+		errs = append(errs, FieldError{Field: "messages", Message: "at least one user message is required"})
+	}
+	if totalBytes > MaxAIInputBytes {
+		errs = append(errs, FieldError{Field: "messages", Message: fmt.Sprintf("total message content exceeds %d bytes", MaxAIInputBytes)})
+	}
+
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = DefaultAIMaxTokens
+	} else if maxTokens < 0 || maxTokens > MaxAIMaxTokens {
+		errs = append(errs, FieldError{Field: "maxTokens", Message: fmt.Sprintf("must be between 1 and %d", MaxAIMaxTokens)})
+	}
+
+	var temp *float64
+	if req.Temperature != nil {
+		t := *req.Temperature
+		if math.IsNaN(t) || math.IsInf(t, 0) || t < 0 || t > 2 {
+			errs = append(errs, FieldError{Field: "temperature", Message: "must be between 0 and 2"})
+		} else {
+			temp = &t
+		}
+	}
+
+	timeout := DefaultAITimeout
+	if req.TimeoutMS < 0 {
+		errs = append(errs, FieldError{Field: "timeoutMs", Message: "must not be negative"})
+	} else if req.TimeoutMS > 0 {
+		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, MaxAITimeout)
+	}
+
+	var compiled *jsonschema.Schema
+	var canonicalSchema []byte
+	var jsonObjectMode bool
+	trimmedSchema := bytes.TrimSpace(req.Schema)
+	if len(trimmedSchema) > 0 && !bytes.Equal(trimmedSchema, []byte("null")) {
+		if len(trimmedSchema) > MaxAISchemaBytes {
+			errs = append(errs, FieldError{Field: "schema", Message: fmt.Sprintf("exceeds %d bytes", MaxAISchemaBytes)})
+		} else {
+			doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(trimmedSchema))
+			if err != nil {
+				errs = append(errs, FieldError{Field: "schema", Message: "must be valid JSON"})
+			} else if obj, ok := doc.(map[string]any); !ok {
+				errs = append(errs, FieldError{Field: "schema", Message: "must be a JSON Schema object"})
+			} else {
+				compiler := jsonschema.NewCompiler()
+				compiler.UseLoader(denyExternalSchemaLoader{})
+				const schemaURI = "urn:ether:plugin:ai:schema.json"
+				if err := compiler.AddResource(schemaURI, doc); err != nil {
+					errs = append(errs, FieldError{Field: "schema", Message: "invalid JSON Schema: " + err.Error()})
+				} else if s, err := compiler.Compile(schemaURI); err != nil {
+					errs = append(errs, FieldError{Field: "schema", Message: "invalid JSON Schema: " + err.Error()})
+				} else {
+					compiled = s
+					canonicalSchema, _ = json.Marshal(doc)
+					jsonObjectMode = schemaExpectsJSONObject(obj)
+				}
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return nil, &ValidationError{Fields: errs}
+	}
+	return &compiledAIRequest{
+		messages:        msgs,
+		maxTokens:       maxTokens,
+		temperature:     temp,
+		timeout:         timeout,
+		schema:          compiled,
+		canonicalSchema: canonicalSchema,
+		jsonObjectMode:  jsonObjectMode,
+	}, nil
+}
+``````
+
+## Source: internal/plugins/host_ai.go#schemaExpectsJSONObject
+
+``````
+func schemaExpectsJSONObject(doc map[string]any) bool {
+	if rawType, ok := doc["type"]; ok {
+		s, _ := rawType.(string)
+		return s == "object"
+	}
+	_, hasProps := doc["properties"]
+	return hasProps
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.aiCompletePerMin
+
+``````
+func (m *Manager) aiCompletePerMin() int {
+	m.mu.Lock()
+	limit := m.aiCompleteLimit
+	m.mu.Unlock()
+	if limit <= 0 {
+		return DefaultAICompletePerMin
+	}
+	return limit
+}
+``````
+
+## Source: internal/plugins/host_ai.go#executeAIComplete
+
+``````
+// executeAIComplete runs a validated completion against backend, keeping
+// provider credentials, endpoints, and raw upstream errors out of plugin-visible
+// results, and validating structured output against the compiled JSON Schema.
+func executeAIComplete(
+	ctx context.Context,
+	log *slog.Logger,
+	pluginID string,
+	backend func(context.Context, AICompleteBackendRequest) (string, error),
+	compiled *compiledAIRequest,
+) (AICompleteResponse, error) {
+	if backend == nil {
+		return AICompleteResponse{}, ErrNotConfigured
+	}
+
+	msgs := make([]AIMessage, 0, len(compiled.messages)+1)
+	if compiled.schema != nil {
+		msgs = append(msgs, AIMessage{
+			Role: "system",
+			Content: "Respond with valid JSON only, with no markdown fences or extra text. " +
+				"The JSON value must conform to this JSON Schema:\n" + string(compiled.canonicalSchema),
+		})
+	}
+	msgs = append(msgs, compiled.messages...)
+
+	callCtx, cancel := context.WithTimeout(ctx, compiled.timeout)
+	defer cancel()
+
+	rawText, err := backend(callCtx, AICompleteBackendRequest{
+		Messages:    msgs,
+		JSONMode:    compiled.jsonObjectMode,
+		MaxTokens:   compiled.maxTokens,
+		Temperature: compiled.temperature,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotConfigured) || errors.Is(err, llm.ErrNotConfigured):
+			return AICompleteResponse{}, ErrNotConfigured
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded):
+			return AICompleteResponse{}, context.DeadlineExceeded
+		case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+			return AICompleteResponse{}, context.Canceled
+		default:
+			if log != nil {
+				log.Warn("plugin ai.complete failed", "plugin", pluginID, "err", err)
+			}
+			// Never return raw provider errors, URLs, or upstream response bodies
+			// to the plugin: they may contain owner endpoint info or key hints.
+			return AICompleteResponse{}, fmt.Errorf("%w: language model request failed", ErrUnavailable)
+		}
+	}
+
+	text := llm.StripReasoning(rawText)
+	if len(text) > MaxAIResponseBytes {
+		return AICompleteResponse{}, fmt.Errorf("%w: language model response exceeded %d bytes", ErrInvalidOutput, MaxAIResponseBytes)
+	}
+
+	if compiled.schema == nil {
+		return AICompleteResponse{Text: text}, nil
+	}
+
+	candidate := strings.TrimSpace(text)
+	if candidate == "" || !json.Valid([]byte(candidate)) {
+		candidate = strings.TrimSpace(stripCodeFence(candidate))
+	}
+	if candidate == "" || !json.Valid([]byte(candidate)) {
+		candidate = strings.TrimSpace(llm.ExtractJSON(text))
+	}
+	if candidate == "" || !json.Valid([]byte(candidate)) {
+		return AICompleteResponse{}, fmt.Errorf("%w: language model did not return valid JSON", ErrInvalidOutput)
+	}
+
+	val, err := jsonschema.UnmarshalJSON(strings.NewReader(candidate))
+	if err != nil {
+		return AICompleteResponse{}, fmt.Errorf("%w: language model did not return valid JSON", ErrInvalidOutput)
+	}
+	if err := compiled.schema.Validate(val); err != nil {
+		return AICompleteResponse{}, fmt.Errorf("%w: language model output did not match schema", ErrInvalidOutput)
+	}
+	canonical, err := json.Marshal(val)
+	if err != nil || len(canonical) > MaxAIResponseBytes {
+		return AICompleteResponse{}, fmt.Errorf("%w: language model response exceeded %d bytes", ErrInvalidOutput, MaxAIResponseBytes)
+	}
+	return AICompleteResponse{
+		Text: string(canonical),
+		JSON: json.RawMessage(canonical),
+	}, nil
+}
+``````
+
+## Source: internal/plugins/host_ai.go#stripCodeFence
+
+``````
+func stripCodeFence(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	rest := s[3:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	}
+	if end := strings.LastIndex(rest, "```"); end >= 0 {
+		return rest[:end]
+	}
+	return s
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*Manager.rateRefund
+
+``````
+func (m *Manager) rateRefund(bucket map[string][]time.Time, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if times := bucket[key]; len(times) > 0 {
+		bucket[key] = times[:len(times)-1]
+	}
+}
+``````
+
+## Source: internal/plugins/host_ai.go#*host.AIComplete
+
+``````
+// AIComplete runs one bounded completion on the owner's configured language
+// model. Requires permissions.ai: "complete" (checked live against grants),
+// refuses interactive viewer/client request paths, enforces input/schema/rate
+// bounds, and never leaks provider secrets or raw upstream errors.
+func (h *host) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
+	r, g, err := h.record(ctx)
+	if err != nil {
+		return AICompleteResponse{}, err
+	}
+	level := normLevel(r.Manifest.Ether.Permissions.AI)
+	if err := h.deny(r, g, "ai", level, func(l string) bool { return l == "complete" }); err != nil {
+		return AICompleteResponse{}, err
+	}
+	if path := callPathFromContext(ctx); path != "" {
+		if !AICompleteAllowedPath(r.Manifest, path, isBackgroundCall(ctx) || wasm.IsBackgroundCall(ctx)) {
+			h.noteDenied("ai_client_path")
+			return AICompleteResponse{}, fmt.Errorf("%w: ai.complete cannot run on viewer or client request path %s", ErrPermissionDenied, path)
+		}
+	}
+
+	compiled, err := ValidateAICompleteRequest(req)
+	if err != nil {
+		return AICompleteResponse{}, err
+	}
+
+	backend := h.m.deps.Backends.AIComplete
+	if backend == nil {
+		return AICompleteResponse{}, ErrNotConfigured
+	}
+
+	limit := h.m.aiCompletePerMin()
+	if !h.m.rateOK(h.m.aiCompleteTimes, h.plugin, limit, time.Minute) {
+		return AICompleteResponse{}, fmt.Errorf("%w: ai.complete is limited to %d calls per minute", ErrRateLimited, limit)
+	}
+
+	resp, err := executeAIComplete(ctx, h.m.log, h.plugin, backend, compiled)
+	if errors.Is(err, ErrNotConfigured) {
+		h.m.rateRefund(h.m.aiCompleteTimes, h.plugin)
+	}
+	return resp, err
 }
 ``````
 
@@ -13762,6 +14405,15 @@ func (b hostBridge) CallHost(ctx context.Context, name string, raw json.RawMessa
 			}
 		}
 		return result(nil, b.h.PublishEvent(ctx, key, payload, corr))
+	case "ai.complete":
+		var req AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		v, err := b.h.AIComplete(ctx, req)
+		return result(v, err)
 	case "notify.owner":
 		return result(nil, b.h.NotifyOwner(ctx, str(0)))
 	case "log":
@@ -13802,6 +14454,12 @@ func mapHostError(err error) error {
 		return &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: valid.Error()}
 	case errors.Is(err, ErrPermissionDenied):
 		return wasm.Forbidden(err.Error())
+	case errors.Is(err, ErrNotConfigured):
+		return &wasm.Fault{Code: "not_configured", Message: "language model is not configured"}
+	case errors.Is(err, ErrInvalidOutput):
+		return &wasm.Fault{Code: "invalid_output", Message: strings.TrimPrefix(err.Error(), "plugins: invalid language model output: ")}
+	case errors.Is(err, ErrUnavailable):
+		return &wasm.Fault{Code: "unavailable", Message: err.Error()}
 	case errors.Is(err, ErrQuotaExceeded):
 		return &wasm.Fault{Code: "quota_exceeded", Message: err.Error()}
 	case errors.Is(err, ErrRateLimited):
@@ -14674,6 +15332,24 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		return json.RawMessage(`{"name":"movie.mkv","path":"movie.mkv","dir":false,"size":1024}`), nil
 	case "notify.owner":
 		return json.RawMessage("null"), nil
+	case "ai.complete":
+		if h.man.Ether == nil || h.man.Ether.Permissions.AI != "complete" {
+			return nil, wasm.Forbidden("ai: complete permission not declared")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("ai.complete cannot run on viewer or client request path " + callPath)
+		}
+		var req plugins.AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if _, err := plugins.ValidateAICompleteRequest(req); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared ai.complete request needs a live test"}
 	default:
 		return nil, wasm.Forbidden("unknown host service " + name)
 	}
@@ -18418,6 +19094,7 @@ func validatePermissions(p Permissions, add func(string, string)) {
 	level("ether.permissions.collections", normLevel(p.Collections), "none", "write")
 	level("ether.permissions.folders", normLevel(p.Folders), "none", "read")
 	level("ether.permissions.sources", normLevel(p.Sources), "none", "search", "acquire")
+	level("ether.permissions.ai", normLevel(p.AI), "none", "complete")
 	level("ether.permissions.viewers.identity", normLevel(p.Viewers.Identity), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.watch_history", normLevel(p.Viewers.WatchHistory), "none", "granted_viewers", "all")
 	level("ether.permissions.viewers.write_watch_state", normLevel(p.Viewers.WriteWatchState), "none", "granted_viewers")
@@ -20833,6 +21510,11 @@ type Host interface {
 
 	PublishEvent(ctx context.Context, pluginID, key string, payload json.RawMessage, corr events.Correlation) error
 
+	// AIComplete runs a bounded completion against the owner's configured
+	// language model (requires permissions.ai: "complete"; never call from a
+	// viewer/client request path).
+	AIComplete(ctx context.Context, pluginID string, req plugins.AICompleteRequest) (plugins.AICompleteResponse, error)
+
 	NotifyOwner(ctx context.Context, pluginID, text string) error
 	Log(ctx context.Context, pluginID, level, msg string, attrs map[string]any) error
 }
@@ -20846,6 +21528,7 @@ type Host interface {
 const (
 	maxKVValueBytes    = 5 << 20
 	maxHostBodyBytes   = 2 << 20
+	maxAIBodyBytes     = 128 << 10
 	maxCollectionBytes = 2 << 20
 	maxKindUpsertBytes = 8 << 20
 	maxCacheBlobBytes  = 256 << 20
@@ -20938,6 +21621,7 @@ func NewHostHandler(opts HostOptions) *HostHandler {
 	mux.HandleFunc("GET /ether/plugin-host/settings", h.settings)
 	mux.HandleFunc("GET /ether/plugin-host/limits", h.runtimeLimits)
 	mux.HandleFunc("POST /ether/plugin-host/events/publish", h.eventsPublish)
+	mux.HandleFunc("POST /ether/plugin-host/ai/complete", h.aiComplete)
 	mux.HandleFunc("POST /ether/plugin-host/notify", h.notify)
 	mux.HandleFunc("POST /ether/plugin-host/log", h.logLine)
 	h.mux = mux
@@ -21647,6 +22331,26 @@ func (h *HostHandler) eventsPublish(w http.ResponseWriter, r *http.Request) {
 }
 ``````
 
+## Source: internal/plugins/remote/host.go#*HostHandler.aiComplete
+
+``````
+func (h *HostHandler) aiComplete(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.Header.Get(HeaderViewerToken)) != "" {
+		writeHostError(w, http.StatusForbidden, "permission_denied", "ai.complete cannot run on viewer or client request paths")
+		return
+	}
+	var req plugins.AICompleteRequest
+	if !h.decode(w, r, maxAIBodyBytes, &req) {
+		return
+	}
+	resp, err := h.host.AIComplete(r.Context(), pluginIDOf(r), req)
+	if !h.finishErr(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+``````
+
 ## Source: internal/plugins/remote/host.go#*HostHandler.notify
 
 ``````
@@ -21759,6 +22463,10 @@ func (h *HostHandler) finishErr(w http.ResponseWriter, err error) bool {
 		writeHostError(w, http.StatusBadRequest, "invalid", cleanMessage(err))
 	case errors.Is(err, ErrRateLimited):
 		writeHostError(w, http.StatusTooManyRequests, "rate_limited", strings.TrimPrefix(err.Error(), "remote: rate limit exceeded: "))
+	case errors.Is(err, ErrNotConfigured):
+		writeHostError(w, http.StatusNotImplemented, "not_configured", "Language model is not configured")
+	case errors.Is(err, ErrInvalidOutput):
+		writeHostError(w, http.StatusBadGateway, "invalid_output", "Language model returned invalid or oversized output")
 	case errors.Is(err, ErrUnavailable):
 		writeHostError(w, http.StatusServiceUnavailable, "unavailable", "This host service is not available")
 	case errors.Is(err, ErrUnauthorized):
@@ -26191,6 +26899,7 @@ globalThis.ether = (() => {
                hash: (root, path) => call("folders.hash", [root, path]),
                stat: (root, path) => call("folders.stat", [root, path]) },
     events: { publish: (key, payload, correlation) => call("events.publish", correlation == null ? [key, payload == null ? {} : payload] : [key, payload == null ? {} : payload, correlation]) },
+    ai: { complete: (req) => call("ai.complete", [req == null ? {} : req]) },
     notify: { owner: (text) => call("notify.owner", [text]) },
   };
   return ether;
@@ -27413,6 +28122,7 @@ var DefaultCosts = map[string]int64{
 	"kinds.upsert": 50, "kinds.delete": 50, "kinds.items": 20, "kinds.visible": 15, "kinds.browse": 20,
 	"sources.resolve": 100, "cache.put": 50, "cache.open": 20, "cache.delete": 10, "frontend.streamURL": 5,
 	"folders.hashStart": 20, "folders.hashPoll": 20, "folders.hashCancel": 20, "folders.hash": 20, "folders.list": 20, "folders.stat": 20, "events.publish": 20, "notify.owner": 20, "settings.get": 5,
+	"ai.complete": 200,
 }
 ``````
 
@@ -27529,6 +28239,18 @@ type callLimitsKey struct{}
 type backgroundCallKey struct{}
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#callPathKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/wasm/wasm.go#callPathKey
+
+``````
+type callPathKey struct{}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#IsBackgroundCall
 
 ``````
@@ -27537,6 +28259,17 @@ type backgroundCallKey struct{}
 func IsBackgroundCall(ctx context.Context) bool {
 	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
 	return bg
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#CallPath
+
+``````
+// CallPath returns the route path of the active hosted plugin call, or "" outside
+// a hosted call.
+func CallPath(ctx context.Context) string {
+	p, _ := ctx.Value(callPathKey{}).(string)
+	return p
 }
 ``````
 
@@ -27562,7 +28295,7 @@ func hostCallTimeout(name string) time.Duration {
 	switch name {
 	case "http.fetch":
 		return 60 * time.Second
-	case "sources.resolve":
+	case "sources.resolve", "ai.complete":
 		return 35 * time.Second
 	case "http.fetchToCache", "http.hash",
 		"archive.list", "archive.open", "archive.read", "archive.extract",
@@ -28031,6 +28764,9 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 	}
 	if cs.backgroundPool {
 		hostCtx = context.WithValue(hostCtx, backgroundCallKey{}, true)
+	}
+	if cs.path != "" {
+		hostCtx = context.WithValue(hostCtx, callPathKey{}, cs.path)
 	}
 
 	type hostCallResult struct {
@@ -29187,6 +29923,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.kind` | `any` | true | {"enum":["source","integration","notification_channel","livetv_source","extension","content"]} |
 | `ether.license` | `string` | false | {} |
 | `ether.permissions` | `object` | false | {} |
+| `ether.permissions.ai` | `any` | false | {"description":"Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).","enum":["none","complete"]} |
 | `ether.permissions.catalog` | `any` | false | {"enum":["none","read"]} |
 | `ether.permissions.collections` | `any` | false | {"enum":["none","write"]} |
 | `ether.permissions.folders` | `any` | false | {"enum":["none","read"]} |
@@ -30835,6 +31572,13 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "permissions": {
           "properties": {
+            "ai": {
+              "description": "Use the owner's configured language model for bounded completions in actions, jobs, sync, and other non-viewer routes (never on viewer/client request paths).",
+              "enum": [
+                "none",
+                "complete"
+              ]
+            },
             "catalog": {
               "enum": [
                 "none",
@@ -31453,7 +32197,7 @@ signing the updated index.
 | ether.capabilities | Only implemented capabilities; the validator checks allowed kinds |
 | ether.summary | ≤80 characters, or `$t:summary` with English fallback |
 | ether.runtime | Hosted: `{kind:"hosted",entry:"src/index.ts"}` (or WASM `module`); remote: `{kind:"remote"}` |
-| ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`; omit access you do not need |
+| ether.permissions | Network hostnames (not URLs), catalog `read`, collections `write`, folders `read`, named secrets, viewers, sources `search`/`acquire`, ai `complete`; omit access you do not need |
 | ether.settings | Inline `{fields:[...]}` or `{"$ref":"settings.schema.json"}` |
 | ether.strings | Locale → package file or inline object; `en` required for `$t:` labels |
 | ether.contributes | Capability descriptors (`listSources`, `posterBadges`, `rankingSteps`, `ruleConditions`, etc.), pages, slots, commands, setup steps, mediaKinds (including `library.card` `poster\|landscape\|square`, `library.dateDisplay` `year\|date`, up to 50 `library.tabs` of `recommended\|library\|collections\|people\|view\|live` with optional `facet`/`order`/`search`/`searchPlaceholder`/`sort`/`direction` on `collections` tabs, required people-type `facet` plus optional `order` `name\|count`, `search`, and `searchPlaceholder` on `people` tabs, optional `layout` `grid\|list\|timeline`, `sort` (including `lastViewed`), `direction`, `search`/`searchPlaceholder`, and `filters` on `view` tabs supporting declared indexed fields and per-viewer state rules, optional `card` `landscape\|poster\|square` plus `search`/`searchPlaceholder` on `live` tabs backed by `/ether/v1/kinds/{kind}/live` and `/live/resolve`, and optional `browse.expand` `{facets, ttlHours?}` for background slice expansion); see generated types |
@@ -31522,6 +32266,33 @@ FoldersList/Stat/Hash need `folders:read` plus an owner-selected root; they retu
 metadata/digests, not bytes. Viewer access requires that viewer's grant.
 Private LAN hosts stay blocked for HTTP fetch, fetchToCache, hash, and remote calls unless the owner allows the exact `host` or `host:port` under "On your network" in the plugin's settings (loopback stays blocked unless `localhost` or `127.0.0.1` is explicitly granted). Exact local hosts declared in `permissions.network` (dotless names, `.local`, `.lan`, `.home.arpa`, or private IPs) are shown on the install sheet and pre-granted when installed. For user-hosted services whose hostname comes from plugin settings, declare `"operator"` in `permissions.network` (never `"*"`); Ether prompts the owner to approve each server address per plugin before requests or stream resolvers admit it.
 Host calls enforce permissions again on every request; revocation is immediate.
+
+## Owner language model (`ether.ai.complete`)
+
+A plugin that wants text or structured JSON completions from the owner's
+configured language model (Settings -> Integrations -> Language model) declares
+`ether.permissions.ai: "complete"` instead of asking the owner for a second API
+key. Call `ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs? })`
+(hosted) or `POST /ether/plugin-host/ai/complete` (`ctx.ether.ai.complete` in TS/Python,
+`ctx.AIComplete` in Go). When `schema` (a JSON Schema object; external `$ref` URLs
+are rejected) is provided, Ether extracts JSON, validates it against `schema`,
+and returns `{ text, json }` (or throws `invalid_output` on mismatch).
+
+`ai.complete` is **blocked on viewer/client request paths** (`/stream/*`,
+`/catalog/*`, `/meta/*`, `/subtitles/*`, `/ether/open*`, `/ether/metadata/*`,
+`/ether/subtitles/*`, `/ether/markers*`, `/ether/v1/kinds/*/resolve|match|search|items|live`,
+`/ether/v1/frontend/*`, `/ether/view/*`, `/ether/options/*`, `/ether/health`,
+`/ether/configure`, `/ether/file/*`, `/ether/directory/*`, and hot paths). Call it
+only from actions (`/ether/action/*`), jobs (`/ether/job/*`), Flow actions,
+tools, event handlers, setup/test routes, background kind/Live TV sync, or
+declared `ether.schedule` routes, and cache results in `ether.kv` for viewer paths.
+
+Safe per-plugin bounds apply automatically: 20 calls/minute, 1..20 messages
+(<=32 KiB total, at least one `user`), <=32 KiB schema, `maxTokens` default 1024
+(max 4096), `temperature` in `[0, 2]`, `timeoutMs` <=30 s, <=64 KiB output. Always
+handle `err.code === "not_configured"` (`HostError.Code == "not_configured"` in
+Go) so the plugin falls back cleanly when no language model is configured. No
+provider credentials, endpoint URLs, or raw upstream error bodies ever reach the plugin.
 
 ## Poster badges
 
@@ -41418,6 +42189,116 @@ type EventsHost interface {
 }
 ``````
 
+## Source: sdk/go/host.go#AIMessage.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `role` | `string` | emitted (validation may require a value) |  |
+| `content` | `string` | emitted (validation may require a value) |  |
+
+
+## Source: sdk/go/host.go#AIMessage
+
+``````
+// AIMessage is one chat turn sent to AIHost.AIComplete.
+type AIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+``````
+
+## Source: sdk/go/host.go#AICompleteRequest.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `messages` | `[]AIMessage` | emitted (validation may require a value) |  |
+| `schema` | `json.RawMessage` | may be omitted (see validation for conditions) | Schema is an optional JSON Schema object (raw JSON or map[string]any marshalled to JSON). When set, Ether extracts JSON from the model reply and validates it against Schema before returning. External $ref URLs are rejected. |
+| `maxTokens` | `int` | may be omitted (see validation for conditions) | MaxTokens bounds output tokens (default 1024, max 4096). |
+| `temperature` | `*float64` | may be omitted (see validation for conditions) | Temperature optionally adjusts sampling in [0, 2]; ignored safely by providers/models that disallow explicit temperature. |
+| `timeoutMs` | `int64` | may be omitted (see validation for conditions) | TimeoutMS optionally tightens the call timeout (clamped to 30000 ms and the enclosing call deadline). |
+
+
+## Source: sdk/go/host.go#AICompleteRequest
+
+``````
+// AICompleteRequest configures one completion on the owner's configured
+// language model (#669).
+type AICompleteRequest struct {
+	Messages []AIMessage `json:"messages"`
+	// Schema is an optional JSON Schema object (raw JSON or map[string]any
+	// marshalled to JSON). When set, Ether extracts JSON from the model reply
+	// and validates it against Schema before returning. External $ref URLs are
+	// rejected.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// MaxTokens bounds output tokens (default 1024, max 4096).
+	MaxTokens int `json:"maxTokens,omitempty"`
+	// Temperature optionally adjusts sampling in [0, 2]; ignored safely by
+	// providers/models that disallow explicit temperature.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms and
+	// the enclosing call deadline).
+	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+}
+``````
+
+## Source: sdk/go/host.go#AICompleteResponse.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `text` | `string` | emitted (validation may require a value) | Text is the assistant reply (with reasoning blocks stripped). When Schema was set, Text holds compact canonical JSON. |
+| `json` | `json.RawMessage` | may be omitted (see validation for conditions) | JSON holds the validated JSON value when Schema was set. |
+
+
+## Source: sdk/go/host.go#AICompleteResponse
+
+``````
+// AICompleteResponse is the completion returned by AIHost.AIComplete.
+type AICompleteResponse struct {
+	// Text is the assistant reply (with reasoning blocks stripped). When Schema
+	// was set, Text holds compact canonical JSON.
+	Text string `json:"text"`
+	// JSON holds the validated JSON value when Schema was set.
+	JSON json.RawMessage `json:"json,omitempty"`
+}
+``````
+
+## Source: sdk/go/host.go#HostError.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: sdk/go/host.go#HostError
+
+``````
+// HostError is a structured error returned by Ether's plugin-host API,
+// preserving the EPP error code (for example "not_configured", "rate_limited",
+// "permission_denied", or "invalid_output") alongside the human message.
+type HostError struct {
+	Status  int
+	Code    string
+	Message string
+}
+``````
+
+## Source: sdk/go/host.go#*HostError.Error
+
+``````
+func (e *HostError) Error() string { return e.Message }
+``````
+
+## Source: sdk/go/host.go#AIHost
+
+``````
+// AIHost runs bounded completions on the owner's configured language model
+// (requires permissions.ai: "complete"; never call on viewer/client request
+// paths). RemoteHostClient and MockHost implement it; Context.AIComplete uses
+// it automatically.
+type AIHost interface {
+	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+}
+``````
+
 ## Source: sdk/go/host.go#PartStreamHost
 
 ``````
@@ -41659,13 +42540,25 @@ func (c *RemoteHostClient) callJSONWithHeaders(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errDoc struct {
 			Error struct {
+				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		if json.Unmarshal(raw, &errDoc) == nil && errDoc.Error.Message != "" {
-			return false, fmt.Errorf("%s", errDoc.Error.Message)
+		if json.Unmarshal(raw, &errDoc) == nil && (errDoc.Error.Message != "" || errDoc.Error.Code != "") {
+			msg := errDoc.Error.Message
+			if msg == "" {
+				msg = fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode)
+			}
+			return false, &HostError{
+				Status:  resp.StatusCode,
+				Code:    errDoc.Error.Code,
+				Message: msg,
+			}
 		}
-		return false, fmt.Errorf("host call %s %s failed with status %d", method, path, resp.StatusCode)
+		return false, &HostError{
+			Status:  resp.StatusCode,
+			Message: fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+		}
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -42021,6 +42914,20 @@ func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload
 	}
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/events/publish", body, nil, false)
 	return err
+}
+``````
+
+## Source: sdk/go/host.go#*RemoteHostClient.AIComplete
+
+``````
+// AIComplete runs a bounded text or JSON-Schema-validated completion against
+// the owner's configured language model through POST /ether/plugin-host/ai/complete.
+// Requires permissions.ai: "complete"; never call on viewer/client request paths.
+// When no model is configured, returns a *HostError with Code == "not_configured".
+func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
+	var res AICompleteResponse
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", req, &res, false)
+	return res, err
 }
 ``````
 
@@ -45444,6 +46351,20 @@ func (c *Context) PublishEvent(key string, payload any, corr *EventCorrelation) 
 }
 ``````
 
+## Source: sdk/go/plugin.go#*Context.AIComplete
+
+``````
+// AIComplete runs a bounded completion against the owner's configured language
+// model. Requires permissions.ai: "complete" and must only be called from
+// actions, jobs, sync, or other non-viewer routes.
+func (c *Context) AIComplete(req AICompleteRequest) (AICompleteResponse, error) {
+	if ah, ok := c.Ether.(AIHost); ok {
+		return ah.AIComplete(c.Context, req)
+	}
+	return AICompleteResponse{}, fmt.Errorf("ai.complete is not supported by this host")
+}
+``````
+
 ## Source: sdk/go/plugin.go#Routes.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -47918,6 +48839,7 @@ type ScheduleEntry struct {
 | `folders` | `string` | may be omitted (see validation for conditions) |  |
 | `secrets` | `[]string` | may be omitted (see validation for conditions) |  |
 | `sources` | `string` | may be omitted (see validation for conditions) | Sources lets a kind resolver ask Ether to find bytes: ""\|none\|search\|acquire. |
+| `ai` | `string` | may be omitted (see validation for conditions) | AI lets a plugin call AIComplete on the owner's configured language model (""\|none\|complete; actions, jobs, sync, and other non-viewer routes only). |
 
 
 ## Source: sdk/go/types.go#Permissions
@@ -47933,6 +48855,9 @@ type Permissions struct {
 	Secrets     []string           `json:"secrets,omitempty"`
 	// Sources lets a kind resolver ask Ether to find bytes: ""|none|search|acquire.
 	Sources string `json:"sources,omitempty"`
+	// AI lets a plugin call AIComplete on the owner's configured language model
+	// (""|none|complete; actions, jobs, sync, and other non-viewer routes only).
+	AI string `json:"ai,omitempty"`
 }
 ``````
 
@@ -51360,6 +52285,44 @@ class FlowActionResponse(TypedDict, total=False):
     branch: str
 
 
+class AIMessage(TypedDict):
+    role: str
+    content: str
+
+
+class AICompleteRequest(TypedDict, total=False):
+    messages: List[AIMessage]
+    schema: Dict[str, Any]
+    maxTokens: int
+    temperature: float
+    timeoutMs: int
+
+
+class AICompleteResponse(TypedDict, total=False):
+    text: str
+    json: Any
+
+
+class HostError(RuntimeError):
+    """Structured error returned by Ether's plugin-host API, carrying `.code` and `.status`."""
+
+    def __init__(self, message: str, code: str = "", status: int = 0) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+class _AIClient:
+    """Client for Ether's owner-configured language model host service (`ai.complete`)."""
+
+    def __init__(self, call_json: Callable[..., Any]) -> None:
+        self._call = call_json
+
+    def complete(self, req: AICompleteRequest) -> AICompleteResponse:
+        res = self._call("POST", "/ether/plugin-host/ai/complete", dict(req))
+        return res if isinstance(res, dict) else {"text": ""}  # type: ignore[return-value]
+
+
 class _EventsClient:
     def __init__(self, call_json: Callable[..., Any]) -> None:
         self._call = call_json
@@ -51454,6 +52417,7 @@ class RemoteHostClient:
         self.viewers = _ViewersClient(self._call_json)
         self.collections = _CollectionsClient(self._call_json)
         self.events = _EventsClient(self._call_json)
+        self.ai = _AIClient(self._call_json)
         self.notify = _NotifyClient(self._call_json)
         self.kinds = _KindsClient(self._call_json, lambda: self.viewer_token)
         self.runtime = _RuntimeClient(self._call_json)
@@ -51538,13 +52502,18 @@ class RemoteHostClient:
             if allow_404 and exc.code == 404:
                 return None
             raw = exc.read().decode("utf-8", errors="replace")
+            code = ""
             try:
                 parsed = json.loads(raw)
-                msg = parsed.get("error", {}).get("message")
+                err_obj = parsed.get("error", {}) if isinstance(parsed, dict) else {}
+                msg = err_obj.get("message") if isinstance(err_obj, dict) else None
+                code = str(err_obj.get("code") or "") if isinstance(err_obj, dict) else ""
             except Exception:
                 msg = None
-            raise RuntimeError(
-                msg or f"Host call {method} {path} failed with HTTP {exc.code}"
+            raise HostError(
+                msg or f"Host call {method} {path} failed with HTTP {exc.code}",
+                code=code,
+                status=int(exc.code),
             ) from exc
 
     def settings_get(self) -> Dict[str, Any]:
@@ -53087,6 +54056,7 @@ class MockHostClient:
             "headers": {"Content-Type": "application/json"},
             "body": "{}",
         }
+        self.ai_handler: Optional[Callable[[AICompleteRequest], AICompleteResponse]] = None
 
         self.kv = self._KV(self)
         self.badges = self._Badges(self)
@@ -53113,6 +54083,7 @@ class MockHostClient:
         self.runtime = self._Runtime(self)
         self.collections = self._Collections(self)
         self.events = self._Events(self)
+        self.ai = self._AI(self)
         self.notify = self._Notify(self)
         self.kinds = self._Kinds(self)
         self.cache = self._Cache(self)
@@ -53568,6 +54539,15 @@ class MockHostClient:
             if correlation is not None:
                 entry["correlation"] = dict(correlation)
             self._p.published_events.append(entry)
+
+    class _AI:
+        def __init__(self, parent: "MockHostClient") -> None:
+            self._p = parent
+
+        def complete(self, req: AICompleteRequest) -> AICompleteResponse:
+            if self._p.ai_handler is None:
+                raise HostError("Language model is not configured", code="not_configured", status=501)
+            return self._p.ai_handler(req)
 
     class _Notify:
         def __init__(self, parent: "MockHostClient") -> None:
@@ -54667,6 +55647,7 @@ export default hello;
 - `file` (`GET /ether/file/{path...}`)
 - `rankKey` and `condMatch` hot-path exports (`rank_key`, `cond_match`)
 - `poster_badges` (`ether.contributes.posterBadges` plus `ctx.ether.badges.set`, `clear`, and `usage`)
+- `ai.complete` (`ether.permissions.ai: "complete"`, `ctx.ether.ai.complete({ messages, schema?, maxTokens?, temperature?, timeoutMs? })` on non-viewer routes — actions, jobs, Flow actions, tools, events, sync, schedules)
 
 ### Poster badges
 
@@ -54891,6 +55872,40 @@ export const PosterBadgeQuotaTitles = 200_000;
 export const MAX_KIND_VISIBLE_IDS = 500;
 export const HEADER_VIEWER_TOKEN = "X-Ether-Viewer-Token";
 export const HEADER_IDEMPOTENCY_KEY = "X-Ether-Idempotency-Key";
+
+export const DefaultAICompletePerMin = 20;
+export const MaxAIMessages = 20;
+export const MaxAIInputBytes = 32 * 1024;
+export const MaxAISchemaBytes = 32 * 1024;
+export const DefaultAIMaxTokens = 1024;
+export const MaxAIMaxTokens = 4096;
+export const DefaultAITimeoutMs = 30_000;
+export const MaxAITimeoutMs = 30_000;
+export const MaxAIResponseBytes = 64 * 1024;
+
+export interface AIMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface AICompleteRequest {
+  messages: AIMessage[];
+  /** Optional JSON Schema object for structured output; the host extracts JSON and validates it before returning. External $ref URLs are rejected. */
+  schema?: Record<string, unknown>;
+  /** Output token cap (default 1024, max 4096). */
+  maxTokens?: number;
+  /** Optional sampling temperature in [0, 2]; ignored safely by providers/models that forbid it. */
+  temperature?: number;
+  /** Optional tighter timeout in milliseconds (clamped to 30000 and the call deadline). */
+  timeoutMs?: number;
+}
+
+export interface AICompleteResponse<T = unknown> {
+  /** Assistant reply text (with reasoning blocks stripped). When `schema` was given, holds compact canonical JSON. */
+  text: string;
+  /** Validated JSON value returned when `schema` was provided. */
+  json?: T;
+}
 
 export interface DataRange { offset: number; length: number }
 export interface ArchiveReadItem { member: number; offset: number; length: number }
@@ -55290,6 +56305,15 @@ export interface EtherHost {
       correlation?: EventCorrelation,
     ): MaybePromise<void>;
   };
+  /**
+   * Owner-configured language model completions (Settings -> Integrations -> Language model).
+   * Requires `permissions.ai: "complete"`. Refused on interactive viewer/client request paths
+   * (actions, jobs, sync, tools, events, setup, and scheduled routes only). Throws an Error
+   * with `code: "not_configured"` when no language model is configured.
+   */
+  ai?: {
+    complete<T = unknown>(req: AICompleteRequest): MaybePromise<AICompleteResponse<T>>;
+  };
   notify: {
     owner(text: string): MaybePromise<void>;
   };
@@ -55397,6 +56421,9 @@ interface GlobalEtherBindings {
     notify: {
       owner: (text: string) => void;
     };
+    ai?: {
+      complete: <T = unknown>(req: AICompleteRequest) => AICompleteResponse<T>;
+    };
     kinds?: {
       upsert: (kind: string, items: import("./types.ts").KindItem[]) => { accepted: number } | number;
       delete: (kind: string, externalIds: string[]) => void;
@@ -55426,8 +56453,22 @@ export function createHostedClient(): EtherHost {
 
   const callHost = <T>(name: string, args: unknown[]): T => {
     if (typeof g.__ether_host === "function") {
-      const raw = g.__ether_host(name, JSON.stringify(args));
-      return (raw ? JSON.parse(raw) : null) as T;
+      try {
+        const raw = g.__ether_host(name, JSON.stringify(args));
+        return (raw ? JSON.parse(raw) : null) as T;
+      } catch (e) {
+        const message = String(e && (e as { message?: unknown }).message || e);
+        const at = message.indexOf("__ETHER_FAULT__");
+        if (at >= 0 && e && typeof e === "object") {
+          try {
+            const fault = JSON.parse(message.slice(at + "__ETHER_FAULT__".length)) as { code?: string; Code?: string };
+            (e as { code?: string }).code = fault.code || fault.Code;
+          } catch {
+            // ignore parse errors
+          }
+        }
+        throw e;
+      }
     }
     throw new Error(`Host service ${name} is not available outside the Ether runtime`);
   };
@@ -55649,6 +56690,14 @@ export function createHostedClient(): EtherHost {
         );
       },
     },
+    ai: {
+      complete<T = unknown>(req: AICompleteRequest): AICompleteResponse<T> {
+        if (g.ether?.ai?.complete) {
+          return g.ether.ai.complete<T>(req);
+        }
+        return callHost<AICompleteResponse<T>>("ai.complete", [req]);
+      },
+    },
     notify: {
       owner(text: string): void {
         if (g.ether?.notify) {
@@ -55807,9 +56856,12 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
     if (!resp.ok) {
       const errObj =
         parsed && typeof parsed.error === "object" ? (parsed.error as Record<string, string>) : null;
-      throw new Error(
+      const err = new Error(
         errObj?.message ?? `Host call ${method} ${path} failed with HTTP ${resp.status}`,
-      );
+      ) as Error & { code?: string; status?: number };
+      if (errObj?.code) err.code = errObj.code;
+      err.status = resp.status;
+      throw err;
     }
     return parsed as T;
   };
@@ -56082,6 +57134,11 @@ export function createRemoteHostClient(opts: RemoteHostOptions = {}): EtherHost 
         return r?.url ?? "";
       },
     },
+    ai: {
+      async complete<T = unknown>(req: AICompleteRequest): Promise<AICompleteResponse<T>> {
+        return (await callJson<AICompleteResponse<T>>("POST", "/ether/plugin-host/ai/complete", req)) ?? { text: "" };
+      },
+    },
     async log(level: string, message: string, attrs?: Record<string, unknown>): Promise<void> {
       await callJson("POST", "/ether/plugin-host/log", { level, message, attrs });
     },
@@ -56243,6 +57300,18 @@ export {
   MAX_KIND_VISIBLE_IDS,
   HEADER_VIEWER_TOKEN,
   HEADER_IDEMPOTENCY_KEY,
+  DefaultAICompletePerMin,
+  MaxAIMessages,
+  MaxAIInputBytes,
+  MaxAISchemaBytes,
+  DefaultAIMaxTokens,
+  MaxAIMaxTokens,
+  DefaultAITimeoutMs,
+  MaxAITimeoutMs,
+  MaxAIResponseBytes,
+  type AIMessage,
+  type AICompleteRequest,
+  type AICompleteResponse,
   type BadgeEntry,
   type BadgeTitleRef,
   type BadgeUsage,
@@ -59187,6 +60256,8 @@ export interface Permissions {
   secrets?: string[];
   /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open. */
   sources?: "none" | "search" | "acquire";
+  /** Lets a plugin call ether.ai.complete on the owner's configured language model (actions, jobs, sync, and other non-viewer routes only). */
+  ai?: "none" | "complete";
 }
 
 export type SettingFieldKind =

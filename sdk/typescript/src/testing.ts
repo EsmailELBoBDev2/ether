@@ -38,6 +38,8 @@ import {
   PosterBadgeQuotaTitles,
   type CatalogTitleSummary,
   type EtherHost,
+  type AICompleteRequest,
+  type AICompleteResponse,
   type FolderEntry,
   type HostFetchRequest,
   type HostFetchResponse,
@@ -164,6 +166,8 @@ export interface MockHostState {
   notifications: string[];
   logs: RecordedLog[];
   httpHandler: (req: HostFetchRequest) => HostFetchResponse | Promise<HostFetchResponse>;
+  /** Optional handler for mock ai.complete calls; when omitted, throws an Error with code "not_configured". */
+  aiHandler?: (req: AICompleteRequest) => AICompleteResponse | Promise<AICompleteResponse>;
   /** The most recent frontend.streamUrl call: [viewerId, itemRef]. */
   lastStreamUrl?: [number, string];
   /** Zero-based part index of the most recent part-scoped frontend.streamUrl call. */
@@ -212,6 +216,7 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
         headers: { "Content-Type": "application/json" },
         body: "{}",
       })),
+    aiHandler: initial?.aiHandler,
   };
 
   return {
@@ -503,6 +508,16 @@ export function createMockHostClient(initial?: Partial<MockHostState>): MockHost
           payload: payload ? { ...payload } : {},
           ...(correlation !== undefined ? { correlation: { ...correlation } } : {}),
         });
+      },
+    },
+    ai: {
+      complete: <T = unknown>(req: AICompleteRequest) => {
+        if (!state.aiHandler) {
+          const err = new Error("language model is not configured") as Error & { code?: string };
+          err.code = "not_configured";
+          throw err;
+        }
+        return state.aiHandler(req) as MaybePromise<AICompleteResponse<T>>;
       },
     },
     log: (level: string, message: string, attrs?: Record<string, unknown>) => {

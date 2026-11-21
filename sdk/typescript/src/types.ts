@@ -208,6 +208,8 @@ export interface Permissions {
   secrets?: string[];
   /** Lets a kind resolver ask Ether to find bytes: search to look, acquire to open. */
   sources?: "none" | "search" | "acquire";
+  /** Lets a plugin call ether.ai.complete on the owner's configured language model (actions, jobs, sync, and other non-viewer routes only). */
+  ai?: "none" | "complete";
 }
 
 export type SettingFieldKind =

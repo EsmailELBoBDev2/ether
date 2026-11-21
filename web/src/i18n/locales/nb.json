@@ -3661,6 +3661,7 @@
   "m_0b55ba7601fc22": "OMDb tilkoblet",
   "m_0b55c237cebf50": "Lagringsbackend",
   "m_0b55c5e1d23824": "Gjenopprett og start",
+  "m_0b56fb040956c5": "Bruker den konfigurerte språkmodellen din",
   "m_0b571527985d9c": "Fargestoppets posisjon",
   "m_0b590594d9dacc": {
     "one": "{count} leverandør fungerer · {active}/{configured} tilkoblinger i bruk",

@@ -778,6 +778,24 @@ func (h *recordingHost) CallHost(ctx context.Context, name string, raw json.RawM
 		return json.RawMessage(`{"name":"movie.mkv","path":"movie.mkv","dir":false,"size":1024}`), nil
 	case "notify.owner":
 		return json.RawMessage("null"), nil
+	case "ai.complete":
+		if h.man.Ether == nil || h.man.Ether.Permissions.AI != "complete" {
+			return nil, wasm.Forbidden("ai: complete permission not declared")
+		}
+		if callPath := wasm.CallPath(ctx); callPath != "" && !plugins.AICompleteAllowedPath(h.man, callPath, wasm.IsBackgroundCall(ctx)) {
+			return nil, wasm.Forbidden("ai.complete cannot run on viewer or client request path " + callPath)
+		}
+		var req plugins.AICompleteRequest
+		if len(args) > 0 && len(bytes.TrimSpace(args[0])) > 0 && string(bytes.TrimSpace(args[0])) != "null" {
+			if err := json.Unmarshal(args[0], &req); err != nil {
+				return nil, &wasm.Fault{Code: "bad_arguments", Message: "ai.complete argument must be a request object"}
+			}
+		}
+		if _, err := plugins.ValidateAICompleteRequest(req); err != nil {
+			return nil, &wasm.Fault{Code: string(wasm.StatusInvalidInput), Message: err.Error()}
+		}
+		h.deferred++
+		return nil, &wasm.Fault{Code: "check_dependency", Message: "declared ai.complete request needs a live test"}
 	default:
 		return nil, wasm.Forbidden("unknown host service " + name)
 	}

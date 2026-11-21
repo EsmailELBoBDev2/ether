@@ -88,7 +88,7 @@ func (s *Service) indexedRecursivePage(ctx context.Context, v *core.User, librar
 		// show-stamped filter would fail every episode's match check.
 		check.Filter.Type = ""
 		if typ == core.TypeEpisode || typ == core.TypeSeason {
-			kept, err = s.visibleEpisodesWith(ctx, v, page.Items, check, ex.AvailabilityInSQL, true)
+			kept, err = s.visibleEpisodes(ctx, v, page.Items, check, ex.AvailabilityInSQL, library.Virtual)
 			if err != nil {
 				return core.Page{}, true, err
 			}

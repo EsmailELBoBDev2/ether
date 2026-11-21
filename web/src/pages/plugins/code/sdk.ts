@@ -97,6 +97,25 @@ interface EtherCatalogTitle {
   tmdbId?: number;
   imdbId?: string;
 }
+interface EtherAIMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+interface EtherAICompleteRequest {
+  messages: EtherAIMessage[];
+  /** Optional JSON Schema object for structured JSON output (external $ref URLs rejected). */
+  schema?: Record<string, unknown>;
+  /** Output token cap (default 1024, max 4096). */
+  maxTokens?: number;
+  /** Optional sampling temperature in [0, 2]. */
+  temperature?: number;
+  /** Optional tighter timeout in ms (clamped to 30000 and call deadline). */
+  timeoutMs?: number;
+}
+interface EtherAICompleteResponse<T = unknown> {
+  text: string;
+  json?: T;
+}
 declare const ether: {
   log(...args: unknown[]): void;
   abort(message?: string): never;
@@ -128,6 +147,8 @@ declare const ether: {
     list(root: string, path?: string): { name: string; path: string; dir: boolean; size?: number }[];
     stat(root: string, path: string): { name: string; path: string; dir: boolean; size?: number };
   };
+  /** Owner-configured language model completions. Requires permissions.ai: "complete"; blocked on viewer/client request paths. */
+  ai: { complete<T = unknown>(req: EtherAICompleteRequest): EtherAICompleteResponse<T> };
   notify: { owner(text: string): void };
 };
 `;

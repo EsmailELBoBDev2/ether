@@ -26,9 +26,9 @@ import (
 // Endpoints used:
 //
 //	GET  /torrents/checkcached?hash=a,b&format=object&list_files=true -> data{hash: {name,size,files}}
-//	POST /torrents/createtorrent  multipart magnet=, add_only_if_cached= -> data{torrent_id}
-//	GET  /torrents/mylist?id=&bypass_cache=true -> data{id,hash,download_present,download_finished,files[{id,name,size}]}
-//	GET  /torrents/mylist?bypass_cache=true     -> data[...] (reuse by hash)
+//	POST /torrents/createtorrent  multipart magnet=, allow_zip=false, add_only_if_cached= -> data{torrent_id}
+//	GET  /torrents/mylist?id=&bypass_cache=true -> data{id,hash,download_present,download_finished,files[{id,name,size,zipped}]}
+//	GET  /torrents/mylist?bypass_cache=true&files=false -> data[...] (reuse by hash)
 //	GET  /torrents/requestdl?token=&torrent_id=&file_id= -> data "https://..."
 //	POST /torrents/controltorrent {torrent_id, operation:"delete"}
 //	GET  /user/me -> data{email, plan, premium_expires_at}
@@ -131,6 +131,7 @@ type tbTorrent struct {
 		Name     string      `json:"name"`
 		Size     int64       `json:"size"`
 		MIMEType string      `json:"mimetype"`
+		Zipped   bool        `json:"zipped"`
 	} `json:"files"`
 }
 
@@ -174,6 +175,12 @@ func (p *torBox) classify(status int, env tbEnvelope) error {
 	case code == "ACTIVE_LIMIT":
 		// The plan's active-download slots are full: nothing new is added.
 		return fmt.Errorf("torbox: %s: %w", msg, ErrDownloadLimit)
+	case code == "DOWNLOAD_TOO_LARGE":
+		// Torrent exceeds this TorBox plan's size limit; another provider
+		// may still serve it, and this is not a provider outage (#667).
+		return fmt.Errorf("torbox: %s: %w", msg, ErrTooLarge)
+	case code == "BOZO_TORRENT":
+		return fmt.Errorf("torbox: %s: %w", msg, core.ErrReleaseRejected)
 	case code == "COOLDOWN_LIMIT" || strings.Contains(code, "RATE"):
 		return fmt.Errorf("torbox: %s: %w", msg, ErrRateLimited)
 	}
@@ -222,7 +229,7 @@ func (p *torBox) findBackground(ctx context.Context, hash string) string {
 }
 
 func (p *torBox) loadList(ctx context.Context) (map[string]string, error) {
-	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}}})
+	data, err := p.do(ctx, apiRequest{method: http.MethodGet, path: "/torrents/mylist", query: url.Values{"bypass_cache": {"true"}, "files": {"false"}}})
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +277,10 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 		var body bytes.Buffer
 		mw := multipart.NewWriter(&body)
 		_ = mw.WriteField("magnet", req.Magnet)
+		// TorBox defaults allow_zip=true and collapses torrents with 100+
+		// files into one .zip unless explicitly disabled; Ether selects
+		// individual files itself (#667).
+		_ = mw.WriteField("allow_zip", "false")
 		if req.CachedOnly {
 			_ = mw.WriteField("add_only_if_cached", "true")
 		}
@@ -333,6 +344,14 @@ func (p *torBox) Acquire(ctx context.Context, req AcquireRequest) (*Acquired, er
 	files := make([]File, 0, len(t.Files))
 	for _, f := range t.Files {
 		files = append(files, File{ID: f.ID.String(), Path: f.Name, Size: f.Size, MIMEType: f.MIMEType})
+	}
+	// If TorBox already cached this >100-file torrent as a single server-side
+	// zip archive despite allow_zip=false, do not pass the synthetic .zip to
+	// Choose (which would falsely fail with ErrWrongContent and stop failover
+	// to other providers).
+	if len(t.Files) == 1 && t.Files[0].Zipped {
+		cleanup()
+		return nil, fmt.Errorf("torbox: torrent cached as zipped archive (%s): %w", torrentFileSummary(files), errProviderZipped)
 	}
 	chosen, err := req.Choose(files)
 	if err != nil {

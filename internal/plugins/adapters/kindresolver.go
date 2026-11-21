@@ -1824,10 +1824,14 @@ func (r *KindResolver) collectPlayableLeaves(ctx context.Context, rec pluginitem
 // the item's resolution when an earlier candidate failed because the
 // plugin's answer was wrong (#641).
 type skippedSources struct {
-	failures []kindstream.SourceFailure
+	failures        []kindstream.SourceFailure
+	anyPluginAnswer bool
 }
 
 func (s *skippedSources) pluginAnswerFailed() bool {
+	if s.anyPluginAnswer {
+		return true
+	}
 	for _, f := range s.failures {
 		if f.PluginAnswer() {
 			return true
@@ -1905,6 +1909,9 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		ItemIndex:            effectiveItemIndex(item.Index, partIdx),
 		Backoff:              r.backoff,
 		OnSourceFailed: func(attempt, total int, src core.PlayableSource, took time.Duration, err error) {
+			if skipped != nil && errors.Is(err, kindstream.ErrPluginAnswer) {
+				skipped.anyPluginAnswer = true
+			}
 			if r.log == nil {
 				return
 			}
@@ -1976,16 +1983,24 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 		}
 		// A fallback that opened only because an earlier candidate failed
 		// on the plugin's own answer is not saved as the item's
-		// resolution: the plugin's first choice is broken, and saving
-		// the fallback would hide that on every later play. Nor is a
-		// source whose declared digest is still verifying (#641, #642).
-		save := !skipped.pluginAnswerFailed()
+		// resolution, and the broken candidate list is dropped so the next
+		// play calls /resolve again instead of replaying cached candidates
+		// (#641). A source whose declared digest is still verifying is not
+		// saved either (#642).
+		pluginBad := skipped.pluginAnswerFailed()
+		if pluginBad {
+			r.deleteCandidates(fk)
+			if r.items != nil {
+				_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
+			}
+		}
+		save := !pluginBad
 		if dr, ok := bs.(kindstream.DigestReporter); ok {
 			if declared, verified := dr.DigestState(); declared && !verified {
 				save = false
 			}
 		}
-		if save {
+		if save && r.items != nil {
 			_ = r.items.SavePartResolution(ctx, item.Ref, partIdx, winning)
 		}
 		return bs, winning, nil
@@ -2087,6 +2102,12 @@ func (r *KindResolver) openItemByteSourceExcluding(ctx context.Context, rec plug
 	openStart := time.Now()
 	bs, winning, err := kindstream.OpenSources(ctx, cands, ksDeps)
 	if err != nil {
+		if skipped.pluginAnswerFailed() {
+			r.deleteCandidates(fk)
+			if r.items != nil {
+				_ = r.items.InvalidatePartResolution(ctx, item.Ref, partIdx)
+			}
+		}
 		if r.log != nil {
 			if errors.Is(err, core.ErrArchiveUnstreamable) {
 				r.log.Warn("this archive format or compression method cannot be streamed",

@@ -230,3 +230,153 @@ func TestPlexDiscoverExtrasSource(t *testing.T) {
 		t.Fatalf("expected clean fallback to TMDB+command, got %+v", fb)
 	}
 }
+
+func TestPlexDiscoverVariantFallbackBySize(t *testing.T) {
+	const (
+		discoverHex = "5d7769c6f617c900201648c0"
+		plexToken   = "secret-plex-token"
+	)
+	makeMP4 := func(total int, tag string) []byte {
+		b := make([]byte, total)
+		copy(b, []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'})
+		copy(b[12:], tag)
+		return b
+	}
+	body5000 := makeMP4(200, "5000")
+	body2500 := makeMP4(100, "2500")
+	body750 := makeMP4(40, "750!")
+
+	var (
+		cdnSawToken atomic.Bool
+		servedPaths []string
+	)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/library/metadata/" + discoverHex + "/extras":
+			// Mirror real Plex Discover: all three variants share Media.url with
+			// videokbrate=5000 and differ only by Part.key.
+			sharedURL := srv.URL + "/cdn/video.mp4?publishedid=611198&videokbrate=5000"
+			payload := map[string]any{
+				"MediaContainer": map[string]any{
+					"Metadata": []map[string]any{
+						{
+							"ratingKey": "disc-multi-1",
+							"title":     "Official Trailer",
+							"subtype":   "trailer",
+							"extraType": 1,
+							"duration":  152000,
+							"Media": []map[string]any{
+								{
+									"container": "mp4", "videoCodec": "h264", "audioCodec": "aac",
+									"videoResolution": "1080", "height": 1080, "bitrate": 5000, "duration": 152000,
+									"url":  sharedURL,
+									"Part": []map[string]any{{"key": "/library/metadata/" + discoverHex + "/extras/disc-multi-1/parts/mp4-5000"}},
+								},
+								{
+									"container": "mp4", "videoCodec": "h264", "audioCodec": "aac",
+									"videoResolution": "720", "height": 720, "bitrate": 2500, "duration": 152000,
+									"url":  sharedURL,
+									"Part": []map[string]any{{"key": "/library/metadata/" + discoverHex + "/extras/disc-multi-1/parts/mp4-2500"}},
+								},
+								{
+									"container": "mp4", "videoCodec": "h264", "audioCodec": "aac",
+									"videoResolution": "sd", "bitrate": 750, "duration": 152000,
+									"url":  sharedURL,
+									"Part": []map[string]any{{"key": "/library/metadata/" + discoverHex + "/extras/disc-multi-1/parts/mp4-750"}},
+								},
+							},
+						},
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(payload)
+		case "/library/metadata/" + discoverHex + "/extras/disc-multi-1/parts/mp4-5000":
+			w.Header().Set("Location", srv.URL+"/cdn/video.mp4?publishedid=611198&videokbrate=5000")
+			w.WriteHeader(http.StatusFound)
+		case "/library/metadata/" + discoverHex + "/extras/disc-multi-1/parts/mp4-2500":
+			w.Header().Set("Location", srv.URL+"/cdn/video.mp4?publishedid=611198&videokbrate=2500")
+			w.WriteHeader(http.StatusFound)
+		case "/library/metadata/" + discoverHex + "/extras/disc-multi-1/parts/mp4-750":
+			w.Header().Set("Location", srv.URL+"/cdn/video.mp4?publishedid=611198&videokbrate=750")
+			w.WriteHeader(http.StatusFound)
+		case "/cdn/video.mp4":
+			if r.Header.Get("X-Plex-Token") != "" || strings.Contains(r.URL.RawQuery, plexToken) {
+				cdnSawToken.Store(true)
+			}
+			kb := r.URL.Query().Get("videokbrate")
+			servedPaths = append(servedPaths, kb)
+			w.Header().Set("Content-Type", "video/mp4")
+			switch kb {
+			case "5000":
+				_, _ = w.Write(body5000)
+			case "2500":
+				_, _ = w.Write(body2500)
+			case "750":
+				_, _ = w.Write(body750)
+			default:
+				http.NotFound(w, r)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	discover := NewPlexDiscover(PlexDiscoverOptions{
+		BaseURL: srv.URL,
+		HTTP:    srv.Client(),
+		Token:   func() string { return plexToken },
+		GUID:    func(context.Context, core.RatingKey) string { return "plex://movie/" + discoverHex },
+	})
+	movie := &core.Title{Key: core.MovieKey(153518), Type: core.TypeMovie, Title: "The Angry Birds Movie"}
+
+	runWithCap := func(capBytes int64) ([]byte, error) {
+		servedPaths = nil
+		svc := New(Options{
+			Discover:  discover,
+			CacheDir:  t.TempDir(),
+			CacheHTTP: srv.Client(),
+			Config:    func() config.Extras { return config.Extras{Enabled: true, TrailerCacheMaxBytes: capBytes} },
+			LookPath:  func(string) (string, error) { return "", exec.ErrNotFound },
+		})
+		t.Cleanup(svc.Close)
+		list, err := svc.List(context.Background(), movie, "en")
+		if err != nil || len(list) == 0 {
+			t.Fatalf("List: err=%v list=%+v", err, list)
+		}
+		cached, err := svc.CacheExtra(context.Background(), list[0])
+		if err != nil {
+			return nil, err
+		}
+		return os.ReadFile(cached.Path)
+	}
+
+	// 1. Cap = 128 B: 5000 kbps (200 B) rejected, falls back via Part.key to 2500 kbps (100 B).
+	got, err := runWithCap(128)
+	if err != nil {
+		t.Fatalf("cap=128 should fall back to 720p (2500 kbps): %v", err)
+	}
+	if string(got[12:16]) != "2500" {
+		t.Fatalf("cap=128 cached variant = %q, want 2500 (tried %v)", string(got[12:16]), servedPaths)
+	}
+
+	// 2. Cap = 64 B: 5000 kbps (200 B) and 2500 kbps (100 B) rejected, falls back to SD (40 B).
+	got, err = runWithCap(64)
+	if err != nil {
+		t.Fatalf("cap=64 should fall back to sd (750 kbps): %v", err)
+	}
+	if string(got[12:16]) != "750!" {
+		t.Fatalf("cap=64 cached variant = %q, want 750! (tried %v)", string(got[12:16]), servedPaths)
+	}
+
+	// 3. Cap = 20 B: all variants exceed limit; error names actual size and limit.
+	_, err = runWithCap(20)
+	if err == nil || !strings.Contains(err.Error(), "40 bytes") || !strings.Contains(err.Error(), "20 bytes") {
+		t.Fatalf("cap=20 error = %v, want actual size (40 bytes) and limit (20 bytes)", err)
+	}
+	if cdnSawToken.Load() {
+		t.Fatal("Plex token leaked to media CDN")
+	}
+}

@@ -27,6 +27,66 @@ var ErrCacheUnsupported = errors.New("extra cannot use MP4 cache")
 
 var ErrCacheDisabled = errors.New("trailer cache disabled")
 
+const (
+	defaultTrailerCacheMaxBytes = 512 << 20
+	defaultTrailerEntryMaxBytes = 160 << 20
+	maxTrailerEntryMaxBytes     = 512 << 20
+)
+
+var trailerFallbackHeights = []int{1080, 720, 480, 360}
+
+// trailerEntryLimit returns the maximum size of a single cached trailer MP4
+// for a cache cap. The 160 MiB default covers full-length 1080p trailers under
+// the default 512 MiB cache cap, scales with larger caches (cap/4 up to
+// 512 MiB), and never exceeds cap when lowered.
+func trailerEntryLimit(cap int64) int64 {
+	limit := max(int64(defaultTrailerEntryMaxBytes), cap/4)
+	limit = min(limit, int64(maxTrailerEntryMaxBytes))
+	return min(cap, limit)
+}
+
+func trailerSoftLimit(limit int64) int64 {
+	if limit > 128<<10 {
+		return limit - (64 << 10)
+	}
+	return max(int64(1), limit)
+}
+
+func trailerExceedsSoftLimit(size, limit, softLimit int64) bool {
+	if limit > 128<<10 {
+		return size >= softLimit
+	}
+	return size > limit
+}
+
+// trailerFormatSelector builds a yt-dlp format selector that enforces the
+// per-entry size cap during format selection instead of using --max-filesize
+// (which skips oversized streams and exits 0). Video gets up to 7/8 of limit
+// (falling back to 3/4 for longer clips with larger audio tracks) so video +
+// audio stay within limit.
+func trailerFormatSelector(maxHeight int, limit int64) string {
+	videoCap := max(int64(1), limit*7/8)
+	audioCap := max(int64(1), limit-videoCap)
+	wideVideoCap := max(int64(1), limit*3/4)
+	wideAudioCap := max(int64(1), limit-wideVideoCap)
+	muxHeightOp := "<="
+	if maxHeight >= 1080 {
+		// Allow single-file streams without height metadata on the initial pass;
+		// retries strictly require a smaller known height.
+		muxHeightOp = "<=?"
+	}
+	return fmt.Sprintf(
+		"bv*[vcodec^=avc1][height<=%d][filesize<=?%d][filesize_approx<=?%d]+ba[acodec^=mp4a][filesize<=?%d][filesize_approx<=?%d]/"+
+			"bv*[vcodec^=avc1][height<=%d][filesize<=?%d][filesize_approx<=?%d]+ba[acodec^=mp4a][filesize<=?%d][filesize_approx<=?%d]/"+
+			"b[ext=mp4][height%s%d][filesize<=?%d][filesize_approx<=?%d]/"+
+			"b[height%s%d][filesize<=?%d][filesize_approx<=?%d]",
+		maxHeight, videoCap, videoCap, audioCap, audioCap,
+		maxHeight, wideVideoCap, wideVideoCap, wideAudioCap, wideAudioCap,
+		muxHeightOp, maxHeight, limit, limit,
+		muxHeightOp, maxHeight, limit, limit,
+	)
+}
+
 // CachedTrailer identifies immutable, locally downloaded trailer bytes.
 // OpenCachedTrailer must be used to open it; eviction may have removed it.
 type CachedTrailer struct {
@@ -130,8 +190,9 @@ func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error
 	defer s.cacheDownloadMu.Unlock()
 	cap := s.cfg().TrailerCacheMaxBytes
 	if cap <= 0 {
-		cap = 512 << 20
+		cap = defaultTrailerCacheMaxBytes
 	}
+	entryLimit := trailerEntryLimit(cap)
 	generation := s.trailerGeneration(e)
 	cached := CachedTrailer{Path: filepath.Join(s.cacheDir, generation+".mp4"), MIMEType: "video/mp4", SourceGeneration: generation, extra: e}
 	if err := os.MkdirAll(s.cacheDir, 0700); err != nil {
@@ -189,55 +250,8 @@ func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error
 			used -= oldest.Size()
 		}
 	}
-	var response *http.Response
-	var split *Resolved
-	direct := false
-	reserve := int64(0)
 	hit, statErr := os.Stat(cached.Path)
-	if statErr != nil || hit.Size() <= 0 || hit.Size() > cap {
-		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		defer cancel()
-		direct = e.Source == SourceCommand && s.downloadTrailers && len(s.cfg().ResolverArgs) == 0
-		if direct {
-			reserve = min(cap, int64(128<<20))
-		} else {
-			resolved, err := s.Resolve(ctx, e)
-			if err != nil {
-				return CachedTrailer{}, err
-			}
-			if resolved.AudioURL == "" && resolved.Container != "mp4" {
-				return CachedTrailer{}, ErrCacheUnsupported
-			}
-			reserve = min(cap, int64(64<<20))
-			if resolved.AudioURL != "" {
-				split = &resolved
-			} else {
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
-				if err != nil {
-					return CachedTrailer{}, err
-				}
-				if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-					return CachedTrailer{}, errors.New("unsupported trailer URL")
-				}
-				for name, value := range resolved.Headers {
-					req.Header.Set(name, value)
-				}
-				client := s.httpClient(90 * time.Second)
-				response, err = client.Do(req)
-				if err != nil {
-					return CachedTrailer{}, scrubProxyErr(err, egress.Current().Proxy)
-				}
-				defer response.Body.Close()
-				reserve = min(cap, int64(64<<20))
-				if response.StatusCode != http.StatusOK || response.ContentLength > reserve {
-					return CachedTrailer{}, errors.New("trailer unavailable or exceeds cache entry bound")
-				}
-				if response.ContentLength > 0 {
-					reserve = response.ContentLength
-				}
-			}
-		}
-	} else {
+	if statErr == nil && hit.Size() > 0 && hit.Size() <= cap {
 		// A hit is the most recently used file, including after a cap reduction.
 		now := s.now()
 		_ = os.Chtimes(cached.Path, now, now)
@@ -248,74 +262,249 @@ func (s *Service) cacheExtra(ctx context.Context, e Extra) (CachedTrailer, error
 				}
 			}
 		}
+		if err := s.evictForReserve(&files, &used, cap, 0); err != nil {
+			return CachedTrailer{}, err
+		}
+		return cached, nil
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].ModTime().Before(files[j].ModTime()) })
-	for len(files) > 0 && (used > cap-reserve || len(files) >= 512 && reserve > 0) {
-		oldest := files[0]
-		files = files[1:]
-		s.cacheMu.Lock()
-		err := os.Remove(filepath.Join(s.cacheDir, oldest.Name()))
-		s.cacheMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	stage := filepath.Join(s.cacheDir, "download.part")
+	defer os.Remove(stage)
+
+	direct := e.Source == SourceCommand && s.downloadTrailers && len(s.cfg().ResolverArgs) == 0
+	if direct {
+		// yt-dlp stages raw inputs alongside the merged MP4 in source.part.
+		reserve := min(cap, entryLimit*2)
+		downloadLimit := max(int64(1), reserve/2)
+		if err := s.evictForReserve(&files, &used, cap, reserve); err != nil {
+			return CachedTrailer{}, err
+		}
+		if err := s.downloadExtra(ctx, e, stage, downloadLimit); err != nil {
+			return CachedTrailer{}, err
+		}
+		if err := validateStagedMP4(stage, downloadLimit); err != nil {
+			return CachedTrailer{}, err
+		}
+		if err := os.Rename(stage, cached.Path); err != nil {
+			return CachedTrailer{}, err
+		}
+		return cached, nil
+	}
+
+	if e.Source == SourcePlexDiscover {
+		variants, err := s.resolveDiscoverVariants(ctx, e)
 		if err != nil {
 			return CachedTrailer{}, err
 		}
-		used -= oldest.Size()
-	}
-	if response == nil && split == nil && !direct {
-		return cached, nil
-	}
-	stage := filepath.Join(s.cacheDir, "download.part")
-	if direct {
-		if err := s.downloadExtra(ctx, e, stage, reserve/2); err != nil {
-			return CachedTrailer{}, err
+		hasMP4 := false
+		for _, v := range variants {
+			if v.container == "mp4" {
+				hasMP4 = true
+				break
+			}
 		}
+		if !hasMP4 {
+			return CachedTrailer{}, ErrCacheUnsupported
+		}
+		seenURL := make(map[string]bool, len(variants))
+		var lastErr error
+		for _, v := range variants {
+			if v.container != "mp4" {
+				continue
+			}
+			resolved, err := v.resolve(ctx)
+			if err != nil {
+				lastErr = err
+				if ctx.Err() != nil {
+					return CachedTrailer{}, ctx.Err()
+				}
+				continue
+			}
+			if seenURL[resolved.URL] {
+				continue
+			}
+			seenURL[resolved.URL] = true
+			if err := s.downloadHTTPMP4(ctx, resolved, stage, entryLimit, cap, &files, &used); err != nil {
+				if errors.Is(err, egress.ErrNotConfigured) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return CachedTrailer{}, err
+				}
+				lastErr = err
+				continue
+			}
+			if err := os.Rename(stage, cached.Path); err != nil {
+				return CachedTrailer{}, err
+			}
+			return cached, nil
+		}
+		if lastErr != nil {
+			return CachedTrailer{}, lastErr
+		}
+		return CachedTrailer{}, errors.New("trailer unavailable")
 	}
-	flags := os.O_CREATE | os.O_RDWR
-	if !direct {
-		flags |= os.O_TRUNC
-	}
-	f, err := os.OpenFile(stage, flags, 0600)
+
+	resolved, err := s.Resolve(ctx, e)
 	if err != nil {
 		return CachedTrailer{}, err
 	}
-	defer os.Remove(stage)
-	var n int64
-	var copyErr error
-	var extraBytes int
-	if direct {
-		if info, err := f.Stat(); err == nil {
-			n = info.Size()
+	if resolved.AudioURL == "" && resolved.Container != "mp4" {
+		return CachedTrailer{}, ErrCacheUnsupported
+	}
+	if resolved.AudioURL != "" {
+		if err := s.evictForReserve(&files, &used, cap, entryLimit); err != nil {
+			return CachedTrailer{}, err
 		}
-	} else if split != nil {
-		copyErr = s.muxExtra(ctx, *split, f, reserve)
-		if info, err := f.Stat(); err == nil {
-			n = info.Size()
+		f, err := os.OpenFile(stage, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+		if err != nil {
+			return CachedTrailer{}, err
+		}
+		muxErr := s.muxExtra(ctx, resolved, f, entryLimit)
+		closeErr := f.Close()
+		if muxErr != nil {
+			return CachedTrailer{}, muxErr
+		}
+		if closeErr != nil {
+			return CachedTrailer{}, closeErr
+		}
+		if err := validateStagedMP4(stage, entryLimit); err != nil {
+			return CachedTrailer{}, err
 		}
 	} else {
-		n, copyErr = io.Copy(f, io.LimitReader(response.Body, reserve))
-		var extra [1]byte
-		var tailErr error
-		extraBytes, tailErr = response.Body.Read(extra[:])
-		if copyErr == nil && tailErr != nil && tailErr != io.EOF {
-			copyErr = tailErr
+		if err := s.downloadHTTPMP4(ctx, resolved, stage, entryLimit, cap, &files, &used); err != nil {
+			return CachedTrailer{}, err
 		}
-	}
-	var header [12]byte
-	_, readErr := f.ReadAt(header[:], 0)
-	closeErr := f.Close()
-	if copyErr != nil {
-		return CachedTrailer{}, copyErr
-	}
-	if closeErr != nil {
-		return CachedTrailer{}, closeErr
-	}
-	if n == 0 || n > reserve || extraBytes != 0 || (response != nil && response.ContentLength >= 0 && n != response.ContentLength) || readErr != nil || string(header[4:8]) != "ftyp" {
-		return CachedTrailer{}, errors.New("trailer is not a bounded MP4 file")
 	}
 	if err := os.Rename(stage, cached.Path); err != nil {
 		return CachedTrailer{}, err
 	}
 	return cached, nil
+}
+
+func (s *Service) evictForReserve(files *[]os.FileInfo, used *int64, cap, reserve int64) error {
+	sort.Slice(*files, func(i, j int) bool { return (*files)[i].ModTime().Before((*files)[j].ModTime()) })
+	for len(*files) > 0 && (*used > cap-reserve || len(*files) >= 512 && reserve > 0) {
+		oldest := (*files)[0]
+		*files = (*files)[1:]
+		s.cacheMu.Lock()
+		err := os.Remove(filepath.Join(s.cacheDir, oldest.Name()))
+		s.cacheMu.Unlock()
+		if err != nil {
+			return err
+		}
+		*used -= oldest.Size()
+	}
+	return nil
+}
+
+func (s *Service) resolveDiscoverVariants(ctx context.Context, e Extra) ([]discoverVariant, error) {
+	if !s.cfg().Enabled {
+		return nil, errors.New("extras disabled")
+	}
+	if !s.DiscoverAvailable() {
+		return nil, errors.New("extras: plex discover unavailable")
+	}
+	if vr, ok := s.discover.(discoverVariantResolver); ok {
+		return vr.resolveVariants(ctx, e)
+	}
+	r, err := s.discover.Resolve(ctx, e)
+	if err != nil {
+		return nil, err
+	}
+	container := r.Container
+	if container == "" {
+		container = "mp4"
+	}
+	return []discoverVariant{{
+		container: container,
+		resolve:   func(context.Context) (Resolved, error) { return r, nil },
+	}}, nil
+}
+
+func (s *Service) downloadHTTPMP4(ctx context.Context, resolved Resolved, stage string, entryLimit, cap int64, files *[]os.FileInfo, used *int64) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved.URL, nil)
+	if err != nil {
+		return err
+	}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return errors.New("unsupported trailer URL")
+	}
+	for name, value := range resolved.Headers {
+		req.Header.Set(name, value)
+	}
+	client := s.httpClient(90 * time.Second)
+	response, err := client.Do(req)
+	if err != nil {
+		return scrubProxyErr(err, egress.Current().Proxy)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("trailer source returned HTTP %d", response.StatusCode)
+	}
+	if response.ContentLength == 0 {
+		return errors.New("trailer is not a bounded MP4 file")
+	}
+	if response.ContentLength > entryLimit {
+		return fmt.Errorf("trailer size %d bytes exceeds cache entry limit %d bytes", response.ContentLength, entryLimit)
+	}
+	reserve := entryLimit
+	if response.ContentLength > 0 {
+		reserve = response.ContentLength
+	}
+	if err := s.evictForReserve(files, used, cap, reserve); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(stage, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	n, copyErr := io.Copy(f, io.LimitReader(response.Body, reserve))
+	var extra [1]byte
+	extraBytes, tailErr := response.Body.Read(extra[:])
+	if copyErr == nil && tailErr != nil && tailErr != io.EOF {
+		copyErr = tailErr
+	}
+	var header [12]byte
+	_, readErr := f.ReadAt(header[:], 0)
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(stage)
+		return scrubProxyErr(copyErr, egress.Current().Proxy)
+	}
+	if closeErr != nil {
+		_ = os.Remove(stage)
+		return closeErr
+	}
+	if extraBytes != 0 || n > reserve {
+		_ = os.Remove(stage)
+		return fmt.Errorf("trailer size exceeds cache entry limit %d bytes", entryLimit)
+	}
+	if n == 0 || (response.ContentLength >= 0 && n != response.ContentLength) || readErr != nil || string(header[4:8]) != "ftyp" {
+		_ = os.Remove(stage)
+		return errors.New("trailer is not a bounded MP4 file")
+	}
+	return nil
+}
+
+func validateStagedMP4(path string, maxBytes int64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	info, statErr := f.Stat()
+	var header [12]byte
+	_, readErr := f.ReadAt(header[:], 0)
+	closeErr := f.Close()
+	if statErr != nil {
+		return statErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if info.Size() == 0 || info.Size() > maxBytes || readErr != nil || string(header[4:8]) != "ftyp" {
+		return errors.New("trailer is not a bounded MP4 file")
+	}
+	return nil
 }
 
 // OpenCachedTrailer serializes opening against eviction (including Windows).
@@ -361,7 +550,7 @@ func (s *Service) muxExtra(ctx context.Context, r Resolved, output *os.File, lim
 	if err != nil {
 		return err
 	}
-	softLimit := max(int64(1), limit-(64<<10))
+	softLimit := trailerSoftLimit(limit)
 	args := []string{"-nostdin", "-v", "error", "-y", "-threads", "1"}
 	args = append(args, inputArgs...)
 	args = append(args, "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-movflags", "+faststart", "-fs", fmt.Sprint(softLimit), "-f", "mp4", output.Name())
@@ -379,8 +568,8 @@ func (s *Service) muxExtra(ctx context.Context, r Resolved, output *os.File, lim
 		return err
 	}
 	// -fs can finish successfully after truncating: reject at the bound.
-	if info.Size() >= softLimit {
-		return errors.New("muxed extra exceeds cache entry bound")
+	if trailerExceedsSoftLimit(info.Size(), limit, softLimit) {
+		return fmt.Errorf("muxed extra size %d bytes exceeds cache entry limit %d bytes", info.Size(), limit)
 	}
 	return nil
 }
@@ -397,7 +586,7 @@ func (s *Service) muxExtraViaHTTP(ctx context.Context, ff string, r Resolved, ou
 		path string
 	}{{r.URL, videoPath}, {r.AudioURL, audioPath}} {
 		if remaining <= 0 {
-			return errors.New("muxed extra exceeds cache entry bound")
+			return fmt.Errorf("muxed extra exceeds cache entry limit %d bytes", limit)
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, part.raw, nil)
 		if err != nil {
@@ -413,9 +602,13 @@ func (s *Service) muxExtraViaHTTP(ctx context.Context, ff string, r Resolved, ou
 		if err != nil {
 			return scrubProxyErr(err, pVideo, pAudio)
 		}
-		if resp.StatusCode != http.StatusOK || resp.ContentLength > remaining {
+		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return errors.New("trailer unavailable or exceeds cache entry bound")
+			return fmt.Errorf("trailer source returned HTTP %d", resp.StatusCode)
+		}
+		if resp.ContentLength > remaining {
+			resp.Body.Close()
+			return fmt.Errorf("trailer size %d bytes exceeds cache entry limit %d bytes", resp.ContentLength, limit)
 		}
 		f, err := os.OpenFile(part.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 		if err != nil {
@@ -432,11 +625,11 @@ func (s *Service) muxExtraViaHTTP(ctx context.Context, ff string, r Resolved, ou
 			return closeErr
 		}
 		if n == 0 || n > remaining {
-			return errors.New("muxed extra exceeds cache entry bound")
+			return fmt.Errorf("muxed extra exceeds cache entry limit %d bytes", limit)
 		}
 		remaining -= n
 	}
-	softLimit := max(int64(1), limit-(64<<10))
+	softLimit := trailerSoftLimit(limit)
 	args := []string{
 		"-nostdin", "-v", "error", "-y", "-threads", "1",
 		"-protocol_whitelist", "file,pipe", "-i", videoPath,
@@ -453,8 +646,8 @@ func (s *Service) muxExtraViaHTTP(ctx context.Context, ff string, r Resolved, ou
 	if err != nil {
 		return err
 	}
-	if info.Size() >= softLimit {
-		return errors.New("muxed extra exceeds cache entry bound")
+	if trailerExceedsSoftLimit(info.Size(), limit, softLimit) {
+		return fmt.Errorf("muxed extra size %d bytes exceeds cache entry limit %d bytes", info.Size(), limit)
 	}
 	return nil
 }
@@ -477,12 +670,6 @@ func (s *Service) downloadExtra(ctx context.Context, e Extra, stage string, limi
 		return errors.New("extras resolver unavailable")
 	}
 	dir := filepath.Join(s.cacheDir, "source.part")
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
 	defer os.RemoveAll(dir)
 	ff := "ffmpeg"
 	if s.themeFFmpeg != nil {
@@ -491,23 +678,78 @@ func (s *Service) downloadExtra(ctx context.Context, e Extra, stage string, limi
 	if ff == "" {
 		return errors.New("extra muxer unavailable")
 	}
-	softLimit := max(int64(1), limit-(64<<10))
-	args := make([]string, 0, 26)
-	if proxy != nil {
-		args = append(args, "--proxy", proxy.String())
-	}
-	args = append(args, "--no-playlist", "--no-cache-dir", "--no-progress", "--no-warnings", "-f", defaultTrailerFormat, "-N", "8", "--http-chunk-size", "10M", "--merge-output-format", "mp4", "--remux-video", "mp4", "--ffmpeg-location", ff, "--postprocessor-args", fmt.Sprintf("ffmpeg_o:-movflags +faststart -fs %d", softLimit), "--max-filesize", fmt.Sprint(max(int64(1), softLimit/2)), "-o", filepath.Join(dir, "media.%(ext)s"), "--", page)
+	softLimit := trailerSoftLimit(limit)
 	runCtx := withRunnerProxy(ctx, runnerProxyConfig{proxy: proxy, policyEnabled: policyEnabled, bypass: bypass})
-	if _, err := s.runner(runCtx, cmd, args); err != nil {
-		return scrubProxyErr(err, proxy)
+	var sizeErr error
+	for _, maxHeight := range trailerFallbackHeights {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+		args := make([]string, 0, 24)
+		if proxy != nil {
+			args = append(args, "--proxy", proxy.String())
+		}
+		args = append(args,
+			"--no-playlist", "--no-cache-dir", "--no-progress", "--no-warnings",
+			"-f", trailerFormatSelector(maxHeight, softLimit),
+			"-N", "8", "--http-chunk-size", "10M",
+			"--merge-output-format", "mp4", "--remux-video", "mp4",
+			"--ffmpeg-location", ff,
+			"--postprocessor-args", fmt.Sprintf("ffmpeg_o:-movflags +faststart -fs %d", softLimit),
+			"-o", filepath.Join(dir, "media.%(ext)s"),
+			"--", page,
+		)
+		out, err := s.runner(runCtx, cmd, args)
+		if err != nil {
+			if isFormatUnavailableErr(err) {
+				// The initial 1080p selector already considers all lower heights;
+				// on retries no smaller format exists within the size cap.
+				return fmt.Errorf("no trailer format fits cache entry limit (%d bytes): %w", limit, scrubProxyErr(err, proxy))
+			}
+			return scrubProxyErr(err, proxy)
+		}
+		path := filepath.Join(dir, "media.mp4")
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if !os.IsNotExist(statErr) {
+				return statErr
+			}
+			// yt-dlp exited 0 without producing media.mp4 (for example, a stream
+			// was skipped due to size). Clean up and fall back to a smaller height.
+			if strings.Contains(strings.ToLower(string(out)), "max-filesize") {
+				sizeErr = fmt.Errorf("trailer exceeds cache entry limit (%d bytes)", limit)
+			} else if sizeErr == nil {
+				sizeErr = fmt.Errorf("trailer download skipped or exceeds cache entry limit (%d bytes)", limit)
+			}
+			continue
+		}
+		if info.Size() == 0 {
+			if sizeErr == nil {
+				sizeErr = fmt.Errorf("trailer download produced empty file (cache entry limit %d bytes)", limit)
+			}
+			continue
+		}
+		if trailerExceedsSoftLimit(info.Size(), limit, softLimit) {
+			sizeErr = fmt.Errorf("trailer size %d bytes exceeds cache entry limit %d bytes", info.Size(), limit)
+			continue
+		}
+		return os.Rename(path, stage)
 	}
-	path := filepath.Join(dir, "media.mp4")
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
+	if sizeErr != nil {
+		return sizeErr
 	}
-	if info.Size() == 0 || info.Size() >= softLimit {
-		return errors.New("downloaded extra exceeds cache entry bound")
+	return fmt.Errorf("trailer exceeds cache entry limit (%d bytes)", limit)
+}
+
+func isFormatUnavailableErr(err error) bool {
+	if err == nil {
+		return false
 	}
-	return os.Rename(path, stage)
+	return strings.Contains(strings.ToLower(err.Error()), "requested format is not available")
 }

@@ -150,6 +150,59 @@ type EventsHost interface {
 	PublishEvent(ctx context.Context, key string, payload any, corr *EventCorrelation) error
 }
 
+// AIMessage is one chat turn sent to AIHost.AIComplete.
+type AIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// AICompleteRequest configures one completion on the owner's configured
+// language model (#669).
+type AICompleteRequest struct {
+	Messages []AIMessage `json:"messages"`
+	// Schema is an optional JSON Schema object (raw JSON or map[string]any
+	// marshalled to JSON). When set, Ether extracts JSON from the model reply
+	// and validates it against Schema before returning. External $ref URLs are
+	// rejected.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// MaxTokens bounds output tokens (default 1024, max 4096).
+	MaxTokens int `json:"maxTokens,omitempty"`
+	// Temperature optionally adjusts sampling in [0, 2]; ignored safely by
+	// providers/models that disallow explicit temperature.
+	Temperature *float64 `json:"temperature,omitempty"`
+	// TimeoutMS optionally tightens the call timeout (clamped to 30000 ms and
+	// the enclosing call deadline).
+	TimeoutMS int64 `json:"timeoutMs,omitempty"`
+}
+
+// AICompleteResponse is the completion returned by AIHost.AIComplete.
+type AICompleteResponse struct {
+	// Text is the assistant reply (with reasoning blocks stripped). When Schema
+	// was set, Text holds compact canonical JSON.
+	Text string `json:"text"`
+	// JSON holds the validated JSON value when Schema was set.
+	JSON json.RawMessage `json:"json,omitempty"`
+}
+
+// HostError is a structured error returned by Ether's plugin-host API,
+// preserving the EPP error code (for example "not_configured", "rate_limited",
+// "permission_denied", or "invalid_output") alongside the human message.
+type HostError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *HostError) Error() string { return e.Message }
+
+// AIHost runs bounded completions on the owner's configured language model
+// (requires permissions.ai: "complete"; never call on viewer/client request
+// paths). RemoteHostClient and MockHost implement it; Context.AIComplete uses
+// it automatically.
+type AIHost interface {
+	AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error)
+}
+
 // PartStreamHost mints a short-lived, scoped ticket for a specific zero-based
 // part of a multi-file kind item (#576). RemoteHostClient and MockHost
 // implement it; Context.StreamPartURL uses it automatically.
@@ -318,13 +371,25 @@ func (c *RemoteHostClient) callJSONWithHeaders(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var errDoc struct {
 			Error struct {
+				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		if json.Unmarshal(raw, &errDoc) == nil && errDoc.Error.Message != "" {
-			return false, fmt.Errorf("%s", errDoc.Error.Message)
+		if json.Unmarshal(raw, &errDoc) == nil && (errDoc.Error.Message != "" || errDoc.Error.Code != "") {
+			msg := errDoc.Error.Message
+			if msg == "" {
+				msg = fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode)
+			}
+			return false, &HostError{
+				Status:  resp.StatusCode,
+				Code:    errDoc.Error.Code,
+				Message: msg,
+			}
 		}
-		return false, fmt.Errorf("host call %s %s failed with status %d", method, path, resp.StatusCode)
+		return false, &HostError{
+			Status:  resp.StatusCode,
+			Message: fmt.Sprintf("host call %s %s failed with status %d", method, path, resp.StatusCode),
+		}
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
@@ -596,6 +661,16 @@ func (c *RemoteHostClient) PublishEvent(ctx context.Context, key string, payload
 	}
 	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/events/publish", body, nil, false)
 	return err
+}
+
+// AIComplete runs a bounded text or JSON-Schema-validated completion against
+// the owner's configured language model through POST /ether/plugin-host/ai/complete.
+// Requires permissions.ai: "complete"; never call on viewer/client request paths.
+// When no model is configured, returns a *HostError with Code == "not_configured".
+func (c *RemoteHostClient) AIComplete(ctx context.Context, req AICompleteRequest) (AICompleteResponse, error) {
+	var res AICompleteResponse
+	_, err := c.callJSON(ctx, http.MethodPost, "/ether/plugin-host/ai/complete", req, &res, false)
+	return res, err
 }
 
 // NotifyOwner sends an owner notification through Ether.

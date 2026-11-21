@@ -67,6 +67,7 @@ export type ServiceTab =
   | "llm"
   | "opensubtitles"
   | "subdl"
+  | "subsource"
   | "ratings"
   | "introdb";
 
@@ -84,6 +85,7 @@ const TAB_ORDER: ServiceTab[] = [
   "llm",
   "opensubtitles",
   "subdl",
+  "subsource",
   "ratings",
   "introdb",
 ];
@@ -107,6 +109,7 @@ export function integrationTabs(
     llm: t("Language model"),
     opensubtitles: "OpenSubtitles",
     subdl: "SubDL",
+    subsource: "SubSource",
     ratings: t("Ratings"),
     introdb: "TheIntroDB",
   };
@@ -121,7 +124,15 @@ export function integrationTabs(
 interface Service {
   tab: Exclude<ServiceTab, "overview" | "ratings">;
   configKey:
-    "plexServers" | "trakt" | "simkl" | "mdblist" | "llm" | "openSubtitles" | "subdl" | "markers";
+    | "plexServers"
+    | "trakt"
+    | "simkl"
+    | "mdblist"
+    | "llm"
+    | "openSubtitles"
+    | "subdl"
+    | "subsource"
+    | "markers";
   endpoint: string;
   /** Boolean this card's switch writes. Omitted fields stay stored. */
   flag: "enabled" | "theIntroDb";
@@ -225,6 +236,16 @@ const SERVICES: Service[] = localized(() => [
     groups: S.SUBDL,
     testLabel: t("Test SubDL"),
     test: (v) => api.testSubDL(v as EtherConfig["subdl"]),
+  },
+  {
+    tab: "subsource",
+    configKey: "subsource",
+    endpoint: "subsource",
+    flag: "enabled",
+    label: "SubSource",
+    groups: S.SUBSOURCE,
+    testLabel: t("Test SubSource"),
+    test: (v) => api.testSubSource(v as EtherConfig["subsource"]),
   },
   {
     tab: "introdb",
@@ -411,6 +432,14 @@ function mergeSection(
         subdl: {
           enabled: boolField(section, "enabled", base.subdl?.enabled ?? false),
           apiKey: textField(section, "apiKey", base.subdl?.apiKey ?? ""),
+        },
+      };
+    case "subsource":
+      return {
+        ...base,
+        subsource: {
+          enabled: boolField(section, "enabled", base.subsource?.enabled ?? false),
+          apiKey: textField(section, "apiKey", base.subsource?.apiKey ?? ""),
         },
       };
     case "markers": {
@@ -1061,7 +1090,10 @@ export function ConnectedServices({
               disabled={locked}
               test={testButton}
               href={
-                s.tab === "introdb" || s.tab === "opensubtitles" || s.tab === "subdl"
+                s.tab === "introdb" ||
+                s.tab === "opensubtitles" ||
+                s.tab === "subdl" ||
+                s.tab === "subsource"
                   ? "/playback/extras"
                   : s.tab === "llm"
                     ? "/home"
@@ -1074,7 +1106,7 @@ export function ConnectedServices({
               usage={
                 s.tab === "introdb"
                   ? t("Choose intro lookups in Playback › Extras.")
-                  : s.tab === "opensubtitles" || s.tab === "subdl"
+                  : s.tab === "opensubtitles" || s.tab === "subdl" || s.tab === "subsource"
                     ? t("Supplies subtitles during playback.")
                     : s.tab === "llm"
                       ? t("Powers search, collections and Home recommendations.")
@@ -1464,6 +1496,21 @@ function ServiceOverview({
           onToggle={(next) => onToggle(service("subdl"), next)}
           configureHref="/services/subdl"
           configureLabel={on("subdl") ? t("Manage SubDL") : t("Set up SubDL")}
+        />
+        <IntegrationAppCard
+          identity={{ id: "subsource", name: "SubSource" }}
+          description={t("Fetch subtitles from SubSource when a release doesn't include them.")}
+          status={switchStatus(
+            on("subsource"),
+            Boolean(saved("subsource").apiKey),
+            t("Needs an API key"),
+          )}
+          enabled={on("subsource")}
+          busy={locked || busyId === "subsource"}
+          disabled={switchesHeld}
+          onToggle={(next) => onToggle(service("subsource"), next)}
+          configureHref="/services/subsource"
+          configureLabel={on("subsource") ? t("Manage SubSource") : t("Set up SubSource")}
         />
         <IntegrationAppCard
           identity={{ id: "introdb", name: "TheIntroDB" }}

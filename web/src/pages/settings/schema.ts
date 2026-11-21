@@ -680,6 +680,14 @@ export const SUBDL: FieldGroup[] = localized(() => [
   },
 ]);
 
+export const SUBSOURCE: FieldGroup[] = localized(() => [
+  {
+    title: "SubSource",
+    description: t("Fetch subtitles from SubSource when a release doesn't include them."),
+    fields: [{ key: "apiKey", label: t("API key"), kind: "secret" }],
+  },
+]);
+
 export const UPDATES: FieldGroup[] = localized(() => [
   {
     title: t("Release channel"),

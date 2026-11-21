@@ -173,6 +173,7 @@ func consolePages() []consolePage {
 				section("llm", T("Language model"), T("llm ollama openai recaps search")),
 				section("opensubtitles", T("OpenSubtitles"), T("subtitles")),
 				section("subdl", T("SubDL"), T("subtitles")),
+				section("subsource", T("SubSource"), T("subtitles")),
 			},
 		}},
 		{id: "plugins", label: T("Plugins"), icon: "Puzzle", order: 40, meta: extend.PageMeta{
@@ -331,6 +332,14 @@ func consoleIntegrations() []extend.Descriptor {
 			meta: extend.IntegrationMeta{
 				Category: "playback-extras", Logo: "subdl", Connect: "fields",
 				Tab: "subdl", ConfigKey: "subdl", Endpoint: "subdl", Test: "subdl",
+				Flag: "enabled", ReadyField: "apiKey",
+				Adds: []extend.Text{T("Subtitles")},
+			}},
+		{id: "subsource", label: T("SubSource"), order: 12,
+			hint: T("Fetch subtitles from SubSource when a release doesn't include them."),
+			meta: extend.IntegrationMeta{
+				Category: "playback-extras", Logo: "subsource", Connect: "fields",
+				Tab: "subsource", ConfigKey: "subsource", Endpoint: "subsource", Test: "subsource",
 				Flag: "enabled", ReadyField: "apiKey",
 				Adds: []extend.Text{T("Subtitles")},
 			}},

@@ -8,6 +8,7 @@ it.each([
   "Language model",
   "OpenSubtitles",
   "SubDL",
+  "SubSource",
   "TheIntroDB",
   "OMDb and MDBList",
   "PostersPlus",
@@ -23,6 +24,7 @@ it.each([
     f.state.config.llm.enabled = false;
     f.state.config.openSubtitles.enabled = false;
     f.state.config.subdl.enabled = false;
+    f.state.config.subsource.enabled = false;
     f.state.config.markers = { theIntroDb: false, apiKey: "" };
   });
   const toggle =
@@ -44,6 +46,7 @@ it.each([
     "Language model": "llm",
     OpenSubtitles: "opensubtitles",
     SubDL: "subdl",
+    SubSource: "subsource",
     TheIntroDB: "introdb",
     TMDB: "tmdb",
     "OMDb and MDBList": "ratings",
@@ -60,6 +63,7 @@ it.each([
     f.state.config.llm.enabled = true;
     f.state.config.openSubtitles.enabled = true;
     f.state.config.subdl = { enabled: true, apiKey: "" };
+    f.state.config.subsource = { enabled: true, apiKey: "" };
     f.state.config.markers = { theIntroDb: true, apiKey: "" };
     f.state.config.posters = {
       version: 1,

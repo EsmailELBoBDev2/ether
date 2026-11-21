@@ -538,6 +538,10 @@ export interface EtherConfig {
     enabled: boolean;
     apiKey: string;
   };
+  subsource: {
+    enabled: boolean;
+    apiKey: string;
+  };
   llm: {
     enabled: boolean;
     provider: string;

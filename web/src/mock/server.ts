@@ -473,6 +473,7 @@ function defaultConfig(): EtherConfig {
       automaticPreferred: false,
     },
     subdl: { enabled: false, apiKey: "" },
+    subsource: { enabled: false, apiKey: "" },
     llm: { enabled: true, provider: "ollama", baseUrl: "", apiKey: "", model: "llama3" },
     updates: {
       enabled: true,
@@ -5236,6 +5237,8 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "POST /test/llm":
       case "POST /test/trakt":
       case "POST /test/opensubtitles":
+      case "POST /test/subdl":
+      case "POST /test/subsource":
         return json({ ok: true, durationMs: 40 + (hash(route) % 200) });
       case "GET /playback/policy": {
         const activeOverrides =

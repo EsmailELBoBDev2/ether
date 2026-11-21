@@ -74,6 +74,7 @@ export function installMockBackend(): void {
       password: "[configured]",
     };
     c.subdl = { enabled: true, apiKey: "[configured]" };
+    c.subsource = { enabled: true, apiKey: "[configured]" };
     c.markers = { ...c.markers, theIntroDb: true, apiKey: "[configured]" };
     c.posters = {
       version: 1,

@@ -285,6 +285,35 @@
   },
   {
     "kind": "integration",
+    "id": "subsource",
+    "owner": "builtin",
+    "label": {
+      "source": "SubSource"
+    },
+    "hint": {
+      "source": "Fetch subtitles from SubSource when a release doesn't include them."
+    },
+    "group": "playback-extras",
+    "order": 12,
+    "meta": {
+      "category": "playback-extras",
+      "logo": "subsource",
+      "adds": [
+        {
+          "source": "Subtitles"
+        }
+      ],
+      "connect": "fields",
+      "tab": "subsource",
+      "configKey": "subsource",
+      "endpoint": "subsource",
+      "test": "subsource",
+      "flag": "enabled",
+      "readyField": "apiKey"
+    }
+  },
+  {
+    "kind": "integration",
     "id": "introdb",
     "owner": "builtin",
     "label": {
@@ -1389,6 +1418,15 @@
           "key": "subdl",
           "label": {
             "source": "SubDL"
+          },
+          "keywords": {
+            "source": "subtitles"
+          }
+        },
+        {
+          "key": "subsource",
+          "label": {
+            "source": "SubSource"
           },
           "keywords": {
             "source": "subtitles"

@@ -132,18 +132,22 @@ func TestKindUpdateReappliesPresentationAndTypesBrowse(t *testing.T) {
 		t.Fatalf("excluded browse = %+v, %v", excluded.Items, err)
 	}
 
-	// An owner's presentation edit survives an update whose declaration did
-	// not change.
+	// An owner's sticky on/off switch survives plugin updates, even when the
+	// manifest changes how other apps see the library.
+	off := false
 	ownerPresent := lib.Present
-	ownerPresent.MediaBrowser.CollectionType = "homevideos"
-	if err := h.libs.SetPresent(ctx, lib.ID, ownerPresent); err != nil {
+	ownerPresent.Plex = nil
+	if err := h.libs.SetPresentAndOverrides(ctx, lib.ID, ownerPresent, core.PresentationOverrides{Plex: &off}); err != nil {
 		t.Fatal(err)
 	}
 	installStudioManifest(t, h.mgr, musicKindManifest(pluginID, "1.1.1", "music",
 		map[string]any{"album": "MusicAlbum", "track": "Audio"}), nil)
 	lib = pluginLibraryOf(t, h, pluginID)
-	if lib.Present.MediaBrowser == nil || lib.Present.MediaBrowser.CollectionType != "homevideos" {
-		t.Fatalf("owner edit overwritten by unchanged declaration: %+v", lib.Present.MediaBrowser)
+	if lib.Present.Plex != nil {
+		t.Fatalf("owner switch-off overwritten by update: %+v", lib.Present.Plex)
+	}
+	if lib.Present.MediaBrowser == nil || lib.Present.MediaBrowser.CollectionType != "music" {
+		t.Fatalf("mediabrowser lost on update: %+v", lib.Present.MediaBrowser)
 	}
 }
 

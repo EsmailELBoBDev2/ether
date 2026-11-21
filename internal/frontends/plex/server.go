@@ -1063,7 +1063,13 @@ func (s *Server) untitledSectionFor(t frontend.MediaType) (Section, bool) {
 	case frontend.TypeShow, frontend.TypeSeason, frontend.TypeEpisode:
 		want = frontend.TypeShow
 	}
-	for _, sec := range s.getSections() {
+	secs := s.getSections()
+	for _, sec := range secs {
+		if !isKindSection(sec) && sec.Type == want {
+			return sec, true
+		}
+	}
+	for _, sec := range secs {
 		if sec.Type == want {
 			return sec, true
 		}

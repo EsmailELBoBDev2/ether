@@ -138,9 +138,7 @@ func TestMigrateVelaPresentation(t *testing.T) {
 
 	// Owner turns Vela off while keeping Plex on; reopening must NOT re-infer Vela.
 	if err := s.SetPresent(ctx, 12, core.Presentations{
-		Plex: &struct {
-			Base string `json:"base"`
-		}{Base: "movie"},
+		Plex: &core.PlexPresentation{Base: "movie"},
 	}); err != nil {
 		db.Close()
 		t.Fatal(err)

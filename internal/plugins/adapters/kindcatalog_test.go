@@ -960,10 +960,7 @@ func TestFilterLibraryAccess(t *testing.T) {
 	h.titles[drama.Key] = drama
 
 	present := core.Presentations{
-		MediaBrowser: &struct {
-			CollectionType string            `json:"collectionType"`
-			ItemTypes      map[string]string `json:"itemTypes,omitempty"`
-		}{CollectionType: "movies"},
+		MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "movies"},
 	}
 	filterLib, err := h.libs.Create(ctx, "Comedy Movies", core.TypeMovie, libraryRules(core.Filter{Type: core.TypeMovie, Genres: []string{"Comedy"}}), "hide", present)
 	if err != nil {

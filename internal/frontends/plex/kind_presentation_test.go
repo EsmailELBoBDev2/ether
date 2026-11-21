@@ -495,9 +495,7 @@ func TestIssue558PluginMusicSectionHubsAndArtistBrowse(t *testing.T) {
 			PluginID:  "subsonic",
 			KindKey:   "artists",
 			MediaType: core.TypeShow,
-			Present: core.Presentations{Plex: &struct {
-				Base string `json:"base"`
-			}{Base: plexBaseArtist}},
+			Present: core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseArtist}},
 		},
 		artists: []core.Title{artist1, artist2},
 		albums:  []core.Title{album1},
@@ -736,9 +734,7 @@ func TestCustomLibrarySectionBrowseSortAndFilter(t *testing.T) {
 			PluginID:  "subsonic",
 			KindKey:   "artists",
 			MediaType: core.TypeShow,
-			Present: core.Presentations{Plex: &struct {
-				Base string `json:"base"`
-			}{Base: plexBaseArtist}},
+			Present: core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseArtist}},
 		},
 		extra: []core.Library{{
 			ID:                4,
@@ -753,9 +749,7 @@ func TestCustomLibrarySectionBrowseSortAndFilter(t *testing.T) {
 				Match:     "all",
 				Rules:     core.LibraryPredicateConditions(core.Filter{YearFrom: 2000}),
 			}},
-			Present: core.Presentations{Plex: &struct {
-				Base string `json:"base"`
-			}{Base: plexBaseMovie}},
+			Present: core.Presentations{Plex: &core.PlexPresentation{Base: plexBaseMovie}},
 		}},
 		artists:               []core.Title{artist1, artist2},
 		rejectUndeclaredQuery: true,

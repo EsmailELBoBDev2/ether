@@ -153,9 +153,7 @@ func TestPresentationsValidation(t *testing.T) {
 	ctx := context.Background()
 
 	validVela := core.Presentations{
-		Vela: &struct {
-			Type string `json:"type"`
-		}{Type: "shows"},
+		Vela: &core.VelaPresentation{Type: "shows"},
 	}
 	if err := s.SetPresent(ctx, 2, validVela); err != nil {
 		t.Fatalf("valid vela present: %v", err)
@@ -166,9 +164,7 @@ func TestPresentationsValidation(t *testing.T) {
 	}
 
 	badVela := core.Presentations{
-		Vela: &struct {
-			Type string `json:"type"`
-		}{Type: "anime"},
+		Vela: &core.VelaPresentation{Type: "anime"},
 	}
 	if err := s.SetPresent(ctx, 2, badVela); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("SetPresent(bad vela) = %v, want ErrInvalid", err)

@@ -471,6 +471,10 @@ type Library struct {
 	// Presentation: how protocols expose this library (§6.2). For builtins
 	// this is synthesised, not stored.
 	Present Presentations `json:"present,omitempty"`
+	// PresentOverrides records sticky owner on/off switches per app.
+	// Nil fields follow the manifest or inferred default; non-nil choices
+	// survive plugin updates and restarts.
+	PresentOverrides PresentationOverrides `json:"presentOverrides,omitempty"`
 	// QualityProfile is the owner-set quality profile name titles in this
 	// library rank with. Empty means "Default": today's Movies/Shows
 	// home/away defaults apply. Set on any library, including catalogue
@@ -499,31 +503,212 @@ func (l Library) EffectiveCardShape(pluginDefault string) string {
 	return CardPoster
 }
 
-// Presentations declares how a library is published per protocol (§6.2).
-// Declared by the plugin for plugin libraries, editable by the owner per
-// library afterwards; a zero value publishes nowhere (console-only).
+// MediaClass names the kind of media a content kind holds.
+type MediaClass string
+
+const (
+	MediaClassVideo     MediaClass = "video"
+	MediaClassMusic     MediaClass = "music"
+	MediaClassAudiobook MediaClass = "audiobook"
+	MediaClassBook      MediaClass = "book"
+	MediaClassPodcast   MediaClass = "podcast"
+	MediaClassPhoto     MediaClass = "photo"
+)
+
+// ValidMediaClass reports whether s is a supported content kind media class.
+func ValidMediaClass(s string) bool {
+	switch MediaClass(s) {
+	case MediaClassVideo, MediaClassMusic, MediaClassAudiobook, MediaClassBook, MediaClassPodcast, MediaClassPhoto:
+		return true
+	default:
+		return false
+	}
+}
+
+// MediaRole names what one hierarchy level of a content kind represents.
+type MediaRole string
+
+const (
+	MediaRoleItem       MediaRole = "item"
+	MediaRoleArtist     MediaRole = "artist"
+	MediaRoleAlbum      MediaRole = "album"
+	MediaRoleTrack      MediaRole = "track"
+	MediaRoleSeries     MediaRole = "series"
+	MediaRoleBook       MediaRole = "book"
+	MediaRoleAudiobook  MediaRole = "audiobook"
+	MediaRolePart       MediaRole = "part"
+	MediaRoleShow       MediaRole = "show"
+	MediaRoleEpisode    MediaRole = "episode"
+	MediaRoleCollection MediaRole = "collection"
+)
+
+// ValidMediaRole reports whether s is a supported content kind level role.
+func ValidMediaRole(s string) bool {
+	switch MediaRole(s) {
+	case MediaRoleItem, MediaRoleArtist, MediaRoleAlbum, MediaRoleTrack,
+		MediaRoleSeries, MediaRoleBook, MediaRoleAudiobook, MediaRolePart,
+		MediaRoleShow, MediaRoleEpisode, MediaRoleCollection:
+		return true
+	default:
+		return false
+	}
+}
+
+// VelaPresentation describes how Vela sees a library.
+type VelaPresentation struct {
+	Type    string `json:"type,omitempty"`    // movies|shows
+	Default *bool  `json:"default,omitempty"` // optional manifest default hint (true when omitted)
+}
+
+// PlexPresentation describes how Plex sees a library.
+type PlexPresentation struct {
+	Base    string `json:"base,omitempty"`    // movie|show|artist|photo
+	Default *bool  `json:"default,omitempty"` // optional manifest default hint (true when omitted)
+}
+
+// MediaBrowserPresentation describes how Jellyfin and Emby see a library.
+type MediaBrowserPresentation struct {
+	CollectionType string            `json:"collectionType,omitempty"` // movies|tvshows|music|audiobooks|books|photos|homevideos
+	ItemTypes      map[string]string `json:"itemTypes,omitempty"`      // level -> Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|AudioBook|Book|PhotoAlbum|Photo
+	Default        *bool             `json:"default,omitempty"`        // optional manifest default hint (true when omitted)
+}
+
+// StremioPresentation describes how Stremio sees a library.
+type StremioPresentation struct {
+	Type    string `json:"type,omitempty"`    // movie|series|channel|tv
+	Default *bool  `json:"default,omitempty"` // optional manifest default hint (true when omitted)
+}
+
+// XtreamPresentation describes how Xtream sees a library.
+type XtreamPresentation struct {
+	Category string `json:"category,omitempty"` // movie|series|live
+	Default  *bool  `json:"default,omitempty"`  // optional manifest default hint (true when omitted)
+}
+
+// SiloPresentation describes how Silo sees a library.
+type SiloPresentation struct {
+	Type    string `json:"type,omitempty"`    // movies|tvshows (mirrors MediaBrowser family)
+	Default *bool  `json:"default,omitempty"` // optional manifest default hint (true when omitted)
+}
+
+// Presentations declares how a library is presented per protocol (§6.2).
+// In a plugin manifest, each app block describes how that app sees the library
+// (and may optionally suggest default: false to start off). On a stored
+// core.Library, non-nil app blocks represent the currently published apps with
+// their resolved per-protocol shapes.
 type Presentations struct {
-	AdapterOnly bool `json:"adapterOnly,omitempty"` // only via FrontendAdapter (§6.5)
-	Vela        *struct {
-		Type string `json:"type"` // movies|shows
-	} `json:"vela,omitempty"`
-	Plex *struct {
-		Base string `json:"base"` // movie|show|artist|photo  (Plex section type / agent family)
-		// level mapping for Base=show: root->show, mid->season, leaf->episode; movie: root|leaf->movie
-	} `json:"plex,omitempty"`
-	MediaBrowser *struct { // Jellyfin + Emby share internal/frontends/mediabrowser
-		CollectionType string            `json:"collectionType"`      // movies|tvshows|music|audiobooks|books|photos|homevideos
-		ItemTypes      map[string]string `json:"itemTypes,omitempty"` // level -> Movie|Series|Season|Episode|MusicArtist|MusicAlbum|Audio|AudioBook|Book|PhotoAlbum|Photo
-	} `json:"mediaBrowser,omitempty"`
-	Stremio *struct {
-		Type string `json:"type"` // movie|series|channel|tv — closed Stremio set; other kinds use their own add-on surface instead
-	} `json:"stremio,omitempty"`
-	Xtream *struct {
-		Category string `json:"category"`
-	} `json:"xtream,omitempty"` // movie|series|live
-	Silo *struct {
-		Type string `json:"type"`
-	} `json:"silo,omitempty"` // mirrors MediaBrowser item family
+	AdapterOnly  bool                      `json:"adapterOnly,omitempty"` // only via FrontendAdapter (§6.5)
+	Vela         *VelaPresentation         `json:"vela,omitempty"`
+	Plex         *PlexPresentation         `json:"plex,omitempty"`
+	MediaBrowser *MediaBrowserPresentation `json:"mediaBrowser,omitempty"`
+	Stremio      *StremioPresentation      `json:"stremio,omitempty"`
+	Xtream       *XtreamPresentation       `json:"xtream,omitempty"`
+	Silo         *SiloPresentation         `json:"silo,omitempty"`
+}
+
+// PresentationOverrides records explicit per-app owner publish switches.
+// Nil fields follow the manifest or inferred default; non-nil choices are
+// sticky across plugin updates and server restarts.
+type PresentationOverrides struct {
+	AdapterOnly  *bool `json:"adapterOnly,omitempty"`
+	Vela         *bool `json:"vela,omitempty"`
+	Plex         *bool `json:"plex,omitempty"`
+	MediaBrowser *bool `json:"mediaBrowser,omitempty"`
+	Stremio      *bool `json:"stremio,omitempty"`
+	Xtream       *bool `json:"xtream,omitempty"`
+	Silo         *bool `json:"silo,omitempty"`
+}
+
+// Get returns the owner override for app ("vela"|"plex"|"mediaBrowser"|
+// "stremio"|"xtream"|"silo"|"adapterOnly"), or nil if not overridden.
+func (o PresentationOverrides) Get(app string) *bool {
+	switch app {
+	case "adapterOnly":
+		return o.AdapterOnly
+	case "vela":
+		return o.Vela
+	case "plex":
+		return o.Plex
+	case "mediaBrowser":
+		return o.MediaBrowser
+	case "stremio":
+		return o.Stremio
+	case "xtream":
+		return o.Xtream
+	case "silo":
+		return o.Silo
+	default:
+		return nil
+	}
+}
+
+// Set updates the owner override for app.
+func (o *PresentationOverrides) Set(app string, val *bool) {
+	if o == nil {
+		return
+	}
+	var cp *bool
+	if val != nil {
+		v := *val
+		cp = &v
+	}
+	switch app {
+	case "adapterOnly":
+		o.AdapterOnly = cp
+	case "vela":
+		o.Vela = cp
+	case "plex":
+		o.Plex = cp
+	case "mediaBrowser":
+		o.MediaBrowser = cp
+	case "stremio":
+		o.Stremio = cp
+	case "xtream":
+		o.Xtream = cp
+	case "silo":
+		o.Silo = cp
+	}
+}
+
+// IsEmpty reports whether no owner overrides are stored.
+func (o PresentationOverrides) IsEmpty() bool {
+	return o.AdapterOnly == nil && o.Vela == nil && o.Plex == nil &&
+		o.MediaBrowser == nil && o.Stremio == nil && o.Xtream == nil && o.Silo == nil
+}
+
+// PresentationSource says where an app's presentation shape came from.
+type PresentationSource string
+
+const (
+	PresentationSourcePlugin      PresentationSource = "plugin"
+	PresentationSourceInferred    PresentationSource = "inferred"
+	PresentationSourceUnavailable PresentationSource = "unavailable"
+)
+
+// ResolvedAppPresentation describes one app row for a library in the owner
+// console: whether the app can show the library, whether it is currently
+// published, where the presentation came from, and a plain-language reason
+// when unavailable.
+type ResolvedAppPresentation struct {
+	App        string             `json:"app"`                  // vela|plex|mediaBrowser|stremio|xtream|silo
+	Available  bool               `json:"available"`
+	Enabled    bool               `json:"enabled"`
+	DefaultOn  bool               `json:"defaultOn"`
+	Overridden bool               `json:"overridden,omitempty"`
+	Source     PresentationSource `json:"source"`               // plugin|inferred|unavailable
+	HintValue  string             `json:"hintValue,omitempty"`  // e.g. movies, show, artist, music, books, photo
+	Reason     string             `json:"reason,omitempty"`     // plain-language reason when unavailable
+}
+
+// ResolvedPresentations is the full server-computed presentation picture for a
+// library, separating HOW each app sees the library (Available) from WHETHER
+// each app currently publishes it (Effective / Apps).
+type ResolvedPresentations struct {
+	MediaClass  MediaClass                `json:"mediaClass"`
+	AdapterOnly bool                      `json:"adapterOnly,omitempty"`
+	Effective   Presentations             `json:"effective"`
+	Available   Presentations             `json:"available"`
+	Apps        []ResolvedAppPresentation `json:"apps"`
 }
 
 // CanonicalLibraryForTitle returns the one canonical library of a TMDB

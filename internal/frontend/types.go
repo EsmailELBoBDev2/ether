@@ -132,6 +132,12 @@ func SeasonKey(show int64, season int) RatingKey {
 
 // Protocol integration contracts remain implemented by the host.
 type Presentations = core.Presentations
+type VelaPresentation = core.VelaPresentation
+type PlexPresentation = core.PlexPresentation
+type MediaBrowserPresentation = core.MediaBrowserPresentation
+type StremioPresentation = core.StremioPresentation
+type XtreamPresentation = core.XtreamPresentation
+type SiloPresentation = core.SiloPresentation
 type SessionPolicy = core.SessionPolicy
 type FrontendHostPolicy = core.FrontendHostPolicy
 type DeliveryPolicy = core.DeliveryPolicy

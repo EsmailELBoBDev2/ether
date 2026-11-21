@@ -1019,6 +1019,16 @@ func (s *Server) findHub(ctx context.Context, pr *Request, id string, sections [
 		if len(sections) > 0 && !containsInt(sections, sec.ID) {
 			continue
 		}
+		if isKindSection(sec) && !isKindMusicSection(sec) {
+			_, kindServed := s.kindSectionHubs(ctx, pr, sec, count)
+			for hid, h := range kindServed {
+				if matchHubID(hid, candidates) {
+					h.ID = id
+					return hubSpec{Hub: h}, true
+				}
+			}
+			continue
+		}
 		if !isVideoSection(sec) {
 			continue
 		}

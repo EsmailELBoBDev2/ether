@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/braedonsaunders/ether/internal/archive"
 	at "github.com/braedonsaunders/ether/internal/archive/archivetest"
 	"github.com/braedonsaunders/ether/internal/blobcache"
 	"github.com/braedonsaunders/ether/internal/core"
@@ -566,6 +568,44 @@ func TestUnstreamableArchivesReturnTypedError(t *testing.T) {
 	}
 	if errors.Is(err, core.ErrSourceUnavailable) {
 		t.Fatalf("OpenSources(all unstreamable) masked error as ErrSourceUnavailable: %v", err)
+	}
+}
+
+func TestOpenSourcesPreservesPermanentRejectionWithoutSourceUnavailable(t *testing.T) {
+	ctx := context.Background()
+	sources := []core.PlayableSource{
+		{ID: "rel-1", Pattern: PatternRelease, MIME: "application/x-cbr", Release: &core.ReleaseHint{NZBURL: "https://idx.test/1.nzb"}},
+		{ID: "rel-2", Pattern: PatternRelease, MIME: "application/x-cbr", Release: &core.ReleaseHint{NZBURL: "https://idx.test/2.nzb"}},
+	}
+
+	// All candidates failing with permanent rejection (e.g. missing archive volume)
+	// must surface core.ErrReleaseRejected, NOT core.ErrSourceUnavailable.
+	_, _, err := OpenSources(ctx, sources, Deps{
+		OpenReleaseSource: func(_ context.Context, src core.PlayableSource) (core.MediaSource, error) {
+			if src.ID == "rel-1" {
+				return nil, fmt.Errorf("rar open: %w", archive.ErrMissingVolume)
+			}
+			return nil, fmt.Errorf("%w: %w", core.ErrReleaseRejected, core.ErrArticleMissing)
+		},
+	})
+	if !errors.Is(err, core.ErrReleaseRejected) || !errors.Is(err, archive.ErrMissingVolume) {
+		t.Fatalf("OpenSources(all rejected) = %v, want core.ErrReleaseRejected + archive.ErrMissingVolume", err)
+	}
+	if errors.Is(err, core.ErrSourceUnavailable) {
+		t.Fatalf("OpenSources(all rejected) masked permanent rejection as ErrSourceUnavailable: %v", err)
+	}
+
+	// Mixed permanent rejection + transient failure stays core.ErrSourceUnavailable.
+	_, _, err = OpenSources(ctx, sources, Deps{
+		OpenReleaseSource: func(_ context.Context, src core.PlayableSource) (core.MediaSource, error) {
+			if src.ID == "rel-1" {
+				return nil, fmt.Errorf("%w: %w", core.ErrReleaseRejected, archive.ErrMissingVolume)
+			}
+			return nil, errors.New("nntp connection reset")
+		},
+	})
+	if !errors.Is(err, core.ErrSourceUnavailable) {
+		t.Fatalf("OpenSources(mixed permanent+transient) = %v, want core.ErrSourceUnavailable", err)
 	}
 }
 

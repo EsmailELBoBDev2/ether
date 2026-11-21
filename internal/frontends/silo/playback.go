@@ -820,6 +820,14 @@ func playbackError(w http.ResponseWriter, err error) {
 		http.Error(w, "This title needs a video transcode to play on this device, and video transcoding is turned off.", http.StatusUnprocessableEntity)
 		return
 	}
+	if errors.Is(err, frontend.ErrArchiveUnstreamable) {
+		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, frontend.ErrReleaseRejected) || errors.Is(err, frontend.ErrArticleMissing) || errors.Is(err, frontend.ErrArticleCorrupt) {
+		http.Error(w, "The source is incomplete or cannot be played.", http.StatusUnprocessableEntity)
+		return
+	}
 	if errors.Is(err, frontend.ErrTrackNotFound) {
 		http.Error(w, "Selected track unavailable", http.StatusUnprocessableEntity)
 		return

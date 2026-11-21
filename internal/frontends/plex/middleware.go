@@ -696,6 +696,9 @@ func (s *Server) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, frontend.ErrArchiveUnstreamable):
 		s.log.Warn("archive format or compression method cannot be streamed", "path", r.URL.Path, "err", err)
 		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
+	case errors.Is(err, frontend.ErrReleaseRejected), errors.Is(err, frontend.ErrArticleMissing), errors.Is(err, frontend.ErrArticleCorrupt):
+		s.log.Warn("source incomplete or cannot be played", "path", r.URL.Path, "err", err)
+		http.Error(w, "The source is incomplete or cannot be played.", http.StatusUnprocessableEntity)
 	case errors.Is(err, frontend.ErrPreparing):
 		w.Header().Set("Retry-After", strconv.Itoa(frontend.PreparingRetrySeconds(err, 5)))
 		w.Header().Set("X-Ether-Media-Error", "preparing")

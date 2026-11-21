@@ -261,3 +261,128 @@ func TestCheckArticlesMissingAndErrors(t *testing.T) {
 		}
 	})
 }
+
+func buildNamedFilesNZB(f *fakeFetcher, names []string, segsPerFile int, segSize int) []byte {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">`)
+	segPayload := make([]byte, segSize)
+	for fi, name := range names {
+		fmt.Fprintf(&b, `<file poster="p" date="1700000000" subject="&quot;%s&quot; yEnc (1/%d)"><groups><group>alt.binaries.test</group></groups><segments>`, name, segsPerFile)
+		for si := 0; si < segsPerFile; si++ {
+			id := fmt.Sprintf("named-%d-s%d@test", fi, si)
+			if f != nil {
+				f.articles[id] = fakeArticle{
+					data: segPayload,
+					part: core.ArticlePart{
+						Part:     si + 1,
+						Total:    segsPerFile,
+						FileSize: int64(segsPerFile * segSize),
+						Begin:    int64(si*segSize + 1),
+						End:      int64((si + 1) * segSize),
+					},
+				}
+			}
+			fmt.Fprintf(&b, `<segment bytes="%d" number="%d">%s</segment>`, segSize, si+1, id)
+		}
+		b.WriteString(`</segments></file>`)
+	}
+	b.WriteString(`</nzb>`)
+	return []byte(b.String())
+}
+
+func TestCheckArticlesMissingArchiveVolumes(t *testing.T) {
+	tests := []struct {
+		name        string
+		files       []string
+		wantMissing int
+	}{
+		{
+			name:        "new-style RAR skipping part14 and part15",
+			files:       []string{"Release.part01.rar", "Release.part02.rar", "Release.part03.rar", "Release.part04.rar", "Release.part05.rar", "Release.part06.rar", "Release.part07.rar", "Release.part08.rar", "Release.part09.rar", "Release.part10.rar", "Release.part11.rar", "Release.part12.rar", "Release.part13.rar", "Release.part16.rar", "Release.part17.rar"},
+			wantMissing: 2,
+		},
+		{
+			name:        "new-style RAR missing part01",
+			files:       []string{"Release.part02.rar", "Release.part03.rar"},
+			wantMissing: 1,
+		},
+		{
+			name:        "old-style RAR missing r01",
+			files:       []string{"Release.rar", "Release.r00", "Release.r02"},
+			wantMissing: 1,
+		},
+		{
+			name:        "7z volume gap",
+			files:       []string{"Release.7z.001", "Release.7z.003"},
+			wantMissing: 1,
+		},
+		{
+			name:        "zip split missing closing zip",
+			files:       []string{"Release.z01", "Release.z02"},
+			wantMissing: 1,
+		},
+		{
+			name:        "plain split volume gap",
+			files:       []string{"Release.mkv.001", "Release.mkv.003"},
+			wantMissing: 1,
+		},
+		{
+			name:        "multi-set pack with one incomplete set",
+			files:       []string{"Ep01.part01.rar", "Ep01.part02.rar", "Ep02.part01.rar", "Ep02.part03.rar", "Ep03.part01.rar", "Ep03.part02.rar"},
+			wantMissing: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ff := newPriorityRecordingFetcher()
+			doc := buildNamedFilesNZB(ff.fakeFetcher, tc.files, 2, 1024)
+			e := New(ff, nil, Options{}, nil)
+			defer e.Close()
+
+			res, err := e.CheckArticles(context.Background(), "rel-missing-vol", doc)
+			if err != nil {
+				t.Fatalf("CheckArticles: %v", err)
+			}
+			if res.Available {
+				t.Fatalf("Available = true, want false (%+v)", res)
+			}
+			if res.Reason != "volumes_missing" {
+				t.Fatalf("Reason = %q, want volumes_missing", res.Reason)
+			}
+			if res.Missing != tc.wantMissing || res.Checked != tc.wantMissing {
+				t.Fatalf("counts = (checked=%d missing=%d), want (%d, %d)", res.Checked, res.Missing, tc.wantMissing, tc.wantMissing)
+			}
+			ff.mu.Lock()
+			calls := ff.totalCalls
+			ff.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("NNTP calls = %d, want 0 when archive volumes are missing", calls)
+			}
+		})
+	}
+
+	t.Run("healthy dominant video ignores tiny incomplete subtitle archive", func(t *testing.T) {
+		ff := newPriorityRecordingFetcher()
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">`)
+		bigSeg := make([]byte, 4096)
+		ff.articles["vid-0@test"] = fakeArticle{data: bigSeg, part: core.ArticlePart{Part: 1, Total: 1, FileSize: 4096, Begin: 1, End: 4096}}
+		b.WriteString(`<file poster="p" date="1700000000" subject="&quot;Movie.2024.mkv&quot; yEnc (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="4096" number="1">vid-0@test</segment></segments></file>`)
+		smallSeg := make([]byte, 128)
+		ff.articles["sub-0@test"] = fakeArticle{data: smallSeg, part: core.ArticlePart{Part: 1, Total: 1, FileSize: 128, Begin: 1, End: 128}}
+		b.WriteString(`<file poster="p" date="1700000000" subject="&quot;Subs.part02.rar&quot; yEnc (1/1)"><groups><group>alt.binaries.test</group></groups><segments><segment bytes="128" number="1">sub-0@test</segment></segments></file>`)
+		b.WriteString(`</nzb>`)
+
+		e := New(ff, nil, Options{}, nil)
+		defer e.Close()
+
+		res, err := e.CheckArticles(context.Background(), "rel-dom-video", []byte(b.String()))
+		if err != nil {
+			t.Fatalf("CheckArticles: %v", err)
+		}
+		if !res.Available {
+			t.Fatalf("Available = false (reason=%q), want true for dominant complete video", res.Reason)
+		}
+	})
+}

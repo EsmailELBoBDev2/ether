@@ -58,6 +58,36 @@ func TestMediaHandlerSurfacesArchiveUnstreamablePlainly(t *testing.T) {
 	}
 }
 
+func TestMediaHandlerSurfacesPermanentRejectionNotTemporarilyUnavailable(t *testing.T) {
+	issuer := NewTicketIssuer()
+	handler := NewMediaHandler(MediaDeps{
+		Tickets: issuer,
+		Viewer: func(_ context.Context, id int64) (*core.Viewer, error) {
+			return viewerWithLibraries(id, "Reader", core.LibraryMovies), nil
+		},
+		Open: func(_ context.Context, _ *core.Viewer, _ string, _ []string) (*frontend.KindMedia, error) {
+			return nil, fmt.Errorf("missing volume: %w", core.ErrReleaseRejected)
+		},
+	})
+
+	token, err := issuer.Issue(StreamGrant{ViewerID: 7, ItemID: "plug:kind:item-1", Adapter: "feed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, KindMediaPath+token, nil))
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Ether-Media-Error"); got != "source_unplayable" {
+		t.Fatalf("X-Ether-Media-Error = %q, want source_unplayable", got)
+	}
+	if strings.Contains(rec.Body.String(), "temporarily unavailable") {
+		t.Fatalf("body still says temporarily unavailable: %q", rec.Body.String())
+	}
+}
+
 func TestMediaHandlerDefaultsEmptyMIMEToOctetStreamNeverVideo(t *testing.T) {
 	issuer := NewTicketIssuer()
 	payload := append([]byte{0x00, 0x00, 0x00, 0x18}, []byte("ftypisom-opaque-binary")...)

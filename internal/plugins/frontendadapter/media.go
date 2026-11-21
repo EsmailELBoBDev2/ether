@@ -166,6 +166,8 @@ func openFailure(err error) (int, string, string) {
 		return http.StatusNotFound, "item_not_found", "The item is not in a library this viewer can open."
 	case errors.Is(err, core.ErrArchiveUnstreamable):
 		return http.StatusUnprocessableEntity, "archive_unstreamable", "This archive format or compression method cannot be streamed."
+	case errors.Is(err, core.ErrReleaseRejected), errors.Is(err, core.ErrNoUsableFile), errors.Is(err, core.ErrArticleMissing), errors.Is(err, core.ErrArticleCorrupt):
+		return http.StatusUnprocessableEntity, "source_unplayable", "The item's source is incomplete or cannot be played."
 	case errors.Is(err, core.ErrSourceUnavailable), errors.Is(err, plugins.ErrBusy):
 		return http.StatusServiceUnavailable, "source_unavailable", "The item's source is temporarily unavailable."
 	default:

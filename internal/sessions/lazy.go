@@ -717,6 +717,14 @@ func (s *lazyStreams) writePlaybackError(w http.ResponseWriter, r *http.Request,
 		s.sourceGone(w, r)
 		return
 	}
+	if errors.Is(err, core.ErrArchiveUnstreamable) {
+		http.Error(w, "This archive format or compression method cannot be streamed.", http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, core.ErrReleaseRejected) || errors.Is(err, core.ErrArticleMissing) || errors.Is(err, core.ErrArticleCorrupt) {
+		http.Error(w, "The source is incomplete or cannot be played.", http.StatusUnprocessableEntity)
+		return
+	}
 	var capacity *frontend.TranscodeCapacityError
 	var busy *frontend.SessionBusyError
 	var retry time.Duration

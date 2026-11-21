@@ -486,6 +486,15 @@ func TestGroupSetsZSplit(t *testing.T) {
 	if !reflect.DeepEqual(names, []string{"Pack.z01", "Pack.z02", "Pack.zip"}) {
 		t.Fatalf("order = %v, want [Pack.z01 Pack.z02 Pack.zip]", names)
 	}
+
+	// Missing closing .zip volume must mark the WinZip split set incomplete.
+	incomplete := GroupSets([]*File{
+		fileNamed("Pack.z01", 100),
+		fileNamed("Pack.z02", 100),
+	})
+	if len(incomplete) != 1 || incomplete[0].Complete() || !reflect.DeepEqual(incomplete[0].Missing, []int{2}) {
+		t.Fatalf("zSplit without .zip = %+v, want Missing=[2]", incomplete)
+	}
 }
 
 // GroupSets used to renumber the files it was given, so grouping the same

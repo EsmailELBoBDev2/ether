@@ -88,7 +88,9 @@ func playbackMessage(err error) string {
 		return "This archive format or compression method cannot be streamed."
 	case errors.Is(err, context.DeadlineExceeded):
 		return "The source timed out. Try again later."
-	case errors.Is(err, frontend.ErrSourceUnavailable), errors.Is(err, frontend.ErrArticleMissing), errors.Is(err, frontend.ErrArticleCorrupt), errors.Is(err, frontend.ErrReleaseRejected):
+	case errors.Is(err, frontend.ErrArticleMissing), errors.Is(err, frontend.ErrArticleCorrupt), errors.Is(err, frontend.ErrReleaseRejected):
+		return "The source is incomplete or cannot be played."
+	case errors.Is(err, frontend.ErrSourceUnavailable):
 		return "The source could not be opened or is incomplete. Try again later."
 	case errors.Is(err, frontend.ErrNotAvailable):
 		return msgNotAvailable

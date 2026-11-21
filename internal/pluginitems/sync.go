@@ -270,10 +270,10 @@ func exceedsDeleteGuard(storedCount, deleteCount int, force bool) bool {
 // cursor if the kind implements /changes.
 func (s *Service) syncInitialWalk(ctx context.Context, caller Caller, rec KindRecord, opts SyncOptions) (SyncResult, error) {
 	var (
-		res          SyncResult
-		progressMu   sync.Mutex
-		pages        int
-		firstNoted   bool
+		res        SyncResult
+		progressMu sync.Mutex
+		pages      int
+		firstNoted bool
 	)
 	onPage := func(batch []core.KindItem) error {
 		if len(batch) == 0 {

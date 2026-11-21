@@ -133,13 +133,13 @@ function LibrarySyncNow({ detail, onClose }: { detail: PluginDetail; onClose: ()
   const anyRunning = Boolean(libs?.some((l) => l.sync?.running));
   const anyPendingFirstSync = Boolean(
     detail.enabled &&
-      libs?.some(
-        (l) =>
-          l.kind?.sync?.mode !== "push" &&
-          !l.sync?.lastOk &&
-          !l.sync?.lastError &&
-          (l.storedItems ?? l.itemCount ?? l.sync?.items ?? 0) === 0,
-      ),
+    libs?.some(
+      (l) =>
+        l.kind?.sync?.mode !== "push" &&
+        !l.sync?.lastOk &&
+        !l.sync?.lastError &&
+        (l.storedItems ?? l.itemCount ?? l.sync?.items ?? 0) === 0,
+    ),
   );
   const shouldPoll = anyRunning || anyPendingFirstSync;
 
@@ -176,14 +176,12 @@ function LibrarySyncNow({ detail, onClose }: { detail: PluginDetail; onClose: ()
   if (!libs || libs.length === 0) return null;
 
   return (
-    <DashboardPanel
-      title={t("Library sync")}
-      description={
-        anyRunning
+    <DashboardPanel title={t("Library sync")}>
+      <p className="mb-3 text-sm text-muted-foreground">
+        {anyRunning
           ? t("Syncing items in the background. Items appear in your apps as pages arrive.")
-          : t("Libraries populated by this plugin.")
-      }
-    >
+          : t("Libraries populated by this plugin.")}
+      </p>
       <div className="space-y-3">
         {libs.map((lib) => {
           const sync = lib.sync;

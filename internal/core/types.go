@@ -193,16 +193,16 @@ func (t *Title) IsFutureRelease(now time.Time) bool {
 }
 
 var (
-	ErrNotFound            = errors.New("not found")
-	ErrNotAvailable        = errors.New("not available yet")      // no acceptable release exists
-	ErrMoreCandidates      = errors.New("more candidates remain") // per-call validation budget hit with untried candidates left
-	ErrVersionUnavailable  = errors.New("version unavailable")
-	ErrPreparing           = errors.New("item is still being prepared")
-	ErrJobsBusy            = errors.New("playback preparation jobs are all busy")
-	ErrUnreleased          = errors.New("title has not been released")
-	ErrArticleMissing      = errors.New("article missing on all providers")
-	ErrArticleCorrupt      = errors.New("corrupt article or media data")
-	ErrReleaseRejected     = errors.New("release cannot be streamed")
+	ErrNotFound           = errors.New("not found")
+	ErrNotAvailable       = errors.New("not available yet")      // no acceptable release exists
+	ErrMoreCandidates     = errors.New("more candidates remain") // per-call validation budget hit with untried candidates left
+	ErrVersionUnavailable = errors.New("version unavailable")
+	ErrPreparing          = errors.New("item is still being prepared")
+	ErrJobsBusy           = errors.New("playback preparation jobs are all busy")
+	ErrUnreleased         = errors.New("title has not been released")
+	ErrArticleMissing     = errors.New("article missing on all providers")
+	ErrArticleCorrupt     = errors.New("corrupt article or media data")
+	ErrReleaseRejected    = errors.New("release cannot be streamed")
 	// ErrNoUsableFile reports a structural verdict that a release contains no
 	// file usable for the request (for example, no matching audio/book file or
 	// no playable video), distinct from transient transport/article failures.

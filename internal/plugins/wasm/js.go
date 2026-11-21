@@ -814,6 +814,7 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 				}
 				metaBytes, err := json.Marshal(meta)
 				if err != nil {
+					ab.Free()
 					return nil, err
 				}
 				obj := qc.NewObject()
@@ -825,29 +826,37 @@ func newJSInstance(ctx context.Context, source string, lim *Limits, hot bool, lo
 			}
 		})
 	}
-	if _, err := qc.Eval("ether-codecs.js", qjs.Code(codecPrelude)); err != nil {
+	if v, err := qc.Eval("ether-codecs.js", qjs.Code(codecPrelude)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "codecs prelude: " + err.Error(), Trap: true}
+	} else {
+		v.Free()
 	}
-	if _, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
+	if v, err := qc.Eval("ether-prelude.js", qjs.Code(prelude)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "prelude: " + err.Error(), Trap: true}
+	} else {
+		v.Free()
 	}
-	if _, err := qc.Eval("plugin.js", qjs.Code(source)); err != nil {
+	if v, err := qc.Eval("plugin.js", qjs.Code(source)); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "load plugin: " + firstLine(err.Error()), Trap: false}
+	} else {
+		v.Free()
 	}
 	v, err := qc.Eval("ether-probe.js", qjs.Code(exportProbe))
 	if err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "probe exports: " + err.Error(), Trap: true}
 	}
+	probeJSON := v.String()
+	v.Free()
 	var found struct {
 		Handle    bool `json:"handle"`
 		RankKey   bool `json:"rank_key"`
 		CondMatch bool `json:"cond_match"`
 	}
-	if err := json.Unmarshal([]byte(v.String()), &found); err != nil {
+	if err := json.Unmarshal([]byte(probeJSON), &found); err != nil {
 		in.closeInstance()
 		return nil, &Error{Status: StatusError, Message: "probe exports: " + err.Error(), Trap: true}
 	}
@@ -945,7 +954,11 @@ func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte)
 		}
 	}()
 	g := in.qc.Global()
-	v, err := in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
+	fn := in.globalFn("__ether_dispatch_handle")
+	reqVal := in.qc.NewString(string(reqJSON))
+	v, err := in.qc.Invoke(fn, g, reqVal)
+	reqVal.Free()
+	fn.Free()
 	if err != nil {
 		return nil, classifyJSError(ctx, cs, err)
 	}
@@ -958,8 +971,9 @@ func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte)
 	if v == nil {
 		return []byte("{}"), nil
 	}
-	defer v.Free()
-	return []byte(v.String()), nil
+	res := v.String()
+	v.Free()
+	return []byte(res), nil
 }
 
 func (in *jsInstance) rankOne(ctx context.Context, cs *callState, cand, cfg []byte) (int64, *Error) {
@@ -986,10 +1000,19 @@ func (in *jsInstance) loadBatch(ctx context.Context, cs *callState, cands [][]by
 	}
 	loadCtx, cancel := context.WithTimeout(ctx, lim.hotKill())
 	defer cancel()
-	_, err := in.jsCall(loadCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_load_batch"), in.qc.Global(),
-			in.qc.NewString(string(candsJSON)), in.qc.NewString(string(arg)))
+	v, err := in.jsCall(loadCtx, cs, func() (*qjs.Value, error) {
+		fn := in.globalFn("__ether_load_batch")
+		candsVal := in.qc.NewString(string(candsJSON))
+		argVal := in.qc.NewString(string(arg))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), candsVal, argVal)
+		argVal.Free()
+		candsVal.Free()
+		fn.Free()
+		return res, err
 	})
+	if v != nil {
+		v.Free()
+	}
 	return err
 }
 
@@ -1002,14 +1025,22 @@ func (in *jsInstance) rankBatch(ctx context.Context, cs *callState, cands [][]by
 	runtime.LockOSThread() // the budget reads this thread's CPU clock
 	defer runtime.UnlockOSThread()
 	v, err := in.jsCall(runCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_rank_batch"), in.qc.Global(),
-			in.qc.NewFloat64(budgetMs(lim.RankPerCandidate)), in.qc.NewFloat64(budgetMs(lim.RankBatch)))
+		fn := in.globalFn("__ether_rank_batch")
+		perVal := in.qc.NewFloat64(budgetMs(lim.RankPerCandidate))
+		batchVal := in.qc.NewFloat64(budgetMs(lim.RankBatch))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), perVal, batchVal)
+		batchVal.Free()
+		perVal.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	raw := v.String()
+	v.Free()
 	var out []*int64
-	if uerr := json.Unmarshal([]byte(v.String()), &out); uerr != nil {
+	if uerr := json.Unmarshal([]byte(raw), &out); uerr != nil {
 		return nil, &Error{Status: StatusError, Message: "rank_key returned a non-numeric result: " + uerr.Error()}
 	}
 	if len(out) != len(cands) {
@@ -1049,14 +1080,24 @@ func (in *jsInstance) condBatch(ctx context.Context, cs *callState, cands [][]by
 	runtime.LockOSThread() // the budget reads this thread's CPU clock
 	defer runtime.UnlockOSThread()
 	v, err := in.jsCall(runCtx, cs, func() (*qjs.Value, error) {
-		return in.qc.Invoke(in.globalFn("__ether_cond_batch"), in.qc.Global(), in.qc.NewString(op),
-			in.qc.NewFloat64(budgetMs(lim.RankPerCandidate)), in.qc.NewFloat64(budgetMs(lim.RankBatch)))
+		fn := in.globalFn("__ether_cond_batch")
+		opVal := in.qc.NewString(op)
+		perVal := in.qc.NewFloat64(budgetMs(lim.RankPerCandidate))
+		batchVal := in.qc.NewFloat64(budgetMs(lim.RankBatch))
+		res, err := in.qc.Invoke(fn, in.qc.Global(), opVal, perVal, batchVal)
+		batchVal.Free()
+		perVal.Free()
+		opVal.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return nil, err
 	}
+	raw := v.String()
+	v.Free()
 	var out []*bool
-	if err := json.Unmarshal([]byte(v.String()), &out); err != nil || len(out) != len(cands) {
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out) != len(cands) {
 		return nil, &Error{Status: StatusError, Message: "invalid condition batch result"}
 	}
 	return out, nil
@@ -1065,14 +1106,23 @@ func (in *jsInstance) condBatch(ctx context.Context, cs *callState, cands [][]by
 func (in *jsInstance) condOne(ctx context.Context, cs *callState, cand []byte, op string, val []byte) (bool, *Error) {
 	v, err := in.jsCall(ctx, cs, func() (*qjs.Value, error) {
 		g := in.qc.Global()
+		fn := in.globalFn("cond_match")
 		c := in.qc.ParseJSON(string(cand))
+		opVal := in.qc.NewString(op)
 		value := in.qc.ParseJSON(string(val))
-		return in.qc.Invoke(in.globalFn("cond_match"), g, c, in.qc.NewString(op), value)
+		res, err := in.qc.Invoke(fn, g, c, opVal, value)
+		value.Free()
+		opVal.Free()
+		c.Free()
+		fn.Free()
+		return res, err
 	})
 	if err != nil {
 		return false, err
 	}
-	return v.Bool(), nil
+	b := v.Bool()
+	v.Free()
+	return b, nil
 }
 
 // LoadJS loads a JavaScript plugin (TypeScript authors go through Compile
@@ -1120,7 +1170,7 @@ func (in *jsInstance) installDispatch() (err error) {
 			err = &Error{Status: StatusError, Message: fmt.Sprintf("install dispatch: %v", r), Trap: true}
 		}
 	}()
-	_, err2 := in.qc.Eval("ether-dispatch.js", qjs.Code(`
+	v, err2 := in.qc.Eval("ether-dispatch.js", qjs.Code(`
 globalThis.__ether_dispatch_handle = (reqJson) => {
   const res = handle(JSON.parse(reqJson));
   if (res && typeof res.then === "function") return res.then((r) => JSON.stringify(r == null ? {} : r));
@@ -1129,5 +1179,6 @@ globalThis.__ether_dispatch_handle = (reqJson) => {
 	if err2 != nil {
 		return &Error{Status: StatusError, Message: "install dispatch: " + err2.Error(), Trap: true}
 	}
+	v.Free()
 	return nil
 }

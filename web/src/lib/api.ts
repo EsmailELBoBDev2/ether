@@ -383,6 +383,7 @@ export const api = {
   testOpenSubtitles: (cfg: EtherConfig["openSubtitles"]) =>
     post<TestResult>("/test/opensubtitles", cfg),
   testSubDL: (cfg: EtherConfig["subdl"]) => post<TestResult>("/test/subdl", cfg),
+  testSubSource: (cfg: EtherConfig["subsource"]) => post<TestResult>("/test/subsource", cfg),
   testLLM: (cfg: EtherConfig["llm"]) => post<TestResult>("/test/llm", cfg),
   llmProviders: async () =>
     (await apiFetch<{ providers: LLMProvider[] }>("/llm/providers")).providers,

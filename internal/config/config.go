@@ -56,6 +56,7 @@ type Config struct {
 	PlexServers   PlexServers   `json:"plexServers"`
 	OpenSubtitles OpenSubtitles `json:"openSubtitles"`
 	SubDL         SubDL         `json:"subdl"`
+	SubSource     SubSource     `json:"subsource"`
 	// Subtitles is the ordered subtitle provider list (OpenSubtitles and
 	// Stremio subtitle add-ons). Empty means OpenSubtitles alone, as before.
 	Subtitles Subtitles `json:"subtitles,omitempty"`
@@ -685,12 +686,21 @@ type SubDL struct {
 	APIKey  string `json:"apiKey"`
 }
 
+// SubSource is the owner's SubSource (subsource.net) subtitle account.
+// Authenticated with the X-API-Key header against api.subsource.net/api/v1.
+type SubSource struct {
+	Enabled bool   `json:"enabled"`
+	APIKey  string `json:"apiKey"`
+}
+
 // Subtitle provider kinds (SubtitleProvider.Kind). An installed add-on's
 // subtitles are kind "plugin:<id>/subtitles".
 const (
 	SubtitleProviderOpenSubtitles = "opensubtitles"
 	// SubtitleProviderSubDL is the SubDL (subdl.com) subtitle provider.
 	SubtitleProviderSubDL = "subdl"
+	// SubtitleProviderSubSource is the SubSource (subsource.net) subtitle provider.
+	SubtitleProviderSubSource = "subsource"
 	// SubtitleProviderStremio is the retired kind of a subtitle add-on
 	// entered with its link (URL, sealed at rest and redacted). Such
 	// entries are migrated once into installed add-ons and never written.

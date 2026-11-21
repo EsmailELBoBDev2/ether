@@ -227,6 +227,7 @@ func (a *App) buildPersonalization(ctx context.Context, cfg config.Config) error
 	a.subtitles = subtitles.New(subtitles.Options{
 		Config:    cfg.OpenSubtitles,
 		SubDL:     cfg.SubDL,
+		SubSource: cfg.SubSource,
 		Providers: cfg.Subtitles.Providers,
 		CacheDir:  filepath.Join(dataDir, "subtitles"),
 		Logger:    log.With("component", "subtitles"),

@@ -59,11 +59,13 @@ const defaultBaseURL = "https://api.opensubtitles.com/api/v1"
 type Options struct {
 	Config           config.OpenSubtitles
 	SubDL            config.SubDL
+	SubSource        config.SubSource
 	Providers        []config.SubtitleProvider
 	CacheDir         string // data dir subfolder for downloaded subtitles
 	BaseURL          string // override for tests
 	SubDLURL         string // override for tests
 	SubDLDownloadURL string // override for tests
+	SubSourceURL     string // override for tests
 	HTTPClient       *http.Client
 	Logger           *slog.Logger
 	UserAgent        string // OpenSubtitles requires an app User-Agent
@@ -86,12 +88,14 @@ type Options struct {
 type Service struct {
 	cfg             config.OpenSubtitles
 	subdl           config.SubDL
+	subsource       config.SubSource
 	providers       []config.SubtitleProvider
 	pluginProviders map[string]PluginProvider
 	dir             string
 	base            string
 	subdlBase       string
 	subdlDownload   string
+	subsourceBase   string
 	http            *http.Client
 	log             *slog.Logger
 	agent           string
@@ -99,12 +103,14 @@ type Service struct {
 	maxWait         time.Duration
 	now             func() time.Time
 
-	mu          sync.Mutex
-	token       string // login token, cached
-	flights     flight.Group[string, string]
-	negative    map[string]time.Time // title+lang -> when nothing was found
-	quotaTill   time.Time            // downloads refused until then
-	videoHashes map[videoHashKey]videoHashEntry
+	mu                    sync.Mutex
+	token                 string // login token, cached
+	flights               flight.Group[string, string]
+	negative              map[string]time.Time // title+lang -> when nothing was found
+	subsourceMovies       map[string]subsourceMovieCacheEntry
+	subsourceBlockedUntil time.Time
+	quotaTill             time.Time // downloads refused until then
+	videoHashes           map[videoHashKey]videoHashEntry
 
 	// pickMu serialises writes of a title's picked subtitle: concurrent
 	// picks of one file rename onto the same path, which Windows refuses
@@ -134,6 +140,9 @@ func New(opts Options) *Service {
 	}
 	if opts.SubDLDownloadURL == "" {
 		opts.SubDLDownloadURL = subdlDownloadURL
+	}
+	if opts.SubSourceURL == "" {
+		opts.SubSourceURL = subsourceBaseURL
 	}
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = egress.Client(egress.CapMetadata, 30*time.Second)
@@ -170,20 +179,23 @@ func New(opts Options) *Service {
 	return &Service{
 		cfg:           opts.Config,
 		subdl:         opts.SubDL,
+		subsource:     opts.SubSource,
 		providers:     append([]config.SubtitleProvider(nil), opts.Providers...),
 		dir:           opts.CacheDir,
 		base:          strings.TrimSuffix(opts.BaseURL, "/"),
 		subdlBase:     strings.TrimSuffix(opts.SubDLURL, "/"),
 		subdlDownload: strings.TrimSuffix(opts.SubDLDownloadURL, "/"),
+		subsourceBase: strings.TrimSuffix(opts.SubSourceURL, "/"),
 		http:          opts.HTTPClient, log: opts.Logger, agent: opts.UserAgent,
-		negative:       map[string]time.Time{},
-		negTTL:         opts.NegativeTTL,
-		maxWait:        opts.MaxRetryAfter,
-		now:            opts.Now,
-		videoHashes:    map[videoHashKey]videoHashEntry{},
-		alignLanguages: alignLangs,
-		speechSem:      make(chan struct{}, 2),
-		ffmpeg:         opts.FFmpeg,
+		negative:        map[string]time.Time{},
+		subsourceMovies: map[string]subsourceMovieCacheEntry{},
+		negTTL:          opts.NegativeTTL,
+		maxWait:         opts.MaxRetryAfter,
+		now:             opts.Now,
+		videoHashes:     map[videoHashKey]videoHashEntry{},
+		alignLanguages:  alignLangs,
+		speechSem:       make(chan struct{}, 2),
+		ffmpeg:          opts.FFmpeg,
 	}
 }
 
@@ -237,6 +249,16 @@ func (s *Service) UpdateConfig(cfg config.OpenSubtitles) {
 func (s *Service) UpdateSubDL(cfg config.SubDL) {
 	s.mu.Lock()
 	s.subdl = cfg
+	s.mu.Unlock()
+}
+
+// UpdateSubSource swaps the SubSource settings (e.g. from config.Store.Subscribe).
+func (s *Service) UpdateSubSource(cfg config.SubSource) {
+	s.mu.Lock()
+	if strings.TrimSpace(cfg.APIKey) != strings.TrimSpace(s.subsource.APIKey) {
+		s.subsourceBlockedUntil = time.Time{}
+	}
+	s.subsource = cfg
 	s.mu.Unlock()
 }
 
@@ -742,6 +764,16 @@ func (s *Service) download(ctx context.Context, c Candidate) ([]byte, error) {
 			defer release()
 		}
 		return s.downloadSubDL(ctx, c)
+	}
+	if c.ProviderID == config.SubtitleProviderSubSource {
+		if parsed, err := url.Parse(c.DownloadURL); err == nil && parsed.Host != "" {
+			release, err := acquireDownloadHost(ctx, strings.ToLower(parsed.Host))
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+		}
+		return s.downloadSubSource(ctx, c)
 	}
 	link, err := s.requestLink(ctx, c)
 	if err != nil {

@@ -213,6 +213,7 @@ type Deps struct {
 	TestTMDB          func(ctx context.Context, key string) error
 	TestOpenSubtitles func(ctx context.Context, cfg config.OpenSubtitles) error
 	TestSubDL         func(ctx context.Context, cfg config.SubDL) error
+	TestSubSource     func(ctx context.Context, cfg config.SubSource) error
 	TestLLM           func(ctx context.Context, cfg config.LLM) error
 	// LLMModels lists the models the provider in cfg offers.
 	LLMModels func(ctx context.Context, cfg config.LLM) ([]LLMModel, error)
@@ -501,6 +502,7 @@ func (h *Handler) routes() *http.ServeMux {
 	api("POST /api/test/tmdb", h.handleTestTMDB)
 	api("POST /api/test/opensubtitles", h.handleTestOpenSubtitles)
 	api("POST /api/test/subdl", h.handleTestSubDL)
+	api("POST /api/test/subsource", h.handleTestSubSource)
 	api("POST /api/test/llm", h.handleTestLLM)
 	api("GET /api/llm/providers", h.handleLLMProviders)
 	api("POST /api/llm/models", h.handleLLMModels)

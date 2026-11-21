@@ -162,6 +162,7 @@ func (a *App) applyServerConfig(c config.Config) {
 	a.trakt.UpdateConfig(c.Trakt)
 	a.subtitles.UpdateConfig(c.OpenSubtitles)
 	a.subtitles.UpdateSubDL(c.SubDL)
+	a.subtitles.UpdateSubSource(c.SubSource)
 	a.subtitles.UpdateProviders(c.Subtitles.Providers)
 	a.publishLibrarySections()
 	a.registrar.Trigger()

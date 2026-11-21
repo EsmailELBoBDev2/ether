@@ -1421,9 +1421,15 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		}()
 	}
 	if s.exact || pinned {
+		if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
+			return cur, nil
+		}
 		return nil, fmt.Errorf("%w: selected release cannot be replaced", core.ErrNotAvailable)
 	}
 	if failovers >= m.opts.MaxFailovers {
+		if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
+			return cur, nil
+		}
 		return nil, fmt.Errorf("%w: session %s gave up after %d failovers", core.ErrNotAvailable, s.id, failovers)
 	}
 	log := m.log.With("session", s.id, "key", s.ident.key, "at", at)
@@ -1537,214 +1543,231 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		}
 		tried = append(tried, failed...)
 	}
-	var copySearchCtx context.Context
 	const maxFailoverMorePasses = 8
-	morePasses := 0
-	for attempt := 0; g == nil && m.attemptAllowed(attempt); attempt++ {
-		attemptCtx := ctx
-		if copySearchCtx != nil {
-			attemptCtx = copySearchCtx
-		}
-		if ctx.Err() != nil {
-			// The copy-preference retry skips the post-failure check
-			// below; never start another candidate's search or open.
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+	const maxHLSSwapAttempts = 3
+	var newInfo core.MediaInfo
+	for hlsSwapAttempt := 0; ; hlsSwapAttempt++ {
+		var copySearchCtx context.Context
+		var copySearchCancel context.CancelFunc
+		morePasses := 0
+		for attempt := 0; g == nil && m.attemptAllowed(attempt); attempt++ {
+			attemptCtx := ctx
+			if copySearchCtx != nil {
+				attemptCtx = copySearchCtx
 			}
-			return nil, ctx.Err()
-		}
-		var (
-			res *core.Resolution
-			err error
-		)
-		if s.isKind() {
-			g, res, err = m.openKindCandidate(attemptCtx, s, tried, fallback)
-			if err != nil && res == nil {
-				lastErr = err
-				break
-			}
-		} else {
-			res = prepared
-			prepared = nil
-			if res == nil {
-				res, err = m.nextResolutionTracking(attemptCtx, s, &tried, nil, alternates)
-			}
-			if err != nil {
-				if errors.Is(err, core.ErrMoreCandidates) && attemptCtx.Err() == nil && morePasses < maxFailoverMorePasses {
-					morePasses++
-					alternates = nil
-					attempt--
-					continue
+			if ctx.Err() != nil {
+				if copySearchCancel != nil {
+					copySearchCancel()
 				}
-				lastErr = err
-				break
-			}
-			g, err = m.openGeneration(attemptCtx, s, res, fallback)
-		}
-		if err == nil {
-			if perr := m.preflightSwap(attemptCtx, s, g); perr != nil {
-				m.dropGeneration(g)
-				g, err = nil, perr
-			}
-		}
-		if err == nil && (fo.encoder || (fo.down && !direct)) && !copyCandidate(g) {
-			m.dropGeneration(g)
-			g, err = nil, fmt.Errorf("replacement needs video encoding: %w", core.ErrNotAvailable)
-		}
-		// Byte-range clients retain the original container headers and
-		// offsets. Equal lengths do not prove equal bytes or Cues. A different
-		// release is kept as a remux-switch fallback rather than being served
-		// under the original representation's validators.
-		if err == nil && direct && (g.releaseID() != cur.releaseID() || g.src.Size() != cur.src.Size() || fo.strictDirect) {
-			keep := fallbackGen == nil
-			if !keep && fo.down {
-				// A down-failover's remux fallback only helps at a lower
-				// bitrate, so a lower mismatch supersedes an earlier
-				// non-lower one instead of being dropped behind it. The
-				// existing veto below still rejects a fallback that is
-				// not lower when no lower mismatch was found.
-				bps := replacementBps(g, oldInfo.Duration)
-				fallbackBps := replacementBps(fallbackGen, oldInfo.Duration)
-				if curBps > 0 && bps > 0 && bps < curBps && !(fallbackBps > 0 && fallbackBps < curBps) {
+				// The copy-preference retry skips the post-failure check
+				// below; never start another candidate's search or open.
+				if fallbackGen != nil {
 					m.dropGeneration(fallbackGen)
-					fallbackGen, keep = nil, true
+				}
+				return nil, ctx.Err()
+			}
+			var (
+				res *core.Resolution
+				err error
+			)
+			if s.isKind() {
+				g, res, err = m.openKindCandidate(attemptCtx, s, tried, fallback)
+				if err != nil && res == nil {
+					lastErr = err
+					break
+				}
+			} else {
+				res = prepared
+				prepared = nil
+				if res == nil {
+					res, err = m.nextResolutionTracking(attemptCtx, s, &tried, nil, alternates)
+				}
+				if err != nil {
+					if errors.Is(err, core.ErrMoreCandidates) && attemptCtx.Err() == nil && morePasses < maxFailoverMorePasses {
+						morePasses++
+						alternates = nil
+						attempt--
+						continue
+					}
+					lastErr = err
+					break
+				}
+				g, err = m.openGeneration(attemptCtx, s, res, fallback)
+			}
+			if err == nil {
+				if perr := m.preflightSwap(attemptCtx, s, g); perr != nil {
+					m.dropGeneration(g)
+					g, err = nil, perr
 				}
 			}
-			if keep {
-				fallbackGen = g
-			} else {
+			if err == nil && (fo.encoder || (fo.down && !direct)) && !copyCandidate(g) {
 				m.dropGeneration(g)
+				g, err = nil, fmt.Errorf("replacement needs video encoding: %w", core.ErrNotAvailable)
 			}
-			g = nil
-			err = fmt.Errorf("incompatible direct-play replacement: %w", core.ErrNotAvailable)
-			if s.isKind() && fallbackGen != nil && !fo.down {
-				lastErr = err
+			// Byte-range clients retain the original container headers and
+			// offsets. Equal lengths do not prove equal bytes or Cues. A different
+			// release is kept as a remux-switch fallback rather than being served
+			// under the original representation's validators.
+			if err == nil && direct && (g.releaseID() != cur.releaseID() || g.src.Size() != cur.src.Size() || fo.strictDirect) {
+				keep := fallbackGen == nil
+				if !keep && fo.down {
+					// A down-failover's remux fallback only helps at a lower
+					// bitrate, so a lower mismatch supersedes an earlier
+					// non-lower one instead of being dropped behind it. The
+					// existing veto below still rejects a fallback that is
+					// not lower when no lower mismatch was found.
+					bps := replacementBps(g, oldInfo.Duration)
+					fallbackBps := replacementBps(fallbackGen, oldInfo.Duration)
+					if curBps > 0 && bps > 0 && bps < curBps && !(fallbackBps > 0 && fallbackBps < curBps) {
+						m.dropGeneration(fallbackGen)
+						fallbackGen, keep = nil, true
+					}
+				}
+				if keep {
+					fallbackGen = g
+				} else {
+					m.dropGeneration(g)
+				}
+				g = nil
+				err = fmt.Errorf("incompatible direct-play replacement: %w", core.ErrNotAvailable)
+				if s.isKind() && fallbackGen != nil && !fo.down {
+					lastErr = err
+					break
+				}
+			}
+			if err == nil && fo.down {
+				if bps := replacementBps(g, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
+					m.dropGeneration(g)
+					g = nil
+					err = fmt.Errorf("down-failover candidate is not lower bitrate: %w", core.ErrNotAvailable)
+				}
+			}
+			if err == nil && preferCopy != nil && !preferCopy(g) {
+				if fallbackGen == nil {
+					fallbackGen = g
+					copySearchCtx, copySearchCancel = context.WithTimeout(ctx, 500*time.Millisecond)
+				} else {
+					m.dropGeneration(g)
+				}
+				g = nil
+				tried = append(tried, res.Release.ID)
+				if len(res.Alternates) > 0 {
+					alternates = res.Alternates
+				}
+				continue
+			}
+			if err == nil {
 				break
 			}
-		}
-		if err == nil && fo.down {
-			if bps := replacementBps(g, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
-				m.dropGeneration(g)
-				g = nil
-				err = fmt.Errorf("down-failover candidate is not lower bitrate: %w", core.ErrNotAvailable)
+			if ctx.Err() != nil {
+				if copySearchCancel != nil {
+					copySearchCancel()
+				}
+				if fallbackGen != nil {
+					m.dropGeneration(fallbackGen)
+				}
+				return nil, ctx.Err()
 			}
-		}
-		if err == nil && preferCopy != nil && !preferCopy(g) {
-			if fallbackGen == nil {
-				fallbackGen = g
-				var cancel context.CancelFunc
-				copySearchCtx, cancel = context.WithTimeout(ctx, 500*time.Millisecond)
-				defer cancel()
-			} else {
-				m.dropGeneration(g)
-			}
-			g = nil
+			lastErr = err
+			log.Warn("failover candidate failed", "release", res.Release.Name, "err", err)
 			tried = append(tried, res.Release.ID)
 			if len(res.Alternates) > 0 {
 				alternates = res.Alternates
 			}
-			continue
-		}
-		if err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+			if direct {
+				alternates = orderExactSizeFirst(alternates, cur.res.Release)
+			} else if fo.down {
+				alternates = orderLowerBitrateFirst(alternates, cur.res.Release)
 			}
-			return nil, ctx.Err()
 		}
-		lastErr = err
-		log.Warn("failover candidate failed", "release", res.Release.Name, "err", err)
-		tried = append(tried, res.Release.ID)
-		if len(res.Alternates) > 0 {
-			alternates = res.Alternates
+		if copySearchCancel != nil {
+			copySearchCancel()
 		}
-		if direct {
-			alternates = orderExactSizeFirst(alternates, cur.res.Release)
-		} else if fo.down {
-			alternates = orderLowerBitrateFirst(alternates, cur.res.Release)
-		}
-	}
-	if g == nil && fo.stallRecovery && direct && !fo.encoder && !fo.down {
-		if fo.stillNeeded != nil && !fo.stillNeeded() {
-			// Progress during the candidate search already cleared the
-			// stall: leave recovery as it is without spending the grace,
-			// and close the opened fallback this call owns — like the
-			// cancellation paths, nothing downstream sees it.
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+		if g == nil && fo.stallRecovery && direct && !fo.encoder && !fo.down {
+			if fo.stillNeeded != nil && !fo.stillNeeded() {
+				// Progress during the candidate search already cleared the
+				// stall: leave recovery as it is without spending the grace,
+				// and close the opened fallback this call owns — like the
+				// cancellation paths, nothing downstream sees it.
+				if fallbackGen != nil {
+					m.dropGeneration(fallbackGen)
+				}
+				return cur, nil
 			}
-			return cur, nil
-		}
-		if s.takeStallContinue(cur) {
-			// A CDN edge that stalls mid-file usually recovers in tens of
-			// seconds, and the alternates that just failed dial the same
-			// provider network. One continuation keeps a cached, previously
-			// healthy release under repair instead of handing the client a
-			// remux restart across the same failing hosts. The grace is one
-			// per playback session, not per outage.
-			if fallbackGen != nil {
-				m.dropGeneration(fallbackGen)
+			if s.takeStallContinue(cur) {
+				// A CDN edge that stalls mid-file usually recovers in tens of
+				// seconds, and the alternates that just failed dial the same
+				// provider network. One continuation keeps a cached, previously
+				// healthy release under repair instead of handing the client a
+				// remux restart across the same failing hosts. The grace is one
+				// per playback session, not per outage.
+				if fallbackGen != nil {
+					m.dropGeneration(fallbackGen)
+				}
+				log.Warn("media host stalled; continuing the original release", "release", cur.res.Release.Name, "lastErr", lastErr)
+				return cur, nil
 			}
-			log.Warn("media host stalled; continuing the original release", "release", cur.res.Release.Name, "lastErr", lastErr)
-			return cur, nil
 		}
-	}
-	if g == nil && fallbackGen != nil && fo.down {
-		// A down-failover only helps with a lower-bitrate fallback.
-		if bps := replacementBps(fallbackGen, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
+		if g == nil && fallbackGen != nil && fo.down {
+			// A down-failover only helps with a lower-bitrate fallback.
+			if bps := replacementBps(fallbackGen, oldInfo.Duration); curBps > 0 && (bps <= 0 || bps >= curBps) {
+				m.dropGeneration(fallbackGen)
+				fallbackGen = nil
+			}
+		}
+		if g == nil && fallbackGen != nil {
+			// No identical representation: do not splice. Swap anyway and restart
+			// the client as a zero-encode remux at the mapped time.
+			g, fallbackGen = fallbackGen, nil
+			if direct {
+				remuxSwitch = true
+				log.Warn("direct-play replacement changes representation; switching to remux", "release", g.res.Release.Name)
+			}
+		}
+		if fallbackGen != nil {
 			m.dropGeneration(fallbackGen)
 			fallbackGen = nil
 		}
-	}
-	if g == nil && fallbackGen != nil {
-		// No identical representation: do not splice. Swap anyway and restart
-		// the client as a zero-encode remux at the mapped time.
-		g, fallbackGen = fallbackGen, nil
-		if direct {
-			remuxSwitch = true
-			log.Warn("direct-play replacement changes representation; switching to remux", "release", g.res.Release.Name)
+		if g == nil {
+			if fo.stopOnFailure && m.trySkipDamagedSegment(ctx, s, cur, at) {
+				return cur, nil
+			}
+			if lastErr == nil {
+				lastErr = core.ErrNotAvailable
+			}
+			if fo.quietFailure {
+				log.Debug("failover found no working release", "err", lastErr)
+			} else {
+				log.Error("failover found no working release", "err", lastErr)
+				m.emitEvent("error", s, lastErr)
+			}
+			if fo.down {
+				m.noteFailedDownFailover(s, tried)
+			}
+			return nil, fmt.Errorf("playback: failover: %w", lastErr)
 		}
-	}
-	if fallbackGen != nil {
-		m.dropGeneration(fallbackGen)
-	}
-	if g == nil {
-		if lastErr == nil {
-			lastErr = core.ErrNotAvailable
-		}
-		if fo.quietFailure {
-			log.Debug("failover found no working release", "err", lastErr)
-		} else {
-			log.Error("failover found no working release", "err", lastErr)
-			m.emitEvent("error", s, lastErr)
-		}
-		if fo.down {
-			m.noteFailedDownFailover(s, tried)
-		}
-		return nil, fmt.Errorf("playback: failover: %w", lastErr)
-	}
 
-	if fo.stillNeeded != nil && !fo.stillNeeded() {
-		m.dropGeneration(g)
-		return cur, nil
-	}
-	// An HLS session restarts ffmpeg on fresh headers; anything else that
-	// swaps to a different-size file must be remuxed. Mark that in the same
-	// critical section as the swap, so no request sees the new release
-	// without the remux requirement.
-	hls, hasHLS := m.deps.HLSLookup(s.id)
-	hasHLS = hasHLS && hls != nil
-	if hasHLS {
-		remuxSwitch = false
-	}
+		if fo.stillNeeded != nil && !fo.stillNeeded() {
+			m.dropGeneration(g)
+			return cur, nil
+		}
+		// An HLS session restarts ffmpeg on fresh headers; anything else that
+		// swaps to a different-size file must be remuxed. Mark that in the same
+		// critical section as the swap, so no request sees the new release
+		// without the remux requirement.
+		hls, hasHLS := m.deps.HLSLookup(s.id)
+		hasHLS = hasHLS && hls != nil
+		if hasHLS {
+			remuxSwitch = false
+		}
 
-	// Take the replacement pin before it is handed to the encoder. Stop can
-	// race the handoff; until publication this function owns the extra pin.
-	m.pinLive(g.releaseID())
-	newInfo := g.infoSnapshot()
-	if hasHLS {
+		// Take the replacement pin before it is handed to the encoder. Stop can
+		// race the handoff; until publication this function owns the extra pin.
+		m.pinLive(g.releaseID())
+		newInfo = g.infoSnapshot()
+		if !hasHLS {
+			break
+		}
 		var seekAt time.Time
 		if source, ok := hls.(core.RecoveryBufferSource); ok {
 			seekAt = source.RecoveryBuffer().SeekAt
@@ -1810,31 +1833,51 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 				}
 			}
 		}
-		if err != nil {
-			changed := false
-			if state, ok := hls.(core.InputSwapState); ok {
-				changed = state.CurrentSwapInput() == m.urlFor(g)
+		if err == nil {
+			break
+		}
+		changed := false
+		if state, ok := hls.(core.InputSwapState); ok {
+			changed = state.CurrentSwapInput() == m.urlFor(g)
+		}
+		// Never roll back to an input that already failed encoder input
+		// (fo.stopOnFailure): rolling back revives the broken source and
+		// ping-pongs forever with the failing replacement (#694).
+		rolledBack := changed && !fo.stopOnFailure && m.rollbackHLS(s, hls, cur, g, at, seekAt)
+		failedID := g.releaseID()
+		m.dropGeneration(g)
+		m.unpinLive(failedID)
+		tried = append(tried, failedID)
+		if fo.down {
+			m.noteFailedDownFailover(s, tried)
+		} else if fo.encoder {
+			m.noteTriedReleases(s, []string{failedID})
+		} else {
+			m.noteTriedReleases(s, tried)
+		}
+		if rolledBack {
+			s.resetSpeed(m.now(), m.opts.SpeedGrace)
+			return cur, nil
+		}
+		if fo.stopOnFailure {
+			lastErr = err
+			if ctx.Err() == nil && hlsSwapAttempt+1 < maxHLSSwapAttempts && !errors.Is(err, core.ErrEncoderExhausted) {
+				log.Warn("hls replacement failed; trying next release", "release", failedID, "err", err, "attempt", hlsSwapAttempt+1)
+				g = nil
+				remuxSwitch = false
+				continue
 			}
-			rolledBack := changed && m.rollbackHLS(s, hls, cur, g, at, seekAt)
-			m.dropGeneration(g)
-			m.unpinLive(g.releaseID())
-			if rolledBack {
-				s.resetSpeed(m.now(), m.opts.SpeedGrace)
-				if fo.down {
-					m.noteFailedDownFailover(s, tried)
-				}
+			if m.trySkipDamagedSegment(ctx, s, cur, at) {
 				return cur, nil
-			}
-			if changed {
-				m.Stop(s.id) // never leave an encoder pointed at a revoked input
-			} else if fo.down {
-				// Rejected handoffs are attempts too. Keep the original input,
-				// but do not retry an uncommittable replacement indefinitely.
-				m.noteFailedDownFailover(s, append(tried, g.releaseID()))
 			}
 			log.Error("hls input swap failed", "err", err)
 			return cur, fmt.Errorf("playback: swap hls input: %w", err)
 		}
+		if changed {
+			m.Stop(s.id) // never leave an encoder pointed at a revoked input
+		}
+		log.Error("hls input swap failed", "err", err)
+		return cur, fmt.Errorf("playback: swap hls input: %w", err)
 	}
 
 	// Pin before publishing g: a Stop right after the swap unpins s.cur,
@@ -1915,6 +1958,51 @@ func (m *Manager) failoverWith(ctx context.Context, s *session, observed *genera
 		return g, errRequireRemux
 	}
 	return g, nil
+}
+
+// noteTriedReleases records release IDs that failed to open or swap so later
+// failovers never loop back to the same failing candidates (#694).
+func (m *Manager) noteTriedReleases(s *session, tried []string) {
+	if s == nil || len(tried) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	for _, id := range tried {
+		if id != "" && !slices.Contains(s.tried, id) {
+			s.tried = append(s.tried, id)
+		}
+	}
+}
+
+// trySkipDamagedSegment asks an HLS encoder session to advance past a bounded
+// corrupt mid-stream segment range on the current source when no alternate
+// release recovered the segment.
+func (m *Manager) trySkipDamagedSegment(ctx context.Context, s *session, cur *generation, at time.Duration) bool {
+	if at <= 0 || cur == nil || cur.sourceFailure() != nil || cur.articleMissing.Load() {
+		return false
+	}
+	hls, ok := m.deps.HLSLookup(s.id)
+	if !ok || hls == nil {
+		return false
+	}
+	skipper, ok := hls.(core.DamagedSegmentSkipper)
+	if !ok {
+		return false
+	}
+	skipCtx, cancelSkip := context.WithCancel(ctx)
+	stopCancel := context.AfterFunc(s.stopCtx, cancelSkip)
+	err := skipper.SkipDamagedSegment(skipCtx, m.urlFor(cur), cur.infoSnapshot(), at)
+	stopCancel()
+	cancelSkip()
+	if err != nil {
+		m.log.Warn("damaged segment skip failed", "session", s.id, "at", at, "err", err)
+		return false
+	}
+	return true
 }
 
 // rollbackHLS only returns to a source that is still open, compatible and

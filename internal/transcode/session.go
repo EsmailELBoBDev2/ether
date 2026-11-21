@@ -107,8 +107,20 @@ type sessionInput struct {
 	forceCPU            bool // hardware encoder failed; stay on CPU
 	copyFallback        bool // copied video failed its packet conversion; encode this session
 	copyDiscontinuities map[int]bool
-	noPause             bool // platform cannot suspend ffmpeg
-	inputFailed         bool // exhausted this input; HTTP retries cannot restart it
+	noPause             bool            // platform cannot suspend ffmpeg
+	inputFailed         bool            // exhausted this input; HTTP retries cannot restart it
+	failedInputs        map[string]bool // inputs that exhausted encoder failure; never swap back
+	lastFailStderr      string
+	totalFailures       int          // lifetime failed ffmpeg runs in this session (hard cap; survives swaps)
+	segFailures         map[int]int  // failed ffmpeg runs per segment across this session
+	skippedSegs         map[int]bool // damaged segments aliased and skipped
+	damagedSkips        int          // total damaged segments skipped in this session
+	damagedStreak       int          // consecutive damaged segments skipped without new output
+	lastFailureAt       time.Time
+	retryRecovering     bool   // sleeping in failure backoff; blocks concurrent restarts
+	retryGen            uint64 // invalidates stale backoff goroutines on swap
+	skipProbing         bool   // SkipDamagedSegment is probing the segment past a damaged range
+	sessionExhausted    bool   // hard cap or client-gone ended failure recovery
 	stallRestarts       []time.Time
 	liveRestarts        restartBudget
 	liveFailures        int

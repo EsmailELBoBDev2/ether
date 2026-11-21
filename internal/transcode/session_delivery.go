@@ -26,10 +26,15 @@ func (s *Session) ServeSegment(w http.ResponseWriter, r *http.Request, n int) {
 // serveSegment writes segment n of track t, waiting for ffmpeg and
 // restarting it when n is behind or far ahead of the encoder.
 func (s *Session) serveSegment(w http.ResponseWriter, r *http.Request, t, n int) {
-	if r == nil || r.Method != http.MethodHead {
-		s.touchMediaAccess()
-	} else {
-		s.Touch()
+	s.mu.Lock()
+	touchAlive := !s.closed && !s.inputFailed && !s.sessionExhausted && s.stoppedAt.Load() == 0
+	s.mu.Unlock()
+	if touchAlive {
+		if r == nil || r.Method != http.MethodHead {
+			s.touchMediaAccess()
+		} else {
+			s.Touch()
+		}
 	}
 	if warm := s.resumeSession(n); warm != nil {
 		warm.serveSegment(w, r, t, n)
@@ -547,7 +552,7 @@ func (s *Session) restartLimit() int {
 // restarting it at n: wait when n is at or a little ahead of the encoder,
 // restart when n is behind the run's start, far ahead, or nothing runs.
 func (s *Session) needsRestartLocked(n int) bool {
-	if s.liveRecovering || s.headerRecovering {
+	if s.liveRecovering || s.headerRecovering || s.retryRecovering || s.skipProbing {
 		return false
 	}
 	if s.pendingStart && s.pendingSegment == n && s.pendingTrack == s.wantTrack {
@@ -603,10 +608,15 @@ func (s *Session) rungDwellLocked(media bool, n int) time.Duration {
 // serveInit writes the init segment of track t, waiting for ffmpeg to
 // write it.
 func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
-	if r == nil || r.Method != http.MethodHead {
-		s.touchMediaAccess()
-	} else {
-		s.Touch()
+	s.mu.Lock()
+	touchAlive := !s.closed && !s.inputFailed && !s.sessionExhausted && s.stoppedAt.Load() == 0
+	s.mu.Unlock()
+	if touchAlive {
+		if r == nil || r.Method != http.MethodHead {
+			s.touchMediaAccess()
+		} else {
+			s.Touch()
+		}
 	}
 	if !hasInitSegment(s.container) || t < 0 || t >= len(s.done) {
 		http.NotFound(w, r)
@@ -681,7 +691,7 @@ func (s *Session) serveInit(w http.ResponseWriter, r *http.Request, t int) {
 			s.wantTrack = t
 		}
 		var dwell *time.Timer
-		if (s.cur == nil || s.cur.finished || s.cur.stopped || (selectTrack && s.cur.track != t)) && !restarted && !probe && !s.pendingStart && !s.headerRecovering {
+		if (s.cur == nil || s.cur.finished || s.cur.stopped || (selectTrack && s.cur.track != t)) && !restarted && !probe && !s.pendingStart && !s.headerRecovering && !s.retryRecovering && !s.skipProbing {
 			left := s.rungDwellLocked(false, s.lastReq)
 			if s.isDASH() && selectTrack && !s.videoRequested && s.runSeq <= 1 {
 				// No video was requested yet: the initial quality choice

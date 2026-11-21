@@ -181,6 +181,13 @@ func ValidateConfig(cfg config.Config) []FieldError {
 	}
 
 	v.port("server.port", cfg.Server.Port, false)
+	v.port("server.consolePort", cfg.Server.ConsolePort, true)
+	if cfg.Server.ConsolePort > 0 && cfg.Server.ConsolePort == cfg.Server.Port {
+		v.add("server.consolePort", "must be different from the main server port")
+	}
+	if cfg.Server.DisableConsoleOnMainPort && cfg.Server.ConsolePort == 0 {
+		v.add("server.disableConsoleOnMainPort", "requires a dedicated console port")
+	}
 	if _, err := frameOrigins(cfg.Server.WebFrameOrigins); err != nil {
 		v.add("server.webFrameOrigins", "%s", err)
 	}

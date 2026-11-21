@@ -49,6 +49,7 @@ func (a *App) buildAdmin() http.Handler {
 		ViewerAlerts:     &notify.ViewerAlerts{DB: a.db, Active: a.users.ActiveUser},
 		ActiveViewer:     a.users.ActiveUser,
 		AppAddress:       a.frontends.appAddress,
+		ConsoleListener:  a.consoleListenerStatus,
 		ViewerPortalURL:  a.frontends.viewerPortalURL,
 		StremioPortalURL: a.frontends.viewerPortalSecureURL,
 		CreateDLNAGuest:  a.createDLNAGuest,

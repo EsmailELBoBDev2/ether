@@ -12,9 +12,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,11 +38,45 @@ type Frontend struct {
 	Skins     *SkinStore
 }
 
+const DefaultPort = 8098
+
+// DedicatedPort extracts a valid optional dedicated listener port (1..65535)
+// from Vela settings, or returns 0 when Vela uses only Ether's main port.
+func DedicatedPort(s map[string]any) int {
+	if s == nil {
+		return 0
+	}
+	switch v := s["port"].(type) {
+	case float64:
+		if v >= 1 && v <= 65535 && math.Trunc(v) == v {
+			return int(v)
+		}
+	case int:
+		if v >= 1 && v <= 65535 {
+			return v
+		}
+	}
+	return 0
+}
+
+// ServeOnMainPort reports whether Vela should continue serving /vela and
+// /sessions/media on Ether's main (Plex) port. Defaults to true when omitted.
+func ServeOnMainPort(s map[string]any) bool {
+	if s == nil {
+		return true
+	}
+	if v, ok := s["serveOnMainPort"].(bool); ok {
+		return v
+	}
+	return true
+}
+
 func (Frontend) Describe() frontend.Descriptor {
 	return frontend.Descriptor{
-		ID:      "vela",
-		Name:    "Vela",
-		Version: "0",
+		ID:          "vela",
+		Name:        "Vela",
+		Version:     "0",
+		DefaultPort: DefaultPort,
 		SettingsSchema: frontend.SettingsSchema{
 			SignInHelp: true,
 			Sections: []frontend.SettingsSection{
@@ -70,6 +107,8 @@ func (Frontend) Describe() frontend.Descriptor {
 				{
 					Key: "find",
 					Fields: []frontend.SettingsField{
+						{Key: "port", Kind: "port", Min: frontend.Int(1), Max: frontend.Int(65535)},
+						{Key: "serveOnMainPort", Kind: "bool"},
 						{Key: "serverName", Kind: "serverName"},
 					},
 				},
@@ -109,9 +148,14 @@ func (f Frontend) ValidateSettings(s frontend.Settings) error {
 			if f.Skins != nil && !IsBuiltinSkinID(id) && !f.Skins.HasInstalled(context.Background(), id) {
 				return errors.New("unknown Vela skin")
 			}
-		case "force", "passwordSignIn", "plexSignIn", "quickConnect":
+		case "force", "passwordSignIn", "plexSignIn", "quickConnect", "serveOnMainPort":
 			if _, ok := value.(bool); !ok {
 				return errors.New("invalid Vela setting")
+			}
+		case "port":
+			n, ok := value.(float64)
+			if !ok || n < 1 || n > 65535 || math.Trunc(n) != n {
+				return errors.New("invalid port")
 			}
 		case "appName":
 			name, ok := value.(string)
@@ -152,6 +196,9 @@ func (f Frontend) ValidateSettings(s frontend.Settings) error {
 		default:
 			return errors.New("invalid Vela setting")
 		}
+	}
+	if serveMain, ok := s["serveOnMainPort"].(bool); ok && !serveMain && DedicatedPort(s) == 0 {
+		return errors.New("turning off /vela on the main port requires a dedicated port")
 	}
 	return nil
 }
@@ -259,8 +306,25 @@ func cursorExpiry(now time.Time) int64 {
 }
 
 func (i *instance) Handler() http.Handler { return http.HandlerFunc(i.serve) }
-func (*instance) Listeners() []frontend.ListenerSpec {
-	return []frontend.ListenerSpec{{Shared: true, PathPrefix: "/vela"}, {Shared: true, PathPrefix: "/sessions/media"}}
+func (i *instance) Listeners() []frontend.ListenerSpec {
+	var settings frontend.Settings
+	if i.host.Config != nil {
+		settings = i.host.Config()
+	}
+	port := DedicatedPort(settings)
+	var specs []frontend.ListenerSpec
+	if port > 0 {
+		specs = append(specs, frontend.ListenerSpec{Address: fmt.Sprintf(":%d", port)})
+	}
+	// Never leave Vela unreachable on both ports: only disable /vela on the
+	// main (Plex) port when a dedicated listener port is configured.
+	if port == 0 || ServeOnMainPort(settings) {
+		specs = append(specs,
+			frontend.ListenerSpec{Shared: true, PathPrefix: "/vela"},
+			frontend.ListenerSpec{Shared: true, PathPrefix: "/sessions/media"},
+		)
+	}
+	return specs
 }
 func (*instance) Discovery() []frontend.Announcer { return nil }
 func (i *instance) Status(context.Context) frontend.Status {
@@ -512,6 +576,25 @@ func (i *instance) viewer(r *http.Request) (*frontend.Viewer, string, error) {
 	}
 	return v, token, nil
 }
+func (i *instance) resolvedRedirectPrefix(r *http.Request) string {
+	if i.host.SurfaceURL != nil {
+		if raw, err := i.host.SurfaceURL(r.Context(), r); err == nil {
+			if u, err := url.Parse(raw); err == nil {
+				p := strings.TrimRight(u.Path, "/")
+				if p == "/vela" || strings.HasSuffix(p, "/vela") {
+					p = strings.TrimSuffix(p, "/vela")
+				}
+				if p != "" && p != "/" {
+					return p
+				}
+			}
+		}
+	}
+	if origin, ok := i.host.Origin(r); ok {
+		return origin.Prefix
+	}
+	return ""
+}
 func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/sessions/media/") {
 		w.Header().Set("Cache-Control", "no-store")
@@ -523,9 +606,7 @@ func (i *instance) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.HasPrefix(r.URL.Path, "/vela/v0/") {
 		brand := i.velaBrand()
-		if origin, ok := i.host.Origin(r); ok {
-			brand.RedirectPrefix = origin.Prefix
-		}
+		brand.RedirectPrefix = i.resolvedRedirectPrefix(r)
 		webclient.ServeVelaWithBrand(w, r, i.assets, brand)
 		return
 	}

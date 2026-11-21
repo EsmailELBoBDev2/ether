@@ -230,6 +230,74 @@ func TestConsoleConnectURLsPerAppPublishedAddresses(t *testing.T) {
 	}
 }
 
+func TestConsoleConnectURLsVelaDedicatedAndConsolePort(t *testing.T) {
+	// Vela on dedicated port 8098 with serveOnMainPort=false: must NOT synthesize :32400/vela.
+	cfg := config.Config{
+		Server:        config.Server{Port: 32400, ConsolePort: 8099, DisableConsoleOnMainPort: true},
+		FrontendPorts: map[string]int{"vela": 8098},
+		Frontends: map[string]config.Frontend{
+			"vela": {
+				Enabled:            true,
+				PublishedAddresses: []string{"https://vela.example.com"},
+				Settings:           map[string]any{"serveOnMainPort": false},
+			},
+		},
+	}
+	// Owner opens the console on dedicated console port 8099.
+	r := httptestRequest("192.168.1.5:8099")
+	gotVela := consoleConnectURLs(r, "vela", []string{"http://192.168.1.5:8098"}, cfg, nil)
+	if len(gotVela) != 2 || gotVela[0] != "https://vela.example.com" || gotVela[1] != "http://192.168.1.5:8098" {
+		t.Fatalf("vela connect URLs = %#v, want [https://vela.example.com http://192.168.1.5:8098]", gotVela)
+	}
+	// Plex and shared Jellyfin URLs built while browsing console port 8099 must target main port 32400, not 8099.
+	gotPlex := consoleConnectURLs(r, "plex", nil, cfg, nil)
+	if len(gotPlex) != 1 || gotPlex[0] != "http://192.168.1.5:32400" {
+		t.Fatalf("plex connect URLs from console port = %#v, want [http://192.168.1.5:32400]", gotPlex)
+	}
+	gotJF := consoleConnectURLs(r, "jellyfin", []string{"http://192.168.1.5:8096"}, cfg, nil)
+	for _, u := range gotJF {
+		if u == "http://192.168.1.5:8099/jellyfin" {
+			t.Fatalf("jellyfin connect URLs leaked dedicated console port: %#v", gotJF)
+		}
+	}
+
+	// ValidateConfig checks for server.consolePort & server.disableConsoleOnMainPort.
+	base := config.Defaults(os.TempDir())
+	base.Server.Port = 32400
+	base.Server.ConsolePort = 32400
+	errs := ValidateConfig(base)
+	foundConsolePortErr := false
+	for _, e := range errs {
+		if e.Field == "server.consolePort" {
+			foundConsolePortErr = true
+		}
+	}
+	if !foundConsolePortErr {
+		t.Fatalf("expected server.consolePort error when matching server.port, got %+v", errs)
+	}
+
+	base.Server.ConsolePort = 0
+	base.Server.DisableConsoleOnMainPort = true
+	errs = ValidateConfig(base)
+	foundDisableErr := false
+	for _, e := range errs {
+		if e.Field == "server.disableConsoleOnMainPort" {
+			foundDisableErr = true
+		}
+	}
+	if !foundDisableErr {
+		t.Fatalf("expected server.disableConsoleOnMainPort error without consolePort, got %+v", errs)
+	}
+
+	base.Server.ConsolePort = 8099
+	base.Server.DisableConsoleOnMainPort = true
+	for _, e := range ValidateConfig(base) {
+		if e.Field == "server.consolePort" || e.Field == "server.disableConsoleOnMainPort" {
+			t.Fatalf("ValidateConfig rejected valid console port settings: %+v", e)
+		}
+	}
+}
+
 func httptestRequest(host string) *http.Request {
 	r, err := http.NewRequest(http.MethodGet, "/ether/api/frontends/jellyfin/status", nil)
 	if err != nil {

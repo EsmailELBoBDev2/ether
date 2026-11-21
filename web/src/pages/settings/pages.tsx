@@ -13,6 +13,7 @@ import type { UpdateStatus } from "../../lib/types";
 import Logs from "../Logs";
 import { BackupsAndImport } from "./Backups";
 import { ClusterOverview, useClustered } from "./Cluster";
+import { ConsolePortSection } from "./ConsolePortDrawer";
 import { OutboundInternet } from "./OutboundInternet";
 import { ServerProtection } from "./ServerProtection";
 import { ConnectedServices, integrationTabs, type ServiceTab } from "./ConnectedServices";
@@ -51,6 +52,7 @@ export function GeneralPage() {
         before={() => <ServerStatus />}
         onSaved={() => void reloadBoot()}
       />
+      <ConsolePortSection />
       <OutboundInternet />
       <RunSetupWizard />
     </DomainPage>

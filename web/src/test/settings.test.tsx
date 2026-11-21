@@ -1036,4 +1036,80 @@ describe("Settings", () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Serve test files")).toBeInTheDocument();
   });
+
+  it("configures the dedicated owner console port via the drawer on Server › General", async () => {
+    const { fake } = renderApp("/server");
+    const setBtn = await screen.findByRole("button", { name: "Set port" }, WAIT);
+    await waitFor(() => expect(setBtn).toBeEnabled(), WAIT);
+    fireEvent.click(setBtn);
+
+    const dialog = await screen.findByRole("dialog", { name: "Owner console port" }, WAIT);
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Dedicated console port" }));
+    const portInput = within(dialog).getByLabelText("Port");
+    expect(portInput).toHaveValue(8099);
+
+    // Reject matching Ether's main port.
+    fireEvent.change(portInput, { target: { value: String(fake.state.config.server.port) } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      String(fake.state.config.server.port),
+    );
+
+    // Save dedicated port 8099 with /ether turned off on the main port.
+    fireEvent.change(portInput, { target: { value: "8099" } });
+    fireEvent.click(
+      within(dialog).getByRole("switch", { name: "Serve /ether on Ether's main port" }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const puts = calls(fake, "PUT", "/config/server");
+      expect(puts).toHaveLength(1);
+      expect(puts[0]!.body).toEqual({
+        consolePort: 8099,
+        disableConsoleOnMainPort: true,
+      });
+    }, WAIT);
+
+    expect(
+      await screen.findByText(
+        "Listening on dedicated port 8099. /ether is turned off on Ether's main port.",
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a bind-failure fallback warning when the dedicated console port could not bind", async () => {
+    renderApp("/server", {}, (fake) => {
+      fake.state.config.server.consolePort = 8099;
+      fake.state.config.server.disableConsoleOnMainPort = true;
+      const orig = fake.fetch;
+      fake.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/server/console-listener")) {
+          return new Response(
+            JSON.stringify({
+              configuredPort: 8099,
+              activePort: 0,
+              mainPort: 32400,
+              onMainPort: true,
+              fallback: true,
+              error: "address already in use",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return orig(input, init);
+      };
+    });
+
+    expect(
+      await screen.findByText(
+        /Port 8099 couldn't bind, so Ether kept the console on port 32400 to prevent lockout/,
+        {},
+        WAIT,
+      ),
+    ).toBeInTheDocument();
+  });
 });

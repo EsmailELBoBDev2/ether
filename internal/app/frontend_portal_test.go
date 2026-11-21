@@ -314,3 +314,100 @@ func TestAppAddressUnifiedPrecedenceAndEsmailSetup(t *testing.T) {
 		t.Fatalf("out-of-band silo = %q err=%v", got, err)
 	}
 }
+
+func TestAppAddressVelaDedicatedAndConsolePort(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *config.Config) error {
+		c.Server.Port = 32400
+		c.Server.ConsolePort = 8099
+		c.Server.DisableConsoleOnMainPort = true
+		c.Server.TrustedProxyCIDRs = []string{"172.20.0.0/16"}
+		c.Plex.CustomURLs = []string{"https://plex.example.com"}
+		c.FrontendPorts = map[string]int{"vela": 8098}
+		c.Frontends = map[string]config.Frontend{
+			"vela":     {Enabled: true, Settings: map[string]any{"serveOnMainPort": false}},
+			"jellyfin": {Enabled: true},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	velaLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer velaLn.Close()
+	velaPort := velaLn.Addr().(*net.TCPAddr).Port
+
+	listeners := newFrontendListeners(nil)
+	listeners.running["vela"] = &runningFrontend{
+		listeners: []net.Listener{velaLn},
+		prefixes:  []string{""},
+	}
+	listeners.running["jellyfin"] = &runningFrontend{sharedPrefixes: []string{"/jellyfin"}}
+
+	rt := &frontendRuntime{
+		app:           &App{cfg: store},
+		control:       &frontendControl{listeners: listeners},
+		mainAddr:      &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 32400},
+		consoleAddr:   &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 8099},
+		consoleOnMain: false,
+	}
+
+	// Console request arriving on dedicated console port 8099 over LAN:
+	// - viewerPortalURL resolves :8099/ether/me
+	// - Vela (dedicated-only, serveOnMainPort=false) resolves its dedicated port (never Plex :32400/vela)
+	// - Jellyfin (shared on main port) resolves main port :32400/jellyfin (never console :8099)
+	consoleReq := httptest.NewRequest(http.MethodGet, "http://192.168.1.5:8099/ether/api/web-player", nil)
+	consoleReq.RemoteAddr = "192.168.1.20:51234"
+	consoleReq = consoleReq.WithContext(context.WithValue(consoleReq.Context(), http.LocalAddrContextKey, rt.consoleAddr))
+
+	if got, err := rt.viewerPortalURL(context.Background(), consoleReq); err != nil || got != "http://192.168.1.5:8099/ether/me" {
+		t.Fatalf("viewerPortalURL on dedicated console port = %q err=%v", got, err)
+	}
+	wantVela := "http://192.168.1.5:" + velaLn.Addr().String()[len("127.0.0.1:"):]
+	// dedicatedAppAddress uses loopback-only guard when bound to 127.0.0.1; verify loopback request gets loopback dedicated port.
+	loopConsoleReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8099/ether/api/web-player", nil)
+	loopConsoleReq.RemoteAddr = "127.0.0.1:51234"
+	loopConsoleReq = loopConsoleReq.WithContext(context.WithValue(loopConsoleReq.Context(), http.LocalAddrContextKey, rt.consoleAddr))
+	_ = wantVela
+	wantLoopVela := "http://127.0.0.1:" + velaLn.Addr().String()[len("127.0.0.1:"):]
+	if got, err := rt.appAddress(context.Background(), "vela", loopConsoleReq, false); err != nil || got != wantLoopVela {
+		t.Fatalf("vela dedicated-only appAddress = %q err=%v, want %q", got, err, wantLoopVela)
+	}
+	if got, err := rt.appAddress(context.Background(), "jellyfin", consoleReq, false); err != nil || got != "http://192.168.1.5:32400/jellyfin" {
+		t.Fatalf("jellyfin appAddress from dedicated console port = %q err=%v, want http://192.168.1.5:32400/jellyfin", got, err)
+	}
+
+	// Remote request for dedicated-only Vela with NO published address must NOT leak disabled Plex port /vela.
+	remoteReq := httptest.NewRequest(http.MethodGet, "http://172.20.0.2:8099/ether/api/web-player", nil)
+	remoteReq.RemoteAddr = "172.20.0.5:41000"
+	remoteReq.Header.Set("X-Forwarded-Host", "admin.example.com")
+	remoteReq.Header.Set("X-Forwarded-Proto", "https")
+	remoteReq.Header.Set("X-Forwarded-For", "198.51.100.9")
+	remoteReq = remoteReq.WithContext(context.WithValue(remoteReq.Context(), http.LocalAddrContextKey, rt.consoleAddr))
+	if got, err := rt.appAddress(context.Background(), "vela", remoteReq, false); err == nil {
+		t.Fatalf("remote dedicated-only vela without published address = %q, want error instead of disabled main port", got)
+	}
+
+	// Once Vela has its own published HTTPS subdomain, W189 resolver returns it and secureOriginsFor uses it.
+	if err := store.Update(func(c *config.Config) error {
+		v := c.Frontends["vela"]
+		v.PublishedAddresses = []string{"https://vela.example.com"}
+		c.Frontends["vela"] = v
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := rt.appAddress(context.Background(), "vela", remoteReq, false); err != nil || got != "https://vela.example.com" {
+		t.Fatalf("vela published appAddress = %q err=%v, want https://vela.example.com", got, err)
+	}
+	if origins := rt.secureOriginsFor(context.Background(), "vela", remoteReq); len(origins) != 1 || origins[0] != "https://vela.example.com" {
+		t.Fatalf("vela secureOriginsFor = %#v, want [https://vela.example.com]", origins)
+	}
+	_ = velaPort
+}

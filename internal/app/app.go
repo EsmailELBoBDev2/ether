@@ -290,6 +290,8 @@ type App struct {
 	plexMetaClose     func()
 	spikeLibrary      *spike.Library
 	handler           http.Handler
+	consoleHandler    http.Handler
+	front             atomic.Pointer[frontDoor]
 	instanceLock      *instanceLock
 	closers           []func()
 	closeOnce         sync.Once
@@ -374,6 +376,7 @@ func New(ctx context.Context, opts Options) (_ *App, err error) {
 	a.tracker = startup.NewTracker(opts.Version, time.Now)
 	if opts.front != nil && (a.deployment == nil || a.deployment.settings.Roles.FullServer()) {
 		a.tracker = opts.front.tracker
+		a.front.Store(opts.front)
 		a.tracker.Begin()
 		if err := a.openFrontDoor(); err != nil {
 			return nil, err
@@ -809,28 +812,47 @@ func (a *App) Run(ctx context.Context) error {
 		front.serve(ln)
 		defer front.close()
 	}
+	a.front.Store(front)
 	addr := front.ln.Addr()
 	a.frontends.start(ctx, addr)
 	defer a.frontends.stop()
 	cfg = a.cfg.Get() // the port may have moved off a busy default
-	// Publish the actual listener, including automatic port fallback, without
-	// exposing the service's protected configuration to the desktop user.
-	if err := service.PublishLocalURL(a.opts.DataDir, strings.TrimSuffix(probeURL(addr), "/identity")); err != nil {
-		a.log.Warn("publish local tray endpoint", "err", err)
-	}
 	front.setTLS(a.certs.TLSConfig)
 	front.setProxies(a.cfg.TrustedProxyCIDRs)
 	front.setRemote(a.cfg.AllowRemoteConsole)
+	front.reconcileConsole(cfg.Server)
+	a.frontends.setConsoleAddr(front.consoleAddr(), front.consoleOnMain.Load())
+	var consoleLiveStopped atomic.Bool
+	defer consoleLiveStopped.Store(true)
+	a.cfg.Subscribe(func(c config.Config) {
+		if consoleLiveStopped.Load() {
+			return
+		}
+		front.reconcileConsole(c.Server)
+		a.frontends.setConsoleAddr(front.consoleAddr(), front.consoleOnMain.Load())
+		if activeAddr := front.activeConsoleAddr(); activeAddr != nil {
+			_ = service.PublishLocalURL(a.opts.DataDir, strings.TrimSuffix(probeURL(activeAddr), "/identity"))
+		}
+	})
+	// Publish the actual listener, including automatic port fallback, without
+	// exposing the service's protected configuration to the desktop user.
+	publishAddr := front.activeConsoleAddr()
+	if publishAddr == nil {
+		publishAddr = addr
+	}
+	if err := service.PublishLocalURL(a.opts.DataDir, strings.TrimSuffix(probeURL(publishAddr), "/identity")); err != nil {
+		a.log.Warn("publish local tray endpoint", "err", err)
+	}
 	// A restore applied at this start counts from here: the server is
 	// about to serve on it. If it cannot be recorded, nothing is served
 	// and Serve puts the original data back.
 	if err := a.confirmRestore(); err != nil {
 		return err
 	}
-	front.gate.Open(a.handler)
+	front.open(a.handler, a.consoleHandler)
 	a.markPublicReady()
 	a.log.Info("startup phase", "phase", "public listener", "duration", time.Since(runStart))
-	uiURL := fmt.Sprintf("http://localhost:%d/ether/", cfg.Server.Port)
+	uiURL := fmt.Sprintf("http://localhost:%d/ether/", front.activeConsolePort())
 	a.log.Info("Ether listening", "addr", addr.String(), "ui", uiURL,
 		"version", a.opts.Version, "spike", cfg.Spike.Enabled)
 	background.start(func() { a.warmPlaybackPolicy(ctx) })
@@ -992,7 +1014,7 @@ func (a *App) Run(ctx context.Context) error {
 	// flight finish (at most 10s, as before).
 	shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
-	front.gate.Close(shutdown)
+	front.closeGates(shutdown)
 	a.registrar.Stop()
 	if runErr != nil {
 		return runErr

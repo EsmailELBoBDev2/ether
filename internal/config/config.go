@@ -181,9 +181,16 @@ type Server struct {
 	// PortExplicit preserves an owner-selected 32400 when PMS is installed.
 	PortExplicit bool `json:"portExplicit,omitempty"`
 	// Port for the Plex API and web UI. PMS uses 32400.
-	Port         int    `json:"port"`
-	BindAddress  string `json:"bindAddress"`
-	FriendlyName string `json:"friendlyName"`
+	Port int `json:"port"`
+	// ConsolePort, when non-zero, binds an optional dedicated listener for
+	// the owner console (/ether) and its API. Zero keeps the console on Port.
+	ConsolePort int `json:"consolePort,omitempty"`
+	// DisableConsoleOnMainPort stops serving /ether on Port while ConsolePort
+	// is bound. Ignored if ConsolePort is unset or fails to bind so the owner
+	// is never locked out.
+	DisableConsoleOnMainPort bool   `json:"disableConsoleOnMainPort,omitempty"`
+	BindAddress              string `json:"bindAddress"`
+	FriendlyName             string `json:"friendlyName"`
 	// The Movies / TV Shows library names live on libraries 1/2 in
 	// internal/libraries (v0.3.8); the old moviesLibraryName /
 	// tvShowsLibraryName keys were migrated there and deleted here.

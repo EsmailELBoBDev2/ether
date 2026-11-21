@@ -105,11 +105,16 @@ func (a *App) openFrontDoor() error {
 	if port != 0 {
 		server.Port = port
 	}
+	if consolePort, cerr := envConsolePort(); cerr != nil {
+		return cerr
+	} else if consolePort != 0 {
+		server.ConsolePort = consolePort
+	}
 	if err := f.bind(server, port != 0); err != nil {
 		return err
 	}
 	a.boundNow = true
-	a.log.Info("Ether is starting; the console shows its progress", "ui", fmt.Sprintf("http://localhost:%d/ether/", f.port))
+	a.log.Info("Ether is starting; the console shows its progress", "ui", fmt.Sprintf("http://localhost:%d/ether/", f.activeConsolePort()))
 	return nil
 }
 

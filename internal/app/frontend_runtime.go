@@ -68,6 +68,8 @@ type frontendRuntime struct {
 	discoveryError string
 	runCtx         context.Context
 	mainAddr       net.Addr
+	consoleAddr    net.Addr
+	consoleOnMain  bool
 	gdmRunning     bool
 	discovery      plexDiscovery
 	newDiscovery   func() plexDiscovery
@@ -106,7 +108,7 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &frontendRuntime{app: a, ctx: ctx, cancel: cancel, events: a.sessionEvents, discovery: a.gdm, newDiscovery: func() plexDiscovery { return a.newGDMResponder() }}
+	r := &frontendRuntime{app: a, ctx: ctx, cancel: cancel, events: a.sessionEvents, consoleOnMain: true, discovery: a.gdm, newDiscovery: func() plexDiscovery { return a.newGDMResponder() }}
 	initialized := false
 	defer func() {
 		if !initialized {
@@ -382,7 +384,9 @@ func newFrontendRuntime(a *App, cfg config.Config) (*frontendRuntime, error) {
 			}
 		}, ClientIP: a.frontendClientIP, RequestOrigin: func(req *http.Request) (clientnet.RequestOrigin, bool) {
 			return clientnet.Origin(req, a.trustedProxyPrefixes()...)
-		}, ViewerPortalURL: r.viewerPortalURL, SecurePortalURL: r.viewerPortalSecureURL, SecureOrigins: r.secureOrigins, SurfaceURL: func(ctx context.Context, req *http.Request) (string, error) {
+		}, ViewerPortalURL: r.viewerPortalURL, SecurePortalURL: r.viewerPortalSecureURL, SecureOrigins: func(ctx context.Context, req *http.Request) []string {
+			return r.secureOriginsFor(ctx, id, req)
+		}, SurfaceURL: func(ctx context.Context, req *http.Request) (string, error) {
 			return scorecardSurfaceURL(ctx, r, id, req)
 		}, PublicOrigin: publicOrigin, RepoFileURL: repoFile, TracePlayback: a.tracePlayback, ServerIdentity: serverIdentity, OwnerSubscription: ownerSub, LANViewer: lanViewer, PageFreshness: func() frontend.PageFreshness {
 			f := a.browseFreshness()
@@ -698,11 +702,22 @@ func (r *frontendRuntime) syncDiscoveryLocked() {
 		r.gdmRunning = false
 	}
 }
+func (r *frontendRuntime) setConsoleAddr(addr net.Addr, onMain bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.consoleAddr = addr
+	r.consoleOnMain = onMain || addr == nil
+	r.mu.Unlock()
+}
 func (r *frontendRuntime) stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.runCtx = nil
 	r.mainAddr = nil
+	r.consoleAddr = nil
+	r.consoleOnMain = true
 	r.lan = lanCheck{}
 	r.lanGeneration++
 	if r.gdmRunning {

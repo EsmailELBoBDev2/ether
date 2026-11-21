@@ -391,7 +391,7 @@ func listenFrontendWith(id frontend.Protocol, address string, listen func(string
 	}
 	for candidate := first; candidate < first+10; candidate++ {
 		reserved := false
-		for _, other := range []frontend.Protocol{"plex", "jellyfin", "emby", "silo"} {
+		for _, other := range []frontend.Protocol{"plex", "jellyfin", "emby", "silo", "vela"} {
 			if p, ok := frontend.DefaultPort(other); ok && candidate == p {
 				reserved = true
 				break

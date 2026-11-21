@@ -49,13 +49,13 @@ export function isLoopbackAddress(value: string): boolean {
 }
 
 /**
- * True when an address uses Ether's shared-port path for an app that normally
- * has its own dedicated listener port (Jellyfin, Emby, Silo).
+ * True when an address uses Ether's shared-port path for an app that can have
+ * its own dedicated listener port (Jellyfin, Emby, Silo, Vela).
  */
 export function isSharedPortFallbackPath(value: string): boolean {
   const parsed = parseCandidateURL(value);
   if (!parsed) return false;
-  return /^\/(jellyfin|emby|silo)(\/|$)/i.test(parsed.pathname || "/");
+  return /^\/(jellyfin|emby|silo|vela)(\/|$)/i.test(parsed.pathname || "/");
 }
 
 function orderDedicatedFirst(addresses: string[]): string[] {

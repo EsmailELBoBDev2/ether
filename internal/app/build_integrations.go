@@ -102,16 +102,64 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 	}
 	a.closers = append(a.closers, a.frontends.close)
 	a.cfg.Subscribe(a.frontends.reconcile)
+	consoleMux := http.NewServeMux()
+	consoleMux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
+	a.mountExtensibility(consoleMux)
+	consoleRedirect := lanOnly(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ether/", http.StatusFound)
+	}), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)
+	consoleMux.Handle("/ether", consoleRedirect)
+	consoleMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			consoleRedirect.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	a.consoleHandler = consoleMux
+
 	mux := http.NewServeMux()
 	a.mountAdapterMedia(mux)
-	mux.Handle("/ether/", a.perf.wrap("console", lanOnly(a.buildAdmin(), a.cfg.TrustedProxyCIDRs, a.cfg.AllowRemoteConsole)))
-	a.mountExtensibility(mux)
-	mux.HandleFunc("/ether", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ether/", http.StatusFound)
-	})
-	mux.Handle("/", browserRootRedirect(a.frontends.plexHandler()))
+	gateConsole := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !a.consoleOnMain() {
+				http.NotFound(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/ether/", gateConsole(consoleMux))
+	mux.Handle("/ether", gateConsole(consoleMux))
+	mux.Handle("/.well-known/oauth-protected-resource", gateConsole(consoleMux))
+	mux.Handle("/.well-known/oauth-protected-resource/ether/mcp", gateConsole(consoleMux))
+	mux.Handle("/.well-known/oauth-authorization-server", gateConsole(consoleMux))
+	mux.Handle("/", browserRootRedirectWhen(a.consoleOnMain, a.frontends.plexHandler()))
 	a.handler = mux
 	return nil
+}
+
+// consoleOnMain reports whether /ether and its console APIs are currently
+// served on Ether's main (Plex) port. Always true unless a dedicated console
+// listener is bound and DisableConsoleOnMainPort is enabled.
+func (a *App) consoleOnMain() bool {
+	if f := a.front.Load(); f != nil {
+		return f.consoleOnMain.Load()
+	}
+	return true
+}
+
+func (a *App) consoleListenerStatus() admin.ConsoleListenerStatus {
+	if f := a.front.Load(); f != nil {
+		return f.consoleStatus()
+	}
+	cfg := a.cfg.Get()
+	return admin.ConsoleListenerStatus{
+		ConfiguredPort: cfg.Server.ConsolePort,
+		ActivePort:     0,
+		MainPort:       cfg.Server.Port,
+		OnMainPort:     true,
+	}
 }
 
 // browserRootRedirect sends a person who types the server's address into a
@@ -119,8 +167,12 @@ func (a *App) buildIntegrations(ctx context.Context, cfg config.Config) error {
 // "/" that asks for HTML and carries nothing of Plex's (no X-Plex-* header,
 // no query) is redirected; every client request reaches Plex unchanged.
 func browserRootRedirect(next http.Handler) http.Handler {
+	return browserRootRedirectWhen(nil, next)
+}
+
+func browserRootRedirectWhen(allow func() bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isBrowserRootRequest(r) {
+		if (allow == nil || allow()) && isBrowserRootRequest(r) {
 			http.Redirect(w, r, "/ether/", http.StatusFound)
 			return
 		}

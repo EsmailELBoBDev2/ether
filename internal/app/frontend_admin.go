@@ -41,7 +41,7 @@ type frontendControl struct {
 	sharedStatus func(frontend.Protocol, *frontend.Status)
 	portChanged  func()
 }
-type listenerSettings struct{ Port, Discovery any }
+type listenerSettings struct{ Port, Discovery, ServeOnMainPort any }
 
 func newFrontendControl(r *frontend.Registry, c *config.Store) *frontendControl {
 	return &frontendControl{registry: r, listeners: newFrontendListeners(r), config: c, applied: make(map[frontend.Protocol]listenerSettings)}
@@ -176,8 +176,10 @@ func (f *frontendControl) Settings(_ context.Context, id frontend.Protocol) (fro
 	}
 	if port := cfg.FrontendPorts[string(id)]; port > 0 {
 		settings["port"] = float64(port)
-	} else if port, ok := frontend.DefaultPort(id); ok {
-		settings["port"] = float64(port)
+	} else if id != "vela" {
+		if port, ok := frontend.DefaultPort(id); ok {
+			settings["port"] = float64(port)
+		}
 	}
 	return settings, nil
 }
@@ -189,7 +191,7 @@ func validateFrontendSettings(s frontend.Settings, protocolValidator bool) error
 			if !ok || n < 1 || n > 65535 || math.Trunc(n) != n {
 				return errors.New("invalid port")
 			}
-		case "discovery", "quickConnect", "publicViewerPicker":
+		case "discovery", "quickConnect", "publicViewerPicker", "serveOnMainPort":
 			if _, ok := v.(bool); !ok {
 				return fmt.Errorf("invalid %s", k)
 			}
@@ -244,6 +246,9 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 	}
 	if id == "vela" {
 		s = vela.NormalizeSettings(s)
+		if port, ok := s["port"].(float64); ok && int(port) == f.config.Get().Server.Port {
+			return errors.New("dedicated port must be different from the main server port")
+		}
 	}
 	if frontendHostPolicy(id).MainListener {
 		for key := range s {
@@ -299,11 +304,16 @@ func (f *frontendControl) PutSettings(ctx context.Context, id frontend.Protocol,
 			v.PublishedAddresses = publishedAddresses
 			v.PublicURL = ""
 		}
+		_, hasPort := s["port"].(float64)
 		v.Settings = make(map[string]any, len(s))
 		for k, val := range s {
-			if k != "port" {
-				v.Settings[k] = val
+			if k == "port" {
+				continue
 			}
+			if id == "vela" && k == "serveOnMainPort" && !hasPort {
+				continue
+			}
+			v.Settings[k] = val
 		}
 		if c.FrontendPorts == nil {
 			c.FrontendPorts = make(map[string]int)
@@ -347,7 +357,11 @@ func (f *frontendControl) Reconcile(ctx context.Context, c config.Config) {
 	for _, d := range f.registry.Descriptors() {
 		desired := frontendDesired(c, d.ID)
 		settings := c.Frontends[string(d.ID)].Settings
-		current := listenerSettings{Port: c.FrontendPorts[string(d.ID)], Discovery: settings["discovery"]}
+		current := listenerSettings{
+			Port:            c.FrontendPorts[string(d.ID)],
+			Discovery:       settings["discovery"],
+			ServeOnMainPort: settings["serveOnMainPort"],
+		}
 		_, mounted := f.registry.Instance(d.ID)
 		if desired && mounted && !reflect.DeepEqual(f.applied[d.ID], current) {
 			_ = f.listeners.stop(ctx, d.ID)

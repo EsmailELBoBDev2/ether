@@ -66,6 +66,11 @@ type velaShellKey struct {
 	name        string
 	iconVersion string
 	iconIsSVG   bool
+	basePath    string
+}
+
+func velaBasePath(brand VelaBrand) string {
+	return clientnet.RedirectPath(brand.RedirectPrefix, "", "/vela")
 }
 
 type velaShellDoc struct {
@@ -109,12 +114,17 @@ func ServeVelaWithBrand(w http.ResponseWriter, r *http.Request, dir string, bran
 		http.Error(w, "Method not allowed", 405)
 		return
 	}
-	if r.URL.Path == "/vela/" {
+	basePath := velaBasePath(brand)
+	if r.URL.Path == "/" || r.URL.Path == "/vela/" {
 		w.Header().Set("Cache-Control", veladist.CacheControlRevalidate)
-		target := url.URL{Path: clientnet.RedirectPath(brand.RedirectPrefix, "", "/vela"), RawQuery: r.URL.RawQuery, Fragment: r.URL.Fragment, RawFragment: r.URL.RawFragment}
+		target := url.URL{Path: basePath, RawQuery: r.URL.RawQuery, Fragment: r.URL.Fragment, RawFragment: r.URL.RawFragment}
 		// Browsers retain an incoming fragment across a redirect whose Location
 		// omits one; ordinary HTTP requests never transmit that fragment.
 		http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
+		return
+	}
+	if r.URL.Path != "/vela" && !strings.HasPrefix(r.URL.Path, "/vela/") {
+		http.NotFound(w, r)
 		return
 	}
 	if !VelaReady(dir) {
@@ -149,7 +159,7 @@ func ServeVelaWithBrand(w http.ResponseWriter, r *http.Request, dir string, bran
 			return
 		}
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		w.Header().Set("Service-Worker-Allowed", "/vela")
+		w.Header().Set("Service-Worker-Allowed", basePath)
 		serveStaticVelaFile(w, r, f, rel, s)
 		return
 	}
@@ -309,8 +319,9 @@ func serveReleaseIcon(w http.ResponseWriter, r *http.Request, root *os.Root, dir
 }
 
 func serveFallbackVelaManifest(w http.ResponseWriter, r *http.Request, brand VelaBrand) {
+	basePath := velaBasePath(brand)
 	base := []byte(`{"id":"/vela","name":"Vela","short_name":"Vela","start_url":"/vela","scope":"/vela","display":"standalone","theme_color":"#090B0E","background_color":"#090B0E"}`)
-	patched := patchVelaManifest(base, strings.TrimSpace(brand.AppName), brand.IconVersion != "")
+	patched := patchVelaManifest(base, strings.TrimSpace(brand.AppName), brand.IconVersion != "", basePath)
 	sum := sha256.Sum256(append(append([]byte(nil), patched...), ("\x00" + brand.IconVersion)...))
 	writeNoCacheDoc(w, r, velaShellDoc{
 		contentType: "application/manifest+json; charset=utf-8",
@@ -321,6 +332,7 @@ func serveFallbackVelaManifest(w http.ResponseWriter, r *http.Request, brand Vel
 
 func serveBrandedVelaDoc(w http.ResponseWriter, r *http.Request, root *os.Root, dir, file string, info os.FileInfo, brand VelaBrand) {
 	appName := strings.TrimSpace(brand.AppName)
+	basePath := velaBasePath(brand)
 	key := velaShellKey{
 		dir:         dir,
 		file:        file,
@@ -329,6 +341,7 @@ func serveBrandedVelaDoc(w http.ResponseWriter, r *http.Request, root *os.Root, 
 		name:        appName,
 		iconVersion: brand.IconVersion,
 		iconIsSVG:   brand.IconIsSVG,
+		basePath:    basePath,
 	}
 	velaShellMu.Lock()
 	doc, ok := velaShellCache[key]
@@ -350,10 +363,10 @@ func serveBrandedVelaDoc(w http.ResponseWriter, r *http.Request, root *os.Root, 
 		var ct string
 		if file == "index.html" {
 			ct = "text/html; charset=utf-8"
-			patched = patchVelaHTML(raw, appName, brand.IconVersion != "", brand.IconIsSVG)
+			patched = patchVelaHTML(raw, appName, brand.IconVersion != "", brand.IconIsSVG, basePath)
 		} else {
 			ct = "application/manifest+json; charset=utf-8"
-			patched = patchVelaManifest(raw, appName, brand.IconVersion != "")
+			patched = patchVelaManifest(raw, appName, brand.IconVersion != "", basePath)
 		}
 		hashInput := make([]byte, 0, len(patched)+1+len(brand.IconVersion))
 		hashInput = append(hashInput, patched...)
@@ -402,13 +415,18 @@ func writeNoCacheDoc(w http.ResponseWriter, r *http.Request, doc velaShellDoc) {
 	}
 }
 
-func patchVelaHTML(raw []byte, appName string, hasCustomIcon, iconIsSVG bool) []byte {
+func patchVelaHTML(raw []byte, appName string, hasCustomIcon, iconIsSVG bool, basePath string) []byte {
 	out := raw
 	if appName != "" {
 		out = patchVelaHTMLTitle(out, appName)
 	}
 	if hasCustomIcon && !iconIsSVG {
-		out = patchVelaHTMLFavicon(out)
+		out = patchVelaHTMLFavicon(out, basePath)
+	}
+	if basePath != "" && basePath != "/vela" {
+		escaped := html.EscapeString(basePath)
+		out = bytes.ReplaceAll(out, []byte(`href="/vela/`), []byte(`href="`+escaped+`/`))
+		out = bytes.ReplaceAll(out, []byte(`src="/vela/`), []byte(`src="`+escaped+`/`))
 	}
 	return out
 }
@@ -426,8 +444,11 @@ func patchVelaHTMLTitle(raw []byte, brand string) []byte {
 	return out
 }
 
-func patchVelaHTMLFavicon(raw []byte) []byte {
-	replacement := []byte(`<link rel="icon" type="image/png" sizes="32x32" href="/vela/favicon-32.png" />`)
+func patchVelaHTMLFavicon(raw []byte, basePath string) []byte {
+	if basePath == "" {
+		basePath = "/vela"
+	}
+	replacement := []byte(`<link rel="icon" type="image/png" sizes="32x32" href="` + html.EscapeString(basePath) + `/favicon-32.png" />`)
 	loc := htmlIconPattern.FindIndex(raw)
 	if loc == nil {
 		return raw
@@ -439,14 +460,32 @@ func patchVelaHTMLFavicon(raw []byte) []byte {
 	return out
 }
 
-var brandedManifestIcons = []map[string]string{
-	{"src": "/vela/vela-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-	{"src": "/vela/vela-icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
-	{"src": "/vela/vela-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-	{"src": "/vela/vela-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+func brandedManifestIconsFor(basePath string) []map[string]string {
+	if basePath == "" {
+		basePath = "/vela"
+	}
+	return []map[string]string{
+		{"src": basePath + "/vela-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+		{"src": basePath + "/vela-icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+		{"src": basePath + "/vela-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+		{"src": basePath + "/vela-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+	}
 }
 
-func patchVelaManifest(raw []byte, appName string, hasCustomIcon bool) []byte {
+func rewriteVelaPath(value, basePath string) string {
+	if value == "/vela" || value == "/vela/" {
+		return basePath
+	}
+	if strings.HasPrefix(value, "/vela/") {
+		return basePath + strings.TrimPrefix(value, "/vela")
+	}
+	return value
+}
+
+func patchVelaManifest(raw []byte, appName string, hasCustomIcon bool, basePath string) []byte {
+	if basePath == "" {
+		basePath = "/vela"
+	}
 	var manifest map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &manifest); err != nil || manifest == nil {
 		return raw
@@ -457,8 +496,43 @@ func patchVelaManifest(raw []byte, appName string, hasCustomIcon bool) []byte {
 			manifest["short_name"] = encodedName
 		}
 	}
+	if basePath != "/vela" {
+		for _, field := range []string{"id", "start_url", "scope"} {
+			if rawField, exists := manifest[field]; exists {
+				var current string
+				if err := json.Unmarshal(rawField, &current); err == nil {
+					if rewritten := rewriteVelaPath(current, basePath); rewritten != current {
+						if encoded, err := json.Marshal(rewritten); err == nil {
+							manifest[field] = encoded
+						}
+					}
+				}
+			}
+		}
+		if !hasCustomIcon {
+			if rawIcons, exists := manifest["icons"]; exists {
+				var icons []map[string]any
+				if err := json.Unmarshal(rawIcons, &icons); err == nil {
+					changed := false
+					for _, icon := range icons {
+						if src, ok := icon["src"].(string); ok {
+							if rewritten := rewriteVelaPath(src, basePath); rewritten != src {
+								icon["src"] = rewritten
+								changed = true
+							}
+						}
+					}
+					if changed {
+						if encoded, err := json.Marshal(icons); err == nil {
+							manifest["icons"] = encoded
+						}
+					}
+				}
+			}
+		}
+	}
 	if hasCustomIcon {
-		if encodedIcons, err := json.Marshal(brandedManifestIcons); err == nil {
+		if encodedIcons, err := json.Marshal(brandedManifestIconsFor(basePath)); err == nil {
 			manifest["icons"] = encodedIcons
 		}
 	}

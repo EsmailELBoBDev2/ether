@@ -65,18 +65,20 @@ var sectionScopes = map[string]Scope{
 // and node-local settings.
 var mixedSections = map[string]map[string]Scope{
 	"server": {
-		"trustedProxyCIDRs":  Local,
-		"port":               Local,
-		"portExplicit":       Local,
-		"bindAddress":        Local,
-		"logLevel":           Local,
-		"friendlyName":       Shared,
-		"webFrameOrigins":    Shared,
-		"allowRemoteConsole": Shared,
-		"startupAnimation":   Shared, // console preference, the same on every node
-		"machineIdentifier":  Shared, // one server identity for the cluster
-		"defaultStreamLimit": Shared,
-		"maxStreams":         Shared,
+		"trustedProxyCIDRs":        Local,
+		"port":                     Local,
+		"consolePort":              Local,
+		"disableConsoleOnMainPort": Local,
+		"portExplicit":             Local,
+		"bindAddress":              Local,
+		"logLevel":                 Local,
+		"friendlyName":             Shared,
+		"webFrameOrigins":          Shared,
+		"allowRemoteConsole":       Shared,
+		"startupAnimation":         Shared, // console preference, the same on every node
+		"machineIdentifier":        Shared, // one server identity for the cluster
+		"defaultStreamLimit":       Shared,
+		"maxStreams":               Shared,
 		// This node's part of account-wide budgets in a cluster.
 		"clusterWeight":   Local,
 		"nodeRoles":       Local,

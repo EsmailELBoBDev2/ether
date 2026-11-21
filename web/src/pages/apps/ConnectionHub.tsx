@@ -148,10 +148,11 @@ function secondaryLabel(
   item: ParsedAddress,
   publishedSet: ReadonlySet<string>,
   observedSet: ReadonlySet<string>,
+  hasDedicated: boolean,
 ): string {
   if (publishedSet.has(item.raw)) return t("Published");
   if (observedSet.has(item.raw)) return t("Seen recently");
-  if (item.isSharedFallback) {
+  if (item.isSharedFallback && hasDedicated) {
     if (item.isTailscale) return t("Tailscale (also reachable at)");
     return t("Also reachable at");
   }
@@ -227,11 +228,14 @@ export function classifyAppAddresses(
   }
 
   const preferredPort = options?.preferredPort ?? "";
+  const hasDedicated = parsed.some(
+    (item) => !item.isSharedFallback && !publishedSet.has(item.raw) && !observedSet.has(item.raw),
+  );
   const localIPv4 = parsed
     .filter((item) => item.isLocal && !item.isIPv6 && !item.isPlexDirect)
     .sort((a, b) => localRank(a, preferredPort) - localRank(b, preferredPort));
   const tailscaleIPv4 = parsed.filter(
-    (item) => item.isTailscale && !item.isIPv6 && !item.isSharedFallback,
+    (item) => item.isTailscale && !item.isIPv6 && (!hasDedicated || !item.isSharedFallback),
   );
   const localAny = parsed
     .filter((item) => item.isLocal)
@@ -247,7 +251,7 @@ export function classifyAppAddresses(
     )
     .map((item) => ({
       address: item.raw,
-      label: secondaryLabel(item, publishedSet, observedSet),
+      label: secondaryLabel(item, publishedSet, observedSet, hasDedicated),
     }));
 
   const hasRemoteAddress = parsed.some((item) => !item.isLocal);
@@ -753,7 +757,9 @@ export function AppOverviewRow({
   const href = `/apps/${appPath(id)}`;
   const live = appLiveStatus(info);
   const conflict = portConflictInfo(info.status);
-  const preferredPort = String(conflict?.actualPort ?? info.descriptor.defaultPort ?? "");
+  const preferredPort = String(
+    conflict?.actualPort ?? (id === "vela" ? "" : (info.descriptor.defaultPort ?? "")),
+  );
   const { primary } = classifyAppAddresses(info.status, { preferredPort });
 
   return (
@@ -819,6 +825,7 @@ export function AppAddressCard({
   configuredRemote,
   publishedAddresses,
   onEditPublishedAddresses,
+  velaPort,
   port,
   onPortChange,
   onSavePlexPort,
@@ -830,6 +837,7 @@ export function AppAddressCard({
   configuredRemote?: string;
   publishedAddresses?: string[];
   onEditPublishedAddresses?: () => void;
+  velaPort?: { port?: number; serveOnMainPort: boolean; onEdit: () => void };
   port?: number;
   onPortChange?: (port: number | undefined) => void;
   onSavePlexPort?: (port: number) => Promise<void>;
@@ -845,7 +853,12 @@ export function AppAddressCard({
     info.enabled && conflict && !info.status.error
       ? { tone: "ok" as const, text: t("Listening") }
       : live;
-  const preferredPort = String(conflict?.actualPort ?? port ?? info.descriptor.defaultPort ?? "");
+  const preferredPort = String(
+    conflict?.actualPort ??
+      (id === "vela"
+        ? (velaPort?.port ?? port ?? serverPort ?? "")
+        : (port ?? info.descriptor.defaultPort ?? "")),
+  );
   const effectivePublished = publishedAddresses ?? info.status.publishedAddresses ?? [];
   const { primary, others, hasRemoteAddress } = classifyAppAddresses(info.status, {
     preferredPort,
@@ -1069,6 +1082,35 @@ export function AppAddressCard({
           />
           {plexPortError != null ? <ErrorPanel error={plexPortError} /> : null}
         </>
+      ) : velaPort ? (
+        <SettingsRow
+          setting="port"
+          title={t("Port")}
+          description={
+            velaPort.port && !velaPort.serveOnMainPort
+              ? t("Listening on dedicated port {port}. /vela is turned off on Ether's main port.", {
+                  port: String(velaPort.port),
+                })
+              : velaPort.port
+                ? t("Listening on dedicated port {port} and Ether's main port ({mainPort}).", {
+                    port: String(velaPort.port),
+                    mainPort: String(serverPort ?? 32400),
+                  })
+                : t(
+                    "Shared on Ether's main port. Use a dedicated port if your reverse proxy gives Vela its own address.",
+                  )
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <span className="rounded-md border border-border bg-bg-subtle px-2.5 py-1 font-mono text-xs text-fg">
+                {velaPort.port || serverPort || 32400}
+              </span>
+              <Button type="button" variant="outline" size="sm" onClick={velaPort.onEdit}>
+                {velaPort.port ? t("Edit") : t("Set port")}
+              </Button>
+            </div>
+          }
+        />
       ) : (
         <SettingsRow
           title={t("Port")}

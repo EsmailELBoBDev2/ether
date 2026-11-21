@@ -4295,12 +4295,19 @@ export function createFakeServer(opts: FakeOptions = {}) {
         ];
       }
       if (id === "vela") {
-        return opts.velaInstalled === true
-          ? [
-              `http://192.168.1.20:${state.config.server.port}/vela`,
-              `http://100.64.0.20:${state.config.server.port}/vela`,
-            ]
-          : [];
+        if (opts.velaInstalled !== true) return [];
+        const serveMain = state.config.frontends?.vela?.settings?.serveOnMainPort !== false;
+        const urls: string[] = [];
+        if (port) {
+          urls.push(`http://192.168.1.20:${port}`, `http://100.64.0.20:${port}`);
+        }
+        if (!port || serveMain) {
+          urls.push(
+            `http://192.168.1.20:${state.config.server.port}/vela`,
+            `http://100.64.0.20:${state.config.server.port}/vela`,
+          );
+        }
+        return urls;
       }
       if (id === "stremio" || id === "webdav" || id === "dlna" || id === "m3u" || id === "xtream") {
         return [`http://192.168.1.20:${state.config.server.port}/${id}`];
@@ -4363,7 +4370,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
       sections: [{ key: "connect", fields: [{ key: note, kind: "note" }] }],
     });
     const protocolDefs = [
-      { id: "vela", name: "Vela", settingsSchema: VELA_SETTINGS_SCHEMA },
+      { id: "vela", name: "Vela", defaultPort: 8098, settingsSchema: VELA_SETTINGS_SCHEMA },
       {
         id: "plex",
         name: "Plex",
@@ -4431,7 +4438,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
               ? (state.config.frontendPorts?.plex ??
                 state.config.server.port ??
                 descriptor.defaultPort)
-              : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
+              : descriptor.id === "vela"
+                ? state.config.frontendPorts?.vela
+                : (state.config.frontendPorts?.[descriptor.id] ?? descriptor.defaultPort);
           const runtime = mockRuntimePort(descriptor.id, configuredPort);
           const port = runtime.actualPort;
           const observed = mockObservedAddresses(descriptor.id, enabled);
@@ -4484,7 +4493,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
             ? (state.config.frontendPorts?.plex ??
               state.config.server.port ??
               descriptor.defaultPort)
-            : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
+            : id === "vela"
+              ? state.config.frontendPorts?.vela
+              : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
         const runtime = mockRuntimePort(id ?? "", configuredPort);
         const port = runtime.actualPort;
         const observed = mockObservedAddresses(id ?? "", enabled);
@@ -4517,12 +4528,14 @@ export function createFakeServer(opts: FakeOptions = {}) {
       }
       if (action === "settings" && method === "GET") {
         const published = mockPublishedAddresses(id!);
+        const storedPort =
+          id === "vela"
+            ? state.config.frontendPorts?.vela
+            : (state.config.frontendPorts?.[id!] ?? descriptor.defaultPort);
         return json({
           ...state.config.frontends?.[id!]?.settings,
           ...(id !== "plex" && published.length ? { publishedAddresses: published } : {}),
-          ...((state.config.frontendPorts?.[id!] ?? descriptor.defaultPort)
-            ? { port: state.config.frontendPorts?.[id!] ?? descriptor.defaultPort }
-            : {}),
+          ...(storedPort ? { port: storedPort } : {}),
         });
       }
       const entries =
@@ -4577,10 +4590,15 @@ export function createFakeServer(opts: FakeOptions = {}) {
           }
           if (settings.appIcon == null) delete settings.appIcon;
         }
+        if (id === "vela" && typeof port !== "number") {
+          delete settings.serveOnMainPort;
+        }
         entry.settings = settings;
         if (typeof port === "number") {
           (state.config.frontendPorts ??= {})[id!] = port;
           if (id === "plex") state.config.server.port = port;
+        } else if (state.config.frontendPorts) {
+          delete state.config.frontendPorts[id!];
         }
         return json({ ok: true });
       }
@@ -4687,6 +4705,18 @@ export function createFakeServer(opts: FakeOptions = {}) {
       case "GET /bootstrap":
       case "GET /health":
         return json(state.boot);
+      case "GET /server/console-listener": {
+        const mainPort = state.config.server.port ?? 32400;
+        const configuredPort = state.config.server.consolePort ?? 0;
+        const disableOnMain = Boolean(state.config.server.disableConsoleOnMainPort);
+        return json({
+          configuredPort,
+          activePort: configuredPort > 0 && configuredPort !== mainPort ? configuredPort : 0,
+          mainPort,
+          onMainPort: configuredPort <= 0 || !disableOnMain,
+          fallback: false,
+        });
+      }
       case "GET /dashboard":
         return json(dashboard());
       case "GET /indexer-usage":

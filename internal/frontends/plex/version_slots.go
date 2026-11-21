@@ -24,16 +24,62 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 	now := s.now()
 	pin := s.playIDs.pinned(ik, ps != nil, now)
 	selected := pin.selected
-	if selected == 0 {
-		selected = int64(t.Key)
-		if ps == nil && !info.Estimated && !(len(versions) > 0 && versions[0].Remembered) {
-			if _, releaseID, ok := s.resumedTracks(ctx, pr, t); ok {
+	var (
+		resumedInfo     frontend.MediaInfo
+		resumedRel      frontend.Release
+		resumedSelector string
+		hasResumed      bool
+		slotInfo        = info
+		infoTarget      int64
+	)
+	if ps != nil {
+		if selected == 0 {
+			selected = int64(t.Key)
+			if ps.Resolution != nil {
 				for _, v := range versions {
-					if v.Release.ID == releaseID {
+					if (ps.Resolution.Release.ID != "" && v.Release.ID == ps.Resolution.Release.ID) ||
+						(!frontend.IsAutoVersionSelector(ps.Resolution.VersionSelector) && v.ID == ps.Resolution.VersionSelector) {
 						selected = s.variantMediaID(t, v)
 						break
 					}
 				}
+			}
+		}
+		infoTarget = selected
+	} else {
+		resumedInfo, resumedRel, resumedSelector, hasResumed = s.resumedVersion(ctx, pr, t)
+		if hasResumed {
+			slotInfo = resumedInfo
+			explicitSlot := frontend.IsExplicitVersionSlotSelector(resumedSelector)
+			if len(versions) > 0 && versions[0].Remembered && (versions[0].Release.ID == resumedRel.ID || !explicitSlot) {
+				infoTarget = int64(t.Key)
+			} else {
+				for _, v := range versions {
+					if resumedRel.ID != "" && v.Release.ID == resumedRel.ID {
+						infoTarget = s.variantMediaID(t, v)
+						break
+					}
+				}
+				if infoTarget == 0 && explicitSlot {
+					for _, v := range versions {
+						if v.ID == resumedSelector {
+							infoTarget = s.variantMediaID(t, v)
+							break
+						}
+					}
+				}
+				if infoTarget == 0 && !explicitSlot {
+					infoTarget = int64(t.Key)
+				}
+			}
+		} else if !info.Estimated && info.Video() != nil {
+			infoTarget = int64(t.Key)
+		}
+		if selected == 0 {
+			if infoTarget != 0 && !(len(versions) > 0 && versions[0].Remembered) {
+				selected = infoTarget
+			} else {
+				selected = int64(t.Key)
 			}
 		}
 	}
@@ -45,18 +91,35 @@ func (s *Server) slotMedia(ctx context.Context, pr *Request, t *frontend.Title, 
 	}
 	for _, v := range versions {
 		id := s.variantMediaID(t, v)
-		// A stopped session's persisted probe is just as authoritative as
-		// a live probe for the selected slot; placeholders retain their IDs.
-		if id == selected && (ps != nil || !info.Estimated && info.Video() != nil) {
-			claimed := v.Info
-			v.Info = info
+		claimed := v.Info
+		appliedSlotProbe := false
+		// A stopped session's persisted probe belongs only to the version
+		// that played; never stamp an explicit non-Auto pick onto Auto.
+		if id == infoTarget && (ps != nil || (!slotInfo.Estimated && slotInfo.Video() != nil)) {
+			v.Info = slotInfo
+			appliedSlotProbe = !slotInfo.Estimated && slotInfo.Video() != nil
 			if ps != nil && ps.Resolution != nil && (ps.Resolution.Release.Name != "" || ps.Resolution.Release.Info.Height > 0) {
 				v.Release = ps.Resolution.Release
-				if v.Auto {
-					v.Label = probedAutoTitle(v.Release, claimed, info)
-				} else {
-					v.Label = strings.TrimPrefix(probedAutoTitle(v.Release, claimed, info), "Auto · ")
+			} else if ps == nil && hasResumed && (resumedRel.Name != "" || resumedRel.Info.Height > 0) {
+				if v.Release.ID == "" || strings.HasPrefix(v.Release.ID, frontend.VersionSelectorPrefix) || v.Release.ID == resumedRel.ID {
+					v.Release = resumedRel
 				}
+			}
+		} else if ps == nil && v.Auto && v.Info.Estimated && infoTarget != int64(t.Key) {
+			if wp, ok := s.playback().(frontend.WarmProber); ok && pr != nil && pr.User != nil {
+				if warm, ok := wp.WarmProbeInfo(pr.User, caps, t.Key); ok && !warm.Estimated && warm.Video() != nil {
+					v.Info = warm
+					appliedSlotProbe = true
+				}
+			}
+		}
+		if !v.Info.Estimated && v.Info.Video() != nil {
+			if v.Info.Size > 0 && v.Release.Size <= 0 {
+				v.Release.Size = v.Info.Size
+			}
+			bareLabel := v.Label == "" || !strings.Contains(v.Label, " · ")
+			if appliedSlotProbe || bareLabel || probeDisagrees(claimed, v.Info) {
+				v.Label = probedVariantTitle(v.Auto, v.Release, claimed, v.Info)
 			}
 		}
 		v.Info = variantInfoForClient(v.Info, caps)

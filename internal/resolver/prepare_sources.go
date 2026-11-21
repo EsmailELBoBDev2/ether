@@ -223,33 +223,36 @@ func (s *Service) cachePreparedSources(title *core.Title, byID map[string]core.R
 	if title != nil {
 		key := searchCacheKey(searchRequestFor(title))
 		s.mu.Lock()
+		cacheChanged := false
 		if e, ok := s.searchCache[key]; ok {
 			updated := make([]core.Release, len(e.results))
 			copy(updated, e.results)
-			changed := false
 			for i := range updated {
 				if p, ok := byID[updated[i].ID]; ok {
 					if updated[i].InfoHash == "" && p.InfoHash != "" {
 						updated[i].InfoHash = p.InfoHash
-						changed = true
+						cacheChanged = true
 					}
 					if updated[i].MagnetURL == "" && p.MagnetURL != "" {
 						updated[i].MagnetURL = p.MagnetURL
-						changed = true
+						cacheChanged = true
 					}
 					if !updated[i].Private && p.Private {
 						updated[i].Private = true
 						updated[i].MagnetURL = p.MagnetURL
-						changed = true
+						cacheChanged = true
 					}
 				}
 			}
-			if changed {
+			if cacheChanged {
 				e.results = updated
 				s.searchCache[key] = e
 			}
 		}
 		s.mu.Unlock()
+		if cacheChanged {
+			s.InvalidateDetailVariants()
+		}
 	}
 	c := &s.con
 	c.mu.Lock()

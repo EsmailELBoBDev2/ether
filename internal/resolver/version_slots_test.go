@@ -5,8 +5,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
+	"github.com/braedonsaunders/ether/internal/store"
 )
 
 // A configured menu is a settings contract, not a projection of discovery.
@@ -235,5 +237,135 @@ func TestColdVersionSlotsPlaceholderHasNoPresumedAudioLanguage(t *testing.T) {
 		if audio.Language != "" {
 			t.Fatalf("slot %d cold placeholder claimed audio language %q, want empty", i, audio.Language)
 		}
+	}
+}
+
+func TestVersionSlotsExplicitNonAutoPlayStaysInOwnSlot(t *testing.T) {
+	ctx := context.Background()
+	cfg := testCfg()
+	cfg.Resolver.SameQualityAlternatives = 0
+	cfg.Resolver.OfferHigherVersions = true
+	cfg.Resolver.AlternativesPerResolution = true
+	cfg.Quality.Default = "hd"
+	cfg.Quality.Profiles = []core.QualityProfile{{Name: "hd", MaxHeight: 1080}}
+
+	rels := []core.Release{
+		rel("rel-1080", "The.Signal.1999.1080p.WEB-DL.DDP5.1.H.264-FLUX", 4096),
+		rel("rel-4k-a", "The.Signal.1999.2160p.WEB-DL.DV.DDP5.1.HEVC-TOP", 9216),
+		rel("rel-4k-b", "The.Signal.1999.2160p.WEB-DL.HDR10.DDP5.1.HEVC-SECOND", 8192),
+	}
+	idx := &fakeIndexer{releases: rels}
+	db := store.OpenTest(t)
+	svc := New(idx, fakeHealth{}, db, cfg, Options{})
+	defer svc.Close()
+
+	user := &core.User{ID: 7, Username: "viewer"}
+	req := core.ResolveRequest{Title: matrixTitle(), Client: appleTVCaps(), User: user}
+	primeSearchCache(t, svc, req.Client)
+
+	slot4K := versionSlot{Kind: "tier", Height: 2160}.id()
+
+	// Explicit non-Auto play of rel-4k-b (<5%, no remembered choice):
+	// Auto stays on rel-1080, 4K stays pinned to rel-4k-b (not refilled with rel-4k-a).
+	playedReq := req
+	playedReq.PlayedRelease = "rel-4k-b"
+	playedReq.PlayedSelector = slot4K
+	playedReq.PlayedReleaseRecord = &rels[2]
+	slots, err := svc.VersionSlots(ctx, playedReq, core.MaxVariants, true)
+	if err != nil || len(slots) < 2 {
+		t.Fatalf("VersionSlots = %d, %v", len(slots), err)
+	}
+	if slots[0].Release.ID != "rel-1080" {
+		t.Fatalf("Auto was hijacked by explicit 4K pick: got %s, want rel-1080", slots[0].Release.ID)
+	}
+	var got4K string
+	for _, s := range slots[1:] {
+		if s.ID == slot4K {
+			got4K = s.Release.ID
+		}
+	}
+	if got4K != "rel-4k-b" {
+		t.Fatalf("4K slot refilled with %q, want played release rel-4k-b", got4K)
+	}
+	pick := playedReq
+	pick.Prefer, pick.PreferredOnly = slot4K, true
+	if res, err := svc.Resolve(ctx, pick); err != nil || res == nil || res.Release.ID != "rel-4k-b" {
+		t.Fatalf("Resolve(slot4K) = %+v, %v; want rel-4k-b", res, err)
+	}
+
+	// Cold search cache with PlayedReleaseRecord still keeps rel-4k-b in 4K slot.
+	svcCold := New(&fakeIndexer{}, fakeHealth{}, db, cfg, Options{})
+	defer svcCold.Close()
+	coldSlots, err := svcCold.VersionSlots(ctx, playedReq, core.MaxVariants, true)
+	if err != nil {
+		t.Fatalf("cold VersionSlots: %v", err)
+	}
+	var cold4K string
+	for _, s := range coldSlots {
+		if s.ID == slot4K {
+			cold4K = s.Release.ID
+		}
+	}
+	if cold4K != "rel-4k-b" {
+		t.Fatalf("cold 4K slot = %q, want rel-4k-b", cold4K)
+	}
+
+	// When remembered choice (≥5% watch) promotes rel-4k-b into Auto, 4K slot
+	// must NOT be refilled with unprobed rel-4k-a (dedupe folds the duplicate).
+	if err := svc.RecordViewerChoice(ctx, user.ID, req.Title, slot4K, rels[2], nil); err != nil {
+		t.Fatal(err)
+	}
+	remSlots, err := svc.VersionSlots(ctx, playedReq, core.MaxVariants, true)
+	if err != nil || len(remSlots) == 0 {
+		t.Fatalf("remembered VersionSlots = %d, %v", len(remSlots), err)
+	}
+	if !remSlots[0].Remembered || remSlots[0].Release.ID != "rel-4k-b" {
+		t.Fatalf("Auto after remembered choice = %+v, want Remembered rel-4k-b", remSlots[0])
+	}
+	for _, s := range remSlots[1:] {
+		if s.ID == slot4K || s.Release.ID == "rel-4k-a" {
+			t.Fatalf("remembered 4K slot was refilled instead of folded: %+v", s)
+		}
+	}
+}
+
+func TestDetailVariantCacheIgnoresVolatileTitleFieldsAndRefreshKeepsConcrete(t *testing.T) {
+	ctx := context.Background()
+	cfg := testCfg()
+	cfg.Resolver.SameQualityAlternatives = 1
+	cfg.Resolver.OfferHigherVersions = true
+	idx := &fakeIndexer{releases: variantReleases()}
+	svc := New(idx, fakeHealth{}, nil, cfg, Options{})
+	defer svc.Close()
+
+	baseTitle := matrixTitle()
+	req := core.ResolveRequest{Title: baseTitle, Client: appleTVCaps()}
+	primeSearchCache(t, svc, req.Client)
+
+	warm, err := svc.VersionSlots(ctx, req, core.MaxVariants, true)
+	if err != nil || len(warm) < 2 || warm[0].Release.ID == warm[0].ID {
+		t.Fatalf("warm VersionSlots = %+v, %v", warm, err)
+	}
+
+	// Non-ranking presentation/enrichment fields on Title must not bust the detail-variant cache.
+	mutated := *baseTitle
+	mutated.Summary = "Updated synopsis after enrichment"
+	mutated.UpdatedAt = time.Now().Add(time.Minute)
+	mutated.Rating = 9.1
+	mutated.Popularity = 1234.5
+	req2 := core.ResolveRequest{Title: &mutated, Client: appleTVCaps()}
+	localCtx := core.WithLocalResponse(ctx)
+
+	got, err := svc.VersionSlots(localCtx, req2, core.MaxVariants, true)
+	if err != nil || len(got) != len(warm) || got[0].Release.ID != warm[0].Release.ID {
+		t.Fatalf("volatile Title fields missed concrete cache: got %+v, want %s", got, warm[0].Release.ID)
+	}
+
+	// RefreshDetailVariants marks stale without wiping concrete releases back
+	// to cold placeholders on the immediately following LocalResponse read.
+	svc.RefreshDetailVariants()
+	stale, err := svc.VersionSlots(localCtx, req2, core.MaxVariants, true)
+	if err != nil || len(stale) != len(warm) || stale[0].Release.ID != warm[0].Release.ID {
+		t.Fatalf("RefreshDetailVariants dropped back to placeholders: got %+v, want %s", stale, warm[0].Release.ID)
 	}
 }

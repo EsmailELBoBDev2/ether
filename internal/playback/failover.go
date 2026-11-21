@@ -57,8 +57,18 @@ func (m *Manager) preparedResolution(ctx context.Context, s *session, profile co
 	}
 	if res == nil {
 		res = m.resumeResolution(ctx, s.ident.userID, s.ident.key, profile, s.caps, original)
-		if res != nil && prefer != "" && !res.MatchesVersion(prefer) {
-			res = nil // a picked version wins over the remembered release
+		if res != nil {
+			if prefer != "" && !isAutoVersionSelector(prefer) {
+				if !res.MatchesVersion(prefer) {
+					res = nil // a picked version wins over the remembered release
+				}
+			} else if core.IsExplicitVersionSlotSelector(res.VersionSelector) {
+				// An explicit non-Auto slot pick stays behind its own version slot
+				// instead of replacing Auto, unless promoted by a remembered choice.
+				if reader, ok := m.deps.Resolver.(viewerChoiceReader); !ok || s.title == nil || reader.ActiveViewerChoiceRelease(core.ResolveRequest{Title: s.title, Client: s.caps, User: &s.user, Prefer: prefer}) != res.Release.ID {
+					res = nil
+				}
+			}
 		}
 		if res != nil {
 			fromResume = true
@@ -2127,14 +2137,16 @@ func (m *Manager) resumeResolution(ctx context.Context, userID int64, key core.R
 		return nil
 	}
 	m.log.Debug("reusing stored release", "key", key, "release", rec.release.Name)
-	return &core.Resolution{Title: key, Release: rec.release, NZB: nzb, ResolvedAt: rec.updatedAt}
+	return &core.Resolution{Title: key, Release: rec.release, NZB: nzb, ResolvedAt: rec.updatedAt, VersionSelector: rec.versionSelector}
 }
 
 // saveResume remembers the release now serving a session.
 func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 	info := g.infoSnapshot()
 	if g.res != nil {
-		m.noteReleaseProbeMemory(g.res.Release, g.res.NZB, info)
+		if _, _, ok := m.noteReleaseProbeMemory(g.res.Release, g.res.NZB, info); ok && m.deps.OnVersionProbed != nil {
+			m.deps.OnVersionProbed(s.ident.key, g.res.Release)
+		}
 	}
 	if s.ident.key.IsPluginKey() {
 		m.noteItemProbeMemory(s.ident.key, info)
@@ -2161,12 +2173,21 @@ func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 		}
 		return
 	}
+	selector := ""
+	if s.prefer != "" && !isAutoVersionSelector(s.prefer) && g.res.MatchesVersion(s.prefer) {
+		if g.res.VersionSelector != "" && !isAutoVersionSelector(g.res.VersionSelector) {
+			selector = g.res.VersionSelector
+		} else {
+			selector = s.prefer
+		}
+	}
 	rec := resumeRecord{
 		userID:           s.ident.userID,
 		key:              s.ident.key,
 		release:          g.res.Release,
 		profile:          s.profileKey,
 		originalLanguage: s.originalLanguage,
+		versionSelector:  selector,
 		size:             g.src.Size(),
 		duration:         info.Duration,
 		updatedAt:        m.now(),

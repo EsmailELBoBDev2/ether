@@ -415,9 +415,10 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 		// surfaceExperience.Item replaces this list with the shared artwork
 		// selection. That selection is the composited poster when overlays are on.
 		var (
-			resumedInfo    core.MediaInfo
-			resumedRelease string
-			hasResumed     bool
+			resumedInfo     core.MediaInfo
+			resumedRel      core.Release
+			resumedSelector string
+			hasResumed      bool
 		)
 		if a.playback != nil {
 			caps := core.ClientCaps{PreserveEmptyVideoCodecs: policy.NativePlaybackCapabilities, Protocol: protocol, Product: device.Product, Platform: device.Platform, DeviceName: device.DeviceName, ClientID: device.ID, Version: device.Version}
@@ -427,9 +428,9 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			if a.cfg != nil {
 				caps = resolver.ApplyClientRulesForTitle(a.cfg.Read().Quality, caps, u, title)
 			}
-			resumedInfo, resumedRelease, hasResumed = a.playback.ResumedTracks(ctx, u, title.Key, caps)
+			resumedInfo, resumedRel, resumedSelector, hasResumed = a.playback.ResumedVersion(ctx, u, title.Key, caps)
 			info := resumedInfo
-			if !hasResumed {
+			if !hasResumed || !core.IsAutoVersionSelector(resumedSelector) {
 				info = a.playback.Estimate(ctx, title, caps)
 			}
 			markerInfo := experience.MarkerMedia(u, device, title.Key, info, a.playback.SessionFor)
@@ -457,20 +458,28 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 				return frontend.ItemDetail{}, err
 			}
 			for _, version := range versions {
-				if hasResumed && (version.ID == resumedRelease || (version.Auto && resumedRelease != "")) {
-					merged := core.CloneMediaInfo(resumedInfo)
-					merged.Estimated = false
-					if len(version.Info.Chapters) > 0 && len(merged.Chapters) == 0 {
-						merged.Chapters = version.Info.Chapters
+				if hasResumed {
+					matched := (resumedRel.ID != "" && (version.Release.ID == resumedRel.ID || version.ID == resumedRel.ID)) ||
+						(!core.IsAutoVersionSelector(resumedSelector) && version.ID == resumedSelector) ||
+						(version.Auto && core.IsAutoVersionSelector(resumedSelector))
+					if matched {
+						merged := core.CloneMediaInfo(resumedInfo)
+						merged.Estimated = false
+						if len(version.Info.Chapters) > 0 && len(merged.Chapters) == 0 {
+							merged.Chapters = version.Info.Chapters
+						}
+						version.Info = merged
+						if merged.Size > 0 && version.Release.Size <= 0 {
+							version.Release.Size = merged.Size
+						}
 					}
-					version.Info = merged
 				}
 				result.Versions = append(result.Versions, frontendVersion(title, version))
 			}
 			// When Auto already has real probed tracks (e.g. from the durable
 			// content-ID probe cache or vault), surface them as the detail's
 			// verified tracks instead of falling back to an estimate.
-			if !hasResumed && result.TracksEstimated && len(versions) > 0 && !versions[0].Info.Estimated && len(versions[0].Info.Streams) > 0 {
+			if result.TracksEstimated && len(versions) > 0 && !versions[0].Info.Estimated && len(versions[0].Info.Streams) > 0 {
 				probed := core.CloneMediaInfo(versions[0].Info)
 				if a.subtitles != nil {
 					probed.Streams = append(probed.Streams, (subtitleSurface{app: a}).CachedSidecars(ctx, title, u, probed.Streams)...)

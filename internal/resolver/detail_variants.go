@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/gob"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/braedonsaunders/ether/internal/core"
@@ -22,23 +23,138 @@ type detailVariantSnapshot struct {
 	pending  bool
 }
 
+type detailVariantTitleKey struct {
+	Key       core.RatingKey
+	ShowKey   core.RatingKey
+	Runtime   time.Duration
+	Language  string
+	Countries []string
+	Search    core.SearchRequest
+}
+
+type detailVariantUserKey struct {
+	ID                int64
+	Username          string
+	IsOwner           bool
+	AudioLanguages    []string
+	PreferOriginal    bool
+	SubtitleLanguages []string
+}
+
+type detailVariantCacheKey struct {
+	Title          detailVariantTitleKey
+	User           *detailVariantUserKey
+	Client         core.ClientCaps
+	PlayedRelease  string
+	PlayedSelector string
+	Prefer         string
+	Exclude        []string
+	Limit          int
+	Slots          bool
+}
+
+func (s *Service) detailVariantKey(req core.ResolveRequest, limit int, slots bool) ([32]byte, error) {
+	ck := detailVariantCacheKey{
+		Title: detailVariantTitleKey{
+			Key:       req.Title.Key,
+			ShowKey:   req.Title.ShowKey,
+			Runtime:   req.Title.Runtime,
+			Language:  req.Title.Language,
+			Countries: req.Title.Countries,
+			Search:    searchRequestFor(req.Title),
+		},
+		Client:         req.Client,
+		PlayedRelease:  req.PlayedRelease,
+		PlayedSelector: req.PlayedSelector,
+		Prefer:         req.Prefer,
+		Exclude:        req.Exclude,
+		Limit:          limit,
+		Slots:          slots,
+	}
+	if req.User != nil {
+		ck.User = &detailVariantUserKey{
+			ID:                req.User.ID,
+			Username:          req.User.Username,
+			IsOwner:           req.User.IsOwner,
+			AudioLanguages:    req.User.AudioLanguages,
+			PreferOriginal:    req.User.PreferOriginal,
+			SubtitleLanguages: req.User.SubtitleLanguages,
+		}
+	}
+	var keyBuf bytes.Buffer
+	if err := gob.NewEncoder(&keyBuf).Encode(ck); err != nil {
+		return [32]byte{}, err
+	}
+	encoded, err := json.Marshal([]any{keyBuf.Bytes(), s.qualityCfg(), s.resolverCfg()})
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(encoded), nil
+}
+
+func (s *Service) detailVariantTTL(versions []core.ReleaseVariant) time.Duration {
+	hasConcrete := false
+	for _, v := range versions {
+		if v.Release.ID != "" && !strings.HasPrefix(v.Release.ID, core.VersionSelectorPrefix) {
+			hasConcrete = true
+			break
+		}
+	}
+	if !hasConcrete {
+		return 15 * time.Second
+	}
+	ttl := 5 * time.Minute
+	if sttl := s.searchTTL(); sttl > 0 && sttl < ttl {
+		ttl = sttl
+	}
+	if ttl < 15*time.Second {
+		ttl = 15 * time.Second
+	}
+	return ttl
+}
+
+func (s *Service) cacheDetailVariants(req core.ResolveRequest, limit int, slots bool, versions []core.ReleaseVariant) {
+	if s == nil || req.Title == nil || len(versions) == 0 {
+		return
+	}
+	key, err := s.detailVariantKey(req, limit, slots)
+	if err != nil {
+		return
+	}
+	now := s.now()
+	ttl := s.detailVariantTTL(versions)
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.bgClosed {
+		return
+	}
+	if s.detailVariants == nil {
+		s.detailVariants = make(map[[32]byte]*detailVariantSnapshot)
+	}
+	if _, exists := s.detailVariants[key]; !exists && len(s.detailVariants) >= 128 {
+		for k, v := range s.detailVariants {
+			if !v.pending && !now.Before(v.until) {
+				delete(s.detailVariants, k)
+			}
+		}
+		if len(s.detailVariants) >= 128 {
+			return
+		}
+	}
+	s.detailVariants[key] = &detailVariantSnapshot{
+		variants: cloneDetailVariants(versions),
+		until:    now.Add(ttl),
+	}
+}
+
 func (s *Service) detailVariantRead(req core.ResolveRequest, limit int, slots bool) ([]core.ReleaseVariant, error) {
 	if req.Title == nil {
 		return nil, nil
 	}
-	// Gob retains runtime-only identity facts (including alternative titles)
-	// that JSON intentionally omits. Serialize once to own the request's slices before starting a worker. The
-	// key includes viewer/client/profile facts so snapshots never cross policy.
-	var request bytes.Buffer
-	err := gob.NewEncoder(&request).Encode(req)
+	key, err := s.detailVariantKey(req, limit, slots)
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal([]any{request.Bytes(), limit, slots, s.qualityCfg(), s.resolverCfg()})
-	if err != nil {
-		return nil, err
-	}
-	key := sha256.Sum256(encoded)
 	now := s.now()
 	s.bgMu.Lock()
 	entry := s.detailVariants[key]
@@ -47,14 +163,26 @@ func (s *Service) detailVariantRead(req core.ResolveRequest, limit int, slots bo
 		s.bgMu.Unlock()
 		return result, nil
 	}
+	var stale []core.ReleaseVariant
+	if entry != nil && len(entry.variants) > 0 {
+		stale = cloneDetailVariants(entry.variants)
+	}
 	if s.bgClosed || (entry != nil && entry.pending) || s.detailVariantWorkers >= 2 {
 		s.bgMu.Unlock()
-		return nil, nil
+		return stale, nil
+	}
+	// Gob retains runtime-only identity facts (including alternative titles)
+	// that JSON intentionally omits. Serialize once to own the request's slices
+	// before starting a worker.
+	var request bytes.Buffer
+	if err := gob.NewEncoder(&request).Encode(req); err != nil {
+		s.bgMu.Unlock()
+		return stale, err
 	}
 	if s.detailVariants == nil {
 		s.detailVariants = make(map[[32]byte]*detailVariantSnapshot)
 	}
-	if len(s.detailVariants) >= 128 {
+	if entry == nil && len(s.detailVariants) >= 128 {
 		for k, v := range s.detailVariants {
 			if !v.pending && !now.Before(v.until) {
 				delete(s.detailVariants, k)
@@ -62,22 +190,29 @@ func (s *Service) detailVariantRead(req core.ResolveRequest, limit int, slots bo
 		}
 		if len(s.detailVariants) >= 128 {
 			s.bgMu.Unlock()
-			return nil, nil
+			return stale, nil
 		}
 	}
-	entry = &detailVariantSnapshot{pending: true}
-	s.detailVariants[key] = entry
+	if entry == nil {
+		entry = &detailVariantSnapshot{pending: true}
+		s.detailVariants[key] = entry
+	} else {
+		entry.pending = true
+	}
 	s.detailVariantWorkers++
 	s.bgWG.Add(1)
 	s.bgMu.Unlock()
 	var owned core.ResolveRequest
 	if err := gob.NewDecoder(bytes.NewReader(request.Bytes())).Decode(&owned); err != nil {
 		s.bgMu.Lock()
-		delete(s.detailVariants, key)
+		entry.pending = false
+		if len(entry.variants) == 0 {
+			delete(s.detailVariants, key)
+		}
 		s.detailVariantWorkers--
 		s.bgMu.Unlock()
 		s.bgWG.Done()
-		return nil, err
+		return stale, err
 	}
 	go func() {
 		defer s.bgWG.Done()
@@ -90,18 +225,19 @@ func (s *Service) detailVariantRead(req core.ResolveRequest, limit int, slots bo
 		} else {
 			versions, err = s.variants(ctx, owned, limit)
 		}
+		ttl := s.detailVariantTTL(versions)
 		s.bgMu.Lock()
 		entry.pending = false
 		s.detailVariantWorkers--
 		if err == nil {
 			entry.variants = cloneDetailVariants(versions)
-			entry.until = s.now().Add(15 * time.Second)
-		} else {
+			entry.until = s.now().Add(ttl)
+		} else if len(entry.variants) == 0 {
 			delete(s.detailVariants, key)
 		}
 		s.bgMu.Unlock()
 	}()
-	return nil, nil
+	return stale, nil
 }
 
 func cloneDetailVariants(in []core.ReleaseVariant) []core.ReleaseVariant {
@@ -117,9 +253,24 @@ func cloneDetailVariants(in []core.ReleaseVariant) []core.ReleaseVariant {
 	return out
 }
 
+// RefreshDetailVariants marks completed detail-variant snapshots stale so the
+// next read keeps concrete releases immediately (allowing callers to overlay
+// freshly stored probes) while scheduling a background refresh.
+func (s *Service) RefreshDetailVariants() {
+	if s == nil {
+		return
+	}
+	s.bgMu.Lock()
+	for _, v := range s.detailVariants {
+		if !v.pending {
+			v.until = time.Time{}
+		}
+	}
+	s.bgMu.Unlock()
+}
+
 // InvalidateDetailVariants drops completed cached detail-variant snapshots so
-// newly probed container tracks and any updated ranking order appear on the
-// next detail read.
+// policy, pin, viewer-choice, or search-cache updates appear on the next read.
 func (s *Service) InvalidateDetailVariants() {
 	if s == nil {
 		return

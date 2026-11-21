@@ -50,7 +50,28 @@ func (s *Service) VersionSlots(ctx context.Context, req core.ResolveRequest, lim
 		// remove or renumber a choice while background discovery fills them.
 		return s.versionSlots(ctx, req, limit, false)
 	}
-	return s.versionSlots(ctx, req, limit, labels)
+	versions, err := s.versionSlots(ctx, req, limit, labels)
+	if err == nil && labels && len(versions) > 0 {
+		s.cacheDetailVariants(req, limit, true, versions)
+	}
+	return versions, err
+}
+
+func (s *Service) playedReleaseForSlots(req core.ResolveRequest) (core.Release, bool) {
+	if req.PlayedRelease == "" {
+		return core.Release{}, false
+	}
+	var rel core.Release
+	var ok bool
+	if req.PlayedReleaseRecord != nil && req.PlayedReleaseRecord.ID == req.PlayedRelease {
+		rel, ok = *req.PlayedReleaseRecord, true
+	} else {
+		rel, ok = s.LookupRelease(req.PlayedRelease)
+	}
+	if !ok || rel.ID == "" || s.isBadRelease(rel) || (req.Title != nil && s.rejectedFor(req.Title.Key, rel)) {
+		return core.Release{}, false
+	}
+	return rel, true
 }
 
 func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, limit int, labels bool) ([]core.ReleaseVariant, error) {
@@ -70,22 +91,27 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 	var candidates []candidate
 	var auto core.Release
 	var autoRemembered bool
+	var titleVC *ViewerChoice
 	ownerPin, hasOwnerPin := s.PinFor(req.Title.Key)
 	if req.Client.Download {
 		hasOwnerPin = false
 	}
 	searchWarm := false
 	if labels {
-		titleVC := s.viewerTitleChoiceForResolve(req, nil)
+		titleVC = s.viewerTitleChoiceForResolve(req, nil)
 		showVC := s.viewerShowChoiceForResolve(req)
 		results, ok := s.peekSearchCache(searchCacheKey(searchRequestFor(req.Title)))
 		searchWarm = ok
+		playedRel, hasPlayed := s.playedReleaseForSlots(req)
 		if !ok {
 			if titleVC != nil {
 				results = withRelease(results, titleVC.Release)
 			}
 			if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
 				results = withRelease(results, ownerPin.Release)
+			}
+			if hasPlayed {
+				results = withRelease(results, playedRel)
 			}
 		}
 		if len(results) > 0 {
@@ -96,6 +122,9 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 			}
 			if titleVC != nil {
 				results = withRelease(results, titleVC.Release)
+			}
+			if hasPlayed {
+				results = withRelease(results, playedRel)
 			}
 			ranked, _, err := s.rankCandidatesLocal(ctx, req, searchRequestFor(req.Title), profile, results, nil, pinID, true)
 			if err == nil {
@@ -114,7 +143,7 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 			}
 		}
 	}
-	picks := slotChoices(slots, candidates, auto)
+	picks := slotPicks(slots, candidates, auto, req, titleVC)
 	out := make([]core.ReleaseVariant, len(slots))
 	wanted := wantedAudio(profile, req.User, s.catalogLanguage())
 	for i, slot := range slots {
@@ -134,6 +163,9 @@ func (s *Service) versionSlots(ctx context.Context, req core.ResolveRequest, lim
 			placeholder = false
 			if probed, ok := s.probedMediaFor(r); ok {
 				info = probed
+				if r.Size <= 0 && info.Size > 0 {
+					r.Size = info.Size
+				}
 			} else {
 				info = estimateVariantInfo(req.Title, r, wanted)
 			}
@@ -308,20 +340,33 @@ func (s *Service) slotAutoWithSource(req core.ResolveRequest, strict, pool []can
 	if pin, _ := s.pinForResolve(autoReq); pin != nil {
 		return pin.Release, false
 	}
-	for _, c := range strict {
-		if c.rel.ID == req.PlayedRelease {
-			return c.rel, false
+	if req.PlayedRelease != "" && !core.IsExplicitVersionSlotSelector(req.PlayedSelector) {
+		for _, c := range strict {
+			if c.rel.ID == req.PlayedRelease {
+				return c.rel, false
+			}
 		}
 	}
-	if len(strict) > 0 {
-		return strict[0].rel, false
+	skipExplicit := ""
+	if req.PlayedRelease != "" && core.IsExplicitVersionSlotSelector(req.PlayedSelector) {
+		skipExplicit = req.PlayedRelease
+	}
+	for _, c := range strict {
+		if skipExplicit != "" && c.rel.ID == skipExplicit {
+			continue
+		}
+		return c.rel, false
 	}
 	return core.Release{}, false
 }
 
 func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []core.Release {
+	return slotPicks(slots, ranked, auto, core.ResolveRequest{}, nil)
+}
+
+func slotPicks(slots []versionSlot, ranked []candidate, auto core.Release, req core.ResolveRequest, titleVC *ViewerChoice) []core.Release {
 	out := make([]core.Release, len(slots))
-	if len(ranked) == 0 {
+	if len(ranked) == 0 && auto.ID == "" {
 		return out
 	}
 	used := map[string]bool{}
@@ -340,6 +385,42 @@ func slotChoices(slots []versionSlot, ranked []candidate, auto core.Release) []c
 		if slot.Kind == "auto" && auto.ID != "" {
 			out[i] = auto
 			take(auto)
+			break
+		}
+	}
+	// Keep an explicitly played release behind its own version slot rather
+	// than refilling that slot with another (potentially unprobed) release.
+	// When a remembered choice moved into Auto from an explicit non-Auto slot,
+	// bind that original slot to the remembered release as well so admission
+	// stays consistent and dedupeVersionSlots folds the duplicate row.
+	if titleVC != nil && titleVC.Release.ID != "" && titleVC.Release.ID == auto.ID && titleVC.Selector != "" {
+		if target, ok := parseVersionSlot(titleVC.Selector); ok && target.Kind != "auto" {
+			for i, slot := range slots {
+				if slot == target {
+					out[i] = auto
+					break
+				}
+			}
+		}
+	} else if req.PlayedRelease != "" && core.IsExplicitVersionSlotSelector(req.PlayedSelector) {
+		if target, ok := parseVersionSlot(req.PlayedSelector); ok && target.Kind != "auto" {
+			for i, slot := range slots {
+				if slot != target || out[i].ID != "" {
+					continue
+				}
+				for _, c := range ranked {
+					if c.rel.ID == req.PlayedRelease && !used[c.rel.ID] && (c.rel.Size <= 0 || !sizes[c.rel.Size]) {
+						out[i] = c.rel
+						take(c.rel)
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+	for i, slot := range slots {
+		if out[i].ID != "" {
 			continue
 		}
 		for _, c := range ranked {

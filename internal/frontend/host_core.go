@@ -175,6 +175,24 @@ func WithLocalResponse(ctx context.Context) context.Context {
 	return core.WithLocalResponse(ctx)
 }
 
+// WithoutLocalResponse clears LocalResponse on ctx while preserving deadlines,
+// cancellation and other request values.
+func WithoutLocalResponse(ctx context.Context) context.Context {
+	return core.WithoutLocalResponse(ctx)
+}
+
+// IsAutoVersionSelector reports whether selector denotes the Auto slot (empty
+// or an encoded {"k":"auto"} configured selector).
+func IsAutoVersionSelector(selector string) bool {
+	return core.IsAutoVersionSelector(selector)
+}
+
+// IsExplicitVersionSlotSelector reports whether selector denotes a non-Auto
+// configured version slot (as opposed to Auto or a legacy concrete release ID).
+func IsExplicitVersionSlotSelector(selector string) bool {
+	return core.IsExplicitVersionSlotSelector(selector)
+}
+
 const IndexerPurposePlayback = core.IndexerPurposePlayback
 
 // WithIndexerPurpose tags ctx with the indexer usage purpose (for example

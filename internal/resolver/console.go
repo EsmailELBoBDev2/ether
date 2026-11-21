@@ -993,6 +993,7 @@ func (s *Service) Forget(ctx context.Context, t *core.Title) error {
 	}
 	delete(s.avail, int64(t.Key))
 	s.mu.Unlock()
+	s.InvalidateDetailVariants()
 	return s.forgetAvailability(ctx, t.Key)
 }
 

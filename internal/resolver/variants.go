@@ -59,12 +59,18 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 		hasOwnerPin = false
 	}
 	if !ok || len(results) == 0 {
-		if titleVC == nil {
+		playedRel, hasPlayed := s.playedReleaseForSlots(req)
+		if titleVC == nil && !hasPlayed {
 			return nil, nil
 		}
-		results = withRelease(nil, titleVC.Release)
+		if titleVC != nil {
+			results = withRelease(results, titleVC.Release)
+		}
 		if hasOwnerPin && !s.isBadRelease(ownerPin.Release) {
 			results = withRelease(results, ownerPin.Release)
+		}
+		if hasPlayed {
+			results = withRelease(results, playedRel)
 		}
 	}
 	// An owner pin that applies to this client is kept in the candidate pool,
@@ -76,6 +82,9 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	}
 	if titleVC != nil {
 		results = withRelease(results, titleVC.Release)
+	}
+	if playedRel, hasPlayed := s.playedReleaseForSlots(req); hasPlayed {
+		results = withRelease(results, playedRel)
 	}
 	// Auto uses the same preferences and hard rules as normal resolution.
 	strict, _, err := s.rankCandidatesLocal(ctx, req, sreq, profile, results, nil, pinID, true)
@@ -118,9 +127,11 @@ func (s *Service) variants(ctx context.Context, req core.ResolveRequest, max int
 	} else {
 		vs = pickVariants(req.Title, req.Client, profile, autoRel, pool, strict, s.sameQualityAlternatives(), max, allowTaller, wanted)
 	}
-	// A historical play must not put a now-rejected namesake back into Auto.
+	// A historical play must not put a now-rejected namesake back into Auto,
+	// and an explicit non-Auto version pick stays on its own entry rather than
+	// relabelling Auto.
 	played := req.PlayedRelease
-	if autoRemembered {
+	if autoRemembered || !core.IsAutoVersionSelector(req.PlayedSelector) {
 		played = ""
 	}
 	if played != "" {

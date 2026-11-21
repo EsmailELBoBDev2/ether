@@ -1,6 +1,11 @@
 package core
 
-import "context"
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+)
 
 // VersionAvailability classifies how quickly a version can start playback
 // without spending any indexer or provider searches.
@@ -133,3 +138,28 @@ const VersionSelectorPrefix = "ether-slot:v1:"
 // selector ({"k":"auto"}), so Auto-slot checks recognize it uniformly across
 // resolver, playback and frontends. Picked, Vela omits versionId.
 const KindAutoVersionID = VersionSelectorPrefix + "eyJrIjoiYXV0byJ9"
+
+// IsAutoVersionSelector reports whether selector denotes Auto (empty or an
+// encoded {"k":"auto"} configured version slot).
+func IsAutoVersionSelector(selector string) bool {
+	if selector == "" || selector == KindAutoVersionID {
+		return true
+	}
+	if !strings.HasPrefix(selector, VersionSelectorPrefix) || len(selector) > 256 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(selector, VersionSelectorPrefix))
+	if err != nil {
+		return false
+	}
+	var slot struct {
+		Kind string `json:"k"`
+	}
+	return json.Unmarshal(raw, &slot) == nil && slot.Kind == "auto"
+}
+
+// IsExplicitVersionSlotSelector reports whether selector denotes a non-Auto
+// configured version slot (as opposed to Auto or a legacy concrete release ID).
+func IsExplicitVersionSlotSelector(selector string) bool {
+	return strings.HasPrefix(selector, VersionSelectorPrefix) && !IsAutoVersionSelector(selector)
+}

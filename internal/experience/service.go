@@ -729,12 +729,7 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 	for offset := 0; ; {
 		filter := q.Filter
 		if expand {
-			filter = core.Filter{
-				CatalogueSources:  q.Filter.CatalogueSources,
-				CollectionMembers: q.Filter.CollectionMembers,
-				ExtraRules:        q.Filter.ExtraRules,
-				ExtraFallback:     q.Filter.ExtraFallback,
-			}
+			filter = scopedShowFilter(q.Filter, nil)
 		}
 		filter.Type = library.Type
 		if v.MaxContentRating != "" && (filter.MaxContentRating == "" || int(contentrating.EnforceLevelOf(v.MaxContentRating)) < int(contentrating.EnforceLevelOf(filter.MaxContentRating))) {
@@ -920,7 +915,40 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 }
 
 func plainItemFilter(f core.Filter) bool {
-	return f.Group == nil && !f.KnownAddedDate && len(f.ExcludeKeys) == 0 && f.Type == "" && len(f.Genres) == 0 && f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 && len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRuntime == 0 && f.MinRuntime == 0 && len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ContentRatings) == 0 && f.MaxContentRating == "" && f.Collection == 0 && f.Person == 0 && f.Studio == "" && f.FirstCharacter == "" && f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" && f.Query == ""
+	return f.Group == nil && !f.KnownAddedDate && f.IncludeKeys == nil && len(f.ExcludeKeys) == 0 && f.Type == "" && len(f.Genres) == 0 && f.YearFrom == 0 && f.YearTo == 0 && len(f.Years) == 0 && len(f.ExcludeYears) == 0 && len(f.ReleasedFilters) == 0 && f.MinRating == 0 && f.MaxRuntime == 0 && f.MinRuntime == 0 && len(f.Languages) == 0 && len(f.Countries) == 0 && len(f.ContentRatings) == 0 && f.MaxContentRating == "" && f.Collection == 0 && f.Person == 0 && f.Studio == "" && f.FirstCharacter == "" && f.NameStartsWith == "" && f.NameStartsWithOrGreater == "" && f.NameLessThan == "" && f.Query == ""
+}
+
+// filterHasLibraryScope reports whether f carries a library, tab, preview,
+// catalogue-source or collection scope that narrows the admitted series.
+func filterHasLibraryScope(f core.Filter) bool {
+	return len(f.ExtraRules) > 0 || (f.ExtraFallback != "" && f.ExtraFallback != "show") ||
+		len(f.TabRules) > 0 || (f.TabFallback != "" && f.TabFallback != "show") ||
+		len(f.PreviewRules) > 0 || (f.PreviewFallback != "" && f.PreviewFallback != "show") ||
+		(f.RuleVisibility != "" && f.RuleVisibility != "all") || f.ApplyCanonicalInPreview ||
+		len(f.CatalogueSources) > 0 || f.CollectionMembers != 0
+}
+
+// scopedShowFilter extracts the series-scoping fields of a library/tab filter
+// onto a TypeShow browse filter (with the viewer's content-rating cap when v
+// is non-nil).
+func scopedShowFilter(f core.Filter, v *core.User) core.Filter {
+	show := core.Filter{
+		Type:                    core.TypeShow,
+		RuleVisibility:          f.RuleVisibility,
+		ApplyCanonicalInPreview: f.ApplyCanonicalInPreview,
+		PreviewRules:            f.PreviewRules,
+		PreviewFallback:         f.PreviewFallback,
+		ExtraRules:              f.ExtraRules,
+		ExtraFallback:           f.ExtraFallback,
+		TabRules:                f.TabRules,
+		TabFallback:             f.TabFallback,
+		CatalogueSources:        f.CatalogueSources,
+		CollectionMembers:       f.CollectionMembers,
+	}
+	if v != nil {
+		show.MaxContentRating = v.MaxContentRating
+	}
+	return show
 }
 
 // plainRecursiveFilter is plainItemFilter for a recursive library listing:

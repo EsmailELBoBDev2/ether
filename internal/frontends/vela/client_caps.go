@@ -11,6 +11,11 @@ import (
 // Detail and Play build the same declaration with current network and owner rules.
 func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c client) (frontend.CapabilityResult, error) {
 	profile := caps.DeviceProfile{MaxStreamingBitrate: c.MaxBitrate, DirectPlayProfiles: []caps.DirectPlayProfile{{Type: "Video", Container: strings.Join(c.Containers, ","), VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}}
+	if containers := velaAudioContainers(c.Containers, c.AudioCodecs); len(containers) > 0 {
+		// Music and audiobooks: the declared audio codecs imply the
+		// audio-only containers this client plays as files.
+		profile.DirectPlayProfiles = append(profile.DirectPlayProfiles, caps.DirectPlayProfile{Type: "Audio", Container: strings.Join(containers, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")})
+	}
 	if c.HLS || c.MSE {
 		container := "mp4"
 		profile.TranscodingProfiles = []caps.TranscodingProfile{{Type: "Video", Protocol: "hls", Container: container, VideoCodec: strings.Join(c.VideoCodecs, ","), AudioCodec: strings.Join(c.AudioCodecs, ",")}}
@@ -38,4 +43,42 @@ func (i *instance) clientCapabilities(r *http.Request, v *frontend.Viewer, c cli
 		}
 	}
 	return result, err
+}
+
+// velaAudioContainers lists the audio-only file containers implied by a Vela
+// client's declared audio codecs, plus any audio containers it declared.
+func velaAudioContainers(containers, audioCodecs []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(names ...string) {
+		for _, n := range names {
+			if !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	for _, c := range containers {
+		switch strings.ToLower(c) {
+		case "flac", "mp3", "aac", "m4a", "m4b", "ogg", "wav":
+			add(strings.ToLower(c))
+		case "mp4":
+			add("m4a", "m4b", "mp4")
+		}
+	}
+	for _, a := range audioCodecs {
+		switch strings.ToLower(a) {
+		case "flac":
+			add("flac")
+		case "mp3":
+			add("mp3")
+		case "aac":
+			add("aac", "m4a", "m4b", "mp4")
+		case "opus", "vorbis":
+			add("ogg")
+		case "pcm", "pcm_s16le", "pcm_s24le":
+			add("wav")
+		}
+	}
+	return out
 }

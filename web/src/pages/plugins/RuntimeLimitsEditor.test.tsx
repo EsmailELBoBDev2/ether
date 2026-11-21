@@ -72,7 +72,7 @@ it("shows stored catalogue items against the plugin cap even when hosted limits 
     />,
   );
 
-  expect(await screen.findByText("1,250 of 2,000,000 stored")).toBeInTheDocument();
+  expect(await screen.findByText("1,250 stored (limit 2,000,000)")).toBeInTheDocument();
   const overrideInput = screen.getByLabelText("Override: Catalogue items");
   await waitFor(() => expect(overrideInput).not.toBeDisabled());
   expect(overrideInput).toHaveAttribute("placeholder", "2,000,000 (default)");

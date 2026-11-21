@@ -212,3 +212,23 @@ func TestApproximateSizeHintVsStrictSize(t *testing.T) {
 		t.Fatalf("grossly wrong approximate size err = %v, want ErrDigestMismatch wrapping ErrPluginAnswer", err)
 	}
 }
+
+// A release source that names an archive member (e.g. a Usenet release whose
+// planner rejects a missing Container.Member with core.ErrWrongContent) must
+// classify the mismatch as ErrPluginAnswer just like explicit release.file (#641).
+func TestOpenReleaseExplicitContainerMemberMismatchWrapsPluginAnswer(t *testing.T) {
+	deps := Deps{
+		OpenReleaseSource: func(context.Context, core.PlayableSource) (core.MediaSource, error) {
+			return nil, core.ErrWrongContent
+		},
+	}
+	src := core.PlayableSource{
+		ID:        "usenet-member",
+		Pattern:   PatternRelease,
+		Release:   &core.ReleaseHint{NZBURL: "https://idx.test/pack.nzb"},
+		Container: &core.ContainerRef{Format: "zip", Member: "Missing.rom"},
+	}
+	if _, err := Open(context.Background(), src, deps); !errors.Is(err, ErrPluginAnswer) || !errors.Is(err, core.ErrWrongContent) {
+		t.Fatalf("err = %v, want ErrPluginAnswer wrapping ErrWrongContent", err)
+	}
+}

@@ -313,3 +313,146 @@ func TestKindResolverCandidateFailoverCacheReResolveAndUsenetBackoff(t *testing.
 			searchCands[0], searchCands[1])
 	}
 }
+
+// When candidate 0 fails because the plugin's own answer was wrong (e.g. wrong
+// digest or missing explicit file) and candidate 1 opens as fallback, neither
+// the fallback resolution nor the broken candidate list may stick: the next
+// play must call /resolve again (#641).
+func TestKindResolverPluginAnswerFallbackDropsCandidateCacheSoNextPlayReResolves(t *testing.T) {
+	h := newKindTestHarness(t, 0, nil)
+	ctx := context.Background()
+
+	const (
+		hashBad  = "1111111111111111111111111111111111111111"
+		hashGood = "2222222222222222222222222222222222222222"
+	)
+	deb := &kindFailoverDebrid{
+		payloads: map[string][]byte{
+			hashBad:  []byte("FIRST-CANDIDATE-BYTES"),
+			hashGood: []byte("FALLBACK-CANDIDATE-BYTES"),
+		},
+	}
+	kr := adapters.NewKindResolver(adapters.KindResolverDeps{
+		Manager:   h.mgr,
+		Libraries: h.libs,
+		Items:     h.items,
+		Blobs:     h.blobs,
+		Catalog:   h.catalog,
+		Debrid:    deb,
+		Engine:    kindFailoverEngine{},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	var resolveCalls atomic.Int32
+	h.rt.callContext = func(_ context.Context, req plugins.Request) (plugins.Response, error) {
+		switch req.Path {
+		case "/ether/health":
+			return plugins.Response{Status: http.StatusOK, Body: json.RawMessage(`{"status":"ok"}`)}, nil
+		case "/ether/v1/kinds/recordings/resolve":
+			n := resolveCalls.Add(1)
+			var resp core.KindResolveResponse
+			if n == 1 {
+				// First resolve: candidate 0 has a wrong CRC32 (ErrPluginAnswer),
+				// candidate 1 opens as fallback.
+				resp = core.KindResolveResponse{
+					TTLSec: 600,
+					Sources: []core.PlayableSource{
+						{
+							ID:      "broken-primary",
+							Pattern: "release",
+							MIME:    "application/octet-stream",
+							CRC32:   "00000000",
+							Release: &core.ReleaseHint{InfoHash: hashBad, File: "primary.bin"},
+						},
+						{
+							ID:      "fallback",
+							Pattern: "release",
+							MIME:    "application/octet-stream",
+							Release: &core.ReleaseHint{InfoHash: hashGood, File: "fallback.bin"},
+						},
+					},
+				}
+			} else {
+				// Second resolve (after fix): candidate 0 now succeeds cleanly.
+				resp = core.KindResolveResponse{
+					TTLSec: 600,
+					Sources: []core.PlayableSource{
+						{
+							ID:      "fixed-primary",
+							Pattern: "release",
+							MIME:    "application/octet-stream",
+							Release: &core.ReleaseHint{InfoHash: hashBad, File: "primary.bin"},
+						},
+					},
+				}
+			}
+			raw, _ := json.Marshal(resp)
+			return plugins.Response{Status: http.StatusOK, Body: raw}, nil
+		default:
+			return plugins.Response{Status: http.StatusOK, Body: json.RawMessage(`{"items":[]}`)}, nil
+		}
+	}
+
+	const pluginID = "community.example.kind641"
+	decl := recordingsKindDecl(true)
+	decl["sync"] = map[string]any{"mode": "push"}
+	installStudioManifest(t, h.mgr, map[string]any{
+		"id":      pluginID,
+		"version": "1.0.0",
+		"name":    "Kind 641 Test",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Kind 641 test",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"strings":      map[string]any{"en": "i18n/en.json"},
+			"contributes":  map[string]any{"mediaKinds": []map[string]any{decl}},
+		},
+	}, map[string][]byte{"i18n/en.json": []byte(`{"lib_name":"Recordings"}`)})
+
+	host := h.mgr.HostFor(pluginID)
+	if _, err := host.KindUpsert(ctx, "recordings", []core.KindItem{
+		{ID: "alb-1", Level: "album", Title: "Album 1"},
+		{ID: "trk-1", Level: "track", ParentID: "alb-1", Index: 1, Title: "Track 1", Playable: true},
+	}); err != nil {
+		t.Fatalf("KindUpsert: %v", err)
+	}
+	trk1, _, err := h.items.GetByExternal(ctx, pluginID, "recordings", "trk-1")
+	if err != nil {
+		t.Fatalf("GetByExternal: %v", err)
+	}
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+
+	// First play serves the fallback after candidate 0 fails on ErrPluginAnswer.
+	m1, err := kr.OpenKind(ctx, viewer, trk1.Key, nil)
+	if err != nil {
+		t.Fatalf("first OpenKind: %v", err)
+	}
+	got1, _ := io.ReadAll(io.NewSectionReader(m1.ReaderAt, 0, m1.Size))
+	_ = m1.Closer.Close()
+	if string(got1) != "FALLBACK-CANDIDATE-BYTES" {
+		t.Fatalf("first play served %q, want fallback", got1)
+	}
+	if _, ok, err := h.items.GetPartResolution(ctx, trk1.Ref, nil); err != nil || ok {
+		t.Fatalf("fallback resolution was saved: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := h.items.GetPartCandidates(ctx, trk1.Ref, nil); err != nil || ok {
+		t.Fatalf("broken candidates remained persisted: ok=%v err=%v", ok, err)
+	}
+
+	// Second play must call /resolve again (not replay cached candidates) and
+	// now open the fixed primary source.
+	m2, err := kr.OpenKind(ctx, viewer, trk1.Key, nil)
+	if err != nil {
+		t.Fatalf("second OpenKind: %v", err)
+	}
+	got2, _ := io.ReadAll(io.NewSectionReader(m2.ReaderAt, 0, m2.Size))
+	_ = m2.Closer.Close()
+	if resolveCalls.Load() != 2 {
+		t.Fatalf("resolve calls = %d, want 2 (broken candidate cache was not dropped)", resolveCalls.Load())
+	}
+	if string(got2) != "FIRST-CANDIDATE-BYTES" {
+		t.Fatalf("second play served %q, want fixed primary", got2)
+	}
+}

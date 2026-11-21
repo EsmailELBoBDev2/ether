@@ -168,9 +168,11 @@ func dlClassify(status int, env dlEnvelope) error {
 		return fmt.Errorf("debrid-link: %s: %w", msg, ErrGone)
 	case "infringingFile": // unavailable for legal reasons
 		return fmt.Errorf("debrid-link: %s: %w", msg, ErrBlocked)
-	case "notAddTorrent", "torrentTooBig":
-		// The torrent could not be added, or is too big for this service:
-		// another provider may still have it.
+	case "torrentTooBig":
+		// Exceeds this service's torrent size limit; another provider may still have it.
+		return fmt.Errorf("debrid-link: %s: %w", msg, ErrTooLarge)
+	case "notAddTorrent":
+		// The torrent could not be added: another provider may still have it.
 		return fmt.Errorf("debrid-link: %s: %w", msg, core.ErrNotCached)
 	case "badTorrentFile":
 		return fmt.Errorf("debrid-link: %s: %w", msg, core.ErrReleaseRejected)
@@ -339,6 +341,10 @@ func (p *debridLink) Acquire(ctx context.Context, req AcquireRequest) (*Acquired
 		}
 	}
 	if !ready {
+		if t != nil && t.IsZip && dlComplete(t) {
+			cleanup()
+			return nil, fmt.Errorf("debrid-link: torrent cached as zipped archive: %w", errProviderZipped)
+		}
 		err := fmt.Errorf("debrid-link: torrent is not ready: %w", core.ErrNotCached)
 		if req.CachedOnly && cleanup() {
 			return nil, err

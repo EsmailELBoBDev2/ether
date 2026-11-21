@@ -666,9 +666,9 @@ func openReleaseSource(ctx context.Context, src core.PlayableSource, deps Deps) 
 		return nil, errors.New("kindstream: OpenRelease dependency is not configured")
 	}
 	if err != nil {
-		if hasExplicitReleaseSelector(*src.Release) && errors.Is(err, core.ErrWrongContent) {
-			// The plugin named a file the release does not contain as
-			// named: its answer is wrong, the release is not down.
+		if hasExplicitReleaseOrMemberSelector(src) && errors.Is(err, core.ErrWrongContent) {
+			// The plugin named a file or archive member the release does not
+			// contain as named: its answer is wrong, the release is not down.
 			return nil, fmt.Errorf("%w: %w", ErrPluginAnswer, err)
 		}
 		return nil, err
@@ -825,6 +825,13 @@ func hasExplicitReleaseSelector(h core.ReleaseHint) bool {
 		return true
 	}
 	return h.Candidate != nil && h.Candidate.FileIndex != nil
+}
+
+func hasExplicitReleaseOrMemberSelector(src core.PlayableSource) bool {
+	if src.Release != nil && hasExplicitReleaseSelector(*src.Release) {
+		return true
+	}
+	return src.Container != nil && (strings.TrimSpace(src.Container.Member) != "" || src.Container.MemberIndex != nil)
 }
 
 func hasVideoFileExtension(name string) bool {

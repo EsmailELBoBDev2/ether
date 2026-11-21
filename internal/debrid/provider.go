@@ -56,6 +56,15 @@ var (
 	// no new torrent for now, cached or not. The provider still answers and
 	// serves what it holds, so this is not an outage.
 	ErrDownloadLimit = fmt.Errorf("debrid: %w", core.ErrDownloadLimit)
+	// ErrTooLarge is a torrent that exceeds the provider's or account plan's
+	// maximum torrent size (e.g. TorBox DOWNLOAD_TOO_LARGE, Real-Debrid 29,
+	// AllDebrid MAGNET_TOO_LARGE, Debrid-Link torrentTooBig). Another
+	// provider may still serve it, and it is not a provider outage.
+	ErrTooLarge = fmt.Errorf("debrid: torrent exceeds provider size limit: %w", core.ErrNotCached)
+	// errProviderZipped is a torrent that the provider only holds collapsed
+	// into a single server-side zip archive instead of its individual files.
+	// Another provider may still hold the unzipped files.
+	errProviderZipped = fmt.Errorf("debrid: provider holds torrent only as a single zip archive: %w", core.ErrNotCached)
 	// ErrNoProvider means no debrid provider is enabled.
 	ErrNoProvider = errors.New("debrid: no debrid provider is enabled")
 	// ErrUnsupported is an operation a provider does not offer.
@@ -417,7 +426,7 @@ func call(ctx context.Context, hc *http.Client, base string, r apiRequest, auth 
 		return 0, nil, sanitize(err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return resp.StatusCode, nil, sanitize(err)
 	}
@@ -836,11 +845,11 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		if target.FileIndex != nil {
 			i := *target.FileIndex
 			if i < 0 || i >= len(files) {
-				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d: %w", i, len(files), core.ErrWrongContent)
+				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d (%s): %w", i, len(files), torrentFileSummary(files), core.ErrWrongContent)
 			}
 			f := files[i]
 			if !exactMatch(f) {
-				return File{}, fmt.Errorf("debrid: selected file does not match target: %w", core.ErrWrongContent)
+				return File{}, fmt.Errorf("debrid: selected file %q does not match target %q (%s): %w", f.Path, target.ExactFile, torrentFileSummary(files), core.ErrWrongContent)
 			}
 			if f.Size <= 0 {
 				return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", f.Path, core.ErrReleaseRejected)
@@ -856,7 +865,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			}
 		}
 		if count != 1 {
-			return File{}, fmt.Errorf("debrid: file matched %d files: %w", count, core.ErrWrongContent)
+			return File{}, fmt.Errorf("debrid: file %q matched %d files (%s): %w", target.ExactFile, count, torrentFileSummary(files), core.ErrWrongContent)
 		}
 		if chosen.Size <= 0 {
 			return File{}, fmt.Errorf("debrid: selected file %q is empty: %w", chosen.Path, core.ErrReleaseRejected)
@@ -884,14 +893,14 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 		if target.FileIndex != nil {
 			i := *target.FileIndex
 			if i < 0 || i >= len(files) {
-				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d: %w", i, len(files), core.ErrWrongContent)
+				return File{}, fmt.Errorf("debrid: fileIndex %d outside file list of %d (%s): %w", i, len(files), torrentFileSummary(files), core.ErrWrongContent)
 			}
 			f := files[i]
 			if !playableVideo(f) {
 				return File{}, fmt.Errorf("debrid: selected file %q is not a main video: %w", f.Path, errNoVideo)
 			}
 			if !exactMatch(f) || !movieMatches(f) {
-				return File{}, fmt.Errorf("debrid: selected file does not match target: %w", core.ErrWrongContent)
+				return File{}, fmt.Errorf("debrid: selected file %q does not match target (%s): %w", f.Path, torrentFileSummary(files), core.ErrWrongContent)
 			}
 			return f, nil
 		}
@@ -907,7 +916,7 @@ func ChooseFile(files []File, target *core.ReleaseTarget) (File, error) {
 			}
 		}
 		if count != 1 {
-			return File{}, fmt.Errorf("debrid: file matched %d files: %w", count, core.ErrWrongContent)
+			return File{}, fmt.Errorf("debrid: file %q matched %d files (%s): %w", target.ExactFile, count, torrentFileSummary(files), core.ErrWrongContent)
 		}
 		return chosen, nil
 	}

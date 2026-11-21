@@ -3,8 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { getThemeScript } from "@braedonsaunders/appkit-ui/theme-script";
 import type { Plugin } from "vite";
-import { mockWatch } from "./src/mock/watch-server";
-import { theme } from "./src/theme";
+import { mockWatch } from "./src/mock/watch-server.ts";
+import { theme } from "./src/theme.ts";
 
 // AppKit's pre-paint theme script goes first in <head>, so the stored (or
 // default dark) theme class is on <html> before anything paints.

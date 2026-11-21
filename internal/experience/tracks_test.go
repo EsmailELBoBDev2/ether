@@ -56,7 +56,6 @@ func TestResolveSubtitlePrefersCodecOverTheOldSlot(t *testing.T) {
 	}
 }
 
-
 func TestPickAudioPenalizesCommentaryAndVisualImpaired(t *testing.T) {
 	tr := true
 	info := core.MediaInfo{Streams: []core.StreamInfo{

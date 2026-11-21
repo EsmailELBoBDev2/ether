@@ -389,7 +389,6 @@ func TestForeignAudioSelectsForcedViewerSubtitle(t *testing.T) {
 	}
 }
 
-
 func TestPickPenalizesCommentaryAndVisualImpaired(t *testing.T) {
 	tr := true
 	streams := []core.StreamInfo{

@@ -564,14 +564,14 @@ func (c *KindCatalog) runContainerHydration(
 		seenCursor    = make(map[string]bool)
 	)
 
-	callExpand := func(cur string) (items []core.KindItem, next string, fallback bool, unsupported bool, err error) {
+	callExpand := func(cur string) (items []core.KindItem, next string, fallback bool, err error) {
 		body, mErr := json.Marshal(core.KindExpandRequest{
 			ParentID: parentItem.ID,
 			Level:    childLevel,
 			Cursor:   cur,
 		})
 		if mErr != nil {
-			return nil, "", false, false, mErr
+			return nil, "", false, mErr
 		}
 		resp, cErr := c.mgr.Call(plugins.WithBackgroundCall(bgCtx), rec.PluginID, plugins.Request{
 			PluginID: rec.PluginID,
@@ -581,21 +581,21 @@ func (c *KindCatalog) runContainerHydration(
 			Body:     body,
 		})
 		if cErr != nil {
-			return nil, "", false, false, cErr
+			return nil, "", false, cErr
 		}
 		if resp.Status == http.StatusNotFound || resp.Status == http.StatusNotImplemented || resp.Status == http.StatusBadRequest {
-			return nil, "", true, false, nil
+			return nil, "", true, nil
 		}
 		if resp.Status < 200 || resp.Status >= 300 {
-			return nil, "", false, false, fmt.Errorf("container expand %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
+			return nil, "", false, fmt.Errorf("container expand %s/%s (%s): status %d", rec.PluginID, rec.KindKey, parentItem.ID, resp.Status)
 		}
 		var page core.KindExpandResponse
 		if len(resp.Body) > 0 {
 			if uErr := json.Unmarshal(resp.Body, &page); uErr != nil {
-				return nil, "", false, false, uErr
+				return nil, "", false, uErr
 			}
 		}
-		return page.Items, page.EffectiveCursor(), false, false, nil
+		return page.Items, page.EffectiveCursor(), false, nil
 	}
 
 	callBrowse := func(cur string) (items []core.KindItem, next string, unsupported bool, err error) {
@@ -642,7 +642,7 @@ func (c *KindCatalog) runContainerHydration(
 			err         error
 		)
 		if !useBrowse {
-			pageItems, next, fallback, unsupported, err = callExpand(cursor)
+			pageItems, next, fallback, err = callExpand(cursor)
 			if err != nil {
 				finish(pluginitems.ExpansionStateError, totalAdded, err.Error())
 				return

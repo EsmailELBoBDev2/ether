@@ -5,7 +5,6 @@ package templates
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -329,11 +328,4 @@ func listParam(params map[string]any, key string, def []string) []string {
 		return append([]string(nil), v...)
 	}
 	return append([]string(nil), def...)
-}
-
-func requireNonEmpty(val, name string) error {
-	if strings.TrimSpace(val) == "" {
-		return errors.New(name + " cannot be empty")
-	}
-	return nil
 }

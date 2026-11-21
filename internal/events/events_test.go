@@ -107,7 +107,7 @@ type samplePlaybackPayload struct {
 	StartedAt   time.Time    `json:"startedAt"`
 	Client      sampleClient `json:"client"`
 	Ignored     string       `json:"-"`
-	unexported  string
+	unexported  string       //nolint:unused // verifies RegisterStruct skips unexported fields
 }
 
 func TestRegistryRegisterStructAndValidation(t *testing.T) {
@@ -150,6 +150,9 @@ func TestRegistryRegisterStructAndValidation(t *testing.T) {
 	}
 	if _, exists := schema.Field("Ignored"); exists {
 		t.Fatal("json:\"-\" field should be skipped")
+	}
+	if _, exists := schema.Field("unexported"); exists {
+		t.Fatal("unexported field should be skipped")
 	}
 
 	// Legacy lookup

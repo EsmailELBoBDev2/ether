@@ -771,6 +771,9 @@ func TestPlaylistValidationSmartReadOnlyVisibilityAndLimits(t *testing.T) {
 		t.Fatalf("moving visible entry past hidden entry: %d %s", w.Code, w.Body.String())
 	}
 	w, afterMove := h.do("tok-1", http.MethodGet, "/vela/v0/playlists/"+mixedID, "")
+	if w.Code != 200 {
+		t.Fatalf("afterMove detail: %d %s", w.Code, w.Body.String())
+	}
 	movedItems := afterMove["items"].([]any)
 	if movedItems[0].(map[string]any)["entryId"] != visEntry2 || movedItems[1].(map[string]any)["entryId"] != visEntry1 {
 		t.Fatalf("visible reorder failed around hidden entry: %#v", movedItems)
@@ -799,6 +802,9 @@ func TestPlaylistValidationSmartReadOnlyVisibilityAndLimits(t *testing.T) {
 		t.Fatalf("sandwich backward move: %d %s", w.Code, w.Body.String())
 	}
 	w, swAfter := h.do("tok-1", http.MethodGet, "/vela/v0/playlists/"+swID, "")
+	if w.Code != 200 {
+		t.Fatalf("swAfter detail: %d %s", w.Code, w.Body.String())
+	}
 	swAfterItems := swAfter["items"].([]any)
 	if len(swAfterItems) != 3 ||
 		swAfterItems[0].(map[string]any)["entryId"] != swA ||

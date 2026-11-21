@@ -64,16 +64,6 @@ func (s *Service) setSyncProgress(pluginID, kindKey string, p syncProgress) {
 	s.workersMu.Unlock()
 }
 
-func (s *Service) clearSyncProgress(pluginID, kindKey string) {
-	if s == nil {
-		return
-	}
-	key := workerKey(pluginID, kindKey)
-	s.workersMu.Lock()
-	delete(s.syncProgress, key)
-	s.workersMu.Unlock()
-}
-
 func (s *Service) clearSyncProgressIfPhase(pluginID, kindKey, phase string) {
 	if s == nil {
 		return

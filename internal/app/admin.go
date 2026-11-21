@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -300,14 +301,20 @@ func (a *App) buildAdmin() http.Handler {
 			}
 			return libraryScopeFilter(lib, req), nil
 		},
-		Images:          a.images,
-		TitlePosters:    a.titlePosters(),
-		OwnerArtwork:    a.artwork,
-		PlexWatch:       a.plexWatchAPI(),
-		Trakt:           a.traktAPI(),
-		PlexServers:     a.plexServersAPI(),
-		SharePlexViewer: a.sharePlexViewer,
-		Prerolls:        a.prerollAdmin(),
+		Images:                a.images,
+		TitlePosters:          a.titlePosters(),
+		OwnerArtwork:          a.artwork,
+		PlexWatch:             a.plexWatchAPI(),
+		Trakt:                 a.traktAPI(),
+		PlexServers:           a.plexServersAPI(),
+		SharePlexViewer:       a.sharePlexViewer,
+		SharePlexViewerNoSync: a.sharePlexViewerNoSync,
+		SyncPlexFriends:       a.syncPlexFriends,
+		ListPlexUsers:         a.listPlexUsers,
+		Prerolls:              a.prerollAdmin(),
+	}
+	if a.users != nil {
+		deps.EnsurePlexFriend = a.users.EnsurePlexFriend
 	}
 	// Optional role-owned dependencies stay absent until a real local or private
 	// service supplies them. This preserves console/auth/config/catalog without
@@ -365,7 +372,7 @@ func (a *App) plexWatchAPI() admin.PlexWatch {
 	return plexWatchAdmin{a.plexWatch}
 }
 
-func (a *App) sharePlexViewer(ctx context.Context, usernameOrEmail string, userID int64) error {
+func (a *App) sharePlexViewerNoSync(ctx context.Context, usernameOrEmail string, userID int64) error {
 	if a.plextv == nil {
 		return errors.New("plextv: client not initialized")
 	}
@@ -377,12 +384,239 @@ func (a *App) sharePlexViewer(ctx context.Context, usernameOrEmail string, userI
 	if cfg.Server.MachineIdentifier == "" {
 		return errors.New("plextv: server machine identifier not configured")
 	}
-	if err := a.plextv.ShareServer(ctx, token, usernameOrEmail, userID, nil); err != nil {
+	return a.plextv.ShareServer(ctx, token, usernameOrEmail, userID, nil)
+}
+
+func (a *App) syncPlexFriends(ctx context.Context) error {
+	if a.registrar == nil {
+		return nil
+	}
+	return a.registrar.SyncFriendsNow(ctx)
+}
+
+func (a *App) listPlexUsers(ctx context.Context) ([]plextv.SharedUser, error) {
+	if a.plextv == nil {
+		return nil, nil
+	}
+	var (
+		mu              sync.Mutex
+		byID            = make(map[int64]int)
+		byUser          = make(map[string]int)
+		out             []plextv.SharedUser
+		accountCount    int
+		serverUserCount int
+		sharedCount     int
+		homeCount       int
+		pmsCount        int
+		communityCount  int
+		communityList   []plextv.CommunityFriend
+	)
+	mergeUsers := func(list []plextv.SharedUser) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, u := range list {
+			if u.PlexID <= 0 {
+				continue
+			}
+			if idx, ok := byID[u.PlexID]; ok {
+				dst := &out[idx]
+				if dst.UUID == "" {
+					dst.UUID = u.UUID
+				}
+				if dst.Username == "" {
+					dst.Username = u.Username
+					if dst.Username != "" {
+						byUser[strings.ToLower(strings.TrimSpace(dst.Username))] = idx
+					}
+				}
+				if dst.Title == "" {
+					dst.Title = u.Title
+				}
+				if dst.FriendlyName == "" {
+					dst.FriendlyName = u.FriendlyName
+				}
+				if dst.Email == "" {
+					dst.Email = u.Email
+				}
+				if dst.Thumb == "" {
+					dst.Thumb = u.Thumb
+				}
+				dst.Home = dst.Home || u.Home
+				dst.Restricted = dst.Restricted || u.Restricted
+				continue
+			}
+			idx := len(out)
+			byID[u.PlexID] = idx
+			if u.Username != "" {
+				byUser[strings.ToLower(strings.TrimSpace(u.Username))] = idx
+			}
+			out = append(out, u)
+		}
+	}
+
+	var wg sync.WaitGroup
+	seenAccountTokens := make(map[string]bool)
+	fetchAccountSources := func(tok string, label string) {
+		if tok == "" || seenAccountTokens[tok] {
+			return
+		}
+		seenAccountTokens[tok] = true
+
+		wg.Go(func() {
+			if users, err := a.plextv.AccountUsers(ctx, tok); err == nil {
+				mu.Lock()
+				accountCount += len(users)
+				mu.Unlock()
+				mergeUsers(users)
+			} else {
+				a.log.Warn("list plex.tv account users error", "source", label, "err", err)
+			}
+		})
+		wg.Go(func() {
+			if users, err := a.plextv.SharedServerUsers(ctx, tok); err == nil {
+				mu.Lock()
+				sharedCount += len(users)
+				mu.Unlock()
+				mergeUsers(users)
+			} else {
+				a.log.Warn("list plex.tv shared server users error", "source", label, "err", err)
+			}
+		})
+		wg.Go(func() {
+			if homes, err := a.plextv.HomeUsers(ctx, tok); err == nil {
+				mapped := make([]plextv.SharedUser, 0, len(homes))
+				for _, h := range homes {
+					if h.ID <= 0 {
+						continue
+					}
+					mapped = append(mapped, plextv.SharedUser{
+						PlexID:       h.ID,
+						UUID:         h.UUID,
+						Username:     h.Username,
+						Title:        h.Title,
+						FriendlyName: h.Friendly,
+						Thumb:        h.Thumb,
+						Home:         true,
+						Restricted:   h.Restricted,
+					})
+				}
+				mu.Lock()
+				homeCount += len(mapped)
+				mu.Unlock()
+				mergeUsers(mapped)
+			} else {
+				a.log.Warn("list plex.tv home users error", "source", label, "err", err)
+			}
+		})
+	}
+
+	etherToken := a.cfg.Get().Plex.Token
+	if etherToken != "" {
+		fetchAccountSources(etherToken, "ether")
+		wg.Go(func() {
+			if users, err := a.plextv.Users(ctx, etherToken); err == nil {
+				mu.Lock()
+				serverUserCount += len(users)
+				mu.Unlock()
+				mergeUsers(users)
+			} else {
+				a.log.Warn("list ether plex.tv users error", "err", err)
+			}
+		})
+		if a.plextv.BaseURL() == plextv.DefaultBaseURL {
+			wg.Go(func() {
+				commCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+				defer cancel()
+				cFriends, err := (&plextv.CommunityClient{MinInterval: time.Millisecond, MaxRetries: -1}).Friends(commCtx, etherToken)
+				if err != nil {
+					a.log.Debug("list plex community friends error", "err", err)
+					return
+				}
+				mu.Lock()
+				communityList = cFriends
+				communityCount = len(cFriends)
+				mu.Unlock()
+			})
+		}
+	}
+
+	if a.plexServers != nil {
+		if srvs, err := a.plexServers.List(ctx); err == nil {
+			for _, srv := range srvs {
+				pmsToken, err := a.plexServers.ServerToken(ctx, srv.ID)
+				if err != nil || pmsToken == "" {
+					continue
+				}
+				fetchAccountSources(pmsToken, "pms")
+				pmsClient := a.plextv
+				if srv.MachineID != "" {
+					id := a.plextv.Identity()
+					id.ClientIdentifier = srv.MachineID
+					pmsClient = a.plextv.WithIdentity(id)
+				}
+				serverID := srv.ID
+				wg.Go(func() {
+					if users, err := pmsClient.Users(ctx, pmsToken); err == nil {
+						mu.Lock()
+						pmsCount += len(users)
+						mu.Unlock()
+						mergeUsers(users)
+					} else {
+						a.log.Warn("list pms plex.tv users error", "serverId", serverID, "err", err)
+					}
+				})
+			}
+		}
+	}
+
+	wg.Wait()
+
+	for _, cf := range communityList {
+		if id, err := strconv.ParseInt(cf.ID, 10, 64); err == nil && id > 0 {
+			mergeUsers([]plextv.SharedUser{{
+				PlexID:       id,
+				Username:     cf.Username,
+				FriendlyName: cf.DisplayName,
+				Thumb:        cf.Avatar,
+			}})
+		}
+		uname := strings.ToLower(strings.TrimSpace(cf.Username))
+		if uname == "" {
+			continue
+		}
+		if idx, ok := byUser[uname]; ok {
+			dst := &out[idx]
+			if cf.DisplayName != "" {
+				if dst.FriendlyName == "" {
+					dst.FriendlyName = cf.DisplayName
+				}
+				if dst.Title == "" || strings.EqualFold(dst.Title, dst.Username) {
+					dst.Title = cf.DisplayName
+				}
+			}
+			if dst.Thumb == "" && cf.Avatar != "" {
+				dst.Thumb = cf.Avatar
+			}
+		}
+	}
+
+	a.log.Debug("resolved plex.tv user directory",
+		"total", len(out),
+		"accountUsers", accountCount,
+		"serverUsers", serverUserCount,
+		"sharedServerUsers", sharedCount,
+		"homeUsers", homeCount,
+		"pmsServerUsers", pmsCount,
+		"communityFriends", communityCount,
+	)
+	return out, nil
+}
+
+func (a *App) sharePlexViewer(ctx context.Context, usernameOrEmail string, userID int64) error {
+	if err := a.sharePlexViewerNoSync(ctx, usernameOrEmail, userID); err != nil {
 		return err
 	}
-	if a.registrar != nil {
-		_ = a.registrar.SyncFriendsNow(ctx)
-	}
+	_ = a.syncPlexFriends(ctx)
 	return nil
 }
 

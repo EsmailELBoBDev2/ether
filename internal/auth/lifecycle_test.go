@@ -155,3 +155,72 @@ func TestViewerLifecycleRefusalsAndRemoval(t *testing.T) {
 		t.Fatalf("merged-away viewer still present: %v", err)
 	}
 }
+
+func TestEnsurePlexFriend(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	s, err := New(ctx, db, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	uid, err := s.EnsurePlexFriend(ctx, plextv.SharedUser{
+		PlexID:   703916194,
+		UUID:     "uuid-sakib",
+		Username: "sakib99",
+		Title:    "Sakib Talukder",
+		Email:    "sakib@example.com",
+		Thumb:    "https://plex.tv/users/sakib/avatar",
+	})
+	if err != nil || uid <= 0 {
+		t.Fatalf("EnsurePlexFriend failed: uid=%d err=%v", uid, err)
+	}
+
+	var (
+		plexID     int64
+		uuid       string
+		username   string
+		title      string
+		email      string
+		thumb      string
+		origin     string
+		active     int
+		plexShared int
+		linkSubj   string
+	)
+	if err := db.QueryRowContext(ctx, `SELECT plex_id, uuid, username, title, email, thumb, origin, active, plex_shared FROM auth_users WHERE id=?`, uid).
+		Scan(&plexID, &uuid, &username, &title, &email, &thumb, &origin, &active, &plexShared); err != nil {
+		t.Fatal(err)
+	}
+	if plexID != 703916194 || uuid != "uuid-sakib" || username != "sakib99" || title != "Sakib Talukder" || email != "sakib@example.com" || thumb != "https://plex.tv/users/sakib/avatar" || origin != "friend" || active != 0 || plexShared != 0 {
+		t.Fatalf("unexpected row: plexID=%d uuid=%q username=%q title=%q email=%q thumb=%q origin=%q active=%d plexShared=%d", plexID, uuid, username, title, email, thumb, origin, active, plexShared)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT subject FROM identity_links WHERE viewer_id=? AND provider='plex'`, uid).Scan(&linkSubj); err != nil || linkSubj != "703916194" {
+		t.Fatalf("unexpected identity_links row: subj=%q err=%v", linkSubj, err)
+	}
+
+	// Re-upsert with updated title returns same ID and updates title.
+	uid2, err := s.EnsurePlexFriend(ctx, plextv.SharedUser{
+		PlexID:   703916194,
+		Username: "sakib99",
+		Title:    "Sakib T.",
+	})
+	if err != nil || uid2 != uid {
+		t.Fatalf("expected same uid %d on re-upsert, got %d (err=%v)", uid, uid2, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT title FROM auth_users WHERE id=?`, uid).Scan(&title); err != nil || title != "Sakib T." {
+		t.Fatalf("expected updated title Sakib T., got %q (err=%v)", title, err)
+	}
+
+	// Re-upsert with empty title preserves existing title.
+	uid3, err := s.EnsurePlexFriend(ctx, plextv.SharedUser{
+		PlexID:   703916194,
+		Username: "sakib99",
+	})
+	if err != nil || uid3 != uid {
+		t.Fatalf("expected same uid %d on empty-title re-upsert, got %d (err=%v)", uid, uid3, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT title FROM auth_users WHERE id=?`, uid).Scan(&title); err != nil || title != "Sakib T." {
+		t.Fatalf("expected title Sakib T. preserved on empty title, got %q (err=%v)", title, err)
+	}
+}

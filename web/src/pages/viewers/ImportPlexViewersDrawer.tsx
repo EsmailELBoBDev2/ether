@@ -434,7 +434,7 @@ export function ImportPlexViewersDrawer({
 
                                   <div className="w-48">
                                     <Select
-                                      value={acct.suggestedViewerId || 0}
+                                      value={0}
                                       disabled={isBusy}
                                       aria-label={t("Match account to existing viewer")}
                                       onChange={(e) =>

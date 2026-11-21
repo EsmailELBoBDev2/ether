@@ -246,28 +246,46 @@ func (c *Client) ServerSectionIDs(ctx context.Context, ownerToken string) ([]int
 	return ids, nil
 }
 
+type v2InvitedUser struct {
+	ID           int64  `json:"id"`
+	UUID         string `json:"uuid"`
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	Title        string `json:"title"`
+	FriendlyName string `json:"friendlyName"`
+	Thumb        string `json:"thumb"`
+}
+
 type v2SharedServer struct {
 	ID                int64          `json:"id"`
 	MachineIdentifier string         `json:"machineIdentifier"`
 	AllLibraries      bool           `json:"allLibraries"`
 	LibrarySectionIDs []int64        `json:"librarySectionIds"`
 	Settings          map[string]any `json:"settings"`
-	Invited           struct {
-		ID       int64  `json:"id"`
-		Username string `json:"username"`
-		Email    string `json:"email"`
-		Title    string `json:"title"`
-	} `json:"invited"`
+	InvitedID         int64          `json:"invitedId"`
+	InvitedEmail      string         `json:"invitedEmail"`
+	Invited           v2InvitedUser  `json:"invited"`
 }
 
 type v2PendingInvite struct {
-	Invited struct {
-		ID       int64  `json:"id"`
-		Username string `json:"username"`
-		Email    string `json:"email"`
-		Title    string `json:"title"`
-	} `json:"invited"`
+	InvitedID     int64            `json:"invitedId"`
+	InvitedEmail  string           `json:"invitedEmail"`
+	Invited       v2InvitedUser    `json:"invited"`
 	SharedServers []v2SharedServer `json:"sharedServers"`
+}
+
+func matchesV2Invited(u v2InvitedUser, fallbackID int64, fallbackEmail, usernameOrEmail string, userID int64) bool {
+	if userID > 0 && (u.ID == userID || fallbackID == userID) {
+		return true
+	}
+	if usernameOrEmail == "" {
+		return false
+	}
+	return strings.EqualFold(u.Username, usernameOrEmail) ||
+		strings.EqualFold(u.Email, usernameOrEmail) ||
+		strings.EqualFold(fallbackEmail, usernameOrEmail) ||
+		strings.EqualFold(u.Title, usernameOrEmail) ||
+		strings.EqualFold(u.FriendlyName, usernameOrEmail)
 }
 
 func (c *Client) findV2Share(ctx context.Context, ownerToken, usernameOrEmail string, userID int64) (*v2SharedServer, error) {
@@ -281,15 +299,8 @@ func (c *Client) findV2Share(ctx context.Context, ownerToken, usernameOrEmail st
 		var accepted []v2SharedServer
 		if json.Unmarshal(respAcc.body, &accepted) == nil {
 			for _, s := range accepted {
-				if s.MachineIdentifier == c.id.ClientIdentifier {
-					if userID > 0 && s.Invited.ID == userID {
-						return &s, nil
-					}
-					if usernameOrEmail != "" && (strings.EqualFold(s.Invited.Username, usernameOrEmail) ||
-						strings.EqualFold(s.Invited.Email, usernameOrEmail) ||
-						strings.EqualFold(s.Invited.Title, usernameOrEmail)) {
-						return &s, nil
-					}
+				if s.MachineIdentifier == c.id.ClientIdentifier && matchesV2Invited(s.Invited, s.InvitedID, s.InvitedEmail, usernameOrEmail, userID) {
+					return &s, nil
 				}
 			}
 		}
@@ -305,16 +316,9 @@ func (c *Client) findV2Share(ctx context.Context, ownerToken, usernameOrEmail st
 		var pending []v2PendingInvite
 		if json.Unmarshal(respPend.body, &pending) == nil {
 			for _, inv := range pending {
-				matchUser := (userID > 0 && inv.Invited.ID == userID) ||
-					(usernameOrEmail != "" && (strings.EqualFold(inv.Invited.Username, usernameOrEmail) ||
-						strings.EqualFold(inv.Invited.Email, usernameOrEmail) ||
-						strings.EqualFold(inv.Invited.Title, usernameOrEmail)))
+				matchUser := matchesV2Invited(inv.Invited, inv.InvitedID, inv.InvitedEmail, usernameOrEmail, userID)
 				for _, s := range inv.SharedServers {
-					if s.MachineIdentifier == c.id.ClientIdentifier && (matchUser ||
-						(userID > 0 && s.Invited.ID == userID) ||
-						(usernameOrEmail != "" && (strings.EqualFold(s.Invited.Username, usernameOrEmail) ||
-							strings.EqualFold(s.Invited.Email, usernameOrEmail) ||
-							strings.EqualFold(s.Invited.Title, usernameOrEmail)))) {
+					if s.MachineIdentifier == c.id.ClientIdentifier && (matchUser || matchesV2Invited(s.Invited, s.InvitedID, s.InvitedEmail, usernameOrEmail, userID)) {
 						return &s, nil
 					}
 				}
@@ -323,6 +327,157 @@ func (c *Client) findV2Share(ctx context.Context, ownerToken, usernameOrEmail st
 	}
 
 	return nil, nil
+}
+
+// SharedServerUsers lists invited Plex accounts from the owner's accepted and
+// pending v2 server shares across all owned servers.
+func (c *Client) SharedServerUsers(ctx context.Context, ownerToken string) ([]SharedUser, error) {
+	byID := make(map[int64]int)
+	var out []SharedUser
+	merge := func(u v2InvitedUser, fallbackID int64, fallbackEmail, machineID string) {
+		uid := u.ID
+		if uid <= 0 {
+			uid = fallbackID
+		}
+		if uid <= 0 {
+			return
+		}
+		email := u.Email
+		if email == "" {
+			email = fallbackEmail
+		}
+		if idx, ok := byID[uid]; ok {
+			dst := &out[idx]
+			if dst.UUID == "" {
+				dst.UUID = u.UUID
+			}
+			if dst.Username == "" {
+				dst.Username = u.Username
+			}
+			if dst.Title == "" {
+				dst.Title = u.Title
+			}
+			if dst.FriendlyName == "" {
+				dst.FriendlyName = u.FriendlyName
+			}
+			if dst.Email == "" {
+				dst.Email = email
+			}
+			if dst.Thumb == "" {
+				dst.Thumb = u.Thumb
+			}
+			if machineID != "" {
+				found := false
+				for _, m := range dst.Servers {
+					if m == machineID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					dst.Servers = append(dst.Servers, machineID)
+				}
+			}
+			return
+		}
+		var servers []string
+		if machineID != "" {
+			servers = []string{machineID}
+		}
+		byID[uid] = len(out)
+		out = append(out, SharedUser{
+			PlexID:       uid,
+			UUID:         u.UUID,
+			Username:     u.Username,
+			Title:        u.Title,
+			FriendlyName: u.FriendlyName,
+			Email:        email,
+			Thumb:        u.Thumb,
+			Servers:      servers,
+		})
+	}
+
+	var firstErr error
+	var okCount int
+	if respAcc, err := c.do(ctx, request{
+		method: http.MethodGet,
+		path:   "/api/v2/shared_servers/owned/accepted",
+		token:  ownerToken,
+		accept: "application/json",
+	}); err == nil {
+		var accepted []v2SharedServer
+		if derr := json.Unmarshal(respAcc.body, &accepted); derr == nil {
+			okCount++
+			for _, s := range accepted {
+				merge(s.Invited, s.InvitedID, s.InvitedEmail, s.MachineIdentifier)
+			}
+		} else if firstErr == nil {
+			firstErr = fmt.Errorf("plextv: decode accepted shared servers: %w", derr)
+		}
+	} else {
+		firstErr = err
+	}
+
+	if respPend, err := c.do(ctx, request{
+		method: http.MethodGet,
+		path:   "/api/v2/shared_servers/invites/owned/pending",
+		token:  ownerToken,
+		accept: "application/json",
+	}); err == nil {
+		var pending []v2PendingInvite
+		if derr := json.Unmarshal(respPend.body, &pending); derr == nil {
+			okCount++
+			for _, inv := range pending {
+				if len(inv.SharedServers) == 0 {
+					merge(inv.Invited, inv.InvitedID, inv.InvitedEmail, "")
+					continue
+				}
+				for _, s := range inv.SharedServers {
+					u := s.Invited
+					if u.ID <= 0 {
+						u = inv.Invited
+					} else {
+						if u.UUID == "" {
+							u.UUID = inv.Invited.UUID
+						}
+						if u.Username == "" {
+							u.Username = inv.Invited.Username
+						}
+						if u.Email == "" {
+							u.Email = inv.Invited.Email
+						}
+						if u.Title == "" {
+							u.Title = inv.Invited.Title
+						}
+						if u.FriendlyName == "" {
+							u.FriendlyName = inv.Invited.FriendlyName
+						}
+						if u.Thumb == "" {
+							u.Thumb = inv.Invited.Thumb
+						}
+					}
+					fid := s.InvitedID
+					if fid <= 0 {
+						fid = inv.InvitedID
+					}
+					femail := s.InvitedEmail
+					if femail == "" {
+						femail = inv.InvitedEmail
+					}
+					merge(u, fid, femail, s.MachineIdentifier)
+				}
+			}
+		} else if firstErr == nil {
+			firstErr = fmt.Errorf("plextv: decode pending invites: %w", derr)
+		}
+	} else if firstErr == nil {
+		firstErr = err
+	}
+
+	if okCount == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return out, nil
 }
 
 func (c *Client) resolveFriendByName(ctx context.Context, ownerToken, name string) (int64, string) {
@@ -434,13 +589,51 @@ func (c *Client) resolveFriendByName(ctx context.Context, ownerToken, name strin
 		return 0, "", false
 	}
 
-	if users, err := c.Users(ctx, ownerToken); err == nil {
+	addSharedUsers := func(users []SharedUser) {
 		for _, u := range users {
-			if u.PlexID > 0 {
-				add(u.PlexID, u.Username, u.Title, u.Email)
+			if u.PlexID <= 0 {
+				continue
+			}
+			add(u.PlexID, u.Username, u.Title, u.Email)
+			if u.FriendlyName != "" && !strings.EqualFold(u.FriendlyName, u.Title) {
+				add(u.PlexID, u.Username, u.FriendlyName, u.Email)
+			}
+		}
+	}
+
+	if users, err := c.AccountUsers(ctx, ownerToken); err == nil {
+		addSharedUsers(users)
+		if id, handle, ok := match(); ok {
+			c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", true, "source", "account_users")
+			return id, handle
+		}
+	}
+	if users, err := c.Users(ctx, ownerToken); err == nil {
+		addSharedUsers(users)
+		if id, handle, ok := match(); ok {
+			c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", true, "source", "server_users")
+			return id, handle
+		}
+	}
+	if users, err := c.SharedServerUsers(ctx, ownerToken); err == nil {
+		addSharedUsers(users)
+		if id, handle, ok := match(); ok {
+			c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", true, "source", "shared_servers")
+			return id, handle
+		}
+	}
+	if homeUsers, err := c.HomeUsers(ctx, ownerToken); err == nil {
+		for _, u := range homeUsers {
+			if u.ID <= 0 {
+				continue
+			}
+			add(u.ID, u.Username, u.Title, "")
+			if u.Friendly != "" && !strings.EqualFold(u.Friendly, u.Title) {
+				add(u.ID, u.Username, u.Friendly, "")
 			}
 		}
 		if id, handle, ok := match(); ok {
+			c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", true, "source", "home_users")
 			return id, handle
 		}
 	}
@@ -451,20 +644,26 @@ func (c *Client) resolveFriendByName(ctx context.Context, ownerToken, name strin
 			}
 		}
 		if id, handle, ok := match(); ok {
+			c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", true, "source", "access_tokens")
 			return id, handle
 		}
 	}
 	if c.base != nil && c.base.String() == DefaultBaseURL {
-		if cFriends, err := (&CommunityClient{Client: c.hc, MinInterval: time.Millisecond, MaxRetries: -1}).Friends(ctx, ownerToken); err == nil {
+		cFriends, err := (&CommunityClient{Client: c.hc, MinInterval: time.Millisecond, MaxRetries: -1}).Friends(ctx, ownerToken)
+		if err != nil {
+			c.log.Debug("community friends lookup failed", "err", err)
+		} else {
 			for _, f := range cFriends {
 				id, _ := strconv.ParseInt(f.ID, 10, 64)
 				add(id, f.Username, f.DisplayName, "")
 			}
 			if id, handle, ok := match(); ok {
+				c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", true, "source", "community")
 				return id, handle
 			}
 		}
 	}
+	c.log.Debug("resolve friend by name result", "candidates", len(cands), "matched", false)
 	return 0, ""
 }
 
@@ -488,7 +687,7 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 	if c.id.ClientIdentifier == "" {
 		return errors.New("plextv: client identifier required")
 	}
-	if userID <= 0 && strings.Contains(usernameOrEmail, " ") {
+	if userID <= 0 && usernameOrEmail != "" {
 		resolvedID, resolvedHandle := c.resolveFriendByName(ctx, ownerToken, usernameOrEmail)
 		if resolvedID > 0 {
 			userID = resolvedID
@@ -554,6 +753,8 @@ func (c *Client) ShareServer(ctx context.Context, ownerToken, usernameOrEmail st
 		if len(sectionIDs) > 0 {
 			targetAll = false
 			targetSections = sectionIDs
+		} else if !targetAll && len(targetSections) == 0 {
+			targetAll = true
 		}
 
 		updatePayload := map[string]any{
@@ -668,6 +869,7 @@ type SharedUser struct {
 	UUID          string
 	Username      string
 	Title         string
+	FriendlyName  string
 	Email         string
 	Thumb         string
 	Home          bool
@@ -684,21 +886,36 @@ func (c *Client) Users(ctx context.Context, ownerToken string) ([]SharedUser, er
 	if err != nil {
 		return nil, err
 	}
-	root, err := parseXMLNode(resp.body)
+	return parseSharedUsers(resp.body)
+}
+
+// AccountUsers lists all friends and Plex Home users on the owner's plex.tv
+// account (GET /api/users), including users not yet shared with this server.
+func (c *Client) AccountUsers(ctx context.Context, ownerToken string) ([]SharedUser, error) {
+	resp, err := c.do(ctx, request{method: http.MethodGet, path: "/api/users", token: ownerToken, accept: "application/xml"})
+	if err != nil {
+		return nil, err
+	}
+	return parseSharedUsers(resp.body)
+}
+
+func parseSharedUsers(body []byte) ([]SharedUser, error) {
+	root, err := parseXMLNode(body)
 	if err != nil {
 		return nil, fmt.Errorf("plextv: decode users: %w", err)
 	}
 	var out []SharedUser
 	for _, n := range root.findAll("User") {
 		u := SharedUser{
-			PlexID:     n.intAttr("id"),
-			UUID:       n.attr("uuid"),
-			Username:   n.attr("username"),
-			Title:      n.attr("title"),
-			Email:      n.attr("email"),
-			Thumb:      n.attr("thumb"),
-			Home:       n.boolAttr("home"),
-			Restricted: n.boolAttr("restricted"),
+			PlexID:       n.intAttr("id"),
+			UUID:         n.attr("uuid"),
+			Username:     n.attr("username"),
+			Title:        n.attr("title"),
+			FriendlyName: n.attr("friendlyName"),
+			Email:        n.attr("email"),
+			Thumb:        n.attr("thumb"),
+			Home:         n.boolAttr("home"),
+			Restricted:   n.boolAttr("restricted"),
 		}
 		for i := range n.Nodes {
 			s := &n.Nodes[i]

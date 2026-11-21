@@ -286,3 +286,177 @@ func TestCommunityClientRetries429AndRecovers(t *testing.T) {
 		t.Fatalf("unexpected result: friends=%+v calls=%d", friends, calls.Load())
 	}
 }
+
+func TestShareServerResolvesNonSpacedNameViaAccountUsers(t *testing.T) {
+	var postV2Calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/users":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<MediaContainer>
+  <User id="703916194" uuid="uuid-sakib" username="sakib99" title="Sakib" email="sakib@example.com" thumb="https://plex.tv/users/sakib/avatar"/>
+</MediaContainer>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/users":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer/>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/access_tokens":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer/>`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers":
+			postV2Calls.Add(1)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["invitedId"] != float64(703916194) {
+				t.Fatalf("expected invitedId=703916194, got %v", payload["invitedId"])
+			}
+			if _, hasEmail := payload["invitedEmail"]; hasEmail {
+				t.Fatalf("expected invitedEmail omitted when invitedId is resolved, got %v", payload["invitedEmail"])
+			}
+			if payload["skipFriendship"] != true {
+				t.Fatalf("expected skipFriendship=true, got %v", payload["skipFriendship"])
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{
+		BaseURL:      srv.URL,
+		Identity:     Identity{ClientIdentifier: "test-mid"},
+		RetryBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := c.AccountUsers(context.Background(), "owner-token")
+	if err != nil {
+		t.Fatalf("AccountUsers failed: %v", err)
+	}
+	if len(users) != 1 || users[0].PlexID != 703916194 || users[0].Email != "sakib@example.com" {
+		t.Fatalf("unexpected AccountUsers result: %+v", users)
+	}
+
+	if err := c.ShareServer(context.Background(), "owner-token", "Sakib", 0, nil); err != nil {
+		t.Fatalf("ShareServer failed for non-spaced title resolved via AccountUsers: %v", err)
+	}
+	if postV2Calls.Load() != 1 {
+		t.Fatalf("expected 1 POST /api/v2/shared_servers call, got %d", postV2Calls.Load())
+	}
+}
+
+func TestSharedServerUsersAndPendingResolve(t *testing.T) {
+	var sharedIDs []float64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/users",
+			r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/users",
+			r.Method == http.MethodGet && r.URL.Path == "/api/home/users",
+			r.Method == http.MethodGet && r.URL.Path == "/api/v2/server/access_tokens":
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(`<MediaContainer/>`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/shared_servers/owned/accepted":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"id":1001,"machineIdentifier":"other-pms","invited":{"id":880011,"username":"ppoliard","title":"ppoliard","friendlyName":"Patricson Poliard","email":"pat@example.com"}}
+			]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/shared_servers/invites/owned/pending":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"invited":{"id":990022,"username":"dsabelag","title":"dsabelag","email":"dsabelag@example.com"},"sharedServers":[{"id":44310104,"machineIdentifier":"test-mid"}]}
+			]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			id, _ := payload["invitedId"].(float64)
+			sharedIDs = append(sharedIDs, id)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{
+		BaseURL:      srv.URL,
+		Identity:     Identity{ClientIdentifier: "test-mid"},
+		RetryBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := c.SharedServerUsers(context.Background(), "owner-token")
+	if err != nil {
+		t.Fatalf("SharedServerUsers error: %v", err)
+	}
+	if len(users) != 2 || users[0].FriendlyName != "Patricson Poliard" || users[1].Username != "dsabelag" {
+		t.Fatalf("unexpected SharedServerUsers: %+v", users)
+	}
+
+	if err := c.ShareServer(context.Background(), "owner-token", "Patricson Poliard", 0, nil); err != nil {
+		t.Fatalf("ShareServer failed for FriendlyName: %v", err)
+	}
+	if err := c.ShareServer(context.Background(), "owner-token", "dsabelag", 0, nil); err != nil {
+		t.Fatalf("ShareServer failed for pending share user: %v", err)
+	}
+	if len(sharedIDs) != 2 || sharedIDs[0] != 880011 || sharedIDs[1] != 990022 {
+		t.Fatalf("expected invitedIds [880011, 990022], got %v", sharedIDs)
+	}
+}
+
+func TestShareServerV2ZeroLibrariesUpgradeToAll(t *testing.T) {
+	var updateCalled atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":[{"code":1123,"message":"You're already sharing this server"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/shared_servers/owned/accepted":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/shared_servers/invites/owned/pending":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"invited":{"id":990022,"username":"dsabelag"},"sharedServers":[{"id":44310104,"machineIdentifier":"test-mid","allLibraries":false,"librarySectionIds":[],"invited":{"id":990022,"username":"dsabelag"}}]}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/shared_servers/44310104":
+			updateCalled.Store(true)
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if all, ok := payload["allLibraries"].(bool); !ok || !all {
+				t.Fatalf("expected allLibraries upgraded to true when existing share had 0 sections, got %v", payload["allLibraries"])
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":44310104,"allLibraries":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(Options{
+		BaseURL:      srv.URL,
+		Identity:     Identity{ClientIdentifier: "test-mid"},
+		RetryBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ShareServer(context.Background(), "owner-token", "dsabelag", 990022, nil); err != nil {
+		t.Fatalf("ShareServer failed: %v", err)
+	}
+	if !updateCalled.Load() {
+		t.Fatal("expected POST /api/v2/shared_servers/44310104 to be called")
+	}
+}

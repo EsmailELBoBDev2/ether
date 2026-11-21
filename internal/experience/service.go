@@ -62,7 +62,7 @@ type ServiceDeps struct {
 	PluginLibraries   PluginLibraries
 	PluginProbedMedia func(ctx context.Context, v *core.User, title core.Title) (core.MediaInfo, bool)
 	Visibility        Visibility
-	Get             func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
+	Get               func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
 	// CachedGet applies catalogue visibility without a network refresh.
 	CachedGet func(context.Context, core.RatingKey) (*core.Title, error)
 	// CachedGetMany reads current cached rows in bounded batches without refresh.

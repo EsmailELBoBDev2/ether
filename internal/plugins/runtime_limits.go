@@ -24,7 +24,7 @@ func defaultRuntimeCeilings() runtimeCeilings {
 		memory:   2 << 30,
 		deadline: 12 * time.Hour,
 		units:    1 << 60,
-		poolSize: wasm.MaxPoolSize,
+		poolSize: wasm.DefaultPoolCeiling,
 		fetch:    8 << 30,
 		member:   8 << 30,
 		expanded: 32 << 30,
@@ -124,6 +124,17 @@ func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
 	}
 	return l
 }
+func (m *Manager) grantedPoolSize(man Manifest, c runtimeCeilings) int {
+	if m != nil && m.runtimeConfig().RuntimeOverrides[man.ID].PoolSize > 0 {
+		return c.poolSize
+	}
+	n := min(wasm.DefaultPoolSize, c.poolSize)
+	if man.Ether != nil && man.Ether.Runtime.Limits != nil && man.Ether.Runtime.Limits.PoolSize > 0 {
+		n = min(man.Ether.Runtime.Limits.PoolSize, c.poolSize)
+	}
+	return n
+}
+
 func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 	if man.RuntimeKind() != "hosted" {
 		return nil
@@ -135,7 +146,7 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
 		Deadline:    l.Deadline.String(),
 		UnitBudget:  l.UnitBudget,
-		PoolSize:    l.PoolSize,
+		PoolSize:    m.grantedPoolSize(man, c),
 	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
@@ -169,7 +180,7 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB, instances at most 4, and resource limits must not be negative.", nil)
+			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, and resource limits must not be negative.", wasm.MaxPoolSize), nil)
 			return
 		}
 		if req.Limits.Deadline != "" {

@@ -995,7 +995,14 @@ Each `indexer_search` candidate carries `indexer` and `indexerId`, and video
 release names also receive `score`, `resolution`, `source` and `codec` scored
 against `profile` (or the owner's default quality profile when `profile` is
 empty); non-video candidates leave those four fields empty, and unknown profile
-names are rejected. Invalid categories are rejected. Stremio/addon sources do
+names are rejected. Same-origin `nzbUrl` and `torrentUrl` links returned by
+`indexer_search` have the indexer's API key and secrets stripped (standard
+`apikey` query parameters are removed; non-standard credential placements use
+URL-safe origin-confined tokens), and Ether re-attaches credentials only at
+fetch time on the originating indexer's origin when the candidate is handed
+back with `indexerId`. Release IDs, vault keys and the `usenet_check` cache are
+keyed on the key-less link, so plugins can persist candidates in KV without
+storing indexer API keys and survive API key rotation. Invalid categories are rejected. Stremio/addon sources do
 not support category filters and reject scoped searches. Omit `category` for
 the default media search. Results and acquired files are cached separately by
 category and file selection. The wire shapes are documented in
@@ -1521,8 +1528,12 @@ recovery on a later owner action after restart; Ether does not resume eagerly.
 archive and catalogue-item resources within owner-controlled global/per-plugin ceilings.
 Defaults: 2 GiB memory ceiling (up to 4 GiB; omitted heap request stays 32 MiB),
 12h, effectively unlimited background work units, 2 hosted WASM instances (`poolSize`,
-requestable up to the owner ceiling, default and max 4; background jobs and sync calls
-hold at most `poolSize - 1` instances so viewer calls keep one), 8 GiB download/member,
+requestable up to the owner ceiling, default ceiling 4 and raisable up to 16; with
+`poolSize >= 3` at least one instance is reserved exclusively for playback resolves
+and background jobs hold at most `poolSize - 2`; with `poolSize == 2` background jobs
+and frontend adapters share at most one instance so playback resolves and health
+checks keep one free; queued resolves also take priority and start their execution
+deadline once an instance is acquired), 8 GiB download/member,
 32 GiB total expansion, 65,535 archive members, and 2,000,000 stored catalogue items
 (`maxItems`, with no upper cap when raised by the owner). Remote plugins can
 also request data and `maxItems` limits. The library cache quota further bounds
@@ -1643,7 +1654,7 @@ func (p Plugins) Catalogue() (indexURL, publicKey string) {
 | `memoryBytes` | `uint64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | zero means effectively unlimited |
-| `poolSize` | `int` | may be omitted (see validation for conditions) | hosted instance pool ceiling; default and max 4 |
+| `poolSize` | `int` | may be omitted (see validation for conditions) | hosted instance pool ceiling; default 4, max 16 |
 
 
 ## Source: internal/config/plugins.go#PluginRuntimeLimits
@@ -1660,7 +1671,7 @@ type PluginRuntimeLimits struct {
 	MemoryBytes          uint64 `json:"memoryBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"` // zero means effectively unlimited
-	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default and max 4
+	PoolSize             int    `json:"poolSize,omitempty"`   // hosted instance pool ceiling; default 4, max 16
 }
 ``````
 
@@ -2508,7 +2519,10 @@ type ReleaseFile struct {
 // SourceCandidate is one Ether-found release for a resolver to rank,
 // carrying the release-hint fields plus the facts matching needs.
 // Torrent candidates carry their infoHash, magnet, and/or torrentUrl and never
-// populate nzbUrl; Usenet candidates populate nzbUrl.
+// populate nzbUrl; Usenet candidates populate nzbUrl. Same-origin download
+// links returned by indexer_search are stripped of indexer API keys and
+// secrets (Ether re-attaches them at fetch time on the originating indexer's
+// origin), so plugins can safely cache candidates without storing credentials.
 type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`
@@ -3695,7 +3709,7 @@ const DefaultMaxPluginItems = 2_000_000
 | `readBytes` | `int64` | may be omitted (see validation for conditions) | ReadBytes is the granted per-call byte ceiling for cache.read, archive.open and archive.read, derived from MemoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB). |
 | `deadline` | `string` | may be omitted (see validation for conditions) | Deadline and UnitBudget are the granted ceilings in manifests/detail and the active route's effective call limits when read via runtime.limits. Go duration; default 12h ceiling, clamped per route on active calls |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) | default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline |
-| `poolSize` | `int` | may be omitted (see validation for conditions) | PoolSize is the hosted WASM instance pool size (default 2, ceiling owner-controlled up to 4). Background jobs hold at most PoolSize-1 instances so interactive calls retain a free instance. |
+| `poolSize` | `int` | may be omitted (see validation for conditions) | PoolSize is the hosted WASM instance pool size (default 2; default owner ceiling 4, raisable up to 16). With poolSize >= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize-2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free. |
 
 
 ## Source: internal/plugins/contract.go#RuntimeLimits
@@ -3719,8 +3733,11 @@ type RuntimeLimits struct {
 	// and the active route's effective call limits when read via runtime.limits.
 	Deadline   string `json:"deadline,omitempty"`   // Go duration; default 12h ceiling, clamped per route on active calls
 	UnitBudget int64  `json:"unitBudget,omitempty"` // default effectively unlimited ceiling; viewer routes clamp to 10,000 units/s of Deadline
-	// PoolSize is the hosted WASM instance pool size (default 2, ceiling owner-controlled up to 4).
-	// Background jobs hold at most PoolSize-1 instances so interactive calls retain a free instance.
+	// PoolSize is the hosted WASM instance pool size (default 2; default owner
+	// ceiling 4, raisable up to 16). With poolSize >= 3 at least one instance is
+	// reserved exclusively for playback resolves and background jobs hold at
+	// most poolSize-2; with poolSize == 2 background jobs and frontend adapters
+	// share at most one instance so resolves and health checks keep one free.
 	PoolSize int `json:"poolSize,omitempty"`
 }
 ``````
@@ -5450,6 +5467,9 @@ type Request struct {
 	// (playback resolution). It never yields to background throttling.
 	// Host-side only; never sent to the plugin.
 	Foreground bool `json:"-"`
+	// Deadline carries the effective per-call deadline computed by the manager
+	// (including live overrides) for hosted runtimes. Host-side only.
+	Deadline time.Duration `json:"-"`
 }
 ``````
 
@@ -13846,7 +13866,7 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 		headers = cloneHeaders(headers)
 		headers["X-Ether-Locale"] = req.Locale
 	}
-	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground})
+	resp, err := r.p.Call(ctx, wasm.Request{Op: req.Op, ID: req.ID, Method: req.Method, Path: req.Path, Query: q, Headers: headers, Body: req.Body, BodyBase64: req.BodyBase64, ContentType: req.ContentType, Foreground: req.Foreground, Deadline: req.Deadline})
 	if err != nil {
 		return Response{}, err
 	}
@@ -23103,7 +23123,7 @@ func defaultRuntimeCeilings() runtimeCeilings {
 		memory:   2 << 30,
 		deadline: 12 * time.Hour,
 		units:    1 << 60,
-		poolSize: wasm.MaxPoolSize,
+		poolSize: wasm.DefaultPoolCeiling,
 		fetch:    8 << 30,
 		member:   8 << 30,
 		expanded: 32 << 30,
@@ -23234,6 +23254,21 @@ func runtimeLimitsWithCeilings(m Manifest, c runtimeCeilings) wasm.Limits {
 }
 ``````
 
+## Source: internal/plugins/runtime_limits.go#*Manager.grantedPoolSize
+
+``````
+func (m *Manager) grantedPoolSize(man Manifest, c runtimeCeilings) int {
+	if m != nil && m.runtimeConfig().RuntimeOverrides[man.ID].PoolSize > 0 {
+		return c.poolSize
+	}
+	n := min(wasm.DefaultPoolSize, c.poolSize)
+	if man.Ether != nil && man.Ether.Runtime.Limits != nil && man.Ether.Runtime.Limits.PoolSize > 0 {
+		n = min(man.Ether.Runtime.Limits.PoolSize, c.poolSize)
+	}
+	return n
+}
+``````
+
 ## Source: internal/plugins/runtime_limits.go#*Manager.grantedRuntimeLimits
 
 ``````
@@ -23248,7 +23283,7 @@ func (m *Manager) grantedRuntimeLimits(man Manifest) *RuntimeLimits {
 		ReadBytes:   wasm.DataReadBytes(l.MemoryBytes),
 		Deadline:    l.Deadline.String(),
 		UnitBudget:  l.UnitBudget,
-		PoolSize:    l.PoolSize,
+		PoolSize:    m.grantedPoolSize(man, c),
 	}
 	r.FetchBytes = c.fetch
 	r.ArchiveMemberBytes = c.member
@@ -23287,7 +23322,7 @@ func (m *Manager) handleRuntimeLimits(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.Limits.MemoryBytes > wasm.MaxMemoryBytes || req.Limits.UnitBudget < 0 || req.Limits.PoolSize < 0 || req.Limits.PoolSize > wasm.MaxPoolSize || req.Limits.FetchBytes < 0 || req.Limits.ArchiveMemberBytes < 0 || req.Limits.ArchiveExpandedBytes < 0 || req.Limits.ArchiveMembers < 0 || req.Limits.ArchiveMembers > 1000000 || req.Limits.MaxItems < 0 {
-			writeErr(w, http.StatusBadRequest, "validation", "Memory must be at most 4 GiB, instances at most 4, and resource limits must not be negative.", nil)
+			writeErr(w, http.StatusBadRequest, "validation", fmt.Sprintf("Memory must be at most 4 GiB, instances at most %d, and resource limits must not be negative.", wasm.MaxPoolSize), nil)
 			return
 		}
 		if req.Limits.Deadline != "" {
@@ -26458,12 +26493,38 @@ func GrantedLimitsPath(path string) bool {
 
 ``````
 // BackgroundPoolPath reports whether path is a background job, sync, or event
-// delivery call bounded to at most PoolSize-1 service instances so interactive
-// viewer resolves, frontend adapter requests and health checks always retain at
-// least one free instance.
+// delivery call bounded below PoolSize so interactive viewer resolves,
+// frontend adapter requests and health checks retain free instances.
 func BackgroundPoolPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
 	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p) || p == "/ether/event"
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#ResolvePoolPath
+
+``````
+// ResolvePoolPath reports whether path is a playback resolution or stream-open
+// call that receives priority access and a reserved pool lane so slow
+// frontend-adapter requests or background jobs cannot starve playback.
+func ResolvePoolPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	if strings.HasPrefix(p, "/ether/open") || strings.HasPrefix(p, "/stream/") {
+		return true
+	}
+	return strings.HasPrefix(p, "/ether/v1/kinds/") &&
+		(strings.HasSuffix(p, "/resolve") || strings.HasSuffix(p, "/match"))
+}
+``````
+
+## Source: internal/plugins/wasm/background.go#FrontendAdapterPath
+
+``````
+// FrontendAdapterPath reports whether path targets a plugin-contributed
+// frontend adapter route (/ether/v1/frontend/*).
+func FrontendAdapterPath(path string) bool {
+	p, _, _ := strings.Cut(path, "?")
+	return strings.HasPrefix(p, "/ether/v1/frontend/") && len(p) > len("/ether/v1/frontend/")
 }
 ``````
 
@@ -28059,6 +28120,10 @@ type Request struct {
 	// Foreground keeps an /ether/job/ call off the background throttle
 	// because a viewer is waiting on it. Host-side only.
 	Foreground bool `json:"-"`
+	// Deadline optionally tightens the call deadline for this invocation
+	// (e.g. a live per-plugin override). Zero uses the plugin's Limits.
+	// Host-side only.
+	Deadline time.Duration `json:"-"`
 }
 ``````
 
@@ -28147,9 +28212,13 @@ const (
 	ArchiveExtractUnitsPerMiB = 10
 	// MaxMemoryBytes is the hard ceiling for a plugin instance.
 	MaxMemoryBytes = 4 << 30
-	// DefaultPoolSize and MaxPoolSize bound instances per hosted plugin pool.
-	DefaultPoolSize = 2
-	MaxPoolSize     = 4
+	// DefaultPoolSize, DefaultPoolCeiling and MaxPoolSize bound instances per
+	// hosted plugin pool. Plugins get DefaultPoolSize by default, manifest
+	// requests clamp to the owner ceiling (default DefaultPoolCeiling), and
+	// owners may raise the ceiling up to MaxPoolSize.
+	DefaultPoolSize    = 2
+	DefaultPoolCeiling = 4
+	MaxPoolSize        = 16
 	// MinDataReadBytes and MaxDataReadBytes bound the per-call readBytes grant
 	// derived from memoryBytes: clamp(memoryBytes/4, 8 MiB, 512 MiB).
 	MinDataReadBytes = 8 << 20
@@ -28357,7 +28426,7 @@ type Limits struct {
 	UnitBudget  int64         // per handle call; default UnitsForDeadline(Deadline)
 	Stremio     bool          // plugin answers Stremio add-on routes (uses StremioDeadline)
 	Busy        func() bool   // background work yields while playback or host load is high
-	PoolSize    int           // instances per pool; default DefaultPoolSize (2), max MaxPoolSize (4)
+	PoolSize    int           // instances per pool; default DefaultPoolSize (2), default ceiling DefaultPoolCeiling (4), max MaxPoolSize (16)
 	// Hot-path budgets. A manifest may lower these, never raise them:
 	// normalize clamps to the defaults below.
 	RankPerCandidate time.Duration // default (and max) 2ms
@@ -28954,6 +29023,21 @@ type poolLeaseInfo struct {
 }
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#poolWaiter.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/wasm/wasm.go#poolWaiter
+
+``````
+type poolWaiter struct {
+	ch       chan instance
+	priority bool
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#pool.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -28966,15 +29050,16 @@ type poolLeaseInfo struct {
 type pool struct {
 	makeFn      func(context.Context) (instance, error)
 	size        int
-	idle        chan instance
-	slots       chan struct{} // one token per live instance: idle, lent or building
 	warm        bool
-	mu          sync.Mutex // orders returning an instance against close and protects counters/holders
-	done        atomic.Bool
-	doneCh      chan struct{}
+	mu          sync.Mutex // guards done, idle, live, inUse, building, waiting, waiters and holders
+	done        bool
+	idle        []instance
+	live        int // idle + lent + building + in-flight waiter handoffs (<= size)
 	inUse       int
 	building    int
 	waiting     int
+	prioWaiters []*poolWaiter
+	normWaiters []*poolWaiter
 	exhaustions atomic.Int64
 	nextLease   uint64
 	holders     map[uint64]poolLeaseInfo
@@ -28988,9 +29073,7 @@ func newPool(size int, makeFn func(context.Context) (instance, error)) *pool {
 	return &pool{
 		makeFn:  makeFn,
 		size:    size,
-		idle:    make(chan instance, size),
-		slots:   make(chan struct{}, size),
-		doneCh:  make(chan struct{}),
+		idle:    make([]instance, 0, size),
 		holders: make(map[uint64]poolLeaseInfo, size),
 	}
 }
@@ -29006,12 +29089,20 @@ func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool
 }
 ``````
 
-## Source: internal/plugins/wasm/wasm.go#*pool.acquireLease
+## Source: internal/plugins/wasm/wasm.go#*pool.isClosed
 
 ``````
-func (p *pool) acquireLease(route string, track bool) uint64 {
+func (p *pool) isClosed() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.done
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.acquireLeaseLocked
+
+``````
+func (p *pool) acquireLeaseLocked(route string, track bool) uint64 {
 	p.inUse++
 	if !track {
 		return 0
@@ -29023,12 +29114,10 @@ func (p *pool) acquireLease(route string, track bool) uint64 {
 }
 ``````
 
-## Source: internal/plugins/wasm/wasm.go#*pool.releaseLease
+## Source: internal/plugins/wasm/wasm.go#*pool.releaseLeaseLocked
 
 ``````
-func (p *pool) releaseLease(leaseID uint64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *pool) releaseLeaseLocked(leaseID uint64) {
 	if leaseID != 0 {
 		if _, ok := p.holders[leaseID]; ok {
 			delete(p.holders, leaseID)
@@ -29094,17 +29183,11 @@ func (p *pool) snapshot() PoolStats {
 }
 ``````
 
-## Source: internal/plugins/wasm/wasm.go#*pool.buildInstance
+## Source: internal/plugins/wasm/wasm.go#*pool.runMakeFn
 
 ``````
-func (p *pool) buildInstance(ctx context.Context) (in instance, err error) {
-	p.mu.Lock()
-	p.building++
-	p.mu.Unlock()
+func (p *pool) runMakeFn(ctx context.Context) (in instance, err error) {
 	defer func() {
-		p.mu.Lock()
-		p.building--
-		p.mu.Unlock()
 		if r := recover(); r != nil {
 			in = nil
 			err = &Error{Status: StatusError, Message: fmt.Sprintf("plugin instance build panic: %v", r), Trap: true}
@@ -29118,7 +29201,7 @@ func (p *pool) buildInstance(ctx context.Context) (in instance, err error) {
 
 ``````
 func (p *pool) get(ctx context.Context) (instance, error) {
-	in, _, err := p.getInternal(ctx, "", false)
+	in, _, err := p.getInternal(ctx, "", false, false)
 	return in, err
 }
 ``````
@@ -29127,64 +29210,159 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 
 ``````
 func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64, error) {
-	return p.getInternal(ctx, route, true)
+	return p.getInternal(ctx, route, true, false)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.getForRoutePriority
+
+``````
+func (p *pool) getForRoutePriority(ctx context.Context, route string, priority bool) (instance, uint64, error) {
+	return p.getInternal(ctx, route, true, priority)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.removeWaiterLocked
+
+``````
+func (p *pool) removeWaiterLocked(target *poolWaiter) bool {
+	list := &p.normWaiters
+	if target.priority {
+		list = &p.prioWaiters
+	}
+	for i, w := range *list {
+		if w == target {
+			copy((*list)[i:], (*list)[i+1:])
+			(*list)[len(*list)-1] = nil
+			*list = (*list)[:len(*list)-1]
+			return true
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.popWaiterLocked
+
+``````
+func (p *pool) popWaiterLocked() *poolWaiter {
+	if len(p.prioWaiters) > 0 {
+		w := p.prioWaiters[0]
+		copy(p.prioWaiters, p.prioWaiters[1:])
+		p.prioWaiters[len(p.prioWaiters)-1] = nil
+		p.prioWaiters = p.prioWaiters[:len(p.prioWaiters)-1]
+		return w
+	}
+	if len(p.normWaiters) > 0 {
+		w := p.normWaiters[0]
+		copy(p.normWaiters, p.normWaiters[1:])
+		p.normWaiters[len(p.normWaiters)-1] = nil
+		p.normWaiters = p.normWaiters[:len(p.normWaiters)-1]
+		return w
+	}
+	return nil
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.hasWaitersLocked
+
+``````
+func (p *pool) hasWaitersLocked() bool {
+	return len(p.prioWaiters) > 0 || len(p.normWaiters) > 0
 }
 ``````
 
 ## Source: internal/plugins/wasm/wasm.go#*pool.getInternal
 
 ``````
-func (p *pool) getInternal(ctx context.Context, route string, track bool) (instance, uint64, error) {
-	if p.done.Load() {
+func (p *pool) getInternal(ctx context.Context, route string, track, priority bool) (instance, uint64, error) {
+	p.mu.Lock()
+	if p.done {
+		p.mu.Unlock()
 		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
-	select {
-	case in := <-p.idle:
-		return in, p.acquireLease(route, track), nil
-	default:
-	}
-	p.mu.Lock()
-	p.waiting++
-	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		p.waiting--
+	if len(p.idle) > 0 && (priority || len(p.prioWaiters) == 0) {
+		n := len(p.idle) - 1
+		in := p.idle[n]
+		p.idle[n] = nil
+		p.idle = p.idle[:n]
+		leaseID := p.acquireLeaseLocked(route, track)
 		p.mu.Unlock()
-	}()
-	if p.warm {
-		// A free slot means an earlier build failed; retry it off-path.
-		p.refill()
-		select {
-		case in := <-p.idle:
-			return in, p.acquireLease(route, track), nil
-		case <-p.doneCh:
-			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
-		case <-ctx.Done():
-			return nil, 0, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
-		}
+		return in, leaseID, nil
 	}
-	select {
-	case in := <-p.idle:
-		return in, p.acquireLease(route, track), nil
-	case p.slots <- struct{}{}:
-		if p.done.Load() {
-			<-p.slots
-			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
-		}
-		in, err := p.buildInstance(ctx)
+	if !p.warm && p.live < p.size {
+		p.live++
+		p.building++
+		p.mu.Unlock()
+		in, err := p.runMakeFn(ctx)
 		if err != nil {
-			<-p.slots
+			p.mu.Lock()
+			p.building--
+			p.live--
+			// If this caller gave up while other waiters are queued, keep a
+			// replacement build going so waiting callers do not stall.
+			if ctx.Err() != nil && p.hasWaitersLocked() {
+				p.refillLocked()
+			}
+			p.mu.Unlock()
 			return nil, 0, err
 		}
-		if p.done.Load() {
+		p.mu.Lock()
+		p.building--
+		if p.done {
+			p.live--
+			p.mu.Unlock()
 			in.closeInstance()
-			<-p.slots
 			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		}
-		return in, p.acquireLease(route, track), nil
-	case <-p.doneCh:
-		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		leaseID := p.acquireLeaseLocked(route, track)
+		p.mu.Unlock()
+		return in, leaseID, nil
+	}
+	w := &poolWaiter{ch: make(chan instance, 1), priority: priority}
+	if priority {
+		p.prioWaiters = append(p.prioWaiters, w)
+	} else {
+		p.normWaiters = append(p.normWaiters, w)
+	}
+	p.waiting++
+	// A free slot means an earlier build failed or retired; retry it off-path.
+	if p.live < p.size {
+		p.refillLocked()
+	}
+	p.mu.Unlock()
+
+	select {
+	case in, ok := <-w.ch:
+		p.mu.Lock()
+		p.waiting--
+		if !ok || in == nil {
+			p.mu.Unlock()
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
+		if p.done {
+			p.live--
+			p.mu.Unlock()
+			in.closeInstance()
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		}
+		leaseID := p.acquireLeaseLocked(route, track)
+		p.mu.Unlock()
+		return in, leaseID, nil
 	case <-ctx.Done():
+		p.mu.Lock()
+		p.waiting--
+		removed := p.removeWaiterLocked(w)
+		p.mu.Unlock()
+		if !removed {
+			// A producer already popped w and delivered (or closed) w.ch.
+			if in, ok := <-w.ch; ok && in != nil {
+				p.adopt(in)
+			}
+			if p.isClosed() {
+				return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+			}
+		}
 		return nil, 0, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
 }
@@ -29202,36 +29380,57 @@ func (p *pool) put(in instance, healthy bool) {
 
 ``````
 func (p *pool) putLease(in instance, leaseID uint64, healthy bool) {
-	p.releaseLease(leaseID)
+	p.mu.Lock()
+	p.releaseLeaseLocked(leaseID)
 	if !healthy {
-		in.closeInstance()
-		<-p.slots
-		if p.warm {
-			p.refill()
+		p.live--
+		needRefill := p.warm || p.hasWaitersLocked()
+		if needRefill {
+			p.refillLocked()
 		}
+		p.mu.Unlock()
+		in.closeInstance()
 		return
 	}
-	p.adopt(in)
+	closeInst := p.adoptLocked(in)
+	p.mu.Unlock()
+	if closeInst {
+		in.closeInstance()
+	}
 }
 ``````
 
 ## Source: internal/plugins/wasm/wasm.go#*pool.adopt
 
 ``````
-// adopt returns a usable instance to the idle set, or closes it when the
-// pool is closed or already full.
+// adopt returns a usable instance to the highest-priority waiter or idle set,
+// or closes it when the pool is closed or already full.
 func (p *pool) adopt(in instance) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.done.Load() {
-		select {
-		case p.idle <- in:
-			return
-		default:
+	closeInst := p.adoptLocked(in)
+	p.mu.Unlock()
+	if closeInst {
+		in.closeInstance()
+	}
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.adoptLocked
+
+``````
+func (p *pool) adoptLocked(in instance) (closeInst bool) {
+	if !p.done {
+		if w := p.popWaiterLocked(); w != nil {
+			w.ch <- in
+			return false
+		}
+		if len(p.idle) < p.size {
+			p.idle = append(p.idle, in)
+			return false
 		}
 	}
-	in.closeInstance()
-	<-p.slots
+	p.live--
+	return true
 }
 ``````
 
@@ -29241,43 +29440,61 @@ func (p *pool) adopt(in instance) {
 // fill builds instances synchronously until the pool is full or a build
 // fails. Plugins call it at load, off any request path.
 func (p *pool) fill() {
-	for !p.done.Load() {
-		select {
-		case p.slots <- struct{}{}:
-		default:
+	for {
+		p.mu.Lock()
+		if p.done || p.live >= p.size {
+			p.mu.Unlock()
 			return
 		}
-		in, err := p.buildInstance(context.Background())
+		p.live++
+		p.building++
+		p.mu.Unlock()
+		in, err := p.runMakeFn(context.Background())
 		if err != nil {
-			<-p.slots
+			p.mu.Lock()
+			p.building--
+			p.live--
+			p.mu.Unlock()
 			return
 		}
-		p.adopt(in)
+		p.mu.Lock()
+		p.building--
+		closeInst := p.adoptLocked(in)
+		p.mu.Unlock()
+		if closeInst {
+			in.closeInstance()
+		}
 	}
 }
 ``````
 
-## Source: internal/plugins/wasm/wasm.go#*pool.refill
+## Source: internal/plugins/wasm/wasm.go#*pool.refillLocked
 
 ``````
-// refill builds one replacement in the background if a slot is free. The
-// slot is held while building, so builds never exceed the pool size.
-func (p *pool) refill() {
-	if p.done.Load() {
+// refillLocked builds one replacement in the background if a slot is free.
+// Caller must hold p.mu.
+func (p *pool) refillLocked() {
+	if p.done || p.live >= p.size {
 		return
 	}
-	select {
-	case p.slots <- struct{}{}:
-	default:
-		return
-	}
+	p.live++
+	p.building++
 	go func() {
-		in, err := p.buildInstance(context.Background())
+		in, err := p.runMakeFn(context.Background())
 		if err != nil {
-			<-p.slots
+			p.mu.Lock()
+			p.building--
+			p.live--
+			p.mu.Unlock()
 			return
 		}
-		p.adopt(in)
+		p.mu.Lock()
+		p.building--
+		closeInst := p.adoptLocked(in)
+		p.mu.Unlock()
+		if closeInst {
+			in.closeInstance()
+		}
 	}()
 }
 ``````
@@ -29287,18 +29504,23 @@ func (p *pool) refill() {
 ``````
 func (p *pool) close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.done.Swap(true) && p.doneCh != nil {
-		close(p.doneCh)
+	if p.done {
+		p.mu.Unlock()
+		return
 	}
-	for {
-		select {
-		case in := <-p.idle:
-			in.closeInstance()
-			<-p.slots
-		default:
-			return
-		}
+	p.done = true
+	toClose := p.idle
+	p.idle = nil
+	p.live -= len(toClose)
+	waiters := append(p.prioWaiters, p.normWaiters...)
+	p.prioWaiters = nil
+	p.normWaiters = nil
+	for _, w := range waiters {
+		close(w.ch)
+	}
+	p.mu.Unlock()
+	for _, in := range toClose {
+		in.closeInstance()
 	}
 }
 ``````
@@ -29364,19 +29586,21 @@ func (e *Engine) Close() error {
 // Plugin is one loaded hosted plugin. Call serves the request ABI;
 // RankBatch and CondMatch serve the hot path. Safe for concurrent use.
 type Plugin struct {
-	id, version string
-	eng         *Engine
-	host        Host
-	lim         Limits
-	caps        caps
-	svc         *pool
-	hot         *pool
-	jobSlots    chan struct{} // sized PoolSize-1 so background jobs leave >= 1 instance for viewer calls
-	closeCh     chan struct{}
-	stats       counters
-	memo        *memo
-	source      string // JS source (rebuild counts / cold start), raw: ""
-	closed      atomic.Bool
+	id, version     string
+	eng             *Engine
+	host            Host
+	lim             Limits
+	caps            caps
+	svc             *pool
+	hot             *pool
+	jobSlots        chan struct{} // PoolSize>=3: sized PoolSize-2 so background jobs leave interactive + resolve slots
+	nonResolveSlots chan struct{} // PoolSize>=3: sized PoolSize-1 so playback resolves always keep >= 1 reserved instance
+	sharedWorkSlots chan struct{} // PoolSize==2: sized 1 for background jobs + frontend adapters so resolves/health keep 1 instance
+	closeCh         chan struct{}
+	stats           counters
+	memo            *memo
+	source          string // JS source (rebuild counts / cold start), raw: ""
+	closed          atomic.Bool
 }
 ``````
 
@@ -29385,8 +29609,12 @@ type Plugin struct {
 ``````
 func (p *Plugin) initPools(makeSvc, makeHot func(context.Context) (instance, error)) {
 	p.closeCh = make(chan struct{})
-	if p.lim.PoolSize > 1 {
-		p.jobSlots = make(chan struct{}, p.lim.PoolSize-1)
+	switch {
+	case p.lim.PoolSize >= 3:
+		p.nonResolveSlots = make(chan struct{}, p.lim.PoolSize-1)
+		p.jobSlots = make(chan struct{}, p.lim.PoolSize-2)
+	case p.lim.PoolSize == 2:
+		p.sharedWorkSlots = make(chan struct{}, 1)
 	}
 	p.svc = newPool(p.lim.PoolSize, makeSvc)
 	p.hot = newWarmPool(p.lim.PoolSize, makeHot)
@@ -29523,6 +29751,25 @@ func (p *Plugin) Call(ctx context.Context, req Request) (Response, error) {
 }
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#*Plugin.acquireLane
+
+``````
+func (p *Plugin) acquireLane(ctx context.Context, lane chan struct{}, route string) *Error {
+	if lane == nil {
+		return nil
+	}
+	select {
+	case lane <- struct{}{}:
+		return nil
+	case <-p.closeCh:
+		return &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+	case <-ctx.Done():
+		p.recordPoolExhaustion(route)
+		return &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+	}
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#*Plugin.CallDetailed
 
 ``````
@@ -29548,58 +29795,128 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 		return Response{}, out, &Error{Status: StatusError, Message: err.Error(), Err: ErrRequestEncode}
 	}
 	lim := limitsForRequest(p.lim, req.Path)
-	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
-	defer cancel()
+	if req.Deadline > 0 && req.Deadline < lim.Deadline {
+		lim.Deadline = req.Deadline
+		if ViewerRequestPath(req.Path) {
+			lim.UnitBudget = min(lim.UnitBudget, UnitsForDeadline(lim.Deadline))
+		}
+	}
 
+	isResolve := ResolvePoolPath(req.Path)
 	background := strings.HasPrefix(req.Path, "/ether/job/") && !req.Foreground
-	if background {
-		// Wait while Ether is busy BEFORE taking a job slot or plugin instance:
-		// a background job must never hold a pool instance while paused on Busy().
-		if err := WaitBackground(callCtx, lim.Busy); err != nil {
-			out.Status = StatusTimeout
-			return Response{}, out, &Error{Status: StatusTimeout, Message: err.Error(), Err: err}
-		}
-	}
 
-	if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
-		// Cap background jobs/syncs at PoolSize-1 so interactive viewer calls,
-		// frontend adapter requests and health checks always retain a free
-		// instance. The defer runs after p.svc.putLease returns the instance.
-		select {
-		case p.jobSlots <- struct{}{}:
-			defer func() { <-p.jobSlots }()
-		case <-p.closeCh:
-			out.Status = StatusError
-			return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
-		case <-callCtx.Done():
-			p.recordPoolExhaustion(req.Path)
+	var (
+		callCtx context.Context
+		cancel  context.CancelFunc
+		in      instance
+		leaseID uint64
+		cs      *callState
+	)
+	if isResolve {
+		// Playback resolves bound queue waiting separately from execution so a
+		// brief pool wait never eats into the resolve's execution deadline.
+		waitCtx, waitCancel := context.WithTimeout(ctx, lim.Deadline)
+		in, leaseID, err = p.svc.getForRoutePriority(waitCtx, req.Path, true)
+		waitCancel()
+		if err != nil {
+			if errors.Is(err, ErrPoolBusy) {
+				p.recordPoolExhaustion(req.Path)
+			}
 			out.Status = StatusTimeout
-			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+			if e, ok := err.(*Error); ok {
+				out.Status = e.Status
+			}
+			return Response{}, out, err
 		}
-	}
-	cs := &callState{
-		ctx:            callCtx,
-		host:           p.host,
-		lim:            &lim,
-		path:           req.Path,
-		start:          start,
-		last:           start,
-		background:     background,
-		backgroundPool: BackgroundPoolPath(req.Path) && !req.Foreground,
-		units:          BaseCallUnits,
-		logger:         p.eng.logger,
-		pluginID:       p.id,
-	}
-	in, leaseID, err := p.svc.getForRoute(callCtx, req.Path)
-	if err != nil {
-		if errors.Is(err, ErrPoolBusy) {
-			p.recordPoolExhaustion(req.Path)
+		execStart := time.Now()
+		callCtx, cancel = context.WithTimeout(ctx, lim.Deadline)
+		defer cancel()
+		if waited := execStart.Sub(start); waited >= 50*time.Millisecond && req.Headers != nil {
+			if rawDL := req.Headers["X-Ether-Deadline"]; rawDL != "" {
+				if parsed, perr := time.Parse(time.RFC3339, rawDL); perr == nil {
+					hdrs := make(map[string]string, len(req.Headers))
+					for k, v := range req.Headers {
+						hdrs[k] = v
+					}
+					hdrs["X-Ether-Deadline"] = parsed.Add(waited).UTC().Format(time.RFC3339)
+					reqCopy := req
+					reqCopy.Headers = hdrs
+					if updated, merr := json.Marshal(reqCopy); merr == nil {
+						reqJSON = updated
+					}
+				}
+			}
 		}
-		out.Status = StatusTimeout
-		if e, ok := err.(*Error); ok {
-			out.Status = e.Status
+		cs = &callState{
+			ctx:      callCtx,
+			host:     p.host,
+			lim:      &lim,
+			path:     req.Path,
+			start:    execStart,
+			last:     execStart,
+			units:    BaseCallUnits,
+			logger:   p.eng.logger,
+			pluginID: p.id,
 		}
-		return Response{}, out, err
+	} else {
+		callCtx, cancel = context.WithTimeout(ctx, lim.Deadline)
+		defer cancel()
+		if background {
+			// Wait while Ether is busy BEFORE taking a lane slot or plugin instance:
+			// a background job must never hold a pool instance while paused on Busy().
+			if err := WaitBackground(callCtx, lim.Busy); err != nil {
+				out.Status = StatusTimeout
+				return Response{}, out, &Error{Status: StatusTimeout, Message: err.Error(), Err: err}
+			}
+		}
+		// Strict semaphore order (jobSlots -> nonResolveSlots, or sharedWorkSlots -> svc)
+		// with LIFO defer release guarantees putLease returns the instance before
+		// freeing lane slots and prevents deadlocks.
+		if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
+			if laneErr := p.acquireLane(callCtx, p.jobSlots, req.Path); laneErr != nil {
+				out.Status = laneErr.Status
+				return Response{}, out, laneErr
+			}
+			defer func() { <-p.jobSlots }()
+		}
+		if p.nonResolveSlots != nil {
+			if laneErr := p.acquireLane(callCtx, p.nonResolveSlots, req.Path); laneErr != nil {
+				out.Status = laneErr.Status
+				return Response{}, out, laneErr
+			}
+			defer func() { <-p.nonResolveSlots }()
+		}
+		if p.sharedWorkSlots != nil && (BackgroundPoolPath(req.Path) || FrontendAdapterPath(req.Path)) {
+			if laneErr := p.acquireLane(callCtx, p.sharedWorkSlots, req.Path); laneErr != nil {
+				out.Status = laneErr.Status
+				return Response{}, out, laneErr
+			}
+			defer func() { <-p.sharedWorkSlots }()
+		}
+		cs = &callState{
+			ctx:            callCtx,
+			host:           p.host,
+			lim:            &lim,
+			path:           req.Path,
+			start:          start,
+			last:           start,
+			background:     background,
+			backgroundPool: BackgroundPoolPath(req.Path) && !req.Foreground,
+			units:          BaseCallUnits,
+			logger:         p.eng.logger,
+			pluginID:       p.id,
+		}
+		in, leaseID, err = p.svc.getForRoutePriority(callCtx, req.Path, false)
+		if err != nil {
+			if errors.Is(err, ErrPoolBusy) {
+				p.recordPoolExhaustion(req.Path)
+			}
+			out.Status = StatusTimeout
+			if e, ok := err.(*Error); ok {
+				out.Status = e.Status
+			}
+			return Response{}, out, err
+		}
 	}
 	healthy := false
 	defer func() {
@@ -29946,7 +30263,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
 | `ether.runtime.limits.fetchBytes` | `integer` | false | {"default":8589934592,"description":"Clamped to the owner ceiling; omitted or zero uses that ceiling.","minimum":0} |
 | `ether.runtime.limits.maxItems` | `integer` | false | {"default":2000000,"description":"Maximum stored items across the plugin's content libraries; clamped to the owner ceiling unless overridden per plugin.","minimum":0} |
 | `ether.runtime.limits.memoryBytes` | `integer` | false | {"default":33554432,"minimum":0} |
-| `ether.runtime.limits.poolSize` | `integer` | false | {"default":2,"description":"Hosted WASM instance pool size; default 2, clamped to the owner ceiling (max 4). Background jobs hold at most poolSize - 1 instances so interactive viewer and health calls keep a free instance.","minimum":0} |
+| `ether.runtime.limits.poolSize` | `integer` | false | {"default":2,"description":"Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize \u003e= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.","minimum":0} |
 | `ether.runtime.limits.unitBudget` | `integer` | false | {"default":1152921504606847000,"minimum":0} |
 | `ether.runtime.module` | `string` | false | {"description":"WASM file. Hosted only."} |
 | `ether.schedule` | `any` | false | {"anyOf":[{"type":"string"},{"items":{"properties":{"call":{"pattern":"^/","type":"string"},"every":{"description":"Go duration, at least 15m.","type":"string"}},"required":["every","call"],"type":"object"},"type":"array"}]} |
@@ -31700,7 +32017,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
                 },
                 "poolSize": {
                   "default": 2,
-                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (max 4). Background jobs hold at most poolSize - 1 instances so interactive viewer and health calls keep a free instance.",
+                  "description": "Hosted WASM instance pool size; default 2, clamped to the owner ceiling (default 4, raisable up to 16). With poolSize >= 3 at least one instance is reserved exclusively for playback resolves and background jobs hold at most poolSize - 2; with poolSize == 2 background jobs and frontend adapters share at most one instance so resolves and health checks keep one free.",
                   "minimum": 0,
                   "type": "integer"
                 },
@@ -32003,11 +32320,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, 
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Torrent download or details page link for torrent indexers; torrent candidates never populate nzbUrl."
+          "description": "Key-less torrent download or details page link for torrent indexers (same-origin indexer credentials are stripped and re-attached by Ether at fetch time when handed back with indexerId); torrent candidates never populate nzbUrl."
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Usenet NZB download link; populated only for Usenet candidates."
+          "description": "Key-less Usenet NZB download link populated only for Usenet candidates. Same-origin indexer API keys and secrets are stripped so candidates are safe to cache in plugin storage; Ether re-attaches credentials on same-origin fetches when handed back with indexerId."
         },
         "title": {
           "type": "string"
@@ -32364,16 +32681,21 @@ SDK) inside a hosted handler returns the **effective** `deadline` and
 call spends its whole budget, the error names the route and limit (for example
 `used the whole 5 s budget for /ether/v1/kinds/games/resolve (50010/50000 units)`).
 
-Plugins request higher memory, time, instance pool (`poolSize`, default 2, max 4),
-download or archive limits in `ether.runtime.limits` in `manifest.json`. Background
-jobs and sync calls hold at most `poolSize - 1` instances so viewer, adapter and
-health calls retain a free instance; waiting for a busy instance returns a retryable
-busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
+Plugins request higher memory, time, instance pool (`poolSize`, default 2, default owner ceiling 4, raisable up to 16),
+download or archive limits in `ether.runtime.limits` in `manifest.json`. With
+`poolSize >= 3`, at least one instance is reserved exclusively for playback resolves
+(`/ether/v1/kinds/*/resolve`, `/match`, `/ether/open*`, `/stream/*`) and background
+jobs/sync calls hold at most `poolSize - 2` instances; with `poolSize == 2`,
+background jobs and frontend-adapter requests (`/ether/v1/frontend/*`) share at most
+one instance so playback resolves and health checks retain a free instance. Queued
+playback resolves take priority ahead of non-resolve waiters and start their execution
+deadline once an instance is acquired (with a bounded wait limit); waiting for a busy
+instance returns a retryable busy error instead of crashing the plugin or cancelling running jobs. Owners raise or lower the server-wide
 ceilings in **Plugins → Settings**, or override them for a single plugin in that
 plugin's drawer (**Settings → More options**, persisted in `plugins.runtimeLimits`
 and `plugins.runtimeOverrides[pluginId]` via `PUT /api/plugins/runtime-limits`).
 A per-plugin override can raise a trusted plugin above the global ceiling (up to
-4 GiB WASM memory and one year for background work). Viewer routes stay capped at
+4 GiB WASM memory, 16 pool instances, and one year for background work). Viewer routes stay capped at
 their route deadlines so browsing and playback remain responsive; offload multi-step
 or long-running work to `/ether/job/*` (including `{pending: true, retryInMs, job}`
 from kind `/resolve` and `/match`).
@@ -43843,7 +44165,10 @@ type ReleaseFile struct {
 ``````
 // SourceCandidate is one Ether-found release for a resolver to rank.
 // Torrent candidates carry infoHash, magnet, and/or torrentUrl and never set
-// nzbUrl; Usenet candidates carry nzbUrl.
+// nzbUrl; Usenet candidates carry nzbUrl. Same-origin download links from
+// indexer_search are stripped of indexer API keys and secrets so candidates
+// can be cached safely; Ether re-attaches credentials at fetch time on the
+// originating indexer's origin using indexerId.
 type SourceCandidate struct {
 	InfoHash   string `json:"infoHash,omitempty"`
 	Magnet     string `json:"magnet,omitempty"`
@@ -48772,7 +49097,7 @@ type RuntimeDecl struct {
 | `readBytes` | `int64` | may be omitted (see validation for conditions) |  |
 | `deadline` | `string` | may be omitted (see validation for conditions) |  |
 | `unitBudget` | `int64` | may be omitted (see validation for conditions) |  |
-| `poolSize` | `int` | may be omitted (see validation for conditions) |  |
+| `poolSize` | `int` | may be omitted (see validation for conditions) | PoolSize requests the hosted WASM instance pool size (default 2; default owner ceiling 4, raisable up to 16). |
 
 
 ## Source: sdk/go/types.go#RuntimeLimits
@@ -48790,7 +49115,9 @@ type RuntimeLimits struct {
 	ReadBytes            int64  `json:"readBytes,omitempty"`
 	Deadline             string `json:"deadline,omitempty"`
 	UnitBudget           int64  `json:"unitBudget,omitempty"`
-	PoolSize             int    `json:"poolSize,omitempty"`
+	// PoolSize requests the hosted WASM instance pool size (default 2; default
+	// owner ceiling 4, raisable up to 16).
+	PoolSize int `json:"poolSize,omitempty"`
 }
 ``````
 
@@ -51461,8 +51788,9 @@ at most 1,024 UTF-8 bytes. The drawer supports progress and cancellation.
 
 Ether uses owner-controlled global/per-plugin ceilings under Plugins: default
 2 GiB memory (up to wasm32 4 GiB), 12 hours, effectively unlimited background
-compute, up to 4 hosted WASM instances (`poolSize`, default 2; background jobs
-hold at most `poolSize - 1`), 8 GiB downloads/member expansion, 32 GiB total
+compute, hosted WASM instance pool (`poolSize`, default 2, default owner
+ceiling 4, raisable up to 16; playback resolves keep a reserved lane and
+priority), 8 GiB downloads/member expansion, 32 GiB total
 expansion and 65,535 ZIP members. Downloads also obey library cache quotas.
 Hosted manifests request `ether.runtime.limits` with `memoryBytes`, `deadline`,
 `unitBudget`, `poolSize`, `fetchBytes`, `archiveMemberBytes`,
@@ -54952,7 +55280,13 @@ class ReleaseFile(TypedDict, total=False):
 
 
 class SourceCandidate(TypedDict, total=False):
-    """One Ether-found release candidate returned by sources.resolve."""
+    """One Ether-found release candidate returned by sources.resolve.
+
+    Same-origin ``nzbUrl`` and ``torrentUrl`` links returned by ``indexer_search``
+    have indexer API keys and secrets stripped; Ether re-attaches credentials at
+    fetch time on the originating indexer's origin when handed back with
+    ``indexerId``.
+    """
 
     infoHash: str
     magnet: str
@@ -55167,7 +55501,9 @@ class _KindsClient:
           name for video release scoring; default uses owner default). Video
           candidates include ``score``, ``resolution``, ``source`` and ``codec``
           alongside ``indexer``/``indexerId``; non-video candidates omit those
-          video fields.
+          video fields. Same-origin ``nzbUrl`` and ``torrentUrl`` links are
+          key-less so candidates can be cached in KV without storing indexer API
+          keys (Ether re-attaches credentials at fetch time using ``indexerId``).
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
         - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
@@ -55756,9 +56092,12 @@ omitted guest heap requests still use **32 MiB**, allocated only as needed.
 The default call/job time ceiling is **12 hours** and background compute is
 effectively unlimited (2^60 units per call); owners and manifests may lower it.
 The hosted WASM instance pool defaults to **2 instances** and manifests may
-request up to the owner ceiling (default and max **4**, `poolSize`); background
-jobs and sync calls hold at most `poolSize - 1` instances so viewer resolves,
-adapter requests and health checks retain a free instance.
+request up to the owner ceiling (default **4**, raisable up to **16**, `poolSize`);
+with `poolSize >= 3` at least one instance is reserved exclusively for playback
+resolves and background jobs hold at most `poolSize - 2`; with `poolSize == 2`
+background jobs and frontend adapters share at most one instance so resolves
+and health checks retain a free instance. Queued resolves take priority and
+start their execution deadline when an instance is acquired.
 The default download and expanded-member ceilings are **8 GiB** each, total
 archive expansion **32 GiB**, archive members **65,535**, and stored catalogue
 items **2,000,000** (`maxItems`, owner-adjustable with no upper bound). Downloads also obey
@@ -60223,6 +60562,7 @@ export interface RuntimeLimits {
   readBytes?: number;
   deadline?: string;
   unitBudget?: number;
+  /** Hosted WASM instance pool size (default 2; default owner ceiling 4, raisable up to 16). */
   poolSize?: number;
 }
 export interface RuntimeDecl {
@@ -60805,8 +61145,9 @@ export interface TrackHint {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
-  /** Torrent download or details page link for torrent indexers (never placed in nzbUrl). */
+  /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
   torrentUrl?: string;
+  /** Key-less Usenet NZB download link; Ether strips same-origin indexer API keys and re-attaches them at fetch time using indexerId so candidates are safe to cache in KV. */
   nzbUrl?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;

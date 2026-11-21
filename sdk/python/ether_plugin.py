@@ -3473,7 +3473,13 @@ class ReleaseFile(TypedDict, total=False):
 
 
 class SourceCandidate(TypedDict, total=False):
-    """One Ether-found release candidate returned by sources.resolve."""
+    """One Ether-found release candidate returned by sources.resolve.
+
+    Same-origin ``nzbUrl`` and ``torrentUrl`` links returned by ``indexer_search``
+    have indexer API keys and secrets stripped; Ether re-attaches credentials at
+    fetch time on the originating indexer's origin when handed back with
+    ``indexerId``.
+    """
 
     infoHash: str
     magnet: str
@@ -3688,7 +3694,9 @@ class _KindsClient:
           name for video release scoring; default uses owner default). Video
           candidates include ``score``, ``resolution``, ``source`` and ``codec``
           alongside ``indexer``/``indexerId``; non-video candidates omit those
-          video fields.
+          video fields. Same-origin ``nzbUrl`` and ``torrentUrl`` links are
+          key-less so candidates can be cached in KV without storing indexer API
+          keys (Ether re-attaches credentials at fetch time using ``indexerId``).
         - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
         - ``release_files``: list files inside a torrent or NZB candidate.
         - ``usenet_check``: on-demand, rate-limited sampled NNTP article check

@@ -185,11 +185,11 @@
         },
         "torrentUrl": {
           "type": "string",
-          "description": "Torrent download or details page link for torrent indexers; torrent candidates never populate nzbUrl."
+          "description": "Key-less torrent download or details page link for torrent indexers (same-origin indexer credentials are stripped and re-attached by Ether at fetch time when handed back with indexerId); torrent candidates never populate nzbUrl."
         },
         "nzbUrl": {
           "type": "string",
-          "description": "Usenet NZB download link; populated only for Usenet candidates."
+          "description": "Key-less Usenet NZB download link populated only for Usenet candidates. Same-origin indexer API keys and secrets are stripped so candidates are safe to cache in plugin storage; Ether re-attaches credentials on same-origin fetches when handed back with indexerId."
         },
         "title": {
           "type": "string"

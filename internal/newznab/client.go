@@ -1856,9 +1856,17 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		if err != nil {
 			return nil, false, err
 		}
+		fetchRel := r
+		if fetchRel.NZBURL != "" {
+			authURL, aerr := c.authenticateLink(fetchRel.NZBURL)
+			if aerr != nil {
+				return nil, false, aerr
+			}
+			fetchRel.NZBURL = authURL
+		}
 		hctx := ctx
 		if cfg.IsStremio() {
-			target := r.NZBURL
+			target := fetchRel.NZBURL
 			if target == "" {
 				target = cfg.URL
 			}
@@ -1870,7 +1878,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 			defer releaseHost()
 		}
 		reserved := false
-		body, err := b.FetchNZB(hctx, r, func(rctx context.Context, kind string) error {
+		body, err := b.FetchNZB(hctx, fetchRel, func(rctx context.Context, kind string) error {
 			if err := c.reserve(rctx, kind); err != nil {
 				return err
 			}
@@ -1902,16 +1910,14 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 		}
 		rawURL = u
 	} else {
-		if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-			base, err := url.Parse(strings.TrimRight(c.Config().URL, "/") + "/")
-			if err != nil {
-				return nil, false, redactURLError(err)
-			}
-			ref, err := url.Parse(rawURL)
-			if err != nil {
-				return nil, false, redactURLError(err)
-			}
-			rawURL = base.ResolveReference(ref).String()
+		var err error
+		rawURL, err = c.resolveLink(rawURL)
+		if err != nil {
+			return nil, false, err
+		}
+		rawURL, err = c.authenticateLink(rawURL)
+		if err != nil {
+			return nil, false, err
 		}
 		id = c.identityFor(config.RequestNZBDownload, rawURL, media)
 		rawURL = id.ApplyToURL(rawURL)

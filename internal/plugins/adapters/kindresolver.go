@@ -1554,6 +1554,9 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		if err != nil {
 			return nil, err
 		}
+		for i := range scored {
+			scored[i] = r.stripCandidateAuth(scored[i])
+		}
 		if query != "" && r.isUsenetBackingOff() && len(scored) > 1 {
 			nonUsenet := make([]core.SourceCandidate, 0, len(scored))
 			usenetOnly := make([]core.SourceCandidate, 0, len(scored))
@@ -1628,6 +1631,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		}
 		// The listing answers for the whole release; any file choice the
 		// candidate already carries does not narrow it.
+		cand = r.stripCandidateAuth(cand)
 		listCand := cand
 		listCand.FileIndex = nil
 		listCand.Files = nil
@@ -1708,6 +1712,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 				cand.NZBURL = strings.TrimSpace(q.NZBURL)
 			}
 		}
+		cand = r.stripCandidateAuth(cand)
 		res, err := r.checkUsenetCandidate(ctx, cand)
 		if err != nil {
 			return nil, err
@@ -1741,6 +1746,7 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 				cand.TorrentURL = strings.TrimSpace(q.TorrentURL)
 			}
 		}
+		cand = r.stripCandidateAuth(cand)
 		rel, err := releaseFromHint(core.ReleaseHint{Candidate: &cand}, "plugin-kind-acquire")
 		if err != nil {
 			return nil, err
@@ -3035,8 +3041,60 @@ func (r *KindResolver) resolveTorrent(ctx context.Context, rel core.Release) (co
 	return resolved, nil
 }
 
+type linkAuthStripper interface {
+	StripLinkAuth(core.Release) core.Release
+}
+
+// stripReleaseAuth removes indexer-owned credentials from rel.NZBURL and
+// recomputes rel.ID so release IDs, logs, vault aliases, and Usenet-check
+// caches stay key-less even when a plugin hands back a legacy keyed link.
+func (r *KindResolver) stripReleaseAuth(rel core.Release) core.Release {
+	if r == nil || r.indexer == nil || strings.TrimSpace(rel.NZBURL) == "" {
+		return rel
+	}
+	s, ok := r.indexer.(linkAuthStripper)
+	if !ok {
+		return rel
+	}
+	stripped := s.StripLinkAuth(rel)
+	if stripped.NZBURL != rel.NZBURL {
+		stripped.ID = releaseIDWithTarget(stripped)
+	}
+	return stripped
+}
+
+// stripCandidateAuth removes indexer-owned credentials from cand's NZBURL and
+// TorrentURL so plugins never receive or persist indexer API keys.
+func (r *KindResolver) stripCandidateAuth(cand core.SourceCandidate) core.SourceCandidate {
+	if r == nil || r.indexer == nil {
+		return cand
+	}
+	s, ok := r.indexer.(linkAuthStripper)
+	if !ok {
+		return cand
+	}
+	if strings.TrimSpace(cand.NZBURL) != "" {
+		cand.NZBURL = s.StripLinkAuth(core.Release{
+			NZBURL:    cand.NZBURL,
+			Indexer:   cand.Indexer,
+			IndexerID: cand.IndexerID,
+			Protocol:  core.ProtocolUsenet,
+		}).NZBURL
+	}
+	if strings.TrimSpace(cand.TorrentURL) != "" {
+		cand.TorrentURL = s.StripLinkAuth(core.Release{
+			NZBURL:    cand.TorrentURL,
+			Indexer:   cand.Indexer,
+			IndexerID: cand.IndexerID,
+			Protocol:  core.ProtocolTorrent,
+		}).NZBURL
+	}
+	return cand
+}
+
 func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release) (core.MediaSource, error) {
 	start := time.Now()
+	rel = r.stripReleaseAuth(rel)
 	if rel.Protocol == core.ProtocolTorrent || rel.InfoHash != "" || rel.MagnetURL != "" {
 		if r.debrid == nil {
 			return nil, core.ErrSourceUnavailable

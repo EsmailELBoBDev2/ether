@@ -712,11 +712,10 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		}
 	}
 	deadline := wasm.EffectiveDeadline(req.Path, grantedDeadline, r.Manifest.SpeaksStremio())
+	req.Deadline = deadline
 	req.Headers = cloneHeaders(req.Headers)
 	vctx, releaseViewer := m.bindAdapterViewer(ctx, pluginID, &req, deadline)
 	defer releaseViewer()
-	cctx, cancel := context.WithTimeout(withCallPath(vctx, req.Path), deadline)
-	defer cancel()
 	req.Headers["X-Ether-Deadline"] = start.Add(deadline).UTC().Format(time.RFC3339)
 	if req.Locale != "" {
 		req.Headers["X-Ether-Locale"] = req.Locale
@@ -730,6 +729,17 @@ func (m *Manager) callOnce(ctx context.Context, pluginID string, req Request) (R
 		}
 		return Response{}, err
 	}
+	// Hosted playback resolves bound waiting and execution separately inside
+	// wasm.Plugin.CallDetailed (up to deadline to acquire an instance, then a
+	// full deadline to execute once acquired), so give the outer call context
+	// room for both phases rather than cancelling mid-execution after a queue
+	// wait.
+	callTimeout := deadline
+	if _, hosted := rt.(*hostedRuntime); hosted && wasm.ResolvePoolPath(req.Path) {
+		callTimeout = 2 * deadline
+	}
+	cctx, cancel := context.WithTimeout(withCallPath(vctx, req.Path), callTimeout)
+	defer cancel()
 	resp, err := rt.Call(cctx, req)
 	ms := m.now().Sub(start).Milliseconds()
 	rec := CallRecord{Plugin: pluginID, Route: req.Path, Method: req.Method, Status: resp.Status, MS: ms,

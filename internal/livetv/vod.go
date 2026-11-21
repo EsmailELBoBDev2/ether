@@ -604,6 +604,14 @@ func (v *VODIndexer) ResolveTorrent(ctx context.Context, r core.Release) (core.R
 	}
 	return r, core.ErrSourceUnavailable
 }
+func (v *VODIndexer) StripLinkAuth(r core.Release) core.Release {
+	if inner, ok := v.Inner.(interface {
+		StripLinkAuth(core.Release) core.Release
+	}); ok {
+		return inner.StripLinkAuth(r)
+	}
+	return r
+}
 func (v *VODIndexer) SearchRescue(ctx context.Context, r core.SearchRequest) ([]core.Release, error) {
 	if inner, ok := v.Inner.(core.RescueIndexer); ok {
 		return inner.SearchRescue(ctx, r)

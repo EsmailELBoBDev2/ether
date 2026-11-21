@@ -175,6 +175,7 @@ export interface RuntimeLimits {
   readBytes?: number;
   deadline?: string;
   unitBudget?: number;
+  /** Hosted WASM instance pool size (default 2; default owner ceiling 4, raisable up to 16). */
   poolSize?: number;
 }
 export interface RuntimeDecl {
@@ -757,8 +758,9 @@ export interface TrackHint {
 export interface SourceCandidate {
   infoHash?: string;
   magnet?: string;
-  /** Torrent download or details page link for torrent indexers (never placed in nzbUrl). */
+  /** Key-less torrent download or details page link for torrent indexers (never placed in nzbUrl); Ether attaches same-origin indexer credentials at fetch time using indexerId. */
   torrentUrl?: string;
+  /** Key-less Usenet NZB download link; Ether strips same-origin indexer API keys and re-attaches them at fetch time using indexerId so candidates are safe to cache in KV. */
   nzbUrl?: string;
   /** Zero-based index in the provider torrent file list. Omit for normal video selection. */
   fileIndex?: number;

@@ -100,6 +100,17 @@ func (x *Indexer) ResolveTorrent(ctx context.Context, r core.Release) (core.Rele
 	return r, fmt.Errorf("debrid: torrent %q has no info hash: %w", r.Name, core.ErrReleaseRejected)
 }
 
+// StripLinkAuth forwards credential stripping to the wrapped indexer so
+// plugin-facing source candidates do not carry indexer API keys or secrets.
+func (x *Indexer) StripLinkAuth(r core.Release) core.Release {
+	if s, ok := x.inner.(interface {
+		StripLinkAuth(core.Release) core.Release
+	}); ok {
+		return s.StripLinkAuth(r)
+	}
+	return r
+}
+
 // Name implements core.Indexer.
 func (x *Indexer) Name() string { return x.inner.Name() }
 

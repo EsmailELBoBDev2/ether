@@ -555,30 +555,45 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 			}
 			defer releaseHost()
 		}
+		fetchRel := r
+		if fetchRel.NZBURL != "" {
+			target := fetchRel.NZBURL
+			if !strings.Contains(target, "://") {
+				resolved, rerr := c.resolveLink(target)
+				if rerr != nil {
+					return r, false, rerr
+				}
+				target = resolved
+			}
+			authURL, aerr := c.authenticateLink(target)
+			if aerr != nil {
+				return r, false, aerr
+			}
+			fetchRel.NZBURL = authURL
+		}
 		reserved := false
-		out, err := b.ResolveTorrent(hctx, r, func(rctx context.Context, kind string) error {
+		out, err := b.ResolveTorrent(hctx, fetchRel, func(rctx context.Context, kind string) error {
 			if err := c.reserve(rctx, kind); err != nil {
 				return err
 			}
 			reserved = true
 			return nil
 		})
+		if err == nil && r.NZBURL != fetchRel.NZBURL && out.NZBURL == fetchRel.NZBURL {
+			out.NZBURL = r.NZBURL
+		}
 		return out, reserved, err
 	}
 	if r.NZBURL == "" {
 		return r, false, fmt.Errorf("newznab: torrent %q has no info hash, magnet or download URL: %w", r.Name, core.ErrReleaseRejected)
 	}
-	rawURL := r.NZBURL
-	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-		base, err := url.Parse(strings.TrimRight(c.Config().URL, "/") + "/")
-		if err != nil {
-			return r, false, redactURLError(err)
-		}
-		ref, err := url.Parse(rawURL)
-		if err != nil {
-			return r, false, redactURLError(err)
-		}
-		rawURL = base.ResolveReference(ref).String()
+	rawURL, err := c.resolveLink(r.NZBURL)
+	if err != nil {
+		return r, false, err
+	}
+	rawURL, err = c.authenticateLink(rawURL)
+	if err != nil {
+		return r, false, err
 	}
 	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
 	if err != nil {

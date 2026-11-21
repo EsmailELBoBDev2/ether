@@ -1789,7 +1789,18 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 	f := &nzbFlight{done: make(chan struct{}), background: core.IsBackgroundCheck(ctx), waiters: 1, readers: 1, cancel: cancel}
 	c.nzbFlights[r.ID] = f
 	go func() {
-		defer cancel()
+		defer func() {
+			if p := recover(); p != nil {
+				f.err = fmt.Errorf("newznab: fetch NZB panic: %v", p)
+			}
+			c.nzbFlightMu.Lock()
+			if c.nzbFlights[r.ID] == f {
+				delete(c.nzbFlights, r.ID)
+			}
+			c.nzbFlightMu.Unlock()
+			close(f.done)
+			cancel()
+		}()
 		started := time.Now()
 		var reserved bool
 		if body := c.keptNZB(fctx, r); body != nil {
@@ -1799,12 +1810,6 @@ func (c *Client) joinNZBFlight(ctx context.Context, r core.Release) (*nzbFlight,
 			f.body, reserved, f.err = c.fetchNZB(fctx, r)
 			c.emitGrab(fctx, r.Name, started, reserved, f.err, true)
 		}
-		c.nzbFlightMu.Lock()
-		if c.nzbFlights[r.ID] == f {
-			delete(c.nzbFlights, r.ID)
-		}
-		c.nzbFlightMu.Unlock()
-		close(f.done)
 	}()
 	return f, true
 }

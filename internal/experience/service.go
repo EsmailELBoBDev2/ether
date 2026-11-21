@@ -58,10 +58,11 @@ type ServiceDeps struct {
 	Libraries        []Library
 	// LiveLibraries, when set, is read on each surface call so configured
 	// names stay current. IDs and media types stay stable. Nil uses Libraries.
-	LiveLibraries   func() []Library
-	PluginLibraries PluginLibraries
-	Visibility      Visibility
-	Get             func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
+	LiveLibraries     func() []Library
+	PluginLibraries   PluginLibraries
+	PluginProbedMedia func(ctx context.Context, v *core.User, title core.Title) (core.MediaInfo, bool)
+	Visibility        Visibility
+	Get               func(context.Context, *core.User, core.RatingKey) (*core.Title, error)
 	// CachedGet applies catalogue visibility without a network refresh.
 	CachedGet func(context.Context, core.RatingKey) (*core.Title, error)
 	// CachedGetMany reads current cached rows in bounded batches without refresh.
@@ -1022,8 +1023,20 @@ func (s *Service) Item(ctx context.Context, req frontend.ItemRequest) (frontend.
 			Title:               piv.Title,
 			Images:              piv.Images,
 			ImagesAuthoritative: len(piv.Images) > 0,
+			Chapters:            append([]core.Chapter(nil), piv.Chapters...),
 			CanPlay:             &playable,
 			Unavailable:         piv.Unavailable,
+		}
+		if s.d.PluginProbedMedia != nil {
+			if info, ok := s.d.PluginProbedMedia(ctx, v, piv.Title); ok && !info.Estimated {
+				if len(info.Chapters) > 0 {
+					d.Chapters = append([]core.Chapter(nil), info.Chapters...)
+				}
+				if len(info.Streams) > 0 {
+					d.Tracks = append([]core.StreamInfo(nil), info.Streams...)
+					d.TracksEstimated = false
+				}
+			}
 		}
 		d.UserData, err = s.d.State.Get(ctx, v.ID, piv.Title.Key)
 		if err != nil {

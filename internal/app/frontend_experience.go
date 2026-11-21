@@ -641,6 +641,45 @@ func (a *App) newSurfaceExperience(protocol core.Protocol, artwork ...frontend.A
 			Logger:    a.log,
 		})
 	}
+	if a.playback != nil {
+		pb := a.playback
+		var kr *adapters.KindResolver
+		if a.pluginsRT != nil {
+			kr = a.pluginsRT.kindResolver
+		}
+		deps.PluginProbedMedia = func(ctx context.Context, u *core.User, title core.Title) (core.MediaInfo, bool) {
+			if !title.Key.IsPluginKey() {
+				return core.MediaInfo{}, false
+			}
+			var best core.MediaInfo
+			var found bool
+			if info, ok := pb.CachedItemProbe(title.Key); ok && !info.Estimated {
+				best, found = info, true
+				if len(best.Chapters) > 0 {
+					return best, true
+				}
+			}
+			if kr != nil && u != nil {
+				// Strictly cached candidates only (allowResolve=false); never
+				// calls the plugin's /resolve endpoint on a detail read.
+				if variants, err := kr.KindVersions(ctx, u, title.Key, kindAccept, false); err == nil && len(variants) > 0 {
+					enriched := pb.WithCachedVariantInfo(ctx, u, &title, variants)
+					for _, v := range enriched {
+						if v.Info.Estimated {
+							continue
+						}
+						if len(v.Info.Chapters) > 0 {
+							return core.CloneMediaInfo(v.Info), true
+						}
+						if !found && len(v.Info.Streams) > 0 {
+							best, found = core.CloneMediaInfo(v.Info), true
+						}
+					}
+				}
+			}
+			return best, found
+		}
+	}
 	deps.Now = parityClock()
 	deps.Log = a.log
 	if a.db != nil {

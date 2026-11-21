@@ -416,7 +416,40 @@ func (e *Engine) learnHot(rel *release, pf *postedFile, i int, seg *segData) {
 func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *release, pf *postedFile, i int, id string, prio core.Priority, fo fetchOpts) {
 	defer e.wg.Done()
 	defer close(fl.stored)
+	decodedClosed := false
+	doneClosed := false
 	defer func() {
+		if r := recover(); r != nil {
+			e.mu.Lock()
+			fl.backoffErr = nil
+			fl.err = fmt.Errorf("stream: segment fetch panic: %v", r)
+			if e.flights[key] == fl {
+				delete(e.flights, key)
+			}
+			e.mu.Unlock()
+			if !decodedClosed {
+				decodedClosed = true
+				close(fl.decoded)
+			}
+			if !doneClosed {
+				doneClosed = true
+				close(fl.done)
+			}
+		} else {
+			if !decodedClosed {
+				decodedClosed = true
+				close(fl.decoded)
+			}
+			if !doneClosed {
+				e.mu.Lock()
+				if e.flights[key] == fl {
+					delete(e.flights, key)
+				}
+				e.mu.Unlock()
+				doneClosed = true
+				close(fl.done)
+			}
+		}
 		if fl.liveCancel != nil {
 			fl.liveCancel()
 		}
@@ -441,6 +474,7 @@ func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *releas
 	fl.backoffErr = nil
 	fl.seg, fl.err = seg, err
 	e.mu.Unlock()
+	decodedClosed = true
 	close(fl.decoded)
 	persist := func() {
 		if err == nil && !fromCache && fo.cacheID != "" && e.cache != nil {
@@ -459,6 +493,7 @@ func (e *Engine) run(ctx context.Context, fl *flight, key flightKey, rel *releas
 		delete(e.flights, key)
 	}
 	e.mu.Unlock()
+	doneClosed = true
 	close(fl.done)
 	if !fo.noHot {
 		// Readers are not kept waiting for the disk.

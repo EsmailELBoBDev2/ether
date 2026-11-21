@@ -1,12 +1,16 @@
 package adapters_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -509,5 +513,197 @@ func TestMusicFactsArtistReleaseOrderingAndExactSearchRanking(t *testing.T) {
 	}
 	if hits[0].SearchScore <= 1.05 || hits[1].SearchScore <= 1.05 {
 		t.Fatalf("expected AC/DC exact album/track scores > 1.05 to beat low-popularity TV episodes, got %.4f / %.4f", hits[0].SearchScore, hits[1].SearchScore)
+	}
+}
+
+func TestMultiPartAudiobookSyntheticPartsAndChapters(t *testing.T) {
+	ctx := context.Background()
+	partBytes := map[string][]byte{
+		"/part0.mp3": []byte("PART-ZERO-AUDIO"),
+		"/part1.mp3": []byte("PART-ONE-AUDIO-BYTES"),
+		"/part2.mp3": []byte("PART-TWO-AUDIO"),
+	}
+	mediaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := partBytes[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/mpeg")
+		http.ServeContent(w, r, r.URL.Path, time.Unix(1_700_000_000, 0), bytes.NewReader(data))
+	}))
+	defer mediaSrv.Close()
+	httpClient := &http.Client{
+		Transport: hostRewriteTransport{target: mediaSrv.URL, base: mediaSrv.Client().Transport},
+	}
+	h := newKindTestHarness(t, 0, httpClient)
+
+	var (
+		mu        sync.Mutex
+		seenParts []int
+	)
+	h.rt.callContext = func(_ context.Context, req plugins.Request) (plugins.Response, error) {
+		switch req.Path {
+		case "/ether/health":
+			return plugins.Response{Status: 200, Body: json.RawMessage(`{"status":"ok"}`)}, nil
+		case "/ether/v1/kinds/audiobook/resolve":
+			var body core.KindResolveRequest
+			if err := json.Unmarshal(req.Body, &body); err != nil {
+				return plugins.Response{Status: 400}, nil
+			}
+			pIdx := -1
+			if body.PartIndex != nil {
+				pIdx = *body.PartIndex
+			}
+			mu.Lock()
+			seenParts = append(seenParts, pIdx)
+			mu.Unlock()
+			data := partBytes["/part"+strconv.Itoa(pIdx)+".mp3"]
+			respBody, _ := json.Marshal(map[string]any{
+				"sources": []map[string]any{{
+					"id":      "src-" + strconv.Itoa(pIdx),
+					"pattern": "range",
+					"mime":    "audio/mpeg",
+					"size":    len(data),
+					"url":     "https://librivox.example/part" + strconv.Itoa(pIdx) + ".mp3",
+				}},
+			})
+			return plugins.Response{Status: 200, Body: respBody}, nil
+		default:
+			return plugins.Response{Status: 404}, nil
+		}
+	}
+
+	const pluginID = "community.librivox"
+	man := map[string]any{
+		"id":      pluginID,
+		"name":    "Audiobooks",
+		"version": "1.0.0",
+		"ether": map[string]any{
+			"protocol":     1,
+			"kind":         "content",
+			"summary":      "Audiobooks test plugin",
+			"runtime":      map[string]any{"kind": "hosted", "entry": "dist/plugin.js"},
+			"capabilities": []string{"catalog_provider", "kind_resolver"},
+			"permissions":  map[string]any{"network": []string{"librivox.example"}},
+			"contributes": map[string]any{
+				"mediaKinds": []any{
+					map[string]any{
+						"key":   "audiobook",
+						"label": "Audiobooks",
+						"media": "audiobook",
+						"library": map[string]any{
+							"name": "Audiobooks",
+							"card": "square",
+						},
+						"levels": []any{
+							map[string]any{"key": "audiobook", "label": "Audiobook", "role": "audiobook", "playable": true},
+						},
+						"fields": []any{
+							map[string]any{"key": "author", "label": "Author", "type": "people", "role": "author"},
+							map[string]any{"key": "narrator", "label": "Narrator", "type": "people", "role": "narrator"},
+						},
+						"browse": map[string]any{"sorts": []string{"title"}},
+						"sync":   map[string]any{"mode": "pull", "intervalSec": 3600},
+					},
+				},
+			},
+		},
+	}
+	installStudioManifest(t, h.mgr, man, nil)
+	rec, err := h.items.GetKind(ctx, pluginID, "audiobook")
+	if err != nil {
+		t.Fatalf("GetKind: %v", err)
+	}
+	lib, err := h.libs.Get(ctx, rec.LibraryID)
+	if err != nil {
+		t.Fatalf("libs.Get: %v", err)
+	}
+
+	_, err = h.items.UpsertItems(ctx, pluginID, "audiobook", []core.KindItem{
+		{
+			ID:       "northanger-abbey",
+			Level:    "audiobook",
+			Title:    "Northanger Abbey",
+			Year:     1817,
+			Playable: true,
+			Fields: map[string]json.RawMessage{
+				"author":   json.RawMessage(`["Jane Austen"]`),
+				"narrator": json.RawMessage(`["Kara Shallenberg"]`),
+			},
+			Hints: json.RawMessage(`{"parts":[
+				{"name":"01_northanger_abbey.mp3","mime":"audio/mpeg","durationSec":600,"size":15},
+				{"name":"Chapter 02 - Bath","mime":"audio/mpeg","durationSec":900,"size":20},
+				{"name":"Chapter 03 - The Abbey","mime":"audio/mpeg","durationSec":750,"size":14}
+			]}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertItems: %v", err)
+	}
+	bookItem, _, err := h.items.GetByExternal(ctx, pluginID, "audiobook", "northanger-abbey")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Parent audiobook Item carries ChildCount=3, summed Runtime, and 3 synthesized chapters.
+	piv, err := h.catalog.Item(ctx, bookItem.Key)
+	if err != nil {
+		t.Fatalf("Item(book): %v", err)
+	}
+	if piv.Title.ChildCount != 3 || piv.Title.Runtime != 2250*time.Second {
+		t.Fatalf("parent ChildCount/Runtime = %d/%v, want 3/2250s", piv.Title.ChildCount, piv.Title.Runtime)
+	}
+	if len(piv.Chapters) != 3 || piv.Chapters[0].Title != "01 northanger abbey" || piv.Chapters[0].Start != 0 || piv.Chapters[1].Title != "Chapter 02 - Bath" || piv.Chapters[1].Start != 600*time.Second || piv.Chapters[2].Start != 1500*time.Second || piv.Chapters[2].End != 2250*time.Second {
+		t.Fatalf("unexpected synthesized chapters: %+v", piv.Chapters)
+	}
+
+	// 2. Children exposes all 3 playable part titles with pagination, role="part", 1-based index, and parent link.
+	p1, err := h.catalog.Children(ctx, bookItem.Key, false, "", 2)
+	if err != nil || len(p1.Items) != 2 || p1.Total != 3 || p1.NextCursor != "part:2" {
+		t.Fatalf("Children page 1 = %+v, err=%v", p1, err)
+	}
+	p2, err := h.catalog.Children(ctx, bookItem.Key, false, p1.NextCursor, 2)
+	if err != nil || len(p2.Items) != 1 || p2.NextCursor != "" {
+		t.Fatalf("Children page 2 = %+v, err=%v", p2, err)
+	}
+	part1 := p1.Items[1]
+	if !part1.Key.IsPluginPartKey() || part1.MediaRole != core.MediaRolePart || part1.MediaClass != core.MediaClassAudiobook || part1.ItemIndex != 2 || part1.Title != "Chapter 02 - Bath" || part1.Runtime != 900*time.Second {
+		t.Fatalf("unexpected synthetic part 1: %+v", part1)
+	}
+	if len(part1.MediaParents) != 1 || part1.MediaParents[0].Key != bookItem.Key || part1.MediaParents[0].Role != core.MediaRoleAudiobook {
+		t.Fatalf("unexpected part 1 parents: %+v", part1.MediaParents)
+	}
+
+	// 3. Item, ItemsMany, and Ancestors resolve synthetic part keys seamlessly.
+	partView, err := h.catalog.Item(ctx, part1.Key)
+	if err != nil || !partView.Playable || partView.Title.Key != part1.Key || partView.Library.ID != lib.ID {
+		t.Fatalf("Item(part1) = %+v, err=%v", partView, err)
+	}
+	many, err := h.catalog.ItemsMany(ctx, []core.RatingKey{bookItem.Key, part1.Key})
+	if err != nil || len(many) != 2 || many[part1.Key].Title.Title != "Chapter 02 - Bath" {
+		t.Fatalf("ItemsMany = %+v, err=%v", many, err)
+	}
+	anc, _, err := h.catalog.Ancestors(ctx, part1.Key)
+	if err != nil || len(anc) != 1 || anc[0].Key != bookItem.Key {
+		t.Fatalf("Ancestors(part1) = %+v, err=%v", anc, err)
+	}
+
+	// 4. KindResolver.OpenKind(part1.Key) opens ONLY part index 1 without concatenating all parts.
+	viewer := &core.Viewer{ID: 1, IsOwner: true}
+	media, err := h.resolver.OpenKind(ctx, viewer, part1.Key, []string{"range"})
+	if err != nil {
+		t.Fatalf("OpenKind(part1): %v", err)
+	}
+	defer media.Close()
+	buf := make([]byte, media.Size)
+	if _, err := io.ReadFull(io.NewSectionReader(media, 0, media.Size), buf); err != nil {
+		t.Fatalf("ReadFull(part1): %v", err)
+	}
+	if string(buf) != "PART-ONE-AUDIO-BYTES" {
+		t.Fatalf("part1 bytes = %q, want PART-ONE-AUDIO-BYTES", string(buf))
+	}
+	if len(seenParts) != 1 || seenParts[0] != 1 {
+		t.Fatalf("expected only partIndex=1 resolved, got %v", seenParts)
 	}
 }

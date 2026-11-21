@@ -1105,7 +1105,14 @@ func (m *Manager) startTrailerFill(g *generation) {
 			}
 		}
 		g.info.Streams = streams
+		updated := core.CloneMediaInfo(g.info)
 		g.mu.Unlock()
+		if len(updated.Chapters) > 0 && g.res != nil {
+			m.persistReleaseProbe(ctx, g.res.Release, g.res.NZB, updated)
+			if g.res.Title.IsPluginKey() {
+				m.persistItemProbe(ctx, g.res.Title, updated)
+			}
+		}
 	}()
 }
 
@@ -2110,13 +2117,35 @@ func (m *Manager) resumeResolution(ctx context.Context, userID int64, key core.R
 
 // saveResume remembers the release now serving a session.
 func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
+	info := g.infoSnapshot()
 	if g.res != nil {
-		m.noteReleaseProbeMemory(g.res.Release, g.res.NZB, g.infoSnapshot())
+		m.noteReleaseProbeMemory(g.res.Release, g.res.NZB, info)
+	}
+	if s.ident.key.IsPluginKey() {
+		m.noteItemProbeMemory(s.ident.key, info)
 	}
 	if m.resume == nil || g.res == nil || len(g.res.NZB) == 0 {
+		if g.res != nil || s.ident.key.IsPluginKey() {
+			var rel core.Release
+			if g.res != nil {
+				rel = g.res.Release
+			}
+			key := s.ident.key
+			m.beginResumeSave()
+			go func() {
+				defer m.endResumeSave()
+				pctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if rel.ID != "" || rel.InfoHash != "" || rel.ContentID != "" {
+					m.persistReleaseProbe(pctx, rel, nil, info)
+				}
+				if key.IsPluginKey() {
+					m.persistItemProbe(pctx, key, info)
+				}
+			}()
+		}
 		return
 	}
-	info := g.infoSnapshot()
 	rec := resumeRecord{
 		userID:           s.ident.userID,
 		key:              s.ident.key,
@@ -2151,6 +2180,9 @@ func (m *Manager) saveResume(ctx context.Context, s *session, g *generation) {
 			m.log.Warn("save resume record failed", "key", rec.key, "err", err)
 		}
 		m.persistReleaseProbe(ctx, rec.release, nzb, info)
+		if rec.key.IsPluginKey() {
+			m.persistItemProbe(ctx, rec.key, info)
+		}
 	}()
 }
 

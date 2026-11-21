@@ -1955,6 +1955,115 @@ func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
 }
 ``````
 
+## Source: internal/core/kinditem.go#ExtractKindItemChaptersFromItem
+
+``````
+// ExtractKindItemChaptersFromItem inspects a KindItem for declared chapters,
+// checking hints.chapters first and falling back to a declared "chapters" array
+// field when present.
+func ExtractKindItemChaptersFromItem(item KindItem) []Chapter {
+	if chs := ExtractKindItemChapters(item.Hints); len(chs) > 0 {
+		return chs
+	}
+	if raw, ok := item.Fields["chapters"]; ok && len(raw) > 0 {
+		if wrapped, err := json.Marshal(struct {
+			Chapters json.RawMessage `json:"chapters"`
+		}{Chapters: raw}); err == nil {
+			return ExtractKindItemChapters(wrapped)
+		}
+	}
+	return nil
+}
+``````
+
+## Source: internal/core/kinditem.go#ExtractKindItemChapters
+
+``````
+// ExtractKindItemChapters inspects a KindItem's Hints JSON for a non-empty
+// "chapters" array and returns normalized Chapter markers in declaration order.
+func ExtractKindItemChapters(hints json.RawMessage) []Chapter {
+	if len(hints) == 0 {
+		return nil
+	}
+	var env struct {
+		Chapters []json.RawMessage `json:"chapters"`
+	}
+	if err := json.Unmarshal(hints, &env); err != nil || len(env.Chapters) == 0 {
+		return nil
+	}
+	out := make([]Chapter, 0, len(env.Chapters))
+	var cursor float64
+	for i, raw := range env.Chapters {
+		var obj struct {
+			Title        string   `json:"title"`
+			Name         string   `json:"name"`
+			Label        string   `json:"label"`
+			StartSec     *float64 `json:"startSec"`
+			StartSeconds *float64 `json:"startSeconds"`
+			Start        *float64 `json:"start"`
+			EndSec       *float64 `json:"endSec"`
+			EndSeconds   *float64 `json:"endSeconds"`
+			End          *float64 `json:"end"`
+			DurationSec  *float64 `json:"durationSec"`
+			Duration     *float64 `json:"duration"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			continue
+		}
+		title := ""
+		for _, cand := range []string{obj.Title, obj.Name, obj.Label} {
+			if s := strings.TrimSpace(cand); s != "" {
+				title = s
+				break
+			}
+		}
+		var startSec float64
+		hasStart := false
+		for _, cand := range []*float64{obj.StartSec, obj.StartSeconds, obj.Start} {
+			if cand != nil && *cand >= 0 {
+				startSec = *cand
+				hasStart = true
+				break
+			}
+		}
+		if !hasStart {
+			startSec = cursor
+		}
+		var endSec float64
+		for _, cand := range []*float64{obj.EndSec, obj.EndSeconds, obj.End} {
+			if cand != nil && *cand > startSec {
+				endSec = *cand
+				break
+			}
+		}
+		if endSec <= startSec {
+			for _, cand := range []*float64{obj.DurationSec, obj.Duration} {
+				if cand != nil && *cand > 0 {
+					endSec = startSec + *cand
+					break
+				}
+			}
+		}
+		if endSec <= startSec && !hasStart && title == "" {
+			continue
+		}
+		if title == "" {
+			title = fmt.Sprintf("Chapter %d", i+1)
+		}
+		if endSec > cursor {
+			cursor = endSec
+		}
+		out = append(out, Chapter{
+			ID:    int64(i),
+			Title: title,
+			Start: time.Duration(startSec * float64(time.Second)),
+			End:   time.Duration(endSec * float64(time.Second)),
+		})
+	}
+	return out
+}
+``````
+
 ## Source: internal/core/kinditem.go#KindArtRef.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -8063,15 +8172,26 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 }
 ``````
 
+## Source: internal/plugins/host.go#defaultHostHTTPFetchTimeout
+
+``````
+const (
+	defaultHostHTTPFetchTimeout = 30 * time.Second
+	maxHostHTTPFetchTimeout     = 60 * time.Second
+)
+``````
+
 ## Source: internal/plugins/host.go#*host.HTTPFetch
 
 ``````
 func (h *host) HTTPFetch(ctx context.Context, req FetchRequest) (FetchResponse, error) {
+	timeout := defaultHostHTTPFetchTimeout
 	if req.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
-		defer cancel()
+		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostHTTPFetchTimeout)
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 	resp, err := h.openFetch(ctx, req)
 	if err != nil {
 		return FetchResponse{}, err
@@ -10205,12 +10325,13 @@ func (h *host) HTTPFetchToCache(ctx context.Context, req FetchCacheRequest) (Fet
 	if err != nil {
 		return FetchCacheResult{}, err
 	}
-	fetchCtx := ctx
+	const maxHostDataFetchTimeout = 10 * time.Minute
+	timeout := maxHostDataFetchTimeout
 	if req.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		fetchCtx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
-		defer cancel()
+		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostDataFetchTimeout)
 	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	resp, err := h.openFetch(fetchCtx, req.FetchRequest)
 	if err != nil {
 		return FetchCacheResult{}, err
@@ -13095,19 +13216,25 @@ func (r *hostedRuntime) Call(ctx context.Context, req Request) (Response, error)
 ## Source: internal/plugins/hosted.go#*hostedRuntime.Close
 
 ``````
-func (r *hostedRuntime) Close() error       { return r.p.Close() }
+func (r *hostedRuntime) Close() error              { return r.p.Close() }
 ``````
 
 ## Source: internal/plugins/hosted.go#*hostedRuntime.HasRankKey
 
 ``````
-func (r *hostedRuntime) HasRankKey() bool   { return r.p.HasRankKey() }
+func (r *hostedRuntime) HasRankKey() bool          { return r.p.HasRankKey() }
 ``````
 
 ## Source: internal/plugins/hosted.go#*hostedRuntime.HasCondMatch
 
 ``````
-func (r *hostedRuntime) HasCondMatch() bool { return r.p.HasCondMatch() }
+func (r *hostedRuntime) HasCondMatch() bool        { return r.p.HasCondMatch() }
+``````
+
+## Source: internal/plugins/hosted.go#*hostedRuntime.PoolStats
+
+``````
+func (r *hostedRuntime) PoolStats() wasm.PoolStats { return r.p.PoolStats() }
 ``````
 
 ## Source: internal/plugins/hosted.go#*hostedRuntime.RankBatch
@@ -22133,7 +22260,9 @@ func (h *host) computeRemoteHash(ctx context.Context, req HashRequest, key strin
 	} else if old.modified != "" {
 		headers["If-Modified-Since"] = old.modified
 	}
-	resp, err := h.openFetchWithOptions(ctx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
+	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	resp, err := h.openFetchWithOptions(fetchCtx, FetchRequest{URL: req.URL, Headers: headers}, fetchOptions{stripCrossOriginHeaders: stripCrossOrigin})
 	if err != nil {
 		return err
 	}
@@ -25620,13 +25749,13 @@ func GrantedLimitsPath(path string) bool {
 ## Source: internal/plugins/wasm/background.go#BackgroundPoolPath
 
 ``````
-// BackgroundPoolPath reports whether path is a background job or sync call
-// bounded to at most PoolSize-1 service instances so interactive viewer
-// resolves, frontend adapter requests and health checks always retain at least
-// one free instance.
+// BackgroundPoolPath reports whether path is a background job, sync, or event
+// delivery call bounded to at most PoolSize-1 service instances so interactive
+// viewer resolves, frontend adapter requests and health checks always retain at
+// least one free instance.
 func BackgroundPoolPath(path string) bool {
 	p, _, _ := strings.Cut(path, "?")
-	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p)
+	return strings.HasPrefix(p, "/ether/job/") || KindSyncPath(p) || LiveTVSyncPath(p) || p == "/ether/event"
 }
 ``````
 
@@ -26760,6 +26889,10 @@ func (in *jsInstance) jsCall(ctx context.Context, cs *callState, fn func() (*qjs
 				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 				return
 			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				callErr = &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+				return
+			}
 			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
 		}
 	}()
@@ -26784,6 +26917,9 @@ func classifyJSError(ctx context.Context, cs *callState, err error) *Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
 	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+	}
 	msg := err.Error()
 	if f := decodeFault(msg); f != nil {
 		st := statusForFaultCode(f.Code)
@@ -26807,17 +26943,40 @@ func (in *jsInstance) globalFn(name string) *qjs.Value {
 ## Source: internal/plugins/wasm/js.go#*jsInstance.handle
 
 ``````
-func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte) ([]byte, *Error) {
-	v, err := in.jsCall(ctx, cs, func() (*qjs.Value, error) {
-		g := in.qc.Global()
-		return in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
-	})
+func (in *jsInstance) handle(ctx context.Context, cs *callState, reqJSON []byte) (out []byte, callErr *Error) {
+	in.cs = cs
+	in.swap.set(ctx)
+	defer func() {
+		in.cs = nil
+		in.swap.reset()
+		if r := recover(); r != nil {
+			out = nil
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				callErr = &Error{Status: StatusTimeout, Message: cs.timeoutMessage(), Trap: true}
+				return
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				callErr = &Error{Status: StatusError, Message: context.Canceled.Error(), Err: context.Canceled, Trap: true}
+				return
+			}
+			callErr = &Error{Status: StatusError, Message: fmt.Sprintf("%v", r), Trap: true}
+		}
+	}()
+	g := in.qc.Global()
+	v, err := in.qc.Invoke(in.globalFn("__ether_dispatch_handle"), g, in.qc.NewString(string(reqJSON)))
 	if err != nil {
-		// Fall back to calling handle directly with a parsed object; the
-		// dispatch wrapper is installed by installDispatch at load. If it is
-		// missing this error is the real one.
-		return nil, err
+		return nil, classifyJSError(ctx, cs, err)
 	}
+	if v != nil && v.IsPromise() {
+		v, err = v.Await()
+		if err != nil {
+			return nil, classifyJSError(ctx, cs, err)
+		}
+	}
+	if v == nil {
+		return []byte("{}"), nil
+	}
+	defer v.Free()
 	return []byte(v.String()), nil
 }
 ``````
@@ -27022,7 +27181,7 @@ globalThis.__ether_dispatch_handle = (reqJson) => {
   return JSON.stringify(res == null ? {} : res);
 };`))
 	if err2 != nil {
-		return &Error{Status: StatusError, Message: "install dispatch: " + err.Error(), Trap: true}
+		return &Error{Status: StatusError, Message: "install dispatch: " + err2.Error(), Trap: true}
 	}
 	return nil
 }
@@ -27358,6 +27517,65 @@ type unitChargerKey struct{}
 type callLimitsKey struct{}
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#backgroundCallKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/wasm/wasm.go#backgroundCallKey
+
+``````
+type backgroundCallKey struct{}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#IsBackgroundCall
+
+``````
+// IsBackgroundCall reports whether ctx belongs to a background hosted plugin
+// call (non-foreground /ether/job/*, kind sync, Live TV sync, or /ether/event).
+func IsBackgroundCall(ctx context.Context) bool {
+	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
+	return bg
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#hostCallTimeoutOverride
+
+``````
+// hostCallTimeout returns the hard per-host-call deadline ceiling for a guest
+// host service call. Even when a background route has a multi-hour granted
+// deadline, an individual host call is bounded so one hung upstream cannot hold
+// a plugin pool instance forever.
+var hostCallTimeoutOverride func(name string) time.Duration
+``````
+
+## Source: internal/plugins/wasm/wasm.go#hostCallTimeout
+
+``````
+func hostCallTimeout(name string) time.Duration {
+	if fn := hostCallTimeoutOverride; fn != nil {
+		if d := fn(name); d > 0 {
+			return d
+		}
+	}
+	switch name {
+	case "http.fetch":
+		return 60 * time.Second
+	case "sources.resolve":
+		return 35 * time.Second
+	case "http.fetchToCache", "http.hash",
+		"archive.list", "archive.open", "archive.read", "archive.extract",
+		"folders.hash", "folders.hashStart", "folders.hashPoll", "folders.hashCancel",
+		"folders.list", "folders.stat",
+		"cache.put", "cache.open", "cache.read", "cache.rasterize", "cache.delete":
+		return 10 * time.Minute
+	default:
+		return 30 * time.Second
+	}
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#CallLimits
 
 ``````
@@ -27487,6 +27705,52 @@ func (l *Limits) costOf(name string) int64 {
 }
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#PoolHolder.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `route` | `string` | emitted (validation may require a value) |  |
+| `held` | `time.Duration` | emitted (validation may require a value) |  |
+
+
+## Source: internal/plugins/wasm/wasm.go#PoolHolder
+
+``````
+// PoolHolder names one active caller currently holding a plugin instance.
+type PoolHolder struct {
+	Route string        `json:"route"`
+	Held  time.Duration `json:"held"`
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#PoolStats.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `size` | `int` | emitted (validation may require a value) |  |
+| `inUse` | `int` | emitted (validation may require a value) |  |
+| `idle` | `int` | emitted (validation may require a value) |  |
+| `building` | `int` | emitted (validation may require a value) |  |
+| `waiting` | `int` | emitted (validation may require a value) |  |
+| `exhaustions` | `int64` | emitted (validation may require a value) |  |
+| `holders` | `[]PoolHolder` | may be omitted (see validation for conditions) |  |
+
+
+## Source: internal/plugins/wasm/wasm.go#PoolStats
+
+``````
+// PoolStats is a point-in-time snapshot of a plugin's service instance pool.
+type PoolStats struct {
+	Size        int          `json:"size"`
+	InUse       int          `json:"inUse"`
+	Idle        int          `json:"idle"`
+	Building    int          `json:"building"`
+	Waiting     int          `json:"waiting"`
+	Exhaustions int64        `json:"exhaustions"`
+	Holders     []PoolHolder `json:"holders,omitempty"`
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#Stats.fields.md
 
 | Field | Go type | Wire presence | Description |
@@ -27507,6 +27771,7 @@ type Stats struct {
 	Governance     int64
 	SlowCandidates int64
 	Units          int64
+	Pool           PoolStats
 }
 ``````
 
@@ -27568,25 +27833,27 @@ func (c *counters) snapshot() Stats {
 ## Source: internal/plugins/wasm/wasm.go#callState
 
 ``````
-// callState is the per-call governance state shared with host functions. One
-// instance serves one call at a time, so no locking is needed beyond the
-// exceeded flag (read after the call from the same goroutine).
+// callState is the per-call governance state shared with host functions.
+// mu guards fields that can be touched by an in-flight host call goroutine
+// (for example streaming unit charges) if dispatch aborts on deadline expiry.
 type callState struct {
-	ctx        context.Context
-	host       Host
-	lim        *Limits
-	path       string
-	start      time.Time
-	last       time.Time
-	units      int64
-	logs       int
-	background bool
-	hot        bool
-	exceeded   bool
-	aborted    bool
-	abortCode  uint32
-	logger     *slog.Logger
-	pluginID   string
+	mu             sync.Mutex
+	ctx            context.Context
+	host           Host
+	lim            *Limits
+	path           string
+	start          time.Time
+	last           time.Time
+	units          int64
+	logs           int
+	background     bool
+	backgroundPool bool
+	hot            bool
+	exceeded       bool
+	aborted        bool
+	abortCode      uint32
+	logger         *slog.Logger
+	pluginID       string
 }
 ``````
 
@@ -27643,10 +27910,10 @@ func (cs *callState) timeoutMessage() string {
 }
 ``````
 
-## Source: internal/plugins/wasm/wasm.go#*callState.chargeWall
+## Source: internal/plugins/wasm/wasm.go#*callState.chargeWallLocked
 
 ``````
-func (cs *callState) chargeWall() {
+func (cs *callState) chargeWallLocked() {
 	now := time.Now()
 	cs.units += int64(now.Sub(cs.last) / WallUnitInterval)
 	cs.last = now
@@ -27660,8 +27927,10 @@ func (cs *callState) chargeWall() {
 // budget is spent; the flag is sticky so a plugin that catches the error
 // still ends the call as governance.
 func (cs *callState) charge(name string) *Fault {
-	cs.chargeWall()
-	return cs.chargeUnits(cs.lim.costOf(name))
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.chargeWallLocked()
+	return cs.chargeUnitsLocked(cs.lim.costOf(name))
 }
 ``````
 
@@ -27669,6 +27938,16 @@ func (cs *callState) charge(name string) *Fault {
 
 ``````
 func (cs *callState) chargeUnits(units int64) *Fault {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.chargeUnitsLocked(units)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*callState.chargeUnitsLocked
+
+``````
+func (cs *callState) chargeUnitsLocked(units int64) *Fault {
 	cs.units += units
 	if cs.units > cs.lim.UnitBudget {
 		cs.exceeded = true
@@ -27682,7 +27961,9 @@ func (cs *callState) chargeUnits(units int64) *Fault {
 
 ``````
 func (cs *callState) finishUnits() int64 {
-	cs.chargeWall()
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.chargeWallLocked()
 	if cs.units > cs.lim.UnitBudget {
 		cs.exceeded = true
 	}
@@ -27697,12 +27978,11 @@ func (cs *callState) finishUnits() int64 {
 // hot-path lockdown. It is the single funnel for JS ether.* and raw
 // ether.host_call.
 func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessage, *Fault) {
-	if cs.background {
-		waitedAt := time.Now()
-		if err := WaitBackground(cs.ctx, cs.lim.Busy); err != nil {
-			return nil, &Fault{Code: string(StatusTimeout), Message: err.Error()}
+	if cs.ctx.Err() != nil {
+		if errors.Is(cs.ctx.Err(), context.Canceled) {
+			return nil, &Fault{Code: string(StatusError), Message: context.Canceled.Error()}
 		}
-		cs.last = cs.last.Add(time.Since(waitedAt))
+		return nil, &Fault{Code: string(StatusTimeout), Message: cs.timeoutMessage()}
 	}
 	if cs.hot && name != "log" {
 		return nil, Forbidden("host services are not available on the hot path: " + name)
@@ -27728,28 +28008,87 @@ func (cs *callState) dispatch(name string, args json.RawMessage) (json.RawMessag
 	if cs.host == nil {
 		return nil, Forbidden("no host services are configured for this plugin")
 	}
-	streamCharged := false
-	hostCtx := context.WithValue(cs.ctx, unitChargerKey{}, func(units int64) *Fault {
-		streamCharged = true
+
+	hostTimeout := hostCallTimeout(name)
+	hostCtx, hostCancel := context.WithTimeout(cs.ctx, hostTimeout)
+	defer hostCancel()
+
+	var abandoned atomic.Bool
+	var streamCharged atomic.Bool
+	hostCtx = context.WithValue(hostCtx, unitChargerKey{}, func(units int64) *Fault {
+		if abandoned.Load() {
+			return &Fault{Code: string(StatusTimeout), Message: fmt.Sprintf("host call %s exceeded its deadline", name)}
+		}
+		streamCharged.Store(true)
+		cs.mu.Lock()
 		cs.last = time.Now()
-		return cs.chargeUnits(units)
+		f := cs.chargeUnitsLocked(units)
+		cs.mu.Unlock()
+		return f
 	})
 	if cs.lim != nil {
 		hostCtx = context.WithValue(hostCtx, callLimitsKey{}, *cs.lim)
 	}
-	out, err := cs.host.CallHost(hostCtx, name, args)
+	if cs.backgroundPool {
+		hostCtx = context.WithValue(hostCtx, backgroundCallKey{}, true)
+	}
+
+	type hostCallResult struct {
+		out json.RawMessage
+		err error
+	}
+	done := make(chan hostCallResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- hostCallResult{err: &Fault{Code: "host_error", Message: fmt.Sprintf("host call %s panicked: %v", name, r)}}
+			}
+		}()
+		out, err := cs.host.CallHost(hostCtx, name, args)
+		done <- hostCallResult{out: out, err: err}
+	}()
+
+	var out json.RawMessage
+	var err error
+	select {
+	case res := <-done:
+		out, err = res.out, res.err
+	case <-hostCtx.Done():
+		abandoned.Store(true)
+		cs.mu.Lock()
+		cs.last = time.Now()
+		cs.mu.Unlock()
+		if cs.ctx.Err() != nil {
+			if errors.Is(cs.ctx.Err(), context.Canceled) {
+				return nil, &Fault{Code: string(StatusError), Message: context.Canceled.Error()}
+			}
+			return nil, &Fault{Code: string(StatusTimeout), Message: cs.timeoutMessage()}
+		}
+		return nil, &Fault{Code: string(StatusTimeout), Message: fmt.Sprintf("host call %s exceeded its %s deadline", name, formatBudgetDuration(hostTimeout))}
+	}
 	// Time spent waiting on the host (a network fetch, a catalogue query) is
 	// paid by the call's own unit price, not as guest wall time; otherwise
 	// one slow upstream response spent the whole budget. The call deadline
 	// still bounds the total.
+	cs.mu.Lock()
 	cs.last = time.Now()
+	cs.mu.Unlock()
 	if err != nil {
 		if f, ok := err.(*Fault); ok {
 			return nil, f
 		}
+		if cs.ctx.Err() != nil {
+			if errors.Is(cs.ctx.Err(), context.Canceled) {
+				return nil, &Fault{Code: string(StatusError), Message: context.Canceled.Error()}
+			}
+			return nil, &Fault{Code: string(StatusTimeout), Message: cs.timeoutMessage()}
+		}
+		if hostCtx.Err() != nil {
+			return nil, &Fault{Code: string(StatusTimeout), Message: fmt.Sprintf("host call %s exceeded its %s deadline", name, formatBudgetDuration(hostTimeout))}
+		}
 		return nil, &Fault{Code: "host_error", Message: err.Error()}
 	}
-	if name == "archive.extract" && !streamCharged {
+	if name == "archive.extract" && !streamCharged.Load() {
 		var extracted struct {
 			Size int64 `json:"size"`
 		}
@@ -27850,13 +28189,13 @@ func statusForFaultCode(code string) Status {
 }
 ``````
 
-## Source: internal/plugins/wasm/wasm.go#pool.fields.md
+## Source: internal/plugins/wasm/wasm.go#poolLeaseInfo.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 
 
-## Source: internal/plugins/wasm/wasm.go#pool
+## Source: internal/plugins/wasm/wasm.go#poolLeaseInfo
 
 ``````
 // pool lends instances up to size, discarding poisoned ones so crash
@@ -27873,14 +28212,36 @@ func statusForFaultCode(code string) Status {
 // Instead the pool is filled at load, a discarded instance is replaced in
 // the background under the service deadline, and a caller only ever waits
 // for an idle instance within its own budget.
+type poolLeaseInfo struct {
+	route string
+	since time.Time
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#pool.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/wasm/wasm.go#pool
+
+``````
 type pool struct {
-	makeFn func(context.Context) (instance, error)
-	idle   chan instance
-	slots  chan struct{} // one token per live instance: idle, lent or building
-	warm   bool
-	mu     sync.Mutex // orders returning an instance against close
-	done   atomic.Bool
-	doneCh chan struct{}
+	makeFn      func(context.Context) (instance, error)
+	size        int
+	idle        chan instance
+	slots       chan struct{} // one token per live instance: idle, lent or building
+	warm        bool
+	mu          sync.Mutex // orders returning an instance against close and protects counters/holders
+	done        atomic.Bool
+	doneCh      chan struct{}
+	inUse       int
+	building    int
+	waiting     int
+	exhaustions atomic.Int64
+	nextLease   uint64
+	holders     map[uint64]poolLeaseInfo
 }
 ``````
 
@@ -27888,7 +28249,14 @@ type pool struct {
 
 ``````
 func newPool(size int, makeFn func(context.Context) (instance, error)) *pool {
-	return &pool{makeFn: makeFn, idle: make(chan instance, size), slots: make(chan struct{}, size), doneCh: make(chan struct{})}
+	return &pool{
+		makeFn:  makeFn,
+		size:    size,
+		idle:    make(chan instance, size),
+		slots:   make(chan struct{}, size),
+		doneCh:  make(chan struct{}),
+		holders: make(map[uint64]poolLeaseInfo, size),
+	}
 }
 ``````
 
@@ -27902,53 +28270,186 @@ func newWarmPool(size int, makeFn func(context.Context) (instance, error)) *pool
 }
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#*pool.acquireLease
+
+``````
+func (p *pool) acquireLease(route string, track bool) uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.inUse++
+	if !track {
+		return 0
+	}
+	p.nextLease++
+	id := p.nextLease
+	p.holders[id] = poolLeaseInfo{route: route, since: time.Now()}
+	return id
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.releaseLease
+
+``````
+func (p *pool) releaseLease(leaseID uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if leaseID != 0 {
+		if _, ok := p.holders[leaseID]; ok {
+			delete(p.holders, leaseID)
+			if p.inUse > 0 {
+				p.inUse--
+			}
+		}
+		return
+	}
+	if p.inUse > 0 {
+		p.inUse--
+	}
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.recordExhaustion
+
+``````
+func (p *pool) recordExhaustion() PoolStats {
+	p.exhaustions.Add(1)
+	return p.snapshot()
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.snapshot
+
+``````
+func (p *pool) snapshot() PoolStats {
+	if p == nil {
+		return PoolStats{}
+	}
+	now := time.Now()
+	p.mu.Lock()
+	holders := make([]PoolHolder, 0, len(p.holders))
+	for _, info := range p.holders {
+		held := now.Sub(info.since)
+		if held < 0 {
+			held = 0
+		}
+		route := info.route
+		if route == "" {
+			route = "(unknown)"
+		}
+		holders = append(holders, PoolHolder{Route: route, Held: held})
+	}
+	stats := PoolStats{
+		Size:        p.size,
+		InUse:       p.inUse,
+		Idle:        len(p.idle),
+		Building:    p.building,
+		Waiting:     p.waiting,
+		Exhaustions: p.exhaustions.Load(),
+		Holders:     holders,
+	}
+	p.mu.Unlock()
+	sort.Slice(stats.Holders, func(i, j int) bool {
+		if stats.Holders[i].Held != stats.Holders[j].Held {
+			return stats.Holders[i].Held > stats.Holders[j].Held
+		}
+		return stats.Holders[i].Route < stats.Holders[j].Route
+	})
+	return stats
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.buildInstance
+
+``````
+func (p *pool) buildInstance(ctx context.Context) (in instance, err error) {
+	p.mu.Lock()
+	p.building++
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.building--
+		p.mu.Unlock()
+		if r := recover(); r != nil {
+			in = nil
+			err = &Error{Status: StatusError, Message: fmt.Sprintf("plugin instance build panic: %v", r), Trap: true}
+		}
+	}()
+	return p.makeFn(ctx)
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#*pool.get
 
 ``````
 func (p *pool) get(ctx context.Context) (instance, error) {
+	in, _, err := p.getInternal(ctx, "", false)
+	return in, err
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.getForRoute
+
+``````
+func (p *pool) getForRoute(ctx context.Context, route string) (instance, uint64, error) {
+	return p.getInternal(ctx, route, true)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.getInternal
+
+``````
+func (p *pool) getInternal(ctx context.Context, route string, track bool) (instance, uint64, error) {
 	if p.done.Load() {
-		return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	}
 	select {
 	case in := <-p.idle:
-		return in, nil
+		return in, p.acquireLease(route, track), nil
 	default:
 	}
+	p.mu.Lock()
+	p.waiting++
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.waiting--
+		p.mu.Unlock()
+	}()
 	if p.warm {
 		// A free slot means an earlier build failed; retry it off-path.
 		p.refill()
 		select {
 		case in := <-p.idle:
-			return in, nil
+			return in, p.acquireLease(route, track), nil
 		case <-p.doneCh:
-			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-ctx.Done():
-			return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+			return nil, 0, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 		}
 	}
 	select {
 	case in := <-p.idle:
-		return in, nil
+		return in, p.acquireLease(route, track), nil
 	case p.slots <- struct{}{}:
 		if p.done.Load() {
 			<-p.slots
-			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		}
-		in, err := p.makeFn(ctx)
+		in, err := p.buildInstance(ctx)
 		if err != nil {
 			<-p.slots
-			return nil, err
+			return nil, 0, err
 		}
 		if p.done.Load() {
 			in.closeInstance()
 			<-p.slots
-			return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+			return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		}
-		return in, nil
+		return in, p.acquireLease(route, track), nil
 	case <-p.doneCh:
-		return nil, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
+		return nil, 0, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 	case <-ctx.Done():
-		return nil, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
+		return nil, 0, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 	}
 }
 ``````
@@ -27957,6 +28458,15 @@ func (p *pool) get(ctx context.Context) (instance, error) {
 
 ``````
 func (p *pool) put(in instance, healthy bool) {
+	p.putLease(in, 0, healthy)
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*pool.putLease
+
+``````
+func (p *pool) putLease(in instance, leaseID uint64, healthy bool) {
+	p.releaseLease(leaseID)
 	if !healthy {
 		in.closeInstance()
 		<-p.slots
@@ -28001,7 +28511,7 @@ func (p *pool) fill() {
 		default:
 			return
 		}
-		in, err := p.makeFn(context.Background())
+		in, err := p.buildInstance(context.Background())
 		if err != nil {
 			<-p.slots
 			return
@@ -28026,7 +28536,7 @@ func (p *pool) refill() {
 		return
 	}
 	go func() {
-		in, err := p.makeFn(context.Background())
+		in, err := p.buildInstance(context.Background())
 		if err != nil {
 			<-p.slots
 			return
@@ -28189,10 +28699,61 @@ func (p *Plugin) HasRankKey() bool   { return p.caps.RankKey }
 func (p *Plugin) HasCondMatch() bool { return p.caps.CondMatch }
 ``````
 
+## Source: internal/plugins/wasm/wasm.go#*Plugin.PoolStats
+
+``````
+func (p *Plugin) PoolStats() PoolStats {
+	if p == nil || p.svc == nil {
+		return PoolStats{}
+	}
+	return p.svc.snapshot()
+}
+``````
+
 ## Source: internal/plugins/wasm/wasm.go#*Plugin.Stats
 
 ``````
-func (p *Plugin) Stats() Stats { return p.stats.snapshot() }
+func (p *Plugin) Stats() Stats {
+	s := p.stats.snapshot()
+	s.Pool = p.PoolStats()
+	return s
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#formatPoolHolders
+
+``````
+func formatPoolHolders(holders []PoolHolder) []string {
+	out := make([]string, len(holders))
+	for i, h := range holders {
+		out[i] = fmt.Sprintf("%s (%s)", h.Route, h.Held.Round(time.Millisecond))
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/wasm/wasm.go#*Plugin.recordPoolExhaustion
+
+``````
+func (p *Plugin) recordPoolExhaustion(route string) {
+	if p == nil || p.svc == nil {
+		return
+	}
+	snap := p.svc.recordExhaustion()
+	if p.eng != nil && p.eng.logger != nil {
+		p.eng.logger.Warn("wasm: plugin instance pool exhausted",
+			"plugin", p.id,
+			"route", route,
+			"pool_size", snap.Size,
+			"in_use", snap.InUse,
+			"idle", snap.Idle,
+			"building", snap.Building,
+			"waiting", snap.Waiting,
+			"exhaustions", snap.Exhaustions,
+			"holders", formatPoolHolders(snap.Holders),
+		)
+	}
+}
 ``````
 
 ## Source: internal/plugins/wasm/wasm.go#*Plugin.Close
@@ -28230,9 +28791,9 @@ func (p *Plugin) Call(ctx context.Context, req Request) (Response, error) {
 
 ``````
 // CallDetailed is Call plus the Outcome (units, duration, trap flag).
-func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outcome, error) {
+func (p *Plugin) CallDetailed(ctx context.Context, req Request) (resp Response, out Outcome, callRetErr error) {
 	start := time.Now()
-	out := Outcome{Status: StatusOK}
+	out = Outcome{Status: StatusOK}
 	defer func() {
 		out.Duration = time.Since(start)
 		p.stats.record(out)
@@ -28253,10 +28814,21 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 	lim := limitsForRequest(p.lim, req.Path)
 	callCtx, cancel := context.WithTimeout(ctx, lim.Deadline)
 	defer cancel()
+
+	background := strings.HasPrefix(req.Path, "/ether/job/") && !req.Foreground
+	if background {
+		// Wait while Ether is busy BEFORE taking a job slot or plugin instance:
+		// a background job must never hold a pool instance while paused on Busy().
+		if err := WaitBackground(callCtx, lim.Busy); err != nil {
+			out.Status = StatusTimeout
+			return Response{}, out, &Error{Status: StatusTimeout, Message: err.Error(), Err: err}
+		}
+	}
+
 	if BackgroundPoolPath(req.Path) && p.jobSlots != nil {
 		// Cap background jobs/syncs at PoolSize-1 so interactive viewer calls,
 		// frontend adapter requests and health checks always retain a free
-		// instance. The defer runs after p.svc.put returns the instance.
+		// instance. The defer runs after p.svc.putLease returns the instance.
 		select {
 		case p.jobSlots <- struct{}{}:
 			defer func() { <-p.jobSlots }()
@@ -28264,37 +28836,66 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 			out.Status = StatusError
 			return Response{}, out, &Error{Status: StatusError, Message: ErrClosed.Error(), Err: ErrClosed}
 		case <-callCtx.Done():
+			p.recordPoolExhaustion(req.Path)
 			out.Status = StatusTimeout
 			return Response{}, out, &Error{Status: StatusTimeout, Message: ErrPoolBusy.Error(), Err: ErrPoolBusy}
 		}
 	}
-	cs := &callState{ctx: callCtx, host: p.host, lim: &lim, path: req.Path, start: start, last: start,
-		background: strings.HasPrefix(req.Path, "/ether/job/") && !req.Foreground,
-		units:      BaseCallUnits, logger: p.eng.logger, pluginID: p.id}
-	in, err := p.svc.get(callCtx)
+	cs := &callState{
+		ctx:            callCtx,
+		host:           p.host,
+		lim:            &lim,
+		path:           req.Path,
+		start:          start,
+		last:           start,
+		background:     background,
+		backgroundPool: BackgroundPoolPath(req.Path) && !req.Foreground,
+		units:          BaseCallUnits,
+		logger:         p.eng.logger,
+		pluginID:       p.id,
+	}
+	in, leaseID, err := p.svc.getForRoute(callCtx, req.Path)
 	if err != nil {
+		if errors.Is(err, ErrPoolBusy) {
+			p.recordPoolExhaustion(req.Path)
+		}
 		out.Status = StatusTimeout
 		if e, ok := err.(*Error); ok {
 			out.Status = e.Status
 		}
 		return Response{}, out, err
 	}
+	healthy := false
+	defer func() {
+		if r := recover(); r != nil {
+			healthy = false
+			resp = Response{}
+			out.Status = StatusError
+			out.Trap = true
+			callRetErr = &Error{Status: StatusError, Message: fmt.Sprintf("plugin call panic: %v", r), Trap: true}
+		}
+		p.svc.putLease(in, leaseID, healthy)
+	}()
 	// Waiting for a free instance is the host's queue, not the plugin's
 	// work: concurrent calls (a metadata sweep) must not spend the budget
 	// of the call at the back of the line.
+	cs.mu.Lock()
 	cs.last = time.Now()
+	cs.mu.Unlock()
 	respJSON, callErr := in.handle(callCtx, cs, reqJSON)
 	out.Units = cs.finishUnits()
-	healthy := callErr == nil || !callErr.Trap
+	healthy = callErr == nil || !callErr.Trap
 	if (callErr != nil && callErr.Status == StatusTimeout) || callCtx.Err() != nil {
 		healthy = false
 	}
-	p.svc.put(in, healthy)
 	if callErr != nil {
 		out.Status, out.Trap = callErr.Status, callErr.Trap
 		return Response{}, out, callErr
 	}
-	if cs.exceeded {
+	cs.mu.Lock()
+	exceeded := cs.exceeded
+	cs.mu.Unlock()
+	if exceeded {
 		out.Status = StatusGovernance
 		return Response{}, out, &Error{Status: StatusGovernance, Message: cs.governanceMessage()}
 	}
@@ -28302,7 +28903,6 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 		out.Status = StatusError
 		return Response{}, out, &Error{Status: StatusError, Message: "plugin response exceeds size cap"}
 	}
-	var resp Response
 	if err := json.Unmarshal(respJSON, &resp); err != nil {
 		out.Status = StatusError
 		return Response{}, out, &Error{Status: StatusError, Message: "plugin returned invalid response JSON: " + err.Error()}

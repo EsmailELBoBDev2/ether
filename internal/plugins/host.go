@@ -470,12 +470,19 @@ func (h *host) openFetchWithOptions(ctx context.Context, req FetchRequest, opts 
 	return resp, nil
 }
 
+const (
+	defaultHostHTTPFetchTimeout = 30 * time.Second
+	maxHostHTTPFetchTimeout     = 60 * time.Second
+)
+
 func (h *host) HTTPFetch(ctx context.Context, req FetchRequest) (FetchResponse, error) {
+	timeout := defaultHostHTTPFetchTimeout
 	if req.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(min(req.TimeoutMS, int64(86400000)))*time.Millisecond)
-		defer cancel()
+		timeout = min(time.Duration(req.TimeoutMS)*time.Millisecond, maxHostHTTPFetchTimeout)
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
 	resp, err := h.openFetch(ctx, req)
 	if err != nil {
 		return FetchResponse{}, err

@@ -77,15 +77,6 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 	rel.Protocol = core.ProtocolUsenet
 	rel.Target = nil
 
-	data, err := r.indexer.FetchNZB(ctx, rel)
-	if err != nil {
-		return core.UsenetCheckResult{}, err
-	}
-	nzbHash := hashNZBBytes(data)
-	if cached, ok := r.lookupUsenetCheck(releaseKey, nzbHash); ok {
-		return cached, nil
-	}
-
 	checkCtx := ctx
 	if !core.IsBackgroundCheck(checkCtx) {
 		checkCtx = core.WithBackgroundBudget(checkCtx, func(context.Context, string, string, int64) error { return nil })
@@ -94,6 +85,15 @@ func (r *KindResolver) checkUsenetCandidate(ctx context.Context, cand core.Sourc
 	if deadline, hasDeadline := checkCtx.Deadline(); !hasDeadline || time.Until(deadline) > usenetCheckTimeout {
 		checkCtx, cancel = context.WithTimeout(checkCtx, usenetCheckTimeout)
 		defer cancel()
+	}
+
+	data, err := r.indexer.FetchNZB(checkCtx, rel)
+	if err != nil {
+		return core.UsenetCheckResult{}, err
+	}
+	nzbHash := hashNZBBytes(data)
+	if cached, ok := r.lookupUsenetCheck(releaseKey, nzbHash); ok {
+		return cached, nil
 	}
 
 	res, err := checker.CheckArticles(checkCtx, rel.ID, data)

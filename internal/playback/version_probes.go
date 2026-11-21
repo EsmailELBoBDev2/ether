@@ -201,6 +201,122 @@ func (m *Manager) RecordReleaseProbe(ctx context.Context, rel core.Release, rawP
 	m.persistReleaseProbe(ctx, rel, rawPayload, info)
 }
 
+func itemProbeContentKey(key core.RatingKey) string {
+	if key == 0 {
+		return ""
+	}
+	return "item:" + key.String()
+}
+
+// noteItemProbeMemory caches probed container facts for a plugin item in
+// memory without disk or database I/O.
+func (m *Manager) noteItemProbeMemory(key core.RatingKey, info core.MediaInfo) (core.MediaInfo, string, bool) {
+	if m == nil || !key.IsPluginKey() {
+		return core.MediaInfo{}, "", false
+	}
+	facts, ok := persistedProbeFacts(info)
+	if !ok {
+		return core.MediaInfo{}, "", false
+	}
+	ck := itemProbeContentKey(key)
+	m.releaseProbeMu.Lock()
+	if m.releaseProbes == nil {
+		m.releaseProbes = make(map[string]core.MediaInfo)
+	}
+	if _, exists := m.releaseProbes[ck]; exists || len(m.releaseProbes) < maxReleaseProbeCache {
+		m.releaseProbes[ck] = core.CloneMediaInfo(facts)
+	} else {
+		m.releaseProbesLoaded = false
+	}
+	m.releaseProbeMu.Unlock()
+	return facts, ck, true
+}
+
+// persistItemProbe durably stores probed container facts (including streams
+// and chapters) for a plugin item in release_probes so detail pages can list
+// probed chapters even across restarts without re-probing or calling /resolve.
+func (m *Manager) persistItemProbe(ctx context.Context, key core.RatingKey, info core.MediaInfo) {
+	facts, ck, ok := m.noteItemProbeMemory(key, info)
+	if !ok || m.deps.DB == nil {
+		return
+	}
+	b, err := json.Marshal(probeFactsRecord{FactsVersion: core.ProbeFactsVersion, Info: facts})
+	if err != nil || len(b) > maxPersistedProbeBytes {
+		return
+	}
+	now := m.now().UnixMilli()
+	_, _ = m.deps.DB.ExecContext(context.WithoutCancel(ctx), `INSERT INTO release_probes(content_key, info_json, updated_at) VALUES(?, ?, ?)
+ON CONFLICT(content_key) DO UPDATE SET info_json=excluded.info_json, updated_at=excluded.updated_at`,
+		ck, string(b), now)
+}
+
+// CachedItemProbe returns probed MediaInfo (including Chapters and Streams)
+// for a plugin item from live sessions, the preloaded in-memory release_probes
+// cache, or release_probes on disk without any network or plugin /resolve I/O.
+func (m *Manager) CachedItemProbe(key core.RatingKey) (core.MediaInfo, bool) {
+	if m == nil || !key.IsPluginKey() {
+		return core.MediaInfo{}, false
+	}
+	var liveInfo core.MediaInfo
+	var liveFound bool
+	var liveAt time.Time
+	m.mu.Lock()
+	var matching []*session
+	for _, s := range m.sessions {
+		if s != nil && !s.closed && s.ident.key == key {
+			matching = append(matching, s)
+		}
+	}
+	m.mu.Unlock()
+	for _, s := range matching {
+		s.mu.Lock()
+		g, closed, started := s.cur, s.closed, s.startedAt
+		s.mu.Unlock()
+		if g == nil || closed {
+			continue
+		}
+		if facts, ok := persistedProbeFacts(g.infoSnapshot()); ok {
+			if !liveFound || len(facts.Chapters) > len(liveInfo.Chapters) || (len(facts.Chapters) == len(liveInfo.Chapters) && started.After(liveAt)) {
+				liveInfo = facts
+				liveFound = true
+				liveAt = started
+			}
+		}
+	}
+	if liveFound && len(liveInfo.Chapters) > 0 {
+		return core.CloneMediaInfo(liveInfo), true
+	}
+
+	ck := itemProbeContentKey(key)
+	m.releaseProbeMu.RLock()
+	if info, ok := m.releaseProbes[ck]; ok {
+		m.releaseProbeMu.RUnlock()
+		if !liveFound || len(info.Chapters) > len(liveInfo.Chapters) {
+			return core.CloneMediaInfo(info), true
+		}
+		return core.CloneMediaInfo(liveInfo), true
+	}
+	complete := m.releaseProbesLoaded
+	m.releaseProbeMu.RUnlock()
+
+	if !complete && m.deps.DB != nil {
+		var raw string
+		if err := m.deps.DB.QueryRow(`SELECT info_json FROM release_probes WHERE content_key=?`, ck).Scan(&raw); err == nil && len(raw) <= maxPersistedProbeBytes {
+			if info, ok := decodePersistedProbe(raw); ok {
+				if facts, ok := persistedProbeFacts(info); ok {
+					if !liveFound || len(facts.Chapters) > len(liveInfo.Chapters) {
+						return facts, true
+					}
+				}
+			}
+		}
+	}
+	if liveFound {
+		return core.CloneMediaInfo(liveInfo), true
+	}
+	return core.MediaInfo{}, false
+}
+
 // CachedReleaseProbe returns probed MediaInfo for rel from in-memory caches
 // (durable release_probes preload and vault TrackStore) with zero request-path
 // database or network I/O.

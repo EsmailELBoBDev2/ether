@@ -338,3 +338,48 @@ func TestPersonThumbValidationAndProjection(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchExactTitleRanksHighRatingOverSparseStubs(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := openTestService(t, Options{})
+
+	decl := sampleStudioClipDecl()
+	if _, err := svc.UpsertKind(ctx, "generic.clips", 99, decl, false); err != nil {
+		t.Fatal(err)
+	}
+	items := []core.KindItem{
+		{ID: "ch-root", Level: "channel", Title: "Music"},
+		// Richly tagged canonical entry with long fields text (worse BM25 length norm) but high rating.
+		{
+			ID:       "canonical",
+			ParentID: "ch-root",
+			Level:    "clip",
+			Title:    "Back In Black",
+			Rating:   9.2,
+			Fields: map[string]json.RawMessage{
+				"notes": rawJSON(t, "hard rock classic rock album label atlantic records 1980 australian rock anthem"),
+			},
+		},
+	}
+	// Add several sparse exact-title stubs with empty fields (better BM25 length norm) and zero rating.
+	for i := 1; i <= 5; i++ {
+		items = append(items, core.KindItem{
+			ID:       "stub-" + string(rune('0'+i)),
+			ParentID: "ch-root",
+			Level:    "clip",
+			Title:    "Back In Black",
+			Rating:   0,
+		})
+	}
+	if _, err := svc.UpsertItems(ctx, "generic.clips", "clip", items); err != nil {
+		t.Fatalf("UpsertItems: %v", err)
+	}
+	// Even under a tight Limit=2, the high-rated canonical exact match must come first (not truncated by BM25).
+	res, err := svc.Search(ctx, SearchQuery{LibraryID: 99, Query: "Back In Black", Limit: 2})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res.Items) != 2 || res.Items[0].ID != "canonical" {
+		t.Fatalf("expected canonical high-rated item first under tight limit, got %+v", res.Items)
+	}
+}

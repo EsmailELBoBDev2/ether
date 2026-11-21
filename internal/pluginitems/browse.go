@@ -262,11 +262,12 @@ func (s *Service) Browse(ctx context.Context, q BrowseQuery) (BrowsePage, error)
 	if len(q.ExcludeKeys) > 0 {
 		var placeholders []string
 		for _, k := range q.ExcludeKeys {
-			if !k.IsPluginKey() {
+			seq := k.PluginSeq()
+			if seq <= 0 {
 				continue
 			}
 			placeholders = append(placeholders, "?")
-			baseArgs = append(baseArgs, int64(k)-core.PluginKeyOffset)
+			baseArgs = append(baseArgs, seq)
 		}
 		if len(placeholders) > 0 {
 			baseWhere.WriteString(` AND i.seq NOT IN (` + strings.Join(placeholders, ",") + `)`)

@@ -75,6 +75,21 @@ func mediaSummary(d frontend.ItemDetail) object {
 	return object{"video": video, "audio": audio}
 }
 
+// detailChapters surfaces already-known chapters (probed container chapters,
+// declared plugin chapters, or part-derived chapters) on title detail without
+// triggering a network probe.
+func detailChapters(d frontend.ItemDetail) []object {
+	if len(d.Chapters) > 0 {
+		return chapters(frontend.MediaInfo{Chapters: d.Chapters})
+	}
+	for _, v := range d.Versions {
+		if !v.Media.Estimated && len(v.Media.Chapters) > 0 {
+			return chapters(v.Media)
+		}
+	}
+	return []object{}
+}
+
 func crewPeople(t frontend.Title) []frontend.Person {
 	out := []frontend.Person{}
 	seen := map[string]bool{}

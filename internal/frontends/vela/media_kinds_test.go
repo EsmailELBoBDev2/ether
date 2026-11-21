@@ -626,3 +626,179 @@ func TestVelaSyntheticSeriesScopedToLibrary(t *testing.T) {
 		t.Fatalf("unexpected colon series title: %v", cTitle)
 	}
 }
+
+func TestVelaAudiobookDetailProbedChaptersAndMultiPartChildren(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	if _, err := db.Exec(`INSERT INTO auth_users(id,plex_id,created_at,updated_at) VALUES(1,123,0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := identity.NewGrants(db, castMembers{}, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bearer, err := grants.Issue(ctx, 1, nil, "vela", core.Device{ID: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	atomicKey := core.PluginKey(9001)
+	libriKey := core.PluginKey(9002)
+	part0Key, _ := core.PluginPartKey(libriKey, 0)
+	part1Key, _ := core.PluginPartKey(libriKey, 1)
+
+	atomic := core.Title{
+		Key:        atomicKey,
+		Type:       core.TypeMovie,
+		LibraryID:  36,
+		Title:      "Atomic Habits",
+		Runtime:    20120 * time.Second,
+		MediaClass: core.MediaClassAudiobook,
+		MediaRole:  core.MediaRoleAudiobook,
+	}
+	libri := core.Title{
+		Key:        libriKey,
+		Type:       core.TypeMovie,
+		LibraryID:  36,
+		Title:      "Northanger Abbey",
+		ChildCount: 2,
+		Runtime:    1500 * time.Second,
+		MediaClass: core.MediaClassAudiobook,
+		MediaRole:  core.MediaRoleAudiobook,
+	}
+	part0 := core.Title{
+		Key:          part0Key,
+		Type:         core.TypeEpisode,
+		LibraryID:    36,
+		Title:        "Chapter 01",
+		ItemIndex:    1,
+		Runtime:      600 * time.Second,
+		MediaClass:   core.MediaClassAudiobook,
+		MediaRole:    core.MediaRolePart,
+		MediaParents: []core.TitleParent{{Key: libriKey, Title: "Northanger Abbey", Role: core.MediaRoleAudiobook}},
+	}
+	part1 := core.Title{
+		Key:          part1Key,
+		Type:         core.TypeEpisode,
+		LibraryID:    36,
+		Title:        "Chapter 02",
+		ItemIndex:    2,
+		Runtime:      900 * time.Second,
+		MediaClass:   core.MediaClassAudiobook,
+		MediaRole:    core.MediaRolePart,
+		MediaParents: []core.TitleParent{{Key: libriKey, Title: "Northanger Abbey", Role: core.MediaRoleAudiobook}},
+	}
+
+	canPlay := true
+	details := map[core.RatingKey]frontend.ItemDetail{
+		atomicKey: {
+			Title:   atomic,
+			CanPlay: &canPlay,
+			Chapters: []core.Chapter{
+				{ID: 0, Title: "Opening Credits", Start: 0, End: 16 * time.Second},
+				{ID: 1, Title: "Epigraph", Start: 16 * time.Second, End: 44 * time.Second},
+			},
+		},
+		libriKey: {
+			Title:   libri,
+			CanPlay: &canPlay,
+			Chapters: []core.Chapter{
+				{ID: 0, Title: "Chapter 01", Start: 0, End: 600 * time.Second},
+				{ID: 1, Title: "Chapter 02", Start: 600 * time.Second, End: 1500 * time.Second},
+			},
+		},
+		part0Key: {Title: part0, CanPlay: &canPlay},
+		part1Key: {Title: part1, CanPlay: &canPlay},
+	}
+
+	exp := frontendtest.Experience{
+		ViewsFunc: func(context.Context, *core.Viewer) ([]frontend.View, error) {
+			return []frontend.View{
+				{ID: "36", LibraryID: 36, Name: "Audiobooks", Type: core.TypeMovie, PluginID: "community.books", KindKey: "audiobook", Media: core.MediaClassAudiobook},
+			}, nil
+		},
+		ItemFunc: func(_ context.Context, req frontend.ItemRequest) (frontend.ItemDetail, error) {
+			if d, ok := details[req.Key]; ok {
+				return d, nil
+			}
+			return frontend.ItemDetail{}, core.ErrNotFound
+		},
+		ChildrenFunc: func(_ context.Context, _ *core.Viewer, _ core.Device, parent core.RatingKey, q frontend.ItemQuery) (core.Page, error) {
+			if parent == libriKey {
+				return core.Page{Items: []core.Title{part0, part1}, Total: 2}, nil
+			}
+			return core.Page{}, nil
+		},
+	}
+
+	seal, err := encryption(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := &instance{
+		ctx:     ctx,
+		db:      db,
+		seal:    seal,
+		replays: make(map[string]*replay),
+		mux:     http.NewServeMux(),
+		host: frontend.Host{
+			Identity:       identityFake{},
+			Experience:     exp,
+			ServerIdentity: frontend.ServerIdentity{MachineID: "srv-1", FriendlyName: "Ether", Version: "0.3.17"},
+		},
+	}
+	inst.routes()
+
+	doGet := func(path string) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("X-Vela-Device-Id", "web")
+		rec := httptest.NewRecorder()
+		inst.serve(rec, req)
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+
+	// 1. Single-file audiobook detail surfaces probed chapters instead of chapters: [].
+	code, atomicDetail := doGet("/vela/v0/titles/" + ids.RatingKeyGUID(atomicKey))
+	if code != 200 {
+		t.Fatalf("atomic detail status=%d body=%v", code, atomicDetail)
+	}
+	chs, _ := atomicDetail["chapters"].([]any)
+	if len(chs) != 2 {
+		t.Fatalf("atomic detail chapters = %v, want 2 chapters", atomicDetail["chapters"])
+	}
+	ch0 := chs[0].(map[string]any)
+	ch1 := chs[1].(map[string]any)
+	if ch0["name"] != "Opening Credits" || ch0["startSeconds"] != float64(0) || ch1["name"] != "Epigraph" || ch1["startSeconds"] != float64(16) {
+		t.Fatalf("unexpected atomic chapters: %v", chs)
+	}
+
+	// 2. Multi-part audiobook detail exposes childCount=2, chapters, and /children returns playable role="part" items.
+	code, libriDetail := doGet("/vela/v0/titles/" + ids.RatingKeyGUID(libriKey))
+	if code != 200 {
+		t.Fatalf("libri detail status=%d body=%v", code, libriDetail)
+	}
+	lMedia := libriDetail["title"].(map[string]any)["media"].(map[string]any)
+	if lMedia["childCount"] != float64(2) {
+		t.Fatalf("libri media.childCount = %v, want 2", lMedia["childCount"])
+	}
+	if lChs, _ := libriDetail["chapters"].([]any); len(lChs) != 2 {
+		t.Fatalf("libri detail chapters = %v, want 2", libriDetail["chapters"])
+	}
+	code, libriChildren := doGet("/vela/v0/titles/" + ids.RatingKeyGUID(libriKey) + "/children")
+	if code != 200 {
+		t.Fatalf("libri children status=%d body=%v", code, libriChildren)
+	}
+	items := libriChildren["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("libri children count = %d, want 2", len(items))
+	}
+	firstPart := items[0].(map[string]any)
+	fpMedia := firstPart["media"].(map[string]any)
+	if firstPart["id"] != ids.RatingKeyGUID(part0Key) || fpMedia["role"] != "part" || fpMedia["index"] != float64(1) {
+		t.Fatalf("unexpected first part child: %v", firstPart)
+	}
+}

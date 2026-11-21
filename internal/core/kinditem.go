@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -236,6 +237,107 @@ func ExtractKindItemParts(hints json.RawMessage) []KindItemPart {
 			}
 		}
 		out = append(out, part)
+	}
+	return out
+}
+
+// ExtractKindItemChaptersFromItem inspects a KindItem for declared chapters,
+// checking hints.chapters first and falling back to a declared "chapters" array
+// field when present.
+func ExtractKindItemChaptersFromItem(item KindItem) []Chapter {
+	if chs := ExtractKindItemChapters(item.Hints); len(chs) > 0 {
+		return chs
+	}
+	if raw, ok := item.Fields["chapters"]; ok && len(raw) > 0 {
+		if wrapped, err := json.Marshal(struct {
+			Chapters json.RawMessage `json:"chapters"`
+		}{Chapters: raw}); err == nil {
+			return ExtractKindItemChapters(wrapped)
+		}
+	}
+	return nil
+}
+
+// ExtractKindItemChapters inspects a KindItem's Hints JSON for a non-empty
+// "chapters" array and returns normalized Chapter markers in declaration order.
+func ExtractKindItemChapters(hints json.RawMessage) []Chapter {
+	if len(hints) == 0 {
+		return nil
+	}
+	var env struct {
+		Chapters []json.RawMessage `json:"chapters"`
+	}
+	if err := json.Unmarshal(hints, &env); err != nil || len(env.Chapters) == 0 {
+		return nil
+	}
+	out := make([]Chapter, 0, len(env.Chapters))
+	var cursor float64
+	for i, raw := range env.Chapters {
+		var obj struct {
+			Title        string   `json:"title"`
+			Name         string   `json:"name"`
+			Label        string   `json:"label"`
+			StartSec     *float64 `json:"startSec"`
+			StartSeconds *float64 `json:"startSeconds"`
+			Start        *float64 `json:"start"`
+			EndSec       *float64 `json:"endSec"`
+			EndSeconds   *float64 `json:"endSeconds"`
+			End          *float64 `json:"end"`
+			DurationSec  *float64 `json:"durationSec"`
+			Duration     *float64 `json:"duration"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			continue
+		}
+		title := ""
+		for _, cand := range []string{obj.Title, obj.Name, obj.Label} {
+			if s := strings.TrimSpace(cand); s != "" {
+				title = s
+				break
+			}
+		}
+		var startSec float64
+		hasStart := false
+		for _, cand := range []*float64{obj.StartSec, obj.StartSeconds, obj.Start} {
+			if cand != nil && *cand >= 0 {
+				startSec = *cand
+				hasStart = true
+				break
+			}
+		}
+		if !hasStart {
+			startSec = cursor
+		}
+		var endSec float64
+		for _, cand := range []*float64{obj.EndSec, obj.EndSeconds, obj.End} {
+			if cand != nil && *cand > startSec {
+				endSec = *cand
+				break
+			}
+		}
+		if endSec <= startSec {
+			for _, cand := range []*float64{obj.DurationSec, obj.Duration} {
+				if cand != nil && *cand > 0 {
+					endSec = startSec + *cand
+					break
+				}
+			}
+		}
+		if endSec <= startSec && !hasStart && title == "" {
+			continue
+		}
+		if title == "" {
+			title = fmt.Sprintf("Chapter %d", i+1)
+		}
+		if endSec > cursor {
+			cursor = endSec
+		}
+		out = append(out, Chapter{
+			ID:    int64(i),
+			Title: title,
+			Start: time.Duration(startSec * float64(time.Second)),
+			End:   time.Duration(endSec * float64(time.Second)),
+		})
 	}
 	return out
 }

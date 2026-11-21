@@ -101,11 +101,17 @@ type Deps struct {
 	// OpenSources attempts per play (0 uses DefaultMaxNonVideoReleaseGrabs;
 	// negative disables the cap).
 	MaxNonVideoReleaseGrabs int
-	Secret                  func(ctx context.Context, name string) (string, error)
-	AllowHost               func(host string) bool
-	MaxDownloadBytes        int64
-	ItemIndex               int
-	Backoff                 *HostBackoff
+	// CandidateOpenTimeout, when positive, bounds how long OpenSources spends
+	// opening any single candidate before moving on to the next candidate.
+	CandidateOpenTimeout time.Duration
+	Secret               func(ctx context.Context, name string) (string, error)
+	AllowHost            func(host string) bool
+	MaxDownloadBytes     int64
+	ItemIndex            int
+	Backoff              *HostBackoff
+	// OnSourceFailed, when set, is called each time a candidate fails to open,
+	// regardless of whether a later candidate succeeds.
+	OnSourceFailed func(attempt, total int, src core.PlayableSource, took time.Duration, err error)
 	// OnSourceSkipped, when set, is called for each candidate that failed
 	// before a later one opened, so the caller can log it and decide
 	// whether the winner may be saved as the item's resolution.
@@ -258,7 +264,7 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 	var errs []error
 	var failures []SourceFailure
 	allUnstreamable := true
-	for _, cand := range sources {
+	for i, cand := range sources {
 		if err := ctx.Err(); err != nil {
 			return nil, core.PlayableSource{}, err
 		}
@@ -278,12 +284,24 @@ func OpenSources(ctx context.Context, sources []core.PlayableSource, deps Deps) 
 			}
 		}
 
-		bs, err := Open(ctx, cand, deps)
+		candCtx := ctx
+		var candCancel context.CancelFunc
+		if deps.CandidateOpenTimeout > 0 {
+			candCtx, candCancel = context.WithTimeout(ctx, deps.CandidateOpenTimeout)
+		}
+		attemptStart := time.Now()
+		bs, err := Open(candCtx, cand, deps)
+		if candCancel != nil {
+			candCancel()
+		}
 		if err == nil {
 			if len(failures) > 0 && deps.OnSourceSkipped != nil {
 				deps.OnSourceSkipped(failures, cand)
 			}
 			return bs, cand, nil
+		}
+		if deps.OnSourceFailed != nil {
+			deps.OnSourceFailed(i+1, len(sources), cand, time.Since(attemptStart), err)
 		}
 		if nonVideo && errors.Is(err, core.ErrNoUsableFile) {
 			structuralFailed[shape] = err
@@ -572,7 +590,7 @@ func openDirectSource(ctx context.Context, src core.PlayableSource, deps Deps) (
 		mime = "application/octet-stream"
 	}
 	return &DirectSource{
-		ctx:     ctx,
+		ctx:     context.WithoutCancel(ctx),
 		src:     src,
 		deps:    deps,
 		url:     expandedURL,
@@ -590,7 +608,9 @@ func (d *DirectSource) ensureDelegate() (ByteSource, error) {
 	}
 	cp := d.src
 	cp.Pattern = PatternRange
-	bs, err := openRangeSource(d.ctx, cp, d.deps)
+	openCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+	bs, err := openRangeSource(openCtx, cp, d.deps)
 	if err != nil {
 		return nil, err
 	}

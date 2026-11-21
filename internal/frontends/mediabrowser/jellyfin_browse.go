@@ -376,7 +376,7 @@ func (i *instance) shapeJellyfinItem(r *http.Request, viewer *frontend.Viewer, i
 				}
 			}
 		}
-	} else if fields["mediasources"] && jellyfinListFile(r) && (title.Type == "movie" || title.Type == "episode") && r != nil && viewer != nil {
+	} else if fields["mediasources"] && jellyfinListFile(r) && !mbIsBookItem(title) && (title.Type == "movie" || title.Type == "episode") && r != nil && viewer != nil {
 		source := i.defaultMediaSource(r, viewer, authhdr.MediaBrowserToken(r), title.Key)
 		jellyfinMediaSourceShape(source, title.Title)
 		i.presentJellyfinFile(item, source, title)

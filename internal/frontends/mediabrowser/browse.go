@@ -37,6 +37,8 @@ func (i *instance) userDataDTO(id string, st frontend.WatchStatus) map[string]an
 	data := map[string]any{"PlaybackPositionTicks": st.ViewOffset.Nanoseconds() / 100, "PlayCount": st.ViewCount, "Played": st.ViewCount > 0, "IsFavorite": st.IsFavorite, "PlayedPercentage": float64(0)}
 	if st.Duration > 0 {
 		data["PlayedPercentage"] = min(100, float64(st.ViewOffset)*100/float64(st.Duration))
+	} else if st.Reading != nil && st.Reading.Fraction > 0 {
+		data["PlayedPercentage"] = min(100, st.Reading.Fraction*100)
 	}
 	if !st.LastViewedAt.IsZero() {
 		data["LastPlayedDate"] = wireTime(st.LastViewedAt)
@@ -65,6 +67,12 @@ func mbItemType(t frontend.Title) string {
 		return t.MBItemType
 	}
 	return map[frontend.MediaType]string{"movie": "Movie", "show": "Series", "season": "Season", "episode": "Episode", "boxset": "BoxSet"}[t.Type]
+}
+
+// mbIsBookItem reports whether title is a book/ebook item that must never be
+// advertised with video/audio MediaSources or opened through A/V PlaybackInfo.
+func mbIsBookItem(t frontend.Title) bool {
+	return t.MBItemType == "Book" || t.MediaClass == frontend.MediaClassBook
 }
 
 // mbDeclaredNonVideo reports whether the title's declared MediaBrowser type
@@ -504,7 +512,7 @@ func (i *instance) browseRoutes() error {
 				if p := paths[title.Key]; p != "" {
 					item["Path"] = p
 				}
-				if fieldSet(r)["mediasources"] {
+				if fieldSet(r)["mediasources"] && !mbIsBookItem(title) {
 					editions := i.jellyfinEditions(r, v, title)
 					if len(editions) == 1 {
 						setSourcePath(editions[0].source, paths[title.Key])
@@ -582,7 +590,7 @@ func (i *instance) browseRoutes() error {
 			http.NotFound(w, r)
 			return
 		}
-		if d.Collection == nil && d.Playlist == nil && versionID == "" && (d.Title.Type == "movie" || d.Title.Type == "episode") {
+		if d.Collection == nil && d.Playlist == nil && versionID == "" && !mbIsBookItem(d.Title) && (d.Title.Type == "movie" || d.Title.Type == "episode") {
 			i.warmDetail(r, v, key)
 		}
 		if d.Collection != nil || d.Playlist != nil {
@@ -627,7 +635,7 @@ func (i *instance) browseRoutes() error {
 		if i.protocol == "jellyfin" {
 			dto["EnableMediaSourceDisplay"] = false
 		}
-		if len(d.Versions) > 0 || d.Title.Type == "movie" || d.Title.Type == "episode" {
+		if !mbIsBookItem(d.Title) && (len(d.Versions) > 0 || d.Title.Type == "movie" || d.Title.Type == "episode") {
 			// No explicit release was requested: when the ranked release
 			// variants are available, list Auto then the variants. Otherwise
 			// keep the edition/default shape exactly as before.
@@ -958,7 +966,10 @@ func (i *instance) pageWithExtra(w http.ResponseWriter, r *http.Request, v *fron
 	r = i.noteLocalUnplayedCounts(r, v, page.Items)
 	i.fillSeriesTitles(r, v, page.Items)
 	for _, title := range page.Items {
-		editions := i.jellyfinEditions(r, v, title)
+		var editions []jellyfinEdition
+		if !mbIsBookItem(title) {
+			editions = i.jellyfinEditions(r, v, title)
+		}
 		if len(editions) > 1 {
 			for _, edition := range editions {
 				item := i.itemDTO(title, state[title.Key])

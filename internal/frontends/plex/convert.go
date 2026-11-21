@@ -373,6 +373,8 @@ func (s *Server) metadata(ctx context.Context, pr *Request, t *frontend.Title, o
 		m.ViewCount = st.ViewCount
 		if st.ViewOffset > 0 && isPlayable(t.Type) {
 			m.ViewOffset = ms(st.ViewOffset)
+		} else if st.Reading != nil && st.Reading.Fraction > 0 && t.Runtime > 0 && isPlayable(t.Type) {
+			m.ViewOffset = ms(time.Duration(st.Reading.Fraction * float64(t.Runtime)))
 		}
 		m.LastViewedAt = unixOrZero(st.LastViewedAt)
 		m.LastRatedAt = unixOrZero(st.LastRatedAt)

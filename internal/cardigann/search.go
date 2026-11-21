@@ -15,6 +15,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 
+	"github.com/braedonsaunders/ether/internal/config"
 	"github.com/braedonsaunders/ether/internal/core"
 	"github.com/braedonsaunders/ether/internal/newznab"
 	"github.com/braedonsaunders/ether/internal/releaseparse"
@@ -346,6 +347,18 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 	if len(attempts) == 0 {
 		return nil, errors.New("search request has no title or supported identifier")
 	}
+	fallbackCat := config.DefaultCategoryForIdentityMedia(config.IdentityMediaTypeForSearch(req))
+	stampMissing := func(res []core.Release) []core.Release {
+		if fallbackCat == 0 {
+			return res
+		}
+		for i := range res {
+			if res[i].Category == 0 {
+				res[i].Category = fallbackCat
+			}
+		}
+		return res
+	}
 	var firstErr error
 	for _, q := range attempts {
 		if err := ctx.Err(); err != nil {
@@ -363,7 +376,7 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 			continue
 		}
 		if len(res) > 0 {
-			return res, nil
+			return stampMissing(res), nil
 		}
 	}
 	if firstErr == nil {
@@ -413,7 +426,7 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 					}
 				}
 				if len(merged) > 0 {
-					return merged, nil
+					return stampMissing(merged), nil
 				}
 				if budgetErr != nil {
 					return nil, budgetErr
@@ -432,7 +445,7 @@ func (r *Runner) Search(ctx context.Context, req core.SearchRequest, movieCats, 
 					continue
 				}
 				if len(res) > 0 {
-					return res, nil
+					return stampMissing(res), nil
 				}
 			}
 		}

@@ -28,6 +28,7 @@ import { useLocale } from "../../i18n/react";
 import { searchSelectLabels } from "../../i18n/appkit-labels";
 import { api, errorMessage, newId } from "../../lib/api";
 import type {
+  IdentityMediaType,
   IdentityRule,
   IdentityTargetKind,
   Indexer,
@@ -56,6 +57,9 @@ const TARGET_KINDS: IdentityTargetKind[] = [
   "torrent_downloads",
   "all_searches",
 ];
+
+const MEDIA_TYPES: IdentityMediaType[] = ["", "movie", "tv", "music", "books"];
+const SPECIFIC_MEDIA_TYPES: Exclude<IdentityMediaType, "">[] = ["movie", "tv", "music", "books"];
 
 const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 const FORBIDDEN_HEADERS = new Set(["host", "content-length", "transfer-encoding"]);
@@ -127,6 +131,36 @@ export function targetKindBadge(target: IdentityTargetKind): string {
   }
 }
 
+export function mediaTypeLabel(mediaType?: IdentityMediaType): string {
+  switch (mediaType ?? "") {
+    case "movie":
+      return t("Movies");
+    case "tv":
+      return t("TV");
+    case "music":
+      return t("Music");
+    case "books":
+      return t("Books");
+    default:
+      return t("Any media type");
+  }
+}
+
+export function mediaTypeBadge(mediaType?: IdentityMediaType): string {
+  switch (mediaType ?? "") {
+    case "movie":
+      return t("Movies");
+    case "tv":
+      return t("TV");
+    case "music":
+      return t("Music");
+    case "books":
+      return t("Books");
+    default:
+      return "";
+  }
+}
+
 function indexerDisplayName(ix: Indexer): string {
   if (ix.name.trim()) return ix.name.trim();
   try {
@@ -136,7 +170,7 @@ function indexerDisplayName(ix: Indexer): string {
   }
 }
 
-export function ruleTargetSummary(rule: IdentityRule, indexers: Indexer[]): string {
+function ruleTargetBaseSummary(rule: IdentityRule, indexers: Indexer[]): string {
   const scopeSuffix =
     rule.scope === "search"
       ? ` (${t("searches")})`
@@ -158,6 +192,12 @@ export function ruleTargetSummary(rule: IdentityRule, indexers: Indexer[]): stri
     case "all_searches":
       return t("All indexer searches");
   }
+}
+
+export function ruleTargetSummary(rule: IdentityRule, indexers: Indexer[]): string {
+  const base = ruleTargetBaseSummary(rule, indexers);
+  const media = mediaTypeBadge(rule.mediaType);
+  return media ? `${base} · ${media}` : base;
 }
 
 function hostOfURL(raw: string): string {
@@ -192,38 +232,44 @@ export function validHostPattern(pattern: string): boolean {
 /**
  * Mirrors internal/config/requestid.go ResolveRequest precedence:
  * specific indexer > exact host > wildcard host > download type / all searches > Ether default.
+ * Within a target tier, a specific mediaType beats Any; list order breaks ties.
  */
 export function resolveRuleForIndexer(
   rules: IdentityRule[],
   indexer: Pick<Indexer, "id" | "url" | "protocol">,
   kind: "search" | "nzb_download" | "torrent_download",
+  mediaType: IdentityMediaType = "",
 ): { rule: IdentityRule | null; profile: string } {
   const host = hostOfURL(indexer.url);
   const isDownload = kind !== "search";
   let bestSpec = 0;
   let best: IdentityRule | null = null;
   for (const r of rules) {
-    let spec = 0;
+    const ruleMedia = (r.mediaType ?? "") as IdentityMediaType;
+    if (ruleMedia && ruleMedia !== mediaType) continue;
+    let targetRank = 0;
     if (r.target === "indexer") {
       if (r.indexerId !== indexer.id) continue;
       if (r.scope === "search" && isDownload) continue;
       if (r.scope === "download" && !isDownload) continue;
-      spec = 4;
+      targetRank = 4;
     } else if (r.target === "host") {
       if (!matchHostPattern(r.host ?? "", host)) continue;
       if (r.scope === "search" && isDownload) continue;
       if (r.scope === "download" && !isDownload) continue;
-      spec = (r.host ?? "").trim().startsWith("*.") ? 2 : 3;
+      targetRank = (r.host ?? "").trim().startsWith("*.") ? 2 : 3;
     } else if (r.target === "nzb_downloads") {
       if (kind !== "nzb_download") continue;
-      spec = 1;
+      targetRank = 1;
     } else if (r.target === "torrent_downloads") {
       if (kind !== "torrent_download") continue;
-      spec = 1;
+      targetRank = 1;
     } else if (r.target === "all_searches") {
       if (kind !== "search") continue;
-      spec = 1;
+      targetRank = 1;
     }
+    if (targetRank === 0) continue;
+    const spec = targetRank * 2 + (ruleMedia ? 1 : 0);
     if (spec > bestSpec) {
       bestSpec = spec;
       best = r;
@@ -365,8 +411,18 @@ function RulePreviewPanel({
     rule?.target === "torrent_downloads" ||
     rule?.scope === "download";
 
+  const mediaBadge = mediaTypeBadge(rule?.mediaType);
+  const searchLabel = mediaBadge
+    ? t("Sample search ({media})", { media: mediaBadge })
+    : t("Sample search");
   const downloadLabel =
-    preview?.downloadKind === "torrent" ? t("Sample torrent download") : t("Sample NZB download");
+    preview?.downloadKind === "torrent"
+      ? mediaBadge
+        ? t("Sample torrent download ({media})", { media: mediaBadge })
+        : t("Sample torrent download")
+      : mediaBadge
+        ? t("Sample NZB download ({media})", { media: mediaBadge })
+        : t("Sample NZB download");
 
   return (
     <div className={compact ? "space-y-2.5" : "space-y-3"}>
@@ -385,11 +441,11 @@ function RulePreviewPanel({
           {downloadPrimary ? (
             <>
               <PreviewCallCard label={downloadLabel} call={preview.download} highlight />
-              <PreviewCallCard label={t("Sample search")} call={preview.search} />
+              <PreviewCallCard label={searchLabel} call={preview.search} />
             </>
           ) : (
             <>
-              <PreviewCallCard label={t("Sample search")} call={preview.search} highlight />
+              <PreviewCallCard label={searchLabel} call={preview.search} highlight />
               <PreviewCallCard label={downloadLabel} call={preview.download} />
             </>
           )}
@@ -562,6 +618,11 @@ function RuleEditorDrawer({
     [locale],
   );
 
+  const mediaTypeOptions = useMemo(
+    () => MEDIA_TYPES.map((value) => ({ value, label: mediaTypeLabel(value) })),
+    [locale],
+  );
+
   const profileOptions = useMemo(
     () => PROFILE_IDS.map((value) => ({ value, label: identityProfileLabel(value) })),
     [locale],
@@ -632,6 +693,7 @@ function RuleEditorDrawer({
       ...(draft.scope && (draft.target === "indexer" || draft.target === "host")
         ? { scope: draft.scope }
         : {}),
+      ...(draft.mediaType ? { mediaType: draft.mediaType } : {}),
       profile: draft.profile || "ether",
       ...(cleanOverrides(draft.headers) ? { headers: cleanOverrides(draft.headers) } : {}),
       ...(cleanOverrides(draft.params) ? { params: cleanOverrides(draft.params) } : {}),
@@ -778,6 +840,24 @@ function RuleEditorDrawer({
                 }
               />
             ) : null}
+
+            <SettingsRow
+              title={t("Media type")}
+              description={t(
+                "Optionally limit this rule to one media type for searches and downloads. Music and Books apply to plugin kinds when known.",
+              )}
+              control={
+                <div className="w-full sm:w-64">
+                  <SearchSelect
+                    {...searchSelectLabels()}
+                    ariaLabel={t("Media type")}
+                    value={draft.mediaType ?? ""}
+                    options={mediaTypeOptions}
+                    onChange={(v) => set({ mediaType: (v as IdentityMediaType) || undefined })}
+                  />
+                </div>
+              }
+            />
           </SettingsSection>
 
           <SettingsSection
@@ -942,6 +1022,46 @@ export function IdentityRulesCard({
   );
 }
 
+function describeEffectiveIdentity(
+  rules: IdentityRule[],
+  indexer: Pick<Indexer, "id" | "url" | "protocol">,
+  kind: "search" | "nzb_download" | "torrent_download",
+  indexers: Indexer[],
+) {
+  const base = resolveRuleForIndexer(rules, indexer, kind, "");
+  const byMedia = SPECIFIC_MEDIA_TYPES.map((mt) => ({
+    mt,
+    res: resolveRuleForIndexer(rules, indexer, kind, mt),
+  }));
+  const overrides = byMedia.filter(
+    ({ res }) => res.rule?.id !== base.rule?.id || res.profile !== base.profile,
+  );
+  const signature = [
+    base.rule?.id ?? "",
+    base.profile,
+    ...byMedia.map(({ res }) => `${res.rule?.id ?? ""}:${res.profile}`),
+  ].join("|");
+  if (overrides.length === 0) {
+    return {
+      split: false as const,
+      signature,
+      identity: identityShortLabel(base.profile, base.rule?.headers),
+      source: base.rule ? ruleTargetSummary(base.rule, indexers) : t("Default"),
+    };
+  }
+  const parts = overrides.map(
+    ({ mt, res }) => `${mediaTypeBadge(mt)}: ${identityShortLabel(res.profile, res.rule?.headers)}`,
+  );
+  if (base.rule) {
+    parts.push(`${t("Other")}: ${identityShortLabel(base.profile, base.rule.headers)}`);
+  }
+  return {
+    split: true as const,
+    signature,
+    summary: parts.join(" · "),
+  };
+}
+
 /** Read-only summary row inside each indexer's drawer, linking to the rules drawer. */
 export function IndexerIdentityRow({
   indexer,
@@ -956,38 +1076,39 @@ export function IndexerIdentityRow({
 }) {
   const isTorrent = indexer.protocol === "torrent";
   const downloadOnly = indexer.kind === "stremio" || indexer.kind === "cardigann";
-  const searchRes = resolveRuleForIndexer(rules, indexer, "search");
-  const dlRes = resolveRuleForIndexer(
+  const searchDesc = describeEffectiveIdentity(rules, indexer, "search", indexers);
+  const dlDesc = describeEffectiveIdentity(
     rules,
     indexer,
     isTorrent ? "torrent_download" : "nzb_download",
+    indexers,
   );
-  const primary = downloadOnly ? dlRes : searchRes;
-  const effectiveLabel = identityShortLabel(primary.profile, primary.rule?.headers);
-  const sourceLabel = primary.rule ? ruleTargetSummary(primary.rule, indexers) : t("Default");
+  const primary = downloadOnly ? dlDesc : searchDesc;
+  const showSeparateDownload = !downloadOnly && dlDesc.signature !== searchDesc.signature;
 
-  const showSeparateDownload =
-    !downloadOnly && (dlRes.rule?.id !== searchRes.rule?.id || dlRes.profile !== searchRes.profile);
-  const dlEffective = identityShortLabel(dlRes.profile, dlRes.rule?.headers);
-  const dlSource = dlRes.rule ? ruleTargetSummary(dlRes.rule, indexers) : t("Default");
+  const title = primary.split
+    ? t("Identifies by media type: {summary}", { summary: primary.summary })
+    : t("Identifies as: {identity} (from rule: {rule})", {
+        identity: primary.identity,
+        rule: primary.source,
+      });
+
+  const description = downloadOnly
+    ? t("Applies to NZB and torrent downloads from this source.")
+    : showSeparateDownload
+      ? dlDesc.split
+        ? t("Downloads identify by media type: {summary}", { summary: dlDesc.summary })
+        : t("Downloads identify as: {identity} (from rule: {rule})", {
+            identity: dlDesc.identity,
+            rule: dlDesc.source,
+          })
+      : t("Managed by your server-wide identity rules.");
 
   return (
     <SettingsSection title={t("Request identity")}>
       <SettingsRow
-        title={t("Identifies as: {identity} (from rule: {rule})", {
-          identity: effectiveLabel,
-          rule: sourceLabel,
-        })}
-        description={
-          downloadOnly
-            ? t("Applies to NZB and torrent downloads from this source.")
-            : showSeparateDownload
-              ? t("Downloads identify as: {identity} (from rule: {rule})", {
-                  identity: dlEffective,
-                  rule: dlSource,
-                })
-              : t("Managed by your server-wide identity rules.")
-        }
+        title={title}
+        description={description}
         control={
           <Button type="button" variant="link" size="sm" onClick={onManage} className="px-0">
             {t("Manage rules")}
@@ -1153,7 +1274,7 @@ export function IdentityRulesDrawer({
                 <h3 className="text-sm font-semibold text-fg">{t("Identity rules")}</h3>
                 <p className="text-xs text-fg-muted">
                   {t(
-                    "The most specific rule wins: indexer, exact host, wildcard host, then download type or all searches. Drag to break ties.",
+                    "The most specific rule wins: indexer, exact host, wildcard host, then download type or all searches (a media type beats Any in the same tier). Drag to break ties.",
                   )}
                 </p>
               </div>
@@ -1175,7 +1296,9 @@ export function IdentityRulesDrawer({
                 className="space-y-2.5"
                 onReorder={(next) => void commitRules(next, t("Rule order saved"))}
                 renderItem={(rule, handle, i) => {
+                  const baseTargetName = ruleTargetBaseSummary(rule, indexers);
                   const targetName = ruleTargetSummary(rule, indexers);
+                  const mediaLabel = mediaTypeBadge(rule.mediaType);
                   const idLabel = identityShortLabel(rule.profile, rule.headers);
                   const edits = editCount(rule);
                   const previewOpen = Boolean(openPreviews[rule.id]);
@@ -1193,7 +1316,7 @@ export function IdentityRulesDrawer({
                             {i + 1}
                           </span>
                           <h4 className="min-w-0 break-words font-semibold text-fg">
-                            {targetName}
+                            {baseTargetName}
                           </h4>
                           <Badge
                             variant="outline"
@@ -1201,6 +1324,14 @@ export function IdentityRulesDrawer({
                           >
                             {targetKindBadge(rule.target)}
                           </Badge>
+                          {mediaLabel ? (
+                            <Badge
+                              variant="outline"
+                              className="hidden whitespace-nowrap sm:inline-flex"
+                            >
+                              {mediaLabel}
+                            </Badge>
+                          ) : null}
                         </div>
                         <div className="col-start-3 row-start-1 flex shrink-0 items-center gap-1 sm:row-span-2 sm:self-start">
                           <OrderButtons
@@ -1236,6 +1367,11 @@ export function IdentityRulesDrawer({
                           <Badge variant="outline" className="whitespace-nowrap sm:hidden">
                             {targetKindBadge(rule.target)}
                           </Badge>
+                          {mediaLabel ? (
+                            <Badge variant="outline" className="whitespace-nowrap sm:hidden">
+                              {mediaLabel}
+                            </Badge>
+                          ) : null}
                           <span>{t("Identifies as")}</span>
                           <Badge
                             variant={rule.profile === "ether" ? "success" : "secondary"}

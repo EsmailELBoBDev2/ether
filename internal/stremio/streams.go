@@ -198,6 +198,7 @@ func FetchNZBWithIdentity(ctx context.Context, client *http.Client, origin, inde
 		Kind:      config.RequestNZBDownload,
 		IndexerID: indexerID,
 		URL:       r.NZBURL,
+		MediaType: config.IdentityMediaTypeForRelease(r, nil, nil),
 	})
 	targetURL := id.ApplyToURL(r.NZBURL)
 	req, err := http.NewRequestWithContext(safefetch.WithTrustedOriginFor(ctx, origin, targetURL), http.MethodGet, targetURL, nil)

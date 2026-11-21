@@ -82,3 +82,45 @@ func TestPreviewMasksAPIKeyAndSecrets(t *testing.T) {
 		t.Fatalf("indexer preview leaked api key: %s", raw2)
 	}
 }
+
+func TestPreviewReflectsMediaTypeRule(t *testing.T) {
+	saved := []config.Indexer{{
+		ID: "idx1", Name: "Geek", URL: "https://api.nzbgeek.info", APIKey: "secret",
+	}}
+	movieRule := config.IdentityRule{
+		ID: "r-movie", Target: config.TargetAllSearches, MediaType: config.IdentityMediaMovie, Profile: "radarr",
+	}
+	movieDL := config.IdentityRule{
+		ID: "r-movie-dl", Target: config.TargetNZBDownloads, MediaType: config.IdentityMediaMovie, Profile: "sabnzbd",
+	}
+	tvRule := config.IdentityRule{
+		ID: "r-tv", Target: config.TargetAllSearches, MediaType: config.IdentityMediaTV, Profile: "sonarr",
+	}
+	rules := []config.IdentityRule{movieRule, movieDL, tvRule}
+
+	pm, err := PreviewRequestIdentity(PreviewInput{
+		Rule: &movieRule, Rules: rules, HasRules: true, SavedIndexers: saved,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(pm.Search.RequestLine, "t=movie") || !strings.Contains(pm.Search.RequestLine, "cat=2000") {
+		t.Fatalf("movie preview search = %q, want t=movie and cat=2000", pm.Search.RequestLine)
+	}
+	if pm.Search.Profile != "radarr" || pm.Download.Profile != "sabnzbd" {
+		t.Fatalf("movie preview profiles = search:%q download:%q, want radarr/sabnzbd", pm.Search.Profile, pm.Download.Profile)
+	}
+
+	ptv, err := PreviewRequestIdentity(PreviewInput{
+		Rule: &tvRule, Rules: rules, HasRules: true, SavedIndexers: saved,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ptv.Search.RequestLine, "t=tvsearch") || !strings.Contains(ptv.Search.RequestLine, "cat=5000") {
+		t.Fatalf("tv preview search = %q, want t=tvsearch and cat=5000", ptv.Search.RequestLine)
+	}
+	if ptv.Search.Profile != "sonarr" || ptv.Download.Profile != "ether" {
+		t.Fatalf("tv preview profiles = search:%q download:%q, want sonarr/ether", ptv.Search.Profile, ptv.Download.Profile)
+	}
+}

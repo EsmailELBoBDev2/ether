@@ -65,7 +65,7 @@ func (c *Client) recent(ctx context.Context, offset, limit int) ([]core.Release,
 		// takes several pages to cover what one filtered page covers. A
 		// single empty answer put it here; ask filtered again once a day.
 		q.Set("cat", joinCats(recentCategories(cfg)))
-		rs, err := c.doSearch(ctx, q, id)
+		rs, err := c.doSearch(ctx, q, id, config.IdentityMediaAny)
 		if err != nil {
 			return nil, err
 		}
@@ -81,12 +81,12 @@ func (c *Client) recent(ctx context.Context, offset, limit int) ([]core.Release,
 	} else {
 		q.Del("cat")
 	}
-	rs, err := c.doSearch(ctx, q, id)
+	rs, err := c.doSearch(ctx, q, id, config.IdentityMediaAny)
 	if err != nil || len(rs) > 0 || offset != 0 || c.feedMode.unfiltered || c.now().Sub(c.feedMode.checked) < 6*time.Hour {
 		return rs, err
 	}
 	q.Del("cat")
-	rs, err = c.doSearch(ctx, q, id)
+	rs, err = c.doSearch(ctx, q, id, config.IdentityMediaAny)
 	if err != nil {
 		return nil, err
 	} // don't call a denied/failed probe an empty feed

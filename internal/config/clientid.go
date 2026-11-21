@@ -24,11 +24,12 @@ type Identity struct {
 	Profile string
 	// Matched rule metadata (RuleID == "" and RuleIndex == -1 when the implicit
 	// Ether default matched).
-	RuleID     string
-	RuleIndex  int
-	RuleTarget IdentityTargetKind
-	RuleHost   string
-	RuleScope  string
+	RuleID        string
+	RuleIndex     int
+	RuleTarget    IdentityTargetKind
+	RuleHost      string
+	RuleScope     string
+	RuleMediaType IdentityMediaType
 	// CustomHeaders records lowercase header names explicitly set by owner
 	// overrides so origin confinement can separate them from standard headers.
 	CustomHeaders map[string]bool
@@ -136,17 +137,18 @@ func upgradeClientIdentity(doc map[string]any) bool {
 	if ci != nil {
 		ua, _ := ci["userAgent"].(string)
 		ua = strings.TrimSpace(ua)
+		slotProfs := map[string]string{}
+		hasLegacySlots := false
 		for _, slot := range []string{"tvSearch", "movieSearch", "tvGrab", "movieGrab"} {
 			raw, exists := ci[slot]
 			if !exists {
 				continue
 			}
-			if ua == "" {
-				key := strings.ToLower(strings.TrimSpace(asString(raw)))
-				if key != "" && key != "ether" && key != "custom" {
-					if mapped, ok := legacyPresetUserAgents[key]; ok {
-						ua = mapped
-					}
+			hasLegacySlots = true
+			key := strings.ToLower(strings.TrimSpace(asString(raw)))
+			if key != "" && key != "ether" && key != "custom" {
+				if _, ok := legacyPresetUserAgents[key]; ok {
+					slotProfs[slot] = key
 				}
 			}
 			delete(ci, slot)
@@ -175,7 +177,44 @@ func upgradeClientIdentity(doc map[string]any) bool {
 			changed = true
 		}
 
-		if ua != "" || len(legacyHeaders) > 0 {
+		addGlobalRule := func(suffix string, target IdentityTargetKind, media IdentityMediaType, prof string, hdrs []any) {
+			if prof == "" {
+				return
+			}
+			rule := map[string]any{
+				"id":      nextID("migrated-global-" + suffix),
+				"target":  string(target),
+				"profile": prof,
+			}
+			if media != IdentityMediaAny {
+				rule["mediaType"] = string(media)
+			}
+			if len(hdrs) > 0 {
+				rule["headers"] = cloneAnySlice(hdrs)
+			}
+			migratedGlobalRules = append(migratedGlobalRules, rule)
+			changed = true
+		}
+
+		if ua == "" && hasLegacySlots && len(slotProfs) > 0 {
+			tvS, movS := slotProfs["tvSearch"], slotProfs["movieSearch"]
+			tvG, movG := slotProfs["tvGrab"], slotProfs["movieGrab"]
+			if tvS != "" && tvS == movS {
+				addGlobalRule("searches", TargetAllSearches, IdentityMediaAny, tvS, legacyHeaders)
+			} else {
+				addGlobalRule("searches-tv", TargetAllSearches, IdentityMediaTV, tvS, legacyHeaders)
+				addGlobalRule("searches-movie", TargetAllSearches, IdentityMediaMovie, movS, legacyHeaders)
+			}
+			if tvG != "" && tvG == movG {
+				addGlobalRule("nzb", TargetNZBDownloads, IdentityMediaAny, tvG, legacyHeaders)
+				addGlobalRule("torrent", TargetTorrentDownloads, IdentityMediaAny, tvG, legacyHeaders)
+			} else {
+				addGlobalRule("nzb-tv", TargetNZBDownloads, IdentityMediaTV, tvG, legacyHeaders)
+				addGlobalRule("torrent-tv", TargetTorrentDownloads, IdentityMediaTV, tvG, legacyHeaders)
+				addGlobalRule("nzb-movie", TargetNZBDownloads, IdentityMediaMovie, movG, legacyHeaders)
+				addGlobalRule("torrent-movie", TargetTorrentDownloads, IdentityMediaMovie, movG, legacyHeaders)
+			}
+		} else if ua != "" || len(legacyHeaders) > 0 {
 			prof, hdrs := profileAndHeadersFromUA(ua, legacyHeaders)
 			if !(prof == "ether" && len(hdrs) == 0) {
 				targets := []struct {
@@ -187,17 +226,8 @@ func upgradeClientIdentity(doc map[string]any) bool {
 					{TargetTorrentDownloads, "torrent"},
 				}
 				for _, t := range targets {
-					rule := map[string]any{
-						"id":      nextID("migrated-global-" + t.suffix),
-						"target":  string(t.target),
-						"profile": prof,
-					}
-					if len(hdrs) > 0 {
-						rule["headers"] = cloneAnySlice(hdrs)
-					}
-					migratedGlobalRules = append(migratedGlobalRules, rule)
+					addGlobalRule(t.suffix, t.target, IdentityMediaAny, prof, hdrs)
 				}
-				changed = true
 			}
 		}
 	}

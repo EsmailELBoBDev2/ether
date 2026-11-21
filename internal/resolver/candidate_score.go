@@ -140,6 +140,7 @@ func ScoreSourceCandidates(ctx context.Context, s *Service, profileName string, 
 			Cached:    len(rel.DebridCached) > 0,
 			Indexer:   rel.Indexer,
 			IndexerID: rel.IndexerID,
+			Category:  rel.Category,
 		}
 		if isTorrent {
 			if strings.HasPrefix(strings.ToLower(dlURL), "magnet:") {

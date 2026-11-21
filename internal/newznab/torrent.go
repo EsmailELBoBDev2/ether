@@ -589,7 +589,7 @@ func (c *Client) resolveTorrent(ctx context.Context, r core.Release) (core.Relea
 	// the safefetch guard, like FetchNZB. Only the owner-configured
 	// indexer origin may be private; redirects away from it (other than
 	// magnet, handled below) are revalidated at dial time.
-	id := c.identityFor(config.RequestTorrentDownload, rawURL)
+	id := c.identityFor(config.RequestTorrentDownload, rawURL, c.releaseMediaType(r))
 	rawURL = id.ApplyToURL(rawURL)
 	req, err := http.NewRequestWithContext(c.trustedCtx(hctx, rawURL), http.MethodGet, rawURL, nil)
 	if err != nil {

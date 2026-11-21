@@ -534,6 +534,9 @@ type SourceCandidate struct {
 	// through that indexer (an NZB needs its originating indexer).
 	Indexer   string `json:"indexer,omitempty"`
 	IndexerID string `json:"indexerId,omitempty"`
+	// Category is the standard Newznab/Torznab category ID reported for this
+	// release when known, preserving media type for follow-up downloads.
+	Category int `json:"category,omitempty"`
 	// Score, Resolution, Source and Codec are populated on indexer_search
 	// candidates whose release name identifies video, scored against the
 	// requested (or owner default) quality profile; non-video candidates

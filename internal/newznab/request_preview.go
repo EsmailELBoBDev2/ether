@@ -71,12 +71,19 @@ func PreviewRequestIdentity(in PreviewInput) (*RequestPreview, error) {
 	var draft config.Indexer
 	downloadKind := "nzb"
 	dlReqKind := config.RequestNZBDownload
+	previewMedia := config.IdentityMediaAny
+	if in.Rule != nil {
+		previewMedia = config.NormalizeIdentityMediaType(in.Rule.MediaType)
+	}
 
 	pickSaved := func(wantTorrent bool, preferUnmatched bool) (config.Indexer, bool) {
 		isShadowed := func(ix config.Indexer) bool {
 			for _, r := range policy.Rules {
 				if r.Target == config.TargetIndexer && r.IndexerID == ix.ID {
-					return true
+					rm := config.NormalizeIdentityMediaType(r.MediaType)
+					if rm == config.IdentityMediaAny || rm == previewMedia {
+						return true
+					}
 				}
 			}
 			return false
@@ -168,12 +175,12 @@ func PreviewRequestIdentity(in PreviewInput) (*RequestPreview, error) {
 	sampleBase := strings.TrimRight(strings.TrimSpace(draft.URL), "/")
 	sampleTorrentURL := sampleBase + "/download/example.torrent"
 
-	searchID := policy.ResolveIndexer(draft, config.RequestSearch, draft.URL)
+	searchID := policy.ResolveIndexerMedia(draft, config.RequestSearch, draft.URL, previewMedia)
 	downloadURLForMatch := draft.URL
 	if downloadKind == "torrent" {
 		downloadURLForMatch = sampleTorrentURL
 	}
-	downloadID := policy.ResolveIndexer(draft, dlReqKind, downloadURLForMatch)
+	downloadID := policy.ResolveIndexerMedia(draft, dlReqKind, downloadURLForMatch, previewMedia)
 
 	// When previewing a specific (possibly unsaved) rule, apply that rule directly
 	// to whichever operation(s) it targets so edits preview live before saving.
@@ -221,10 +228,7 @@ func PreviewRequestIdentity(in PreviewInput) (*RequestPreview, error) {
 	safeSearchID := sanitizeParams(searchID)
 	safeDownloadID := sanitizeParams(downloadID)
 
-	searchURL, err := c.apiURLFor(url.Values{
-		"t": {"tvsearch"}, "q": {"Example Show"}, "season": {"1"}, "ep": {"1"},
-		"cat": {"5000"}, "extended": {"1"}, "limit": {"100"},
-	}, safeSearchID)
+	searchURL, err := c.apiURLFor(sampleSearchParams(previewMedia), safeSearchID)
 	if err != nil {
 		return nil, err
 	}
@@ -295,4 +299,29 @@ func PreviewRequestIdentity(in PreviewInput) (*RequestPreview, error) {
 		out.Profiles = append(out.Profiles, PreviewProfile{ID: p.ID, UserAgent: config.ProfileUserAgent(p.ID)})
 	}
 	return out, nil
+}
+
+func sampleSearchParams(media config.IdentityMediaType) url.Values {
+	switch config.NormalizeIdentityMediaType(media) {
+	case config.IdentityMediaMovie:
+		return url.Values{
+			"t": {"movie"}, "imdbid": {"0133093"},
+			"cat": {"2000"}, "extended": {"1"}, "limit": {"100"},
+		}
+	case config.IdentityMediaMusic:
+		return url.Values{
+			"t": {"search"}, "q": {"Example Album"},
+			"cat": {"3000"}, "extended": {"1"}, "limit": {"100"},
+		}
+	case config.IdentityMediaBooks:
+		return url.Values{
+			"t": {"search"}, "q": {"Example Book"},
+			"cat": {"7000"}, "extended": {"1"}, "limit": {"100"},
+		}
+	default:
+		return url.Values{
+			"t": {"tvsearch"}, "q": {"Example Show"}, "season": {"1"}, "ep": {"1"},
+			"cat": {"5000"}, "extended": {"1"}, "limit": {"100"},
+		}
+	}
 }

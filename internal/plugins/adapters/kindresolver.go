@@ -1873,6 +1873,7 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 		}
 	}
 	defaultMIME := kindDefaultMIME(rec.Decl)
+	defaultCategory := kindDefaultCategory(rec.Decl)
 	return kindstream.Deps{
 		OpenFile: func(ctx context.Context, src core.PlayableSource) (kindstream.ByteSource, error) {
 			s := &StreamSources{mgr: r.mgr}
@@ -1895,11 +1896,13 @@ func (r *KindResolver) kindstreamDeps(ctx context.Context, rec pluginitems.KindR
 			}
 			return &kindLocalFile{File: f, size: info.Size(), mime: src.MIME}, nil
 		},
-		HTTP:        r.http,
-		Cache:       ns,
-		OpenRelease: r.openRelease,
+		HTTP:  r.http,
+		Cache: ns,
+		OpenRelease: func(octx context.Context, hint core.ReleaseHint) (core.MediaSource, error) {
+			return r.openReleaseWithCategory(octx, hint, defaultCategory)
+		},
 		OpenReleaseSource: func(octx context.Context, src core.PlayableSource) (core.MediaSource, error) {
-			return r.openReleaseForSource(octx, src, defaultMIME, secretFn)
+			return r.openReleaseForSourceWithCategory(octx, src, defaultMIME, defaultCategory, secretFn)
 		},
 		DefaultReleaseMIME:   defaultMIME,
 		CandidateOpenTimeout: r.candidateOpenTimeout,
@@ -2676,6 +2679,7 @@ func releaseFromHint(hint core.ReleaseHint, defaultTitle string) (core.Release, 
 		rel.Size = hint.Candidate.Size
 		rel.Indexer = hint.Candidate.Indexer
 		rel.IndexerID = hint.Candidate.IndexerID
+		rel.Category = hint.Candidate.Category
 	}
 	if h := strings.ToLower(strings.TrimSpace(hint.InfoHash)); h != "" {
 		rel.InfoHash = h
@@ -2727,6 +2731,42 @@ func releaseIDWithTarget(rel core.Release) string {
 		id += fmt.Sprintf(":file:%x", sha256.Sum256(selection))
 	}
 	return id
+}
+
+func kindDefaultCategory(decl plugins.MediaKindMeta) int {
+	switch strings.ToLower(strings.TrimSpace(string(decl.Media))) {
+	case "music":
+		return 3000
+	case "audiobook":
+		return 3030
+	case "book":
+		return 7000
+	}
+	if decl.Present.MediaBrowser != nil {
+		switch strings.ToLower(strings.TrimSpace(decl.Present.MediaBrowser.CollectionType)) {
+		case "movies":
+			return 2000
+		case "tvshows":
+			return 5000
+		case "music":
+			return 3000
+		case "audiobooks":
+			return 3030
+		case "books":
+			return 7000
+		}
+	}
+	if decl.Present.Plex != nil {
+		switch strings.ToLower(strings.TrimSpace(decl.Present.Plex.Base)) {
+		case "movie":
+			return 2000
+		case "show":
+			return 5000
+		case "artist":
+			return 3000
+		}
+	}
+	return 0
 }
 
 func kindDefaultMIME(decl plugins.MediaKindMeta) string {
@@ -2864,6 +2904,10 @@ func playableSourceRelease(src core.PlayableSource, defaultTitle string) core.Re
 }
 
 func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (core.MediaSource, error) {
+	return r.openReleaseWithCategory(ctx, hint, 0)
+}
+
+func (r *KindResolver) openReleaseWithCategory(ctx context.Context, hint core.ReleaseHint, fallbackCategory int) (core.MediaSource, error) {
 	if r.engine == nil {
 		return nil, core.ErrSourceUnavailable
 	}
@@ -2871,16 +2915,26 @@ func (r *KindResolver) openRelease(ctx context.Context, hint core.ReleaseHint) (
 	if err != nil {
 		return nil, err
 	}
+	if rel.Category == 0 && fallbackCategory != 0 {
+		rel.Category = fallbackCategory
+	}
 	return r.openPreparedRelease(ctx, rel)
 }
 
 func (r *KindResolver) openReleaseForSource(ctx context.Context, src core.PlayableSource, fallbackMIME string, secretFn func(context.Context, string) (string, error)) (core.MediaSource, error) {
+	return r.openReleaseForSourceWithCategory(ctx, src, fallbackMIME, 0, secretFn)
+}
+
+func (r *KindResolver) openReleaseForSourceWithCategory(ctx context.Context, src core.PlayableSource, fallbackMIME string, fallbackCategory int, secretFn func(context.Context, string) (string, error)) (core.MediaSource, error) {
 	if r.engine == nil {
 		return nil, core.ErrSourceUnavailable
 	}
 	rel, err := releaseFromSource(src, "", fallbackMIME)
 	if err != nil {
 		return nil, err
+	}
+	if rel.Category == 0 && fallbackCategory != 0 {
+		rel.Category = fallbackCategory
 	}
 	if rel.Protocol == core.ProtocolUsenet && rel.Target != nil && rel.Target.AllowNonVideo && secretFn != nil {
 		pwSecret := ""

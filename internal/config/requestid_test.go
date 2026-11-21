@@ -245,3 +245,92 @@ func TestIdentityMigrationWithoutLoss(t *testing.T) {
 		t.Fatalf("reload duplicated rules: %d -> %d", len(cfg.ClientIdentity.Rules), len(reloaded.Get().ClientIdentity.Rules))
 	}
 }
+
+func TestIdentityRuleMediaTypePrecedenceAndMigration(t *testing.T) {
+	policy := ClientIdentity{
+		Rules: []IdentityRule{
+			{ID: "all-any", Target: TargetAllSearches, Profile: "prowlarr"},
+			{ID: "all-movie", Target: TargetAllSearches, MediaType: IdentityMediaMovie, Profile: "radarr"},
+			{ID: "all-tv", Target: TargetAllSearches, MediaType: IdentityMediaTV, Profile: "sonarr"},
+			{ID: "ix-any", Target: TargetIndexer, IndexerID: "ix-1", Profile: "nzbhydra2"},
+			{ID: "ix-movie", Target: TargetIndexer, IndexerID: "ix-2", MediaType: IdentityMediaMovie, Profile: "radarr"},
+			{ID: "dl-movie", Target: TargetNZBDownloads, MediaType: IdentityMediaMovie, Profile: "radarr"},
+			{ID: "dl-tv", Target: TargetNZBDownloads, MediaType: IdentityMediaTV, Profile: "sonarr"},
+			{ID: "dl-music", Target: TargetNZBDownloads, MediaType: IdentityMediaMusic, Profile: "sabnzbd"},
+			{ID: "dl-books", Target: TargetNZBDownloads, MediaType: IdentityMediaBooks, Profile: "nzbget"},
+		},
+	}
+	if errs := policy.Validate(); len(errs) > 0 {
+		t.Fatalf("valid mediaType rules rejected: %+v", errs)
+	}
+
+	// Specific mediaType beats Any within the same target tier.
+	if id := policy.ResolveRequest(IdentityRequest{Kind: RequestSearch, IndexerID: "ix-other", URL: "https://other.test/api", MediaType: IdentityMediaMovie}); id.RuleID != "all-movie" || id.Profile != "radarr" {
+		t.Fatalf("movie search = %+v, want all-movie/radarr", id)
+	}
+	if id := policy.ResolveRequest(IdentityRequest{Kind: RequestSearch, IndexerID: "ix-other", URL: "https://other.test/api", MediaType: IdentityMediaTV}); id.RuleID != "all-tv" || id.Profile != "sonarr" {
+		t.Fatalf("tv search = %+v, want all-tv/sonarr", id)
+	}
+	// Unknown media type (e.g. caps) falls through media-scoped rules to Any.
+	if id := policy.ResolveRequest(IdentityRequest{Kind: RequestSearch, IndexerID: "ix-other", URL: "https://other.test/api"}); id.RuleID != "all-any" || id.Profile != "prowlarr" {
+		t.Fatalf("unknown media search = %+v, want all-any/prowlarr", id)
+	}
+	// More specific target tier (specific indexer Any) still beats broader tier (all_searches Movie).
+	if id := policy.ResolveRequest(IdentityRequest{Kind: RequestSearch, IndexerID: "ix-1", URL: "https://ix1.test/api", MediaType: IdentityMediaMovie}); id.RuleID != "ix-any" || id.Profile != "nzbhydra2" {
+		t.Fatalf("indexer Any should beat all_searches Movie: got %+v", id)
+	}
+	// Media-scoped indexer rule does NOT match caps or TV; falls back to all-tv / all-any.
+	if id := policy.ResolveRequest(IdentityRequest{Kind: RequestSearch, IndexerID: "ix-2", URL: "https://ix2.test/api", MediaType: IdentityMediaTV}); id.RuleID != "all-tv" {
+		t.Fatalf("ix-2 TV should not match ix-movie: got %+v", id)
+	}
+	if id := policy.ResolveRequest(IdentityRequest{Kind: RequestSearch, IndexerID: "ix-2", URL: "https://ix2.test/api", MediaType: IdentityMediaMovie}); id.RuleID != "ix-movie" {
+		t.Fatalf("ix-2 Movie should match ix-movie: got %+v", id)
+	}
+	// Downloads resolve Movies, TV, Music, and Books by mediaType.
+	for _, tc := range []struct {
+		mt      IdentityMediaType
+		wantID  string
+		wantPrf string
+	}{
+		{IdentityMediaMovie, "dl-movie", "radarr"},
+		{IdentityMediaTV, "dl-tv", "sonarr"},
+		{IdentityMediaMusic, "dl-music", "sabnzbd"},
+		{IdentityMediaBooks, "dl-books", "nzbget"},
+		{IdentityMediaAny, "", "ether"},
+	} {
+		if id := policy.ResolveRequest(IdentityRequest{Kind: RequestNZBDownload, IndexerID: "ix-other", URL: "https://other.test/dl.nzb", MediaType: tc.mt}); id.RuleID != tc.wantID || id.Profile != tc.wantPrf {
+			t.Fatalf("download media=%q: got %+v, want %q/%q", tc.mt, id, tc.wantID, tc.wantPrf)
+		}
+	}
+
+	// Unknown mediaType is rejected by Validate.
+	bad := ClientIdentity{Rules: []IdentityRule{{ID: "bad", Target: TargetAllSearches, MediaType: "anime", Profile: "sonarr"}}}
+	if errs := bad.Validate(); len(errs) == 0 {
+		t.Fatal("expected validation error for unknown mediaType")
+	}
+
+	// Legacy pre-W175 tvSearch/movieSearch/tvGrab/movieGrab slots migrate without losing the Movie/TV split.
+	dir := t.TempDir()
+	raw := `{"clientIdentity":{"tvSearch":"sonarr","movieSearch":"radarr","tvGrab":"sonarr","movieGrab":"radarr"}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	migrated := store.Get().ClientIdentity
+	if id := migrated.ResolveRequest(IdentityRequest{Kind: RequestSearch, URL: "https://ix.test/api", MediaType: IdentityMediaMovie}); id.Profile != "radarr" {
+		t.Fatalf("migrated movie search = %+v, want radarr", id)
+	}
+	if id := migrated.ResolveRequest(IdentityRequest{Kind: RequestSearch, URL: "https://ix.test/api", MediaType: IdentityMediaTV}); id.Profile != "sonarr" {
+		t.Fatalf("migrated tv search = %+v, want sonarr", id)
+	}
+	if id := migrated.ResolveRequest(IdentityRequest{Kind: RequestNZBDownload, URL: "https://ix.test/a.nzb", MediaType: IdentityMediaMovie}); id.Profile != "radarr" {
+		t.Fatalf("migrated movie nzb = %+v, want radarr", id)
+	}
+	if id := migrated.ResolveRequest(IdentityRequest{Kind: RequestNZBDownload, URL: "https://ix.test/b.nzb", MediaType: IdentityMediaTV}); id.Profile != "sonarr" {
+		t.Fatalf("migrated tv nzb = %+v, want sonarr", id)
+	}
+}

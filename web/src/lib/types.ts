@@ -59,6 +59,9 @@ export type IdentityTargetKind =
 /** Optional search/download narrowing on an indexer or host rule. */
 export type IdentityScope = "" | "search" | "download";
 
+/** Optional media-type narrowing on an identity rule. Empty ("") matches any media type. */
+export type IdentityMediaType = "" | "movie" | "tv" | "music" | "books";
+
 /** One header or query-parameter override in an identity rule. */
 export interface KVOverride {
   name: string;
@@ -73,6 +76,7 @@ export interface IdentityRule {
   indexerId?: string;
   host?: string;
   scope?: IdentityScope;
+  mediaType?: IdentityMediaType;
   profile: string;
   headers?: KVOverride[] | null;
   params?: KVOverride[] | null;

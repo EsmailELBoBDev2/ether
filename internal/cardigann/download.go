@@ -49,7 +49,7 @@ type payload struct {
 
 // fetch downloads a release link through the definition's download block,
 // counting one grab and signing in again once if the session expired.
-func (r *Runner) fetch(ctx context.Context, link string, kind config.RequestKind, reserve Reserver) (payload, error) {
+func (r *Runner) fetch(ctx context.Context, link string, kind config.RequestKind, media config.IdentityMediaType, reserve Reserver) (payload, error) {
 	if reserve == nil {
 		reserve = noReserve
 	}
@@ -61,7 +61,7 @@ func (r *Runner) fetch(ctx context.Context, link string, kind config.RequestKind
 	}
 	for attempt := 0; ; attempt++ {
 		_, version := r.session()
-		p, err := r.fetchOnce(ctx, link, kind)
+		p, err := r.fetchOnce(ctx, link, kind, media)
 		if errors.Is(err, errSessionExpired) && attempt == 0 && r.def.Login != nil {
 			if err := r.reauth(ctx, version); err != nil {
 				return payload{}, err
@@ -72,14 +72,14 @@ func (r *Runner) fetch(ctx context.Context, link string, kind config.RequestKind
 	}
 }
 
-func (r *Runner) fetchOnce(ctx context.Context, link string, kind config.RequestKind) (payload, error) {
+func (r *Runner) fetchOnce(ctx context.Context, link string, kind config.RequestKind, media config.IdentityMediaType) (payload, error) {
 	u, err := r.resolve(link, nil)
 	if err != nil {
 		return payload{}, err
 	}
 	dl := r.def.Download
 	if dl == nil {
-		return r.getPayload(ctx, u, http.MethodGet, nil, kind)
+		return r.getPayload(ctx, u, http.MethodGet, nil, kind, media)
 	}
 	v := r.downloadVars(u)
 	env := r.env(v)
@@ -103,7 +103,7 @@ func (r *Runner) fetchOnce(ctx context.Context, link string, kind config.Request
 		}
 	}
 	if dl.InfoHash == nil && len(dl.Selectors) == 0 {
-		return r.getPayload(ctx, u, downloadMethod(dl.Method), hdr, kind)
+		return r.getPayload(ctx, u, downloadMethod(dl.Method), hdr, kind, media)
 	}
 	var page *response
 	pageDoc := func(useBefore bool) (*goquery.Document, *url.URL, error) {
@@ -165,7 +165,7 @@ func (r *Runner) fetchOnce(ctx context.Context, link string, kind config.Request
 			lastErr = err
 			continue
 		}
-		p, err := r.getPayload(ctx, target, downloadMethod(dl.Method), hdr, kind)
+		p, err := r.getPayload(ctx, target, downloadMethod(dl.Method), hdr, kind, media)
 		if err == nil {
 			return p, nil
 		}
@@ -185,7 +185,7 @@ func downloadMethod(m string) string {
 }
 
 // getPayload fetches a .torrent/.nzb document, stopping at magnet redirects.
-func (r *Runner) getPayload(ctx context.Context, u *url.URL, method string, hdr http.Header, kind config.RequestKind) (payload, error) {
+func (r *Runner) getPayload(ctx context.Context, u *url.URL, method string, hdr http.Header, kind config.RequestKind, media config.IdentityMediaType) (payload, error) {
 	target := *u
 	headers := hdr
 	if r.clientID != nil {
@@ -193,6 +193,7 @@ func (r *Runner) getPayload(ctx context.Context, u *url.URL, method string, hdr 
 			Kind:      kind,
 			IndexerID: r.id,
 			URL:       target.String(),
+			MediaType: media,
 		})
 		if id.RuleID != "" {
 			if updated, err := url.Parse(id.ApplyToURL(target.String())); err == nil {
@@ -272,7 +273,7 @@ func (r *Runner) ResolveTorrent(ctx context.Context, rel core.Release, reserve R
 	if rel.NZBURL == "" {
 		return rel, fmt.Errorf("%s: torrent %q has no download link: %w", r.def.Name, rel.Name, core.ErrReleaseRejected)
 	}
-	p, err := r.fetch(ctx, rel.NZBURL, config.RequestTorrentDownload, reserve)
+	p, err := r.fetch(ctx, rel.NZBURL, config.RequestTorrentDownload, config.IdentityMediaTypeForRelease(rel, nil, nil), reserve)
 	if err != nil {
 		return rel, err
 	}
@@ -313,7 +314,7 @@ func (r *Runner) FetchNZB(ctx context.Context, rel core.Release, reserve Reserve
 	if rel.NZBURL == "" {
 		return nil, fmt.Errorf("%s: release %q has no NZB link", r.def.Name, rel.Name)
 	}
-	p, err := r.fetch(ctx, rel.NZBURL, config.RequestNZBDownload, reserve)
+	p, err := r.fetch(ctx, rel.NZBURL, config.RequestNZBDownload, config.IdentityMediaTypeForRelease(rel, nil, nil), reserve)
 	if err != nil {
 		return nil, err
 	}

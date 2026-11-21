@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -273,5 +274,104 @@ func TestTorznabStandardCategoryWins(t *testing.T) {
 	}
 	if len(rs) != 1 || rs[0].Category != 2000 {
 		t.Fatalf("multi-category movie: %+v", rs)
+	}
+}
+
+func TestClientIdentityByMediaTypeOnWire(t *testing.T) {
+	ws := newWireServer(t)
+	ctx := context.Background()
+	wantDefaultUA := config.DefaultUserAgent()
+
+	c := New(wireConfig(ws.srv.URL), nil, Options{
+		ClientIdentity: config.ClientIdentity{
+			Rules: []config.IdentityRule{
+				{ID: "r-movie", Target: config.TargetIndexer, IndexerID: "idx1", MediaType: config.IdentityMediaMovie, Profile: "radarr"},
+				{ID: "r-tv", Target: config.TargetIndexer, IndexerID: "idx1", MediaType: config.IdentityMediaTV, Profile: "sonarr"},
+				{ID: "r-music", Target: config.TargetAllSearches, MediaType: config.IdentityMediaMusic, Profile: "prowlarr"},
+				{ID: "r-books", Target: config.TargetAllSearches, MediaType: config.IdentityMediaBooks, Profile: "nzbhydra2"},
+			},
+		},
+	})
+
+	// Capabilities have no media type -> honest Ether default.
+	if _, err := c.Caps(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := ws.last(); got.ua != wantDefaultUA {
+		t.Fatalf("caps with only media-scoped rules: ua=%q, want default %q", got.ua, wantDefaultUA)
+	}
+
+	// Movie search sends Radarr without changing query shape; TV search sends Sonarr.
+	ws.reset()
+	movieReq := core.SearchRequest{Type: core.TypeMovie, IDs: core.IDs{IMDB: "tt0133093"}, Title: "The Matrix", Year: 1999}
+	if _, err := c.Search(ctx, movieReq); err != nil {
+		t.Fatal(err)
+	}
+	const wantMovieQuery = "apikey=secret&cat=2000&extended=1&imdbid=0133093&limit=100&t=movie"
+	if got := ws.last(); got.ua != config.ProfileUserAgent("radarr") || got.rawQuery != wantMovieQuery {
+		t.Fatalf("movie search wire: %+v", got)
+	}
+
+	ws.reset()
+	if _, err := c.Search(ctx, tvSearch()); err != nil {
+		t.Fatal(err)
+	}
+	const wantTVQuery = "apikey=secret&cat=5000&ep=2&extended=1&limit=100&season=1&t=tvsearch&tvdbid=81797"
+	if got := ws.last(); got.ua != config.ProfileUserAgent("sonarr") || got.rawQuery != wantTVQuery {
+		t.Fatalf("tv search wire: %+v", got)
+	}
+
+	// Plugin-kind Music and Books searches resolve through category family.
+	ws.reset()
+	if _, err := c.Search(ctx, core.SearchRequest{Title: "Album", Category: "music"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ws.last(); got.ua != config.ProfileUserAgent("prowlarr") {
+		t.Fatalf("music search wire: %+v", got)
+	}
+	ws.reset()
+	if _, err := c.Search(ctx, core.SearchRequest{Title: "Book", Category: "7000,3030"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ws.last(); got.ua != config.ProfileUserAgent("nzbhydra2") {
+		t.Fatalf("books search wire: %+v", got)
+	}
+
+	// Downloads resolve by media type too: Movie NZB -> Radarr, TV NZB -> Sonarr.
+	ws.reset()
+	if _, err := c.FetchNZB(ctx, core.Release{ID: "m1", Name: "Movie.2026.1080p", NZBURL: ws.srv.URL + "/dl/file.nzb", Category: 2040}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ws.last(); got.ua != config.ProfileUserAgent("radarr") {
+		t.Fatalf("movie nzb grab wire: %+v", got)
+	}
+	ws.reset()
+	if _, err := c.FetchNZB(ctx, core.Release{ID: "t1", Name: "Show.S01E02.1080p", NZBURL: ws.srv.URL + "/dl/file.nzb", Category: 5040}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ws.last(); got.ua != config.ProfileUserAgent("sonarr") {
+		t.Fatalf("tv nzb grab wire: %+v", got)
+	}
+
+	// Editing the movie rule invalidates the cached movie search and applies param overrides from the matched rule.
+	before := len(ws.all())
+	c.SetClientIdentity(config.ClientIdentity{
+		Rules: []config.IdentityRule{
+			{
+				ID: "r-movie", Target: config.TargetIndexer, IndexerID: "idx1",
+				MediaType: config.IdentityMediaMovie, Profile: "radarr",
+				Params: []config.KVOverride{{Name: "custom", Value: "1"}},
+			},
+			{ID: "r-tv", Target: config.TargetIndexer, IndexerID: "idx1", MediaType: config.IdentityMediaTV, Profile: "sonarr"},
+		},
+	})
+	if _, err := c.Search(ctx, movieReq); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.all()) == before {
+		t.Fatal("editing the movie rule kept the old cached movie answer")
+	}
+	if got := ws.last(); !strings.Contains(got.rawQuery, "custom=1") {
+		t.Fatalf("movie rule param override not applied to search URL: %+v", got)
 	}
 }

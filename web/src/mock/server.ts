@@ -4817,6 +4817,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
           indexerId?: string;
           host?: string;
           scope?: string;
+          mediaType?: string;
           profile?: string;
           headers?: MockKV[] | null;
           params?: MockKV[] | null;
@@ -4957,32 +4958,38 @@ export function createFakeServer(opts: FakeOptions = {}) {
           kind: "search" | "nzb_download" | "torrent_download",
           indexerId: string,
           host: string,
+          mediaType = "",
         ): { profile: string; ruleId: string; headers: MockKV[]; params: MockKV[] } => {
           let bestSpec = 0;
           let best: MockRule | null = null;
           const isDownload = kind !== "search";
+          const reqMedia = mediaType.trim().toLowerCase();
           for (const r of rules) {
-            let spec = 0;
+            const ruleMedia = (r.mediaType ?? "").trim().toLowerCase();
+            if (ruleMedia && ruleMedia !== reqMedia) continue;
+            let targetRank = 0;
             if (r.target === "indexer") {
               if (r.indexerId !== indexerId) continue;
               if (r.scope === "search" && isDownload) continue;
               if (r.scope === "download" && !isDownload) continue;
-              spec = 4;
+              targetRank = 4;
             } else if (r.target === "host") {
               if (!matchHost(r.host ?? "", host)) continue;
               if (r.scope === "search" && isDownload) continue;
               if (r.scope === "download" && !isDownload) continue;
-              spec = (r.host ?? "").trim().startsWith("*.") ? 2 : 3;
+              targetRank = (r.host ?? "").trim().startsWith("*.") ? 2 : 3;
             } else if (r.target === "nzb_downloads") {
               if (kind !== "nzb_download") continue;
-              spec = 1;
+              targetRank = 1;
             } else if (r.target === "torrent_downloads") {
               if (kind !== "torrent_download") continue;
-              spec = 1;
+              targetRank = 1;
             } else if (r.target === "all_searches") {
               if (kind !== "search") continue;
-              spec = 1;
+              targetRank = 1;
             }
+            if (targetRank === 0) continue;
+            const spec = targetRank * 2 + (ruleMedia ? 1 : 0);
             if (spec > bestSpec) {
               bestSpec = spec;
               best = r;
@@ -4999,11 +5006,16 @@ export function createFakeServer(opts: FakeOptions = {}) {
 
         const indexers = state.config.indexers ?? [];
         const rule = req.rule;
+        const previewMedia = (rule?.mediaType ?? "").trim().toLowerCase();
         let sampleHost = "indexer.example.com";
         let sampleIndexerId = "";
         let downloadKind: "nzb" | "torrent" = "nzb";
         const isShadowed = (id: string) =>
-          activeRules.some((r) => r.target === "indexer" && r.indexerId === id);
+          activeRules.some((r) => {
+            if (r.target !== "indexer" || r.indexerId !== id) return false;
+            const rm = (r.mediaType ?? "").trim().toLowerCase();
+            return !rm || rm === previewMedia;
+          });
         const pickUnshadowed = (wantTorrent: boolean) =>
           indexers.find(
             (x) =>
@@ -5064,9 +5076,9 @@ export function createFakeServer(opts: FakeOptions = {}) {
           if (ix?.protocol === "torrent") downloadKind = "torrent";
         }
         const evalRules = rule ? (req.rules ? req.rules : [rule]) : activeRules;
-        let searchId = resolve(evalRules, "search", sampleIndexerId, sampleHost);
+        let searchId = resolve(evalRules, "search", sampleIndexerId, sampleHost, previewMedia);
         const dlKind = downloadKind === "torrent" ? "torrent_download" : "nzb_download";
-        let dlId = resolve(evalRules, dlKind, sampleIndexerId, sampleHost);
+        let dlId = resolve(evalRules, dlKind, sampleIndexerId, sampleHost, previewMedia);
         if (rule) {
           const direct = {
             profile: rule.profile || "ether",
@@ -5083,19 +5095,45 @@ export function createFakeServer(opts: FakeOptions = {}) {
             if (rule.scope !== "search") dlId = direct;
           }
         }
-        const searchQuery = applyParams(
-          [
-            ["apikey", "••••"],
-            ["cat", "5000"],
-            ["ep", "1"],
-            ["extended", "1"],
-            ["limit", "100"],
-            ["q", "Example Show"],
-            ["season", "1"],
-            ["t", "tvsearch"],
-          ],
-          searchId.params,
-        );
+        const sampleSearchBase: [string, string][] =
+          previewMedia === "movie"
+            ? [
+                ["apikey", "••••"],
+                ["cat", "2000"],
+                ["extended", "1"],
+                ["imdbid", "0133093"],
+                ["limit", "100"],
+                ["t", "movie"],
+              ]
+            : previewMedia === "music"
+              ? [
+                  ["apikey", "••••"],
+                  ["cat", "3000"],
+                  ["extended", "1"],
+                  ["limit", "100"],
+                  ["q", "Example Album"],
+                  ["t", "search"],
+                ]
+              : previewMedia === "books"
+                ? [
+                    ["apikey", "••••"],
+                    ["cat", "7000"],
+                    ["extended", "1"],
+                    ["limit", "100"],
+                    ["q", "Example Book"],
+                    ["t", "search"],
+                  ]
+                : [
+                    ["apikey", "••••"],
+                    ["cat", "5000"],
+                    ["ep", "1"],
+                    ["extended", "1"],
+                    ["limit", "100"],
+                    ["q", "Example Show"],
+                    ["season", "1"],
+                    ["t", "tvsearch"],
+                  ];
+        const searchQuery = applyParams(sampleSearchBase, searchId.params);
         const downloadPath =
           downloadKind === "torrent"
             ? `/download/example.torrent${
@@ -5147,6 +5185,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
             indexerId?: string;
             host?: string;
             scope?: string;
+            mediaType?: string;
             profile?: string;
             headers?: Array<{ name: string; value?: string; remove?: boolean }> | null;
           }>;
@@ -5163,6 +5202,7 @@ export function createFakeServer(opts: FakeOptions = {}) {
         let bestSpec = 0;
         let matched: (typeof rules)[number] | null = null;
         for (const r of rules) {
+          if ((r.mediaType ?? "").trim()) continue;
           let spec = 0;
           if (r.target === "indexer" && r.indexerId === ix.id && r.scope !== "download") spec = 4;
           else if (r.target === "host" && r.scope !== "download") {

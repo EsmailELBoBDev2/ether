@@ -345,14 +345,24 @@ func (c *Client) clientIdentity() config.Identity {
 	return c.id
 }
 
-// identityFor resolves the request identity for a specific operation and
-// destination URL (such as a feed-supplied NZB or .torrent URL on another host).
-func (c *Client) identityFor(kind config.RequestKind, rawURL string) config.Identity {
+// identityFor resolves the request identity for a specific operation,
+// destination URL (such as a feed-supplied NZB or .torrent URL on another
+// host), and known media type.
+func (c *Client) identityFor(kind config.RequestKind, rawURL string, media config.IdentityMediaType) config.Identity {
 	ix := c.Config()
 	c.idMu.RLock()
 	policy := c.policy
 	c.idMu.RUnlock()
-	return policy.ResolveIndexer(ix, kind, rawURL)
+	return policy.ResolveIndexerMedia(ix, kind, rawURL, media)
+}
+
+func (c *Client) searchIdentityFor(req core.SearchRequest) config.Identity {
+	return c.identityFor(config.RequestSearch, c.Config().URL, config.IdentityMediaTypeForSearch(req))
+}
+
+func (c *Client) releaseMediaType(r core.Release) config.IdentityMediaType {
+	cfg := c.Config()
+	return config.IdentityMediaTypeForRelease(r, cfg.MovieCategories, cfg.TVCategories)
 }
 
 // Name implements core.Indexer.
@@ -696,7 +706,7 @@ func (c *Client) Caps(ctx context.Context) (*Caps, error) {
 
 func (c *Client) fetchCaps(ctx context.Context) (*Caps, error) {
 	id := c.clientIdentity()
-	u, err := c.apiURL(url.Values{"t": {"caps"}})
+	u, err := c.apiURLFor(url.Values{"t": {"caps"}}, id)
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +772,7 @@ func cacheKey(c *Client, req core.SearchRequest) string {
 	fmt.Fprintf(h, "%s|", searchIdentity(c.Config()))
 	// The client identity decides outbound headers and parameter overrides: a
 	// cached answer fetched under one identity must not serve another.
-	fmt.Fprintf(h, "client-id-v2:%s|", c.clientIdentity().Fingerprint())
+	fmt.Fprintf(h, "client-id-v2:%s|", c.searchIdentityFor(req).Fingerprint())
 	fmt.Fprintf(h, "%s|%s|%d|%s|%d|%s|%d|%d|%d",
 		c.indexerID(), req.Type, req.IDs.TMDB, req.IDs.IMDB, req.IDs.TVDB,
 		strings.ToLower(strings.TrimSpace(req.Title)), req.Year, req.Season, req.Episode)
@@ -1148,11 +1158,23 @@ func (c *Client) numberedSearchAttempts(req core.SearchRequest, caps *Caps) []ur
 	return attempts
 }
 
-func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Identity) ([]core.Release, error) {
+func stampMissingCategory(results []core.Release, media config.IdentityMediaType) {
+	cat := config.DefaultCategoryForIdentityMedia(media)
+	if cat == 0 {
+		return
+	}
+	for i := range results {
+		if results[i].Category == 0 {
+			results[i].Category = cat
+		}
+	}
+}
+
+func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Identity, media config.IdentityMediaType) ([]core.Release, error) {
 	if err := c.searchPaused(); err != nil {
 		return nil, err
 	}
-	u, err := c.apiURL(params)
+	u, err := c.apiURLFor(params, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1170,7 +1192,14 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 		}
 		reserved = true
 		if emit, ok := ctx.Value(searchArrivalKey{}).(func([]core.Release)); ok {
-			return c.getSearchStream(ctx, u, emit, id)
+			wrappedEmit := emit
+			if config.DefaultCategoryForIdentityMedia(media) != 0 {
+				wrappedEmit = func(rs []core.Release) {
+					stampMissingCategory(rs, media)
+					emit(rs)
+				}
+			}
+			return c.getSearchStream(ctx, u, wrappedEmit, id)
 		}
 		body, err := c.get(ctx, u, 20<<20, id)
 		if err != nil {
@@ -1184,6 +1213,9 @@ func (c *Client) doSearch(ctx context.Context, params url.Values, id config.Iden
 		for i := range results {
 			results[i].Protocol = core.ProtocolTorrent
 		}
+	}
+	if err == nil {
+		stampMissingCategory(results, media)
 	}
 	out := c.feedReleases(results)
 	if admitted && !(err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrIndexerPaused))) {
@@ -1264,14 +1296,15 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 		c.cachePut(ctx, key, results)
 		return results, nil
 	}
-	id := c.clientIdentity()
+	media := config.IdentityMediaTypeForSearch(req)
+	id := c.identityFor(config.RequestSearch, cfg.URL, media)
 	caps, _ := c.Caps(ctx) // best effort; failures just mean no param gating
 	attempts := c.searchAttempts(req, caps)
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("newznab: search request has no usable identifiers")
 	}
 	var firstErr error
-	results, err := c.doSearch(ctx, attempts[0], id)
+	results, err := c.doSearch(ctx, attempts[0], id, media)
 	if err != nil {
 		if errors.Is(err, core.ErrBudgetExhausted) {
 			return nil, err
@@ -1332,7 +1365,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 				wg.Add(1)
 				go func(i int, p url.Values) {
 					defer wg.Done()
-					slots[i].res, slots[i].err = c.doSearch(ctx, p, id)
+					slots[i].res, slots[i].err = c.doSearch(ctx, p, id, media)
 				}(i, p)
 			}
 			wg.Wait()
@@ -1377,7 +1410,7 @@ func (c *Client) Search(ctx context.Context, req core.SearchRequest) ([]core.Rel
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			results, err := c.doSearch(ctx, params, id)
+			results, err := c.doSearch(ctx, params, id, media)
 			if err != nil {
 				if errors.Is(err, core.ErrBudgetExhausted) {
 					return nil, err
@@ -1569,7 +1602,8 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 		c.cachePut(ctx, key, merged)
 		return merged, nil
 	}
-	id := c.clientIdentity()
+	media := config.IdentityMediaTypeForSearch(req)
+	id := c.identityFor(config.RequestSearch, c.Config().URL, media)
 	caps, _ := c.Caps(ctx)
 	attempts := c.rescueAttempts(req, caps)
 	if len(attempts) == 0 {
@@ -1601,7 +1635,7 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 				wg.Add(1)
 				go func(i int, p url.Values) {
 					defer wg.Done()
-					slots[i].res, slots[i].err = c.doSearch(ctx, p, id)
+					slots[i].res, slots[i].err = c.doSearch(ctx, p, id, media)
 				}(i, p)
 			}
 			wg.Wait()
@@ -1640,7 +1674,7 @@ func (c *Client) SearchRescue(ctx context.Context, req core.SearchRequest) ([]co
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			res, err := c.doSearch(ctx, p, id)
+			res, err := c.doSearch(ctx, p, id, media)
 			if err != nil {
 				if errors.Is(err, core.ErrBudgetExhausted) {
 					// A refused query proves nothing: never cache it as a miss.
@@ -1855,12 +1889,13 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 	// there) may reach a private address; absolute feed URLs to any
 	// other host, and redirects away from the indexer, must be public.
 	var id config.Identity
+	media := c.releaseMediaType(r)
 	rawURL := r.NZBURL
 	if rawURL == "" {
 		if r.GUID == "" {
 			return nil, false, fmt.Errorf("newznab: release %q has no NZB URL or GUID: %w", r.Name, core.ErrReleaseRejected)
 		}
-		id = c.identityFor(config.RequestNZBDownload, c.Config().URL)
+		id = c.identityFor(config.RequestNZBDownload, c.Config().URL, media)
 		u, err := c.apiURLFor(url.Values{"t": {"get"}, "id": {r.GUID}}, id)
 		if err != nil {
 			return nil, false, err
@@ -1878,7 +1913,7 @@ func (c *Client) fetchNZB(ctx context.Context, r core.Release) ([]byte, bool, er
 			}
 			rawURL = base.ResolveReference(ref).String()
 		}
-		id = c.identityFor(config.RequestNZBDownload, rawURL)
+		id = c.identityFor(config.RequestNZBDownload, rawURL, media)
 		rawURL = id.ApplyToURL(rawURL)
 	}
 	hctx, releaseHost, err := c.acquireHost(ctx, rawURL)
@@ -2072,7 +2107,7 @@ func TestWithOptions(ctx context.Context, cfg config.Indexer, opts Options) erro
 		return humanError(name, err)
 	}
 	params := url.Values{"t": {"search"}, "q": {"test"}, "limit": {"1"}, "extended": {"1"}}
-	if _, err := c.doSearch(ctx, params, c.clientIdentity()); err != nil {
+	if _, err := c.doSearch(ctx, params, c.clientIdentity(), config.IdentityMediaAny); err != nil {
 		return humanError(name, err)
 	}
 	return nil

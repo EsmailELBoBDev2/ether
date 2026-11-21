@@ -5,7 +5,10 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/braedonsaunders/ether/internal/core"
 )
 
 // Server-wide request identity rules: how Ether identifies itself to indexers
@@ -45,6 +48,139 @@ const (
 	RequestTorrentDownload RequestKind = "torrent_download"
 )
 
+// IdentityMediaType optionally scopes an IdentityRule to one media type.
+// Empty ("") matches any media type, including requests whose media type is
+// unknown (such as capabilities checks or unfiltered feeds).
+type IdentityMediaType string
+
+const (
+	IdentityMediaAny   IdentityMediaType = ""
+	IdentityMediaMovie IdentityMediaType = "movie"
+	IdentityMediaTV    IdentityMediaType = "tv"
+	IdentityMediaMusic IdentityMediaType = "music"
+	IdentityMediaBooks IdentityMediaType = "books"
+)
+
+// NormalizeIdentityMediaType canonicalises an IdentityMediaType value.
+func NormalizeIdentityMediaType(mt IdentityMediaType) IdentityMediaType {
+	return IdentityMediaType(strings.ToLower(strings.TrimSpace(string(mt))))
+}
+
+// ValidIdentityMediaType reports whether mt is a supported media-type condition.
+func ValidIdentityMediaType(mt IdentityMediaType) bool {
+	switch NormalizeIdentityMediaType(mt) {
+	case IdentityMediaAny, IdentityMediaMovie, IdentityMediaTV, IdentityMediaMusic, IdentityMediaBooks:
+		return true
+	default:
+		return false
+	}
+}
+
+// IdentityMediaTypeForCategory maps a standard Newznab/Torznab category ID to
+// an IdentityMediaType. Returns IdentityMediaAny when unknown or outside the
+// Movies/TV/Music/Books families.
+func IdentityMediaTypeForCategory(cat int) IdentityMediaType {
+	switch {
+	case cat >= 2000 && cat < 3000:
+		return IdentityMediaMovie
+	case cat >= 5000 && cat < 6000:
+		return IdentityMediaTV
+	case cat == 3030 || (cat >= 7000 && cat < 8000):
+		return IdentityMediaBooks
+	case cat >= 3000 && cat < 4000:
+		return IdentityMediaMusic
+	default:
+		return IdentityMediaAny
+	}
+}
+
+// IdentityMediaTypeForCategories returns the common IdentityMediaType when
+// every category in cats maps to the same non-empty media type. Mixed or
+// unknown sets return IdentityMediaAny.
+func IdentityMediaTypeForCategories(cats []int) IdentityMediaType {
+	var common IdentityMediaType
+	for _, cat := range cats {
+		mt := IdentityMediaTypeForCategory(cat)
+		if mt == IdentityMediaAny {
+			return IdentityMediaAny
+		}
+		if common == IdentityMediaAny {
+			common = mt
+		} else if common != mt {
+			return IdentityMediaAny
+		}
+	}
+	return common
+}
+
+// DefaultCategoryForIdentityMedia returns the standard top-level Newznab
+// category for mt, or 0 for IdentityMediaAny.
+func DefaultCategoryForIdentityMedia(mt IdentityMediaType) int {
+	switch NormalizeIdentityMediaType(mt) {
+	case IdentityMediaMovie:
+		return 2000
+	case IdentityMediaTV:
+		return 5000
+	case IdentityMediaMusic:
+		return 3000
+	case IdentityMediaBooks:
+		return 7000
+	default:
+		return 0
+	}
+}
+
+// IdentityMediaTypeForSearch extracts the media type known by a search request.
+func IdentityMediaTypeForSearch(req core.SearchRequest) IdentityMediaType {
+	if strings.TrimSpace(req.Category) != "" {
+		cats, err := core.SearchCategories(req.Category)
+		if err != nil || len(cats) == 0 {
+			return IdentityMediaAny
+		}
+		return IdentityMediaTypeForCategories(cats)
+	}
+	if req.Type == core.TypeEpisode || req.Type == core.TypeShow || req.Type == core.TypeSeason || req.Season > 0 {
+		return IdentityMediaTV
+	}
+	if req.Type == core.TypeMovie {
+		return IdentityMediaMovie
+	}
+	return IdentityMediaAny
+}
+
+// IdentityMediaTypeForRelease extracts the media type known by a release for
+// NZB/torrent download identity resolution. movieCats and tvCats may hold an
+// indexer's custom site-specific category IDs.
+func IdentityMediaTypeForRelease(r core.Release, movieCats, tvCats []int) IdentityMediaType {
+	if mt := IdentityMediaTypeForCategory(r.Category); mt != IdentityMediaAny {
+		return mt
+	}
+	if r.Category != 0 {
+		if slices.Contains(movieCats, r.Category) {
+			return IdentityMediaMovie
+		}
+		if slices.Contains(tvCats, r.Category) {
+			return IdentityMediaTV
+		}
+	}
+	if len(r.Info.Seasons) > 0 || len(r.Info.Episodes) > 0 || r.Info.FullSeason {
+		return IdentityMediaTV
+	}
+	if r.Target != nil && strings.TrimSpace(r.Target.MIME) != "" {
+		mime := strings.ToLower(strings.TrimSpace(r.Target.MIME))
+		switch {
+		case mime == "application/epub+zip",
+			mime == "application/pdf",
+			mime == "application/x-mobipocket-ebook",
+			strings.HasPrefix(mime, "application/vnd.comicbook"):
+			return IdentityMediaBooks
+		case strings.HasPrefix(mime, "audio/"):
+			return IdentityMediaMusic
+		}
+	}
+	return IdentityMediaAny
+}
+
 // IdentityRule sets the outbound HTTP identity for matching requests.
 type IdentityRule struct {
 	ID        string             `json:"id"`
@@ -53,10 +189,13 @@ type IdentityRule struct {
 	Host      string             `json:"host,omitempty"`
 	// Scope optionally narrows an indexer or host rule to "search" or
 	// "download" (preserved when migrating split search/grab configs).
-	Scope   string       `json:"scope,omitempty"`
-	Profile string       `json:"profile"`
-	Headers []KVOverride `json:"headers,omitempty"`
-	Params  []KVOverride `json:"params,omitempty"`
+	Scope string `json:"scope,omitempty"`
+	// MediaType optionally narrows this rule to one media type (movie, tv,
+	// music, books). Empty matches any media type.
+	MediaType IdentityMediaType `json:"mediaType,omitempty"`
+	Profile   string            `json:"profile"`
+	Headers   []KVOverride      `json:"headers,omitempty"`
+	Params    []KVOverride      `json:"params,omitempty"`
 }
 
 // IdentityRequest describes one outbound indexer search or NZB/torrent
@@ -65,6 +204,7 @@ type IdentityRequest struct {
 	Kind      RequestKind
 	IndexerID string
 	URL       string
+	MediaType IdentityMediaType
 }
 
 // ClientProfile is one selectable compatibility header set.
@@ -200,6 +340,7 @@ func ResolveRule(rule IdentityRule, ruleIndex int) Identity {
 		RuleTarget:    rule.Target,
 		RuleHost:      rule.Host,
 		RuleScope:     rule.Scope,
+		RuleMediaType: NormalizeIdentityMediaType(rule.MediaType),
 		CustomHeaders: custom,
 	}
 	for _, h := range ordered {
@@ -228,7 +369,8 @@ func DefaultIdentity() Identity {
 }
 
 // ResolveRequest resolves the winning rule for req.
-// Precedence (most specific wins; list order breaks ties within the same tier):
+// Precedence (most specific wins; within a target tier a specific mediaType
+// beats Any; list order breaks ties within the same tier):
 //  1. specific indexer (TargetIndexer)
 //  2. exact host (TargetHost without "*.")
 //  3. wildcard host (TargetHost with "*.host")
@@ -251,8 +393,15 @@ func (p ClientIdentity) ResolveRequest(req IdentityRequest) Identity {
 	return ResolveRule(p.Rules[bestIdx], bestIdx)
 }
 
-// ResolveIndexer resolves the search or download identity for ix.
+// ResolveIndexer resolves the search or download identity for ix without a
+// specific media type (e.g. capabilities checks or unfiltered feeds).
 func (p ClientIdentity) ResolveIndexer(ix Indexer, kind RequestKind, rawURL string) Identity {
+	return p.ResolveIndexerMedia(ix, kind, rawURL, IdentityMediaAny)
+}
+
+// ResolveIndexerMedia resolves the search or download identity for ix and a
+// known media type.
+func (p ClientIdentity) ResolveIndexerMedia(ix Indexer, kind RequestKind, rawURL string, media IdentityMediaType) Identity {
 	if strings.TrimSpace(rawURL) == "" {
 		rawURL = ix.URL
 	}
@@ -260,10 +409,17 @@ func (p ClientIdentity) ResolveIndexer(ix Indexer, kind RequestKind, rawURL stri
 		Kind:      kind,
 		IndexerID: ix.ID,
 		URL:       rawURL,
+		MediaType: media,
 	})
 }
 
 func ruleSpecificity(rule IdentityRule, req IdentityRequest, reqHost string) int {
+	ruleMedia := NormalizeIdentityMediaType(rule.MediaType)
+	reqMedia := NormalizeIdentityMediaType(req.MediaType)
+	if ruleMedia != IdentityMediaAny && ruleMedia != reqMedia {
+		return 0
+	}
+	targetRank := 0
 	switch rule.Target {
 	case TargetIndexer:
 		if rule.IndexerID == "" || rule.IndexerID != req.IndexerID {
@@ -272,7 +428,7 @@ func ruleSpecificity(rule IdentityRule, req IdentityRequest, reqHost string) int
 		if !scopeMatches(rule.Scope, req.Kind) {
 			return 0
 		}
-		return 4
+		targetRank = 4
 	case TargetHost:
 		if reqHost == "" || !scopeMatches(rule.Scope, req.Kind) {
 			return 0
@@ -283,32 +439,32 @@ func ruleSpecificity(rule IdentityRule, req IdentityRequest, reqHost string) int
 		}
 		if suffix, wildcard := strings.CutPrefix(pat, "*."); wildcard {
 			if suffix != "" && strings.HasSuffix(reqHost, "."+suffix) {
-				return 2
+				targetRank = 2
 			}
-			return 0
+		} else if reqHost == pat {
+			targetRank = 3
 		}
-		if reqHost == pat {
-			return 3
-		}
-		return 0
 	case TargetNZBDownloads:
 		if req.Kind == RequestNZBDownload {
-			return 1
+			targetRank = 1
 		}
-		return 0
 	case TargetTorrentDownloads:
 		if req.Kind == RequestTorrentDownload {
-			return 1
+			targetRank = 1
 		}
-		return 0
 	case TargetAllSearches:
 		if req.Kind == RequestSearch {
-			return 1
+			targetRank = 1
 		}
-		return 0
-	default:
+	}
+	if targetRank == 0 {
 		return 0
 	}
+	mediaBonus := 0
+	if ruleMedia != IdentityMediaAny {
+		mediaBonus = 1
+	}
+	return targetRank*2 + mediaBonus
 }
 
 func scopeMatches(scope string, kind RequestKind) bool {
@@ -444,6 +600,10 @@ func (p ClientIdentity) Validate() []IdentityFieldError {
 
 		if s := strings.ToLower(strings.TrimSpace(r.Scope)); s != "" && s != "search" && s != "download" {
 			add("scope", "must be empty, search, or download")
+		}
+
+		if !ValidIdentityMediaType(r.MediaType) {
+			add("mediaType", "must be empty, movie, tv, music, or books")
 		}
 
 		if _, ok := LookupProfile(r.Profile); !ok {

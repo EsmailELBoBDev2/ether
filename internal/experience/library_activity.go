@@ -48,6 +48,41 @@ func (s *Service) LatestAdded(ctx context.Context, viewer *core.Viewer, device c
 	return s.latestAdded(ctx, viewer, device, viewID, limit, true)
 }
 
+func (s *Service) resolveActivityLibrary(ctx context.Context, v *core.User, viewID string) (core.Library, core.MediaType, error) {
+	id, err := strconv.Atoi(viewID)
+	if err != nil {
+		return core.Library{}, "", core.ErrNotFound
+	}
+	lib, err := s.d.PluginLibraries.Library(ctx, core.LibraryID(id))
+	if err != nil {
+		return core.Library{}, "", core.ErrNotFound
+	}
+	// Match LibraryItems: collection libraries remain queryable while
+	// console-only unless hidden; every other source must be published to the
+	// protocol asking.
+	mt := filterMediaType(lib)
+	if lib.Source != core.LibraryCollection {
+		var ok bool
+		mt, _, ok = s.publishedLibrary(ctx, lib)
+		if !ok {
+			return core.Library{}, "", core.ErrNotFound
+		}
+	} else if lib.Hidden {
+		return core.Library{}, "", core.ErrNotFound
+	}
+	if !v.AllowsLibrary(lib.ID) {
+		return core.Library{}, "", core.ErrNotFound
+	}
+	return lib, mt, nil
+}
+
+func isUnscopedBuiltinLibrary(lib core.Library, f core.Filter) bool {
+	return (lib.ID == core.LibraryMovies || lib.ID == core.LibraryShows) &&
+		lib.Source != core.LibraryCollection &&
+		lib.Source != core.LibraryPlugin &&
+		!filterHasLibraryScope(f)
+}
+
 func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID string, limit int, group bool) ([]frontend.LatestItem, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
@@ -55,13 +90,41 @@ func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.D
 		return nil, err
 	}
 	limit = activityLimit(limit)
+	if s.d.PluginLibraries != nil {
+		if viewID != "" {
+			lib, mt, err := s.resolveActivityLibrary(ctx, v, viewID)
+			if err != nil {
+				return nil, err
+			}
+			items, err := s.latestFromLibrary(ctx, v, lib, mt, limit, group)
+			if err != nil {
+				return nil, err
+			}
+			return sortLatestItems(items, limit), nil
+		}
+		libs, err := s.d.PluginLibraries.Libraries(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var result []frontend.LatestItem
+		for _, lib := range libs {
+			mt, _, ok := s.publishedLibrary(ctx, lib)
+			if !ok || !v.AllowsLibrary(lib.ID) {
+				continue
+			}
+			found, err := s.latestFromLibrary(ctx, v, lib, mt, limit, group)
+			if errors.Is(err, core.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, found...)
+		}
+		return sortLatestItems(dedupeLatestItems(result), limit), nil
+	}
 	lib, err := s.activityLibrary(v, viewID)
 	if err != nil {
-		if viewID != "" && errors.Is(err, core.ErrNotFound) && s.d.PluginLibraries != nil {
-			if plib, _, perr := s.publishedLibraryByViewID(ctx, v, viewID); perr == nil && plib.Source == core.LibraryPlugin {
-				return s.latestFromPluginLibrary(ctx, v, plib, limit)
-			}
-		}
 		return nil, err
 	}
 	if s.d.Browse == nil || s.d.AddedTimes == nil {
@@ -84,70 +147,282 @@ func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.D
 			result = append(result, found...)
 			continue
 		}
-		found := 0
-		for offset := 0; offset < activityScanLimit; {
-			fetch := min(max(limit*2, 50), 500)
-			var page core.Page
+		found, err := s.latestFromBrowseScan(ctx, v, core.Filter{Type: library.Type, KnownAddedDate: true}, limit, false, library.Type == core.TypeShow && !group)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, found...)
+	}
+	return sortLatestItems(dedupeLatestItems(result), limit), nil
+}
+
+func (s *Service) latestFromLibrary(ctx context.Context, v *core.User, lib core.Library, mt core.MediaType, limit int, group bool) ([]frontend.LatestItem, error) {
+	if lib.Source == core.LibraryPlugin {
+		return s.latestFromPluginLibrary(ctx, v, lib, limit)
+	}
+	if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
+		return nil, nil
+	}
+	if mt != core.TypeMovie && mt != core.TypeShow {
+		return nil, nil
+	}
+	if s.d.Browse == nil {
+		return nil, core.ErrNotAvailable
+	}
+	baseFilter := s.libraryBrowseFilter(ctx, v, lib, core.Filter{KnownAddedDate: true})
+	library := &Library{ID: int(lib.ID), Name: lib.Name, Type: mt, Virtual: true}
+	unscoped := isUnscopedBuiltinLibrary(lib, baseFilter)
+	baseFilter.Type = mt
+	if unscoped {
+		if group && s.d.RecentAir != nil {
+			return s.latestFromRecent(ctx, v, *library, limit)
+		}
+		if !group && mt == core.TypeShow {
+			if s.d.AddedTimes == nil {
+				return nil, core.ErrNotAvailable
+			}
+			return s.latestFromBrowseScan(ctx, v, baseFilter, limit, false, true)
+		}
+	}
+	if !group && mt == core.TypeShow {
+		return s.latestScopedEpisodes(ctx, v, baseFilter, limit)
+	}
+	req := frontend.ItemQuery{
+		Filter:  baseFilter,
+		Sort:    core.SortAdded,
+		Desc:    true,
+		Limit:   limit,
+		NoTotal: true,
+	}
+	if playedOnly, filterPlayed := frontend.LatestPlayedFilter(ctx); filterPlayed {
+		req.Watched = &playedOnly
+	}
+	if page, ok, err := s.indexedLibraryPage(ctx, v, library, req); err != nil {
+		return nil, err
+	} else if ok {
+		return s.latestItemsWithAdded(ctx, page.Items)
+	}
+	return s.latestFromBrowseScan(ctx, v, baseFilter, limit, true, false)
+}
+
+func (s *Service) latestScopedEpisodes(ctx context.Context, v *core.User, baseFilter core.Filter, limit int) ([]frontend.LatestItem, error) {
+	epFilter := baseFilter
+	epFilter.Type = core.TypeEpisode
+	epFilter.KnownAddedDate = true
+	req := frontend.ItemQuery{
+		Filter:  baseFilter,
+		Sort:    core.SortAdded,
+		Desc:    true,
+		Limit:   limit,
+		NoTotal: true,
+	}
+	req.Filter.Type = ""
+	if playedOnly, filterPlayed := frontend.LatestPlayedFilter(ctx); filterPlayed {
+		req.Watched = &playedOnly
+	}
+	if s.d.PageExclusions != nil {
+		ex := s.d.PageExclusions(ctx, v, core.TypeEpisode)
+		if ex.Err != nil {
+			return nil, ex.Err
+		}
+		filter, fits, none := viewerBrowseFilter(epFilter, v, ex, core.TypeEpisode)
+		if none {
+			return nil, nil
+		}
+		if fits {
+			child := filter
+			child.ChildVisibility = nil
+			filter.ChildVisibility = &child
 			var err error
-			if library.Type == core.TypeShow && !group {
-				if s.d.AiredEpisodes == nil {
-					return nil, core.ErrNotAvailable
-				}
-				page, err = s.d.AiredEpisodes(ctx, 0, offset, fetch)
-			} else {
-				page, err = s.d.Browse(ctx, core.BrowseQuery{Filter: core.Filter{Type: library.Type, KnownAddedDate: true}, Sort: core.SortAdded, Desc: true, Offset: offset, Limit: fetch})
-			}
+			filter, fits, none, err = s.userStateFilter(ctx, v, filter, req)
 			if err != nil {
 				return nil, err
 			}
-			keys := make([]core.RatingKey, len(page.Items))
-			for i := range page.Items {
-				keys[i] = page.Items[i].Key
+			if none {
+				return nil, nil
 			}
-			times, err := s.d.AddedTimes(ctx, keys)
-			if err != nil {
-				return nil, err
-			}
-			var states map[core.RatingKey]core.WatchStatus
-			playedOnly, filterPlayed := frontend.LatestPlayedFilter(ctx)
-			if filterPlayed {
-				if s.d.State == nil {
-					return nil, core.ErrNotAvailable
-				}
-				states, err = s.d.State.GetMany(ctx, v.ID, keys)
+			if fits {
+				page, err := s.d.Browse(ctx, core.BrowseQuery{Filter: filter, Sort: core.SortAdded, Desc: true, Limit: limit, NoTotal: true})
 				if err != nil {
 					return nil, err
 				}
-			}
-			for i := range page.Items {
-				at, known := times[page.Items[i].Key]
-				if known && !at.IsZero() && s.visible(ctx, v, &page.Items[i]) {
-					if filterPlayed && (states[page.Items[i].Key].ViewCount > 0) != playedOnly {
-						continue
-					}
-					value := at
-					result = append(result, frontend.LatestItem{Title: page.Items[i], AddedAt: &value})
-					found++
-					if found == limit {
-						break
+				if s.pageStateHolds(ctx, v, page.Items, req) {
+					check := req
+					check.Watched = nil
+					if s.d.ParentTitles != nil {
+						kept, err := s.visibleEpisodes(ctx, v, page.Items, check, ex.AvailabilityInSQL, true)
+						if err != nil {
+							return nil, err
+						}
+						if len(kept) == len(page.Items) || len(page.Items) < limit {
+							return s.latestItemsWithAdded(ctx, kept)
+						}
+					} else if s.indexedPageHolds(ctx, v, page.Items, check, ex.AvailabilityInSQL) {
+						return s.latestItemsWithAdded(ctx, page.Items)
 					}
 				}
 			}
-			offset += len(page.Items)
-			if found == limit || offset >= page.Total {
+		}
+	}
+	return s.latestFromBrowseScan(ctx, v, epFilter, limit, true, false)
+}
+
+func (s *Service) latestItemsWithAdded(ctx context.Context, items []core.Title) ([]frontend.LatestItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	var missing []core.RatingKey
+	for i := range items {
+		if items[i].AddedAt.IsZero() {
+			missing = append(missing, items[i].Key)
+		}
+	}
+	var times map[core.RatingKey]time.Time
+	if len(missing) > 0 {
+		if s.d.AddedTimes == nil {
+			return nil, core.ErrNotAvailable
+		}
+		var err error
+		times, err = s.d.AddedTimes(ctx, missing)
+		if err != nil {
+			return nil, err
+		}
+	}
+	out := make([]frontend.LatestItem, 0, len(items))
+	for i := range items {
+		at := items[i].AddedAt
+		if at.IsZero() {
+			at = times[items[i].Key]
+		}
+		if at.IsZero() {
+			continue
+		}
+		value := at
+		out = append(out, frontend.LatestItem{Title: items[i], AddedAt: &value})
+	}
+	return out, nil
+}
+
+func (s *Service) latestFromBrowseScan(ctx context.Context, v *core.User, filter core.Filter, limit int, skipSectionCheck, useAiredEpisodes bool) ([]frontend.LatestItem, error) {
+	vis := s.d.Visibility
+	if skipSectionCheck {
+		vis = withoutSectionCheck(vis)
+	}
+	playedOnly, filterPlayed := frontend.LatestPlayedFilter(ctx)
+	var result []frontend.LatestItem
+	for offset := 0; offset < activityScanLimit; {
+		fetch := min(max(limit*2, 50), 500)
+		var page core.Page
+		var err error
+		if useAiredEpisodes {
+			if s.d.AiredEpisodes == nil {
+				return nil, core.ErrNotAvailable
+			}
+			page, err = s.d.AiredEpisodes(ctx, 0, offset, fetch)
+		} else {
+			page, err = s.d.Browse(ctx, core.BrowseQuery{Filter: filter, Sort: core.SortAdded, Desc: true, Offset: offset, Limit: fetch, NoTotal: true})
+		}
+		if err != nil {
+			return nil, err
+		}
+		keys := make([]core.RatingKey, len(page.Items))
+		var missingTimes []core.RatingKey
+		for i := range page.Items {
+			keys[i] = page.Items[i].Key
+			if page.Items[i].AddedAt.IsZero() {
+				missingTimes = append(missingTimes, page.Items[i].Key)
+			}
+		}
+		var times map[core.RatingKey]time.Time
+		if len(missingTimes) > 0 {
+			if s.d.AddedTimes == nil {
+				return nil, core.ErrNotAvailable
+			}
+			times, err = s.d.AddedTimes(ctx, missingTimes)
+			if err != nil {
+				return nil, err
+			}
+		}
+		var states map[core.RatingKey]core.WatchStatus
+		if filterPlayed {
+			if s.d.State == nil {
+				return nil, core.ErrNotAvailable
+			}
+			states, err = s.d.State.GetMany(ctx, v.ID, keys)
+			if err != nil {
+				return nil, err
+			}
+		}
+		for i := range page.Items {
+			at := page.Items[i].AddedAt
+			if at.IsZero() {
+				at = times[page.Items[i].Key]
+			}
+			if at.IsZero() {
+				continue
+			}
+			var allowed bool
+			if skipSectionCheck {
+				allowed = vis.Visible(ctx, v, &page.Items[i])
+			} else {
+				allowed = s.visible(ctx, v, &page.Items[i])
+			}
+			if !allowed {
+				continue
+			}
+			if filterPlayed && (states[page.Items[i].Key].ViewCount > 0) != playedOnly {
+				continue
+			}
+			value := at
+			result = append(result, frontend.LatestItem{Title: page.Items[i], AddedAt: &value})
+			if len(result) == limit {
+				break
+			}
+		}
+		offset += len(page.Items)
+		if len(result) == limit {
+			break
+		}
+		if useAiredEpisodes {
+			if offset >= page.Total {
 				break
 			}
 			if len(page.Items) == 0 {
 				return nil, errors.New("experience: incomplete latest catalogue page")
 			}
-			if err = ctx.Err(); err != nil {
-				return nil, err
-			}
-			if offset >= activityScanLimit {
-				return nil, errors.New("experience: latest catalogue scan limit reached")
-			}
+		} else if len(page.Items) < fetch || (page.TotalExact && offset >= page.Total) {
+			break
+		}
+		if err = ctx.Err(); err != nil {
+			return nil, err
+		}
+		if offset >= activityScanLimit {
+			return nil, errors.New("experience: latest catalogue scan limit reached")
 		}
 	}
+	return result, nil
+}
+
+func dedupeLatestItems(items []frontend.LatestItem) []frontend.LatestItem {
+	if len(items) < 2 {
+		return items
+	}
+	seen := make(map[core.RatingKey]int, len(items))
+	out := make([]frontend.LatestItem, 0, len(items))
+	for _, item := range items {
+		if idx, ok := seen[item.Title.Key]; ok {
+			if item.AddedAt != nil && (out[idx].AddedAt == nil || item.AddedAt.After(*out[idx].AddedAt)) {
+				out[idx] = item
+			}
+			continue
+		}
+		seen[item.Title.Key] = len(out)
+		out = append(out, item)
+	}
+	return out
+}
+
+func sortLatestItems(result []frontend.LatestItem, limit int) []frontend.LatestItem {
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].AddedAt == nil {
 			return false
@@ -160,7 +435,7 @@ func (s *Service) latestAdded(ctx context.Context, viewer *core.Viewer, _ core.D
 	if len(result) > limit {
 		result = result[:limit]
 	}
-	return result, nil
+	return result
 }
 
 // latestFromPluginLibrary returns the newest root items in one published plugin

@@ -1839,45 +1839,39 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 	}
 	wantType := typeFromParam(rq.Get("type"))
 	wantSection, _ := strconv.Atoi(rq.Get("sectionID"))
-	if paged, ok := s.catalog().(frontend.RecentPageCatalog); ok && r.URL.Path == "/library/recentlyAdded" {
+	var selected []Section
+	hasKind := false
+	for _, sec := range s.userSections(pr.User) {
+		if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
+			continue
+		}
+		selected = append(selected, sec)
+		if isKindSection(sec) {
+			hasKind = true
+		}
+	}
+	if len(selected) == 1 && hasKind && s.exp() != nil {
+		sec := selected[0]
 		_, pageSize := pr.pageOf(0)
-		q := frontend.BrowseQuery{Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Offset: max(pr.Start, 0), Limit: pageSize}
-		if pr.User != nil {
-			q.Filter.MaxContentRating = pr.User.MaxContentRating
-			if unwatched {
-				q.Filter.Group = &frontend.FilterGroup{Unwatched: &unwatched, UserID: pr.User.ID}
-			}
+		if r.URL.Path != "/library/recentlyAdded" {
+			pageSize = size
 		}
-		if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
-			q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+		req := frontend.ItemQuery{
+			Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()},
+			Sort:   frontend.SortAdded,
+			Desc:   true,
+			Offset: max(pr.Start, 0),
+			Limit:  pageSize,
 		}
-		movieFilter := q.Filter
-		epFilter := q.Filter
-		movieNone, epNone := false, false
-		if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok && pr.User != nil {
-			movieFilter, movieNone = s.exp().MergeShareFilter(movieFilter, share.BrowseShareFilter(pr.User, frontend.TypeMovie))
-			epFilter, epNone = s.exp().MergeShareFilter(epFilter, share.BrowseShareFilter(pr.User, frontend.TypeEpisode))
+		if unwatched {
+			w := false
+			req.Watched = &w
 		}
-		var kinds []frontend.MediaType
-		for _, sec := range s.userSections(pr.User) {
-			if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
-				continue
-			}
-			kind := sec.Type
-			if kind == frontend.TypeShow {
-				kind = frontend.TypeEpisode
-			}
-			if kind == frontend.TypeMovie && movieNone || kind == frontend.TypeEpisode && epNone {
-				continue
-			}
-			kinds = append(kinds, kind)
+		if r.URL.Path == "/library/recentlyAdded" && sec.Type == frontend.TypeShow && sec.PluginID == "" {
+			req.Recursive = true
+			req.Types = []frontend.MediaType{frontend.TypeEpisode}
 		}
-		epChild := epFilter
-		epFilter.ChildVisibility = &epChild
-		q.Filter.ChildVisibility = &epChild
-		q.Filter.MovieFilter = &movieFilter
-		q.Filter.EpisodeFilter = &epFilter
-		page, err := paged.RecentPage(ctx, q, kinds)
+		page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), req)
 		if err != nil {
 			s.writeErr(w, r, err)
 			return
@@ -1885,14 +1879,96 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 		mc := libraryContainer()
 		mc.Title1 = "Recently Added"
 		mc.Mixed = model.Ptr(true)
-		mc.Metadata = s.renderTitles(ctx, pr, page.Items, renderOpts{media: true})
+		mc.Metadata = s.renderTitles(ctx, pr, page.Items, renderOpts{media: true, availabilityInSQL: true})
 		mc.Size = len(mc.Metadata)
-		mc.SetPage(pr.Start, page.Total)
+		mc.SetPage(max(pr.Start, 0), page.Total)
 		s.write(w, r, mc)
 		return
 	}
-	for _, sec := range s.userSections(pr.User) {
-		if wantSection > 0 && sec.ID != wantSection || wantType != "" && wantType != sec.Type {
+	if !hasKind {
+		if paged, ok := s.catalog().(frontend.RecentPageCatalog); ok && r.URL.Path == "/library/recentlyAdded" {
+			_, pageSize := pr.pageOf(0)
+			q := frontend.BrowseQuery{Filter: frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Offset: max(pr.Start, 0), Limit: pageSize}
+			if pr.User != nil {
+				q.Filter.MaxContentRating = pr.User.MaxContentRating
+				if unwatched {
+					q.Filter.Group = &frontend.FilterGroup{Unwatched: &unwatched, UserID: pr.User.ID}
+				}
+			}
+			if blocks, ok := s.policy().(frontend.BrowseBlocksPolicy); ok {
+				q.Filter.ExcludeGenres, q.Filter.ExcludeKeywords = blocks.BrowseBlocks(pr.User)
+			}
+			movieFilter := q.Filter
+			epFilter := q.Filter
+			movieNone, epNone := false, false
+			if share, ok := s.policy().(frontend.BrowseShareFilterPolicy); ok && pr.User != nil {
+				movieFilter, movieNone = s.exp().MergeShareFilter(movieFilter, share.BrowseShareFilter(pr.User, frontend.TypeMovie))
+				epFilter, epNone = s.exp().MergeShareFilter(epFilter, share.BrowseShareFilter(pr.User, frontend.TypeEpisode))
+			}
+			var kinds []frontend.MediaType
+			for _, sec := range selected {
+				kind := sec.Type
+				if kind == frontend.TypeShow {
+					kind = frontend.TypeEpisode
+				}
+				if kind == frontend.TypeMovie && movieNone || kind == frontend.TypeEpisode && epNone {
+					continue
+				}
+				kinds = append(kinds, kind)
+			}
+			epChild := epFilter
+			epFilter.ChildVisibility = &epChild
+			q.Filter.ChildVisibility = &epChild
+			q.Filter.MovieFilter = &movieFilter
+			q.Filter.EpisodeFilter = &epFilter
+			page, err := paged.RecentPage(ctx, q, kinds)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			mc := libraryContainer()
+			mc.Title1 = "Recently Added"
+			mc.Mixed = model.Ptr(true)
+			mc.Metadata = s.renderTitles(ctx, pr, page.Items, renderOpts{media: true})
+			mc.Size = len(mc.Metadata)
+			mc.SetPage(pr.Start, page.Total)
+			s.write(w, r, mc)
+			return
+		}
+	}
+	seenKeys := map[frontend.RatingKey]bool{}
+	appendUnique := func(batch []frontend.Title) {
+		for _, item := range batch {
+			if seenKeys[item.Key] {
+				continue
+			}
+			seenKeys[item.Key] = true
+			items = append(items, item)
+		}
+	}
+	for _, sec := range selected {
+		if isKindSection(sec) && s.exp() != nil {
+			req := frontend.ItemQuery{
+				Filter:  frontend.Filter{KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()},
+				Sort:    frontend.SortAdded,
+				Desc:    true,
+				Limit:   200,
+				NoTotal: true,
+			}
+			if unwatched {
+				w := false
+				req.Watched = &w
+			}
+			if r.URL.Path == "/library/recentlyAdded" && sec.Type == frontend.TypeShow && sec.PluginID == "" {
+				req.Recursive = true
+				req.Types = []frontend.MediaType{frontend.TypeEpisode}
+			}
+			page, err := s.exp().LibraryItems(ctx, pr.User, plexDevice(pr), sec.IDString(), req)
+			if err != nil {
+				s.writeErr(w, r, err)
+				return
+			}
+			appendUnique(page.Items)
 			continue
 		}
 		q := frontend.BrowseQuery{Filter: frontend.Filter{Type: sec.Type, KnownAddedDate: true, SaferPlexRating: s.plexMetaOn()}, Sort: frontend.SortAdded, Desc: true, Limit: 200}
@@ -1924,12 +2000,11 @@ func (s *Server) handleRecentlyAdded(w http.ResponseWriter, r *http.Request) {
 			s.writeErr(w, r, err)
 			return
 		}
-		items = append(items, page.Items...)
+		appendUnique(s.openableTitles(withStoredPolicy(ctx), pr.User, page.Items, shelfContainsAll(ctx, page.Items)))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].DateAdded(s.now()).After(items[j].DateAdded(s.now()))
 	})
-	items = s.openableTitles(withStoredPolicy(ctx), pr.User, items, shelfContainsAll(ctx, items))
 	total := min(len(items), 200)
 	start := min(max(pr.Start, 0), total)
 	end := start + min(size, total-start)

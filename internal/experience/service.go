@@ -574,6 +574,9 @@ func (s *Service) LibraryItems(ctx context.Context, viewer *core.Viewer, device 
 		if lib.Source == core.LibraryPlugin {
 			return s.pluginLibraryItems(ctx, v, lib, s.sanitizePluginLibraryQuery(ctx, lib, q))
 		}
+		if lib.Source == core.LibraryCollection && lib.CollectionID <= 0 {
+			return core.Page{Items: []core.Title{}, Total: 0, TotalExact: true}, nil
+		}
 		if s.d.Browse == nil {
 			return core.Page{}, core.ErrNotFound
 		}

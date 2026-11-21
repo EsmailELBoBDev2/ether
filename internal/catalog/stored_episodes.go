@@ -37,18 +37,6 @@ var (
 	seasonKeyEnd    = int64(core.KindSeason+1) * 1_000_000_000_000_000
 )
 
-func hasNarrowCatalogueSources(sources []string) bool {
-	if len(sources) == 0 {
-		return false
-	}
-	for _, id := range sources {
-		if id == "tmdb-movies" || id == "tmdb-tv" {
-			return false
-		}
-	}
-	return true
-}
-
 // storedShowScoped reports whether f narrows the admitted series by library,
 // tab or preview rules, a catalogue source or a collection. Scoped key-order
 // episode and season reads drive from the admitted series in key order rather
@@ -58,7 +46,7 @@ func storedShowScoped(f core.Filter) bool {
 		len(f.TabRules) > 0 || (f.TabFallback != "" && f.TabFallback != "show") ||
 		len(f.PreviewRules) > 0 || (f.PreviewFallback != "" && f.PreviewFallback != "show") ||
 		(f.RuleVisibility != "" && f.RuleVisibility != "all") || f.ApplyCanonicalInPreview ||
-		f.CollectionMembers != 0 || hasNarrowCatalogueSources(f.CatalogueSources)
+		f.CollectionMembers != 0 || hasRestrictedCatalogueSources(f.CatalogueSources)
 }
 
 func storedBrowseUncacheable(f core.Filter) bool {
@@ -587,7 +575,7 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 		}
 	}
 
-	smallScoped := storedShowScoped(q.Filter) && ((!q.NoTotal && total <= 5000) || q.Filter.CollectionMembers != 0 || hasNarrowCatalogueSources(q.Filter.CatalogueSources))
+	smallScoped := storedShowScoped(q.Filter) && ((!q.NoTotal && total <= 5000) || q.Filter.CollectionMembers != 0 || hasRestrictedCatalogueSources(q.Filter.CatalogueSources))
 	var items []core.Title
 	switch {
 	case q.Filter.Group != nil && watchedOnly(*q.Filter.Group):
@@ -658,6 +646,11 @@ func (c *Catalog) BrowseStoredEpisodes(ctx context.Context, q core.BrowseQuery) 
 	}
 	if err != nil {
 		return core.Page{}, err
+	}
+	if q.Sort == core.SortAdded {
+		if err := applyAirAddedTimes(ctx, c.db, items, c.now()); err != nil {
+			return core.Page{}, err
+		}
 	}
 	if items == nil {
 		items = []core.Title{}

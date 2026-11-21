@@ -66,7 +66,7 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 	minBucket := c.minuteBucket()
 	ckey := c.consoleAvailabilityCacheKey(q.Filter) + "|" + browseFilterKey(c.policyKeyFilter(q.Filter)) + fmt.Sprintf("|rules:%s:%v:%#v:%s|extra:%#v:%s|tab:%#v:%s", q.Filter.RuleVisibility, q.Filter.ApplyCanonicalInPreview, q.Filter.PreviewRules, q.Filter.PreviewFallback, q.Filter.ExtraRules, q.Filter.ExtraFallback, q.Filter.TabRules, q.Filter.TabFallback)
 	bkey := fmt.Sprintf("after:%d|", q.AfterKey) + fmt.Sprintf("%s|%s|%v|%v|%d|%d|%v|%v", ckey, q.Sort, q.Desc, q.SecondarySorts, offset, limit, q.NoTotal, q.CheapTotal)
-	cacheable := !filterHasViewerState(q.Filter)
+	cacheable := !filterHasViewerState(q.Filter) && q.Filter.CollectionMembers == 0
 	// An export page holds partial titles (ListRows) and is read once per
 	// export: it neither serves from nor fills the page cache.
 	listRows := q.ListRows != nil && q.Sort == core.SortKey
@@ -194,7 +194,20 @@ func (c *Catalog) Browse(ctx context.Context, q core.BrowseQuery) (core.Page, er
 		// A collection library reads its page straight from the semi-join:
 		// the cached page keys cannot promise to follow a rebuild, and the
 		// count always comes from the predicates above.
-		items, err := c.queryPagedTitles(ctx, `SELECT `+prefixedCols("t")+` FROM catalog_titles t WHERE `+where+` ORDER BY `+browseOrder(q)+`, t.key ASC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
+		order := browseOrder(q)
+		if q.Sort == core.SortAdded {
+			dir := "ASC"
+			if q.Desc {
+				dir = "DESC"
+			}
+			switch q.Filter.Type {
+			case core.TypeShow:
+				order = "t.show_added_ts " + dir + browseSecondaryOrder("t", q.SecondarySorts)
+			case "":
+				order = "CASE WHEN t.type='show' THEN t.show_added_ts ELSE t.released_ts END " + dir + browseSecondaryOrder("t", q.SecondarySorts)
+			}
+		}
+		items, err := c.queryPagedTitles(ctx, `SELECT `+prefixedCols("t")+` FROM catalog_titles t WHERE `+where+` ORDER BY `+order+`, t.key ASC LIMIT ? OFFSET ?`, append(append([]any{}, args...), limit, offset)...)
 		if err != nil {
 			return core.Page{}, err
 		}
@@ -579,6 +592,18 @@ func groupHasOwnState(g *core.FilterGroup) bool {
 		g.LastViewedAfter != 0 || g.LastViewedBefore != 0
 }
 
+func hasRestrictedCatalogueSources(sources []string) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	for _, id := range sources {
+		if id == "tmdb-movies" || id == "tmdb-tv" {
+			return false
+		}
+	}
+	return true
+}
+
 func filterHasViewerState(f core.Filter) bool {
 	return groupHasState(f.Group) ||
 		libraryfilter.RulesHaveViewerState(f.TabRules) ||
@@ -875,28 +900,21 @@ func (c *Catalog) browseWhereMode(f core.Filter, membershipOnly bool) (string, [
 			args = append(args, key)
 		}
 	}
-	if len(f.CatalogueSources) > 0 {
-		all := false
-		for _, id := range f.CatalogueSources {
-			if id == "tmdb-movies" || id == "tmdb-tv" {
-				all = true
-			}
+	if hasRestrictedCatalogueSources(f.CatalogueSources) {
+		marks := make([]string, len(f.CatalogueSources))
+		for i, id := range f.CatalogueSources {
+			marks[i] = "?"
+			args = append(args, id)
 		}
-		if !all {
-			marks := make([]string, len(f.CatalogueSources))
-			for i, id := range f.CatalogueSources {
-				marks[i] = "?"
-				args = append(args, id)
-			}
-			conds = append(conds, "t.key IN (SELECT lcm.key FROM libraries_catalogue_members lcm WHERE lcm.source_id IN ("+strings.Join(marks, ",")+"))")
-		}
+		conds = append(conds, "t.key IN (SELECT lcm.key FROM libraries_catalogue_members lcm WHERE lcm.source_id IN ("+strings.Join(marks, ",")+"))")
 	}
 	if f.CollectionMembers != 0 {
 		// A collection library is a semi-join on the collection's
-		// materialised members, never a list of keys in memory. Only a
-		// shared member is shown to everyone; per-viewer rules are the
-		// collection engine's business, not this page's.
-		conds = append(conds, "EXISTS (SELECT 1 FROM collections_members cm WHERE cm.spec_id=? AND cm.key=t.key AND cm.shared=1)")
+		// materialised members, never a list of keys in memory. Using IN lets
+		// SQLite and PostgreSQL drive from collections_members instead of
+		// scanning catalog_titles. Only a shared member is shown to everyone;
+		// per-viewer rules are the collection engine's business, not this page's.
+		conds = append(conds, "t.key IN (SELECT cm.key FROM collections_members cm WHERE cm.spec_id=? AND cm.shared=1)")
 		args = append(args, f.CollectionMembers)
 	}
 	if f.IncludeKeys != nil {

@@ -556,3 +556,169 @@ func TestMediaBrowserProviderIDAndIsPlayed(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaBrowserLatestHonorsLibrarySources(t *testing.T) {
+	a := setupTestApp(t, true)
+	ctx := context.Background()
+	if err := a.users.SetOwner(ctx, plextv.Account{ID: 42, Username: "owner"}, "owner-token"); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := a.users.Owner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := identity.NewLocal(a.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = local.Create(ctx, owner.ID, "viewer", "password-1234"); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	// Movies: outsideNewest is newer than both collection movies and must NEVER
+	// appear in the collection library's /Items/Latest response.
+	outsideNewest := core.Title{Key: core.MovieKey(9001), Type: core.TypeMovie, IDs: core.IDs{TMDB: 9001}, Title: "Outside Newest", Released: base.Add(-1 * time.Hour), Genres: []string{"Action"}}
+	collPlayed := core.Title{Key: core.MovieKey(9002), Type: core.TypeMovie, IDs: core.IDs{TMDB: 9002}, Title: "Collection Played", Released: base.Add(-2 * time.Hour), Genres: []string{"Drama"}}
+	collUnplayed := core.Title{Key: core.MovieKey(9003), Type: core.TypeMovie, IDs: core.IDs{TMDB: 9003}, Title: "Collection Unplayed", Released: base.Add(-4 * time.Hour), Genres: []string{"Comedy"}}
+	srcOnly := core.Title{Key: core.MovieKey(9004), Type: core.TypeMovie, IDs: core.IDs{TMDB: 9004}, Title: "Custom Source Film", Released: base.Add(-6 * time.Hour), Genres: []string{"Sci-Fi"}}
+	for _, m := range []core.Title{outsideNewest, collPlayed, collUnplayed, srcOnly} {
+		if err := a.catalog.UpsertTitle(ctx, m, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.state.Scrobble(ctx, owner.ID, collPlayed.Key); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shows: collShowA premiered earlier than collShowB, but has a newer aired
+	// episode; outsideShow has the newest episode overall and must not leak.
+	collShowA := core.Title{Key: core.ShowKey(9101), Type: core.TypeShow, IDs: core.IDs{TMDB: 9101}, Title: "Collection Show A", Released: base.Add(-400 * time.Hour)}
+	collShowB := core.Title{Key: core.ShowKey(9102), Type: core.TypeShow, IDs: core.IDs{TMDB: 9102}, Title: "Collection Show B", Released: base.Add(-200 * time.Hour)}
+	outsideShow := core.Title{Key: core.ShowKey(9103), Type: core.TypeShow, IDs: core.IDs{TMDB: 9103}, Title: "Outside Show", Released: base.Add(-100 * time.Hour)}
+	for _, sh := range []core.Title{collShowA, collShowB, outsideShow} {
+		if err := a.catalog.UpsertTitle(ctx, sh, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	epA := core.Title{Key: core.EpisodeKey(9101, 2, 1), ShowKey: collShowA.Key, Type: core.TypeEpisode, Season: 2, Episode: 1, Title: "Show A Latest Ep", Released: base.Add(-3 * time.Hour)}
+	epB := core.Title{Key: core.EpisodeKey(9102, 1, 1), ShowKey: collShowB.Key, Type: core.TypeEpisode, Season: 1, Episode: 1, Title: "Show B Ep", Released: base.Add(-10 * time.Hour)}
+	epOut := core.Title{Key: core.EpisodeKey(9103, 1, 1), ShowKey: outsideShow.Key, Type: core.TypeEpisode, Season: 1, Episode: 1, Title: "Outside Ep", Released: base.Add(-30 * time.Minute)}
+	for _, ep := range []core.Title{epA, epB, epOut} {
+		if err := a.catalog.UpsertTitle(ctx, ep, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO collections_members(spec_id,pos,key,shared) VALUES (701,0,?,1),(701,1,?,1),(702,0,?,1),(702,1,?,1)`,
+		int64(collPlayed.Key), int64(collUnplayed.Key), int64(collShowA.Key), int64(collShowB.Key)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO libraries_catalogue_members(source_id,key) VALUES ('stremio-curated',?)`, int64(srcOnly.Key)); err != nil {
+		t.Fatal(err)
+	}
+
+	moviePresent := core.Presentations{
+		MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "movies"},
+	}
+	tvPresent := core.Presentations{
+		MediaBrowser: &core.MediaBrowserPresentation{CollectionType: "tvshows"},
+	}
+	collMovieLib, err := a.libraries.CreateCollection(ctx, "Curated Films", 701, core.TypeMovie, moviePresent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collShowLib, err := a.libraries.CreateCollection(ctx, "Curated Shows", 702, core.TypeShow, tvPresent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcLib, err := a.libraries.Create(ctx, "Stremio Films", core.TypeMovie, nil, "", moviePresent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.libraries.SetSources(ctx, srcLib.ID, []string{"stremio-curated"}); err != nil {
+		t.Fatal(err)
+	}
+	ruleLib, err := a.libraries.Create(ctx, "Comedy Only", core.TypeMovie, []core.LibraryExclusion{
+		{Name: "Show Comedy", Action: "show", MediaType: "movie", Match: "all", Rules: []core.CollectionRule{{Field: "genre", Op: "is", Value: json.RawMessage(`"Comedy"`)}}},
+	}, "hide", moviePresent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	collMovieGUID, _ := ids.GUID(ids.View, int64(collMovieLib.ID))
+	collShowGUID, _ := ids.GUID(ids.View, int64(collShowLib.ID))
+	srcGUID, _ := ids.GUID(ids.View, int64(srcLib.ID))
+	ruleGUID, _ := ids.GUID(ids.View, int64(ruleLib.ID))
+
+	for _, surface := range []string{"jellyfin", "emby"} {
+		t.Run(surface, func(t *testing.T) {
+			inst, err := a.frontends.registry.Mount(ctx, core.Protocol(surface))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.frontends.registry.Unmount(ctx, core.Protocol(surface))
+			call := func(method, path, body, token string) *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				r := httptest.NewRequest(method, path, strings.NewReader(body))
+				r.RemoteAddr = "192.0.2.20:1234"
+				r.Header.Set("Authorization", `MediaBrowser Client="TV", DeviceId="tv", Token="`+token+`"`)
+				inst.Handler().ServeHTTP(w, r)
+				return w
+			}
+			login := call("POST", "/Users/AuthenticateByName", `{"Username":"viewer","Pw":"password-1234"}`, "")
+			if login.Code != 200 {
+				t.Fatalf("login %d %s", login.Code, login.Body)
+			}
+			var auth struct {
+				AccessToken string
+				User        struct {
+					ID string `json:"Id"`
+				}
+			}
+			if err := json.Unmarshal(login.Body.Bytes(), &auth); err != nil {
+				t.Fatal(err)
+			}
+			latestNames := func(path string) []string {
+				t.Helper()
+				rec := call("GET", path, "", auth.AccessToken)
+				if rec.Code != 200 {
+					t.Fatalf("GET %s -> %d %s", path, rec.Code, rec.Body.String())
+				}
+				var items []struct{ Name string }
+				if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+					t.Fatalf("decode %s: %v (%s)", path, err, rec.Body.String())
+				}
+				names := make([]string, len(items))
+				for i, it := range items {
+					names[i] = it.Name
+				}
+				return names
+			}
+
+			// Default Latest hides played items and returns only collection members.
+			if got := latestNames("/Users/" + auth.User.ID + "/Items/Latest?ParentId=" + collMovieGUID + "&Limit=8"); len(got) != 1 || got[0] != "Collection Unplayed" {
+				t.Fatalf("collection movie latest (default unplayed) = %v, want [Collection Unplayed]", got)
+			}
+			if got := latestNames("/Items/Latest?ParentId=" + collMovieGUID + "&IsPlayed=true&Limit=8"); len(got) != 1 || got[0] != "Collection Played" {
+				t.Fatalf("collection movie latest (IsPlayed=true) = %v, want [Collection Played]", got)
+			}
+
+			// Show collection: grouped orders by latest aired episode; ungrouped returns scoped episodes.
+			if got := latestNames("/Users/" + auth.User.ID + "/Items/Latest?ParentId=" + collShowGUID + "&Limit=8"); len(got) != 2 || got[0] != "Collection Show A" || got[1] != "Collection Show B" {
+				t.Fatalf("collection show latest grouped = %v, want [Collection Show A, Collection Show B]", got)
+			}
+			if got := latestNames("/Users/" + auth.User.ID + "/Items/Latest?ParentId=" + collShowGUID + "&GroupItems=false&Limit=8"); len(got) != 2 || got[0] != "Show A Latest Ep" || got[1] != "Show B Ep" {
+				t.Fatalf("collection show latest ungrouped = %v, want [Show A Latest Ep, Show B Ep]", got)
+			}
+
+			// Custom catalogue source and rule-filtered catalogue libraries.
+			if got := latestNames("/Users/" + auth.User.ID + "/Items/Latest?ParentId=" + srcGUID + "&Limit=8"); len(got) != 1 || got[0] != "Custom Source Film" {
+				t.Fatalf("custom source latest = %v, want [Custom Source Film]", got)
+			}
+			if got := latestNames("/Users/" + auth.User.ID + "/Items/Latest?ParentId=" + ruleGUID + "&Limit=8"); len(got) != 1 || got[0] != "Collection Unplayed" {
+				t.Fatalf("rule-filtered latest = %v, want [Collection Unplayed]", got)
+			}
+		})
+	}
+}

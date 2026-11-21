@@ -25,8 +25,16 @@ func (i *instance) addQualityPaths(ctx context.Context, a frontend.SessionAccess
 	if provider, ok := i.host.Sessions.(interface {
 		QualityLimitations(context.Context, frontend.SessionAccess, string) ([]frontend.QualityLimitation, error)
 	}); ok {
-		if limits, err := provider.QualityLimitations(ctx, a, id); err == nil && len(limits) > 0 {
-			s.plan["qualityLimitations"] = limits
+		if limits, err := provider.QualityLimitations(ctx, a, id); err == nil {
+			filtered := make([]frontend.QualityLimitation, 0, len(limits))
+			for _, l := range limits {
+				if l.Height > 0 {
+					filtered = append(filtered, l)
+				}
+			}
+			if len(filtered) > 0 {
+				s.plan["qualityLimitations"] = filtered
+			}
 		}
 	}
 	rungs, err := q.QualityRungs(ctx, a, id)

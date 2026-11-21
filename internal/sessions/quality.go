@@ -18,23 +18,20 @@ func (b *Broker) ProactiveFallbackAvailable() bool {
 }
 
 func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core.Viewer) ([]core.QualityVariant, []core.QualityLimitation, error) {
-	deny := func(reason string) ([]core.QualityVariant, []core.QualityLimitation, error) {
-		return nil, []core.QualityLimitation{{Reason: reason}}, nil
-	}
 	if s.public.Protocol != "vela" || s.live || s.restored {
 		return nil, nil, nil
 	}
 	if b.videoTranscodingOff() {
-		return deny("transcoding_disabled")
+		return nil, nil, nil
 	}
 	if !b.ProactiveFallbackAvailable() {
-		return deny("quality_service_unavailable")
+		return nil, nil, nil
 	}
 	if !b.currentMediaPolicy(ctx, viewer, s) {
-		return deny("owner_policy")
+		return nil, nil, nil
 	}
 	if s.allowTranscoding != nil && !*s.allowTranscoding {
-		return deny("transcoding_disabled")
+		return nil, nil, nil
 	}
 	ps, ok := b.deps.Playback.Session(s.playID)
 	if !ok || ps == nil {
@@ -44,23 +41,23 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 		return nil, nil, frontend.ErrSourceGone
 	}
 	dec := s.decision
+	options := s.opts
 	// A DirectPlay decision carries no transcode output codecs, so the HLS
 	// ladder must be re-decided with DirectPlay disabled. This covers both the
 	// original_runtime re-pin and a plain direct-play decision (reason ""),
 	// where the empty codecs would otherwise fail profileDeliveryAllowed and
-	// yield a broken Height-0 limitation instead of the HLS rungs.
+	// drop the HLS rungs.
 	if dec.Kind == core.DecisionDirectPlay {
-		options := s.opts
 		options.DirectPlay = false
 		var err error
-		dec, err = b.decideProfile(ps, frontend.PlanRequest{Viewer: viewer, Device: s.public.Device, Protocol: s.public.Protocol, Caps: s.caps, Intent: frontend.PlayIntent{Options: options, AllowTranscoding: s.allowTranscoding}})
+		dec, err = b.decideProfile(ps, frontend.PlanRequest{Viewer: viewer, Device: s.public.Device, Protocol: s.public.Protocol, Item: s.public.Item, Caps: s.caps, Intent: frontend.PlayIntent{Options: options, AllowTranscoding: s.allowTranscoding}})
 		if err != nil {
-			return deny("output_profile_unavailable")
+			return nil, nil, nil
 		}
 	}
-	dec, allowed := b.hlsOutputDecision(ps, s.caps, s.opts, s.allowTranscoding, dec)
+	dec, allowed := b.hlsOutputDecision(ps, s.caps, options, s.allowTranscoding, dec)
 	if !allowed || dec.Container == "mkv" {
-		return deny("output_profile_unavailable")
+		return nil, nil, nil
 	}
 	width, height, kbps := s.opts.MaxWidth, s.opts.MaxHeight, s.opts.MaxBitrateKbps
 	if s.caps.MaxHeight > 0 && (height == 0 || s.caps.MaxHeight < height) {
@@ -88,6 +85,9 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 	variants, limits := transcode.VelaQualityVariants(ps.Info, dec, s.caps, width, height, kbps, support)
 	out := variants[:0]
 	for _, variant := range variants {
+		if variant.Rung.Height <= 0 {
+			continue
+		}
 		d, ok := constrainedH264(variant.Decision, ps.Info, s.caps, b.h264EncoderVerified())
 		if !ok || !profileDeliveryAllowed(s.caps.Profiles, d, ps.Info, "hls") {
 			limits = append(limits, core.QualityLimitation{Height: variant.Rung.Height, Reason: "decoder_profile_limit"})
@@ -96,7 +96,16 @@ func (b *Broker) qualityPlan(ctx context.Context, s *brokerSession, viewer *core
 		variant.Decision = d
 		out = append(out, variant)
 	}
-	return out, limits, nil
+	filteredLimits := limits[:0]
+	for _, l := range limits {
+		if l.Height > 0 {
+			filteredLimits = append(filteredLimits, l)
+		}
+	}
+	if len(filteredLimits) == 0 {
+		filteredLimits = nil
+	}
+	return out, filteredLimits, nil
 }
 
 func (b *Broker) qualityRungs(ctx context.Context, s *brokerSession, viewer *core.Viewer) ([]core.HLSRung, error) {

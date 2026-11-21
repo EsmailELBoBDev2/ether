@@ -89,7 +89,7 @@ func TestDecideProfileVideoTranscodingOff(t *testing.T) {
 		t.Fatal("ProactiveFallbackAvailable() must be false when video transcoding is off")
 	}
 	variants, limits, err := b.qualityPlan(context.Background(), &brokerSession{public: frontend.Session{Protocol: "vela"}}, &core.Viewer{ID: 1})
-	if err != nil || len(variants) != 0 || len(limits) == 0 || limits[0].Reason != "transcoding_disabled" {
-		t.Fatalf("qualityPlan = (%v, %v, %v), want transcoding_disabled", variants, limits, err)
+	if err != nil || len(variants) != 0 || len(limits) != 0 {
+		t.Fatalf("qualityPlan = (%v, %v, %v), want empty variants and no height-0 limitations", variants, limits, err)
 	}
 }

@@ -37,9 +37,9 @@ func (a *App) buildExtras() {
 		HTTP:     a.opts.plextvHTTP,
 		Token:    plexToken,
 		ClientID: clientID,
-		GUID: func(ctx context.Context, key core.RatingKey) string {
+		ResolveGUID: func(ctx context.Context, key core.RatingKey) (string, error) {
 			if plexToken() == "" {
-				return ""
+				return "", nil
 			}
 			a.plexMetaMu.Lock()
 			pg := a.plexGUID
@@ -51,20 +51,17 @@ func (a *App) buildExtras() {
 				a.plexMetaMu.Unlock()
 			}
 			if pg == nil {
-				return ""
+				return "", nil
 			}
 			if g := pg.Cached(ctx, key); g != "" {
-				return g
+				return g, nil
 			}
-			g, err := pg.Resolve(ctx, key)
-			if err != nil {
-				return ""
-			}
-			return g
+			return pg.Resolve(ctx, key)
 		},
 		Logger: a.log.With("component", "extras"),
 	})
 	a.extras = extras.New(extras.Options{
+		DB: a.db,
 		ThemeFFmpeg: func() string {
 			if a.transcoder != nil {
 				return a.transcoder.FFmpegPath()

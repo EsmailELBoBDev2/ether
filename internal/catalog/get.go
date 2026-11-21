@@ -207,8 +207,18 @@ func (c *Catalog) getMovie(ctx context.Context, id int64) (*core.Title, error) {
 		}
 		return c.writeDetail(ctx, t, upsertOpts{browsable: c.meetsThreshold(t), detail: true, releaseDates: d.ReleaseDates}, crowd)
 	}
-	if ferr := c.hydrate(ctx, movieRefreshKey(id), c.listReadWait(err == nil && st.detail, fromList), fetch); ferr != nil {
+	haveDetails := err == nil && st.detail
+	wait := c.listReadWait(haveDetails, fromList)
+	hydrateCtx := ctx
+	if !haveDetails && noReadWait(ctx) && core.ColdDetail(ctx, key) {
+		wait = hydrateWait
+		hydrateCtx = WithReadWaitBudget(ctx, hydrateWait)
+	}
+	if ferr := c.hydrate(hydrateCtx, movieRefreshKey(id), wait, fetch); ferr != nil {
 		if err == nil {
+			if !haveDetails && core.ColdDetail(ctx, key) {
+				core.ReportDetailPending(ctx, key, "details")
+			}
 			return &st.t, nil // serve stored details while the refresh runs or after it failed
 		}
 		return nil, ferr

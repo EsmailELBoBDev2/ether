@@ -31,26 +31,28 @@ type DiscoverProvider interface {
 
 // PlexDiscoverOptions configures the Plex Discover extras provider.
 type PlexDiscoverOptions struct {
-	BaseURL  string
-	HTTP     *http.Client
-	GUID     func(ctx context.Context, key core.RatingKey) string
-	Token    func() string
-	ClientID func() string
-	Now      func() time.Time
-	Logger   *slog.Logger
+	BaseURL     string
+	HTTP        *http.Client
+	GUID        func(ctx context.Context, key core.RatingKey) string
+	ResolveGUID func(ctx context.Context, key core.RatingKey) (string, error)
+	Token       func() string
+	ClientID    func() string
+	Now         func() time.Time
+	Logger      *slog.Logger
 }
 
 // PlexDiscover fetches direct-MP4 trailers and extras from Plex Discover using
 // the title's verified plex:// GUID and the server's existing Plex account
 // token handling. Tokens are never exposed to clients or forwarded on redirect.
 type PlexDiscover struct {
-	baseURL  string
-	http     *http.Client
-	guid     func(ctx context.Context, key core.RatingKey) string
-	token    func() string
-	clientID func() string
-	now      func() time.Time
-	log      *slog.Logger
+	baseURL     string
+	http        *http.Client
+	guid        func(ctx context.Context, key core.RatingKey) string
+	resolveGUID func(ctx context.Context, key core.RatingKey) (string, error)
+	token       func() string
+	clientID    func() string
+	now         func() time.Time
+	log         *slog.Logger
 }
 
 // NewPlexDiscover constructs a Plex Discover extras provider.
@@ -77,20 +79,21 @@ func NewPlexDiscover(o PlexDiscoverOptions) *PlexDiscover {
 		o.Logger = slog.Default()
 	}
 	return &PlexDiscover{
-		baseURL:  base,
-		http:     &hc,
-		guid:     o.GUID,
-		token:    o.Token,
-		clientID: o.ClientID,
-		now:      o.Now,
-		log:      o.Logger.With("source", SourcePlexDiscover),
+		baseURL:     base,
+		http:        &hc,
+		guid:        o.GUID,
+		resolveGUID: o.ResolveGUID,
+		token:       o.Token,
+		clientID:    o.ClientID,
+		now:         o.Now,
+		log:         o.Logger.With("source", SourcePlexDiscover),
 	}
 }
 
 // Available reports whether Plex Discover can be queried under Ether's Plex
 // account privacy rules (Plex enabled and claimed with an account token).
 func (p *PlexDiscover) Available() bool {
-	if p == nil || p.guid == nil || p.token == nil {
+	if p == nil || (p.guid == nil && p.resolveGUID == nil) || p.token == nil {
 		return false
 	}
 	return strings.TrimSpace(p.token()) != ""
@@ -101,7 +104,17 @@ func (p *PlexDiscover) List(ctx context.Context, parent *core.Title) ([]Extra, e
 	if !p.Available() || parent == nil || parent.Key == 0 {
 		return nil, nil
 	}
-	parentHex := extractDiscoverHex(p.guid(ctx, parent.Key))
+	var rawGUID string
+	if p.resolveGUID != nil {
+		g, err := p.resolveGUID(ctx, parent.Key)
+		if err != nil {
+			return nil, err
+		}
+		rawGUID = g
+	} else if p.guid != nil {
+		rawGUID = p.guid(ctx, parent.Key)
+	}
+	parentHex := extractDiscoverHex(rawGUID)
 	if parentHex == "" {
 		return nil, nil
 	}

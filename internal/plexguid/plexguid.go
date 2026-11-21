@@ -107,7 +107,15 @@ type Service struct {
 	// the request and the background scan eventually reaches the row.
 	priority   chan core.RatingKey
 	prioQueued map[core.RatingKey]bool
+	flights    map[core.RatingKey]*resolveFlight
 }
+
+type resolveFlight struct {
+	done chan struct{}
+	guid string
+}
+
+const maxBoundedResolveFlights = 8
 
 func New(db *sql.DB, o Options) *Service {
 	if o.HTTP == nil {
@@ -725,6 +733,70 @@ func (s *Service) storeMappingIdentity(ctx context.Context, k core.RatingKey, id
 
 func (s *Service) Resolve(ctx context.Context, k core.RatingKey) (string, error) {
 	return s.resolve(ctx, k, true)
+}
+
+// ResolveBounded returns a cached verified plex:// GUID immediately, or waits
+// at most wait for one deduplicated detached resolution to finish. If wait
+// expires first, the lookup continues in the background within the service
+// lifecycle so subsequent opens hit the durable cache without blocking this
+// response beyond wait.
+func (s *Service) ResolveBounded(ctx context.Context, k core.RatingKey, wait time.Duration) string {
+	if s == nil || !resolvableKey(k) || s.ctx.Err() != nil {
+		return ""
+	}
+	if g := s.Cached(ctx, k); g != "" {
+		return g
+	}
+	if s.o.Token == nil || s.o.Token() == "" {
+		return ""
+	}
+	if !s.unprovenMapping(ctx, k) {
+		if cached, ok := s.freshCached(ctx, k); ok {
+			return cached
+		}
+	}
+	if wait <= 0 {
+		return ""
+	}
+	s.mu.Lock()
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return ""
+	}
+	f := s.flights[k]
+	if f == nil && len(s.flights) < maxBoundedResolveFlights {
+		if s.flights == nil {
+			s.flights = map[core.RatingKey]*resolveFlight{}
+		}
+		f = &resolveFlight{done: make(chan struct{})}
+		s.flights[k] = f
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			bg, cancel := context.WithTimeout(s.ctx, bgLookupTimeout)
+			defer cancel()
+			g, _ := s.Resolve(bg, k)
+			f.guid = g
+			s.mu.Lock()
+			delete(s.flights, k)
+			s.mu.Unlock()
+			close(f.done)
+		}()
+	}
+	s.mu.Unlock()
+	if f == nil {
+		return ""
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-f.done:
+		return f.guid
+	case <-timer.C:
+		return ""
+	case <-ctx.Done():
+		return ""
+	}
 }
 
 // reverify is the repair worker's entry point. For a stored movie or show it

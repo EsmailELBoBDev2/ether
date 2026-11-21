@@ -38,7 +38,7 @@ func (i *instance) meta(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	detail, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: viewer, Device: device, Key: key})
+	detail, err := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), key), frontend.ItemRequest{Viewer: viewer, Device: device, Key: key})
 	if err != nil {
 		http.NotFound(w, r)
 		return

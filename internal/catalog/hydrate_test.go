@@ -377,3 +377,50 @@ func TestExhaustedBudgetReadsAreNotFound(t *testing.T) {
 		t.Fatalf("after the background fetch = %+v, %v", got, err)
 	}
 }
+
+type coldMovieCastTMDB struct {
+	TMDB
+	calls atomic.Int64
+}
+
+func (m *coldMovieCastTMDB) MovieDetails(_ context.Context, id int64) (*tmdb.MovieDetails, error) {
+	m.calls.Add(1)
+	return &tmdb.MovieDetails{
+		Movie:   tmdb.Movie{ID: id, Title: "Cold Movie", ReleaseDate: "2024-05-01"},
+		IMDBID:  "tt1234567",
+		Runtime: 118,
+		Credits: &tmdb.Credits{
+			Cast: []tmdb.CastMember{{ID: 101, Name: "Ada Lead", Character: "Hero"}},
+			Crew: []tmdb.CastMember{{ID: 202, Name: "Sam Dir", Job: "Director"}},
+		},
+	}, nil
+}
+
+// A cold movie opened as a single-item detail page under NoProviderWait must
+// hydrate its TMDB details (cast, directors, IMDb ID) on the first open, while
+// non-ColdDetail reads keep serving the stored summary immediately.
+func TestColdMovieDetailHydratesCreditsOnFirstOpen(t *testing.T) {
+	ctx := context.Background()
+	db := store.OpenTest(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	provider := &coldMovieCastTMDB{}
+	c, err := New(db, provider, config.Catalog{}, nil, WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := core.MovieKey(9001)
+	if err := c.UpsertTitle(ctx, core.Title{Key: key, Type: core.TypeMovie, IDs: core.IDs{TMDB: 9001}, Title: "Cold Movie", Year: 2024, Released: now.AddDate(-1, 0, 0)}, true); err != nil {
+		t.Fatal(err)
+	}
+	local := core.WithLocalResponse(WithReadWaitBudget(ctx, 0))
+	got, err := c.Get(core.WithColdDetail(local, key), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cast) != 1 || got.Cast[0].Name != "Ada Lead" || len(got.Directors) != 1 || got.IDs.IMDB != "tt1234567" {
+		t.Fatalf("cold movie detail missing credits/ids on first open: %+v", got)
+	}
+	if provider.calls.Load() != 1 {
+		t.Fatalf("MovieDetails calls = %d, want 1", provider.calls.Load())
+	}
+}

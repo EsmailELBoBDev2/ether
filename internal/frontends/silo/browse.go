@@ -724,7 +724,7 @@ func (i *instance) detail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unavailable", 503)
 		return
 	}
-	d, err := i.host.Experience.Item(r.Context(), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
+	d, err := i.host.Experience.Item(frontend.WithColdDetail(r.Context(), key), frontend.ItemRequest{Viewer: v, Device: device(r), Key: key})
 	if err != nil {
 		notFound(w)
 		return

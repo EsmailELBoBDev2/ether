@@ -112,6 +112,11 @@ type KindResolver struct {
 
 	candMu    sync.Mutex
 	candCache map[resolveFlightKey]cachedKindCandidates
+
+	usenetCheckMu   sync.Mutex
+	usenetByRelease map[string]*usenetCheckEntry
+	usenetByHash    map[string]*usenetCheckEntry
+	usenetEntries   map[*usenetCheckEntry]struct{}
 }
 
 var (
@@ -143,23 +148,26 @@ func NewKindResolver(deps KindResolverDeps) *KindResolver {
 		nowFn = time.Now
 	}
 	return &KindResolver{
-		mgr:           deps.Manager,
-		libs:          deps.Libraries,
-		items:         deps.Items,
-		blobs:         deps.Blobs,
-		catalog:       deps.Catalog,
-		indexer:       deps.Indexer,
-		resolver:      deps.Resolver,
-		debrid:        deps.Debrid,
-		engine:        deps.Engine,
-		usenetServing: deps.UsenetServing,
-		now:           nowFn,
-		http:          hc,
-		authorize:     deps.Authorize,
-		backoff:       kindstream.NewHostBackoff(),
-		log:           log.With("component", "kindresolver"),
-		flights:       make(map[resolveFlightKey]*resolveFlight),
-		candCache:     make(map[resolveFlightKey]cachedKindCandidates),
+		mgr:             deps.Manager,
+		libs:            deps.Libraries,
+		items:           deps.Items,
+		blobs:           deps.Blobs,
+		catalog:         deps.Catalog,
+		indexer:         deps.Indexer,
+		resolver:        deps.Resolver,
+		debrid:          deps.Debrid,
+		engine:          deps.Engine,
+		usenetServing:   deps.UsenetServing,
+		now:             nowFn,
+		http:            hc,
+		authorize:       deps.Authorize,
+		backoff:         kindstream.NewHostBackoff(),
+		log:             log.With("component", "kindresolver"),
+		flights:         make(map[resolveFlightKey]*resolveFlight),
+		candCache:       make(map[resolveFlightKey]cachedKindCandidates),
+		usenetByRelease: make(map[string]*usenetCheckEntry),
+		usenetByHash:    make(map[string]*usenetCheckEntry),
+		usenetEntries:   make(map[*usenetCheckEntry]struct{}),
 	}
 }
 
@@ -1346,6 +1354,24 @@ func (r *KindResolver) ResolveSources(ctx context.Context, _ string, q core.Sour
 		}
 		return []core.SourceCandidate{cand}, nil
 
+	case "usenet_check":
+		cand := core.SourceCandidate{
+			NZBURL: strings.TrimSpace(q.NZBURL),
+		}
+		if q.Candidate != nil {
+			cand = *q.Candidate
+			cand.NZBURL = strings.TrimSpace(cand.NZBURL)
+			if strings.TrimSpace(q.NZBURL) != "" {
+				cand.NZBURL = strings.TrimSpace(q.NZBURL)
+			}
+		}
+		res, err := r.checkUsenetCandidate(ctx, cand)
+		if err != nil {
+			return nil, err
+		}
+		cand.UsenetCheck = &res
+		return []core.SourceCandidate{cand}, nil
+
 	case "debrid_acquire":
 		if r.debrid == nil {
 			return nil, core.ErrNotAvailable
@@ -2456,9 +2482,14 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 			return nil, core.ErrSourceUnavailable
 		}
 		rel.Protocol = core.ProtocolUsenet
+		releaseKey := normalizeNZBKey(rel.NZBURL)
 		nzbData, err := r.indexer.FetchNZB(ctx, rel)
 		if err != nil {
 			return nil, err
+		}
+		var nzbHash string
+		if rel.Target == nil {
+			nzbHash = hashNZBBytes(nzbData)
 		}
 		if rel.Target != nil && rel.Target.AllowNonVideo {
 			nzbData, err = ensureNonVideoNZB(nzbData, rel.Target)
@@ -2466,7 +2497,12 @@ func (r *KindResolver) openPreparedRelease(ctx context.Context, rel core.Release
 				return nil, err
 			}
 		}
-		return r.engine.Open(ctx, rel.ID, nzbData)
+		ms, err := r.engine.Open(ctx, rel.ID, nzbData)
+		if err != nil {
+			r.recordUsenetPlaybackFailure(releaseKey, nzbHash, err)
+			return nil, err
+		}
+		return r.wrapUsenetPlaybackSource(ms, releaseKey, nzbHash), nil
 	}
 	return nil, core.ErrSourceUnavailable
 }

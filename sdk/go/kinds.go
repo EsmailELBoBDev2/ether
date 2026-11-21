@@ -135,7 +135,7 @@ type KindChangesRequest struct {
 
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -149,8 +149,32 @@ type SourceQuery struct {
 	// TorrentURL carries a torrent download or details page link when an
 	// indexer did not supply an infoHash or magnet.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// Candidate carries an indexer_search candidate back for release_files.
+	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
+	// Candidate carries an indexer_search candidate back for release_files
+	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+}
+
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release (usenet_check).
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a prior real playback attempt against this
+	// NZB failed with an article or release error.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false.
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
 }
 
 // ReleaseFile is one file inside a candidate release (release_files).
@@ -189,6 +213,8 @@ type SourceCandidate struct {
 	Codec      string `json:"codec,omitempty"`
 	// Files is populated only by a release_files query.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.

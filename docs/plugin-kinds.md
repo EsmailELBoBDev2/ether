@@ -331,6 +331,31 @@ sum is known. Match a file to your item by name, then return the release with
 when copying `file.size` to `source.size`); the choice is honoured on Usenet
 as on debrid.
 
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+NZB's article availability on demand before your resolver offers it, using the
+same `sources: "search"` permission as `debrid_check` and `release_files`. It
+returns a single candidate with `usenetCheck: {available, checked, missing,
+cached?, playbackFailed?, reason?, checkedAt?}`:
+
+- **Bounded & playback-safe:** runs Ether's sampled, bounded STAT/BODY check
+  (capped at 32 articles per NZB, regardless of file or segment count) at
+  background (`prefetch`) NNTP priority through the owner's shared provider
+  connection limits and live-reserve rules, so resolver checks never starve
+  active playback.
+- **Shared verdict & playback-failure cache:** verdicts are cached per NZB
+  (indexed by release NZB URL and raw NZB SHA-256 hash) for a bounded TTL
+  (15 min for available verdicts, 30 min for missing/failed verdicts). Real
+  playback-time article or release failures (`ErrArticleMissing`,
+  `ErrArticleCorrupt`, `ErrReleaseRejected`, etc., at open time or mid-stream)
+  are recorded against the same cache entry with `playbackFailed: true` and
+  `available: false`, so subsequent `usenet_check` calls agree with real
+  playback without hitting the indexer or NNTP again. Transient provider or
+  indexer errors are not cached as unavailable.
+- **On-demand & rate-limited:** limited per plugin (`20` checks per minute;
+  excess calls fail with `rate_limited` / HTTP 429) and refused during
+  background/scheduled plugin tasks (`schedule`, catalog sync, container
+  expand) so it never runs as an eager background library sweep.
+
 ### Multi-file items (`hints.parts`)
 
 When one playable item consists of several ordered files (multi-disc sets,

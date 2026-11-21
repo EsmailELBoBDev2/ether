@@ -436,6 +436,24 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 	return page, nil
 }
 
+// DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls
+// per minute so a resolver cannot flood Usenet indexers or NNTP providers.
+const DefaultUsenetCheckPerMin = 20
+
+type backgroundCallKey struct{}
+
+// WithBackgroundCall marks a plugin invocation context as background work
+// (such as a scheduled job or catalog sync/expand). On-demand-only host
+// queries such as usenet_check refuse background contexts.
+func WithBackgroundCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundCallKey{}, true)
+}
+
+func isBackgroundCall(ctx context.Context) bool {
+	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
+	return bg
+}
+
 func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.SourceCandidate, error) {
 	r, g, err := h.record(ctx)
 	if err != nil {
@@ -470,6 +488,21 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
+	case "usenet_check":
+		if isBackgroundCall(ctx) {
+			h.noteDenied("usenet_check_background")
+			return nil, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
+		}
+		nzbURL := strings.TrimSpace(q.NZBURL)
+		if nzbURL == "" && q.Candidate != nil {
+			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
+		}
+		if nzbURL == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "nzbUrl",
+				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+			}}}
+		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
@@ -493,6 +526,15 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	backend := h.m.kindBackends().ResolveSources
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	if q.Kind == "usenet_check" {
+		limit := h.m.usenetCheckLimit
+		if limit <= 0 {
+			limit = DefaultUsenetCheckPerMin
+		}
+		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
+			return nil, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+		}
 	}
 	return backend(ctx, h.plugin, q)
 }

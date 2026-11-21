@@ -988,6 +988,31 @@ sum is known. Match a file to your item by name, then return the release with
 when copying `file.size` to `source.size`); the choice is honoured on Usenet
 as on debrid.
 
+`ResolveSources({kind: "usenet_check", candidate})` (or `nzbUrl`) checks an
+NZB's article availability on demand before your resolver offers it, using the
+same `sources: "search"` permission as `debrid_check` and `release_files`. It
+returns a single candidate with `usenetCheck: {available, checked, missing,
+cached?, playbackFailed?, reason?, checkedAt?}`:
+
+- **Bounded & playback-safe:** runs Ether's sampled, bounded STAT/BODY check
+  (capped at 32 articles per NZB, regardless of file or segment count) at
+  background (`prefetch`) NNTP priority through the owner's shared provider
+  connection limits and live-reserve rules, so resolver checks never starve
+  active playback.
+- **Shared verdict & playback-failure cache:** verdicts are cached per NZB
+  (indexed by release NZB URL and raw NZB SHA-256 hash) for a bounded TTL
+  (15 min for available verdicts, 30 min for missing/failed verdicts). Real
+  playback-time article or release failures (`ErrArticleMissing`,
+  `ErrArticleCorrupt`, `ErrReleaseRejected`, etc., at open time or mid-stream)
+  are recorded against the same cache entry with `playbackFailed: true` and
+  `available: false`, so subsequent `usenet_check` calls agree with real
+  playback without hitting the indexer or NNTP again. Transient provider or
+  indexer errors are not cached as unavailable.
+- **On-demand & rate-limited:** limited per plugin (`20` checks per minute;
+  excess calls fail with `rate_limited` / HTTP 429) and refused during
+  background/scheduled plugin tasks (`schedule`, catalog sync, container
+  expand) so it never runs as an eager background library sweep.
+
 ### Multi-file items (`hints.parts`)
 
 When one playable item consists of several ordered files (multi-disc sets,
@@ -2141,15 +2166,16 @@ type KindMatchResponse struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names. When set with an empty Query, indexer_search requests recent releases. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
 | `infoHashes` | `[]string` | may be omitted (see validation for conditions) |  |
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
-| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download link (.torrent or indexer details download page) for torrent indexers that do not emit an info hash or magnet in search results. |
-| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files, so an NZB or torrent link is resolved through its originating indexer. |
+| `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link for torrent indexers that do not emit an info hash or magnet in search results. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when the plugin does not pass a full Candidate from indexer_search. |
+| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries a candidate previously returned by indexer_search back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer. |
 
 
 ## Source: internal/core/kinditem.go#SourceQuery
@@ -2158,7 +2184,7 @@ type KindMatchResponse struct {
 // SourceQuery asks Ether to find sources for a kind resolver
 // (spec §4.5).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names.
 	// When set with an empty Query, indexer_search requests recent releases.
@@ -2169,14 +2195,56 @@ type SourceQuery struct {
 	InfoHashes []string `json:"infoHashes,omitempty"`
 	InfoHash   string   `json:"infoHash,omitempty"`
 	Magnet     string   `json:"magnet,omitempty"`
-	// TorrentURL carries a torrent download link (.torrent or indexer details
-	// download page) for torrent indexers that do not emit an info hash or
-	// magnet in search results.
+	// TorrentURL carries a torrent download or details page link for torrent
+	// indexers that do not emit an info hash or magnet in search results.
 	TorrentURL string `json:"torrentUrl,omitempty"`
+	// NZBURL carries a Usenet NZB link for usenet_check when the plugin does
+	// not pass a full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
 	// Candidate carries a candidate previously returned by indexer_search
-	// back for release_files, so an NZB or torrent link is resolved through
-	// its originating indexer.
+	// back for release_files or usenet_check, so an NZB or torrent link is
+	// resolved through its originating indexer.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+}
+``````
+
+## Source: internal/core/kinditem.go#UsenetCheckResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `available` | `bool` | emitted (validation may require a value) |  |
+| `checked` | `int` | emitted (validation may require a value) |  |
+| `missing` | `int` | emitted (validation may require a value) |  |
+| `cached` | `bool` | may be omitted (see validation for conditions) | Cached is true when this verdict came from Ether's bounded per-NZB cache (including a recorded playback failure) rather than a fresh NNTP check on this call. |
+| `playbackFailed` | `bool` | may be omitted (see validation for conditions) | PlaybackFailed is true when a previous real playback attempt against this NZB failed with an article or release error (such as missing or corrupt articles), overriding or pre-empting any sampled check. |
+| `reason` | `string` | may be omitted (see validation for conditions) | Reason carries a short diagnostic code when Available is false (e.g. "articles_missing", "playback_article_missing", "playback_article_corrupt", "playback_release_rejected"). |
+| `checkedAt` | `int64` | may be omitted (see validation for conditions) | CheckedAt is the Unix timestamp (seconds) when this verdict or playback failure was recorded. |
+
+
+## Source: internal/core/kinditem.go#UsenetCheckResult
+
+``````
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release, as returned by a usenet_check source query.
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a previous real playback attempt against
+	// this NZB failed with an article or release error (such as missing or
+	// corrupt articles), overriding or pre-empting any sampled check.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false
+	// (e.g. "articles_missing", "playback_article_missing",
+	// "playback_article_corrupt", "playback_release_rejected").
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
 }
 ``````
 
@@ -2229,6 +2297,7 @@ type ReleaseFile struct {
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query: the files inside this candidate release. |
+| `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query: the sampled article availability verdict and any recorded playback failure for this NZB release. |
 
 
 ## Source: internal/core/kinditem.go#SourceCandidate
@@ -2265,6 +2334,10 @@ type SourceCandidate struct {
 	// Files is populated only by a release_files query: the files inside
 	// this candidate release.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query: the sampled
+	// article availability verdict and any recorded playback failure for
+	// this NZB release.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 }
 ``````
 
@@ -6919,7 +6992,7 @@ func (m *Manager) runScheduledCall(ctx context.Context, flight *scheduleFlight, 
 	defer m.scheduleWG.Done()
 	defer flight.cancel()
 	startedAt := m.now()
-	resp, err := m.Call(ctx, pluginID, Request{Method: "POST", Path: callPath})
+	resp, err := m.Call(WithBackgroundCall(ctx), pluginID, Request{Method: "POST", Path: callPath})
 	var started *actionJob
 	var startErr error
 	if err == nil && ctx.Err() == nil && resp.Status >= 200 && resp.Status < 300 && len(resp.Body) > 0 {
@@ -12074,6 +12147,46 @@ func (h *host) KindBrowse(ctx context.Context, kindKey string, q core.KindBrowse
 }
 ``````
 
+## Source: internal/plugins/host_kinds.go#DefaultUsenetCheckPerMin
+
+``````
+// DefaultUsenetCheckPerMin bounds per-plugin on-demand usenet_check calls
+// per minute so a resolver cannot flood Usenet indexers or NNTP providers.
+const DefaultUsenetCheckPerMin = 20
+``````
+
+## Source: internal/plugins/host_kinds.go#backgroundCallKey.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/host_kinds.go#backgroundCallKey
+
+``````
+type backgroundCallKey struct{}
+``````
+
+## Source: internal/plugins/host_kinds.go#WithBackgroundCall
+
+``````
+// WithBackgroundCall marks a plugin invocation context as background work
+// (such as a scheduled job or catalog sync/expand). On-demand-only host
+// queries such as usenet_check refuse background contexts.
+func WithBackgroundCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundCallKey{}, true)
+}
+``````
+
+## Source: internal/plugins/host_kinds.go#isBackgroundCall
+
+``````
+func isBackgroundCall(ctx context.Context) bool {
+	bg, _ := ctx.Value(backgroundCallKey{}).(bool)
+	return bg
+}
+``````
+
 ## Source: internal/plugins/host_kinds.go#*host.ResolveSources
 
 ``````
@@ -12111,6 +12224,21 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 				Message: "release_files needs an info hash, magnet, torrentUrl or candidate",
 			}}}
 		}
+	case "usenet_check":
+		if isBackgroundCall(ctx) {
+			h.noteDenied("usenet_check_background")
+			return nil, fmt.Errorf("%w: usenet_check is on-demand only and cannot run in background tasks", ErrPermissionDenied)
+		}
+		nzbURL := strings.TrimSpace(q.NZBURL)
+		if nzbURL == "" && q.Candidate != nil {
+			nzbURL = strings.TrimSpace(q.Candidate.NZBURL)
+		}
+		if nzbURL == "" {
+			return nil, &ValidationError{Fields: []FieldError{{
+				Field:   "nzbUrl",
+				Message: "usenet_check needs an nzbUrl or candidate with nzbUrl",
+			}}}
+		}
 	case "debrid_acquire":
 		need = "acquire"
 		if q.InfoHash == "" && q.Magnet == "" && q.TorrentURL == "" && q.Candidate == nil {
@@ -12134,6 +12262,15 @@ func (h *host) ResolveSources(ctx context.Context, q core.SourceQuery) ([]core.S
 	backend := h.m.kindBackends().ResolveSources
 	if backend == nil {
 		return nil, ErrUnavailable
+	}
+	if q.Kind == "usenet_check" {
+		limit := h.m.usenetCheckLimit
+		if limit <= 0 {
+			limit = DefaultUsenetCheckPerMin
+		}
+		if !h.m.rateOK(h.m.usenetCheckTimes, h.plugin, limit, time.Minute) {
+			return nil, fmt.Errorf("%w: usenet_check is limited to %d per minute", ErrRateLimited, limit)
+		}
 	}
 	return backend(ctx, h.plugin, q)
 }
@@ -30262,7 +30399,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
             "indexer_search",
             "debrid_check",
             "debrid_acquire",
-            "release_files"
+            "release_files",
+            "usenet_check"
           ]
         },
         "query": {
@@ -30293,9 +30431,53 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
           "type": "string",
           "description": "Torrent download or details page link for torrent indexers that do not supply an infoHash or magnet."
         },
+        "nzbUrl": {
+          "type": "string",
+          "description": "Usenet NZB download link for usenet_check when not passing a full candidate."
+        },
         "candidate": {
           "$ref": "#/$defs/sourceCandidate",
-          "description": "A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its originating indexer."
+          "description": "A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its originating indexer."
+        }
+      }
+    },
+    "usenetCheckResult": {
+      "type": "object",
+      "required": [
+        "available",
+        "checked",
+        "missing"
+      ],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "True when all sampled NZB articles were confirmed available and no playback failure is recorded for this NZB."
+        },
+        "checked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled articles evaluated (bounded by Ether's per-check sample cap)."
+        },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of sampled or playback-observed articles confirmed missing."
+        },
+        "cached": {
+          "type": "boolean",
+          "description": "True when the verdict was served from Ether's bounded per-NZB cache (including a recorded playback failure) without running a fresh NNTP check."
+        },
+        "playbackFailed": {
+          "type": "boolean",
+          "description": "True when a real playback attempt against this NZB failed with an article or release error."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Short diagnostic code when available is false (e.g. articles_missing, segment_absent_from_nzb, playback_article_missing, playback_article_corrupt, playback_release_rejected)."
+        },
+        "checkedAt": {
+          "type": "integer",
+          "description": "Unix timestamp (seconds) when this verdict or playback failure was recorded."
         }
       }
     },
@@ -30387,6 +30569,10 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
             "$ref": "#/$defs/releaseFile"
           },
           "description": "Files inside this release; populated only by a release_files query."
+        },
+        "usenetCheck": {
+          "$ref": "#/$defs/usenetCheckResult",
+          "description": "Sampled Usenet article availability verdict and any recorded playback failure; populated only by a usenet_check query."
         }
       }
     },
@@ -41847,7 +42033,7 @@ type KindChangesRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files |
+| `kind` | `string` | emitted (validation may require a value) | indexer_search\|debrid_check\|debrid_acquire\|release_files\|usenet_check |
 | `query` | `string` | may be omitted (see validation for conditions) |  |
 | `category` | `string` | may be omitted (see validation for conditions) | Category accepts comma-separated Newznab IDs or standard family names; when set with an empty Query, indexer_search requests recent releases. |
 | `profile` | `string` | may be omitted (see validation for conditions) | Profile names the quality profile to score video release names against on indexer_search; empty uses the owner's default profile. |
@@ -41855,7 +42041,8 @@ type KindChangesRequest struct {
 | `infoHash` | `string` | may be omitted (see validation for conditions) |  |
 | `magnet` | `string` | may be omitted (see validation for conditions) |  |
 | `torrentUrl` | `string` | may be omitted (see validation for conditions) | TorrentURL carries a torrent download or details page link when an indexer did not supply an infoHash or magnet. |
-| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files. |
+| `nzbUrl` | `string` | may be omitted (see validation for conditions) | NZBURL carries a Usenet NZB link for usenet_check when not passing a full Candidate from indexer_search. |
+| `candidate` | `*SourceCandidate` | may be omitted (see validation for conditions) | Candidate carries an indexer_search candidate back for release_files or usenet_check. |
 
 
 ## Source: sdk/go/kinds.go#SourceQuery
@@ -41863,7 +42050,7 @@ type KindChangesRequest struct {
 ``````
 // SourceQuery asks Ether to find sources (Host.ResolveSources).
 type SourceQuery struct {
-	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files
+	Kind  string `json:"kind"` // indexer_search|debrid_check|debrid_acquire|release_files|usenet_check
 	Query string `json:"query,omitempty"`
 	// Category accepts comma-separated Newznab IDs or standard family names;
 	// when set with an empty Query, indexer_search requests recent releases.
@@ -41877,8 +42064,49 @@ type SourceQuery struct {
 	// TorrentURL carries a torrent download or details page link when an
 	// indexer did not supply an infoHash or magnet.
 	TorrentURL string `json:"torrentUrl,omitempty"`
-	// Candidate carries an indexer_search candidate back for release_files.
+	// NZBURL carries a Usenet NZB link for usenet_check when not passing a
+	// full Candidate from indexer_search.
+	NZBURL string `json:"nzbUrl,omitempty"`
+	// Candidate carries an indexer_search candidate back for release_files
+	// or usenet_check.
 	Candidate *SourceCandidate `json:"candidate,omitempty"`
+}
+``````
+
+## Source: sdk/go/kinds.go#UsenetCheckResult.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+| `available` | `bool` | emitted (validation may require a value) |  |
+| `checked` | `int` | emitted (validation may require a value) |  |
+| `missing` | `int` | emitted (validation may require a value) |  |
+| `cached` | `bool` | may be omitted (see validation for conditions) | Cached is true when this verdict came from Ether's bounded per-NZB cache (including a recorded playback failure) rather than a fresh NNTP check on this call. |
+| `playbackFailed` | `bool` | may be omitted (see validation for conditions) | PlaybackFailed is true when a prior real playback attempt against this NZB failed with an article or release error. |
+| `reason` | `string` | may be omitted (see validation for conditions) | Reason carries a short diagnostic code when Available is false. |
+| `checkedAt` | `int64` | may be omitted (see validation for conditions) | CheckedAt is the Unix timestamp (seconds) when this verdict or playback failure was recorded. |
+
+
+## Source: sdk/go/kinds.go#UsenetCheckResult
+
+``````
+// UsenetCheckResult reports the sampled article availability verdict for one
+// Usenet NZB release (usenet_check).
+type UsenetCheckResult struct {
+	Available bool `json:"available"`
+	Checked   int  `json:"checked"`
+	Missing   int  `json:"missing"`
+	// Cached is true when this verdict came from Ether's bounded per-NZB
+	// cache (including a recorded playback failure) rather than a fresh
+	// NNTP check on this call.
+	Cached bool `json:"cached,omitempty"`
+	// PlaybackFailed is true when a prior real playback attempt against this
+	// NZB failed with an article or release error.
+	PlaybackFailed bool `json:"playbackFailed,omitempty"`
+	// Reason carries a short diagnostic code when Available is false.
+	Reason string `json:"reason,omitempty"`
+	// CheckedAt is the Unix timestamp (seconds) when this verdict or
+	// playback failure was recorded.
+	CheckedAt int64 `json:"checkedAt,omitempty"`
 }
 ``````
 
@@ -41927,6 +42155,7 @@ type ReleaseFile struct {
 | `source` | `string` | may be omitted (see validation for conditions) |  |
 | `codec` | `string` | may be omitted (see validation for conditions) |  |
 | `files` | `[]ReleaseFile` | may be omitted (see validation for conditions) | Files is populated only by a release_files query. |
+| `usenetCheck` | `*UsenetCheckResult` | may be omitted (see validation for conditions) | UsenetCheck is populated only by a usenet_check query. |
 
 
 ## Source: sdk/go/kinds.go#SourceCandidate
@@ -41957,6 +42186,8 @@ type SourceCandidate struct {
 	Codec      string `json:"codec,omitempty"`
 	// Files is populated only by a release_files query.
 	Files []ReleaseFile `json:"files,omitempty"`
+	// UsenetCheck is populated only by a usenet_check query.
+	UsenetCheck *UsenetCheckResult `json:"usenetCheck,omitempty"`
 
 	// Ref names this candidate in match scores. Ether derives it from the
 	// infohash/NZB when empty; matchers echo it verbatim.
@@ -52244,7 +52475,7 @@ class MockHostClient:
                 out["nextCursor"] = page[-1].get("id")
             return out
 
-        def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
             return list(self._p.sources)
 
     class _Cache:
@@ -52919,6 +53150,64 @@ class KindLibraryDecl(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class UsenetCheckResult(TypedDict, total=False):
+    """Sampled Usenet article availability verdict for one NZB (usenet_check)."""
+
+    available: bool
+    checked: int
+    missing: int
+    cached: bool
+    playbackFailed: bool
+    reason: str
+    checkedAt: int
+
+
+class ReleaseFile(TypedDict, total=False):
+    """One file inside a candidate release returned by release_files."""
+
+    index: int
+    path: str
+    size: int
+    sizeApproximate: bool
+
+
+class SourceCandidate(TypedDict, total=False):
+    """One Ether-found release candidate returned by sources.resolve."""
+
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    fileIndex: int
+    title: str
+    size: int
+    seeders: int
+    cached: bool
+    indexer: str
+    indexerId: str
+    score: int
+    resolution: int
+    source: str
+    codec: str
+    files: List[ReleaseFile]
+    usenetCheck: UsenetCheckResult
+
+
+class SourceQuery(TypedDict, total=False):
+    """Host sources.resolve query payload."""
+
+    kind: Literal["indexer_search", "debrid_check", "debrid_acquire", "release_files", "usenet_check"]
+    query: str
+    category: str
+    profile: str
+    infoHashes: List[str]
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    candidate: SourceCandidate
+
+
 class CatalogProvider:
     """Serve browse/detail for one declared kind. Items are plain dicts in
     the KindItem wire shape; requests are dicts with an extra ``kind`` key."""
@@ -53088,19 +53377,27 @@ class _KindsClient:
         )
         return result or {"items": []}
 
-    def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics; with empty query,
-        fetches up to 100 recent releases) and profile (quality profile name for
-        video release scoring; default uses owner default). Video candidates
-        include score, resolution, source and codec alongside indexer/indexerId;
-        non-video candidates omit those video fields. A release source may set
-        release.fileIndex or candidate.fileIndex (zero-based provider torrent
-        list), or release.file (exact path/unique basename), to open any file
-        kind. Invalid selections fail; omitted selectors retain video selection.
-        Explicit file selection is supported for torrents, not NZB members.
+    def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
+        """Find or inspect owner sources via ``sources.resolve``.
+
+        Supported ``kind`` values:
+        - ``indexer_search``: accepts ``category`` (comma-separated Newznab IDs
+          or family names, e.g. music/books/comics; with empty ``query``,
+          fetches up to 100 recent releases) and ``profile`` (quality profile
+          name for video release scoring; default uses owner default). Video
+          candidates include ``score``, ``resolution``, ``source`` and ``codec``
+          alongside ``indexer``/``indexerId``; non-video candidates omit those
+          video fields.
+        - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
+        - ``release_files``: list files inside a torrent or NZB candidate.
+        - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
+          for a Usenet ``candidate`` (or ``nzbUrl``). Returns one candidate
+          with ``usenetCheck`` (``{available, checked, missing, cached?,
+          playbackFailed?, reason?, checkedAt?}``), backed by Ether's bounded
+          per-NZB verdict and playback-failure cache at background NNTP
+          priority. Refused inside background/scheduled calls.
         """
-        result = self._call("POST", "/ether/plugin-host/sources/resolve", query)
+        result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
 
 
@@ -58574,7 +58871,7 @@ export interface KindChangePage {
 }
 
 export interface SourceQuery {
-  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files";
+  kind: "indexer_search" | "debrid_check" | "debrid_acquire" | "release_files" | "usenet_check";
   query?: string;
   /** Comma-separated Newznab category IDs or standard family names; with empty query, fetches recent releases. */
   category?: string;
@@ -58585,8 +58882,25 @@ export interface SourceQuery {
   magnet?: string;
   /** Torrent download or details page link when an indexer did not supply infoHash or magnet. */
   torrentUrl?: string;
-  /** A candidate from indexer_search handed back for release_files, so an NZB or torrent link is resolved through its indexer. */
+  /** Usenet NZB link for usenet_check when not passing a full candidate. */
+  nzbUrl?: string;
+  /** A candidate from indexer_search handed back for release_files or usenet_check, so an NZB or torrent link is resolved through its indexer. */
   candidate?: SourceCandidate;
+}
+
+/** Sampled Usenet article availability verdict for one NZB release (usenet_check). */
+export interface UsenetCheckResult {
+  available: boolean;
+  checked: number;
+  missing: number;
+  /** True when served from Ether's bounded per-NZB cache (including a recorded playback failure). */
+  cached?: boolean;
+  /** True when a real playback attempt against this NZB failed with an article or release error. */
+  playbackFailed?: boolean;
+  /** Short diagnostic code when available is false (e.g. articles_missing, playback_article_missing). */
+  reason?: string;
+  /** Unix timestamp (seconds) when this verdict or playback failure was recorded. */
+  checkedAt?: number;
 }
 
 /** One file inside a candidate release, from a release_files query. Index is the order Ether's file selection counts. */
@@ -58619,6 +58933,8 @@ export interface SourceCandidate {
   codec?: string;
   /** Files inside this release; populated only by a release_files query. */
   files?: ReleaseFile[];
+  /** Sampled Usenet article availability verdict; populated only by a usenet_check query. */
+  usenetCheck?: UsenetCheckResult;
 }
 
 export interface KindMatchRequest {

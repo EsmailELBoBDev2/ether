@@ -2721,7 +2721,7 @@ class MockHostClient:
                 out["nextCursor"] = page[-1].get("id")
             return out
 
-        def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
             return list(self._p.sources)
 
     class _Cache:
@@ -3396,6 +3396,64 @@ class KindLibraryDecl(TypedDict, total=False):
     shelves: List[KindLibraryShelf]
 
 
+class UsenetCheckResult(TypedDict, total=False):
+    """Sampled Usenet article availability verdict for one NZB (usenet_check)."""
+
+    available: bool
+    checked: int
+    missing: int
+    cached: bool
+    playbackFailed: bool
+    reason: str
+    checkedAt: int
+
+
+class ReleaseFile(TypedDict, total=False):
+    """One file inside a candidate release returned by release_files."""
+
+    index: int
+    path: str
+    size: int
+    sizeApproximate: bool
+
+
+class SourceCandidate(TypedDict, total=False):
+    """One Ether-found release candidate returned by sources.resolve."""
+
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    fileIndex: int
+    title: str
+    size: int
+    seeders: int
+    cached: bool
+    indexer: str
+    indexerId: str
+    score: int
+    resolution: int
+    source: str
+    codec: str
+    files: List[ReleaseFile]
+    usenetCheck: UsenetCheckResult
+
+
+class SourceQuery(TypedDict, total=False):
+    """Host sources.resolve query payload."""
+
+    kind: Literal["indexer_search", "debrid_check", "debrid_acquire", "release_files", "usenet_check"]
+    query: str
+    category: str
+    profile: str
+    infoHashes: List[str]
+    infoHash: str
+    magnet: str
+    torrentUrl: str
+    nzbUrl: str
+    candidate: SourceCandidate
+
+
 class CatalogProvider:
     """Serve browse/detail for one declared kind. Items are plain dicts in
     the KindItem wire shape; requests are dicts with an extra ``kind`` key."""
@@ -3565,19 +3623,27 @@ class _KindsClient:
         )
         return result or {"items": []}
 
-    def resolve_sources(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Find owner sources. indexer_search accepts category (comma-separated
-        Newznab IDs or family names, e.g. music/books/comics; with empty query,
-        fetches up to 100 recent releases) and profile (quality profile name for
-        video release scoring; default uses owner default). Video candidates
-        include score, resolution, source and codec alongside indexer/indexerId;
-        non-video candidates omit those video fields. A release source may set
-        release.fileIndex or candidate.fileIndex (zero-based provider torrent
-        list), or release.file (exact path/unique basename), to open any file
-        kind. Invalid selections fail; omitted selectors retain video selection.
-        Explicit file selection is supported for torrents, not NZB members.
+    def resolve_sources(self, query: Union[SourceQuery, Dict[str, Any]]) -> List[SourceCandidate]:
+        """Find or inspect owner sources via ``sources.resolve``.
+
+        Supported ``kind`` values:
+        - ``indexer_search``: accepts ``category`` (comma-separated Newznab IDs
+          or family names, e.g. music/books/comics; with empty ``query``,
+          fetches up to 100 recent releases) and ``profile`` (quality profile
+          name for video release scoring; default uses owner default). Video
+          candidates include ``score``, ``resolution``, ``source`` and ``codec``
+          alongside ``indexer``/``indexerId``; non-video candidates omit those
+          video fields.
+        - ``debrid_check`` / ``debrid_acquire``: check or acquire torrents.
+        - ``release_files``: list files inside a torrent or NZB candidate.
+        - ``usenet_check``: on-demand, rate-limited sampled NNTP article check
+          for a Usenet ``candidate`` (or ``nzbUrl``). Returns one candidate
+          with ``usenetCheck`` (``{available, checked, missing, cached?,
+          playbackFailed?, reason?, checkedAt?}``), backed by Ether's bounded
+          per-NZB verdict and playback-failure cache at background NNTP
+          priority. Refused inside background/scheduled calls.
         """
-        result = self._call("POST", "/ether/plugin-host/sources/resolve", query)
+        result = self._call("POST", "/ether/plugin-host/sources/resolve", dict(query))
         return list((result or {}).get("candidates") or [])
 
 

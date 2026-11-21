@@ -277,6 +277,13 @@ const healthHeadSlots = 12
 
 // withHead adds the first k slots of files to a sample, without repeats.
 func withHead(refs []slotRef, files []*postedFile, k int) []slotRef {
+	return withHeadBounded(refs, files, k, 0)
+}
+
+func withHeadBounded(refs []slotRef, files []*postedFile, k, maxSamples int) []slotRef {
+	if maxSamples > 0 && len(refs) >= maxSamples {
+		return refs
+	}
 	seen := map[slotRef]bool{}
 	for _, r := range refs {
 		seen[r] = true
@@ -288,6 +295,9 @@ func withHead(refs []slotRef, files []*postedFile, k int) []slotRef {
 			if !seen[ref] {
 				seen[ref] = true
 				refs = append(refs, ref)
+				if maxSamples > 0 && len(refs) >= maxSamples {
+					return refs
+				}
 			}
 		}
 		if k == 0 {
@@ -301,6 +311,13 @@ func withHead(refs []slotRef, files []*postedFile, k int) []slotRef {
 // spread samples. Two pipelined STATs per volume bound the extra traffic;
 // the existing BODY probes still validate the global sample against takedowns.
 func withVolumeSamples(refs []slotRef, files []*postedFile) []slotRef {
+	return withVolumeSamplesBounded(refs, files, 0)
+}
+
+func withVolumeSamplesBounded(refs []slotRef, files []*postedFile, maxSamples int) []slotRef {
+	if maxSamples > 0 && len(refs) >= maxSamples {
+		return refs
+	}
 	seen := make(map[slotRef]bool, len(refs))
 	for _, ref := range refs {
 		seen[ref] = true
@@ -315,6 +332,9 @@ func withVolumeSamples(refs []slotRef, files []*postedFile) []slotRef {
 			if !seen[ref] {
 				refs = append(refs, ref)
 				seen[ref] = true
+				if maxSamples > 0 && len(refs) >= maxSamples {
+					return refs
+				}
 			}
 		}
 	}
@@ -342,14 +362,16 @@ type statStreamer interface {
 
 // sampleOutcome is the verdict of sampling one candidate's articles.
 type sampleOutcome struct {
-	missing      int
-	total        int
-	bodyProbes   int
-	bodyOK       int
-	bodyDuration time.Duration // slowest BODY probe
-	failFast     bool          // bailed on the first confirmed miss
-	reason       string        // which probe confirmed the miss
-	err          error
+	missing        int
+	checked        int
+	total          int
+	bodyProbes     int
+	bodyOK         int
+	bodyDuration   time.Duration // slowest BODY probe
+	failFast       bool          // bailed on the first confirmed miss
+	missingFromNZB bool          // confirmed miss was an empty slot in the NZB XML
+	reason         string        // which probe confirmed the miss
+	err            error
 }
 
 // expectedPart is what the yEnc header of slot's article must say, so far
@@ -389,7 +411,18 @@ func bodyProbeSlots(n int) map[int]bool {
 // than awaited. When STAT has been failing real downloads, BODY probes widen
 // across the spread sample and include a full decoded segment fetch.
 func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs ...func(slotRef) bool) (out sampleOutcome) {
-	refs := healthSample(files, e.opts.HealthSamples)
+	return e.statSampleBounded(parent, files, 0, repairs...)
+}
+
+func (e *Engine) statSampleBounded(parent context.Context, files []*postedFile, maxSamples int, repairs ...func(slotRef) bool) (out sampleOutcome) {
+	spreadN := e.opts.HealthSamples
+	if spreadN <= 0 {
+		spreadN = 12
+	}
+	if maxSamples > 0 && spreadN > maxSamples {
+		spreadN = maxSamples
+	}
+	refs := healthSample(files, spreadN)
 	// BODY probes stay on the spread sample; the head is STAT-only.
 	var probes map[int]bool
 	fullSlot := -1
@@ -398,8 +431,13 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 	} else {
 		probes = bodyProbeSlots(len(refs))
 	}
-	refs = withVolumeSamples(refs, files)
-	refs = withHead(refs, files, healthHeadSlots)
+	if maxSamples > 0 {
+		refs = withHeadBounded(refs, files, healthHeadSlots, maxSamples)
+		refs = withVolumeSamplesBounded(refs, files, maxSamples)
+	} else {
+		refs = withVolumeSamples(refs, files)
+		refs = withHead(refs, files, healthHeadSlots)
+	}
 	out.total = len(refs)
 	if len(refs) == 0 {
 		return out
@@ -505,6 +543,9 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 				continue
 			}
 			decided++
+			if ev.missing || ev.err == nil {
+				out.checked++
+			}
 			if ev.body {
 				out.bodyDuration = max(out.bodyDuration, ev.dur)
 				if ev.err == nil && !ev.missing {
@@ -551,6 +592,7 @@ func (e *Engine) statSample(parent context.Context, files []*postedFile, repairs
 					kind = "BODY"
 				}
 				if ev.id == "" {
+					out.missingFromNZB = true
 					out.reason = "segment absent from NZB"
 				} else if ev.err != nil {
 					// Keep the underlying reply in the reason: a 451

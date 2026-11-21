@@ -20,10 +20,11 @@ func init() {
 // MaxLibraryTabs bounds how many tabs an owner may configure on a single library.
 const MaxLibraryTabs = 50
 
-// PluginTabSchema describes the declared facets and sorts of a plugin library
-// kind when validating owner-defined tabs. Nil skips manifest-specific checks
-// when a standalone libraries.Service runs without the plugin registry.
+// PluginTabSchema describes the declared levels, facets and sorts of a plugin
+// library kind when validating owner-defined tabs. Nil skips manifest-specific
+// checks when a standalone libraries.Service runs without the plugin registry.
 type PluginTabSchema struct {
+	Levels           map[string]bool
 	CollectionFacets map[string]bool
 	PeopleFacets     map[string]bool
 	Sorts            map[string]bool
@@ -202,6 +203,25 @@ func (s *Service) ValidateTabs(ctx context.Context, lib core.Library, tabs []cor
 		default:
 			if t.Facet != "" {
 				return nil, fmt.Errorf("%w: tab %q of kind %s cannot set facet", ErrInvalid, t.Key, t.Kind)
+			}
+		}
+
+		// Level validation (plugin library, view, collections, and people tabs).
+		t.Level = strings.TrimSpace(t.Level)
+		if t.Level != "" {
+			if lib.Source != core.LibraryPlugin {
+				return nil, fmt.Errorf("%w: tab %q cannot set level on a non-plugin library", ErrInvalid, t.Key)
+			}
+			switch t.Kind {
+			case core.TabLibrary, core.TabView, core.TabCollections, core.TabPeople:
+				if !validIdent(t.Level) {
+					return nil, fmt.Errorf("%w: tab %q has invalid level %q", ErrInvalid, t.Key, t.Level)
+				}
+				if pluginSchema != nil && len(pluginSchema.Levels) > 0 && !pluginSchema.Levels[t.Level] {
+					return nil, fmt.Errorf("%w: tab %q uses undeclared level %q", ErrInvalid, t.Key, t.Level)
+				}
+			default:
+				return nil, fmt.Errorf("%w: tab %q of kind %s cannot set level", ErrInvalid, t.Key, t.Kind)
 			}
 		}
 

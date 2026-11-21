@@ -22,19 +22,21 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 {
   "key": "recordings",              // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
   "label": "Field recordings",
+  "media": "music",                 // optional: video|music|audiobook|book|podcast|photo
   "library": {
     "name": "Field recordings",     // default name; the owner can rename
     "card": "landscape",            // optional: poster (default) | landscape | square
     "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
     "tabs": [                       // optional (<= 50); defaults to Recommended + Library
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
-      { "key": "library", "label": "Library", "kind": "library" }
+      { "key": "library", "label": "Library", "kind": "library" },
+      { "key": "albums", "label": "Albums", "kind": "library", "level": "album" }
     ]
   },
   "levels": [                       // 1–5 levels, first is the root
-    { "key": "collection", "label": "Collection" },
-    { "key": "album", "label": "Album", "container": true },
-    { "key": "track", "label": "Track", "playable": true }
+    { "key": "collection", "label": "Collection", "role": "artist" },
+    { "key": "album", "label": "Album", "role": "album", "container": true },
+    { "key": "track", "label": "Track", "role": "track", "playable": true }
   ],
   "fields": [                       // validated per item; indexed ones can facet
     { "key": "genre", "type": "string", "label": "Genre", "indexed": true },
@@ -64,9 +66,10 @@ unless the owner agrees to replace the library's contents.
 
 `library` and `browse` shape how Vela renders the library without per-plugin client logic:
 
+- `media` and `levels[].role`: optional semantic hints (`media`: `"video"`, `"music"`, `"audiobook"`, `"book"`, `"podcast"`, or `"photo"`; `role`: `"item"`, `"artist"`, `"album"`, `"track"`, `"series"`, `"book"`, `"audiobook"`, `"part"`, `"show"`, `"episode"`, or `"collection"`). Music kinds (`media: "music"`) and `"track"`-role items are excluded from Continue Watching and skip saving mid-track resume offsets while still recording playback timestamps and completions so history shelves work. Other media classes automatically localize the Continue shelf title per request locale (`Continue Watching` for video/photo, `Continue Reading` for book, `Continue Listening` for audiobook/podcast).
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
-- `library.tabs`: up to 50 entries of `{key, label, kind, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+- `library.tabs`: up to 50 entries of `{key, label, kind, level?, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). `library`, `view`, `collections`, and `people` tabs may set optional `level` (naming a declared `levels[].key`) to scope browsing, facets, facet collections, and people lists to a non-root hierarchy level (for example an `Albums` or `Tracks` tab on an `artist -> album -> track` kind). Vela exposes `level` on each tab and accepts `?level=<key>` on `/items` and `/facets/{field}` (or inherits the tab's `level` from `?tab=<key>`); Plex `?type=8/9/10` and Jellyfin `IncludeItemTypes=MusicArtist/MusicAlbum/Audio` resolve to matching declared levels on the indexed SQL path.
   - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts` or `"lastViewed"`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
   - **`"view"` tabs (Smart Views)**: define filtered, sorted sub-views inside the library — including per-viewer History, Watchlist, Favorites, Unwatched, or field-filtered tabs. Accepts optional `layout` (`"grid"` default, `"list"`, or `"timeline"`), `sort` (one of `browse.sorts` or `"lastViewed"`), `direction` (`"asc"` or `"desc"`, defaulting to `"desc"` for `"lastViewed"`), `search` (`true` by default), `searchPlaceholder` (≤60 characters when `search` is enabled), and `filters` (`{match?: "all"|"any", rules: [...], exclude?: [...]}`). Filter rules may target declared indexed fields (`"browse:<field>"`, `"year"`, `"rating"`, or mapped indexed facts) and per-viewer state (`{"field":"viewer","op":"is","value":{...}}` supporting `history`, `watched`, `unwatched`, `inProgress`, `favorite`, `watchlist`, `lastViewedAfter`, and `lastViewedBefore`, evaluated strictly for the requesting viewer). Vela reads items via `GET /vela/v0/libraries/{id}/items?tab=<tabKey>` and receives `title.watch.lastViewedAt` (RFC3339 UTC) on viewed items.
@@ -106,6 +109,7 @@ unless the owner agrees to replace the library's contents.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
     ```json
     "shelves": [
+      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "filters": [{ "field": "viewer", "value": { "history": true } }] },
       { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
       { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
       { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
@@ -114,9 +118,10 @@ unless the owner agrees to replace the library's contents.
     Each shelf accepts:
     - `key` (required): unique in the library, matching `^[a-z][a-z0-9-]{0,39}$`.
     - `label` (required): literal or `$t:<key>`, at most 60 characters.
-    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`.
+    - `level` (optional): declared `levels[].key` to query instead of the root level.
+    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`, `lastViewed`.
     - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
-    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters: { "<facet>": ["..."] }` (AND across facets, OR within each facet). Every referenced facet must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`).
+    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters` as either a legacy facet map (`{ "<facet>": ["..."] }`, AND across facets, OR within each facet), a `TabFilter` object (`{ match?, rules, exclude? }`), a single rule object, or a list of rules (`[{ "field": "viewer", "value": { "history": true } }]`; omitted `"op"` on `"viewer"` rules defaults to `"is"`). Every referenced field must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`, or `"viewer"`). Viewer history filters and `lastViewed` ordering roll descendant playback up to ancestor containers (so playing a track surfaces its album on an `album`-level `lastViewed` shelf without ever leaking unviewed items).
 
 ## The item envelope
 
@@ -142,7 +147,7 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
-| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket or plugin person | Background only, when `browse.expand` lists that facet. Receives `{facet, value, valueId?, cursor?}` and returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. Runs on owner-granted limits; 404/501 is a clean no-op. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or unhydrated container | For facets/people: background only when `browse.expand` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For containers with `childCount > 0` and missing/stale children: triggered on container open (never on list render) with `{parentId, level?, cursor?}` (falling back to `/browse` with `parentId` on 400/404/501), deduplicated per container with a bounded first-page wait (~1.8s) and background continuation. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
@@ -216,6 +221,7 @@ only when someone actually opens that slice, declare `browse.expand`:
 - While an expansion for that slice is running, Vela adds `"expanding": true` to
   `GET /vela/v0/libraries/{id}/items` and `GET /vela/v0/people/{id}/titles`, and
   bumps the response `ETag` and kind sync generation when it finishes.
+- **On-demand container hydration**: when a client opens a container item (for example an artist or album) whose `childCount > 0` has no stored children yet — or whose children are older than `browse.expand.ttlHours` (default `168` hours) — Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level?, cursor?}` (falling back automatically to `POST /ether/v1/kinds/{kind}/browse` with `{parentId, level?, cursor?, limit}` when `/expand` answers `400`, `404`, `501`, or empty). Concurrent opens of the same container coalesce into a single plugin call, the first page waits up to ~1.8 seconds before returning whatever is stored while remaining pages continue in the background, and list renders (`Browse`, `Recommended`, `Search`) never trigger container hydration.
 
 ## Resolving bytes
 

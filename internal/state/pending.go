@@ -231,7 +231,11 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 			}
 			switch w.progress.state {
 			case "explicit-resume":
-				ws.ViewOffset = w.progress.offset
+				if w.progress.skipResume {
+					ws.ViewOffset = 0
+				} else {
+					ws.ViewOffset = w.progress.offset
+				}
 				ws.LastViewedAt = w.progress.at
 			case "explicit-complete":
 				ws.ViewOffset = 0
@@ -250,7 +254,11 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 			if w.progress.offset <= time.Minute {
 				return ws
 			}
-			ws.ViewOffset = w.progress.offset
+			if w.progress.skipResume {
+				ws.ViewOffset = 0
+			} else {
+				ws.ViewOffset = w.progress.offset
+			}
 			break
 		}
 		if w.progress.duration > 0 {
@@ -262,7 +270,7 @@ func overlayPending(ws core.WatchStatus, w pendingWrite, counted bool, watchAt t
 				ws.ViewCount++
 			}
 			ws.ViewOffset = 0
-		} else if ws.Duration > 0 && offset < time.Duration(StartedThreshold*float64(ws.Duration)) {
+		} else if w.progress.skipResume || (ws.Duration > 0 && offset < time.Duration(StartedThreshold*float64(ws.Duration))) {
 			ws.ViewOffset = 0
 		} else {
 			ws.ViewOffset = offset

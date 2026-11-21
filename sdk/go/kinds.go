@@ -96,14 +96,16 @@ type KindBrowseRequest struct {
 // KindBrowseQuery is the query passed to kinds.browse from a frontend adapter (#615).
 type KindBrowseQuery = KindBrowseRequest
 
-// KindExpandRequest asks a plugin to expand one declared facet bucket or
-// plugin person slice in the background via POST /ether/v1/kinds/{kind}/expand.
+// KindExpandRequest asks a plugin to expand one declared facet bucket,
+// plugin person slice, or container's children via POST /ether/v1/kinds/{kind}/expand.
 type KindExpandRequest struct {
-	Kind    string `json:"-"`
-	Facet   string `json:"facet"`
-	Value   string `json:"value"`
-	ValueID int64  `json:"valueId,omitempty"`
-	Cursor  string `json:"cursor,omitempty"`
+	Kind     string `json:"-"`
+	Facet    string `json:"facet,omitempty"`
+	Value    string `json:"value,omitempty"`
+	ValueID  int64  `json:"valueId,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
 
 // KindExpandResponse is returned by POST /ether/v1/kinds/{kind}/expand.

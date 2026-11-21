@@ -30,11 +30,12 @@ type PluginBrowsePage struct {
 // PluginItemView is a projected plugin item with its owning library, raw art
 // references and playability flag.
 type PluginItemView struct {
-	Library     core.Library
-	Title       core.Title
-	Images      []frontend.Image
-	Playable    bool
-	Unavailable *core.ItemUnavailable
+	Library      core.Library
+	Title        core.Title
+	Images       []frontend.Image
+	Playable     bool
+	SkipContinue bool
+	Unavailable  *core.ItemUnavailable
 }
 
 // PluginLibraries supplies unified library metadata (builtin, filter, and
@@ -62,13 +63,16 @@ type PluginLibraries interface {
 type PluginShelf struct {
 	Key       string
 	Label     string
+	Level     string
 	Sort      core.SortOrder
 	Direction string // "desc" (default) or "asc"
 	Filters   map[string][]string
+	TabFilter *core.TabFilter
 }
 
 // PluginPresentation carries manifest-declared Vela library presentation metadata.
 type PluginPresentation struct {
+	Media       core.MediaClass
 	Card        string
 	DateDisplay string
 	Tabs        []frontend.ViewTab
@@ -108,16 +112,28 @@ type PluginPresentationLibraries interface {
 	FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (PluginFacetPeoplePage, error)
 }
 
+// PluginLevelFacetLibraries is an optional extension of PluginLibraries /
+// PluginPresentationLibraries supporting hierarchy-level-scoped facets, facet
+// collections, and people lists.
+type PluginLevelFacetLibraries interface {
+	FacetsAtLevel(ctx context.Context, lib core.Library, level, facet string) ([]core.FacetValue, error)
+	FacetBucketsAtLevel(ctx context.Context, lib core.Library, level, field string) ([]frontend.FacetBucket, error)
+	FacetCollectionsAtLevel(ctx context.Context, lib core.Library, level, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error)
+	FacetPeopleAtLevel(ctx context.Context, lib core.Library, level, field, order, query string, offset, limit int) (PluginFacetPeoplePage, error)
+}
+
 type catalogTabFacetReader interface {
 	LibraryFacetCollections(context.Context, core.CatalogFacetCollectionsQuery) (core.CatalogFacetCollectionsPage, error)
 	LibraryFacetPeople(context.Context, core.CatalogFacetPeopleQuery) (core.CatalogFacetPeoplePage, error)
 }
 
 var (
-	_ frontend.LibraryFacetBuckets     = (*Service)(nil)
-	_ frontend.LibraryFacetCollections = (*Service)(nil)
-	_ frontend.LibraryFacetPeople      = (*Service)(nil)
-	_ frontend.PluginLibraryRowsReader = (*Service)(nil)
+	_ frontend.LibraryFacetBuckets        = (*Service)(nil)
+	_ frontend.LibraryFacetBucketsAtLevel = (*Service)(nil)
+	_ frontend.LevelFacetReader           = (*Service)(nil)
+	_ frontend.LibraryFacetCollections    = (*Service)(nil)
+	_ frontend.LibraryFacetPeople         = (*Service)(nil)
+	_ frontend.PluginLibraryRowsReader    = (*Service)(nil)
 )
 
 const maxPluginCursorEntries = 512
@@ -220,6 +236,7 @@ func libraryTabsToViewTabs(tabs []core.LibraryTab, sorts []string, isCatalogue b
 			ID:                tab.Key,
 			Label:             tab.Label,
 			Kind:              tab.Kind,
+			Level:             tab.Level,
 			Facet:             tab.Facet,
 			Order:             tab.Order,
 			Sort:              sortID,
@@ -554,9 +571,6 @@ func pluginQuerySQLReady(q frontend.ItemQuery) bool {
 		// Plugin titles are never favourites; the walk answers empty.
 		return false
 	}
-	if len(q.ExcludedTypes) > 0 || len(q.UnservedTypes) > 0 {
-		return false
-	}
 	f := q.Filter
 	return len(f.IncludeKeys) == 0 &&
 		f.Type == "" &&
@@ -651,7 +665,7 @@ func (s *Service) pluginBrowseQuery(ctx context.Context, v *core.User, lib core.
 }
 
 func pluginCursorPrefix(scope string, q frontend.ItemQuery) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%v|%v|%v|%+v", scope, q.Sort, q.Desc, q.Recursive, q.Types, q.Filter)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%v|%v|%v|%v|%v|%+v", scope, q.Level, q.Sort, q.Desc, q.Recursive, q.Types, q.UnservedTypes, q.ExcludedTypes, q.Filter)))
 	return hex.EncodeToString(sum[:16]) + "|"
 }
 
@@ -860,7 +874,7 @@ func (s *Service) pluginChildren(ctx context.Context, v *core.User, parent core.
 
 	// Children carries no ItemQuery to the store, so its SQL page can only
 	// be trusted when no viewer predicate would filter it in process.
-	if v != nil && pluginQuerySQLReady(q) && q.Watched == nil && v.MaxContentRating == "" && q.Filter.MaxContentRating == "" &&
+	if v != nil && pluginQuerySQLReady(q) && len(q.ExcludedTypes) == 0 && len(q.UnservedTypes) == 0 && q.Watched == nil && v.MaxContentRating == "" && q.Filter.MaxContentRating == "" &&
 		len(q.Filter.ExcludeKeys) == 0 && len(q.Filter.ExcludeGenres) == 0 && s.pluginPolicyPassive(v) && q.Sort == "" && q.Limit > 0 {
 		prefix := pluginCursorPrefix("child:"+parent.String(), q)
 		cursor := ""
@@ -1014,6 +1028,10 @@ func (s *Service) pluginAncestors(ctx context.Context, v *core.User, key core.Ra
 }
 
 func (s *Service) pluginLibraryFacets(ctx context.Context, viewer *core.Viewer, lib core.Library, name string) ([]core.FacetValue, error) {
+	return s.pluginLibraryFacetsAtLevel(ctx, viewer, lib, "", name)
+}
+
+func (s *Service) pluginLibraryFacetsAtLevel(ctx context.Context, viewer *core.Viewer, lib core.Library, level, name string) ([]core.FacetValue, error) {
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
 		return nil, err
@@ -1023,6 +1041,11 @@ func (s *Service) pluginLibraryFacets(ctx context.Context, viewer *core.Viewer, 
 	}
 	if _, _, ok := s.publishedLibrary(ctx, lib); !ok {
 		return nil, core.ErrNotFound
+	}
+	if level != "" {
+		if lf, ok := s.d.PluginLibraries.(PluginLevelFacetLibraries); ok {
+			return lf.FacetsAtLevel(ctx, lib, level, name)
+		}
 	}
 	return s.d.PluginLibraries.Facets(ctx, lib, name)
 }
@@ -1192,7 +1215,12 @@ func (s *Service) catalogueFacetQueryFilter(ctx context.Context, v *core.User, l
 }
 
 // LibraryFacetBuckets implements frontend.LibraryFacetBuckets.
-func (s *Service) LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, field string) ([]frontend.FacetBucket, error) {
+func (s *Service) LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, dev core.Device, viewID, field string) ([]frontend.FacetBucket, error) {
+	return s.LibraryFacetBucketsAtLevel(ctx, viewer, dev, viewID, "", field)
+}
+
+// LibraryFacetBucketsAtLevel implements frontend.LibraryFacetBucketsAtLevel.
+func (s *Service) LibraryFacetBucketsAtLevel(ctx context.Context, viewer *core.Viewer, _ core.Device, viewID, level, field string) ([]frontend.FacetBucket, error) {
 	ctx = core.WithCatalogViewer(ctx, viewer)
 	v, err := s.viewer(ctx, viewer)
 	if err != nil {
@@ -1211,6 +1239,11 @@ func (s *Service) LibraryFacetBuckets(ctx context.Context, viewer *core.Viewer, 
 	}
 	if !declared {
 		return nil, core.ErrNotFound
+	}
+	if level != "" {
+		if lf, ok := s.d.PluginLibraries.(PluginLevelFacetLibraries); ok {
+			return lf.FacetBucketsAtLevel(ctx, lib, level, field)
+		}
 	}
 	return pres.FacetBuckets(ctx, lib, field)
 }
@@ -1242,7 +1275,16 @@ func (s *Service) LibraryFacetCollections(ctx context.Context, viewer *core.View
 		if !declared {
 			return frontend.FacetCollectionPage{}, core.ErrNotFound
 		}
-		out, err := pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+		var out frontend.FacetCollectionPage
+		if page.Level != "" {
+			if lf, ok := s.d.PluginLibraries.(PluginLevelFacetLibraries); ok {
+				out, err = lf.FacetCollectionsAtLevel(ctx, lib, page.Level, field, order, page.Query, page.Offset, page.Limit)
+			} else {
+				out, err = pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+			}
+		} else {
+			out, err = pres.FacetCollections(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+		}
 		if err != nil {
 			return frontend.FacetCollectionPage{}, err
 		}
@@ -1329,7 +1371,16 @@ func (s *Service) LibraryFacetPeople(ctx context.Context, viewer *core.Viewer, _
 		if !declaredPeople {
 			return frontend.FacetPersonPage{}, core.ErrNotFound
 		}
-		raw, err := pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+		var raw PluginFacetPeoplePage
+		if page.Level != "" {
+			if lf, ok := s.d.PluginLibraries.(PluginLevelFacetLibraries); ok {
+				raw, err = lf.FacetPeopleAtLevel(ctx, lib, page.Level, field, order, page.Query, page.Offset, page.Limit)
+			} else {
+				raw, err = pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+			}
+		} else {
+			raw, err = pres.FacetPeople(ctx, lib, field, order, page.Query, page.Offset, page.Limit)
+		}
 		if err != nil {
 			return frontend.FacetPersonPage{}, err
 		}
@@ -1410,11 +1461,11 @@ func (s *Service) PluginLibraryCandidateRows(ctx context.Context, viewer *core.V
 	if err != nil {
 		return nil, err
 	}
-	rows, _, err := s.pluginLibraryCandidateRows(ctx, v, viewID)
+	rows, _, err := s.pluginLibraryCandidateRows(ctx, v, core.Device{}, viewID)
 	return rows, err
 }
 
-func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, viewID string) ([]frontend.Row, bool, error) {
+func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, dev core.Device, viewID string) ([]frontend.Row, bool, error) {
 	lib, pres, p, err := s.pluginLibraryByViewID(ctx, v, viewID)
 	if err != nil {
 		return nil, false, err
@@ -1449,8 +1500,9 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 		})
 	}
 
-	// 1. Continue watching.
-	if s.d.State != nil {
+	// 1. Continue shelf (excluded for music kinds and track-role items; title
+	// adapts to media class and request locale).
+	if s.d.State != nil && p.Media != core.MediaClassMusic {
 		if sts, sErr := s.d.State.InProgress(ctx, v.ID, 200); sErr == nil && len(sts) > 0 {
 			var keys []core.RatingKey
 			for _, st := range sts {
@@ -1463,7 +1515,7 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 					var cont []core.Title
 					for _, k := range keys {
 						piv, ok := pivs[k]
-						if !ok || piv.Library.ID != lib.ID || !s.pluginItemAllowed(ctx, v, piv) {
+						if !ok || piv.Library.ID != lib.ID || piv.SkipContinue || !s.pluginItemAllowed(ctx, v, piv) {
 							continue
 						}
 						cont = append(cont, piv.Title)
@@ -1471,7 +1523,7 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 							break
 						}
 					}
-					appendRow("plugin:"+viewID+":continue", "Continue Watching", frontend.RowContinue, "continue", cont)
+					appendRow("plugin:"+viewID+":continue", pluginContinueTitle(p.Media, dev.Language), frontend.RowContinue, "continue", cont)
 				}
 			}
 		}
@@ -1487,6 +1539,7 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 			}
 			desc := sh.Direction != "asc"
 			q := frontend.ItemQuery{
+				Level:          sh.Level,
 				Sort:           sortOrder,
 				Desc:           desc,
 				Limit:          rowLimit,
@@ -1498,7 +1551,10 @@ func (s *Service) pluginLibraryCandidateRows(ctx context.Context, v *core.User, 
 				for k, vals := range sh.Filters {
 					facets[k] = append([]string(nil), vals...)
 				}
-				q.Filter = core.Filter{Facets: facets}
+				q.Filter.Facets = facets
+			}
+			if sh.TabFilter != nil && !sh.TabFilter.IsEmpty() {
+				q.Filter.TabRules, q.Filter.TabFallback = sh.TabFilter.ToPolicy("")
 			}
 			page, pErr := s.pluginLibraryItems(ctx, v, lib, q)
 			if pErr != nil || len(page.Items) == 0 {
@@ -1655,7 +1711,7 @@ func (s *Service) PluginLibraryRows(ctx context.Context, viewer *core.Viewer, de
 	if err != nil {
 		return nil, err
 	}
-	rows, declaredShelves, err := s.pluginLibraryCandidateRows(ctx, v, viewID)
+	rows, declaredShelves, err := s.pluginLibraryCandidateRows(ctx, v, dev, viewID)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@
 package vela
 
 import (
+	"cmp"
 	"context"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -485,7 +486,9 @@ func (d device) neutral() frontend.Device {
 	return frontend.Device{ID: d.ID, DeviceName: d.Name, Platform: d.Platform, Version: d.AppVersion, Client: "Vela", Product: "Vela"}
 }
 func requestDevice(r *http.Request) frontend.Device {
-	return device{ID: r.Header.Get("X-Vela-Device-Id"), Name: r.Header.Get("X-Vela-Device-Name"), Platform: r.Header.Get("X-Vela-Platform"), AppVersion: r.Header.Get("X-Vela-Version")}.neutral()
+	d := device{ID: r.Header.Get("X-Vela-Device-Id"), Name: r.Header.Get("X-Vela-Device-Name"), Platform: r.Header.Get("X-Vela-Platform"), AppVersion: r.Header.Get("X-Vela-Version")}.neutral()
+	d.Language = cmp.Or(r.Header.Get("X-Vela-Language"), r.Header.Get("Accept-Language"))
+	return d
 }
 func (i *instance) viewer(r *http.Request) (*frontend.Viewer, string, error) {
 	token, ok := authhdr.Bearer(r.Header.Get("Authorization"))

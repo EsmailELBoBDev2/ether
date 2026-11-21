@@ -34,7 +34,7 @@ func (i *instance) clientCompatibilityRoutes() error {
 		{"/Localization/Options", i.emptyOptionalArray},
 		{"/System/WakeOnLanInfo", i.emptyOptionalArray},
 		{"/Users/{userId}/HomeSections", i.homeSections},
-		{"/Artists", i.emptyOptionalItems}, {"/Artists/AlbumArtists", i.emptyOptionalItems},
+		{"/Artists", i.artists}, {"/Artists/AlbumArtists", i.artists},
 		{"/Items/{id}/InstantMix", i.emptyItemCompanions},
 		{"/LiveTv/Timers", i.emptyOptionalItems}, {"/LiveTv/SeriesTimers", i.emptyOptionalItems},
 		{"/LiveTv/Recordings/Folders", i.emptyOptionalItems},
@@ -52,6 +52,24 @@ func (i *instance) clientCompatibilityRoutes() error {
 		}
 	}
 	return i.router.Handle("DELETE", "/Videos/ActiveEncodings", http.HandlerFunc(i.stopEncoding))
+}
+
+// artists answers /Artists and /Artists/AlbumArtists by browsing MusicArtist
+// items across the requested ParentId library (or all accessible libraries).
+// Servers with no music kind libraries answer empty via requestedTypesServable.
+func (i *instance) artists(w http.ResponseWriter, r *http.Request) {
+	if i.host.Experience == nil {
+		i.emptyOptionalItems(w, r)
+		return
+	}
+	clone := r.Clone(r.Context())
+	u := *r.URL
+	q := u.Query()
+	q.Set("IncludeItemTypes", "MusicArtist")
+	q.Set("Recursive", "true")
+	u.RawQuery = q.Encode()
+	clone.URL = &u
+	i.items(w, clone)
 }
 
 // clientLogDocument accepts a client log upload the way Jellyfin 10.10

@@ -99,6 +99,7 @@ func (c *librariesConsole) pluginTabSchema(ctx context.Context, lib core.Library
 		return nil
 	}
 	schema := &libraries.PluginTabSchema{
+		Levels: make(map[string]bool, len(decl.Levels)),
 		CollectionFacets: map[string]bool{
 			"year":     true,
 			"decade":   true,
@@ -107,6 +108,9 @@ func (c *librariesConsole) pluginTabSchema(ctx context.Context, lib core.Library
 		},
 		PeopleFacets: make(map[string]bool),
 		Sorts:        make(map[string]bool),
+	}
+	for _, lv := range decl.Levels {
+		schema.Levels[lv.Key] = true
 	}
 	for _, fd := range decl.Fields {
 		if fd.Type == "people" {
@@ -151,6 +155,7 @@ func (c *librariesConsole) defaultTabsForLibrary(ctx context.Context, lib core.L
 					Key:               t.Key,
 					Label:             label,
 					Kind:              t.Kind,
+					Level:             t.Level,
 					Facet:             t.Facet,
 					Order:             t.Order,
 					Sort:              sortID,
@@ -556,6 +561,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 			if len(decl.Levels) > 0 {
 				rootLevel = decl.Levels[0].Key
 			}
+			targetLevel := cmp.Or(tab.Level, rootLevel)
 			policy, err := items.LibraryPolicy(ctx, lib)
 			if err != nil {
 				libError(w, http.StatusBadRequest, "Invalid library filter")
@@ -579,7 +585,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 					LibraryID: lib.ID,
 					ViewerID:  ownerID,
 					Query:     query,
-					Level:     rootLevel,
+					Level:     targetLevel,
 					Limit:     limit,
 				}
 				page, err := items.Search(ctx, sq)
@@ -605,7 +611,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 				TabPolicy: tabPolicy,
 				LibraryID: lib.ID,
 				ViewerID:  ownerID,
-				Level:     rootLevel,
+				Level:     targetLevel,
 				Sort:      browseSort,
 				Limit:     limit,
 			})
@@ -686,7 +692,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 			}
 			page, err := items.FacetCollections(ctx, pluginitems.FacetCollectionsQuery{
 				LibraryID: lib.ID,
-				Level:     rootLevel,
+				Level:     cmp.Or(tab.Level, rootLevel),
 				Policy:    policy,
 				FieldKey:  tab.Facet,
 				Order:     effOrder,
@@ -811,7 +817,7 @@ func (c *librariesConsole) handleTabsPreview(w http.ResponseWriter, r *http.Requ
 			}
 			page, err := items.FacetPeople(ctx, pluginitems.FacetPeopleQuery{
 				LibraryID: lib.ID,
-				Level:     rootLevel,
+				Level:     cmp.Or(tab.Level, rootLevel),
 				Policy:    policy,
 				FieldKey:  tab.Facet,
 				Order:     effOrder,

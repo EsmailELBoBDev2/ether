@@ -131,6 +131,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		add(base+".key", "must be lower case letters, digits and dashes, at most 32 characters")
 	}
 	label(base+".label", k.Label, 60)
+	if k.Media != "" && !core.ValidMediaClass(k.Media) {
+		add(base+".media", "must be video, music, audiobook, book, podcast or photo")
+	}
 	if !k.Library.IsZero() {
 		label(base+".library.name", k.Library.Name, 60)
 		if unsafePath(k.Library.Icon) {
@@ -177,6 +180,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		levelKeys[lv.Key] = true
 		label(lbase+".label", lv.Label, 40)
+		if lv.Role != "" && !core.ValidMediaRole(lv.Role) {
+			add(lbase+".role", "must be item, artist, album, track, series, book, audiobook, part, show, episode or collection")
+		}
 		if lv.Playable {
 			playable = true
 		}
@@ -291,6 +297,16 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		ruleFields := KindRuleFields(k.Fields)
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			if tab.Level != "" {
+				switch tab.Kind {
+				case "library", "view", "collections", "people":
+					if !levelKeys[tab.Level] {
+						add(tbase+".level", "must name a declared level")
+					}
+				default:
+					add(tbase+".level", "only library, view, collections or people tabs may set level")
+				}
+			}
 			switch tab.Kind {
 			case "collections":
 				if tab.Facet != "" && !seenFacet[tab.Facet] {
@@ -460,7 +476,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			}
 		}
 	}
-	validateKindLibraryShelves(base, k.Library.Shelves, fields, add, label)
+	validateKindLibraryShelves(base, k.Library.Shelves, levelKeys, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -763,13 +779,22 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 	return nil
 }
 
-func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
 	if len(shelves) == 0 {
 		return
 	}
 	if len(shelves) > MaxKindLibraryShelves {
 		add(base+".library.shelves", fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
 	}
+	declaredIndexed := make(map[string]string, len(fields))
+	fieldList := make([]KindField, 0, len(fields))
+	for _, f := range fields {
+		fieldList = append(fieldList, f)
+		if f.Indexed {
+			declaredIndexed[f.Key] = f.Type
+		}
+	}
+	ruleFields := KindRuleFields(fieldList)
 	checkFacet := func(fieldPath, fk string) {
 		if fk == "year" || fk == "released" || fk == "rating" {
 			return
@@ -791,13 +816,16 @@ func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields 
 		}
 		seenKey[sh.Key] = true
 		label(sbase+".label", sh.Label, 60)
+		if sh.Level != "" && !levelKeys[sh.Level] {
+			add(sbase+".level", "must name a declared level")
+		}
 		if sh.Sort != "" && !kindSorts[sh.Sort] {
-			add(sbase+".sort", "must be title, added, released, year, rating or index")
+			add(sbase+".sort", "must be title, added, released, year, rating, index or lastViewed")
 		}
 		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
 			add(sbase+".direction", "must be asc or desc")
 		}
-		if sh.Facet != "" && len(sh.Filters) > 0 {
+		if sh.Facet != "" && !sh.Filters.IsEmpty() {
 			add(sbase+".filters", "cannot be combined with facet")
 		}
 		if sh.Facet != "" {
@@ -826,27 +854,44 @@ func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields 
 				add(sbase+".values", "requires facet to be set")
 			}
 		}
-		if len(sh.Filters) > 0 {
-			fkeys := make([]string, 0, len(sh.Filters))
-			for fk := range sh.Filters {
-				fkeys = append(fkeys, fk)
+		if sh.Filters != nil {
+			if sh.Filters.Tab != nil {
+				tf := sh.Filters.Tab
+				if tf.Match != "" && tf.Match != "all" && tf.Match != "any" {
+					add(sbase+".filters.match", "must be all or any")
+				}
+				if tf.VisibilityDefault != "" && tf.VisibilityDefault != "show" && tf.VisibilityDefault != "hide" {
+					add(sbase+".filters.visibilityDefault", "must be show or hide")
+				}
+				if !tf.IsEmpty() {
+					specs, fallback := tf.ToPolicy("")
+					if err := libraryfilter.ValidatePluginManifestPolicy(specs, fallback, declaredIndexed, ruleFields); err != nil {
+						add(sbase+".filters", err.Error())
+					}
+				}
 			}
-			sort.Strings(fkeys)
-			for _, fk := range fkeys {
-				if strings.TrimSpace(fk) == "" {
-					add(sbase+".filters", "filter facet key must not be empty")
-					continue
+			if len(sh.Filters.Facets) > 0 {
+				fkeys := make([]string, 0, len(sh.Filters.Facets))
+				for fk := range sh.Filters.Facets {
+					fkeys = append(fkeys, fk)
 				}
-				fbase := sbase + ".filters." + fk
-				checkFacet(fbase, fk)
-				vals := sh.Filters[fk]
-				if len(vals) == 0 {
-					add(fbase, "must list at least one value")
-					continue
-				}
-				for vi, v := range vals {
-					if strings.TrimSpace(v) == "" {
-						add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+				sort.Strings(fkeys)
+				for _, fk := range fkeys {
+					if strings.TrimSpace(fk) == "" {
+						add(sbase+".filters", "filter facet key must not be empty")
+						continue
+					}
+					fbase := sbase + ".filters." + fk
+					checkFacet(fbase, fk)
+					vals := sh.Filters.Facets[fk]
+					if len(vals) == 0 {
+						add(fbase, "must list at least one value")
+						continue
+					}
+					for vi, v := range vals {
+						if strings.TrimSpace(v) == "" {
+							add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+						}
 					}
 				}
 			}

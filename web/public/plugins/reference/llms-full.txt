@@ -677,19 +677,21 @@ the `catalog_provider` / `kind_resolver` capabilities (plus optional
 {
   "key": "recordings",              // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
   "label": "Field recordings",
+  "media": "music",                 // optional: video|music|audiobook|book|podcast|photo
   "library": {
     "name": "Field recordings",     // default name; the owner can rename
     "card": "landscape",            // optional: poster (default) | landscape | square
     "dateDisplay": "date",          // optional: year (default) | date (full YYYY-MM-DD)
     "tabs": [                       // optional (<= 50); defaults to Recommended + Library
       { "key": "recommended", "label": "Recommended", "kind": "recommended" },
-      { "key": "library", "label": "Library", "kind": "library" }
+      { "key": "library", "label": "Library", "kind": "library" },
+      { "key": "albums", "label": "Albums", "kind": "library", "level": "album" }
     ]
   },
   "levels": [                       // 1–5 levels, first is the root
-    { "key": "collection", "label": "Collection" },
-    { "key": "album", "label": "Album", "container": true },
-    { "key": "track", "label": "Track", "playable": true }
+    { "key": "collection", "label": "Collection", "role": "artist" },
+    { "key": "album", "label": "Album", "role": "album", "container": true },
+    { "key": "track", "label": "Track", "role": "track", "playable": true }
   ],
   "fields": [                       // validated per item; indexed ones can facet
     { "key": "genre", "type": "string", "label": "Genre", "indexed": true },
@@ -719,9 +721,10 @@ unless the owner agrees to replace the library's contents.
 
 `library` and `browse` shape how Vela renders the library without per-plugin client logic:
 
+- `media` and `levels[].role`: optional semantic hints (`media`: `"video"`, `"music"`, `"audiobook"`, `"book"`, `"podcast"`, or `"photo"`; `role`: `"item"`, `"artist"`, `"album"`, `"track"`, `"series"`, `"book"`, `"audiobook"`, `"part"`, `"show"`, `"episode"`, or `"collection"`). Music kinds (`media: "music"`) and `"track"`-role items are excluded from Continue Watching and skip saving mid-track resume offsets while still recording playback timestamps and completions so history shelves work. Other media classes automatically localize the Continue shelf title per request locale (`Continue Watching` for video/photo, `Continue Reading` for book, `Continue Listening` for audiobook/podcast).
 - `library.card`: `"poster"` (2:3, default), `"landscape"` (16:9; Ether serves the item's `thumb`, else `backdrop`, as `artwork[]` kind `"thumb"`, falling back to `poster`), or `"square"` (1:1).
 - `library.dateDisplay`: `"year"` (default) or `"date"`. When set to `"date"`, Vela receives `"dateDisplay": "date"` on the library (and on projected items alongside canonical `"airDate": "YYYY-MM-DD"`), and both Vela and the owner console display full `YYYY-MM-DD` dates from `item.released` instead of year-only labels. Useful for dated broadcasts, tournament VODs, or daily recordings.
-- `library.tabs`: up to 50 entries of `{key, label, kind, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`).
+- `library.tabs`: up to 50 entries of `{key, label, kind, level?, facet?, order?, card?, layout?, search?, searchPlaceholder?, sort?, direction?, filters?}` where `kind` is `"recommended"`, `"library"`, `"collections"`, `"people"`, `"view"`, or `"live"`. Keys match `^[a-z][a-z0-9-]{0,31}$` and are unique within the library; labels support `$t:` keys and follow copy rules (≤40 characters). Omitting `tabs` defaults to `Recommended` (`recommended`) and `Library` (`library`). `library`, `view`, `collections`, and `people` tabs may set optional `level` (naming a declared `levels[].key`) to scope browsing, facets, facet collections, and people lists to a non-root hierarchy level (for example an `Albums` or `Tracks` tab on an `artist -> album -> track` kind). Vela exposes `level` on each tab and accepts `?level=<key>` on `/items` and `/facets/{field}` (or inherits the tab's `level` from `?tab=<key>`); Plex `?type=8/9/10` and Jellyfin `IncludeItemTypes=MusicArtist/MusicAlbum/Audio` resolve to matching declared levels on the indexed SQL path.
   - **`"collections"` tabs**: may set `facet` (one of `browse.facets`), `order` (`"count"` default, or `"name"` for case-insensitive alphabetical ordering), `search` (`true` by default; set `false` to hide in-tab search), `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled), `sort` (one of `browse.sorts` or `"lastViewed"`), and `direction` (`"asc"` or `"desc"`, defaulting to `released` `desc` when `released` is declared). `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages those facet buckets (optionally filtered by case- and diacritic-insensitive word prefix on `query`, 1–100 characters after trimming) with the newest item's artwork, and opening one navigates to `/vela/v0/libraries/{id}/items?facet.<field>=<valueId>&sort=&direction=` (or `?collectionId=facet:<field>:<valueId>`).
   - **`"people"` tabs**: require `facet` referencing a declared `browse.facets` entry whose field has `type: "people"`, and accept `order` (`"name"` case-insensitive alphabetical by default, or `"count"`), `search` (`true` by default), and `searchPlaceholder` (optional localizable `$t:` or literal copy, ≤60 characters, when `search` is enabled). `sort` and `direction` are not used on `"people"` tabs. `GET /vela/v0/libraries/{id}/collections?tab=<tabKey>&query=<text>` pages the distinct root-level people in that field (with the same `query` word-prefix filter when `search` is enabled) as `{"id":"person:<personId>","kind":"person","person":{"id":"<personId>","name":"…","photo":…},"itemCount":N,"receiptToken":""}`, with portraits resolved in one batch per page; `<personId>` opens `GET /vela/v0/people/{id}` and `/vela/v0/people/{id}/titles`.
   - **`"view"` tabs (Smart Views)**: define filtered, sorted sub-views inside the library — including per-viewer History, Watchlist, Favorites, Unwatched, or field-filtered tabs. Accepts optional `layout` (`"grid"` default, `"list"`, or `"timeline"`), `sort` (one of `browse.sorts` or `"lastViewed"`), `direction` (`"asc"` or `"desc"`, defaulting to `"desc"` for `"lastViewed"`), `search` (`true` by default), `searchPlaceholder` (≤60 characters when `search` is enabled), and `filters` (`{match?: "all"|"any", rules: [...], exclude?: [...]}`). Filter rules may target declared indexed fields (`"browse:<field>"`, `"year"`, `"rating"`, or mapped indexed facts) and per-viewer state (`{"field":"viewer","op":"is","value":{...}}` supporting `history`, `watched`, `unwatched`, `inProgress`, `favorite`, `watchlist`, `lastViewedAfter`, and `lastViewedBefore`, evaluated strictly for the requesting viewer). Vela reads items via `GET /vela/v0/libraries/{id}/items?tab=<tabKey>` and receives `title.watch.lastViewedAt` (RFC3339 UTC) on viewed items.
@@ -761,6 +764,7 @@ unless the owner agrees to replace the library's contents.
   - To define curated default Recommended shelves directly in the manifest, declare `library.shelves` (up to 40 entries). When `library.shelves` is non-empty, Ether prepends Continue watching whenever the viewer has in-progress items, then evaluates each declared shelf in order (up to 20 items each, skipping empty shelves) without clamping to the auto-generated 8-row default. Each shelf receives the stable row ID `plugin:<viewID>:shelf:<key>`, so the library's Recommended row editor can reorder, hide, pin, or set `MaxRows` (owner overrides always win). `GET /vela/v0/libraries/{id}/rows` supports cursor pagination (`limit` and `cursor` query parameters, returning `items`, `continuation`: `"more" | "exhausted"`, and `nextCursor`) so clients can page through 30+ shelves:
     ```json
     "shelves": [
+      { "key": "jump-back-in", "label": "Jump back in", "level": "album", "sort": "lastViewed", "direction": "desc", "filters": [{ "field": "viewer", "value": { "history": true } }] },
       { "key": "latest-episodes", "label": "Latest episodes", "sort": "released", "direction": "desc" },
       { "key": "science-nature", "label": "Science and nature", "facet": "topic", "values": ["Science", "Nature"] },
       { "key": "longform-history", "label": "$t:shelf_longform_history", "sort": "rating", "direction": "desc", "filters": { "topic": ["History"], "format": ["Feature", "Miniseries"] } }
@@ -769,9 +773,10 @@ unless the owner agrees to replace the library's contents.
     Each shelf accepts:
     - `key` (required): unique in the library, matching `^[a-z][a-z0-9-]{0,39}$`.
     - `label` (required): literal or `$t:<key>`, at most 60 characters.
-    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`.
+    - `level` (optional): declared `levels[].key` to query instead of the root level.
+    - `sort` (optional, default `"released"`): one of `title`, `added`, `released`, `year`, `rating`, `index`, `lastViewed`.
     - `direction` (optional, default `"desc"`): `"desc"` or `"asc"`.
-    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters: { "<facet>": ["..."] }` (AND across facets, OR within each facet). Every referenced facet must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`).
+    - Optional filtering: either `facet` plus `value` or `values` (OR), or `filters` as either a legacy facet map (`{ "<facet>": ["..."] }`, AND across facets, OR within each facet), a `TabFilter` object (`{ match?, rules, exclude? }`), a single rule object, or a list of rules (`[{ "field": "viewer", "value": { "history": true } }]`; omitted `"op"` on `"viewer"` rules defaults to `"is"`). Every referenced field must be a declared indexed field (or `people` field, or envelope facet `year`/`released`/`rating`, or `"viewer"`). Viewer history filters and `lastViewed` ordering roll descendant playback up to ancestor containers (so playing a track surfaces its album on an `album`-level `lastViewed` shelf without ever leaking unviewed items).
 
 ## The item envelope
 
@@ -797,7 +802,7 @@ query the client sent:
 |---|---|---|
 | `/ether/v1/kinds/{kind}/browse` | Pull sync walks your catalogue | One level per call (`parentId`, `level`, `cursor`, `limit`). Return `nextCursor` or the full set up to `limit`; never more than `limit` items. |
 | `/ether/v1/kinds/{kind}/changes` | Pull sync refresh | Optional delta feed `{upserts, deletes, nextCursor, complete}`. Answer 404/501 and Ether re-walks and diffs by `etag` instead. |
-| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket or plugin person | Background only, when `browse.expand` lists that facet. Receives `{facet, value, valueId?, cursor?}` and returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. Runs on owner-granted limits; 404/501 is a clean no-op. |
+| `/ether/v1/kinds/{kind}/expand` | Viewer opens a declared facet bucket, plugin person, or unhydrated container | For facets/people: background only when `browse.expand` lists that facet, receiving `{facet, value, valueId?, cursor?}`. For containers with `childCount > 0` and missing/stale children: triggered on container open (never on list render) with `{parentId, level?, cursor?}` (falling back to `/browse` with `parentId` on 400/404/501), deduplicated per container with a bounded first-page wait (~1.8s) and background continuation. Returns `{items, cursor?}` (or `nextCursor`) or `{job: "/ether/job/..."}`. |
 | `/ether/v1/kinds/{kind}/items/{id}` | Conformance and detail refresh | One full item. |
 | `/ether/v1/kinds/{kind}/search` | Client searches, only when `browse.liveSearch` is on | Same page shape as browse with `query` set. Short budget; see below. |
 | `/ether/v1/kinds/{kind}/live` | Viewer or owner opens a `kind: "live"` tab | `{tab?, q?, filter?, cursor?, limit?}` → `{items:[{id, title, subtitle?, badge?, viewers?, tags?, thumb?, live?}], filters?:[{key, label}], nextCursor?}`. Cached briefly (~45s); 10s interactive budget. |
@@ -871,6 +876,7 @@ only when someone actually opens that slice, declare `browse.expand`:
 - While an expansion for that slice is running, Vela adds `"expanding": true` to
   `GET /vela/v0/libraries/{id}/items` and `GET /vela/v0/people/{id}/titles`, and
   bumps the response `ETag` and kind sync generation when it finishes.
+- **On-demand container hydration**: when a client opens a container item (for example an artist or album) whose `childCount > 0` has no stored children yet — or whose children are older than `browse.expand.ttlHours` (default `168` hours) — Ether calls `POST /ether/v1/kinds/{kind}/expand` with `{parentId, level?, cursor?}` (falling back automatically to `POST /ether/v1/kinds/{kind}/browse` with `{parentId, level?, cursor?, limit}` when `/expand` answers `400`, `404`, `501`, or empty). Concurrent opens of the same container coalesce into a single plugin call, the first page waits up to ~1.8 seconds before returning whatever is stored while remaining pages continue in the background, and list renders (`Browse`, `Recommended`, `Search`) never trigger container hydration.
 
 ## Resolving bytes
 
@@ -1940,9 +1946,11 @@ type KindBrowseRequest struct {
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `facet` | `string` | emitted (validation may require a value) |  |
-| `value` | `string` | emitted (validation may require a value) |  |
+| `facet` | `string` | may be omitted (see validation for conditions) |  |
+| `value` | `string` | may be omitted (see validation for conditions) |  |
 | `valueId` | `int64` | may be omitted (see validation for conditions) |  |
+| `parentId` | `string` | may be omitted (see validation for conditions) |  |
+| `level` | `string` | may be omitted (see validation for conditions) |  |
 | `cursor` | `string` | may be omitted (see validation for conditions) |  |
 
 
@@ -1950,12 +1958,14 @@ type KindBrowseRequest struct {
 
 ``````
 // KindExpandRequest is the request body sent to POST /ether/v1/kinds/{kind}/expand
-// to expand a declared browse facet bucket or people credit on demand.
+// to expand a declared browse facet bucket, people credit, or container on demand.
 type KindExpandRequest struct {
-	Facet   string `json:"facet"`
-	Value   string `json:"value"`
-	ValueID int64  `json:"valueId,omitempty"`
-	Cursor  string `json:"cursor,omitempty"`
+	Facet    string `json:"facet,omitempty"`
+	Value    string `json:"value,omitempty"`
+	ValueID  int64  `json:"valueId,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
 ``````
 
@@ -4010,6 +4020,7 @@ type CommandMeta struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) | ^[a-z][a-z0-9-]{0,31}$, unique in the plugin |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `media` | `string` | may be omitted (see validation for conditions) | video\|music\|audiobook\|book\|podcast\|photo |
 | `library` | `KindLibraryDecl` | may be omitted (see validation for conditions) |  |
 | `levels` | `[]KindLevel` | emitted (validation may require a value) | 1..5, first is the root |
 | `fields` | `[]KindField` | may be omitted (see validation for conditions) |  |
@@ -4028,6 +4039,7 @@ type CommandMeta struct {
 type MediaKindMeta struct {
 	Key     string             `json:"key"` // ^[a-z][a-z0-9-]{0,31}$, unique in the plugin
 	Label   string             `json:"label"`
+	Media   string             `json:"media,omitempty"` // video|music|audiobook|book|podcast|photo
 	Library KindLibraryDecl    `json:"library,omitzero"`
 	Levels  []KindLevel        `json:"levels"`           // 1..5, first is the root
 	Fields  []KindField        `json:"fields,omitempty"` //
@@ -4080,6 +4092,7 @@ type KindLibraryDecl struct {
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
 | `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people\|view\|live |
+| `level` | `string` | may be omitted (see validation for conditions) | optional declared hierarchy level (library, view, collections or people) |
 | `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (collections or people) |
 | `sort` | `string` | may be omitted (see validation for conditions) | one of browse.sorts or lastViewed (facet collections or view) |
 | `direction` | `string` | may be omitted (see validation for conditions) | asc\|desc (facet collections or view) |
@@ -4099,6 +4112,7 @@ type KindLibraryTab struct {
 	Key               string          `json:"key"`
 	Label             string          `json:"label"`
 	Kind              string          `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string          `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
 	Facet             string          `json:"facet,omitempty"`             // declared browse.facets entry (collections or people)
 	Sort              string          `json:"sort,omitempty"`              // one of browse.sorts or lastViewed (facet collections or view)
 	Direction         string          `json:"direction,omitempty"`         // asc|desc (facet collections or view)
@@ -4364,18 +4378,223 @@ func (d KindLibraryDecl) EffectiveTabs() []KindLibraryTab {
 const MaxKindLibraryShelves = 40
 ``````
 
+## Source: internal/plugins/contract.go#KindLibraryShelfFilters.fields.md
+
+| Field | Go type | Wire presence | Description |
+|---|---|---|---|
+
+
+## Source: internal/plugins/contract.go#KindLibraryShelfFilters
+
+``````
+// KindLibraryShelfFilters configures optional filtering for a declared
+// Recommended shelf. In JSON it accepts four equivalent forms:
+//
+//  1. A legacy facet map: {"topic":["science","nature"]}
+//  2. A TabFilter object: {"match":"all","rules":[...],"exclude":[...]}
+//  3. A single rule object: {"field":"viewer","value":{"history":true}}
+//  4. An array of rules: [{"field":"viewer","value":{"history":true}}]
+//
+// Omitted "op" on a "viewer" rule defaults to "is".
+type KindLibraryShelfFilters struct {
+	Facets map[string][]string
+	Tab    *core.TabFilter
+}
+``````
+
+## Source: internal/plugins/contract.go#*KindLibraryShelfFilters.IsEmpty
+
+``````
+// IsEmpty reports whether neither facet filters nor rule filters are set.
+func (f *KindLibraryShelfFilters) IsEmpty() bool {
+	if f == nil {
+		return true
+	}
+	return len(f.Facets) == 0 && f.Tab.IsEmpty()
+}
+``````
+
+## Source: internal/plugins/contract.go#*KindLibraryShelfFilters.Clone
+
+``````
+// Clone returns a deep copy of f, or nil when f is nil.
+func (f *KindLibraryShelfFilters) Clone() *KindLibraryShelfFilters {
+	if f == nil {
+		return nil
+	}
+	out := &KindLibraryShelfFilters{Tab: f.Tab.Clone()}
+	if len(f.Facets) > 0 {
+		out.Facets = make(map[string][]string, len(f.Facets))
+		for k, vals := range f.Facets {
+			out.Facets[k] = append([]string(nil), vals...)
+		}
+	}
+	return out
+}
+``````
+
+## Source: internal/plugins/contract.go#KindLibraryShelfFilters.MarshalJSON
+
+``````
+// MarshalJSON encodes f in its canonical form (TabFilter when rule-based,
+// otherwise the facet map).
+func (f KindLibraryShelfFilters) MarshalJSON() ([]byte, error) {
+	if f.Tab != nil {
+		return json.Marshal(f.Tab)
+	}
+	if len(f.Facets) > 0 {
+		return json.Marshal(f.Facets)
+	}
+	return []byte("{}"), nil
+}
+``````
+
+## Source: internal/plugins/contract.go#*KindLibraryShelfFilters.UnmarshalJSON
+
+``````
+// UnmarshalJSON decodes a facet map, TabFilter, single rule, or rule array.
+func (f *KindLibraryShelfFilters) UnmarshalJSON(data []byte) error {
+	f.Facets = nil
+	f.Tab = nil
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var rules []core.CollectionRule
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&rules); err != nil {
+			return err
+		}
+		normalizeShelfRuleOps(rules)
+		f.Tab = &core.TabFilter{Match: "all", Rules: rules}
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return fmt.Errorf("shelf filters must be a JSON object or array")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return err
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	if isSingleRuleObject(raw) {
+		var rule core.CollectionRule
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&rule); err != nil {
+			return err
+		}
+		rules := []core.CollectionRule{rule}
+		normalizeShelfRuleOps(rules)
+		f.Tab = &core.TabFilter{Match: "all", Rules: rules}
+		return nil
+	}
+	if isTabFilterObject(raw) {
+		var tf core.TabFilter
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&tf); err != nil {
+			return err
+		}
+		normalizeShelfTabFilter(&tf)
+		f.Tab = &tf
+		return nil
+	}
+	var facets map[string][]string
+	if err := json.Unmarshal(trimmed, &facets); err != nil {
+		return err
+	}
+	f.Facets = facets
+	return nil
+}
+``````
+
+## Source: internal/plugins/contract.go#isSingleRuleObject
+
+``````
+func isSingleRuleObject(raw map[string]json.RawMessage) bool {
+	v, ok := raw["field"]
+	if !ok {
+		return false
+	}
+	trimmed := bytes.TrimSpace(v)
+	return len(trimmed) > 0 && trimmed[0] == '"'
+}
+``````
+
+## Source: internal/plugins/contract.go#isTabFilterObject
+
+``````
+func isTabFilterObject(raw map[string]json.RawMessage) bool {
+	for _, key := range []string{"match", "visibilityDefault"} {
+		if v, ok := raw[key]; ok {
+			t := bytes.TrimSpace(v)
+			if len(t) > 0 && t[0] == '"' {
+				return true
+			}
+		}
+	}
+	for _, key := range []string{"rules", "exclude", "groups"} {
+		if v, ok := raw[key]; ok {
+			t := bytes.TrimSpace(v)
+			if len(t) == 0 || t[0] != '[' {
+				continue
+			}
+			// Check whether the array holds objects (rules/groups) rather than strings (a facet literally named "rules").
+			rest := bytes.TrimSpace(t[1:])
+			if len(rest) > 0 && (rest[0] == '{' || rest[0] == ']') {
+				return true
+			}
+		}
+	}
+	return false
+}
+``````
+
+## Source: internal/plugins/contract.go#normalizeShelfTabFilter
+
+``````
+func normalizeShelfTabFilter(tf *core.TabFilter) {
+	if tf == nil {
+		return
+	}
+	normalizeShelfRuleOps(tf.Rules)
+	normalizeShelfRuleOps(tf.Exclude)
+	for i := range tf.Groups {
+		normalizeShelfRuleOps(tf.Groups[i].Rules)
+	}
+}
+``````
+
+## Source: internal/plugins/contract.go#normalizeShelfRuleOps
+
+``````
+func normalizeShelfRuleOps(rules []core.CollectionRule) {
+	for i := range rules {
+		if rules[i].Field == "viewer" && rules[i].Op == "" {
+			rules[i].Op = "is"
+		}
+	}
+}
+``````
+
 ## Source: internal/plugins/contract.go#KindLibraryShelf.fields.md
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
-| `sort` | `string` | may be omitted (see validation for conditions) | released (default)\|title\|added\|year\|rating\|index |
+| `level` | `string` | may be omitted (see validation for conditions) | optional declared hierarchy level key |
+| `sort` | `string` | may be omitted (see validation for conditions) | released (default)\|title\|added\|year\|rating\|index\|lastViewed |
 | `direction` | `string` | may be omitted (see validation for conditions) | desc (default)\|asc |
 | `facet` | `string` | may be omitted (see validation for conditions) | single-facet shorthand (declared and indexed) |
 | `value` | `string` | may be omitted (see validation for conditions) | single value for facet |
 | `values` | `[]string` | may be omitted (see validation for conditions) | OR values for facet |
-| `filters` | `map[string][]string` | may be omitted (see validation for conditions) | AND across facets, OR within each facet |
+| `filters` | `*KindLibraryShelfFilters` | may be omitted (see validation for conditions) | facet map, TabFilter, or rule/rules list |
 
 
 ## Source: internal/plugins/contract.go#KindLibraryShelf
@@ -4385,14 +4604,15 @@ const MaxKindLibraryShelves = 40
 // Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>" so the
 // library's Recommended row editor can reorder, hide, pin, or cap it.
 type KindLibraryShelf struct {
-	Key       string              `json:"key"`
-	Label     string              `json:"label"`
-	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
-	Direction string              `json:"direction,omitempty"` // desc (default)|asc
-	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
-	Value     string              `json:"value,omitempty"`     // single value for facet
-	Values    []string            `json:"values,omitempty"`    // OR values for facet
-	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
+	Key       string                   `json:"key"`
+	Label     string                   `json:"label"`
+	Level     string                   `json:"level,omitempty"`     // optional declared hierarchy level key
+	Sort      string                   `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index|lastViewed
+	Direction string                   `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string                   `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string                   `json:"value,omitempty"`     // single value for facet
+	Values    []string                 `json:"values,omitempty"`    // OR values for facet
+	Filters   *KindLibraryShelfFilters `json:"filters,omitempty"`   // facet map, TabFilter, or rule/rules list
 }
 ``````
 
@@ -4420,11 +4640,24 @@ func (s KindLibraryShelf) EffectiveDirection() string {
 }
 ``````
 
+## Source: internal/plugins/contract.go#KindLibraryShelf.EffectiveTabFilter
+
+``````
+// EffectiveTabFilter returns the shelf's rule-based TabFilter when Filters
+// was authored as rules or a TabFilter, or nil otherwise.
+func (s KindLibraryShelf) EffectiveTabFilter() *core.TabFilter {
+	if s.Filters == nil || s.Filters.Tab.IsEmpty() {
+		return nil
+	}
+	return s.Filters.Tab.Clone()
+}
+``````
+
 ## Source: internal/plugins/contract.go#KindLibraryShelf.EffectiveFilters
 
 ``````
 // EffectiveFilters returns the shelf's facet filter map (AND across facets,
-// OR within each facet), or nil when the shelf is unfiltered.
+// OR within each facet), or nil when the shelf has no facet map filter.
 func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 	if s.Facet != "" {
 		if len(s.Values) > 0 {
@@ -4444,11 +4677,11 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 		}
 		return nil
 	}
-	if len(s.Filters) == 0 {
+	if s.Filters == nil || len(s.Filters.Facets) == 0 {
 		return nil
 	}
-	out := make(map[string][]string, len(s.Filters))
-	for k, raw := range s.Filters {
+	out := make(map[string][]string, len(s.Filters.Facets))
+	for k, raw := range s.Filters.Facets {
 		var vals []string
 		for _, v := range raw {
 			if v = strings.TrimSpace(v); v != "" {
@@ -4472,6 +4705,7 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `role` | `string` | may be omitted (see validation for conditions) | item\|artist\|album\|track\|series\|book\|audiobook\|part\|show\|episode\|collection |
 | `playable` | `bool` | may be omitted (see validation for conditions) | leaves the resolver can open; at least one level |
 | `container` | `bool` | may be omitted (see validation for conditions) | item is a container other leaves are extracted from |
 
@@ -4483,6 +4717,7 @@ func (s KindLibraryShelf) EffectiveFilters() map[string][]string {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
+	Role      string `json:"role,omitempty"`      // item|artist|album|track|series|book|audiobook|part|show|episode|collection
 	Playable  bool   `json:"playable,omitempty"`  // leaves the resolver can open; at least one level
 	Container bool   `json:"container,omitempty"` // item is a container other leaves are extracted from
 }
@@ -18372,6 +18607,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		add(base+".key", "must be lower case letters, digits and dashes, at most 32 characters")
 	}
 	label(base+".label", k.Label, 60)
+	if k.Media != "" && !core.ValidMediaClass(k.Media) {
+		add(base+".media", "must be video, music, audiobook, book, podcast or photo")
+	}
 	if !k.Library.IsZero() {
 		label(base+".library.name", k.Library.Name, 60)
 		if unsafePath(k.Library.Icon) {
@@ -18418,6 +18656,9 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		}
 		levelKeys[lv.Key] = true
 		label(lbase+".label", lv.Label, 40)
+		if lv.Role != "" && !core.ValidMediaRole(lv.Role) {
+			add(lbase+".role", "must be item, artist, album, track, series, book, audiobook, part, show, episode or collection")
+		}
 		if lv.Playable {
 			playable = true
 		}
@@ -18532,6 +18773,16 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 		ruleFields := KindRuleFields(k.Fields)
 		for j, tab := range k.Library.Tabs {
 			tbase := fmt.Sprintf("%s.library.tabs[%d]", base, j)
+			if tab.Level != "" {
+				switch tab.Kind {
+				case "library", "view", "collections", "people":
+					if !levelKeys[tab.Level] {
+						add(tbase+".level", "must name a declared level")
+					}
+				default:
+					add(tbase+".level", "only library, view, collections or people tabs may set level")
+				}
+			}
 			switch tab.Kind {
 			case "collections":
 				if tab.Facet != "" && !seenFacet[tab.Facet] {
@@ -18701,7 +18952,7 @@ func validateMediaKind(m Manifest, k MediaKindMeta, base string, hasProvider boo
 			}
 		}
 	}
-	validateKindLibraryShelves(base, k.Library.Shelves, fields, add, label)
+	validateKindLibraryShelves(base, k.Library.Shelves, levelKeys, fields, add, label)
 	for j, f := range k.Browse.SearchFields {
 		field, ok := fields[f]
 		if !ok {
@@ -19036,13 +19287,22 @@ func ValidateMediaKindsUpgrade(prev, next []MediaKindMeta) error {
 ## Source: internal/plugins/manifest_kinds.go#validateKindLibraryShelves
 
 ``````
-func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
+func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, levelKeys map[string]bool, fields map[string]KindField, add func(string, string), label func(string, string, int)) {
 	if len(shelves) == 0 {
 		return
 	}
 	if len(shelves) > MaxKindLibraryShelves {
 		add(base+".library.shelves", fmt.Sprintf("at most %d shelves are allowed", MaxKindLibraryShelves))
 	}
+	declaredIndexed := make(map[string]string, len(fields))
+	fieldList := make([]KindField, 0, len(fields))
+	for _, f := range fields {
+		fieldList = append(fieldList, f)
+		if f.Indexed {
+			declaredIndexed[f.Key] = f.Type
+		}
+	}
+	ruleFields := KindRuleFields(fieldList)
 	checkFacet := func(fieldPath, fk string) {
 		if fk == "year" || fk == "released" || fk == "rating" {
 			return
@@ -19064,13 +19324,16 @@ func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields 
 		}
 		seenKey[sh.Key] = true
 		label(sbase+".label", sh.Label, 60)
+		if sh.Level != "" && !levelKeys[sh.Level] {
+			add(sbase+".level", "must name a declared level")
+		}
 		if sh.Sort != "" && !kindSorts[sh.Sort] {
-			add(sbase+".sort", "must be title, added, released, year, rating or index")
+			add(sbase+".sort", "must be title, added, released, year, rating, index or lastViewed")
 		}
 		if sh.Direction != "" && sh.Direction != "asc" && sh.Direction != "desc" {
 			add(sbase+".direction", "must be asc or desc")
 		}
-		if sh.Facet != "" && len(sh.Filters) > 0 {
+		if sh.Facet != "" && !sh.Filters.IsEmpty() {
 			add(sbase+".filters", "cannot be combined with facet")
 		}
 		if sh.Facet != "" {
@@ -19099,27 +19362,44 @@ func validateKindLibraryShelves(base string, shelves []KindLibraryShelf, fields 
 				add(sbase+".values", "requires facet to be set")
 			}
 		}
-		if len(sh.Filters) > 0 {
-			fkeys := make([]string, 0, len(sh.Filters))
-			for fk := range sh.Filters {
-				fkeys = append(fkeys, fk)
+		if sh.Filters != nil {
+			if sh.Filters.Tab != nil {
+				tf := sh.Filters.Tab
+				if tf.Match != "" && tf.Match != "all" && tf.Match != "any" {
+					add(sbase+".filters.match", "must be all or any")
+				}
+				if tf.VisibilityDefault != "" && tf.VisibilityDefault != "show" && tf.VisibilityDefault != "hide" {
+					add(sbase+".filters.visibilityDefault", "must be show or hide")
+				}
+				if !tf.IsEmpty() {
+					specs, fallback := tf.ToPolicy("")
+					if err := libraryfilter.ValidatePluginManifestPolicy(specs, fallback, declaredIndexed, ruleFields); err != nil {
+						add(sbase+".filters", err.Error())
+					}
+				}
 			}
-			sort.Strings(fkeys)
-			for _, fk := range fkeys {
-				if strings.TrimSpace(fk) == "" {
-					add(sbase+".filters", "filter facet key must not be empty")
-					continue
+			if len(sh.Filters.Facets) > 0 {
+				fkeys := make([]string, 0, len(sh.Filters.Facets))
+				for fk := range sh.Filters.Facets {
+					fkeys = append(fkeys, fk)
 				}
-				fbase := sbase + ".filters." + fk
-				checkFacet(fbase, fk)
-				vals := sh.Filters[fk]
-				if len(vals) == 0 {
-					add(fbase, "must list at least one value")
-					continue
-				}
-				for vi, v := range vals {
-					if strings.TrimSpace(v) == "" {
-						add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+				sort.Strings(fkeys)
+				for _, fk := range fkeys {
+					if strings.TrimSpace(fk) == "" {
+						add(sbase+".filters", "filter facet key must not be empty")
+						continue
+					}
+					fbase := sbase + ".filters." + fk
+					checkFacet(fbase, fk)
+					vals := sh.Filters.Facets[fk]
+					if len(vals) == 0 {
+						add(fbase, "must list at least one value")
+						continue
+					}
+					for vi, v := range vals {
+						if strings.TrimSpace(v) == "" {
+							add(fmt.Sprintf("%s[%d]", fbase, vi), "must not be empty")
+						}
 					}
 				}
 			}
@@ -27345,6 +27625,7 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].levels[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].levels[].playable` | `boolean` | false | {} |
+| `ether.contributes.mediaKinds[].levels[].role` | `any` | false | {"enum":["item","artist","album","track","series","book","audiobook","part","show","episode","collection"]} |
 | `ether.contributes.mediaKinds[].library` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].library.card` | `any` | false | {"enum":["poster","landscape","square"]} |
 | `ether.contributes.mediaKinds[].library.dateDisplay` | `any` | false | {"enum":["year","date"]} |
@@ -27353,10 +27634,11 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.shelves` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].direction` | `any` | false | {"enum":["asc","desc"]} |
 | `ether.contributes.mediaKinds[].library.shelves[].facet` | `string` | false | {} |
-| `ether.contributes.mediaKinds[].library.shelves[].filters` | `object` | false | {"additionalProperties":{"items":{"type":"string"},"type":"array"}} |
+| `ether.contributes.mediaKinds[].library.shelves[].filters` | `any` | false | {"anyOf":[{"additionalProperties":{"items":{"type":"string"},"type":"array"},"type":"object"},{"properties":{"exclude":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"groups":{"items":{"properties":{"action":{"type":"string"},"match":{"type":"string"},"mediaType":{"type":"string"},"name":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"scope":{"type":"string"}},"type":"object"},"type":"array"},"match":{"type":"string"},"rules":{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"},"visibilityDefault":{"type":"string"}},"type":"object"},{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},{"items":{"properties":{"field":{"type":"string"},"label":{"type":"string"},"labels":{"items":{"type":"string"},"type":"array"},"op":{"type":"string"},"value":{}},"type":"object"},"type":"array"}]} |
 | `ether.contributes.mediaKinds[].library.shelves[].key` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].label` | `string` | false | {} |
-| `ether.contributes.mediaKinds[].library.shelves[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index"]} |
+| `ether.contributes.mediaKinds[].library.shelves[].level` | `string` | false | {} |
+| `ether.contributes.mediaKinds[].library.shelves[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].library.shelves[].value` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.shelves[].values` | `array` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs` | `array` | false | {} |
@@ -27394,12 +27676,14 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
 | `ether.contributes.mediaKinds[].library.tabs[].kind` | `any` | false | {"enum":["recommended","library","collections","people","view","live"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].label` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].layout` | `any` | false | {"enum":["grid","list","timeline"]} |
+| `ether.contributes.mediaKinds[].library.tabs[].level` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].order` | `any` | false | {"enum":["count","name"]} |
 | `ether.contributes.mediaKinds[].library.tabs[].search` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].searchPlaceholder` | `string` | false | {} |
 | `ether.contributes.mediaKinds[].library.tabs[].sort` | `any` | false | {"enum":["title","added","released","year","rating","index","lastViewed"]} |
 | `ether.contributes.mediaKinds[].match` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].match.thresholdDefault` | `number` | false | {} |
+| `ether.contributes.mediaKinds[].media` | `any` | false | {"enum":["video","music","audiobook","book","podcast","photo"]} |
 | `ether.contributes.mediaKinds[].present` | `object` | false | {} |
 | `ether.contributes.mediaKinds[].present.adapterOnly` | `boolean` | false | {} |
 | `ether.contributes.mediaKinds[].present.mediaBrowser` | `object` | false | {} |
@@ -28207,6 +28491,21 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                         },
                         "playable": {
                           "type": "boolean"
+                        },
+                        "role": {
+                          "enum": [
+                            "item",
+                            "artist",
+                            "album",
+                            "track",
+                            "series",
+                            "book",
+                            "audiobook",
+                            "part",
+                            "show",
+                            "episode",
+                            "collection"
+                          ]
                         }
                       },
                       "type": "object"
@@ -28247,18 +28546,176 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                               "type": "string"
                             },
                             "filters": {
-                              "additionalProperties": {
-                                "items": {
-                                  "type": "string"
+                              "anyOf": [
+                                {
+                                  "additionalProperties": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "type": "object"
                                 },
-                                "type": "array"
-                              },
-                              "type": "object"
+                                {
+                                  "properties": {
+                                    "exclude": {
+                                      "items": {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "groups": {
+                                      "items": {
+                                        "properties": {
+                                          "action": {
+                                            "type": "string"
+                                          },
+                                          "match": {
+                                            "type": "string"
+                                          },
+                                          "mediaType": {
+                                            "type": "string"
+                                          },
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "rules": {
+                                            "items": {
+                                              "properties": {
+                                                "field": {
+                                                  "type": "string"
+                                                },
+                                                "label": {
+                                                  "type": "string"
+                                                },
+                                                "labels": {
+                                                  "items": {
+                                                    "type": "string"
+                                                  },
+                                                  "type": "array"
+                                                },
+                                                "op": {
+                                                  "type": "string"
+                                                },
+                                                "value": {}
+                                              },
+                                              "type": "object"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "scope": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "match": {
+                                      "type": "string"
+                                    },
+                                    "rules": {
+                                      "items": {
+                                        "properties": {
+                                          "field": {
+                                            "type": "string"
+                                          },
+                                          "label": {
+                                            "type": "string"
+                                          },
+                                          "labels": {
+                                            "items": {
+                                              "type": "string"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "op": {
+                                            "type": "string"
+                                          },
+                                          "value": {}
+                                        },
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "visibilityDefault": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "properties": {
+                                    "field": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "labels": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "op": {
+                                      "type": "string"
+                                    },
+                                    "value": {}
+                                  },
+                                  "type": "object"
+                                },
+                                {
+                                  "items": {
+                                    "properties": {
+                                      "field": {
+                                        "type": "string"
+                                      },
+                                      "label": {
+                                        "type": "string"
+                                      },
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "op": {
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              ]
                             },
                             "key": {
                               "type": "string"
                             },
                             "label": {
+                              "type": "string"
+                            },
+                            "level": {
                               "type": "string"
                             },
                             "sort": {
@@ -28268,7 +28725,8 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                                 "released",
                                 "year",
                                 "rating",
-                                "index"
+                                "index",
+                                "lastViewed"
                               ]
                             },
                             "value": {
@@ -28433,6 +28891,9 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                                 "timeline"
                               ]
                             },
+                            "level": {
+                              "type": "string"
+                            },
                             "order": {
                               "enum": [
                                 "count",
@@ -28471,6 +28932,16 @@ func (p *Plugin) CallDetailed(ctx context.Context, req Request) (Response, Outco
                       }
                     },
                     "type": "object"
+                  },
+                  "media": {
+                    "enum": [
+                      "video",
+                      "music",
+                      "audiobook",
+                      "book",
+                      "podcast",
+                      "photo"
+                    ]
                   },
                   "present": {
                     "properties": {
@@ -40546,23 +41017,27 @@ type KindBrowseQuery = KindBrowseRequest
 
 | Field | Go type | Wire presence | Description |
 |---|---|---|---|
-| `facet` | `string` | emitted (validation may require a value) |  |
-| `value` | `string` | emitted (validation may require a value) |  |
+| `facet` | `string` | may be omitted (see validation for conditions) |  |
+| `value` | `string` | may be omitted (see validation for conditions) |  |
 | `valueId` | `int64` | may be omitted (see validation for conditions) |  |
+| `parentId` | `string` | may be omitted (see validation for conditions) |  |
+| `level` | `string` | may be omitted (see validation for conditions) |  |
 | `cursor` | `string` | may be omitted (see validation for conditions) |  |
 
 
 ## Source: sdk/go/kinds.go#KindExpandRequest
 
 ``````
-// KindExpandRequest asks a plugin to expand one declared facet bucket or
-// plugin person slice in the background via POST /ether/v1/kinds/{kind}/expand.
+// KindExpandRequest asks a plugin to expand one declared facet bucket,
+// plugin person slice, or container's children via POST /ether/v1/kinds/{kind}/expand.
 type KindExpandRequest struct {
-	Kind    string `json:"-"`
-	Facet   string `json:"facet"`
-	Value   string `json:"value"`
-	ValueID int64  `json:"valueId,omitempty"`
-	Cursor  string `json:"cursor,omitempty"`
+	Kind     string `json:"-"`
+	Facet    string `json:"facet,omitempty"`
+	Value    string `json:"value,omitempty"`
+	ValueID  int64  `json:"valueId,omitempty"`
+	ParentID string `json:"parentId,omitempty"`
+	Level    string `json:"level,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
 ``````
 
@@ -45958,6 +46433,7 @@ type Presentations struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `media` | `string` | may be omitted (see validation for conditions) | video\|music\|audiobook\|book\|podcast\|photo |
 | `library` | `KindLibraryDecl` | emitted (validation may require a value) |  |
 | `levels` | `[]KindLevel` | emitted (validation may require a value) |  |
 | `fields` | `[]KindField` | may be omitted (see validation for conditions) |  |
@@ -45976,6 +46452,7 @@ type Presentations struct {
 type MediaKindMeta struct {
 	Key     string          `json:"key"`
 	Label   string          `json:"label"`
+	Media   string          `json:"media,omitempty"` // video|music|audiobook|book|podcast|photo
 	Library KindLibraryDecl `json:"library"`
 	Levels  []KindLevel     `json:"levels"`
 	Fields  []KindField     `json:"fields,omitempty"`
@@ -46072,6 +46549,7 @@ type KindLibraryTabRule struct {
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
 | `kind` | `string` | emitted (validation may require a value) | recommended\|library\|collections\|people\|view\|live |
+| `level` | `string` | may be omitted (see validation for conditions) | optional declared hierarchy level (library, view, collections or people) |
 | `facet` | `string` | may be omitted (see validation for conditions) | declared browse.facets entry (optional on collections; required people-type facet on people) |
 | `order` | `string` | may be omitted (see validation for conditions) | count\|name (default count on collections, name on people) |
 | `card` | `string` | may be omitted (see validation for conditions) | landscape (default)\|poster\|square (live tabs only) |
@@ -46091,6 +46569,7 @@ type KindLibraryTab struct {
 	Key               string                `json:"key"`
 	Label             string                `json:"label"`
 	Kind              string                `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string                `json:"level,omitempty"`             // optional declared hierarchy level (library, view, collections or people)
 	Facet             string                `json:"facet,omitempty"`             // declared browse.facets entry (optional on collections; required people-type facet on people)
 	Order             string                `json:"order,omitempty"`             // count|name (default count on collections, name on people)
 	Card              string                `json:"card,omitempty"`              // landscape (default)|poster|square (live tabs only)
@@ -46116,12 +46595,13 @@ const MaxKindLibraryShelves = 40
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
-| `sort` | `string` | may be omitted (see validation for conditions) | released (default)\|title\|added\|year\|rating\|index |
+| `level` | `string` | may be omitted (see validation for conditions) | optional declared hierarchy level key |
+| `sort` | `string` | may be omitted (see validation for conditions) | released (default)\|title\|added\|year\|rating\|index\|lastViewed |
 | `direction` | `string` | may be omitted (see validation for conditions) | desc (default)\|asc |
 | `facet` | `string` | may be omitted (see validation for conditions) | single-facet shorthand (declared and indexed) |
 | `value` | `string` | may be omitted (see validation for conditions) | single value for facet |
 | `values` | `[]string` | may be omitted (see validation for conditions) | OR values for facet |
-| `filters` | `map[string][]string` | may be omitted (see validation for conditions) | AND across facets, OR within each facet |
+| `filters` | `any` | may be omitted (see validation for conditions) | map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule |
 
 
 ## Source: sdk/go/types.go#KindLibraryShelf
@@ -46129,15 +46609,18 @@ const MaxKindLibraryShelves = 40
 ``````
 // KindLibraryShelf declares one default Recommended shelf for a plugin library.
 // Each shelf gets the stable row ID "plugin:<viewID>:shelf:<key>".
+// Filters accepts a map[string][]string (facet map), *KindLibraryTabFilter,
+// KindLibraryTabRule, or []KindLibraryTabRule.
 type KindLibraryShelf struct {
-	Key       string              `json:"key"`
-	Label     string              `json:"label"`
-	Sort      string              `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index
-	Direction string              `json:"direction,omitempty"` // desc (default)|asc
-	Facet     string              `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
-	Value     string              `json:"value,omitempty"`     // single value for facet
-	Values    []string            `json:"values,omitempty"`    // OR values for facet
-	Filters   map[string][]string `json:"filters,omitempty"`   // AND across facets, OR within each facet
+	Key       string   `json:"key"`
+	Label     string   `json:"label"`
+	Level     string   `json:"level,omitempty"`     // optional declared hierarchy level key
+	Sort      string   `json:"sort,omitempty"`      // released (default)|title|added|year|rating|index|lastViewed
+	Direction string   `json:"direction,omitempty"` // desc (default)|asc
+	Facet     string   `json:"facet,omitempty"`     // single-facet shorthand (declared and indexed)
+	Value     string   `json:"value,omitempty"`     // single value for facet
+	Values    []string `json:"values,omitempty"`    // OR values for facet
+	Filters   any      `json:"filters,omitempty"`   // map[string][]string, *KindLibraryTabFilter, KindLibraryTabRule or []KindLibraryTabRule
 }
 ``````
 
@@ -46147,6 +46630,7 @@ type KindLibraryShelf struct {
 |---|---|---|---|
 | `key` | `string` | emitted (validation may require a value) |  |
 | `label` | `string` | emitted (validation may require a value) |  |
+| `role` | `string` | may be omitted (see validation for conditions) | item\|artist\|album\|track\|series\|book\|audiobook\|part\|show\|episode\|collection |
 | `playable` | `bool` | may be omitted (see validation for conditions) |  |
 | `container` | `bool` | may be omitted (see validation for conditions) |  |
 
@@ -46158,6 +46642,7 @@ type KindLibraryShelf struct {
 type KindLevel struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
+	Role      string `json:"role,omitempty"` // item|artist|album|track|series|book|audiobook|part|show|episode|collection
 	Playable  bool   `json:"playable,omitempty"`
 	Container bool   `json:"container,omitempty"`
 }
@@ -51525,12 +52010,13 @@ class KindLibraryShelf(TypedDict, total=False):
 
     key: str
     label: str
-    sort: Literal["title", "added", "released", "year", "rating", "index"]
+    level: str
+    sort: Literal["title", "added", "released", "year", "rating", "index", "lastViewed"]
     direction: Literal["asc", "desc"]
     facet: str
     value: str
     values: List[str]
-    filters: Dict[str, List[str]]
+    filters: Any
 
 
 class KindLibraryTab(TypedDict, total=False):
@@ -51539,6 +52025,7 @@ class KindLibraryTab(TypedDict, total=False):
     key: str
     label: str
     kind: Literal["recommended", "library", "collections", "people", "view", "live"]
+    level: str
     facet: str
     order: Literal["count", "name"]
     card: Literal["poster", "landscape", "square"]
@@ -56895,9 +57382,25 @@ export interface Presentations {
   silo?: { type: string };
 }
 
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -56917,7 +57420,7 @@ export interface KindArt {
 
 export interface KindLibraryTabRule {
   field: string;
-  op: string;
+  op?: string;
   value?: unknown;
 }
 
@@ -56931,6 +57434,8 @@ export interface KindLibraryTab {
   key: string;
   label: string;
   kind: "recommended" | "library" | "collections" | "people" | "view" | "live";
+  /** Optional declared hierarchy level key (library, view, collections or people tabs). */
+  level?: string;
   /** Declared browse.facets entry (optional on collections; required people-type facet on people). */
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
@@ -56954,8 +57459,10 @@ export interface KindLibraryShelf {
   key: string;
   /** Localizable shelf title (literal or "$t:<key>", at most 60 characters). */
   label: string;
+  /** Optional declared hierarchy level key to populate the shelf from (defaults to the root level). */
+  level?: string;
   /** Optional sort field (defaults to "released"). */
-  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index" | "lastViewed";
   /** Sort direction (defaults to "desc"). */
   direction?: "asc" | "desc";
   /** Single-facet filter shorthand; must name a declared and indexed field (or year/released/rating). */
@@ -56964,8 +57471,8 @@ export interface KindLibraryShelf {
   value?: string;
   /** OR values for `facet`. */
   values?: string[];
-  /** Multi-facet filter (AND across facets, OR within each facet); cannot be combined with `facet`. */
-  filters?: Record<string, string[]>;
+  /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
+  filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
 }
 
 export interface KindLibraryDecl {
@@ -56991,6 +57498,7 @@ export interface KindBrowseExpand {
 export interface MediaKindMeta {
   key: string;
   label: string;
+  media?: MediaClass;
   library: KindLibraryDecl;
   levels: KindLevel[];
   fields?: KindField[];
@@ -57092,9 +57600,11 @@ export type KindBrowseQuery = Omit<KindBrowseRequest, "kind">;
 
 export interface KindExpandRequest {
   kind: string;
-  facet: string;
-  value: string;
+  facet?: string;
+  value?: string;
   valueId?: number;
+  parentId?: string;
+  level?: string;
   cursor?: string;
 }
 

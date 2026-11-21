@@ -38,10 +38,25 @@ export interface LibraryTabFilter {
   rules: Rule[];
 }
 
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
 export interface LibraryTab {
   key: string;
   label: string;
   kind: LibraryTabKind;
+  level?: string;
   facet?: string;
   order?: "count" | "name";
   sort?: string;
@@ -152,6 +167,7 @@ export interface LibraryLiveSession {
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -165,6 +181,7 @@ export interface KindField {
 export interface MediaKind {
   key: string;
   label: string;
+  media?: MediaClass;
   library: {
     name: string;
     icon?: string;

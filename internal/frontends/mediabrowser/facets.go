@@ -48,13 +48,35 @@ func (i *instance) facets(kind string) http.HandlerFunc {
 		offset, limit := queryInt(r, "StartIndex", 0), queryInt(r, "Limit", 50)
 		var page []frontend.FacetValue
 		total := 0
-		if pager, ok := i.host.Experience.(frontend.FacetPager); ok {
+		viewID := facetView(r)
+		levelHint := ""
+		if viewID != "" {
+			if rawTypes := route.Query(r.URL.Query(), "IncludeItemTypes"); len(rawTypes) > 0 {
+				parts := strings.Split(strings.TrimSpace(rawTypes[0]), ",")
+				if len(parts) == 1 {
+					levelHint = strings.TrimSpace(parts[0])
+				}
+			}
+		}
+		if levelHint != "" {
+			if lr, ok := i.host.Experience.(frontend.LevelFacetReader); ok {
+				var facets []frontend.FacetValue
+				facets, err = lr.FacetsAtLevel(r.Context(), v, device(r), viewID, levelHint, kind)
+				page, total = paging.Slice(facets, offset, limit), len(facets)
+			} else if pager, ok := i.host.Experience.(frontend.FacetPager); ok {
+				page, total, err = pager.FacetPage(r.Context(), v, device(r), viewID, kind, offset, limit)
+			} else {
+				var facets []frontend.FacetValue
+				facets, err = i.host.Experience.Facets(r.Context(), v, device(r), viewID, kind)
+				page, total = paging.Slice(facets, offset, limit), len(facets)
+			}
+		} else if pager, ok := i.host.Experience.(frontend.FacetPager); ok {
 			// A page of names and their count, not every studio listed
 			// to slice fifty.
-			page, total, err = pager.FacetPage(r.Context(), v, device(r), facetView(r), kind, offset, limit)
+			page, total, err = pager.FacetPage(r.Context(), v, device(r), viewID, kind, offset, limit)
 		} else {
 			var facets []frontend.FacetValue
-			facets, err = i.host.Experience.Facets(r.Context(), v, device(r), facetView(r), kind)
+			facets, err = i.host.Experience.Facets(r.Context(), v, device(r), viewID, kind)
 			page, total = paging.Slice(facets, offset, limit), len(facets)
 		}
 		if err != nil {

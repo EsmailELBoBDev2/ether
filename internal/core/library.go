@@ -26,6 +26,58 @@ const (
 	LibraryCollection LibrarySource = "collection" // exactly the titles of one owner collection
 )
 
+// MediaClass classifies a content kind's primary playback/consumption model.
+type MediaClass string
+
+const (
+	MediaClassVideo     MediaClass = "video"
+	MediaClassMusic     MediaClass = "music"
+	MediaClassAudiobook MediaClass = "audiobook"
+	MediaClassBook      MediaClass = "book"
+	MediaClassPodcast   MediaClass = "podcast"
+	MediaClassPhoto     MediaClass = "photo"
+)
+
+// ValidMediaClass reports whether s is a supported MediaClass value.
+func ValidMediaClass(s string) bool {
+	switch MediaClass(s) {
+	case MediaClassVideo, MediaClassMusic, MediaClassAudiobook, MediaClassBook, MediaClassPodcast, MediaClassPhoto:
+		return true
+	default:
+		return false
+	}
+}
+
+// MediaRole classifies the semantic role of a single hierarchy level inside a
+// content kind (for example artist/album/track or show/episode).
+type MediaRole string
+
+const (
+	MediaRoleItem       MediaRole = "item"
+	MediaRoleArtist     MediaRole = "artist"
+	MediaRoleAlbum      MediaRole = "album"
+	MediaRoleTrack      MediaRole = "track"
+	MediaRoleSeries     MediaRole = "series"
+	MediaRoleBook       MediaRole = "book"
+	MediaRoleAudiobook  MediaRole = "audiobook"
+	MediaRolePart       MediaRole = "part"
+	MediaRoleShow       MediaRole = "show"
+	MediaRoleEpisode    MediaRole = "episode"
+	MediaRoleCollection MediaRole = "collection"
+)
+
+// ValidMediaRole reports whether s is a supported MediaRole value.
+func ValidMediaRole(s string) bool {
+	switch MediaRole(s) {
+	case MediaRoleItem, MediaRoleArtist, MediaRoleAlbum, MediaRoleTrack,
+		MediaRoleSeries, MediaRoleBook, MediaRoleAudiobook, MediaRolePart,
+		MediaRoleShow, MediaRoleEpisode, MediaRoleCollection:
+		return true
+	default:
+		return false
+	}
+}
+
 // Library card shapes.
 const (
 	CardPoster    = "poster"
@@ -235,6 +287,7 @@ type LibraryTab struct {
 	Key               string     `json:"key"`
 	Label             string     `json:"label"`
 	Kind              string     `json:"kind"`                        // recommended|library|collections|people|view|live
+	Level             string     `json:"level,omitempty"`             // optional plugin hierarchy level key (library, view, collections or people)
 	Facet             string     `json:"facet,omitempty"`             // collections or people facet
 	Order             string     `json:"order,omitempty"`             // count|name (collections or people)
 	Sort              string     `json:"sort,omitempty"`              // default sort (library, view, facet collections)

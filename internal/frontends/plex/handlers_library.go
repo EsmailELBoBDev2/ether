@@ -1465,6 +1465,19 @@ func (s *Server) sectionFacet(w http.ResponseWriter, r *http.Request, sec Sectio
 	)
 	if sub == "label" {
 		vals = nil
+	} else if sec.PluginID != "" && s.exp() != nil {
+		pr := FromContext(ctx)
+		if sub != "firstCharacter" {
+			levelHint := ""
+			if tp := typeFromParam(r.URL.Query().Get("type")); tp != "" && tp != "collection" {
+				levelHint = string(tp)
+			}
+			if lr, ok := s.exp().(frontend.LevelFacetReader); ok && levelHint != "" {
+				vals, err = lr.FacetsAtLevel(ctx, pr.User, plexDevice(pr), sec.IDString(), levelHint, facet)
+			} else {
+				vals, err = s.exp().Facets(ctx, pr.User, plexDevice(pr), sec.IDString(), facet)
+			}
+		}
 	} else if sub == "firstCharacter" {
 		pr := FromContext(ctx)
 		br := s.parseBrowse(ctx, sec, t, pr.User, r.URL.Query())

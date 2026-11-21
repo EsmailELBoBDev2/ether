@@ -53,6 +53,9 @@ type verifiedDeviceKey struct{}
 
 func device(r *http.Request) frontend.Device {
 	if stored, ok := r.Context().Value(verifiedDeviceKey{}).(frontend.Device); ok {
+		if stored.Language == "" {
+			stored.Language = r.Header.Get("Accept-Language")
+		}
 		return stored
 	}
 	p, _ := authhdr.MediaBrowser(r.Header.Get("Authorization"))
@@ -72,7 +75,7 @@ func device(r *http.Request) frontend.Device {
 		return ""
 	}
 	client := get("Client", "X-Emby-Client")
-	return frontend.Device{ID: get("DeviceId", "X-Emby-Device-Id"), Client: client, Product: client, Version: get("Version", "X-Emby-Client-Version"), DeviceName: get("Device", "X-Emby-Device-Name")}
+	return frontend.Device{ID: get("DeviceId", "X-Emby-Device-Id"), Client: client, Product: client, Version: get("Version", "X-Emby-Client-Version"), DeviceName: get("Device", "X-Emby-Device-Name"), Language: r.Header.Get("Accept-Language")}
 
 }
 

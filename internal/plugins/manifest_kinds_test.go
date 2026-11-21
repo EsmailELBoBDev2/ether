@@ -624,7 +624,7 @@ func TestValidateKindLibraryShelves(t *testing.T) {
 		{Key: "latest", Label: "Latest releases"},
 		{Key: "science", Label: "$t:shelf_science", Sort: "rating", Direction: "desc", Facet: "topic", Value: "science"},
 		{Key: "earth-space", Label: "Earth and space", Sort: "title", Direction: "asc", Facet: "topic", Values: []string{"earth", "space"}},
-		{Key: "feature-history", Label: "Feature history", Filters: map[string][]string{"topic": {"history"}, "format": {"feature", "miniseries"}}},
+		{Key: "feature-history", Label: "Feature history", Filters: &KindLibraryShelfFilters{Facets: map[string][]string{"topic": {"history"}, "format": {"feature", "miniseries"}}}},
 		{Key: "narrated", Label: "Narrated picks", Facet: "narrator", Value: "Elena Vance"},
 		{Key: "recent-years", Label: "Recent years", Facet: "year", Values: []string{"2024", "2025"}},
 	}
@@ -722,7 +722,7 @@ func TestValidateKindLibraryShelves(t *testing.T) {
 		},
 		{
 			name:    "facet combined with filters",
-			shelves: []KindLibraryShelf{{Key: "mixed", Label: "Mixed", Facet: "topic", Value: "science", Filters: map[string][]string{"format": {"feature"}}}},
+			shelves: []KindLibraryShelf{{Key: "mixed", Label: "Mixed", Facet: "topic", Value: "science", Filters: &KindLibraryShelfFilters{Facets: map[string][]string{"format": {"feature"}}}}},
 			want:    ".library.shelves[0].filters",
 		},
 		{
@@ -737,17 +737,17 @@ func TestValidateKindLibraryShelves(t *testing.T) {
 		},
 		{
 			name:    "unindexed filters facet",
-			shelves: []KindLibraryShelf{{Key: "unindexed-filter", Label: "Notes", Filters: map[string][]string{"notes": {"x"}}}},
+			shelves: []KindLibraryShelf{{Key: "unindexed-filter", Label: "Notes", Filters: &KindLibraryShelfFilters{Facets: map[string][]string{"notes": {"x"}}}}},
 			want:    ".library.shelves[0].filters.notes",
 		},
 		{
 			name:    "empty filters slice",
-			shelves: []KindLibraryShelf{{Key: "empty-slice", Label: "Topic", Filters: map[string][]string{"topic": {}}}},
+			shelves: []KindLibraryShelf{{Key: "empty-slice", Label: "Topic", Filters: &KindLibraryShelfFilters{Facets: map[string][]string{"topic": {}}}}},
 			want:    ".library.shelves[0].filters.topic",
 		},
 		{
 			name:    "blank value in filters",
-			shelves: []KindLibraryShelf{{Key: "blank-val", Label: "Topic", Filters: map[string][]string{"topic": {"  "}}}},
+			shelves: []KindLibraryShelf{{Key: "blank-val", Label: "Topic", Filters: &KindLibraryShelfFilters{Facets: map[string][]string{"topic": {"  "}}}}},
 			want:    ".library.shelves[0].filters.topic[0]",
 		},
 	}

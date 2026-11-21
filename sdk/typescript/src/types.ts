@@ -444,9 +444,25 @@ export interface Presentations {
   silo?: { type: string };
 }
 
+export type MediaClass = "video" | "music" | "audiobook" | "book" | "podcast" | "photo";
+
+export type MediaRole =
+  | "item"
+  | "artist"
+  | "album"
+  | "track"
+  | "series"
+  | "book"
+  | "audiobook"
+  | "part"
+  | "show"
+  | "episode"
+  | "collection";
+
 export interface KindLevel {
   key: string;
   label: string;
+  role?: MediaRole;
   playable?: boolean;
   container?: boolean;
 }
@@ -466,7 +482,7 @@ export interface KindArt {
 
 export interface KindLibraryTabRule {
   field: string;
-  op: string;
+  op?: string;
   value?: unknown;
 }
 
@@ -480,6 +496,8 @@ export interface KindLibraryTab {
   key: string;
   label: string;
   kind: "recommended" | "library" | "collections" | "people" | "view" | "live";
+  /** Optional declared hierarchy level key (library, view, collections or people tabs). */
+  level?: string;
   /** Declared browse.facets entry (optional on collections; required people-type facet on people). */
   facet?: string;
   /** Bucket/person ordering: "count" (default on collections) or "name" (case-insensitive alphabetical, default on people). */
@@ -503,8 +521,10 @@ export interface KindLibraryShelf {
   key: string;
   /** Localizable shelf title (literal or "$t:<key>", at most 60 characters). */
   label: string;
+  /** Optional declared hierarchy level key to populate the shelf from (defaults to the root level). */
+  level?: string;
   /** Optional sort field (defaults to "released"). */
-  sort?: "title" | "added" | "released" | "year" | "rating" | "index";
+  sort?: "title" | "added" | "released" | "year" | "rating" | "index" | "lastViewed";
   /** Sort direction (defaults to "desc"). */
   direction?: "asc" | "desc";
   /** Single-facet filter shorthand; must name a declared and indexed field (or year/released/rating). */
@@ -513,8 +533,8 @@ export interface KindLibraryShelf {
   value?: string;
   /** OR values for `facet`. */
   values?: string[];
-  /** Multi-facet filter (AND across facets, OR within each facet); cannot be combined with `facet`. */
-  filters?: Record<string, string[]>;
+  /** Multi-facet map, TabFilter object, single rule, or rule array (including viewer-state rules); cannot be combined with `facet`. */
+  filters?: Record<string, string[]> | KindLibraryTabFilter | KindLibraryTabRule | KindLibraryTabRule[];
 }
 
 export interface KindLibraryDecl {
@@ -540,6 +560,7 @@ export interface KindBrowseExpand {
 export interface MediaKindMeta {
   key: string;
   label: string;
+  media?: MediaClass;
   library: KindLibraryDecl;
   levels: KindLevel[];
   fields?: KindField[];
@@ -641,9 +662,11 @@ export type KindBrowseQuery = Omit<KindBrowseRequest, "kind">;
 
 export interface KindExpandRequest {
   kind: string;
-  facet: string;
-  value: string;
+  facet?: string;
+  value?: string;
   valueId?: number;
+  parentId?: string;
+  level?: string;
   cursor?: string;
 }
 

@@ -157,7 +157,42 @@ func compilePluginViewerGroup(g *core.FilterGroup, viewerID int64) (string, []an
 		addWatch("w.view_offset_ns>0", *g.InProgress)
 	}
 	if g.History != nil {
-		addWatch("(w.last_viewed_at>0 OR w.view_count>0 OR w.view_offset_ns>0)", *g.History)
+		if uid <= 0 {
+			if *g.History {
+				parts = append(parts, "1=0")
+			} else {
+				parts = append(parts, "1=1")
+			}
+		} else {
+			// Roll descendant watch activity up through parent_ref (up to the
+			// 5-level plugin hierarchy) so container shelves (for example
+			// "Jump back in" albums when tracks were played) match without
+			// scanning plugin_items: every branch drives from state_watch and
+			// walks plugin_items by seq/item_ref PK.
+			watchCond := fmt.Sprintf("w.user_id=? AND w.rating_key>%d AND w.rating_key<%d AND (w.last_viewed_at>0 OR w.view_count>0 OR w.view_offset_ns>0)", keyBase, keyEnd)
+			rolledSubq := fmt.Sprintf(
+				`SELECT p0.item_ref FROM state_watch w JOIN plugin_items p0 ON p0.seq = w.rating_key - %d WHERE %s
+UNION
+SELECT p0.parent_ref FROM state_watch w JOIN plugin_items p0 ON p0.seq = w.rating_key - %d WHERE %s AND p0.parent_ref <> ''
+UNION
+SELECT p1.parent_ref FROM state_watch w JOIN plugin_items p0 ON p0.seq = w.rating_key - %d JOIN plugin_items p1 ON p1.item_ref = p0.parent_ref WHERE %s AND p0.parent_ref <> '' AND p1.parent_ref <> ''
+UNION
+SELECT p2.parent_ref FROM state_watch w JOIN plugin_items p0 ON p0.seq = w.rating_key - %d JOIN plugin_items p1 ON p1.item_ref = p0.parent_ref JOIN plugin_items p2 ON p2.item_ref = p1.parent_ref WHERE %s AND p0.parent_ref <> '' AND p1.parent_ref <> '' AND p2.parent_ref <> ''
+UNION
+SELECT p3.parent_ref FROM state_watch w JOIN plugin_items p0 ON p0.seq = w.rating_key - %d JOIN plugin_items p1 ON p1.item_ref = p0.parent_ref JOIN plugin_items p2 ON p2.item_ref = p1.parent_ref JOIN plugin_items p3 ON p3.item_ref = p2.parent_ref WHERE %s AND p0.parent_ref <> '' AND p1.parent_ref <> '' AND p2.parent_ref <> '' AND p3.parent_ref <> ''`,
+				keyBase, watchCond,
+				keyBase, watchCond,
+				keyBase, watchCond,
+				keyBase, watchCond,
+				keyBase, watchCond,
+			)
+			if *g.History {
+				parts = append(parts, "i.item_ref IN ("+rolledSubq+")")
+			} else {
+				parts = append(parts, "i.item_ref NOT IN ("+rolledSubq+")")
+			}
+			args = append(args, uid, uid, uid, uid, uid)
+		}
 	}
 	if g.Favorite != nil {
 		if uid <= 0 {

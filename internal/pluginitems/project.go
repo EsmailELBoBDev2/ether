@@ -24,6 +24,10 @@ func EffectiveCard(cardShape string, decl plugins.KindLibraryDecl) string {
 	}
 }
 
+// TextResolver looks up a plugin i18n key (without the "$t:" prefix) in the
+// plugin's strings file for the default locale.
+type TextResolver func(key string) (string, bool)
+
 // Project maps a plugin KindItem into a core.Title for legacy Plex/Jellyfin/Emby
 // frontends per §6.3.
 //
@@ -44,7 +48,16 @@ func EffectiveCard(cardShape string, decl plugins.KindLibraryDecl) string {
 //   - Title.BackdropPath = art["backdrop"]
 //   - Title.StillPath = art["thumb"] (for episode-like items)
 //   - Title.LogoPath = art["logo"]
+//
+// Any "$t:" field labels without a text resolver fall back to the field key so
+// unresolved i18n tokens are never emitted.
 func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presentations, cardShape ...string) core.Title {
+	return ProjectWithText(item, decl, present, nil, cardShape...)
+}
+
+// ProjectWithText behaves like Project and resolves "$t:" field labels through
+// resolve (falling back to the field key when unresolved).
+func ProjectWithText(item core.KindItem, decl plugins.MediaKindMeta, present core.Presentations, resolve TextResolver, cardShape ...string) core.Title {
 	var ownerCard string
 	if len(cardShape) > 0 {
 		ownerCard = cardShape[0]
@@ -76,7 +89,7 @@ func Project(item core.KindItem, decl plugins.MediaKindMeta, present core.Presen
 		DateDisplay:   dateDisplay,
 		Title:         item.Title,
 		SortTitle:     sortTitle,
-		Summary:       projectSummary(item, decl),
+		Summary:       projectSummary(item, decl, resolve),
 		Year:          item.Year,
 		Rating:        item.Rating,
 		ChildCount:    item.ChildCount,
@@ -280,7 +293,7 @@ func projectMediaType(level string, decl plugins.MediaKindMeta, present core.Pre
 	}
 }
 
-func projectSummary(item core.KindItem, decl plugins.MediaKindMeta) string {
+func projectSummary(item core.KindItem, decl plugins.MediaKindMeta, resolve TextResolver) string {
 	base := strings.TrimSpace(item.Summary)
 	if len(item.Fields) == 0 || len(decl.Fields) == 0 {
 		return base
@@ -296,10 +309,7 @@ func projectSummary(item core.KindItem, decl plugins.MediaKindMeta) string {
 		if val == "" {
 			continue
 		}
-		label := strings.TrimSpace(fd.Label)
-		if label == "" {
-			label = fd.Key
-		}
+		label := plugins.ResolveTextValue(fd.Label, fd.Key, resolve)
 		extras = append(extras, fmt.Sprintf("%s: %s", label, val))
 	}
 

@@ -74,12 +74,17 @@ type KindCatalog struct {
 	liveMu    sync.Mutex
 	liveCalls map[string]*liveSearchCall
 	liveSems  map[string]chan struct{}
+
+	hydrateMu       sync.Mutex
+	hydrateInflight map[string]*containerHydrateCall
+	hydrateSems     map[string]chan struct{}
 }
 
 var (
 	_ experience.PluginLibraries             = (*KindCatalog)(nil)
 	_ experience.PluginPeopleLibraries       = (*KindCatalog)(nil)
 	_ experience.PluginPresentationLibraries = (*KindCatalog)(nil)
+	_ experience.PluginLevelFacetLibraries   = (*KindCatalog)(nil)
 )
 
 // AttachKindCatalog constructs a KindCatalog and registers its OnSync and
@@ -110,6 +115,8 @@ func AttachKindCatalog(syncCtx context.Context, deps KindCatalogDeps) *KindCatal
 		quotas:            make(map[string]blobcache.Quota),
 		liveCalls:         make(map[string]*liveSearchCall),
 		liveSems:          make(map[string]chan struct{}),
+		hydrateInflight:   make(map[string]*containerHydrateCall),
+		hydrateSems:       make(map[string]chan struct{}),
 	}
 	if deps.Manager != nil {
 		deps.Manager.OnSync(c.syncPlugin)
@@ -185,10 +192,7 @@ func (c *KindCatalog) syncPlugin(ctx context.Context, r plugins.Record) {
 	keep := make(map[string]bool, len(declared))
 	for _, k := range declared {
 		keep[k.Key] = true
-		libName := c.resolvePluginText(ctx, r.ID, k.Library.Name)
-		if strings.TrimSpace(libName) == "" {
-			libName = k.Key
-		}
+		libName := c.resolvePluginTextFallback(ctx, r.ID, k.Library.Name, k.Key)
 		lib, err := c.libs.UpsertPluginLibrary(ctx, r.ID, k.Key, libraries.PluginLibraryDecl{
 			Name:    libName,
 			Present: k.Present,
@@ -340,15 +344,15 @@ func (c *KindCatalog) purgeBlobNamespace(libKey string) {
 }
 
 func (c *KindCatalog) resolvePluginText(ctx context.Context, pluginID, val string) string {
-	val = strings.TrimSpace(val)
-	key, ok := strings.CutPrefix(val, "$t:")
-	if !ok || c.mgr == nil {
-		return val
+	return c.resolvePluginTextFallback(ctx, pluginID, val, "")
+}
+
+func (c *KindCatalog) resolvePluginTextFallback(ctx context.Context, pluginID, val, fallback string) string {
+	var resolve func(string) (string, bool)
+	if c != nil && c.mgr != nil {
+		resolve = c.mgr.ResolveTextFunc(ctx, pluginID, "")
 	}
-	if resolved, ok := c.mgr.ResolveText(ctx, pluginID, key, "en"); ok && strings.TrimSpace(resolved) != "" {
-		return resolved
-	}
-	return key
+	return plugins.ResolveTextValue(val, fallback, resolve)
 }
 
 func (c *KindCatalog) recordAllowsCatalogSync(ctx context.Context, r plugins.Record) bool {
@@ -550,11 +554,12 @@ func (c *KindCatalog) Item(ctx context.Context, key core.RatingKey) (experience.
 	}
 	titles := c.projectItems(ctx, rec, lib, []core.KindItem{item})
 	return experience.PluginItemView{
-		Library:     lib,
-		Title:       titles[0],
-		Images:      projectImages(item.Art, lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape),
-		Unavailable: item.Unavailable,
-		Playable:    item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
+		Library:      lib,
+		Title:        titles[0],
+		Images:       projectImages(item.Art, lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape),
+		Unavailable:  item.Unavailable,
+		Playable:     item.Unavailable == nil && item.Playable && levelIsPlayable(rec.Decl, item.Level),
+		SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, item.Level),
 	}, nil
 }
 
@@ -619,11 +624,12 @@ func (c *KindCatalog) ItemsMany(ctx context.Context, keys []core.RatingKey) (map
 		landscape := lib.EffectiveCardShape(rec.Decl.Library.EffectiveCard()) == core.CardLandscape
 		for i, it := range visibleItems {
 			out[it.Key] = experience.PluginItemView{
-				Library:     lib,
-				Title:       titles[i],
-				Images:      projectImages(it.Art, landscape),
-				Unavailable: it.Unavailable,
-				Playable:    it.Unavailable == nil && it.Playable && levelIsPlayable(rec.Decl, it.Level),
+				Library:      lib,
+				Title:        titles[i],
+				Images:       projectImages(it.Art, landscape),
+				Unavailable:  it.Unavailable,
+				Playable:     it.Unavailable == nil && it.Playable && levelIsPlayable(rec.Decl, it.Level),
+				SkipContinue: shouldSkipItemContinue(rec.Decl, lib.Present, it.Level),
 			}
 		}
 	}
@@ -708,6 +714,9 @@ func (c *KindCatalog) Children(ctx context.Context, parent core.RatingKey, recur
 		return experience.PluginBrowsePage{}, core.ErrNotFound
 	}
 	_, levelIdx, _ := rec.Decl.Level(parentItem.Level)
+	if cursor == "" {
+		c.maybeHydrateContainer(ctx, rec, lib, parentItem, levelIdx)
+	}
 	if !recursive || levelIdx < 0 || levelIdx >= len(rec.Decl.Levels)-2 {
 		policy, e := c.items.LibraryPolicy(ctx, lib)
 		if e != nil {
@@ -821,13 +830,69 @@ func (c *KindCatalog) Ancestors(ctx context.Context, key core.RatingKey) ([]core
 
 // Facets implements experience.PluginLibraries.
 func (c *KindCatalog) Facets(ctx context.Context, lib core.Library, facet string) ([]core.FacetValue, error) {
+	return c.FacetsAtLevel(ctx, lib, "", facet)
+}
+
+// FacetsAtLevel implements experience.PluginLevelFacetLibraries. level may be
+// empty (defaults to the kind's root level), an exact declared level key, or a
+// protocol item type/role (for example "album", "track", "MusicAlbum", "Audio").
+func (c *KindCatalog) FacetsAtLevel(ctx context.Context, lib core.Library, level, facet string) ([]core.FacetValue, error) {
 	if c == nil || c.items == nil {
 		return nil, nil
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
+	if err != nil {
+		return nil, err
+	}
+	targetLevel, ok := resolveProtocolLevel(rec.Decl, lib.Present, level)
+	if !ok {
+		return []core.FacetValue{}, nil
 	}
 	if facet == "person" {
 		policy, err := c.items.LibraryPolicy(ctx, lib)
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(level) != "" && targetLevel != "" {
+			var entries []core.FacetValue
+			seen := make(map[int64]bool)
+			for _, fd := range rec.Decl.Fields {
+				if fd.Type != "people" {
+					continue
+				}
+				page, pErr := c.items.FacetPeople(ctx, pluginitems.FacetPeopleQuery{
+					LibraryID: lib.ID,
+					Level:     targetLevel,
+					Policy:    policy,
+					FieldKey:  fd.Key,
+					Order:     "name",
+					Limit:     500,
+				})
+				if pErr != nil {
+					return nil, pErr
+				}
+				for _, p := range page.Items {
+					if !core.IsPluginPersonID(p.PersonID) || strings.TrimSpace(p.Name) == "" || seen[p.PersonID] {
+						continue
+					}
+					seen[p.PersonID] = true
+					keyStr := strconv.FormatInt(p.PersonID, 10)
+					entries = append(entries, core.FacetValue{
+						ID:    core.FacetID("person", keyStr),
+						Key:   keyStr,
+						Title: strings.TrimSpace(p.Name),
+						Count: p.Count,
+					})
+				}
+			}
+			sort.Slice(entries, func(i, j int) bool {
+				li, lj := strings.ToLower(entries[i].Title), strings.ToLower(entries[j].Title)
+				if li != lj {
+					return li < lj
+				}
+				return entries[i].Key < entries[j].Key
+			})
+			return entries, nil
 		}
 		type personEntry struct {
 			id   int64
@@ -862,21 +927,13 @@ func (c *KindCatalog) Facets(ctx context.Context, lib core.Library, facet string
 		}
 		return out, nil
 	}
-	rec, err := c.items.GetKindByLibrary(ctx, lib.ID)
-	if err != nil {
-		return nil, err
-	}
-	rootLevel := ""
-	if len(rec.Decl.Levels) > 0 {
-		rootLevel = rec.Decl.Levels[0].Key
-	}
 	fields := resolveFacetFields(rec.Decl, facet)
 	if len(fields) == 0 {
 		return []core.FacetValue{}, nil
 	}
 	merged := make(map[string]int)
 	for _, fieldKey := range fields {
-		page, err := c.items.Facets(ctx, lib.ID, rootLevel, fieldKey, 500)
+		page, err := c.items.Facets(ctx, lib.ID, targetLevel, fieldKey, 500)
 		if err != nil {
 			return nil, err
 		}
@@ -1018,7 +1075,8 @@ func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query 
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := searchLevelsForQuery(rec.Decl, lib.Present, q); !ok {
+	allowedLevels, ok := searchLevelsForQuery(rec.Decl, lib.Present, q)
+	if !ok {
 		return nil, nil
 	}
 	policy, err := c.items.LibraryPolicy(core.WithExplicitSearch(ctx), lib)
@@ -1035,10 +1093,10 @@ func (c *KindCatalog) SearchPeople(ctx context.Context, lib core.Library, query 
 	out := make([]experience.PluginPersonMatch, 0, len(matches))
 	for _, m := range matches {
 		titles := c.projectItems(ctx, rec, lib, m.Items)
-		if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
+		if len(allowedLevels) > 0 {
 			filtered := titles[:0]
 			for _, t := range titles {
-				if levelMatchesQueryTypes(t, q) {
+				if slices.Contains(allowedLevels, t.KindLevel) {
 					filtered = append(filtered, t)
 				}
 			}
@@ -1211,6 +1269,10 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	if len(items) == 0 {
 		return []core.Title{}
 	}
+	var resolveText pluginitems.TextResolver
+	if c != nil && c.mgr != nil {
+		resolveText = c.mgr.ResolveTextFunc(ctx, rec.PluginID, "")
+	}
 	rootCache := make(map[string]core.Title)
 	resolveRoot := func(parentID string) (core.Title, bool) {
 		if parentID == "" {
@@ -1235,7 +1297,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 			rootCache[parentID] = core.Title{}
 			return core.Title{}, false
 		}
-		rt := pluginitems.Project(root, rec.Decl, lib.Present, lib.CardShape)
+		rt := pluginitems.ProjectWithText(root, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		rt.LibraryID = lib.ID
 		if rt.ContentRating == "" {
 			rt.ContentRating = extractContentRating(root.Fields)
@@ -1254,7 +1316,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 			parentCache[parentID] = core.Title{}
 			return core.Title{}, false
 		}
-		pt := pluginitems.Project(p, rec.Decl, lib.Present, lib.CardShape)
+		pt := pluginitems.ProjectWithText(p, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		pt.LibraryID = lib.ID
 		parentCache[parentID] = pt
 		return pt, true
@@ -1263,7 +1325,7 @@ func (c *KindCatalog) projectItems(ctx context.Context, rec pluginitems.KindReco
 	flatAlbum := flatPlayableAlbum(rec.Decl, lib.Present)
 	out := make([]core.Title, len(items))
 	for i, it := range items {
-		t := pluginitems.Project(it, rec.Decl, lib.Present, lib.CardShape)
+		t := pluginitems.ProjectWithText(it, rec.Decl, lib.Present, resolveText, lib.CardShape)
 		t.LibraryID = lib.ID
 		if flatAlbum && it.Playable && it.Unavailable == nil {
 			// The album lists its one synthetic playable child.
@@ -1360,23 +1422,190 @@ func levelIsPlayable(decl plugins.MediaKindMeta, levelKey string) bool {
 	return ok && lv.Playable
 }
 
-// levelMatchesQueryTypes reports whether a level's projected title answers
-// the query's type filter: by its core media type (movie/show/season/episode)
-// or by the MediaBrowser item type the presentation declares for it
-// (MusicAlbum, Audio, Book, …), which clients name in IncludeItemTypes and
-// the query carries in UnservedTypes. A level the client excluded by either
-// name never matches.
-func levelMatchesQueryTypes(projected core.Title, q frontend.ItemQuery) bool {
-	for _, excluded := range q.ExcludedTypes {
-		if excluded == projected.Type || strings.EqualFold(string(excluded), projected.MBItemType) {
-			return false
+// ResolveKindMediaClass derives the effective MediaClass for a declared kind
+// from MediaKindMeta.Media, KindLevel.Role, MediaBrowser/Plex presentation
+// metadata, and falls back to core.MediaClassVideo.
+func ResolveKindMediaClass(decl plugins.MediaKindMeta, present core.Presentations) core.MediaClass {
+	if core.ValidMediaClass(decl.Media) {
+		return core.MediaClass(decl.Media)
+	}
+	for _, lv := range decl.Levels {
+		switch core.MediaRole(lv.Role) {
+		case core.MediaRoleArtist, core.MediaRoleAlbum, core.MediaRoleTrack:
+			return core.MediaClassMusic
+		case core.MediaRoleAudiobook:
+			return core.MediaClassAudiobook
+		case core.MediaRoleBook:
+			return core.MediaClassBook
 		}
 	}
-	if slices.Contains(q.Types, projected.Type) {
+	if present.MediaBrowser != nil {
+		switch strings.ToLower(strings.TrimSpace(present.MediaBrowser.CollectionType)) {
+		case "music":
+			return core.MediaClassMusic
+		case "books":
+			return core.MediaClassBook
+		case "photos":
+			return core.MediaClassPhoto
+		}
+		for _, itemType := range present.MediaBrowser.ItemTypes {
+			switch strings.ToLower(strings.TrimSpace(itemType)) {
+			case "musicartist", "musicalbum", "audio":
+				return core.MediaClassMusic
+			case "audiobook":
+				return core.MediaClassAudiobook
+			case "book":
+				return core.MediaClassBook
+			case "photo", "photoalbum":
+				return core.MediaClassPhoto
+			}
+		}
+	}
+	if present.Plex != nil {
+		switch strings.ToLower(strings.TrimSpace(present.Plex.Base)) {
+		case "artist":
+			return core.MediaClassMusic
+		case "photo":
+			return core.MediaClassPhoto
+		}
+	}
+	return core.MediaClassVideo
+}
+
+func shouldSkipItemContinue(decl plugins.MediaKindMeta, present core.Presentations, levelKey string) bool {
+	if ResolveKindMediaClass(decl, present) == core.MediaClassMusic {
 		return true
 	}
+	if lv, _, ok := decl.Level(levelKey); ok && core.MediaRole(lv.Role) == core.MediaRoleTrack {
+		return true
+	}
+	return false
+}
+
+// SkipResume reports whether playback progress for key must not persist a
+// resume offset (music libraries and track-role items). LastViewedAt and
+// completion tracking continue normally so history shelves work.
+func (c *KindCatalog) SkipResume(ctx context.Context, key core.RatingKey) bool {
+	if c == nil || c.items == nil || !key.IsPluginKey() {
+		return false
+	}
+	item, libID, err := c.items.GetByKey(ctx, key)
+	if err != nil {
+		return false
+	}
+	rec, err := c.items.GetKindByLibrary(ctx, libID)
+	if err != nil {
+		return false
+	}
+	present := rec.Decl.Present
+	if c.libs != nil {
+		if lib, lErr := c.libs.Get(ctx, libID); lErr == nil {
+			present = lib.Present
+		}
+	}
+	return shouldSkipItemContinue(rec.Decl, present, item.Level)
+}
+
+func effectiveDeclLevel(decl plugins.MediaKindMeta, level string) (string, bool) {
+	level = strings.TrimSpace(level)
+	if level == "" {
+		if len(decl.Levels) > 0 {
+			return decl.Levels[0].Key, true
+		}
+		return "", true
+	}
+	if lv, _, ok := decl.Level(level); ok {
+		return lv.Key, true
+	}
+	return "", false
+}
+
+func levelMatchesTypeName(lv plugins.KindLevel, idx int, decl plugins.MediaKindMeta, present core.Presentations, projected core.Title, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.EqualFold(name, string(projected.Type)) || strings.EqualFold(name, projected.MBItemType) {
+		return true
+	}
+	if lv.Role != "" && strings.EqualFold(name, lv.Role) {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "series":
+		return projected.Type == core.TypeShow
+	case "musicartist":
+		return projected.MBItemType == "" && core.MediaRole(lv.Role) == core.MediaRoleArtist
+	case "musicalbum":
+		return projected.MBItemType == "" && core.MediaRole(lv.Role) == core.MediaRoleAlbum
+	case "audio":
+		return projected.MBItemType == "" && core.MediaRole(lv.Role) == core.MediaRoleTrack
+	case "artist":
+		if strings.EqualFold(projected.MBItemType, "MusicArtist") || core.MediaRole(lv.Role) == core.MediaRoleArtist {
+			return true
+		}
+		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") && idx == 0 && len(decl.Levels) >= 3
+	case "album":
+		if strings.EqualFold(projected.MBItemType, "MusicAlbum") || core.MediaRole(lv.Role) == core.MediaRoleAlbum {
+			return true
+		}
+		if present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") {
+			return (len(decl.Levels) <= 2 && idx == 0) || (len(decl.Levels) >= 3 && idx == 1)
+		}
+	case "track":
+		if strings.EqualFold(projected.MBItemType, "Audio") || core.MediaRole(lv.Role) == core.MediaRoleTrack {
+			return true
+		}
+		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "artist") && len(decl.Levels) >= 2 && idx == len(decl.Levels)-1
+	case "photo":
+		if strings.EqualFold(projected.MBItemType, "Photo") {
+			return true
+		}
+		return present.Plex != nil && strings.EqualFold(present.Plex.Base, "photo") && idx == len(decl.Levels)-1
+	}
+	return false
+}
+
+func resolveProtocolLevel(decl plugins.MediaKindMeta, present core.Presentations, raw string) (string, bool) {
+	if lv, ok := effectiveDeclLevel(decl, raw); ok {
+		return lv, true
+	}
+	for idx, lv := range decl.Levels {
+		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+		if levelMatchesTypeName(lv, idx, decl, present, projected, raw) {
+			return lv.Key, true
+		}
+	}
+	return "", false
+}
+
+func levelExcludedByQuery(lv plugins.KindLevel, idx int, decl plugins.MediaKindMeta, present core.Presentations, projected core.Title, q frontend.ItemQuery) bool {
+	for _, excluded := range q.ExcludedTypes {
+		if levelMatchesTypeName(lv, idx, decl, present, projected, string(excluded)) {
+			return true
+		}
+	}
+	return false
+}
+
+// levelMatchesQueryTypes reports whether a level's projected title answers
+// the query's type filter: by its core media type (movie/show/season/episode),
+// its declared level role or Plex music/photo type (artist/album/track/photo),
+// or the MediaBrowser item type the presentation declares for it
+// (MusicAlbum, Audio, Book, …), which clients name in IncludeItemTypes and
+// the query carries in UnservedTypes. A level the client excluded by any
+// matching name never matches.
+func levelMatchesQueryTypes(lv plugins.KindLevel, idx int, decl plugins.MediaKindMeta, present core.Presentations, projected core.Title, q frontend.ItemQuery) bool {
+	if levelExcludedByQuery(lv, idx, decl, present, projected, q) {
+		return false
+	}
+	for _, want := range q.Types {
+		if levelMatchesTypeName(lv, idx, decl, present, projected, string(want)) {
+			return true
+		}
+	}
 	for _, kind := range q.UnservedTypes {
-		if strings.EqualFold(kind, projected.MBItemType) {
+		if levelMatchesTypeName(lv, idx, decl, present, projected, kind) {
 			return true
 		}
 	}
@@ -1385,32 +1614,65 @@ func levelMatchesQueryTypes(projected core.Title, q frontend.ItemQuery) bool {
 
 func browseLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) (level string, levels []string, anyLevel bool, ok bool) {
 	if len(decl.Levels) == 0 {
+		if strings.TrimSpace(q.Level) != "" {
+			return "", nil, false, false
+		}
 		return "", nil, true, true
+	}
+	flatAudio := flatAudioQuery(decl, present, q)
+	if reqLevel := strings.TrimSpace(q.Level); reqLevel != "" {
+		lv, idx, found := decl.Level(reqLevel)
+		if !found {
+			return "", nil, false, false
+		}
+		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+		if levelExcludedByQuery(lv, idx, decl, present, projected, q) {
+			return "", nil, false, false
+		}
+		if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
+			if !levelMatchesQueryTypes(lv, idx, decl, present, projected, q) && !flatAudio {
+				return "", nil, false, false
+			}
+		}
+		return lv.Key, nil, false, true
 	}
 	if len(q.Types) == 0 && len(q.UnservedTypes) == 0 {
 		if q.Filter.Person > 0 {
-			return "", nil, true, true
+			if len(q.ExcludedTypes) == 0 {
+				return "", nil, true, true
+			}
+			var allowed []string
+			for idx, lv := range decl.Levels {
+				projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+				if !levelExcludedByQuery(lv, idx, decl, present, projected, q) {
+					allowed = append(allowed, lv.Key)
+				}
+			}
+			if len(allowed) == 0 {
+				return "", nil, false, false
+			}
+			if len(allowed) == 1 {
+				return allowed[0], nil, false, true
+			}
+			return "", allowed, false, true
 		}
 		// An exclusion alone still narrows the root listing.
 		if len(q.ExcludedTypes) == 0 {
 			return decl.Levels[0].Key, nil, false, true
 		}
 		root := pluginitems.Project(core.KindItem{Level: decl.Levels[0].Key}, decl, present)
-		for _, excluded := range q.ExcludedTypes {
-			if excluded == root.Type || strings.EqualFold(string(excluded), root.MBItemType) {
-				return "", nil, false, false
-			}
+		if levelExcludedByQuery(decl.Levels[0], 0, decl, present, root, q) {
+			return "", nil, false, false
 		}
 		return decl.Levels[0].Key, nil, false, true
 	}
-	flatAudio := flatAudioQuery(decl, present, q)
 	var matched []string
-	for _, lv := range decl.Levels {
+	for idx, lv := range decl.Levels {
 		if !q.Recursive && lv.Key != decl.Levels[0].Key {
 			continue
 		}
 		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
-		if levelMatchesQueryTypes(projected, q) || flatAudio {
+		if levelMatchesQueryTypes(lv, idx, decl, present, projected, q) || flatAudio {
 			matched = append(matched, lv.Key)
 		}
 	}
@@ -1424,14 +1686,40 @@ func browseLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations
 }
 
 func searchLevelsForQuery(decl plugins.MediaKindMeta, present core.Presentations, q frontend.ItemQuery) ([]string, bool) {
-	if (len(q.Types) == 0 && len(q.UnservedTypes) == 0) || len(decl.Levels) == 0 {
+	if len(decl.Levels) == 0 {
+		if strings.TrimSpace(q.Level) != "" {
+			return nil, false
+		}
 		return nil, true
 	}
 	flatAudio := flatAudioQuery(decl, present, q)
-	var matched []string
-	for _, lv := range decl.Levels {
+	if reqLevel := strings.TrimSpace(q.Level); reqLevel != "" {
+		lv, idx, found := decl.Level(reqLevel)
+		if !found {
+			return nil, false
+		}
 		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
-		if levelMatchesQueryTypes(projected, q) || flatAudio {
+		if levelExcludedByQuery(lv, idx, decl, present, projected, q) {
+			return nil, false
+		}
+		if len(q.Types) > 0 || len(q.UnservedTypes) > 0 {
+			if !levelMatchesQueryTypes(lv, idx, decl, present, projected, q) && !flatAudio {
+				return nil, false
+			}
+		}
+		return []string{lv.Key}, true
+	}
+	if len(q.Types) == 0 && len(q.UnservedTypes) == 0 && len(q.ExcludedTypes) == 0 {
+		return nil, true
+	}
+	var matched []string
+	for idx, lv := range decl.Levels {
+		projected := pluginitems.Project(core.KindItem{Level: lv.Key}, decl, present)
+		if len(q.Types) == 0 && len(q.UnservedTypes) == 0 {
+			if !levelExcludedByQuery(lv, idx, decl, present, projected, q) {
+				matched = append(matched, lv.Key)
+			}
+		} else if levelMatchesQueryTypes(lv, idx, decl, present, projected, q) || flatAudio {
 			matched = append(matched, lv.Key)
 		}
 	}
@@ -1699,6 +1987,11 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	decl := rec.Decl
 	sorts := append([]string(nil), decl.Browse.Sorts...)
 
+	var resolveText func(string) (string, bool)
+	if c != nil && c.mgr != nil {
+		resolveText = c.mgr.ResolveTextFunc(ctx, rec.PluginID, "")
+	}
+
 	var tabs []frontend.ViewTab
 	if lib.TabsCustomized {
 		tabs = make([]frontend.ViewTab, 0, len(lib.Tabs))
@@ -1709,12 +2002,13 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 			effSearch := tab.EffectiveSearch()
 			var placeholder string
 			if effSearch && strings.TrimSpace(tab.SearchPlaceholder) != "" {
-				placeholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
+				placeholder = plugins.ResolveTextValue(tab.SearchPlaceholder, "", resolveText)
 			}
 			vt := frontend.ViewTab{
 				ID:                tab.Key,
-				Label:             c.resolvePluginText(ctx, rec.PluginID, tab.Label),
+				Label:             plugins.ResolveTextValue(tab.Label, tab.Key, resolveText),
 				Kind:              tab.Kind,
+				Level:             tab.Level,
 				Facet:             tab.Facet,
 				Order:             tab.Order,
 				Sort:              tab.Sort,
@@ -1734,8 +2028,9 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		for _, tab := range rawTabs {
 			vt := frontend.ViewTab{
 				ID:        tab.Key,
-				Label:     c.resolvePluginText(ctx, rec.PluginID, tab.Label),
+				Label:     plugins.ResolveTextValue(tab.Label, tab.Key, resolveText),
 				Kind:      tab.Kind,
+				Level:     tab.Level,
 				Facet:     tab.Facet,
 				Order:     tab.Order,
 				Sort:      tab.Sort,
@@ -1747,7 +2042,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 			if tab.Kind == "collections" || tab.Kind == "people" || tab.Kind == "view" || tab.Kind == "live" {
 				vt.Search = tab.EffectiveSearch()
 				if vt.Search && strings.TrimSpace(tab.SearchPlaceholder) != "" {
-					vt.SearchPlaceholder = c.resolvePluginText(ctx, rec.PluginID, tab.SearchPlaceholder)
+					vt.SearchPlaceholder = plugins.ResolveTextValue(tab.SearchPlaceholder, "", resolveText)
 				}
 			}
 			fillPluginTabDefaults(&vt, sorts)
@@ -1761,10 +2056,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	}
 	resolveViewFacet := func(fk string) (frontend.ViewFacet, bool) {
 		if fd, ok := fieldsByKey[fk]; ok {
-			lbl := c.resolvePluginText(ctx, rec.PluginID, fd.Label)
-			if strings.TrimSpace(lbl) == "" {
-				lbl = fk
-			}
+			lbl := plugins.ResolveTextValue(fd.Label, fk, resolveText)
 			return frontend.ViewFacet{
 				ID:    fk,
 				Label: lbl,
@@ -1774,10 +2066,7 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 		}
 		if base, ok := libraryfilter.SplitDateDecadeFacet(fk); ok {
 			if fd, exists := fieldsByKey[base]; exists && fd.Type == "date" {
-				lbl := c.resolvePluginText(ctx, rec.PluginID, fd.Label)
-				if strings.TrimSpace(lbl) == "" {
-					lbl = base
-				}
+				lbl := plugins.ResolveTextValue(fd.Label, base, resolveText)
 				return frontend.ViewFacet{
 					ID:    fk,
 					Label: lbl + " (decade)",
@@ -1825,21 +2114,21 @@ func (c *KindCatalog) Presentation(ctx context.Context, lib core.Library) (exper
 	if len(decl.Library.Shelves) > 0 {
 		shelves = make([]experience.PluginShelf, 0, len(decl.Library.Shelves))
 		for _, sh := range decl.Library.Shelves {
-			lbl := c.resolvePluginText(ctx, rec.PluginID, sh.Label)
-			if strings.TrimSpace(lbl) == "" {
-				lbl = sh.Key
-			}
+			lbl := plugins.ResolveTextValue(sh.Label, sh.Key, resolveText)
 			shelves = append(shelves, experience.PluginShelf{
 				Key:       sh.Key,
 				Label:     lbl,
+				Level:     sh.Level,
 				Sort:      mapPluginShelfSort(sh.EffectiveSort()),
 				Direction: sh.EffectiveDirection(),
 				Filters:   sh.EffectiveFilters(),
+				TabFilter: sh.EffectiveTabFilter(),
 			})
 		}
 	}
 
 	return experience.PluginPresentation{
+		Media:       ResolveKindMediaClass(decl, lib.Present),
 		Card:        lib.EffectiveCardShape(decl.Library.EffectiveCard()),
 		DateDisplay: decl.Library.EffectiveDateDisplay(),
 		Tabs:        tabs,
@@ -1863,6 +2152,8 @@ func mapPluginShelfSort(raw string) core.SortOrder {
 		return core.SortRating
 	case "index":
 		return core.SortIndex
+	case "lastViewed", "last_viewed", "lastviewed":
+		return core.SortLastViewed
 	default:
 		return core.SortReleased
 	}
@@ -1887,6 +2178,11 @@ func mapVelaFacetType(raw string) string {
 
 // FacetBuckets implements experience.PluginPresentationLibraries.
 func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field string) ([]frontend.FacetBucket, error) {
+	return c.FacetBucketsAtLevel(ctx, lib, "", field)
+}
+
+// FacetBucketsAtLevel implements experience.PluginLevelFacetLibraries.
+func (c *KindCatalog) FacetBucketsAtLevel(ctx context.Context, lib core.Library, level, field string) ([]frontend.FacetBucket, error) {
 	if c == nil || c.items == nil {
 		return []frontend.FacetBucket{}, nil
 	}
@@ -1894,15 +2190,15 @@ func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field 
 	if err != nil {
 		return nil, err
 	}
-	rootLevel := ""
-	if len(rec.Decl.Levels) > 0 {
-		rootLevel = rec.Decl.Levels[0].Key
+	targetLevel, ok := effectiveDeclLevel(rec.Decl, level)
+	if !ok {
+		return []frontend.FacetBucket{}, nil
 	}
 	policy, err := c.items.LibraryPolicy(ctx, lib)
 	if err != nil {
 		return nil, err
 	}
-	buckets, err := c.items.FacetBuckets(ctx, lib.ID, rootLevel, policy, field)
+	buckets, err := c.items.FacetBuckets(ctx, lib.ID, targetLevel, policy, field)
 	if err != nil {
 		return nil, err
 	}
@@ -1919,6 +2215,11 @@ func (c *KindCatalog) FacetBuckets(ctx context.Context, lib core.Library, field 
 
 // FacetCollections implements experience.PluginPresentationLibraries.
 func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error) {
+	return c.FacetCollectionsAtLevel(ctx, lib, "", field, order, query, offset, limit)
+}
+
+// FacetCollectionsAtLevel implements experience.PluginLevelFacetLibraries.
+func (c *KindCatalog) FacetCollectionsAtLevel(ctx context.Context, lib core.Library, level, field, order, query string, offset, limit int) (frontend.FacetCollectionPage, error) {
 	if c == nil || c.items == nil {
 		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
@@ -1926,9 +2227,9 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 	if err != nil {
 		return frontend.FacetCollectionPage{}, err
 	}
-	rootLevel := ""
-	if len(rec.Decl.Levels) > 0 {
-		rootLevel = rec.Decl.Levels[0].Key
+	targetLevel, ok := effectiveDeclLevel(rec.Decl, level)
+	if !ok {
+		return frontend.FacetCollectionPage{Items: []frontend.FacetCollection{}}, nil
 	}
 	policy, err := c.items.LibraryPolicy(ctx, lib)
 	if err != nil {
@@ -1936,7 +2237,7 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 	}
 	page, err := c.items.FacetCollections(ctx, pluginitems.FacetCollectionsQuery{
 		LibraryID: lib.ID,
-		Level:     rootLevel,
+		Level:     targetLevel,
 		Policy:    policy,
 		FieldKey:  field,
 		Order:     order,
@@ -1978,6 +2279,11 @@ func (c *KindCatalog) FacetCollections(ctx context.Context, lib core.Library, fi
 
 // FacetPeople implements experience.PluginPresentationLibraries.
 func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, order, query string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
+	return c.FacetPeopleAtLevel(ctx, lib, "", field, order, query, offset, limit)
+}
+
+// FacetPeopleAtLevel implements experience.PluginLevelFacetLibraries.
+func (c *KindCatalog) FacetPeopleAtLevel(ctx context.Context, lib core.Library, level, field, order, query string, offset, limit int) (experience.PluginFacetPeoplePage, error) {
 	if c == nil || c.items == nil {
 		return experience.PluginFacetPeoplePage{Items: []experience.PluginFacetPerson{}}, nil
 	}
@@ -1985,9 +2291,9 @@ func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, 
 	if err != nil {
 		return experience.PluginFacetPeoplePage{}, err
 	}
-	rootLevel := ""
-	if len(rec.Decl.Levels) > 0 {
-		rootLevel = rec.Decl.Levels[0].Key
+	targetLevel, ok := effectiveDeclLevel(rec.Decl, level)
+	if !ok {
+		return experience.PluginFacetPeoplePage{Items: []experience.PluginFacetPerson{}}, nil
 	}
 	policy, err := c.items.LibraryPolicy(ctx, lib)
 	if err != nil {
@@ -1995,7 +2301,7 @@ func (c *KindCatalog) FacetPeople(ctx context.Context, lib core.Library, field, 
 	}
 	page, err := c.items.FacetPeople(ctx, pluginitems.FacetPeopleQuery{
 		LibraryID: lib.ID,
-		Level:     rootLevel,
+		Level:     targetLevel,
 		Policy:    policy,
 		FieldKey:  field,
 		Order:     order,

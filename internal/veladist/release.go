@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -147,7 +148,7 @@ func openSource(ctx context.Context, client *http.Client, address string, local 
 		return nil, errors.New("invalid release URL")
 	}
 	if local && u.Scheme == "file" && (u.Host == "" || u.Host == "localhost") && u.RawQuery == "" && u.Fragment == "" {
-		return os.Open(u.Path)
+		return os.Open(localFilePath(u.Path, runtime.GOOS))
 	}
 	if u.Scheme != "https" || u.Host == "" {
 		return nil, errors.New("release downloads require HTTPS")
@@ -197,4 +198,14 @@ func metadata(ctx context.Context, client *http.Client, a Asset, local bool) ([]
 func digestMatches(b []byte, want string) bool {
 	d := sha256.Sum256(b)
 	return strings.EqualFold(hex.EncodeToString(d[:]), want)
+}
+
+func localFilePath(p, goos string) string {
+	if goos == "windows" {
+		if len(p) >= 3 && p[0] == '/' && p[2] == ':' && ((p[1] >= 'A' && p[1] <= 'Z') || (p[1] >= 'a' && p[1] <= 'z')) {
+			p = p[1:]
+		}
+		return strings.ReplaceAll(p, "/", `\`)
+	}
+	return p
 }

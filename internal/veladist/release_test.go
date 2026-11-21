@@ -339,4 +339,12 @@ func TestDistribution(t *testing.T) {
 		}
 	})
 
+	t.Run("local-file-path", func(t *testing.T) {
+		if got := localFilePath("/C:/Users/runner/release.json", "windows"); got != `C:\Users\runner\release.json` {
+			t.Fatalf("windows drive path = %q", got)
+		}
+		if got := localFilePath("/var/lib/ether/release.json", "linux"); got != "/var/lib/ether/release.json" {
+			t.Fatalf("unix path = %q", got)
+		}
+	})
 }
